@@ -58,7 +58,10 @@ function halfAndHalfStill() {
   return canvas.toDataURL("image/png");
 }
 
-function mountHost(backdrop: ThemeBackdrop, extra: { stillOnly?: boolean } = {}) {
+function mountHost(
+  backdrop: ThemeBackdrop,
+  extra: { stillOnly?: boolean; framedStill?: boolean; conditions?: BackdropConditions } = {},
+) {
   const statuses: ThemeBackdropStatus[] = [];
   const ref = createRef<ThemeBackdropHostHandle>();
   const screen = render(
@@ -130,6 +133,36 @@ describe("ThemeBackdropHost", () => {
     image.src = still;
     await image.decode();
     expect([image.naturalWidth, image.naturalHeight]).toEqual([320, 200]);
+  });
+
+  it("keeps the frame for Motion: Still, standing on one frame of the art with its own glass", async () => {
+    const still = halfAndHalfStill();
+    const host = mountHost(
+      { mode: "grid", script: GRID_ART, maxFps: 20, still },
+      { conditions: { ...LIVE, motion: "still" }, framedStill: true },
+    );
+    await vi.waitFor(
+      () =>
+        expect(host.statuses.at(-1)).toMatchObject({
+          kind: "still",
+          reason: "motion",
+          framed: true,
+        }),
+      { timeout: 8_000, interval: 50 },
+    );
+    expect(frameElement()).not.toBeNull();
+    // The frame's picture, not the still image under CSS tints.
+    expect(stillElement()).toBeNull();
+  });
+
+  it("removes the frame for art the computer found too heavy, even though it is still too", async () => {
+    const host = mountHost(
+      { mode: "grid", script: GRID_ART, maxFps: 20, still: halfAndHalfStill() },
+      { conditions: { ...LIVE, motion: "still" }, framedStill: false },
+    );
+    const status = await host.statusOf("still");
+    expect(status).toMatchObject({ kind: "still", reason: "motion", framed: false });
+    expect(frameElement()).toBeNull();
   });
 
   it("shows only the still on a phone, with one tint that covers all of it", async () => {

@@ -1,12 +1,17 @@
-import { EnvironmentId } from "@threadlines/contracts";
-import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
+import { EnvironmentId, type EnvironmentApi } from "@threadlines/contracts";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
-  findFileNamed,
+  __resetEnvironmentApiOverridesForTests,
+  __setEnvironmentApiOverrideForTests,
+} from "./environmentApi";
+import {
+  findReferencedFile,
   isPathWithinCwd,
   openDirectoryInViewer,
   openFileInViewer,
   parseChatFileReference,
+  placeChatFileReference,
   relativePathWithinCwd,
   useFileViewerStore,
 } from "./fileViewerStore";
@@ -68,14 +73,135 @@ describe("fileViewerStore", () => {
       { path: "docs/read-me-notes.txt", kind: "file" as const },
       { path: "README.md", kind: "file" as const },
     ];
-    expect(findFileNamed(fuzzyHits, "README.txt")).toBeUndefined();
+    expect(findReferencedFile(fuzzyHits, "README.txt")).toEqual({ status: "none" });
 
     const withExactMatch = [
       ...fuzzyHits,
       { path: "packaging/readme.txt", kind: "directory" as const },
       { path: "packaging/win/README.txt", kind: "file" as const },
+      { path: "packaging/mac/README.txt", kind: "file" as const },
     ];
-    expect(findFileNamed(withExactMatch, "README.txt")?.path).toBe("packaging/win/README.txt");
+    expect(findReferencedFile(withExactMatch, "README.txt")).toEqual({
+      status: "found",
+      path: "packaging/win/README.txt",
+    });
+  });
+
+  it("resolves a path from inside a subfolder only to the one file ending in it", () => {
+    const moduleFile = "shop/app/code/Buyfire/ReturnForm/Model/ReturnForm.php";
+    const hits = [
+      { path: moduleFile, kind: "file" as const },
+      {
+        path: "shop/app/code/Buyfire/ReturnForm/Model/ReturnFormLegacy.php",
+        kind: "file" as const,
+      },
+    ];
+    expect(findReferencedFile(hits, "Model/ReturnForm.php")).toEqual({
+      status: "found",
+      path: moduleFile,
+    });
+    // Two modules each have one, and nothing says which the agent meant.
+    const helpers = [
+      { path: "shop/app/code/Buyfire/Analytics/Helper/Data.php", kind: "file" as const },
+      { path: "shop/app/code/Buyfire/ReturnForm/Helper/Data.php", kind: "file" as const },
+    ];
+    expect(findReferencedFile(helpers, "Helper/Data.php")).toEqual({ status: "ambiguous" });
+    // The file at the path as written wins over others ending the same way.
+    expect(
+      findReferencedFile(
+        [
+          { path: "packages/a/src/index.ts", kind: "file" as const },
+          { path: "src/index.ts", kind: "file" as const },
+        ],
+        "src/index.ts",
+      ),
+    ).toEqual({ status: "found", path: "src/index.ts" });
+    // Exact spelling first: on a case-sensitive disk these are two files.
+    expect(
+      findReferencedFile(
+        [
+          { path: "src/index.ts", kind: "file" as const },
+          { path: "src/Index.ts", kind: "file" as const },
+        ],
+        "src/Index.ts",
+      ),
+    ).toEqual({ status: "found", path: "src/Index.ts" });
+  });
+
+  it("places a cited path from the files the server finds, and on an older server reads it first", async () => {
+    // A current server finds the files a path can name itself.
+    const currentSearch = vi.fn(async (input: { query: string }) => ({
+      entries:
+        input.query === "Helper/Data.php"
+          ? [
+              { path: "shop/Analytics/Helper/Data.php", kind: "file" },
+              { path: "shop/Banner/Helper/Data.php", kind: "file" },
+            ]
+          : [{ path: `module/${input.query}`, kind: "file" }],
+      // Past the index's size cap, one file found is not the only one.
+      truncated: input.query === "View/Form.php",
+      match: "path-ending",
+    }));
+    const readFile = vi.fn(async (_input: { relativePath: string }) => {
+      throw new Error("Permission denied");
+    });
+    // The environment API is only handed out in a window.
+    vi.stubGlobal("window", {});
+    __setEnvironmentApiOverrideForTests(TEST_ENVIRONMENT_ID, {
+      projects: { readFile, searchEntries: currentSearch },
+    } as unknown as EnvironmentApi);
+    const place = (path: string) =>
+      placeChatFileReference({
+        environmentId: TEST_ENVIRONMENT_ID,
+        cwd: "/repo",
+        projectRoot: null,
+        reference: { path, line: 3 },
+      });
+
+    try {
+      // A leading ./ says nothing the search needs.
+      await expect(place("./Model/Form.php")).resolves.toEqual({
+        status: "found",
+        file: { cwd: "/repo", relativePath: "module/Model/Form.php", line: 3 },
+      });
+      await expect(place("Helper/Data.php")).resolves.toEqual({ status: "ambiguous" });
+      await expect(place("View/Form.php")).resolves.toEqual({ status: "ambiguous" });
+      expect(currentSearch.mock.calls.map(([input]) => input)).toMatchObject([
+        { query: "Model/Form.php", match: "path-ending" },
+        { query: "Helper/Data.php", match: "path-ending" },
+        { query: "View/Form.php", match: "path-ending" },
+      ]);
+      expect(readFile).not.toHaveBeenCalled();
+
+      // An older server ranks fuzzy hits from an index without ignored files.
+      // Asked for the file name it ranks namesakes first; a read of the path
+      // as written that fails proves nothing, so that path stands.
+      const olderSearch = vi.fn(async (_input: { query: string }) => ({
+        entries: [{ path: "module/Model/Form.php", kind: "file" }],
+        truncated: false,
+      }));
+      __setEnvironmentApiOverrideForTests(TEST_ENVIRONMENT_ID, {
+        projects: { readFile, searchEntries: olderSearch },
+      } as unknown as EnvironmentApi);
+      await expect(place("Model/Form.php")).resolves.toEqual({
+        status: "found",
+        file: { cwd: "/repo", relativePath: "Model/Form.php", line: 3 },
+      });
+      readFile.mockResolvedValueOnce({ kind: "missing", relativePath: "Model/Form.php" } as never);
+      await expect(place("Model/Form.php")).resolves.toEqual({
+        status: "found",
+        file: { cwd: "/repo", relativePath: "module/Model/Form.php", line: 3 },
+      });
+      expect(olderSearch.mock.calls.map(([input]) => input.query)).toEqual([
+        "Model/Form.php",
+        "Form.php",
+        "Model/Form.php",
+        "Form.php",
+      ]);
+    } finally {
+      __resetEnvironmentApiOverridesForTests();
+      vi.unstubAllGlobals();
+    }
   });
 
   it("opens Git Bash Windows absolute paths with line suffixes in the viewer", () => {

@@ -72,7 +72,12 @@ const git = (cwd: string, args: ReadonlyArray<string>, env?: NodeJS.ProcessEnv) 
     return result.stdout.trim();
   });
 
-const searchWorkspaceEntries = (input: { cwd: string; query: string; limit: number }) =>
+const searchWorkspaceEntries = (input: {
+  cwd: string;
+  query: string;
+  limit: number;
+  match?: "path-ending";
+}) =>
   Effect.gen(function* () {
     const workspaceEntries = yield* WorkspaceEntries;
     return yield* workspaceEntries.search(input);
@@ -256,6 +261,55 @@ it.layer(TestLayer)("WorkspaceEntriesLive", (it) => {
         expect(paths).not.toContain("ignored.txt");
         expect(paths.some((entryPath) => entryPath.startsWith(".convex/"))).toBe(false);
         expect(paths.some((entryPath) => entryPath.startsWith("convex/"))).toBe(false);
+      }),
+    );
+
+    it.effect("finds the files a path names, an ignored one at the path itself included", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTempDir({ prefix: "threadlines-workspace-path-ending-", git: true });
+        yield* writeTextFile(cwd, ".gitignore", "/local/\n");
+        yield* writeTextFile(cwd, "shop/Analytics/Helper/Data.php", "<?php");
+        yield* writeTextFile(cwd, "shop/Banner/Helper/Data.php", "<?php");
+        yield* writeTextFile(cwd, "shop/Banner/Helper/Data.php.bak", "");
+        // A folder where the path points is not the file it names.
+        yield* writeTextFile(cwd, "Helper/Data.php/notes.txt", "");
+        // Ignored, so only a look at the disk finds it.
+        yield* writeTextFile(cwd, "local/Model/Form.php", "<?php");
+        yield* writeTextFile(cwd, "module/local/Model/Form.php", "<?php");
+
+        const helpers = yield* searchWorkspaceEntries({
+          cwd,
+          query: "helper/data.php",
+          limit: 10,
+          match: "path-ending",
+        });
+        expect(helpers.match).toBe("path-ending");
+        expect(helpers.entries.map((entry) => entry.path)).toEqual([
+          "shop/Analytics/Helper/Data.php",
+          "shop/Banner/Helper/Data.php",
+        ]);
+
+        const form = yield* searchWorkspaceEntries({
+          cwd,
+          query: "local/Model/Form.php",
+          limit: 1,
+          match: "path-ending",
+        });
+        expect(form.entries.map((entry) => entry.path)).toEqual(["local/Model/Form.php"]);
+        expect(form.truncated).toBe(true);
+
+        // Outside git the index walks folder level by level; the files still
+        // come back in path order.
+        const plain = yield* makeTempDir({ prefix: "threadlines-workspace-path-ending-plain-" });
+        yield* writeTextFile(plain, "z/Foo.ts", "");
+        yield* writeTextFile(plain, "a/deep/Foo.ts", "");
+        const foo = yield* searchWorkspaceEntries({
+          cwd: plain,
+          query: "Foo.ts",
+          limit: 10,
+          match: "path-ending",
+        });
+        expect(foo.entries.map((entry) => entry.path)).toEqual(["a/deep/Foo.ts", "z/Foo.ts"]);
       }),
     );
 

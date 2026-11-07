@@ -288,7 +288,7 @@ const BackdropCornerRadius = Schema.Number.check(Schema.isBetween({ minimum: 0, 
 /**
  * Where the art is frosted. `core` holds all the text the app can draw in
  * the zone and gets the full tint; a `soft` zone feathers outside its core.
- * `tint` is the floor (theme glass times the user's "Art in threads").
+ * `tint` is the floor (the theme's glass, moved by the user's Glass slider).
  */
 export const BackdropZone = Schema.Struct({
   id: TrimmedNonEmptyString.check(Schema.isMaxLength(40)),
@@ -337,7 +337,7 @@ export const BackdropConditions = Schema.Struct({
   motion: Schema.Literals(["live", "still"]),
   /** The window can be seen (not hidden, minimized, covered or under a full-window page). */
   visible: Schema.Boolean,
-  /** The user is scrolling, typing, resizing or a reply is streaming in view. */
+  /** The user is resizing the window or dragging a divider: the art holds still. */
   busy: Schema.Boolean,
   /** No input and no agent working for two minutes. */
   idle: Schema.Boolean,
@@ -366,6 +366,8 @@ export const BackdropHostMessage = Schema.Union([
       Schema.Number.check(Schema.isBetween({ minimum: 3, maximum: 21 })),
     ).check(Schema.isMaxLength(32)),
     blur: Schema.Int.check(Schema.isBetween({ minimum: 8, maximum: 48 })),
+    /** The theme's still (a data URL), shown until the art's first frame: the art fades in from it. */
+    still: Schema.optional(Schema.String.check(Schema.isMaxLength(THEME_MAX_STILL_CHARS))),
   }),
   Schema.Struct({
     type: Schema.Literal("viewport"),
@@ -380,6 +382,17 @@ export const BackdropHostMessage = Schema.Union([
   Schema.Struct({ type: Schema.Literal("activity"), activity: BackdropActivity }),
   Schema.Struct({ type: Schema.Literal("pulse"), kind: Schema.Literals(["turn-done"]) }),
   Schema.Struct({ type: Schema.Literal("conditions"), conditions: BackdropConditions }),
+  /**
+   * New text colors or ratios after `init` (the Glass slider moved, or the
+   * theme's colors changed): the frame keeps running and tints by them.
+   */
+  Schema.Struct({
+    type: Schema.Literal("texts"),
+    textColors: Schema.Array(ThemeColor).check(Schema.isMaxLength(32)),
+    textRatios: Schema.Array(
+      Schema.Number.check(Schema.isBetween({ minimum: 3, maximum: 21 })),
+    ).check(Schema.isMaxLength(32)),
+  }),
   /** Asks for a still; the frame answers with `still`. */
   Schema.Struct({
     type: Schema.Literal("capture-still"),
@@ -433,7 +446,16 @@ export type BackdropFrameMessage = typeof BackdropFrameMessage.Type;
 // ---------------------------------------------------------------------------
 // Device settings (client settings) that shape how a theme with art shows.
 
-/** How much art shows inside threads: the reading column's tint floor. */
+/**
+ * The Glass slider: how much of a theme's art shows through the glass on
+ * every page, 0 (solid) to 100 (clearest), with the theme's own glass at
+ * `THEME_GLASS_LEVEL_DEFAULT`. Text over the art stays readable at any level.
+ */
+export const ThemeGlassLevel = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 100 }));
+export type ThemeGlassLevel = typeof ThemeGlassLevel.Type;
+export const THEME_GLASS_LEVEL_DEFAULT = 50;
+
+/** Before the Glass slider: how much art showed inside threads. Read only to carry the choice over. */
 export const ThemeArtInThreads = Schema.Literals(["none", "some", "full"]);
 export type ThemeArtInThreads = typeof ThemeArtInThreads.Type;
 

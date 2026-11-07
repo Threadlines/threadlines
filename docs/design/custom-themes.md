@@ -51,7 +51,7 @@ colors is optional.
 | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Colors   | `base` (`light` or `dark`) plus about 12 seed colors (background, foreground, muted text, accent, accent text, border, success, warning, danger, info, code background, selection). Optional overrides for a listed subset of tokens, a code-syntax palette, a 16-color terminal palette. |
 | Fonts    | Optional UI and mono font, embedded as woff2 bytes (at most 2 fonts, 400 KB each). An agent names a Google Fonts or Bunny family; the server downloads it once when the theme is first saved. After that the file is self-contained and works offline.                                    |
-| Glass    | How much tint the frame, thread list, reading column and composer get (0 to 1), and the blur radius. Only used when there is a backdrop. These are floors the user's "Art in threads" setting moves; readability can raise them, never lower them.                                        |
+| Glass    | How much tint the frame, thread list, reading column and composer get (0 to 1), and the blur radius. Only used when there is a backdrop. These are floors the user's Glass slider moves; readability can raise them, never lower them.                                                    |
 | Backdrop | Optional live art: a script for the draw contract below, a frame rate (12 to 30, default 24), and a still image the runtime captures.                                                                                                                                                     |
 
 Also stored: `name`, `prompt` (what made it, for "Copy prompt"), `createdBy`
@@ -89,12 +89,16 @@ theme this device already kept skips the trial.
 **Switching.** Four ways in:
 
 - `/theme` in the composer opens a strip of thumbnails above the message box
-  (built-ins, starters, yours, "New theme…"). Arrow keys preview (a trial),
-  Enter keeps, Esc goes back.
+  (built-ins, starters, yours, "New theme…"). Arrow keys or a click preview
+  (a trial); Keep (shown while previewing), Enter or a second click keeps;
+  the ✕ or Esc goes back. While a theme with art shows, the Glass slider sits
+  beside the strip's title. The keys work without labels; the buttons'
+  tooltips name them.
 - Command palette: "Change theme…" submenu, and "Use default theme".
-- Settings › General › Appearance: the gallery, "Art in threads" (None, Some,
-  Full), "Motion" (Live, Still), "Import theme file…".
-- An agent asked to "switch to Dunes" uses `settings_change` on
+- Settings › General › Appearance: the gallery, "Glass" (a slider, Solid to
+  Clear, the theme's own in the middle), "Motion" (Live, Still), "Import
+  theme file…".
+- An agent asked to "switch to Meadow" uses `settings_change` on
   `general.theme`, whose choices become dynamic (System, Light, Dark and the
   library's names, checked like `model`). Accepting the card starts the same
   trial when the theme is new to this device; the device result reports the
@@ -119,16 +123,23 @@ same way: a patch behind its heading, line and buttons, and one behind the
 links under them.
 Inside a thread the reading column (composer width plus a margin) is frosted
 and tinted; the art shows crisp in the margins, and frosted through the
-thread list, title row and rail. "Art in threads" moves the column's tint
-floor: None (opaque column), Some (default), Full (light tint). Readability
-can always raise a tint. Text over the art keeps 4.5:1, or 3:1 when the
-theme's `glass.readability` is `relaxed` (art-first themes, where the look
-matters more than long reading, Will's call for themes like Honu Lagoon) or
-the user picks Full; text on solid surfaces keeps its checks either way. Settings and every other page (Usage, Scheduled,
+thread list, title row and rail. The Glass slider (`themeGlass`, 0 to 100,
+a device setting) moves every surface's tint floor at once: frame, thread
+list, column, composer and pages. 0 is Solid (every floor opaque), 50 the
+theme's own glass, 100 Clear (no floor, only what readability needs),
+linear between. It replaced "Art in threads" (None, Some, Full, the reading
+column only), whose choices carry over as 0, 50 and 75. Readability can
+always raise a tint. Text over the art keeps 4.5:1 up to the theme's own,
+easing to 3:1 by 75; a theme whose `glass.readability` is `relaxed`
+(art-first themes, where the look matters more than long reading, Will's
+call for themes like Honu Lagoon) keeps 3:1 throughout. Text on solid
+surfaces keeps its checks either way. Dragging moves the glass live: the
+zones get new floors, and the frame takes new text ratios with a `texts`
+message instead of starting over; the setting is saved when the drag ends. Settings and every other page (Usage, Scheduled,
 Pull requests, General chats, Fleet) work like a thread: each marks its
 scrolling area and column (`glassPage.ts`), the column is frosted and tinted
-the full height of the page at the theme's own column floor ("Art in threads"
-is about threads), and the art shows beside it. A page that marks nothing is
+the full height of the page at the column's floor, and the art shows
+beside it. A page that marks nothing is
 frosted whole, so art never shows raw behind its text. The composer and the panels it opens above itself (the theme picker, the
 new-theme hint) are glass too, each over a patch rounded like its outline.
 
@@ -199,6 +210,18 @@ it:
   Motion, or on phones, the frame keeps the last bitmap and terminates the
   worker. A theme can't spend anything while paused. Resuming starts a new
   worker and continues `t` from where it stopped (setup runs again).
+- **Still keeps the frame.** Under "Motion: Still" or Reduce Motion on a
+  computer, the frame stays: it draws one frame of the art (or keeps the one
+  on screen when Still is chosen), terminates the worker, and stands on it,
+  frosting and tinting it patch by patch like the live art, so Still keeps
+  Live's colors and glass. It recomposites only when the layout moves, and
+  draws one new frame once the window settles at a new size. Until its first
+  frame, the app's 3-second watchdog expects progress as for live art. The
+  first build removed the frame and showed the still image under one
+  whole-page CSS tint, which washed busy art out. The cost is the frame's
+  graphics memory while it stands. Art the computer found too heavy (the
+  desktop CPU watchdog's last verdict) is still too, but loses its frame:
+  the still image shows, as on phones.
 - **Missed ticks.** A tick not answered within two frame intervals counts as a
   miss. Three misses in a row halve the frame rate; continued misses
   terminate the worker and show the still, with "Paused: this theme's art is
@@ -298,7 +321,8 @@ cost counts against the budget. Zones still update while paused: the frame
 recomposites and remeasures the kept bitmap.
 
 **The fallback can't remeasure,** so it doesn't depend on layout: when the
-app shows the still (phones, Still, a failed frame), it computes one tint from
+app shows the still image (phones, a failed frame, the moment before the
+frame draws), it computes one tint from
 the per-channel box of the whole still and applies it to every text surface.
 With no still, text surfaces are opaque.
 
@@ -340,17 +364,35 @@ under 0.1 ms). The design leans on that:
   another app it drops to 10 fps, 15 while agents work, with a burst to the
   theme's rate for 2 seconds after a `turn-done` pulse. A theme can ask for
   less, never more than 30.
-- **The app always wins.** While the user scrolls, drags a divider, resizes
-  the window or types, and while a reply is streaming into the open thread,
-  the app posts `busy` and the frame holds its last frame. It resumes 400 ms
-  after the last busy signal.
+- **The app always wins.** While the user resizes the window or drags a
+  divider, the layout changes every step (and with the window, the art's
+  canvas), so the app posts `busy` and the frame holds its last frame. It
+  resumes 400 ms after the last busy signal. Typing and scrolling don't hold
+  the art. The first build held it for them too, and that freeze was the most
+  visible thing about the art. Measured in Chromium on a MacBook Pro (Nov 6,
+  production build, Aurora and Dunes against no art at all), keys took as
+  long to show up (24 ms typical, 32 ms at worst) and scrolling dropped as
+  many frames (6%) with the art running as with it held or off: it runs in
+  its own process. A reply streaming into the open thread doesn't hold or
+  slow it either: the same check with a stand-in agent streaming a long
+  markdown reply dropped as few frames (2 to 4 in 5 seconds at 120 Hz) with
+  the art at full rate as with it slowed to 12 fps or off. (The first build
+  held the art for the whole reply, which read as a random freeze.)
 - **Power and heat.** On battery the frame rate stays at or under 20 (desktop `powerMonitor`
   `on-battery`/`on-ac`; on web `navigator.getBattery()` where it exists). When
   macOS reports a `serious` or `critical` thermal state, or the CPU speed
   limit drops, the art goes still until it recovers.
 - **Nothing runs unseen.** Hidden, minimized or fully covered windows, a
   full-window panel or Settings page over the art, and 2 idle minutes all
-  terminate the worker.
+  terminate the worker. When the art resumes, a new worker starts the art's
+  own state over (`setup` reruns), so the frame keeps a copy of the picture
+  on screen and dissolves it into the restarted art over 500 ms instead of
+  snapping. A theme's first frame (switching themes, turning Motion back on,
+  which remounts the frame) fades the same way from the theme's still, which
+  the app shows until then: `init` carries it, and the art waits up to a
+  second for it to decode (the still shows meanwhile). A fade holds while
+  the art is held or paused. The copy (one full-window texture) lives only
+  for the fade.
 - **An energy label.** The runtime keeps a running average of work per second
   (frame cost times frame rate). Appearance shows each theme's label on this
   computer (Light, Medium, Heavy) next to its thumbnail, and `preview_theme`
@@ -503,8 +545,9 @@ tested per provider.
 
 Gating: on when agent pages are on (`enableAgentPages`). The app guide gets a
 `themes` topic (what a theme is, the draw contract, the art rules: calm
-center, slow motion, a seamless loop, palette from the art, stay under the
-budget, no network) and places for the new Appearance rows.
+center, slow motion, a seamless loop, palette from the art, motion that adds
+up speed × `dt` and eases into the working look so nothing jumps, stay under
+the budget, no network) and places for the new Appearance rows.
 
 ## Storage and devices
 
@@ -550,12 +593,19 @@ budget, no network) and places for the new Appearance rows.
 
 ## Starter themes
 
-Six, all ours: **Aurora** (dark, ASCII night sky, live), **Dunes** (light,
-painted dunes and wind, live), **Phosphor** (dark, green terminal colors,
-mono font, static scanlines, no live art), **Snowfield** (light, ASCII snow
-over pines, live), **Night Rain** (dark, rain on a window with city lights,
-live), **Ember** (dark warm, slow sparks, live). Each is tuned under the
-budget, passes the table, and is a reference in the guide topic.
+Six, all ours: **Aurora** (dark, ASCII night sky, live), **Lantern Lake**
+(dark but not too dark, a pixel lake at dusk with a lit cabin and fireflies,
+live), **Meadow** (light,
+grass, clouds over hills, seeds and butterflies, live), **Phosphor** (dark,
+green terminal colors, mono font, static scanlines, no live art),
+**Snowfield** (light, ASCII snow over pines, live), **Tokyo Rain** (dark, a
+neon alley in the rain, two embedded OFL fonts, live). Each is tuned under
+the budget, passes the table, and is a reference in the guide topic.
+
+Retired, still found by id so a device that chose one keeps it, but no
+longer listed (`RETIRED_STARTER_THEMES`): **Dunes** (gave way to Meadow),
+**Night Rain** (gave way to Tokyo Rain, which began as Will's own theme),
+**Ember**.
 
 ## The public gallery (after)
 

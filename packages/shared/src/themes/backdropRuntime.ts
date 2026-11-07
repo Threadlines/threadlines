@@ -47,6 +47,8 @@ export interface BackdropRuntimeTiming {
   readonly batteryFps: number;
   readonly burstMs: number;
   readonly busyResumeMs: number;
+  readonly resumeFadeMs: number;
+  readonly stillWaitMs: number;
   readonly budgetWindowMs: number;
   readonly budgetWarmupMs: number;
   readonly budgetMsPerSecond: number;
@@ -136,6 +138,8 @@ export function backdropFrameRuntime(
     base: Rgb;
     texts: Array<{ luminance: number; ratio: number }>;
     blur: number;
+    /** The still the app shows until the art's first frame, a data URL. */
+    still: string | null;
   }
   interface Rect {
     x: number;
@@ -183,6 +187,24 @@ export function backdropFrameRuntime(
     return { x, y, w, h };
   };
 
+  /** Text colors with the contrast each needs over the art, from `init` or `texts`. */
+  const readTexts = (textColors: unknown, textRatios: unknown): Init["texts"] | null => {
+    if (!Array.isArray(textColors) || !Array.isArray(textRatios)) return null;
+    if (textColors.length > limits.maxTextColors || textColors.length !== textRatios.length)
+      return null;
+    const texts: Init["texts"] = [];
+    for (let index = 0; index < textColors.length; index++) {
+      const hex: unknown = textColors[index];
+      const ratio: unknown = textRatios[index];
+      // From 3:1 up: a ratio near 1:1 leaves a band of failing tints too thin
+      // for the tint map's search to be sure of stepping on it.
+      if (typeof hex !== "string" || !HEX.test(hex) || !isNum(ratio, 3, 21)) return null;
+      const rgb = hexToRgb(hex);
+      texts.push({ luminance: math.luminance(rgb.r, rgb.g, rgb.b), ratio });
+    }
+    return texts;
+  };
+
   const readInit = (message: Record<string, unknown>): Init | null => {
     const { mode, script, maxFps, base, palette, textColors, textRatios, blur } = message;
     if (mode !== "grid" && mode !== "pixels" && mode !== "canvas") return null;
@@ -198,19 +220,8 @@ export function backdropFrameRuntime(
         return null;
       cleanPalette[key] = value;
     }
-    if (!Array.isArray(textColors) || !Array.isArray(textRatios)) return null;
-    if (textColors.length > limits.maxTextColors || textColors.length !== textRatios.length)
-      return null;
-    const texts: Init["texts"] = [];
-    for (let index = 0; index < textColors.length; index++) {
-      const hex = textColors[index];
-      const ratio = textRatios[index];
-      // From 3:1 up: a ratio near 1:1 leaves a band of failing tints too thin
-      // for the tint map's search to be sure of stepping on it.
-      if (typeof hex !== "string" || !HEX.test(hex) || !isNum(ratio, 3, 21)) return null;
-      const rgb = hexToRgb(hex);
-      texts.push({ luminance: math.luminance(rgb.r, rgb.g, rgb.b), ratio });
-    }
+    const texts = readTexts(textColors, textRatios);
+    if (!texts) return null;
     const solid = cleanPalette["surface-solid"] ?? cleanPalette.background;
     const baseColor =
       solid !== undefined && HEX.test(solid)
@@ -218,7 +229,14 @@ export function backdropFrameRuntime(
         : base === "dark"
           ? { r: 0.086, g: 0.086, b: 0.086 }
           : { r: 1, g: 1, b: 1 };
-    return { mode, script, maxFps, palette: cleanPalette, base: baseColor, texts, blur };
+    // A still that doesn't parse only costs the fade into the first frame.
+    const still =
+      typeof message.still === "string" &&
+      message.still.length <= limits.maxStillChars &&
+      /^data:image\/(?:png|jpeg|webp);base64,/.test(message.still)
+        ? message.still
+        : null;
+    return { mode, script, maxFps, palette: cleanPalette, base: baseColor, texts, blur, still };
   };
 
   const readZones = (value: unknown): Zone[] | null => {
@@ -376,6 +394,23 @@ export function backdropFrameRuntime(
     | null = null;
   /** Buffers of an earlier frame, handed back to the worker with the next tick. */
   let spare: ArrayBuffer[] = [];
+  /** The window changed size since the last frame: one standing for Still is redrawn. */
+  let stillStale = false;
+  /** The art target holds a drawn frame: the picture on screen. */
+  let artHeld = false;
+  /** A restarted worker's first frame fades in over the picture on screen. */
+  let fadeNext = false;
+  /** The picture on screen when the art resumed, fading out over the restarted art. */
+  let fadeFrom: Target | null = null;
+  let fadeStartedAt = 0;
+  /** When the fade froze: the art paused or held still mid-fade, so the picture holds too. */
+  let fadeHeldAt: number | null = null;
+  let fadeTimer: number | null = null;
+  let fadeMs = timing.resumeFadeMs;
+  /** The theme's still, decoded: the art's very first frame fades in from it. */
+  let stillImage: BackdropBitmap | null = null;
+  /** The still is decoding: the art waits for it, at most `stillWaitMs`. */
+  let stillDecoding = false;
 
   // ---------------------------------------------------------------------
   // WebGL2.
@@ -423,6 +458,7 @@ export function backdropFrameRuntime(
     blur: Program;
     composite: Program;
     tint: Program;
+    fade: Program;
     atlas: GLHandle | null;
     atlasKey: string;
     atlasCols: number;
@@ -517,6 +553,16 @@ void main() {
   vec2 css = vec2(gl_FragCoord.x, uDeviceHeight - gl_FragCoord.y) / uDpr;
   vec4 c = texture(uSource, css * uMap.xy + uMap.zw);
   outColor = vec4(c.rgb * c.a, c.a);
+}`;
+  /** A kept picture at `uAlpha`, premultiplied: over the art it fades out, at 1 it copies. */
+  const FADE_FS = `#version 300 es
+precision highp float;
+uniform sampler2D uSource;
+uniform vec2 uSize;
+uniform float uAlpha;
+out vec4 outColor;
+void main() {
+  outColor = vec4(texture(uSource, gl_FragCoord.xy / uSize).rgb * uAlpha, uAlpha);
 }`;
   const DOWNSAMPLE_FS = `#version 300 es
 precision highp float;
@@ -722,6 +768,8 @@ void main() {
 }`;
 
   const QUARTER = 4;
+  /** How often a resume fade recomposites, about 30 times a second. */
+  const FADE_STEP_MS = 33;
 
   const buildGpu = (context: BackdropGL) => {
     const compile = (type: number, source: string) => {
@@ -804,6 +852,7 @@ void main() {
       blur: link(FULLSCREEN_VS, BLUR_FS),
       composite: link(FULLSCREEN_VS, COMPOSITE_FS),
       tint: link(FULLSCREEN_VS, TINT_MAP_FS),
+      fade: link(FULLSCREEN_VS, FADE_FS),
       atlas: null,
       atlasKey: "",
       atlasCols: 1,
@@ -855,6 +904,21 @@ void main() {
     context.deleteFramebuffer(target.framebuffer);
   };
 
+  /** How much of the picture from before still shows over the art: 1 down to 0, eased. */
+  const fadeAlpha = () => {
+    if (!fadeFrom) return 0;
+    const k = Math.min(1, Math.max(0, ((fadeHeldAt ?? now()) - fadeStartedAt) / fadeMs));
+    return 1 - k * k * (3 - 2 * k);
+  };
+
+  const endFade = () => {
+    if (fadeTimer !== null) win.clearTimeout(fadeTimer);
+    fadeTimer = null;
+    fadeHeldAt = null;
+    if (gl && fadeFrom) dropTarget(gl, fadeFrom);
+    fadeFrom = null;
+  };
+
   /** Device size of the visible canvas: the window at the frame's pixel ratio, capped. */
   const deviceSize = () => {
     let dpr = viewport.dpr;
@@ -880,6 +944,7 @@ void main() {
       dropTarget(gl, gpu.art);
       gpu.artLevels = Math.floor(Math.log2(Math.max(size.width, size.height))) + 1;
       gpu.art = makeTarget(gl, size.width, size.height, gpu.artLevels);
+      artHeld = false;
     }
     if (
       !gpu.quarterA ||
@@ -952,6 +1017,9 @@ void main() {
     if (failed) return;
     failed = true;
     stopArt();
+    endFade();
+    stillImage?.close();
+    stillImage = null;
     if (resumeTimer !== null) win.clearTimeout(resumeTimer);
     if (restoreTimer !== null) win.clearTimeout(restoreTimer);
     const clipped = detail === undefined ? undefined : detail.slice(0, 500);
@@ -983,6 +1051,10 @@ void main() {
   const startArt = () => {
     if (!theme || art || failed) return;
     generation += 1;
+    // A new worker starts the art's own state over (setup reruns): rather
+    // than snap to it, the picture on screen (the last frame, or before the
+    // first one the still the app shows) dissolves into its first frames.
+    fadeNext = artHeld || stillImage !== null;
     const config = {
       generation,
       palette: theme.palette,
@@ -1319,8 +1391,13 @@ void main() {
       failWith("bad-output", "A frame didn't match the art's mode.");
       return;
     }
+    if (fadeNext) {
+      fadeNext = false;
+      beginFade();
+    }
     render();
     drawnFrames += 1;
+    stillStale = false;
     // The first frame is announced at once: the app shows the art on it, and
     // the next heartbeat could be a second away.
     if (drawnFrames === 1) send({ type: "heartbeat", frame: drawnFrames });
@@ -1488,6 +1565,137 @@ void main() {
   const shownWorst = new Map<string, { low: number; high: number }>();
 
   /**
+   * Keeps a copy of the picture on screen, before the restarted art draws
+   * over it: the art target's last frame, or before the first frame the still
+   * (covering the window, as the app shows it). Then recomposites about 30
+   * times a second until it has faded, whatever the art's own rate.
+   */
+  const beginFade = () => {
+    endFade();
+    const still = stillImage;
+    stillImage = null;
+    if (!gl || !gpu || contextLost || !gpu.art || (!artHeld && !still)) {
+      still?.close();
+      return;
+    }
+    const { art: artTarget } = gpu;
+    fadeFrom = makeTarget(gl, artTarget.width, artTarget.height, 1);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fadeFrom.framebuffer);
+    gl.viewport(0, 0, fadeFrom.width, fadeFrom.height);
+    gl.disable(gl.BLEND);
+    gl.bindVertexArray(gpu.empty);
+    gl.activeTexture(gl.TEXTURE0);
+    if (artHeld) {
+      gl.useProgram(gpu.fade.program);
+      gl.bindTexture(gl.TEXTURE_2D, artTarget.texture);
+      gl.uniform1i(gpu.fade.uniform("uSource"), 0);
+      gl.uniform2f(gpu.fade.uniform("uSize"), fadeFrom.width, fadeFrom.height);
+      gl.uniform1f(gpu.fade.uniform("uAlpha"), 1);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    } else if (still) {
+      const texture = gl.createTexture();
+      if (texture) {
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, still);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        // Cover, centered: uv = css * map.xy + map.zw.
+        const cover = Math.max(viewport.width / still.width, viewport.height / still.height);
+        const shownWidth = still.width * cover;
+        const shownHeight = still.height * cover;
+        gl.useProgram(gpu.quad.program);
+        gl.uniform1i(gpu.quad.uniform("uSource"), 0);
+        gl.uniform1f(gpu.quad.uniform("uDpr"), deviceSize().dpr);
+        gl.uniform1f(gpu.quad.uniform("uDeviceHeight"), fadeFrom.height);
+        gl.uniform4f(
+          gpu.quad.uniform("uMap"),
+          1 / shownWidth,
+          1 / shownHeight,
+          -(viewport.width - shownWidth) / 2 / shownWidth,
+          -(viewport.height - shownHeight) / 2 / shownHeight,
+        );
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        gl.deleteTexture(texture);
+      }
+    }
+    still?.close();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    fadeStartedAt = now();
+    fadeTimer = win.setTimeout(fadeStep, FADE_STEP_MS);
+  };
+
+  /** One step of a fade. It freezes while the art isn't running (`continueFade` picks it up). */
+  const fadeStep = () => {
+    fadeTimer = null;
+    if (!fadeFrom) return;
+    if (contextLost || failed) {
+      endFade();
+      return;
+    }
+    // Held still or out of sight, the fade waits; standing for Motion: Still,
+    // it finishes, since the picture is on screen.
+    if (runState() !== "running" && !standingStill()) {
+      fadeHeldAt = now();
+      return;
+    }
+    if (fadeAlpha() <= 0) {
+      endFade();
+      render();
+      return;
+    }
+    render();
+    fadeTimer = win.setTimeout(fadeStep, FADE_STEP_MS);
+  };
+
+  const continueFade = () => {
+    if (!fadeFrom || fadeHeldAt === null) return;
+    fadeStartedAt += now() - fadeHeldAt;
+    fadeHeldAt = null;
+    if (fadeTimer === null) fadeTimer = win.setTimeout(fadeStep, FADE_STEP_MS);
+  };
+
+  /** Decodes the theme's still; the art waits for it (at most `stillWaitMs`) so it can fade from it. */
+  const decodeStill = (url: string) => {
+    let bytes: Uint8Array<ArrayBuffer>;
+    try {
+      const raw = atob(url.slice(url.indexOf(",") + 1));
+      bytes = new Uint8Array(raw.length);
+      for (let index = 0; index < raw.length; index++) bytes[index] = raw.charCodeAt(index);
+    } catch {
+      return;
+    }
+    stillDecoding = true;
+    const wait = win.setTimeout(() => {
+      if (!stillDecoding) return;
+      stillDecoding = false;
+      schedule();
+    }, timing.stillWaitMs);
+    const settle = (bitmap: BackdropBitmap | null) => {
+      // Too late, or no longer wanted: the art started without it.
+      if (!stillDecoding || failed || !bitmap) {
+        bitmap?.close();
+        if (stillDecoding) {
+          stillDecoding = false;
+          win.clearTimeout(wait);
+          schedule();
+        }
+        return;
+      }
+      stillDecoding = false;
+      win.clearTimeout(wait);
+      stillImage = bitmap;
+      schedule();
+    };
+    win.createImageBitmap(new Blob([bytes], { type: url.slice(5, url.indexOf(";")) })).then(
+      (bitmap) => settle(bitmap),
+      () => settle(null),
+    );
+  };
+
+  /**
    * Puts the kept frame on screen: the art and its frost, each patch of
    * glass's tint worked out from that frost, then the composite. All on the
    * GPU, nothing read back.
@@ -1637,7 +1845,19 @@ void main() {
       gl.uniform4f(gpu.quad.uniform("uMap"), map[0]!, map[1]!, map[2]!, map[3]!);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
+    // Resuming: the picture from before the pause over it, fading out.
+    const fading = fadeAlpha();
+    if (fadeFrom && fading > 0) {
+      gl.useProgram(gpu.fade.program);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, fadeFrom.texture);
+      gl.uniform1i(gpu.fade.uniform("uSource"), 0);
+      gl.uniform2f(gpu.fade.uniform("uSize"), artTarget.width, artTarget.height);
+      gl.uniform1f(gpu.fade.uniform("uAlpha"), fading);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    }
     gl.disable(gl.BLEND);
+    artHeld = frame !== null;
 
     // 2. A quarter-resolution copy, averaged through the art's mip levels.
     gl.bindTexture(gl.TEXTURE_2D, artTarget.texture);
@@ -1887,20 +2107,28 @@ void main() {
   const runState = (): RunState => {
     if (!theme || !gl || failed || contextLost || !conditions) return "paused";
     const c = conditions;
-    if (
-      c.motion === "still" ||
-      !c.visible ||
-      c.idle ||
-      c.thermal === "serious" ||
-      c.thermal === "critical"
-    ) {
+    if (!c.visible || c.idle || c.thermal === "serious" || c.thermal === "critical") {
       return "paused";
     }
     // Busy holds the art, but not before its first frame: a theme just
     // switched to (often by keyboard) shows its art at once.
     if (c.busy || now() < busyUntil) return drawnFrames === 0 ? "running" : "hold";
+    // Still: one frame of the art, then it stands, frosted and tinted like
+    // the live art. A frame already on screen (from before Still, or the
+    // still's fade) stays; after a lost context, or once the window settles
+    // at a new size, one is drawn again.
+    if (c.motion === "still") return shown === null || stillStale ? "running" : "paused";
     return "running";
   };
+
+  /** Paused only because Motion is Still: the art's frame is on screen and can still be recomposited. */
+  const standingStill = () =>
+    runState() === "paused" &&
+    conditions?.motion === "still" &&
+    conditions.visible &&
+    !conditions.idle &&
+    conditions.thermal !== "serious" &&
+    conditions.thermal !== "critical";
 
   const targetFps = () => {
     if (!theme) return 0;
@@ -1919,6 +2147,7 @@ void main() {
 
   const schedule = () => {
     const state = runState();
+    if (state === "running" || standingStill()) continueFade();
     if (state === "paused") {
       stopArt();
       return;
@@ -1933,6 +2162,7 @@ void main() {
       return;
     }
     if (!art) {
+      if (stillDecoding) return;
       // A new worker's first frames run setup and unoptimized code: the budget starts after them.
       budgetSamples = [];
       budgetStart = now() + timing.budgetWarmupMs;
@@ -2081,6 +2311,8 @@ void main() {
     contextLost = true;
     losses += 1;
     stopArt();
+    endFade();
+    artHeld = false;
     if (losses > 1) {
       failWith("context-lost", "The graphics context was lost again.");
       return;
@@ -2143,6 +2375,7 @@ void main() {
     }
     sizeTargets();
     render();
+    if (init.still) decodeStill(init.still);
     win.setInterval(() => {
       if (!failed) send({ type: "heartbeat", frame: drawnFrames });
     }, timing.heartbeatMs);
@@ -2166,9 +2399,28 @@ void main() {
         )
           return;
         viewport = next;
+        // A frame standing for Still was drawn for the old size.
+        stillStale = true;
         if (shown && shown.kind === "pixels" && art?.definition) {
           shown.map = pixelMap(art.definition, shown.width, shown.height);
         }
+        render();
+        schedule();
+        return;
+      }
+      case "texts": {
+        // The Glass slider moved, or the theme's colors changed: the art keeps running.
+        const texts = readTexts(message.textColors, message.textRatios);
+        if (!texts || !theme) return;
+        theme = { ...theme, texts };
+        render();
+        return;
+      }
+      case "texts": {
+        // The Glass slider moved, or the theme's colors changed: the art keeps running.
+        const texts = readTexts(message.textColors, message.textRatios);
+        if (!texts || !theme) return;
+        theme = { ...theme, texts };
         render();
         return;
       }
@@ -2223,6 +2475,7 @@ void main() {
    * generation back to the reply handler, and `test:capture-shown` reads
    * back the composited pixels inside each zone's core on every frame,
    * keeping the darkest and brightest luminance shown (`worst` in the probe).
+   * `test:fade-ms` sets how long a resume fade lasts.
    */
   const onTestMessage = (message: Record<string, unknown>) => {
     if (message.type === "test:probe") {
@@ -2265,7 +2518,12 @@ void main() {
         t: artTime,
         staleDropped,
         state: runState(),
+        fading: fadeFrom !== null,
       } as unknown as { type: "test:probe" });
+      return;
+    }
+    if (message.type === "test:fade-ms") {
+      if (isNum(message.ms, 1, 60_000)) fadeMs = message.ms;
       return;
     }
     if (message.type === "test:lose-context") {

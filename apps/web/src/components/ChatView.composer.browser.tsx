@@ -17,7 +17,7 @@ import { useComposerDraftStore } from "../composerDraftStore";
 import { useRoomRecipientStore } from "../rooms";
 import { isMacPlatform } from "../lib/utils";
 import { useTerminalStateStore } from "../terminalStateStore";
-import { readThemeState } from "../theme/themeStore";
+import { chooseTheme, readThemeState } from "../theme/themeStore";
 import { type NormalizedWsRpcRequestBody } from "../../test/wsRpcHarness";
 
 import {
@@ -1431,6 +1431,62 @@ describe("ChatView (full app): composer", () => {
       await page.getByRole("button", { name: "a rainy night in Tokyo" }).click();
       await vi.waitFor(() => expect(editorText()).toContain("feels like a rainy night in Tokyo."));
     } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps a /theme preview with Keep, and sets the Glass there without moving the preview", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-theme-keep-target" as MessageId,
+        targetText: "theme keep thread",
+      }),
+    });
+
+    try {
+      await waitForComposerEditor();
+      await page.getByTestId("composer-editor").fill("/them");
+      await (await waitForComposerMenuItem("slash:theme")).click();
+      const picker = page.getByRole("listbox", { name: "Themes" });
+      await vi.waitFor(() => expect(document.activeElement).toBe(picker.element()));
+      // Nothing previewed yet: nothing to keep.
+      expect(page.getByRole("button", { name: "Keep" }).query()).toBeNull();
+      // System, Light, Dark, then the first starter with art.
+      await userEvent.keyboard("{ArrowRight}{ArrowRight}{ArrowRight}");
+      await vi.waitFor(() => expect(readThemeState().active.manifest?.backdrop).toBeTruthy());
+      const previewed = readThemeState().trial?.choice;
+      expect(previewed).toBeTruthy();
+
+      // The Glass slider takes its own arrow keys: the glass moves, the preview stays.
+      const glass = page.getByRole("slider", { name: "Glass" });
+      await expect.element(glass).toBeVisible();
+      expect(glass.element().getAttribute("aria-valuetext")).toBe("The theme's own");
+      (glass.element() as HTMLElement).focus();
+      await userEvent.keyboard("{ArrowRight}");
+      await vi.waitFor(() => expect(glass.element().getAttribute("aria-valuenow")).toBe("55"));
+      expect(readThemeState().trial?.choice).toEqual(previewed);
+
+      await page.getByRole("button", { name: "Keep" }).click();
+      await expect.element(picker).not.toBeInTheDocument();
+      await vi.waitFor(() => expect(readThemeState().committed).toEqual(previewed));
+      expect(readThemeState().trial).toBeNull();
+
+      // Saved: the picker opens on the same glass.
+      await page.getByTestId("composer-editor").fill("/them");
+      await (await waitForComposerMenuItem("slash:theme")).click();
+      // The strip takes focus once it settles; only then is the slider's key its own.
+      await vi.waitFor(() => expect(document.activeElement).toBe(picker.element()));
+      await expect
+        .element(page.getByRole("slider", { name: "Glass" }))
+        .toHaveAttribute("aria-valuenow", "55");
+      (page.getByRole("slider", { name: "Glass" }).element() as HTMLElement).focus();
+      await userEvent.keyboard("{ArrowLeft}");
+      await expect
+        .element(page.getByRole("slider", { name: "Glass" }))
+        .toHaveAttribute("aria-valuenow", "50");
+    } finally {
+      chooseTheme({ kind: "builtin", id: "system" });
       await mounted.cleanup();
     }
   });

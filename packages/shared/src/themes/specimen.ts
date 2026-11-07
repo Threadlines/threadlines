@@ -171,6 +171,9 @@ a{color:var(--primary-readable);text-decoration:none}
 .seg{display:flex;padding:2px;border-radius:8px;background:var(--segmented-track);font-size:12px}
 .seg span{padding:3px 10px;border-radius:6px;color:var(--muted-foreground)}
 .seg .on{background:var(--control);color:var(--foreground)}
+.slider{width:120px;height:4px;border-radius:2px;background:var(--switch-off);position:relative}
+.slider .fill{position:absolute;left:0;top:0;bottom:0;width:50%;border-radius:2px;background:var(--primary)}
+.slider .knob{position:absolute;left:50%;top:50%;width:14px;height:14px;margin:-7px 0 0 -7px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.3)}
 .switch{width:30px;height:18px;border-radius:9px;background:var(--switch-off);position:relative}
 .switch.on{background:var(--primary)}
 .switch::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff}
@@ -223,7 +226,7 @@ const settingsMarkup = (name: string) => `<main class="main">
 <h2>Appearance</h2>
 <div class="group">
 <div class="set"><div class="what"><b>Theme</b><span>${name}, kept on this device</span></div><span class="btn">New theme</span></div>
-<div class="set"><div class="what"><b>Art in threads</b><span>How much of the art shows behind a thread.</span></div><div class="seg"><span>None</span><span class="on">Some</span><span>Full</span></div></div>
+<div class="set"><div class="what"><b>Glass</b><span>How much of the art shows through, on every page.</span></div><div class="slider"><span class="fill"></span><span class="knob"></span></div></div>
 <div class="set"><div class="what"><b>Motion</b><span>Live art, or a still picture of it.</span></div><div class="seg"><span class="on">Live</span><span>Still</span></div></div>
 </div>
 <h2>Chats</h2>

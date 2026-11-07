@@ -80,7 +80,14 @@ export const BACKDROP_FRAME_CONTENT_SECURITY_POLICY =
  *   theme's maximum or `batteryFps` on battery, halved per throttle step,
  *   and never below `minFps` (the app's watchdog expects a new frame within
  *   3 seconds while the art runs).
- * - The art holds while the app is busy and resumes `busyResumeMs` after.
+ * - The art holds while the app is busy (the window resizing, a divider
+ *   dragged) and resumes `busyResumeMs` after. Typing, scrolling and a reply
+ *   streaming in don't hold or slow it.
+ * - After a pause the art restarts in a new worker, its own state fresh: the
+ *   picture on screen dissolves into the restarted art over `resumeFadeMs`.
+ *   A theme's first frame fades the same way from its still (what the app
+ *   shows until then), when one comes with `init`: the art waits up to
+ *   `stillWaitMs` for it to decode.
  * - Budget: a frame's cost is the work the worker reports (its prelude's
  *   clock, or the round trip when a reply carries none) plus the frame's own
  *   work. When the work per second over `budgetWindowMs` passes
@@ -104,6 +111,8 @@ export const BACKDROP_RUNTIME_TIMING: BackdropRuntimeTiming = {
   batteryFps: 20,
   burstMs: 2_000,
   busyResumeMs: 400,
+  resumeFadeMs: 500,
+  stillWaitMs: 1_000,
   budgetWindowMs: 5_000,
   budgetWarmupMs: 1_500,
   budgetMsPerSecond: 60,

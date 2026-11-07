@@ -20,7 +20,6 @@ import {
   type BackdropFailureReason,
   type BackdropHostMessage,
   type BackdropZone,
-  type GlassReadability,
   type ThemeBackdrop,
   type ThemeBase,
 } from "@threadlines/contracts";
@@ -28,7 +27,7 @@ import {
   BACKDROP_FRAME_SANDBOX,
   buildBackdropFrameDocument,
 } from "@threadlines/shared/themeBackdropFrame";
-import { glassTextColors } from "@threadlines/shared/themeContrast";
+import { GLASS_TEXT_RATIO, glassTextColors } from "@threadlines/shared/themeContrast";
 import type { ThemeTokens } from "@threadlines/shared/themeTokens";
 import * as Schema from "effect/Schema";
 import {
@@ -54,14 +53,20 @@ export type ThemeBackdropStatus =
     }
   | {
       /**
-       * Showing the still: Motion is Still or Reduce Motion ("motion"), a
-       * phone ("phone"), or the art hasn't drawn its first frame yet, because
-       * it is starting or paused before it drew one ("paused").
+       * Not moving: Motion is Still or Reduce Motion ("motion"), a phone
+       * ("phone"), or the art hasn't drawn its first frame yet, because it
+       * is starting or paused before it drew one ("paused").
        */
       readonly kind: "still";
       readonly reason: "motion" | "paused" | "phone";
       /** The tint every glass text surface needs over the still (layout-independent). */
       readonly minimumTint: number;
+      /**
+       * The frame shows one frame of the art, frosted and tinted patch by
+       * patch like the live art, so the surfaces stay clear (Motion: Still on
+       * a computer). Otherwise the app shows the still image under CSS tints.
+       */
+      readonly framed?: boolean;
     }
   | {
       readonly kind: "failed";
@@ -78,8 +83,11 @@ export interface ThemeBackdropHostProps {
   readonly base: ThemeBase;
   readonly tokens: ThemeTokens;
   readonly blur: number;
-  /** How readable text over the art must stay (relaxed: 3:1, for art-first looks). Default standard. */
-  readonly readability?: GlassReadability;
+  /**
+   * The contrast text over the art keeps, 3 to 4.5 (glass.ts glassTextRatio).
+   * Default 4.5. It changes live: the frame keeps running.
+   */
+  readonly textRatio?: number;
   readonly zones: ReadonlyArray<BackdropZone>;
   readonly conditions: BackdropConditions;
   readonly activity: BackdropActivity;
@@ -87,6 +95,12 @@ export interface ThemeBackdropHostProps {
   readonly pulse: number;
   /** Phones show the still only. */
   readonly stillOnly?: boolean;
+  /**
+   * Motion is Still by the user's choice (or Reduce Motion): the frame stays
+   * and stands on one frame. Art the computer found too heavy is still too,
+   * but its frame goes, and the still image shows.
+   */
+  readonly framedStill?: boolean;
   readonly onStatus?: (status: ThemeBackdropStatus) => void;
 }
 
@@ -103,6 +117,11 @@ export const BACKDROP_WATCHDOG_MS = 3_000;
 export const BACKDROP_STILL_TIMEOUT_MS = 5_000;
 
 const decodeFrameMessage = Schema.decodeUnknownOption(BackdropFrameMessage);
+
+/** Every text color drawn on glass, each needing `ratio` (default 4.5) over the art. */
+function textsFor(tokens: ThemeTokens, ratio = GLASS_TEXT_RATIO.standard) {
+  return glassTextColors(tokens).map((text) => ({ color: text.color, ratio }));
+}
 
 const LAYER_STYLE: CSSProperties = {
   position: "fixed",
@@ -127,15 +146,8 @@ const shouldDraw = (conditions: BackdropConditions) =>
 
 export const ThemeBackdropHost = forwardRef<ThemeBackdropHostHandle, ThemeBackdropHostProps>(
   function ThemeBackdropHost(props, ref) {
-    // A new theme, or new readability (the frame takes its text ratios at
-    // start), is a new session: fresh frame, fresh failure state.
-    return (
-      <BackdropSession
-        key={`${props.themeKey}:${props.readability ?? "standard"}`}
-        {...props}
-        ref={ref}
-      />
-    );
+    // A new theme is a new session: fresh frame, fresh failure state.
+    return <BackdropSession key={props.themeKey} {...props} ref={ref} />;
   },
 );
 
@@ -156,13 +168,24 @@ interface FrameApi {
  */
 const BackdropSession = forwardRef<ThemeBackdropHostHandle, ThemeBackdropHostProps>(
   function BackdropSession(props, ref) {
-    const { backdrop, conditions, stillOnly = false, tokens, readability } = props;
+    const {
+      backdrop,
+      conditions,
+      stillOnly = false,
+      framedStill = false,
+      tokens,
+      textRatio,
+    } = props;
     const [attempt, setAttempt] = useState(0);
     const [failure, setFailure] = useState<Failure | null>(null);
     const [progress, setProgress] = useState<FrameProgress>(null);
     const [measured, setMeasured] = useState<{ still: string; tint: number } | null>(null);
     const frameApi = useRef<FrameApi | null>(null);
-    const showFrame = !stillOnly && conditions.motion === "live" && failure === null;
+    // The frame stays for Motion: Still too: it draws one frame and stands,
+    // with the same glass. Phones, a failed frame and art found too heavy
+    // show the still image.
+    const showFrame =
+      !stillOnly && failure === null && (conditions.motion === "live" || framedStill);
 
     // A frame shown again is a new frame: it hasn't drawn anything yet.
     const [shownBefore, setShownBefore] = useState(showFrame);
@@ -176,7 +199,7 @@ const BackdropSession = forwardRef<ThemeBackdropHostHandle, ThemeBackdropHostPro
     useEffect(() => {
       if (!still) return;
       let cancelled = false;
-      measureStillTint(still, tokens, readability).then(
+      measureStillTint(still, tokens, textRatio).then(
         (tint) => {
           if (!cancelled) setMeasured({ still, tint });
         },
@@ -187,7 +210,7 @@ const BackdropSession = forwardRef<ThemeBackdropHostHandle, ThemeBackdropHostPro
       return () => {
         cancelled = true;
       };
-    }, [still, tokens, readability]);
+    }, [still, tokens, textRatio]);
     const minimumTint = still && measured?.still === still ? measured.tint : 1;
 
     const status: ThemeBackdropStatus = failure
@@ -195,7 +218,7 @@ const BackdropSession = forwardRef<ThemeBackdropHostHandle, ThemeBackdropHostPro
       : stillOnly
         ? { kind: "still", reason: "phone", minimumTint }
         : conditions.motion === "still"
-          ? { kind: "still", reason: "motion", minimumTint }
+          ? { kind: "still", reason: "motion", minimumTint, framed: progress !== null }
           : progress === null
             ? { kind: "still", reason: "paused", minimumTint }
             : {
@@ -312,7 +335,7 @@ function BackdropFrame(props: BackdropFrameProps) {
     if (state.started) return;
     state.started = true;
     const current = latest.current;
-    const texts = glassTextColors(current.tokens, current.readability);
+    const texts = textsFor(current.tokens, current.textRatio);
     post({
       type: "init",
       mode: current.backdrop.mode,
@@ -323,6 +346,8 @@ function BackdropFrame(props: BackdropFrameProps) {
       textColors: texts.map((text) => text.color),
       textRatios: texts.map((text) => text.ratio),
       blur: current.blur,
+      // Shown until the first frame: the art fades in from it.
+      ...(current.backdrop.still ? { still: current.backdrop.still } : {}),
     });
     post(viewportMessage());
     post({ type: "zones", zones: current.zones });
@@ -449,6 +474,17 @@ function BackdropFrame(props: BackdropFrameProps) {
     state.lastProgressAt = performance.now();
     state.lastHeartbeatAt = performance.now();
   }, [conditionsKey, post]);
+  // The Glass slider moving, or new theme colors: new text bounds, same frame.
+  const textsKey = JSON.stringify(textsFor(props.tokens, props.textRatio));
+  useEffect(() => {
+    if (!session.current.started) return;
+    const texts = JSON.parse(textsKey) as ReturnType<typeof textsFor>;
+    post({
+      type: "texts",
+      textColors: texts.map((text) => text.color),
+      textRatios: texts.map((text) => text.ratio),
+    });
+  }, [textsKey, post]);
   useEffect(() => {
     const state = session.current;
     if (!state.started || pulse === state.pulse) return;
@@ -469,7 +505,10 @@ function BackdropFrame(props: BackdropFrameProps) {
         return;
       }
       const silent = now - state.lastHeartbeatAt > BACKDROP_WATCHDOG_MS;
-      const stalled = shouldDraw(conditions) && now - state.lastProgressAt > BACKDROP_WATCHDOG_MS;
+      // Still draws one frame: until it has, the frame must show progress too.
+      const expecting =
+        shouldDraw(conditions) || (conditions.motion === "still" && state.lastFrame === 0);
+      const stalled = expecting && now - state.lastProgressAt > BACKDROP_WATCHDOG_MS;
       if (silent || stalled) {
         latest.current.onFailure({
           reason: "heartbeat",

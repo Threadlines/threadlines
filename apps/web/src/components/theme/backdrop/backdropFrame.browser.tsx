@@ -16,6 +16,7 @@ interface Probe {
   tints: Record<string, number>;
   boxes: Record<string, { maxR: number; maxG: number; maxB: number }>;
   worst: Record<string, { low: number; high: number }>;
+  shown: Record<string, { low: number; high: number }>;
   drawnFrames: number;
   ticks: number;
   generation: number;
@@ -23,6 +24,8 @@ interface Probe {
   throttle: number;
   t: number;
   staleDropped: number;
+  fading: boolean;
+  state: "running" | "hold" | "paused";
 }
 
 const tokens = BUILTIN_THEME_TOKENS.dark;
@@ -78,6 +81,7 @@ async function mountFrame() {
     script: string,
     zones: BackdropZone[] = [],
     textColors: ReadonlyArray<{ color: string; ratio: number }> = texts,
+    still?: string,
   ) => {
     post({
       type: "init",
@@ -89,6 +93,7 @@ async function mountFrame() {
       textColors: textColors.map((text) => text.color),
       textRatios: textColors.map((text) => text.ratio),
       blur: 16,
+      ...(still ? { still } : {}),
     });
     post({ type: "viewport", width: 800, height: 500, dpr: window.devicePixelRatio || 1 });
     post({ type: "zones", zones });
@@ -218,6 +223,119 @@ describe("backdrop frame", () => {
     expect(resumed.t - paused.t).toBeLessThan((performance.now() - resumedAt) / 1000 + 0.3);
   });
 
+  it("dissolves the picture on screen into the art when it resumes after a pause", async () => {
+    mounted = await mountFrame();
+    // The art's first worker paints white. A worker started after a pause
+    // begins its own state over, and this one paints black.
+    mounted.start(
+      "grid",
+      `let first = true;
+      threadlines.backdrop({ mode: "grid", cell: { width: 10, height: 14 }, glyphs: " #",
+        setup(info) { first = info.t < 0.25; },
+        draw(grid) {
+          for (let i = 0; i < grid.glyph.length; i++) {
+            grid.glyph[i] = -1;
+            grid.bg.fill(first ? 255 : 0, i * 4, i * 4 + 3);
+            grid.bg[i * 4 + 3] = 255;
+          }
+        } });`,
+      [COLUMN],
+      [],
+    );
+    await mounted.framesAbove(4);
+    mounted.post({ type: "conditions", conditions: { ...LIVE, visible: false } });
+    await vi.waitFor(async () => expect((await mounted!.probe()).workerAlive).toBe(false));
+    const paused = await mounted.probe();
+    // A minute-long fade: however slow the machine, the checks below land in
+    // its first part. The test ends it on purpose further down.
+    mounted.post({ type: "test:fade-ms", ms: 60_000 });
+    mounted.post({ type: "test:capture-shown", on: true });
+    mounted.post({ type: "conditions", conditions: LIVE });
+
+    const resumed = await mounted.framesAbove(paused.drawnFrames);
+    expect(resumed.generation).toBe(paused.generation + 1);
+    expect(resumed.fading).toBe(true);
+    // The restarted art is black; the white from before the pause still shows over it.
+    expect((await mounted.probe()).shown.column?.high).toBeGreaterThan(0.25);
+
+    // Held still mid-fade (the user drags a divider), the fade holds too:
+    // even cut short to end at once, it waits for the art to run again.
+    mounted.post({ type: "conditions", conditions: { ...LIVE, busy: true } });
+    await vi.waitFor(async () => expect((await mounted!.probe()).state).toBe("hold"));
+    mounted.post({ type: "test:fade-ms", ms: 1 });
+    await sleep(500);
+    expect((await mounted.probe()).fading).toBe(true);
+
+    mounted.post({ type: "conditions", conditions: LIVE });
+    await vi.waitFor(async () => expect((await mounted!.probe()).fading).toBe(false), {
+      timeout: 8_000,
+      interval: 100,
+    });
+    expect((await mounted.probe()).shown.column?.high).toBeLessThan(0.05);
+  });
+
+  it("fades a theme's first frame in from the still the app shows until then", async () => {
+    mounted = await mountFrame();
+    const white = document.createElement("canvas");
+    white.width = 16;
+    white.height = 10;
+    const context = white.getContext("2d")!;
+    context.fillStyle = "#fff";
+    context.fillRect(0, 0, white.width, white.height);
+    mounted.post({ type: "test:fade-ms", ms: 60_000 });
+    mounted.post({ type: "test:capture-shown", on: true });
+    // The art paints black; its still is white.
+    mounted.start(
+      "grid",
+      `threadlines.backdrop({ mode: "grid", cell: { width: 10, height: 14 }, glyphs: " #",
+        draw(grid) {
+          for (let i = 0; i < grid.glyph.length; i++) {
+            grid.glyph[i] = -1;
+            grid.bg.fill(0, i * 4, i * 4 + 3);
+            grid.bg[i * 4 + 3] = 255;
+          }
+        } });`,
+      [COLUMN],
+      [],
+      white.toDataURL("image/png"),
+    );
+    const first = await mounted.framesAbove(0);
+    expect(first.fading).toBe(true);
+    expect((await mounted.probe()).shown.column?.high).toBeGreaterThan(0.25);
+    mounted.post({ type: "test:fade-ms", ms: 1 });
+    await vi.waitFor(async () => expect((await mounted!.probe()).fading).toBe(false), {
+      timeout: 6_000,
+      interval: 100,
+    });
+    expect((await mounted.probe()).shown.column?.high).toBeLessThan(0.05);
+  });
+
+  it("draws one frame for Motion: Still and stands on it, then moves on from it when Live", async () => {
+    mounted = await mountFrame();
+    mounted.start("grid", GRID_ART, [COLUMN]);
+    mounted.post({ type: "conditions", conditions: { ...LIVE, motion: "still" } });
+    const first = await mounted.framesAbove(0);
+    await vi.waitFor(async () => expect((await mounted!.probe()).workerAlive).toBe(false));
+    const standing = await mounted.probe();
+    await sleep(600);
+    // No more frames, and no worker: one frame, standing.
+    const later = await mounted.probe();
+    expect(later.drawnFrames).toBe(standing.drawnFrames);
+    expect(later.workerAlive).toBe(false);
+    expect(later.state).toBe("paused");
+
+    // A new window size: one new frame for it, then it stands again.
+    mounted.post({ type: "viewport", width: 700, height: 450, dpr: window.devicePixelRatio || 1 });
+    const resized = await mounted.framesAbove(later.drawnFrames);
+    await vi.waitFor(async () => expect((await mounted!.probe()).workerAlive).toBe(false));
+    await sleep(400);
+    expect((await mounted.probe()).drawnFrames).toBeLessThanOrEqual(resized.drawnFrames + 1);
+
+    mounted.post({ type: "conditions", conditions: LIVE });
+    const moving = await mounted.framesAbove(resized.drawnFrames + 2);
+    expect(moving.generation).toBeGreaterThan(first.generation);
+  });
+
   it("steps the rate down when ticks go unanswered, then stops the art as too heavy", async () => {
     mounted = await mountFrame();
     // In front, the art runs at its own 24 fps: even slowed twice (6 fps) a
@@ -238,16 +356,49 @@ describe("backdrop frame", () => {
 
   it("counts work the art defers past its frame, and slows art that hides it there", async () => {
     mounted = await mountFrame();
-    // Each frame looks free, but queues 12 ms of work to run right after its reply.
+    // Each frame looks free, but queues 30 ms of work to run right after its
+    // reply: over the 60 ms a second budget even when a busy machine (CI)
+    // manages only a few frames a second.
     mounted.start(
       "grid",
       `threadlines.backdrop({ mode: "grid", cell: { width: 10, height: 14 }, glyphs: " #",
-        draw() { Promise.resolve().then(() => { const end = performance.now() + 12; while (performance.now() < end) {} }); } });`,
+        draw() { Promise.resolve().then(() => { const end = performance.now() + 30; while (performance.now() < end) {} }); } });`,
     );
     await vi.waitFor(async () => expect((await mounted!.probe()).throttle).toBeGreaterThan(0), {
       timeout: 12_000,
       interval: 250,
     });
+  });
+
+  it("takes new text contrast while it runs, without starting the art over", async () => {
+    mounted = await mountFrame();
+    // White art; no text to keep readable yet, so the column keeps its floor.
+    mounted.start(
+      "grid",
+      `threadlines.backdrop({ mode: "grid", cell: { width: 10, height: 14 }, glyphs: " #",
+        draw(grid) {
+          for (let i = 0; i < grid.glyph.length; i++) {
+            grid.glyph[i] = -1;
+            grid.bg.fill(255, i * 4, i * 4 + 4);
+          }
+        } });`,
+      [COLUMN],
+      [],
+    );
+    await mounted.framesAbove(3);
+    const before = await mounted.probe(true);
+    expect(before.tints.column).toBeCloseTo(COLUMN.tint, 2);
+    // The Glass slider moved: the app's light text now needs 4.5:1 over that white.
+    mounted.post({
+      type: "texts",
+      textColors: texts.map((text) => text.color),
+      textRatios: texts.map(() => 4.5),
+    });
+    await vi.waitFor(async () =>
+      expect((await mounted!.probe(true)).tints.column).toBeGreaterThan(0.5),
+    );
+    const after = await mounted.framesAbove(before.drawnFrames + 2);
+    expect(after.generation).toBe(before.generation);
   });
 
   it("keeps column text readable when the art turns white", async () => {

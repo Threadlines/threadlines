@@ -3,7 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { color, composite, contrastRatio } from "./color.ts";
 import { checkThemeManifest } from "./manifest.ts";
 import { STARTER_SUMMARIES } from "./starterSummaries.ts";
-import { STARTER_THEMES } from "./starters.ts";
+import { RETIRED_STARTER_THEMES, STARTER_THEMES } from "./starters.ts";
 import { resolveThemeTokens } from "./tokens.ts";
 
 interface Declared {
@@ -64,6 +64,9 @@ function targetFor(art: Declared) {
   };
 }
 
+/** Offered and retired: a retired starter is still worn, so it keeps passing every check. */
+const EVERY_STARTER = [...STARTER_THEMES, ...RETIRED_STARTER_THEMES];
+
 describe("starter themes", () => {
   it("list as their summaries say, without loading their art", () => {
     expect(STARTER_SUMMARIES).toEqual(
@@ -81,23 +84,29 @@ describe("starter themes", () => {
     );
   });
 
-  it("have stable, unique ids", () => {
+  it("have stable, unique ids, retired ones still found by theirs", () => {
     expect(STARTER_THEMES.map((starter) => starter.id)).toEqual([
       "aurora",
-      "dunes",
+      "lantern-lake",
+      "meadow",
       "phosphor",
       "snowfield",
+      "tokyo-rain",
+    ]);
+    // A device that chose one of these keeps it.
+    expect(RETIRED_STARTER_THEMES.map((starter) => starter.id)).toEqual([
+      "dunes",
       "night-rain",
       "ember",
     ]);
   });
 
-  it.each(STARTER_THEMES)("$id passes the theme check", ({ manifest }) => {
+  it.each(EVERY_STARTER)("$id passes the theme check", ({ manifest }) => {
     const check = checkThemeManifest(manifest);
     expect(check.ok ? [] : check.errors).toEqual([]);
   });
 
-  it.each(STARTER_THEMES)(
+  it.each(EVERY_STARTER)(
     "$id's code and terminal colors read on their backgrounds",
     ({ manifest }) => {
       const tokens = resolveThemeTokens(manifest);
@@ -116,7 +125,7 @@ describe("starter themes", () => {
     },
   );
 
-  it.each(STARTER_THEMES.filter((starter) => starter.manifest.backdrop))(
+  it.each(EVERY_STARTER.filter((starter) => starter.manifest.backdrop))(
     "$id's art draws in its declared mode, idle, working and after a turn",
     ({ manifest }) => {
       const backdrop = manifest.backdrop!;
@@ -142,6 +151,59 @@ describe("starter themes", () => {
       }
     },
   );
+
+  // An hour in, motion drawn as time × a speed that changes with state lands
+  // somewhere else entirely the frame agents start or stop: Dunes' wind
+  // streaks teleported and raced after every turn.
+  it.each(EVERY_STARTER.filter((starter) => starter.manifest.backdrop))(
+    "$id's art eases in and out of the working look without jumping, an hour in",
+    ({ manifest }) => {
+      const art = declare(manifest.backdrop!.script);
+      const { target, info } = targetFor(art);
+      const palette = resolveThemeTokens(manifest);
+      const dt = 1 / 24;
+      const start = 3600;
+      art.setup?.({ ...info, t: start, dt, frame: 0, palette, state: idle }, target);
+      // One second idle, three working, three idle again.
+      const steps: number[] = [];
+      let last: Float32Array | null = null;
+      for (let frame = 0; frame < 168; frame++) {
+        const state = frame >= 24 && frame < 96 ? { ...idle, working: 1 } : idle;
+        art.draw(target, { ...info, t: start + frame * dt, dt, frame, palette, state });
+        const shown = seen(target);
+        if (last) steps.push(meanDifference(last, shown));
+        last = shown;
+      }
+      // steps[i] is the change from frame i to i + 1: agents start at frame 24 and stop at 96.
+      const others = steps
+        .filter((_, index) => index !== 23 && index !== 95)
+        .toSorted((a, b) => a - b);
+      const typical = others[Math.floor(others.length / 2)]!;
+      expect(steps[23]! / typical).toBeLessThan(3);
+      expect(steps[95]! / typical).toBeLessThan(3);
+    },
+  );
 });
+
+/** What a frame shows, premultiplied: pixels as drawn, a grid's glyphs and cell backgrounds by their alpha. */
+function seen(target: ReturnType<typeof targetFor>["target"]): Float32Array {
+  if ("data" in target) return Float32Array.from(target.data);
+  const out = new Float32Array(target.glyph.length * 6);
+  for (let k = 0; k < target.glyph.length; k++) {
+    const glyphAlpha = (target.glyph[k] ?? -1) >= 0 ? (target.fg[k * 4 + 3] ?? 0) / 255 : 0;
+    const cellAlpha = (target.bg[k * 4 + 3] ?? 0) / 255;
+    for (let c = 0; c < 3; c++) {
+      out[k * 6 + c] = (target.fg[k * 4 + c] ?? 0) * glyphAlpha;
+      out[k * 6 + 3 + c] = (target.bg[k * 4 + c] ?? 0) * cellAlpha;
+    }
+  }
+  return out;
+}
+
+function meanDifference(a: Float32Array, b: Float32Array): number {
+  let sum = 0;
+  for (let i = 0; i < a.length; i++) sum += Math.abs((a[i] ?? 0) - (b[i] ?? 0));
+  return sum / a.length;
+}
 
 const idle = { working: 0, waiting: 0, pulse: 0, sincePulse: 1e9 };

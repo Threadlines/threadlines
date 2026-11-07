@@ -9,9 +9,9 @@
  *   remeasured when it changes, at most every 100 ms;
  * - conditions: motion (the Motion setting, Reduce Motion, the desktop
  *   watchdog), visibility (the window, and whether a chat is on screen),
- *   busy (scrolling, typing, resizing, dragging, a reply streaming into the
- *   open thread), idle (two minutes without input or agent work), power and
- *   heat (desktop, else the Battery API);
+ *   busy (resizing the window, dragging a divider: the art holds), idle
+ *   (two minutes without input or agent work), power and heat (desktop, else
+ *   the Battery API);
  * - activity: working and waiting agents across every computer, and a
  *   `turn-done` pulse whenever a thread stops working.
  *
@@ -22,14 +22,10 @@ import type {
   BackdropActivity,
   BackdropConditions,
   DesktopPowerState,
-  EnvironmentId,
   ThemeBase,
   ThemeManifest,
-  ThreadId,
 } from "@threadlines/contracts";
-import { scopeThreadRef } from "@threadlines/client-runtime";
 import type { ThemeTokens } from "@threadlines/shared/themeTokens";
-import { useMatches } from "@tanstack/react-router";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 
@@ -42,18 +38,18 @@ import { useSettings } from "../hooks/useSettings";
 import {
   selectRunningSidebarThreadsAcrossEnvironments,
   selectSidebarThreadsAcrossEnvironments,
-  selectThreadByRef,
   useStore,
 } from "../store";
-import { resolveThreadRouteRef } from "../threadRoutes";
 import {
   measureBackdropZones,
   type MeasuredBackdropLayout,
   sameBackdropZones,
 } from "./backdropZones";
-import { cssGlassTints, glassFloors, glassReadability, glassTintCss } from "./glass";
+import { cssGlassTints, glassFloors, glassTextRatio, glassTintCss } from "./glass";
+import { useGlassLevel } from "./glassLevel";
 import { GLASS_PAGE_SELECTOR } from "./glassPage";
 import { applyGlassTints } from "./themeApply";
+import { useLayoutBusy } from "./layoutBusy";
 import {
   readThemeState,
   setBackdropStatus,
@@ -65,8 +61,6 @@ import {
 const ZONE_MIN_INTERVAL_MS = 100;
 /** Remeasure once more after this, for layout that moves by transition (the list's slide). */
 const ZONE_SETTLE_MS = 300;
-/** Input this recent counts as busy; the runtime adds its own 400 ms hold. */
-const BUSY_QUIET_MS = 150;
 const IDLE_AFTER_MS = 2 * 60 * 1000;
 const IDLE_CHECK_MS = 15_000;
 
@@ -87,9 +81,9 @@ export function ThemeBackdropLayer(props: {
   const { manifest, tokens, base } = props;
   const backdrop = manifest.backdrop!;
   const glass = manifest.glass!;
-  const artInThreads = useSettings((settings) => settings.themeArtInThreads);
+  const glassLevel = useGlassLevel();
   const motionSetting = useSettings((settings) => settings.themeMotion);
-  const floors = useMemo(() => glassFloors(glass, artInThreads), [glass, artInThreads]);
+  const floors = useMemo(() => glassFloors(glass, glassLevel), [glass, glassLevel]);
   const status = useSyncExternalStore(subscribeTheme, () => readThemeState().backdropStatus);
   const tooHeavy = useBackdropTooHeavy();
   const slowdown = useBackdropSlowdown();
@@ -148,12 +142,13 @@ export function ThemeBackdropLayer(props: {
         base={base}
         tokens={tokens}
         blur={glass.blur}
-        readability={glassReadability(glass, artInThreads)}
+        textRatio={glassTextRatio(glass, glassLevel)}
         zones={layout.zones}
         conditions={conditions}
         activity={activity}
         pulse={pulse}
         stillOnly={stillOnly}
+        framedStill={!tooHeavy}
         onStatus={setBackdropStatus}
       />
     </div>,
@@ -312,69 +307,6 @@ function useWindowFocused(): boolean {
   );
 }
 
-/** Raw busy: input or layout work within the last moment, or a reply streaming in the open thread. */
-function useBusy(): boolean {
-  const [inputBusy, setInputBusy] = useState(false);
-  useEffect(() => {
-    let quiet: ReturnType<typeof setTimeout> | null = null;
-    let busy = false;
-    const mark = () => {
-      if (!busy) {
-        busy = true;
-        setInputBusy(true);
-      }
-      if (quiet !== null) clearTimeout(quiet);
-      quiet = setTimeout(() => {
-        quiet = null;
-        busy = false;
-        setInputBusy(false);
-      }, BUSY_QUIET_MS);
-    };
-    const onPointerMove = (event: PointerEvent) => {
-      // Dragging: a divider, the list's edge, a selection.
-      if (event.buttons !== 0) mark();
-    };
-    const options = { capture: true, passive: true } as const;
-    document.addEventListener("scroll", mark, options);
-    document.addEventListener("wheel", mark, options);
-    document.addEventListener("keydown", mark, options);
-    document.addEventListener("input", mark, options);
-    document.addEventListener("pointermove", onPointerMove, options);
-    window.addEventListener("resize", mark);
-    return () => {
-      if (quiet !== null) clearTimeout(quiet);
-      document.removeEventListener("scroll", mark, options);
-      document.removeEventListener("wheel", mark, options);
-      document.removeEventListener("keydown", mark, options);
-      document.removeEventListener("input", mark, options);
-      document.removeEventListener("pointermove", onPointerMove, options);
-      window.removeEventListener("resize", mark);
-    };
-  }, []);
-
-  const openThreadKey = useMatches({
-    select: (matches) => {
-      const leaf = matches.at(-1);
-      if (leaf?.routeId !== "/_chat/$environmentId/$threadId") return null;
-      const ref = resolveThreadRouteRef(leaf.params);
-      return ref ? `${ref.environmentId}\u0000${ref.threadId}` : null;
-    },
-  });
-  const openThreadRef = useMemo(() => {
-    if (openThreadKey === null) return null;
-    const [environmentId, threadId] = openThreadKey.split("\u0000");
-    return environmentId && threadId
-      ? scopeThreadRef(environmentId as EnvironmentId, threadId as ThreadId)
-      : null;
-  }, [openThreadKey]);
-  const streaming = useStore((state) =>
-    openThreadRef === null
-      ? false
-      : selectThreadByRef(state, openThreadRef)?.messages.at(-1)?.streaming === true,
-  );
-  return inputBusy || streaming;
-}
-
 function useIdle(working: number): boolean {
   const [idle, setIdle] = useState(false);
   const lastInputRef = useRef(0);
@@ -462,7 +394,7 @@ function useBackdropConditions(input: {
   const reducedMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
   const documentVisible = useDocumentVisible();
   const focused = useWindowFocused();
-  const busy = useBusy();
+  const busy = useLayoutBusy();
   const idle = useIdle(input.working);
   const power = usePowerState();
   const motion =
@@ -476,7 +408,16 @@ function useBackdropConditions(input: {
   const visible = documentVisible && input.artShown;
   const { slowdown } = input;
   return useMemo(
-    () => ({ motion, visible, busy, idle, focused, power: power.power, thermal, slowdown }),
+    () => ({
+      motion,
+      visible,
+      busy,
+      idle,
+      focused,
+      power: power.power,
+      thermal,
+      slowdown,
+    }),
     [motion, visible, busy, idle, focused, power.power, thermal, slowdown],
   );
 }

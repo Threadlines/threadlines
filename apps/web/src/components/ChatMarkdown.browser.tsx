@@ -444,6 +444,83 @@ describe("ChatMarkdown", () => {
     }
   });
 
+  it("places a path cited from inside a subfolder, in the project folder when the worktree lacks it", async () => {
+    const cwd = "/repo/worktree";
+    const moduleFile = "shop/app/code/Buyfire/ReturnForm/Model/ReturnForm.php";
+    setActiveFileViewerContext({
+      environmentId: CHAT_MARKDOWN_ENVIRONMENT_ID,
+      cwd,
+      projectRoot: "/repo/project",
+      threadRef: CHAT_MARKDOWN_THREAD_REF,
+    });
+    // The worktree predates the module; the project folder has it. Both have
+    // two modules with a Helper/Data.php.
+    const helpers = [
+      { path: "shop/app/code/Buyfire/Analytics/Helper/Data.php", kind: "file" as const },
+      { path: "shop/app/code/Buyfire/Banner/Helper/Data.php", kind: "file" as const },
+    ];
+    // The server finds the files each path can name.
+    const searchEntries = vi.fn(async (input: { cwd: string; query: string }) => ({
+      entries:
+        input.query === "Helper/Data.php"
+          ? helpers
+          : input.query === "Model/ReturnForm.php" && input.cwd === "/repo/project"
+            ? [{ path: moduleFile, kind: "file" as const }]
+            : [],
+      truncated: false,
+      match: "path-ending" as const,
+    }));
+    const readFile = vi.fn();
+    installReadFileEnvironment(
+      readFile as unknown as EnvironmentApi["projects"]["readFile"],
+      searchEntries as unknown as EnvironmentApi["projects"]["searchEntries"],
+    );
+    await parkPointer();
+    const screen = await renderWithAppProviders(
+      <ChatMarkdown
+        text="Compare `Model/ReturnForm.php:12` with `Helper/Data.php`."
+        cwd={cwd}
+        environmentId={CHAT_MARKDOWN_ENVIRONMENT_ID}
+      />,
+    );
+
+    try {
+      const found = page.getByRole("link", { name: "ReturnForm.php · L12" });
+      await userEvent.hover(found.element());
+      await vi.waitFor(() => {
+        expect(document.querySelector('[data-slot="tooltip-popup"]')?.textContent).toBe(
+          `/repo/project/${moduleFile}:12Not in this worktree · opens the project folder's copy`,
+        );
+      });
+      await found.click();
+      await vi.waitFor(() => {
+        const state = useFileViewerStore.getState();
+        expect(state.activePath).toBe(`/repo/project/${moduleFile}`);
+        expect(state.revealLine).toBe(12);
+      });
+      // The worktree first, then the project folder.
+      expect(searchEntries.mock.calls.map(([input]) => input.cwd)).toEqual([cwd, "/repo/project"]);
+
+      // Two files end in this path, and nothing says which one the agent meant.
+      const ambiguous = document.querySelector(
+        'a[data-chat-file-reference="Helper/Data.php"]',
+      ) as HTMLElement;
+      await userEvent.unhover(found.element());
+      await userEvent.hover(ambiguous);
+      await vi.waitFor(() => {
+        expect(document.querySelector('[data-slot="tooltip-popup"]')?.textContent).toContain(
+          "More than one file matches · ask the agent for the full path",
+        );
+      });
+      expect(await chooseFromFileMenu(ambiguous, null)).toEqual([
+        { id: "not-found", label: "More than one file matches", disabled: true },
+        { id: "copy-name", label: "Copy name", separatorBefore: true },
+      ]);
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("opens a file outside the project in the file viewer, and says so", async () => {
     setActiveFileViewerContext({
       environmentId: CHAT_MARKDOWN_ENVIRONMENT_ID,
@@ -749,7 +826,9 @@ describe("ChatMarkdown", () => {
       cwd,
       threadRef: CHAT_MARKDOWN_THREAD_REF,
     });
-    const screen = await render(<ChatMarkdown text={MIXED_REFERENCE_PROSE} cwd={cwd} />);
+    const screen = await renderWithAppProviders(
+      <ChatMarkdown text={MIXED_REFERENCE_PROSE} cwd={cwd} />,
+    );
 
     try {
       // Both citations went through one pre-pass, so the two namesakes carry the
@@ -1595,6 +1674,55 @@ describe("ChatMarkdown", () => {
         expect(useFileViewerStore.getState().activePath).toBe("docs/shots/home.png");
       });
       expect(searchEntries).toHaveBeenCalledTimes(1);
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("shows the picture a click would open for an image path cited from inside a subfolder", async () => {
+    const cwd = "/repo/project";
+    setActiveFileViewerContext({
+      environmentId: CHAT_MARKDOWN_ENVIRONMENT_ID,
+      cwd,
+      threadRef: CHAT_MARKDOWN_THREAD_REF,
+    });
+    const searchEntries = vi.fn(async () => ({
+      entries: [{ path: "docs/shots/home.png", kind: "file" as const }],
+      truncated: false,
+    }));
+    // Nothing at the path as written; the picture is one folder further down.
+    const readFile = vi.fn(async (input: { cwd: string; relativePath: string }) =>
+      input.relativePath === "docs/shots/home.png"
+        ? {
+            kind: "image" as const,
+            relativePath: input.relativePath,
+            mimeType: "image/png",
+            base64: PIXEL_PNG_BASE64,
+            size: 70,
+          }
+        : { kind: "missing" as const, relativePath: input.relativePath },
+    );
+    installReadFileEnvironment(
+      readFile as unknown as EnvironmentApi["projects"]["readFile"],
+      searchEntries as unknown as EnvironmentApi["projects"]["searchEntries"],
+    );
+
+    const screen = await renderWithAppProviders(
+      <ChatMarkdown
+        text="The new layout is in `shots/home.png`."
+        cwd={cwd}
+        environmentId={CHAT_MARKDOWN_ENVIRONMENT_ID}
+      />,
+    );
+
+    try {
+      await expect
+        .element(page.getByRole("img", { name: "home.png" }), { timeout: 5_000 })
+        .toBeInTheDocument();
+      await page.getByRole("link", { name: "home.png" }).click();
+      await vi.waitFor(() => {
+        expect(useFileViewerStore.getState().activePath).toBe("docs/shots/home.png");
+      });
     } finally {
       await screen.unmount();
     }

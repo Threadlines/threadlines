@@ -66,9 +66,12 @@ function loadedOnDemand<T>(load: () => Promise<T>) {
 }
 
 // The starters carry their art scripts, loaded the first time one is tried
-// or used.
+// or used. Retired ones too: a device that chose one keeps it.
 const starterCode = loadedOnDemand<ReadonlyArray<StarterTheme>>(() =>
-  import("@threadlines/shared/themeStarters").then((module) => module.STARTER_THEMES),
+  import("@threadlines/shared/themeStarters").then((module) => [
+    ...module.STARTER_THEMES,
+    ...module.RETIRED_STARTER_THEMES,
+  ]),
 );
 
 // The color math that turns a theme's seeds into its tokens, loaded the

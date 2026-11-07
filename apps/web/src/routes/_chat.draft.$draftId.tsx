@@ -189,6 +189,9 @@ function DraftChatThreadRouteView() {
       ? `${draftProject.cwd}/threads/${draftThreadRef.threadId}`
       : null
     : (sourceControlTarget?.cwd ?? null);
+  const fileViewerProjectRoot = isGeneralChatDraft
+    ? null
+    : (sourceControlTarget?.projectCwd ?? null);
   useEffect(() => {
     if (!draftThreadRef || !fileViewerCwd) {
       setActiveFileViewerContext(null);
@@ -197,12 +200,13 @@ function DraftChatThreadRouteView() {
     setActiveFileViewerContext({
       environmentId: draftThreadRef.environmentId,
       cwd: fileViewerCwd,
+      projectRoot: fileViewerProjectRoot,
       threadRef: draftThreadRef,
     });
     return () => {
       setActiveFileViewerContext(null);
     };
-  }, [draftThreadRef, fileViewerCwd]);
+  }, [draftThreadRef, fileViewerCwd, fileViewerProjectRoot]);
   /**
    * The draft route has no diff panel of its own: the diff reads the thread's
    * checkpoints and working tree through the thread route's params, so opening

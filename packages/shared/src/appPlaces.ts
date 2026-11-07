@@ -27,7 +27,6 @@ import type {
   ServerSettingsPatch,
   SourceControlWritingStyleMode,
   ThreadEnvMode,
-  ThemeArtInThreads,
   ThemeMotion,
   TimestampFormat,
 } from "@threadlines/contracts";
@@ -39,6 +38,7 @@ import {
   RESPONSIVE_PAGE_SIZE_LABEL,
 } from "./browserPageSizes.ts";
 import { agentInvitesChoice, agentThreadsMode } from "./serverSettings.ts";
+import { themeGlassLevel } from "./themes/glassLevel.ts";
 
 /** Where a page lives in the app, and which computer it can show. */
 export interface AppPlaceRoute {
@@ -343,9 +343,6 @@ export const TIMESTAMP_FORMAT_LABELS: Readonly<Record<TimestampFormat, string>> 
 
 /** "Theme", as its menu words each choice. */
 export const THEME_LABELS = { system: "System", light: "Light", dark: "Dark" } as const;
-
-/** "Art in threads", as its control words each choice. */
-export const THEME_ART_IN_THREADS_LABELS = { none: "None", some: "Some", full: "Full" } as const;
 
 /** "Motion", as its control words each choice. */
 export const THEME_MOTION_LABELS = { live: "Live", still: "Still" } as const;
@@ -942,20 +939,29 @@ const ROWS = [
     edit: { lands: "device", control: { kind: "theme" }, store: "theme" },
   },
   {
-    id: "general.themeArtInThreads",
+    id: "general.themeGlass",
     kind: "row",
     parent: "general.appearance",
-    title: "Art in threads",
+    title: "Glass",
     about:
-      "How much of a theme's live art shows behind a thread. None keeps the reading column solid; Full shows the most, even where text gets harder to read.",
-    keywords: ["backdrop", "glass", "transparency", "wallpaper"],
+      "How much of a theme's art shows through the glass on every page. Text stays readable, a little lighter toward Clear.",
+    keywords: [
+      "backdrop",
+      "transparency",
+      "transparent",
+      "see-through",
+      "frosted",
+      "art in threads",
+      "wallpaper",
+    ],
     scope: "device",
+    // 0 is Solid, 50 the theme's own glass, 100 Clear.
     edit: {
       lands: "device",
-      control: { kind: "choice", options: THEME_ART_IN_THREADS_LABELS },
-      leaves: ["themeArtInThreads"],
-      read: (settings) => settings.themeArtInThreads,
-      patch: (value) => ({ themeArtInThreads: value as ThemeArtInThreads }),
+      control: { kind: "count", min: 0, max: 100, unit: "percent" },
+      leaves: ["themeGlass"],
+      read: (settings) => themeGlassLevel(settings),
+      patch: (value) => ({ themeGlass: value as number }),
     },
   },
   {

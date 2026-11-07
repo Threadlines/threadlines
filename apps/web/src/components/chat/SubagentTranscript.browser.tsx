@@ -1,6 +1,7 @@
 import "../../index.css";
 
 import { EnvironmentId, ThreadId } from "@threadlines/contracts";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { page } from "vite-plus/test/browser";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
@@ -52,17 +53,22 @@ const ENTRIES = [
 /** The drill-in's real width: the panel is 330px and the transcript keeps the
  *  panel's 12px gutter inside it. */
 function renderTranscript(options?: { cwd?: string; objective?: string }) {
+  // The app renders every transcript under its query client; file chips in the
+  // prose look themselves up through it.
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <div style={{ boxSizing: "border-box", display: "flex", height: 520, width: 330 }}>
-      <SubagentTranscript
-        environmentId={ENVIRONMENT_ID}
-        threadId={THREAD_ID}
-        agentIds={["agent-1"]}
-        cwd={options?.cwd}
-        objective={options?.objective}
-        scrollable
-      />
-    </div>,
+    <QueryClientProvider client={queryClient}>
+      <div style={{ boxSizing: "border-box", display: "flex", height: 520, width: 330 }}>
+        <SubagentTranscript
+          environmentId={ENVIRONMENT_ID}
+          threadId={THREAD_ID}
+          agentIds={["agent-1"]}
+          cwd={options?.cwd}
+          objective={options?.objective}
+          scrollable
+        />
+      </div>
+    </QueryClientProvider>,
   );
 }
 
