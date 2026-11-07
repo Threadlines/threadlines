@@ -3,6 +3,7 @@ import {
   isProviderAvailable,
   type ProviderFailureCategory,
   type ServerProvider,
+  type ThemeManifest,
 } from "@threadlines/contracts";
 import { isProviderAuthErrorMessage } from "@threadlines/shared/providerAuth";
 import * as Schema from "effect/Schema";
@@ -638,4 +639,19 @@ export function providerReadinessProperties(
     );
   }
   return properties;
+}
+
+/**
+ * What a theme event says about the theme (docs/telemetry.md): who made it
+ * (an agent, a file, a copy of a starter), light or dark, the kind of live
+ * art or none, and whether it sets its own fonts. Never its name, prompt,
+ * colors, art or fonts.
+ */
+export function themeAnalyticsProperties(manifest: ThemeManifest) {
+  return {
+    origin: manifest.createdBy?.kind ?? "unknown",
+    base: manifest.base,
+    art: manifest.backdrop?.mode ?? "none",
+    customFonts: manifest.fonts?.ui !== undefined || manifest.fonts?.mono !== undefined,
+  };
 }
