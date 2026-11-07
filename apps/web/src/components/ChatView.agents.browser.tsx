@@ -1539,7 +1539,7 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
       localStorage.setItem("threadlines:theme", "dark");
       const request = settingsRequest("settings-request-change", [
         { place: "general.streamReplies", value: false, from: true },
-        { place: "general.theme", value: "light" },
+        { place: "appearance.theme", value: "light" },
         { place: "general.timeFormat", value: "24-hour" },
       ]);
       const answer = deferred<unknown>();
@@ -1572,7 +1572,7 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
           { name: "Time format", value: "System default → 24-hour", lands: "this device" },
         ]);
         // The names open their rows.
-        expect(card.querySelector('a[data-place-link="general.theme"]')).not.toBeNull();
+        expect(card.querySelector('a[data-place-link="appearance.theme"]')).not.toBeNull();
 
         button(card, "Change").click();
         await vi.waitFor(() => expect(respondRequests()).toHaveLength(1), {
@@ -1600,7 +1600,7 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
                 threadId: THREAD_ID,
                 requestId: request.requestId,
                 claimId: (sent["claim"] as { claimId: string }).claimId,
-                device: { applied: ["general.timeFormat", "general.theme"], failed: [] },
+                device: { applied: ["general.timeFormat", "appearance.theme"], failed: [] },
               }),
             ]);
           },
@@ -1670,7 +1670,7 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
     it("changes nothing when another device answered first, and asks for an update it can't make", async () => {
       localStorage.setItem("threadlines:theme", "dark");
       const first = settingsRequest("settings-request-answered", [
-        { place: "general.theme", value: "light" },
+        { place: "appearance.theme", value: "light" },
       ]);
       const newer = settingsRequest("settings-request-newer", [
         { place: "general.streamReplies", value: false, from: true },

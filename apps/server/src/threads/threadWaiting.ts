@@ -18,7 +18,7 @@ import {
   collectOpenPendingRequests,
   USER_INPUT_ACTIVITY_KINDS,
 } from "@threadlines/shared/pendingRequests";
-import { isPlaceId, placeById } from "@threadlines/shared/appPlaces";
+import { currentPlaceId, placeById } from "@threadlines/shared/appPlaces";
 
 import { actionableProposedPlan, proposedPlanTitle } from "../orchestration/proposedPlans.ts";
 import { threadStatus } from "./threadOperations.ts";
@@ -254,7 +254,10 @@ export function threadWaitingItems(
       asks: "settings",
       detail: clip(
         request.changes
-          .map(({ place }) => (isPlaceId(place) ? placeById(place).title : place))
+          .map(({ place }) => {
+            const id = currentPlaceId(place);
+            return id !== null ? placeById(id).title : place;
+          })
           .join(" · "),
         WAITING_DETAIL_CHAR_LIMIT,
       ),

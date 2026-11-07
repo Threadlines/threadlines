@@ -4005,7 +4005,7 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
           turnId,
           changes: [
             { place: "general.streamReplies", value: false, from: true },
-            { place: "general.theme", value: "light" },
+            { place: "appearance.theme", value: "light" },
           ],
           createdAt,
         });
@@ -4044,7 +4044,7 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
         threadId,
         requestId: SettingsChangeRequestId.make("settings-reviewer"),
         claimId: "claim-1",
-        device: { applied: ["general.theme"], failed: [] },
+        device: { applied: ["appearance.theme"], failed: [] },
         createdAt,
       });
       yield* settle("settings-own", "declined");
@@ -4071,7 +4071,7 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
         folded?.map((entry) => [String(entry.requestId), entry.status, entry.noted, entry.device]),
         [
           ["settings-own", "declined", true, undefined],
-          ["settings-reviewer", "changed", false, { applied: ["general.theme"], failed: [] }],
+          ["settings-reviewer", "changed", false, { applied: ["appearance.theme"], failed: [] }],
         ],
       );
       assert.deepEqual(

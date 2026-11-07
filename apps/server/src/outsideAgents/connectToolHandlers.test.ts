@@ -1867,7 +1867,7 @@ describe("what a thread waits on", () => {
             turnId: TurnId.make("turn-1"),
             changes: [
               { place: "general.streamReplies", value: false, from: true },
-              { place: "general.theme", value: "light" },
+              { place: "appearance.theme", value: "light" },
             ],
             status: "waiting",
             createdAt: AT,

@@ -8,17 +8,24 @@ import type {
   OrchestrationSettingsChangeRequest,
   SettingsChangeItem,
 } from "@threadlines/contracts";
-import { isPlaceId, placeById, placePathLabel } from "@threadlines/shared/appPlaces";
+import { currentPlaceId, placeById, placePathLabel } from "@threadlines/shared/appPlaces";
 import { describeEditValue } from "@threadlines/shared/settingsEdits";
 
-const landsOnDevice = (change: SettingsChangeItem) =>
-  isPlaceId(change.place) && placeById(change.place).edit?.lands === "device";
+// A card saved before a place moved names it by its old id; it reads as the place now.
+const landsOnDevice = (change: SettingsChangeItem) => {
+  const place = currentPlaceId(change.place);
+  return place !== null && placeById(place).edit?.lands === "device";
+};
 
-const nameOf = (change: SettingsChangeItem) =>
-  isPlaceId(change.place) ? placePathLabel(change.place) : change.place;
+const nameOf = (change: SettingsChangeItem) => {
+  const place = currentPlaceId(change.place);
+  return place !== null ? placePathLabel(place) : change.place;
+};
 
-const valueOf = (change: SettingsChangeItem) =>
-  isPlaceId(change.place) ? describeEditValue(change.place, change.value) : String(change.value);
+const valueOf = (change: SettingsChangeItem) => {
+  const place = currentPlaceId(change.place);
+  return place !== null ? describeEditValue(place, change.value) : String(change.value);
+};
 
 const nowIs = (changes: ReadonlyArray<SettingsChangeItem>) =>
   changes.map((change) => `${nameOf(change)} is now ${valueOf(change)}`).join("; ");

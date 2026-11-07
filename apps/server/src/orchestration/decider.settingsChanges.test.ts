@@ -132,7 +132,7 @@ const ask = (
   turnId: options.turnId ?? TURN,
   changes: [
     { place: "general.streamReplies", value: false, from: true },
-    { place: "general.theme", value: "light" },
+    { place: "appearance.theme", value: "light" },
   ],
   createdAt: options.createdAt ?? now,
 });
@@ -166,7 +166,7 @@ const report = (id: string, claimId: string): OrchestrationCommand => ({
   threadId: THREAD,
   requestId: SettingsChangeRequestId.make(id),
   claimId,
-  device: { applied: ["general.theme"], failed: [] },
+  device: { applied: ["appearance.theme"], failed: [] },
   createdAt: now,
 });
 

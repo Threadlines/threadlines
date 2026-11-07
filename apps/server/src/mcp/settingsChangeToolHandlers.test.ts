@@ -129,7 +129,7 @@ describe("settings_change", () => {
       handler(mainCaller(), {
         changes: [
           { place: "general.streamReplies", value: false },
-          { place: "general.theme", value: "light" },
+          { place: "appearance.theme", value: "light" },
         ],
       }),
     );
@@ -141,7 +141,7 @@ describe("settings_change", () => {
         to: "Off",
         lands: "computer",
       }),
-      expect.objectContaining({ place: "general.theme", to: "Light", lands: "device" }),
+      expect.objectContaining({ place: "appearance.theme", to: "Light", lands: "device" }),
     ]);
     expect(dispatched).toHaveLength(1);
     expect(dispatched[0]).toMatchObject({
@@ -149,7 +149,7 @@ describe("settings_change", () => {
       turnId: TURN,
       changes: [
         { place: "general.streamReplies", value: false, from: true },
-        { place: "general.theme", value: "light" },
+        { place: "appearance.theme", value: "light" },
       ],
     });
   });
@@ -158,12 +158,12 @@ describe("settings_change", () => {
     const { handler, dispatched } = harness({}, ["Night Sky"]);
     for (const value of ["night sky", "Aurora", "system"]) {
       const asked = await Effect.runPromise(
-        handler(mainCaller(), { changes: [{ place: "general.theme", value }] }),
+        handler(mainCaller(), { changes: [{ place: "appearance.theme", value }] }),
       );
       expect(asked.outcome).toBe("asked_user");
     }
     const refused = await Effect.runPromise(
-      handler(mainCaller(), { changes: [{ place: "general.theme", value: "Sepia" }] }),
+      handler(mainCaller(), { changes: [{ place: "appearance.theme", value: "Sepia" }] }),
     );
     expect(refused).toMatchObject({ outcome: "refused" });
     expect(refused.detail).toContain('"Night Sky"');
@@ -172,7 +172,7 @@ describe("settings_change", () => {
 
   it("makes one card for a retried call", async () => {
     const { handler, dispatched, thread } = harness();
-    const call = { changes: [{ place: "general.theme", value: "dark" }] };
+    const call = { changes: [{ place: "appearance.theme", value: "dark" }] };
     await Effect.runPromise(handler(mainCaller(), call));
     const again = await Effect.runPromise(handler(mainCaller(), call));
     expect(again.outcome).toBe("asked_user");
@@ -210,7 +210,7 @@ describe("settings_change", () => {
           side: { sideTurnId: SideTurnId.make("side-1"), kind: "ask" },
           roomTools: new Set(roomToolsFor("ask")),
         },
-        { changes: [{ place: "general.theme", value: "dark" }] },
+        { changes: [{ place: "appearance.theme", value: "dark" }] },
       ),
     );
     expect(result.outcome).toBe("not_allowed");

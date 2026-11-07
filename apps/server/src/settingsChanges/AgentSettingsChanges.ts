@@ -240,7 +240,7 @@ export const make = (reads: AgentSettingsChangesReads) =>
             for (const edit of computer) {
               if (edit.edit.lands !== "computer") continue;
               const now = edit.edit.read(current);
-              const from = asked.get(edit.place);
+              const from = asked.get(edit.asked);
               if (from !== undefined && now !== from) {
                 return Effect.fail<Stale | ModelRefused>({
                   _tag: "Stale",

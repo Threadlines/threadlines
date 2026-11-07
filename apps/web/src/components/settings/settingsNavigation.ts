@@ -6,6 +6,7 @@ import {
   FileTextIcon,
   KeyboardIcon,
   MessagesSquareIcon,
+  PaletteIcon,
   PlugIcon,
   Settings2Icon,
   SmartphoneIcon,
@@ -21,6 +22,7 @@ export const HOSTED_STATIC_DEFAULT_SETTINGS_SECTION_PATH = "/settings/general" a
 
 export const VISIBLE_SETTINGS_SECTION_PATHS = [
   DEFAULT_SETTINGS_SECTION_PATH,
+  "/settings/appearance",
   "/settings/threads",
   "/settings/archived",
   "/settings/providers",
@@ -35,6 +37,7 @@ export type SettingsSectionPath = (typeof VISIBLE_SETTINGS_SECTION_PATHS)[number
 
 export const HOSTED_STATIC_SETTINGS_SECTION_PATHS = [
   HOSTED_STATIC_DEFAULT_SETTINGS_SECTION_PATH,
+  "/settings/appearance",
   "/settings/threads",
   "/settings/archived",
   "/settings/providers",
@@ -78,6 +81,11 @@ export const SETTINGS_NAV_ITEMS: ReadonlyArray<SettingsNavItem> = [
   settingsNavItem("settings.general", {
     to: "/settings/general",
     icon: Settings2Icon,
+    group: "threads",
+  }),
+  settingsNavItem("settings.appearance", {
+    to: "/settings/appearance",
+    icon: PaletteIcon,
     group: "threads",
   }),
   settingsNavItem("settings.threads", {

@@ -400,7 +400,7 @@ describe("agents' settings changes", () => {
     requestId,
     participantId: null,
     turnId: TurnId.make("turn-1"),
-    changes: [{ place: "general.theme", value: "light" }],
+    changes: [{ place: "appearance.theme", value: "light" }],
     status: "waiting" as const,
     createdAt: "2026-02-27T00:00:01.000Z",
     noted: false,

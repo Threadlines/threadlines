@@ -15,7 +15,7 @@ import {
   NO_MODEL,
   type PlaceId,
   THEME_LABELS,
-  isPlaceId,
+  currentPlaceId,
   parseModelEditValue,
   placeById,
   placeMarkdownLink,
@@ -33,6 +33,12 @@ export interface SettingsChangeInput {
 /** A change that passed `checkEdits`: a place agents may change, with a value its row takes. */
 export interface CheckedEdit {
   readonly place: PlaceId;
+  /**
+   * The place as the request named it: the same id, or one from before the
+   * place moved (a card saved by an older build). Reports that answer the
+   * request name its places this way.
+   */
+  readonly asked: string;
   readonly value: EditValue;
   readonly edit: AppPlaceEdit;
 }
@@ -124,12 +130,13 @@ export function checkEdits(
   const seen = new Set<string>();
   const edits: CheckedEdit[] = [];
   for (const change of changes) {
-    const place = change.place.trim();
-    if (!isPlaceId(place)) {
+    const asked = change.place.trim();
+    const place = currentPlaceId(asked);
+    if (place === null) {
       return {
         refused: {
           reason: "unknown",
-          detail: `"${place}" isn't a place in Threadlines. Look the setting up with app_guide and use the id it gives.`,
+          detail: `"${asked}" isn't a place in Threadlines. Look the setting up with app_guide and use the id it gives.`,
         },
       };
     }
@@ -167,7 +174,7 @@ export function checkEdits(
         },
       };
     }
-    edits.push({ place, value: change.value, edit: spec.edit });
+    edits.push({ place, asked, value: change.value, edit: spec.edit });
   }
   // Alerts need a phone or browser and these rows the desktop app: no one app can accept both.
   const alert = edits.find(({ edit }) => "store" in edit && edit.store === "alerts");

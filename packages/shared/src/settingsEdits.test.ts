@@ -12,6 +12,7 @@ import {
   type EditValue,
   NO_MODEL,
   type PlaceId,
+  placeIdFromHref,
 } from "./appPlaces.ts";
 import { applyServerSettingsPatch } from "./serverSettings.ts";
 import {
@@ -101,8 +102,8 @@ describe("agents' settings changes", () => {
     expect(refused([{ place: "general.usageAnalytics", value: true }])).toBe("not_editable");
     expect(
       refused([
-        { place: "general.theme", value: "light" },
-        { place: "general.theme", value: "dark" },
+        { place: "appearance.theme", value: "light" },
+        { place: "appearance.theme", value: "dark" },
       ]),
     ).toBe("duplicate");
     expect(refused([{ place: "general.terminalTextSize", value: 12.5 }])).toBe("bad_value");
@@ -130,11 +131,26 @@ describe("agents' settings changes", () => {
     ).toBe("no_one_app");
   });
 
+  // A card saved before themes left General names them by their old ids.
+  it("finds a place that moved by its old id, and answers under the old one", () => {
+    const checked = checkEdits([{ place: "general.theme", value: "light" }]);
+    expect("edits" in checked ? checked.edits : checked).toEqual([
+      expect.objectContaining({ place: "appearance.theme", asked: "general.theme" }),
+    ]);
+    // The old and new id of one place are one setting.
+    const twice = checkEdits([
+      { place: "general.themeMotion", value: "still" },
+      { place: "appearance.motion", value: "live" },
+    ]);
+    expect("refused" in twice ? twice.refused.reason : null).toBe("duplicate");
+    expect(placeIdFromHref("threadlines-place:general.themeGlass")).toBe("appearance.glass");
+  });
+
   it("writes two changes under one setting together, keeping the rest of it", () => {
     const checked = checkEdits([
       { place: "sourceControl.writingStyle", value: "conventional_commits" },
       { place: "sourceControl.followPrTemplates", value: false },
-      { place: "general.theme", value: "light" },
+      { place: "appearance.theme", value: "light" },
     ]);
     if (!("edits" in checked)) throw new Error("refused");
     const current = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
@@ -150,7 +166,7 @@ describe("agents' settings changes", () => {
 
   it("words values as their rows do", () => {
     expect(describeEditValue("general.streamReplies", false)).toBe("Off");
-    expect(describeEditValue("general.theme", "light")).toBe("Light");
+    expect(describeEditValue("appearance.theme", "light")).toBe("Light");
     expect(describeEditValue("general.terminalTextSize", 14)).toBe("14 px");
     expect(describeEditValue("sourceControl.fetchInterval", 0)).toBe("Off");
     // A value agents can't pick still reads as its row shows it.

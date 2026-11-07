@@ -14,7 +14,7 @@ import type {
 } from "@threadlines/contracts";
 import {
   type EditValue,
-  isPlaceId,
+  currentPlaceId,
   NO_MODEL,
   parseModelEditValue,
   type PlaceId,
@@ -32,8 +32,8 @@ export type SettingsChangeLands = "computer" | "device";
  * app can't make.
  */
 export function settingsChangeLands(change: SettingsChangeItem): SettingsChangeLands {
-  const place = change.place.trim();
-  const edit = isPlaceId(place) ? placeById(place).edit : undefined;
+  const placeId = currentPlaceId(change.place);
+  const edit = placeId !== null ? placeById(placeId).edit : undefined;
   if (edit !== undefined) return edit.lands;
   return change.from !== undefined ? "computer" : "device";
 }
@@ -94,7 +94,7 @@ export function settingsChangeLines(
 ): ReadonlyArray<SettingsChangeLine> {
   return request.changes.map((change) => {
     const place = change.place.trim();
-    const placeId = isPlaceId(place) ? place : null;
+    const placeId = currentPlaceId(place);
     const lands = settingsChangeLands(change);
     const from =
       lands === "computer" ? change.from : placeId !== null ? readDevice(placeId) : undefined;

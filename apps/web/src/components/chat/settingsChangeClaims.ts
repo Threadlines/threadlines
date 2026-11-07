@@ -97,13 +97,13 @@ async function makeDeviceChanges(
   if (clientEdits.length > 0) {
     try {
       await updateClientSettingsAndPersist(composeClientPatch(clientEdits));
-      applied.push(...clientEdits.map(({ place }) => place));
+      applied.push(...clientEdits.map(({ asked }) => asked));
     } catch (error) {
       const detail = failureDetail(error);
-      failed.push(...clientEdits.map(({ place }) => ({ place, detail })));
+      failed.push(...clientEdits.map(({ asked }) => ({ place: asked, detail })));
     }
   }
-  for (const { place, edit, value } of edits) {
+  for (const { asked, edit, value } of edits) {
     if (!(edit.lands === "device" && "store" in edit)) continue;
     try {
       if (edit.store === "theme") {
@@ -122,9 +122,9 @@ async function makeDeviceChanges(
           ? setPushAlertsQuietAtComputer(value === true)
           : setPushAlertKind(edit.alert, value === true));
       }
-      applied.push(place);
+      applied.push(asked);
     } catch (error) {
-      failed.push({ place, detail: failureDetail(error) });
+      failed.push({ place: asked, detail: failureDetail(error) });
     }
   }
   return { applied, failed };

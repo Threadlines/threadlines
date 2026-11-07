@@ -1,6 +1,6 @@
 import { EnvironmentId } from "@threadlines/contracts";
-import type { PlaceId } from "@threadlines/shared/appPlaces";
-import { useLocation, useSearch } from "@tanstack/react-router";
+import { type PlaceId, placeRoute } from "@threadlines/shared/appPlaces";
+import { useLocation, useNavigate, useSearch } from "@tanstack/react-router";
 import { useEffect, useRef } from "react";
 
 import { placeIdFromArrivalHash, placeScopeFromSearch } from "../appPlaceLinks";
@@ -117,13 +117,34 @@ export function arriveAtPlace(placeId: PlaceId): () => void {
  * Plays the arrival a place link asked for: the route hash `place=<id>&n=<click>`
  * (appPlaceLinks.ts). Each click carries a new `n`, so the same link clicked
  * again plays it again. Mounted by the layouts place links open: Settings and Fleet.
+ *
+ * An address saved before a setting moved to another settings page (General's
+ * themes went to Appearance) opens the page it was on; it moves on to the
+ * setting's page now, and arrives there.
  */
 export function usePlaceArrival(): void {
   const hash = useLocation({ select: (location) => location.hash });
+  const pathname = useLocation({ select: (location) => location.pathname });
+  const navigate = useNavigate();
   useEffect(() => {
     const placeId = placeIdFromArrivalHash(hash);
-    return placeId === null ? undefined : arriveAtPlace(placeId);
-  }, [hash]);
+    if (placeId === null) return undefined;
+    const route = placeRoute(placeId);
+    if (
+      route.to !== pathname &&
+      route.to.startsWith("/settings/") &&
+      pathname.startsWith("/settings/")
+    ) {
+      void navigate({
+        to: route.to,
+        ...(route.search !== undefined ? { search: route.search } : {}),
+        hash,
+        replace: true,
+      });
+      return undefined;
+    }
+    return arriveAtPlace(placeId);
+  }, [hash, navigate, pathname]);
 }
 
 /**

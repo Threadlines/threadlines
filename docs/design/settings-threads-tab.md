@@ -86,7 +86,8 @@ The first send already creates the thread with the draft's room in one command
     delete (moved).
   - Phone (hosted-static) shows the same tab; computer-owned sections say
     "Applies to your paired computer" in the section description.
-- General keeps: Appearance (theme, time format) · Chat & diffs (stream replies,
+- General keeps: Appearance (theme, time format; themes later moved to their own
+  Appearance page, time format into Chat & diffs) · Chat & diffs (stream replies,
   changed files in chat, wrap diff lines, hide whitespace) · Dictation · This
   computer (keep awake, add project starts in, sites agents can visit, clear
   browser data) · Privacy & about (version + update track, usage analytics,

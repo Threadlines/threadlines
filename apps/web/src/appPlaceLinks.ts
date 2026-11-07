@@ -7,7 +7,7 @@
  */
 import type { EnvironmentId } from "@threadlines/contracts";
 import {
-  isPlaceId,
+  currentPlaceId,
   PLACE_HREF_SCHEME,
   type PlaceId,
   placeChain,
@@ -133,7 +133,7 @@ export function nextPlaceArrivalHash(placeId: PlaceId): string {
 export function placeIdFromArrivalHash(hash: string): PlaceId | null {
   if (!hash.startsWith("place=")) return null;
   const placeId = new URLSearchParams(hash).get("place");
-  return placeId !== null && isPlaceId(placeId) ? placeId : null;
+  return placeId !== null ? currentPlaceId(placeId) : null;
 }
 
 /**
