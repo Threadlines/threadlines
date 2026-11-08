@@ -19,6 +19,7 @@ import { isMacPlatform } from "../lib/utils";
 import { useTerminalStateStore } from "../terminalStateStore";
 import { chooseTheme, readThemeState } from "../theme/themeStore";
 import { type NormalizedWsRpcRequestBody } from "../../test/wsRpcHarness";
+import { nextFrames } from "../lib/frameProbe.browser-harness";
 
 import {
   THREAD_ID,
@@ -1372,11 +1373,7 @@ describe("ChatView (full app): composer", () => {
         expect(findComposerProviderModelPicker()?.textContent).not.toContain("/model");
       });
 
-      await new Promise<void>((resolve) => {
-        requestAnimationFrame(() => {
-          requestAnimationFrame(() => resolve());
-        });
-      });
+      await nextFrames(2);
 
       await vi.waitFor(() => {
         const searchInput = document.querySelector<HTMLInputElement>(
