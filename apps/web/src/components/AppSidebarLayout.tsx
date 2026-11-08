@@ -19,6 +19,7 @@ import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { resolveShortcutCommand } from "../keybindings";
 import { startNewThreadFromContext } from "../lib/chatThreadActions";
 import { isTerminalFocused } from "../lib/terminalFocus";
+import { usePublishMainAreaStart } from "../mainAreaLayout";
 import { useServerKeybindings } from "../rpc/serverState";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
 import { buildThreadRouteParams } from "../threadRoutes";
@@ -239,6 +240,8 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
   const hasList = destinationHasList(selectedDestination);
   const panelRef = useRef<HTMLDivElement>(null);
   usePageCrossFade(panelRef, selectedDestination);
+  // Dialogs and other window-wide layers center over the page beside the list.
+  usePublishMainAreaStart(panelRef);
   // The title row's slot for the open page; null without a title row.
   const [titleBarSlot, setTitleBarSlot] = useState<HTMLElement | null>(null);
   const setListOpen = useCallback(

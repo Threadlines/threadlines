@@ -3,6 +3,7 @@ import { type RefCallback, useCallback, useEffect, useRef } from "react";
 import { isElectron } from "./env";
 import { useMediaQuery } from "./hooks/useMediaQuery";
 import { useSettings } from "./hooks/useSettings";
+import { publishMainAreaEndInset } from "./mainAreaLayout";
 
 export const RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY = "(max-width: 980px)";
 
@@ -49,40 +50,34 @@ export const RIGHT_PANEL_SHEET_VIEWPORT_CLASS_NAME = "pointer-events-none";
 export const RIGHT_PANEL_SHEET_BACKDROP_CLASS_NAME = "mt-[var(--chat-header-bottom)]";
 
 export const CHAT_HEADER_BOTTOM_CSS_VAR = "--chat-header-bottom";
-export const RIGHT_PANEL_INSET_CSS_VAR = "--right-panel-inset";
 
 /**
- * Publishes how much of the viewport's right edge the open right panel occupies
- * as a root-level CSS variable, so body-portaled overlays can stay clear of it.
- * `0px` while the panel is closed. Attach the returned ref to the element that
- * holds the panel's layout slot.
+ * Publishes how much of the window's right edge the open right panel takes
+ * (mainAreaLayout.ts), so layers portaled to the body can keep clear of it or
+ * center over the page beside it. 0 while the panel is closed. Attach the
+ * returned ref to the element that holds the panel's layout slot.
  *
- * Same pattern (and the same reason) as {@link useChatHeaderBottomVarRef}: the
- * toast viewport is fixed to the viewport, not to the chat column, so nothing in
- * the layout can push it aside. The width changes on open/close, on a drag of
- * the panel's resize handle, and on a window resize, all of which the observer
- * catches. The variable is reset on unmount so a route without a right panel
- * does not leave overlays inset for a panel that is gone.
+ * Toasts and dialogs are fixed to the window, not to the chat column, so
+ * nothing in the layout can push them aside. The width changes on open/close,
+ * on a drag of the panel's resize handle, and on a window resize, all of which
+ * the observer catches. It is reset on unmount so a route without a right
+ * panel does not leave layers inset for a panel that is gone.
  */
-export function useRightPanelInsetVarRef(): RefCallback<HTMLElement> {
+export function useRightPanelInsetRef(): RefCallback<HTMLElement> {
   return useCallback((node: HTMLElement | null) => {
-    const rootStyle = document.documentElement.style;
     if (!node || typeof ResizeObserver === "undefined") {
-      rootStyle.setProperty(RIGHT_PANEL_INSET_CSS_VAR, "0px");
+      publishMainAreaEndInset(0);
       return undefined;
     }
     const publish = () => {
-      rootStyle.setProperty(
-        RIGHT_PANEL_INSET_CSS_VAR,
-        `${Math.max(0, Math.round(node.getBoundingClientRect().width))}px`,
-      );
+      publishMainAreaEndInset(Math.max(0, Math.round(node.getBoundingClientRect().width)));
     };
     const observer = new ResizeObserver(publish);
     observer.observe(node);
     publish();
     return () => {
       observer.disconnect();
-      rootStyle.setProperty(RIGHT_PANEL_INSET_CSS_VAR, "0px");
+      publishMainAreaEndInset(0);
     };
   }, []);
 }

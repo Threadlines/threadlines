@@ -4,11 +4,11 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
 import { ChatRightPanelInlineSidebar } from "./ChatRightPanelInlineSidebar";
-import { RIGHT_PANEL_INSET_CSS_VAR } from "../rightPanelLayout";
+import { publishMainAreaEndInset, readMainAreaBounds } from "../mainAreaLayout";
 import { resetTestPage } from "../lib/testPage.browser-harness";
 
-function readPanelInset(): string {
-  return document.documentElement.style.getPropertyValue(RIGHT_PANEL_INSET_CSS_VAR);
+function readPanelInset(): number {
+  return readMainAreaBounds().endInset;
 }
 
 function renderSidebar(open: boolean) {
@@ -24,13 +24,13 @@ function renderSidebar(open: boolean) {
 
 describe("ChatRightPanelInlineSidebar", () => {
   afterEach(async () => {
-    document.documentElement.style.removeProperty(RIGHT_PANEL_INSET_CSS_VAR);
+    publishMainAreaEndInset(0);
     await resetTestPage();
   });
 
-  // Toasts and other body-portaled overlays are fixed to the viewport, so the
-  // layout cannot push them off the panel. They read this instead.
-  it("publishes how much of the right edge the open panel takes", async () => {
+  // Toasts, dialogs and other body-portaled layers are fixed to the window, so
+  // the layout cannot push them off the panel. They read this instead.
+  it("publishes how much of the right edge the open panel takes, and clears it on unmount", async () => {
     const mounted = await renderSidebar(true);
 
     try {
@@ -39,24 +39,26 @@ describe("ChatRightPanelInlineSidebar", () => {
       const slotWidth = Math.round(slot!.getBoundingClientRect().width);
       expect(slotWidth).toBeGreaterThan(0);
       await vi.waitFor(() => {
-        expect(readPanelInset()).toBe(`${slotWidth}px`);
+        expect(readPanelInset()).toBe(slotWidth);
       });
     } finally {
       await mounted.unmount();
     }
+
+    expect(readPanelInset()).toBe(0);
   });
 
-  it("reports no inset while the panel is closed, and clears it on unmount", async () => {
+  it("reports no inset while the panel is closed", async () => {
+    // What an open panel on the previous thread left behind.
+    publishMainAreaEndInset(320);
     const mounted = await renderSidebar(false);
 
     try {
       await vi.waitFor(() => {
-        expect(readPanelInset()).toBe("0px");
+        expect(readPanelInset()).toBe(0);
       });
     } finally {
       await mounted.unmount();
     }
-
-    expect(readPanelInset()).toBe("0px");
   });
 });
