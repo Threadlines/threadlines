@@ -53,8 +53,18 @@ function isWindowsPathStyle(value: string): boolean {
   return isWindowsAbsolutePath(value) || /[A-Za-z]:\\/.test(value);
 }
 
+/** `value` without the slashes it ends in. A loop, not `/[\\/]+$/`: that
+ *  pattern retries from every slash and slows to a crawl on a long run of them. */
+function trimTrailingSeparators(value: string): string {
+  let end = value.length;
+  while (end > 0 && (value[end - 1] === "/" || value[end - 1] === "\\")) {
+    end -= 1;
+  }
+  return value.slice(0, end);
+}
+
 function joinPath(base: string, next: string, separator: "/" | "\\"): string {
-  const cleanBase = base.replace(/[\\/]+$/, "");
+  const cleanBase = trimTrailingSeparators(base);
   if (separator === "\\") {
     return `${cleanBase}\\${next.replaceAll("/", "\\")}`;
   }
@@ -181,6 +191,14 @@ export interface BareLocalhostUrlMatch {
 }
 
 function trimUrlTrailingPunctuation(value: string): string {
+  // Counted once and kept in step, not recounted per character: a run of
+  // closing parentheses would otherwise cost its length squared.
+  let opened = 0;
+  let closed = 0;
+  for (const char of value) {
+    if (char === "(") opened += 1;
+    else if (char === ")") closed += 1;
+  }
   let end = value.length;
   while (end > 0) {
     const char = value[end - 1]!;
@@ -188,14 +206,10 @@ function trimUrlTrailingPunctuation(value: string): string {
       end -= 1;
       continue;
     }
-    if (char === ")") {
-      const slice = value.slice(0, end);
-      const opened = slice.split("(").length - 1;
-      const closed = slice.split(")").length - 1;
-      if (closed > opened) {
-        end -= 1;
-        continue;
-      }
+    if (char === ")" && closed > opened) {
+      end -= 1;
+      closed -= 1;
+      continue;
     }
     break;
   }

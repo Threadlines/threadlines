@@ -81,6 +81,15 @@ describe("extractMessagePictures", () => {
   });
 });
 
+describe("on long runs of one character", () => {
+  it("stays linear, since the server runs this on any reply", () => {
+    const started = performance.now();
+    resolveMessagePicturePath("shot.png", `/repo${"/".repeat(100_000)}`);
+    extractMessagePictures(`See /tmp/shot.png${")".repeat(100_000)}`);
+    expect(performance.now() - started).toBeLessThan(1_000);
+  });
+});
+
 describe("resolveMessagePicturePath", () => {
   it("resolves the way the chat does, against the thread's folder", () => {
     // Joined as the chat joins it; the disk reads `./` as itself.
