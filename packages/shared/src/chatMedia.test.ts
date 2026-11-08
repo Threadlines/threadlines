@@ -82,12 +82,15 @@ describe("extractMessagePictures", () => {
 });
 
 describe("on long runs of one character", () => {
-  it("stays linear, since the server runs this on any reply", () => {
+  // Each takes tens of milliseconds; a quadratic one takes tens of seconds at
+  // this length, so the bound leaves room for a slow CI machine and nothing else.
+  it("stays linear, since the server runs this on any reply", { timeout: 20_000 }, () => {
+    const length = 200_000;
     const started = performance.now();
-    resolveMessagePicturePath("shot.png", `/repo${"/".repeat(100_000)}`);
-    extractMessagePictures(`See /tmp/shot.png${")".repeat(100_000)}`);
-    extractMessagePictures(`${"$$"}${" ".repeat(100_000)}x${"$$"}`);
-    expect(performance.now() - started).toBeLessThan(1_000);
+    resolveMessagePicturePath("shot.png", `/repo${"/".repeat(length)}`);
+    extractMessagePictures(`See /tmp/shot.png${")".repeat(length)}`);
+    extractMessagePictures(`${"$$"}${" ".repeat(length)}x${"$$"}`);
+    expect(performance.now() - started).toBeLessThan(5_000);
   });
 });
 
