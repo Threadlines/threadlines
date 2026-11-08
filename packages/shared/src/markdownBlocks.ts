@@ -30,9 +30,14 @@ export const OPENER_PREFIX = String.raw`((?:[ \t]*(?:>|(?:[-*+]|\d{1,9}[.)])(?=[
 /** What can start a later line of the same container: quote markers and indentation. */
 export const CONTINUATION_PREFIX = String.raw`((?:[ \t]*>)*[ \t]*)`;
 
-/** `$$` opening display math, alone or with the formula's first line after it. */
+/**
+ * `$$` opening display math, alone or with the formula's first line after it
+ * (group 2, its trailing spaces left out). The formula ends in a character
+ * that is not a space, so each trailing space has one place to go: with a lazy
+ * formula there, a line with a long run of spaces took time in its square.
+ */
 export const DOLLAR_MATH_OPEN_REGEX = new RegExp(
-  String.raw`^${OPENER_PREFIX}\$\$(?!\$)((?:(?!\$\$)[^\r])*?)[ \t]*\r?$`,
+  String.raw`^${OPENER_PREFIX}\$\$(?!\$)((?:(?:(?!\$\$)[^\r])*(?!\$\$)[^\r \t])?)[ \t]*\r?$`,
 );
 /** `$$` closing it, alone or after the formula's last line (with no other `$`). */
 export const DOLLAR_MATH_CLOSE_REGEX = new RegExp(

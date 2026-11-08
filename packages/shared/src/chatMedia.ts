@@ -382,6 +382,9 @@ function decodeDestination(raw: string): string {
 
 type MicromarkEvent = ReturnType<typeof postprocess>[number];
 
+/** How much of one reply is read for pictures. */
+export const MESSAGE_PICTURES_MAX_CHARS = 512 * 1024;
+
 /** A reference label as markdown matches it: case-blind, spaces collapsed. */
 function normalizeLabel(value: string): string {
   return value
@@ -411,7 +414,11 @@ function parseBlock(block: string): ReadonlyArray<MicromarkEvent> {
  */
 export function extractMessagePictures(text: string): MessagePicture[] {
   const found = new Map<string, MessagePicture>();
-  for (const block of splitMarkdownBlocks(text)) {
+  // The server reads every settled reply; a bound keeps one enormous reply
+  // from holding it up. Pictures past it are not listed.
+  const readable =
+    text.length > MESSAGE_PICTURES_MAX_CHARS ? text.slice(0, MESSAGE_PICTURES_MAX_CHARS) : text;
+  for (const block of splitMarkdownBlocks(readable)) {
     for (const picture of extractBlockPictures(block)) {
       const key = `${picture.kind}\u0000${
         picture.kind === "path"
