@@ -89,6 +89,7 @@ function withProcessEnvPatch<A, E, R>(
 function makeHarness(options: UpdatesHarnessOptions = {}) {
   let checkCount = 0;
   let downloadCount = 0;
+  let installCount = 0;
   let allowDowngrade = false;
   const feedUrls: ElectronUpdater.ElectronUpdaterFeedUrl[] = [];
   const listeners = new Map<string, Set<(...args: readonly unknown[]) => void>>();
@@ -134,7 +135,10 @@ function makeHarness(options: UpdatesHarnessOptions = {}) {
       downloadCount += 1;
       return options.downloadUpdate?.(downloadCount) ?? Effect.void;
     }),
-    quitAndInstall: () => Effect.void,
+    quitAndInstall: () =>
+      Effect.sync(() => {
+        installCount += 1;
+      }),
     on: (eventName, listener) =>
       Effect.acquireRelease(
         Effect.sync(() => {
@@ -224,6 +228,7 @@ function makeHarness(options: UpdatesHarnessOptions = {}) {
     layer,
     checkCount: () => checkCount,
     downloadCount: () => downloadCount,
+    installCount: () => installCount,
     feedUrls: () => feedUrls,
     listenerCount: () =>
       Array.from(listeners.values()).reduce(
@@ -576,6 +581,147 @@ describe("DesktopUpdates", () => {
         ),
       );
     });
+  });
+
+  describe("checking", () => {
+    // What electron-updater rejects with when GitHub's server times out.
+    const timedOut = Effect.fail(
+      new ElectronUpdater.ElectronUpdaterCheckForUpdatesError({
+        cause: Object.assign(new Error("504 Gateway Time-out"), { statusCode: 504 }),
+      }),
+    );
+
+    it.effect("says what happened in plain words when GitHub times out", () => {
+      const harness = makeHarness({ checkForUpdates: timedOut });
+      return Effect.scoped(
+        Effect.gen(function* () {
+          const updates = yield* DesktopUpdates.DesktopUpdates;
+          yield* updates.configure;
+          const result = yield* updates.check("web-ui");
+
+          assert.equal(result.state.status, "error");
+          assert.equal(
+            result.state.message,
+            "GitHub's download server had a problem. Try again in a minute.",
+          );
+        }),
+      ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+    });
+
+    it.effect("keeps a downloaded update ready when a re-check fails", () => {
+      const harness = makeHarness({ checkForUpdates: timedOut });
+      return Effect.scoped(
+        Effect.gen(function* () {
+          const updates = yield* DesktopUpdates.DesktopUpdates;
+          yield* updates.configure;
+          harness.emit("update-available", { version: "1.2.4" });
+          harness.emit("update-downloaded", { version: "1.2.4" });
+          yield* flushCallbacks;
+
+          // The background poll that hit GitHub's 504 used to turn the ready
+          // update into an error and leave Restart doing nothing.
+          yield* updates.check("poll");
+          const state = yield* updates.getState;
+          assert.equal(state.status, "downloaded");
+          assert.equal(state.downloadedVersion, "1.2.4");
+
+          const result = yield* updates.install;
+          assert.isTrue(result.accepted);
+          assert.equal(harness.installCount(), 1);
+        }),
+      ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+    });
+
+    it.effect("keeps Restart going when a re-check fails partway through it", () =>
+      Effect.gen(function* () {
+        const checkStarted = yield* Deferred.make<void>();
+        const releaseCheck = yield* Deferred.make<void>();
+        const cause = Object.assign(new Error("504 Gateway Time-out"), { statusCode: 504 });
+        let emit: (eventName: string, payload?: unknown) => void = () => {};
+        const harness = makeHarness({
+          // Like electron-updater: the "error" event fires, then the check rejects.
+          checkForUpdates: Deferred.succeed(checkStarted, undefined).pipe(
+            Effect.andThen(Deferred.await(releaseCheck)),
+            Effect.andThen(Effect.sync(() => emit("error", cause))),
+            Effect.andThen(timedOut),
+          ),
+        });
+        emit = harness.emit;
+
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const updates = yield* DesktopUpdates.DesktopUpdates;
+            const desktopState = yield* DesktopState.DesktopState;
+            yield* updates.configure;
+            harness.emit("update-available", { version: "1.2.4" });
+            harness.emit("update-downloaded", { version: "1.2.4" });
+            yield* flushCallbacks;
+
+            const checkFiber = yield* updates.check("poll").pipe(Effect.forkScoped);
+            yield* Deferred.await(checkStarted);
+            assert.isTrue((yield* updates.install).accepted);
+
+            yield* Deferred.succeed(releaseCheck, undefined);
+            yield* Fiber.join(checkFiber);
+            yield* flushCallbacks;
+
+            // The check's failure is not the install's: the restart stays
+            // under way, and a second click can't start another one.
+            assert.isTrue(yield* Ref.get(desktopState.quitting));
+            const state = yield* updates.getState;
+            assert.equal(state.status, "downloaded");
+            assert.isNull(state.errorContext);
+            assert.isFalse((yield* updates.install).accepted);
+            assert.equal(harness.installCount(), 1);
+          }),
+        ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+      }),
+    );
+  });
+
+  it.effect("installs a downloaded update even after an updater error took its status", () => {
+    const harness = makeHarness();
+
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const updates = yield* DesktopUpdates.DesktopUpdates;
+        yield* updates.configure;
+        harness.emit("update-available", { version: "1.2.4" });
+        harness.emit("update-downloaded", { version: "1.2.4" });
+        harness.emit("error", new Error("something outside a check went wrong"));
+        yield* flushCallbacks;
+        const errored = yield* updates.getState;
+        assert.equal(errored.status, "error");
+        assert.equal(errored.downloadedVersion, "1.2.4");
+
+        // The Restart button shows whenever an update is downloaded, so
+        // it has to work then too.
+        const result = yield* updates.install;
+        assert.isTrue(result.accepted);
+        assert.equal(harness.installCount(), 1);
+      }),
+    ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+  });
+
+  it.effect("brings the ready pill back when a later check finds the same update", () => {
+    const harness = makeHarness();
+
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const updates = yield* DesktopUpdates.DesktopUpdates;
+        yield* updates.configure;
+        harness.emit("update-available", { version: "1.2.4" });
+        harness.emit("update-downloaded", { version: "1.2.4" });
+        harness.emit("error", new Error("something outside a check went wrong"));
+        harness.emit("update-available", { version: "1.2.4" });
+        yield* flushCallbacks;
+
+        const state = yield* updates.getState;
+        assert.equal(state.status, "downloaded");
+        assert.equal(state.downloadedVersion, "1.2.4");
+        assert.isNull(state.message);
+      }),
+    ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
   });
 
   it.effect("replaces a downloaded update when a newer release supersedes it", () => {

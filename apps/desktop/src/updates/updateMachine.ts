@@ -52,11 +52,25 @@ export function reduceDesktopUpdateStateOnCheckStart(
   };
 }
 
+/**
+ * Whether Restart can install now: an update is downloaded. The client's
+ * Restart button reads the same field, so a button that shows always works.
+ */
+export function hasInstallableUpdate(state: DesktopUpdateState): boolean {
+  return state.downloadedVersion !== null;
+}
+
+/**
+ * A check that failed. A downloaded update stays ready: its installer is
+ * still on disk, and one GitHub hiccup on a later re-check must not take
+ * Restart away.
+ */
 export function reduceDesktopUpdateStateOnCheckFailure(
   state: DesktopUpdateState,
   message: string,
   checkedAt: string,
 ): DesktopUpdateState {
+  if (state.status === "downloaded") return state;
   return {
     ...state,
     status: "error",
@@ -117,18 +131,22 @@ export function reduceDesktopUpdateStateOnDownloadStart(
 }
 
 /**
- * Why a download failed, by what the updater's error says: `server` answered
- * "not now" (5xx, 408, 429), `network` got no answer at all, and `other` is
- * anything a second try won't change, like a missing file or a bad checksum.
+ * Why an update check or download failed, by what the updater's error says:
+ * `server` answered "not now" (5xx, 408, 429), `network` got no answer at
+ * all, and `other` is anything a second try won't change, like a missing
+ * file or a bad checksum.
  */
-export type UpdateDownloadFailureKind = "server" | "network" | "other";
+export type UpdaterRequestFailureKind = "server" | "network" | "other";
 
-export function classifyUpdateDownloadFailure(cause: unknown): UpdateDownloadFailureKind {
+export function classifyUpdaterRequestFailure(cause: unknown): UpdaterRequestFailureKind {
   const message = cause instanceof Error ? cause.message : String(cause);
+  // A check's failed request is an HttpError carrying `statusCode`; a
+  // download's says "status 504", and an error that wraps an HttpError
+  // keeps its "HttpError: 504" line.
   const statusCode =
     typeof cause === "object" && cause !== null && "statusCode" in cause
       ? Number(cause.statusCode)
-      : Number(/\bstatus (\d{3})\b/u.exec(message)?.[1]);
+      : Number(/\b(?:status|HttpError:) (\d{3})\b/u.exec(message)?.[1]);
   if (Number.isInteger(statusCode)) {
     return statusCode >= 500 || statusCode === 408 || statusCode === 429 ? "server" : "other";
   }
@@ -141,9 +159,9 @@ export function classifyUpdateDownloadFailure(cause: unknown): UpdateDownloadFai
     : "other";
 }
 
-/** What the user reads for a download that failed for good, or `fallback` when there's nothing plainer to say. */
-export function describeUpdateDownloadFailure(cause: unknown, fallback: string): string {
-  switch (classifyUpdateDownloadFailure(cause)) {
+/** What the user reads for a check or download that failed for good, or `fallback` when there's nothing plainer to say. */
+export function describeUpdaterRequestFailure(cause: unknown, fallback: string): string {
+  switch (classifyUpdaterRequestFailure(cause)) {
     case "server":
       return "GitHub's download server had a problem. Try again in a minute.";
     case "network":

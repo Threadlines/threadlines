@@ -37,12 +37,13 @@ import {
 import { resolveDefaultDesktopUpdateChannel } from "./updateChannels.ts";
 import {
   createInitialDesktopUpdateState,
+  hasInstallableUpdate,
   reduceDesktopUpdateStateOnCheckFailure,
   reduceDesktopUpdateStateOnCheckStart,
   reduceDesktopUpdateStateOnDownloadComplete,
   reduceDesktopUpdateStateOnDownloadFailure,
-  classifyUpdateDownloadFailure,
-  describeUpdateDownloadFailure,
+  classifyUpdaterRequestFailure,
+  describeUpdaterRequestFailure,
   reduceDesktopUpdateStateOnDownloadProgress,
   reduceDesktopUpdateStateOnDownloadStart,
   reduceDesktopUpdateStateOnInstallFailure,
@@ -642,9 +643,10 @@ const make = Effect.gen(function* () {
     // postpones the restart, the release it came from can be superseded by a
     // newer one or pulled entirely, and a pill that can never re-check gets
     // stuck advertising a version that no longer matters. The check runs
-    // silently in that state (no transition to "checking") so the ready pill
-    // doesn't flicker on every poll.
-    const silentCheck = state.status === "downloaded";
+    // silently while an update is downloaded (no transition to "checking")
+    // so the ready pill doesn't flicker on every poll, and a failed one
+    // leaves it ready (reduceDesktopUpdateStateOnCheckFailure).
+    const silentCheck = hasInstallableUpdate(state);
 
     yield* Ref.set(updateCheckInFlightRef, true);
     const checkedAt = yield* currentIsoTimestamp;
@@ -658,16 +660,19 @@ const make = Effect.gen(function* () {
         yield* markPrivateGitHubAuthMissingForCheck;
         return true;
       }
+      // No retry here: the next poll is one, and a downloaded update stays
+      // ready through a failed check.
       yield* electronUpdater.checkForUpdates;
       return true;
     }).pipe(
       Effect.catch(
         Effect.fn("desktop.updates.handleCheckForUpdatesFailure")(function* (error) {
+          const message = describeUpdaterRequestFailure(error.cause, error.message);
           const failedAt = yield* currentIsoTimestamp;
           yield* updateState((current) =>
-            reduceDesktopUpdateStateOnCheckFailure(current, error.message, failedAt),
+            reduceDesktopUpdateStateOnCheckFailure(current, message, failedAt),
           );
-          yield* logUpdaterError("failed to check for updates", { message: error.message });
+          yield* logUpdaterError("failed to check for updates", { message });
           return true;
         }),
       ),
@@ -699,7 +704,7 @@ const make = Effect.gen(function* () {
       // A release file's server hiccups now and then; one more try usually gets it.
       yield* electronUpdater.downloadUpdate.pipe(
         Effect.catch((error) =>
-          classifyUpdateDownloadFailure(error.cause) === "other"
+          classifyUpdaterRequestFailure(error.cause) === "other"
             ? Effect.fail(error)
             : logUpdaterInfo("download failed, trying once more").pipe(
                 Effect.andThen(Effect.sleep(UPDATE_DOWNLOAD_RETRY_DELAY)),
@@ -715,7 +720,7 @@ const make = Effect.gen(function* () {
     }).pipe(
       Effect.catch(
         Effect.fn("desktop.updates.handleDownloadFailure")(function* (error) {
-          const message = describeUpdateDownloadFailure(error.cause, error.message);
+          const message = describeUpdaterRequestFailure(error.cause, error.message);
           yield* updateState((current) =>
             reduceDesktopUpdateStateOnDownloadFailure(current, message),
           );
@@ -732,7 +737,7 @@ const make = Effect.gen(function* () {
     if (
       (yield* Ref.get(desktopState.quitting)) ||
       !(yield* Ref.get(updaterConfiguredRef)) ||
-      state.status !== "downloaded"
+      !hasInstallableUpdate(state)
     ) {
       return { accepted: false, completed: false };
     }
@@ -799,13 +804,16 @@ const make = Effect.gen(function* () {
             return;
           }
 
-          if (state.status === "downloaded" && state.downloadedVersion === info.version) {
+          if (state.downloadedVersion === info.version) {
             // The downloaded update is still the latest; keep the ready pill
             // exactly as it is instead of restarting the cycle for the same
-            // bits.
+            // bits, or bring it back if an error had replaced it.
             yield* logUpdaterInfo("downloaded update is still the latest", {
               version: info.version,
             });
+            if (state.status !== "downloaded") {
+              yield* setState(reduceDesktopUpdateStateOnDownloadComplete(state, info.version));
+            }
             return;
           }
 
@@ -845,6 +853,15 @@ const make = Effect.gen(function* () {
     error: unknown,
   ) {
     const message = error instanceof Error ? error.message : String(error);
+    // While a check runs, an error is the check's, and its own failure
+    // handler sets the state. That holds after Restart has begun too: a
+    // background check failing mid-restart must not pass for a failed
+    // install and undo the restart's guards.
+    if (yield* Ref.get(updateCheckInFlightRef)) {
+      yield* logUpdaterError("updater error", { message });
+      return;
+    }
+
     if (yield* Ref.get(updateInstallInFlightRef)) {
       yield* Ref.set(updateInstallInFlightRef, false);
       yield* Ref.set(desktopState.quitting, false);
@@ -853,7 +870,7 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    if (!(yield* Ref.get(updateCheckInFlightRef)) && !(yield* Ref.get(updateDownloadInFlightRef))) {
+    if (!(yield* Ref.get(updateDownloadInFlightRef))) {
       const errorContext = yield* resolveUpdaterErrorContext;
       const checkedAt = yield* currentIsoTimestamp;
       yield* updateState((current) => ({

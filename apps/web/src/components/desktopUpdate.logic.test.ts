@@ -9,6 +9,7 @@ import {
   getDesktopUpdateActionError,
   getDesktopUpdateButtonTooltip,
   getDesktopUpdateInstallConfirmationMessage,
+  getDesktopUpdateInstallRefusal,
   getDesktopUpdateStatusLine,
   getSidebarDesktopUpdateTagPresentation,
   isDesktopUpdateActionKindDisabled,
@@ -188,6 +189,24 @@ describe("getDesktopUpdateActionError", () => {
       },
     };
     expect(getDesktopUpdateActionError(result)).toBeNull();
+  });
+});
+
+describe("getDesktopUpdateInstallRefusal", () => {
+  it("explains a refused Restart, unless the app is already restarting", () => {
+    const refused = (state: DesktopUpdateState): DesktopUpdateActionResult => ({
+      accepted: false,
+      completed: false,
+      state,
+    });
+    expect(getDesktopUpdateInstallRefusal(refused({ ...baseState, status: "up-to-date" }))).toBe(
+      "That update isn't ready to install anymore.",
+    );
+    expect(
+      getDesktopUpdateInstallRefusal(
+        refused({ ...baseState, status: "downloaded", downloadedVersion: "1.1.0" }),
+      ),
+    ).toBeNull();
   });
 });
 

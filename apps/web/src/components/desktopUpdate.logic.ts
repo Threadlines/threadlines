@@ -109,6 +109,15 @@ export function getDesktopUpdateActionError(result: DesktopUpdateActionResult): 
   return message.length > 0 ? message : null;
 }
 
+/**
+ * Why the app turned a Restart down, for the toast. Null when it took it, or
+ * when the update is still downloaded: then the app is already restarting.
+ */
+export function getDesktopUpdateInstallRefusal(result: DesktopUpdateActionResult): string | null {
+  if (result.accepted || result.state.downloadedVersion !== null) return null;
+  return "That update isn't ready to install anymore.";
+}
+
 export function shouldHighlightDesktopUpdateError(state: DesktopUpdateState | null): boolean {
   if (!state) return false;
   return state.errorContext === "download" || state.errorContext === "install";
