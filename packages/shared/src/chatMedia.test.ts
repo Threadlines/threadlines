@@ -86,6 +86,7 @@ describe("on long runs of one character", () => {
     const started = performance.now();
     resolveMessagePicturePath("shot.png", `/repo${"/".repeat(100_000)}`);
     extractMessagePictures(`See /tmp/shot.png${")".repeat(100_000)}`);
+    extractMessagePictures(`${"$$"}${" ".repeat(100_000)}x${"$$"}`);
     expect(performance.now() - started).toBeLessThan(1_000);
   });
 });
