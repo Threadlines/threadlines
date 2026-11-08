@@ -384,8 +384,18 @@ const PAGES = [
     id: "settings.general",
     kind: "page",
     title: "General",
-    about: "How Threadlines looks, how chats show, and this computer.",
+    about: "How chats and diffs show, the terminal, dictation, and this computer.",
     route: { to: "/settings/general" },
+  },
+  {
+    id: "settings.appearance",
+    kind: "page",
+    title: "Appearance",
+    about: "Themes, glass and motion. Each device picks its own.",
+    route: { to: "/settings/appearance" },
+    keywords: ["themes", "dark mode", "light mode", "colors", "look"],
+    // Everything on it is the app's own, so a link opens it here from any thread.
+    scope: "device",
   },
   {
     id: "settings.threads",
@@ -517,20 +527,12 @@ const SECTIONS = [
     keywords: ["notifications", "push"],
   },
   {
-    id: "general.appearance",
-    kind: "section",
-    parent: "settings.general",
-    title: "Appearance",
-    about: "Theme, its live art, and time format.",
-    scope: "device",
-    keywords: ["dark mode", "light mode", "themes"],
-  },
-  {
     id: "general.chatAndDiffs",
     kind: "section",
     parent: "settings.general",
     title: "Chat & diffs",
-    about: "How replies stream, how changed files show in the chat, and how diffs wrap.",
+    about:
+      "How replies stream, how times read, how changed files show in the chat, and how diffs wrap.",
   },
   {
     id: "general.terminal",
@@ -563,6 +565,17 @@ const SECTIONS = [
     title: "Privacy & about",
     about: "The app's version and update track, usage analytics, and diagnostics.",
     keywords: ["version", "update", "nightly", "stable"],
+  },
+  // Appearance
+  {
+    id: "appearance.themes",
+    kind: "section",
+    parent: "settings.appearance",
+    title: "Themes",
+    about:
+      "Every theme this device can wear: your own, the starters and the built-in ones, with Glass and Motion for their art.",
+    scope: "device",
+    keywords: ["dark mode", "light mode", "gallery", "custom theme"],
   },
   // Keybindings
   {
@@ -916,11 +929,11 @@ const ROWS = [
     scope: "device",
     edit: editableAlert("quietAtComputer"),
   },
-  // General › Appearance
+  // Appearance › Themes
   {
-    id: "general.theme",
+    id: "appearance.theme",
     kind: "row",
-    parent: "general.appearance",
+    parent: "appearance.themes",
     title: "Theme",
     about:
       "How Threadlines looks: built in, a starter, or a theme you or an agent made. Each device picks its own.",
@@ -939,9 +952,9 @@ const ROWS = [
     edit: { lands: "device", control: { kind: "theme" }, store: "theme" },
   },
   {
-    id: "general.themeGlass",
+    id: "appearance.glass",
     kind: "row",
-    parent: "general.appearance",
+    parent: "appearance.themes",
     title: "Glass",
     about:
       "How much of a theme's art shows through the glass on every page. Text stays readable, a little lighter toward Clear.",
@@ -965,9 +978,9 @@ const ROWS = [
     },
   },
   {
-    id: "general.themeMotion",
+    id: "appearance.motion",
     kind: "row",
-    parent: "general.appearance",
+    parent: "appearance.themes",
     title: "Motion",
     about: "Whether a theme's art moves. Still shows one frame of it.",
     keywords: ["animation", "reduce motion", "battery", "backdrop"],
@@ -980,10 +993,20 @@ const ROWS = [
       patch: (value) => ({ themeMotion: value as ThemeMotion }),
     },
   },
+  // General › Chat & diffs (on a phone, Stream replies sits under This computer)
+  {
+    id: "general.streamReplies",
+    kind: "row",
+    parent: "general.chatAndDiffs",
+    title: "Stream replies",
+    about: "Show the agent's reply while it's being written.",
+    keywords: ["streaming"],
+    ...editableServerSwitch("enableAssistantStreaming"),
+  },
   {
     id: "general.timeFormat",
     kind: "row",
-    parent: "general.appearance",
+    parent: "general.chatAndDiffs",
     title: "Time format",
     about: "System default follows your computer's clock setting.",
     keywords: ["12-hour", "24-hour", "clock"],
@@ -995,16 +1018,6 @@ const ROWS = [
       read: (settings) => settings.timestampFormat,
       patch: (value) => ({ timestampFormat: value as TimestampFormat }),
     },
-  },
-  // General › Chat & diffs (on a phone, Stream replies sits under This computer)
-  {
-    id: "general.streamReplies",
-    kind: "row",
-    parent: "general.chatAndDiffs",
-    title: "Stream replies",
-    about: "Show the agent's reply while it's being written.",
-    keywords: ["streaming"],
-    ...editableServerSwitch("enableAssistantStreaming"),
   },
   {
     id: "general.changedFilesInChat",
@@ -1779,6 +1792,26 @@ const PLACE_BY_ID: ReadonlyMap<string, AppPlaceSpec> = new Map(
 
 export const isPlaceId = (value: string): value is PlaceId => PLACE_BY_ID.has(value);
 
+/**
+ * Ids places had before they moved, so what was saved under an old id still
+ * finds its place: a settings-change card still waiting in a thread, a place
+ * link in an agent's reply. Add one whenever a place is renamed or moved;
+ * never take one out.
+ */
+const MOVED_PLACES: ReadonlyMap<string, PlaceId> = new Map([
+  // November 2026: themes left General for their own Appearance page.
+  ["general.appearance", "settings.appearance"],
+  ["general.theme", "appearance.theme"],
+  ["general.themeGlass", "appearance.glass"],
+  ["general.themeMotion", "appearance.motion"],
+]);
+
+/** The place an id names now, following moves; null for an id this build doesn't know. */
+export function currentPlaceId(value: string): PlaceId | null {
+  const id = value.trim();
+  return isPlaceId(id) ? id : (MOVED_PLACES.get(id) ?? null);
+}
+
 /** A place by id; every PlaceId has one. */
 export function placeById(id: PlaceId): AppPlaceSpec {
   return PLACE_BY_ID.get(id)!;
@@ -1835,8 +1868,7 @@ export const placeHref = (id: PlaceId): string => `${PLACE_HREF_SCHEME}${id}`;
 /** The place a `threadlines-place:` href names, or null (another scheme, or an id this build doesn't know). */
 export function placeIdFromHref(href: string): PlaceId | null {
   if (!href.startsWith(PLACE_HREF_SCHEME)) return null;
-  const id = href.slice(PLACE_HREF_SCHEME.length).trim();
-  return isPlaceId(id) ? id : null;
+  return currentPlaceId(href.slice(PLACE_HREF_SCHEME.length));
 }
 
 /** The markdown link an agent puts in its reply: the place's path, opening the place. */

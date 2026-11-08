@@ -69,6 +69,8 @@ import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSna
 import { ProjectionThreadPageRepository } from "../persistence/Services/ProjectionThreadPages.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { themeProblems, ThemeWorkshop } from "../themes/ThemeWorkshop.ts";
+import { themeAnalyticsProperties } from "../telemetry/AnalyticsProperties.ts";
+import { AnalyticsService } from "../telemetry/Services/AnalyticsService.ts";
 import {
   type PageStoreError,
   ensurePageAssetsDir,
@@ -286,6 +288,7 @@ const make = Effect.gen(function* () {
   const settings = yield* ServerSettingsService;
   const previews = yield* PagePreview;
   const workshop = yield* ThemeWorkshop;
+  const analytics = yield* AnalyticsService;
 
   const pending = new Set<string>();
   // One publish at a time per page, so versions are numbered in the order
@@ -645,7 +648,18 @@ const make = Effect.gen(function* () {
           stillStands: (still) =>
             (still.session?.participantId ?? null) === participantId &&
             still.session?.activeTurnId === turnId,
-        }),
+        }).pipe(
+          // Counted once it is in the chat; a new version of one already shown says so.
+          Effect.tap((result) =>
+            result.outcome === "shown"
+              ? analytics.record("theme.offered", {
+                  ...themeAnalyticsProperties(manifest),
+                  // A blank page id asks for a new page, as pageIdFor reads it.
+                  revised: (input.pageId?.trim() ?? "") !== "",
+                })
+              : Effect.void,
+          ),
+        ),
       );
     }).pipe(
       Effect.catchTag("PageStoreError", (error) =>

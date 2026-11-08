@@ -37,6 +37,7 @@ import { buttonVariants } from "~/components/ui/button";
 import { useComposerDraftStore } from "~/composerDraftStore";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { usePageAttended } from "~/lib/pageAttention";
+import { useRightPanelInsetStyle } from "~/mainAreaLayout";
 import { resolveThreadRouteTarget } from "~/threadRoutes";
 import { useNoticesRaisedAboveBackdrops } from "./noticeLayer";
 import {
@@ -750,6 +751,7 @@ function Toasts({ position = "top-right" }: { position: ToastPosition }) {
   );
   const visibleToastLayout = buildVisibleToastLayout(visibleToasts);
   const raisedAboveBackdrops = useNoticesRaisedAboveBackdrops();
+  const rightPanelInsetStyle = useRightPanelInsetStyle();
   const windowInFront = usePageAttended();
   const hiddenForThread = toasts.filter(
     (toast) =>
@@ -800,8 +802,9 @@ function Toasts({ position = "top-right" }: { position: ToastPosition }) {
           "data-[position*=bottom]:bottom-(--toast-inset)",
           // Horizontal positioning. Right-anchored toasts sit beside the open
           // right panel rather than on top of it: the panel publishes its width
-          // as `--right-panel-inset` (0px when closed) because this viewport is
-          // fixed to the viewport and the layout cannot push it aside.
+          // (mainAreaLayout.ts, carried here as `--right-panel-inset`, 0px when
+          // closed) because this viewport is fixed to the window and the
+          // layout cannot push it aside.
           "data-[position*=left]:left-(--toast-inset)",
           "data-[position*=right]:right-[calc(var(--toast-inset)+var(--right-panel-inset,0px))]",
           "data-[position*=center]:-translate-x-1/2 data-[position*=center]:left-1/2",
@@ -818,6 +821,7 @@ function Toasts({ position = "top-right" }: { position: ToastPosition }) {
         )}
         style={
           {
+            ...rightPanelInsetStyle,
             "--toast-frontmost-height": `${visibleToastLayout.frontmostHeight}px`,
           } as CSSProperties
         }

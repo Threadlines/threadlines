@@ -65,7 +65,7 @@ describe("isThreadDetailEvent", () => {
           requestId,
           participantId: null,
           turnId: TurnId.make("turn-1"),
-          changes: [{ place: "general.theme", value: "light" }],
+          changes: [{ place: "appearance.theme", value: "light" }],
           status: "waiting",
           createdAt: at,
           noted: false,
@@ -86,7 +86,7 @@ describe("isThreadDetailEvent", () => {
       makeThreadEvent("thread.settings-change-device-reported", {
         threadId,
         requestId,
-        device: { applied: ["general.theme"], failed: [] },
+        device: { applied: ["appearance.theme"], failed: [] },
         reportedAt: at,
       }),
       makeThreadEvent("thread.settings-change-notes-delivered", {

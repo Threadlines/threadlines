@@ -476,7 +476,7 @@ describe("other steps", () => {
       routine: true,
       label: "Looked it up in the Threadlines guide",
     });
-    expect(room("threadlines_room.settings_change: place=general.theme")).toMatchObject({
+    expect(room("threadlines_room.settings_change: place=appearance.theme")).toMatchObject({
       routine: false,
       label: "Asked to change settings",
       liveLabel: "Asking to change settings",

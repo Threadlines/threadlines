@@ -5,6 +5,7 @@ import {
   AlertsOnThisDeviceRow,
   AlertsQuietAtComputerRow,
 } from "../../pushAlerts/PushAlertsSettings";
+import { ThemeGlassRow, ThemeMotionRow } from "../theme/ui/ThemeSettingsRows";
 import { KeepAwakeForScheduledTasksRow, RunInBackgroundRow } from "./DesktopBackgroundRows";
 import { DownloadedModelsRow, HoldToRecordRow, SpeechModelRow } from "./DictationSettings";
 import type { SettingsRowPlaceId } from "./settingsPlaceAvailability";
@@ -25,9 +26,6 @@ import {
   PreventSleepRow,
   TerminalScreenReaderRow,
   TerminalTextSizeRow,
-  ThemeGlassRow,
-  ThemeMotionRow,
-  ThemeRow,
   TimeFormatRow,
   UpdateTrackRow,
   UsageAnalyticsRow,
@@ -92,11 +90,8 @@ export const SETTINGS_ROWS = {
   "general.alertFinished": live(() => <AlertKindRow kind="finished" />),
   "general.alertFailed": live(() => <AlertKindRow kind="failed" />),
   "general.alertsQuietAtComputer": live(AlertsQuietAtComputerRow),
-  "general.theme": live(ThemeRow),
-  "general.themeGlass": live(ThemeGlassRow),
-  "general.themeMotion": live(ThemeMotionRow),
-  "general.timeFormat": live(TimeFormatRow),
   "general.streamReplies": live(AssistantStreamingRow),
+  "general.timeFormat": live(TimeFormatRow),
   "general.changedFilesInChat": live(ChangedFilesInChatRow),
   "general.agentsPanel": live(AgentsPanelRow),
   "general.wrapDiffLines": live(WrapDiffLinesRow),
@@ -121,6 +116,10 @@ export const SETTINGS_ROWS = {
   "general.diagnostics": live(DiagnosticsRow),
   "general.reportProblem": live(ReportProblemRow),
   "general.phoneSettings": live(PhoneSettingsRow),
+  // Appearance: the gallery's filter and dialogs are the page's, so a result opens it.
+  "appearance.theme": LINK,
+  "appearance.glass": live(ThemeGlassRow),
+  "appearance.motion": live(ThemeMotionRow),
   // Threads
   "threads.agent": live(NewThreadAgentRow),
   "threads.room": live(NewThreadRoomRow),

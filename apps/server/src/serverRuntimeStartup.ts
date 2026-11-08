@@ -35,6 +35,7 @@ import { AssistantEvents } from "./assistants/AssistantEvents.ts";
 import { PushAlerts } from "./pushAlerts/PushAlerts.ts";
 import { ScheduledTasks } from "./scheduled/ScheduledTasks.ts";
 import { ThreadAutoArchiveSweeper } from "./orchestration/Services/ThreadAutoArchiveSweeper.ts";
+import { ProjectMedia } from "./media/ProjectMedia.ts";
 import { ContinueAtResetSweeper } from "./orchestration/Services/ContinueAtResetSweeper.ts";
 import { PullRequestAutomationWatcher } from "./orchestration/Services/PullRequestAutomationWatcher.ts";
 import { ThreadPullRequestLinker } from "./orchestration/Services/ThreadPullRequestLinker.ts";
@@ -48,6 +49,7 @@ import { ServerAuth } from "./auth/Services/ServerAuth.ts";
 import { ProviderSessionReaper } from "./provider/Services/ProviderSessionReaper.ts";
 import { ProviderService } from "./provider/Services/ProviderService.ts";
 import { SleepInhibitor } from "./power/Services/SleepInhibitor.ts";
+import { ThemeLibrary } from "./themes/ThemeLibrary.ts";
 import {
   formatHeadlessServeOutput,
   issueHeadlessServeAccessInfo,
@@ -140,6 +142,7 @@ export const makeCommandGate = Effect.gen(function* () {
 export const recordStartupHeartbeat = Effect.gen(function* () {
   const analytics = yield* AnalyticsService;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+  const themeLibrary = yield* ThemeLibrary;
 
   const { threadCount, projectCount } = yield* projectionSnapshotQuery.getCounts().pipe(
     Effect.catch((cause) =>
@@ -154,9 +157,20 @@ export const recordStartupHeartbeat = Effect.gen(function* () {
     ),
   );
 
+  // Themes kept in this computer's library, deleted ones left out.
+  const savedThemeCount = yield* themeLibrary.snapshot.pipe(
+    Effect.map(({ entries }) => entries.filter((entry) => !entry.deleted).length),
+    Effect.catch((cause) =>
+      Effect.logWarning("failed to count saved themes for telemetry", { cause }).pipe(
+        Effect.as(null),
+      ),
+    ),
+  );
+
   yield* analytics.record("server.boot.heartbeat", {
     threadCount,
     projectCount,
+    savedThemeCount,
   });
 });
 
@@ -351,6 +365,7 @@ export const makeServerRuntimeStartup = Effect.gen(function* () {
   const threadPullRequestLinker = yield* ThreadPullRequestLinker;
   const automaticGitFetchSupervisor = yield* AutomaticGitFetchSupervisor;
   const sleepInhibitor = yield* SleepInhibitor;
+  const projectMedia = yield* ProjectMedia;
   const lifecycleEvents = yield* ServerLifecycleEvents;
   const serverSettings = yield* ServerSettingsService;
   const serverEnvironment = yield* ServerEnvironment;
@@ -434,6 +449,8 @@ export const makeServerRuntimeStartup = Effect.gen(function* () {
         yield* threadPullRequestLinker.start().pipe(Scope.provide(reactorScope));
         yield* automaticGitFetchSupervisor.start().pipe(Scope.provide(reactorScope));
         yield* sleepInhibitor.start().pipe(Scope.provide(reactorScope));
+        // Older chats' pictures for the Media tab, a little at a time.
+        yield* projectMedia.startChatBackfill().pipe(Scope.provide(reactorScope));
       }),
     );
 

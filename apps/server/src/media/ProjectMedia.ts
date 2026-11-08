@@ -9,12 +9,17 @@
  * translated here and files outside the folder (or gone from disk) are left
  * out. Timed on a real history (527 threads, ~4,800 turns): ~150 ms cold.
  *
+ * With `includeChat` it also lists what was shared in chat (chatMediaListing),
+ * and it starts the one background pass that indexes older chats for that.
+ *
  * @module ProjectMedia
  */
 import {
   type OrchestrationListProjectMediaInput,
   type OrchestrationListProjectMediaResult,
   OrchestrationProjectMediaEntry,
+  type OrchestrationReadChatMediaInput,
+  type OrchestrationReadChatMediaResult,
   type ProjectRevisionFileResult,
   type VcsReadRepositoryFileInput,
 } from "@threadlines/contracts";
@@ -25,6 +30,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import type * as Scope from "effect/Scope";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlSchema from "effect/sql/SqlSchema";
 
@@ -38,6 +44,8 @@ import {
 } from "./projectMediaFold.ts";
 import { fileVersionOf } from "../workspace/fileVersion.ts";
 import { readRevisionFileResult } from "./revisionFile.ts";
+import { makeChatMediaListing } from "./chatMediaListing.ts";
+import { runThreadMediaBackfill } from "./ThreadMediaBackfill.ts";
 
 /** Entries past this many (oldest first) are left off and `truncated` set. */
 export const PROJECT_MEDIA_MAX_ENTRIES = 2_000;
@@ -63,6 +71,12 @@ export interface ProjectMediaShape {
   readonly readRepositoryFile: (
     input: VcsReadRepositoryFileInput,
   ) => Effect.Effect<ProjectRevisionFileResult, ProjectMediaError>;
+  /** The bytes of a picture shown inline in a chat (a tool's screenshot). */
+  readonly readChatMedia: (
+    input: OrchestrationReadChatMediaInput,
+  ) => Effect.Effect<OrchestrationReadChatMediaResult, ProjectMediaError>;
+  /** Index older chats' pictures in the background, once; see ThreadMediaBackfill. */
+  readonly startChatBackfill: () => Effect.Effect<void, never, Scope.Scope>;
 }
 
 export class ProjectMedia extends Context.Service<ProjectMedia, ProjectMediaShape>()(
@@ -120,6 +134,7 @@ const make = Effect.gen(function* () {
   const vcsRegistry = yield* VcsDriverRegistry;
   const checkpointStore = yield* CheckpointStore;
   const workspaceFileSystem = yield* WorkspaceFileSystem;
+  const chatMedia = yield* makeChatMediaListing;
 
   const listRows = SqlSchema.findAll({
     Request: ListRequest,
@@ -254,7 +269,7 @@ const make = Effect.gen(function* () {
       const seen = new Set<string>();
       const entries: unknown[] = [];
       for (const entry of newestFirst) {
-        const key = path.join(entry.cwd, entry.relativePath);
+        const key = path.resolve(entry.cwd, entry.relativePath);
         if (seen.has(key)) {
           continue;
         }
@@ -264,10 +279,20 @@ const make = Effect.gen(function* () {
       // The rows carry plain strings; decoding brands them, and a row the
       // projection holds in some unexpected shape fails here, loudly.
       const decoded = yield* decodeEntries(entries.slice(0, PROJECT_MEDIA_MAX_ENTRIES));
-      return {
+      const files = {
         entries: decoded,
         truncated: entries.length > PROJECT_MEDIA_MAX_ENTRIES,
       } satisfies OrchestrationListProjectMediaResult;
+      if (input.includeChat !== true) {
+        return files;
+      }
+      const shared = yield* chatMedia.listChatMedia({
+        projectId: input.projectId,
+        threadId: input.threadId ?? null,
+        // Only what this listing shows: a file past its cap still shows in chat.
+        projectFiles: new Set(decoded.map((entry) => path.resolve(entry.cwd, entry.relativePath))),
+      });
+      return { ...files, ...shared } satisfies OrchestrationListProjectMediaResult;
     },
     Effect.mapError(
       (cause) =>
@@ -333,7 +358,31 @@ const make = Effect.gen(function* () {
     ),
   );
 
-  return { listProjectMedia, readRepositoryFile } satisfies ProjectMediaShape;
+  const readChatMedia: ProjectMediaShape["readChatMedia"] = (input) =>
+    chatMedia.readChatMedia(input).pipe(
+      Effect.mapError(
+        (cause) =>
+          new ProjectMediaError({
+            operation: "ProjectMedia.readChatMedia",
+            detail: "Could not read this picture.",
+            cause,
+          }),
+      ),
+    );
+
+  const startChatBackfill: ProjectMediaShape["startChatBackfill"] = () =>
+    runThreadMediaBackfill(sql).pipe(
+      Effect.catchCause((cause) => Effect.logWarning("media.chat-backfill.failed", { cause })),
+      Effect.forkScoped,
+      Effect.asVoid,
+    );
+
+  return {
+    listProjectMedia,
+    readRepositoryFile,
+    readChatMedia,
+    startChatBackfill,
+  } satisfies ProjectMediaShape;
 });
 
 export const ProjectMediaLive = Layer.effect(ProjectMedia, make);

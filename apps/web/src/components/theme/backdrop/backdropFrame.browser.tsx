@@ -11,6 +11,17 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 // The backdrop frame (packages/shared themes/backdropRuntime.ts) driven by hand,
 // the way ThemeBackdropHost drives it, with its test hooks on.
 
+/**
+ * Waits on the frame. It answers a probe between frames, and on a busy CI
+ * machine's software GPU, more so while `test:capture-shown` reads pixels
+ * back every frame, one frame can outlast vi.waitFor's 1 s default. Waits
+ * that already allow longer keep their own.
+ */
+const waitForFrame = <T,>(
+  callback: () => T | Promise<T>,
+  options?: { readonly timeout?: number; readonly interval?: number },
+) => vi.waitFor(callback, { timeout: 5_000, interval: 50, ...options });
+
 type Message = Record<string, unknown> & { type: string };
 interface Probe {
   tints: Record<string, number>;
@@ -64,13 +75,13 @@ async function mountFrame() {
   };
   window.addEventListener("message", onMessage);
   document.body.appendChild(frame);
-  await vi.waitFor(() => expect(messages.some((message) => message.type === "ready")).toBe(true));
+  await waitForFrame(() => expect(messages.some((message) => message.type === "ready")).toBe(true));
   const post = (message: Record<string, unknown>) => frame.contentWindow?.postMessage(message, "*");
   /** The frame's state; `measure` also reads back each zone's frost box and tint (a GPU wait). */
   const probe = async (measure = false) => {
     const before = messages.length;
     post({ type: "test:probe", measure });
-    return vi.waitFor(() => {
+    return waitForFrame(() => {
       const found = messages.slice(before).find((message) => message.type === "test:probe");
       if (!found) throw new Error("no probe answer yet");
       return found as unknown as Probe;
@@ -101,7 +112,7 @@ async function mountFrame() {
     post({ type: "conditions", conditions: LIVE });
   };
   const failure = (timeout = 8_000) =>
-    vi.waitFor(
+    waitForFrame(
       () => {
         const found = messages.find((message) => message.type === "failure");
         if (!found) throw new Error("no failure yet");
@@ -110,7 +121,7 @@ async function mountFrame() {
       { timeout, interval: 50 },
     );
   const framesAbove = (count: number) =>
-    vi.waitFor(
+    waitForFrame(
       async () => {
         const answer = await probe();
         expect(answer.drawnFrames).toBeGreaterThan(count);
@@ -162,7 +173,7 @@ describe("backdrop frame", () => {
       `threadlines.backdrop({ mode: "grid", cell: { width: 10, height: 14 }, glyphs: " #",
         draw() { const end = performance.now() + 2500; while (performance.now() < end) {} } });`,
     );
-    await vi.waitFor(async () => expect((await mounted!.probe()).ticks).toBeGreaterThan(0));
+    await waitForFrame(async () => expect((await mounted!.probe()).ticks).toBeGreaterThan(0));
     let worst = 0;
     for (let round = 0; round < 30; round++) {
       const asked = performance.now();
@@ -202,7 +213,7 @@ describe("backdrop frame", () => {
     mounted.start("grid", GRID_ART, [COLUMN]);
     await mounted.framesAbove(3);
     mounted.post({ type: "conditions", conditions: { ...LIVE, visible: false } });
-    await vi.waitFor(async () => expect((await mounted!.probe()).workerAlive).toBe(false));
+    await waitForFrame(async () => expect((await mounted!.probe()).workerAlive).toBe(false));
     const paused = await mounted.probe();
     await sleep(500);
     const later = await mounted.probe();
@@ -211,7 +222,7 @@ describe("backdrop frame", () => {
 
     // Zones still update while paused: the kept frame is measured again.
     mounted.post({ type: "zones", zones: [{ ...COLUMN, id: "composer" }] });
-    await vi.waitFor(async () =>
+    await waitForFrame(async () =>
       expect(Object.keys((await mounted!.probe()).tints)).toEqual(["composer"]),
     );
 
@@ -244,7 +255,7 @@ describe("backdrop frame", () => {
     );
     await mounted.framesAbove(4);
     mounted.post({ type: "conditions", conditions: { ...LIVE, visible: false } });
-    await vi.waitFor(async () => expect((await mounted!.probe()).workerAlive).toBe(false));
+    await waitForFrame(async () => expect((await mounted!.probe()).workerAlive).toBe(false));
     const paused = await mounted.probe();
     // A minute-long fade: however slow the machine, the checks below land in
     // its first part. The test ends it on purpose further down.
@@ -261,13 +272,13 @@ describe("backdrop frame", () => {
     // Held still mid-fade (the user drags a divider), the fade holds too:
     // even cut short to end at once, it waits for the art to run again.
     mounted.post({ type: "conditions", conditions: { ...LIVE, busy: true } });
-    await vi.waitFor(async () => expect((await mounted!.probe()).state).toBe("hold"));
+    await waitForFrame(async () => expect((await mounted!.probe()).state).toBe("hold"));
     mounted.post({ type: "test:fade-ms", ms: 1 });
     await sleep(500);
     expect((await mounted.probe()).fading).toBe(true);
 
     mounted.post({ type: "conditions", conditions: LIVE });
-    await vi.waitFor(async () => expect((await mounted!.probe()).fading).toBe(false), {
+    await waitForFrame(async () => expect((await mounted!.probe()).fading).toBe(false), {
       timeout: 8_000,
       interval: 100,
     });
@@ -303,7 +314,7 @@ describe("backdrop frame", () => {
     expect(first.fading).toBe(true);
     expect((await mounted.probe()).shown.column?.high).toBeGreaterThan(0.25);
     mounted.post({ type: "test:fade-ms", ms: 1 });
-    await vi.waitFor(async () => expect((await mounted!.probe()).fading).toBe(false), {
+    await waitForFrame(async () => expect((await mounted!.probe()).fading).toBe(false), {
       timeout: 6_000,
       interval: 100,
     });
@@ -315,7 +326,7 @@ describe("backdrop frame", () => {
     mounted.start("grid", GRID_ART, [COLUMN]);
     mounted.post({ type: "conditions", conditions: { ...LIVE, motion: "still" } });
     const first = await mounted.framesAbove(0);
-    await vi.waitFor(async () => expect((await mounted!.probe()).workerAlive).toBe(false));
+    await waitForFrame(async () => expect((await mounted!.probe()).workerAlive).toBe(false));
     const standing = await mounted.probe();
     await sleep(600);
     // No more frames, and no worker: one frame, standing.
@@ -327,7 +338,7 @@ describe("backdrop frame", () => {
     // A new window size: one new frame for it, then it stands again.
     mounted.post({ type: "viewport", width: 700, height: 450, dpr: window.devicePixelRatio || 1 });
     const resized = await mounted.framesAbove(later.drawnFrames);
-    await vi.waitFor(async () => expect((await mounted!.probe()).workerAlive).toBe(false));
+    await waitForFrame(async () => expect((await mounted!.probe()).workerAlive).toBe(false));
     await sleep(400);
     expect((await mounted.probe()).drawnFrames).toBeLessThanOrEqual(resized.drawnFrames + 1);
 
@@ -347,7 +358,7 @@ describe("backdrop frame", () => {
         draw() { const end = performance.now() + 700; while (performance.now() < end) {} } });`,
     );
     mounted.post({ type: "conditions", conditions: { ...LIVE, focused: true } });
-    await vi.waitFor(async () => expect((await mounted!.probe()).throttle).toBeGreaterThan(0), {
+    await waitForFrame(async () => expect((await mounted!.probe()).throttle).toBeGreaterThan(0), {
       timeout: 8_000,
       interval: 50,
     });
@@ -364,7 +375,7 @@ describe("backdrop frame", () => {
       `threadlines.backdrop({ mode: "grid", cell: { width: 10, height: 14 }, glyphs: " #",
         draw() { Promise.resolve().then(() => { const end = performance.now() + 30; while (performance.now() < end) {} }); } });`,
     );
-    await vi.waitFor(async () => expect((await mounted!.probe()).throttle).toBeGreaterThan(0), {
+    await waitForFrame(async () => expect((await mounted!.probe()).throttle).toBeGreaterThan(0), {
       timeout: 12_000,
       interval: 250,
     });
@@ -394,7 +405,7 @@ describe("backdrop frame", () => {
       textColors: texts.map((text) => text.color),
       textRatios: texts.map(() => 4.5),
     });
-    await vi.waitFor(async () =>
+    await waitForFrame(async () =>
       expect((await mounted!.probe(true)).tints.column).toBeGreaterThan(0.5),
     );
     const after = await mounted.framesAbove(before.drawnFrames + 2);
@@ -417,10 +428,13 @@ describe("backdrop frame", () => {
       [COLUMN],
     );
     mounted.post({ type: "test:capture-shown", on: true });
-    await vi.waitFor(async () => expect((await mounted!.probe(true)).boxes.column?.maxR).toBe(1), {
-      timeout: 6_000,
-      interval: 50,
-    });
+    await waitForFrame(
+      async () => expect((await mounted!.probe(true)).boxes.column?.maxR).toBe(1),
+      {
+        timeout: 6_000,
+        interval: 50,
+      },
+    );
     await mounted.framesAbove((await mounted.probe()).drawnFrames + 3);
     expectReadable((await mounted.probe()).worst.column);
   });
@@ -475,7 +489,7 @@ describe("backdrop frame", () => {
     mounted.start("grid", GRID_ART, [COLUMN]);
     // Arrow keys previewing themes keep the app busy.
     mounted.post({ type: "conditions", conditions: { ...LIVE, busy: true } });
-    const first = await vi.waitFor(
+    const first = await waitForFrame(
       () => {
         const beat = mounted!.messages.find(
           (message) => message.type === "heartbeat" && Number(message.frame) > 0,
@@ -496,7 +510,7 @@ describe("backdrop frame", () => {
     mounted = await mountFrame();
     mounted.start("grid", GRID_ART, [COLUMN]);
     mounted.post({ type: "conditions", conditions: { ...LIVE, slowdown: 2 } });
-    const stats = await vi.waitFor(
+    const stats = await waitForFrame(
       () => {
         const all = mounted!.messages.filter(
           (message) => message.type === "stats" && Number(message.fps) > 0,
@@ -600,11 +614,11 @@ describe("backdrop frame", () => {
     mounted.start("grid", GRID_ART);
     await mounted.framesAbove(2);
     mounted.post({ type: "conditions", conditions: { ...LIVE, visible: false } });
-    await vi.waitFor(async () => expect((await mounted!.probe()).workerAlive).toBe(false));
+    await waitForFrame(async () => expect((await mounted!.probe()).workerAlive).toBe(false));
     mounted.post({ type: "conditions", conditions: LIVE });
     const resumed = await mounted.framesAbove((await mounted.probe()).drawnFrames + 1);
     mounted.post({ type: "test:replay-stale" });
-    await vi.waitFor(async () =>
+    await waitForFrame(async () =>
       expect((await mounted!.probe()).staleDropped).toBeGreaterThan(resumed.staleDropped),
     );
     await mounted.framesAbove(resumed.drawnFrames + 2);

@@ -24,6 +24,7 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 import { render } from "vitest-browser-react";
 
+import { largestDrop, nextFrames, readAfterEachPaint } from "../../lib/frameProbe.browser-harness";
 import { MessagesTimeline } from "./MessagesTimeline";
 import { LIVE_REPRO_GZIP_BASE64 } from "./MessagesTimeline.live-repro.fixture";
 import {
@@ -83,10 +84,6 @@ class CrashCatcher extends Component<{ onCrash: (error: unknown) => void; childr
   }
 }
 
-function nextFrame() {
-  return new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-}
-
 /**
  * Waits for the list to finish its first layout: its scroll position and
  * content height unchanged for 300 ms. A fixed pause can end before a busy CI
@@ -98,7 +95,7 @@ async function waitForListToSettle(list: HTMLElement) {
     async () => {
       const before = [list.scrollTop, list.scrollHeight];
       await new Promise((resolve) => setTimeout(resolve, 300));
-      await nextFrame();
+      await nextFrames();
       expect([list.scrollTop, list.scrollHeight]).toEqual(before);
     },
     { timeout: 10_000 },
@@ -125,31 +122,6 @@ async function waitForRowsToSettle(list: HTMLElement) {
   } finally {
     observer.disconnect();
   }
-}
-
-/**
- * Calls `read` once per frame, after that frame is drawn: a task posted from a
- * frame's callbacks runs after the frame paints and, in Chromium, before work
- * queued while painting it. Sampling in the frame callback itself would miss a
- * bounce that a late correction undoes before the next frame. Returns a stop.
- */
-function readAfterEachPaint(read: () => void): () => void {
-  const channel = new MessageChannel();
-  channel.port1.addEventListener("message", read);
-  channel.port1.start();
-  let frame = requestAnimationFrame(function post() {
-    channel.port2.postMessage(null);
-    frame = requestAnimationFrame(post);
-  });
-  return () => {
-    cancelAnimationFrame(frame);
-    channel.port1.close();
-  };
-}
-
-/** The largest step down between consecutive positions. */
-function largestDrop(positions: ReadonlyArray<number>): number {
-  return Math.max(...positions.slice(1).map((top, index) => top - positions[index]!));
 }
 
 function assistantBodyTop(messageId: string): number {
@@ -264,27 +236,22 @@ describe("MessagesTimeline with the real virtual list", () => {
       </div>
     );
     const screen = await renderTimeline(renderList(message.text));
-    let frame = 0;
+    let stopReading = () => {};
     try {
       await new Promise((resolve) => setTimeout(resolve, 300));
       const body = document.querySelector<HTMLElement>('[data-assistant-message-body="true"]')!;
       const list = document.querySelector<HTMLElement>('[data-chat-messages-list="true"]')!;
       expect(list.scrollHeight).toBeGreaterThan(list.clientHeight);
       const positions: number[] = [];
-      const sample = () => {
-        positions.push(body.getBoundingClientRect().top);
-        frame = requestAnimationFrame(sample);
-      };
-      frame = requestAnimationFrame(sample);
+      stopReading = readAfterEachPaint(() => positions.push(body.getBoundingClientRect().top));
       for (let length = 15; length <= 900; length += 15) {
         await screen.rerender(renderList(message.text + sentence.repeat(12).slice(0, length)));
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
       await new Promise((resolve) => setTimeout(resolve, 200));
-      cancelAnimationFrame(frame);
-      const downwardSteps = positions.slice(1).map((top, index) => top - positions[index]!);
+      stopReading();
       expect(
-        Math.max(...downwardSteps),
+        largestDrop(positions),
         "new lines must not make earlier text bounce down",
       ).toBeLessThanOrEqual(1);
       expect(positions.at(-1)).toBeLessThan(positions[0]! - 100);
@@ -300,7 +267,7 @@ describe("MessagesTimeline with the real virtual list", () => {
       await new Promise((resolve) => setTimeout(resolve, 500));
       expect(Math.abs(body.getBoundingClientRect().top - readingTop)).toBeLessThanOrEqual(1);
     } finally {
-      cancelAnimationFrame(frame);
+      stopReading();
       await screen.unmount();
     }
   });
@@ -349,7 +316,7 @@ describe("MessagesTimeline with the real virtual list", () => {
       );
 
       await screen.rerender(renderList(true, 1500, true));
-      await nextFrame();
+      await nextFrames();
       await screen.rerender(renderList(true, 1501, true));
       await new Promise((resolve) => setTimeout(resolve, 200));
       expect(crashes).toEqual([]);
@@ -415,8 +382,7 @@ describe("MessagesTimeline with the real virtual list", () => {
     const streamChunk = async () => {
       text += sentence;
       await screen.rerender(renderList(text));
-      await nextFrame();
-      await nextFrame();
+      await nextFrames(2);
     };
     try {
       await new Promise((resolve) => setTimeout(resolve, 300));
@@ -433,7 +399,7 @@ describe("MessagesTimeline with the real virtual list", () => {
 
       dispatchTouch(list, "touchmove", 220);
       list.scrollTop -= 20;
-      await nextFrame();
+      await nextFrames();
       const heldTop = body.getBoundingClientRect().top;
       for (let chunk = 0; chunk < 6; chunk++) {
         await streamChunk();
@@ -487,8 +453,7 @@ describe("MessagesTimeline with the real virtual list", () => {
     const streamLines = async () => {
       text += sentence.repeat(4);
       await screen.rerender(renderList(text));
-      await nextFrame();
-      await nextFrame();
+      await nextFrames(2);
     };
     try {
       await new Promise((resolve) => setTimeout(resolve, 300));
@@ -503,16 +468,14 @@ describe("MessagesTimeline with the real virtual list", () => {
       dispatchTouch(list, "touchstart", 200);
       dispatchTouch(list, "touchmove", 260);
       list.scrollTop -= 60;
-      await nextFrame();
-      await nextFrame();
+      await nextFrames(2);
       // More lines land while the finger rests. Then the finger brings the
       // list back to where the bottom was, which the list reports measured
       // after those lines, and lifts.
       const bottomBeforeLines = list.scrollHeight - list.clientHeight;
       await streamLines();
       list.scrollTop = bottomBeforeLines;
-      await nextFrame();
-      await nextFrame();
+      await nextFrames(2);
       dispatchTouch(list, "touchend", 260);
 
       // Once the list rests, it catches up and follows again. Wait for that
@@ -562,8 +525,7 @@ describe("MessagesTimeline with the real virtual list", () => {
     const streamChunk = async () => {
       text += sentence;
       await screen.rerender(renderList(text));
-      await nextFrame();
-      await nextFrame();
+      await nextFrames(2);
     };
     const pointer = (type: "pointerdown" | "pointerup", target: EventTarget) =>
       target.dispatchEvent(
@@ -615,8 +577,7 @@ describe("MessagesTimeline with the real virtual list", () => {
       // Back at the bottom once the scroll lock has run out, it follows again.
       await new Promise((resolve) => setTimeout(resolve, 500));
       list.scrollTop = list.scrollHeight;
-      await nextFrame();
-      await nextFrame();
+      await nextFrames(2);
       await streamChunk();
       expect(distanceFromEnd()).toBeLessThanOrEqual(1);
 
@@ -624,8 +585,7 @@ describe("MessagesTimeline with the real virtual list", () => {
       // list hears another. It stays where it was let go.
       pointer("pointerdown", body);
       list.scrollTop -= 60;
-      await nextFrame();
-      await nextFrame();
+      await nextFrames(2);
       pointer("pointerup", window);
       const quickTop = list.scrollTop;
       await streamChunk();
@@ -668,8 +628,7 @@ describe("MessagesTimeline with the real virtual list", () => {
     const streamChunk = async () => {
       text += sentence;
       await screen.rerender(renderList(text));
-      await nextFrame();
-      await nextFrame();
+      await nextFrames(2);
     };
     const pointer = (type: "pointerdown" | "pointerup", target: EventTarget) =>
       target.dispatchEvent(
@@ -705,8 +664,7 @@ describe("MessagesTimeline with the real virtual list", () => {
       // while the button is still down.
       pointer("pointerdown", body);
       list.scrollTop = list.scrollHeight;
-      await nextFrame();
-      await nextFrame();
+      await nextFrames(2);
       await streamChunk();
       await streamChunk();
       expect(distanceFromEnd()).toBeGreaterThan(20);
@@ -808,7 +766,7 @@ describe("MessagesTimeline with the real virtual list", () => {
       try {
         for (const live of stages) {
           await screen.rerender(renderList(live));
-          await nextFrame();
+          await nextFrames();
         }
       } finally {
         collect(observer.takeRecords());
@@ -940,7 +898,7 @@ describe("MessagesTimeline with the real virtual list", () => {
 
       for (let step = 1; step <= 6; step++) {
         await screen.rerender(renderList(600 + step * 23.46875));
-        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+        await nextFrames();
       }
 
       expect(paddingWrites.length, "replay should exercise the temporary padding").toBeGreaterThan(
@@ -1012,7 +970,7 @@ describe("MessagesTimeline with the real virtual list", () => {
         controls.changeData();
       });
       flushSync(() => controls.resizePage(600));
-      for (let frame = 0; frame < 3; frame++) await nextFrame();
+      await nextFrames(3);
       expect(gapBelowPage()).toBe(0);
     } finally {
       await screen.unmount();
@@ -1253,7 +1211,7 @@ describe("MessagesTimeline with the real virtual list", () => {
       });
       for (let length = 9; length <= script.length; length += 9) {
         await screen.rerender(renderList(script.slice(0, length)));
-        await nextFrame();
+        await nextFrames();
       }
       await new Promise((resolve) => setTimeout(resolve, 200));
       stopReading();
@@ -1330,7 +1288,7 @@ describe("MessagesTimeline with the real virtual list", () => {
       const row = document.querySelector(`[data-message-id="${reply.id}"]`)!;
       const container = row.parentElement!;
       container.parentElement!.insertBefore(container, container.parentElement!.firstChild);
-      for (let frame = 0; frame < 3; frame++) await nextFrame();
+      await nextFrames(3);
       await new Promise((resolve) => setTimeout(resolve, 50));
 
       const afterMove = frames.slice(moved);
@@ -1650,8 +1608,7 @@ describe("find in chat with the real virtual list", () => {
       for (let chunk = 0; chunk < 4; chunk++) {
         text += `\n\n${sentence}`;
         await screen.rerender(renderList(text));
-        await nextFrame();
-        await nextFrame();
+        await nextFrames(2);
       }
       await new Promise((resolve) => setTimeout(resolve, 300));
       expect(Math.abs(currentFindHighlight()!.rect.top - matchTop)).toBeLessThanOrEqual(1);
@@ -2030,7 +1987,7 @@ async function scrollPelicanIntoView(list: HTMLElement, step: number) {
 async function expectPelicanToHoldStill(list: HTMLElement) {
   const before = wordRect("message-51", "pelican");
   await new Promise((resolve) => setTimeout(resolve, 300));
-  await nextFrame();
+  await nextFrames();
   const after = wordRect("message-51", "pelican");
   const listRect = list.getBoundingClientRect();
   expect(before).not.toBeNull();
@@ -2181,7 +2138,7 @@ describe("text selection popover with the real virtual list", () => {
         .nextNode()!;
       window.getSelection()!.collapse(elsewhere, 0);
       await vi.waitFor(() => expect(selectionPopover()).toBeNull());
-      await nextFrame();
+      await nextFrames();
       expect(window.getSelection()!.isCollapsed).toBe(true);
     } finally {
       await screen.unmount();
@@ -2219,7 +2176,7 @@ describe("text selection popover with the real virtual list", () => {
         await userEvent.fill(noteInput, "Check this bird");
         await vi.advanceTimersByTimeAsync(1_000);
         // React draws what the timers did on its next turn.
-        await nextFrame();
+        await nextFrames();
         expect(selectionPopover()).not.toBeNull();
       } finally {
         vi.useRealTimers();
@@ -2231,8 +2188,7 @@ describe("text selection popover with the real virtual list", () => {
       // reuses the farthest row's slot first.
       for (let step = 0; step < 100 && list.scrollTop > 0; step += 1) {
         list.scrollTop = Math.max(0, list.scrollTop - 200);
-        await nextFrame();
-        await nextFrame();
+        await nextFrames(2);
       }
       await vi.waitFor(
         () => {

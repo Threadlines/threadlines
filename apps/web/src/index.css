@@ -235,6 +235,24 @@ html.electron.mac:not([data-marketing-capture]) {
   padding-right: max(env(safe-area-inset-right), 0px);
 }
 
+/* Centers a layer that is portaled to the window (a dialog, the command
+   palette) over the page beside the thread list and the right panel, not over
+   the whole window. The layer lays itself out centered on the window and
+   carries --main-area-offset inline (useMainAreaCenterStyle in
+   mainAreaLayout.ts); this slides it that far, but no closer than 1rem to the
+   window's edge, and not at all once it is as wide as the window (a phone's
+   bottom sheet). Percentages in translate are the layer's own width. Leave
+   translate out of the layer's transitions (slide it with transform): a popup
+   gliding to a new spot after a resize pokes past the window's edge. */
+@utility center-on-main-area {
+  --tw-translate-x: clamp(
+    min(0px, 50% - 50vw + 1rem),
+    var(--main-area-offset, 0px),
+    max(0px, 50vw - 50% - 1rem)
+  );
+  translate: var(--tw-translate-x) var(--tw-translate-y, 0);
+}
+
 /* Suppress all transitions during theme changes */
 .no-transitions,
 .no-transitions *,

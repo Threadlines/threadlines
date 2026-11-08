@@ -75,6 +75,7 @@ Tests must earn their maintenance cost. When adding or changing tests:
 - Don't write tests that restate the implementation or assert mock wiring — they pass when the code is wrong and break when the code is refactored.
 - One focused test that would catch a real regression beats five that mirror the code.
 - Tests are good! Endless smoke tests, "regression tests" for feature deletions, and tests added for the sake of having tests are much less good. Tests should be focused, not slop.
+- To test that something on screen doesn't jump, bounce or flash, read it after every drawn frame with `readAfterEachPaint` from `apps/web/src/lib/frameProbe.browser-harness.ts` and assert on the whole run, not just the end state.
 - Not every change needs a new test. Add one for new observable behavior or a regression you actually hit. Deletions, renames, and refactors update existing tests; they don't add new ones. Never write a test that asserts something no longer exists — the code being gone and the suite staying green is the proof.
 - Never loosen an existing test's expectation to make your change pass. The same goes for lint rules, type errors, CI workflows, and git hooks: don't disable, suppress, or skip them (`--no-verify`) to get green. A failing check is a signal about your change. If the expectation is truly outdated, fix it and say so loudly in your report.
 

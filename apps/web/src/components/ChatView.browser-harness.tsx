@@ -431,6 +431,9 @@ export function createMockEnvironmentApi(input: {
           kind: "missing",
           relativePath: request.path,
         })) as EnvironmentApi["orchestration"]["getTurnFile"]),
+      readChatMedia: (async () => ({
+        kind: "missing",
+      })) as EnvironmentApi["orchestration"]["readChatMedia"],
       listProjectMedia:
         input.listProjectMedia ??
         ((async () => ({

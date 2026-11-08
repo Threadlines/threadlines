@@ -22,6 +22,7 @@ describe("SETTINGS_NAV_ITEMS", () => {
       ),
     ).toEqual([
       "General",
+      "Appearance",
       "Threads",
       "Archives",
       "| Providers",
@@ -40,6 +41,7 @@ describe("SETTINGS_NAV_ITEMS", () => {
   it("keeps hosted phone navigation to phone-safe settings sections", () => {
     expect(HOSTED_STATIC_SETTINGS_NAV_ITEMS.map((item) => item.to)).toEqual([
       "/settings/general",
+      "/settings/appearance",
       "/settings/threads",
       "/settings/archived",
       "/settings/providers",

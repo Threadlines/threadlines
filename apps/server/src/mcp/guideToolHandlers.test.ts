@@ -56,7 +56,7 @@ describe("app_guide", () => {
     const theme = await Effect.runPromise(guide({ query: "dark mode" }));
     // Themes go by name now: the built-ins, a starter, or one in this computer's library.
     expect(theme.answer).toContain(
-      `settings_change (place "general.theme", value "system", "light", "dark", or the name of a starter theme or a theme in this computer's library)`,
+      `settings_change (place "appearance.theme", value "system", "light", "dark", or the name of a starter theme or a theme in this computer's library)`,
     );
     const threads = await Effect.runPromise(guide({ query: "why can't you start threads" }));
     expect(threads.answer).toContain("Only the user can change it");

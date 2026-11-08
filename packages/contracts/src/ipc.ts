@@ -247,6 +247,8 @@ import type {
   OrchestrationGetTurnFileResult,
   OrchestrationListProjectMediaInput,
   OrchestrationListProjectMediaResult,
+  OrchestrationReadChatMediaInput,
+  OrchestrationReadChatMediaResult,
   OrchestrationGetRevertPlanInput,
   OrchestrationGetRevertPlanResult,
   OrchestrationGetTurnActivitiesInput,
@@ -2106,6 +2108,9 @@ export interface EnvironmentApi {
     listProjectMedia: (
       input: OrchestrationListProjectMediaInput,
     ) => Promise<OrchestrationListProjectMediaResult>;
+    readChatMedia: (
+      input: OrchestrationReadChatMediaInput,
+    ) => Promise<OrchestrationReadChatMediaResult>;
     getRevertPlan: (
       input: OrchestrationGetRevertPlanInput,
     ) => Promise<OrchestrationGetRevertPlanResult>;

@@ -119,7 +119,7 @@ import { cn, newCommandId } from "~/lib/utils";
 import { projectMediaQueryOptions } from "../lib/mediaReactQuery";
 import {
   countMediaByKind,
-  type MediaEntry,
+  type MediaChatTarget,
   turnSummariesRevision,
 } from "../components/media/mediaPanel.logic";
 import {
@@ -663,7 +663,8 @@ function ChatThreadRouteView() {
   // The thread's media, for the launcher's Media row: the same listing the
   // Media tab opens on, so the row and the tab agree. Read only while the
   // launcher is on screen; a turn landing changes the revision and so the key.
-  const mediaTurnsRevision = turnSummariesRevision(serverThread?.turnDiffSummaries ?? null);
+  // A message (a reply, your attachment) can share a picture between turns.
+  const mediaTurnsRevision = `${turnSummariesRevision(serverThread?.turnDiffSummaries ?? null)}:${serverThread?.messages.length ?? 0}`;
   const launcherMediaListing = useQuery(
     projectMediaQueryOptions({
       environmentId: threadRef?.environmentId ?? null,
@@ -674,9 +675,13 @@ function ChatThreadRouteView() {
     }),
   );
   const launcherMediaEntries = launcherMediaListing.data?.entries;
+  const launcherChatMedia = launcherMediaListing.data?.chat;
   const launcherMediaCounts = useMemo(
-    () => (launcherMediaEntries ? countMediaByKind(launcherMediaEntries) : null),
-    [launcherMediaEntries],
+    () =>
+      launcherMediaEntries
+        ? countMediaByKind([...launcherMediaEntries, ...(launcherChatMedia ?? [])])
+        : null,
+    [launcherChatMedia, launcherMediaEntries],
   );
   // What the launcher's rows say. Only assembled while the launcher is the
   // thing on screen, since that is the only place it is read.
@@ -906,19 +911,20 @@ function ChatThreadRouteView() {
     },
     [currentThreadKey, diffTarget, navigateToTab],
   );
-  // "Go to turn N" from the Media tab: the chat at the reply of the turn that
-  // last changed the file, in whichever thread made it. Another thread opens
-  // with its own Media tab beside it; on a phone the sheet steps aside so the
-  // reply is what shows.
-  const goToMediaTurn = useCallback(
-    (entry: MediaEntry) => {
+  // "Go to turn N" and "Go to message" from the Media tab: the chat at the
+  // reply of the turn that last changed a file, or the message that shared a
+  // picture, in whichever thread it was. Another thread opens with its own
+  // Media tab beside it; on a phone the sheet steps aside so the message is
+  // what shows.
+  const goToMediaChat = useCallback(
+    (entry: MediaChatTarget) => {
       if (!threadRef) {
         return;
       }
       const target = scopeThreadRef(threadRef.environmentId, entry.threadId);
       const sameThread = entry.threadId === threadRef.threadId;
-      const focus = entry.assistantMessageId
-        ? { focusMessageId: entry.assistantMessageId, focusRequest: newCommandId() }
+      const focus = entry.messageId
+        ? { focusMessageId: entry.messageId, focusRequest: newCommandId() }
         : {};
       if (!sameThread && !shouldUseDiffSheet) {
         focusRightPanelTab(`${target.environmentId}:${target.threadId}`, "media");
@@ -1043,7 +1049,7 @@ function ChatThreadRouteView() {
               threadId={threadRef.threadId}
               turnsRevision={mediaTurnsRevision}
               visible={mediaOpen}
-              onGoToTurn={goToMediaTurn}
+              onGoToChat={goToMediaChat}
             />
           </Suspense>
         </div>

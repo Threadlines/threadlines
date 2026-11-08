@@ -10,7 +10,7 @@ import {
   RIGHT_PANEL_INLINE_SIDEBAR_MIN_WIDTH,
   RIGHT_PANEL_INLINE_SIDEBAR_WIDTH_STORAGE_KEY,
   normalizeRightPanelStoredWidth,
-  useRightPanelInsetVarRef,
+  useRightPanelInsetRef,
 } from "../rightPanelLayout";
 import {
   COMPOSER_FOOTER_RESERVE_ATTRIBUTE,
@@ -29,9 +29,9 @@ export function ChatRightPanelInlineSidebar(props: {
   children: ReactNode;
 }) {
   const { open, onClose, onRequestOpen } = props;
-  // Body-portaled overlays (toasts) are fixed to the viewport, so they need to
-  // be told how wide this slot is to keep off the panel.
-  const insetRef = useRightPanelInsetVarRef();
+  // Body-portaled layers (toasts, dialogs) are fixed to the window, so they
+  // need to be told how wide this slot is to keep off the panel.
+  const insetRef = useRightPanelInsetRef();
   const onOpenChange = useCallback(
     (nextOpen: boolean) => {
       if (nextOpen) {

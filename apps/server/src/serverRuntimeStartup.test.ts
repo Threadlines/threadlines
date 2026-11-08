@@ -9,6 +9,7 @@ import {
 import { assert, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
@@ -21,6 +22,7 @@ import {
 } from "./orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { AnalyticsService } from "./telemetry/Services/AnalyticsService.ts";
+import { ThemeLibrary } from "./themes/ThemeLibrary.ts";
 import {
   getAutoBootstrapDefaultModelSelection,
   launchStartupHeartbeat,
@@ -122,6 +124,7 @@ it.effect("launchStartupHeartbeat does not block the caller while counts are loa
           record: () => Effect.void,
           flush: Effect.void,
         }),
+        Effect.provide(Layer.mock(ThemeLibrary)({ snapshot: Effect.succeed({ entries: [] }) })),
       );
     }),
   ),

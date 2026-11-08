@@ -61,7 +61,7 @@ const keysOf = (text: string) => search(text).results.map((result) => result.ite
 describe("settings search", () => {
   it("finds a setting by the words people use for it, and says which", () => {
     const [first] = search("dark mode").results;
-    expect(first?.item.key).toBe("general.theme");
+    expect(first?.item.key).toBe("appearance.theme");
     expect(first?.match.keyword).toBe("dark mode");
   });
 

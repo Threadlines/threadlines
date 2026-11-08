@@ -3,6 +3,8 @@ import "../../index.css";
 import {
   EnvironmentId,
   type EnvironmentApi,
+  MessageId,
+  type OrchestrationChatMediaEntry,
   type OrchestrationProjectMediaEntry,
   ProjectId,
   ThreadId,
@@ -90,11 +92,97 @@ const OTHER_THREAD_MEDIA = [
   }),
 ];
 
-function installApi() {
+function chatEntry(
+  overrides: Partial<OrchestrationChatMediaEntry> &
+    Pick<OrchestrationChatMediaEntry, "id" | "name" | "origin" | "source">,
+): OrchestrationChatMediaEntry {
+  return {
+    threadId: THREAD_ID,
+    threadTitle: "Refresh the screenshots",
+    cwd: "/repo",
+    mediaKind: "picture",
+    sharedAt: "2026-03-01T00:04:00.000Z",
+    messageId: MessageId.make("message-reply"),
+    size: 68,
+    version: "1",
+    ...overrides,
+  } as OrchestrationChatMediaEntry;
+}
+
+const CHAT_MEDIA = [
+  chatEntry({
+    id: "activity:shot#0000",
+    name: "browser_screenshot.png",
+    origin: "tool",
+    source: { kind: "inline", mimeType: "image/png" },
+  }),
+  chatEntry({
+    id: "message:reply#0000",
+    name: "shot.png",
+    origin: "reply",
+    source: { kind: "file", path: "/tmp/shots/shot.png" },
+  }),
+  chatEntry({
+    id: "message:ask#0000",
+    name: "mock.png",
+    origin: "attached",
+    source: {
+      kind: "attachment",
+      attachment: {
+        type: "image",
+        id: "attachment-mock",
+        name: "mock.png",
+        mimeType: "image/png",
+        sizeBytes: 68,
+      },
+    },
+  }),
+  chatEntry({
+    id: "message:ask#0001",
+    name: "brief.pdf",
+    origin: "attached",
+    mediaKind: "document",
+    source: {
+      kind: "attachment",
+      attachment: {
+        type: "file",
+        kind: "pdf",
+        id: "attachment-brief",
+        name: "brief.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 900,
+      },
+    },
+  }),
+];
+
+function installApi(options: { readonly chat?: ReadonlyArray<OrchestrationChatMediaEntry> } = {}) {
   const listProjectMedia = vi.fn(async (input: { readonly threadId?: ThreadId }) => ({
     entries: input.threadId ? THREAD_MEDIA : [...THREAD_MEDIA, ...OTHER_THREAD_MEDIA],
     truncated: false,
+    ...(options.chat ? { chat: options.chat, chatTruncated: false, chatIndexing: true } : {}),
   }));
+  const readChatMedia = vi.fn(async () => ({
+    kind: "image" as const,
+    mimeType: "image/png",
+    base64: PIXEL_PNG,
+    size: 68,
+  }));
+  const readAttachment = vi.fn(async (input: { readonly attachmentId: string }) =>
+    input.attachmentId === "attachment-brief"
+      ? {
+          attachmentId: input.attachmentId,
+          mimeType: "application/pdf",
+          base64: btoa(TINY_PDF),
+          sizeBytes: TINY_PDF.length,
+        }
+      : {
+          attachmentId: input.attachmentId,
+          mimeType: "image/png",
+          base64: PIXEL_PNG,
+          sizeBytes: 68,
+        },
+  );
   const getTurnFile = vi.fn(async (input: { readonly path: string }) => ({
     kind: "image" as const,
     relativePath: input.path,
@@ -130,10 +218,11 @@ function installApi() {
             },
   );
   __setEnvironmentApiOverrideForTests(ENVIRONMENT_ID, {
-    orchestration: { listProjectMedia, getTurnFile },
+    orchestration: { listProjectMedia, getTurnFile, readChatMedia },
     projects: { readFile },
+    attachments: { read: readAttachment },
   } as unknown as EnvironmentApi);
-  return { listProjectMedia, getTurnFile, readFile };
+  return { listProjectMedia, getTurnFile, readFile, readChatMedia, readAttachment };
 }
 
 function renderPanel() {
@@ -146,7 +235,7 @@ function renderPanel() {
         threadId={THREAD_ID}
         turnsRevision="3"
         visible
-        onGoToTurn={() => undefined}
+        onGoToChat={() => undefined}
       />
       <ExpandedImageViewerHost />
     </>,
@@ -179,6 +268,7 @@ describe("MediaPanel", () => {
     expect(api.listProjectMedia).toHaveBeenLastCalledWith({
       projectId: PROJECT_ID,
       threadId: THREAD_ID,
+      includeChat: true,
     });
     // A tile asks for its picture and shows a shrunk copy of it.
     await vi.waitFor(() => {
@@ -234,9 +324,50 @@ describe("MediaPanel", () => {
     await expect
       .element(page.getByRole("button", { name: "Preview retry-chart.png" }))
       .toBeVisible();
-    expect(api.listProjectMedia).toHaveBeenLastCalledWith({ projectId: PROJECT_ID });
+    expect(api.listProjectMedia).toHaveBeenLastCalledWith({
+      projectId: PROJECT_ID,
+      includeChat: true,
+    });
     // Every thread's view says which thread made each file.
     await expect.element(page.getByText("Checkout recovery")).toBeVisible();
+  });
+
+  it("lists what was shared in chat after the files, read where the chat reads it", async () => {
+    const api = installApi({ chat: CHAT_MEDIA });
+    await renderPanel();
+
+    const shared = page.getByRole("region", { name: "Shared in chat" });
+    await expect.element(shared).toBeVisible();
+    await expect.element(shared.getByText("Still looking through older chats.")).toBeVisible();
+    for (const name of ["browser_screenshot.png", "shot.png", "mock.png", "brief.pdf"]) {
+      await vi.waitFor(
+        () => {
+          const image = document.querySelector<HTMLImageElement>(`[data-media-tile="${name}"] img`);
+          expect(image?.src.startsWith("blob:")).toBe(true);
+        },
+        { timeout: 15_000 },
+      );
+    }
+    // A screenshot from the chat itself, a file from the thread's folder as
+    // the chat reads it, and attachments from where they are stored.
+    expect(api.readChatMedia).toHaveBeenCalledWith({
+      threadId: THREAD_ID,
+      mediaId: "activity:shot#0000",
+    });
+    expect(api.readFile).toHaveBeenCalledWith({
+      cwd: "/repo",
+      relativePath: "/tmp/shots/shot.png",
+    });
+    expect(api.readAttachment).toHaveBeenCalledWith({ attachmentId: "attachment-mock" });
+    await expect.element(shared.getByText("From a tool · ", { exact: false })).toBeVisible();
+
+    // The viewer steps from the files into what was shared in chat.
+    await page.getByRole("button", { name: "Preview browser_screenshot.png" }).click();
+    const viewer = page.getByRole("dialog", { name: "Expanded image preview" });
+    await expect.element(viewer.getByText("From a tool · Refresh the screenshots")).toBeVisible();
+    await expect
+      .element(viewer.getByRole("button", { name: "Before", exact: true }))
+      .not.toBeInTheDocument();
   });
 
   it("opens a changed picture full size, with its Before from the thread's start", async () => {

@@ -72,10 +72,12 @@ function SettingsContentLayout() {
   const navigateBackWithinApp = useNavigateBackWithinApp();
   const [restoreSignal, setRestoreSignal] = useState(0);
   const isHostedStatic = authGateState.status === "hosted-static";
-  // One restore for every setting on these two pages (and Source Control's
+  // One restore for every setting on these three pages (and Source Control's
   // writing settings, which it has always covered).
   const showRestoreDefaults =
-    (location.pathname === "/settings/general" || location.pathname === "/settings/threads") &&
+    (location.pathname === "/settings/general" ||
+      location.pathname === "/settings/appearance" ||
+      location.pathname === "/settings/threads") &&
     !isHostedStatic;
   const isSettingsIndex = location.pathname === "/settings" || location.pathname === "/settings/";
   // On mobile the header titles the current section and offers ← back to the

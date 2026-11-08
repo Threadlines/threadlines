@@ -305,14 +305,16 @@ Pictures and PDFs show in the viewer, PDFs with zoom and find. An SVG shows as a
       "before and after",
       "play video",
       "pdf preview",
+      "attachments",
+      "shared in chat",
     ],
-    body: `The Media tab in the right sidebar lists the pictures, videos, sounds and documents (PDFs, Word, slides and the like) that agents created or changed. Open it from the sidebar's list of panels or its + menu.
+    body: `The Media tab in the right sidebar lists the pictures, videos, sounds and documents (PDFs, Word, slides and the like) that agents created or changed, then, under Shared in chat, the pictures the chat showed and the pictures and PDFs you attached. Open it from the sidebar's list of panels or its + menu.
 
 It opens on the current thread; All threads shows every thread in the project, each file marked with the thread that made it. Files are grouped by type, and each is marked A (the thread added it) or M (it changed one that was there). Search by name, sort newest, oldest or by name, and group by type or by thread. Pictures and PDFs show as small pictures (a PDF its first page); a video shows its first frame once it has played.
 
 Click a picture to see it full size, with arrows to step through the rest; a changed picture has Before and After. A PDF, video or sound file opens in the file viewer, where videos and sound play. Right-click any file to preview it, open it in the file viewer, go to the turn that made it, open it in your editor, reveal it in Finder or Explorer, or copy its path.
 
-Only files inside the project's folder are listed. A file an agent saved elsewhere (a temp folder, say), one in a folder git ignores, or one deleted since, doesn't show.
+Files agents made are listed only from inside the project's folder. Shared in chat covers the rest: a screenshot a tool took, a picture an agent's reply showed (even from a temp folder or a folder git ignores), and your attachments. Each says where it came from (You attached, From a tool, In a reply), and right-clicking it can go to that message. A picture is listed once, at the newest place it showed, and one the files above already list isn't repeated. A file deleted since doesn't show. Right after an update, pictures from older chats appear over the first minutes while they are looked through.
 
 In the Diff tab, a changed picture shows its Before and After side by side instead of a file name.`,
   },
@@ -371,7 +373,7 @@ With {place:threads.commandRequests} on, an agent can ask you to run a command i
       "glass",
       "look",
     ],
-    body: `A theme changes how all of Threadlines looks: its colors, its fonts, and optionally live art behind the app, with the chat and Settings on frosted glass in front. Each device picks its own theme in {place:general.appearance}; a theme kept once is in this computer's library on every device.
+    body: `A theme changes how all of Threadlines looks: its colors, its fonts, and optionally live art behind the app, with the chat and Settings on frosted glass in front. Each device picks its own theme in {place:settings.appearance}; a theme kept once is in this computer's library on every device.
 
 An agent makes one with preview_theme (screenshots of the app wearing it, its readability checks and what its art costs) and offers it with show_theme: a row in the chat with Try it. Trying shows a bar at the top of the window, Keep or Undo, and it switches back by itself after 15 seconds; Esc, a reload or closing the window undo it too (while the /theme picker is open, a preview waits for its ✕ or Esc instead). The Settings gallery, the composer's /theme and an imported ${THEME_FILE_EXTENSION} file start the same trial. New theme, in /theme or in Settings, puts the start of a request in the message box ("Make me a Threadlines theme that feels like") with a few ideas to finish it (Settings opens a general chat for it); sending it asks the agent for one. In Settings, the options on a theme's picture rename it, duplicate it to change a copy, export a file to share, copy the request it was made from, or delete it; starters can be duplicated and exported.
 
@@ -383,7 +385,7 @@ ${THEME_ART_RULES_GUIDE}
 
 ${THEME_DESIGN_GUIDE}
 
-The art is walled off: it runs in a worker in a sandboxed frame with no network, sees only agent counts and the theme's colors, and Threadlines stops it when it fails, gets too heavy, or nobody is looking. Text stays readable whatever the art draws: the frame raises the glass tint under text as needed. Appearance also has {place:general.themeGlass} (a slider, Solid to Clear, for how much of the art shows through the glass on every page; the middle is the theme's own, and the same slider sits in the /theme picker) and {place:general.themeMotion} (Live or Still). Switching a device to a theme by name, when the user asks, is a settings change to {place:general.theme}.`,
+The art is walled off: it runs in a worker in a sandboxed frame with no network, sees only agent counts and the theme's colors, and Threadlines stops it when it fails, gets too heavy, or nobody is looking. Text stays readable whatever the art draws: the frame raises the glass tint under text as needed. Appearance also has {place:appearance.glass} (a slider, Solid to Clear, for how much of the art shows through the glass on every page; the middle is the theme's own, and the same slider sits in the /theme picker) and {place:appearance.motion} (Live or Still). Switching a device to a theme by name, when the user asks, is a settings change to {place:appearance.theme}.`,
   },
   {
     id: "changing-settings",
@@ -399,7 +401,7 @@ The art is walled off: it runs in a worker in a sandboxed frame with no network,
       "default model",
       "alerts",
     ],
-    body: `An agent can change many settings when you ask: the theme, streaming replies, the model new threads start with, the writing model, which alerts you get, where links open and more (the guide says which, place by place). A model it picks starts at that model's default reasoning, and it can't pick a provider billed per use. It puts a card above the message box listing each change, from what to what, and where it lands: this computer's settings, or the app you accept it in, since settings like {place:general.theme} are kept by each app. Alert switches change only where alerts are on (a phone or a browser), and {place:general.openLinksIn} only in the desktop app; the card says so if you're somewhere else. Nothing changes until you press Change; Not now changes nothing. The agent hears how it went at its next turn. The theme can also be one from the theme library, by name; a theme new to that device starts as a trial with Keep and Undo (see \`themes\`).
+    body: `An agent can change many settings when you ask: the theme, streaming replies, the model new threads start with, the writing model, which alerts you get, where links open and more (the guide says which, place by place). A model it picks starts at that model's default reasoning, and it can't pick a provider billed per use. It puts a card above the message box listing each change, from what to what, and where it lands: this computer's settings, or the app you accept it in, since settings like {place:appearance.theme} are kept by each app. Alert switches change only where alerts are on (a phone or a browser), and {place:general.openLinksIn} only in the desktop app; the card says so if you're somewhere else. Nothing changes until you press Change; Not now changes nothing. The agent hears how it went at its next turn. The theme can also be one from the theme library, by name; a theme new to that device starts as a trial with Keep and Undo (see \`themes\`).
 
 Settings that give agents more reach ({place:threads.agentThreads}, {place:threads.enableRooms}, access levels, linked computers, plugins and sign-ins), that archive or delete threads, or that share data ({place:general.usageAnalytics}) are yours alone: an agent links them for you instead.`,
   },

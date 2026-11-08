@@ -17,7 +17,7 @@ const PHONE_ALERTS_OFF = { desktopApp: false, alerts: "off" } as const;
 const request = {
   changes: [
     { place: "general.streamReplies", value: false, from: true },
-    { place: "general.theme", value: "light" },
+    { place: "appearance.theme", value: "light" },
     { place: "general.timeFormat", value: "24-hour" },
   ],
 };
@@ -25,7 +25,7 @@ const request = {
 describe("settingsChangeLines", () => {
   it("words each change as its row does, with computer values as asked and device values as now", () => {
     const lines = settingsChangeLines(request, (placeId) =>
-      placeId === "general.theme" ? "dark" : "locale",
+      placeId === "appearance.theme" ? "dark" : "locale",
     );
     expect(lines.map(({ name, lands, from, to }) => ({ name, lands, from, to }))).toEqual([
       { name: "Stream replies", lands: "computer", from: "On", to: "Off" },
@@ -99,7 +99,7 @@ describe("checkDeviceChanges", () => {
     const check = checkDeviceChanges(request, DESKTOP);
     expect(check.kind).toBe("ready");
     expect(check.kind === "ready" ? check.edits.map((edit) => edit.place) : []).toEqual([
-      "general.theme",
+      "appearance.theme",
       "general.timeFormat",
     ]);
     // Only computer changes: nothing for this app to make.
@@ -116,7 +116,7 @@ describe("checkDeviceChanges", () => {
     ).toEqual({ kind: "update" });
     // Themes go by name (any library's), so the value a theme row can't take is a non-name.
     expect(
-      checkDeviceChanges({ changes: [{ place: "general.theme", value: true }] }, DESKTOP),
+      checkDeviceChanges({ changes: [{ place: "appearance.theme", value: true }] }, DESKTOP),
     ).toEqual({ kind: "update" });
   });
 
@@ -174,7 +174,7 @@ describe("settings change notices", () => {
       settingsChangeResultNotice({
         lines,
         computer: { ending: "changed" },
-        device: { applied: ["general.theme", "general.timeFormat"], failed: [] },
+        device: { applied: ["appearance.theme", "general.timeFormat"], failed: [] },
       }),
     ).toEqual({
       type: "success",
@@ -192,7 +192,7 @@ describe("settings change notices", () => {
           detail: "Stream replies was changed to Off since the agent asked",
         },
         device: {
-          applied: ["general.theme"],
+          applied: ["appearance.theme"],
           failed: [{ place: "general.timeFormat", detail: "Couldn't save it on this device" }],
         },
       }),

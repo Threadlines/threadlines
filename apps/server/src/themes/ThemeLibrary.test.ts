@@ -17,6 +17,7 @@ import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts"
 import { PagePreviewBrowserError } from "../pages/preview/headlessChrome.ts";
 import { PagePreview } from "../pages/preview/PagePreview.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import { AnalyticsService } from "../telemetry/Services/AnalyticsService.ts";
 import type { DownloadFetch } from "../provider/managedRuntime/VerifiedDownload.ts";
 import { ThemeLibrary, ThemeLibraryLive } from "./ThemeLibrary.ts";
 import { ThemeLibraryRepositoryLive } from "./ThemeLibraryRepository.ts";
@@ -85,8 +86,16 @@ const fakeFonts =
   };
 
 const asked: Array<string> = [];
+/** What the library counted, as PostHog would get it. */
+const recorded: Array<{ event: string; properties: unknown }> = [];
 const TestLayer = ThemeLibraryLive.pipe(
   Layer.provide(ThemeLibraryRepositoryLive),
+  Layer.provide(
+    Layer.succeed(AnalyticsService, {
+      record: (event, properties) => Effect.sync(() => recorded.push({ event, properties })),
+      flush: Effect.void,
+    }),
+  ),
   Layer.provideMerge(
     Layer.effect(ThemeWorkshop, makeThemeWorkshop({ fetch: fakeFonts(asked) })).pipe(
       Layer.provide(
@@ -196,6 +205,46 @@ it.layer(TestLayer)("ThemeLibrary", (it) => {
       const kept = entries.find((entry) => entry.entryId === copy.entryId);
       assert.isFalse(kept?.deleted);
       assert.strictEqual((yield* library.read({ hash: copy.hash })).manifest.name, "Dunes");
+    }),
+  );
+
+  it.effect("counts a save and a delete made here, never the theme's name; a merge isn't", () =>
+    Effect.gen(function* () {
+      const library = yield* ThemeLibrary;
+      recorded.length = 0;
+      // Content no other test saved, so its first save is not a copy.
+      const imported = {
+        ...dunes,
+        colors: { ...dunes.colors, accent: "#a8472a" },
+        createdBy: { kind: "imported" as const },
+      };
+      const first = yield* library.save({ manifest: imported, name: "Mine" });
+      yield* library.save({ manifest: imported, name: "Mine copy" });
+      yield* library.delete({ entryId: first.entryId });
+      // A delete of a theme already deleted counts nothing.
+      yield* library.delete({ entryId: first.entryId });
+      const theme = { origin: "imported", base: "light", art: "none", customFonts: false };
+      assert.deepStrictEqual(recorded, [
+        { event: "theme.saved", properties: { ...theme, copy: false } },
+        { event: "theme.saved", properties: { ...theme, copy: true } },
+        { event: "theme.deleted", properties: theme },
+      ]);
+      // Another computer's entry: that computer counted it.
+      const elsewhere = yield* Effect.promise(() => themeContentHash(aurora));
+      yield* library.merge({
+        entry: {
+          entryId: "from-elsewhere",
+          name: "Elsewhere",
+          hash: elsewhere,
+          revision: 99,
+          revisedBy: "env-other",
+          deleted: false,
+          createdAt: "2026-11-06T00:00:00.000Z",
+          updatedAt: "2026-11-06T00:00:00.000Z",
+        },
+        manifest: aurora,
+      });
+      assert.strictEqual(recorded.length, 3);
     }),
   );
 

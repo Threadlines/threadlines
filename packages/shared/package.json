@@ -482,6 +482,18 @@
     "./media": {
       "types": "./src/media.ts",
       "import": "./src/media.ts"
+    },
+    "./chatLinks": {
+      "types": "./src/chatLinks.ts",
+      "import": "./src/chatLinks.ts"
+    },
+    "./chatMedia": {
+      "types": "./src/chatMedia.ts",
+      "import": "./src/chatMedia.ts"
+    },
+    "./markdownBlocks": {
+      "types": "./src/markdownBlocks.ts",
+      "import": "./src/markdownBlocks.ts"
     }
   },
   "scripts": {
@@ -490,6 +502,7 @@
   },
   "dependencies": {
     "@threadlines/contracts": "workspace:*",
+    "decode-named-character-reference": "^1.3.0",
     "diff": "^9.0.0",
     "effect": "catalog:",
     "micromark": "^4.0.3",

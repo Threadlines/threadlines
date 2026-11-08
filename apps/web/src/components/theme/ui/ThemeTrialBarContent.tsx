@@ -2,8 +2,8 @@
  * The trial bar and the import dialog (ThemeTrialBar.tsx loads this module
  * only while a trial runs or a file waits to import).
  *
- * The bar floats at the top of the window, clear of the composer and its
- * controls. The bar and the dialog are drawn with the built-in tokens, not the
+ * The bar floats at the top of the window, centered over the page beside the
+ * sidebar and clear of the composer and its controls. The bar and the dialog are drawn with the built-in tokens, not the
  * candidate theme's, so they stay readable whatever the candidate does. Keep
  * saves a theme that isn't in a library yet (an agent's offer, an imported
  * file) and commits it; Undo, Esc and the countdown put the old theme back.
@@ -19,6 +19,7 @@ import {
   type ThemeTrial,
   useActiveTheme,
 } from "~/theme/themeStore";
+import { useMainAreaCenterStyle } from "~/mainAreaLayout";
 import { describeTheme } from "~/themeLibrary/themeCatalog";
 import { useThemeImportStore } from "~/themeLibrary/themeImportState";
 import { Button } from "../../ui/button";
@@ -64,13 +65,14 @@ function TrialBar({ trial }: { readonly trial: ThemeTrial }) {
   const active = useActiveTheme();
   const secondsLeft = useSecondsLeft(trial);
   const [keeping, setKeeping] = useState(false);
+  const mainAreaCenterStyle = useMainAreaCenterStyle();
   return (
     <div
       role="alertdialog"
       aria-label={`Keep ${trial.name}?`}
       data-theme-trial-bar
-      style={builtinThemeStyle(active.base)}
-      className="fixed inset-x-0 top-[calc(env(safe-area-inset-top)+var(--app-titlebar-height,38px)+12px)] z-[60] mx-auto flex w-[min(460px,calc(100vw-24px))] items-center gap-3 rounded-[var(--app-radius-large)] border border-border bg-popover px-4 py-2.5 text-popover-foreground shadow-lg"
+      style={{ ...builtinThemeStyle(active.base), ...mainAreaCenterStyle }}
+      className="center-on-main-area fixed inset-x-0 top-[calc(env(safe-area-inset-top)+var(--app-titlebar-height,38px)+12px)] z-[60] mx-auto flex w-[min(460px,calc(100vw-24px))] items-center gap-3 rounded-[var(--app-radius-large)] border border-border bg-popover px-4 py-2.5 text-popover-foreground shadow-lg"
       onKeyDown={(event) => {
         if (event.key === "Escape") {
           event.preventDefault();
