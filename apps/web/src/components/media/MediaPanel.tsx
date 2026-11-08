@@ -1,17 +1,21 @@
 /**
  * The Media tab: the pictures, videos, sounds and documents agents created or
- * changed, for this thread or the whole project. Pictures show as a grid of
- * thumbnails; the rest as rows. A picture opens in the app's image viewer
- * (with Before/After when the thread changed one that was there), anything
- * else in the file viewer, and every file has the shared right-click menu.
+ * changed, for this thread or the whole project, then "Shared in chat": the
+ * pictures the chat showed and the pictures and PDFs you attached. Pictures
+ * show as a grid of thumbnails; the rest as rows. A picture opens in the app's
+ * image viewer (with Before/After when the thread changed one that was there),
+ * anything else in the file viewer, and every file has the shared right-click
+ * menu.
  *
- * The server lists the files (from the turn summaries it already keeps) and
- * the panel only shapes them: see mediaPanel.logic.ts.
+ * The server lists both (from the turn summaries and the chat's media it
+ * keeps) and the panel only shapes them: see mediaPanel.logic.ts.
  */
 import type {
   EnvironmentId,
   OrchestrationMediaKind,
   ProjectId,
+  ProjectReadFileResult,
+  ProjectRevisionFileResult,
   ThreadId,
 } from "@threadlines/contracts";
 import { useQuery } from "@tanstack/react-query";
@@ -26,21 +30,35 @@ import {
   SearchIcon,
   XIcon,
 } from "lucide-react";
-import { memo, type MouseEvent, useCallback, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  type MouseEvent,
+  type ReactNode,
+  useCallback,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import { scopeProjectRef } from "@threadlines/client-runtime";
 
 import { ensureEnvironmentApi } from "../../environmentApi";
 import { selectSidebarThreadsForProjectRef, useStore } from "../../store";
-import { openFileInActiveViewer } from "../../fileViewerStore";
+import { openFileInActiveViewer, relativePathWithinCwd } from "../../fileViewerStore";
 import { formatBytes } from "../../lib/formatBytes";
 import { isImageFilePath } from "../../lib/imageFilePaths";
-import { projectMediaQueryOptions, revisionFileDataUrl } from "../../lib/mediaReactQuery";
+import { loadChatAttachmentBlob } from "../../lib/attachmentPreviewQuery";
+import {
+  projectMediaQueryOptions,
+  readChatMediaFile,
+  revisionFileDataUrl,
+} from "../../lib/mediaReactQuery";
 import { cn } from "../../lib/utils";
 import { readLocalApi } from "../../localApi";
 import { resolvePathLinkTarget } from "../../terminal-links";
 import { formatRelativeTimeLabel } from "../../timestampFormat";
 import { openExpandedImagePreview } from "../chat/ExpandedImagePreview";
+import { FilePreviewDialog, type FilePreviewRequest } from "../chat/FilePreviewDialog";
 import {
   type FileActionTarget,
   fileActionMenuItems,
@@ -63,6 +81,11 @@ import { SectionLabel } from "../ui/threadline";
 import { TooltipWrapper } from "../ui/tooltip";
 import {
   buildMediaGroups,
+  CHAT_MEDIA_ORIGIN_LABELS,
+  type ChatMediaEntry,
+  chatMediaKey,
+  type MediaChatTarget,
+  filterChatMedia,
   type MediaEntry,
   mediaEntryKey,
   mediaFileName,
@@ -73,8 +96,12 @@ import {
 } from "./mediaPanel.logic";
 import { useMediaThumbnail, useNearViewport, videoPosterKey } from "./mediaThumbnails";
 
-/** How often every thread's view re-reads while on screen. */
-const PROJECT_REFRESH_MS = 20_000;
+/**
+ * How often the tab re-reads while on screen, for what no revision announces:
+ * a file recorded a moment after its turn, a screenshot mid-turn, older chats
+ * still being looked through.
+ */
+const REFRESH_MS = 20_000;
 
 /** What the server sends whole; a bigger picture is never asked for. */
 const MAX_PREVIEW_BYTES = 10_485_760;
@@ -94,7 +121,7 @@ const ROW_ICONS: Readonly<Record<OrchestrationMediaKind, typeof ImageIcon>> = {
   document: FileTextIcon,
 };
 
-type MediaMenuAction = "preview" | "open-viewer" | "go-to-turn";
+type MediaMenuAction = "preview" | "open-viewer" | "go-to-chat";
 
 export interface MediaPanelProps {
   readonly environmentId: EnvironmentId;
@@ -104,12 +131,31 @@ export interface MediaPanelProps {
   readonly turnsRevision: string;
   /** False while the tab sits hidden in the strip: no listing is fetched then. */
   readonly visible: boolean;
-  /** Shows the chat at the turn that last changed the file, in its own thread. */
-  readonly onGoToTurn: (entry: MediaEntry) => void;
+  /** Shows a file's turn, or where a picture was shared, in its own thread's chat. */
+  readonly onGoToChat: (target: MediaChatTarget) => void;
+}
+
+/** One picture the viewer can step to, and how to find it again. */
+interface ViewerPicture {
+  readonly key: string;
+  readonly name: string;
+  readonly detail: string;
+  readonly load: () => Promise<string | null>;
+  readonly before?: { readonly load: () => Promise<string | null> };
 }
 
 function absolutePath(entry: MediaEntry): string {
   return resolvePathLinkTarget(entry.relativePath, entry.cwd);
+}
+
+function describeShared(entry: ChatMediaEntry, includeThread: boolean): string {
+  const origin = CHAT_MEDIA_ORIGIN_LABELS[entry.origin];
+  return includeThread ? `${origin} · ${entry.threadTitle.trim() || "Untitled thread"}` : origin;
+}
+
+/** A read as something an `<img>` can show, or null. */
+function readResultDataUrl(result: ProjectReadFileResult | null): string | null {
+  return result?.kind === "image" ? `data:${result.mimeType};base64,${result.base64}` : null;
 }
 
 function describeChange(entry: MediaEntry, includeThread: boolean): string {
@@ -121,11 +167,12 @@ function describeChange(entry: MediaEntry, includeThread: boolean): string {
 }
 
 export const MediaPanel = memo(function MediaPanel(props: MediaPanelProps) {
-  const { environmentId, projectId, threadId, turnsRevision, visible, onGoToTurn } = props;
+  const { environmentId, projectId, threadId, turnsRevision, visible, onGoToChat } = props;
   const [scope, setScope] = useState<MediaScope>("thread");
   const [sort, setSort] = useState<MediaSort>("newest");
   const [groupBy, setGroupBy] = useState<MediaGroupBy>("type");
   const [query, setQuery] = useState("");
+  const [previewedFile, setPreviewedFile] = useState<FilePreviewRequest | null>(null);
 
   // Every thread's view follows the project's threads: a turn finishing in
   // any of them changes this. A turn can finish a moment before its files are
@@ -147,10 +194,16 @@ export const MediaPanel = memo(function MediaPanel(props: MediaPanelProps) {
       threadId: scope === "thread" ? threadId : null,
       revision: scope === "thread" ? turnsRevision : `${turnsRevision}|${projectRevision}`,
       enabled: visible,
-      ...(scope === "project" ? { refetchInterval: PROJECT_REFRESH_MS } : {}),
+      refetchInterval: REFRESH_MS,
     }),
   );
   const entries = listing.data?.entries;
+  const chatIndexing = listing.data?.chatIndexing === true;
+  const chatEntries = listing.data?.chat;
+  const chatVisible = useMemo(
+    () => (chatEntries ? filterChatMedia({ entries: chatEntries, query, sort }) : []),
+    [chatEntries, query, sort],
+  );
   const groups = useMemo(
     () =>
       entries
@@ -163,16 +216,6 @@ export const MediaPanel = memo(function MediaPanel(props: MediaPanelProps) {
           })
         : [],
     [entries, groupBy, query, scope, sort],
-  );
-  // Every picture on screen, in the order shown, for the viewer's arrows.
-  const pictures = useMemo(
-    () =>
-      groups.flatMap((group) =>
-        group.tiles.filter(
-          (entry) => entry.mediaKind === "picture" && isImageFilePath(entry.relativePath),
-        ),
-      ),
-    [groups],
   );
   const showThread = scope === "project";
 
@@ -193,40 +236,93 @@ export const MediaPanel = memo(function MediaPanel(props: MediaPanelProps) {
     openFileInActiveViewer({ path: absolutePath(entry) });
   }, []);
 
+  // Every picture on screen, in the order shown, for the viewer's arrows:
+  // the files, then what was shared in chat.
+  const pictures = useMemo<ReadonlyArray<ViewerPicture>>(
+    () => [
+      ...groups.flatMap((group) =>
+        group.tiles
+          .filter((entry) => entry.mediaKind === "picture" && isImageFilePath(entry.relativePath))
+          .map((picture) => ({
+            key: mediaEntryKey(picture),
+            name: mediaFileName(picture),
+            detail: describeChange(picture, true),
+            load: () => readCurrent(picture),
+            ...(picture.change === "modified"
+              ? {
+                  before: {
+                    // As it was before this thread first touched it.
+                    load: () =>
+                      ensureEnvironmentApi(environmentId)
+                        .orchestration.getTurnFile({
+                          threadId: picture.threadId,
+                          range: { kind: "thread", toTurnCount: picture.checkpointTurnCount },
+                          side: "before",
+                          path: picture.repositoryPath,
+                        })
+                        .then(revisionFileDataUrl),
+                  },
+                }
+              : {}),
+          })),
+      ),
+      ...chatVisible
+        .filter((entry) => entry.mediaKind === "picture")
+        .map((picture) => ({
+          key: chatMediaKey(picture),
+          name: picture.name,
+          detail: describeShared(picture, true),
+          load: () =>
+            picture.source.kind === "remote"
+              ? Promise.resolve(picture.source.url)
+              : readChatMediaFile(environmentId, picture).then(readResultDataUrl),
+        })),
+    ],
+    [chatVisible, environmentId, groups, readCurrent],
+  );
+
+  /** Open the viewer at one picture; false when the viewer could not open. */
+  const openPictureAt = useCallback(
+    (key: string): boolean =>
+      openExpandedImagePreview({
+        images: pictures.map(({ key: _key, ...picture }) => picture),
+        index: Math.max(
+          0,
+          pictures.findIndex((picture) => picture.key === key),
+        ),
+      }),
+    [pictures],
+  );
+
   const openPicture = useCallback(
     (entry: MediaEntry) => {
-      const index = pictures.findIndex(
-        (picture) => mediaEntryKey(picture) === mediaEntryKey(entry),
-      );
-      const opened = openExpandedImagePreview({
-        images: pictures.map((picture) => ({
-          name: mediaFileName(picture),
-          detail: describeChange(picture, true),
-          load: () => readCurrent(picture),
-          ...(picture.change === "modified"
-            ? {
-                before: {
-                  // As it was before this thread first touched it.
-                  load: () =>
-                    ensureEnvironmentApi(environmentId)
-                      .orchestration.getTurnFile({
-                        threadId: picture.threadId,
-                        range: { kind: "thread", toTurnCount: picture.checkpointTurnCount },
-                        side: "before",
-                        path: picture.repositoryPath,
-                      })
-                      .then(revisionFileDataUrl),
-                },
-              }
-            : {}),
-        })),
-        index: Math.max(0, index),
-      });
-      if (!opened) {
+      if (!openPictureAt(mediaEntryKey(entry))) {
         openInFileViewer(entry);
       }
     },
-    [environmentId, openInFileViewer, pictures, readCurrent],
+    [openInFileViewer, openPictureAt],
+  );
+
+  const openChatEntry = useCallback(
+    (entry: ChatMediaEntry) => {
+      if (entry.mediaKind === "picture") {
+        openPictureAt(chatMediaKey(entry));
+        return;
+      }
+      if (entry.source.kind === "attachment" && entry.source.attachment.type === "file") {
+        const attachment = entry.source.attachment;
+        setPreviewedFile({
+          name: attachment.name,
+          kind: attachment.kind,
+          loadBlob: () => loadChatAttachmentBlob({ environmentId, attachmentId: attachment.id }),
+        });
+        return;
+      }
+      if (entry.source.kind === "file") {
+        openFileInActiveViewer({ path: entry.source.path });
+      }
+    },
+    [environmentId, openPictureAt],
   );
 
   const openEntry = useCallback(
@@ -260,7 +356,7 @@ export const MediaPanel = memo(function MediaPanel(props: MediaPanelProps) {
           : []),
         { id: "open-viewer", label: "Open in file viewer" },
         {
-          id: "go-to-turn",
+          id: "go-to-chat",
           label: otherThread
             ? `Go to turn ${entry.checkpointTurnCount} in "${entry.threadTitle.trim() || "Untitled thread"}"`
             : `Go to turn ${entry.checkpointTurnCount} in chat`,
@@ -280,14 +376,83 @@ export const MediaPanel = memo(function MediaPanel(props: MediaPanelProps) {
         case "open-viewer":
           openInFileViewer(entry);
           return;
-        case "go-to-turn":
-          onGoToTurn(entry);
+        case "go-to-chat":
+          onGoToChat({ threadId: entry.threadId, messageId: entry.assistantMessageId });
           return;
         default:
           return;
       }
     },
-    [environmentId, onGoToTurn, openInFileViewer, openPicture, threadId],
+    [environmentId, onGoToChat, openInFileViewer, openPicture, threadId],
+  );
+
+  const showChatContextMenu = useCallback(
+    async (entry: ChatMediaEntry, position: { readonly x: number; readonly y: number }) => {
+      const api = readLocalApi();
+      if (!api) {
+        return;
+      }
+      const otherThread = entry.threadId !== threadId;
+      const openItems: Array<{ id: MediaMenuAction; label: string }> = [
+        { id: "preview", label: entry.mediaKind === "picture" ? "Preview" : "Open" },
+        ...(entry.source.kind === "file"
+          ? [{ id: "open-viewer" as const, label: "Open in file viewer" }]
+          : []),
+        ...(entry.messageId !== null
+          ? [
+              {
+                id: "go-to-chat" as const,
+                label: otherThread
+                  ? `Go to message in "${entry.threadTitle.trim() || "Untitled thread"}"`
+                  : "Go to message in chat",
+              },
+            ]
+          : []),
+      ];
+      // A picture on disk gets the file's own actions; one that lives only in
+      // the chat (an attachment, a screenshot, a web picture) has none.
+      const filePath = entry.source.kind === "file" ? entry.source.path : null;
+      const launchers = readFileActionLaunchers(environmentId);
+      const target: FileActionTarget | null =
+        filePath === null
+          ? null
+          : {
+              path: filePath,
+              kind: "file",
+              relativePath: relativePathWithinCwd(filePath, entry.cwd),
+              workspaceRoot: entry.cwd,
+            };
+      const clicked = await api.contextMenu.show(
+        target === null ? openItems : fileActionMenuItems(target, launchers, openItems),
+        position,
+      );
+      if (target !== null && runFileAction(clicked, target, launchers)) {
+        return;
+      }
+      switch (clicked) {
+        case "preview":
+          openChatEntry(entry);
+          return;
+        case "open-viewer":
+          if (filePath !== null) openFileInActiveViewer({ path: filePath });
+          return;
+        case "go-to-chat":
+          onGoToChat({ threadId: entry.threadId, messageId: entry.messageId });
+          return;
+        default:
+          return;
+      }
+    },
+    [environmentId, onGoToChat, openChatEntry, threadId],
+  );
+
+  const onChatEntryContextMenu = useCallback(
+    (entry: ChatMediaEntry, event: MouseEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      void showChatContextMenu(entry, { x: event.clientX, y: event.clientY });
+    },
+    [showChatContextMenu],
   );
 
   const onEntryContextMenu = useCallback(
@@ -401,7 +566,7 @@ export const MediaPanel = memo(function MediaPanel(props: MediaPanelProps) {
           ) : (
             <p className="px-3 py-3 text-xs text-muted-foreground">Loading media…</p>
           )
-        ) : groups.length === 0 ? (
+        ) : groups.length === 0 && chatVisible.length === 0 && !chatIndexing ? (
           <p className="px-3 py-3 text-xs text-muted-foreground">
             {query.trim().length > 0
               ? `Nothing matches "${query.trim()}".`
@@ -450,13 +615,48 @@ export const MediaPanel = memo(function MediaPanel(props: MediaPanelProps) {
             </section>
           ))
         )}
+        {entries !== undefined && (chatVisible.length > 0 || chatIndexing) ? (
+          <section aria-label="Shared in chat">
+            <SectionLabel className="px-3 pt-3 pb-1.5">
+              Shared in chat
+              <span className="ml-1.5 font-mono tracking-normal normal-case">
+                {chatVisible.length}
+              </span>
+            </SectionLabel>
+            {chatIndexing ? (
+              <p className="px-3 pb-1.5 text-[11px] text-muted-foreground">
+                Still looking through older chats.
+              </p>
+            ) : null}
+            {chatVisible.length > 0 ? (
+              <div className="grid grid-cols-[repeat(auto-fill,minmax(136px,1fr))] gap-x-2 gap-y-3 px-3">
+                {chatVisible.map((entry) => (
+                  <ChatMediaTile
+                    key={chatMediaKey(entry)}
+                    entry={entry}
+                    environmentId={environmentId}
+                    showThread={showThread}
+                    onOpen={openChatEntry}
+                    onContextMenu={onChatEntryContextMenu}
+                  />
+                ))}
+              </div>
+            ) : null}
+          </section>
+        ) : null}
         {entries !== undefined ? (
           <p className="mx-3 mt-4 border-t border-border/60 pt-2 text-[11px] text-muted-foreground">
-            {listing.data?.truncated ? "Showing the newest 2,000 files. " : ""}
-            Files saved outside the project's folder, or in folders git ignores, don't show here.
+            {listing.data?.truncated || listing.data?.chatTruncated
+              ? "Showing the newest 2,000. "
+              : ""}
+            Files outside the project's folder, or in folders git ignores, show here only if the
+            chat showed them.
           </p>
         ) : null}
       </div>
+      {previewedFile ? (
+        <FilePreviewDialog request={previewedFile} onClose={() => setPreviewedFile(null)} />
+      ) : null}
     </div>
   );
 });
@@ -495,12 +695,23 @@ function EntryMeta(props: { readonly entry: MediaEntry; readonly showThread: boo
 }
 
 /** What a tile shows and how it gets it. */
-function tileSource(entry: MediaEntry, environmentId: EnvironmentId) {
+interface TileSource {
+  readonly kind: "picture" | "pdf" | "video";
+  /** The thumbnail cache's key, or null when there is nothing to read. */
+  readonly key: string | null;
+  readonly read: (() => Promise<ProjectReadFileResult | ProjectRevisionFileResult>) | null;
+  readonly tooBig: boolean;
+  /** A web picture, shown from its address as the chat shows it. */
+  readonly url?: string;
+  readonly size: number;
+}
+
+function tileSource(entry: MediaEntry, environmentId: EnvironmentId): TileSource {
   if (entry.mediaKind === "video") {
     // Only the first frame kept from playing it: a tile never downloads a
     // whole video just to draw itself.
     return {
-      kind: "video" as const,
+      kind: "video",
       key: videoPosterKey(
         environmentId,
         resolvePathLinkTarget(entry.relativePath, entry.cwd),
@@ -508,13 +719,14 @@ function tileSource(entry: MediaEntry, environmentId: EnvironmentId) {
       ),
       read: null,
       tooBig: false,
+      size: entry.size,
     };
   }
   const isPdf = entry.mediaKind === "document";
   const tooBig = entry.size > (isPdf ? MAX_DOCUMENT_PREVIEW_BYTES : MAX_PREVIEW_BYTES);
   const previewable = !tooBig && (isPdf || isImageFilePath(entry.relativePath));
   return {
-    kind: isPdf ? ("pdf" as const) : ("picture" as const),
+    kind: isPdf ? "pdf" : "picture",
     // The version changes with every write, so a rewritten file reads again.
     key: previewable
       ? `media|${environmentId}|${entry.cwd}|${entry.relativePath}|${entry.version}`
@@ -526,27 +738,59 @@ function tileSource(entry: MediaEntry, environmentId: EnvironmentId) {
         ...(isPdf ? { documents: true } : {}),
       }),
     tooBig,
+    size: entry.size,
   };
 }
 
-const MediaTile = memo(function MediaTile(props: {
-  readonly entry: MediaEntry;
-  readonly environmentId: EnvironmentId;
-  readonly showThread: boolean;
-  readonly onOpen: (entry: MediaEntry) => void;
-  readonly onContextMenu: (entry: MediaEntry, event: MouseEvent) => void;
+function chatTileSource(entry: ChatMediaEntry, environmentId: EnvironmentId): TileSource {
+  const isPdf = entry.mediaKind === "document";
+  if (entry.source.kind === "remote") {
+    return {
+      kind: "picture",
+      key: null,
+      read: null,
+      tooBig: false,
+      url: entry.source.url,
+      size: 0,
+    };
+  }
+  const tooBig = entry.size > (isPdf ? MAX_DOCUMENT_PREVIEW_BYTES : MAX_PREVIEW_BYTES);
+  return {
+    kind: isPdf ? "pdf" : "picture",
+    key: tooBig ? null : `chat|${environmentId}|${entry.id}|${entry.version}`,
+    read: () =>
+      readChatMediaFile(environmentId, entry).then(
+        (result) => result ?? { kind: "missing" as const, relativePath: entry.name },
+      ),
+    tooBig,
+    size: entry.size,
+  };
+}
+
+/** A tile: the thumbnail, the name under it, and a line about it. */
+function MediaTileView(props: {
+  readonly tileKey: string;
+  readonly name: string;
+  readonly title: string;
+  readonly source: TileSource;
+  readonly meta: ReactNode;
+  readonly onOpen: () => void;
+  readonly onContextMenu: (event: MouseEvent) => void;
 }) {
-  const { entry, environmentId, showThread, onOpen, onContextMenu } = props;
+  const { source, name } = props;
   const ref = useRef<HTMLButtonElement>(null);
   const near = useNearViewport(ref);
-  const source = tileSource(entry, environmentId);
   const thumbnail = useMediaThumbnail({ key: source.key, read: source.read, enabled: near });
-  const name = mediaFileName(entry);
-  const folder = mediaFolder(entry);
-  const ready = thumbnail.status === "ready" && thumbnail.url;
+  const [remoteFailed, setRemoteFailed] = useState(false);
+  const url = source.url ?? (thumbnail.status === "ready" ? thumbnail.url : undefined);
+  const ready = url !== undefined && !(source.url !== undefined && remoteFailed);
+  const failed =
+    source.url !== undefined
+      ? remoteFailed
+      : thumbnail.status === "missing" || thumbnail.status === "unavailable" || source.key === null;
 
   return (
-    <div className="min-w-0" data-media-tile={entry.relativePath}>
+    <div className="min-w-0" data-media-tile={props.tileKey}>
       <button
         ref={ref}
         type="button"
@@ -557,34 +801,38 @@ const MediaTile = memo(function MediaTile(props: {
               ? `Open ${name}`
               : `Preview ${name}`
         }
-        title={folder ? `${folder}/${name}` : name}
+        title={props.title}
         className={cn(
           "relative block aspect-[4/3] w-full overflow-hidden rounded-md border border-border/70 bg-muted/40 focus-ring",
           source.kind === "picture" ? "cursor-zoom-in" : "cursor-pointer",
         )}
-        onClick={() => onOpen(entry)}
-        onContextMenu={(event) => onContextMenu(entry, event)}
+        onClick={props.onOpen}
+        onContextMenu={props.onContextMenu}
       >
         {ready ? (
           <img
-            src={thumbnail.url}
+            src={url}
             alt=""
             className={cn(
               "size-full",
-              // A page or a screenshot reads from the top; a frame from its middle.
               source.kind === "video" ? "object-cover" : "object-cover object-top",
               source.kind === "pdf" && "bg-white",
             )}
             draggable={false}
+            {...(source.url !== undefined
+              ? {
+                  loading: "lazy" as const,
+                  referrerPolicy: "no-referrer" as const,
+                  onError: () => setRemoteFailed(true),
+                }
+              : {})}
           />
         ) : source.kind === "video" ? (
           <span className="flex size-full flex-col items-center justify-center gap-1 text-[11px] text-muted-foreground">
             <FilmIcon className="size-4" aria-hidden="true" />
-            {formatBytes(entry.size)}
+            {formatBytes(source.size)}
           </span>
-        ) : thumbnail.status === "missing" ||
-          thumbnail.status === "unavailable" ||
-          source.key === null ? (
+        ) : failed ? (
           <span className="flex size-full flex-col items-center justify-center gap-1 text-[11px] text-muted-foreground">
             {thumbnail.status === "missing" ? (
               <ImageOffIcon className="size-4" aria-hidden="true" />
@@ -612,8 +860,58 @@ const MediaTile = memo(function MediaTile(props: {
       <span className="mt-1 block truncate text-xs text-foreground" title={name}>
         {name}
       </span>
-      <EntryMeta entry={entry} showThread={showThread} />
+      {props.meta}
     </div>
+  );
+}
+
+const MediaTile = memo(function MediaTile(props: {
+  readonly entry: MediaEntry;
+  readonly environmentId: EnvironmentId;
+  readonly showThread: boolean;
+  readonly onOpen: (entry: MediaEntry) => void;
+  readonly onContextMenu: (entry: MediaEntry, event: MouseEvent) => void;
+}) {
+  const { entry, onOpen, onContextMenu } = props;
+  const name = mediaFileName(entry);
+  const folder = mediaFolder(entry);
+  return (
+    <MediaTileView
+      tileKey={entry.relativePath}
+      name={name}
+      title={folder ? `${folder}/${name}` : name}
+      source={tileSource(entry, props.environmentId)}
+      meta={<EntryMeta entry={entry} showThread={props.showThread} />}
+      onOpen={() => onOpen(entry)}
+      onContextMenu={(event) => onContextMenu(entry, event)}
+    />
+  );
+});
+
+const ChatMediaTile = memo(function ChatMediaTile(props: {
+  readonly entry: ChatMediaEntry;
+  readonly environmentId: EnvironmentId;
+  readonly showThread: boolean;
+  readonly onOpen: (entry: ChatMediaEntry) => void;
+  readonly onContextMenu: (entry: ChatMediaEntry, event: MouseEvent) => void;
+}) {
+  const { entry, onOpen, onContextMenu } = props;
+  return (
+    <MediaTileView
+      tileKey={entry.name}
+      name={entry.name}
+      title={entry.source.kind === "file" ? entry.source.path : entry.name}
+      source={chatTileSource(entry, props.environmentId)}
+      meta={
+        <span className="block min-w-0 truncate text-[11px] text-muted-foreground">
+          {props.showThread
+            ? entry.threadTitle.trim() || "Untitled thread"
+            : `${CHAT_MEDIA_ORIGIN_LABELS[entry.origin]} · ${formatRelativeTimeLabel(entry.sharedAt)}`}
+        </span>
+      }
+      onOpen={() => onOpen(entry)}
+      onContextMenu={(event) => onContextMenu(entry, event)}
+    />
   );
 });
 

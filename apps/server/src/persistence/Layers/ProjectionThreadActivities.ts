@@ -7,6 +7,11 @@ import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
 
 import { toPersistenceDecodeError, toPersistenceSqlError } from "../Errors.ts";
+import {
+  deleteThreadMediaForThread,
+  replaceThreadMedia,
+  threadMediaForActivity,
+} from "../threadMedia.ts";
 
 import {
   DeleteProjectionThreadActivitiesInput,
@@ -174,8 +179,18 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
       `,
   });
 
+  // Only tool steps show pictures; their media is rewritten with them.
   const upsert: ProjectionThreadActivityRepositoryShape["upsert"] = (row) =>
     upsertProjectionThreadActivityRow(row).pipe(
+      Effect.andThen(
+        row.kind.startsWith("tool.")
+          ? replaceThreadMedia(
+              sql,
+              row.activityId,
+              threadMediaForActivity({ ...row, eventSequence: row.eventSequence ?? null }),
+            )
+          : Effect.void,
+      ),
       Effect.mapError(
         toPersistenceSqlOrDecodeError(
           "ProjectionThreadActivityRepository.upsert:query",
@@ -210,6 +225,7 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
 
   const deleteByThreadId: ProjectionThreadActivityRepositoryShape["deleteByThreadId"] = (input) =>
     deleteProjectionThreadActivityRows(input).pipe(
+      Effect.andThen(deleteThreadMediaForThread(sql, input.threadId, "activity")),
       Effect.mapError(
         toPersistenceSqlError("ProjectionThreadActivityRepository.deleteByThreadId:query"),
       ),

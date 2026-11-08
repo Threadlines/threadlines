@@ -3,14 +3,26 @@
  * and the groups (by type or by thread). Pure, so the panel only renders.
  */
 import type {
+  MessageId,
+  OrchestrationChatMediaEntry,
+  OrchestrationChatMediaOrigin,
   OrchestrationMediaKind,
   OrchestrationProjectMediaEntry,
+  ThreadId,
 } from "@threadlines/contracts";
 import { MEDIA_KIND_ORDER } from "@threadlines/shared/media";
 
 import { pluralize } from "../../lib/utils";
 
 export type MediaEntry = OrchestrationProjectMediaEntry;
+/** A picture the chat showed, or a picture or PDF you attached. */
+export type ChatMediaEntry = OrchestrationChatMediaEntry;
+
+/** A message to show in a thread's chat; no message shows the thread. */
+export interface MediaChatTarget {
+  readonly threadId: ThreadId;
+  readonly messageId: MessageId | null;
+}
 export type MediaScope = "thread" | "project";
 export type MediaSort = "newest" | "oldest" | "name";
 export type MediaGroupBy = "type" | "thread";
@@ -146,6 +158,45 @@ export function buildMediaGroups(input: {
     .map(([threadId, entries]) =>
       splitGroup(threadId, entries[0]?.threadTitle.trim() || "Untitled thread", entries),
     );
+}
+
+/** Where in the chat a picture showed, as its tile says it. */
+export const CHAT_MEDIA_ORIGIN_LABELS: Readonly<Record<OrchestrationChatMediaOrigin, string>> = {
+  attached: "You attached",
+  tool: "From a tool",
+  reply: "In a reply",
+};
+
+/** One identity per picture shared in chat. */
+export function chatMediaKey(entry: Pick<ChatMediaEntry, "id">): string {
+  return `chat\u0000${entry.id}`;
+}
+
+/**
+ * What "Shared in chat" shows: searched by name and thread like files, and
+ * sorted the same way (by when it was shared).
+ */
+export function filterChatMedia(input: {
+  readonly entries: ReadonlyArray<ChatMediaEntry>;
+  readonly query: string;
+  readonly sort: MediaSort;
+}): ReadonlyArray<ChatMediaEntry> {
+  const words = input.query.trim().toLowerCase().split(/\s+/u).filter(Boolean);
+  return input.entries
+    .filter((entry) => {
+      const haystack = `${entry.name} ${entry.threadTitle}`.toLowerCase();
+      return words.every((word) => haystack.includes(word));
+    })
+    .toSorted((left, right) => {
+      if (input.sort === "name") {
+        return (
+          left.name.localeCompare(right.name, undefined, { sensitivity: "base", numeric: true }) ||
+          left.id.localeCompare(right.id)
+        );
+      }
+      const byTime = left.sharedAt.localeCompare(right.sharedAt);
+      return input.sort === "newest" ? -byTime : byTime;
+    });
 }
 
 /** How many files of each kind, for the launcher row. */

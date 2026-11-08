@@ -9,8 +9,21 @@
  */
 import { create } from "zustand";
 
-import type { EnvironmentId, ProjectEntry, ScopedThreadRef } from "@threadlines/contracts";
+import type { EnvironmentId, ScopedThreadRef } from "@threadlines/contracts";
+import {
+  FILE_REFERENCE_SEARCH_LIMIT,
+  findReferencedFile,
+  parseChatFileReference,
+  placeReferenceInSearch,
+} from "@threadlines/shared/chatLinks";
 import { isWindowsAbsolutePath } from "@threadlines/shared/path";
+
+export {
+  FILE_REFERENCE_SEARCH_LIMIT,
+  findReferencedFile,
+  parseChatFileReference,
+  type ReferencedFileMatch,
+} from "@threadlines/shared/chatLinks";
 
 export interface FileViewerContext {
   environmentId: EnvironmentId;
@@ -519,104 +532,6 @@ export function openDirectoryInActiveViewer(input: { path: string }): boolean {
   });
 }
 
-/**
- * Inline-code text that reads as a file reference: an optionally-pathed file
- * name with a letter-led extension and an optional `:line[:column]` suffix.
- * (`v0.1.0` and package names like `effect/Schema` deliberately do not match.)
- */
-const CHAT_FILE_REFERENCE_PATTERN =
-  /^(?<path>[\w.@~-]+(?:\/[\w.@~-]+)*\.[A-Za-z][A-Za-z0-9]{0,7})(?::(?<line>\d+)(?::\d+)?)?$/;
-
-/** Bare dotted identifiers (`telemetry.step`, `tool.started`) are common in
- * technical prose and look exactly like extensionless file names to a regex.
- * A path makes intent explicit; a bare name needs a familiar file extension
- * before the chat turns it into a file chip. */
-const CHAT_BARE_FILE_EXTENSIONS = new Set([
-  "astro",
-  "bash",
-  "bat",
-  "c",
-  "cc",
-  "cjs",
-  "cpp",
-  "cs",
-  "css",
-  "csv",
-  "cxx",
-  "env",
-  "fish",
-  "fs",
-  "fsx",
-  "gif",
-  "go",
-  "gql",
-  "graphql",
-  "h",
-  "hpp",
-  "htm",
-  "html",
-  "hxx",
-  "ico",
-  "java",
-  "jpeg",
-  "jpg",
-  "js",
-  "json",
-  "jsonc",
-  "jsx",
-  "kt",
-  "kts",
-  "less",
-  "lock",
-  "md",
-  "mdx",
-  "mjs",
-  "pdf",
-  "php",
-  "png",
-  "proto",
-  "ps1",
-  "psm1",
-  "py",
-  "pyi",
-  "rb",
-  "rs",
-  "sass",
-  "scss",
-  "sh",
-  "sql",
-  "svelte",
-  "svg",
-  "swift",
-  "toml",
-  "ts",
-  "tsv",
-  "tsx",
-  "txt",
-  "vue",
-  "webp",
-  "xml",
-  "yaml",
-  "yml",
-  "zsh",
-]);
-
-export function parseChatFileReference(
-  text: string,
-): { path: string; line: number | undefined } | null {
-  const match = CHAT_FILE_REFERENCE_PATTERN.exec(text.trim());
-  if (!match?.groups?.path) {
-    return null;
-  }
-  const path = match.groups.path;
-  const extension = path.slice(path.lastIndexOf(".") + 1).toLowerCase();
-  if (!path.includes("/") && !CHAT_BARE_FILE_EXTENSIONS.has(extension)) {
-    return null;
-  }
-  const line = match.groups.line ? Number.parseInt(match.groups.line, 10) : undefined;
-  return { path, line };
-}
-
 /** Where an inline-code file reference points, once it has been placed. */
 export interface ResolvedChatFileReference {
   /** The folder the path is relative to: the thread's, or the project folder behind it. */
@@ -698,9 +613,11 @@ export async function placeChatFileReference(input: {
       // file name instead, it ranks every file with that name first.
       result = await search(folder, path.slice(path.lastIndexOf("/") + 1));
     }
-    let match = findReferencedFile(result.entries, path);
-    const foundAsWritten = match.status === "found" && match.path === path;
-    if (isOlderServer && path.includes("/") && !foundAsWritten) {
+    if (isOlderServer && path.includes("/")) {
+      const olderMatch = findReferencedFile(result.entries, path);
+      if (olderMatch.status === "found" && olderMatch.path === path) {
+        return { status: "found", file: { cwd: folder, relativePath: path, line } };
+      }
       // The older server's index leaves out ignored files, so the path as
       // written is read where it says. A read that fails proves nothing, and
       // the path as written stands.
@@ -711,11 +628,12 @@ export async function placeChatFileReference(input: {
         return { status: "found", file: { cwd: folder, relativePath: path, line } };
       }
     }
-    if (!isOlderServer && result.truncated && path.includes("/") && !foundAsWritten) {
-      // The project is past the index's size cap, so one file found ending in
-      // the path does not mean it is the only one.
-      match = match.status === "none" ? match : { status: "ambiguous" };
-    }
+    // A current server's answer is read the way the Media tab reads it on the
+    // server (placeReferenceInSearch); an older one's ranked hits are not
+    // capped the same way.
+    const match = isOlderServer
+      ? findReferencedFile(result.entries, path)
+      : placeReferenceInSearch(result, path);
     if (match.status === "found") {
       return { status: "found", file: { cwd: folder, relativePath: match.path, line } };
     }
@@ -782,52 +700,6 @@ export async function openChatFileReference(
     return "opened";
   }
   return place?.status === "ambiguous" ? "ambiguous" : "none";
-}
-
-/**
- * Files asked for per lookup. A current server returns only files the
- * reference can name, so two settle whether a path names one; an older one
- * ranks fuzzy hits, and the rest of the page gives the real ones room.
- */
-export const FILE_REFERENCE_SEARCH_LIMIT = 32;
-
-/** Which workspace search hit an inline-code reference names. */
-export type ReferencedFileMatch =
-  | { readonly status: "found"; readonly path: string }
-  | { readonly status: "ambiguous" }
-  | { readonly status: "none" };
-
-/**
- * The workspace search hit an inline-code reference names. The search is
- * fuzzy, so its best hit can be some other file entirely: a reference only
- * ever resolves to a file whose path is it or ends with it. The file at the
- * path as written wins. Otherwise a bare name (`README.txt`) is the best-ranked
- * file with exactly that name, in whatever folder. A path is the one file whose
- * path ends with it, since agents often cite a path from inside a subfolder
- * (`Model/ReturnForm.php` for `shop/app/code/Buyfire/ReturnForm/Model/ReturnForm.php`);
- * when several do, nothing says which one is meant.
- */
-export function findReferencedFile(
-  entries: ReadonlyArray<ProjectEntry>,
-  reference: string,
-): ReferencedFileMatch {
-  const wanted = reference.toLowerCase();
-  const ending = `/${wanted}`;
-  const matches = entries.filter((entry) => {
-    if (entry.kind !== "file") return false;
-    const path = entry.path.toLowerCase();
-    return path === wanted || path.endsWith(ending);
-  });
-  // Exact spelling first: on a case-sensitive disk `src/Index.ts` and
-  // `src/index.ts` are two files.
-  const asWritten =
-    matches.find((entry) => entry.path === reference) ??
-    matches.find((entry) => entry.path.toLowerCase() === wanted);
-  const best = asWritten ?? (wanted.includes("/") && matches.length > 1 ? undefined : matches[0]);
-  if (best) {
-    return { status: "found", path: best.path };
-  }
-  return matches.length > 1 ? { status: "ambiguous" } : { status: "none" };
 }
 
 export interface OpenFileInViewerInput {

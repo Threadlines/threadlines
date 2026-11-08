@@ -305,14 +305,16 @@ Pictures and PDFs show in the viewer, PDFs with zoom and find. An SVG shows as a
       "before and after",
       "play video",
       "pdf preview",
+      "attachments",
+      "shared in chat",
     ],
-    body: `The Media tab in the right sidebar lists the pictures, videos, sounds and documents (PDFs, Word, slides and the like) that agents created or changed. Open it from the sidebar's list of panels or its + menu.
+    body: `The Media tab in the right sidebar lists the pictures, videos, sounds and documents (PDFs, Word, slides and the like) that agents created or changed, then, under Shared in chat, the pictures the chat showed and the pictures and PDFs you attached. Open it from the sidebar's list of panels or its + menu.
 
 It opens on the current thread; All threads shows every thread in the project, each file marked with the thread that made it. Files are grouped by type, and each is marked A (the thread added it) or M (it changed one that was there). Search by name, sort newest, oldest or by name, and group by type or by thread. Pictures and PDFs show as small pictures (a PDF its first page); a video shows its first frame once it has played.
 
 Click a picture to see it full size, with arrows to step through the rest; a changed picture has Before and After. A PDF, video or sound file opens in the file viewer, where videos and sound play. Right-click any file to preview it, open it in the file viewer, go to the turn that made it, open it in your editor, reveal it in Finder or Explorer, or copy its path.
 
-Only files inside the project's folder are listed. A file an agent saved elsewhere (a temp folder, say), one in a folder git ignores, or one deleted since, doesn't show.
+Files agents made are listed only from inside the project's folder. Shared in chat covers the rest: a screenshot a tool took, a picture an agent's reply showed (even from a temp folder or a folder git ignores), and your attachments. Each says where it came from (You attached, From a tool, In a reply), and right-clicking it can go to that message. A picture is listed once, at the newest place it showed, and one the files above already list isn't repeated. A file deleted since doesn't show. Right after an update, pictures from older chats appear over the first minutes while they are looked through.
 
 In the Diff tab, a changed picture shows its Before and After side by side instead of a file name.`,
   },
