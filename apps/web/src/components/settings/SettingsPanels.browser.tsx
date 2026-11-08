@@ -127,6 +127,8 @@ import {
 } from "../../environments/providerComputer";
 import { resetSourceControlDiscoveryStateForTests } from "../../lib/sourceControlDiscoveryState";
 import { resetTestPage } from "../../lib/testPage.browser-harness";
+import { readAfterEachPaint } from "../../lib/frameProbe.browser-harness";
+import { chooseTheme, setBackdropStatus, useActiveTheme } from "../../theme/themeStore";
 
 /**
  * The app-wide providers these panels are always mounted under. Settings rows
@@ -6955,5 +6957,79 @@ describe("Settings search rows", () => {
       Reflect.deleteProperty(window, "desktopBridge");
     }
     expect(drawnAlone).toBe(liveRows.length - cannotDrawAlone.size);
+  });
+});
+
+describe("AppearanceSettingsPanel", () => {
+  afterEach(async () => {
+    chooseTheme({ kind: "builtin", id: "light" });
+    setBackdropStatus(null);
+    localStorage.clear();
+    await resetTestPage();
+    resetServerStateForTests();
+    await __resetLocalApiForTests();
+  });
+
+  // The line on the art sits between Glass and Motion and the gallery: a
+  // theme without art, or art that hasn't started, keeps its place.
+  it("holds the gallery still while switching between themes with and without art", async () => {
+    setServerConfigSnapshot(createBaseServerConfig());
+    let activeName: string | null = null;
+    function ReadActive() {
+      activeName = useActiveTheme().manifest?.name ?? null;
+      return null;
+    }
+    await renderWithTestRouter(
+      <TestAppProviders>
+        <ReadActive />
+        <AppearanceSettingsPanel />
+      </TestAppProviders>,
+    );
+    const pick = async (key: string, name: string) => {
+      const tile = await vi.waitUntil(() =>
+        document.querySelector<HTMLElement>(`[data-theme-tile="${key}"]`),
+      );
+      await page.elementLocator(tile).click();
+      await vi.waitFor(() => expect(activeName).toBe(name));
+    };
+    const galleryTop = () =>
+      document.querySelector('[data-place="appearance.theme"]')!.getBoundingClientRect().top;
+
+    await pick("starter:meadow", "Meadow");
+    setBackdropStatus({
+      kind: "running",
+      fps: 24,
+      msPerSecond: 40,
+      energy: "light",
+      throttled: false,
+    });
+    await expect
+      .element(page.getByText("Live art is on, a light load on this computer."))
+      .toBeInTheDocument();
+
+    const start = galleryTop();
+    const tops: number[] = [];
+    const stop = readAfterEachPaint(() => tops.push(galleryTop()));
+    try {
+      await pick("starter:phosphor", "Phosphor");
+      await expect.element(page.getByText("This theme has no live art.")).toBeInTheDocument();
+      // Back to art that hasn't reported how it runs yet, then running.
+      await pick("starter:meadow", "Meadow");
+      setBackdropStatus({
+        kind: "running",
+        fps: 24,
+        msPerSecond: 40,
+        energy: "light",
+        throttled: false,
+      });
+      await expect
+        .element(page.getByText("Live art is on, a light load on this computer."))
+        .toBeInTheDocument();
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    } finally {
+      stop();
+    }
+    expect(tops.length).toBeGreaterThan(0);
+    expect(tops.filter((top) => top !== start)).toEqual([]);
   });
 });
