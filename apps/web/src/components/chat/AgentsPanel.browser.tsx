@@ -18,6 +18,7 @@ import { AgentsPanel } from "./AgentsPanel";
 import { ChatRightPanel } from "../ChatRightPanel";
 import { buildRightPanelLauncherStates } from "./rightPanelLauncherState";
 import type { ThreadBackgroundRunItem } from "./threadActivity";
+import { nextFrames } from "../../lib/frameProbe.browser-harness";
 import { resetTestPage } from "../../lib/testPage.browser-harness";
 
 const transcriptRpcMock = vi.hoisted(() => vi.fn());
@@ -1489,13 +1490,7 @@ describe("AgentsPanel", () => {
         .offsetWidth;
       const paddingLeaving = (available: number) =>
         `${row.clientWidth - parseFloat(getComputedStyle(row).paddingLeft) - actions - available}px`;
-      const settle = async () => {
-        for (let frame = 0; frame < 3; frame += 1) {
-          await new Promise((resolve) => {
-            requestAnimationFrame(() => resolve(null));
-          });
-        }
-      };
+      const settle = () => nextFrames(3);
 
       let flips = 0;
       const observer = new MutationObserver(() => {
