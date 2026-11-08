@@ -23,19 +23,21 @@ the shared full editor in settings and review dialogs. Options come from reporte
 capabilities and every change uses the existing persistence path.
 `composer-footer.css` owns the footer layout; `ai-provider-settings.css` maps tokens.
 
-Reuse decision: searched `AI settings` in the shared catalog and read
-`docs/ai-settings.md`. Extended `@app-core/ui/ai-settings` with icon-only controls,
+Reuse decision: searched `AI settings` in the shared catalog. Extended the
+portable `@app-core/ui/ai-settings` source with icon-only controls,
 mode glyphs and effort tones. The model panel retains its original row/meter
 interaction because a second toolbar changed that layout; descriptor and save
 logic still come from `traitControls.ts`.
 Effort's `iconOnly: 'auto'` uses the owner's content measurements and resize/font
 notifications; there is no fixed window-width cutoff or measurement polling loop.
 
-The shared owner is `F:/www/shared/app-core/packages/ui/src/ai-settings`.
-The pinned source distribution lives in `apps/web/src/lib/vendor/ai-settings`.
-Follow its `source.json` receipt and the [owner's maintenance guide](F:/www/shared/app-core/docs/ai-settings.md) to update it.
-Never edit the consumer copy: regenerate it from a verified owner revision, then
-run the update verification and Threadlines checks.
+The complete pinned source lives in `apps/web/src/lib/vendor/ai-settings`.
+Its `source.json` receipt records the shared owner, source path and SHA-256 hashes.
+Building and running Threadlines needs no sibling checkout, external UI package,
+or private service. Review the included JavaScript, declarations and CSS directly.
+For shared-source updates, regenerate the snapshot from a reviewed owner revision,
+update the receipt, and run the Threadlines checks. Keep the adapter and product
+policy here; keep portable rendering and interaction in the shared source.
 
 Run from the repository root with `node_modules/.bin` on PATH:
 
