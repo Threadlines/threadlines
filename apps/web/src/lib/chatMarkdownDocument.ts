@@ -23,7 +23,9 @@ import {
   resolveMarkdownFileLinkMeta,
   rewriteMarkdownFileUriHref,
 } from "../markdown-links";
-import { createFenceTracker, laterMathClosers } from "./markdownFences";
+import { createFenceTracker } from "./markdownFences";
+
+export { splitMarkdownBlocks } from "@threadlines/shared/markdownBlocks";
 
 /**
  * The markdown dialect chat speaks: GitHub-flavored, plus math. Only `$$`
@@ -189,68 +191,6 @@ export function buildInlineCodeFileLinkMeta(
     if (meta) metaBySpan.set(span, meta);
   }
   return metaBySpan;
-}
-
-/** ATX headings and thematic breaks, recognized only at the left margin: one
- *  space of indent and they can be content inside a list item instead. */
-const ATX_HEADING_LINE_REGEX = /^#{1,6}(?: |$)/;
-const THEMATIC_BREAK_LINE_REGEX = /^(?:\*{3,}|_{3,}|-{3,})[ \t]*$/;
-
-/**
- * Splits markdown into top-level blocks at blank lines outside fenced code
- * and display math, plus at headings and thematic breaks, which never continue
- * the block above them. Every render goes through this: a streaming message re-parses
- * only its growing tail, and a settled one keeps the same blocks so nothing
- * remounts when streaming stops.
- *
- * Fidelity note: because the final render no longer re-parses the whole
- * document, constructs that reference across blank lines (reference-style link
- * definitions, footnotes) and blank-line-separated indented code stay degraded
- * rather than healing at the end of the turn.
- */
-export function splitMarkdownBlocks(text: string): string[] {
-  const blocks: string[] = [];
-  const lines = text.split("\n");
-  const fence = createFenceTracker({ closesLater: laterMathClosers(lines) });
-  let current: string[] = [];
-  const flushCurrent = () => {
-    if (current.length > 0) {
-      blocks.push(current.join("\n"));
-      current = [];
-    }
-  };
-
-  for (const line of lines) {
-    if (fence.feed(line) !== "text") {
-      current.push(line);
-      continue;
-    }
-
-    if (line.trim() === "") {
-      flushCurrent();
-      continue;
-    }
-
-    if (ATX_HEADING_LINE_REGEX.test(line)) {
-      flushCurrent();
-      current.push(line);
-      continue;
-    }
-
-    // A `---` under a paragraph is that paragraph's setext heading underline,
-    // so only a break that starts a block is safe to cut on. `***` and `___`
-    // are never underlines and always break.
-    if (THEMATIC_BREAK_LINE_REGEX.test(line) && !(line.startsWith("-") && current.length > 0)) {
-      flushCurrent();
-      blocks.push(line);
-      continue;
-    }
-
-    current.push(line);
-  }
-
-  flushCurrent();
-  return blocks;
 }
 
 const TAIL_CONTAINER_PREFIX_REGEX = /^[ \t>]*(?:(?:[-*+]|\d{1,9}[.)])(?= ))?[ \t]*/;

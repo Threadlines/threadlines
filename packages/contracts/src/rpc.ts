@@ -276,6 +276,7 @@ import {
   OrchestrationGetTurnFileInput,
   OrchestrationListProjectMediaError,
   OrchestrationListProjectMediaInput,
+  OrchestrationReadChatMediaInput,
   OrchestrationGetRevertPlanError,
   OrchestrationGetRevertPlanInput,
   OrchestrationGetSnapshotError,
@@ -1820,6 +1821,12 @@ export const WsOrchestrationListProjectMediaRpc = Rpc.make(
   },
 );
 
+export const WsOrchestrationReadChatMediaRpc = Rpc.make(ORCHESTRATION_WS_METHODS.readChatMedia, {
+  payload: OrchestrationReadChatMediaInput,
+  success: OrchestrationRpcSchemas.readChatMedia.output,
+  error: OrchestrationListProjectMediaError,
+});
+
 export const WsOrchestrationGetRevertPlanRpc = Rpc.make(ORCHESTRATION_WS_METHODS.getRevertPlan, {
   payload: OrchestrationGetRevertPlanInput,
   success: OrchestrationRpcSchemas.getRevertPlan.output,
@@ -2798,6 +2805,7 @@ export const WsCoreRpcGroup = RpcGroup.make(
   WsOrchestrationGetFullThreadDiffRpc,
   WsOrchestrationGetTurnFileRpc,
   WsOrchestrationListProjectMediaRpc,
+  WsOrchestrationReadChatMediaRpc,
   WsOrchestrationGetRevertPlanRpc,
   WsOrchestrationSearchThreadsRpc,
   WsOrchestrationGetTurnActivitiesRpc,

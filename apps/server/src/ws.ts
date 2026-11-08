@@ -1370,6 +1370,20 @@ const makeCoreRpcLayer = (
             ),
             { "rpc.aggregate": "orchestration" },
           ),
+        [ORCHESTRATION_WS_METHODS.readChatMedia]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.readChatMedia,
+            projectMedia.readChatMedia(input).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationListProjectMediaError({
+                    message: "Failed to read this picture",
+                    cause,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
         [ORCHESTRATION_WS_METHODS.getRevertPlan]: (input) =>
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.getRevertPlan,

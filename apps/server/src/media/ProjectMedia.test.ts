@@ -2,7 +2,7 @@ import * as NodeFs from "node:fs";
 import * as NodeOs from "node:os";
 import * as NodePath from "node:path";
 
-import { ProjectId, ThreadId } from "@threadlines/contracts";
+import { EventId, MessageId, ProjectId, ThreadId, TurnId } from "@threadlines/contracts";
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
@@ -11,10 +11,16 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { CheckpointStore } from "../checkpointing/Services/CheckpointStore.ts";
 import { makeCheckpointStoreStub } from "../checkpointing/testing/CheckpointStoreStub.ts";
+import { ProjectionThreadActivityRepositoryLive } from "../persistence/Layers/ProjectionThreadActivities.ts";
+import { ProjectionThreadMessageRepositoryLive } from "../persistence/Layers/ProjectionThreadMessages.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import { ProjectionThreadActivityRepository } from "../persistence/Services/ProjectionThreadActivities.ts";
+import { ProjectionThreadMessageRepository } from "../persistence/Services/ProjectionThreadMessages.ts";
 import { VcsDriverRegistry, type VcsDriverHandle } from "../vcs/VcsDriverRegistry.ts";
+import { WorkspaceEntries } from "../workspace/Services/WorkspaceEntries.ts";
 import { WorkspaceFileSystem } from "../workspace/Services/WorkspaceFileSystem.ts";
 import { ProjectMedia, ProjectMediaLive } from "./ProjectMedia.ts";
+import { runThreadMediaBackfill } from "./ThreadMediaBackfill.ts";
 
 // The repository's root holds the project in its `app/` folder, so summary
 // paths (repository-root-relative) have to be read from inside that folder.
@@ -36,12 +42,33 @@ NodeFs.symlinkSync(
   NodePath.join(projectFolder, "link.png"),
 );
 
+// Files the stub workspace index holds, project-relative.
+const workspaceIndex = ["docs/cited.png", "docs/other.txt"];
+NodeFs.mkdirSync(NodePath.join(projectFolder, "docs"), { recursive: true });
+NodeFs.writeFileSync(NodePath.join(projectFolder, "docs", "cited.png"), "x");
+NodeFs.writeFileSync(NodePath.join(outsideFolder, "shot.png"), "x");
+NodeFs.writeFileSync(NodePath.join(outsideFolder, "PHOTO.JPEG"), "x");
+
 const layer = it.layer(
   ProjectMediaLive.pipe(
+    Layer.provideMerge(ProjectionThreadMessageRepositoryLive),
+    Layer.provideMerge(ProjectionThreadActivityRepositoryLive),
     Layer.provideMerge(SqlitePersistenceMemory),
     Layer.provideMerge(NodeServices.layer),
     Layer.provideMerge(Layer.succeed(CheckpointStore, makeCheckpointStoreStub())),
     Layer.provideMerge(Layer.mock(WorkspaceFileSystem)({})),
+    Layer.provideMerge(
+      Layer.mock(WorkspaceEntries)({
+        search: (input) =>
+          Effect.succeed({
+            entries: workspaceIndex
+              .filter((entry) => entry.toLowerCase().endsWith(input.query.toLowerCase()))
+              .map((entry) => ({ path: entry, kind: "file" as const })),
+            truncated: false,
+            match: "path-ending" as const,
+          }),
+      }),
+    ),
     Layer.provideMerge(
       Layer.mock(VcsDriverRegistry)({
         detect: () =>
@@ -247,6 +274,351 @@ layer("ProjectMedia", (it) => {
         });
         assert.deepEqual(result, { kind: "missing", relativePath: path });
       }
+    }),
+  );
+  it.effect("lists what the chat showed and what you attached, once each, newest first", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id, title, workspace_root, default_model_selection_json, scripts_json,
+          created_at, updated_at, deleted_at
+        )
+        VALUES ('project-chat', 'Chat', ${projectFolder}, NULL, '[]',
+          '2026-03-01T00:00:00.000Z', '2026-03-01T00:00:00.000Z', NULL)
+      `;
+      // The thread made `hero.png`, so the project listing shows it already.
+      yield* insertThread({
+        threadId: "thread-chat",
+        projectId: "project-chat",
+        title: "Screenshots",
+        turns: [[{ path: "app/hero.png", kind: "add", additions: 0, deletions: 0 }]],
+      });
+      const messages = yield* ProjectionThreadMessageRepository;
+      const activities = yield* ProjectionThreadActivityRepository;
+      const threadId = ThreadId.make("thread-chat");
+      const turnId = TurnId.make("thread-chat-turn-1");
+      const message = (
+        id: string,
+        role: "user" | "assistant",
+        text: string,
+        at: string,
+        extra: { readonly isStreaming?: boolean } = {},
+      ) => ({
+        messageId: MessageId.make(id),
+        threadId,
+        turnId,
+        role,
+        text,
+        isStreaming: extra.isStreaming ?? false,
+        createdAt: at,
+        updatedAt: at,
+      });
+      const askAttachments = [
+        {
+          type: "image",
+          id: "att-mock",
+          name: "mock.png",
+          mimeType: "image/png",
+          sizeBytes: 68,
+        },
+        {
+          type: "file",
+          kind: "pdf",
+          id: "att-brief",
+          name: "brief.pdf",
+          mimeType: "application/pdf",
+          sizeBytes: 900,
+        },
+        {
+          type: "file",
+          kind: "text",
+          id: "att-notes",
+          name: "notes.txt",
+          mimeType: "text/plain",
+          sizeBytes: 12,
+        },
+      ] as const;
+      yield* messages.upsert({
+        ...message(
+          "ask",
+          "user",
+          "Look at /tmp/typed-in-my-message.png",
+          "2026-03-01T00:01:00.000Z",
+        ),
+        attachments: askAttachments,
+      });
+      const screenshot = (activityId: string, kind: string, at: string) => ({
+        activityId: EventId.make(activityId),
+        threadId,
+        turnId,
+        tone: "tool" as const,
+        kind,
+        summary: "MCP tool call",
+        payload: {
+          toolCallId: "call-screenshot",
+          itemType: "mcp_tool_call",
+          data: {
+            toolName: "mcp__browser__browser_screenshot",
+            result: {
+              content: [
+                {
+                  type: "image",
+                  source: { type: "base64", media_type: "image/png", data: "PIXEL" },
+                },
+              ],
+            },
+          },
+        },
+        createdAt: at,
+      });
+      // One call, two rows carrying the same screenshot.
+      yield* activities.upsert(screenshot("tool-1", "tool.updated", "2026-03-01T00:02:00.000Z"));
+      yield* activities.upsert(screenshot("tool-2", "tool.completed", "2026-03-01T00:02:01.000Z"));
+      yield* activities.upsert({
+        activityId: EventId.make("tool-3"),
+        threadId,
+        turnId,
+        tone: "tool",
+        kind: "tool.completed",
+        summary: "Image view",
+        payload: {
+          itemType: "image_view",
+          data: { item: { id: "view-1", path: `${outsideFolder}/shot.png` } },
+        },
+        createdAt: "2026-03-01T00:03:00.000Z",
+      });
+      // A Read of the same screenshot shows its bytes; it is the same picture.
+      yield* activities.upsert({
+        activityId: EventId.make("tool-4"),
+        threadId,
+        turnId,
+        tone: "tool",
+        kind: "tool.completed",
+        summary: "Read file",
+        payload: {
+          toolCallId: "call-read",
+          itemType: "dynamic_tool_call",
+          title: "Read file",
+          data: {
+            toolName: "Read",
+            input: { file_path: `${outsideFolder}/shot.png` },
+            result: {
+              content: [
+                {
+                  type: "image",
+                  source: { type: "base64", media_type: "image/png", data: "PIXEL" },
+                },
+              ],
+            },
+          },
+        },
+        createdAt: "2026-03-01T00:03:30.000Z",
+      });
+      yield* messages.upsert(
+        message(
+          "reply",
+          "assistant",
+          [
+            `Saved \`${outsideFolder}/shot.png\` and the old \`cited.png\`.`,
+            "Remote: ![chart](https://example.com/chart.png). Gone: /tmp/never-there-4b1d.png.",
+            "The hero is at ./hero.png and the notes at `docs/other.txt`.",
+          ].join("\n\n"),
+          "2026-03-01T00:04:00.000Z",
+        ),
+      );
+      yield* messages.upsert(
+        message("streaming", "assistant", "Writing /tmp/half.png", "2026-03-01T00:05:00.000Z", {
+          isStreaming: true,
+        }),
+      );
+
+      const media = yield* ProjectMedia;
+      const filesOnly = yield* media.listProjectMedia({
+        projectId: ProjectId.make("project-chat"),
+      });
+      assert.strictEqual("chat" in filesOnly, false);
+
+      const listing = yield* media.listProjectMedia({
+        projectId: ProjectId.make("project-chat"),
+        threadId,
+        includeChat: true,
+      });
+      assert.deepEqual(
+        listing.entries.map((entry) => entry.relativePath),
+        ["hero.png"],
+      );
+      assert.strictEqual(listing.chatIndexing, false);
+      assert.deepEqual(
+        listing.chat?.map((entry) => ({
+          name: entry.name,
+          origin: entry.origin,
+          kind: entry.mediaKind,
+          source:
+            entry.source.kind === "file"
+              ? `file:${NodePath.relative(repositoryRoot, entry.source.path)}`
+              : entry.source.kind === "attachment"
+                ? `attachment:${entry.source.attachment.id}`
+                : entry.source.kind === "remote"
+                  ? `remote:${entry.source.url}`
+                  : `inline:${entry.source.mimeType}`,
+          message: entry.messageId as string | null,
+        })),
+        [
+          // The reply mentions the screenshot the tool viewed, later: listed there.
+          {
+            name: "shot.png",
+            origin: "reply",
+            kind: "picture",
+            source: `file:${NodePath.relative(repositoryRoot, `${outsideFolder}/shot.png`)}`,
+            message: "reply",
+          },
+          {
+            name: "cited.png",
+            origin: "reply",
+            kind: "picture",
+            source: "file:app/docs/cited.png",
+            message: "reply",
+          },
+          {
+            name: "chart.png",
+            origin: "reply",
+            kind: "picture",
+            source: "remote:https://example.com/chart.png",
+            message: "reply",
+          },
+          {
+            name: "browser_screenshot.png",
+            origin: "tool",
+            kind: "picture",
+            source: "inline:image/png",
+            message: "thread-chat-reply-1",
+          },
+          {
+            name: "mock.png",
+            origin: "attached",
+            kind: "picture",
+            source: "attachment:att-mock",
+            message: "ask",
+          },
+          {
+            name: "brief.pdf",
+            origin: "attached",
+            kind: "document",
+            source: "attachment:att-brief",
+            message: "ask",
+          },
+        ],
+      );
+
+      const inline = listing.chat?.find((entry) => entry.source.kind === "inline");
+      assert.deepEqual(yield* media.readChatMedia({ threadId, mediaId: inline!.id }), {
+        kind: "image",
+        mimeType: "image/png",
+        base64: "PIXEL",
+        size: 3,
+      });
+
+      // Undoing the reply takes what it showed with it.
+      yield* messages.deleteByThreadId({ threadId });
+      yield* messages.upsert({
+        ...message("ask", "user", "Look", "2026-03-01T00:01:00.000Z"),
+        attachments: askAttachments,
+      });
+      const afterRevert = yield* media.listProjectMedia({
+        projectId: ProjectId.make("project-chat"),
+        threadId,
+        includeChat: true,
+      });
+      assert.deepEqual(
+        afterRevert.chat?.map((entry) => entry.name),
+        ["shot.png", "browser_screenshot.png", "mock.png", "brief.pdf"],
+      );
+    }),
+  );
+
+  it.effect("finds the pictures in chats written before the media table", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id, title, workspace_root, default_model_selection_json, scripts_json,
+          created_at, updated_at, deleted_at
+        )
+        VALUES ('project-old', 'Old', ${projectFolder}, NULL, '[]',
+          '2026-03-01T00:00:00.000Z', '2026-03-01T00:00:00.000Z', NULL)
+      `;
+      yield* insertThread({
+        threadId: "thread-old",
+        projectId: "project-old",
+        title: "Old",
+        turns: [],
+      });
+      // Written straight to the tables, as an older build left them.
+      yield* sql`
+        INSERT INTO projection_thread_messages (
+          message_id, thread_id, turn_id, role, text, is_streaming, created_at, updated_at
+        )
+        VALUES ('old-reply', 'thread-old', NULL, 'assistant', ${`See ${outsideFolder}/shot.png`}, 0,
+          '2026-02-01T00:00:00.000Z', '2026-02-01T00:00:00.000Z')
+      `;
+      yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id, thread_id, turn_id, tone, kind, summary, payload_json, created_at
+        )
+        VALUES ('old-read', 'thread-old', NULL, 'tool', 'tool.completed', 'Read file',
+          ${JSON.stringify({ title: "Read file", data: { input: { file_path: `${outsideFolder}/PHOTO.JPEG` } } })},
+          '2026-02-01T00:00:02.000Z')
+      `;
+      for (const [index, kind] of [
+        "tool.started",
+        "tool.output.updated",
+        "tool.completed",
+      ].entries()) {
+        yield* sql`
+          INSERT INTO projection_thread_activities (
+            activity_id, thread_id, turn_id, tone, kind, summary, payload_json, created_at
+          )
+          VALUES (${`old-tool-${index}`}, 'thread-old', NULL, 'tool', ${kind}, 'Tool',
+            ${JSON.stringify(
+              kind === "tool.completed"
+                ? { itemType: "image_view", data: { item: { id: "v", path: "docs/cited.png" } } }
+                : { data: { output: "nothing to see" } },
+            )},
+            '2026-02-01T00:00:01.000Z')
+        `;
+      }
+      yield* sql`
+        UPDATE projection_thread_media_backfill
+        SET next_rowid = 1,
+          end_rowid = CASE source_kind
+            WHEN 'message' THEN (SELECT MAX(rowid) FROM projection_thread_messages)
+            ELSE (SELECT MAX(rowid) FROM projection_thread_activities)
+          END
+      `;
+
+      const media = yield* ProjectMedia;
+      const before = yield* media.listProjectMedia({
+        projectId: ProjectId.make("project-old"),
+        includeChat: true,
+      });
+      assert.deepEqual(before.chat, []);
+      assert.strictEqual(before.chatIndexing, true);
+
+      yield* runThreadMediaBackfill(sql, { startDelay: 0, pause: 0, windowSize: 2 });
+      const after = yield* media.listProjectMedia({
+        projectId: ProjectId.make("project-old"),
+        includeChat: true,
+      });
+      assert.strictEqual(after.chatIndexing, false);
+      assert.deepEqual(
+        after.chat?.map((entry) => [entry.name, entry.origin]),
+        [
+          ["PHOTO.JPEG", "tool"],
+          ["cited.png", "tool"],
+          ["shot.png", "reply"],
+        ],
+      );
     }),
   );
 });

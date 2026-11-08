@@ -5,7 +5,9 @@
  */
 import type {
   EnvironmentId,
+  OrchestrationChatMediaEntry,
   ProjectId,
+  ProjectReadFileResult,
   ProjectRevisionFileResult,
   ThreadId,
 } from "@threadlines/contracts";
@@ -50,6 +52,7 @@ export function projectMediaQueryOptions(input: {
       return ensureEnvironmentApi(input.environmentId).orchestration.listProjectMedia({
         projectId: input.projectId,
         ...(threadId ? { threadId } : {}),
+        includeChat: true,
       });
     },
     enabled: (input.enabled ?? true) && input.environmentId !== null && input.projectId !== null,
@@ -64,4 +67,54 @@ export function projectMediaQueryOptions(input: {
 /** A picture result as something an `<img>` can show, or null. */
 export function revisionFileDataUrl(result: ProjectRevisionFileResult | undefined): string | null {
   return result?.kind === "image" ? `data:${result.mimeType};base64,${result.base64}` : null;
+}
+
+/**
+ * The bytes of a picture or PDF shared in chat, shaped like a file read so
+ * tiles and the viewer treat it as one. Null for a `remote` picture, which
+ * loads from its address as it does in the chat.
+ */
+export async function readChatMediaFile(
+  environmentId: EnvironmentId,
+  entry: OrchestrationChatMediaEntry,
+): Promise<ProjectReadFileResult | null> {
+  const api = ensureEnvironmentApi(environmentId);
+  const document = entry.mediaKind === "document";
+  switch (entry.source.kind) {
+    case "attachment": {
+      const file = await api.attachments.read({ attachmentId: entry.source.attachment.id });
+      return {
+        kind: document ? "document" : "image",
+        relativePath: entry.name,
+        mimeType: file.mimeType,
+        base64: file.base64,
+        size: file.sizeBytes,
+      };
+    }
+    case "file":
+      // From the thread's folder, as the chat reads it: a file outside it is
+      // only served when its bytes really are a picture.
+      return api.projects.readFile({
+        cwd: entry.cwd,
+        relativePath: entry.source.path,
+        ...(document ? { documents: true } : {}),
+      });
+    case "inline": {
+      const result = await api.orchestration.readChatMedia({
+        threadId: entry.threadId,
+        mediaId: entry.id,
+      });
+      return result.kind === "image"
+        ? {
+            kind: "image",
+            relativePath: entry.name,
+            mimeType: result.mimeType,
+            base64: result.base64,
+            size: result.size,
+          }
+        : { kind: "missing", relativePath: entry.name };
+    }
+    case "remote":
+      return null;
+  }
 }

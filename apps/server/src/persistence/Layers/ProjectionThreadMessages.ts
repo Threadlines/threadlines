@@ -28,6 +28,7 @@ import {
 } from "@threadlines/contracts";
 
 import { toPersistenceSqlError } from "../Errors.ts";
+import { deleteThreadMediaForThread, reindexMessageMedia } from "../threadMedia.ts";
 import {
   GetProjectionThreadMessageInput,
   ProjectionThreadMessageRepository,
@@ -336,8 +337,11 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
       `,
   });
 
+  // A settled message's media is rewritten with it; while it streams it
+  // keeps what it had (nothing, for a new reply).
   const upsert: ProjectionThreadMessageRepositoryShape["upsert"] = (row) =>
     upsertProjectionThreadMessageRow(row).pipe(
+      Effect.andThen(row.isStreaming ? Effect.void : reindexMessageMedia(sql, row.messageId)),
       Effect.mapError(toPersistenceSqlError("ProjectionThreadMessageRepository.upsert:query")),
     );
 
@@ -369,6 +373,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
 
   const deleteByThreadId: ProjectionThreadMessageRepositoryShape["deleteByThreadId"] = (input) =>
     deleteProjectionThreadMessageRows(input).pipe(
+      Effect.andThen(deleteThreadMediaForThread(sql, input.threadId, "message")),
       Effect.mapError(
         toPersistenceSqlError("ProjectionThreadMessageRepository.deleteByThreadId:query"),
       ),

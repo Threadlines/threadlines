@@ -52,6 +52,7 @@ export const ORCHESTRATION_WS_METHODS = {
   getFullThreadDiff: "orchestration.getFullThreadDiff",
   getTurnFile: "orchestration.getTurnFile",
   listProjectMedia: "orchestration.listProjectMedia",
+  readChatMedia: "orchestration.readChatMedia",
   getRevertPlan: "orchestration.getRevertPlan",
   searchThreads: "orchestration.searchThreads",
   getTurnActivities: "orchestration.getTurnActivities",
@@ -6351,10 +6352,76 @@ export const OrchestrationProjectMediaEntry = Schema.Struct({
 });
 export type OrchestrationProjectMediaEntry = typeof OrchestrationProjectMediaEntry.Type;
 
+/**
+ * How to read a picture or file shared in a chat. `attachment` reads through
+ * `attachments.read`; `file` is an absolute path on the server's machine, read
+ * through `projects.readFile` from the thread's folder as the chat reads it;
+ * `inline` bytes sit in the chat and come from `orchestration.readChatMedia`;
+ * `remote` is an `http(s)` picture the client loads as the chat does.
+ */
+export const OrchestrationChatMediaSource = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("attachment"), attachment: ChatAttachment }),
+  Schema.Struct({ kind: Schema.Literal("file"), path: TrimmedNonEmptyString }),
+  Schema.Struct({ kind: Schema.Literal("inline"), mimeType: TrimmedNonEmptyString }),
+  Schema.Struct({ kind: Schema.Literal("remote"), url: TrimmedNonEmptyString }),
+]);
+export type OrchestrationChatMediaSource = typeof OrchestrationChatMediaSource.Type;
+
+/** Where in the chat it showed: your attachment, a tool step, or an agent's reply. */
+export const OrchestrationChatMediaOrigin = Schema.Literals(["attached", "tool", "reply"]);
+export type OrchestrationChatMediaOrigin = typeof OrchestrationChatMediaOrigin.Type;
+
+/**
+ * A picture the chat showed, or a picture or PDF you attached: the Media
+ * tab's "Shared in chat". Listed once, at the newest place it showed.
+ */
+export const OrchestrationChatMediaEntry = Schema.Struct({
+  /** Stable while the chat keeps it; opaque. */
+  id: TrimmedNonEmptyString,
+  threadId: ThreadId,
+  threadTitle: Schema.String,
+  /** The thread's folder, which `file` paths are read from. */
+  cwd: TrimmedNonEmptyString,
+  name: TrimmedNonEmptyString,
+  mediaKind: OrchestrationMediaKind,
+  origin: OrchestrationChatMediaOrigin,
+  source: OrchestrationChatMediaSource,
+  sharedAt: IsoDateTime,
+  /** The message to jump to in the chat, when there is one. */
+  messageId: Schema.NullOr(MessageId),
+  /** Bytes when known; 0 for a `remote` picture. */
+  size: NonNegativeInt,
+  /** Changes whenever the bytes may have; opaque. */
+  version: TrimmedNonEmptyString,
+});
+export type OrchestrationChatMediaEntry = typeof OrchestrationChatMediaEntry.Type;
+
+const decodeChatMediaEntryExit = Schema.decodeUnknownExit(OrchestrationChatMediaEntry);
+
+/** Chat entries a later server may shape differently are left out, never the
+ *  whole listing with them. */
+export const OrchestrationChatMediaEntryListLenient = Schema.Array(Schema.Unknown).pipe(
+  Schema.decodeTo(
+    Schema.Array(OrchestrationChatMediaEntry),
+    SchemaTransformation.transformEffect({
+      decode: (entries) =>
+        Effect.succeed(
+          entries.filter((entry) =>
+            Exit.isSuccess(decodeChatMediaEntryExit(entry)),
+          ) as ReadonlyArray<typeof OrchestrationChatMediaEntry.Encoded>,
+        ),
+      encode: (entries) => Effect.succeed(entries as ReadonlyArray<unknown>),
+    }),
+  ),
+);
+
 export const OrchestrationListProjectMediaInput = Schema.Struct({
   projectId: ProjectId,
   /** Only this thread's media. */
   threadId: Schema.optionalKey(ThreadId),
+  /** Also list what was shared in chat. A server that predates it ignores the
+   *  flag and answers without `chat`. */
+  includeChat: Schema.optionalKey(Schema.Boolean),
 });
 export type OrchestrationListProjectMediaInput = typeof OrchestrationListProjectMediaInput.Type;
 
@@ -6362,8 +6429,34 @@ export type OrchestrationListProjectMediaInput = typeof OrchestrationListProject
 export const OrchestrationListProjectMediaResult = Schema.Struct({
   entries: Schema.Array(OrchestrationProjectMediaEntry),
   truncated: Schema.Boolean,
+  /** With `includeChat`: newest first. Absent from servers that predate it. */
+  chat: Schema.optionalKey(OrchestrationChatMediaEntryListLenient),
+  /** Older chat entries were left off. */
+  chatTruncated: Schema.optionalKey(Schema.Boolean),
+  /** Older chats are still being looked through, so more may appear. */
+  chatIndexing: Schema.optionalKey(Schema.Boolean),
 });
 export type OrchestrationListProjectMediaResult = typeof OrchestrationListProjectMediaResult.Type;
+
+export const OrchestrationReadChatMediaInput = Schema.Struct({
+  threadId: ThreadId,
+  /** An `inline` entry's `id`. */
+  mediaId: TrimmedNonEmptyString,
+});
+export type OrchestrationReadChatMediaInput = typeof OrchestrationReadChatMediaInput.Type;
+
+/** The bytes of a picture shown inline in the chat; `missing` once the chat
+ *  no longer holds it. */
+export const OrchestrationReadChatMediaResult = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("image"),
+    mimeType: TrimmedNonEmptyString,
+    base64: Schema.String,
+    size: NonNegativeInt,
+  }),
+  Schema.Struct({ kind: Schema.Literal("missing") }),
+]);
+export type OrchestrationReadChatMediaResult = typeof OrchestrationReadChatMediaResult.Type;
 
 export const OrchestrationRevertPlanMode = Schema.Literals(["workspace", "selective"]);
 export type OrchestrationRevertPlanMode = typeof OrchestrationRevertPlanMode.Type;
@@ -6512,6 +6605,10 @@ export const OrchestrationRpcSchemas = {
   listProjectMedia: {
     input: OrchestrationListProjectMediaInput,
     output: OrchestrationListProjectMediaResult,
+  },
+  readChatMedia: {
+    input: OrchestrationReadChatMediaInput,
+    output: OrchestrationReadChatMediaResult,
   },
   getRevertPlan: {
     input: OrchestrationGetRevertPlanInput,
