@@ -100,7 +100,8 @@ theme this device already kept skips the trial.
   section with New theme and Import theme file on its title line; Glass (a
   slider, Solid to Clear, the theme's own in the middle) and Motion (Live,
   Still) side by side in one group, a compact form of their rows (the
-  settings search still draws them as full rows); a line on the art's cost;
+  settings search still draws them as full rows); a line on the art (its cost
+  here, or that the theme has none, always there so the gallery never moves);
   then the gallery under plain filters (All, Yours, Starters, Built in), yours
   first. A Showcase of shared themes would join it later as a second view.
 - An agent asked to "switch to Meadow" uses `settings_change` on

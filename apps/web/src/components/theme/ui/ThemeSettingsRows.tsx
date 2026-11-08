@@ -79,11 +79,17 @@ const failed = (title: `Couldn't ${string}`) => (error: unknown) =>
 
 const ENERGY_WORDS = { light: "a light", medium: "a medium", heavy: "a heavy" } as const;
 
-/** One line about the running theme's art: its cost here, or why it isn't moving. */
+/**
+ * One line about the running theme's art: its cost here, why it isn't moving,
+ * or that the theme has none. The line is always there, so switching themes
+ * never moves the gallery under it.
+ */
 function ArtStatusLine() {
   const status = useBackdropStatus();
   const active = useActiveTheme();
-  if (status === null || active.manifest?.backdrop === undefined) return null;
+  if (active.manifest?.backdrop === undefined) return <span>This theme has no live art.</span>;
+  // Art that is starting hasn't said how it runs yet: hold the line's place.
+  if (status === null) return <span aria-hidden className="h-[18px]" />;
   if (status.kind === "running") {
     return (
       <span>
@@ -352,14 +358,14 @@ export function ThemeActions() {
 
 /**
  * What to know about the theme in use, one line each: that it couldn't be
- * found, or lives only here, or was deleted elsewhere; then what its art costs
- * on this computer. Nothing when there is nothing to say.
+ * found, or lives only here, or was deleted elsewhere; then the line on its
+ * art, which every theme has.
  */
 export function ThemeStatusLines() {
   const unavailable = useThemeUnavailable();
   const active = useActiveTheme();
   return (
-    <div className="flex flex-col gap-0.5 px-1 text-[12px] leading-[18px] text-muted-foreground empty:hidden">
+    <div className="flex flex-col gap-0.5 px-1 text-[12px] leading-[18px] text-muted-foreground">
       {unavailable !== null ? (
         <span>
           {unavailable.name} isn't on this device or any connected computer, so you're seeing
