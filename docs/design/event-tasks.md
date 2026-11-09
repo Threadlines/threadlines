@@ -486,7 +486,8 @@ All in the Scheduled page and its form; desktop, web and phone.
   and shows the outcome and the exact message the agent would get. "Start a run
   with it" is a second button.
 - **Row text:** "When an issue in acme/app gets the label agent" in place of
-  "Weekdays at 9:00". Run threads show "Event · <task>" in the inbox.
+  "Weekdays at 9:00". Run threads show a webhook glyph after the project name
+  in the inbox, and "Event · <task>" in their hover card.
 - **In the thread:** a run's first message folds to one line ("Event ·
   <task>", or "Scheduled · <task>" for clock runs), opening on click, reusing
   the fold built for agent messages (T3 #22638). Clock runs get it too.

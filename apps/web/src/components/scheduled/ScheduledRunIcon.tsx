@@ -1,8 +1,9 @@
 import { CalendarClockIcon, WebhookIcon } from "lucide-react";
 
 /**
- * The glyph beside a run's "Scheduled · <task>" or "Event · <task>" line: a
- * clock for a clock task's run, a webhook for an event task's.
+ * A scheduled task's run, as a glyph: a clock for a clock task's run, a
+ * webhook for an event task's. It marks the run after the project name on its
+ * sidebar row, and leads its "Scheduled · <task>" or "Event · <task>" line.
  */
 export function ScheduledRunIcon({
   event,

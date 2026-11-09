@@ -4,6 +4,7 @@ import {
   formatElapsedDurationLabel,
   formatWorkingDurationLabel,
   formatExpiresInLabel,
+  formatRelativeTimeShortLabel,
   formatRelativeTimeUntilLabel,
   getTimestampFormatOptions,
 } from "./timestampFormat";
@@ -52,6 +53,14 @@ describe("formatRelativeTimeUntilLabel", () => {
 
   it("formats hours remaining", () => {
     expect(formatRelativeTimeUntilLabel("2026-04-07T18:00:00.000Z", NOW)).toBe("6h left");
+  });
+});
+
+describe("formatRelativeTimeShortLabel", () => {
+  it("drops the ago, and says now for the last minute", () => {
+    expect(formatRelativeTimeShortLabel("2026-04-07T11:25:00.000Z", NOW)).toBe("35m");
+    expect(formatRelativeTimeShortLabel("2026-04-04T12:00:00.000Z", NOW)).toBe("3d");
+    expect(formatRelativeTimeShortLabel("2026-04-07T11:59:30.000Z", NOW)).toBe("now");
   });
 });
 

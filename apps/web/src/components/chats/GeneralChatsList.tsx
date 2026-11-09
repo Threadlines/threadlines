@@ -113,7 +113,7 @@ function GeneralChatRow({
               thread={thread}
               status={status}
               testId="chats-list-row-status"
-              resting={<RelativeTimeLabel at={chatActivityAt(thread)} />}
+              resting={<RelativeTimeLabel at={chatActivityAt(thread)} compact />}
               restingClassName="text-muted-foreground"
             />
           </button>
