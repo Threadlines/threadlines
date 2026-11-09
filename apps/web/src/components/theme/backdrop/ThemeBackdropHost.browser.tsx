@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
 import {
+  BACKDROP_WATCHDOG_MS,
   ThemeBackdropHost,
   type ThemeBackdropHostHandle,
   type ThemeBackdropStatus,
@@ -60,7 +61,7 @@ function halfAndHalfStill() {
 
 function mountHost(
   backdrop: ThemeBackdrop,
-  extra: { stillOnly?: boolean; framedStill?: boolean; conditions?: BackdropConditions } = {},
+  extra: { phone?: boolean; framedStill?: boolean; conditions?: BackdropConditions } = {},
 ) {
   const statuses: ThemeBackdropStatus[] = [];
   const ref = createRef<ThemeBackdropHostHandle>();
@@ -155,24 +156,14 @@ describe("ThemeBackdropHost", () => {
     expect(stillElement()).toBeNull();
   });
 
-  it("removes the frame for art the computer found too heavy, even though it is still too", async () => {
+  it("removes the frame for art the computer found too heavy, and tints for all of its still", async () => {
+    const still = halfAndHalfStill();
     const host = mountHost(
-      { mode: "grid", script: GRID_ART, maxFps: 20, still: halfAndHalfStill() },
+      { mode: "grid", script: GRID_ART, maxFps: 20, still },
       { conditions: { ...LIVE, motion: "still" }, framedStill: false },
     );
     const status = await host.statusOf("still");
     expect(status).toMatchObject({ kind: "still", reason: "motion", framed: false });
-    expect(frameElement()).toBeNull();
-  });
-
-  it("shows only the still on a phone, with one tint that covers all of it", async () => {
-    const still = halfAndHalfStill();
-    const host = mountHost(
-      { mode: "grid", script: GRID_ART, maxFps: 20, still },
-      { stillOnly: true },
-    );
-    const status = await host.statusOf("still");
-    expect(status).toMatchObject({ kind: "still", reason: "phone" });
     const expected = minimumGlassTint({
       tint: color(tokens.background),
       box: colorBox([
@@ -192,6 +183,35 @@ describe("ThemeBackdropHost", () => {
     );
     expect(frameElement()).toBeNull();
     expect(stillElement()?.getAttribute("src")).toBe(still);
+  });
+
+  it("draws one frame of the art on a phone and stands on it, not the cropped still", async () => {
+    const host = mountHost(
+      { mode: "grid", script: GRID_ART, maxFps: 20, still: halfAndHalfStill() },
+      { phone: true, conditions: { ...LIVE, motion: "still" }, framedStill: true },
+    );
+    await vi.waitFor(
+      () =>
+        expect(host.statuses.at(-1)).toMatchObject({
+          kind: "still",
+          reason: "phone",
+          framed: true,
+        }),
+      { timeout: 8_000, interval: 50 },
+    );
+    expect(frameElement()).not.toBeNull();
+    expect(stillElement()).toBeNull();
+  });
+
+  it("doesn't fail a phone's frame that is paused before it drew (a tab left idle)", async () => {
+    const host = mountHost(
+      { mode: "grid", script: GRID_ART, maxFps: 20, still: halfAndHalfStill() },
+      { phone: true, conditions: { ...LIVE, motion: "still", idle: true }, framedStill: true },
+    );
+    // Past the watchdog's limit and its next check.
+    await new Promise((resolve) => setTimeout(resolve, BACKDROP_WATCHDOG_MS + 1_500));
+    expect(host.statuses.some((status) => status.kind === "failed")).toBe(false);
+    expect(frameElement()).not.toBeNull();
   });
 
   it("removes a failed frame and falls back to the still", async () => {

@@ -51,7 +51,7 @@ export const ShowThemeResult = Schema.Struct({
 
 export const PreviewThemeTool = Tool.make(THEME_PREVIEW_TOOL_NAME, {
   description: [
-    "Render a Threadlines theme (how the whole app looks: colors, fonts, glass and optional live art behind it) in a mock of the app at 1440×900: in a thread, on the new-thread screen and on a Settings page (every page that isn't a chat looks like it). You get the screenshots and a report: the readability checks, what the art costs (frames and milliseconds of work a second, and an energy label), and console errors. Use it until the theme looks right and passes, then offer it with show_theme.",
+    "Render a Threadlines theme (how the whole app looks: colors, fonts, glass and optional live art behind it) in a mock of the app at 1440×900: in a thread, on the new-thread screen and on a Settings page (every page that isn't a chat looks like it), and in a thread on a phone held upright (390×844). You get the screenshots and a report: the readability checks, what the art costs (frames and milliseconds of work a second, and an energy label), and console errors. Use it until the theme looks right and passes, then offer it with show_theme.",
     "Give the theme as theme (the object) or path (a file).",
     THEME_FORMAT_GUIDE,
     THEME_ART_CONTRACT_GUIDE,

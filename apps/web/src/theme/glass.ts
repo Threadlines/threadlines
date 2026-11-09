@@ -16,11 +16,13 @@
  * - While the backdrop frame runs, it paints every zone's tint over the art
  *   itself (raising it for readability), so the app's own surfaces are clear
  *   and alpha never compounds.
- * - Motion: Still keeps the frame: it draws one frame of the art and stands,
- *   tinting it the same way, so the surfaces stay clear.
- * - When the app shows the still image instead (a phone, a failed frame, or
- *   before the frame draws), the frame can't measure, so the surfaces paint
- *   the tint in CSS, each raised to the still's layout-independent minimum.
+ * - Motion: Still keeps the frame (and phones always use it): it draws one
+ *   frame of the art for this screen and stands, tinting it the same way, so
+ *   the surfaces stay clear.
+ * - When the app shows the still image instead (a failed frame, art found too
+ *   heavy, or before the frame draws), the frame can't measure, so the
+ *   surfaces paint the tint in CSS, each raised to the still's
+ *   layout-independent minimum.
  * - Before the backdrop reports anything, surfaces are opaque.
  */
 import type { ThemeGlass } from "@threadlines/contracts";

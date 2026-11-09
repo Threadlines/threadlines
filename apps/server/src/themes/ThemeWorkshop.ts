@@ -35,6 +35,9 @@ import { embedThemeFonts, makeThemeFontCache, THEME_FONT_HOSTS } from "./themeFo
 /** The window size themes are previewed and their stills captured at. */
 export const THEME_SPECIMEN_WIDTH = 1440;
 export const THEME_SPECIMEN_HEIGHT = 900;
+/** And a phone held upright, where the art draws one frame at the phone's size. */
+export const THEME_PHONE_WIDTH = 390;
+export const THEME_PHONE_HEIGHT = 844;
 /** A library thumbnail: the new-thread specimen, scaled down. */
 export const THEME_THUMBNAIL_WIDTH = 320;
 export const THEME_THUMBNAIL_HEIGHT = 200;
@@ -141,8 +144,8 @@ export const makeThemeWorkshop = Effect.fn("ThemeWorkshop.make")(function* (
     buildThemeSpecimenDocument({
       manifest,
       layout,
-      width: THEME_SPECIMEN_WIDTH,
-      height: THEME_SPECIMEN_HEIGHT,
+      width: layout === "phone" ? THEME_PHONE_WIDTH : THEME_SPECIMEN_WIDTH,
+      height: layout === "phone" ? THEME_PHONE_HEIGHT : THEME_SPECIMEN_HEIGHT,
     });
 
   const preview: ThemeWorkshopShape["preview"] = (manifest) =>
@@ -175,7 +178,19 @@ export const makeThemeWorkshop = Effect.fn("ThemeWorkshop.make")(function* (
           },
         ],
       });
-      const shotsTaken = [thread, fresh, settings];
+      // A phone is its own viewport, so its own capture.
+      const [phone] = yield* previews.captureViewports({
+        width: THEME_PHONE_WIDTH,
+        height: THEME_PHONE_HEIGHT,
+        shots: [
+          {
+            document: specimen(manifest, "phone"),
+            waitMs: art ? STILL_RUN_MS : 0,
+            readAttributes: [THEME_SPECIMEN_ATTRIBUTES.failure],
+          },
+        ],
+      });
+      const shotsTaken = [thread, fresh, settings, phone];
       const attribute = (name: string) =>
         shotsTaken.map((shot) => shot?.attributes[name]).find((value) => value != null);
       return {
@@ -183,6 +198,7 @@ export const makeThemeWorkshop = Effect.fn("ThemeWorkshop.make")(function* (
           { layout: "thread" as const, png: thread?.png ?? "" },
           { layout: "new-thread" as const, png: fresh?.png ?? "" },
           { layout: "settings" as const, png: settings?.png ?? "" },
+          { layout: "phone" as const, png: phone?.png ?? "" },
         ].filter((shot) => shot.png.length > 0),
         stats: Option.getOrNull(decodeStats(attribute(THEME_SPECIMEN_ATTRIBUTES.stats))),
         failure: Option.getOrNull(decodeFailure(attribute(THEME_SPECIMEN_ATTRIBUTES.failure))),

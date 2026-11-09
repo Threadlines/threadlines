@@ -20,7 +20,8 @@ import { glassTextColors } from "./contrast.ts";
 import { cssFontFamilyList } from "./fontFamilies.ts";
 import { resolveThemeTokens, type ThemeTokens, themeTokensCss } from "./tokens.ts";
 
-export type ThemeSpecimenLayout = "thread" | "new-thread" | "settings";
+/** The desktop's three screens, and a thread on a phone held upright. */
+export type ThemeSpecimenLayout = "thread" | "new-thread" | "settings" | "phone";
 
 /** How the specimen shows a theme's art: running, its captured still, or not at all. */
 export type ThemeSpecimenArt = "live" | "still" | "none";
@@ -178,7 +179,12 @@ a{color:var(--primary-readable);text-decoration:none}
 .switch.on{background:var(--primary)}
 .switch::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff}
 .switch.on::after{left:14px}
-.btn{padding:4px 10px;border-radius:7px;background:var(--control);font-size:12.5px}`;
+.btn{padding:4px 10px;border-radius:7px;background:var(--control);font-size:12.5px}
+.app.phone{grid-template:1fr/1fr}
+.phone .head{padding:0 14px}
+.phone .column{width:calc(100% - 24px);padding:12px 0 14px}
+.phone .user{max-width:88%}
+.phone .chips{gap:10px}`;
 };
 
 const THREADS = [
@@ -219,6 +225,18 @@ const threadMarkup = (name: string) => `<main class="main">
 ${composer("Ask for a change…")}
 </div></div></main>`;
 
+/** A thread on a phone: its header, the column and the composer, no sidebar. */
+const phoneMarkup = (name: string) => `<main class="main">
+<div class="head" data-zone="frame"><span>☰ A theme for long days</span></div>
+<div class="scroll"><div class="column" data-zone="column">
+<div class="user">Make me a theme I'd like to look at all day.</div>
+<div class="reply"><h3>${name}</h3>
+<p>Colors, fonts and art for the whole app. Text sits on glass in front of the art, so it stays easy to read.</p>
+<ul><li>The accent marks what's selected, on, and the send button.</li><li>The art moves a little faster while an agent works.</li></ul>
+<div class="meta">Worked for 2m 14s · 3 files changed</div></div>
+${composer("Ask for a change…")}
+</div></div></main>`;
+
 const settingsMarkup = (name: string) => `<main class="main">
 <div class="scroll"><div class="page" data-zone="column">
 <h1>General</h1>
@@ -248,12 +266,14 @@ ${composer("Describe a task or ask a question")}
 /**
  * The host side of the backdrop bridge, as the app runs it: makes the frame,
  * and once it is ready posts the theme, the viewport, steady conditions, one
- * agent working, and the zones measured from `[data-zone]` elements.
+ * agent working, and the zones measured from `[data-zone]` elements. With
+ * motion `still` the art draws one frame and stands, as on a phone.
  */
 const hostScript = (input: {
   readonly init: unknown;
   readonly tints: Readonly<Record<string, number>>;
   readonly tintColor: string;
+  readonly motion: "live" | "still";
 }) => `(() => {
   const ATTR = ${scriptJson(THEME_SPECIMEN_ATTRIBUTES)};
   const init = ${scriptJson(input.init)};
@@ -286,7 +306,7 @@ const hostScript = (input: {
     if (data.type === "ready") {
       root.setAttribute(ATTR.art, "ready");
       post(init);
-      post({ type: "conditions", conditions: { motion: "live", visible: true, busy: false, idle: false, focused: true, power: "ac", thermal: "nominal", slowdown: 0 } });
+      post({ type: "conditions", conditions: { motion: ${scriptJson(input.motion)}, visible: true, busy: false, idle: false, focused: true, power: "ac", thermal: "nominal", slowdown: 0 } });
       post({ type: "activity", activity: ${scriptJson({ working: 1, waiting: 0 })} });
       document.fonts.ready.then(send);
     } else if (data.type === "heartbeat") root.setAttribute(ATTR.frame, String(data.frame));
@@ -304,6 +324,8 @@ const page = (input: {
   readonly body: string;
   /** Overrides the zones' tint floors (the art document wants none). */
   readonly tints?: Readonly<Record<string, number>>;
+  /** `still`: one frame, as a phone draws it. Default `live`. */
+  readonly motion?: "live" | "still";
 }) => {
   const { manifest } = input;
   const tokens = resolveThemeTokens(manifest);
@@ -333,6 +355,7 @@ const page = (input: {
             composer: glass?.composer ?? 1,
           },
           tintColor: tokens["surface-solid"],
+          motion: input.motion ?? "live",
         })}</script>`
       : "";
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${escapeHtml(manifest.name)}</title><style>${css({ manifest, tokens, art })}</style></head><body>${input.body}${script}</body></html>`;
@@ -348,10 +371,19 @@ export function buildThemeSpecimenDocument(input: {
   readonly art?: ThemeSpecimenArt;
 }): string {
   const name = escapeHtml(input.manifest.name);
+  const minWidth = `min-width:${Math.round(input.width)}px`;
+  if (input.layout === "phone") {
+    return page({
+      manifest: input.manifest,
+      art: input.art ?? "live",
+      motion: "still",
+      body: `<div class="app phone" style="${minWidth}">${phoneMarkup(name)}</div>`,
+    });
+  }
   return page({
     manifest: input.manifest,
     art: input.art ?? "live",
-    body: `<div class="app" style="min-width:${Math.round(input.width)}px">${frameMarkup(name)}${
+    body: `<div class="app" style="${minWidth}">${frameMarkup(name)}${
       input.layout === "thread"
         ? threadMarkup(name)
         : input.layout === "settings"
