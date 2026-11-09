@@ -258,17 +258,19 @@ export const MODEL_SLUG_ALIASES_BY_PROVIDER: Partial<
     "gpt-5.3-spark": "gpt-5.3-codex-spark",
   },
   [CLAUDE_DRIVER_KIND]: {
-    fable: "claude-fable-5-1",
+    // Bare family names (`fable`, `opus`, `sonnet`, `haiku`, and their `[1m]`
+    // forms) have no entry: Claude Code resolves them, per account and to the
+    // newest model, so they are passed to it as written.
+    "fable-5.2": "claude-fable-5-2",
+    "claude-fable-5.2": "claude-fable-5-2",
+    "claude-fable-5-2[1m]": "claude-fable-5-2",
     "fable-5.1": "claude-fable-5-1",
     "claude-fable-5.1": "claude-fable-5-1",
     "claude-fable-5-1[1m]": "claude-fable-5-1",
-    "fable[1m]": "claude-fable-5-1",
     "fable-5": "claude-fable-5",
-    opus: "claude-opus-5-5",
     "opus-5.5": "claude-opus-5-5",
     "claude-opus-5.5": "claude-opus-5-5",
     "claude-opus-5-5[1m]": "claude-opus-5-5",
-    "opus[1m]": "claude-opus-5-5",
     "opus-5": "claude-opus-5",
     "claude-opus-5[1m]": "claude-opus-5",
     "opus-4.8": "claude-opus-4-8",
@@ -278,9 +280,6 @@ export const MODEL_SLUG_ALIASES_BY_PROVIDER: Partial<
     "opus-4.6": "claude-opus-4-6",
     "claude-opus-4.6": "claude-opus-4-6",
     "claude-opus-4-6-20251117": "claude-opus-4-6",
-    // Claude Code resolves bare `sonnet` per account (Sonnet 5.5 on the
-    // Anthropic API, still Sonnet 5 on claude.ai plans as of 2.1.284).
-    sonnet: "claude-sonnet-5",
     "sonnet-5.5": "claude-sonnet-5-5",
     "claude-sonnet-5.5": "claude-sonnet-5-5",
     "claude-sonnet-5-5[1m]": "claude-sonnet-5-5",
@@ -288,9 +287,6 @@ export const MODEL_SLUG_ALIASES_BY_PROVIDER: Partial<
     "sonnet-4.6": "claude-sonnet-4-6",
     "claude-sonnet-4.6": "claude-sonnet-4-6",
     "claude-sonnet-4-6-20251117": "claude-sonnet-4-6",
-    // Bare `haiku` stays on Haiku 4.5: Claude Code before 2.1.293 has no
-    // Haiku 5.5, and claude.ai plans may resolve the alias later than the API.
-    haiku: "claude-haiku-4-5",
     "haiku-5.5": "claude-haiku-5-5",
     "claude-haiku-5.5": "claude-haiku-5-5",
     "claude-haiku-5-5[1m]": "claude-haiku-5-5",

@@ -79,6 +79,54 @@ export interface AppModelOption {
   promoLabel?: string;
   isCustom: boolean;
   isDefault?: boolean;
+  /** Other names the provider gives this model right now (`opus`). */
+  aliases?: ReadonlyArray<string>;
+}
+
+/**
+ * Whether `selectedModel` is a pick of this model, a row the provider stopped
+ * listing. Such a row stays for whoever already picked it, however the pick
+ * was spelled (`fable-5.3` for `claude-fable-5-3`).
+ */
+function isKeptPick(
+  model: ServerProvider["models"][number],
+  selectedModel: string | null | undefined,
+  provider: ProviderDriverKind,
+): boolean {
+  if (model.keptForExistingPicks !== true) return false;
+  const selected = selectedModel?.trim();
+  return (
+    selected !== undefined &&
+    selected.length > 0 &&
+    (model.slug === selected || model.slug === normalizeModelSlug(selected, provider))
+  );
+}
+
+/**
+ * Whether a provider's model is offered in a list. A hidden one is not, with
+ * one exception: a model the provider stopped listing is offered where it is
+ * the current pick.
+ */
+function isOfferedModel(
+  model: ServerProvider["models"][number],
+  selectedModel: string | null | undefined,
+  provider: ProviderDriverKind,
+): boolean {
+  return model.isHidden !== true || isKeptPick(model, selectedModel, provider);
+}
+
+/**
+ * The option for a model the provider stopped listing, when `model` is a pick
+ * of it on this instance. A picker adds it to its own list, so the thread, the
+ * room agent or the setting already on it keeps it and nothing else is
+ * offered it.
+ */
+export function getKeptModelOptionForPick(
+  entry: ProviderInstanceEntry,
+  model: string | null | undefined,
+): AppModelOption | undefined {
+  const kept = entry.models.find((candidate) => isKeptPick(candidate, model, entry.driverKind));
+  return kept ? toAppModelOption(kept) : undefined;
 }
 
 function toAppModelOption(model: ServerProvider["models"][number]): AppModelOption {
@@ -93,6 +141,7 @@ function toAppModelOption(model: ServerProvider["models"][number]): AppModelOpti
   if (metaLabel) option.metaLabel = metaLabel;
   if (model.promoLabel) option.promoLabel = model.promoLabel;
   if (model.isDefault !== undefined) option.isDefault = model.isDefault;
+  if (model.aliases && model.aliases.length > 0) option.aliases = model.aliases;
   return option;
 }
 
@@ -155,10 +204,10 @@ export function getAppModelOptions(
   settings: UnifiedSettings,
   providers: ReadonlyArray<ServerProvider>,
   provider: ProviderDriverKind,
-  _selectedModel?: string | null,
+  selectedModel?: string | null,
 ): AppModelOption[] {
   const options: AppModelOption[] = getProviderModels(providers, provider)
-    .filter((model) => model.isHidden !== true)
+    .filter((model) => isOfferedModel(model, selectedModel, provider))
     .map(toAppModelOption);
   const seen = new Set(options.map((option) => option.slug));
   const builtInModelSlugs = new Set(
@@ -202,17 +251,27 @@ export function getAppModelOptions(
  * `settings.providers[driverKind].customModels` bucket for default
  * instances only. This keeps two instances of the same kind from leaking
  * custom slugs into each other.
+ *
+ * `selectedModel` is a pick to resolve on this instance, when there is one. A
+ * model the provider no longer lists is offered only to a pick of it. Lists
+ * shown to the user leave it out and let each picker add its own current
+ * pick ({@link getKeptModelOptionForPick}).
  */
 export function getAppModelOptionsForInstance(
   settings: UnifiedSettings,
   entry: ProviderInstanceEntry,
+  selectedModel?: string | null,
 ): AppModelOption[] {
   const options: AppModelOption[] = entry.models
-    .filter((model) => model.isHidden !== true)
+    .filter((model) => isOfferedModel(model, selectedModel, entry.driverKind))
     .map(toAppModelOption);
   const seen = new Set(options.map((option) => option.slug));
+  // A model the provider stopped listing is not one of its models any more:
+  // adding its id by hand makes it the user's own entry.
   const builtInModelSlugs = new Set(
-    entry.models.filter((model) => !model.isCustom).map((model) => model.slug),
+    entry.models
+      .filter((model) => !model.isCustom && model.keptForExistingPicks !== true)
+      .map((model) => model.slug),
   );
 
   const customModels = readInstanceCustomModels(settings, entry.instanceId, entry.driverKind);
@@ -256,7 +315,7 @@ export function resolveAppModelSelectionForInstance(
     (candidate) => candidate.instanceId === instanceId,
   );
   if (!entry) return null;
-  const options = getAppModelOptionsForInstance(settings, entry);
+  const options = getAppModelOptionsForInstance(settings, entry, selectedModel);
   const visibleBuiltInOptions = options.filter((option) => !option.isCustom);
   const liveDefault = visibleBuiltInOptions.find((option) => option.isDefault === true)?.slug;
   const configuredDefault = resolveSelectableModel(

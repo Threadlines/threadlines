@@ -27,6 +27,7 @@ import {
   type ProviderOptions,
   type TraitsPersistence,
   useTraitsUpdater,
+  showsDefaultTag,
 } from "./traitControls";
 
 /** The agent whose reasoning and other options the panel edits. */
@@ -247,7 +248,7 @@ function OptionSelectRow(props: {
               <span className="flex min-w-0 flex-col">
                 <span className="flex min-w-0 items-center gap-2">
                   <span className="truncate">{option.label}</span>
-                  {option.isDefault ? (
+                  {showsDefaultTag(option) ? (
                     <span className="shrink-0 text-[10px] text-muted-foreground">default</span>
                   ) : null}
                 </span>

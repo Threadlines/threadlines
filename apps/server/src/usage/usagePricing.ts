@@ -100,6 +100,18 @@ const perMillion = (usd: number): number => usd / 1_000_000;
  */
 const BUILT_IN_RATES: RateTable = new Map([
   [
+    // $8 in / $40 out, a fifth below Fable 5.1. Cache reads stay at 0.025x
+    // input; cache writes at the usual 1.25x (5 minutes) and 2x (1 hour).
+    "claude-fable-5-2",
+    {
+      inputCostPerToken: perMillion(8),
+      outputCostPerToken: perMillion(40),
+      cacheReadCostPerToken: perMillion(0.2),
+      cacheCreationCostPerToken: perMillion(10),
+      cacheCreation1hCostPerToken: perMillion(16),
+    },
+  ],
+  [
     // Claude Fable 5 pricing throughout, except cache reads at 0.025x input.
     "claude-fable-5-1",
     {

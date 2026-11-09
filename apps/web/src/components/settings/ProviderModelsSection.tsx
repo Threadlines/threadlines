@@ -151,7 +151,14 @@ export function ProviderModelsSection({
       setError("Enter a model slug.");
       return;
     }
-    if (models.some((model) => !model.isCustom && model.slug === normalized)) {
+    // A model the provider stopped listing is not built in any more: adding
+    // its id is how to pick it again.
+    if (
+      models.some(
+        (model) =>
+          !model.isCustom && model.keptForExistingPicks !== true && model.slug === normalized,
+      )
+    ) {
       setError("That model is already built in.");
       return;
     }
@@ -418,7 +425,11 @@ export function ProviderModelsSection({
                 ) : null}
                 {isHidden ? (
                   <span className="text-[10px] text-muted-foreground">
-                    {isProviderHidden ? "provider hidden" : "hidden"}
+                    {model.keptForExistingPicks
+                      ? "no longer listed"
+                      : isProviderHidden
+                        ? "provider hidden"
+                        : "hidden"}
                   </span>
                 ) : null}
                 {model.isDefault ? (
@@ -543,7 +554,9 @@ export function ProviderModelsSection({
                           }}
                           aria-label={
                             isProviderHidden
-                              ? `${model.name} is hidden by the provider`
+                              ? model.keptForExistingPicks
+                                ? `${model.name} is no longer listed by the provider`
+                                : `${model.name} is hidden by the provider`
                               : `${isUserHidden ? "Show" : "Hide"} ${model.name}`
                           }
                         />
@@ -556,11 +569,13 @@ export function ProviderModelsSection({
                       )}
                     </TooltipTrigger>
                     <TooltipPopup side="top">
-                      {isProviderHidden
-                        ? "Hidden by provider"
-                        : isUserHidden
-                          ? "Show in picker"
-                          : "Hide from picker"}
+                      {model.keptForExistingPicks
+                        ? "No longer listed. Threads already on it keep it."
+                        : isProviderHidden
+                          ? "Hidden by provider"
+                          : isUserHidden
+                            ? "Show in picker"
+                            : "Hide from picker"}
                     </TooltipPopup>
                   </Tooltip>
                 ) : null}

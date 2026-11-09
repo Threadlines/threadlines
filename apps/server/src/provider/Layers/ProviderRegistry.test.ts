@@ -45,10 +45,14 @@ import {
 import {
   carryClaudeUsageAcrossChecks,
   checkClaudeProviderStatus,
+  type ClaudeReportedModels,
+  claudeReportedModelsFromCache,
+  type ClaudeReportedModelsStore,
   readClaudeNormalAuthEmail,
   stopClaudeCliAfterSignInRenewal,
 } from "./ClaudeProvider.ts";
 import { checkOpenCodeProviderStatus } from "./OpenCodeProvider.ts";
+import { type ServerProviderDraft } from "../providerSnapshot.ts";
 import {
   makeClaudeTokenUsageHistoryReader,
   parseClaudeStatsTokenUsage,
@@ -3556,6 +3560,72 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
         ),
       );
 
+      // Claude Code 2.1.321 lists Fable 5.2 behind its `fable` row, as a
+      // native-1M model, and runs it at Medium unless told otherwise.
+      it.effect("includes Claude Fable 5.2 with launch capabilities on supported versions", () =>
+        Effect.gen(function* () {
+          const status = yield* checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            claudeCapabilities({
+              models: [
+                {
+                  value: "fable",
+                  resolvedModel: "claude-fable-5-2[1m]",
+                  displayName: "Fable",
+                  description:
+                    "Fable 5.2 · Most capable for your hardest and longest-running tasks",
+                  supportsEffort: true,
+                  supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+                  supportsAdaptiveThinking: true,
+                  supportsFastMode: true,
+                  supportsAutoMode: true,
+                },
+              ],
+            }),
+          );
+          const fable52Rows = status.models.filter((model) =>
+            model.slug.startsWith("claude-fable-5-2"),
+          );
+          assert.deepStrictEqual(
+            fable52Rows.map((model) => model.slug),
+            ["claude-fable-5-2"],
+          );
+          const fable52 = fable52Rows[0];
+          if (!fable52?.capabilities) {
+            assert.fail("Expected Claude Fable 5.2 capabilities for Claude Code v2.1.321.");
+          }
+          assert.strictEqual(fable52.name, "Claude Fable 5.2");
+          const effortDescriptor = fable52.capabilities.optionDescriptors?.find(
+            (descriptor) => descriptor.type === "select" && descriptor.id === "effort",
+          );
+          assert.deepStrictEqual(
+            effortDescriptor?.type === "select" ? effortDescriptor.options : undefined,
+            [
+              { id: "low", label: "Low" },
+              { id: "medium", label: "Medium", isDefault: true },
+              { id: "high", label: "High" },
+              { id: "xhigh", label: "Extra High" },
+              { id: "max", label: "Max" },
+            ],
+          );
+          assert.deepStrictEqual(
+            fable52.capabilities.optionDescriptors?.map((descriptor) => descriptor.id),
+            ["effort", "ultracode", "fastMode"],
+          );
+          assert.strictEqual(status.message, undefined);
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              const joined = args.join(" ");
+              if (joined === "--version") return { stdout: "2.1.321\n", stderr: "", code: 0 };
+              if (joined === "auth status")
+                return { stdout: '{"loggedIn":true}\n', stderr: "", code: 0 };
+              throw new Error(`Unexpected args: ${joined}`);
+            }),
+          ),
+        ),
+      );
+
       it.effect("includes Claude Fable 5.1 with launch capabilities on supported versions", () =>
         Effect.gen(function* () {
           const status = yield* checkClaudeProviderStatus(
@@ -3888,7 +3958,11 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
               id: "effort",
               label: "Reasoning",
               type: "select",
+              // Claude Code names the levels, not which one the model
+              // defaults to, so the list starts on Default.
+              currentValue: "default",
               options: [
+                { id: "default", label: "Default", isDefault: true },
                 { id: "low", label: "Low" },
                 { id: "high", label: "High" },
                 { id: "max", label: "Max" },
@@ -4325,7 +4399,11 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
             ),
             false,
           );
-          assert.strictEqual(status.message, undefined);
+          // Every model up to this version is in; only the newer Fable 5.2 is not.
+          assert.strictEqual(
+            status.message,
+            "Claude Code v2.1.293 is too old for Claude Fable 5.2. Upgrade to v2.1.321 or newer to access it.",
+          );
         }).pipe(
           Effect.provide(
             mockSpawnerLayer((args) => {
@@ -4362,6 +4440,266 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
             mockSpawnerLayer((args) => {
               const joined = args.join(" ");
               if (joined === "--version") return { stdout: "2.1.292\n", stderr: "", code: 0 };
+              if (joined === "auth status")
+                return { stdout: '{"loggedIn":true}\n', stderr: "", code: 0 };
+              throw new Error(`Unexpected args: ${joined}`);
+            }),
+          ),
+        ),
+      );
+
+      // Anthropic turns a new model on for an account before most people
+      // update Claude Code. The account has it, so it is listed, with the
+      // options that Claude Code reported rather than a newer one's.
+      it.effect("lists a model Claude Code reports that this build expects a newer one for", () =>
+        Effect.gen(function* () {
+          const status = yield* checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            claudeCapabilities({
+              models: [
+                {
+                  value: "fable",
+                  resolvedModel: "claude-fable-5-2",
+                  displayName: "Fable",
+                  description: "Fable 5.2",
+                  supportsEffort: true,
+                  supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+                  supportsAdaptiveThinking: true,
+                  supportsAutoMode: true,
+                },
+              ],
+            }),
+          );
+          const fable52 = status.models.find((model) => model.slug === "claude-fable-5-2");
+          assert.strictEqual(fable52?.name, "Claude Fable 5.2");
+          const effortDescriptor = fable52?.capabilities?.optionDescriptors?.find(
+            (descriptor) => descriptor.id === "effort",
+          );
+          assert.deepStrictEqual(
+            effortDescriptor?.type === "select" ? effortDescriptor.options : undefined,
+            [
+              { id: "default", label: "Default", isDefault: true },
+              { id: "low", label: "Low" },
+              { id: "medium", label: "Medium" },
+              { id: "high", label: "High" },
+              { id: "xhigh", label: "Extra High" },
+              { id: "max", label: "Max" },
+            ],
+          );
+          assert.strictEqual(
+            fable52?.capabilities?.optionDescriptors?.some(
+              (descriptor) => descriptor.id === "fastMode",
+            ),
+            false,
+          );
+          // Nothing is missing from the list, so nothing asks for an update.
+          assert.strictEqual(status.message, undefined);
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              const joined = args.join(" ");
+              if (joined === "--version") return { stdout: "2.1.319\n", stderr: "", code: 0 };
+              if (joined === "auth status")
+                return { stdout: '{"loggedIn":true}\n', stderr: "", code: 0 };
+              throw new Error(`Unexpected args: ${joined}`);
+            }),
+          ),
+        ),
+      );
+
+      // The picker, a chat and a title all read this list. A check whose
+      // probe timed out lists Claude Code's last answer again, so a model this
+      // build has no entry of its own for keeps the options it was shown with.
+      it.effect("lists the models Claude Code last reported when a check cannot ask it", () =>
+        Effect.gen(function* () {
+          let kept: ClaudeReportedModels | undefined;
+          const store: ClaudeReportedModelsStore = {
+            get: Effect.sync(() => kept),
+            set: (reported) =>
+              Effect.sync(() => {
+                kept = reported;
+              }),
+          };
+          const check = (capabilities: Parameters<typeof checkClaudeProviderStatus>[1]) =>
+            checkClaudeProviderStatus(
+              defaultClaudeSettings,
+              capabilities,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              store,
+            );
+          const fable52Of = (provider: ServerProviderDraft) =>
+            provider.models.find((model) => model.slug === "claude-fable-5-2");
+          const reportsFable52 = claudeCapabilities({
+            models: [
+              {
+                value: "fable",
+                resolvedModel: "claude-fable-5-2",
+                displayName: "Fable",
+                description: "Fable 5.2",
+                supportsEffort: true,
+                supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+                supportsAutoMode: true,
+              },
+            ],
+          });
+
+          // Nothing reported yet: only what this Claude Code is known to have,
+          // as a fallback that leaves clients their last list.
+          const neverAsked = yield* check(noClaudeCapabilities);
+          assert.strictEqual(fable52Of(neverAsked), undefined);
+          assert.strictEqual(neverAsked.modelCatalogSource, "fallback");
+
+          // Reported, then a probe that timed out. The model stays as Claude
+          // Code reported it, not as the entry for a newer Claude Code has
+          // it, and the list still stands as Claude Code's answer.
+          const asked = yield* check(reportsFable52);
+          const notAsked = yield* check(noClaudeCapabilities);
+          assert.deepStrictEqual(fable52Of(notAsked), fable52Of(asked));
+          assert.strictEqual(
+            fable52Of(notAsked)?.capabilities?.optionDescriptors?.some(
+              (descriptor) => descriptor.id === "fastMode",
+            ),
+            false,
+          );
+          assert.strictEqual(notAsked.modelCatalogSource, "live");
+
+          // A restart starts from the saved answer, minus the user's own
+          // entries. A list that never held an answer seeds nothing.
+          const identity = {
+            instanceId: ProviderInstanceId.make("claudeAgent"),
+            driver: ProviderDriverKind.make("claudeAgent"),
+          };
+          const saved: ServerProvider = {
+            ...notAsked,
+            ...identity,
+            models: [
+              ...notAsked.models,
+              { slug: "my-model", name: "my-model", isCustom: true, capabilities: null },
+            ],
+          };
+          assert.strictEqual(
+            claudeReportedModelsFromCache({ ...saved, modelCatalogSource: "fallback" }, identity),
+            undefined,
+          );
+          kept = claudeReportedModelsFromCache(saved, identity);
+          assert.strictEqual(
+            kept?.models.some((model) => model.slug === "my-model"),
+            false,
+          );
+          assert.deepStrictEqual(fable52Of(yield* check(noClaudeCapabilities)), fable52Of(asked));
+
+          // Claude Code's own name for the row comes along, so a pick written
+          // `fable` resolves to the model it means today.
+          assert.deepStrictEqual(fable52Of(asked)?.aliases, ["fable"]);
+
+          // An answer that no longer lists the model is an answer, not a
+          // fallback. The model leaves the picker but stays, options and all,
+          // for the threads and settings already on it. Its alias does not:
+          // `fable` is the newer model's name now.
+          const reportsAnother = claudeCapabilities({
+            models: [
+              {
+                value: "opus",
+                resolvedModel: "claude-opus-9[1m]",
+                displayName: "Opus",
+                description: "Opus 9",
+                supportsEffort: true,
+                supportedEffortLevels: ["low", "high"],
+                supportsAutoMode: true,
+              },
+            ],
+          });
+          const dropped = yield* check(reportsAnother);
+          assert.strictEqual(dropped.modelCatalogSource, "live");
+          const { isDefault: _isDefault, aliases: _aliases, ...reportedRow } = fable52Of(asked)!;
+          const keptRow = { ...reportedRow, isHidden: true, keptForExistingPicks: true };
+          assert.deepStrictEqual(fable52Of(dropped), keptRow);
+          assert.strictEqual(dropped.models.at(-1)?.slug, "claude-fable-5-2");
+
+          // It is kept through a check that cannot ask, and through a restart.
+          assert.deepStrictEqual(fable52Of(yield* check(noClaudeCapabilities)), keptRow);
+          kept = claudeReportedModelsFromCache({ ...dropped, ...identity }, identity);
+          assert.deepStrictEqual(fable52Of(yield* check(noClaudeCapabilities)), keptRow);
+
+          // An answer that lists no models at all keeps what came before it
+          // too, a model known only as `<id>[1m]` included, and still counts
+          // as an answer through the checks that follow.
+          const answeredEmpty = yield* check(claudeCapabilities({ models: [] }));
+          assert.strictEqual(answeredEmpty.modelCatalogSource, "live");
+          const keptSlugs = (provider: ServerProviderDraft) =>
+            provider.models
+              .filter((model) => model.keptForExistingPicks === true)
+              .map((model) => model.slug);
+          assert.deepStrictEqual(keptSlugs(answeredEmpty), [
+            "claude-opus-9[1m]",
+            "claude-fable-5-2",
+          ]);
+          const afterEmpty = yield* check(noClaudeCapabilities);
+          assert.strictEqual(afterEmpty.modelCatalogSource, "live");
+          assert.deepStrictEqual(keptSlugs(afterEmpty), keptSlugs(answeredEmpty));
+
+          // Added back by hand, it is the user's own entry: listed, not kept
+          // twice, and with the options it had.
+          const addedBack = yield* checkClaudeProviderStatus(
+            { ...defaultClaudeSettings, customModels: ["claude-fable-5-2"] },
+            reportsAnother,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            store,
+          );
+          assert.strictEqual(
+            addedBack.models.filter((model) => model.slug === "claude-fable-5-2").length,
+            1,
+          );
+          assert.strictEqual(fable52Of(addedBack)?.isCustom, true);
+          assert.strictEqual(fable52Of(addedBack)?.isHidden, undefined);
+          assert.deepStrictEqual(fable52Of(addedBack)?.capabilities, keptRow.capabilities);
+
+          // Reported again, it is an ordinary model once more.
+          assert.deepStrictEqual(fable52Of(yield* check(reportsFable52)), fable52Of(asked));
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              const joined = args.join(" ");
+              if (joined === "--version") return { stdout: "2.1.319\n", stderr: "", code: 0 };
+              if (joined === "auth status")
+                return { stdout: '{"loggedIn":true}\n', stderr: "", code: 0 };
+              throw new Error(`Unexpected args: ${joined}`);
+            }),
+          ),
+        ),
+      );
+
+      it.effect("hides Claude Fable 5.2 before the Claude Code version that exposes it", () =>
+        Effect.gen(function* () {
+          const status = yield* checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            claudeCapabilities(),
+          );
+          assert.strictEqual(
+            status.models.some((model) => model.slug === "claude-fable-5-2"),
+            false,
+          );
+          assert.strictEqual(
+            status.models.some((model) => model.slug === "claude-fable-5-1"),
+            true,
+          );
+          assert.strictEqual(
+            status.message,
+            "Claude Code v2.1.319 is too old for Claude Fable 5.2. Upgrade to v2.1.321 or newer to access it.",
+          );
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              const joined = args.join(" ");
+              if (joined === "--version") return { stdout: "2.1.319\n", stderr: "", code: 0 };
               if (joined === "auth status")
                 return { stdout: '{"loggedIn":true}\n', stderr: "", code: 0 };
               throw new Error(`Unexpected args: ${joined}`);

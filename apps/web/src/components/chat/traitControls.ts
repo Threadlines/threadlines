@@ -97,6 +97,16 @@ export function getDescriptorStringValue(
   return typeof value === "string" ? value : null;
 }
 
+/**
+ * Whether a choice gets the small "default" tag beside its label. A choice
+ * that is itself named Default (a provider's own level) already says so.
+ */
+export function showsDefaultTag(
+  option: SelectProviderOptionDescriptor["options"][number],
+): boolean {
+  return option.isDefault === true && option.label.trim().toLowerCase() !== "default";
+}
+
 function optionLooksLikeFastTier(option: SelectProviderOptionDescriptor["options"][number]) {
   const searchable = `${option.id} ${option.label}`.toLowerCase();
   return /\bfast\b/u.test(searchable) || /\bpriority\b/u.test(searchable);

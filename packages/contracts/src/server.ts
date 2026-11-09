@@ -292,6 +292,18 @@ export const ServerProviderModel = Schema.Struct({
   isCustom: Schema.Boolean,
   isDefault: Schema.optional(Schema.Boolean),
   isHidden: Schema.optional(Schema.Boolean),
+  /**
+   * Other names the provider itself gives this model right now, such as
+   * Claude Code's `opus` for its current Opus. A pick written with one
+   * resolves to this row.
+   */
+  aliases: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
+  /**
+   * A model the provider listed once and no longer does. It is not offered
+   * for new picks (it is `isHidden` too), but a thread or a setting already
+   * on it keeps it, options included.
+   */
+  keptForExistingPicks: Schema.optional(Schema.Boolean),
   /** Compact catalog metadata line, e.g. "500K ctx · $2.00/M in · $6.00/M out". */
   metaLabel: Schema.optional(TrimmedNonEmptyString),
   /** Promotional pricing chip from the provider's catalog, e.g. "Free". */
