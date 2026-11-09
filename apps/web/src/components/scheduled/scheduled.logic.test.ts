@@ -10,6 +10,7 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  checkBackThreads,
   DEFAULT_WEBHOOK_FORM,
   describeNextRun,
   describeScheduleCall,
@@ -358,5 +359,46 @@ describe("event tasks", () => {
     expect(fields).toContain("comment.body");
     expect(fields.filter((field) => field === "action")).toHaveLength(1);
     expect(fields.at(-1)).toBe("repository.full_name");
+  });
+});
+
+describe("check-backs on the Scheduled page", () => {
+  const checkBack = (id: string, scheduledFor: string, participantId: string | null = null) => ({
+    id,
+    participantId: participantId === null ? null : ThreadParticipantId.make(participantId),
+    scheduledFor,
+    exact: false,
+    recurring: false,
+    durable: false,
+  });
+
+  it("lists each thread an agent will come back to once, soonest first", () => {
+    const listed = checkBackThreads([
+      { title: "Quiet", archivedAt: null },
+      {
+        title: "Deploy",
+        archivedAt: null,
+        checkBacks: [
+          checkBack("late", "2026-10-21T15:00:00.000Z"),
+          checkBack("soon", "2026-10-21T10:00:00.000Z", "participant-reviewer"),
+        ],
+      },
+      {
+        title: "Docs",
+        archivedAt: null,
+        checkBacks: [checkBack("docs", "2026-10-21T09:00:00.000Z")],
+      },
+      {
+        title: "Gone",
+        archivedAt: "2026-10-21T07:00:00.000Z",
+        checkBacks: [checkBack("gone", "2026-10-21T08:30:00.000Z")],
+      },
+    ]);
+    expect(
+      listed.map((entry) => [entry.thread.title, entry.soonest.id, entry.more] as const),
+    ).toEqual([
+      ["Docs", "docs", 0],
+      ["Deploy", "soon", 1],
+    ]);
   });
 });

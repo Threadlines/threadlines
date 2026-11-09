@@ -87,7 +87,6 @@ export function remoteThreadFilingOf(
     | "handedBackAt"
     | "handedBackTurnId"
     | "session"
-    | "checkBacks"
     | "queuedFollowUps"
   >,
 ): RemoteThreadFiling {
@@ -104,10 +103,9 @@ export function remoteThreadFilingOf(
     unseen:
       hasUnseenCompletion(shell, shell.lastSeenAt) ||
       hasUnseenSessionFailure(shell, shell.lastSeenAt),
+    // A check-back doesn't hold it: wrapped, it comes back when that fires.
     waiting:
-      (shell.checkBacks?.length ?? 0) > 0 ||
-      (shell.session?.continueAtReset ?? null) !== null ||
-      (shell.queuedFollowUps?.length ?? 0) > 0,
+      (shell.session?.continueAtReset ?? null) !== null || (shell.queuedFollowUps?.length ?? 0) > 0,
     archived: false,
   };
 }

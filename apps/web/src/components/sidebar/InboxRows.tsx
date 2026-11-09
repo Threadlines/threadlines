@@ -48,7 +48,7 @@ import {
 import { selectThreadTerminalState, useTerminalStateStore } from "../../terminalStateStore";
 import { useThreadSelectionStore } from "../../threadSelectionStore";
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
-import { formatCheckBackCountdownShort } from "../chat/checkBacks";
+import { formatCheckBackCountdownShort, nextCheckBack } from "../chat/checkBacks";
 import { formatWorkingDurationLabel } from "../../timestampFormat";
 import { RelativeTimeLabel } from "../RelativeTimeLabel";
 import { getPickerModelName } from "../chat/providerIconUtils";
@@ -69,6 +69,7 @@ import {
   inboxStatusWord,
   remoteChildStatusText,
   THREAD_STATUS_DOT_CLASSES,
+  WAITING_STATUS_TONE,
   type ChildThreadsSummary,
   type InboxRemoteChild,
   type ThreadStatusPill,
@@ -1418,6 +1419,11 @@ export const InboxChildRow = memo(function InboxChildRow(props: InboxChildRowPro
   const isSelected = useThreadSelectionStore((state) => state.selectedThreadKeys.has(threadKey));
   const isRenaming = renamingThreadKey === threadKey;
   const shownStatus = isDone ? null : status;
+  // Wrapped while an agent is still coming back: the row says when, as a
+  // wrapped row in the shelf does, whatever status it would show live.
+  const wrappedCheckBackAt = isDone
+    ? (nextCheckBack(thread.checkBacks)?.scheduledFor ?? null)
+    : null;
   const needsYou =
     shownStatus?.label === "Pending Approval" || shownStatus?.label === "Awaiting Input";
 
@@ -1598,9 +1604,14 @@ export const InboxChildRow = memo(function InboxChildRow(props: InboxChildRowPro
                   thread={thread}
                   status={shownStatus}
                   testId={`child-meta-${thread.id}`}
-                  {...(isDone
-                    ? { resting: doneAt ? <RelativeTimeLabel at={doneAt} compact /> : null }
-                    : {})}
+                  {...(wrappedCheckBackAt !== null
+                    ? {
+                        resting: <RowCheckBackStatus at={wrappedCheckBackAt} />,
+                        restingClassName: WAITING_STATUS_TONE,
+                      }
+                    : isDone
+                      ? { resting: doneAt ? <RelativeTimeLabel at={doneAt} compact /> : null }
+                      : {})}
                 />
               )}
               {showAction ? (
@@ -2085,6 +2096,9 @@ export const InboxDoneRow = memo(function InboxDoneRow(props: InboxDoneRowProps)
       selectThreadTerminalState(state.terminalStateByThreadKey, threadRef).runningTerminalIds,
   );
   const terminalStatus = terminalStatusFromRunningIds(runningTerminalIds);
+  // Wrapped while an agent is still coming back: the row says when, since
+  // that is when the thread returns to the list by itself.
+  const checkBackAt = nextCheckBack(thread.checkBacks)?.scheduledFor ?? null;
 
   const handleClick = useCallback(() => {
     navigateToThread(threadRef);
@@ -2318,14 +2332,25 @@ export const InboxDoneRow = memo(function InboxDoneRow(props: InboxDoneRowProps)
                   />
                 </span>
               ) : null}
-              {/* A thread that moved away says so instead of when it wrapped. */}
+              {/* A thread that moved away says so instead of when it wrapped,
+                and one an agent comes back to says when. */}
               <span
+                data-testid={`done-time-${thread.id}`}
                 className={cn(
                   "shrink-0 font-mono text-[11px] tabular-nums",
-                  thread.moveStatus ? "text-muted-foreground" : "text-muted-foreground/45",
+                  thread.moveStatus
+                    ? "text-muted-foreground"
+                    : checkBackAt !== null
+                      ? WAITING_STATUS_TONE
+                      : "text-muted-foreground/45",
                 )}
               >
-                {thread.moveStatus ?? (doneAt ? <RelativeTimeLabel at={doneAt} compact /> : null)}
+                {thread.moveStatus ??
+                  (checkBackAt !== null ? (
+                    <RowCheckBackStatus at={checkBackAt} />
+                  ) : doneAt ? (
+                    <RelativeTimeLabel at={doneAt} compact />
+                  ) : null)}
               </span>
               {isConfirmingArchive ? (
                 <RowFloatingActions isActive={isActive} isSelected={false} alwaysVisible>

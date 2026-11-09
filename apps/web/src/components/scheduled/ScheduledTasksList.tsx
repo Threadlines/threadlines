@@ -15,6 +15,7 @@ import {
   RUN_STATUS_LABELS,
   taskRunStatus,
 } from "./scheduled.logic";
+import { CheckBacksListSection } from "./ScheduledCheckBacks";
 import { useScheduledNavigation, useScheduledSearch } from "./useScheduledPage";
 
 function TaskRow({
@@ -76,8 +77,9 @@ function TaskRow({
 /**
  * The Scheduled page's list beside the rail: All tasks (the page's own
  * overview), then every task on every connected computer that runs them,
- * grouped by computer when there are several. Choosing one opens it in the
- * page; New task opens the form.
+ * grouped by computer when there are several, then the threads agents will
+ * come back to. Choosing a task opens it in the page, and a check-back its
+ * thread; New task opens the form.
  */
 export function ScheduledTasksList() {
   const nowMs = useRelativeTimeTick(30_000);
@@ -118,7 +120,8 @@ export function ScheduledTasksList() {
         }
       />
       <SidebarContent className="px-2 pb-3" data-testid="scheduled-tasks-list">
-        {/* With no tasks the page itself says so; the list stays quiet. */}
+        {/* With no tasks the page itself says so; the list stays quiet, but
+            for any check-backs. */}
         {empty ? null : (
           <ul className="flex flex-col gap-0.5">
             <DestinationListRow
@@ -169,6 +172,7 @@ export function ScheduledTasksList() {
                 </section>
               ),
             )}
+        <CheckBacksListSection />
       </SidebarContent>
     </>
   );

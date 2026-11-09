@@ -26,9 +26,15 @@ import {
 import { deriveProviderInstanceEntries } from "../../providerInstances";
 import { buildRoomAgentLabels } from "../../rooms";
 import { deriveAccessLevel, runtimeModeConfig } from "../../runtimeModeOptions";
-import { selectEnvironmentState, selectProjectsAcrossEnvironments, useStore } from "../../store";
+import {
+  selectEnvironmentState,
+  selectProjectsAcrossEnvironments,
+  selectSidebarThreadsAcrossEnvironments,
+  useStore,
+} from "../../store";
+import type { SidebarThreadSummary } from "../../types";
 import { getPickerModelName } from "../chat/providerIconUtils";
-import type { ScheduledTaskRef } from "./scheduled.logic";
+import { type CheckBackThread, checkBackThreads, type ScheduledTaskRef } from "./scheduled.logic";
 import { parseScheduledSearch, type ScheduledSearch } from "./scheduledShell.logic";
 
 /** Where the Scheduled page is, from its search params (the list beside the rail reads it too). */
@@ -253,4 +259,42 @@ export function useGitHubContext(
     staleTime: 60_000,
   });
   return query.data ?? null;
+}
+
+/** The threads agents will come back to, on every connected computer, soonest first. */
+export function useCheckBackThreads(): ReadonlyArray<CheckBackThread<SidebarThreadSummary>> {
+  const threads = useStore(selectSidebarThreadsAcrossEnvironments);
+  return useMemo(() => checkBackThreads(threads), [threads]);
+}
+
+/**
+ * The agent that will come back, named as the thread's chat names it: its
+ * name in the room, else its model ("Opus 5.5"). Null until the thread is
+ * loaded here.
+ */
+export function useCheckBackAgentName(
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+  participantId: ThreadParticipantId | null,
+): string | null {
+  const providersOn = useEnvironmentProviders();
+  const agentLabels = useAgentLabels();
+  const shell = useStore(
+    (state) => selectEnvironmentState(state, environmentId).threadShellById[threadId],
+  );
+  return useMemo(() => {
+    if (shell === undefined) return null;
+    const roomName = buildRoomAgentLabels(
+      shell,
+      deriveProviderInstanceEntries(providersOn(environmentId)),
+      (model, entry) => getPickerModelName(model, entry.driverKind),
+    )?.get(roomAgentKey(participantId))?.name;
+    if (roomName !== undefined) return roomName;
+    const selection =
+      participantId === null
+        ? shell.modelSelection
+        : shell.participants?.find((participant) => participant.id === participantId)
+            ?.modelSelection;
+    return selection === undefined ? null : agentLabels(environmentId, selection).model;
+  }, [agentLabels, environmentId, participantId, providersOn, shell]);
 }

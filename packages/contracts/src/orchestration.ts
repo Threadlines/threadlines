@@ -2151,7 +2151,11 @@ export const RemoteThreadFiling = Schema.Struct({
   seenAt: Schema.NullOr(IsoDateTime),
   /** It holds a finished turn or a failure the user hasn't opened there. */
   unseen: Schema.Boolean,
-  /** It starts again on its own: a check-back is set, a usage reset continues it, or a message waits to run. */
+  /**
+   * It starts again on its own: a usage reset continues it, or a message
+   * waits to run. A check-back doesn't count (it may be wrapped meanwhile);
+   * computers older than that still count one.
+   */
   waiting: Schema.Boolean,
   /** Archived or deleted there: it left that computer's lists. */
   archived: Schema.Boolean,

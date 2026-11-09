@@ -34,11 +34,13 @@ import {
   RUN_STATUS_LABELS,
   taskRunStatus,
 } from "./scheduled.logic";
+import { CheckBacksSection } from "./ScheduledCheckBacks";
 import { ScheduledTaskDetail } from "./ScheduledTaskDetail";
 import { ScheduledTaskForm } from "./ScheduledTaskForm";
 import { glassPage } from "../../theme/glassPage";
 import {
   useAgentLabels,
+  useCheckBackThreads,
   useProjectNames,
   useScheduledNavigation,
   useScheduledSearch,
@@ -164,11 +166,16 @@ function TaskOverviewRow({
   );
 }
 
-/** Every task, grouped by computer when there are several. */
+/**
+ * Every task, grouped by computer when there are several, then the threads
+ * agents will come back to (check-backs). With check-backs and no tasks the
+ * page lists just those, under the header's New task.
+ */
 function ScheduledOverview() {
   const nowMs = useRelativeTimeTick(30_000);
   const groups = useScheduledTaskGroups();
   const navigation = useScheduledNavigation();
+  const hasCheckBacks = useCheckBackThreads().length > 0;
   const taskCount = groups.reduce((count, group) => count + (group.tasks?.length ?? 0), 0);
   const eventTasks = groups.some((group) => group.environment.eventTasks);
   const description = pageDescription(eventTasks);
@@ -182,11 +189,12 @@ function ScheduledOverview() {
           None of your connected computers runs scheduled tasks. Update Threadlines on a computer to
           use them there.
         </SettingsGroup>
+        <CheckBacksSection className="mt-7" />
       </>
     );
   }
 
-  if (taskCount === 0 && !loading) {
+  if (taskCount === 0 && !loading && !hasCheckBacks) {
     return (
       <>
         <SettingsPageHeader title="Scheduled" description={description} />
@@ -258,6 +266,7 @@ function ScheduledOverview() {
           </section>
         ),
       )}
+      <CheckBacksSection className="mt-7" />
     </>
   );
 }
