@@ -1,8 +1,9 @@
 /**
  * The strip `/theme` opens above the message box (docs/design/custom-themes.md,
  * "Switching"): every theme as a tile. Arrow keys and clicks preview a theme
- * as a trial; Keep, Enter or clicking the previewed tile again keeps it; Esc
- * or the ✕ puts the old one back and closes. While a theme with art shows,
+ * as a trial; Keep, Enter or clicking the previewed tile again keeps it (Update
+ * when it is an agent's later version of a theme kept before, which replaces
+ * that copy, as in the trial bar); Esc or the ✕ puts the old one back and closes. While a theme with art shows,
  * the Glass slider beside the title sets how much of it shows through.
  * "New theme" hands the message box a prompt for an agent to make one
  * (NewThemeHint.tsx explains it).
@@ -24,9 +25,10 @@ import {
   type ThemeTile,
   useThemeTiles,
 } from "~/themeLibrary/themeCatalog";
+import { useLibraryThemes } from "~/themeLibrary/themeLibraryState";
 import { ThemeGlassSlider } from "./ThemeGlassSlider";
 import { useThemePickerOpenStore } from "./themePickerOpen";
-import { keepThemeTrial } from "./themeTrialState";
+import { keepThemeTrial, themeUpdateTarget } from "./themeTrialState";
 import { ThemeTileView } from "./ThemeTileView";
 
 export function ThemePickerStrip({
@@ -45,6 +47,11 @@ export function ThemePickerStrip({
   const committed = useThemeChoice();
   const active = useActiveTheme();
   const trial = useThemeTrial();
+  const libraryThemes = useLibraryThemes();
+  const updateTarget = useMemo(
+    () => (trial === null ? null : themeUpdateTarget(trial, libraryThemes)),
+    [libraryThemes, trial],
+  );
   const [highlighted, setHighlighted] = useState(() =>
     Math.max(
       0,
@@ -163,11 +170,15 @@ export function ThemePickerStrip({
             type="button"
             variant="ghost"
             size="xs"
-            tooltip="Keep this theme (Enter)"
+            tooltip={
+              updateTarget === null
+                ? "Keep this theme (Enter)"
+                : `Update ${updateTarget.entry.name} to this version (Enter)`
+            }
             onClick={keepShown}
           >
             <CheckIcon aria-hidden />
-            Keep
+            {updateTarget === null ? "Keep" : "Update"}
           </Button>
         ) : null}
         <Button

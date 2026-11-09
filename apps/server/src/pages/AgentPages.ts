@@ -621,9 +621,14 @@ const make = Effect.gen(function* () {
       const { pageId } = target;
       const participantId = scope.participantId;
       let note: string | undefined;
+      // Every version shown on this page carries the same offer, so keeping a
+      // later one updates the copy kept from an earlier one.
       const manifest: ThemeManifest = {
         ...check.manifest,
-        createdBy: check.manifest.createdBy ?? { kind: "agent", threadId: scope.threadId },
+        createdBy: {
+          ...(check.manifest.createdBy ?? { kind: "agent", threadId: scope.threadId }),
+          offer: { threadId: scope.threadId, pageId },
+        },
       };
       const lock = yield* lockFor(`${scope.threadId}\u0000${pageId}`);
       return yield* lock.withPermits(1)(

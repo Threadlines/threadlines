@@ -73,6 +73,7 @@ import {
   ThemeMergeInput,
   ThemeReadInput,
   ThemeRenameInput,
+  ThemeReplaceInput,
   ThemeSaveInput,
   ThemesSubscribeInput,
 } from "./themes.ts";
@@ -756,6 +757,7 @@ export const WS_METHODS = {
   themesRead: "themes.read",
   themesSave: "themes.save",
   themesRename: "themes.rename",
+  themesReplace: "themes.replace",
   themesDelete: "themes.delete",
   themesRestore: "themes.restore",
   themesMerge: "themes.merge",
@@ -2569,6 +2571,13 @@ export const WsThemesRenameRpc = Rpc.make(WS_METHODS.themesRename, {
   error: ThemeError,
 });
 
+/** A later version of the theme an entry holds: same entry, same name, new content. */
+export const WsThemesReplaceRpc = Rpc.make(WS_METHODS.themesReplace, {
+  payload: ThemeReplaceInput,
+  success: ThemeEntrySummary,
+  error: ThemeError,
+});
+
 /** Tombstones an entry; its content stays while any entry or device cache may need it. */
 export const WsThemesDeleteRpc = Rpc.make(WS_METHODS.themesDelete, {
   payload: ThemeEntryIdInput,
@@ -2599,6 +2608,7 @@ export const WsThemesRpcGroup = RpcGroup.make(
   WsThemesReadRpc,
   WsThemesSaveRpc,
   WsThemesRenameRpc,
+  WsThemesReplaceRpc,
   WsThemesDeleteRpc,
   WsThemesRestoreRpc,
   WsThemesMergeRpc,

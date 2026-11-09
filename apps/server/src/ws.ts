@@ -691,6 +691,8 @@ const ThemesRpcLayer = WsThemesRpcGroup.toLayer(
         observeRpcEffect(WS_METHODS.themesSave, themes.save(input), aggregate),
       [WS_METHODS.themesRename]: (input) =>
         observeRpcEffect(WS_METHODS.themesRename, themes.rename(input), aggregate),
+      [WS_METHODS.themesReplace]: (input) =>
+        observeRpcEffect(WS_METHODS.themesReplace, themes.replace(input), aggregate),
       [WS_METHODS.themesDelete]: (input) =>
         observeRpcEffect(WS_METHODS.themesDelete, themes.delete(input), aggregate),
       [WS_METHODS.themesRestore]: (input) =>

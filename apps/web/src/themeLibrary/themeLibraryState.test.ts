@@ -8,7 +8,7 @@ import {
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import { themeTileByName } from "./themeCatalog";
-import { libraryThemesOf, reconcileFollowedLibraries } from "./themeLibraryState";
+import { keptCopyOfOffer, libraryThemesOf, reconcileFollowedLibraries } from "./themeLibraryState";
 
 const mac = EnvironmentId.make("env-mac");
 const pc = EnvironmentId.make("env-pc");
@@ -130,5 +130,45 @@ describe("theme library across computers", () => {
     expect(themeTileByName("aurora", library)?.key).toBe("starter:aurora");
     expect(themeTileByName("night sky", library)?.key).toBe("library:e1");
     expect(themeTileByName("Nope", library)).toBeNull();
+  });
+});
+
+describe("a later version of an agent's offer", () => {
+  const offered = (pageId: string): ThemeManifest => ({
+    ...manifest,
+    createdBy: { kind: "agent", threadId: "t1", offer: { threadId: "t1", pageId } },
+  });
+  const kept = (
+    entryId: string,
+    hash: string,
+    offerKey: string | null,
+    revision: number,
+    updatedAt = "2026-11-09T10:00:00.000Z",
+  ) => ({ entry: entry({ entryId, hash, offerKey, revision, updatedAt }), holders: [mac] });
+
+  it("updates the copy of the same offer changed last, and nothing else", () => {
+    const library = [
+      kept("v1", "1".repeat(64), "t1/p1", 3),
+      // Changed last on a computer whose clock runs behind: revision order, not the clock.
+      kept("v2", "2".repeat(64), "t1/p1", 4, "2026-11-01T00:00:00.000Z"),
+      kept("other", "3".repeat(64), "t1/p2", 9),
+      kept("file", "4".repeat(64), null, 9),
+    ];
+    expect(keptCopyOfOffer(library, offered("p1"), "5".repeat(64))?.entry.entryId).toBe("v2");
+    // A first version, a theme no agent offered, or one kept exactly as it is: no update.
+    expect(keptCopyOfOffer(library, offered("p9"), "5".repeat(64))).toBeNull();
+    expect(keptCopyOfOffer(library, manifest, "5".repeat(64))).toBeNull();
+    expect(keptCopyOfOffer(library, offered("p1"), "1".repeat(64))).toBeNull();
+  });
+
+  it("knows a kept copy's offer when only some computers do (an older build left it out)", () => {
+    const knows = entry({ entryId: "v1", offerKey: "t1/p1", revision: 3 });
+    const forgot = entry({ entryId: "v1", offerKey: null, revision: 3 });
+    const library = libraryThemesOf({ [mac]: snapshot(forgot), [pc]: snapshot(knows) }, [
+      { environmentId: mac },
+      { environmentId: pc },
+    ]);
+    expect(library[0]?.holders).toEqual([mac, pc]);
+    expect(keptCopyOfOffer(library, offered("p1"), "5".repeat(64))?.entry.entryId).toBe("v1");
   });
 });

@@ -454,9 +454,14 @@ it.layer(NodeServices.layer)("AgentPages.showTheme", (it) => {
           versionId: command.page.versionId,
         });
         assert.strictEqual(read.kind, "theme");
+        // It says which offer it is, so a later version kept updates the earlier copy.
         assert.deepStrictEqual(JSON.parse(read.content), {
           ...aurora,
-          createdBy: { kind: "agent", threadId: THREAD },
+          createdBy: {
+            kind: "agent",
+            threadId: THREAD,
+            offer: { threadId: THREAD, pageId: command.page.pageId },
+          },
         });
       }).pipe(
         Effect.provide(

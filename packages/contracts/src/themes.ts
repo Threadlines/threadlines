@@ -192,6 +192,16 @@ export const ThemeOrigin = keepingUnknownKeys(
     agent: Schema.optional(TrimmedNonEmptyString),
     /** The thread it was made in. */
     threadId: Schema.optional(TrimmedNonEmptyString),
+    /**
+     * The chat offer it was shown as (show_theme's page, in its thread). Each
+     * new version an agent shows keeps the same offer, so keeping one updates
+     * the copy kept from an earlier version instead of adding another.
+     */
+    offer: Schema.optional(
+      keepingUnknownKeys(
+        Schema.Struct({ threadId: TrimmedNonEmptyString, pageId: TrimmedNonEmptyString }),
+      ),
+    ),
   }),
 );
 export type ThemeOrigin = typeof ThemeOrigin.Type;
@@ -271,6 +281,12 @@ export const ThemeEntry = Schema.Struct({
   deleted: Schema.Boolean,
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
+  /**
+   * The chat offer it was kept from (themeOfferKey), set when it is saved and
+   * never changed, so keeping a later version of that offer updates this entry.
+   * Absent from older computers, and null for a theme no agent offered.
+   */
+  offerKey: Schema.optional(Schema.NullOr(Schema.String)),
 });
 export type ThemeEntry = typeof ThemeEntry.Type;
 
@@ -312,6 +328,17 @@ export const ThemeSaveInput = Schema.Struct({
   name: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(60))),
 });
 export type ThemeSaveInput = typeof ThemeSaveInput.Type;
+
+/**
+ * Gives an entry new content (a later version of the theme it holds), keeping
+ * its id and name: one more revision, which other computers merge like any.
+ * The server validates the theme and embeds its fonts, as on save.
+ */
+export const ThemeReplaceInput = Schema.Struct({
+  entryId: ThemeEntryId,
+  manifest: ThemeManifest,
+});
+export type ThemeReplaceInput = typeof ThemeReplaceInput.Type;
 
 export const ThemeRenameInput = Schema.Struct({
   entryId: ThemeEntryId,

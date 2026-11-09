@@ -86,7 +86,21 @@ the top of the window: "Keep Aurora? Keep · Undo · switches back in 15s".
 While the `/theme` picker shows a preview, the countdown waits (the picker's
 ✕ and Esc are its way back) and starts over if the picker closes another way.
 Keep commits
-it as this device's theme and saves it to the library. Undo, Esc, the
+it as this device's theme and saves it to the library. A new version of a
+theme an agent already offered in that chat (show_theme on the same page)
+updates the copy kept from an earlier version instead: the bar asks "Update
+Speedcube?", with Keep both to add it as another entry (the /theme picker's
+Keep reads Update then too). The theme records its offer (`createdBy.offer`,
+the thread and page); the entry kept from it remembers it (`offerKey`, on the
+entry since migration 107, set on save, never changed and carried through
+merges, since two offers can make identical content, stored once; entries kept
+before have none and aren't guessed from content). A Duplicate is the user's
+own copy and doesn't take the offer. Of the entries kept from that offer, the
+one changed last by revision order is updated; a new version identical to a
+theme already kept switches to that one instead. Update is `themes.replace`: the same entry and name with the new
+content, at a new revision, which reaches other computers like any change.
+Like a rename, an update made where a delete on another computer hasn't
+arrived yet wins over it and brings the entry back. Undo, Esc, the
 countdown, reloading, or closing the window all leave the committed theme in
 place. The bar and its buttons render with the built-in tokens, not the
 candidate's, so they stay readable under any theme. Switching back to a

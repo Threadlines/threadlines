@@ -13,7 +13,16 @@
  * Content stays while any entry names it, tombstones included; nothing here
  * deletes content yet (a device may still use a theme deleted elsewhere).
  *
- * A save and a delete made here are counted (`theme.saved`, `theme.deleted`,
+ * An entry kept from an agent's chat offer remembers it (`offerKey`, set on
+ * save, never changed, kept through merges, filled in by a replace when an
+ * older build left it out), and `replace` gives it a later version of that
+ * offer. Like a rename, a replace made on a computer that
+ * hasn't heard of a delete made elsewhere is a later revision, so it wins and
+ * brings the entry back; the app only offers it for an entry that its
+ * connected computers show as kept.
+ *
+ * A save, an update (`replace`, a later version kept over an earlier one) and
+ * a delete made here are counted (`theme.saved`, `theme.deleted`,
  * docs/telemetry.md), a save of a theme from the Showcase as its origin; an
  * entry merged from another computer is not, since that computer counted it.
  */
@@ -30,9 +39,14 @@ import {
   type ThemeMergeInput,
   type ThemeReadInput,
   type ThemeRenameInput,
+  type ThemeReplaceInput,
   type ThemeSaveInput,
 } from "@threadlines/contracts";
-import { compareThemeRevisions, nextThemeRevision } from "@threadlines/shared/themeLibrary";
+import {
+  compareThemeRevisions,
+  nextThemeRevision,
+  themeOfferKey,
+} from "@threadlines/shared/themeLibrary";
 import { checkThemeManifest, themeContentHash } from "@threadlines/shared/themeManifest";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -59,6 +73,12 @@ export interface ThemeLibraryShape {
   /** A new entry for a theme: checked, fonts embedded, a fresh entry id. */
   readonly save: (input: ThemeSaveInput) => Effect.Effect<ThemeEntrySummary, ThemeError>;
   readonly rename: (input: ThemeRenameInput) => Effect.Effect<ThemeEntrySummary, ThemeError>;
+  /**
+   * A later version of the theme an entry holds (an agent's new version of an
+   * offer kept before): checked, fonts embedded, the same entry and name with
+   * the new content, at a new revision.
+   */
+  readonly replace: (input: ThemeReplaceInput) => Effect.Effect<ThemeEntrySummary, ThemeError>;
   /** Tombstones an entry; deleting a tombstone changes nothing. */
   readonly delete: (input: ThemeEntryIdInput) => Effect.Effect<ThemeEntrySummary, ThemeError>;
   /** Brings a tombstoned entry back; restoring a live one changes nothing. */
@@ -183,6 +203,7 @@ const make = Effect.gen(function* () {
             deleted: false,
             createdAt: now,
             updatedAt: now,
+            offerKey: themeOfferKey(manifest),
           };
           yield* repo.putEntry(entry).pipe(stored);
           return { summary: yield* summaryOf(entry.entryId), copy };
@@ -235,6 +256,36 @@ const make = Effect.gen(function* () {
           )
         : Effect.succeed(entry.name === input.name ? null : { name: input.name }),
     );
+
+  const replace: ThemeLibraryShape["replace"] = (input) =>
+    Effect.gen(function* () {
+      const manifest = yield* workshop.prepare(input.manifest);
+      const hash = yield* hashOf(manifest);
+      const changed = { yes: false };
+      const summary = yield* revise(input.entryId, (entry) =>
+        Effect.gen(function* () {
+          if (entry.deleted) {
+            return yield* new ThemeError({
+              detail: "That theme was deleted. Restore it to update it.",
+            });
+          }
+          if (entry.hash === hash) return null;
+          yield* storeContent(hash, manifest);
+          changed.yes = true;
+          // An entry an older build saved or merged doesn't know its offer yet: this version says it.
+          return { hash, offerKey: entry.offerKey ?? themeOfferKey(manifest) };
+        }),
+      );
+      // Counted as a keep, saying it updated a copy rather than adding one.
+      if (changed.yes) {
+        yield* analytics.record("theme.saved", {
+          ...themeAnalyticsProperties(manifest),
+          copy: false,
+          updated: true,
+        });
+      }
+      return summary;
+    });
 
   const remove: ThemeLibraryShape["delete"] = (input) =>
     Effect.gen(function* () {
@@ -294,7 +345,9 @@ const make = Effect.gen(function* () {
             return yield* summaryOf(incoming.entryId);
           }
           if (content !== undefined) yield* storeContent(incoming.hash, content);
-          yield* repo.putEntry(incoming).pipe(stored);
+          // An entry's offer never changes, so one a computer didn't send (an older build) stays.
+          const offerKey = incoming.offerKey ?? Option.getOrUndefined(current)?.offerKey ?? null;
+          yield* repo.putEntry({ ...incoming, offerKey }).pipe(stored);
           return yield* summaryOf(incoming.entryId);
         }),
       );
@@ -306,6 +359,7 @@ const make = Effect.gen(function* () {
     read,
     save,
     rename,
+    replace,
     delete: remove,
     restore,
     merge,

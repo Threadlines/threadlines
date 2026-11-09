@@ -6,7 +6,7 @@
  * `(revision, revisedBy)` wins, compared the same way everywhere, so any order
  * of merges ends in the same library.
  */
-import type { ThemeEntry } from "@threadlines/contracts";
+import type { ThemeEntry, ThemeManifest } from "@threadlines/contracts";
 
 type Revisioned = Pick<ThemeEntry, "revision" | "revisedBy">;
 
@@ -54,4 +54,25 @@ export function reconcileThemeLibraries<T extends ThemeEntry>(
     if (!ours || compareThemeRevisions(entry, ours) > 0) takeFromOther.push(entry);
   }
   return { sendToOther, takeFromOther };
+}
+
+/**
+ * The chat offer a theme came from, as one key ("<thread>/<page>"): every
+ * version an agent shows of one theme shares it. Null for a theme no agent
+ * offered (a file, a starter, one made by hand) or from a build before offers
+ * were recorded.
+ */
+export function themeOfferKey(manifest: ThemeManifest): string | null {
+  const offer = manifest.createdBy?.offer;
+  return offer === undefined ? null : `${offer.threadId}/${offer.pageId}`;
+}
+
+/**
+ * The theme without the offer it came from, for a copy the user makes of it.
+ * Its content hash is the same (the hash leaves createdBy out).
+ */
+export function themeWithoutOffer(manifest: ThemeManifest): ThemeManifest {
+  if (manifest.createdBy?.offer === undefined) return manifest;
+  const { offer: _offer, ...createdBy } = manifest.createdBy;
+  return { ...manifest, createdBy };
 }

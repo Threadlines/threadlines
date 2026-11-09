@@ -6,7 +6,9 @@
  * sidebar and clear of the composer and its controls. The bar and the dialog are drawn with the built-in tokens, not the
  * candidate theme's, so they stay readable whatever the candidate does. Keep
  * saves a theme that isn't in a library yet (an agent's offer, an imported
- * file) and commits it; Undo, Esc and the countdown put the old theme back.
+ * file) and commits it; for a new version of an offer kept before, the bar
+ * asks to Update that copy instead, with Keep both beside it. Undo, Esc and
+ * the countdown put the old theme back.
  */
 import type { ThemeBase } from "@threadlines/contracts";
 import { BUILTIN_THEME_TOKENS } from "@threadlines/shared/themeBuiltinTokens";
@@ -33,7 +35,7 @@ import {
   DialogTitle,
 } from "../../ui/dialog";
 import { ThemeCreditsText } from "./ThemeCreditsText";
-import { keepThemeTrial } from "./themeTrialState";
+import { keepThemeTrial, useThemeUpdateTarget } from "./themeTrialState";
 
 /** The built-in UI font, as index.css declares it. */
 const BUILTIN_FONT_SANS =
@@ -67,10 +69,17 @@ function TrialBar({ trial }: { readonly trial: ThemeTrial }) {
   const secondsLeft = useSecondsLeft(trial);
   const [keeping, setKeeping] = useState(false);
   const mainAreaCenterStyle = useMainAreaCenterStyle();
+  // A new version of an offer kept before updates that copy; Keep both adds another.
+  const target = useThemeUpdateTarget(trial);
+  const question = target === null ? `Keep ${trial.name}?` : `Update ${target.entry.name}?`;
+  const keep = (asCopy: boolean) => {
+    setKeeping(true);
+    void keepThemeTrial(trial, { asCopy }).finally(() => setKeeping(false));
+  };
   return (
     <div
       role="alertdialog"
-      aria-label={`Keep ${trial.name}?`}
+      aria-label={question}
       data-theme-trial-bar
       style={{ ...builtinThemeStyle(active.base), ...mainAreaCenterStyle }}
       className="center-on-main-area fixed inset-x-0 top-[calc(env(safe-area-inset-top)+var(--app-titlebar-height,38px)+12px)] z-[60] mx-auto flex w-[min(460px,calc(100vw-24px))] items-center gap-3 rounded-[var(--app-radius-large)] border border-border bg-popover px-4 py-2.5 text-popover-foreground shadow-lg"
@@ -82,24 +91,21 @@ function TrialBar({ trial }: { readonly trial: ThemeTrial }) {
       }}
     >
       <div className="min-w-0 flex-1">
-        <div className="truncate text-[13.5px] leading-5 font-medium">Keep {trial.name}?</div>
-        <div className="text-[12px] leading-4 text-muted-foreground" aria-live="polite">
+        <div className="truncate text-[13.5px] leading-5 font-medium">{question}</div>
+        <div className="truncate text-[12px] leading-4 text-muted-foreground" aria-live="polite">
           {trial.expiresAt === null ? "Trying it" : `Switches back in ${secondsLeft}s`}
         </div>
       </div>
       <Button size="sm" variant="outline" onClick={() => endThemeTrial(trial.id)}>
         Undo
       </Button>
-      <Button
-        size="sm"
-        autoFocus
-        disabled={keeping}
-        onClick={() => {
-          setKeeping(true);
-          void keepThemeTrial(trial).finally(() => setKeeping(false));
-        }}
-      >
-        Keep
+      {target !== null ? (
+        <Button size="sm" variant="outline" disabled={keeping} onClick={() => keep(true)}>
+          Keep both
+        </Button>
+      ) : null}
+      <Button size="sm" autoFocus disabled={keeping} onClick={() => keep(false)}>
+        {target === null ? "Keep" : "Update"}
       </Button>
     </div>
   );

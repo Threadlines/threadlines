@@ -72,7 +72,8 @@ Threadlines sends product and reliability events such as:
 - thread rollback and delete events;
 - themes: when an agent shows one in a chat (and whether it's a new version of
   one it showed before); when one is kept in this computer's theme library,
-  and whether the same theme was already kept there (a Duplicate); and when
+  and whether the same theme was already kept there (a Duplicate) or this
+  was a new version updating a copy kept before; and when
   one is deleted from it. Each says where the theme came from (made by an
   agent, imported from a file, a copy of a starter, made by hand, or unknown
   for a theme file that doesn't say), whether

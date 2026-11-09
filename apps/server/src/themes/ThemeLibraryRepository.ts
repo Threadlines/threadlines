@@ -1,7 +1,7 @@
 /**
- * The theme library's tables (migration 104): entries and the content they
- * name. Content rows are only ever added (and given a thumbnail); entries
- * are written whole, by id.
+ * The theme library's tables (migrations 104 and 107): entries, with the chat
+ * offer each was kept from, and the content they name. Content rows are only
+ * ever added (and given a thumbnail); entries are written whole, by id.
  */
 import {
   IsoDateTime,
@@ -92,7 +92,8 @@ const make = Effect.gen(function* () {
     e.revised_by AS "revisedBy",
     e.deleted AS "deleted",
     e.created_at AS "createdAt",
-    e.updated_at AS "updatedAt"
+    e.updated_at AS "updatedAt",
+    e.offer_key AS "offerKey"
   `;
   const selectSummaries = `
     SELECT ${entryColumns},
@@ -197,7 +198,7 @@ const make = Effect.gen(function* () {
   const putEntry: ThemeLibraryRepositoryShape["putEntry"] = (entry) =>
     sql`
       INSERT INTO theme_entries (
-        entry_id, name, hash, revision, revised_by, deleted, created_at, updated_at
+        entry_id, name, hash, revision, revised_by, deleted, created_at, updated_at, offer_key
       ) VALUES (
         ${entry.entryId},
         ${entry.name},
@@ -206,7 +207,8 @@ const make = Effect.gen(function* () {
         ${entry.revisedBy},
         ${entry.deleted ? 1 : 0},
         ${entry.createdAt},
-        ${entry.updatedAt}
+        ${entry.updatedAt},
+        ${entry.offerKey ?? null}
       )
       ON CONFLICT (entry_id) DO UPDATE SET
         name = excluded.name,
@@ -215,7 +217,8 @@ const make = Effect.gen(function* () {
         revised_by = excluded.revised_by,
         deleted = excluded.deleted,
         created_at = excluded.created_at,
-        updated_at = excluded.updated_at
+        updated_at = excluded.updated_at,
+        offer_key = excluded.offer_key
     `.pipe(Effect.asVoid, wrap("putEntry"));
 
   return ThemeLibraryRepository.of({

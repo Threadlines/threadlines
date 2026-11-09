@@ -17,7 +17,12 @@ import type {
   ThemeLibrarySnapshot,
   ThemeManifest,
 } from "@threadlines/contracts";
-import { compareThemeRevisions, reconcileThemeLibraries } from "@threadlines/shared/themeLibrary";
+import {
+  compareThemeRevisions,
+  reconcileThemeLibraries,
+  themeOfferKey,
+  themeWithoutOffer,
+} from "@threadlines/shared/themeLibrary";
 import { useEffect, useMemo } from "react";
 import { create } from "zustand";
 
@@ -95,12 +100,40 @@ export function libraryThemesOf(
       const current = winners.get(entry.entryId);
       const order = current === undefined ? 1 : compareThemeRevisions(entry, current.entry);
       if (order > 0) winners.set(entry.entryId, { entry, holders: [environmentId] });
-      else if (order === 0) current?.holders.push(environmentId);
+      else if (order === 0 && current !== undefined) {
+        current.holders.push(environmentId);
+        // An entry's offer never changes; a computer on an older build may just not know it.
+        if (current.entry.offerKey == null && entry.offerKey != null) {
+          current.entry = { ...current.entry, offerKey: entry.offerKey };
+        }
+      }
     }
   }
   return [...winners.values()]
     .filter(({ entry }) => !entry.deleted)
     .toSorted((first, second) => first.entry.name.localeCompare(second.entry.name));
+}
+
+/**
+ * The kept copy a later version of an agent's offer would update: of the
+ * entries kept from the same chat offer, the one changed last (revision order,
+ * the same on every computer). Null when the theme is already kept as it is
+ * (its hash), or no agent offered it, or none was kept.
+ */
+export function keptCopyOfOffer(
+  library: ReadonlyArray<LibraryTheme>,
+  manifest: ThemeManifest,
+  hash: string,
+): LibraryTheme | null {
+  if (library.some((theme) => theme.entry.hash === hash)) return null;
+  const key = themeOfferKey(manifest);
+  if (key === null) return null;
+  let newest: LibraryTheme | null = null;
+  for (const theme of library) {
+    if (theme.entry.offerKey !== key) continue;
+    if (newest === null || compareThemeRevisions(theme.entry, newest.entry) > 0) newest = theme;
+  }
+  return newest;
 }
 
 /** The library as `useLibraryThemes` shows it, read once outside React. */
@@ -142,6 +175,7 @@ const entryOf = (summary: ThemeEntry): ThemeEntry => ({
   deleted: summary.deleted,
   createdAt: summary.createdAt,
   updatedAt: summary.updatedAt,
+  offerKey: summary.offerKey ?? null,
 });
 
 type ThemesClient = WsRpcClient["themes"];
@@ -188,6 +222,43 @@ export async function saveThemeToLibrary(
   return { entry, environmentId };
 }
 
+/**
+ * Gives an entry a later version of its theme, on the computer holding it:
+ * the same entry and name, new content, which spreads to the others.
+ */
+export async function replaceLibraryTheme(
+  entryId: string,
+  manifest: ThemeManifest,
+): Promise<{ readonly entry: ThemeEntrySummary; readonly environmentId: EnvironmentId }> {
+  const environmentId = holderOf(entryId);
+  const entry = await clientOf(environmentId).replace({ entryId, manifest });
+  return { entry, environmentId };
+}
+
+/**
+ * Keeps a theme in the library: the entry that already has it (the one kept
+ * from the same chat offer first), else an update of the copy kept from an
+ * earlier version of its offer (keptCopyOfOffer), else a new entry. `asCopy`
+ * (Keep both, Save as new) adds a new entry instead of updating.
+ */
+export async function keepThemeInLibrary(
+  theme: { readonly manifest: ThemeManifest; readonly name: string; readonly hash: string },
+  options: { readonly asCopy?: boolean } = {},
+): Promise<{ readonly entry: ThemeEntrySummary; readonly environmentId: EnvironmentId | null }> {
+  const library = currentLibraryThemes();
+  const offerKey = themeOfferKey(theme.manifest);
+  const sameContent = library.filter((kept) => kept.entry.hash === theme.hash);
+  const existing =
+    sameContent.find((kept) => offerKey !== null && kept.entry.offerKey === offerKey) ??
+    sameContent[0];
+  if (existing) return { entry: existing.entry, environmentId: existing.holders[0] ?? null };
+  const target =
+    options.asCopy === true ? null : keptCopyOfOffer(library, theme.manifest, theme.hash);
+  return target === null
+    ? saveThemeToLibrary(theme.manifest, theme.name)
+    : replaceLibraryTheme(target.entry.entryId, theme.manifest);
+}
+
 export async function renameLibraryTheme(entryId: string, name: string): Promise<void> {
   await clientOf(holderOf(entryId)).rename({ entryId, name });
 }
@@ -224,10 +295,14 @@ export async function readLibraryTheme(
   throw lastError;
 }
 
-/** Saves a copy of an entry under a new name: a new entry with the same content. */
+/**
+ * Saves a copy of an entry under a new name: a new entry with the same content.
+ * The copy is the user's own, not kept from an agent's offer, so a later
+ * version of that offer never updates it.
+ */
 export async function duplicateLibraryTheme(theme: LibraryTheme, name: string): Promise<void> {
   const content = await readLibraryTheme(theme.entry.hash, theme.holders[0] ?? null);
-  await saveThemeToLibrary(content.manifest, name);
+  await saveThemeToLibrary(themeWithoutOffer(content.manifest), name);
 }
 
 // ---------------------------------------------------------------------------

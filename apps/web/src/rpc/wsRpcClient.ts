@@ -424,6 +424,7 @@ export interface WsRpcClient {
     readonly read: RpcUnaryMethod<typeof WS_METHODS.themesRead>;
     readonly save: RpcUnaryMethod<typeof WS_METHODS.themesSave>;
     readonly rename: RpcUnaryMethod<typeof WS_METHODS.themesRename>;
+    readonly replace: RpcUnaryMethod<typeof WS_METHODS.themesReplace>;
     readonly remove: RpcUnaryMethod<typeof WS_METHODS.themesDelete>;
     readonly restore: RpcUnaryMethod<typeof WS_METHODS.themesRestore>;
     readonly merge: RpcUnaryMethod<typeof WS_METHODS.themesMerge>;
@@ -1258,6 +1259,7 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       read: (input) => transport.request((client) => client[WS_METHODS.themesRead](input)),
       save: (input) => transport.request((client) => client[WS_METHODS.themesSave](input)),
       rename: (input) => transport.request((client) => client[WS_METHODS.themesRename](input)),
+      replace: (input) => transport.request((client) => client[WS_METHODS.themesReplace](input)),
       remove: (input) => transport.request((client) => client[WS_METHODS.themesDelete](input)),
       restore: (input) => transport.request((client) => client[WS_METHODS.themesRestore](input)),
       merge: (input) => transport.request((client) => client[WS_METHODS.themesMerge](input)),

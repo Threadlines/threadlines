@@ -122,6 +122,54 @@ const failure = <A>(effect: Effect.Effect<A, ThemeError>) =>
   );
 
 it.layer(TestLayer)("ThemeLibrary", (it) => {
+  it.effect("gives an entry a later version of its theme, keeping its id and name", () =>
+    Effect.gen(function* () {
+      const library = yield* ThemeLibrary;
+      const offer = { threadId: "thread-7", pageId: "page-3" };
+      // Colors of its own: content is stored once per hash, whoever saved it first.
+      const offered: ThemeManifest = {
+        ...aurora,
+        colors: { ...aurora.colors, accent: "#41d0a8" },
+        createdBy: { kind: "agent", threadId: "thread-7", offer },
+      };
+      const first = yield* library.save({ manifest: offered, name: "My night" });
+      assert.strictEqual(first.offerKey, "thread-7/page-3");
+      // The same content offered in another chat is stored once, but its entry keeps its own offer.
+      const elsewhere = yield* library.save({
+        manifest: {
+          ...offered,
+          createdBy: { kind: "agent", offer: { threadId: "t-9", pageId: "p-1" } },
+        },
+      });
+      assert.strictEqual(elsewhere.hash, first.hash);
+      assert.strictEqual(elsewhere.offerKey, "t-9/p-1");
+      const later: ThemeManifest = { ...offered, colors: { ...aurora.colors, accent: "#5fb3ff" } };
+      const updated = yield* library.replace({ entryId: first.entryId, manifest: later });
+      assert.strictEqual(updated.entryId, first.entryId);
+      assert.strictEqual(updated.name, "My night");
+      assert.strictEqual(updated.hash, yield* Effect.promise(() => themeContentHash(later)));
+      assert.strictEqual(updated.accent, "#5fb3ff");
+      assert.strictEqual(updated.offerKey, "thread-7/page-3");
+      assert.isAbove(updated.revision, first.revision);
+      assert.deepInclude(recorded.at(-1), { event: "theme.saved" });
+      // The same content again changes nothing; a deleted entry isn't brought back this way.
+      const again = yield* library.replace({ entryId: first.entryId, manifest: later });
+      assert.strictEqual(again.revision, updated.revision);
+      yield* library.delete({ entryId: first.entryId });
+      const refused = yield* failure(
+        library.replace({ entryId: first.entryId, manifest: offered }),
+      );
+      assert.match(refused, /deleted/);
+      // An entry an older build kept without its offer learns it from the version that updates it.
+      const unmarked = yield* library.save({
+        manifest: { ...offered, createdBy: { kind: "agent" } },
+      });
+      assert.isNull(unmarked.offerKey);
+      const filled = yield* library.replace({ entryId: unmarked.entryId, manifest: later });
+      assert.strictEqual(filled.offerKey, "thread-7/page-3");
+    }),
+  );
+
   it.effect("saves a checked theme as a new entry, and refuses one that fails the checks", () =>
     Effect.gen(function* () {
       const library = yield* ThemeLibrary;
@@ -299,9 +347,23 @@ it.layer(TestLayer)("ThemeLibrary", (it) => {
       });
       assert.strictEqual(newer.name, "Theirs");
       assert.strictEqual(newer.revisedBy, "env-other");
+      // The chat offer it was kept from comes along, and an older build that doesn't send it can't drop it.
+      const offered = yield* library.merge({
+        entry: {
+          ...theirs,
+          revision: saved.revision + 41,
+          revisedBy: "env-other",
+          offerKey: "t/p",
+        },
+      });
+      assert.strictEqual(offered.offerKey, "t/p");
+      const fromOlder = yield* library.merge({
+        entry: { ...theirs, name: "Theirs", revision: saved.revision + 42, revisedBy: "env-old" },
+      });
+      assert.strictEqual(fromOlder.offerKey, "t/p");
       // The next change here counts on from the highest revision it has seen.
       const renamed = yield* library.rename({ entryId: saved.entryId, name: "Ours again" });
-      assert.strictEqual(renamed.revision, saved.revision + 41);
+      assert.strictEqual(renamed.revision, saved.revision + 43);
       assert.strictEqual(renamed.revisedBy, "env-test");
     }),
   );
