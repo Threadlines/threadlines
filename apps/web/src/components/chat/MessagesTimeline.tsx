@@ -104,6 +104,7 @@ import {
   ChevronRightIcon,
   CircleAlertIcon,
   Clock3Icon,
+  FileIcon,
   FileTextIcon,
   GitForkIcon,
   KeyRoundIcon,
@@ -2552,25 +2553,41 @@ function TimelineFileAttachmentChips(props: {
   const environmentId = ctx.activeThreadEnvironmentId;
   return (
     <div className={cn("flex flex-wrap gap-1.5", props.className)}>
-      {files.map((file) => (
-        <button
-          key={file.id}
-          type="button"
-          title={file.name}
-          aria-label={`Preview ${file.name}`}
-          className="inline-flex max-w-[260px] cursor-zoom-in items-center gap-1.5 rounded-md border border-border/80 bg-background/70 px-2 py-1 text-xs text-muted-foreground hover:text-foreground/80"
-          onClick={() =>
-            ctx.onPreviewFile({
-              name: file.name,
-              kind: file.kind,
-              loadBlob: () => loadChatAttachmentBlob({ environmentId, attachmentId: file.id }),
-            })
-          }
-        >
-          <FileTextIcon className="size-3.5 shrink-0" />
-          <span className="truncate">{file.name}</span>
-        </button>
-      ))}
+      {files.map((file) => {
+        const kind = file.kind;
+        // Nothing to preview for any other file: the agent opens it from disk.
+        if (kind === "other") {
+          return (
+            <span
+              key={file.id}
+              title={file.name}
+              className="inline-flex max-w-[260px] items-center gap-1.5 rounded-md border border-border/80 bg-background/70 px-2 py-1 text-xs text-muted-foreground"
+            >
+              <FileIcon className="size-3.5 shrink-0" />
+              <span className="truncate">{file.name}</span>
+            </span>
+          );
+        }
+        return (
+          <button
+            key={file.id}
+            type="button"
+            title={file.name}
+            aria-label={`Preview ${file.name}`}
+            className="inline-flex max-w-[260px] cursor-zoom-in items-center gap-1.5 rounded-md border border-border/80 bg-background/70 px-2 py-1 text-xs text-muted-foreground hover:text-foreground/80"
+            onClick={() =>
+              ctx.onPreviewFile({
+                name: file.name,
+                kind,
+                loadBlob: () => loadChatAttachmentBlob({ environmentId, attachmentId: file.id }),
+              })
+            }
+          >
+            <FileTextIcon className="size-3.5 shrink-0" />
+            <span className="truncate">{file.name}</span>
+          </button>
+        );
+      })}
     </div>
   );
 }

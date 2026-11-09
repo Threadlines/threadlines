@@ -148,6 +148,7 @@ import { countStructuredPatchStats, type FileChangeStat } from "@threadlines/sha
 import { parseSessionKey } from "@threadlines/shared/threadParticipants";
 import { withUsualCommandLookup } from "@threadlines/shared/windowsCommandLookup";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
+import { buildFileAttachmentNote } from "../fileAttachmentPrompt.ts";
 import { ServerConfig } from "../../config.ts";
 import {
   BROWSER_MCP_SERVER_NAME,
@@ -2823,8 +2824,8 @@ function buildClaudeImageContentBlock(input: {
 }
 
 /** Claude reads PDFs natively as base64 document blocks and text-shaped
- *  files (plain text, markdown, CSV) as text document sources; both were
- *  verified end-to-end through the agent SDK streaming input path. */
+ *  files (plain text, markdown, CSV, code) as text document sources; both
+ *  were verified end-to-end through the agent SDK streaming input path. */
 function buildClaudeDocumentContentBlock(input: {
   readonly kind: "pdf" | "text";
   readonly name: string;
@@ -3017,17 +3018,6 @@ const buildUserMessageEffect = Effect.fn("buildUserMessageEffect")(function* (
   }
 
   for (const attachment of input.attachments ?? []) {
-    if (
-      attachment.type === "image" &&
-      !SUPPORTED_CLAUDE_IMAGE_MIME_TYPES.has(attachment.mimeType)
-    ) {
-      return yield* new ProviderAdapterRequestError({
-        provider: PROVIDER,
-        method,
-        detail: `Unsupported Claude image attachment type '${attachment.mimeType}'.`,
-      });
-    }
-
     const attachmentPath = resolveAttachmentPath({
       attachmentsDir: dependencies.attachmentsDir,
       attachment,
@@ -3038,6 +3028,19 @@ const buildUserMessageEffect = Effect.fn("buildUserMessageEffect")(function* (
         method,
         detail: `Invalid attachment id '${attachment.id}'.`,
       });
+    }
+
+    // Claude takes four picture formats, PDFs and text natively. Anything
+    // else (an SVG or HEIC picture, a Word document) it opens from disk.
+    const documentKind =
+      attachment.type === "file" && attachment.kind !== "other" ? attachment.kind : null;
+    const takenNatively =
+      attachment.type === "image"
+        ? SUPPORTED_CLAUDE_IMAGE_MIME_TYPES.has(attachment.mimeType)
+        : documentKind !== null;
+    if (!takenNatively) {
+      sdkContent.push({ type: "text", text: buildFileAttachmentNote(attachment, attachmentPath) });
+      continue;
     }
 
     const bytes = yield* dependencies.fileSystem.readFile(attachmentPath).pipe(
@@ -3053,13 +3056,13 @@ const buildUserMessageEffect = Effect.fn("buildUserMessageEffect")(function* (
     );
 
     sdkContent.push(
-      attachment.type === "image"
+      documentKind === null
         ? buildClaudeImageContentBlock({
             mimeType: attachment.mimeType,
             bytes,
           })
         : buildClaudeDocumentContentBlock({
-            kind: attachment.kind,
+            kind: documentKind,
             name: attachment.name,
             bytes,
           }),

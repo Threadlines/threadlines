@@ -2484,7 +2484,6 @@ export function hydrateAttachmentsFromPersisted(
       mimeType: attachment.mimeType,
       fileName: attachment.name,
     });
-    if (!fileType) return [];
     return [
       {
         type: "file" as const,

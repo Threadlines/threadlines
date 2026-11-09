@@ -103,6 +103,35 @@ describe("attachmentStore", () => {
     }
   });
 
+  it("stores any other file under its own extension and finds it by id", () => {
+    const attachment = {
+      type: "file",
+      kind: "other",
+      id: "thread-1-brief" as ChatAttachmentId,
+      name: "Brief.docx",
+      mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      sizeBytes: 10,
+    } as const;
+    expect(attachmentRelativePath(attachment)).toBe("thread-1-brief.docx");
+
+    const attachmentsDir = fs.mkdtempSync(path.join(os.tmpdir(), "threadlines-attachment-store-"));
+    try {
+      const docxPath = path.join(attachmentsDir, "thread-1-brief.docx");
+      fs.writeFileSync(docxPath, Buffer.from("PK"));
+      // Another attachment whose id starts the same way is not this one.
+      fs.writeFileSync(path.join(attachmentsDir, "thread-1-brief-2.xlsx"), Buffer.from("PK"));
+
+      expect(resolveAttachmentPathById({ attachmentsDir, attachmentId: "thread-1-brief" })).toBe(
+        docxPath,
+      );
+      expect(
+        resolveAttachmentPathById({ attachmentsDir, attachmentId: "thread-1-bri" }),
+      ).toBeNull();
+    } finally {
+      fs.rmSync(attachmentsDir, { recursive: true, force: true });
+    }
+  });
+
   it("returns null when no attachment file exists for the id", () => {
     const attachmentsDir = fs.mkdtempSync(path.join(os.tmpdir(), "threadlines-attachment-store-"));
     try {

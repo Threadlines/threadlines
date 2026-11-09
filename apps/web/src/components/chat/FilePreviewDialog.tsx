@@ -4,6 +4,10 @@ import { LoaderCircleIcon, XIcon } from "lucide-react";
 import type { ChatFileAttachmentKind } from "@threadlines/contracts";
 import { Button } from "../ui/button";
 
+/** The file kinds the app can show: an `other` file (a Word document, an
+ *  archive) is only named, the agent opens it from disk. */
+export type PreviewableFileKind = Exclude<ChatFileAttachmentKind, "other">;
+
 /**
  * A request to preview a non-image file attachment. `loadBlob` abstracts over
  * where the bytes live: composer drafts hold an in-memory `File`, sent
@@ -11,7 +15,7 @@ import { Button } from "../ui/button";
  */
 export interface FilePreviewRequest {
   name: string;
-  kind: ChatFileAttachmentKind;
+  kind: PreviewableFileKind;
   loadBlob: () => Promise<Blob>;
 }
 

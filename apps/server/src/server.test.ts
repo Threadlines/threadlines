@@ -2648,6 +2648,52 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("serves an attached page only as a download, and pictures sandboxed", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const attachmentId = "thread-22222222-2222-4222-8222-222222222222";
+
+      const config = yield* buildAppUnderTest();
+      const attachmentPath = resolveAttachmentRelativePath({
+        attachmentsDir: config.attachmentsDir,
+        relativePath: `${attachmentId}.html`,
+      });
+      assert.isNotNull(attachmentPath, "Attachment path should be resolvable");
+
+      yield* fileSystem.makeDirectory(path.dirname(attachmentPath), { recursive: true });
+      yield* fileSystem.writeFileString(attachmentPath, "<script>alert(1)</script>");
+
+      const response = yield* HttpClient.get(`/attachments/${attachmentId}`, {
+        headers: {
+          cookie: yield* getAuthenticatedSessionCookieHeader(),
+        },
+      });
+      assert.equal(response.status, 200);
+      assert.equal(response.headers["content-type"], "application/octet-stream");
+      assert.equal(response.headers["content-disposition"], "attachment");
+      assert.equal(yield* response.text, "<script>alert(1)</script>");
+
+      // A picture shows as itself, but sandboxed: an SVG's scripts can't run.
+      const svgId = "thread-33333333-3333-4333-8333-333333333333";
+      const svgPath = resolveAttachmentRelativePath({
+        attachmentsDir: config.attachmentsDir,
+        relativePath: `${svgId}.svg`,
+      });
+      assert.isNotNull(svgPath, "Attachment path should be resolvable");
+      yield* fileSystem.writeFileString(svgPath, "<svg xmlns='http://www.w3.org/2000/svg'/>");
+      const svgResponse = yield* HttpClient.get(`/attachments/${svgId}`, {
+        headers: {
+          cookie: yield* getAuthenticatedSessionCookieHeader(),
+        },
+      });
+      assert.equal(svgResponse.status, 200);
+      assert.equal(svgResponse.headers["content-type"], "image/svg+xml");
+      assert.equal(svgResponse.headers["content-security-policy"], "sandbox");
+      assert.isUndefined(svgResponse.headers["content-disposition"]);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("serves attachment files for URL-encoded paths", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;

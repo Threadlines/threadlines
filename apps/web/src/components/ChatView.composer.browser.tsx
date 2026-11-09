@@ -1862,6 +1862,43 @@ describe("ChatView (full app): composer", () => {
     }
   });
 
+  it("attaches any file, and names a Word document without offering a preview", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-any-file" as MessageId,
+        targetText: "any file",
+      }),
+    });
+
+    try {
+      // The "Attach files" picker: the other two only take pictures.
+      const input = await waitForElement(
+        () =>
+          document.querySelector<HTMLInputElement>('input[type="file"][multiple]:not([accept])'),
+        "The attach-files picker did not render.",
+      );
+      const transfer = new DataTransfer();
+      transfer.items.add(
+        new File(["PK\u0003\u0004"], "Brief.docx", {
+          type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        }),
+      );
+      transfer.items.add(new File(["# notes"], "notes.md", { type: "" }));
+      input.files = transfer.files;
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+
+      await expect.element(page.getByTitle("Brief.docx")).toBeInTheDocument();
+      await expect
+        .element(page.getByRole("button", { name: "Preview notes.md" }))
+        .toBeInTheDocument();
+      expect(document.querySelector('[aria-label="Preview Brief.docx"]')).toBeNull();
+      expect(document.body.textContent).not.toContain("Unsupported file type");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("edits a user prompt from a stopped stale turn while preserving attachments and skills", async () => {
     const sourceMessageId = "msg-user-edit-and-branch" as MessageId;
     const staleTurnId = "turn-stale-edit-and-branch" as TurnId;

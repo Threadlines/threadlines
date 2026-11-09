@@ -69,6 +69,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
+import { buildFileAttachmentNote } from "../fileAttachmentPrompt.ts";
 import { ServerConfig } from "../../config.ts";
 import {
   mcpEndpointUrl,
@@ -2415,7 +2416,12 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
         }).pipe(Effect.onError(() => Scope.close(scope, Exit.void)));
       });
 
-    /** Text and attachments as an OpenCode prompt; images and files travel inline. */
+    /**
+     * Text and attachments as an OpenCode prompt. Pictures, PDFs and text
+     * travel inline (text as plain text, the one text type every model
+     * provider takes); any other file is a note naming its staged path,
+     * which the agent opens with its own tools.
+     */
     const promptContent = (
       threadId: ThreadId,
       input: {
@@ -2425,6 +2431,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
     ) =>
       Effect.gen(function* () {
         const files: Array<{ uri: string; name?: string }> = [];
+        const notes: Array<string> = [];
         for (const attachment of input.attachments ?? []) {
           const path = resolveAttachmentPath({
             attachmentsDir: serverConfig.attachmentsDir,
@@ -2437,6 +2444,10 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
               detail: `Invalid attachment id '${attachment.id}'.`,
             });
           }
+          if (attachment.type === "file" && attachment.kind === "other") {
+            notes.push(buildFileAttachmentNote(attachment, path));
+            continue;
+          }
           const bytes = yield* fileSystem.readFile(path).pipe(
             Effect.mapError(
               (cause) =>
@@ -2448,12 +2459,16 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
                 }),
             ),
           );
+          const mimeType =
+            attachment.type === "file" && attachment.kind === "text"
+              ? "text/plain"
+              : attachment.mimeType;
           files.push({
-            uri: `data:${attachment.mimeType};base64,${Buffer.from(bytes).toString("base64")}`,
+            uri: `data:${mimeType};base64,${Buffer.from(bytes).toString("base64")}`,
             name: attachment.name,
           });
         }
-        const text = input.input?.trim() ?? "";
+        const text = [input.input?.trim() ?? "", ...notes].filter(Boolean).join("\n\n");
         if (!text && files.length === 0) {
           return yield* new ProviderAdapterValidationError({
             provider: PROVIDER,
