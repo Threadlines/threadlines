@@ -37,6 +37,7 @@ import { compareSemverVersions } from "@threadlines/shared/semver";
 import { humanizeWorkflowName, parseWorkflowScriptMeta } from "@threadlines/shared/workflowScript";
 import {
   ApprovalRequestId,
+  type ChatAttachment,
   type CanonicalItemType,
   type CanonicalRequestType,
   type ClaudeSettings,
@@ -147,8 +148,12 @@ import { countStructuredPatchStats, type FileChangeStat } from "@threadlines/sha
 
 import { parseSessionKey } from "@threadlines/shared/threadParticipants";
 import { withUsualCommandLookup } from "@threadlines/shared/windowsCommandLookup";
-import { resolveAttachmentPath } from "../../attachmentStore.ts";
-import { buildFileAttachmentNote } from "../fileAttachmentPrompt.ts";
+import {
+  isPlainFile,
+  resolveAttachmentPath,
+  stagedAttachmentPathKey,
+} from "../../attachmentStore.ts";
+import { buildFileAttachmentNote, isLargeTextAttachment } from "../fileAttachmentPrompt.ts";
 import { ServerConfig } from "../../config.ts";
 import {
   BROWSER_MCP_SERVER_NAME,
@@ -609,6 +614,10 @@ interface ClaudeSessionContext {
    *  tool item. The SDK can surface the same completion through both a
    *  structured tool_use_result and a legacy task-notification message. */
   readonly completedCollabAgentItemIds: Set<string>;
+  /** Where this session's messages staged attachments for Claude to read, by
+   *  stagedAttachmentPathKey; reading one needs no approval. A resumed session
+   *  starts empty, so an older attachment read again asks first. */
+  readonly stagedAttachmentPaths: Set<string>;
   /** Structured final results already applied. Kept separately so a richer
    *  structured result can supersede an earlier legacy notification once. */
   readonly structuredCompletedCollabAgentItemIds: Set<string>;
@@ -1053,6 +1062,35 @@ export function lockDownClaudeQueryOptions(
       ],
     },
   };
+}
+
+/** A Read of, or a Grep in, a file this session's messages staged for
+ *  Claude, still the plain file it was (not since swapped for a link). */
+function readsStagedAttachment(
+  toolName: string,
+  toolInput: Record<string, unknown>,
+  stagedAttachmentPaths: ReadonlySet<string>,
+): boolean {
+  const filePath =
+    toolName === "Read" ? toolInput.file_path : toolName === "Grep" ? toolInput.path : undefined;
+  return (
+    typeof filePath === "string" &&
+    filePath.length > 0 &&
+    stagedAttachmentPaths.has(stagedAttachmentPathKey(filePath)) &&
+    isPlainFile(filePath)
+  );
+}
+
+/** Notes where a message's attachments are staged (see readsStagedAttachment). */
+function rememberStagedAttachments(
+  stagedAttachmentPaths: Set<string>,
+  attachments: ReadonlyArray<ChatAttachment> | undefined,
+  attachmentsDir: string,
+): void {
+  for (const attachment of attachments ?? []) {
+    const stagedPath = resolveAttachmentPath({ attachmentsDir, attachment });
+    if (stagedPath) stagedAttachmentPaths.add(stagedAttachmentPathKey(stagedPath));
+  }
 }
 
 function isUuid(value: string): boolean {
@@ -3031,9 +3069,14 @@ const buildUserMessageEffect = Effect.fn("buildUserMessageEffect")(function* (
     }
 
     // Claude takes four picture formats, PDFs and text natively. Anything
-    // else (an SVG or HEIC picture, a Word document) it opens from disk.
+    // else (an SVG or HEIC picture, a Word document, a text file too big to
+    // go inline) it opens from disk.
     const documentKind =
-      attachment.type === "file" && attachment.kind !== "other" ? attachment.kind : null;
+      attachment.type === "file" &&
+      attachment.kind !== "other" &&
+      !isLargeTextAttachment(attachment)
+        ? attachment.kind
+        : null;
     const takenNatively =
       attachment.type === "image"
         ? SUPPORTED_CLAUDE_IMAGE_MIME_TYPES.has(attachment.mimeType)
@@ -8967,6 +9010,16 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           } satisfies PermissionResult;
         }
 
+        // Attachments are staged outside the project for Claude to read (a
+        // large text file, a Word document): reading one this session's
+        // messages pointed it to is what they asked, so it needs no approval.
+        if (readsStagedAttachment(toolName, toolInput, context.stagedAttachmentPaths)) {
+          return {
+            behavior: "allow",
+            updatedInput: toolInput,
+          } satisfies PermissionResult;
+        }
+
         // Plan turns route write tools here regardless of allow rules; never
         // inherit full-access auto-allow while planning, so a plan turn cannot
         // silently edit files. In "auto" mode the SDK classifier handles
@@ -9192,6 +9245,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(flagSettings.suggestionsWhenUsageRunsFast
           ? { env: { [CLAUDE_PROMPT_SUGGESTION_ENV]: "true" } }
           : {}),
+        // Staged attachments sit outside the project. A user who blocks reads
+        // outside the working directories would have Claude refuse them before
+        // canUseTool sees the ask; the exemption only lifts that block, and
+        // canUseTool still decides each read.
+        permissions: { blockReadsExemptPaths: [serverConfig.attachmentsDir] },
       };
       // Agents treat `git worktree remove` as ordinary post-merge tidying. Here
       // it deletes the session's own working directory, so a session running in
@@ -9546,6 +9604,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         collabAgentToolsByItemId: new Map(),
         completedCollabAgentItemIds: new Set(),
         structuredCompletedCollabAgentItemIds: new Set(),
+        stagedAttachmentPaths: new Set(),
         backgroundAgentSpawnsByAgentId: new Map(),
         subagentSpawnAncestry: new Map(),
         subagentToolUseOwners: new Map(),
@@ -9952,6 +10011,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       knownCliVersion,
       ...(seedPreamble !== undefined ? { seedPreamble } : {}),
     });
+    rememberStagedAttachments(
+      context.stagedAttachmentPaths,
+      input.attachments,
+      serverConfig.attachmentsDir,
+    );
     // Consume the handoff seed once; subsequent turns continue natively.
     context.pendingContextSeedText = undefined;
     context.pendingAppendOnlyResults += messages.filter(isAppendOnlyUserMessage).length;
@@ -10018,6 +10082,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       method: "turn/steer",
       cliVersion: context.cliVersion,
     });
+    rememberStagedAttachments(
+      context.stagedAttachmentPaths,
+      input.attachments,
+      serverConfig.attachmentsDir,
+    );
 
     const taken = yield* Deferred.make<void>();
     yield* Queue.offerAll(
