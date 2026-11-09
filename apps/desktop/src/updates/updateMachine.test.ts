@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
-  classifyUpdateDownloadFailure,
+  classifyUpdaterRequestFailure,
   createInitialDesktopUpdateState,
-  describeUpdateDownloadFailure,
+  describeUpdaterRequestFailure,
   reduceDesktopUpdateStateOnCheckFailure,
   reduceDesktopUpdateStateOnCheckStart,
   reduceDesktopUpdateStateOnDownloadComplete,
@@ -15,11 +15,19 @@ import {
   reduceDesktopUpdateStateOnUpdateAvailable,
 } from "./updateMachine.ts";
 
-describe("classifyUpdateDownloadFailure", () => {
+describe("classifyUpdaterRequestFailure", () => {
   it.each([
     ['Cannot download "https://github.com/a.exe", status 504: ', "server"],
     ['Cannot download "https://github.com/a.exe", status 429: ', "server"],
     [Object.assign(new Error("HTTP error"), { statusCode: 503 }), "server"],
+    [
+      "Unable to find latest version on GitHub (https://github.com/o/r/releases/latest), please ensure a production release exists: HttpError: 504 Gateway Time-out",
+      "server",
+    ],
+    [
+      "Cannot find nightly.yml in the latest release artifacts (https://github.com/o/r): HttpError: 404 Not Found",
+      "other",
+    ],
     ["net::ERR_INTERNET_DISCONNECTED", "network"],
     ["connect ETIMEDOUT 140.82.114.3:443", "network"],
     ['Cannot download "https://github.com/a.exe", status 404: ', "other"],
@@ -29,14 +37,14 @@ describe("classifyUpdateDownloadFailure", () => {
     ["net::ERR_ABORTED", "other"],
     ["cancelled", "other"],
   ])("reads %s as %s", (cause, kind) => {
-    expect(classifyUpdateDownloadFailure(cause)).toBe(kind);
+    expect(classifyUpdaterRequestFailure(cause)).toBe(kind);
   });
 
   it("names the problem only when it knows it", () => {
-    expect(describeUpdateDownloadFailure(new Error("status 504"), "fallback")).toBe(
+    expect(describeUpdaterRequestFailure(new Error("status 504"), "fallback")).toBe(
       "GitHub's download server had a problem. Try again in a minute.",
     );
-    expect(describeUpdateDownloadFailure(new Error("checksum mismatch"), "fallback")).toBe(
+    expect(describeUpdaterRequestFailure(new Error("checksum mismatch"), "fallback")).toBe(
       "fallback",
     );
   });

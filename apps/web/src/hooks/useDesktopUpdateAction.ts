@@ -10,6 +10,7 @@ import type {
 import {
   type DesktopUpdateActionKind,
   getDesktopUpdateActionError,
+  getDesktopUpdateInstallRefusal,
   isDesktopUpdateActionKindDisabled,
   resolveDesktopUpdateActionKind,
 } from "../components/desktopUpdate.logic";
@@ -101,6 +102,8 @@ export function useDesktopUpdateAction(): DesktopUpdateAction {
           return runPendingDesktopUpdateAction(bridge, "install").then((result) => {
             setDesktopUpdateStateQueryData(queryClient, result.state);
             toastAcceptedActionFailure(result, "Couldn't install the update");
+            const refusal = getDesktopUpdateInstallRefusal(result);
+            if (refusal) toastUpdateError("Couldn't install the update", { reason: refusal });
           });
         })
         .catch((error: unknown) => {
