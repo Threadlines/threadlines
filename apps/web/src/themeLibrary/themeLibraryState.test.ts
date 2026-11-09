@@ -133,6 +133,19 @@ describe("theme library across computers", () => {
     );
     await vi.waitFor(() => expect(merges).toHaveLength(1));
     expect(merges).toEqual([{ target: pc, revision: 9, withContent: true }]);
+
+    // A computer that took the pick but says it lacks the theme's content gets that again.
+    const later = { ...picked, revision: 12 };
+    reconcileFollowedLibraries(
+      {
+        [mac]: { entries: [entry({ entryId: "e9", hash })], pick: later, pickHasContent: true },
+        [pc]: { entries: [], pick: later, pickHasContent: false },
+      },
+      [mac, pc],
+      clients as never,
+    );
+    await vi.waitFor(() => expect(merges).toHaveLength(2));
+    expect(merges[1]).toEqual({ target: pc, revision: 12, withContent: true });
   });
 
   it("tries a failed merge again later, with no new snapshot to prompt it", async () => {

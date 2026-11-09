@@ -92,7 +92,8 @@ export interface ThemeLibraryShape {
   /**
    * Makes a theme the shared pick ("Same theme on all my devices") at a
    * revision above any the device has seen; the same theme, already picked
-   * above that, changes nothing.
+   * above that, changes nothing, and with `onlyIfNone` (a device joining)
+   * neither does any pick already there.
    */
   readonly pick: (input: ThemePickInput) => Effect.Effect<ThemePick, ThemeError>;
   /** Keeps whichever shared pick wins the revision order, storing the theme's content if sent. */
@@ -123,9 +124,13 @@ const make = Effect.gen(function* () {
   const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
   const stored = <A, E>(effect: Effect.Effect<A, E>) => effect.pipe(Effect.mapError(storageError));
 
-  const snapshot: ThemeLibraryShape["snapshot"] = Effect.all({
-    entries: repo.listSummaries,
-    pick: repo.getPick.pipe(Effect.map(Option.getOrNull)),
+  const snapshot: ThemeLibraryShape["snapshot"] = Effect.gen(function* () {
+    const entries = yield* repo.listSummaries;
+    const pick = Option.getOrNull(yield* repo.getPick);
+    // A library pick that arrived without its content says so, for a client to send it again.
+    const hash = pick?.theme.kind === "library" ? pick.theme.hash : undefined;
+    if (hash === undefined) return { entries, pick };
+    return { entries, pick, pickHasContent: yield* repo.hasContent(hash) };
   }).pipe(stored);
 
   const changes: ThemeLibraryShape["changes"] = Stream.concat(
@@ -370,6 +375,8 @@ const make = Effect.gen(function* () {
     write(
       Effect.gen(function* () {
         const current = Option.getOrNull(yield* repo.getPick.pipe(stored));
+        // A device joining the others takes the pick there is, whatever it shows itself.
+        if (current !== null && input.onlyIfNone === true) return current;
         if (
           current !== null &&
           sameThemePickTheme(current.theme, input.theme) &&

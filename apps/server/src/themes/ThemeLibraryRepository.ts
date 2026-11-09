@@ -66,6 +66,8 @@ export interface ThemeLibraryRepositoryShape {
   readonly getContent: (
     hash: string,
   ) => Effect.Effect<Option.Option<ThemeContentRow>, ThemeLibraryRepositoryError>;
+  /** Whether content is stored under this hash, without reading it. */
+  readonly hasContent: (hash: string) => Effect.Effect<boolean, ThemeLibraryRepositoryError>;
   /** Stores content under its hash unless it is there already; true when it was new. */
   readonly insertContent: (
     row: ThemeContentRow,
@@ -171,6 +173,12 @@ const make = Effect.gen(function* () {
       wrap("getContent"),
     );
 
+  const hasContent: ThemeLibraryRepositoryShape["hasContent"] = (hash) =>
+    sql<{ readonly hash: string }>`SELECT hash FROM theme_contents WHERE hash = ${hash}`.pipe(
+      Effect.map((rows) => rows.length > 0),
+      wrap("hasContent"),
+    );
+
   const insertContent: ThemeLibraryRepositoryShape["insertContent"] = (row) =>
     Effect.gen(function* () {
       const { manifest } = row;
@@ -266,6 +274,7 @@ const make = Effect.gen(function* () {
     getEntry,
     getSummary,
     getContent,
+    hasContent,
     insertContent,
     lacksThumbnail,
     setThumbnail,
