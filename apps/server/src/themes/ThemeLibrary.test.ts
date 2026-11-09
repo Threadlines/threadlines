@@ -208,11 +208,13 @@ it.layer(TestLayer)("ThemeLibrary", (it) => {
         yield* failure(library.mergePick({ pick: theirs, manifest: dunes })),
         "isn't the content the pick names",
       );
-      // The pick arrived first, without content: the same pick sent again with it still stores it.
+      // The pick arrived first, without content, and the library says so; the
+      // same pick sent again with it still stores it.
       assert.deepStrictEqual(yield* library.mergePick({ pick: theirs }), theirs);
+      assert.strictEqual((yield* library.snapshot).pickHasContent, false);
       const merged = yield* library.mergePick({ pick: theirs, manifest: night });
       assert.deepStrictEqual(merged, theirs);
-      assert.deepStrictEqual((yield* library.snapshot).pick, theirs);
+      assert.deepInclude(yield* library.snapshot, { pick: theirs, pickHasContent: true });
       assert.deepStrictEqual((yield* library.read({ hash })).manifest, night);
       // The next change here counts on from the pick's revision too.
       const saved = yield* library.save({ manifest: night });

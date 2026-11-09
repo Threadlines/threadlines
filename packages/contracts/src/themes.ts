@@ -319,6 +319,12 @@ export const ThemePickTheme = keepingUnknownKeys(
     hash: Schema.optional(Schema.String),
     name: Schema.optional(Schema.String),
     base: Schema.optional(Schema.String),
+    /**
+     * Names the one user choice this pick came from, minted by the window
+     * it was made in, so the device knows that very pick when it comes back
+     * (two picks of one theme are still two choices). Absent from older builds.
+     */
+    pickId: Schema.optional(Schema.String),
   }),
 );
 export type ThemePickTheme = typeof ThemePickTheme.Type;
@@ -345,6 +351,12 @@ export const ThemeLibrarySnapshot = Schema.Struct({
    * server too old to keep one, which clients don't publish to or merge into.
    */
   pick: Schema.optional(Schema.NullOr(ThemePick)),
+  /**
+   * False when the pick names a library theme whose content this computer
+   * doesn't hold (the pick arrived without it), so a client sends it again
+   * with the content. Absent when there is nothing to hold, and from older servers.
+   */
+  pickHasContent: Schema.optional(Schema.Boolean),
 });
 export type ThemeLibrarySnapshot = typeof ThemeLibrarySnapshot.Type;
 
@@ -403,7 +415,7 @@ export type ThemeMergeInput = typeof ThemeMergeInput.Type;
  * Makes `theme` the shared pick, at a revision above `atLeast` (the highest
  * pick revision the device has seen on any computer), so it beats every pick
  * the user could have seen before choosing. Picking the theme already picked,
- * at or above `atLeast`, changes nothing.
+ * above `atLeast`, changes nothing.
  */
 export const ThemePickInput = Schema.Struct({
   theme: ThemePickTheme,

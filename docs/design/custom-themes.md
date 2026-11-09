@@ -643,29 +643,62 @@ the budget, no network) and places for the new Appearance rows.
 - **Same theme on all my devices** (a device switch, on by default, Nov 9).
   Each computer also keeps one shared pick beside the library (`theme_pick`,
   migration 108): the theme (a built-in, a starter, or a library entry with
-  its hash, name and base) and a `(revision, revisedBy)` in the same order as
-  entries, so the app reconciles it like an entry, sending the winner (with a
-  library theme's content when a computer lacks it) to computers holding an
-  older one. A server too old to keep one sends no `pick` in its snapshot and
-  is left out. On a device with the switch on (themePickSync.ts), a theme the
-  user commits there (a pick, Keep, a settings change; not a pick applied from
-  elsewhere, not another window's commit) is kept as a pending pick in
-  storage until a computer takes it (`themes.pick`, at a revision above every
-  pick the device has seen), and a pick newer than the newest the device has
-  seen is applied, after any trial running in that window, never under
-  `?theme=default`, and never an older one (a computer dropping off can't roll
-  the theme back). A pending pick that a newer one overtook is dropped and
-  the newer one followed. Themes kept on one device only aren't shared.
-  Turning the switch on takes the shared pick, or shares the device's own
-  theme when nobody has picked one. Nothing changes until someone picks a
-  theme after updating: no device's look is guessed and pushed to the others.
-- **Across linked computers, the app keeps libraries in step.** Keep saves the
-  entry to every computer the app is connected to. When the app connects to
-  computers it reconciles entry by entry: a missing entry is copied with its
-  content, and where two copies differ the winner by revision order is
-  written to the other. Any of the user's apps connected to two computers
-  keeps them in step, so a theme saved once reaches every computer the user's
-  apps can see, with no new peer protocol.
+  its hash, name and base, and the `pickId` of the one choice it came from)
+  and a `(revision, revisedBy)` in the same order as entries, so the app
+  reconciles it like an entry, sending the winner (with a library theme's
+  content when a computer lacks it, and the content again to one whose
+  snapshot says `pickHasContent: false`) to computers holding an older one. A
+  server too old to keep one sends no `pick` in its snapshot and is left out.
+  On a device (themePickSync.ts, whose logic is `createThemePickSync`, tested
+  apart from the browser against several windows and a computer):
+  - What the device knows is one note in storage, shared by its windows:
+    `taken` (it shows this pick), `unsent` (the user picked a theme here and
+    no computer has it yet), `local` (the user's own theme with the switch
+    on, not shared) or `off` (the switch is off). Every window runs the same
+    rules on that note and comes to the same step, so no window is in charge
+    and a step taken twice changes nothing.
+  - A theme the user commits (a pick, Keep, a settings change; not a pick
+    applied from elsewhere) becomes the `unsent` note, written before the
+    device's theme so no window sees the theme under the old note. Its window
+    sends it with `themes.pick`, above every pick it has heard of (also from
+    a computer that has since dropped off), carrying a `pickId`; one send at
+    a time, so a window's picks reach the computer in the order they were
+    made. The pick is done when a computer answers for it or the shared pick
+    carries its id. A failed send is tried again after 30 seconds, or at the
+    next pick; a send unanswered for 15 seconds counts as lost. If the window
+    is gone (15 seconds without an attempt), another sends it, also after a
+    reload. A pick from elsewhere doesn't replace it on screen while it is on
+    its way; it gives way only when it couldn't be sent for a minute and
+    someone else picked meanwhile.
+  - A pick newer than the one the note knows is applied, after any trial in
+    that window, never an older one, and never by a window under
+    `?theme=default`. A theme kept on this device only, or picked before the
+    settings had loaded, is `local`: it stays until a newer pick comes.
+  - Every note carries `past`, the ids of the device's earlier picks. A send
+    can land late (a slow connection, a second attempt, another window's), so
+    one of them can come back as the newest shared pick. That is never news:
+    the device sends what it shows again, above it, or just keeps a theme
+    that is its own.
+  - A window that sees the switch off writes `off`, which drops a pick that
+    hadn't gone; nothing picked while it is off is shared later. With the
+    switch on, a note that says `off` means the device joins: once every
+    followed computer has reported, it takes the shared pick, or keeps its
+    theme when there is none. It never offers its own theme; that is shared
+    the next time the user picks. A note that went `off` in the last 5
+    seconds waits first, since a window that hadn't heard of the switch yet
+    may have written it; a window that hears of the switch late finds the
+    note already moved on and changes nothing.
+  - The first build's single key is carried over once: the pick it showed
+    isn't taken again, and a pick it hadn't sent yet is sent.
+  - Left as they are: a device that took a pick from a computer which dropped
+    off before the others had it ignores their older picks until that
+    computer is back or someone picks again; a send that failed but landed,
+    sent again within the minute, goes above a pick made elsewhere in
+    between; two windows writing the note in the same instant leave
+    whichever wrote last; and a pick applied by one window ends a trial
+    running in another, like any theme change there.
+    Nothing changes until someone picks a theme after updating: no device's
+    look is guessed and pushed to the others.
 - **Deleting changes no other device's look.** A device keeps using a cached
   theme that was deleted elsewhere; Appearance shows "Not in your library
   anymore · Save again · Switch". Deleting the theme this device uses asks

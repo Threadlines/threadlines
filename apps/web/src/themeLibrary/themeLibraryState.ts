@@ -382,28 +382,32 @@ async function sendMerge(
 }
 
 /**
- * Brings the winning shared pick to a computer holding an older one (or none).
- * A library pick's content goes with it when the computer lacks it, read from
- * whichever followed computer has it; without it the pick still lands, and the
- * content can follow with the entries.
+ * Brings the winning shared pick to a computer holding an older one (or
+ * none), or holding it without its theme's content (`contentOnly`). A library
+ * pick's content goes with it when the computer lacks it, read from whichever
+ * followed computer has it. When none can give it now, the pick still lands,
+ * the computer says it is missing the content, and this is tried again later.
  */
 async function sendPickMerge(
   target: EnvironmentId,
   pick: ThemePick,
+  contentOnly: boolean,
   byEnvironment: Readonly<Record<string, ThemeLibrarySnapshot>>,
   readyIds: readonly EnvironmentId[],
   clients: MergeClients,
   retry: () => void,
 ): Promise<void> {
-  const key = `pick\0${target}\0${pick.revision}\0${pick.revisedBy}`;
+  const key = `pick${contentOnly ? "-content" : ""}\0${target}\0${pick.revision}\0${pick.revisedBy}`;
   if (sentMerges.has(key)) return;
   sentMerges.set(key, "sending");
   try {
     const hash = pick.theme.kind === "library" ? pick.theme.hash : undefined;
-    const targetHas = (hash: string) =>
-      byEnvironment[target]?.entries.some((entry) => entry.hash === hash) ?? false;
+    // The computer's own word where it gives it; else whether an entry of its names the content.
+    const needsContent =
+      hash !== undefined &&
+      (contentOnly || !byEnvironment[target]?.entries.some((entry) => entry.hash === hash));
     let manifest: ThemeManifest | undefined;
-    if (hash !== undefined && !targetHas(hash)) {
+    if (hash !== undefined && needsContent) {
       for (const source of readyIds) {
         if (source === target) continue;
         try {
@@ -414,10 +418,16 @@ async function sendPickMerge(
         }
       }
     }
-    await clients(target).mergePick(manifest === undefined ? { pick } : { pick, manifest });
-    // Without content it lacks, try again on the next change: a computer with it may connect.
-    if (hash !== undefined && manifest === undefined && !targetHas(hash)) sentMerges.delete(key);
-    else sentMerges.set(key, "done");
+    if (!contentOnly || manifest !== undefined) {
+      await clients(target).mergePick(manifest === undefined ? { pick } : { pick, manifest });
+    }
+    if (needsContent && manifest === undefined) {
+      // No computer could give the content now: again later, when one may.
+      sentMerges.delete(key);
+      retry();
+    } else {
+      sentMerges.set(key, "done");
+    }
   } catch (error) {
     sentMerges.delete(key);
     retry();
@@ -460,8 +470,13 @@ export function reconcileFollowedLibraries(
   if (winning === null) return;
   for (const id of keeping) {
     const held = byEnvironment[id]!.pick ?? null;
-    if (held !== null && compareThemeRevisions(held, winning) >= 0) continue;
-    void sendPickMerge(id, winning, byEnvironment, ready, clients, retry);
+    const order = held === null ? -1 : compareThemeRevisions(held, winning);
+    if (order < 0) {
+      void sendPickMerge(id, winning, false, byEnvironment, ready, clients, retry);
+    } else if (order === 0 && byEnvironment[id]!.pickHasContent === false) {
+      // It holds the pick but not the theme's content: that alone goes again.
+      void sendPickMerge(id, winning, true, byEnvironment, ready, clients, retry);
+    }
   }
 }
 

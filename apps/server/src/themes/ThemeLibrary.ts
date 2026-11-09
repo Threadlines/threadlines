@@ -123,9 +123,13 @@ const make = Effect.gen(function* () {
   const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
   const stored = <A, E>(effect: Effect.Effect<A, E>) => effect.pipe(Effect.mapError(storageError));
 
-  const snapshot: ThemeLibraryShape["snapshot"] = Effect.all({
-    entries: repo.listSummaries,
-    pick: repo.getPick.pipe(Effect.map(Option.getOrNull)),
+  const snapshot: ThemeLibraryShape["snapshot"] = Effect.gen(function* () {
+    const entries = yield* repo.listSummaries;
+    const pick = Option.getOrNull(yield* repo.getPick);
+    // A library pick that arrived without its content says so, for a client to send it again.
+    const hash = pick?.theme.kind === "library" ? pick.theme.hash : undefined;
+    if (hash === undefined) return { entries, pick };
+    return { entries, pick, pickHasContent: yield* repo.hasContent(hash) };
   }).pipe(stored);
 
   const changes: ThemeLibraryShape["changes"] = Stream.concat(

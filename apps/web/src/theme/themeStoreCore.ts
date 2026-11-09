@@ -8,7 +8,8 @@
  * - The committed choice is this device's: every window reads it from
  *   storage and a `storage` event from another window adopts it. A choice
  *   made here by the user (chooseTheme, Keep) is announced to
- *   `subscribeUserCommits`, which shares it with the user's other devices;
+ *   `subscribeUserCommits` before it is written, which shares it with the
+ *   user's other devices;
  *   one applied from another device (applyPickedChoice) or adopted from
  *   another window is not, so a pick never echoes back.
  * - A trial lives in one window's memory. It ends by Keep, Undo, its own
@@ -532,15 +533,17 @@ export function createThemeStoreCore(env: ThemeStoreEnv): ThemeStoreCore {
     const content = contentFor(choice, manifest);
     const theme = content ? resolveNow(content) : null;
     const base = content?.manifest.base ?? (by.user ? null : by.base);
+    // Announced before the device's theme is written and before subscribers
+    // hear the trial end: what shares the user's pick writes it down first,
+    // so no window sees the new theme without it, or applies a pick from
+    // elsewhere over a Keep.
+    if (by.user) for (const listener of userCommitListeners) listener(choice, base);
     writeStorage(THEME_STORAGE_KEY, serializeThemeChoice(choice, base));
     if (content?.hash) {
       env.rememberContent(content.hash, content.manifest);
       markKept(content.hash);
     }
     writePaintRecord(choice, theme);
-    // Announced before subscribers hear the trial end, so the user's Keep is
-    // shared before anything waiting on that (a pick from elsewhere) applies.
-    if (by.user) for (const listener of userCommitListeners) listener(choice, base);
     update({
       committed: choice,
       committedBase: base,
