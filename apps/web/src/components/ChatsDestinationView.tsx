@@ -9,7 +9,7 @@ import { type ThreadRowSwipeHandler, useThreadRowSwipes } from "../hooks/useThre
 import { useTouchHoldMenu } from "../hooks/useTouchHoldMenu";
 import { useThreadSeenSources } from "../lib/threadInboxSync";
 import { buildThreadRouteParams } from "../threadRoutes";
-import { formatRelativeTimeLabel } from "../timestampFormat";
+import { RelativeTimeLabel } from "./RelativeTimeLabel";
 import { cn } from "../lib/utils";
 import { PageTitlebar } from "./PageTitlebar";
 import { ProviderGlyph } from "./chat/ProviderInstanceIcon";
@@ -268,7 +268,7 @@ function ChatRow({
                 thread={thread}
                 status={status}
                 testId="chats-view-row-status"
-                resting={formatRelativeTimeLabel(chatActivityAt(thread))}
+                resting={<RelativeTimeLabel at={chatActivityAt(thread)} />}
                 restingClassName="text-muted-foreground"
               />
             </span>

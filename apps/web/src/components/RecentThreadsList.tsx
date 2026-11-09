@@ -13,9 +13,9 @@ import {
   useStore,
 } from "../store";
 import { buildThreadRouteParams } from "../threadRoutes";
-import { formatRelativeTimeLabel } from "../timestampFormat";
 import { ProjectFavicon } from "./ProjectFavicon";
 import { ThreadRowLeadingStatus } from "./ThreadStatusIndicators";
+import { RelativeTimeLabel } from "./RelativeTimeLabel";
 
 interface RecentThreadsListProps {
   limit?: number;
@@ -161,9 +161,9 @@ export function RecentThreadsList({
                 </span>
               ) : null}
               <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
-                {formatRelativeTimeLabel(
-                  thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt,
-                )}
+                <RelativeTimeLabel
+                  at={thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt}
+                />
               </span>
             </button>
           );

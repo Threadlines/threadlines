@@ -208,6 +208,7 @@ export function ProjectThreadMap({
 }) {
   const navigate = useNavigate();
   const map = useProjectThreadMap(memberProjectRefs);
+  const nowMs = useRelativeTimeTick(60_000);
   const [activeKey, setActiveKey] = useState<string | null>(null);
   const gradientId = useId().replaceAll(":", "");
   const layout = useMemo(
@@ -439,7 +440,7 @@ export function ProjectThreadMap({
           if (!source) return null;
           const { entry, thread } = source;
           const landed = entry.settledAt
-            ? `merged ${formatRelativeTimeLabel(entry.settledAt)}`
+            ? `merged ${formatRelativeTimeLabel(entry.settledAt, nowMs)}`
             : "merged";
           return (
             <TooltipWrapper

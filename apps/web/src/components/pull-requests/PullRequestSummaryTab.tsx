@@ -36,7 +36,6 @@ import {
 } from "../../lib/pullRequestsReactQuery";
 import { openExternalUrl } from "../../lib/externalLinks";
 import { cn, pluralize } from "../../lib/utils";
-import { formatRelativeTimeLabel } from "../../timestampFormat";
 import ChatMarkdown from "../ChatMarkdown";
 import { Button } from "../ui/button";
 import { Skeleton } from "../ui/skeleton";
@@ -57,6 +56,7 @@ import {
   scrollPullRequestSummaryTo,
 } from "./pullRequestPresentation";
 import { formatPullRequestChecksSummary, summarizePullRequestChecks } from "./pullRequests.logic";
+import { RelativeTimeLabel } from "../RelativeTimeLabel";
 
 /** One identity for "no reactions", so a re-read does not look like a change. */
 const EMPTY_REACTIONS: readonly PullRequestReaction[] = [];
@@ -530,7 +530,7 @@ function PullRequestCommentRow({
         </span>
         <MetaSeparator />
         <span className="shrink-0 font-mono text-[11px] tabular-nums">
-          {formatRelativeTimeLabel(comment.createdAt)}
+          <RelativeTimeLabel at={comment.createdAt} />
         </span>
         {comment.reviewState ? (
           <>

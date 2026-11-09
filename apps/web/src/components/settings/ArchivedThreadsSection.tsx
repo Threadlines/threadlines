@@ -2,7 +2,6 @@ import { ArchiveIcon, SearchIcon, Trash2Icon, XIcon } from "lucide-react";
 import type { EnvironmentId, OrchestrationShellSnapshot, ProjectId } from "@threadlines/contracts";
 import { useMemo, useState } from "react";
 import { cn } from "../../lib/utils";
-import { formatRelativeTimeLabel } from "../../timestampFormat";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { Button } from "../ui/button";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
@@ -10,6 +9,7 @@ import { Skeleton } from "../ui/skeleton";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { SETTINGS_GROUP_ROW_CLASS, SettingsRow, SettingsSection } from "./settingsLayout";
 import { ARCHIVED_THREADS_PAGE_SIZE, filterArchivedThreads } from "./SettingsPanels.logic";
+import { RelativeTimeLabel } from "../RelativeTimeLabel";
 
 export interface ArchivedThreadProject {
   /** `${environmentId}:${projectId}`; project ids are only unique within an environment. */
@@ -242,7 +242,9 @@ export function ArchivedThreadsSection({
                         <span>{thread.project.name} ·</span>
                       </>
                     ) : null}
-                    <span>{formatRelativeTimeLabel(thread.archivedAt ?? thread.createdAt)}</span>
+                    <span>
+                      <RelativeTimeLabel at={thread.archivedAt ?? thread.createdAt} />
+                    </span>
                   </span>
                   <div className="col-start-1 row-start-1 -me-1.5 flex items-center gap-0.5 opacity-0 transition-opacity group-hover/archived-row:opacity-100 group-focus-within/archived-row:opacity-100 pointer-coarse:opacity-100">
                     <Button

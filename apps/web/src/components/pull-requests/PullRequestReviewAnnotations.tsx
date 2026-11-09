@@ -25,7 +25,6 @@ import {
   pullRequestThreadResolutionMutationOptions,
 } from "../../lib/pullRequestsReactQuery";
 import { cn, pluralize } from "../../lib/utils";
-import { formatRelativeTimeLabel } from "../../timestampFormat";
 import ChatMarkdown from "../ChatMarkdown";
 import { DiffCommentAnnotation, isCommentSubmitShortcut } from "../diffs/DiffCommentAnnotation";
 import { Button } from "../ui/button";
@@ -34,6 +33,7 @@ import { PullRequestMarkdownEditor } from "./PullRequestMarkdownEditor";
 import { PullRequestReactionBar } from "./PullRequestReactions";
 import { MetaSeparator, TEXT_BUTTON_CLASS } from "./pullRequestPresentation";
 import type { PendingReviewComment } from "./pullRequestReviewStore";
+import { RelativeTimeLabel } from "../RelativeTimeLabel";
 
 /** A comment waiting to go with the rest of the review. */
 export function PendingReviewCommentCard({
@@ -264,7 +264,7 @@ export function ReviewThreadCard({
                   </span>
                   <MetaSeparator />
                   <span className="shrink-0 font-mono text-[11px] tabular-nums">
-                    {formatRelativeTimeLabel(comment.createdAt)}
+                    <RelativeTimeLabel at={comment.createdAt} />
                   </span>
                   {capabilities.edit.comment &&
                   comment.viewerIsAuthor &&

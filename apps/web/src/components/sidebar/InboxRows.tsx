@@ -49,7 +49,8 @@ import { selectThreadTerminalState, useTerminalStateStore } from "../../terminal
 import { useThreadSelectionStore } from "../../threadSelectionStore";
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import { formatCheckBackCountdownShort } from "../chat/checkBacks";
-import { formatRelativeTimeLabel, formatWorkingDurationLabel } from "../../timestampFormat";
+import { formatWorkingDurationLabel } from "../../timestampFormat";
+import { RelativeTimeLabel } from "../RelativeTimeLabel";
 import { getPickerModelName } from "../chat/providerIconUtils";
 import { ProviderGlyph } from "../chat/ProviderInstanceIcon";
 import { isRoom, roomAgentDisplayName } from "../../rooms";
@@ -531,8 +532,11 @@ export function ThreadStatusText({
       ) : isLive ? (
         <RowLiveStatus word={liveWord} clockStartedAt={liveClockStartedAt} />
       ) : (
-        (resting ??
-        formatRelativeTimeLabel(thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt))
+        (resting ?? (
+          <RelativeTimeLabel
+            at={thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt}
+          />
+        ))
       )}
     </span>
   );
@@ -1104,9 +1108,9 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                         <RowLiveStatus word={liveWord} clockStartedAt={liveClockStartedAt} />
                       </>
                     ) : (
-                      formatRelativeTimeLabel(
-                        thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt,
-                      )
+                      <RelativeTimeLabel
+                        at={thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt}
+                      />
                     )}
                   </span>
                   {/* Wrap up is the only hover action; pin lives in the row's
@@ -1493,7 +1497,9 @@ export const InboxChildRow = memo(function InboxChildRow(props: InboxChildRowPro
                   thread={thread}
                   status={shownStatus}
                   testId={`child-meta-${thread.id}`}
-                  {...(isDone ? { resting: doneAt ? formatRelativeTimeLabel(doneAt) : null } : {})}
+                  {...(isDone
+                    ? { resting: doneAt ? <RelativeTimeLabel at={doneAt} /> : null }
+                    : {})}
                 />
               )}
               {showAction ? (
@@ -1741,7 +1747,7 @@ export const InboxRemoteDoneRow = memo(function InboxRemoteDoneRow({
             <CloudIcon aria-hidden className="size-3 text-muted-foreground/50" />
           </span>
           <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground/45">
-            {child.settledAt ? formatRelativeTimeLabel(child.settledAt) : null}
+            {child.settledAt ? <RelativeTimeLabel at={child.settledAt} /> : null}
           </span>
           {onSetDone !== undefined && child.canWrap === true ? (
             <RemoteChildWrapButton child={child} onSetDone={onSetDone} testIdPrefix="remote-done" />
@@ -1870,7 +1876,7 @@ export const InboxLinkRequestRow = memo(function InboxLinkRequestRow({
       ) : null}
       <div className="flex min-w-0 items-center gap-1 ps-[13px]">
         <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground/50 tabular-nums">
-          {formatRelativeTimeLabel(request.createdAt)}
+          <RelativeTimeLabel at={request.createdAt} />
         </span>
         <Button
           variant="ghost"
@@ -2218,7 +2224,7 @@ export const InboxDoneRow = memo(function InboxDoneRow(props: InboxDoneRowProps)
                   thread.moveStatus ? "text-muted-foreground" : "text-muted-foreground/45",
                 )}
               >
-                {thread.moveStatus ?? (doneAt ? formatRelativeTimeLabel(doneAt) : null)}
+                {thread.moveStatus ?? (doneAt ? <RelativeTimeLabel at={doneAt} /> : null)}
               </span>
               {isConfirmingArchive ? (
                 <RowFloatingActions isActive={isActive} isSelected={false} alwaysVisible>

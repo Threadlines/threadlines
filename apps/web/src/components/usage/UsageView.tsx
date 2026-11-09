@@ -23,7 +23,7 @@ import {
 } from "../../lib/usageReactQuery";
 import { usePrimaryEnvironmentId } from "../../environments/primary";
 import { useServerProviders } from "../../rpc/serverState";
-import { formatRelativeTimeLabel } from "../../timestampFormat";
+import { RelativeTimeLabel } from "../RelativeTimeLabel";
 import { PageTitlebar } from "../PageTitlebar";
 import {
   ClaudeAI,
@@ -1342,11 +1342,15 @@ function UsageMachineRowView({ machine }: { readonly machine: UsageMachineRow })
             {source.fingerprint.resolvedHomePath}
           </span>
           <span className={cn(NUMBER_CLASS, "shrink-0 text-[11px] text-muted-foreground")}>
-            {source.status === "missing"
-              ? "not found"
-              : source.status === "failed"
-                ? "couldn't read"
-                : `scanned ${formatRelativeTimeLabel(source.lastScannedAt)}`}
+            {source.status === "missing" ? (
+              "not found"
+            ) : source.status === "failed" ? (
+              "couldn't read"
+            ) : (
+              <>
+                scanned <RelativeTimeLabel at={source.lastScannedAt} />
+              </>
+            )}
           </span>
         </span>
       ))}

@@ -40,6 +40,7 @@ import {
 import { cn } from "../../lib/utils";
 import { selectWorkspaceProjectsAcrossEnvironments, useStore } from "../../store";
 import { formatRelativeTimeLabel } from "../../timestampFormat";
+import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import {
   PreviewCard,
   PreviewCardPopup,
@@ -370,6 +371,7 @@ function PullRequestHoverCardContent({
   observedAt,
 }: PullRequestHoverCardPayload) {
   const attended = useSurfaceAttended();
+  const nowMs = useRelativeTimeTick(60_000);
   const query = useQuery(pullRequestDetailQueryOptions({ environmentId, reference, attended }));
   const detail = query.data;
   // The newer read says what state it is in: this detail, or the chip's word.
@@ -386,7 +388,7 @@ function PullRequestHoverCardContent({
     stateSource ? pullRequestArmedToMerge(stateSource) : autoMergeEnabled,
   );
   const settledAt = detail ? (detail.mergedAt ?? detail.closedAt) : null;
-  const timestamp = detail ? formatRelativeTimeLabel(settledAt ?? detail.updatedAt) : null;
+  const timestamp = detail ? formatRelativeTimeLabel(settledAt ?? detail.updatedAt, nowMs) : null;
 
   return (
     <>

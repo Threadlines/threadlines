@@ -256,7 +256,7 @@ describe("buildAgentsPanelView", () => {
     expect(view.earlier[0]?.task).toBe("Sweep the router for panel wiring");
     // What ran, in the meta; when it ran, on the row's own right edge.
     expect(view.earlier[0]?.meta).toEqual(["claude-opus-5", "high", "24k tokens"]);
-    expect(view.earlier[0]?.time).toBe("12m ago");
+    expect(view.earlier[0]?.timeAt).toBe("2026-08-11T10:00:00.000Z");
   });
 
   it("holds only agents: a thread with nothing but commands running is empty", () => {
@@ -362,7 +362,7 @@ describe("buildAgentsPanelView", () => {
     });
 
     expect(view.earlier[0]?.meta).toEqual(["gpt-5.6-sol", "high"]);
-    expect(view.earlier[0]?.time).toBe("6m ago");
+    expect(view.earlier[0]?.timeAt).toBe("2026-08-11T10:06:00.000Z");
   });
 
   it("names the model and effort on a running agent too, ahead of its clock", () => {

@@ -361,13 +361,14 @@ export function resolveSourceControlPrimaryAction(input: {
   };
 }
 
-export function formatCommitGraphTimestamp(value: string, now = new Date()): string {
+/** "5m ago", then a date after a week. `nowMs` comes from a ticking clock; see `formatRelativeTime`. */
+export function formatCommitGraphTimestamp(value: string, nowMs: number): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
     return "";
   }
 
-  const elapsedSeconds = Math.max(0, Math.floor((now.getTime() - date.getTime()) / 1000));
+  const elapsedSeconds = Math.max(0, Math.floor((nowMs - date.getTime()) / 1000));
   if (elapsedSeconds < 60) {
     return "just now";
   }

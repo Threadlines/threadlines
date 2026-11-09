@@ -62,7 +62,7 @@ function SidebarVersionCard({
   onAction: () => void;
 }) {
   // Only ticks while the card is open — the popup unmounts on close.
-  useRelativeTimeTick(30_000);
+  const nowMs = useRelativeTimeTick(30_000);
   const isCheckingForUpdate = state?.status === "checking";
   const isDownloadingUpdate = state?.status === "downloading";
   const statusLine = getDesktopUpdateStatusLine(state);
@@ -70,7 +70,7 @@ function SidebarVersionCard({
   // updater controls double as the "running in the desktop app" signal.
   const showUpdaterControls = shouldShowDesktopUpdaterControls(state);
   const checkedLabel = state?.checkedAt
-    ? `Checked ${formatRelativeTimeLabel(state.checkedAt)}`
+    ? `Checked ${formatRelativeTimeLabel(state.checkedAt, nowMs)}`
     : "Not checked yet";
   const statusText = statusLine?.text ?? (showUpdaterControls ? checkedLabel : null);
   // While a check is in flight the action kind resolves to "none"; keep the

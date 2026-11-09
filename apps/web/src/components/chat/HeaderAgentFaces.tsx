@@ -1,7 +1,8 @@
 import type { ProviderDriverKind, ProviderInstanceId } from "@threadlines/contracts";
-import { memo, useState } from "react";
+import { memo } from "react";
 
 import { cn } from "../../lib/utils";
+import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import { formatWorkingDurationLabel } from "../../timestampFormat";
 import { Button } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -118,10 +119,10 @@ export const HeaderAgentFaces = memo(function HeaderAgentFaces({
   );
 });
 
-/** Mounted only while the tooltip is open, so each agent's time is read then
- *  rather than whenever the header last rendered. */
+/** Mounted only while the tooltip is open, so its clock runs only then, and
+ *  each agent's time counts up while the user reads it. */
 function AgentFacesTooltipBody({ liveAgents }: { liveAgents: LiveAgentIndicator }) {
-  const [nowMs] = useState(() => Date.now());
+  const nowMs = useRelativeTimeTick(1_000);
   const rows = liveAgents.agents.slice(0, MAX_TOOLTIP_ROWS);
   const hidden = liveAgents.count - rows.length;
   return (

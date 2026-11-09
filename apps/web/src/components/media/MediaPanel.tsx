@@ -56,7 +56,7 @@ import {
 import { cn } from "../../lib/utils";
 import { readLocalApi } from "../../localApi";
 import { resolvePathLinkTarget } from "../../terminal-links";
-import { formatRelativeTimeLabel } from "../../timestampFormat";
+import { RelativeTimeLabel } from "../RelativeTimeLabel";
 import { openExpandedImagePreview } from "../chat/ExpandedImagePreview";
 import { FilePreviewDialog, type FilePreviewRequest } from "../chat/FilePreviewDialog";
 import {
@@ -686,9 +686,13 @@ function EntryMeta(props: { readonly entry: MediaEntry; readonly showThread: boo
     <span className="flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
       <ChangeBadge change={entry.change} />
       <span className="min-w-0 truncate">
-        {showThread
-          ? entry.threadTitle.trim() || "Untitled thread"
-          : `Turn ${entry.checkpointTurnCount} · ${formatRelativeTimeLabel(entry.changedAt)}`}
+        {showThread ? (
+          entry.threadTitle.trim() || "Untitled thread"
+        ) : (
+          <>
+            Turn {entry.checkpointTurnCount} · <RelativeTimeLabel at={entry.changedAt} />
+          </>
+        )}
       </span>
     </span>
   );
@@ -904,9 +908,13 @@ const ChatMediaTile = memo(function ChatMediaTile(props: {
       source={chatTileSource(entry, props.environmentId)}
       meta={
         <span className="block min-w-0 truncate text-[11px] text-muted-foreground">
-          {props.showThread
-            ? entry.threadTitle.trim() || "Untitled thread"
-            : `${CHAT_MEDIA_ORIGIN_LABELS[entry.origin]} · ${formatRelativeTimeLabel(entry.sharedAt)}`}
+          {props.showThread ? (
+            entry.threadTitle.trim() || "Untitled thread"
+          ) : (
+            <>
+              {CHAT_MEDIA_ORIGIN_LABELS[entry.origin]} · <RelativeTimeLabel at={entry.sharedAt} />
+            </>
+          )}
         </span>
       }
       onOpen={() => onOpen(entry)}

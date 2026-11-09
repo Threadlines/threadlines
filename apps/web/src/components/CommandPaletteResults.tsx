@@ -16,6 +16,7 @@ import {
   CommandList,
   CommandShortcut,
 } from "./ui/command";
+import { RelativeTimeLabel } from "./RelativeTimeLabel";
 import { Skeleton } from "./ui/skeleton";
 import { cn } from "~/lib/utils";
 
@@ -183,9 +184,9 @@ function CommandPaletteResultRow(props: {
         </span>
       )}
       {props.item.titleTrailingContent}
-      {props.item.timestamp ? (
+      {props.item.timestampAt ? (
         <span className="min-w-12 shrink-0 text-right text-[10px] tabular-nums text-muted-foreground/70">
-          {props.item.timestamp}
+          <RelativeTimeLabel at={props.item.timestampAt} />
         </span>
       ) : null}
       {shortcutLabel ? <CommandShortcut>{shortcutLabel}</CommandShortcut> : null}

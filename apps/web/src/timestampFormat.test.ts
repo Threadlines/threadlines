@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { describe, expect, it } from "vite-plus/test";
 
 import {
   formatElapsedDurationLabel,
@@ -7,6 +7,8 @@ import {
   formatRelativeTimeUntilLabel,
   getTimestampFormatOptions,
 } from "./timestampFormat";
+
+const NOW = Date.parse("2026-04-07T12:00:00.000Z");
 
 describe("getTimestampFormatOptions", () => {
   it("omits hour12 when locale formatting is requested", () => {
@@ -36,65 +38,46 @@ describe("getTimestampFormatOptions", () => {
 });
 
 describe("formatRelativeTimeUntilLabel", () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-04-07T12:00:00.000Z"));
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
   it("returns Expired when the instant is in the past", () => {
-    expect(formatRelativeTimeUntilLabel("2026-04-07T11:59:00.000Z")).toBe("Expired");
+    expect(formatRelativeTimeUntilLabel("2026-04-07T11:59:00.000Z", NOW)).toBe("Expired");
   });
 
   it("formats seconds remaining", () => {
-    expect(formatRelativeTimeUntilLabel("2026-04-07T12:00:45.000Z")).toBe("45s left");
+    expect(formatRelativeTimeUntilLabel("2026-04-07T12:00:45.000Z", NOW)).toBe("45s left");
   });
 
   it("formats minutes remaining", () => {
-    expect(formatRelativeTimeUntilLabel("2026-04-07T12:15:00.000Z")).toBe("15m left");
+    expect(formatRelativeTimeUntilLabel("2026-04-07T12:15:00.000Z", NOW)).toBe("15m left");
   });
 
   it("formats hours remaining", () => {
-    expect(formatRelativeTimeUntilLabel("2026-04-07T18:00:00.000Z")).toBe("6h left");
+    expect(formatRelativeTimeUntilLabel("2026-04-07T18:00:00.000Z", NOW)).toBe("6h left");
   });
 });
 
 describe("formatExpiresInLabel", () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-04-07T12:00:00.000Z"));
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
   it("returns Expired when the instant is in the past", () => {
-    expect(formatExpiresInLabel("2026-04-07T11:59:00.000Z")).toBe("Expired");
+    expect(formatExpiresInLabel("2026-04-07T11:59:00.000Z", NOW)).toBe("Expired");
   });
 
   it("uses sub-minute second count", () => {
-    expect(formatExpiresInLabel("2026-04-07T12:00:45.000Z")).toBe("Expires in 45s");
+    expect(formatExpiresInLabel("2026-04-07T12:00:45.000Z", NOW)).toBe("Expires in 45s");
   });
 
   it("uses minutes and seconds under one hour", () => {
-    expect(formatExpiresInLabel("2026-04-07T12:04:12.000Z")).toBe("Expires in 4m 12s");
-    expect(formatExpiresInLabel("2026-04-07T12:15:00.000Z")).toBe("Expires in 15m");
+    expect(formatExpiresInLabel("2026-04-07T12:04:12.000Z", NOW)).toBe("Expires in 4m 12s");
+    expect(formatExpiresInLabel("2026-04-07T12:15:00.000Z", NOW)).toBe("Expires in 15m");
   });
 
   it("uses hours with minute and second remainder", () => {
-    expect(formatExpiresInLabel("2026-04-07T14:02:03.000Z")).toBe("Expires in 2h 2m 3s");
-    expect(formatExpiresInLabel("2026-04-07T18:00:00.000Z")).toBe("Expires in 6h");
+    expect(formatExpiresInLabel("2026-04-07T14:02:03.000Z", NOW)).toBe("Expires in 2h 2m 3s");
+    expect(formatExpiresInLabel("2026-04-07T18:00:00.000Z", NOW)).toBe("Expires in 6h");
   });
 });
 
 describe("formatWorkingDurationLabel", () => {
   it("always reads as a duration, including the first seconds of a run", () => {
-    const now = Date.parse("2026-04-07T12:00:00.000Z");
-    const at = (iso: string) => formatWorkingDurationLabel(iso, now);
+    const at = (iso: string) => formatWorkingDurationLabel(iso, NOW);
 
     // The relative formatter would say "just now" here, which is not a length.
     expect(at("2026-04-07T12:00:00.000Z")).toBe("0s");
@@ -106,24 +89,15 @@ describe("formatWorkingDurationLabel", () => {
 });
 
 describe("formatElapsedDurationLabel", () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-04-07T12:00:00.000Z"));
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
   it("returns just now when the instant is current or in the future", () => {
-    expect(formatElapsedDurationLabel("2026-04-07T12:00:00.000Z")).toBe("just now");
-    expect(formatElapsedDurationLabel("2026-04-07T12:01:00.000Z")).toBe("just now");
+    expect(formatElapsedDurationLabel("2026-04-07T12:00:00.000Z", NOW)).toBe("just now");
+    expect(formatElapsedDurationLabel("2026-04-07T12:01:00.000Z", NOW)).toBe("just now");
   });
 
   it("formats seconds, minutes, hours, and days", () => {
-    expect(formatElapsedDurationLabel("2026-04-07T11:59:45.000Z")).toBe("15s");
-    expect(formatElapsedDurationLabel("2026-04-07T11:45:00.000Z")).toBe("15m");
-    expect(formatElapsedDurationLabel("2026-04-07T06:00:00.000Z")).toBe("6h");
-    expect(formatElapsedDurationLabel("2026-04-03T12:00:00.000Z")).toBe("4d");
+    expect(formatElapsedDurationLabel("2026-04-07T11:59:45.000Z", NOW)).toBe("15s");
+    expect(formatElapsedDurationLabel("2026-04-07T11:45:00.000Z", NOW)).toBe("15m");
+    expect(formatElapsedDurationLabel("2026-04-07T06:00:00.000Z", NOW)).toBe("6h");
+    expect(formatElapsedDurationLabel("2026-04-03T12:00:00.000Z", NOW)).toBe("4d");
   });
 });
