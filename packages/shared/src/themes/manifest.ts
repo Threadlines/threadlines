@@ -33,6 +33,46 @@ const decodeManifest = Schema.decodeUnknownExit(ThemeManifest);
 const base64Bytes = (data: string) => Math.floor((data.replace(/=+$/, "").length * 3) / 4);
 
 const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
+
+/** The font slots a theme sets; the Record makes a new slot fail to compile until it's listed. */
+const THEME_FONT_SLOTS = Object.keys({ ui: true, mono: true } satisfies Record<
+  keyof NonNullable<ThemeManifest["fonts"]>,
+  true
+>) as ReadonlyArray<keyof NonNullable<ThemeManifest["fonts"]>>;
+
+/**
+ * How deep a theme's data may nest. Fields a build doesn't know are kept as
+ * they came, and a few kilobytes can nest deep enough to overflow the stack
+ * of anything that walks them (the size check, the hash); the known format
+ * nests five levels.
+ */
+export const THEME_MAX_NESTING = 32;
+
+/**
+ * How many values a theme may hold, counted as the nesting walk goes: a
+ * theme parsed from JSON stays far below it (its size caps it), and a value
+ * built in memory from shared pieces, which could take billions of steps to
+ * walk, stops here.
+ */
+const THEME_MAX_VALUES = 500_000;
+
+/**
+ * Whether a value nests deeper than `limit` objects and arrays, or holds more
+ * than THEME_MAX_VALUES values, walked without recursion.
+ */
+function nestsTooDeep(value: unknown, limit: number): boolean {
+  const pending: Array<{ readonly value: unknown; readonly depth: number }> = [{ value, depth: 0 }];
+  let seen = 0;
+  while (pending.length > 0) {
+    const { value: next, depth } = pending.pop()!;
+    seen += 1;
+    if (seen > THEME_MAX_VALUES) return true;
+    if (next === null || typeof next !== "object") continue;
+    if (depth >= limit) return true;
+    for (const child of Object.values(next)) pending.push({ value: child, depth: depth + 1 });
+  }
+  return false;
+}
 const PNG_DATA_URL = "data:image/png;base64,";
 const WOFF2_SIGNATURE = [0x77, 0x4f, 0x46, 0x32]; // "wOF2"
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
@@ -87,8 +127,18 @@ function stillProblem(still: string): string | null {
   return null;
 }
 
+export interface ThemeCheckOptions {
+  /**
+   * An agent is writing the theme (preview_theme, show_theme): also refuse
+   * what this build would only ignore, so a typo gets named. Elsewhere (save,
+   * sync, import) a theme from a newer build passes: an override of a token
+   * this build doesn't have is kept and goes unused here.
+   */
+  readonly authoring?: boolean;
+}
+
 /** Validates an unknown value as a theme file. */
-export function checkThemeManifest(input: unknown): ThemeCheck {
+export function checkThemeManifest(input: unknown, options: ThemeCheckOptions = {}): ThemeCheck {
   const decoded = decodeManifest(input);
   if (decoded._tag === "Failure") {
     const format =
@@ -107,6 +157,15 @@ export function checkThemeManifest(input: unknown): ThemeCheck {
     };
   }
   const manifest = decoded.value;
+  if (nestsTooDeep(manifest, THEME_MAX_NESTING)) {
+    return {
+      ok: false,
+      errors: [
+        `The theme nests its data more than ${THEME_MAX_NESTING} levels deep, or holds more than ${THEME_MAX_VALUES} values.`,
+      ],
+      contrast: [],
+    };
+  }
   const errors: string[] = [];
   const size = new TextEncoder().encode(JSON.stringify(manifest)).length;
   if (size > THEME_MAX_FILE_BYTES) {
@@ -116,6 +175,7 @@ export function checkThemeManifest(input: unknown): ThemeCheck {
   }
   for (const [name, value] of Object.entries(manifest.overrides ?? {})) {
     if (!(THEME_OVERRIDABLE_TOKENS as ReadonlyArray<string>).includes(name)) {
+      if (options.authoring !== true) continue;
       errors.push(
         `"${name}" is not a token a theme can override. Overridable: ${THEME_OVERRIDABLE_TOKENS.join(", ")}.`,
       );
@@ -129,7 +189,9 @@ export function checkThemeManifest(input: unknown): ThemeCheck {
       );
     }
   }
-  for (const [slot, font] of Object.entries(manifest.fonts ?? {})) {
+  // The known slots only: a slot a newer build added rides along unchecked.
+  for (const slot of THEME_FONT_SLOTS) {
+    const font = manifest.fonts?.[slot];
     if (!font) continue;
     if (font.data !== undefined && base64Bytes(font.data) > THEME_MAX_FONT_BYTES) {
       errors.push(`The ${slot} font is larger than ${THEME_MAX_FONT_BYTES} bytes.`);

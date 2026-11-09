@@ -6,7 +6,12 @@
  * table (a test), which keeps it honest. Changing a component's color classes
  * means updating its row here.
  */
-import type { GlassReadability, ThemeBase, ThemeManifest } from "@threadlines/contracts";
+import type {
+  GlassReadability,
+  ThemeBase,
+  ThemeCodePalette,
+  ThemeManifest,
+} from "@threadlines/contracts";
 
 import { color, composite, contrastRatio, formatHex, type Rgba, withAlpha } from "./color.ts";
 import { resolveThemeTokens, type ThemeTokenName, type ThemeTokens } from "./tokens.ts";
@@ -200,6 +205,20 @@ export function themeContrastFailures(
 }
 
 /** Syntax colors, as code blocks and diffs draw them on the code background. */
+/** Every syntax color slot a theme sets; the Record makes a new slot fail to compile until it's listed. */
+const THEME_CODE_SLOTS = Object.keys({
+  foreground: true,
+  comment: true,
+  keyword: true,
+  string: true,
+  number: true,
+  function: true,
+  type: true,
+  variable: true,
+  operator: true,
+  punctuation: true,
+} satisfies Record<keyof ThemeCodePalette, true>) as ReadonlyArray<keyof ThemeCodePalette>;
+
 const CODE_RATIOS: Readonly<Record<string, number>> = {
   foreground: 4.5,
   keyword: 4.5,
@@ -227,7 +246,9 @@ function paletteFailures(
   const failures: ThemeContrastFailure[] = [];
   const canvas = { ...color(tokens["surface-solid"]), a: 1 };
   const codeBackground = composite(color(tokens["code-background"]), canvas);
-  for (const [slot, value] of Object.entries(manifest.code ?? {})) {
+  // The known slots only: a field a newer build added rides along unchecked.
+  for (const slot of THEME_CODE_SLOTS) {
+    const value = manifest.code?.[slot];
     if (value === undefined) continue;
     const min = CODE_RATIOS[slot] ?? 4.5;
     const ratio = contrastRatio(composite(color(value), codeBackground), codeBackground);

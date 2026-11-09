@@ -155,15 +155,15 @@ describe("inbox relative times", () => {
       vi.setSystemTime(new Date("2026-09-01T09:33:00.000Z"));
       renderRow(null);
       const meta = page.getByTestId(`thread-meta-${THREAD_ID}`);
-      await expect.element(meta).toHaveTextContent("33m ago");
+      await expect.element(meta).toMatchTextContent(/^33m$/);
 
       await vi.advanceTimersByTimeAsync(60_000);
-      await expect.element(meta).toHaveTextContent("34m ago");
+      await expect.element(meta).toMatchTextContent(/^34m$/);
 
       // A computer that slept wakes hours later, and the thread never changed.
       vi.setSystemTime(new Date("2026-09-01T14:33:00.000Z"));
       await vi.advanceTimersByTimeAsync(60_000);
-      await expect.element(meta).toHaveTextContent("5h ago");
+      await expect.element(meta).toMatchTextContent(/^5h$/);
     } finally {
       vi.useRealTimers();
     }
@@ -389,14 +389,14 @@ describe("InboxThreadRow scheduled runs", () => {
     renderRow(null, [], runThread(true));
     await expect
       .element(page.getByTestId(`thread-scheduled-run-${THREAD_ID}`))
-      .toHaveTextContent("Event · Triage labeled issues");
+      .toHaveAttribute("aria-label", "Event · Triage labeled issues");
   });
 
   it("names a clock task's run as scheduled", async () => {
     renderRow(null, [], runThread(false));
     await expect
       .element(page.getByTestId(`thread-scheduled-run-${THREAD_ID}`))
-      .toHaveTextContent("Scheduled · Triage labeled issues");
+      .toHaveAttribute("aria-label", "Scheduled · Triage labeled issues");
   });
 });
 

@@ -19,9 +19,12 @@ export const THEME_LICENSE_WORDS: Readonly<
 /** Credits without blank parts; null when nothing is left. */
 export function cleanThemeCredits(credits: ThemeCredits | null | undefined): ThemeCredits | null {
   if (credits === null || credits === undefined) return null;
-  const author = credits.author?.trim();
-  const link = credits.link?.trim();
+  // A part a newer build added rides along as it came.
+  const { author: rawAuthor, link: rawLink, license: _license, ...others } = credits;
+  const author = rawAuthor?.trim();
+  const link = rawLink?.trim();
   const clean: ThemeCredits = {
+    ...others,
     ...(author ? { author } : {}),
     ...(link ? { link } : {}),
     ...(credits.license !== undefined ? { license: credits.license } : {}),

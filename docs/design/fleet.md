@@ -748,7 +748,7 @@ Schedules are configuration, not thread history, so they live in their own table
   - Run history: started, skipped with the reason, nothing to report, interrupted, each with a link to its thread.
   - Run now, Edit and Pause.
   - Delete, with "Also archive its run threads".
-- **Inbox.** Run threads are ordinary inbox threads, with a clock glyph and "Scheduled · <task>" on their top line.
+- **Inbox.** Run threads are ordinary inbox threads, with a clock glyph after the project name on their top line (the run's title is the task's name); the hover card says "Scheduled · <task>".
 - **Keep awake.** A desktop setting, "Keep this computer awake for scheduled tasks" (default off). Electron's `powerSaveBlocker` `prevent-app-suspension` holds while this computer has an active task that isn't manual.
 
 ## Part 7: Startup label (#38)

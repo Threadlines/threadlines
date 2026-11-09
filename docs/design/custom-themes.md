@@ -649,12 +649,16 @@ computer updates, credited themes (every duplicated starter included) don't
 reach it, and the sender retries once a minute. Only nightlies from Nov 6 to
 Nov 9, 2026 are affected; no stable release had themes yet.
 
-**Before themes ship in a stable release:** the format needs to keep fields
-it doesn't know. Today every build drops unknown fields on decode (Effect's
-Schema only ignores or errors), so any field added to the hashed content
-breaks sync with older builds the same way. The fix is to store, hash and
-send a theme's validated JSON as received, unknown fields included, and
-decode only to read it.
+**Fields a build doesn't know** (Nov 9, 2026, before themes reached
+stable): every part of the format decodes with a rest record
+(`keepingUnknownKeys` in packages/contracts/src/themes.ts), so a field a
+newer build added, at the top or inside a part, is kept as it came: checked
+for size with the rest, counted in the hash, stored, synced, exported and
+shared. Builds from this one on agree on a newer theme's hash, so adding a
+field no longer breaks sync. Its TypeScript type stays the known fields.
+The rule for a new field: a build that doesn't know it will carry it
+everywhere, sharing included, so anything private goes under `createdBy`,
+which sharing always leaves out.
 
 Still to come before a public showcase: font licenses travel with embedded
 fonts (Google and Bunny fonts are open, but OFL wants its notice kept),

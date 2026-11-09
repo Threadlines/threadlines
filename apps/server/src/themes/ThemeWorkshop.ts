@@ -116,7 +116,11 @@ export const makeThemeWorkshop = Effect.fn("ThemeWorkshop.make")(function* (
     Effect.gen(function* () {
       const check = checkThemeManifest(input);
       if (!check.ok) return yield* themeProblems(check.errors);
-      return yield* embedFonts(check.manifest);
+      // Embedded fonts add up to a megabyte: the theme as saved must still pass,
+      // or another computer would refuse it in a merge.
+      const embedded = checkThemeManifest(yield* embedFonts(check.manifest));
+      if (!embedded.ok) return yield* themeProblems(embedded.errors);
+      return embedded.manifest;
     });
 
   const specimen = (manifest: ThemeManifest, layout: ThemeSpecimenLayout) =>

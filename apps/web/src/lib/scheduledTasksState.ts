@@ -223,8 +223,9 @@ export function useScheduledRunTaskName(
 }
 
 /**
- * The line that names a run's task, on its inbox row and over its first
- * message: "Event · <task>" for an event task's run, else "Scheduled · <task>".
+ * The line that names a run's task, on the glyph that marks its inbox row, in
+ * its hover card and over its first message: "Event · <task>" for an event
+ * task's run, else "Scheduled · <task>".
  */
 export function scheduledRunLabel(taskName: string, event: boolean): string {
   return `${event ? "Event" : "Scheduled"} · ${taskName}`;
