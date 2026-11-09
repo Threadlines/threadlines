@@ -572,6 +572,8 @@ describe("the Showcase", () => {
     expect(showcaseSlugFor("Tide Pool", new Set(["tide-pool", "tide-pool-2"]))).toBe("tide-pool-3");
     expect(showcaseSlugFor("Café Noir", new Set())).toBe("cafe-noir");
     expect(showcaseSlugFor("東京", new Set())).toBe("theme");
+    expect(showcaseSlugFor("--Night  Owl--", new Set())).toBe("night-owl");
+    expect(showcaseSlugFor(`${"a".repeat(35)} b`, new Set())).toBe("a".repeat(35));
   });
 });
 
