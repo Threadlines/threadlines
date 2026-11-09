@@ -52,7 +52,10 @@ import {
   ReportProblemDialogHost,
   useReportProblemMenuAction,
 } from "../components/ReportProblemDialog";
-import { ExpandedImageViewerHost } from "../components/chat/ExpandedImageDialog";
+import {
+  ExpandedImageViewerHost,
+  preloadExpandedImageDialog,
+} from "../components/chat/ExpandedImageViewerHost";
 import {
   preloadProviderSignInDialog,
   ProviderSignInDialogHost,
@@ -878,6 +881,7 @@ function AppShellIdlePreloads() {
       void preloadOutsideAgentDialog();
       void preloadWhatsNewDialog();
       void preloadReportProblemDialog();
+      void preloadExpandedImageDialog();
     });
   }, [router, workspaceLoaded]);
 

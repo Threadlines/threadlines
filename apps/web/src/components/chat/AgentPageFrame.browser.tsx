@@ -14,7 +14,7 @@ import { render } from "vitest-browser-react";
 
 import { AgentPageFrame } from "./AgentPageFrame";
 import { AgentPageRow } from "./AgentPageRow";
-import { ExpandedImageViewerHost } from "./ExpandedImageDialog";
+import { ExpandedImageViewerHost } from "./ExpandedImageViewerHost";
 
 // Stored pages by version id: what `pages.read` would return.
 const storedPages = vi.hoisted(() => new Map<string, string>());

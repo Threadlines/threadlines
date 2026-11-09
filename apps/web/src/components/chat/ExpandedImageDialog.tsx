@@ -3,25 +3,7 @@ import { createPortal } from "react-dom";
 import { ChevronLeftIcon, ChevronRightIcon, XIcon } from "lucide-react";
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
-import {
-  closeExpandedImagePreview,
-  type ExpandedImageItem,
-  type ExpandedImagePreview,
-  registerExpandedImageHost,
-  useExpandedImagePreview,
-} from "./ExpandedImagePreview";
-
-/**
- * The app's one image viewer, mounted in the root layout so a picture
- * anywhere can open it (openExpandedImagePreview).
- */
-export function ExpandedImageViewerHost() {
-  const preview = useExpandedImagePreview();
-  useEffect(() => registerExpandedImageHost(), []);
-  return preview ? (
-    <ExpandedImageDialog preview={preview} onClose={closeExpandedImagePreview} />
-  ) : null;
-}
+import { type ExpandedImageItem, type ExpandedImagePreview } from "./ExpandedImagePreview";
 
 interface ExpandedImageDialogProps {
   preview: ExpandedImagePreview;
