@@ -101,19 +101,29 @@ const CLAUDE_AUTO_MODE_UNSUPPORTED_SLUGS: ReadonlySet<string> = new Set([
 export function claudeModelSupportsAutoRuntimeMode(modelSlug: string | null | undefined): boolean {
   return modelSlug ? !CLAUDE_AUTO_MODE_UNSUPPORTED_SLUGS.has(modelSlug) : true;
 }
-const MINIMUM_CLAUDE_FABLE_5_2_VERSION = "2.1.321";
-const MINIMUM_CLAUDE_HAIKU_5_5_VERSION = "2.1.293";
-const MINIMUM_CLAUDE_SONNET_5_5_VERSION = "2.1.284";
 // Claude Code 2.1.284 made Ultracode its own setting that works at any effort
 // level. Older CLIs only know it as an effort level that forces Extra High.
 const MINIMUM_CLAUDE_ULTRACODE_SWITCH_VERSION = "2.1.284";
-const MINIMUM_CLAUDE_OPUS_5_5_VERSION = "2.1.280";
-const MINIMUM_CLAUDE_FABLE_5_1_VERSION = "2.1.257";
-const MINIMUM_CLAUDE_FABLE_5_VERSION = "2.1.170";
-const MINIMUM_CLAUDE_SONNET_5_VERSION = "2.1.197";
-const MINIMUM_CLAUDE_OPUS_5_VERSION = "2.1.219";
-const MINIMUM_CLAUDE_OPUS_4_8_VERSION = "2.1.154";
-const MINIMUM_CLAUDE_OPUS_4_7_VERSION = "2.1.111";
+/**
+ * The Claude Code version that first shipped each hand-written model, oldest
+ * first. Below it the hand-written entry is left out of the fallback list. A
+ * model Claude Code itself reports is listed whatever the version: the
+ * account has it. Models without a row need no version.
+ *
+ * New models need no row here. Claude Code reports them, and that is enough.
+ */
+const CLAUDE_MODEL_MINIMUM_VERSIONS: ReadonlyArray<readonly [slug: string, version: string]> = [
+  ["claude-opus-4-7", "2.1.111"],
+  ["claude-opus-4-8", "2.1.154"],
+  ["claude-fable-5", "2.1.170"],
+  ["claude-sonnet-5", "2.1.197"],
+  ["claude-opus-5", "2.1.219"],
+  ["claude-fable-5-1", "2.1.257"],
+  ["claude-opus-5-5", "2.1.280"],
+  ["claude-sonnet-5-5", "2.1.284"],
+  ["claude-haiku-5-5", "2.1.293"],
+  ["claude-fable-5-2", "2.1.321"],
+];
 const CLAUDE_FABLE_5_DESCRIPTION = "Most capable for the hardest and longest-running tasks.";
 const CLAUDE_ULTRACODE_DESCRIPTION =
   "Runs big tasks as workflows of many agents. Uses more of your limit.";
@@ -500,44 +510,8 @@ const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = BUILT_IN_MODEL_DEFIN
       : { ...model, supportedRuntimeModes: LEGACY_RUNTIME_MODES },
 );
 
-function supportsClaudeOpus48(version: string | null | undefined): boolean {
-  return version ? compareSemverVersions(version, MINIMUM_CLAUDE_OPUS_4_8_VERSION) >= 0 : false;
-}
-
-function supportsClaudeOpus55(version: string | null | undefined): boolean {
-  return version ? compareSemverVersions(version, MINIMUM_CLAUDE_OPUS_5_5_VERSION) >= 0 : false;
-}
-
-function supportsClaudeOpus5(version: string | null | undefined): boolean {
-  return version ? compareSemverVersions(version, MINIMUM_CLAUDE_OPUS_5_VERSION) >= 0 : false;
-}
-
-function supportsClaudeFable5(version: string | null | undefined): boolean {
-  return version ? compareSemverVersions(version, MINIMUM_CLAUDE_FABLE_5_VERSION) >= 0 : false;
-}
-
-function supportsClaudeFable51(version: string | null | undefined): boolean {
-  return version ? compareSemverVersions(version, MINIMUM_CLAUDE_FABLE_5_1_VERSION) >= 0 : false;
-}
-
-function supportsClaudeFable52(version: string | null | undefined): boolean {
-  return version ? compareSemverVersions(version, MINIMUM_CLAUDE_FABLE_5_2_VERSION) >= 0 : false;
-}
-
-function supportsClaudeSonnet55(version: string | null | undefined): boolean {
-  return version ? compareSemverVersions(version, MINIMUM_CLAUDE_SONNET_5_5_VERSION) >= 0 : false;
-}
-
-function supportsClaudeHaiku55(version: string | null | undefined): boolean {
-  return version ? compareSemverVersions(version, MINIMUM_CLAUDE_HAIKU_5_5_VERSION) >= 0 : false;
-}
-
-function supportsClaudeSonnet5(version: string | null | undefined): boolean {
-  return version ? compareSemverVersions(version, MINIMUM_CLAUDE_SONNET_5_VERSION) >= 0 : false;
-}
-
-function supportsClaudeOpus47(version: string | null | undefined): boolean {
-  return version ? compareSemverVersions(version, MINIMUM_CLAUDE_OPUS_4_7_VERSION) >= 0 : false;
+function claudeCodeIsAtLeast(version: string | null | undefined, minimum: string): boolean {
+  return version ? compareSemverVersions(version, minimum) >= 0 : false;
 }
 
 // Claude Code 2.1.219 removed Claude Opus 4.7 from fast mode; older CLIs
@@ -620,38 +594,10 @@ function withUltracodeShapeForVersion(
 function getBuiltInClaudeModelsForVersion(
   version: string | null | undefined,
 ): ReadonlyArray<ServerProviderModel> {
+  const minimumVersions = new Map(CLAUDE_MODEL_MINIMUM_VERSIONS);
   return BUILT_IN_MODELS.filter((model) => {
-    if (model.slug === "claude-fable-5-2") {
-      return supportsClaudeFable52(version);
-    }
-    if (model.slug === "claude-fable-5-1") {
-      return supportsClaudeFable51(version);
-    }
-    if (model.slug === "claude-fable-5") {
-      return supportsClaudeFable5(version);
-    }
-    if (model.slug === "claude-sonnet-5-5") {
-      return supportsClaudeSonnet55(version);
-    }
-    if (model.slug === "claude-haiku-5-5") {
-      return supportsClaudeHaiku55(version);
-    }
-    if (model.slug === "claude-sonnet-5") {
-      return supportsClaudeSonnet5(version);
-    }
-    if (model.slug === "claude-opus-5-5") {
-      return supportsClaudeOpus55(version);
-    }
-    if (model.slug === "claude-opus-5") {
-      return supportsClaudeOpus5(version);
-    }
-    if (model.slug === "claude-opus-4-8") {
-      return supportsClaudeOpus48(version);
-    }
-    if (model.slug === "claude-opus-4-7") {
-      return supportsClaudeOpus47(version);
-    }
-    return true;
+    const minimum = minimumVersions.get(model.slug);
+    return minimum === undefined || claudeCodeIsAtLeast(version, minimum);
   }).map((model) =>
     withUltracodeShapeForVersion(
       model.slug === "claude-opus-4-7" && !claudeOpus47SupportsFastMode(version)
@@ -672,78 +618,26 @@ function formatClaudeModelUpgradeMessage(input: {
   return `Claude Code ${versionLabel} is too old for ${modelName}. Upgrade to v${minimumVersion} or newer to access it.`;
 }
 
-function formatClaudeUpgradeMessage(version: string | null): string | undefined {
-  if (!supportsClaudeOpus47(version)) {
-    return formatClaudeModelUpgradeMessage({
-      version,
-      modelName: "Claude Opus 4.7",
-      minimumVersion: MINIMUM_CLAUDE_OPUS_4_7_VERSION,
-    });
+/**
+ * The note for the oldest hand-written model this Claude Code is too old for.
+ * A model Claude Code reported is skipped: it is listed, so nothing is missing.
+ */
+function formatClaudeUpgradeMessage(
+  version: string | null,
+  reportedSlugs: ReadonlySet<string> = new Set(),
+): string | undefined {
+  const missing = CLAUDE_MODEL_MINIMUM_VERSIONS.find(
+    ([slug, minimum]) => !reportedSlugs.has(slug) && !claudeCodeIsAtLeast(version, minimum),
+  );
+  if (!missing) {
+    return undefined;
   }
-  if (!supportsClaudeOpus48(version)) {
-    return formatClaudeModelUpgradeMessage({
-      version,
-      modelName: "Claude Opus 4.8",
-      minimumVersion: MINIMUM_CLAUDE_OPUS_4_8_VERSION,
-    });
-  }
-  if (!supportsClaudeFable5(version)) {
-    return formatClaudeModelUpgradeMessage({
-      version,
-      modelName: "Claude Fable 5",
-      minimumVersion: MINIMUM_CLAUDE_FABLE_5_VERSION,
-    });
-  }
-  if (!supportsClaudeSonnet5(version)) {
-    return formatClaudeModelUpgradeMessage({
-      version,
-      modelName: "Claude Sonnet 5",
-      minimumVersion: MINIMUM_CLAUDE_SONNET_5_VERSION,
-    });
-  }
-  if (!supportsClaudeOpus5(version)) {
-    return formatClaudeModelUpgradeMessage({
-      version,
-      modelName: "Claude Opus 5",
-      minimumVersion: MINIMUM_CLAUDE_OPUS_5_VERSION,
-    });
-  }
-  if (!supportsClaudeFable51(version)) {
-    return formatClaudeModelUpgradeMessage({
-      version,
-      modelName: "Claude Fable 5.1",
-      minimumVersion: MINIMUM_CLAUDE_FABLE_5_1_VERSION,
-    });
-  }
-  if (!supportsClaudeOpus55(version)) {
-    return formatClaudeModelUpgradeMessage({
-      version,
-      modelName: "Claude Opus 5.5",
-      minimumVersion: MINIMUM_CLAUDE_OPUS_5_5_VERSION,
-    });
-  }
-  if (!supportsClaudeSonnet55(version)) {
-    return formatClaudeModelUpgradeMessage({
-      version,
-      modelName: "Claude Sonnet 5.5",
-      minimumVersion: MINIMUM_CLAUDE_SONNET_5_5_VERSION,
-    });
-  }
-  if (!supportsClaudeHaiku55(version)) {
-    return formatClaudeModelUpgradeMessage({
-      version,
-      modelName: "Claude Haiku 5.5",
-      minimumVersion: MINIMUM_CLAUDE_HAIKU_5_5_VERSION,
-    });
-  }
-  if (!supportsClaudeFable52(version)) {
-    return formatClaudeModelUpgradeMessage({
-      version,
-      modelName: "Claude Fable 5.2",
-      minimumVersion: MINIMUM_CLAUDE_FABLE_5_2_VERSION,
-    });
-  }
-  return undefined;
+  const [slug, minimumVersion] = missing;
+  return formatClaudeModelUpgradeMessage({
+    version,
+    modelName: BUILT_IN_MODELS.find((model) => model.slug === slug)?.name ?? slug,
+    minimumVersion,
+  });
 }
 
 export function getClaudeModelCapabilities(model: string | null | undefined): ModelCapabilities {
@@ -755,15 +649,23 @@ export function getClaudeModelCapabilities(model: string | null | undefined): Mo
 }
 
 /**
+ * The reasoning choice that names no level. Nothing is sent for it, so Claude
+ * Code runs the model at the level it picks itself (Medium for Fable 5.2 on
+ * Claude Code 2.1.321, for one). Models with no hand-written default start on
+ * it, since Claude Code does not report a model's default level.
+ */
+export const CLAUDE_DEFAULT_EFFORT = "default";
+
+/**
  * Normalize a resolved Claude effort value into one suitable for the Claude
  * CLI's `--effort` flag.
  *
  * `"ultracode"` is the effort level Claude Code before 2.1.284 offered for
  * Ultracode, which runs at `xhigh`. Returns `undefined` when no flag should
- * be passed.
+ * be passed, which is what the Default choice asks for.
  */
 export function normalizeClaudeCliEffort(effort: string | null | undefined): string | undefined {
-  if (!effort) {
+  if (!effort || effort === CLAUDE_DEFAULT_EFFORT) {
     return undefined;
   }
   if (effort === "ultracode") {
@@ -1050,6 +952,45 @@ export function seedClaudeProviderUsage(
   };
 }
 
+/**
+ * The models Claude Code last reported for one provider instance. A status
+ * check that cannot ask Claude Code (its probe timed out) lists these again,
+ * options included, so the picker, a chat and a title keep agreeing on a
+ * model this build has no entry of its own for. A check that did get an
+ * answer replaces them, or clears them when the answer lists none.
+ */
+export interface ClaudeReportedModels {
+  /** Claude Code's own rows, as they were listed. */
+  readonly models: ReadonlyArray<ServerProviderModel>;
+}
+
+/** Where a status check reads and writes the last reported models. */
+export interface ClaudeReportedModelsStore {
+  readonly get: Effect.Effect<ClaudeReportedModels | undefined>;
+  readonly set: (reported: ClaudeReportedModels | undefined) => Effect.Effect<void>;
+}
+
+/**
+ * The last reported models as the previous run saved them, for a restart
+ * whose first check cannot ask Claude Code. Only a snapshot that held Claude
+ * Code's answer counts, and the user's own entries come from settings.
+ */
+export function claudeReportedModelsFromCache(
+  cached: ServerProvider | undefined,
+  instance: Pick<ServerProvider, "instanceId" | "driver">,
+): ClaudeReportedModels | undefined {
+  if (
+    !cached ||
+    cached.instanceId !== instance.instanceId ||
+    cached.driver !== instance.driver ||
+    cached.modelCatalogSource !== "live"
+  ) {
+    return undefined;
+  }
+  const models = cached.models.filter((model) => !model.isCustom);
+  return models.length > 0 ? { models } : undefined;
+}
+
 // ── SDK capability probe ────────────────────────────────────────────
 
 // Claude's SDK initialization can be slow on a busy Windows machine even when
@@ -1125,6 +1066,11 @@ function claudeDiscoveredModelName(slug: string, model: ClaudeModelInfo): string
   return (isDefaultAlias ? undefined : nonEmptyProbeString(model.displayName)) ?? slug;
 }
 
+/**
+ * What a model offers, from Claude Code's own row for it. The row names the
+ * levels but not which one the model defaults to, so the list starts on
+ * Default and leaves that to Claude Code.
+ */
 function claudeDiscoveredModelCapabilities(model: ClaudeModelInfo): ModelCapabilities {
   const optionDescriptors: Array<ProviderOptionDescriptor> = [];
   const effortLevels = model.supportsEffort ? (model.supportedEffortLevels ?? []) : [];
@@ -1134,10 +1080,13 @@ function claudeDiscoveredModelCapabilities(model: ClaudeModelInfo): ModelCapabil
       buildSelectOptionDescriptor({
         id: "effort",
         label: "Reasoning",
-        options: effortLevels.map((value) => ({
-          value,
-          label: value === "xhigh" ? "Extra High" : toTitleCaseWords(value),
-        })),
+        options: [
+          { value: CLAUDE_DEFAULT_EFFORT, label: "Default", isDefault: true },
+          ...effortLevels.map((value) => ({
+            value,
+            label: value === "xhigh" ? "Extra High" : toTitleCaseWords(value),
+          })),
+        ],
       }),
     );
   }
@@ -1157,21 +1106,30 @@ function claudeDiscoveredModelCapabilities(model: ClaudeModelInfo): ModelCapabil
   return createModelCapabilities({ optionDescriptors });
 }
 
+/**
+ * The model list for a Claude Code that reported its own: its rows first,
+ * then the hand-written models it did not report (older ones, mostly).
+ *
+ * A reported model is always listed. One with a hand-written entry for this
+ * Claude Code version takes that entry's options; any other (a model newer
+ * than this build, or one whose entry asks for a newer Claude Code) takes the
+ * options Claude Code reported for it.
+ */
 function mergeClaudeDiscoveredModels(
   discoveredModels: ReadonlyArray<ClaudeModelInfo>,
   curatedModels: ReadonlyArray<ServerProviderModel>,
   version: string | null,
 ): {
   readonly models: ReadonlyArray<ServerProviderModel>;
-  readonly hasLiveModels: boolean;
+  /** The models Claude Code reported, by slug. Empty when it reported none. */
+  readonly reportedSlugs: ReadonlySet<string>;
 } {
   const curatedBySlug = new Map(curatedModels.map((model) => [model.slug, model] as const));
-  const knownBuiltInSlugs = new Set(BUILT_IN_MODELS.map((model) => model.slug));
   const discoveredBySlug = new Map<string, ServerProviderModel>();
 
   for (const discovered of discoveredModels) {
     const slug = canonicalClaudeDiscoveredModelSlug(discovered);
-    if (!slug || (knownBuiltInSlugs.has(slug) && !curatedBySlug.has(slug))) {
+    if (!slug) {
       continue;
     }
 
@@ -1206,7 +1164,33 @@ function mergeClaudeDiscoveredModels(
       ...discoveredBySlug.values(),
       ...curatedModels.filter((model) => !discoveredBySlug.has(model.slug)),
     ],
-    hasLiveModels: discoveredBySlug.size > 0,
+    reportedSlugs: new Set(discoveredBySlug.keys()),
+  };
+}
+
+/**
+ * The list for a check that could not ask Claude Code: the models it last
+ * reported, then the hand-written ones it did not. With no answer kept, the
+ * hand-written list alone.
+ *
+ * The kept rows are listed as they were, even after Claude Code itself was
+ * updated: a row shaped for the older version still runs, and dropping it
+ * would leave a chat on that model without the options the picker shows.
+ */
+function withLastReportedClaudeModels(
+  curatedModels: ReadonlyArray<ServerProviderModel>,
+  last: ClaudeReportedModels | undefined,
+): {
+  readonly models: ReadonlyArray<ServerProviderModel>;
+  readonly reportedSlugs: ReadonlySet<string>;
+} {
+  if (!last) {
+    return { models: curatedModels, reportedSlugs: new Set() };
+  }
+  const reportedSlugs = new Set(last.models.map((model) => model.slug));
+  return {
+    models: [...last.models, ...curatedModels.filter((model) => !reportedSlugs.has(model.slug))],
+    reportedSlugs,
   };
 }
 
@@ -1828,6 +1812,8 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
    * command starts the renewal and exits without waiting for it.
    */
   isSignInRenewalDue?: (claudeSettings: ClaudeSettings) => Effect.Effect<boolean>,
+  /** The models Claude Code last reported, kept across checks by the caller. */
+  lastReportedModels?: ClaudeReportedModelsStore,
 ): Effect.fn.Return<
   ServerProviderDraft,
   never,
@@ -1912,21 +1898,35 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   }
 
   const versionedBuiltInModels = getBuiltInClaudeModelsForVersion(parsedVersion);
-  const upgradeMessage = formatClaudeUpgradeMessage(parsedVersion);
 
   const capabilities = resolveCapabilities
     ? yield* resolveCapabilities(claudeSettings).pipe(Effect.orElseSucceed(() => undefined))
     : undefined;
   const discoveredCatalog = capabilities
     ? mergeClaudeDiscoveredModels(capabilities.models, versionedBuiltInModels, parsedVersion)
-    : { models: versionedBuiltInModels, hasLiveModels: false };
+    : withLastReportedClaudeModels(
+        versionedBuiltInModels,
+        lastReportedModels ? yield* lastReportedModels.get : undefined,
+      );
+  if (capabilities && lastReportedModels) {
+    // An answer replaces what was kept; one that lists no models clears it.
+    const reported = discoveredCatalog.models.filter((model) =>
+      discoveredCatalog.reportedSlugs.has(model.slug),
+    );
+    yield* lastReportedModels.set(reported.length > 0 ? { models: reported } : undefined);
+  }
+  const upgradeMessage = formatClaudeUpgradeMessage(parsedVersion, discoveredCatalog.reportedSlugs);
   const models = providerModelsFromSettings(
     discoveredCatalog.models,
     PROVIDER,
     claudeSettings.customModels,
     DEFAULT_CLAUDE_MODEL_CAPABILITIES,
   );
-  const modelCatalogSource = discoveredCatalog.hasLiveModels ? "live" : "fallback";
+  // "live" is Claude Code's answer, now or as last kept, and replaces what
+  // clients listed before, also when it names no models of its own. Only a
+  // check with no answer to go on is a fallback, which keeps their last list.
+  const modelCatalogSource =
+    capabilities || discoveredCatalog.reportedSlugs.size > 0 ? "live" : "fallback";
   const slashCommands = capabilities?.slashCommands ?? [];
   const dedupedSlashCommands = dedupeSlashCommands(slashCommands);
   const tokenUsageEffect = resolveTokenUsage

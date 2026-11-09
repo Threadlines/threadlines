@@ -120,6 +120,12 @@ describe("normalizeModelSlug", () => {
     expect(normalizeModelSlug("fable-5.1", claude)).toBe("claude-fable-5-1");
     expect(normalizeModelSlug("claude-fable-5-1[1m]", claude)).toBe("claude-fable-5-1");
     expect(normalizeModelSlug("fable-5", claude)).toBe("claude-fable-5");
+    // A dotted version needs no entry of its own, so a model newer than
+    // this build still resolves. Other providers keep the spelling.
+    expect(normalizeModelSlug("fable-5.3", claude)).toBe("claude-fable-5-3");
+    expect(normalizeModelSlug("claude-opus-7.1", claude)).toBe("claude-opus-7-1");
+    expect(normalizeModelSlug("claude-opus-7-1[1m]", claude)).toBe("claude-opus-7-1[1m]");
+    expect(normalizeModelSlug("fable-5.3")).toBe("fable-5.3");
     expect(normalizeModelSlug("sonnet", claude)).toBe("claude-sonnet-5");
     expect(normalizeModelSlug("sonnet-5.5", claude)).toBe("claude-sonnet-5-5");
     expect(normalizeModelSlug("claude-sonnet-5-5[1m]", claude)).toBe("claude-sonnet-5-5");

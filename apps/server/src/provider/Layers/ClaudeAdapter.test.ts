@@ -10715,6 +10715,61 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  // Default names no level: Claude Code runs the model at its own. Choosing
+  // it again clears a level set earlier in the session.
+  it.effect("sends no effort for the Default reasoning choice and clears one mid-session", () => {
+    const harness = makeHarness({
+      resolveModelMetadata: () =>
+        Effect.succeed({
+          capabilities: createModelCapabilities({
+            optionDescriptors: [
+              {
+                id: "effort",
+                label: "Reasoning",
+                type: "select",
+                options: [
+                  { id: "default", label: "Default", isDefault: true },
+                  { id: "low", label: "Low" },
+                  { id: "high", label: "High" },
+                ],
+              },
+            ],
+          }),
+        }),
+    });
+    const selection = (effort: string) =>
+      createModelSelection(ProviderInstanceId.make("claudeAgent"), "claude-opus-9", [
+        { id: "effort", value: effort },
+      ]);
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        modelSelection: selection("default"),
+        runtimeMode: "full-access",
+      });
+      assert.equal(harness.getLastCreateQueryInput()?.options.effort, undefined);
+
+      for (const effort of ["high", "default"]) {
+        yield* adapter.sendTurn({
+          threadId: session.threadId,
+          input: "hello",
+          modelSelection: selection(effort),
+          attachments: [],
+        });
+      }
+      assert.deepEqual(
+        harness.query.applyFlagSettingsCalls.map((call) => call.effortLevel),
+        ["high", null],
+      );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("does not call applyFlagSettings when session options are unchanged", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

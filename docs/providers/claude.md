@@ -322,7 +322,10 @@ Do not put environment variable assignments in `Launch arguments`.
 ## Claude Fable 5, 5.1 And 5.2
 
 Threadlines shows Claude Fable 5.2 when the configured Claude Code binary is `2.1.321` or newer,
-Claude Fable 5.1 from `2.1.257`, and Claude Fable 5 from `2.1.170`. Select a Fable model in the
+Claude Fable 5.1 from `2.1.257`, and Claude Fable 5 from `2.1.170`. An older Claude Code still
+shows a Fable model once it reports that model for your account (see
+[New Claude Models Need No Threadlines Update](#new-claude-models-need-no-threadlines-update)).
+Select a Fable model in the
 model picker when you want Anthropic's highest-capability widely available model for long-running
 or difficult work. Claude Code `2.1.321` makes Fable 5.2 the model its bare `fable` alias resolves
 to, and Threadlines normalizes the alias the same way; `fable-5.1` still means Claude Fable 5.1.
@@ -361,6 +364,31 @@ by the active Claude account appear before Threadlines' curated historical catal
 behind Claude's `default` row becomes that provider instance's default in Threadlines. Curated entries
 still supply richer Threadlines-specific metadata and remain available as an offline fallback when
 Claude initialization cannot return a live catalog.
+
+## New Claude Models Need No Threadlines Update
+
+Claude Code reports the models your account can use, and for a claude.ai sign-in that list comes
+from Anthropic. Threadlines lists every model it reports, including one this Threadlines has never
+heard of and one it would otherwise expect a newer Claude Code for.
+
+- **Options.** A model Threadlines has no entry of its own for takes the options Claude Code
+  reports: its reasoning levels, Fast Mode, and Ultracode when Extra High is among the levels.
+- **Default reasoning.** Claude Code names a model's levels but not which one it defaults to. So
+  such a model starts on `Default`: Threadlines sends no level and Claude Code picks. Choosing
+  `Default` again later clears a level you set. A model with an entry of its own keeps the default
+  that entry marks, once your Claude Code is new enough for that entry. Before that it starts on
+  `Default` too.
+- **A check that cannot ask.** When a status check cannot reach Claude Code, the models it last
+  reported stay, in the picker and for chat, titles and commit messages alike. An answer that no
+  longer lists a model removes it.
+- **Models Claude Code stops reporting.** It lists current models only. When a model drops off its
+  list and Threadlines has no entry for it, it leaves the picker. Add its id under the provider's
+  custom models to keep using it.
+- **Spellings.** A dotted version such as `fable-5.3` or `claude-fable-5.3` resolves to Claude's
+  own id, `claude-fable-5-3`, with no entry per model.
+
+An "update Claude Code" note only names a model that is missing from the list. A model Claude Code
+reports is there, so nothing asks you to update for it.
 
 ## Claude Usage Resets
 

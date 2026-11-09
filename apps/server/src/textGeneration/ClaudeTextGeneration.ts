@@ -13,7 +13,11 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
-import { type ClaudeSettings, type ModelSelection } from "@threadlines/contracts";
+import {
+  type ClaudeSettings,
+  type ModelCapabilities,
+  type ModelSelection,
+} from "@threadlines/contracts";
 import { hideWindowsConsole } from "@threadlines/shared/childProcess";
 import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@threadlines/shared/git";
 
@@ -60,6 +64,16 @@ const decodeClaudeOutputEnvelope = Schema.decodeEffect(Schema.fromJsonString(Cla
 export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(function* (
   claudeSettings: ClaudeSettings,
   environment: NodeJS.ProcessEnv = process.env,
+  options?: {
+    /**
+     * What a model offers, as the provider lists it now. Lets a model known
+     * only from Claude Code's own list keep the reasoning level chosen for
+     * it; without an answer the hand-written list decides.
+     */
+    readonly resolveModelCapabilities?: (
+      model: string,
+    ) => Effect.Effect<ModelCapabilities | null | undefined>;
+  },
 ) {
   const commandSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const claudeEnvironment = yield* makeClaudeEnvironment(claudeSettings, environment);
@@ -125,7 +139,10 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       toJsonSchemaObject(outputSchemaJson),
       "Failed to encode structured output schema.",
     );
-    const caps = getClaudeModelCapabilities(modelSelection.model);
+    const listedCaps = options?.resolveModelCapabilities
+      ? yield* options.resolveModelCapabilities(modelSelection.model)
+      : undefined;
+    const caps = listedCaps ?? getClaudeModelCapabilities(modelSelection.model);
     const descriptors = getProviderOptionDescriptors({
       caps,
       selections: modelSelection.options,
@@ -170,7 +187,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
           "--json-schema",
           jsonSchemaStr,
           "--model",
-          resolveClaudeApiModelId(modelSelection),
+          resolveClaudeApiModelId(modelSelection, caps),
           ...(cliEffort ? ["--effort", cliEffort] : []),
           "--settings",
           settingsJson,
