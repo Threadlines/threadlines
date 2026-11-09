@@ -5,7 +5,10 @@
  * row per entry, the winning copy by revision order), and keeps the computers
  * in step: whenever two followed computers disagree about an entry, the
  * winning copy is merged into the other, content included when it lacks it.
- * A change goes to one computer and spreads from there.
+ * A change goes to one computer and spreads from there. The shared theme
+ * pick ("Same theme on all my devices", themePickSync.ts) rides along: the
+ * winning pick is merged into computers holding an older one, with its
+ * theme's content when they lack it.
  *
  * One subscription per computer, mounted once at the root (ThemeLibrarySync).
  */
@@ -16,12 +19,14 @@ import type {
   ThemeEntrySummary,
   ThemeLibrarySnapshot,
   ThemeManifest,
+  ThemePick,
 } from "@threadlines/contracts";
 import {
   compareThemeRevisions,
   reconcileThemeLibraries,
   themeOfferKey,
   themeWithoutOffer,
+  winningThemePick,
 } from "@threadlines/shared/themeLibrary";
 import { useEffect, useMemo } from "react";
 import { create } from "zustand";
@@ -35,6 +40,7 @@ import {
 } from "../environments/runtime";
 import { type CapableEnvironment, capableEnvironmentsOf } from "../lib/capableEnvironments";
 import type { WsRpcClient } from "../rpc/wsRpcClient";
+import { startThemePickSync, useThemePickSyncSettings } from "./themePickSync";
 
 interface ThemeLibraryState {
   /** Each computer's latest snapshot; absent until its first one arrives. */
@@ -323,10 +329,14 @@ const retryEnvironments = new Map<EnvironmentId, ThemeLibrarySnapshot | undefine
  * standing in for a computer that sent none is harmless, since a merge
  * keeps whichever copy wins.
  */
+type MergeClients = (
+  environmentId: EnvironmentId,
+) => Pick<ThemesClient, "read" | "merge" | "mergePick">;
+
 function scheduleMergeRetry(
   byEnvironment: Readonly<Record<string, ThemeLibrarySnapshot>>,
   environmentIds: readonly EnvironmentId[],
-  clients: (environmentId: EnvironmentId) => Pick<ThemesClient, "read" | "merge">,
+  clients: MergeClients,
 ): void {
   for (const id of environmentIds) retryEnvironments.set(id, byEnvironment[id]);
   if (retryTimer !== null) return;
@@ -350,7 +360,7 @@ async function sendMerge(
   target: EnvironmentId,
   entry: ThemeEntry,
   targetHasContent: boolean,
-  clients: (environmentId: EnvironmentId) => Pick<ThemesClient, "read" | "merge">,
+  clients: MergeClients,
   retry: () => void,
 ): Promise<void> {
   const key = `${target}\0${entry.entryId}\0${entry.revision}\0${entry.revisedBy}`;
@@ -371,11 +381,59 @@ async function sendMerge(
   }
 }
 
-/** Sends every entry two followed computers disagree about to the one holding the older copy. */
+/**
+ * Brings the winning shared pick to a computer holding an older one (or none).
+ * A library pick's content goes with it when the computer lacks it, read from
+ * whichever followed computer has it; without it the pick still lands, and the
+ * content can follow with the entries.
+ */
+async function sendPickMerge(
+  target: EnvironmentId,
+  pick: ThemePick,
+  byEnvironment: Readonly<Record<string, ThemeLibrarySnapshot>>,
+  readyIds: readonly EnvironmentId[],
+  clients: MergeClients,
+  retry: () => void,
+): Promise<void> {
+  const key = `pick\0${target}\0${pick.revision}\0${pick.revisedBy}`;
+  if (sentMerges.has(key)) return;
+  sentMerges.set(key, "sending");
+  try {
+    const hash = pick.theme.kind === "library" ? pick.theme.hash : undefined;
+    const targetHas = (hash: string) =>
+      byEnvironment[target]?.entries.some((entry) => entry.hash === hash) ?? false;
+    let manifest: ThemeManifest | undefined;
+    if (hash !== undefined && !targetHas(hash)) {
+      for (const source of readyIds) {
+        if (source === target) continue;
+        try {
+          manifest = (await clients(source).read({ hash })).manifest;
+          break;
+        } catch {
+          // Not on that computer: try the next.
+        }
+      }
+    }
+    await clients(target).mergePick(manifest === undefined ? { pick } : { pick, manifest });
+    // Without content it lacks, try again on the next change: a computer with it may connect.
+    if (hash !== undefined && manifest === undefined && !targetHas(hash)) sentMerges.delete(key);
+    else sentMerges.set(key, "done");
+  } catch (error) {
+    sentMerges.delete(key);
+    retry();
+    console.warn("[themes] couldn't bring the shared theme pick to another computer", error);
+  }
+}
+
+/**
+ * Sends every entry two followed computers disagree about to the one holding
+ * the older copy, and the winning shared pick to every computer that keeps
+ * picks and holds an older one.
+ */
 export function reconcileFollowedLibraries(
   byEnvironment: Readonly<Record<string, ThemeLibrarySnapshot>>,
   environmentIds: readonly EnvironmentId[],
-  clients: (environmentId: EnvironmentId) => Pick<ThemesClient, "read" | "merge"> = clientOf,
+  clients: MergeClients = clientOf,
 ): void {
   const ready = environmentIds.filter((id) => byEnvironment[id] !== undefined);
   const retry = () => scheduleMergeRetry(byEnvironment, environmentIds, clients);
@@ -395,6 +453,15 @@ export function reconcileFollowedLibraries(
         void sendMerge(b, a, entry, hashesA.has(entry.hash), clients, retry);
       }
     }
+  }
+  // Only computers whose snapshot carries `pick` keep one; older ones never see a pick.
+  const keeping = ready.filter((id) => byEnvironment[id]!.pick !== undefined);
+  const winning = winningThemePick(keeping.map((id) => byEnvironment[id]!.pick));
+  if (winning === null) return;
+  for (const id of keeping) {
+    const held = byEnvironment[id]!.pick ?? null;
+    if (held !== null && compareThemeRevisions(held, winning) >= 0) continue;
+    void sendPickMerge(id, winning, byEnvironment, ready, clients, retry);
   }
 }
 
@@ -447,6 +514,19 @@ export function ThemeLibrarySync() {
       environments.map((environment) => environment.environmentId),
     );
   }, [byEnvironment, environments]);
+
+  // "Same theme on all my devices": follows the shared pick and shares this device's.
+  useThemePickSyncSettings();
+  useEffect(
+    () =>
+      startThemePickSync({
+        followed: () => followedEnvironmentIds,
+        snapshots: () => useThemeLibraryStore.getState().byEnvironment,
+        subscribe: (listener) => useThemeLibraryStore.subscribe(listener),
+        pick: (environmentId, input) => clientOf(environmentId).pick(input),
+      }),
+    [],
+  );
 
   return null;
 }

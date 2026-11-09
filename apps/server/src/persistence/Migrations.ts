@@ -127,6 +127,7 @@ import Migration0104 from "./Migrations/104_ThemeLibrary.ts";
 import Migration0105 from "./Migrations/105_ProjectionThreadMedia.ts";
 import Migration0106 from "./Migrations/106_ThemeShowcaseSubmissions.ts";
 import Migration0107 from "./Migrations/107_ThemeEntryOffer.ts";
+import Migration0108 from "./Migrations/108_ThemePick.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -246,6 +247,7 @@ export const migrationEntries = [
   [105, "ProjectionThreadMedia", Migration0105],
   [106, "ThemeShowcaseSubmissions", Migration0106],
   [107, "ThemeEntryOffer", Migration0107],
+  [108, "ThemePick", Migration0108],
 ] as const;
 
 /** Highest id in the full registry, so the "n of total" count is the real total. */

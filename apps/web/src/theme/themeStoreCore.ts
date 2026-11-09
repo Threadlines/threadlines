@@ -6,7 +6,11 @@
  * theme to the document.
  *
  * - The committed choice is this device's: every window reads it from
- *   storage and a `storage` event from another window adopts it.
+ *   storage and a `storage` event from another window adopts it. A choice
+ *   made here by the user (chooseTheme, Keep) is announced to
+ *   `subscribeUserCommits`, which shares it with the user's other devices;
+ *   one applied from another device (applyPickedChoice) or adopted from
+ *   another window is not, so a pick never echoes back.
  * - A trial lives in one window's memory. It ends by Keep, Undo, its own
  *   countdown (which carries its id, so it can only end itself), another
  *   window committing a choice, or the window going away.
@@ -240,6 +244,19 @@ export interface ThemeStoreCore {
   readonly getState: () => ThemeStoreState;
   readonly subscribe: (listener: () => void) => () => void;
   readonly chooseTheme: (choice: ThemeChoice, manifest?: ThemeManifest) => void;
+  /**
+   * Commits the theme another device picked ("Same theme on all my devices"),
+   * with its base for when the content is nowhere. Not a user commit.
+   */
+  readonly applyPickedChoice: (
+    choice: ThemeChoice,
+    base: ThemeBase | null,
+    manifest?: ThemeManifest,
+  ) => void;
+  /** Calls `listener` after each choice the user commits in this window (not picks applied, not other windows'). */
+  readonly subscribeUserCommits: (
+    listener: (choice: ThemeChoice, base: ThemeBase | null) => void,
+  ) => () => void;
   readonly startThemeTrial: (input: {
     readonly choice: ThemeChoice;
     readonly manifest: ThemeManifest | null;
@@ -270,6 +287,7 @@ export interface ThemeStoreCore {
 
 export function createThemeStoreCore(env: ThemeStoreEnv): ThemeStoreCore {
   const listeners = new Set<() => void>();
+  const userCommitListeners = new Set<(choice: ThemeChoice, base: ThemeBase | null) => void>();
   const stored = readStoredThemeChoice(env.storage);
   let cancelTrialTimer: (() => void) | null = null;
   // Each commit gets a number; content that resolves for an older one is dropped.
@@ -498,20 +516,31 @@ export function createThemeStoreCore(env: ThemeStoreEnv): ThemeStoreCore {
     }, THEME_TRIAL_MS);
   };
 
-  /** Makes `choice` this device's theme, in storage and in this window. */
-  const commit = (choice: ThemeChoice, manifest: ThemeManifest | null | undefined) => {
+  /**
+   * Makes `choice` this device's theme, in storage and in this window. `by`
+   * says whose choice it is: the user's here, or a pick from another device
+   * (which carries the base to fall back to while its content is nowhere).
+   */
+  const commit = (
+    choice: ThemeChoice,
+    manifest: ThemeManifest | null | undefined,
+    by: { readonly user: true } | { readonly user: false; readonly base: ThemeBase | null },
+  ) => {
     commitSequence += 1;
     const sequence = commitSequence;
     clearTrialTimer();
     const content = contentFor(choice, manifest);
     const theme = content ? resolveNow(content) : null;
-    const base = content?.manifest.base ?? null;
+    const base = content?.manifest.base ?? (by.user ? null : by.base);
     writeStorage(THEME_STORAGE_KEY, serializeThemeChoice(choice, base));
     if (content?.hash) {
       env.rememberContent(content.hash, content.manifest);
       markKept(content.hash);
     }
     writePaintRecord(choice, theme);
+    // Announced before subscribers hear the trial end, so the user's Keep is
+    // shared before anything waiting on that (a pick from elsewhere) applies.
+    if (by.user) for (const listener of userCommitListeners) listener(choice, base);
     update({
       committed: choice,
       committedBase: base,
@@ -541,7 +570,14 @@ export function createThemeStoreCore(env: ThemeStoreEnv): ThemeStoreCore {
         listeners.delete(listener);
       };
     },
-    chooseTheme: (choice, manifest) => commit(choice, manifest),
+    chooseTheme: (choice, manifest) => commit(choice, manifest, { user: true }),
+    applyPickedChoice: (choice, base, manifest) => commit(choice, manifest, { user: false, base }),
+    subscribeUserCommits: (listener) => {
+      userCommitListeners.add(listener);
+      return () => {
+        userCommitListeners.delete(listener);
+      };
+    },
     startThemeTrial: ({ choice, manifest }) => {
       if (choice.kind !== "builtin" && manifest === null) {
         throw new Error("A trial of a custom theme needs its manifest.");
@@ -580,7 +616,7 @@ export function createThemeStoreCore(env: ThemeStoreEnv): ThemeStoreCore {
       const trial = state.trial;
       if (!trial || trial.id !== id) return;
       const finalChoice = choice ?? trial.choice;
-      commit(finalChoice, trial.manifest ?? undefined);
+      commit(finalChoice, trial.manifest ?? undefined, { user: true });
     },
     endThemeTrial: (id) => {
       if (state.trial?.id !== id) return;
@@ -602,9 +638,11 @@ export function createThemeStoreCore(env: ThemeStoreEnv): ThemeStoreCore {
     handleStorageChange: (key) => {
       if (key !== THEME_STORAGE_KEY && key !== null) return;
       // Another window committed a choice: this window's trial ends and the
-      // choice is adopted. (`null` means storage was cleared.)
+      // choice is adopted. (`null` means storage was cleared.) A load under
+      // `?theme=default` keeps showing System whatever is saved meanwhile.
       const raw = readStoredRaw();
       lastSeenRaw = raw;
+      if (state.bypass) return;
       const next = parseStoredThemeChoice(raw) ?? {
         choice: { kind: "builtin", id: "system" } as const,
         base: null,

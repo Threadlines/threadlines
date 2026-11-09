@@ -428,6 +428,9 @@ export interface WsRpcClient {
     readonly remove: RpcUnaryMethod<typeof WS_METHODS.themesDelete>;
     readonly restore: RpcUnaryMethod<typeof WS_METHODS.themesRestore>;
     readonly merge: RpcUnaryMethod<typeof WS_METHODS.themesMerge>;
+    /** The shared pick; only on servers whose snapshot carries `pick`. */
+    readonly pick: RpcUnaryMethod<typeof WS_METHODS.themesPick>;
+    readonly mergePick: RpcUnaryMethod<typeof WS_METHODS.themesMergePick>;
   };
   /** The Showcase (docs/design/custom-themes.md), on servers reporting `themeShowcase`. */
   readonly themeShowcase: {
@@ -1263,6 +1266,9 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       remove: (input) => transport.request((client) => client[WS_METHODS.themesDelete](input)),
       restore: (input) => transport.request((client) => client[WS_METHODS.themesRestore](input)),
       merge: (input) => transport.request((client) => client[WS_METHODS.themesMerge](input)),
+      pick: (input) => transport.request((client) => client[WS_METHODS.themesPick](input)),
+      mergePick: (input) =>
+        transport.request((client) => client[WS_METHODS.themesMergePick](input)),
     },
     themeShowcase: {
       list: (input) => transport.request((client) => client[WS_METHODS.themeShowcaseList](input)),

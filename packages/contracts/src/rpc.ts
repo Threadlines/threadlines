@@ -71,6 +71,9 @@ import {
   ThemeError,
   ThemeLibrarySnapshot,
   ThemeMergeInput,
+  ThemeMergePickInput,
+  ThemePick,
+  ThemePickInput,
   ThemeReadInput,
   ThemeRenameInput,
   ThemeReplaceInput,
@@ -761,6 +764,8 @@ export const WS_METHODS = {
   themesDelete: "themes.delete",
   themesRestore: "themes.restore",
   themesMerge: "themes.merge",
+  themesPick: "themes.pick",
+  themesMergePick: "themes.mergePick",
   // The Showcase: themes people shared, in the public Threadlines/themes repository.
   themeShowcaseList: "themeShowcase.list",
   themeShowcasePicture: "themeShowcase.picture",
@@ -2598,6 +2603,20 @@ export const WsThemesMergeRpc = Rpc.make(WS_METHODS.themesMerge, {
   error: ThemeError,
 });
 
+/** Sets the theme every device with "Same theme on all my devices" on shows. */
+export const WsThemesPickRpc = Rpc.make(WS_METHODS.themesPick, {
+  payload: ThemePickInput,
+  success: ThemePick,
+  error: ThemeError,
+});
+
+/** The shared pick from another computer: keeps whichever wins the revision order. */
+export const WsThemesMergePickRpc = Rpc.make(WS_METHODS.themesMergePick, {
+  payload: ThemeMergePickInput,
+  success: ThemePick,
+  error: ThemeError,
+});
+
 /**
  * The theme library. A group of its own, merged into WsRpcGroup, for the same
  * reason as the outside agents' group: the main group sits near TypeScript's
@@ -2612,6 +2631,8 @@ export const WsThemesRpcGroup = RpcGroup.make(
   WsThemesDeleteRpc,
   WsThemesRestoreRpc,
   WsThemesMergeRpc,
+  WsThemesPickRpc,
+  WsThemesMergePickRpc,
 );
 
 /** The Showcase's list, as fetched from the repository (or the last good copy). */

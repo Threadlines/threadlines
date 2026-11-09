@@ -281,6 +281,56 @@ describe("theme store", () => {
     });
   });
 
+  it("announces only the user's own commits, and a pick from another device keeps its base", async () => {
+    const { env, storage } = makeEnv({});
+    const store = createThemeStoreCore(env);
+    const announced: ThemeChoice[] = [];
+    store.subscribeUserCommits((choice) => announced.push(choice));
+    store.chooseTheme({ kind: "builtin", id: "dark" });
+    const trial = store.startThemeTrial({
+      choice: library(HASH_A, "Aurora"),
+      manifest: manifest("Aurora"),
+    });
+    store.commitThemeTrial(trial.id);
+
+    // Another device's pick, its content nowhere yet: its base shows meanwhile.
+    store.applyPickedChoice(library(HASH_B, "Night"), "light");
+    await flush();
+    expect(store.getState().active).toMatchObject({
+      choice: library(HASH_B, "Night"),
+      base: "light",
+    });
+    // Another window's commit is that window's to announce.
+    storage.setItem(THEME_STORAGE_KEY, "dark");
+    store.handleStorageChange(THEME_STORAGE_KEY);
+    expect(announced).toEqual([{ kind: "builtin", id: "dark" }, library(HASH_A, "Aurora")]);
+
+    // A Keep is announced before anything hears its trial end.
+    const order: string[] = [];
+    store.subscribeUserCommits(() => order.push("announced"));
+    store.subscribe(() => {
+      if (store.getState().trial === null && !order.includes("trial ended"))
+        order.push("trial ended");
+    });
+    const next = store.startThemeTrial({
+      choice: { kind: "builtin", id: "light" },
+      manifest: null,
+    });
+    store.commitThemeTrial(next.id);
+    expect(order).toEqual(["announced", "trial ended"]);
+  });
+
+  it("keeps showing System under ?theme=default whatever another window saves", () => {
+    const { env, storage } = makeEnv({
+      storage: memoryStorage({ [THEME_STORAGE_KEY]: "light" }),
+    });
+    const store = createThemeStoreCore({ ...env, bypassSavedChoice: true });
+    storage.setItem(THEME_STORAGE_KEY, "dark");
+    store.handleStorageChange(THEME_STORAGE_KEY);
+    expect(store.getState().bypass).toBe(true);
+    expect(store.getState().active.choice).toEqual({ kind: "builtin", id: "system" });
+  });
+
   it("falls back to the theme's base when its content is nowhere, and recovers once a computer has it", async () => {
     const saved = library(HASH_A, "Aurora");
     const content: Record<string, ThemeManifest> = {};

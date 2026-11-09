@@ -391,7 +391,7 @@ const PAGES = [
     id: "settings.appearance",
     kind: "page",
     title: "Appearance",
-    about: "Themes, glass and motion. Each device picks its own.",
+    about: "Themes, glass and motion, on this device or all of them.",
     route: { to: "/settings/appearance" },
     keywords: ["themes", "dark mode", "light mode", "colors", "look"],
     // Everything on it is the app's own, so a link opens it here from any thread.
@@ -937,7 +937,7 @@ const ROWS = [
     parent: "appearance.themes",
     title: "Theme",
     about:
-      "How Threadlines looks: built in, a starter, or a theme you or an agent made. Each device picks its own.",
+      "How Threadlines looks: built in, a starter, or a theme you or an agent made. Devices with Same theme on all my devices on show the same one.",
     keywords: [
       "dark mode",
       "light mode",
@@ -951,6 +951,17 @@ const ROWS = [
     ],
     scope: "device",
     edit: { lands: "device", control: { kind: "theme" }, store: "theme" },
+  },
+  {
+    id: "appearance.sameEverywhere",
+    kind: "row",
+    parent: "appearance.themes",
+    title: "Same theme on all my devices",
+    about:
+      "Picking a theme here switches every device that has this on, your phone and other computers too. Off, this device keeps its own.",
+    keywords: ["sync theme", "phone", "every device", "match", "follow"],
+    scope: "device",
+    edit: editableDeviceSwitch("themeSameEverywhere"),
   },
   {
     id: "appearance.glass",

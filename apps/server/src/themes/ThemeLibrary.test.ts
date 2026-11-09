@@ -170,6 +170,56 @@ it.layer(TestLayer)("ThemeLibrary", (it) => {
     }),
   );
 
+  it.effect("keeps one shared pick, above any a device saw, merged by revision order", () =>
+    Effect.gen(function* () {
+      const library = yield* ThemeLibrary;
+      assert.isNull((yield* library.snapshot).pick);
+      const dark = yield* library.pick({ theme: { kind: "builtin", id: "dark" }, atLeast: 0 });
+      assert.strictEqual(dark.revisedBy, "env-test");
+      // The same theme, already above what the device saw: nothing changes.
+      const again = yield* library.pick({
+        theme: { kind: "builtin", id: "dark" },
+        atLeast: dark.revision - 1,
+      });
+      assert.deepStrictEqual(again, dark);
+      // A device that saw revision 50 elsewhere: its pick lands above it.
+      const light = yield* library.pick({ theme: { kind: "builtin", id: "light" }, atLeast: 50 });
+      assert.strictEqual(light.revision, 51);
+      // Another computer's: an older pick changes nothing, a newer one wins.
+      const older = yield* library.mergePick({
+        pick: {
+          ...light,
+          theme: { kind: "starter", id: "aurora" },
+          revision: 40,
+          revisedBy: "env-b",
+        },
+      });
+      assert.deepStrictEqual(older, light);
+      // A library pick brings its content to a computer that lacks it, checked against its hash.
+      const night: ThemeManifest = { ...aurora, colors: { ...aurora.colors, accent: "#7ac4f0" } };
+      const hash = yield* Effect.promise(() => themeContentHash(night));
+      const theirs = {
+        theme: { kind: "library", entryId: "e-9", hash, name: "Night", base: "dark" },
+        revision: 60,
+        revisedBy: "env-b",
+        updatedAt: "2026-11-09T12:00:00.000Z",
+      };
+      assert.include(
+        yield* failure(library.mergePick({ pick: theirs, manifest: dunes })),
+        "isn't the content the pick names",
+      );
+      // The pick arrived first, without content: the same pick sent again with it still stores it.
+      assert.deepStrictEqual(yield* library.mergePick({ pick: theirs }), theirs);
+      const merged = yield* library.mergePick({ pick: theirs, manifest: night });
+      assert.deepStrictEqual(merged, theirs);
+      assert.deepStrictEqual((yield* library.snapshot).pick, theirs);
+      assert.deepStrictEqual((yield* library.read({ hash })).manifest, night);
+      // The next change here counts on from the pick's revision too.
+      const saved = yield* library.save({ manifest: night });
+      assert.isAbove(saved.revision, 60);
+    }),
+  );
+
   it.effect("saves a checked theme as a new entry, and refuses one that fails the checks", () =>
     Effect.gen(function* () {
       const library = yield* ThemeLibrary;
