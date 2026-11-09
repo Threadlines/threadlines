@@ -21,7 +21,9 @@ export function canonicalJson(value: unknown): string {
  * The part of a theme its hash covers: everything but its name, prompt,
  * origin and date. Embedded font bytes and the still are content too, so two
  * files that differ only there never share a hash (and one never silently
- * replaces the other in a library).
+ * replaces the other in a library). So are its credits: a library stores
+ * content once per hash, and a license belongs with the content it covers, so
+ * a credited copy is never folded into an uncredited one (or the other way).
  */
 export function themeContentForHash(manifest: ThemeManifest): unknown {
   const {

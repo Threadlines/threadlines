@@ -17,6 +17,7 @@ import { cssFontFamilyList } from "./fontFamilies.ts";
 import { themeGlassLevel } from "./glassLevel.ts";
 import { reconcileThemeLibraries, winningThemeEntry } from "./library.ts";
 import { checkThemeManifest, themeContentHash } from "./manifest.ts";
+import { themeForSharing } from "./sharing.ts";
 import { BUILTIN_THEME_TOKENS } from "./builtinTokens.ts";
 import { deriveThemeTokens, THEME_TOKEN_NAMES } from "./tokens.ts";
 
@@ -269,6 +270,10 @@ describe("theme content hash", () => {
     expect(
       await themeContentHash({ ...aurora, name: "Northern lights", prompt: "a winter night" }),
     ).toBe(hash);
+    // A license goes with the content it covers: a credited copy is its own.
+    expect(
+      await themeContentHash({ ...aurora, credits: { author: "Mira", license: "CC0-1.0" } }),
+    ).not.toBe(hash);
     const withArt: ThemeManifest = {
       ...aurora,
       fonts: { mono: { family: "Geist Mono", source: "google", data: "AAAA" } },
@@ -283,6 +288,113 @@ describe("theme content hash", () => {
     expect(
       await themeContentHash({ ...aurora, colors: { ...aurora.colors, accent: "#2fd6b1" } }),
     ).not.toBe(hash);
+  });
+});
+
+/** Base64 of bytes, as a theme file embeds them. */
+const base64 = (bytes: ReadonlyArray<number>) => btoa(String.fromCharCode(...bytes));
+
+/** A PNG's signature and IHDR chunk saying width × height: enough for the check to read its size. */
+const pngHead = (width: number, height: number) => {
+  const be32 = (value: number) => [
+    (value >>> 24) & 255,
+    (value >>> 16) & 255,
+    (value >>> 8) & 255,
+    value & 255,
+  ];
+  return `data:image/png;base64,${base64([
+    0x89,
+    0x50,
+    0x4e,
+    0x47,
+    0x0d,
+    0x0a,
+    0x1a,
+    0x0a,
+    ...be32(13),
+    0x49,
+    0x48,
+    0x44,
+    0x52,
+    ...be32(width),
+    ...be32(height),
+    8,
+    6,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+  ])}`;
+};
+
+describe("files a theme embeds", () => {
+  const withFiles = (font: string, still: string): ThemeManifest => ({
+    ...aurora,
+    fonts: { mono: { family: "Geist Mono", source: "google", data: font } },
+    glass: { frame: 0.4, list: 0.5, column: 0.4, composer: 0.7, blur: 22 },
+    backdrop: { mode: "grid", script: "x", maxFps: 15, still },
+  });
+  const errors = (manifest: ThemeManifest) => {
+    const check = checkThemeManifest(manifest);
+    return check.ok ? [] : check.errors;
+  };
+  const woff2 = base64([0x77, 0x4f, 0x46, 0x32, 0, 1, 0, 0]);
+
+  it("takes a font only when it is WOFF2, and a still only when it is a PNG of a size that opens", () => {
+    expect(errors(withFiles(woff2, pngHead(1440, 900)))).toEqual([]);
+    // Padding is optional, as the app's font loader reads it.
+    expect(errors(withFiles(woff2.replace(/=+$/, ""), pngHead(1440, 900)))).toEqual([]);
+    // Labeled right, holding something else: a TrueType font, text, broken base64.
+    expect(errors(withFiles(base64([0, 1, 0, 0, 0, 0, 0, 0]), pngHead(1440, 900)))).toEqual([
+      "The mono font isn't a WOFF2 font file.",
+    ]);
+    expect(errors(withFiles("not base64!", pngHead(1440, 900)))).toEqual([
+      "The mono font isn't a WOFF2 font file.",
+    ]);
+    expect(errors(withFiles(woff2, `data:image/png;base64,${btoa("<svg/>")}`))).toEqual([
+      "The backdrop still isn't a PNG picture.",
+    ]);
+    // A few bytes can claim a picture far too big to open.
+    expect(errors(withFiles(woff2, pngHead(30_000, 30_000)))).toEqual([
+      "The backdrop still is 30000×30000 pixels; the most is 4096 on a side and 9216000 in all.",
+    ]);
+  });
+});
+
+describe("sharing a theme", () => {
+  const made: ThemeManifest = {
+    ...aurora,
+    prompt: "a winter night over a quiet town",
+    createdBy: { kind: "agent", agent: "Claude", threadId: "thread-private" },
+  };
+
+  it("never says which thread made it, and keeps the prompt only when asked", () => {
+    const shared = themeForSharing(made, { name: "Winter", includePrompt: false, credits: null });
+    expect(shared.name).toBe("Winter");
+    expect(shared).not.toHaveProperty("createdBy");
+    expect(shared).not.toHaveProperty("prompt");
+    expect(shared).not.toHaveProperty("credits");
+    expect(
+      themeForSharing(made, { name: "Winter", includePrompt: true, credits: null }).prompt,
+    ).toBe(made.prompt);
+  });
+
+  it("takes its author's credits, but passes on credits a theme already has", () => {
+    const mine = themeForSharing(made, {
+      name: "Winter",
+      includePrompt: false,
+      credits: { author: "  Will ", link: " ", license: "CC-BY-4.0" },
+    });
+    expect(mine.credits).toEqual({ author: "Will", license: "CC-BY-4.0" });
+    // Someone else's theme, shared on: its credit is theirs.
+    const reshared = themeForSharing(
+      { ...made, credits: { author: "Mira", license: "CC0-1.0" } },
+      { name: "Winter", includePrompt: false, credits: { author: "Will", license: "CC-BY-4.0" } },
+    );
+    expect(reshared.credits).toEqual({ author: "Mira", license: "CC0-1.0" });
   });
 });
 

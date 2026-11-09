@@ -54,10 +54,16 @@ colors is optional.
 | Glass    | How much tint the frame, thread list, reading column and composer get (0 to 1), and the blur radius. Only used when there is a backdrop. These are floors the user's Glass slider moves; readability can raise them, never lower them.                                                    |
 | Backdrop | Optional live art: a script for the draw contract below, a frame rate (12 to 30, default 24), and a still image the runtime captures.                                                                                                                                                     |
 
-Also stored: `name`, `prompt` (what made it, for "Copy prompt"), `createdBy`
-(agent and thread, or "imported"), `createdAt`. The **content hash** covers
-everything except name and timestamps, over a canonical JSON form. Size
-limits: 3 MB per file, art script at most 200 KB.
+Also stored: `name`, `prompt` (what made it, for "Copy prompt"), `credits`
+(author, an https link and a license, set when its author exports it; see
+Sharing), `createdBy` (agent and thread, or "imported"), `createdAt`. The
+**content hash** covers everything except name, prompt, origin and date,
+over a canonical JSON form (credits count: a library stores content once per
+hash, and a license belongs with the content it covers). Size limits: 3 MB per file, art script at
+most 200 KB, an embedded font 400 KB, a still 1.5 MB of data URL and at most
+4096 pixels a side (9.2 million in all). The check reads what embedded files
+hold, not only what they say: a font must start as WOFF2, a still as a PNG
+whose size header is within those limits.
 
 `deriveThemeTokens(seeds, base)` in `packages/shared/src/themes/` expands the
 seeds into the full token set (about 85 colors), following the elevation
@@ -110,9 +116,9 @@ theme this device already kept skips the trial.
   trial when the theme is new to this device; the device result reports the
   switch, and a later Undo is the user's own change.
 
-**Library actions** (row menu in Settings): Rename, Duplicate, Export file,
+**Library actions** (row menu in Settings): Rename, Duplicate, Export file…,
 Copy prompt, Delete. Starters are read-only: their menu has Duplicate (a copy
-in your themes, to change), Export file and Copy prompt. Your themes come
+in your themes, to change), Export file… and Copy prompt. Your themes come
 first in the gallery and the picker; New theme sits in the Theme row and in
 the picker's header.
 
@@ -617,6 +623,42 @@ Retired, still found by id so a device that chose one keeps it, but no
 longer listed (`RETIRED_STARTER_THEMES`): **Dunes** (gave way to Meadow),
 **Night Rain** (gave way to Tokyo Rain, which began as Will's own theme),
 **Ember**.
+
+## Sharing
+
+A theme file is the unit people share, by hand today and through a
+showcase later. Export file… opens a dialog that makes the file ready to
+share (`themeForSharing`, packages/shared/src/themes/sharing.ts):
+
+- It never says which thread made the theme: `createdBy` is left out (an
+  import stamps its own origin anyway).
+- The prompt stays out unless the author turns on "Include the prompt"; the
+  dialog shows it, so they see what they'd share.
+- Credits: a theme that already has them (every starter, credited
+  Threadlines under MIT; someone else's theme) keeps them, so re-sharing
+  passes the credit on. One without takes its author's: a name, a link (https
+  only) and CC BY 4.0 or CC0. This device remembers them for the next export.
+  Agents never set credits.
+- Importing shows the credit, a link that opens in the browser, and what the
+  license lets you do.
+
+Credits count toward the content hash (a license belongs with its content).
+A build from before credits drops the field when it decodes a theme, so it
+hashes a credited theme differently and refuses it in a merge: until such a
+computer updates, credited themes (every duplicated starter included) don't
+reach it, and the sender retries once a minute. Only nightlies from Nov 6 to
+Nov 9, 2026 are affected; no stable release had themes yet.
+
+**Before themes ship in a stable release:** the format needs to keep fields
+it doesn't know. Today every build drops unknown fields on decode (Effect's
+Schema only ignores or errors), so any field added to the hashed content
+breaks sync with older builds the same way. The fix is to store, hash and
+send a theme's validated JSON as received, unknown fields included, and
+decode only to read it.
+
+Still to come before a public showcase: font licenses travel with embedded
+fonts (Google and Bunny fonts are open, but OFL wants its notice kept),
+re-encoded previews, and a takedown policy.
 
 ## The public gallery (after)
 

@@ -6,7 +6,7 @@
  * scripts/render-theme-thumbnails.ts measures them in a real browser).
  * Thumbnails live at apps/web/public/themes/<id>.png.
  */
-import { THEME_FILE_FORMAT, type ThemeManifest } from "@threadlines/contracts";
+import { THEME_FILE_FORMAT, type ThemeCredits, type ThemeManifest } from "@threadlines/contracts";
 
 import {
   AURORA_ART,
@@ -26,12 +26,24 @@ export interface StarterTheme {
   readonly manifest: ThemeManifest;
 }
 
+/** Who made the starters, as an exported starter says it: Threadlines, under its own MIT license. */
+const STARTER_CREDITS = {
+  author: "Threadlines",
+  link: "https://threadlines.dev",
+  license: "MIT",
+} as const satisfies ThemeCredits;
+
 const starter = (
   id: string,
-  manifest: Omit<ThemeManifest, "format" | "createdBy">,
+  manifest: Omit<ThemeManifest, "format" | "createdBy" | "credits">,
 ): StarterTheme => ({
   id,
-  manifest: { format: THEME_FILE_FORMAT, createdBy: { kind: "starter" }, ...manifest },
+  manifest: {
+    format: THEME_FILE_FORMAT,
+    createdBy: { kind: "starter" },
+    credits: STARTER_CREDITS,
+    ...manifest,
+  },
 });
 
 /** The system's own monospace faces, for a theme set in mono. */

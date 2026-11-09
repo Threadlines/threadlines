@@ -6,7 +6,11 @@
  * filters, each library theme with its menu). The settings search draws Glass
  * and Motion as ordinary rows with the same controls.
  */
-import { THEME_GLASS_LEVEL_DEFAULT, type ThemeMotion } from "@threadlines/contracts";
+import {
+  THEME_GLASS_LEVEL_DEFAULT,
+  type ThemeManifest,
+  type ThemeMotion,
+} from "@threadlines/contracts";
 import { DEFAULT_UNIFIED_SETTINGS } from "@threadlines/contracts/settings";
 import { placeById, type SettingsPlaceId } from "@threadlines/shared/appPlaces";
 import { EllipsisIcon, PlusIcon, UploadIcon } from "lucide-react";
@@ -32,7 +36,7 @@ import {
   type ThemeTile,
   useThemeTiles,
 } from "~/themeLibrary/themeCatalog";
-import { exportThemeFile, importThemeFile } from "~/themeLibrary/themeFiles";
+import { importThemeFile } from "~/themeLibrary/themeFiles";
 import {
   deleteLibraryTheme,
   duplicateLibraryTheme,
@@ -66,6 +70,7 @@ import { failureNotice, toastManager } from "../../ui/toast";
 import { SettingResetButton, SettingsGroup, SettingsRow } from "../../settings/settingsLayout";
 import { moveBetweenTabs, pageTabId } from "../../ui/page-tabs";
 import { NEW_THEME_PROMPT } from "./NewThemeHint";
+import { ThemeExportDialog } from "./ThemeExportDialog";
 import { ThemeGlassSlider } from "./ThemeGlassSlider";
 import { ThemeTileView } from "./ThemeTileView";
 
@@ -233,18 +238,20 @@ function RenameDialog({
 
 /**
  * A starter's or your theme's options: Duplicate (a copy in your themes, to
- * change), Export file and Copy prompt for both; Rename and Delete for your
- * own. Built-ins have none.
+ * change), Export file (its dialog makes the file ready to share) and Copy
+ * prompt for both; Rename and Delete for your own. Built-ins have none.
  */
 function ThemeTileMenu({
   tile,
   inUse,
   onRename,
+  onExport,
   onDelete,
 }: {
   readonly tile: ThemeTile;
   readonly inUse: boolean;
   readonly onRename: () => void;
+  readonly onExport: () => void;
   readonly onDelete: () => void;
 }) {
   const { copyToClipboard } = useCopyToClipboard();
@@ -277,15 +284,7 @@ function ThemeTileMenu({
       <MenuPopup align="end">
         {library ? <MenuItem onClick={onRename}>Rename</MenuItem> : null}
         <MenuItem onClick={duplicate}>Duplicate</MenuItem>
-        <MenuItem
-          onClick={() =>
-            void loadTileManifest(tile)
-              .then((manifest) => manifest && exportThemeFile(manifest, tile.name))
-              .catch(failed("Couldn't export the theme"))
-          }
-        >
-          Export file
-        </MenuItem>
+        <MenuItem onClick={onExport}>Export file…</MenuItem>
         <MenuItem
           onClick={() =>
             void loadTileManifest(tile)
@@ -403,6 +402,17 @@ export function ThemeGallery() {
   const [filter, setFilter] = useState<ThemeFilter>("all");
   const panelId = useId();
   const [renaming, setRenaming] = useState<ThemeTile | null>(null);
+  const [exporting, setExporting] = useState<{
+    readonly manifest: ThemeManifest;
+    readonly name: string;
+  } | null>(null);
+  const exportTile = (tile: ThemeTile) =>
+    void loadTileManifest(tile)
+      .then((manifest) => {
+        if (!manifest) throw new Error("The theme couldn't be read.");
+        setExporting({ manifest, name: tile.name });
+      })
+      .catch(failed("Couldn't export the theme"));
   const [confirmDelete, setConfirmDelete] = useState<ThemeTile | null>(null);
   const pick = (tile: ThemeTile) => {
     if (sameThemeChoice(tile.choice, active.choice)) return;
@@ -470,6 +480,7 @@ export function ThemeGallery() {
                     tile={tile}
                     inUse={sameThemeChoice(tile.choice, committed)}
                     onRename={() => setRenaming(tile)}
+                    onExport={() => exportTile(tile)}
                     onDelete={() =>
                       sameThemeChoice(tile.choice, committed)
                         ? setConfirmDelete(tile)
@@ -489,6 +500,13 @@ export function ThemeGallery() {
         ) : null}
       </div>
       {renaming ? <RenameDialog tile={renaming} onClose={() => setRenaming(null)} /> : null}
+      {exporting ? (
+        <ThemeExportDialog
+          manifest={exporting.manifest}
+          name={exporting.name}
+          onClose={() => setExporting(null)}
+        />
+      ) : null}
       <AlertDialog
         open={confirmDelete !== null}
         onOpenChange={(open) => (open ? undefined : setConfirmDelete(null))}

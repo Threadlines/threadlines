@@ -22,6 +22,12 @@ export const THEME_MAX_SCRIPT_CHARS = 200_000;
 export const THEME_MAX_FONT_BYTES = 400 * 1024;
 /** Largest still image, in characters of its data URL. */
 export const THEME_MAX_STILL_CHARS = 1_500_000;
+/**
+ * Largest still image, in pixels per side and in all: a few kilobytes of PNG
+ * can claim a picture too big to open, so the size it says is checked too.
+ */
+export const THEME_MAX_STILL_SIDE = 4096;
+export const THEME_MAX_STILL_PIXELS = 3840 * 2400;
 /** The highest frame rate a backdrop may ask for. */
 export const THEME_MAX_FPS = 30;
 
@@ -153,6 +159,31 @@ export const ThemeOrigin = Schema.Struct({
 });
 export type ThemeOrigin = typeof ThemeOrigin.Type;
 
+/**
+ * The licenses a shared theme file may carry: CC BY 4.0 (use and change it,
+ * crediting its author), CC0 1.0 (use it for anything) and MIT (the
+ * starters, under Threadlines' own license).
+ */
+export const THEME_LICENSES = ["CC-BY-4.0", "CC0-1.0", "MIT"] as const;
+export const ThemeLicense = Schema.Literals(THEME_LICENSES);
+export type ThemeLicense = typeof ThemeLicense.Type;
+
+/**
+ * Who made a theme and how others may use it, as its author chose when they
+ * exported it (docs/design/custom-themes.md, "Sharing"). Never filled in by
+ * an agent; every part is optional.
+ */
+export const ThemeCredits = Schema.Struct({
+  /** The name the author wants shown. */
+  author: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(60))),
+  /** Their site or profile, an https address. */
+  link: Schema.optional(
+    Schema.String.check(Schema.isMaxLength(200), Schema.isPattern(/^https:\/\/[^\s/]+\S*$/)),
+  ),
+  license: Schema.optional(ThemeLicense),
+});
+export type ThemeCredits = typeof ThemeCredits.Type;
+
 /** A theme file. `name`, `prompt`, `createdBy` and `createdAt` are not part of the content hash. */
 export const ThemeManifest = Schema.Struct({
   format: Schema.Literal(THEME_FILE_FORMAT),
@@ -166,8 +197,9 @@ export const ThemeManifest = Schema.Struct({
   fonts: Schema.optional(ThemeFonts),
   glass: Schema.optional(ThemeGlass),
   backdrop: Schema.optional(ThemeBackdrop),
-  /** What was asked for, for "Copy prompt". */
+  /** What was asked for, for "Copy prompt". Left out of an exported file unless its author keeps it. */
   prompt: Schema.optional(Schema.String.check(Schema.isMaxLength(8000))),
+  credits: Schema.optional(ThemeCredits),
   createdBy: Schema.optional(ThemeOrigin),
   createdAt: Schema.optional(IsoDateTime),
 });

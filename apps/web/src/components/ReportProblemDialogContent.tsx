@@ -45,6 +45,7 @@ import {
   DialogTitle,
 } from "./ui/dialog";
 import { Input } from "./ui/input";
+import { LabeledField } from "./ui/labeled-field";
 import { Spinner } from "./ui/spinner";
 import { Textarea } from "./ui/textarea";
 
@@ -305,7 +306,7 @@ export function ReportProblemDialogContent({
         </DialogDescription>
       </DialogHeader>
       <DialogPanel className="grid gap-4">
-        <ReportField label="Summary">
+        <LabeledField label="Summary">
           <Input
             nativeInput
             size="sm"
@@ -315,8 +316,8 @@ export function ReportProblemDialogContent({
             disabled={locked}
             onChange={(event) => update({ title: event.target.value })}
           />
-        </ReportField>
-        <ReportField label="What happened?">
+        </LabeledField>
+        <LabeledField label="What happened?">
           <Textarea
             size="sm"
             value={draft.whatHappened}
@@ -324,8 +325,8 @@ export function ReportProblemDialogContent({
             disabled={locked}
             onChange={(event) => update({ whatHappened: event.target.value })}
           />
-        </ReportField>
-        <ReportField
+        </LabeledField>
+        <LabeledField
           label="How can we make it happen?"
           hint="Rough steps are fine. If it only happened once, say that."
         >
@@ -339,8 +340,8 @@ export function ReportProblemDialogContent({
             disabled={locked}
             onChange={(event) => update({ steps: event.target.value })}
           />
-        </ReportField>
-        <ReportField label="What did you expect instead?" optional>
+        </LabeledField>
+        <LabeledField label="What did you expect instead?" optional>
           <Textarea
             size="sm"
             value={draft.expected}
@@ -348,8 +349,8 @@ export function ReportProblemDialogContent({
             disabled={locked}
             onChange={(event) => update({ expected: event.target.value })}
           />
-        </ReportField>
-        <ReportField
+        </LabeledField>
+        <LabeledField
           label="Error text"
           optional
           hint="Paste only the part that matters, and check it for anything private."
@@ -362,8 +363,8 @@ export function ReportProblemDialogContent({
             disabled={locked}
             onChange={(event) => update({ errorText: event.target.value })}
           />
-        </ReportField>
-        <ReportField
+        </LabeledField>
+        <LabeledField
           label="Your setup"
           hint={`Version ${REPORT_ISSUE_VERSION} is added for you. Name the agent if it matters.`}
         >
@@ -375,7 +376,7 @@ export function ReportProblemDialogContent({
             disabled={locked}
             onChange={(event) => update({ setup: event.target.value })}
           />
-        </ReportField>
+        </LabeledField>
         {status.kind === "editing" && status.error ? (
           <p role="alert" className="text-xs text-destructive-foreground">
             {status.error}
@@ -412,32 +413,6 @@ export function ReportProblemDialogContent({
         ) : null}
       </DialogFooter>
     </DialogPopup>
-  );
-}
-
-function ReportField({
-  label,
-  hint,
-  optional = false,
-  children,
-}: {
-  readonly label: string;
-  readonly hint?: string;
-  readonly optional?: boolean;
-  readonly children: ReactNode;
-}) {
-  // The hint sits outside the label, so a field's name is only its label.
-  return (
-    <div className="grid gap-1.5">
-      <label className="grid gap-1.5">
-        <span className="text-xs font-medium text-foreground">
-          {label}
-          {optional ? <span className="font-normal text-muted-foreground"> (optional)</span> : null}
-        </span>
-        {children}
-      </label>
-      {hint ? <span className="text-xs text-muted-foreground">{hint}</span> : null}
-    </div>
   );
 }
 
