@@ -2562,7 +2562,8 @@ function estimateRowContentHeight(row: MessagesTimelineRow, width: number): numb
     case "check-back":
       return 46;
     case "subagent-result":
-      return 40;
+      // Its name line and its report line, in the block's padding.
+      return 54;
     case "workflow-run":
       return estimateWorkflowRunCardHeight(row.run);
     case "mcp-app":

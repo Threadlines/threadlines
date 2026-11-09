@@ -11,6 +11,7 @@ import {
   findAgentsPanelSubagent,
   formatAgentsHeaderMeta,
   formatLiveAgentStatusRows,
+  formatSubagentReceiptOutcome,
   resolveSubagentProvider,
   selectSubagentsForTurns,
   selectTurnAgents,
@@ -961,5 +962,30 @@ describe("formatAgentsHeaderMeta", () => {
         nowMs,
       }),
     ).toBeNull();
+  });
+});
+
+describe("formatSubagentReceiptOutcome", () => {
+  it("says how the run ended, so a failed or stopped agent never reads as finished", () => {
+    expect(formatSubagentReceiptOutcome({ status: "completed" })).toEqual({
+      status: "completed",
+      label: "Finished",
+    });
+    expect(formatSubagentReceiptOutcome({ status: "failed" })).toEqual({
+      status: "failed",
+      label: "Failed",
+    });
+    expect(formatSubagentReceiptOutcome({ status: "interrupted" })).toEqual({
+      status: "stopped",
+      label: "Stopped",
+    });
+  });
+
+  it("claims no outcome for a report whose agent was sent back to work", () => {
+    // The record now says "running"; how the earlier run ended is not on it.
+    expect(formatSubagentReceiptOutcome({ status: "running" })).toEqual({
+      status: null,
+      label: "Reported back",
+    });
   });
 });

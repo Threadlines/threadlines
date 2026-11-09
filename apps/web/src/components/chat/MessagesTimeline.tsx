@@ -52,12 +52,15 @@ import {
   type SubagentProgressItem,
   type ThreadSubagentHistoryEntry,
 } from "../../session-logic";
+import { AgentFace } from "./AgentFace";
 import {
   formatLiveAgentStatusRows,
+  formatSubagentReceiptOutcome,
   formatSubagentReceiptSummary,
   liveAgentTrackerSignature,
   mergeSubagentLists,
   parseLiveAgentTrackerSignature,
+  resolveSubagentProvider,
   selectTurnAgents,
   summarizeTurnAgents,
   type LiveAgentStatusRoster,
@@ -2313,8 +2316,8 @@ function agentLineOffsets(row: TimelineRow): CSSProperties {
         : row.kind === "message"
           ? [2, 13]
           : row.kind === "subagent-result"
-            ? // The tile's border and padding, then its 20px line.
-              [0, 15]
+            ? // The block's middle, where its face sits.
+              [0, 23]
             : row.kind === "page"
               ? // The panel's padding, then its title line.
                 [0, AGENT_PAGE_TITLE_MIDDLE_PX]
@@ -3894,9 +3897,10 @@ const COLLAPSED_MESSAGE_FADE_STYLE: CSSProperties = {
 };
 
 /**
- * A finished agent, as one line of the conversation. The full report is not
- * inlined: the rail's Agents tab owns the transcript, and this row is the
- * receipt that says it happened and takes you there.
+ * A finished agent's receipt in the conversation: its face, its name and when
+ * it landed, then how the run ended and the first line of what it reported.
+ * The full report is not inlined: the rail's Agents tab owns the transcript,
+ * and this row says it happened and takes you there.
  */
 function SubagentReceiptTimelineRow({
   row,
@@ -3904,13 +3908,18 @@ function SubagentReceiptTimelineRow({
   row: Extract<TimelineRow, { kind: "subagent-result" }>;
 }) {
   const ctx = use(TimelineRowCtx);
+  // The agent whose turn spawned this one lends its mark when nothing on
+  // record says who ran it.
+  const spawner = use(TimelineAgentLabelCtx)(
+    row.agentLine?.agent ?? null,
+    row.result.turnId,
+    row.agentLine?.asWritten ?? null,
+  )?.entry;
   // Named as its live line named it, so the agent keeps one name as it lands.
   const displayName = formatSubagentListName(row.result);
   const summary = formatSubagentReceiptSummary(row.result.body);
+  const outcome = formatSubagentReceiptOutcome(row.result);
   const agentThreadId = row.result.agentThreadId;
-  const meta = [row.result.model, formatTimestamp(row.createdAt, ctx.timestampFormat)]
-    .filter((part): part is string => typeof part === "string" && part.length > 0)
-    .join(" · ");
   // A provider that serves no transcript for this agent has nothing to drill
   // into, so the receipt is just a line of the record.
   const onOpenAgentsPanel = ctx.onOpenAgentsPanel;
@@ -3918,39 +3927,61 @@ function SubagentReceiptTimelineRow({
 
   const body = (
     <>
-      {/* Leads with the same icon as the rail's Agents tab, so the receipt and
-          the surface it opens read as one thing. */}
-      <BotIcon aria-hidden="true" className="mt-1 size-3 shrink-0 text-muted-foreground/60" />
-      <span className="min-w-0 flex-1 truncate text-[12px] leading-5">
-        <span className="font-medium text-foreground/85">{displayName}</span>
-        {summary ? (
-          <>
-            <span className="px-1.5 text-muted-foreground/30">·</span>
-            <span className="text-muted-foreground/75">{summary}</span>
-          </>
-        ) : null}
-      </span>
-      <span className="mt-[3px] flex shrink-0 items-center gap-1 rounded border border-border/50 bg-background/60 px-1 py-px text-[9px] leading-none font-medium tracking-[0.08em] text-muted-foreground/70 uppercase">
-        <CheckIcon aria-hidden="true" className="size-2.5" />
-        Subagent finished
-      </span>
-      {meta ? (
-        <span className="shrink-0 font-mono text-[10px] leading-5 text-muted-foreground/35 tabular-nums">
-          {meta}
+      {/* The face the header drew while the agent ran, a size up, its ring now
+          saying how the run ended (the resting grey when nothing says). */}
+      <AgentFace
+        size="md"
+        status={outcome.status ?? "stopped"}
+        provider={resolveSubagentProvider(row.result)}
+        threadInstanceId={spawner?.instanceId}
+        threadDriverKind={spawner?.driverKind}
+      />
+      <span className="flex min-w-0 flex-1 flex-col">
+        <span className="flex min-w-0 items-baseline gap-3">
+          <span className="min-w-0 flex-1 truncate text-[13px] leading-[18px] font-medium text-foreground">
+            {displayName}
+          </span>
+          {/* Shorter than the name's line, so sitting on its baseline never
+              makes the line taller. */}
+          <span className="flex shrink-0 items-baseline gap-1.5 font-mono text-[10.5px] leading-[14px] text-muted-foreground tabular-nums">
+            {/* The face already says whose agent it was; a narrow row keeps
+                the time and gives the model's room to the name. */}
+            {row.result.model ? (
+              <span className="@max-md/subagent-receipt:hidden">{row.result.model} ·</span>
+            ) : null}
+            <span>{formatTimestamp(row.createdAt, ctx.timestampFormat)}</span>
+          </span>
         </span>
-      ) : null}
+        <span className="truncate text-[12px] leading-4 text-muted-foreground">
+          <span
+            className={cn(
+              "font-medium",
+              outcome.status === "failed" ? "text-destructive" : "text-foreground/80",
+            )}
+            data-subagent-receipt-outcome={outcome.status ?? "unknown"}
+          >
+            {outcome.label}
+          </span>
+          {summary ? ` · ${summary}` : null}
+        </span>
+      </span>
     </>
   );
 
-  // A bordered clickable tile — the one shape the flat system reserves for
-  // exactly this: a row that opens another surface.
+  // A quiet filled block, the way the conversation sets a page or a turn's
+  // changed files apart from prose. 46px tall: the two lines (18px and 16px)
+  // in 6px of padding, the face centered beside them.
   const rowClassName =
-    "flex w-full min-w-0 items-start gap-2 rounded-md border border-border/50 px-2 py-1 text-left";
+    "flex w-full min-w-0 items-center gap-2.5 surface-group px-2.5 py-1.5 text-left";
 
   return (
     // The receipt lands mid-turn the moment its agent finishes; the fade makes
     // that arrival read as an event rather than a row that was always there.
-    <div ref={rowEntranceRef} className="min-w-0" data-subagent-receipt-row="true">
+    <div
+      ref={rowEntranceRef}
+      className="@container/subagent-receipt min-w-0"
+      data-subagent-receipt-row="true"
+    >
       {/* Heading its agent's stretch (a turn that delegated before it wrote),
           the receipt names the agent; px-1 lines the name up with the text. */}
       {row.agentLine?.heads ? (
@@ -3967,7 +3998,7 @@ function SubagentReceiptTimelineRow({
           type="button"
           className={cn(
             rowClassName,
-            "group/subagent-receipt transition-colors hover:border-border/80 hover:bg-foreground/[0.03] focus-ring",
+            "group/subagent-receipt cursor-pointer transition-colors hover:bg-foreground/[0.07] focus-ring",
           )}
           aria-label={`Open ${displayName} transcript`}
           data-subagent-receipt-open="true"
@@ -3977,7 +4008,7 @@ function SubagentReceiptTimelineRow({
           {/* The drill-in affordance: quiet at rest, named on hover. */}
           <ChevronRightIcon
             aria-hidden="true"
-            className="mt-1 size-3 shrink-0 text-muted-foreground/30 transition-colors duration-150 group-hover/subagent-receipt:text-muted-foreground/70"
+            className="size-3.5 shrink-0 text-muted-foreground transition-colors duration-150 group-hover/subagent-receipt:text-foreground"
           />
         </button>
       ) : (
