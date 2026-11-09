@@ -320,8 +320,8 @@ export const ThemePickTheme = keepingUnknownKeys(
     name: Schema.optional(Schema.String),
     base: Schema.optional(Schema.String),
     /**
-     * Names the one user choice this pick came from, minted by the device
-     * that made it, so that device knows its own pick when it comes back
+     * Names the one user choice this pick came from, minted by the window
+     * it was made in, so the device knows that very pick when it comes back
      * (two picks of one theme are still two choices). Absent from older builds.
      */
     pickId: Schema.optional(Schema.String),
@@ -357,16 +357,7 @@ export const ThemeLibrarySnapshot = Schema.Struct({
    * with the content. Absent when there is nothing to hold, and from older servers.
    */
   pickHasContent: Schema.optional(Schema.Boolean),
-  /**
-   * What this server's `themes.pick` understands: 2 honors `onlyIfNone`.
-   * Absent from the first build that kept a pick, which a joining device
-   * therefore never offers its own theme to.
-   */
-  pickVersion: Schema.optional(NonNegativeInt),
 });
-
-/** The `pickVersion` a server of this build reports. */
-export const THEME_PICK_VERSION = 2;
 export type ThemeLibrarySnapshot = typeof ThemeLibrarySnapshot.Type;
 
 export const ThemesSubscribeInput = Schema.Struct({});
@@ -429,11 +420,6 @@ export type ThemeMergeInput = typeof ThemeMergeInput.Type;
 export const ThemePickInput = Schema.Struct({
   theme: ThemePickTheme,
   atLeast: NonNegativeInt,
-  /**
-   * A device joining the others: its theme becomes the pick only when there
-   * is none yet; an existing pick is returned unchanged for it to take.
-   */
-  onlyIfNone: Schema.optional(Schema.Boolean),
 });
 export type ThemePickInput = typeof ThemePickInput.Type;
 

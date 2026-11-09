@@ -312,12 +312,17 @@ describe("theme store", () => {
       if (store.getState().trial === null && !order.includes("trial ended"))
         order.push("trial ended");
     });
+    // And before the device's theme is written, so a note about it can be there first.
+    const storedWhenAnnounced: Array<string | null> = [];
+    store.subscribeUserCommits(() => storedWhenAnnounced.push(storage.getItem(THEME_STORAGE_KEY)));
     const next = store.startThemeTrial({
       choice: { kind: "builtin", id: "light" },
       manifest: null,
     });
     store.commitThemeTrial(next.id);
     expect(order).toEqual(["announced", "trial ended"]);
+    expect(storedWhenAnnounced).toEqual(["dark"]);
+    expect(storage.getItem(THEME_STORAGE_KEY)).toBe("light");
   });
 
   it("keeps showing System under ?theme=default whatever another window saves", () => {

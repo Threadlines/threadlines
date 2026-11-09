@@ -649,45 +649,44 @@ the budget, no network) and places for the new Appearance rows.
   content when a computer lacks it, and the content again to one whose
   snapshot says `pickHasContent: false`) to computers holding an older one. A
   server too old to keep one sends no `pick` in its snapshot and is left out.
-  On a device with the switch on (themePickSync.ts, whose logic is
-  `createThemePickSync`, tested apart from the browser against two windows
-  and a computer):
-  - One window a device runs the sync, the holder of a Web Lock (every window
-    where there are none, as on plain http). The device's notes are a storage
-    key each with one writer. Any window writes `pending`, the theme the user
-    just picked in it, as the commit is announced, and nothing else; the
-    runner writes the rest (`device`, `seen`, `observed`, `join`, `done`,
-    `on`) and never `pending`. It finishes a pending pick by adding its id to
-    `done`, so it can't erase a newer one another window wrote meanwhile.
+  On a device (themePickSync.ts, whose logic is `createThemePickSync`, tested
+  apart from the browser against several windows and a computer):
+  - What the device knows is one note in storage, shared by its windows:
+    `taken` (it shows this pick), `unsent` (the user picked a theme here and
+    no computer has it yet), `local` (the user's own theme with the switch
+    on, not shared) or `off` (the switch is off). Every window runs the same
+    rules on that note and comes to the same step, so no window is in charge
+    and a step taken twice changes nothing.
   - A theme the user commits (a pick, Keep, a settings change; not a pick
-    applied from elsewhere, not another window's commit) is that pending
-    pick. It is sent with `themes.pick`, at a revision above every pick the
-    device has been shown, carrying `pickId` `<device>.<id>`. What the
-    computer answers is read like its snapshot: the pick has landed when the
-    shared pick carries its id; a pick carrying the device's id is its own,
-    never one that overtook it; it is put aside, and the newer pick followed,
-    only when someone else's overtook it. A failed send is tried again after
-    30 seconds, or at the next pick.
-  - A pick newer than the one the device last took is applied, after any
-    trial in the runner's window, never an older one, and never by a window
-    under `?theme=default`, which doesn't run the sync at all. The pick last
-    taken is kept whole (`seen`). If no followed computer holds it (the one
-    that did dropped off before the others had it), the runner brings it to
-    them, a library theme with the content its window is showing, so neither
-    a rollback nor a lasting split can come of a computer dropping off. And
-    if the device shows another shareable theme with nothing pending (two
-    windows crossed), it takes the pick again.
-  - The switch turning is handled once, by the runner (`on` is how it last
-    saw it). On: the device joins, once every followed computer has
-    reported. It takes the newest pick they hold or it remembers; when there
-    is none it offers its own theme with `onlyIfNone`, which the computer
-    refuses if a pick got there first (only to a computer whose snapshot says
-    `pickVersion` 2; the first build would have let it replace one). A theme
-    picked after the switch turned on goes instead. Off: what was waiting is
-    put aside, and nothing picked while it is off is shared later.
-    Themes kept on one device only aren't shared. Nothing changes until someone
-    picks a theme after updating: no device's look is guessed and pushed to the
-    others.
+    applied from elsewhere) becomes the `unsent` note, written before the
+    device's theme so no window sees the theme under the old note. Its window
+    sends it with `themes.pick`, above every pick the device has heard of,
+    carrying a `pickId`; one send at a time, so a window's picks reach the
+    computer in the order they were made. The pick has landed when the shared
+    pick carries its id. A failed send is tried again after 30 seconds, or at
+    the next pick. If the window is gone (15 seconds without an attempt),
+    another sends it, also after a reload. A pick from elsewhere doesn't
+    replace it on screen while it is on its way; it gives way only when it
+    couldn't be sent for a minute and someone else picked meanwhile.
+  - A pick newer than the one the note knows is applied, after any trial,
+    never an older one, and never by a window under `?theme=default`. A theme
+    kept on this device only, or picked before the settings had loaded, is
+    `local`: it stays until a newer pick comes, and the device's own earlier
+    pick landing late doesn't count as one.
+  - A window that sees the switch off writes `off`, which drops a pick that
+    hadn't gone; nothing picked while it is off is shared later. A window
+    that sees it turn on joins if the note still says `off`: once every
+    followed computer has reported, it takes the shared pick, or keeps its
+    theme when there is none. It never offers its own theme; that is shared
+    the next time the user picks. A window that hears of the switch late
+    finds the note already moved on and changes nothing.
+  - Left as they are: a device that took a pick from a computer which dropped
+    off before the others had it ignores their older picks until that
+    computer is back or someone picks again; and two windows writing the note
+    in the same instant leave whichever wrote last, put right by the next
+    pick anywhere.
+    Nothing changes until someone picks a theme after updating: no device's
+    look is guessed and pushed to the others.
 - **Deleting changes no other device's look.** A device keeps using a cached
   theme that was deleted elsewhere; Appearance shows "Not in your library
   anymore · Save again · Switch". Deleting the theme this device uses asks

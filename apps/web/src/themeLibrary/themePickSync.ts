@@ -4,53 +4,58 @@
  * last picked on any device with the switch on, and the themes the user
  * picks here become it.
  *
- * - The pick lives on every computer beside the library and is merged by
- *   revision order, like entries (themeLibraryState reconciles both).
- * - One window a device runs this (a Web Lock; every window where there are
- *   none). The device's notes are a storage key each with one writer: any
- *   window writes `pending` (the theme the user just picked in it) and
- *   nothing else; the runner writes the rest and never `pending`. It marks a
- *   pending pick finished by id (`done`) instead of removing it, so it can't
- *   erase a newer one another window wrote meanwhile.
- * - Following: a pick newer than the one this device last took is applied
- *   (applyPick), except while a trial runs in the runner's window (it waits)
- *   or under `?theme=default` (such a window never runs this). An older one
- *   never is. The pick last taken is remembered whole (`seen`): a computer
- *   that falls behind it is brought it, so a computer dropping off can
- *   neither roll the theme back nor leave this device apart from the others;
- *   and if the device shows another theme with nothing waiting to be shared
- *   (two windows crossed), it takes the pick again.
- * - Sharing: a theme the user commits (not a pick applied, not another
- *   window's commit) becomes the pending pick, with an id of its own, until a
- *   computer takes it, above every pick revision the device has been shown.
- *   The pick is sent carrying `<device>.<id>`: it has landed when the shared
- *   pick carries that, and a pick carrying the device's id is its own, never
- *   one that overtook it. It is dropped, and the newer pick followed, only
- *   when someone else's overtook it. A send that fails is tried again a
- *   little later. A theme kept on this device only isn't shared, and puts
- *   aside one waiting to be.
- * - The switch: turning it on joins the others, once every computer the
- *   device follows has reported. The device takes the shared pick; when
- *   there is none, its own theme becomes it, which the computer refuses if a
- *   pick got there first (`onlyIfNone`, on servers that know it). A pick made
- *   after turning it on goes instead. Turning it off puts aside what was
- *   waiting.
- * - Nothing happens until the client settings have loaded, so a device with
- *   the switch saved off never follows under the default.
+ * The pick lives on every computer beside the library and is merged by
+ * revision order, like entries (themeLibraryState reconciles both). What a
+ * device knows of it is one note in storage, shared by its windows, always in
+ * one of four states:
+ *
+ * - `taken`: the device shows this pick. A newer one is taken when it comes.
+ * - `unsent`: the user picked a theme here with the switch on, and no
+ *   computer has it yet. Its window sends it, above every pick it knew, one
+ *   send at a time, and tries again after a failure. If that window is gone
+ *   (15 seconds without an attempt), any other sends it, also after a reload.
+ *   The pick is done when the shared pick carries its id. It gives way only
+ *   when it couldn't be sent for a minute and someone else picked meanwhile.
+ * - `local`: the user's own theme with the switch on, not shared: one kept on
+ *   this device only, or picked before the settings had loaded. A pick newer
+ *   than what was known then is still taken, except the device's own earlier
+ *   pick landing late (`past`).
+ * - `off`: the switch is off. Nothing is sent or taken.
+ *
+ * The note is written before the device's theme whenever the user picks, so
+ * no window sees the new theme under the old note. Every window runs the same
+ * rules on the same note and comes to the same step, so none is in charge and
+ * a step taken twice changes nothing.
+ *
+ * A window that sees the switch off writes `off`. A window that sees it turn
+ * on joins, if the note still says `off`: it takes the shared pick once every
+ * computer has reported, or stays as it is when there is none. It never
+ * offers the device's own theme, which is shared the next time the user
+ * picks. A note another window has already moved on from `off` is left alone,
+ * so a window that hears of the switch late undoes nothing. Nothing happens
+ * until the client settings have loaded, or in a window under `?theme=default`.
+ *
+ * Left as they are, on purpose:
+ * - A device that took a pick from a computer which dropped off before the
+ *   other computers had it ignores their older picks until that computer is
+ *   back or someone picks again.
+ * - Two windows writing the note in the same instant (the user picks in one
+ *   as a pick from elsewhere arrives in the other) leave one of the two
+ *   standing, whichever wrote last. Storage has no way to write both in
+ *   order, and the next pick anywhere puts it right.
+ * - A window still holding the old value of the switch for the moment after
+ *   it changed in another acts on that value until it hears.
  *
  * `createThemePickSync` is the logic, apart from the browser so every case
  * can be tested; `startThemePickSync` builds the one the app runs.
  */
-import {
-  type EnvironmentId,
-  type ThemeBase,
-  type ThemeLibrarySnapshot,
-  type ThemeManifest,
-  type ThemeMergePickInput,
-  THEME_PICK_VERSION,
-  type ThemePick,
-  type ThemePickInput,
-  type ThemePickTheme,
+import type {
+  EnvironmentId,
+  ThemeBase,
+  ThemeLibrarySnapshot,
+  ThemePick,
+  ThemePickInput,
+  ThemePickTheme,
 } from "@threadlines/contracts";
 import {
   compareThemeRevisions,
@@ -61,7 +66,7 @@ import { useEffect } from "react";
 
 import { useClientSettingsHydrated, useSettings } from "../hooks/useSettings";
 import { randomUUID } from "../lib/utils";
-import { parseStoredThemeChoice } from "../theme/themeChoice";
+import { parseStoredThemeChoice, sameThemeChoice } from "../theme/themeChoice";
 import {
   adoptStoredThemeChoice,
   applyThemePick,
@@ -72,79 +77,62 @@ import {
 } from "../theme/themeStore";
 import type { ThemeChoice } from "../theme/themeTypes";
 
-/** The device's notes, one storage key each. */
-export const THEME_PICK_STORAGE_PREFIX = "threadlines:theme-pick:";
-const KEY = {
-  /** Names this device in the picks it sends. The runner's. */
-  device: `${THEME_PICK_STORAGE_PREFIX}device`,
-  /** The pick this device last took or shared, whole. The runner's. */
-  seen: `${THEME_PICK_STORAGE_PREFIX}seen`,
-  /** The newest pick any computer has shown it. The runner's. */
-  observed: `${THEME_PICK_STORAGE_PREFIX}observed`,
-  /** The theme the user last picked, in whichever window. Any window's, and their only one. */
-  pending: `${THEME_PICK_STORAGE_PREFIX}pending`,
-  /** The switch turned on and the device hasn't joined the others yet. The runner's. */
-  join: `${THEME_PICK_STORAGE_PREFIX}join`,
-  /** Ids of pending picks and joins that are finished. The runner's. */
-  done: `${THEME_PICK_STORAGE_PREFIX}done`,
-  /** The switch as the runner last handled it, to tell it turning. The runner's. */
-  on: `${THEME_PICK_STORAGE_PREFIX}on`,
-} as const;
-/** The first build kept all of it under one key; what it held is carried over once. */
+/** The device's note. */
+export const THEME_PICK_NOTE_KEY = "threadlines:theme-pick:note";
+/** The first build's key: the pick it showed is carried over once. */
 const LEGACY_STORAGE_KEY = "threadlines:theme-pick";
-const DONE_LIMIT = 64;
 /** A send that failed is tried again after this long, or at the user's next pick. */
 export const THEME_PICK_RETRY_MS = 30_000;
-/** The Web Lock the device's one runner holds. */
-const LEAD_LOCK = "threadlines:theme-pick-sync";
+/** A window sending a pick is left to it this long after each attempt before another takes over. */
+export const THEME_PICK_CLAIM_MS = 15_000;
+/** A pick that couldn't be sent for this long gives way to one made elsewhere since. */
+export const THEME_PICK_FRESH_MS = 60_000;
 
 type Revision = Pick<ThemePick, "revision" | "revisedBy">;
 
-/** The pick this device last took: whole when this build took it, its revision alone from the first build. */
-export type SeenThemePick = Revision & Partial<Pick<ThemePick, "theme" | "updatedAt">>;
-
-/** The theme the user picked in some window, to be shared. */
-export interface PendingThemePick {
-  /** Names this one choice: the pick sent for it carries `<device>.<id>`. */
-  readonly id: string;
-  /** Null for a theme kept on this device only: nothing to share, and what was waiting is put aside. */
-  readonly theme: ThemePickTheme | null;
-  /** The newest pick this device had been shown when the user picked; a newer one may overtake this. */
-  readonly known: Revision | null;
-}
-
-/** The switch turned on: the device is to take the shared pick, or offer its own theme when there is none. */
-export interface ThemePickJoin {
-  readonly id: string;
-  /** Null when the device's own theme can't be shared. */
-  readonly theme: ThemePickTheme | null;
-}
-
-export interface ThemePickSyncState {
-  readonly device: string;
-  readonly seen: SeenThemePick | null;
-  /** The pending pick, unless it is finished. */
-  readonly pending: PendingThemePick | null;
-  /** The join, unless it is finished. */
-  readonly join: ThemePickJoin | null;
-}
-
-/** What to do next, given where the device and its computers are. */
-export type ThemePickStep =
-  | { readonly kind: "wait" }
-  /** A pending pick or a join is finished without anything to show for it. */
-  | { readonly kind: "finish"; readonly id: string }
-  /** The pending pick is the shared pick now: it came back carrying its id. */
-  | { readonly kind: "landed"; readonly id: string; readonly pick: ThemePick }
+export type ThemePickNote =
+  | ({ readonly state: "taken" } & Revision)
   | {
-      readonly kind: "publish";
+      readonly state: "local";
+      /** The newest pick the device knew when the user chose this theme. */
+      readonly known: Revision | null;
+      /** The pick this device still had on its way then: no news when it lands. */
+      readonly past?: string;
+    }
+  | { readonly state: "off" }
+  | {
+      readonly state: "unsent";
+      /** Names this one choice: the pick sent for it carries it as `pickId`. */
       readonly id: string;
       readonly theme: ThemePickTheme;
+      /** The newest pick the device knew when the user picked. */
       readonly known: Revision | null;
-      readonly onlyIfNone: boolean;
-    }
-  /** Show this pick; `finish` names the join it completes. */
-  | { readonly kind: "apply"; readonly pick: ThemePick; readonly finish?: string };
+      /** When the user picked (epoch ms). */
+      readonly since: number;
+      /** When a window last set about sending it. */
+      readonly at: number;
+    };
+
+type UnsentNote = Extract<ThemePickNote, { readonly state: "unsent" }>;
+
+/** What a window does next, given the note and what the computers hold. */
+export type ThemePickStep =
+  /** Nothing now; `until` is when to look again without being told (a claim or a wait running out). */
+  | { readonly kind: "wait"; readonly until?: number }
+  /** Show this pick and note it as taken. */
+  | { readonly kind: "take"; readonly pick: ThemePick }
+  /** Set about sending the unsent pick. */
+  | { readonly kind: "send"; readonly note: UnsentNote }
+  /** The switch turned on and there is no shared pick to take: joined as it is. */
+  | { readonly kind: "joined" };
+
+const revisionOf = (value: unknown): Revision | null =>
+  typeof value === "object" &&
+  value !== null &&
+  typeof (value as Revision).revision === "number" &&
+  typeof (value as Revision).revisedBy === "string"
+    ? { revision: (value as Revision).revision, revisedBy: (value as Revision).revisedBy }
+    : null;
 
 /** The newer of two revisions (either may be a whole pick), as a bare revision. */
 export function newerThemeRevision(
@@ -159,6 +147,14 @@ export function newerThemeRevision(
         : second;
   return winner === null ? null : { revision: winner.revision, revisedBy: winner.revisedBy };
 }
+
+/** The newest pick a note says the device knew: one newer than this is news. */
+const knownBy = (note: ThemePickNote | null): Revision | null =>
+  note === null || note.state === "off"
+    ? null
+    : note.state === "taken"
+      ? revisionOf(note)
+      : note.known;
 
 /** A device's choice as a pick's theme; null for one kept on this device only. */
 export function pickThemeOf(choice: ThemeChoice, base: ThemeBase | null): ThemePickTheme | null {
@@ -191,17 +187,6 @@ export function choiceOfPickTheme(
   return parseStoredThemeChoice(JSON.stringify({ v: 1, kind, id, entryId, hash, name, base }));
 }
 
-/** The pick this device remembers taking, when it remembers it whole. */
-const wholeSeen = (seen: SeenThemePick | null): ThemePick | null =>
-  seen !== null && seen.theme !== undefined
-    ? {
-        theme: seen.theme,
-        revision: seen.revision,
-        revisedBy: seen.revisedBy,
-        updatedAt: seen.updatedAt ?? new Date(0).toISOString(),
-      }
-    : null;
-
 /** The next step: pure, so every case is testable apart from the stores. */
 export function nextThemePickStep(input: {
   /** Settings loaded; until then nothing happens. */
@@ -215,122 +200,65 @@ export function nextThemePickStep(input: {
   readonly winning: ThemePick | null;
   /** Whether any followed computer keeps picks (a newer server). */
   readonly canPublish: boolean;
-  /** Whether that computer refuses a joining device's theme when a pick is there (`onlyIfNone`). */
-  readonly canOffer: boolean;
   /** Whether every followed computer has sent its library yet. */
   readonly allReported: boolean;
   /** What the device shows, as a pick's theme; null for a theme kept on this device only. */
   readonly shown: ThemePickTheme | null;
-  readonly state: ThemePickSyncState;
+  readonly note: ThemePickNote | null;
+  /** This window saw the switch turn on and the note still says `off`. */
+  readonly joining: boolean;
+  /** The unsent pick made in this window, which it sends without waiting on anyone. */
+  readonly mine: string | null;
+  /** The pick this window is sending right now; the next goes after its answer. */
+  readonly sending: string | null;
+  /** When this window may send again after a failure (epoch ms). */
+  readonly retryAt: number;
+  readonly now: number;
 }): ThemePickStep {
-  const { state, winning } = input;
+  const { note, winning, now } = input;
   if (!input.hydrated || input.bypass || !input.on) return { kind: "wait" };
-  const { pending, join, seen } = state;
-  const own = (pick: ThemePick) => pick.theme.pickId?.startsWith(`${state.device}.`) === true;
-  if (pending !== null) {
-    // The user picked a theme: that is shared, whatever joining would have done.
-    if (join !== null) return { kind: "finish", id: join.id };
-    if (pending.theme === null) return { kind: "finish", id: pending.id };
-    if (winning !== null && winning.theme.pickId === `${state.device}.${pending.id}`) {
-      return { kind: "landed", id: pending.id, pick: winning };
+  /** Showing a pick ends a trial, so it waits for one; noting a pick the device already shows doesn't. */
+  const take = (pick: ThemePick): ThemePickStep =>
+    input.trialRunning && (input.shown === null || !sameThemePickTheme(input.shown, pick.theme))
+      ? { kind: "wait" }
+      : { kind: "take", pick };
+  if (note !== null && note.state === "off") {
+    // Only a window that saw the switch turn on joins, and only once every computer has reported.
+    if (!input.joining || !input.allReported) return { kind: "wait" };
+    return winning === null ? { kind: "joined" } : take(winning);
+  }
+  if (note !== null && note.state === "unsent") {
+    if (winning !== null && winning.theme.pickId === note.id) return take(winning);
+    // One send at a time from a window, so its picks reach the computer in the order they were made.
+    if (input.sending !== null) return { kind: "wait" };
+    // Another window set about it lately: it is left to it.
+    if (input.mine !== note.id && now < note.at + THEME_PICK_CLAIM_MS) {
+      return { kind: "wait", until: note.at + THEME_PICK_CLAIM_MS };
     }
     const overtaken =
       winning !== null &&
-      (pending.known === null || compareThemeRevisions(winning, pending.known) > 0) &&
-      !own(winning);
-    if (overtaken) return { kind: "finish", id: pending.id };
-    return input.canPublish
-      ? {
-          kind: "publish",
-          id: pending.id,
-          theme: pending.theme,
-          known: pending.known,
-          onlyIfNone: false,
-        }
-      : { kind: "wait" };
+      (note.known === null || compareThemeRevisions(winning, note.known) > 0) &&
+      now - note.since > THEME_PICK_FRESH_MS;
+    if (overtaken) return take(winning);
+    if (!input.canPublish) return { kind: "wait" };
+    if (now < input.retryAt) return { kind: "wait", until: input.retryAt };
+    return { kind: "send", note };
   }
-  const remembered = wholeSeen(seen);
-  if (join !== null) {
-    // Joining: the newest pick the others hold or this device remembers; else its own theme.
-    if (!input.allReported) return { kind: "wait" };
-    const theirs =
-      winning !== null && (remembered === null || compareThemeRevisions(winning, remembered) >= 0)
-        ? winning
-        : remembered;
-    if (theirs !== null) {
-      return input.trialRunning
-        ? { kind: "wait" }
-        : { kind: "apply", pick: theirs, finish: join.id };
+  const known = knownBy(note);
+  if (winning !== null && (known === null || compareThemeRevisions(winning, known) > 0)) {
+    // The device's own earlier pick, landing after the user chose a theme to keep here.
+    if (note?.state === "local" && note.past !== undefined && winning.theme.pickId === note.past) {
+      return { kind: "wait" };
     }
-    if (join.theme === null) return { kind: "finish", id: join.id };
-    return input.canOffer
-      ? { kind: "publish", id: join.id, theme: join.theme, known: null, onlyIfNone: true }
-      : { kind: "wait" };
-  }
-  if (winning !== null && (seen === null || compareThemeRevisions(winning, seen) > 0)) {
-    return input.trialRunning ? { kind: "wait" } : { kind: "apply", pick: winning };
-  }
-  // The device shows another shareable theme than the pick it last took, with
-  // nothing waiting to be shared: two windows crossed. It takes the pick again.
-  if (
-    remembered !== null &&
-    input.shown !== null &&
-    !sameThemePickTheme(input.shown, remembered.theme) &&
-    choiceOfPickTheme(remembered.theme) !== null
-  ) {
-    return input.trialRunning ? { kind: "wait" } : { kind: "apply", pick: remembered };
+    return take(winning);
   }
   return { kind: "wait" };
 }
 
 // ---------------------------------------------------------------------------
-// The device's notes
+// The note
 
 type PickStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
-
-const revisionOf = (value: unknown): Revision | null =>
-  typeof value === "object" &&
-  value !== null &&
-  typeof (value as Revision).revision === "number" &&
-  typeof (value as Revision).revisedBy === "string"
-    ? { revision: (value as Revision).revision, revisedBy: (value as Revision).revisedBy }
-    : null;
-
-const pickThemeFrom = (value: unknown): ThemePickTheme | null =>
-  typeof value === "object" && value !== null && typeof (value as ThemePickTheme).kind === "string"
-    ? (value as ThemePickTheme)
-    : null;
-
-const seenFrom = (value: unknown): SeenThemePick | null => {
-  const revision = revisionOf(value);
-  if (revision === null) return null;
-  const record = value as Record<string, unknown>;
-  const theme = pickThemeFrom(record.theme);
-  return {
-    ...revision,
-    ...(theme === null ? {} : { theme }),
-    ...(typeof record.updatedAt === "string" ? { updatedAt: record.updatedAt } : {}),
-  };
-};
-
-const noteId = (value: unknown): string | null => {
-  const id = typeof value === "object" && value !== null ? (value as { id?: unknown }).id : null;
-  return typeof id === "string" && id !== "" ? id : null;
-};
-
-const pendingFrom = (value: unknown): PendingThemePick | null => {
-  const id = noteId(value);
-  if (id === null) return null;
-  const record = value as Record<string, unknown>;
-  return { id, theme: pickThemeFrom(record.theme), known: revisionOf(record.known) };
-};
-
-const joinFrom = (value: unknown): ThemePickJoin | null => {
-  const id = noteId(value);
-  return id === null
-    ? null
-    : { id, theme: pickThemeFrom((value as Record<string, unknown>).theme) };
-};
 
 function readJson(storage: PickStorage | null, key: string): unknown {
   try {
@@ -351,18 +279,55 @@ function writeJson(storage: PickStorage | null, key: string, value: unknown): vo
   }
 }
 
+export function readThemePickNote(storage: PickStorage | null): ThemePickNote | null {
+  const value = readJson(storage, THEME_PICK_NOTE_KEY);
+  if (typeof value !== "object" || value === null) return null;
+  const record = value as Record<string, unknown>;
+  if (record.state === "taken") {
+    const revision = revisionOf(record);
+    return revision === null ? null : { state: "taken", ...revision };
+  }
+  if (record.state === "off") return { state: "off" };
+  if (record.state === "local") {
+    return {
+      state: "local",
+      known: revisionOf(record.known),
+      ...(typeof record.past === "string" && record.past !== "" ? { past: record.past } : {}),
+    };
+  }
+  if (record.state === "unsent") {
+    const theme = record.theme as ThemePickTheme | null | undefined;
+    if (
+      typeof record.id !== "string" ||
+      record.id === "" ||
+      typeof theme !== "object" ||
+      theme === null ||
+      typeof theme.kind !== "string" ||
+      typeof record.since !== "number" ||
+      typeof record.at !== "number"
+    ) {
+      return null;
+    }
+    return {
+      state: "unsent",
+      id: record.id,
+      theme,
+      known: revisionOf(record.known),
+      since: record.since,
+      at: record.at,
+    };
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // The logic
 
-/** What the sync reads from the library: each followed computer's snapshot, and its pick RPCs. */
+/** What the sync reads from the library: each followed computer's snapshot, and a way to pick on one. */
 export interface ThemePickSyncLibrary {
   readonly followed: () => ReadonlyArray<EnvironmentId>;
   readonly snapshots: () => Readonly<Record<string, ThemeLibrarySnapshot>>;
   readonly pick: (environmentId: EnvironmentId, input: ThemePickInput) => Promise<ThemePick>;
-  readonly mergePick: (
-    environmentId: EnvironmentId,
-    input: ThemeMergePickInput,
-  ) => Promise<ThemePick>;
 }
 
 export interface ThemePickSyncEnv {
@@ -371,11 +336,6 @@ export interface ThemePickSyncEnv {
   /** Runs `callback` after `ms`; returns a cancel. */
   readonly setTimer: (callback: () => void, ms: number) => () => void;
   readonly randomId: () => string;
-  /**
-   * Asks to be the device's one runner; `lead` is called when this window is
-   * (at once where windows can't take turns). Returns a way to give it up.
-   */
-  readonly requestLead: (lead: () => void) => () => void;
   readonly theme: {
     /** The device's theme as storage has it now, not as this window last heard. */
     readonly state: () => {
@@ -386,19 +346,17 @@ export interface ThemePickSyncEnv {
     };
     /** Commits another device's pick here; not announced as this device's own. */
     readonly applyPick: (choice: ThemeChoice, base: ThemeBase | null) => void;
-    /** The content of a library theme this window holds (the one it shows), to send along with a pick. */
-    readonly manifestOf: (hash: string) => ThemeManifest | null;
   };
   readonly library: ThemePickSyncLibrary;
   readonly warn: (message: string, error: unknown) => void;
 }
 
 export interface ThemePickSync {
-  /** Something changed (the library, the device's notes, its theme, a trial): take the next steps. */
+  /** Something changed (the library, the note, the device's theme, a trial): take the next steps. */
   readonly run: () => void;
   /**
-   * The user committed a theme in this window. Written down at once, so no
-   * window sees the device's new theme without the pick that goes with it.
+   * The user is committing a theme in this window. Called before the theme is
+   * written, so the note for it is there first; `run` follows once it is.
    */
   readonly userCommitted: (choice: ThemeChoice, base: ThemeBase | null) => void;
   /** The device's switch and whether settings have loaded. */
@@ -409,265 +367,107 @@ export interface ThemePickSync {
 export function createThemePickSync(env: ThemePickSyncEnv): ThemePickSync {
   const { storage } = env;
   let settings = { hydrated: false, on: true };
-  let leader = false;
-  /** Asked once: being given the lead runs the sync, which must not ask again. */
-  let leadRequested = false;
-  let releaseLead: (() => void) | null = null;
   let stopped = false;
-  /** This window is sending a pick; one at a time. */
-  let publishing = false;
-  /** After a failed send, the next waits until then (epoch ms). */
-  let publishAfter = 0;
-  let cancelRetry: (() => void) | null = null;
+  let joining = false;
+  let mine: string | null = null;
+  let sending: string | null = null;
+  let retryAt = 0;
+  let cancelWake: (() => void) | null = null;
   /** What each computer last answered with: its pick then, at least as new as its snapshot's. */
   const answers = new Map<EnvironmentId, ThemePick>();
-  /** Computers being brought the pick this device remembers, and when a failed one may be tried again. */
-  const carrying = new Map<string, number | "sending">();
 
-  // The first build's single key: what it held is carried over, so the pick
-  // this device already shows isn't applied again and one it never sent still goes.
+  // The first build's key: the pick the device took then isn't taken again.
+  // A pick it had not sent yet is not carried over.
   const legacy = readJson(storage, LEGACY_STORAGE_KEY) as Record<string, unknown> | null;
   if (legacy !== null) {
-    if (readJson(storage, KEY.seen) === null) {
-      writeJson(storage, KEY.seen, revisionOf(legacy.seen));
-    }
-    if (readJson(storage, KEY.observed) === null) {
-      writeJson(storage, KEY.observed, revisionOf(legacy.observed));
-    }
-    const unsent = legacy.pending as Record<string, unknown> | null | undefined;
-    const theme = pickThemeFrom(unsent?.theme);
-    if (theme !== null && unsent?.join !== true && readJson(storage, KEY.pending) === null) {
-      writeJson(storage, KEY.pending, {
-        id: env.randomId(),
-        theme,
-        known: revisionOf(unsent?.known),
-      } satisfies PendingThemePick);
+    const seen = revisionOf(legacy.seen);
+    if (seen !== null && readThemePickNote(storage) === null) {
+      writeJson(storage, THEME_PICK_NOTE_KEY, { state: "taken", ...seen } satisfies ThemePickNote);
     }
     writeJson(storage, LEGACY_STORAGE_KEY, null);
   }
 
-  const doneIds = (): ReadonlyArray<string> => {
-    const done = readJson(storage, KEY.done);
-    return Array.isArray(done) ? done.filter((id): id is string => typeof id === "string") : [];
-  };
-  const finish = (id: string) => {
-    const done = doneIds();
-    if (!done.includes(id)) writeJson(storage, KEY.done, [...done, id].slice(-DONE_LIMIT));
-  };
-
-  /** The device's id, made by the runner the first time it is needed. */
-  const deviceId = (): string => {
-    const stored = readJson(storage, KEY.device);
-    if (typeof stored === "string" && stored !== "") return stored;
-    writeJson(storage, KEY.device, env.randomId());
-    // Read back: where two windows run this (no locks), both use the one that stuck.
-    const kept = readJson(storage, KEY.device);
-    return typeof kept === "string" && kept !== "" ? kept : env.randomId();
-  };
-
-  const readState = (): ThemePickSyncState => {
-    const done = doneIds();
-    const pending = pendingFrom(readJson(storage, KEY.pending));
-    const join = joinFrom(readJson(storage, KEY.join));
-    return {
-      device: deviceId(),
-      seen: seenFrom(readJson(storage, KEY.seen)),
-      pending: pending !== null && !done.includes(pending.id) ? pending : null,
-      join: join !== null && !done.includes(join.id) ? join : null,
-    };
-  };
-
-  /** The newest pick the followed computers hold, where to send one, and what that computer understands. */
+  /** The newest pick the followed computers hold, and where to send one. */
   const picks = () => {
     const snapshots = env.library.snapshots();
     const followed = env.library.followed();
     const keeping = followed.filter((id) => snapshots[id]?.pick !== undefined);
-    const home = keeping[0] ?? null;
     return {
-      keeping,
       winning: winningThemePick([
         ...keeping.map((id) => snapshots[id]?.pick),
         ...keeping.map((id) => answers.get(id)),
       ]),
-      home,
-      canOffer: home !== null && (snapshots[home]?.pickVersion ?? 1) >= THEME_PICK_VERSION,
+      home: keeping[0] ?? null,
       allReported: followed.every((id) => snapshots[id] !== undefined),
     };
   };
 
-  const noteObserved = (revision: Revision | null) => {
-    const observed = revisionOf(readJson(storage, KEY.observed));
-    const next = newerThemeRevision(observed, revision);
-    if (JSON.stringify(next) !== JSON.stringify(observed)) writeJson(storage, KEY.observed, next);
-  };
+  const note = (value: ThemePickNote) => writeJson(storage, THEME_PICK_NOTE_KEY, value);
 
-  /** Remembers the pick the device now shows; only ever a newer one, or the same one whole. */
-  const noteSeen = (pick: ThemePick) => {
-    const seen = seenFrom(readJson(storage, KEY.seen));
-    const order = seen === null ? 1 : compareThemeRevisions(pick, seen);
-    if (order > 0 || (order === 0 && seen?.theme === undefined)) {
-      writeJson(storage, KEY.seen, {
-        theme: pick.theme,
-        revision: pick.revision,
-        revisedBy: pick.revisedBy,
-        updatedAt: pick.updatedAt,
-      } satisfies SeenThemePick);
-    }
-  };
-
-  /** Tries the pending send again once the wait after a failure is over. */
-  const retryLater = () => {
-    cancelRetry?.();
-    cancelRetry = env.setTimer(
+  /** Looks again at `until`, for a step no event will announce. */
+  const wakeAt = (until: number) => {
+    cancelWake?.();
+    cancelWake = env.setTimer(
       () => {
-        cancelRetry = null;
+        cancelWake = null;
         run();
       },
-      Math.max(0, publishAfter - env.now()),
+      Math.max(0, until - env.now()),
     );
   };
 
-  /**
-   * Sends a pick to the computer that keeps picks; one at a time. Its answer
-   * is that computer's pick now, which the next run reads like a snapshot's:
-   * landed, refused for one that was there, or overtaken.
-   */
-  const publish = (
-    home: EnvironmentId,
-    step: Extract<ThemePickStep, { readonly kind: "publish" }>,
-    state: ThemePickSyncState,
-  ) => {
-    if (publishing) return;
-    if (env.now() < publishAfter) {
-      if (cancelRetry === null) retryLater();
-      return;
-    }
-    publishing = true;
-    const observed = revisionOf(readJson(storage, KEY.observed));
-    const atLeast = Math.max(
-      observed?.revision ?? 0,
-      state.seen?.revision ?? 0,
-      step.known?.revision ?? 0,
-    );
+  /** Sends the unsent pick. Its answer is that computer's pick now, read like its snapshot. */
+  const send = (home: EnvironmentId, unsent: UnsentNote, winning: ThemePick | null) => {
+    sending = unsent.id;
+    // Claimed: other windows leave it to this one for a while.
+    note({ ...unsent, at: env.now() });
+    const atLeast = Math.max(unsent.known?.revision ?? 0, winning?.revision ?? 0);
     // Inside a promise, so a send that throws at once (no connection) fails like any other.
     void Promise.resolve()
       .then(() =>
-        env.library.pick(home, {
-          theme: { ...step.theme, pickId: `${state.device}.${step.id}` },
-          atLeast,
-          ...(step.onlyIfNone ? { onlyIfNone: true } : {}),
-        }),
+        env.library.pick(home, { theme: { ...unsent.theme, pickId: unsent.id }, atLeast }),
       )
       .then(
         (picked) => {
-          answers.set(home, picked);
+          const before = answers.get(home);
+          if (before === undefined || compareThemeRevisions(picked, before) > 0) {
+            answers.set(home, picked);
+          }
+          // The computer already held that theme, picked above what this device knew: taken as it is.
+          const current = readThemePickNote(storage);
+          if (
+            current?.state === "unsent" &&
+            current.id === unsent.id &&
+            picked.theme.pickId !== unsent.id &&
+            sameThemePickTheme(picked.theme, unsent.theme)
+          ) {
+            note({ state: "taken", revision: picked.revision, revisedBy: picked.revisedBy });
+          }
         },
         (error: unknown) => {
-          publishAfter = env.now() + THEME_PICK_RETRY_MS;
-          retryLater();
+          // Only this pick waits: one the user made since goes at once.
+          const current = readThemePickNote(storage);
+          if (current?.state === "unsent" && current.id === unsent.id) {
+            retryAt = env.now() + THEME_PICK_RETRY_MS;
+          }
           env.warn("[themes] couldn't share the theme with your other devices", error);
         },
       )
       .finally(() => {
-        publishing = false;
+        sending = null;
         run();
       });
-  };
-
-  /**
-   * Brings the pick this device remembers to the followed computers when none
-   * of them holds it (the computer that did dropped off before the others had
-   * it), so this device and the devices on those computers show the same
-   * again. Between computers that are both followed, the library's own
-   * reconcile does this. A library theme goes with its content, which this
-   * window has while it shows the theme; without it the pick waits.
-   */
-  const carry = (remembered: ThemePick, held: ReturnType<typeof picks>) => {
-    if (held.winning !== null && compareThemeRevisions(held.winning, remembered) >= 0) return;
-    const hash = remembered.theme.kind === "library" ? remembered.theme.hash : undefined;
-    const manifest = hash === undefined ? null : env.theme.manifestOf(hash);
-    if (hash !== undefined && manifest === null) return;
-    for (const id of held.keeping) {
-      const key = `${id}\0${remembered.revision}\0${remembered.revisedBy}`;
-      const state = carrying.get(key);
-      if (state === "sending" || (state !== undefined && env.now() < state)) continue;
-      carrying.set(key, "sending");
-      void Promise.resolve()
-        .then(() =>
-          env.library.mergePick(
-            id,
-            manifest === null ? { pick: remembered } : { pick: remembered, manifest },
-          ),
-        )
-        .then(
-          (kept) => {
-            carrying.delete(key);
-            answers.set(id, kept);
-          },
-          (error: unknown) => {
-            carrying.set(key, env.now() + THEME_PICK_RETRY_MS);
-            env.warn("[themes] couldn't bring the shared theme pick to a computer", error);
-          },
-        )
-        .finally(run);
-    }
-  };
-
-  /** The switch turning, as the runner sees it: once per turn, whichever window made it. */
-  const handleSwitch = (shown: ThemePickTheme | null) => {
-    const handled = readJson(storage, KEY.on);
-    if (handled === settings.on) return;
-    if (typeof handled === "boolean") {
-      const state = readState();
-      if (settings.on) {
-        // Off to on. A pick made since (in a window that already knew) is what
-        // the device shows and goes as it is; anything else waiting is from before.
-        const fresh =
-          state.pending !== null &&
-          state.pending.theme !== null &&
-          shown !== null &&
-          sameThemePickTheme(state.pending.theme, shown);
-        if (state.pending !== null && !fresh) finish(state.pending.id);
-        if (!fresh) {
-          writeJson(storage, KEY.join, {
-            id: env.randomId(),
-            theme: shown,
-          } satisfies ThemePickJoin);
-        }
-      } else {
-        // On to off: nothing picked before is shared later.
-        if (state.pending !== null) finish(state.pending.id);
-        if (state.join !== null) finish(state.join.id);
-      }
-    }
-    writeJson(storage, KEY.on, settings.on);
   };
 
   function run(): void {
     if (stopped) return;
-    // A window under `?theme=default` never runs the sync; one that leaves it asks to.
-    if (!env.theme.state().bypass && !leadRequested) {
-      leadRequested = true;
-      releaseLead = env.requestLead(() => {
-        leader = true;
-        run();
-      });
-    }
-    if (!leader || !settings.hydrated) return;
-    // At most a few steps a pass (finish, then apply); each changes the notes it reads.
-    for (let pass = 0; pass < 5; pass++) {
+    // At most a few steps a pass; each changes what the next reads.
+    for (let pass = 0; pass < 4; pass++) {
       const theme = env.theme.state();
-      if (theme.bypass) return;
-      const shown = pickThemeOf(theme.committed, theme.committedBase);
-      handleSwitch(shown);
       const held = picks();
-      // Remember the newest pick ever shown, even if its computer drops off before it counts.
-      noteObserved(held.winning);
-      const state = readState();
-      if (settings.on) {
-        const remembered = wholeSeen(state.seen);
-        if (remembered !== null) carry(remembered, held);
-      }
+      const current = readThemePickNote(storage);
+      // Another window joined already, or the user picked since: nothing left to join.
+      if (current?.state !== "off") joining = false;
       const step = nextThemePickStep({
         hydrated: settings.hydrated,
         on: settings.on,
@@ -675,33 +475,41 @@ export function createThemePickSync(env: ThemePickSyncEnv): ThemePickSync {
         trialRunning: theme.trialRunning,
         winning: held.winning,
         canPublish: held.home !== null,
-        canOffer: held.canOffer,
         allReported: held.allReported,
-        shown,
-        state,
+        shown: pickThemeOf(theme.committed, theme.committedBase),
+        note: current,
+        joining,
+        mine,
+        sending,
+        retryAt,
+        now: env.now(),
       });
       switch (step.kind) {
         case "wait":
+          if (step.until !== undefined) wakeAt(step.until);
           return;
-        case "finish":
-          finish(step.id);
+        case "joined":
+          joining = false;
+          // No shared pick: the device's theme stays, and the first pick from anywhere is news.
+          note({ state: "local", known: null });
           continue;
-        case "landed":
-          finish(step.id);
-          noteSeen(step.pick);
-          continue;
-        case "apply": {
+        case "take": {
+          joining = false;
+          // The note first, then the theme: a window between the two sees the pick already taken.
+          note({
+            state: "taken",
+            revision: step.pick.revision,
+            revisedBy: step.pick.revisedBy,
+          });
           const next = choiceOfPickTheme(step.pick.theme);
-          // A kind this build can't show is passed over, not retried forever.
-          if (next !== null && (shown === null || !sameThemePickTheme(shown, step.pick.theme))) {
+          // A kind this build can't show is noted and passed over, not retried forever.
+          if (next !== null && !sameThemeChoice(next.choice, theme.committed)) {
             env.theme.applyPick(next.choice, next.base);
           }
-          if (step.finish !== undefined) finish(step.finish);
-          noteSeen(step.pick);
           continue;
         }
-        case "publish":
-          if (held.home !== null) publish(held.home, step, state);
+        case "send":
+          if (held.home !== null) send(held.home, step.note, held.winning);
           return;
       }
     }
@@ -710,27 +518,49 @@ export function createThemePickSync(env: ThemePickSyncEnv): ThemePickSync {
   return {
     run,
     userCommitted: (choice, base) => {
-      // Not while the switch is off or unknown: nothing picked then is shared later.
-      if (!settings.hydrated || !settings.on) return;
-      writeJson(storage, KEY.pending, {
-        id: env.randomId(),
-        theme: pickThemeOf(choice, base),
-        known: newerThemeRevision(revisionOf(readJson(storage, KEY.observed)), picks().winning),
-      } satisfies PendingThemePick);
+      const before = readThemePickNote(storage);
+      mine = null;
+      if (settings.hydrated && !settings.on) {
+        note({ state: "off" });
+        return;
+      }
+      const theme = pickThemeOf(choice, base);
+      const known = newerThemeRevision(knownBy(before), picks().winning);
+      if (theme === null || !settings.hydrated) {
+        // Kept on this device, or picked before the switch is known: not shared.
+        const past =
+          before?.state === "unsent"
+            ? before.id
+            : before?.state === "local"
+              ? before.past
+              : undefined;
+        note({ state: "local", known, ...(past === undefined ? {} : { past }) });
+        return;
+      }
+      const id = env.randomId();
+      const now = env.now();
+      note({ state: "unsent", id, theme, known, since: now, at: now });
+      mine = id;
       // The user's pick goes at once, whatever an earlier failure is waiting out.
-      publishAfter = 0;
+      retryAt = 0;
     },
     setSettings: (next) => {
+      const was = settings;
       settings = next;
+      if (next.hydrated && !next.on) {
+        // The switch is off, as this window sees for itself: the device leaves the shared pick.
+        joining = false;
+        if (readThemePickNote(storage)?.state !== "off") note({ state: "off" });
+      } else if (next.hydrated && !(was.hydrated && was.on)) {
+        // It turned on, or this window is new: it joins if the note still says off.
+        joining = true;
+      }
       run();
     },
     stop: () => {
       stopped = true;
-      cancelRetry?.();
-      cancelRetry = null;
-      releaseLead?.();
-      releaseLead = null;
-      leader = false;
+      cancelWake?.();
+      cancelWake = null;
     },
   };
 }
@@ -740,33 +570,6 @@ export function createThemePickSync(env: ThemePickSyncEnv): ThemePickSync {
 
 let active: ThemePickSync | null = null;
 let currentSettings = { hydrated: false, on: true };
-
-/** One window a device runs the sync: the holder of a Web Lock, or every window without them. */
-function requestLead(lead: () => void): () => void {
-  const locks = typeof navigator === "undefined" ? undefined : navigator.locks;
-  if (!locks) {
-    lead();
-    return () => {};
-  }
-  let release: (() => void) | null = null;
-  let given = false;
-  void locks
-    .request(LEAD_LOCK, () => {
-      if (given) return undefined;
-      lead();
-      return new Promise<void>((resolve) => {
-        release = resolve;
-      });
-    })
-    .catch(() => {
-      // Locks refused (a private window): this window runs it alone.
-      if (!given) lead();
-    });
-  return () => {
-    given = true;
-    release?.();
-  };
-}
 
 /** Starts the sync over the given library; returns the way to stop it. */
 export function startThemePickSync(
@@ -781,7 +584,6 @@ export function startThemePickSync(
     },
     // Not crypto.randomUUID: a phone on plain http has none.
     randomId: randomUUID,
-    requestLead,
     theme: {
       state: () => {
         // Another window's commit may be in storage with its event still on the way.
@@ -795,18 +597,14 @@ export function startThemePickSync(
         };
       },
       applyPick: applyThemePick,
-      manifestOf: (hash) => {
-        const { active } = readThemeState();
-        return active.hash === hash ? active.manifest : null;
-      },
     },
     library,
     warn: (message, error) => console.warn(message, error),
   });
   active = sync;
   sync.setSettings(currentSettings);
-  // Written down as the commit is announced, right after the store saved the
-  // theme; the run waits for the store's own update to land.
+  // The store announces a commit before it writes the theme: the note goes
+  // first, and the run waits for the store's own update to land.
   const stopCommits = subscribeUserThemeCommits((choice, base) => {
     sync.userCommitted(choice, base);
     queueMicrotask(sync.run);
@@ -816,22 +614,18 @@ export function startThemePickSync(
     if (readThemeState().committedState.status === "unavailable") retryUnavailableTheme();
     sync.run();
   });
-  // The device's theme changing (another window's commit), a trial ending or
-  // `?theme=default` ending may each leave something to do: after the
-  // change's own listeners.
+  // A trial ending or `?theme=default` ending may let a waiting pick be taken:
+  // after the change's own listeners.
   let last = readThemeState();
   const stopTheme = subscribeTheme(() => {
     const state = readThemeState();
-    const same =
-      state.trial === last.trial &&
-      state.bypass === last.bypass &&
-      state.committed === last.committed;
+    const same = state.trial === last.trial && state.bypass === last.bypass;
     last = state;
     if (!same) queueMicrotask(sync.run);
   });
-  // Another window wrote the device's notes (a pick the user made there).
+  // Another window wrote the note (a pick the user made there, or one it took).
   const onStorage = (event: StorageEvent) => {
-    if (event.key === null || event.key.startsWith(THEME_PICK_STORAGE_PREFIX)) sync.run();
+    if (event.key === null || event.key === THEME_PICK_NOTE_KEY) sync.run();
   };
   window.addEventListener("storage", onStorage);
   return () => {

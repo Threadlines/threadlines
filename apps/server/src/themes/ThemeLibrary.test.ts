@@ -173,7 +173,7 @@ it.layer(TestLayer)("ThemeLibrary", (it) => {
   it.effect("keeps one shared pick, above any a device saw, merged by revision order", () =>
     Effect.gen(function* () {
       const library = yield* ThemeLibrary;
-      assert.deepInclude(yield* library.snapshot, { pick: null, pickVersion: 2 });
+      assert.isNull((yield* library.snapshot).pick);
       const dark = yield* library.pick({ theme: { kind: "builtin", id: "dark" }, atLeast: 0 });
       assert.strictEqual(dark.revisedBy, "env-test");
       // The same theme, already above what the device saw: nothing changes.
@@ -182,13 +182,6 @@ it.layer(TestLayer)("ThemeLibrary", (it) => {
         atLeast: dark.revision - 1,
       });
       assert.deepStrictEqual(again, dark);
-      // A device joining the others doesn't replace the pick there is.
-      const joined = yield* library.pick({
-        theme: { kind: "builtin", id: "light" },
-        atLeast: 0,
-        onlyIfNone: true,
-      });
-      assert.deepStrictEqual(joined, dark);
       // A device that saw revision 50 elsewhere: its pick lands above it.
       const light = yield* library.pick({ theme: { kind: "builtin", id: "light" }, atLeast: 50 });
       assert.strictEqual(light.revision, 51);
