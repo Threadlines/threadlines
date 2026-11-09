@@ -67,6 +67,7 @@ import {
   WsCoreRpcGroup,
   WsOutsideAgentsRpcGroup,
   WsRpcGroup,
+  WsThemeShowcaseRpcGroup,
   WsThemesRpcGroup,
   WsOwnerRequiredError,
   OutsideAgentError,
@@ -174,6 +175,7 @@ import { OutsideAgentSignIn } from "./outsideAgents/OutsideAgentSignIn.ts";
 import { ComputerLinks } from "./links/ComputerLinks.ts";
 import { ScheduledTasks, snapshotForClient } from "./scheduled/ScheduledTasks.ts";
 import { ThemeLibrary } from "./themes/ThemeLibrary.ts";
+import { ThemeShowcase } from "./themes/ThemeShowcase.ts";
 import { ThreadMoves } from "./moves/ThreadMoves.ts";
 import { ProjectSetups } from "./projectSetup/ProjectSetups.ts";
 import { ProjectSetupSource } from "./projectSetup/ProjectSetupSource.ts";
@@ -699,6 +701,32 @@ const ThemesRpcLayer = WsThemesRpcGroup.toLayer(
   }),
 );
 
+/**
+ * The Showcase (docs/design/custom-themes.md, "Showcase"): browsing it, and
+ * sharing to it from the GitHub account `gh` uses on this computer. Open to
+ * every paired device, like the library.
+ */
+const ThemeShowcaseRpcLayer = WsThemeShowcaseRpcGroup.toLayer(
+  Effect.gen(function* () {
+    const showcase = yield* ThemeShowcase;
+    const aggregate = { "rpc.aggregate": "themeShowcase" } as const;
+    return WsThemeShowcaseRpcGroup.of({
+      [WS_METHODS.themeShowcaseList]: (input) =>
+        observeRpcEffect(WS_METHODS.themeShowcaseList, showcase.list(input), aggregate),
+      [WS_METHODS.themeShowcasePicture]: (input) =>
+        observeRpcEffect(WS_METHODS.themeShowcasePicture, showcase.picture(input), aggregate),
+      [WS_METHODS.themeShowcaseRead]: (input) =>
+        observeRpcEffect(WS_METHODS.themeShowcaseRead, showcase.read(input), aggregate),
+      [WS_METHODS.themeShowcasePrepare]: (input) =>
+        observeRpcEffect(WS_METHODS.themeShowcasePrepare, showcase.prepare(input), aggregate),
+      [WS_METHODS.themeShowcaseSubmit]: (input) =>
+        observeRpcEffect(WS_METHODS.themeShowcaseSubmit, showcase.submit(input), aggregate),
+      [WS_METHODS.themeShowcaseSubmissions]: (_input) =>
+        observeRpcEffect(WS_METHODS.themeShowcaseSubmissions, showcase.submissions, aggregate),
+    });
+  }),
+);
+
 /** Every RPC the WebSocket serves, for one connection. */
 const makeWsRpcLayer = (
   currentSession: {
@@ -715,6 +743,7 @@ const makeWsRpcLayer = (
     makeCoreRpcLayer(currentSession, viewerId, sentFromRef, devicePlace),
     makeOutsideAgentsRpcLayer(currentSession.role),
     ThemesRpcLayer,
+    ThemeShowcaseRpcLayer,
   );
 
 const makeCoreRpcLayer = (

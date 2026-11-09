@@ -30,7 +30,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
-import { GitHubCli, GitHubCliError } from "./GitHubCli.ts";
+import { GitHubCli, GitHubCliError, gitHubFailureKind as failureKind } from "./GitHubCli.ts";
 
 const GITHUB_HOST = "github.com";
 const LOOKUP_TIMEOUT_MS = 15_000;
@@ -62,24 +62,6 @@ const decodePostedIssue = Schema.decodeUnknownOption(Schema.fromJsonString(Poste
 const decodeFoundIssues = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Array(PostedIssue)),
 );
-
-type FailureKind = "noGitHubCli" | "signedOut" | "rejected" | "rateLimited" | "unknown";
-
-/** The HTTP status `gh api` prints when GitHub answers with an error, like "(HTTP 422)". */
-function httpStatusOf(error: GitHubCliError): number | null {
-  const match = /\(HTTP (\d{3})\)/.exec(error.detail);
-  return match ? Number(match[1]) : null;
-}
-
-function failureKind(error: GitHubCliError): FailureKind {
-  if (error.detail.includes("not available on PATH")) return "noGitHubCli";
-  if (error.detail.includes("not authenticated")) return "signedOut";
-  const status = httpStatusOf(error);
-  if (status === 401) return "signedOut";
-  if (status === 403 || status === 429) return "rateLimited";
-  if (status !== null && status >= 400 && status < 500) return "rejected";
-  return "unknown";
-}
 
 const refuse = (reason: string) => new ReportProblemError({ reason, uncertain: false });
 

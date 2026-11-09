@@ -99,6 +99,14 @@
       "types": "./src/themes/sharing.ts",
       "import": "./src/themes/sharing.ts"
     },
+    "./themeShowcase": {
+      "types": "./src/themes/showcase.ts",
+      "import": "./src/themes/showcase.ts"
+    },
+    "./themeFontNotice": {
+      "types": "./src/themes/fontNotice.ts",
+      "import": "./src/themes/fontNotice.ts"
+    },
     "./themeManifest": {
       "types": "./src/themes/manifest.ts",
       "import": "./src/themes/manifest.ts"

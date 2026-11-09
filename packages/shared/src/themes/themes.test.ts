@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { crc32, deflateSync, inflateSync } from "node:zlib";
 
 import { THEME_FILE_FORMAT, type ThemeEntry, type ThemeManifest } from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
@@ -18,6 +19,13 @@ import { themeGlassLevel } from "./glassLevel.ts";
 import { reconcileThemeLibraries, winningThemeEntry } from "./library.ts";
 import { checkThemeManifest, themeContentHash } from "./manifest.ts";
 import { themeForSharing } from "./sharing.ts";
+import {
+  plainPng,
+  showcasePngProblems,
+  showcaseSlugFor,
+  themeShowcaseProblems,
+  unknownThemeFields,
+} from "./showcase.ts";
 import { BUILTIN_THEME_TOKENS } from "./builtinTokens.ts";
 import { deriveThemeTokens, THEME_TOKEN_NAMES } from "./tokens.ts";
 
@@ -462,6 +470,108 @@ describe("sharing a theme", () => {
       { name: "Winter", includePrompt: false, credits: { author: "Will", license: "CC-BY-4.0" } },
     );
     expect(reshared.credits).toEqual({ author: "Mira", license: "CC0-1.0" });
+  });
+});
+
+describe("the Showcase", () => {
+  const credited: ThemeManifest = { ...aurora, credits: { author: "Mira", license: "CC-BY-4.0" } };
+
+  it("takes only fields this build knows, an open license, and no trace of the thread", () => {
+    expect(themeShowcaseProblems(credited)).toEqual([]);
+    expect(
+      unknownThemeFields({
+        ...credited,
+        glass: { frame: 0.4, list: 0.5, column: 0.4, composer: 0.7, blur: 22, sheen: 0.3 },
+        fonts: { emoji: { family: "Noto", source: "system" } },
+        credits: { author: "Mira", pronouns: "she/her" },
+        soundscape: { kind: "rain" },
+      } as ThemeManifest),
+    ).toEqual(["soundscape", "fonts.emoji", "glass.sheen", "credits.pronouns"]);
+    expect(
+      themeShowcaseProblems({ ...credited, createdBy: { kind: "agent", threadId: "t-1" } }),
+    ).toHaveLength(1);
+    expect(themeShowcaseProblems(aurora)).toEqual([
+      "Pick a license others can use it under: CC BY 4.0 or CC0.",
+    ]);
+    expect(
+      themeShowcaseProblems({ ...aurora, credits: { author: "Threadlines", license: "MIT" } })[0],
+    ).toMatch(/starter's MIT license/);
+  });
+
+  it("takes a picture only as a plain PNG of its size, and drops what a screenshot adds", () => {
+    const chunk = (type: string, data: Uint8Array) => {
+      const out = Buffer.alloc(12 + data.length);
+      out.writeUInt32BE(data.length, 0);
+      out.write(type, 4, "latin1");
+      out.set(data, 8);
+      out.writeUInt32BE(crc32(out.subarray(4, 8 + data.length)), 8 + data.length);
+      return out;
+    };
+    const png = (width: number, extra: Buffer[] = []) => {
+      const header = Buffer.alloc(13);
+      header.writeUInt32BE(width, 0);
+      header.writeUInt32BE(200, 4);
+      header.set([8, 2, 0, 0, 0], 8);
+      return new Uint8Array(
+        Buffer.concat([
+          Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+          chunk("IHDR", header),
+          ...extra,
+          chunk("IDAT", deflateSync(Buffer.alloc(200 * (1 + width * 3)))),
+          chunk("IEND", new Uint8Array()),
+        ]),
+      );
+    };
+    const limits = { width: 320, height: 200, maxBytes: 160 * 1024 };
+    const text = chunk("tEXt", Buffer.from("Comment\0from the thread"));
+    expect(showcasePngProblems(png(320), limits)).toEqual([]);
+    expect(showcasePngProblems(png(320, [text]), limits)).toEqual([
+      "The picture carries extra data (a tEXt chunk).",
+    ]);
+    expect(showcasePngProblems(png(321), limits)).toEqual([
+      "The picture is 321×200; it must be 320×200.",
+    ]);
+    expect(showcasePngProblems(new Uint8Array([...png(320), 0]), limits)).toEqual([
+      "The picture has data after its end.",
+    ]);
+    // A header and an end with nothing between, or a byte changed in transit.
+    const empty = png(320).filter((_, index, all) => {
+      const idat = Buffer.from(all).indexOf("IDAT") - 4;
+      const length = Buffer.from(all).readUInt32BE(idat);
+      return index < idat || index >= idat + 12 + length;
+    });
+    expect(showcasePngProblems(empty, limits)).toEqual(["The picture has no image in it."]);
+    // Image data that unpacks to fewer rows than the header promises.
+    const short = Buffer.from(png(320));
+    const idat = short.indexOf("IDAT") - 4;
+    const shortData = chunk("IDAT", deflateSync(Buffer.alloc(10)));
+    const shortPng = new Uint8Array(
+      Buffer.concat([
+        short.subarray(0, idat),
+        shortData,
+        short.subarray(idat + 12 + short.readUInt32BE(idat)),
+      ]),
+    );
+    expect(showcasePngProblems(shortPng, limits)).toEqual([]);
+    expect(showcasePngProblems(shortPng, limits, inflateSync)).toEqual([
+      "The picture's image data is damaged.",
+    ]);
+    expect(showcasePngProblems(png(320), limits, inflateSync)).toEqual([]);
+    const damaged = png(320);
+    damaged[40] = damaged[40]! ^ 0xff;
+    expect(showcasePngProblems(damaged, limits)).toEqual([
+      "The picture is damaged: a part of it doesn't match its checksum.",
+    ]);
+    // A screenshot's text is dropped; a chunk the picture can't do without refuses it.
+    expect(plainPng(png(320, [text]))).toEqual(png(320));
+    expect(plainPng(png(320, [chunk("ZZZZ", new Uint8Array(1))]))).toBeNull();
+  });
+
+  it("names a theme's folder from its name, apart from the folders taken", () => {
+    expect(showcaseSlugFor("Tide Pool!", new Set())).toBe("tide-pool");
+    expect(showcaseSlugFor("Tide Pool", new Set(["tide-pool", "tide-pool-2"]))).toBe("tide-pool-3");
+    expect(showcaseSlugFor("Café Noir", new Set())).toBe("cafe-noir");
+    expect(showcaseSlugFor("東京", new Set())).toBe("theme");
   });
 });
 

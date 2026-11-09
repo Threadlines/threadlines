@@ -14,8 +14,8 @@
  * deletes content yet (a device may still use a theme deleted elsewhere).
  *
  * A save and a delete made here are counted (`theme.saved`, `theme.deleted`,
- * docs/telemetry.md); an entry merged from another computer is not, since
- * that computer counted it.
+ * docs/telemetry.md), a save of a theme from the Showcase as its origin; an
+ * entry merged from another computer is not, since that computer counted it.
  */
 import { randomUUID } from "node:crypto";
 
@@ -48,6 +48,7 @@ import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts"
 import { themeAnalyticsProperties } from "../telemetry/AnalyticsProperties.ts";
 import { AnalyticsService } from "../telemetry/Services/AnalyticsService.ts";
 import { ThemeLibraryRepository } from "./ThemeLibraryRepository.ts";
+import { ThemeShowcase } from "./ThemeShowcase.ts";
 import { themeProblems, ThemeWorkshop } from "./ThemeWorkshop.ts";
 
 export interface ThemeLibraryShape {
@@ -80,6 +81,8 @@ const make = Effect.gen(function* () {
   const workshop = yield* ThemeWorkshop;
   const environment = yield* ServerEnvironment;
   const analytics = yield* AnalyticsService;
+  // Optional, so a library without the Showcase (tests) still runs: it only says which saves came from it.
+  const showcase = yield* Effect.serviceOption(ThemeShowcase);
   const scope = yield* Effect.scope;
   const writes = yield* Semaphore.make(1);
   const changed = yield* PubSub.sliding<void>(1);
@@ -185,7 +188,12 @@ const make = Effect.gen(function* () {
           return { summary: yield* summaryOf(entry.entryId), copy };
         }),
       );
-      yield* analytics.record("theme.saved", { ...themeAnalyticsProperties(manifest), copy });
+      const fromShowcase = Option.isSome(showcase) && (yield* showcase.value.listed(hash));
+      yield* analytics.record("theme.saved", {
+        ...themeAnalyticsProperties(manifest),
+        ...(fromShowcase ? { origin: "showcase" } : {}),
+        copy,
+      });
       return summary;
     });
 

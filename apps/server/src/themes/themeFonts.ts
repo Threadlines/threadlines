@@ -75,7 +75,7 @@ const fontError = (font: ThemeFont, reason: string) =>
   });
 
 /** Reads a response body, refusing one larger than `maxBytes`. */
-async function readCapped(response: Response, maxBytes: number): Promise<Uint8Array | null> {
+export async function readCapped(response: Response, maxBytes: number): Promise<Uint8Array | null> {
   const reader = response.body?.getReader();
   if (reader === undefined) return new Uint8Array(0);
   const chunks: Array<Uint8Array> = [];

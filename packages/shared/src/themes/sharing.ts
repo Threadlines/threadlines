@@ -5,7 +5,12 @@
  * re-sharing someone else's theme passes their credit on. A theme without
  * credits takes the ones its author gives now.
  */
-import type { ThemeCredits, ThemeLicense, ThemeManifest } from "@threadlines/contracts";
+import {
+  THEME_MAX_FILE_BYTES,
+  type ThemeCredits,
+  type ThemeLicense,
+  type ThemeManifest,
+} from "@threadlines/contracts";
 
 /** Each license as the export and import dialogs name it, with what it lets others do. */
 export const THEME_LICENSE_WORDS: Readonly<
@@ -64,4 +69,16 @@ export function themeForSharing(
     ...(options.includePrompt && prompt !== undefined ? { prompt } : {}),
     ...(credits !== null ? { credits } : {}),
   };
+}
+
+/**
+ * A theme file's text: indented for people to read while the file still
+ * fits under the size limit (import refuses a larger file, whitespace
+ * included), on one line past it.
+ */
+export function themeFileText(manifest: ThemeManifest): string {
+  const indented = `${JSON.stringify(manifest, null, 2)}\n`;
+  return new TextEncoder().encode(indented).length <= THEME_MAX_FILE_BYTES
+    ? indented
+    : `${JSON.stringify(manifest)}\n`;
 }

@@ -104,6 +104,7 @@ import {
 import { ComputerLinks, type ComputerLinksShape } from "./links/ComputerLinks.ts";
 import { ScheduledTasks, type ScheduledTasksShape } from "./scheduled/ScheduledTasks.ts";
 import { ThemeLibrary, type ThemeLibraryShape } from "./themes/ThemeLibrary.ts";
+import { ThemeShowcase } from "./themes/ThemeShowcase.ts";
 import { LinkMoves } from "./links/LinkMoves.ts";
 import { LinkRequests, type LinkRequestsShape } from "./links/LinkRequests.ts";
 import { ThreadMoves } from "./moves/ThreadMoves.ts";
@@ -873,6 +874,7 @@ const buildAppUnderTest = (options?: {
             changes: Stream.make({ entries: [] }),
             ...options?.layers?.themeLibrary,
           }),
+          Layer.mock(ThemeShowcase)({}),
           Layer.mock(LinkRequests)({
             pending: Effect.succeed([]),
             pendingChanges: Stream.empty,

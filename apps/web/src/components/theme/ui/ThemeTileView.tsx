@@ -52,7 +52,8 @@ export function ThemeTileView({
   onSelect,
   className,
 }: {
-  readonly tile: ThemeTile;
+  /** What the tile draws; the Showcase passes its entries' the same way. */
+  readonly tile: Pick<ThemeTile, "key" | "name" | "detail" | "swatch" | "thumbnail">;
   readonly selected: boolean;
   /** Keyboard focus in a strip that moves it with the arrow keys. */
   readonly highlighted?: boolean;

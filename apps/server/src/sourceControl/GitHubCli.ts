@@ -125,6 +125,34 @@ export function isGitHubPullRequestNotFound(error: GitHubCliError): boolean {
   return error.detail === GITHUB_PULL_REQUEST_NOT_FOUND_DETAIL;
 }
 
+/** The HTTP status `gh api` prints when GitHub answers with an error, like "(HTTP 422)". */
+export function gitHubHttpStatus(error: GitHubCliError): number | null {
+  const match = /\(HTTP (\d{3})\)/.exec(error.detail);
+  return match ? Number(match[1]) : null;
+}
+
+/**
+ * What a failed `gh api` call says about posting as the person: no `gh`,
+ * signed out, limited, refused (GitHub answered no, so nothing was written),
+ * or unknown (no clear answer: GitHub may have taken it).
+ */
+export type GitHubFailureKind =
+  | "noGitHubCli"
+  | "signedOut"
+  | "rejected"
+  | "rateLimited"
+  | "unknown";
+
+export function gitHubFailureKind(error: GitHubCliError): GitHubFailureKind {
+  if (error.detail.includes("not available on PATH")) return "noGitHubCli";
+  if (error.detail.includes("not authenticated")) return "signedOut";
+  const status = gitHubHttpStatus(error);
+  if (status === 401) return "signedOut";
+  if (status === 403 || status === 429) return "rateLimited";
+  if (status !== null && status >= 400 && status < 500) return "rejected";
+  return "unknown";
+}
+
 export class GitHubCli extends Context.Service<GitHubCli, GitHubCliShape>()(
   "threadlines/source-control/GitHubCli",
 ) {}

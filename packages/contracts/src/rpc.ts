@@ -77,6 +77,20 @@ import {
   ThemesSubscribeInput,
 } from "./themes.ts";
 import {
+  ThemeShowcaseError,
+  ThemeShowcaseIdInput,
+  ThemeShowcaseListInput,
+  ThemeShowcaseListing,
+  ThemeShowcasePicture,
+  ThemeShowcasePreparation,
+  ThemeShowcaseShareInput,
+  ThemeShowcaseSubmission,
+  ThemeShowcaseSubmissions,
+  ThemeShowcaseSubmissionsInput,
+  ThemeShowcaseSubmitInput,
+  ThemeShowcaseTheme,
+} from "./themeShowcase.ts";
+import {
   SettingsChangeAnswer,
   SettingsChangeError,
   SettingsChangeReportDeviceInput,
@@ -745,6 +759,13 @@ export const WS_METHODS = {
   themesDelete: "themes.delete",
   themesRestore: "themes.restore",
   themesMerge: "themes.merge",
+  // The Showcase: themes people shared, in the public Threadlines/themes repository.
+  themeShowcaseList: "themeShowcase.list",
+  themeShowcasePicture: "themeShowcase.picture",
+  themeShowcaseRead: "themeShowcase.read",
+  themeShowcasePrepare: "themeShowcase.prepare",
+  themeShowcaseSubmit: "themeShowcase.submit",
+  themeShowcaseSubmissions: "themeShowcase.submissions",
   // Moving a thread to a linked computer (docs/design/fleet.md, Part 3).
   movesPreview: "moves.preview",
   movesStart: "moves.start",
@@ -2583,7 +2604,59 @@ export const WsThemesRpcGroup = RpcGroup.make(
   WsThemesMergeRpc,
 );
 
-/** Everything else the WebSocket serves; with the outside agents' and themes' groups, WsRpcGroup. */
+/** The Showcase's list, as fetched from the repository (or the last good copy). */
+export const WsThemeShowcaseListRpc = Rpc.make(WS_METHODS.themeShowcaseList, {
+  payload: ThemeShowcaseListInput,
+  success: ThemeShowcaseListing,
+  error: ThemeShowcaseError,
+});
+
+/** One listed theme's picture, checked against the list's digest. */
+export const WsThemeShowcasePictureRpc = Rpc.make(WS_METHODS.themeShowcasePicture, {
+  payload: ThemeShowcaseIdInput,
+  success: ThemeShowcasePicture,
+  error: ThemeShowcaseError,
+});
+
+/** One listed theme, checked and matched to its list entry, to try. */
+export const WsThemeShowcaseReadRpc = Rpc.make(WS_METHODS.themeShowcaseRead, {
+  payload: ThemeShowcaseIdInput,
+  success: ThemeShowcaseTheme,
+  error: ThemeShowcaseError,
+});
+
+/** What sharing a library theme would publish, and why it can't be shared yet, if it can't. */
+export const WsThemeShowcasePrepareRpc = Rpc.make(WS_METHODS.themeShowcasePrepare, {
+  payload: ThemeShowcaseShareInput,
+  success: ThemeShowcasePreparation,
+  error: ThemeShowcaseError,
+});
+
+/** Shares a library theme: a pull request to the repository from the person's own GitHub account. */
+export const WsThemeShowcaseSubmitRpc = Rpc.make(WS_METHODS.themeShowcaseSubmit, {
+  payload: ThemeShowcaseSubmitInput,
+  success: ThemeShowcaseSubmission,
+  error: ThemeShowcaseError,
+});
+
+/** The shares this computer made, each with how its pull request stands. */
+export const WsThemeShowcaseSubmissionsRpc = Rpc.make(WS_METHODS.themeShowcaseSubmissions, {
+  payload: ThemeShowcaseSubmissionsInput,
+  success: ThemeShowcaseSubmissions,
+  error: ThemeShowcaseError,
+});
+
+/** The Showcase, a group of its own for the same reason as the themes' group. */
+export const WsThemeShowcaseRpcGroup = RpcGroup.make(
+  WsThemeShowcaseListRpc,
+  WsThemeShowcasePictureRpc,
+  WsThemeShowcaseReadRpc,
+  WsThemeShowcasePrepareRpc,
+  WsThemeShowcaseSubmitRpc,
+  WsThemeShowcaseSubmissionsRpc,
+);
+
+/** Everything else the WebSocket serves; with the outside agents', themes' and Showcase's groups, WsRpcGroup. */
 export const WsCoreRpcGroup = RpcGroup.make(
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,
@@ -2815,4 +2888,8 @@ export const WsCoreRpcGroup = RpcGroup.make(
   WsOrchestrationSubscribeThreadRpc,
 );
 
-export const WsRpcGroup = WsCoreRpcGroup.merge(WsOutsideAgentsRpcGroup, WsThemesRpcGroup);
+export const WsRpcGroup = WsCoreRpcGroup.merge(
+  WsOutsideAgentsRpcGroup,
+  WsThemesRpcGroup,
+  WsThemeShowcaseRpcGroup,
+);
