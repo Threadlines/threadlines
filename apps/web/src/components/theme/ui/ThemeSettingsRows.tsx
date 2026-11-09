@@ -1,12 +1,14 @@
 /**
  * Settings › Appearance, the theme parts (docs/design/custom-themes.md,
- * "Switching" and "Library actions"): New theme and Import, Glass and Motion
- * side by side, what the running art costs on this computer, and the gallery
- * (your themes across computers, the starters and the built-ins, under
- * filters, each library theme with its menu). The settings search draws Glass
- * and Motion as ordinary rows with the same controls.
+ * "Switching", "Library actions" and "Showcase"): New theme and Import, Glass
+ * and Motion side by side, what the running art costs on this computer, and
+ * the gallery (your themes across computers, the starters and the built-ins,
+ * under filters, each library theme with its menu; or the Showcase). The
+ * settings search draws Glass and Motion as ordinary rows with the same
+ * controls.
  */
 import {
+  type EnvironmentId,
   THEME_GLASS_LEVEL_DEFAULT,
   type ThemeManifest,
   type ThemeMotion,
@@ -37,6 +39,11 @@ import {
   useThemeTiles,
 } from "~/themeLibrary/themeCatalog";
 import { importThemeFile } from "~/themeLibrary/themeFiles";
+import {
+  SHOWCASE_SHARE_WORDS,
+  useShowcaseEnvironments,
+  useShowcaseShares,
+} from "~/themeLibrary/themeShowcase";
 import {
   deleteLibraryTheme,
   duplicateLibraryTheme,
@@ -72,6 +79,8 @@ import { moveBetweenTabs, pageTabId } from "../../ui/page-tabs";
 import { NEW_THEME_PROMPT } from "./NewThemeHint";
 import { ThemeExportDialog } from "./ThemeExportDialog";
 import { ThemeGlassSlider } from "./ThemeGlassSlider";
+import { ThemeShareDialog } from "./ThemeShareDialog";
+import { ThemeShowcaseView } from "./ThemeShowcaseView";
 import { ThemeTileView } from "./ThemeTileView";
 
 const failed = (title: `Couldn't ${string}`) => (error: unknown) =>
@@ -239,19 +248,23 @@ function RenameDialog({
 /**
  * A starter's or your theme's options: Duplicate (a copy in your themes, to
  * change), Export file (its dialog makes the file ready to share) and Copy
- * prompt for both; Rename and Delete for your own. Built-ins have none.
+ * prompt for both; Share to Showcase, Rename and Delete for your own.
+ * Built-ins have none.
  */
 function ThemeTileMenu({
   tile,
   inUse,
   onRename,
   onExport,
+  onShare,
   onDelete,
 }: {
   readonly tile: ThemeTile;
   readonly inUse: boolean;
   readonly onRename: () => void;
   readonly onExport: () => void;
+  /** Null when no computer holding it can share (an older Threadlines). */
+  readonly onShare: (() => void) | null;
   readonly onDelete: () => void;
 }) {
   const { copyToClipboard } = useCopyToClipboard();
@@ -285,6 +298,7 @@ function ThemeTileMenu({
         {library ? <MenuItem onClick={onRename}>Rename</MenuItem> : null}
         <MenuItem onClick={duplicate}>Duplicate</MenuItem>
         <MenuItem onClick={onExport}>Export file…</MenuItem>
+        {library && onShare ? <MenuItem onClick={onShare}>Share to Showcase…</MenuItem> : null}
         <MenuItem
           onClick={() =>
             void loadTileManifest(tile)
@@ -390,17 +404,69 @@ const THEME_FILTERS: ReadonlyArray<{ readonly value: ThemeFilter; readonly label
   { value: "builtin", label: "Built in" },
 ];
 
+type GalleryView = "mine" | "showcase";
+
 /**
- * The gallery: every theme this device can wear, yours first, the one it
- * wears marked. Plain words above it narrow it to one kind; nothing is
- * remembered, so Settings always opens on All.
+ * The gallery: your themes and the Showcase, a switch apart. Your themes are
+ * every theme this device can wear, yours first, the one it wears marked;
+ * plain words above them narrow them to one kind. Nothing is remembered, so
+ * Settings always opens on your themes, All.
  */
 export function ThemeGallery() {
+  const [view, setView] = useState<GalleryView>("mine");
+  const switcher = (
+    <SegmentedControl
+      size="sm"
+      value={view}
+      onValueChange={(next) => setView(next as GalleryView)}
+      aria-label="Themes to show"
+    >
+      <SegmentedControlItem value="mine">Your themes</SegmentedControlItem>
+      <SegmentedControlItem value="showcase">Showcase</SegmentedControlItem>
+    </SegmentedControl>
+  );
+  return (
+    <div data-place="appearance.theme" className="flex flex-col gap-1.5">
+      {view === "showcase" ? (
+        <ThemeShowcaseView switcher={switcher} />
+      ) : (
+        <OwnThemes switcher={switcher} />
+      )}
+    </div>
+  );
+}
+
+/** Your themes, the starters and the built-ins, under their filters. */
+function OwnThemes({ switcher }: { readonly switcher: ReactNode }) {
   const { builtins, starters, library } = useThemeTiles();
   const committed = useThemeChoice();
   const active = useActiveTheme();
   const [filter, setFilter] = useState<ThemeFilter>("all");
   const panelId = useId();
+  const shares = useShowcaseShares();
+  const sharing = useShowcaseEnvironments();
+  const [sharingTile, setSharingTile] = useState<{
+    readonly environmentId: EnvironmentId;
+    readonly entryId: string;
+    readonly manifest: ThemeManifest;
+    readonly name: string;
+  } | null>(null);
+  /** A computer holding the theme that can share it, this one first. */
+  const sharerOf = (tile: ThemeTile) =>
+    sharing.find(({ environmentId }) => tile.library?.holders.includes(environmentId))
+      ?.environmentId ?? null;
+  const shareTile = (tile: ThemeTile, environmentId: EnvironmentId) =>
+    void loadTileManifest(tile)
+      .then((manifest) => {
+        if (!manifest || !tile.library) throw new Error("The theme couldn't be read.");
+        setSharingTile({
+          environmentId,
+          entryId: tile.library.entry.entryId,
+          manifest,
+          name: tile.name,
+        });
+      })
+      .catch(failed("Couldn't share the theme"));
   const [renaming, setRenaming] = useState<ThemeTile | null>(null);
   const [exporting, setExporting] = useState<{
     readonly manifest: ThemeManifest;
@@ -432,29 +498,36 @@ export function ThemeGallery() {
           : [...library, ...starters, ...builtins];
   const showHint = library.length === 0 && (filter === "all" || filter === "yours");
   return (
-    <div data-place="appearance.theme" className="flex flex-col gap-1.5">
-      <div role="tablist" aria-label="Show themes" className="flex flex-wrap items-center gap-0.5">
-        {THEME_FILTERS.map(({ value, label }) => (
-          <button
-            key={value}
-            type="button"
-            role="tab"
-            id={pageTabId(panelId, label)}
-            aria-selected={filter === value}
-            aria-controls={panelId}
-            tabIndex={filter === value ? 0 : -1}
-            className={cn(
-              "cursor-pointer rounded-md px-2 py-0.5 text-[12.5px] leading-5 font-medium transition-colors focus-ring",
-              filter === value
-                ? "bg-accent text-foreground"
-                : "text-muted-foreground hover:text-foreground",
-            )}
-            onClick={() => setFilter(value)}
-            onKeyDown={moveBetweenTabs}
-          >
-            {label}
-          </button>
-        ))}
+    <>
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
+        {switcher}
+        <div
+          role="tablist"
+          aria-label="Show themes"
+          className="flex flex-wrap items-center gap-0.5"
+        >
+          {THEME_FILTERS.map(({ value, label }) => (
+            <button
+              key={value}
+              type="button"
+              role="tab"
+              id={pageTabId(panelId, label)}
+              aria-selected={filter === value}
+              aria-controls={panelId}
+              tabIndex={filter === value ? 0 : -1}
+              className={cn(
+                "cursor-pointer rounded-md px-2 py-0.5 text-[12.5px] leading-5 font-medium transition-colors focus-ring",
+                filter === value
+                  ? "bg-accent text-foreground"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+              onClick={() => setFilter(value)}
+              onKeyDown={moveBetweenTabs}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
       </div>
       <div
         role="tabpanel"
@@ -467,29 +540,34 @@ export function ThemeGallery() {
       >
         {tiles.length > 0 ? (
           <div className="grid grid-cols-[repeat(auto-fill,minmax(112px,1fr))] gap-1">
-            {tiles.map((tile) => (
-              <div key={tile.key} className="group/tile relative">
-                <ThemeTileView
-                  tile={tile}
-                  selected={sameThemeChoice(tile.choice, committed)}
-                  onSelect={() => pick(tile)}
-                  className="w-full"
-                />
-                {tile.group !== "builtin" ? (
-                  <ThemeTileMenu
-                    tile={tile}
-                    inUse={sameThemeChoice(tile.choice, committed)}
-                    onRename={() => setRenaming(tile)}
-                    onExport={() => exportTile(tile)}
-                    onDelete={() =>
-                      sameThemeChoice(tile.choice, committed)
-                        ? setConfirmDelete(tile)
-                        : remove(tile)
-                    }
+            {tiles.map((tile) => {
+              const share = tile.library ? shares.get(tile.library.entry.entryId) : undefined;
+              const sharer = sharerOf(tile);
+              return (
+                <div key={tile.key} className="group/tile relative">
+                  <ThemeTileView
+                    tile={share ? { ...tile, detail: SHOWCASE_SHARE_WORDS[share.state] } : tile}
+                    selected={sameThemeChoice(tile.choice, committed)}
+                    onSelect={() => pick(tile)}
+                    className="w-full"
                   />
-                ) : null}
-              </div>
-            ))}
+                  {tile.group !== "builtin" ? (
+                    <ThemeTileMenu
+                      tile={tile}
+                      inUse={sameThemeChoice(tile.choice, committed)}
+                      onRename={() => setRenaming(tile)}
+                      onExport={() => exportTile(tile)}
+                      onShare={sharer === null ? null : () => shareTile(tile, sharer)}
+                      onDelete={() =>
+                        sameThemeChoice(tile.choice, committed)
+                          ? setConfirmDelete(tile)
+                          : remove(tile)
+                      }
+                    />
+                  ) : null}
+                </div>
+              );
+            })}
           </div>
         ) : null}
         {showHint ? (
@@ -500,6 +578,9 @@ export function ThemeGallery() {
         ) : null}
       </div>
       {renaming ? <RenameDialog tile={renaming} onClose={() => setRenaming(null)} /> : null}
+      {sharingTile ? (
+        <ThemeShareDialog {...sharingTile} onClose={() => setSharingTile(null)} />
+      ) : null}
       {exporting ? (
         <ThemeExportDialog
           manifest={exporting.manifest}
@@ -536,7 +617,7 @@ export function ThemeGallery() {
           </AlertDialogFooter>
         </AlertDialogPopup>
       </AlertDialog>
-    </div>
+    </>
   );
 }
 

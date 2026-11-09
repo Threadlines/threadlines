@@ -79,7 +79,12 @@ Threadlines sends product and reliability events such as:
   it's light or dark, the kind of live art it has (grid, pixels or canvas) or
   none, and whether it sets its own fonts. Never a theme's name, prompt,
   colors, art, fonts or the thread it came from. A theme another computer
-  kept, arriving with its library, is counted there, not again here;
+  kept, arriving with its library, is counted there, not again here. A
+  theme kept from the Showcase says so as its origin;
+- the theme Showcase: when someone tries a theme from it (and whether it's a
+  featured one), and when someone shares one of theirs to it, with the same
+  theme details as above plus its license and whether the prompt went with
+  it. Never the theme's name, credit, GitHub account or pull request;
 - basic counts such as project count, thread count, how many themes are kept
   in the theme library, attachment count, and active session count.
 

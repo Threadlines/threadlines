@@ -114,6 +114,8 @@ import { PageFileSweepLive } from "./pages/PageFileSweep.ts";
 import * as PagePreview from "./pages/preview/PagePreview.ts";
 import { ThemeLibraryLive } from "./themes/ThemeLibrary.ts";
 import { ThemeLibraryRepositoryLive } from "./themes/ThemeLibraryRepository.ts";
+import { ThemeShowcaseLive } from "./themes/ThemeShowcase.ts";
+import { ThemeShowcaseRepositoryLive } from "./themes/ThemeShowcaseRepository.ts";
 import { ThemeWorkshopLive } from "./themes/ThemeWorkshop.ts";
 import { DictationLive } from "./dictation/DictationService.ts";
 import * as LocalServers from "./preview/LocalServers.ts";
@@ -567,8 +569,18 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
       // Outside agents' starts and sends by request id (`/mcp/connect`);
       // building it marks the ones a restart cut off.
       OutsideAgentRequestsLive,
-      // The theme library (docs/design/custom-themes.md), over its own tables.
-      ThemeLibraryLive.pipe(Layer.provide(ThemeLibraryRepositoryLive)),
+      // The theme library (docs/design/custom-themes.md), over its own tables,
+      // and the Showcase, which shares from it and tells it which saves came
+      // from the Showcase. Sharing posts through `gh`, like Report a problem.
+      ThemeLibraryLive.pipe(
+        Layer.provideMerge(
+          ThemeShowcaseLive.pipe(
+            Layer.provide(ThemeShowcaseRepositoryLive),
+            Layer.provide(GitHubCli.layer.pipe(Layer.provide(VcsProcess.layer))),
+          ),
+        ),
+        Layer.provide(ThemeLibraryRepositoryLive),
+      ),
     ).pipe(
       // Getting themes ready, for the library and the theme tools: their
       // fonts, and specimens, stills and thumbnails in the preview browser.

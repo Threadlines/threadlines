@@ -72,6 +72,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   scheduledTasks: Schema.optionalKey(Schema.Boolean),
   /** The server keeps a theme library (`themes.*`, docs/design/custom-themes.md). */
   themes: Schema.optionalKey(Schema.Boolean),
+  /** The server reads the Showcase and shares to it (`themeShowcase.*`, docs/design/custom-themes.md). */
+  themeShowcase: Schema.optionalKey(Schema.Boolean),
   /** The server moves threads to linked computers. Absent until a server ships it. */
   threadMove: Schema.optionalKey(Schema.Boolean),
   /** The server sets up projects copied from another computer (`projectSetups.*`). */

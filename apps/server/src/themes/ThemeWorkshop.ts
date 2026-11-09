@@ -86,6 +86,11 @@ export interface ThemeWorkshopShape {
   ) => Effect.Effect<{ readonly manifest: ThemeManifest; readonly note?: string }>;
   /** A small PNG data URL for the library, for a theme with art; null when there's none to make. */
   readonly thumbnail: (manifest: ThemeManifest) => Effect.Effect<string | null>;
+  /**
+   * The new-thread specimen at thumbnail size, art or not: a Showcase
+   * theme's picture. Installs the preview browser when it has to.
+   */
+  readonly picture: (manifest: ThemeManifest) => Effect.Effect<string, ThemeError>;
 }
 
 export class ThemeWorkshop extends Context.Service<ThemeWorkshop, ThemeWorkshopShape>()(
@@ -226,15 +231,16 @@ export const makeThemeWorkshop = Effect.fn("ThemeWorkshop.make")(function* (
       return { manifest: { ...manifest, backdrop: { ...backdrop, still: captured.still } } };
     });
 
-  const thumbnail: ThemeWorkshopShape["thumbnail"] = (manifest) =>
+  /** The new-thread specimen at thumbnail size; null when the browser took no shot. */
+  const smallSpecimen = (manifest: ThemeManifest, installedOnly: boolean) =>
     Effect.gen(function* () {
-      if (manifest.backdrop === undefined) return null;
-      const still = manifest.backdrop.still !== undefined;
+      const art = manifest.backdrop;
+      const still = art?.still !== undefined;
       const [shot] = yield* previews.captureViewports({
         width: THEME_SPECIMEN_WIDTH,
         height: THEME_SPECIMEN_HEIGHT,
         scale: THEME_THUMBNAIL_WIDTH / THEME_SPECIMEN_WIDTH,
-        installedOnly: true,
+        installedOnly,
         shots: [
           {
             document: buildThemeSpecimenDocument({
@@ -242,14 +248,17 @@ export const makeThemeWorkshop = Effect.fn("ThemeWorkshop.make")(function* (
               layout: "new-thread",
               width: THEME_SPECIMEN_WIDTH,
               height: THEME_SPECIMEN_HEIGHT,
-              art: still ? "still" : "live",
+              ...(art === undefined ? {} : { art: still ? ("still" as const) : ("live" as const) }),
             }),
-            waitMs: still ? 0 : STILL_RUN_MS,
+            waitMs: art === undefined || still ? 0 : STILL_RUN_MS,
           },
         ],
       });
       return shot === undefined ? null : pngDataUrl(shot.png);
-    }).pipe(
+    });
+
+  const thumbnail: ThemeWorkshopShape["thumbnail"] = (manifest) =>
+    (manifest.backdrop === undefined ? Effect.succeed(null) : smallSpecimen(manifest, true)).pipe(
       Effect.catch((error) =>
         Effect.logInfo("No thumbnail for a theme.", { reason: error.message }).pipe(
           Effect.as(null),
@@ -257,7 +266,18 @@ export const makeThemeWorkshop = Effect.fn("ThemeWorkshop.make")(function* (
       ),
     );
 
-  return ThemeWorkshop.of({ embedFonts, prepare, preview, withStill, thumbnail });
+  const picture: ThemeWorkshopShape["picture"] = (manifest) =>
+    smallSpecimen(manifest, false).pipe(
+      Effect.mapError((error) => error.message),
+      Effect.flatMap((png) =>
+        png === null ? Effect.fail("the preview browser took no picture") : Effect.succeed(png),
+      ),
+      Effect.mapError(
+        (reason) => new ThemeError({ detail: `Couldn't draw the theme's picture: ${reason}.` }),
+      ),
+    );
+
+  return ThemeWorkshop.of({ embedFonts, prepare, preview, withStill, thumbnail, picture });
 });
 
 export const ThemeWorkshopLive = Layer.effect(ThemeWorkshop, makeThemeWorkshop());

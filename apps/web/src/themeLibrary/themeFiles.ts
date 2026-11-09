@@ -11,6 +11,7 @@ import {
   type ThemeManifest,
 } from "@threadlines/contracts";
 import { checkThemeManifest, themeContentHash } from "@threadlines/shared/themeManifest";
+import { themeFileText } from "@threadlines/shared/themeSharing";
 
 import { useThemeImportStore } from "./themeImportState";
 
@@ -61,14 +62,7 @@ export function themeFileName(name: string): string {
 
 /** Downloads a theme as a file, as it is: make it ready to share first (`themeForSharing`). */
 export function exportThemeFile(manifest: ThemeManifest): void {
-  // Import refuses a file over the size limit, whitespace included: indent
-  // only while the file still fits.
-  const indented = `${JSON.stringify(manifest, null, 2)}\n`;
-  const text =
-    new TextEncoder().encode(indented).length <= THEME_MAX_FILE_BYTES
-      ? indented
-      : `${JSON.stringify(manifest)}\n`;
-  const blob = new Blob([text], { type: "application/json" });
+  const blob = new Blob([themeFileText(manifest)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;

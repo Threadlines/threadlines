@@ -44,6 +44,8 @@ export interface HttpsFetchOptions {
   readonly publicAddressesOnly?: boolean;
   /** Refuse every host but these, by exact name. */
   readonly allowedHosts?: ReadonlyArray<string>;
+  /** The most redirects followed (five by default); past them the request fails. */
+  readonly maxRedirects?: number;
 }
 
 /**
@@ -161,6 +163,7 @@ export function makeHttpsFetch(options: HttpsFetchOptions = {}): DownloadFetch {
     ? new Set(options.allowedHosts.map((host) => host.toLowerCase()))
     : undefined;
   const lookup = options.publicAddressesOnly ? publicAddressLookup() : undefined;
+  const maxRedirects = options.maxRedirects ?? MAX_REDIRECTS;
 
   const get = (url: URL, init: RequestInit) =>
     new Promise<http.IncomingMessage>((resolve, reject) => {
@@ -211,8 +214,12 @@ export function makeHttpsFetch(options: HttpsFetchOptions = {}): DownloadFetch {
         return toResponse(message);
       }
       message.resume();
-      if (redirects >= MAX_REDIRECTS) {
-        throw new Error(`Gave up on ${rawUrl} after ${MAX_REDIRECTS} redirects.`);
+      if (redirects >= maxRedirects) {
+        throw new Error(
+          maxRedirects === 0
+            ? `Refusing to follow ${url.host}'s redirect from ${rawUrl}.`
+            : `Gave up on ${rawUrl} after ${maxRedirects} redirects.`,
+        );
       }
       url = new URL(location, url);
     }

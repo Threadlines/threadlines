@@ -428,6 +428,15 @@ export interface WsRpcClient {
     readonly restore: RpcUnaryMethod<typeof WS_METHODS.themesRestore>;
     readonly merge: RpcUnaryMethod<typeof WS_METHODS.themesMerge>;
   };
+  /** The Showcase (docs/design/custom-themes.md), on servers reporting `themeShowcase`. */
+  readonly themeShowcase: {
+    readonly list: RpcUnaryMethod<typeof WS_METHODS.themeShowcaseList>;
+    readonly picture: RpcUnaryMethod<typeof WS_METHODS.themeShowcasePicture>;
+    readonly read: RpcUnaryMethod<typeof WS_METHODS.themeShowcaseRead>;
+    readonly prepare: RpcUnaryMethod<typeof WS_METHODS.themeShowcasePrepare>;
+    readonly submit: RpcUnaryMethod<typeof WS_METHODS.themeShowcaseSubmit>;
+    readonly submissions: RpcUnaryMethod<typeof WS_METHODS.themeShowcaseSubmissions>;
+  };
   /** This computer's scheduled tasks (docs/design/fleet.md, Part 6). */
   readonly scheduledTasks: {
     readonly subscribe: RpcStreamMethod<typeof WS_METHODS.scheduledTasksSubscribe>;
@@ -1252,6 +1261,18 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       remove: (input) => transport.request((client) => client[WS_METHODS.themesDelete](input)),
       restore: (input) => transport.request((client) => client[WS_METHODS.themesRestore](input)),
       merge: (input) => transport.request((client) => client[WS_METHODS.themesMerge](input)),
+    },
+    themeShowcase: {
+      list: (input) => transport.request((client) => client[WS_METHODS.themeShowcaseList](input)),
+      picture: (input) =>
+        transport.request((client) => client[WS_METHODS.themeShowcasePicture](input)),
+      read: (input) => transport.request((client) => client[WS_METHODS.themeShowcaseRead](input)),
+      prepare: (input) =>
+        transport.request((client) => client[WS_METHODS.themeShowcasePrepare](input)),
+      submit: (input) =>
+        transport.request((client) => client[WS_METHODS.themeShowcaseSubmit](input)),
+      submissions: (input) =>
+        transport.request((client) => client[WS_METHODS.themeShowcaseSubmissions](input)),
     },
     scheduledTasks: {
       subscribe: (listener, options) =>

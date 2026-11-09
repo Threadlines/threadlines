@@ -626,8 +626,7 @@ longer listed (`RETIRED_STARTER_THEMES`): **Dunes** (gave way to Meadow),
 
 ## Sharing
 
-A theme file is the unit people share, by hand today and through a
-showcase later. Export file… opens a dialog that makes the file ready to
+A theme file is the unit people share, by hand or through the Showcase. Export file… opens a dialog that makes the file ready to
 share (`themeForSharing`, packages/shared/src/themes/sharing.ts):
 
 - It never says which thread made the theme: `createdBy` is left out (an
@@ -660,16 +659,75 @@ The rule for a new field: a build that doesn't know it will carry it
 everywhere, sharing included, so anything private goes under `createdBy`,
 which sharing always leaves out.
 
-Still to come before a public showcase: font licenses travel with embedded
-fonts (Google and Bunny fonts are open, but OFL wants its notice kept),
-re-encoded previews, and a takedown policy.
+## Showcase
 
-## The public gallery (after)
+Themes people shared, browsable and tryable in the app (Nov 9, 2026). It
+lives in a public repository, Threadlines/themes, with no server or account
+of ours: sharing is a pull request from the person's own GitHub account, and
+the list is a file the repository's workflow rebuilds on every merge.
 
-A page on threadlines.dev with the starters, later user submissions: still,
-live preview, Download, Copy prompt. Submissions need review because themes
-are code, even walled off. Separate PR after the app feature, per Will's
-"files first, then a gallery".
+**The repository.** `themes/<folder>/` holds `theme.threadlines-theme`,
+`thumbnail.png` (320×200), `meta.json` (`sharedBy`, the login that shared
+it, and `featured`, which maintainers set) and a generated `NOTICE.md`
+(credit, license, each font's copyright and license). `index.json` lists
+every theme with what a tile needs (name, base, three colors, credits, who
+shared it, featured, the day it was added) and, for its file and picture,
+the path, byte count and SHA-256. `licenses/` carries the OFL 1.1 and
+Apache 2.0 texts. `scripts/theme-showcase.ts` here does both jobs, run by
+the repository's workflows from a pinned Threadlines commit (never code from
+the pull request): `check` on every pull request, `index` after a merge.
+
+**The rules** (`packages/shared/src/themes/showcase.ts`, shared by the app,
+the server and the checks):
+
+- Only fields this build knows (`unknownThemeFields`): nothing a newer build
+  added can slip out unreviewed. `createdBy` is never there.
+- A license others can use: CC BY 4.0 or CC0. A starter's MIT copy is
+  refused (everyone has the starters).
+- Embedded fonts keep their notice inside the font: the WOFF2 name table
+  (`fontNotice.ts`) must carry a copyright (name 0) and an OFL or Apache
+  license (name 13 or 14), which is how OFL's "keep the notice" is met.
+  Google and Bunny subsets keep both.
+- The picture is a plain PNG of 320×200, at most 160 KB, with no chunk
+  that could carry text, every checksum right and its image data unpacking
+  to exactly its rows (where zlib is at hand: the server and the checks). The app draws it (the new-thread specimen, art or
+  not) and drops what a browser screenshot adds (`plainPng`).
+- A pull request from anyone but a maintainer may add theme folders, change
+  only folders it shared, claim only its own login, and touch nothing else.
+
+**Reading it.** The server fetches `index.json` and every file from
+raw.githubusercontent.com/Threadlines/themes/main only, following no
+redirect, each within its size cap, and uses a file only when its size and
+SHA-256 match the list (a theme also its content hash). The list stays fresh
+for 30 minutes and is kept when a later fetch fails; the view says the list
+may be old, with Try again. A list in a newer format says to update.
+
+**What the user sees.** Settings › Appearance has Your themes and Showcase
+side by side above the gallery, each with its own filters (Showcase: All,
+Featured when there is one, Dark, Light). A Showcase tile shows its picture,
+name and credit ("by Mira", or the login that shared it); clicking it starts
+the usual trial, and Keep saves it to the library (`theme.saved` with origin
+`showcase`). A library theme's menu has Share to Showcase… (beside Export
+file…, which stays for sharing by hand). Its dialog shows the picture, the
+fonts and their licenses, the same credit fields as export, Include the
+prompt, and the GitHub account it would post as (Sign in when there is
+none), plus anything that stops it from being shared. Share opens the pull
+request; the tile then says In review, In the Showcase or Not added.
+
+**Sharing, step by step** (`apps/server/src/themes/ThemeShowcase.ts`). The
+server rebuilds the file itself from the library entry (never the client's
+copy), checks the account is the one the person saw, records the share
+(`theme_showcase_submissions`, migration 106), forks the repository (GitHub
+returns the existing fork), writes the folder as one commit on branch
+`showcase/<share id>`, and opens the pull request, or finds the one that
+branch already has. Every step can be taken again: sending the same share
+twice updates one branch and finds one pull request, and a pull request
+GitHub opened without answering is looked for before saying so. The account
+is checked again just before the pull request, which is what makes it
+public. A share's state follows its pull request, looked up at most every
+five minutes.
+
+**Takedown.** An issue form in the repository; maintainers remove the folder.
 
 ## Rule changes (approved by Will, Nov 5)
 
