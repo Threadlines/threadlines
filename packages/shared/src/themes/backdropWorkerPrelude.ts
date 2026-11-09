@@ -517,4 +517,7 @@ export function backdropWorkerPrelude(config: BackdropWorkerConfig): void {
     if (!message || message.type !== "tick" || message.generation !== generation) return;
     onTick(message);
   });
+
+  // The theme's script runs next: its time to define the art starts now.
+  post({ type: "booted", generation });
 }

@@ -12,15 +12,21 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 // the way ThemeBackdropHost drives it, with its test hooks on.
 
 /**
- * Waits on the frame. It answers a probe between frames, and on a busy CI
- * machine's software GPU, more so while `test:capture-shown` reads pixels
- * back every frame, one frame can outlast vi.waitFor's 1 s default. Waits
- * that already allow longer keep their own.
+ * How long a wait on the frame may take. In the test browser the frame runs
+ * on the page's main thread (a sandboxed frame gets no process of its own),
+ * and each of its GL calls can wait on the GPU process. On CI that is one
+ * software GPU shared by every test tab, and it has gone 6 s without letting
+ * the frame draw or answer a probe. A healthy machine answers in milliseconds, and a wait
+ * returns as soon as its check passes, so the room only costs time when the
+ * machine is starved.
  */
+const FRAME_WAIT_MS = 20_000;
+
+/** Waits on the frame. It answers a probe between frames. */
 const waitForFrame = <T,>(
   callback: () => T | Promise<T>,
   options?: { readonly timeout?: number; readonly interval?: number },
-) => vi.waitFor(callback, { timeout: 5_000, interval: 50, ...options });
+) => vi.waitFor(callback, { timeout: FRAME_WAIT_MS, interval: 50, ...options });
 
 type Message = Record<string, unknown> & { type: string };
 interface Probe {
@@ -123,31 +129,32 @@ async function mountFrame() {
     post({ type: "activity", activity: { working: 0, waiting: 0 } });
     post({ type: "conditions", conditions: LIVE });
   };
-  const failure = (timeout = 8_000) =>
-    waitForFrame(
-      () => {
-        const found = messages.find((message) => message.type === "failure");
-        if (!found) throw new Error("no failure yet");
-        return found as Message & { reason: string; detail?: string };
-      },
-      { timeout, interval: 50 },
-    );
-  /** Waits for a frame past `count`. Art the frame stopped says why, rather than a frame count. */
+  const failure = () =>
+    waitForFrame(() => {
+      const found = messages.find((message) => message.type === "failure");
+      if (!found) throw new Error("no failure yet");
+      return found as Message & { reason: string; detail?: string };
+    });
+  /**
+   * Waits for a frame past `count`. Art the frame stopped says why; a frame
+   * that is only slow shows how far it got.
+   */
   const framesAbove = (count: number) =>
-    waitForFrame(
-      async () => {
-        const answer = await probe();
-        const stopped = messages.find((message) => message.type === "failure");
-        if (stopped) {
-          throw new Error(
-            `The art stopped: ${String(stopped.reason)} ${String(stopped.detail ?? "")}`,
-          );
-        }
-        expect(answer.drawnFrames).toBeGreaterThan(count);
-        return answer;
-      },
-      { timeout: 6_000, interval: 50 },
-    );
+    waitForFrame(async () => {
+      const answer = await probe();
+      const stopped = messages.find((message) => message.type === "failure");
+      if (stopped) {
+        throw new Error(
+          `The art stopped: ${String(stopped.reason)} ${String(stopped.detail ?? "")}`,
+        );
+      }
+      const { drawnFrames, ticks, generation, workerAlive, throttle, state } = answer;
+      expect(
+        drawnFrames,
+        `the frame so far: ${JSON.stringify({ ticks, generation, workerAlive, throttle, state })}`,
+      ).toBeGreaterThan(count);
+      return answer;
+    });
   const dispose = () => {
     window.removeEventListener("message", onMessage);
     frame.remove();
@@ -184,22 +191,45 @@ afterEach(() => {
   mounted = null;
 });
 
-describe("backdrop frame", () => {
+// A few frame waits in a row can each take FRAME_WAIT_MS on a starved machine.
+describe("backdrop frame", { timeout: 60_000 }, () => {
   it("keeps the page's timers on time while the art spins", async () => {
     mounted = await mountFrame();
+    // Every frame holds the worker for SPIN_MS. Slowed twice, a tick has
+    // 800 ms before it counts as missed, so the first frame comes back after
+    // three misses rather than the art being stopped as too heavy (six) in
+    // the middle of it.
+    const SPIN_MS = 3_000;
     mounted.start(
       "grid",
       `threadlines.backdrop({ mode: "grid", cell: { width: 10, height: 14 }, glyphs: " #",
-        draw() { const end = performance.now() + 2500; while (performance.now() < end) {} } });`,
+        draw() { const end = performance.now() + ${SPIN_MS}; while (performance.now() < end) {} } });`,
     );
+    mounted.post({ type: "conditions", conditions: { ...LIVE, slowdown: 2 } });
     await waitForFrame(async () => expect((await mounted!.probe()).ticks).toBeGreaterThan(0));
+    // A second of short timers, inside the art's first frame.
     let worst = 0;
-    for (let round = 0; round < 30; round++) {
+    for (const until = performance.now() + 1_000; performance.now() < until;) {
       const asked = performance.now();
       await sleep(25);
       worst = Math.max(worst, performance.now() - asked - 25);
     }
-    expect(worst).toBeLessThan(50);
+    // On the page's thread, the art would hold a timer for most of a frame.
+    // The frame's own drawing does run there in the test browser, and a
+    // starved software GPU has held the page 140 ms on CI and seconds locally.
+    expect(worst).toBeLessThan(SPIN_MS / 2);
+    // Hold the art and let the frame in flight come back: Chromium lets a
+    // worker stopped mid-spin run on for about 1.5 s, into the next test.
+    // Art already stopped as too heavy has nothing left to wait for.
+    mounted.post({ type: "conditions", conditions: { ...LIVE, slowdown: 2, busy: true } });
+    await waitForFrame(async () => {
+      const { ticks, drawnFrames, state } = await mounted!.probe();
+      const stopped = mounted!.messages.some((message) => message.type === "failure");
+      expect(
+        stopped || (state === "hold" && ticks === drawnFrames),
+        `state ${state}, ${ticks - drawnFrames} frame(s) in flight`,
+      ).toBe(true);
+    });
   });
 
   it("gives the art no network, nested scripts or fonts", async () => {
@@ -225,6 +255,23 @@ describe("backdrop frame", () => {
       scripts: "blocked",
       font: "blocked",
     });
+  });
+
+  it("fails art whose worker never reports in, rather than waiting on it", async () => {
+    mounted = await mountFrame();
+    mounted.post({ type: "test:launch-ms", ms: 1_000 });
+    // A function declared at a script's top level exists before any of the
+    // script runs, the prelude included: this one swallows every reply.
+    mounted.start(
+      "grid",
+      `function postMessage() {}
+      threadlines.backdrop({ mode: "grid", cell: { width: 10, height: 14 }, glyphs: " #", draw() {} });`,
+    );
+    const failure = await mounted.failure();
+    expect([failure.reason, failure.detail]).toEqual([
+      "script-error",
+      "The art didn't start: its worker never reported in.",
+    ]);
   });
 
   it("terminates the worker while paused, remeasures new zones, and resumes the art's time", async () => {
@@ -297,7 +344,6 @@ describe("backdrop frame", () => {
 
     mounted.post({ type: "conditions", conditions: LIVE });
     await waitForFrame(async () => expect((await mounted!.probe()).fading).toBe(false), {
-      timeout: 8_000,
       interval: 100,
     });
     expect((await mounted.shownNow()).column?.high).toBeLessThan(0.05);
@@ -332,7 +378,6 @@ describe("backdrop frame", () => {
     expect((await mounted.shownNow()).column?.high).toBeGreaterThan(0.25);
     mounted.post({ type: "test:fade-ms", ms: 1 });
     await waitForFrame(async () => expect((await mounted!.probe()).fading).toBe(false), {
-      timeout: 6_000,
       interval: 100,
     });
     expect((await mounted.shownNow()).column?.high).toBeLessThan(0.05);
@@ -376,10 +421,9 @@ describe("backdrop frame", () => {
     );
     mounted.post({ type: "conditions", conditions: { ...LIVE, focused: true } });
     await waitForFrame(async () => expect((await mounted!.probe()).throttle).toBeGreaterThan(0), {
-      timeout: 8_000,
       interval: 50,
     });
-    expect((await mounted.failure(12_000)).reason).toBe("too-heavy");
+    expect((await mounted.failure()).reason).toBe("too-heavy");
   });
 
   it("counts work the art defers past its frame, and slows art that hides it there", async () => {
@@ -393,7 +437,6 @@ describe("backdrop frame", () => {
         draw() { Promise.resolve().then(() => { const end = performance.now() + 30; while (performance.now() < end) {} }); } });`,
     );
     await waitForFrame(async () => expect((await mounted!.probe()).throttle).toBeGreaterThan(0), {
-      timeout: 12_000,
       interval: 250,
     });
   });
@@ -449,7 +492,6 @@ describe("backdrop frame", () => {
     await waitForFrame(
       async () => expect((await mounted!.probe(true)).boxes.column?.maxR).toBe(1),
       {
-        timeout: 6_000,
         interval: 50,
       },
     );
@@ -552,7 +594,7 @@ describe("backdrop frame", () => {
         if (!beat) throw new Error("no frame announced yet");
         return beat;
       },
-      { timeout: 6_000, interval: 20 },
+      { interval: 20 },
     );
     // Announced on the first frame, not on the next once-a-second heartbeat.
     expect(first.frame).toBe(1);
@@ -573,7 +615,7 @@ describe("backdrop frame", () => {
         if (all.length < 2) throw new Error("not enough stats yet");
         return all.at(-1)!;
       },
-      { timeout: 10_000, interval: 100 },
+      { interval: 100 },
     );
     // Behind other apps the art runs at 10 fps; slowed twice, 2.5.
     expect(Number(stats.fps)).toBeLessThan(5);
