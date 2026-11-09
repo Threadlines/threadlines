@@ -1,19 +1,23 @@
 import type {
   ProviderDriverKind,
   ProviderInstanceId,
-  ProviderInteractionMode,
   ProviderOptionDescriptor,
-  RuntimeMode,
   ServerProviderModel,
 } from "@threadlines/contracts";
 import { buildProviderOptionSelectionsFromDescriptors } from "@threadlines/shared/model";
 import { memo, type ReactNode } from "react";
 import { cn } from "~/lib/utils";
 import { interactionModeOptions } from "../../interactionModeOptions";
-import { runtimeModeConfig, type RuntimeModeOption } from "../../runtimeModeOptions";
 import { SegmentedControl, SegmentedControlItem } from "../ui/segmented-control";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
+import {
+  ACCESS_WHILE_PLANNING_NOTE,
+  AccessOptionContent,
+  currentAccessOption,
+  type ComposerAccessControl,
+  type ComposerModeControl,
+} from "./ComposerRunControls";
 import { EffortMeter } from "./EffortMeter";
 import {
   getDescriptorStringValue,
@@ -40,27 +44,22 @@ const ROW_LABEL_CLASS = "w-12 shrink-0 text-xs text-muted-foreground pointer-coa
 
 /**
  * The rows under the model list in the composer's settings button: the
- * agent's effort and other options, then the chat's Build/Plan mode and its
- * access level. Picking here never moves focus back to the prompt, so several
- * settings can change in one visit; the popup closes on its own terms.
+ * agent's effort and other options, then, where the composer row has no room
+ * for them (phones), the chat's Build/Plan mode and its access level. Picking
+ * here never moves focus back to the prompt, so several settings can change in
+ * one visit; the popup closes on its own terms.
  */
 export const ModelPickerSettings = memo(function ModelPickerSettings(props: {
   /** Null while there is no agent to set up, such as while one is being added. */
   traits: ModelPickerTraitsTarget | null;
   /** Shown in place of the agent's options while `traits` is null. */
   traitsNote?: ReactNode;
-  mode: {
-    value: ProviderInteractionMode;
-    onChange: (mode: ProviderInteractionMode) => void;
-  } | null;
-  access: {
-    value: RuntimeMode;
-    options: ReadonlyArray<RuntimeModeOption>;
-    onChange: (mode: RuntimeMode) => void;
-    /** Plan turns don't edit; the level applies once the agent builds. */
-    planning: boolean;
-  };
+  /** Null where the agent has no Plan mode, or the composer row shows it. */
+  mode: ComposerModeControl | null;
+  /** Null where the composer row shows it. */
+  access: ComposerAccessControl | null;
 }) {
+  if (!props.traits && !props.traitsNote && !props.mode && !props.access) return null;
   return (
     <div
       data-model-picker-settings="true"
@@ -71,98 +70,76 @@ export const ModelPickerSettings = memo(function ModelPickerSettings(props: {
       ) : props.traitsNote ? (
         <p className="text-xs text-muted-foreground">{props.traitsNote}</p>
       ) : null}
-      <div className="flex min-w-0 items-center gap-2.5">
-        {props.mode ? (
-          <>
-            <span className={ROW_LABEL_CLASS}>Mode</span>
-            <SegmentedControl
-              size="sm"
-              aria-label="Mode"
-              value={props.mode.value}
-              onValueChange={props.mode.onChange}
-            >
-              {interactionModeOptions.map((option) => {
-                const Icon = option.icon;
-                return (
-                  <SegmentedControlItem
-                    key={option.mode}
-                    value={option.mode}
-                    title={option.description}
-                    data-mode-option={option.mode}
-                  >
-                    <Icon aria-hidden="true" />
-                    {option.label}
-                  </SegmentedControlItem>
-                );
-              })}
-            </SegmentedControl>
-          </>
-        ) : null}
-        <AccessSelect {...props.access} />
-      </div>
+      {props.mode || props.access ? (
+        <div className="flex min-w-0 items-center gap-2.5">
+          {props.mode ? (
+            <>
+              <span className={ROW_LABEL_CLASS}>Mode</span>
+              <SegmentedControl
+                size="sm"
+                aria-label="Mode"
+                value={props.mode.value}
+                onValueChange={props.mode.onChange}
+              >
+                {interactionModeOptions.map((option) => {
+                  const Icon = option.icon;
+                  return (
+                    <SegmentedControlItem
+                      key={option.mode}
+                      value={option.mode}
+                      title={option.description}
+                      data-mode-option={option.mode}
+                    >
+                      <Icon aria-hidden="true" />
+                      {option.label}
+                    </SegmentedControlItem>
+                  );
+                })}
+              </SegmentedControl>
+            </>
+          ) : null}
+          {props.access ? <AccessSelect access={props.access} /> : null}
+        </div>
+      ) : null}
     </div>
   );
 });
 
-function AccessSelect(props: {
-  value: RuntimeMode;
-  options: ReadonlyArray<RuntimeModeOption>;
-  onChange: (mode: RuntimeMode) => void;
-  planning: boolean;
-}) {
-  const current = props.options.find((option) => option.mode === props.value) ?? {
-    mode: props.value,
-    ...runtimeModeConfig[props.value],
-  };
+function AccessSelect(props: { access: ComposerAccessControl }) {
+  const { access } = props;
+  const current = currentAccessOption(access);
   const CurrentIcon = current.icon;
   return (
     <span className="ms-auto flex min-w-0 items-center gap-2">
       <span className="shrink-0 text-xs text-muted-foreground">Access</span>
       <Select
-        value={props.value}
+        value={access.value}
         onValueChange={(value) => {
           // Shown is the level the chat runs at, which can differ from the
           // one chosen: picking it pins it, so only an empty value is skipped.
-          if (value) props.onChange(value);
+          if (value) access.onChange(value);
         }}
       >
         <SelectTrigger
           size="xs"
-          className={cn("w-auto min-w-0 max-w-44", props.planning && "opacity-65")}
+          className={cn("w-auto min-w-0 max-w-44", access.planning && "opacity-65")}
           aria-label={`Access level: ${current.label}`}
-          title={
-            props.planning
-              ? "Plan turns don't edit files. This access level applies when you build."
-              : current.description
-          }
+          title={access.planning ? ACCESS_WHILE_PLANNING_NOTE : current.description}
         >
           <CurrentIcon aria-hidden="true" className="size-3.5" />
           <SelectValue>{current.label}</SelectValue>
         </SelectTrigger>
         <SelectPopup alignItemWithTrigger={false} matchTriggerWidth={false} align="end">
-          {props.options.map((option) => {
-            const OptionIcon = option.icon;
-            return (
-              <SelectItem
-                key={option.mode}
-                value={option.mode}
-                disabled={option.disabled === true}
-                className="min-w-64 py-2"
-              >
-                <div className="grid min-w-0 gap-0.5">
-                  <span className="inline-flex items-center gap-1.5 font-medium text-foreground">
-                    <OptionIcon className="size-3.5 shrink-0 text-muted-foreground" />
-                    {option.label}
-                  </span>
-                  <span className="text-muted-foreground text-xs leading-4">
-                    {option.disabled && option.disabledReason
-                      ? option.disabledReason
-                      : option.description}
-                  </span>
-                </div>
-              </SelectItem>
-            );
-          })}
+          {access.options.map((option) => (
+            <SelectItem
+              key={option.mode}
+              value={option.mode}
+              disabled={option.disabled === true}
+              className="min-w-64 py-2"
+            >
+              <AccessOptionContent option={option} />
+            </SelectItem>
+          ))}
         </SelectPopup>
       </Select>
     </span>

@@ -19,7 +19,7 @@ import { isMacPlatform } from "../lib/utils";
 import { useTerminalStateStore } from "../terminalStateStore";
 import { chooseTheme, readThemeState } from "../theme/themeStore";
 import { type NormalizedWsRpcRequestBody } from "../../test/wsRpcHarness";
-import { nextFrames } from "../lib/frameProbe.browser-harness";
+import { nextFrames, readAfterEachPaint } from "../lib/frameProbe.browser-harness";
 
 import {
   THREAD_ID,
@@ -32,6 +32,7 @@ import {
   wsRequests,
   DEFAULT_VIEWPORT,
   WIDE_FOOTER_VIEWPORT,
+  PHONE_VIEWPORT,
   createTerminalContext,
   createSnapshotForTargetUser,
   addThreadToSnapshot,
@@ -55,9 +56,9 @@ import {
   waitForSendButton,
   findComposerProviderModelPicker,
   findVisibleComposerFooter,
-  waitForSelectItemContainingText,
-  clickSelectItemContainingText,
   waitForServerConfigToApply,
+  waitForComposerInteractionMode,
+  setVisibleComposerFormWidth,
   releaseModShortcut,
   mountChatView,
   registerChatViewSuiteHooks,
@@ -87,6 +88,14 @@ async function openComposerSettings(): Promise<HTMLElement> {
   return waitForElement(
     () => document.querySelector<HTMLElement>('[data-model-picker-settings="true"]'),
     "Unable to find the composer settings.",
+  );
+}
+
+/** One level in the access menu beside the model button. */
+function waitForAccessOption(mode: string): Promise<HTMLElement> {
+  return waitForElement(
+    () => document.querySelector<HTMLElement>(`[data-access-option="${mode}"]`),
+    `Unable to find the ${mode} access option.`,
   );
 }
 
@@ -525,7 +534,7 @@ describe("ChatView (full app): composer", () => {
     }
   });
 
-  it("shows runtime mode descriptions in the desktop composer access select", async () => {
+  it("puts Build/Plan and access beside the model button, dropping their words where the row is short", async () => {
     setDraftThreadWithoutWorktree();
 
     const mounted = await mountChatView({
@@ -534,26 +543,172 @@ describe("ChatView (full app): composer", () => {
     });
 
     try {
-      // Access lives in the settings under the model button.
-      const settings = await openComposerSettings();
-      const runtimeModeSelect = await waitForElement(
-        () =>
-          settings.querySelector<HTMLButtonElement>(
-            'button[aria-label="Access level: Full access"]',
-          ),
-        "Unable to find the access level select.",
+      const footer = await waitForElement(
+        findVisibleComposerFooter,
+        "Unable to find composer footer.",
       );
-      runtimeModeSelect.click();
+      const modeButton = await waitForElement(
+        () => footer.querySelector<HTMLButtonElement>("[data-chat-composer-mode]"),
+        "Unable to find the mode button.",
+      );
+      const accessButton = await waitForElement(
+        () => footer.querySelector<HTMLButtonElement>('button[aria-label^="Access level:"]'),
+        "Unable to find the access button.",
+      );
+      const editor = await waitForComposerEditor();
+      const draft = () => useComposerDraftStore.getState().draftThreadsByThreadKey[THREAD_KEY];
 
-      expect((await waitForSelectItemContainingText("Supervised")).textContent).toContain(
+      // One click switches the mode and puts the cursor back in the prompt.
+      await waitForComposerInteractionMode("Build");
+      modeButton.click();
+      await waitForComposerInteractionMode("Plan");
+      await vi.waitFor(() => expect(editor.contains(document.activeElement)).toBe(true));
+      expect(draft()?.interactionMode).toBe("plan");
+
+      // A pick from the access menu does the same.
+      accessButton.click();
+      (await waitForAccessOption("approval-required")).click();
+      await vi.waitFor(() => {
+        expect(draft()?.runtimeMode).toBe("approval-required");
+        expect(accessButton.getAttribute("aria-label")).toBe("Access level: Supervised");
+        expect(editor.contains(document.activeElement)).toBe(true);
+      });
+
+      // The model button and its panel don't repeat them.
+      const modelButton = footer.querySelector<HTMLElement>(
+        '[data-chat-provider-model-picker="true"]',
+      )!;
+      expect(modelButton.textContent).not.toContain("Plan");
+      modelButton.click();
+      const picker = await waitForElement(
+        () => document.querySelector<HTMLElement>("[data-model-picker-variant]"),
+        "Unable to find the model picker.",
+      );
+      expect(picker.querySelector("[data-mode-option]")).toBeNull();
+      expect(picker.querySelector('[aria-label^="Access level:"]')).toBeNull();
+      await userEvent.keyboard("{Escape}");
+      await vi.waitFor(() =>
+        expect(document.querySelector("[data-model-picker-variant]")).toBeNull(),
+      );
+
+      // A short row keeps the icons and sets the words aside; room brings
+      // them back.
+      const wordsShown = () =>
+        [...footer.querySelectorAll<HTMLElement>("[data-run-control-word]")].every(
+          (word) => getComputedStyle(word).visibility !== "hidden",
+        );
+      const modelCut = () =>
+        [...modelButton.querySelectorAll<HTMLElement>(".truncate")].some(
+          (label) => label.scrollWidth > label.clientWidth,
+        );
+      expect(wordsShown()).toBe(true);
+      await setVisibleComposerFormWidth(480);
+      await vi.waitFor(() => expect(wordsShown()).toBe(false));
+      expect(modeButton.getBoundingClientRect().width).toBeGreaterThan(0);
+      expect(accessButton.getBoundingClientRect().width).toBeGreaterThan(0);
+
+      // Find where the words only just fit beside "Supervised".
+      let width = 480;
+      while (!wordsShown() && width < 900) {
+        width += 4;
+        await setVisibleComposerFormWidth(width);
+        await nextFrames(2);
+      }
+      expect(wordsShown()).toBe(true);
+      expect(modelCut()).toBe(false);
+
+      // At that width the longer "Auto-accept edits" doesn't fit: the words
+      // go, and no frame shows the model name cut on the way.
+      let cutFrames = 0;
+      const stop = readAfterEachPaint(() => {
+        if (wordsShown() && modelCut()) cutFrames += 1;
+      });
+      try {
+        accessButton.click();
+        (await waitForAccessOption("auto-accept-edits")).click();
+        await vi.waitFor(() => expect(wordsShown()).toBe(false));
+        await nextFrames(3);
+        accessButton.click();
+        (await waitForAccessOption("approval-required")).click();
+        await vi.waitFor(() => expect(wordsShown()).toBe(true));
+        await nextFrames(3);
+      } finally {
+        stop();
+      }
+      expect(cutFrames).toBe(0);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps Build/Plan and access in the model button's panel on phones, leaving the name its room", async () => {
+    setDraftThreadWithoutWorktree();
+    useComposerDraftStore.getState().setInteractionMode(THREAD_REF, "plan");
+
+    const mounted = await mountChatView({
+      viewport: PHONE_VIEWPORT,
+      snapshot: createDraftOnlySnapshot(),
+    });
+
+    try {
+      const footer = await waitForElement(
+        findVisibleComposerFooter,
+        "Unable to find composer footer.",
+      );
+      expect(footer.querySelector("[data-chat-composer-mode]")).toBeNull();
+      expect(footer.querySelector('[aria-label^="Access level:"]')).toBeNull();
+      // Plan shows as the composer's ring, not on the model button, whose
+      // name keeps its room.
+      await waitForComposerInteractionMode("Plan");
+      const modelButton = footer.querySelector<HTMLElement>(
+        '[data-chat-provider-model-picker="true"]',
+      )!;
+      expect(modelButton.textContent).not.toContain("Plan");
+      expect(modelButton.textContent).not.toContain("Full access");
+      for (const label of modelButton.querySelectorAll<HTMLElement>(".truncate")) {
+        expect(label.scrollWidth).toBeLessThanOrEqual(label.clientWidth);
+      }
+
+      const settings = await openComposerSettings();
+      expect(settings.querySelector('[data-mode-option="plan"]')).not.toBeNull();
+      expect(
+        settings.querySelector('button[aria-label="Access level: Full access"]'),
+      ).not.toBeNull();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("shows runtime mode descriptions in the desktop composer access menu", async () => {
+    setDraftThreadWithoutWorktree();
+
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createDraftOnlySnapshot(),
+    });
+
+    try {
+      // On desktop, access has its own button beside the model button.
+      const footer = await waitForElement(
+        findVisibleComposerFooter,
+        "Unable to find composer footer.",
+      );
+      const accessButton = await waitForElement(
+        () =>
+          footer.querySelector<HTMLButtonElement>('button[aria-label="Access level: Full access"]'),
+        "Unable to find the access level button.",
+      );
+      accessButton.click();
+
+      expect((await waitForAccessOption("approval-required")).textContent).toContain(
         "Asks before commands and file changes",
       );
-
       // The draft uses the default codex driver, so the menu shows the
       // codex-specific blast-radius copy for the middle tier.
-      const autoAcceptItem = await waitForSelectItemContainingText("Auto-accept edits");
-      expect(autoAcceptItem.textContent).toContain("workspace commands run");
-      expect((await waitForSelectItemContainingText("Full access")).textContent).toContain(
+      expect((await waitForAccessOption("auto-accept-edits")).textContent).toContain(
+        "workspace commands run",
+      );
+      expect((await waitForAccessOption("full-access")).textContent).toContain(
         "No prompts or sandbox",
       );
     } finally {
@@ -593,12 +748,10 @@ describe("ChatView (full app): composer", () => {
         findVisibleComposerFooter,
         "Unable to find composer footer.",
       );
-      expect(footer).toBeTruthy();
-      const settings = await openComposerSettings();
+      const accessButton = () =>
+        footer.querySelector<HTMLButtonElement>('button[aria-label^="Access level:"]');
       await vi.waitFor(() => {
-        expect(
-          settings.querySelector('button[aria-label="Access level: Auto-accept edits"]'),
-        ).not.toBeNull();
+        expect(accessButton()?.getAttribute("aria-label")).toBe("Access level: Auto-accept edits");
       });
       // The chat keeps its choice, for an agent that has Auto.
       const chosen = () =>
@@ -606,8 +759,8 @@ describe("ChatView (full app): composer", () => {
       expect(chosen()).toBe("auto");
 
       // Picking the level shown pins it.
-      settings.querySelector<HTMLButtonElement>('button[aria-label^="Access level:"]')!.click();
-      await clickSelectItemContainingText("Auto-accept edits");
+      accessButton()!.click();
+      (await waitForAccessOption("auto-accept-edits")).click();
       await vi.waitFor(() => {
         expect(chosen()).toBe("auto-accept-edits");
       });

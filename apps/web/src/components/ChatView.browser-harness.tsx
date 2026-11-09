@@ -2976,19 +2976,22 @@ export async function dragRightPanelFarWider(): Promise<void> {
 }
 
 /**
- * Waits for the composer's mode: Plan shows on its settings button, Build
- * (the usual) does not.
+ * Waits for the composer's mode: on its own button beside the model button,
+ * and on phones, which have no such button, as the composer's blue Plan ring.
  */
 export async function waitForComposerInteractionMode(expected: "Build" | "Plan"): Promise<void> {
   await vi.waitFor(
     () => {
-      const button = document.querySelector<HTMLButtonElement>(
-        '[data-chat-provider-model-picker="true"]',
+      const modeButton = document.querySelector<HTMLButtonElement>(
+        '[data-chat-composer-footer="true"] [data-chat-composer-mode]',
       );
-      expect(button).not.toBeNull();
-      expect(button!.querySelector('[data-model-picker-trigger-plan="true"]') !== null).toBe(
-        expected === "Plan",
-      );
+      if (modeButton) {
+        expect(modeButton.getAttribute("aria-label")).toBe(`Mode: ${expected}`);
+        return;
+      }
+      const frame = document.querySelector<HTMLElement>('[data-glass-surface="composer"]');
+      expect(frame).not.toBeNull();
+      expect(frame!.classList.contains("plan-mode-frame")).toBe(expected === "Plan");
     },
     { timeout: 8_000, interval: 16 },
   );

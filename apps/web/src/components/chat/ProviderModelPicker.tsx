@@ -16,7 +16,7 @@ import {
 import { scopedThreadKey } from "@threadlines/client-runtime";
 import { codexModelRetirementNotice } from "@threadlines/shared/model";
 import type { VariantProps } from "class-variance-authority";
-import { ChevronDownIcon, LockOpenIcon, ZapIcon } from "lucide-react";
+import { ChevronDownIcon, ZapIcon } from "lucide-react";
 import { Button, buttonVariants } from "../ui/button";
 import { DropdownChevron } from "../ui/select";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
@@ -47,15 +47,14 @@ const ADD_AGENT_REQUEST_LAPSE_MS = 2_000;
 
 /**
  * What the composer's settings button says besides the model: the effort
- * level, and the settings that are worth seeing because they are not the
- * usual (Plan mode, Full access). Ultracode keeps its own look and glint.
+ * level and Fast Mode. Ultracode keeps its own look and glint. Build/Plan and
+ * the access level have buttons of their own beside it on desktop and live in
+ * its panel on phones, where Plan still shows as the composer's blue ring.
  */
 export interface ModelPickerTriggerSummary {
   readonly effort: string | null;
   readonly ultracode: boolean;
   readonly fastMode: boolean;
-  readonly plan: boolean;
-  readonly fullAccess: boolean;
   /** The agent the summary describes is working; an active Ultracode glints. */
   readonly working: boolean;
 }
@@ -105,11 +104,11 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   notice?: ReactNode;
   /** What the button shows instead of the model, e.g. "Last used" or "Add agent". */
   triggerContent?: ReactNode;
-  /** The composer's settings beside the model name (effort, Plan, Full access). */
+  /** The composer's settings beside the model name (effort, Fast Mode). */
   summary?: ModelPickerTriggerSummary | null;
   /**
-   * Rows under the model list: the agent's effort and other options, the
-   * chat's mode and access level.
+   * Rows under the model list: the agent's effort and other options, and on
+   * phones the chat's mode and access level.
    */
   settings?: ReactNode;
   /** The rows while an agent is being added, which has no options of its own yet. */
@@ -271,7 +270,9 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   const inRoom = room !== null && room.inRoom;
 
   const triggerClassName = cn(
-    "min-w-0 justify-start overflow-hidden whitespace-nowrap px-2 text-muted-foreground/70 hover:text-foreground/80 [&_svg]:mx-0",
+    // The hover eases in, quick but not instant, like the buttons beside it;
+    // the shadow stays in the list for the solid variant's pressed state.
+    "min-w-0 justify-start overflow-hidden whitespace-nowrap px-2 text-muted-foreground/70 transition-[color,background-color,border-color,box-shadow] duration-150 hover:text-foreground/80 [&_svg]:mx-0",
     // A room's narrow button is wider by the faded icons, so the name
     // keeps the room it has outside a room whenever the row allows.
     props.compact
@@ -486,11 +487,10 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
 /**
  * The settings beside the model name on the composer's button. The effort
  * drops out where the row gets narrow (and on phones), before the name has
- * to truncate; Plan and Full access stay, since the controls that set them
- * are now behind the button.
+ * to truncate.
  */
 function TriggerSummary(props: { summary: ModelPickerTriggerSummary }) {
-  const { effort, ultracode, fastMode, plan, fullAccess } = props.summary;
+  const { effort, ultracode, fastMode } = props.summary;
   const effortText =
     ultracode && effort && effort !== "Ultracode" ? `${effort}, Ultracode` : effort;
   return (
@@ -513,27 +513,6 @@ function TriggerSummary(props: { summary: ModelPickerTriggerSummary }) {
           <ZapIcon aria-hidden="true" className="size-3 shrink-0 text-primary-readable" />
           <span className="sr-only">Fast Mode on</span>
         </>
-      ) : null}
-      {plan ? (
-        <span data-model-picker-trigger-plan="true" className="flex shrink-0 items-center gap-1">
-          <span aria-hidden="true" className="opacity-50">
-            ·
-          </span>
-          <span className="font-medium text-primary-readable">Plan</span>
-        </span>
-      ) : null}
-      {fullAccess ? (
-        <span
-          data-model-picker-trigger-full-access="true"
-          className="flex shrink-0 items-center gap-1 text-warning-foreground"
-        >
-          <span aria-hidden="true" className="text-muted-foreground opacity-50 max-sm:hidden">
-            ·
-          </span>
-          {/* A phone's row has no room for the words: the open lock says it. */}
-          <LockOpenIcon aria-hidden="true" className="size-3.5 sm:hidden" />
-          <span className="max-sm:sr-only">Full access</span>
-        </span>
       ) : null}
     </>
   );

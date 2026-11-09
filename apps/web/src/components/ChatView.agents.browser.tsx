@@ -582,7 +582,7 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
         expect(document.activeElement).toBe(pill("primary"));
       });
       // Still open: picking an agent doesn't close the picker.
-      expect(document.querySelector('[data-model-picker-settings="true"]')).not.toBeNull();
+      expect(document.querySelector("[data-model-picker-variant]")).not.toBeNull();
     } finally {
       useRoomRecipientStore.getState().choose(THREAD_REF, null);
       await mounted.cleanup();
