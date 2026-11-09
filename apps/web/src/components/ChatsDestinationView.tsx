@@ -268,7 +268,7 @@ function ChatRow({
                 thread={thread}
                 status={status}
                 testId="chats-view-row-status"
-                resting={<RelativeTimeLabel at={chatActivityAt(thread)} />}
+                resting={<RelativeTimeLabel at={chatActivityAt(thread)} compact />}
                 restingClassName="text-muted-foreground"
               />
             </span>
