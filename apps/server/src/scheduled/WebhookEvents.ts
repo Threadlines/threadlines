@@ -11,7 +11,9 @@
  *
  * A task's queue is drained when an event is stored, when any scheduled run
  * ends, and on every scheduler tick (which also covers a restart), so nothing
- * strands. Made once by ScheduledTasks, which hands it its launch.
+ * strands. While the computer woke only for upkeep a drain holds the events
+ * that came on their own. Made once by ScheduledTasks, which hands it its
+ * launch.
  */
 import * as Crypto from "node:crypto";
 
@@ -216,6 +218,10 @@ const displayBody = (event: WebhookEventRow) => {
   };
 };
 
+/** An event the user sent from Threadlines, rather than one that came on its own. */
+const sentByUser = (event: Pick<WebhookEventRow, "source">) =>
+  event.source === "test" || event.source === "replay";
+
 class ClaimRaced extends Data.TaggedError("ClaimRaced")<{}> {}
 
 export interface WebhookPipelineDeps {
@@ -236,6 +242,13 @@ export interface WebhookPipelineDeps {
   readonly projectRoot: (task: ScheduledTaskRow) => Effect.Effect<string | null>;
   /** After a write the clients' snapshot shows. */
   readonly changed: Effect.Effect<void>;
+  /**
+   * False while the computer woke only for upkeep (SystemWake): queued
+   * events stay queued, and the scheduler's first pass once it's fully awake
+   * drains them. Events the user sent ("Send a test event", "Run with this
+   * event") don't wait.
+   */
+  readonly fullyAwake: Effect.Effect<boolean>;
 }
 
 /**
@@ -662,13 +675,20 @@ export const makeWebhookEvents = (deps: WebhookPipelineDeps) =>
         return yield* new ClaimRaced();
       });
 
-    /** A task's queue, in arrival order. */
+    /**
+     * A task's queue, in arrival order. While the computer woke only for
+     * upkeep, events that came on their own stay queued; ones the user sent
+     * ("Send a test event", "Run with this event") go ahead of them.
+     */
     const processQueue = (taskId: ScheduledTaskId) =>
       Effect.gen(function* () {
         const queued = yield* webhooks.listQueued(taskId);
         if (queued.length === 0) return;
+        const runnable =
+          queued.every(sentByUser) || (yield* deps.fullyAwake) ? queued : queued.filter(sentByUser);
+        if (runnable.length === 0) return;
         let roomBlocked: string | null = null;
-        for (const event of queued) {
+        for (const event of runnable) {
           roomBlocked = yield* processOne(event, roomBlocked).pipe(
             Effect.catchCause((cause) =>
               Cause.hasInterruptsOnly(cause)

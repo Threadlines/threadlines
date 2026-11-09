@@ -22,6 +22,9 @@
  *   that had nothing to report.
  *
  * Runs work while Threadlines is running on this computer; nothing wakes it.
+ * A Mac that woke only for upkeep (SystemWake) is about to sleep again, so
+ * nothing starts then: due slots stay unclaimed and launches unresumed until
+ * it's fully awake, and a slot claimed then is a catch-up run.
  */
 import {
   type AgentThreadsMode,
@@ -119,6 +122,7 @@ import { ThreadBootstrap } from "../orchestration/Services/ThreadBootstrap.ts";
 import { ProjectionTurnRepository } from "../persistence/Services/ProjectionTurns.ts";
 import { derivedUuid } from "../orchestration/childRequestIds.ts";
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
+import { SystemWake } from "../power/Services/SystemWake.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
 import { RelayHooks } from "../relay/RelayHooks.ts";
@@ -577,6 +581,7 @@ const make = Effect.gen(function* () {
   const environment = yield* ServerEnvironment;
   const webhooks = yield* WebhookTaskRepository;
   const relayHooks = yield* RelayHooks;
+  const systemWake = yield* SystemWake;
   /** When the relay connection went down while an event task existed; null while up. */
   let relayDownSince: number | null = null;
   let eventsUnreachable = false;
@@ -2168,13 +2173,22 @@ const make = Effect.gen(function* () {
   // The scheduler
   // ---------------------------------------------------------------------------
 
-  /** Runs still launching that nobody here is launching: resumed. */
+  /**
+   * Runs still launching that nobody here is launching: resumed. Ones that
+   * started on their own wait for the computer to be fully awake; a run
+   * the user started ("Run now") doesn't.
+   */
   const resumeLaunches = Effect.gen(function* () {
     const working = yield* repo.listWorkingRuns.pipe(Effect.orElseSucceed(() => []));
-    for (const run of working) {
-      if (run.status === "launching" && !launching.has(runKey(run))) {
-        yield* launchRun(run).pipe(Effect.forkDetach);
-      }
+    const stalled = working.filter(
+      (run) => run.status === "launching" && !launching.has(runKey(run)),
+    );
+    if (stalled.length === 0) return;
+    const awake = stalled.every((run) => run.trigger === "manual")
+      ? true
+      : yield* systemWake.fullyAwake;
+    for (const run of stalled) {
+      if (awake || run.trigger === "manual") yield* launchRun(run).pipe(Effect.forkDetach);
     }
   });
 
@@ -2224,6 +2238,12 @@ const make = Effect.gen(function* () {
     yield* checkEventsReachable(tasks, now);
     let claimedAny = false;
     for (const task of tasks) {
+      // A due slot waits, unclaimed, while the computer is only half awake.
+      const due =
+        task.status === "active" &&
+        task.nextSlotUtc !== null &&
+        Date.parse(task.nextSlotUtc) <= now;
+      if (due && !(yield* systemWake.fullyAwake)) continue;
       const claimed = yield* claimDue(task, now).pipe(
         Effect.catchCause((cause) =>
           Effect.logWarning("a scheduled task's slot could not be claimed", {
@@ -2323,6 +2343,7 @@ const make = Effect.gen(function* () {
     projectRoot: (task) =>
       readProject(task.projectId).pipe(Effect.map((project) => project?.workspaceRoot ?? null)),
     changed: changedRuns,
+    fullyAwake: systemWake.fullyAwake,
   });
 
   /** An event-task call's failure in plain words: its own refusal, or what couldn't be done. */

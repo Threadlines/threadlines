@@ -102,6 +102,33 @@ it.layer(NodeServices.layer)("ScheduledTasks", (it) => {
     }),
   );
 
+  it.effect("a due slot waits while the Mac woke only for upkeep, then runs as a catch-up", () =>
+    Effect.gen(function* () {
+      const computer = yield* makeComputer;
+      yield* setClock("2026-10-20T08:00:00.000Z");
+      const service = yield* computer.boot();
+      const task = yield* service.create(draft());
+
+      // 9:00 comes in a dark wake: nothing is claimed or recorded.
+      yield* computer.setFullyAwake(false);
+      yield* setClock("2026-10-20T09:00:10.000Z");
+      yield* service.tick;
+      assert.deepEqual(yield* computer.runs(task.id), []);
+      assert.equal((yield* service.getTask(task.id))?.nextRunAt, "2026-10-20T09:00:00.000Z");
+
+      // The user opens the Mac at 9:40.
+      yield* computer.setFullyAwake(true);
+      yield* setClock("2026-10-20T09:40:00.000Z");
+      yield* service.tick;
+      const rows = yield* computer.runs(task.id);
+      assert.deepEqual(
+        rows.map((row) => [row.slotUtc, row.trigger, row.status === "skipped"]),
+        [["2026-10-20T09:00:00.000Z", "catch_up", false]],
+      );
+      assert.equal((yield* service.getTask(task.id))?.nextRunAt, "2026-10-21T09:00:00.000Z");
+    }),
+  );
+
   it.effect("a slot missed more than a week ago gets no catch-up run", () =>
     Effect.gen(function* () {
       const computer = yield* makeComputer;

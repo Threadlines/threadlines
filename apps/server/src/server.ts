@@ -90,6 +90,7 @@ import { CheckpointReactorLive } from "./orchestration/Layers/CheckpointReactor.
 import { ThreadDeletionReactorLive } from "./orchestration/Layers/ThreadDeletionReactor.ts";
 import { ThreadDiffStatBaselineReactorLive } from "./orchestration/Layers/ThreadDiffStatBaselineReactor.ts";
 import { SleepInhibitorLive } from "./power/Layers/SleepInhibitor.ts";
+import { SystemWakeLive } from "./power/Layers/SystemWake.ts";
 import { StorageMaintenanceDaemonLive } from "./persistence/Layers/StorageMaintenance.ts";
 import * as McpHttpServer from "./mcp/McpHttpServer.ts";
 import * as McpRoomServer from "./mcp/McpRoomServer.ts";
@@ -307,6 +308,11 @@ const ComputerLinksLayerLive = Layer.mergeAll(ComputerLinkReactorsLive, Computer
   Layer.provide(ServerSecretStoreLive),
 );
 
+// Whether a Mac woke only for upkeep (a dark wake): scheduled runs, event
+// tasks and continuing at a usage reset start nothing then. One instance,
+// shared by both layers below.
+const SystemWakeLayerLive = SystemWakeLive.pipe(Layer.provide(ProcessRunnerLive));
+
 // Scheduled tasks (docs/design/fleet.md, Part 6): this computer's tasks and
 // the scheduler that starts their runs, started with the other reactors;
 // runtime ingestion hands every turn's end to it (ScheduledRunTurnEnds), and
@@ -328,6 +334,7 @@ const ScheduledTasksLayerLive = Layer.mergeAll(
       WebhookTaskRepositoryLive,
       ServerSecretStoreLive,
       GitHubCli.layer,
+      SystemWakeLayerLive,
     ),
   ),
 );
@@ -532,7 +539,7 @@ const OutsideAgentsLayerLive = OutsideAgentConnectionsLive.pipe(
 const ProviderRuntimeLayerLive = Layer.mergeAll(
   ProviderSessionReaperLive,
   ThreadAutoArchiveSweeperLive,
-  ContinueAtResetSweeperLive,
+  ContinueAtResetSweeperLive.pipe(Layer.provide(SystemWakeLayerLive)),
 ).pipe(Layer.provideMerge(ProviderLayerLive), Layer.provideMerge(OrchestrationLayerLive));
 
 const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(

@@ -215,6 +215,54 @@ it.layer(NodeServices.layer)("event tasks", (it) => {
     }),
   );
 
+  it.effect(
+    "an event that comes while the Mac woke only for upkeep waits for a full wake; one the user sends runs at once",
+    () =>
+      Effect.gen(function* () {
+        const computer = yield* makeComputer;
+        yield* setClock("2026-10-20T08:00:00.000Z");
+        const service = yield* computer.boot();
+        const task = yield* service.create(
+          draft({ name: "Triage", prompt: "Triage the issue.", cadence: githubCadence() }),
+        );
+        const secret = yield* secretOf(service, task.id);
+        const body = issueLabeled(12);
+        const statuses = eventsOf(computer, task.id).pipe(
+          Effect.map((events) => events.map((event) => [event.source, event.status])),
+        );
+
+        yield* computer.setFullyAwake(false);
+        assert.equal(
+          yield* sendLocal(service, task.id, {
+            headers: githubHeaders({ event: "issues", delivery: "g-1", body, secret }),
+            body,
+          }),
+          202,
+        );
+        yield* service.tick;
+        assert.deepEqual(yield* statuses, [["local", "received"]]);
+        assert.deepEqual(yield* computer.runs(task.id), []);
+
+        // The user's test event runs; the one that came on its own still waits.
+        const tested = yield* service.testWebhook({ id: task.id, startRun: true });
+        assert.equal(tested.event.status, "ran");
+        assert.deepEqual(yield* statuses, [
+          ["local", "received"],
+          ["test", "ran"],
+        ]);
+        assert.equal((yield* computer.runs(task.id)).length, 1);
+
+        yield* computer.setFullyAwake(true);
+        yield* setClock("2026-10-20T08:10:00.000Z");
+        yield* service.tick;
+        assert.deepEqual(yield* statuses, [
+          ["local", "ran"],
+          ["test", "ran"],
+        ]);
+        assert.equal((yield* computer.runs(task.id)).length, 2);
+      }),
+  );
+
   it.effect("each check ends an event with its reason, in arrival order", () =>
     Effect.gen(function* () {
       const computer = yield* makeComputer;
