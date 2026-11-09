@@ -1568,6 +1568,7 @@ describe("finished turns and the live step", () => {
         label: "Explorer",
         role: null,
         objective: null,
+        status: "completed" as const,
         body: "Done.",
         model: null,
         reasoningEffort: null,

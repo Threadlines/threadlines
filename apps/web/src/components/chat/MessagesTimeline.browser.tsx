@@ -266,6 +266,7 @@ function buildSubagentResultTimelineEntry(objective: string) {
       label: "Reviewer subagent",
       role: "reviewer",
       objective,
+      status: "completed" as const,
       body: "**Finding:** subagent output is visible.",
       model: "gpt-5.5",
       reasoningEffort: "medium",
@@ -2006,8 +2007,12 @@ describe("MessagesTimeline", () => {
       await expect.element(receipt).toBeVisible();
       // A receipt, not a card: the full report stays in the rail.
       expect(document.querySelector("[data-subagent-result-body='true']")).toBeNull();
-      expect(document.querySelector("[data-subagent-receipt-row='true']")?.textContent).toContain(
-        "Finding: subagent output is visible.",
+      const receiptRow = document.querySelector("[data-subagent-receipt-row='true']");
+      expect(receiptRow?.textContent).toContain("Finding: subagent output is visible.");
+      // It wears the header's agent face, ringed for how the run ended.
+      expect(receiptRow?.querySelector("[data-agent-face='completed']")).not.toBeNull();
+      expect(receiptRow?.querySelector("[data-subagent-receipt-outcome]")?.textContent).toBe(
+        "Finished",
       );
 
       await receipt.click();

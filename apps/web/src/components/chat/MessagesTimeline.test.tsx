@@ -1205,6 +1205,7 @@ describe("MessagesTimeline", () => {
               nickname: "Heisenberg",
               role: "reviewer",
               objective: "Inspect timeline rendering",
+              status: "completed",
               body: "## Findings\n\n**Finding:** subagent output is visible.",
               model: "gpt-5.5",
               reasoningEffort: "medium",
@@ -1223,7 +1224,7 @@ describe("MessagesTimeline", () => {
     );
     expect(markup).toContain("Heisenberg");
     expect(markup).toContain("Findings");
-    expect(markup).toContain("Subagent");
+    expect(markup).toContain('data-subagent-receipt-outcome="completed"');
     expect(markup).toContain("gpt-5.5");
     // The report itself stays in the rail: no card, no inlined body.
     expect(markup).not.toContain('data-subagent-result-body="true"');

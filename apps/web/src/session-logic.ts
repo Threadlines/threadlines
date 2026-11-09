@@ -477,6 +477,15 @@ export interface SubagentResultEntry {
   nickname?: string | null;
   role: string | null;
   objective: string | null;
+  /** The agent's lifecycle status now. Settled, it is how the run behind this
+   *  report ended: a failed or stopped agent files a report too, and its
+   *  receipt must not read as a success. An agent sent back to work is live
+   *  again, and nothing on record says how its earlier run ended. */
+  status: SubagentProgressStatus;
+  /** Who ran it, for its mark (see SubagentProgressItem). */
+  agentProvider?: ProviderDriverKind | null;
+  sessionProvider?: ProviderDriverKind | null;
+  sessionProviderInstanceId?: ProviderInstanceId | null;
   body: string;
   model: string | null;
   reasoningEffort: string | null;
@@ -1637,6 +1646,10 @@ function deriveSubagentResultEntriesFromRecords(
       ...(record.nickname ? { nickname: record.nickname } : {}),
       role: record.role,
       objective: record.objective,
+      status: record.status,
+      agentProvider: record.agentProvider,
+      sessionProvider: record.sessionProvider,
+      sessionProviderInstanceId: record.sessionProviderInstanceId,
       body: record.resultBody,
       model: record.model,
       reasoningEffort: record.reasoningEffort,

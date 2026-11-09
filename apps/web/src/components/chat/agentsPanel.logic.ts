@@ -17,6 +17,7 @@ import {
   formatSubagentListName,
   isActiveSubagentStatus,
   type SubagentProgressItem,
+  type SubagentResultEntry,
   type ThreadSubagentHistoryEntry,
 } from "../../session-logic";
 import { formatContextWindowTokensCompact } from "../../lib/contextWindow";
@@ -604,6 +605,29 @@ export function formatSubagentReceiptSummary(body: string): string | null {
     }
   }
   return null;
+}
+
+/**
+ * How a finished agent's receipt says the run behind its report ended. An
+ * agent sent back to work after it reported is live again: its record holds
+ * only its latest state, so the receipt says the report came in and claims no
+ * outcome for it (`status` null).
+ */
+export function formatSubagentReceiptOutcome(result: Pick<SubagentResultEntry, "status">): {
+  readonly status: "completed" | "failed" | "stopped" | null;
+  readonly label: string;
+} {
+  const status = subagentBranchStatus(result.status);
+  switch (status) {
+    case "completed":
+      return { status, label: "Finished" };
+    case "failed":
+      return { status, label: "Failed" };
+    case "stopped":
+      return { status, label: "Stopped" };
+    default:
+      return { status: null, label: "Reported back" };
+  }
 }
 
 /**
