@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import os from "node:os";
@@ -57,7 +58,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
-import { attachmentRelativePath } from "../../attachmentStore.ts";
+import { attachmentRelativePath, createAttachmentId } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderAdapterValidationError } from "../Errors.ts";
@@ -582,6 +583,12 @@ function claudeInitMessage(version: string): SDKMessage {
 }
 
 const THREAD_ID = ThreadId.make("thread-claude-1");
+
+/** What every Claude session's settings carry besides its flags: staged
+ *  attachments stay readable when reads outside the project are blocked. */
+const hostSettings = (attachmentsDir: string) => ({
+  permissions: { blockReadsExemptPaths: [attachmentsDir] },
+});
 const RESUME_THREAD_ID = ThreadId.make("thread-claude-resume");
 
 describe("mapClaudeSubagentTranscript", () => {
@@ -1197,7 +1204,9 @@ describe("ClaudeAdapterLive", () => {
       const createInput = harness.getLastCreateQueryInput();
       assert.equal(createInput?.options.model, "claude-opus-5");
       assert.equal(createInput?.options.effort, "max");
+      const { attachmentsDir } = yield* ServerConfig;
       assert.deepEqual(createInput?.options.settings, {
+        ...hostSettings(attachmentsDir),
         fastMode: true,
       });
     }).pipe(
@@ -1251,7 +1260,9 @@ describe("ClaudeAdapterLive", () => {
       assert.equal(createInput?.options.model, "claude-opus-6");
       assert.equal(createInput?.options.effort, "max");
       assert.equal(createInput?.options.permissionMode, "auto");
+      const { attachmentsDir } = yield* ServerConfig;
       assert.deepEqual(createInput?.options.settings, {
+        ...hostSettings(attachmentsDir),
         fastMode: true,
       });
     }).pipe(
@@ -1304,7 +1315,8 @@ describe("ClaudeAdapterLive", () => {
       const createInput = harness.getLastCreateQueryInput();
       assert.equal(createInput?.options.model, "claude-fable-5");
       assert.equal(createInput?.options.effort, "xhigh");
-      assert.equal(createInput?.options.settings, undefined);
+      const { attachmentsDir } = yield* ServerConfig;
+      assert.deepEqual(createInput?.options.settings, hostSettings(attachmentsDir));
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -1327,7 +1339,9 @@ describe("ClaudeAdapterLive", () => {
       });
 
       const createInput = harness.getLastCreateQueryInput();
+      const { attachmentsDir } = yield* ServerConfig;
       assert.deepEqual(createInput?.options.settings, {
+        ...hostSettings(attachmentsDir),
         alwaysThinkingEnabled: false,
       });
     }).pipe(
@@ -1353,7 +1367,9 @@ describe("ClaudeAdapterLive", () => {
 
       const createInput = harness.getLastCreateQueryInput();
       assert.equal(createInput?.options.effort, "xhigh");
+      const { attachmentsDir } = yield* ServerConfig;
       assert.deepEqual(createInput?.options.settings, {
+        ...hostSettings(attachmentsDir),
         ultracode: true,
       });
     }).pipe(
@@ -1384,7 +1400,11 @@ describe("ClaudeAdapterLive", () => {
 
       const createInput = harness.getLastCreateQueryInput();
       assert.equal(createInput?.options.effort, "medium");
-      assert.deepEqual(createInput?.options.settings, { ultracode: true });
+      const { attachmentsDir } = yield* ServerConfig;
+      assert.deepEqual(createInput?.options.settings, {
+        ...hostSettings(attachmentsDir),
+        ultracode: true,
+      });
 
       yield* adapter.sendTurn({
         threadId: session.threadId,
@@ -1434,7 +1454,9 @@ describe("ClaudeAdapterLive", () => {
           runtimeMode: "full-access",
         });
 
+        const { attachmentsDir } = yield* ServerConfig;
         assert.deepEqual(harness.getLastCreateQueryInput()?.options.settings, {
+          ...hostSettings(attachmentsDir),
           workflowSizeGuideline: "large",
         });
 
@@ -1482,7 +1504,9 @@ describe("ClaudeAdapterLive", () => {
           ),
           runtimeMode: "full-access",
         });
+        const { attachmentsDir } = yield* ServerConfig;
         assert.deepEqual(harness.getLastCreateQueryInput()?.options.settings, {
+          ...hostSettings(attachmentsDir),
           env: { CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: "true" },
         });
 
@@ -1526,7 +1550,8 @@ describe("ClaudeAdapterLive", () => {
       });
 
       const createInput = harness.getLastCreateQueryInput();
-      assert.equal(createInput?.options.settings, undefined);
+      const { attachmentsDir } = yield* ServerConfig;
+      assert.deepEqual(createInput?.options.settings, hostSettings(attachmentsDir));
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -2640,78 +2665,93 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
-  it.effect("hands Claude files it cannot take natively as staged-path notes", () => {
-    const baseDir = mkdtempSync(path.join(os.tmpdir(), "claude-file-attachments-"));
-    const harness = makeHarness({
-      cwd: "/tmp/project-claude-file-attachments",
-      baseDir,
-    });
-    return Effect.gen(function* () {
-      yield* Effect.addFinalizer(() =>
-        Effect.sync(() =>
-          rmSync(baseDir, {
-            recursive: true,
-            force: true,
-          }),
-        ),
+  it.effect(
+    "hands Claude files it cannot take natively, or too big to, as staged-path notes",
+    () => {
+      const baseDir = mkdtempSync(path.join(os.tmpdir(), "claude-file-attachments-"));
+      const harness = makeHarness({
+        cwd: "/tmp/project-claude-file-attachments",
+        baseDir,
+      });
+      return Effect.gen(function* () {
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() =>
+            rmSync(baseDir, {
+              recursive: true,
+              force: true,
+            }),
+          ),
+        );
+
+        const adapter = yield* ClaudeAdapter;
+        const { attachmentsDir } = yield* ServerConfig;
+
+        const docxAttachment = {
+          type: "file" as const,
+          kind: "other" as const,
+          id: "thread-claude-attachment-12345678-1234-1234-1234-123456789abe",
+          name: "Brief.docx",
+          mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          sizeBytes: 4,
+        };
+        const svgAttachment = {
+          type: "image" as const,
+          id: "thread-claude-attachment-12345678-1234-1234-1234-123456789abf",
+          name: "logo.svg",
+          mimeType: "image/svg+xml",
+          sizeBytes: 6,
+        };
+        // Text too big to go inline: a 5 MB log is over a million tokens.
+        const logAttachment = {
+          type: "file" as const,
+          kind: "text" as const,
+          id: "thread-claude-attachment-12345678-1234-1234-1234-123456789ac0",
+          name: "server.log",
+          mimeType: "text/plain",
+          sizeBytes: 5 * 1024 * 1024,
+        };
+        const stagedPaths = [docxAttachment, svgAttachment, logAttachment].map((attachment) => {
+          const attachmentPath = path.join(attachmentsDir, attachmentRelativePath(attachment));
+          mkdirSync(path.dirname(attachmentPath), { recursive: true });
+          writeFileSync(attachmentPath, "PK\u0003\u0004");
+          return attachmentPath;
+        });
+
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        });
+
+        yield* adapter.sendTurn({
+          threadId: session.threadId,
+          input: "What does this say?",
+          attachments: [docxAttachment, svgAttachment, logAttachment],
+        });
+
+        const createInput = harness.getLastCreateQueryInput();
+        const promptMessage = yield* Effect.promise(() => readFirstPromptMessage(createInput));
+        const content = promptMessage?.message.content;
+        assert.isTrue(Array.isArray(content));
+        const blocks = content as ReadonlyArray<{ type: string; text?: string }>;
+        assert.deepEqual(
+          blocks.map((block) => block.type),
+          ["text", "text", "text", "text"],
+        );
+        assert.include(blocks[1]?.text, '"Brief.docx"');
+        assert.include(blocks[1]?.text, stagedPaths[0]);
+        assert.include(blocks[1]?.text, "not plain text");
+        assert.include(blocks[2]?.text, '"logo.svg"');
+        assert.include(blocks[2]?.text, stagedPaths[1]);
+        assert.include(blocks[3]?.text, '"server.log"');
+        assert.include(blocks[3]?.text, stagedPaths[2]);
+        assert.include(blocks[3]?.text, "too large to read whole");
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
       );
-
-      const adapter = yield* ClaudeAdapter;
-      const { attachmentsDir } = yield* ServerConfig;
-
-      const docxAttachment = {
-        type: "file" as const,
-        kind: "other" as const,
-        id: "thread-claude-attachment-12345678-1234-1234-1234-123456789abe",
-        name: "Brief.docx",
-        mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        sizeBytes: 4,
-      };
-      const svgAttachment = {
-        type: "image" as const,
-        id: "thread-claude-attachment-12345678-1234-1234-1234-123456789abf",
-        name: "logo.svg",
-        mimeType: "image/svg+xml",
-        sizeBytes: 6,
-      };
-      const stagedPaths = [docxAttachment, svgAttachment].map((attachment) => {
-        const attachmentPath = path.join(attachmentsDir, attachmentRelativePath(attachment));
-        mkdirSync(path.dirname(attachmentPath), { recursive: true });
-        writeFileSync(attachmentPath, "PK\u0003\u0004");
-        return attachmentPath;
-      });
-
-      const session = yield* adapter.startSession({
-        threadId: THREAD_ID,
-        provider: ProviderDriverKind.make("claudeAgent"),
-        runtimeMode: "full-access",
-      });
-
-      yield* adapter.sendTurn({
-        threadId: session.threadId,
-        input: "What does this say?",
-        attachments: [docxAttachment, svgAttachment],
-      });
-
-      const createInput = harness.getLastCreateQueryInput();
-      const promptMessage = yield* Effect.promise(() => readFirstPromptMessage(createInput));
-      const content = promptMessage?.message.content;
-      assert.isTrue(Array.isArray(content));
-      const blocks = content as ReadonlyArray<{ type: string; text?: string }>;
-      assert.deepEqual(
-        blocks.map((block) => block.type),
-        ["text", "text", "text"],
-      );
-      assert.include(blocks[1]?.text, '"Brief.docx"');
-      assert.include(blocks[1]?.text, stagedPaths[0]);
-      assert.include(blocks[1]?.text, "not plain text");
-      assert.include(blocks[2]?.text, '"logo.svg"');
-      assert.include(blocks[2]?.text, stagedPaths[1]);
-    }).pipe(
-      Effect.provideService(Random.Random, makeDeterministicRandomService()),
-      Effect.provide(harness.layer),
-    );
-  });
+    },
+  );
 
   it.effect("maps Claude stream/runtime messages to canonical provider runtime events", () => {
     const harness = makeHarness();
@@ -9786,6 +9826,94 @@ describe("ClaudeAdapterLive", () => {
       );
       yield* Stream.runHead(adapter.streamEvents);
       yield* Effect.promise(() => grepPermissionPromise);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("lets Claude read the attachments its messages staged without asking", () => {
+    const baseDir = mkdtempSync(path.join(os.tmpdir(), "claude-staged-reads-"));
+    const harness = makeHarness({ baseDir });
+    return Effect.gen(function* () {
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => rmSync(baseDir, { recursive: true, force: true })),
+      );
+      const adapter = yield* ClaudeAdapter;
+      const { attachmentsDir } = yield* ServerConfig;
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "approval-required",
+      });
+      yield* Stream.take(adapter.streamEvents, 3).pipe(Stream.runDrain);
+
+      const logAttachment = {
+        type: "file" as const,
+        kind: "text" as const,
+        id: `${createAttachmentId(THREAD_ID)}`,
+        name: "server.log",
+        mimeType: "text/plain",
+        sizeBytes: 5 * 1024 * 1024,
+      };
+      const stagedLog = path.join(attachmentsDir, attachmentRelativePath(logAttachment));
+      // Never sent in this session, though named like this thread's own.
+      const unsentLog = path.join(attachmentsDir, `${createAttachmentId(THREAD_ID)}.txt`);
+      mkdirSync(attachmentsDir, { recursive: true });
+      writeFileSync(stagedLog, "ERROR boom\n");
+      writeFileSync(unsentLog, "secret\n");
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "Why did it crash?",
+        attachments: [logAttachment],
+      });
+      yield* Stream.take(adapter.streamEvents, 1).pipe(Stream.runDrain);
+
+      const canUseTool = harness.getLastCreateQueryInput()?.options.canUseTool;
+      assert.equal(typeof canUseTool, "function");
+      if (!canUseTool) {
+        return;
+      }
+      const ask = (toolName: string, input: Record<string, unknown>, id: string) =>
+        canUseTool(toolName, input, {
+          signal: new AbortController().signal,
+          toolUseID: id,
+          requestId: id,
+        });
+      const expectAsked = (pending: ReturnType<typeof ask>) =>
+        Effect.gen(function* () {
+          const requested = yield* Stream.runHead(
+            adapter.streamEvents.pipe(Stream.filter((event) => event.type === "request.opened")),
+          );
+          const opened =
+            requested._tag === "Some" && requested.value.type === "request.opened"
+              ? requested.value
+              : undefined;
+          assert.isDefined(opened);
+          if (!opened) return;
+          yield* adapter.respondToRequest(
+            session.threadId,
+            ApprovalRequestId.make(String(opened.requestId)),
+            "decline",
+          );
+          assert.equal((yield* Effect.promise(() => pending))?.behavior, "deny");
+        });
+
+      const read = yield* Effect.promise(() => ask("Read", { file_path: stagedLog }, "read"));
+      assert.equal(read?.behavior, "allow");
+      const grep = yield* Effect.promise(() =>
+        ask("Grep", { pattern: "ERROR", path: stagedLog }, "grep"),
+      );
+      assert.equal(grep?.behavior, "allow");
+
+      yield* expectAsked(ask("Read", { file_path: unsentLog }, "read-unsent"));
+
+      // Swapped for a link since, it no longer reads as the staged file.
+      rmSync(stagedLog);
+      symlinkSync(unsentLog, stagedLog);
+      yield* expectAsked(ask("Read", { file_path: stagedLog }, "read-link"));
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

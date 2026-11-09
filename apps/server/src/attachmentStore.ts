@@ -1,6 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import { randomUUID } from "node:crypto";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync } from "node:fs";
 import NodePath from "node:path";
 
 import type { ChatAttachment } from "@threadlines/contracts";
@@ -131,6 +131,22 @@ export function resolveAttachmentPathById(input: {
   return entry === undefined
     ? null
     : resolveAttachmentRelativePath({ attachmentsDir: input.attachmentsDir, relativePath: entry });
+}
+
+/** The spelling staged attachment paths are compared by: resolved, and on
+ *  Windows, whose paths ignore letter case, lowercased. */
+export function stagedAttachmentPathKey(filePath: string): string {
+  const resolved = NodePath.resolve(filePath);
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+/** Whether a path is a plain file as it stands: not a link, not a folder. */
+export function isPlainFile(filePath: string): boolean {
+  try {
+    return lstatSync(filePath).isFile();
+  } catch {
+    return false;
+  }
 }
 
 /** Whether a stored attachment may be served under its own content type

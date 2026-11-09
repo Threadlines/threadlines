@@ -69,7 +69,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
-import { buildFileAttachmentNote } from "../fileAttachmentPrompt.ts";
+import { buildFileAttachmentNote, isLargeTextAttachment } from "../fileAttachmentPrompt.ts";
 import { ServerConfig } from "../../config.ts";
 import {
   mcpEndpointUrl,
@@ -2419,8 +2419,8 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
     /**
      * Text and attachments as an OpenCode prompt. Pictures, PDFs and text
      * travel inline (text as plain text, the one text type every model
-     * provider takes); any other file is a note naming its staged path,
-     * which the agent opens with its own tools.
+     * provider takes); any other file, and text too big to go inline, is a
+     * note naming its staged path, which the agent opens with its own tools.
      */
     const promptContent = (
       threadId: ThreadId,
@@ -2444,7 +2444,10 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
               detail: `Invalid attachment id '${attachment.id}'.`,
             });
           }
-          if (attachment.type === "file" && attachment.kind === "other") {
+          if (
+            (attachment.type === "file" && attachment.kind === "other") ||
+            isLargeTextAttachment(attachment)
+          ) {
             notes.push(buildFileAttachmentNote(attachment, path));
             continue;
           }
