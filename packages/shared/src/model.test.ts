@@ -114,7 +114,13 @@ describe("normalizeModelSlug", () => {
     expect(normalizeModelSlug("gpt-5-codex")).toBe("gpt-5.5");
     expect(normalizeModelSlug("5.5")).toBe("gpt-5.5");
     expect(normalizeModelSlug("5.3")).toBe("gpt-5.3-codex");
-    expect(normalizeModelSlug("fable", claude)).toBe("claude-fable-5-2");
+    // A bare family name is Claude Code's to resolve, per account and to the
+    // newest model, so it is passed along as written.
+    expect(normalizeModelSlug("fable", claude)).toBe("fable");
+    expect(normalizeModelSlug("sonnet", claude)).toBe("sonnet");
+    expect(normalizeModelSlug("haiku", claude)).toBe("haiku");
+    expect(normalizeModelSlug("opus", claude)).toBe("opus");
+    expect(normalizeModelSlug("opus[1m]", claude)).toBe("opus[1m]");
     expect(normalizeModelSlug("fable-5.2", claude)).toBe("claude-fable-5-2");
     expect(normalizeModelSlug("claude-fable-5-2[1m]", claude)).toBe("claude-fable-5-2");
     expect(normalizeModelSlug("fable-5.1", claude)).toBe("claude-fable-5-1");
@@ -126,14 +132,11 @@ describe("normalizeModelSlug", () => {
     expect(normalizeModelSlug("claude-opus-7.1", claude)).toBe("claude-opus-7-1");
     expect(normalizeModelSlug("claude-opus-7-1[1m]", claude)).toBe("claude-opus-7-1[1m]");
     expect(normalizeModelSlug("fable-5.3")).toBe("fable-5.3");
-    expect(normalizeModelSlug("sonnet", claude)).toBe("claude-sonnet-5");
     expect(normalizeModelSlug("sonnet-5.5", claude)).toBe("claude-sonnet-5-5");
     expect(normalizeModelSlug("claude-sonnet-5-5[1m]", claude)).toBe("claude-sonnet-5-5");
     expect(normalizeModelSlug("sonnet-5", claude)).toBe("claude-sonnet-5");
     expect(normalizeModelSlug("sonnet-4.6", claude)).toBe("claude-sonnet-4-6");
-    expect(normalizeModelSlug("opus", claude)).toBe("claude-opus-5-5");
     expect(normalizeModelSlug("opus-5.5", claude)).toBe("claude-opus-5-5");
-    expect(normalizeModelSlug("opus[1m]", claude)).toBe("claude-opus-5-5");
     expect(normalizeModelSlug("claude-opus-5-5[1m]", claude)).toBe("claude-opus-5-5");
     expect(normalizeModelSlug("opus-5", claude)).toBe("claude-opus-5");
     expect(normalizeModelSlug("claude-opus-5[1m]", claude)).toBe("claude-opus-5");
@@ -181,9 +184,20 @@ describe("resolveSelectableModel", () => {
     expect(resolveSelectableModel(ProviderDriverKind.make("codex"), "gpt-5.3 codex", options)).toBe(
       "gpt-5.3-codex",
     );
-    expect(resolveSelectableModel(ProviderDriverKind.make("claudeAgent"), "sonnet", options)).toBe(
-      "claude-sonnet-5",
-    );
+    expect(
+      resolveSelectableModel(ProviderDriverKind.make("claudeAgent"), "sonnet-5", options),
+    ).toBe("claude-sonnet-5");
+    // A bare family name means what the provider says it means today: the
+    // listed model that carries it as an alias, and no fixed one otherwise.
+    expect(
+      resolveSelectableModel(ProviderDriverKind.make("claudeAgent"), "sonnet", options),
+    ).toBeNull();
+    expect(
+      resolveSelectableModel(ProviderDriverKind.make("claudeAgent"), "Sonnet", [
+        ...options,
+        { slug: "claude-sonnet-5-5", name: "Claude Sonnet 5.5", aliases: ["sonnet"] },
+      ]),
+    ).toBe("claude-sonnet-5-5");
   });
 });
 

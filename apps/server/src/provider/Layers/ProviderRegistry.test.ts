@@ -4592,12 +4592,78 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
           );
           assert.deepStrictEqual(fable52Of(yield* check(noClaudeCapabilities)), fable52Of(asked));
 
-          // An answer that lists no models clears what was kept, and says so
-          // to clients: it is an answer, not a fallback.
+          // Claude Code's own name for the row comes along, so a pick written
+          // `fable` resolves to the model it means today.
+          assert.deepStrictEqual(fable52Of(asked)?.aliases, ["fable"]);
+
+          // An answer that no longer lists the model is an answer, not a
+          // fallback. The model leaves the picker but stays, options and all,
+          // for the threads and settings already on it. Its alias does not:
+          // `fable` is the newer model's name now.
+          const reportsAnother = claudeCapabilities({
+            models: [
+              {
+                value: "opus",
+                resolvedModel: "claude-opus-9[1m]",
+                displayName: "Opus",
+                description: "Opus 9",
+                supportsEffort: true,
+                supportedEffortLevels: ["low", "high"],
+                supportsAutoMode: true,
+              },
+            ],
+          });
+          const dropped = yield* check(reportsAnother);
+          assert.strictEqual(dropped.modelCatalogSource, "live");
+          const { isDefault: _isDefault, aliases: _aliases, ...reportedRow } = fable52Of(asked)!;
+          const keptRow = { ...reportedRow, isHidden: true, keptForExistingPicks: true };
+          assert.deepStrictEqual(fable52Of(dropped), keptRow);
+          assert.strictEqual(dropped.models.at(-1)?.slug, "claude-fable-5-2");
+
+          // It is kept through a check that cannot ask, and through a restart.
+          assert.deepStrictEqual(fable52Of(yield* check(noClaudeCapabilities)), keptRow);
+          kept = claudeReportedModelsFromCache({ ...dropped, ...identity }, identity);
+          assert.deepStrictEqual(fable52Of(yield* check(noClaudeCapabilities)), keptRow);
+
+          // An answer that lists no models at all keeps what came before it
+          // too, a model known only as `<id>[1m]` included, and still counts
+          // as an answer through the checks that follow.
           const answeredEmpty = yield* check(claudeCapabilities({ models: [] }));
-          assert.strictEqual(fable52Of(answeredEmpty), undefined);
           assert.strictEqual(answeredEmpty.modelCatalogSource, "live");
-          assert.strictEqual(fable52Of(yield* check(noClaudeCapabilities)), undefined);
+          const keptSlugs = (provider: ServerProviderDraft) =>
+            provider.models
+              .filter((model) => model.keptForExistingPicks === true)
+              .map((model) => model.slug);
+          assert.deepStrictEqual(keptSlugs(answeredEmpty), [
+            "claude-opus-9[1m]",
+            "claude-fable-5-2",
+          ]);
+          const afterEmpty = yield* check(noClaudeCapabilities);
+          assert.strictEqual(afterEmpty.modelCatalogSource, "live");
+          assert.deepStrictEqual(keptSlugs(afterEmpty), keptSlugs(answeredEmpty));
+
+          // Added back by hand, it is the user's own entry: listed, not kept
+          // twice, and with the options it had.
+          const addedBack = yield* checkClaudeProviderStatus(
+            { ...defaultClaudeSettings, customModels: ["claude-fable-5-2"] },
+            reportsAnother,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            store,
+          );
+          assert.strictEqual(
+            addedBack.models.filter((model) => model.slug === "claude-fable-5-2").length,
+            1,
+          );
+          assert.strictEqual(fable52Of(addedBack)?.isCustom, true);
+          assert.strictEqual(fable52Of(addedBack)?.isHidden, undefined);
+          assert.deepStrictEqual(fable52Of(addedBack)?.capabilities, keptRow.capabilities);
+
+          // Reported again, it is an ordinary model once more.
+          assert.deepStrictEqual(fable52Of(yield* check(reportsFable52)), fable52Of(asked));
         }).pipe(
           Effect.provide(
             mockSpawnerLayer((args) => {

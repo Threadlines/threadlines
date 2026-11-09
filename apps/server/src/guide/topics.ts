@@ -222,7 +222,7 @@ While this computer is asleep or Threadlines is closed, assistants are told it's
 
 {place:providers.community} adds agents from the open ACP registry; Threadlines hasn't tested those.
 
-Claude's models come from Claude Code itself, so a new one shows up without a Threadlines update. A model Threadlines has no settings of its own for starts on Default reasoning: no level is sent and Claude Code picks one.
+Claude's models come from Claude Code itself, so a new one shows up without a Threadlines update. A model Threadlines has no settings of its own for starts on Default reasoning: no level is sent and Claude Code picks one. When Claude Code stops listing a model, the picker stops offering it, but a thread, room agent or setting already on it keeps it.
 
 How much of each plan you've used is on {place:usage}.
 

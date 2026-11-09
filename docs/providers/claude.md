@@ -328,7 +328,8 @@ shows a Fable model once it reports that model for your account (see
 Select a Fable model in the
 model picker when you want Anthropic's highest-capability widely available model for long-running
 or difficult work. Claude Code `2.1.321` makes Fable 5.2 the model its bare `fable` alias resolves
-to, and Threadlines normalizes the alias the same way; `fable-5.1` still means Claude Fable 5.1.
+to. Threadlines gives a bare `fable` no meaning of its own, so it always means what Claude Code
+means by it; `fable-5.1` still means Claude Fable 5.1.
 
 Fable 5.2 reasons at Medium unless you pick another level, because that is Claude Code's own
 default for it (the Claude API's default is `high`). It also offers Claude Code fast mode, which
@@ -351,8 +352,8 @@ notice. This can happen from repository context alone in security-heavy or biolo
 
 Threadlines shows Claude Opus 5.5 when the configured Claude Code binary is `2.1.280` or newer, and
 Claude Opus 5 from `2.1.219`. The canonical model ids are `claude-opus-5-5` and `claude-opus-5`.
-Claude Code `2.1.280` makes Opus 5.5 the model its bare `opus` alias resolves to, and Threadlines
-normalizes the alias the same way; `opus-5` still means Claude Opus 5. Both use a native 1M context
+Claude Code `2.1.280` makes Opus 5.5 the model its bare `opus` alias resolves to. Threadlines gives
+a bare `opus` no meaning of its own; `opus-5` still means Claude Opus 5. Both use a native 1M context
 window, support `low` through `max` effort, and expose Claude Code fast mode.
 
 Claude Code lists native-1M models only as `<model>[1m]` and labels its `default` row
@@ -382,10 +383,17 @@ heard of and one it would otherwise expect a newer Claude Code for.
   reported stay, in the picker and for chat, titles and commit messages alike. An answer that no
   longer lists a model removes it.
 - **Models Claude Code stops reporting.** It lists current models only. When a model drops off its
-  list and Threadlines has no entry for it, it leaves the picker. Add its id under the provider's
-  custom models to keep using it.
+  list and Threadlines has no entry for it, the picker stops offering it, but a thread, a room
+  agent or a setting already on it keeps it, with its options. In the provider's model list it
+  reads `no longer listed`. Switch that thread to another model and the old one is gone from its
+  picker. To pick it again, add its id under the provider's custom models: it comes back as your
+  own entry, with the options it had.
 - **Spellings.** A dotted version such as `fable-5.3` or `claude-fable-5.3` resolves to Claude's
   own id, `claude-fable-5-3`, with no entry per model.
+- **Bare family names.** `fable`, `opus`, `sonnet` and `haiku` are Claude Code's names, and it
+  points them at the newest model for your account. Threadlines has no fixed meaning for them. A
+  saved pick written that way resolves to the model Claude Code lists under that name today. Added
+  as a custom model, the name is passed to Claude Code as written, so it follows the newest.
 
 An "update Claude Code" note only names a model that is missing from the list. A model Claude Code
 reports is there, so nothing asks you to update for it.

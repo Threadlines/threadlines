@@ -49,6 +49,8 @@ export function codexModelRetirementNotice(
 export interface SelectableModelOption {
   slug: string;
   name: string;
+  /** Other names the provider gives this model right now (`opus`). */
+  aliases?: ReadonlyArray<string> | undefined;
 }
 
 export function createModelCapabilities(input: {
@@ -452,6 +454,15 @@ export function resolveSelectableModel(
   const byName = options.find((option) => option.name.toLowerCase() === trimmed.toLowerCase());
   if (byName) {
     return byName.slug;
+  }
+
+  // The provider's own name for a model, such as Claude Code's `opus`: it
+  // means the model the provider points it at today.
+  const byAlias = options.find((option) =>
+    option.aliases?.some((alias) => alias.toLowerCase() === trimmed.toLowerCase()),
+  );
+  if (byAlias) {
+    return byAlias.slug;
   }
 
   const normalized = normalizeModelSlug(trimmed, provider);

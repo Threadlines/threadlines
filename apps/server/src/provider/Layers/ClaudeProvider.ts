@@ -957,11 +957,17 @@ export function seedClaudeProviderUsage(
  * check that cannot ask Claude Code (its probe timed out) lists these again,
  * options included, so the picker, a chat and a title keep agreeing on a
  * model this build has no entry of its own for. A check that did get an
- * answer replaces them, or clears them when the answer lists none.
+ * answer replaces them, and moves the ones it no longer lists to `dropped`.
  */
 export interface ClaudeReportedModels {
-  /** Claude Code's own rows, as they were listed. */
+  /** Claude Code's own rows, as its last answer listed them. */
   readonly models: ReadonlyArray<ServerProviderModel>;
+  /**
+   * Rows earlier answers listed and later ones did not, newest first: the
+   * Fable before the current one, say. They stay for the threads and settings
+   * already on them and are not offered for new picks.
+   */
+  readonly dropped: ReadonlyArray<ServerProviderModel>;
 }
 
 /** Where a status check reads and writes the last reported models. */
@@ -972,23 +978,102 @@ export interface ClaudeReportedModelsStore {
 
 /**
  * The last reported models as the previous run saved them, for a restart
- * whose first check cannot ask Claude Code. Only a snapshot that held Claude
- * Code's answer counts, and the user's own entries come from settings.
+ * whose first check cannot ask Claude Code. The last answer comes back only
+ * from a snapshot that held one; the rows kept for existing picks come back
+ * from any. The user's own entries come from settings.
  */
 export function claudeReportedModelsFromCache(
   cached: ServerProvider | undefined,
   instance: Pick<ServerProvider, "instanceId" | "driver">,
 ): ClaudeReportedModels | undefined {
-  if (
-    !cached ||
-    cached.instanceId !== instance.instanceId ||
-    cached.driver !== instance.driver ||
-    cached.modelCatalogSource !== "live"
-  ) {
+  if (!cached || cached.instanceId !== instance.instanceId || cached.driver !== instance.driver) {
     return undefined;
   }
-  const models = cached.models.filter((model) => !model.isCustom);
-  return models.length > 0 ? { models } : undefined;
+  const rows = cached.models.filter((model) => !model.isCustom);
+  const models =
+    cached.modelCatalogSource === "live"
+      ? rows.filter((model) => model.keptForExistingPicks !== true)
+      : [];
+  const dropped = rows
+    .filter((model) => model.keptForExistingPicks === true)
+    .map(({ isHidden: _isHidden, keptForExistingPicks: _kept, ...model }) => model);
+  return models.length > 0 || dropped.length > 0 ? { models, dropped } : undefined;
+}
+
+/** Claude's own id for a model, `claude-fable-5-2`, with no alias or suffix. */
+const CANONICAL_CLAUDE_MODEL_SLUG = /^claude-(fable|mythos|opus|sonnet|haiku)-(\d+)(?:-(\d+))?$/i;
+
+/**
+ * The rows kept for existing picks once Claude Code has answered: those its
+ * last answer listed and this list lacks, ahead of the ones kept before, less
+ * any that are listed again. Only Claude's own model ids are kept (an alias
+ * row or a gateway's id means whatever its source says it means today), and
+ * all of them: a thread may sit on an old model for as long as it likes.
+ */
+function claudeModelsDroppedByAnswer(
+  last: ClaudeReportedModels | undefined,
+  listed: ReadonlyArray<ServerProviderModel>,
+): ReadonlyArray<ServerProviderModel> {
+  if (!last) {
+    return [];
+  }
+  const listedSlugs = new Set(listed.map((model) => model.slug));
+  const dropped = new Map<string, ServerProviderModel>();
+  for (const model of [...last.models, ...last.dropped]) {
+    if (
+      listedSlugs.has(model.slug) ||
+      dropped.has(model.slug) ||
+      !CANONICAL_CLAUDE_MODEL_SLUG.test(model.slug.replace(/\[1m\]$/i, ""))
+    ) {
+      continue;
+    }
+    // What a pick written with an alias means is the current model's to say.
+    const { aliases: _aliases, ...row } = model;
+    dropped.set(model.slug, row);
+  }
+  return [...dropped.values()];
+}
+
+/**
+ * The list with the kept rows at its end, hidden from new picks.
+ *
+ * A custom entry carries no options of its own. One that names a kept model
+ * (added back by hand to pick it again) or one of Claude Code's own names for
+ * a listed model (`opus`, passed to Claude Code as written) takes that
+ * model's options, and stays the user's entry: listed, and not kept twice.
+ */
+function withClaudeModelsKeptForPicks(
+  listed: ReadonlyArray<ServerProviderModel>,
+  dropped: ReadonlyArray<ServerProviderModel>,
+): ReadonlyArray<ServerProviderModel> {
+  const known = new Map<string, ServerProviderModel>();
+  for (const model of dropped) known.set(model.slug, model);
+  for (const model of listed) {
+    for (const alias of model.aliases ?? []) known.set(alias, model);
+  }
+  const models = listed.map((model) => {
+    const named = model.isCustom ? known.get(model.slug) : undefined;
+    return named
+      ? {
+          ...model,
+          capabilities: named.capabilities,
+          ...(named.supportedRuntimeModes
+            ? { supportedRuntimeModes: named.supportedRuntimeModes }
+            : {}),
+        }
+      : model;
+  });
+  const slugs = new Set(models.map((model) => model.slug));
+  return [
+    ...models,
+    ...dropped
+      .filter((model) => !slugs.has(model.slug))
+      .map(({ isDefault: _isDefault, ...model }) => ({
+        ...model,
+        isHidden: true,
+        keptForExistingPicks: true,
+      })),
+  ];
 }
 
 // ── SDK capability probe ────────────────────────────────────────────
@@ -1053,9 +1138,7 @@ function canonicalClaudeDiscoveredModelSlug(model: ClaudeModelInfo): string | un
 function claudeDiscoveredModelName(slug: string, model: ClaudeModelInfo): string {
   const has1mSuffix = /\[1m\]$/i.test(slug);
   const baseSlug = slug.replace(/\[1m\]$/i, "");
-  const canonicalMatch = baseSlug.match(
-    /^claude-(fable|mythos|opus|sonnet|haiku)-(\d+)(?:-(\d+))?$/i,
-  );
+  const canonicalMatch = baseSlug.match(CANONICAL_CLAUDE_MODEL_SLUG);
   if (canonicalMatch) {
     const [, family, major, minor] = canonicalMatch;
     const familyName = `${family![0]!.toUpperCase()}${family!.slice(1).toLowerCase()}`;
@@ -1136,6 +1219,15 @@ function mergeClaudeDiscoveredModels(
     const existing = discoveredBySlug.get(slug);
     const curated = curatedBySlug.get(slug);
     const liveDescription = nonEmptyProbeString(discovered.description);
+    // Claude Code's own name for the row (`opus`), which it may point at
+    // another model tomorrow. A pick written with it resolves here today.
+    const alias = nonEmptyProbeString(discovered.value);
+    const aliases = [
+      ...new Set([
+        ...(existing?.aliases ?? []),
+        ...(alias && alias !== "default" && alias !== slug ? [alias] : []),
+      ]),
+    ];
     const isDefault = existing?.isDefault === true || discovered.value.trim() === "default";
     const capabilities =
       curated?.capabilities ??
@@ -1154,6 +1246,7 @@ function mergeClaudeDiscoveredModels(
       ...(liveDescription ? { description: liveDescription } : {}),
       isCustom: false,
       ...(isDefault ? { isDefault: true } : {}),
+      ...(aliases.length > 0 ? { aliases } : {}),
       capabilities,
       supportedRuntimeModes,
     });
@@ -1902,31 +1995,40 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   const capabilities = resolveCapabilities
     ? yield* resolveCapabilities(claudeSettings).pipe(Effect.orElseSucceed(() => undefined))
     : undefined;
+  const lastReported = lastReportedModels ? yield* lastReportedModels.get : undefined;
   const discoveredCatalog = capabilities
     ? mergeClaudeDiscoveredModels(capabilities.models, versionedBuiltInModels, parsedVersion)
-    : withLastReportedClaudeModels(
-        versionedBuiltInModels,
-        lastReportedModels ? yield* lastReportedModels.get : undefined,
-      );
+    : withLastReportedClaudeModels(versionedBuiltInModels, lastReported);
+  // What Claude Code listed once and no longer does stays, hidden from new
+  // picks, for the threads and settings already on it.
+  const droppedModels = capabilities
+    ? claudeModelsDroppedByAnswer(lastReported, discoveredCatalog.models)
+    : (lastReported?.dropped ?? []);
   if (capabilities && lastReportedModels) {
-    // An answer replaces what was kept; one that lists no models clears it.
+    // An answer replaces the last one, also when it lists no models.
     const reported = discoveredCatalog.models.filter((model) =>
       discoveredCatalog.reportedSlugs.has(model.slug),
     );
-    yield* lastReportedModels.set(reported.length > 0 ? { models: reported } : undefined);
+    yield* lastReportedModels.set(
+      reported.length > 0 || droppedModels.length > 0
+        ? { models: reported, dropped: droppedModels }
+        : undefined,
+    );
   }
   const upgradeMessage = formatClaudeUpgradeMessage(parsedVersion, discoveredCatalog.reportedSlugs);
-  const models = providerModelsFromSettings(
-    discoveredCatalog.models,
-    PROVIDER,
-    claudeSettings.customModels,
-    DEFAULT_CLAUDE_MODEL_CAPABILITIES,
+  const models = withClaudeModelsKeptForPicks(
+    providerModelsFromSettings(
+      discoveredCatalog.models,
+      PROVIDER,
+      claudeSettings.customModels,
+      DEFAULT_CLAUDE_MODEL_CAPABILITIES,
+    ),
+    droppedModels,
   );
   // "live" is Claude Code's answer, now or as last kept, and replaces what
   // clients listed before, also when it names no models of its own. Only a
   // check with no answer to go on is a fallback, which keeps their last list.
-  const modelCatalogSource =
-    capabilities || discoveredCatalog.reportedSlugs.size > 0 ? "live" : "fallback";
+  const modelCatalogSource = capabilities || lastReported ? "live" : "fallback";
   const slashCommands = capabilities?.slashCommands ?? [];
   const dedupedSlashCommands = dedupeSlashCommands(slashCommands);
   const tokenUsageEffect = resolveTokenUsage
