@@ -8,7 +8,8 @@
  * - zones: the calm areas to frost, from the layout (backdropZones.ts),
  *   remeasured when it changes, at most every 100 ms;
  * - conditions: motion (the Motion setting, Reduce Motion, the desktop
- *   watchdog), visibility (the window, and whether a chat is on screen),
+ *   watchdog, and phones, which always draw one frame at their own size and
+ *   stand on it), visibility (the window, and whether a chat is on screen),
  *   busy (resizing the window, dragging a divider: the art holds), idle
  *   (two minutes without input or agent work), power and heat (desktop, else
  *   the Battery API);
@@ -88,7 +89,7 @@ export function ThemeBackdropLayer(props: {
   const status = useSyncExternalStore(subscribeTheme, () => readThemeState().backdropStatus);
   const tooHeavy = useBackdropTooHeavy();
   const slowdown = useBackdropSlowdown();
-  const stillOnly = useIsMobile();
+  const phone = useIsMobile();
 
   // The tints the surfaces paint themselves while the art isn't running.
   const tintCss = glassTintCss(cssGlassTints(floors, status, tooHeavy, clarity));
@@ -113,6 +114,7 @@ export function ThemeBackdropLayer(props: {
     slowdown,
     artShown: layout.artShown,
     working: activity.working,
+    phone,
   });
 
   useEffect(() => {
@@ -149,7 +151,7 @@ export function ThemeBackdropLayer(props: {
         conditions={conditions}
         activity={activity}
         pulse={pulse}
-        stillOnly={stillOnly}
+        phone={phone}
         framedStill={!tooHeavy}
         onStatus={setBackdropStatus}
       />
@@ -261,6 +263,9 @@ function useBackdropLayout(
       ],
     });
     window.addEventListener("resize", schedule);
+    // A phone's keyboard shrinks and pans the visible page without resizing the window.
+    window.visualViewport?.addEventListener("resize", schedule);
+    window.visualViewport?.addEventListener("scroll", schedule);
     // The new-thread screen scrolls as one, carrying its patch with it.
     document.addEventListener("scroll", schedule, { capture: true, passive: true });
     // Text that rises into place (the home screen's) settles where its patch belongs.
@@ -273,6 +278,8 @@ function useBackdropLayout(
       resizeObserver.disconnect();
       mutationObserver.disconnect();
       window.removeEventListener("resize", schedule);
+      window.visualViewport?.removeEventListener("resize", schedule);
+      window.visualViewport?.removeEventListener("scroll", schedule);
       document.removeEventListener("scroll", schedule, { capture: true });
       document.removeEventListener("animationend", schedule);
     };
@@ -392,6 +399,8 @@ function useBackdropConditions(input: {
   readonly slowdown: number;
   readonly artShown: boolean;
   readonly working: number;
+  /** Phones never animate the art (battery): one frame, drawn for the phone's screen. */
+  readonly phone: boolean;
 }): BackdropConditions {
   const reducedMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
   const documentVisible = useDocumentVisible();
@@ -400,7 +409,9 @@ function useBackdropConditions(input: {
   const idle = useIdle(input.working);
   const power = usePowerState();
   const motion =
-    input.motionSetting === "still" || reducedMotion || input.tooHeavy ? "still" : "live";
+    input.motionSetting === "still" || reducedMotion || input.tooHeavy || input.phone
+      ? "still"
+      : "live";
   // A lowered CPU speed limit stills the art like a serious thermal state does.
   const thermal =
     power.speedLimited &&

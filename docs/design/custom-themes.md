@@ -243,9 +243,10 @@ it:
   caught in a busy loop keeps its core for about 2 seconds after
   `terminate()` before Chromium forces it to stop. Resuming starts a new
   worker and continues `t` from where it stopped (setup runs again).
-- **Still keeps the frame.** Under "Motion: Still" or Reduce Motion on a
-  computer, the frame stays: it draws one frame of the art (or keeps the one
-  on screen when Still is chosen), terminates the worker, and stands on it,
+- **Still keeps the frame.** Under "Motion: Still" or Reduce Motion, and
+  always on phones, the frame stays: it draws one frame of the art at the
+  screen's own size (or keeps the one on screen when Still is chosen),
+  terminates the worker, and stands on it,
   frosting and tinting it patch by patch like the live art, so Still keeps
   Live's colors and glass. It recomposites only when the layout moves, and
   draws one new frame once the window settles at a new size. Until its first
@@ -254,7 +255,18 @@ it:
   whole-page CSS tint, which washed busy art out. The cost is the frame's
   graphics memory while it stands. Art the computer found too heavy (the
   desktop CPU watchdog's last verdict) is still too, but loses its frame:
-  the still image shows, as on phones.
+  the still image shows.
+- **Phones draw for their own screen.** Phones never animate the art
+  (battery), and until Nov 9 they showed the still image, a 1440×900 picture
+  cropped to its middle, which is the calm part art keeps empty: art by an
+  edge vanished. Now a phone runs the art in the frame as Still does, so the
+  theme's script lays its scene out for the phone's width and height. The
+  zones are remeasured when the on-screen keyboard shrinks or pans the
+  visible page (`visualViewport`), which doesn't resize the window, so the
+  standing frame recomposites without drawing again. Pixels art with a fixed
+  width and height keeps its picture and is cropped around its middle to
+  cover a tall screen; `scale` follows the screen. A frame that fails (no
+  WebGL2, the watchdog) falls back to the still image, as anywhere.
 - **Missed ticks.** A tick not answered within two frame intervals counts as a
   miss. Three misses in a row halve the frame rate; continued misses
   terminate the worker and show the still, with "Paused: this theme's art is
@@ -358,8 +370,8 @@ cost counts against the budget. Zones still update while paused: the frame
 recomposites and remeasures the kept bitmap.
 
 **The fallback can't remeasure,** so it doesn't depend on layout: when the
-app shows the still image (phones, a failed frame, the moment before the
-frame draws), it computes one tint from
+app shows the still image (a failed frame, art found too heavy, the moment
+before the frame draws), it computes one tint from
 the per-channel box of the whole still and applies it to every text surface.
 With no still, text surfaces are opaque.
 
@@ -560,8 +572,10 @@ and Muse get the endpoint as they do for pages. Availability and approval are
 tested per provider.
 
 - `preview_theme({ theme })` validates, runs the readability check, renders a
-  theme **specimen** in the preview browser in the new-thread and thread
-  layouts, measures the art's cost over 2 seconds, and returns screenshots
+  theme **specimen** in the preview browser in the thread, new-thread and
+  Settings layouts at 1440×900 and a phone thread at 390×844 (the art drawing
+  one frame there, as phones do), measures the art's cost over 2 seconds, and
+  returns screenshots
   plus a report (failed pairs, frame cost, console errors). The preview
   browser gets a fixed-viewport mode and multi-frame capture (CDP is already
   there). The specimen is a small self-contained mock of the app built from
@@ -766,7 +780,7 @@ five minutes.
 - Entry points: chat row and trial bar, `/theme`, palette, Settings,
   `settings_change`, file drop, desktop View menu reset, `?theme=default`.
 - Clients: web, desktop (window color, title bar, View menu, CPU watchdog),
-  phone (still only, status bar color).
+  phone (one frame of the art at the phone's size, status bar color).
 - Providers: through the pages endpoint, with Claude's allow list updated;
   community agents via the ACP core, no special casing.
 - Contracts: `packages/contracts/src/themes.ts` (manifest, summary, RPCs, tool

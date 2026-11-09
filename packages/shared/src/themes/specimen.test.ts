@@ -45,6 +45,29 @@ describe("buildThemeSpecimenDocument", () => {
     expect(scripts(document)).toBe(1);
   });
 
+  it("shows a phone a thread without the sidebar, its art drawing one frame as phones do", () => {
+    const manifest = {
+      ...theme,
+      backdrop: { mode: "pixels" as const, maxFps: 12, script: "draw()" },
+    };
+    const phone = buildThemeSpecimenDocument({
+      manifest,
+      layout: "phone",
+      width: 390,
+      height: 844,
+    });
+    expect(phone).toContain('class="app phone"');
+    expect(phone).not.toContain('class="list"');
+    expect(phone).toContain('motion: "still"');
+    const computer = buildThemeSpecimenDocument({
+      manifest,
+      layout: "thread",
+      width: 1440,
+      height: 900,
+    });
+    expect(computer).toContain('motion: "live"');
+  });
+
   it("runs live art in a sandboxed frame, and shows the still or nothing otherwise", () => {
     const live = buildThemeArtDocument({
       manifest: { ...theme, backdrop: { mode: "pixels", maxFps: 12, script: "draw()" } },
