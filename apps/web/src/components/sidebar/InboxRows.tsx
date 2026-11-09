@@ -228,6 +228,67 @@ function ThreadPullRequestBadge({
 const ROW_META_SLOT_CLASS_NAME =
   "relative ml-auto flex flex-none items-center gap-1.5 whitespace-nowrap";
 
+/**
+ * Where the work lives (the project name, or the thread it came from) while a
+ * room's status names its agent: it takes only the width the status leaves
+ * (no basis of its own), so it gives way before the agent's name loses a
+ * pixel. The padding stands in for the gap before it and the negative margin
+ * takes that gap back, so a place squeezed to nothing leaves one gap, not two.
+ */
+const ROW_PLACE_YIELDS_CLASS_NAME = "-ml-1.5 flex-1 pl-1.5";
+
+/**
+ * A name on a row's first line (the project, the branch) shown whole, cut
+ * with enough left to read (3rem, about seven letters), or not at all: cut
+ * to "Thre…" it says less than the favicon beside it, and hidden it would
+ * leave a gap where a readable start could have stood. A name with less room
+ * than its minimum wraps onto a second line the fixed height hides, so it is
+ * pure layout: nothing measures, and nothing re-renders as the sidebar
+ * resizes. `leading` (the branch glyph) goes with the name; `trailing` (a
+ * scheduled run's glyph) stays on the first line either way, after the name
+ * or in its place once it has gone, so a caller with one gives the label a
+ * minimum width that holds it.
+ */
+function ReadableNameLabel({
+  children,
+  leading,
+  trailing,
+  className,
+}: {
+  children: React.ReactNode;
+  leading?: React.ReactNode;
+  trailing?: React.ReactNode;
+  className?: string | undefined;
+}) {
+  return (
+    <span
+      className={cn(
+        // Reversed, so the first child (the glyph, or an empty spacer) is the
+        // one that keeps line one, the name wraps after it, and packed to the
+        // left (`justify-end` in reverse) the line reads name, then glyph.
+        "flex h-lh min-w-0 flex-row-reverse flex-wrap content-start items-center justify-end overflow-hidden",
+        trailing !== undefined && "gap-x-1",
+        className,
+      )}
+    >
+      {/* Either first child stands the full line height: a shorter one would
+          start line two inside the box, and a sliver of the name would show. */}
+      {trailing !== undefined ? (
+        <span className="flex h-lh shrink-0 items-center">{trailing}</span>
+      ) : (
+        <span aria-hidden="true" className="h-lh w-0" />
+      )}
+      {/* Wraps away below its 3rem basis (or below its whole width, when
+          that is less); above it, grows up to its whole width and cuts the
+          rest. */}
+      <span className="flex h-lh max-w-max min-w-0 flex-1 basis-12 items-center gap-1">
+        {leading}
+        <span className="min-w-0 truncate">{children}</span>
+      </span>
+    </span>
+  );
+}
+
 /** `relative` lifts the buttons above their own backdrop layers. */
 export const ROW_ACTION_BUTTON_CLASS_NAME =
   "relative inline-flex size-5 cursor-pointer items-center justify-center rounded-sm text-muted-foreground transition-colors pointer-coarse:size-7 hover:text-foreground focus-ring";
@@ -343,7 +404,7 @@ function MetaSeparator() {
 /**
  * In a room, the agent working or last at work: the name the user gave it,
  * otherwise its model named the way the composer's model picker names it
- * ("GPT-6 Astra · working"). The one part of the status that yields when the
+ * ("GPT-6 Astra · 4m"). The one part of the status that yields when the
  * row is narrow; the full name is in its tooltip.
  */
 function RoomSlotAgentName({
@@ -461,7 +522,6 @@ function ThreadJumpLabel({ label }: { label: string }) {
   );
 }
 
-/** The live half of a status slot: its word, then the clock. */
 /** "◷ 14m": how long until an agent comes back by itself. */
 function RowCheckBackStatus({ at }: { at: string }) {
   const nowMs = useRelativeTimeTick(30_000);
@@ -473,13 +533,28 @@ function RowCheckBackStatus({ at }: { at: string }) {
   );
 }
 
-function RowLiveStatus({ word, clockStartedAt }: { word: string; clockStartedAt: string | null }) {
+/**
+ * The live half of a status slot: its word, then the clock. A room that names
+ * its agent drops "working" once the clock runs ("Opus 5.5 · 4m"): the slot's
+ * colour already says it, and the project name gets the width. "starting" and
+ * "answering" share that colour, so they keep their word.
+ */
+function RowLiveStatus({
+  word,
+  clockStartedAt,
+  namesAgent = false,
+}: {
+  word: string;
+  clockStartedAt: string | null;
+  namesAgent?: boolean;
+}) {
+  const showsWord = !(namesAgent && word === "working" && clockStartedAt !== null);
   return (
     <>
-      <span className="shrink-0">{word}</span>
+      {showsWord ? <span className="shrink-0">{word}</span> : null}
       {clockStartedAt ? (
         <>
-          <MetaSeparator />
+          {showsWord ? <MetaSeparator /> : null}
           <span className="shrink-0">
             <ThreadElapsedLabel startedAt={clockStartedAt} />
           </span>
@@ -535,6 +610,7 @@ export function ThreadStatusText({
         (resting ?? (
           <RelativeTimeLabel
             at={thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt}
+            compact
           />
         ))
       )}
@@ -841,18 +917,50 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
   const isUnseen = status?.label === "Completed";
   // Line one has one hard rule: the status slot on the right always fits
   // whole, and the left cluster yields to it in a fixed order. The branch goes
-  // first and goes completely -- half a branch name is worse than none, and a
-  // row that is *doing* something has more to say than which ref it is on.
+  // first: at rest it gets only what the project name and the time leave, and
+  // a row that is *doing* something drops it, having more to say than which
+  // ref it is on. The project name goes next, and never to a stub (see
+  // ReadableNameLabel); its favicon stays to say which project.
   // Who the status names in a room: the agent answering, or the one at work.
   const roomAgentSelection = isAnswering
     ? thread.roomSideModelSelection
     : thread.roomSlotModelSelection;
   const roomAgentRole = isAnswering ? thread.roomSideRole : thread.roomSlotRole;
   const showBranch = thread.branch !== null && !hasStatusLabel;
-  // A room's live status also names the agent, which needs the width: the
-  // project name yields first, then the agent's name, never the state or
-  // the clock.
+  // A room's live status also names the agent, which needs the width: what
+  // stands in the project name's place yields first, then the agent's name,
+  // never the state or the clock.
   const namesRoomAgent = roomAgentSelection != null && !jumpLabel && statusWord === null && isLive;
+  // A scheduled task's run: its glyph after the project name. The task's name
+  // is the run's own title on the line below, and the hover card's.
+  const scheduledRunGlyph =
+    scheduledRunLabel === null ? null : (
+      <span
+        role="img"
+        aria-label={scheduledRunLabel}
+        data-testid={`thread-scheduled-run-${thread.id}`}
+        // A line's height, as the name it may stand in for would be.
+        className="inline-flex h-lh shrink-0 items-center text-muted-foreground/60"
+      >
+        <ScheduledRunIcon event={thread.scheduledRun?.event === true} className="size-2.5" />
+      </span>
+    );
+  const projectPlace = projectLabel ? (
+    <ReadableNameLabel
+      className={cn(
+        "text-muted-foreground/60",
+        namesRoomAgent && ROW_PLACE_YIELDS_CLASS_NAME,
+        // The least a run's place shrinks to: its 10px glyph, and the 6px the
+        // yielding place pads in, so the run keeps its mark beside any agent.
+        scheduledRunGlyph !== null && "min-w-4",
+      )}
+      trailing={scheduledRunGlyph ?? undefined}
+    >
+      {projectLabel}
+    </ReadableNameLabel>
+  ) : (
+    scheduledRunGlyph
+  );
   const handleToggleFamily = useCallback(() => {
     onToggleFamily?.(threadKey);
   }, [onToggleFamily, threadKey]);
@@ -1019,23 +1127,16 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                     className="size-3 shrink-0"
                   />
                 ) : null}
-                {scheduledRunLabel !== null ? (
-                  // A scheduled task's run says which task, in the project name's place.
-                  <span
-                    className="flex min-w-0 items-center gap-1 text-muted-foreground/60"
-                    data-testid={`thread-scheduled-run-${thread.id}`}
-                  >
-                    <ScheduledRunIcon
-                      event={thread.scheduledRun?.event === true}
-                      className="size-2.5 shrink-0"
-                    />
-                    <span className="min-w-0 truncate">{scheduledRunLabel}</span>
-                  </span>
+                {scheduledRunGlyph !== null ? (
+                  projectPlace
                 ) : remoteParent !== null ? (
                   // Started from another computer and standing on its own: the
                   // thread that started it, and where that thread runs.
                   <span
-                    className="flex min-w-0 items-center gap-1 text-muted-foreground/60"
+                    className={cn(
+                      "flex min-w-0 items-center gap-1 text-muted-foreground/60",
+                      namesRoomAgent && ROW_PLACE_YIELDS_CLASS_NAME,
+                    )}
                     data-testid={`thread-remote-parent-${thread.id}`}
                   >
                     <CornerDownRightIcon aria-hidden className="size-2.5 shrink-0" />
@@ -1047,33 +1148,28 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                   // A child whose parent is wrapped says where it came from, in
                   // the project name's place.
                   <span
-                    className="flex min-w-0 items-center gap-1 text-muted-foreground/60"
+                    className={cn(
+                      "flex min-w-0 items-center gap-1 text-muted-foreground/60",
+                      namesRoomAgent && ROW_PLACE_YIELDS_CLASS_NAME,
+                    )}
                     data-testid={`thread-wrapped-parent-${thread.id}`}
                   >
                     <CornerDownRightIcon aria-hidden className="size-2.5 shrink-0" />
                     <span className="min-w-0 truncate">{wrappedParentTitle}</span>
                   </span>
-                ) : projectLabel ? (
-                  <span
-                    className={cn(
-                      "min-w-0 truncate text-muted-foreground/60",
-                      // Takes only the width the status leaves (no basis of its
-                      // own), so it is gone before the agent's name gives up a
-                      // pixel. Its gap goes with it: the spacing before the name
-                      // is inside it, so a name shrunk to nothing leaves no double
-                      // gap.
-                      namesRoomAgent &&
-                        "-ml-1.5 flex-1 before:inline-block before:w-1.5 before:content-['']",
-                    )}
-                  >
-                    {projectLabel}
-                  </span>
-                ) : null}
+                ) : (
+                  projectPlace
+                )}
                 {showBranch ? (
-                  <span className="flex min-w-0 items-center gap-1">
-                    <GitBranchIcon aria-hidden className="size-2.5 shrink-0 opacity-60" />
-                    <span className="min-w-0 truncate font-mono text-[10px]">{thread.branch}</span>
-                  </span>
+                  // Only what the project name and the time leave (no basis of
+                  // its own); its own type size sets the line, as the branch
+                  // text did.
+                  <ReadableNameLabel
+                    className="flex-1 font-mono text-[10px]"
+                    leading={<GitBranchIcon aria-hidden className="size-2.5 shrink-0 opacity-60" />}
+                  >
+                    {thread.branch}
+                  </ReadableNameLabel>
                 ) : null}
                 <span
                   className={cn(ROW_META_SLOT_CLASS_NAME, namesRoomAgent && "min-w-0 flex-initial")}
@@ -1105,11 +1201,16 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                             <MetaSeparator />
                           </>
                         ) : null}
-                        <RowLiveStatus word={liveWord} clockStartedAt={liveClockStartedAt} />
+                        <RowLiveStatus
+                          word={liveWord}
+                          clockStartedAt={liveClockStartedAt}
+                          namesAgent={namesRoomAgent}
+                        />
                       </>
                     ) : (
                       <RelativeTimeLabel
                         at={thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt}
+                        compact
                       />
                     )}
                   </span>
@@ -1498,7 +1599,7 @@ export const InboxChildRow = memo(function InboxChildRow(props: InboxChildRowPro
                   status={shownStatus}
                   testId={`child-meta-${thread.id}`}
                   {...(isDone
-                    ? { resting: doneAt ? <RelativeTimeLabel at={doneAt} /> : null }
+                    ? { resting: doneAt ? <RelativeTimeLabel at={doneAt} compact /> : null }
                     : {})}
                 />
               )}
@@ -1747,7 +1848,7 @@ export const InboxRemoteDoneRow = memo(function InboxRemoteDoneRow({
             <CloudIcon aria-hidden className="size-3 text-muted-foreground/50" />
           </span>
           <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground/45">
-            {child.settledAt ? <RelativeTimeLabel at={child.settledAt} /> : null}
+            {child.settledAt ? <RelativeTimeLabel at={child.settledAt} compact /> : null}
           </span>
           {onSetDone !== undefined && child.canWrap === true ? (
             <RemoteChildWrapButton child={child} onSetDone={onSetDone} testIdPrefix="remote-done" />
@@ -1876,7 +1977,7 @@ export const InboxLinkRequestRow = memo(function InboxLinkRequestRow({
       ) : null}
       <div className="flex min-w-0 items-center gap-1 ps-[13px]">
         <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground/50 tabular-nums">
-          <RelativeTimeLabel at={request.createdAt} />
+          <RelativeTimeLabel at={request.createdAt} compact />
         </span>
         <Button
           variant="ghost"
@@ -2224,7 +2325,7 @@ export const InboxDoneRow = memo(function InboxDoneRow(props: InboxDoneRowProps)
                   thread.moveStatus ? "text-muted-foreground" : "text-muted-foreground/45",
                 )}
               >
-                {thread.moveStatus ?? (doneAt ? <RelativeTimeLabel at={doneAt} /> : null)}
+                {thread.moveStatus ?? (doneAt ? <RelativeTimeLabel at={doneAt} compact /> : null)}
               </span>
               {isConfirmingArchive ? (
                 <RowFloatingActions isActive={isActive} isSelected={false} alwaysVisible>

@@ -9,9 +9,11 @@ import {
   type PreviewAutomationRequest,
   type PreviewAutomationResponse,
   ProviderInstanceId,
+  ScheduledTaskId,
   type SideTurnId,
   type ThreadId,
   type ThreadParticipantId,
+  type ThreadScheduledRun,
   type TurnId,
   WS_METHODS,
 } from "@threadlines/contracts";
@@ -1361,8 +1363,14 @@ describe("ChatView (full app): sidebar", () => {
     }
   });
 
-  /** A room row whose added agent has been at work for twelve and a half minutes. */
-  async function mountRoomWorkingRow(agent: { readonly model: string; readonly role?: string }) {
+  /** A room row whose added agent has been at work for twelve and a half
+   *  minutes, optionally a scheduled task's run, in a project named
+   *  "Project" unless `projectTitle` says otherwise. */
+  async function mountRoomWorkingRow(
+    agent: { readonly model: string; readonly role?: string },
+    options: { readonly scheduledRun?: ThreadScheduledRun; readonly projectTitle?: string } = {},
+  ) {
+    const { scheduledRun, projectTitle = "Project" } = options;
     const agentId = "7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d" as ThreadParticipantId;
     // The widest clock a turn shows before its first hour ("12m 30s").
     const startedAt = new Date(Date.now() - 12.5 * 60_000).toISOString();
@@ -1376,6 +1384,7 @@ describe("ChatView (full app): sidebar", () => {
       viewport: DEFAULT_VIEWPORT,
       snapshot: {
         ...base,
+        projects: base.projects.map((project) => ({ ...project, title: projectTitle })),
         threads: base.threads.map((thread) =>
           thread.id === THREAD_ID
             ? {
@@ -1394,6 +1403,7 @@ describe("ChatView (full app): sidebar", () => {
                   },
                 ],
                 session: thread.session ? { ...thread.session, participantId: agentId } : null,
+                ...(scheduledRun !== undefined ? { scheduledRun } : {}),
                 latestTurn: {
                   turnId: "turn-room-working" as TurnId,
                   state: "running" as const,
@@ -1416,17 +1426,18 @@ describe("ChatView (full app): sidebar", () => {
         () => document.querySelector<HTMLElement>(`[data-testid="thread-meta-${THREAD_ID}"]`),
         "Unable to find the row's status slot.",
       );
+      // The agent's name and the clock: the slot's colour says it is working.
       await vi.waitFor(
         () => {
-          expect(meta.textContent).toMatch(/.\s·\sworking\s·\s12m \d+s$/);
+          expect(meta.textContent).toMatch(/^[^·]+\s·\s12m \d+s$/);
         },
         { timeout: 8_000, interval: 16 },
       );
-      const [name, , state, , clock] = [...meta.children] as HTMLElement[];
+      const [name, , clock] = [...meta.children] as HTMLElement[];
       const project = [...line.querySelectorAll<HTMLElement>("span")].find(
-        (element) => element.textContent === "Project",
+        (element) => element.textContent === projectTitle,
       );
-      return { mounted, line, name: name!, state: state!, clock: clock!, project };
+      return { mounted, line, name: name!, clock: clock!, project: project! };
     } catch (error) {
       await mounted.cleanup();
       throw error;
@@ -1441,29 +1452,73 @@ describe("ChatView (full app): sidebar", () => {
     return range.getBoundingClientRect().width <= element.getBoundingClientRect().width + 0.01;
   };
 
-  it("keeps a room's working agent, state and clock whole at the default width", async () => {
-    const { mounted, line, name, state, clock, project } = await mountRoomWorkingRow({
+  /** Whether a row's name is on screen whole: all of its text lies inside
+   *  the box that clips it. */
+  const showsName = (label: HTMLElement) => {
+    const range = document.createRange();
+    range.selectNodeContents(label);
+    const text = range.getBoundingClientRect();
+    const box = label.getBoundingClientRect();
+    return (
+      text.width > 0 &&
+      text.left >= box.left - 0.5 &&
+      text.right <= box.right + 0.5 &&
+      text.bottom <= box.bottom + 0.5
+    );
+  };
+
+  /** How much of a row's name is on screen, in px: the box its text is cut
+   *  to, or 0 once it has wrapped out of sight. */
+  const shownNameWidth = (label: HTMLElement) => {
+    const text =
+      [...label.querySelectorAll<HTMLElement>("span")].findLast(
+        (element) => element.textContent === label.textContent,
+      ) ?? label;
+    const box = text.getBoundingClientRect();
+    return box.top < label.getBoundingClientRect().bottom - 0.5 ? box.width : 0;
+  };
+
+  const expectWholeInLine = (line: HTMLElement, parts: readonly HTMLElement[]) => {
+    for (const part of parts) {
+      expect(showsWholeText(part)).toBe(true);
+      expect(part.getBoundingClientRect().right).toBeLessThanOrEqual(
+        line.getBoundingClientRect().right + 0.5,
+      );
+    }
+  };
+
+  it("keeps a room's working agent, clock and project name whole at the default width", async () => {
+    const { mounted, line, name, clock, project } = await mountRoomWorkingRow({
       model: "Opus 5.5",
     });
     try {
-      for (const part of [name, state, clock]) {
-        expect(showsWholeText(part)).toBe(true);
-        expect(part.getBoundingClientRect().right).toBeLessThanOrEqual(
-          line.getBoundingClientRect().right + 0.5,
-        );
-      }
-      // The project name is the first thing to give way: at the default width
-      // it may be shortened, but it only goes once a long agent name needs
-      // its room (below).
-      expect(project).toBeDefined();
-      expect(project!.getBoundingClientRect().width).toBeGreaterThan(0.5);
+      expectWholeInLine(line, [name, clock]);
+      // The project name is the first thing to give way: at the default
+      // width it fits whole beside the agent's name and the clock.
+      expect(showsName(project)).toBe(true);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("cuts a long project name beside the agent, but never to a stub", async () => {
+    const { mounted, line, name, clock, project } = await mountRoomWorkingRow(
+      { model: "Opus 5.5" },
+      { projectTitle: "A project with a deliberately long display name" },
+    );
+    try {
+      expectWholeInLine(line, [name, clock]);
+      // Too long to fit whole, it is cut with a readable start left (3rem),
+      // rather than hidden behind a gap.
+      expect(showsName(project)).toBe(false);
+      expect(shownNameWidth(project)).toBeGreaterThanOrEqual(47.5);
     } finally {
       await mounted.cleanup();
     }
   });
 
   it("shortens a long agent name only once the project name is gone", async () => {
-    const { mounted, line, name, state, clock, project } = await mountRoomWorkingRow({
+    const { mounted, line, name, clock, project } = await mountRoomWorkingRow({
       model: "Opus 5.5",
       // Custom names go up to 32 characters.
       role: "Reviewer with a very long name",
@@ -1471,13 +1526,39 @@ describe("ChatView (full app): sidebar", () => {
     try {
       expect(name.textContent).toBe("Reviewer with a very long name");
       expect(showsWholeText(name)).toBe(false);
-      expect(project!.getBoundingClientRect().width).toBeLessThan(0.5);
-      for (const part of [state, clock]) {
-        expect(showsWholeText(part)).toBe(true);
-        expect(part.getBoundingClientRect().right).toBeLessThanOrEqual(
-          line.getBoundingClientRect().right + 0.5,
-        );
-      }
+      expect(shownNameWidth(project)).toBe(0);
+      expectWholeInLine(line, [clock]);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps a scheduled run's glyph and clock beside a long agent name", async () => {
+    const taskName = "Sun Nov 8: finish the manual index and the glossary";
+    const { mounted, line, name, clock, project } = await mountRoomWorkingRow(
+      { model: "Opus 5.5", role: "Reviewer with a very long name" },
+      {
+        scheduledRun: {
+          taskId: ScheduledTaskId.make("task-manual-index"),
+          taskName,
+          slotUtc: "2026-11-08T09:00:00.000Z",
+        },
+      },
+    );
+    try {
+      expectWholeInLine(line, [clock]);
+      // The project name gives way; the glyph that marks the run does not,
+      // and it names the task.
+      expect(shownNameWidth(project)).toBe(0);
+      const glyph = line.querySelector<HTMLElement>(
+        `[data-testid="thread-scheduled-run-${THREAD_ID}"]`,
+      );
+      expect(glyph?.getAttribute("aria-label")).toBe(`Scheduled · ${taskName}`);
+      const box = glyph!.getBoundingClientRect();
+      expect(
+        glyph!.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2)),
+      ).toBe(true);
+      expect(box.right).toBeLessThanOrEqual(name.getBoundingClientRect().left);
     } finally {
       await mounted.cleanup();
     }

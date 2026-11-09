@@ -38,6 +38,8 @@ import type { SidebarThreadSummary } from "../../types";
 import { formatChildThreadCount, type ThreadStatusPill } from "../Sidebar.logic";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { OutsideOriginMark } from "../outsideAgents/AssistantMark";
+import { ScheduledRunIcon } from "../scheduled/ScheduledRunIcon";
+import { useScheduledRunLabel } from "../../lib/scheduledTasksState";
 import {
   PreviewCard,
   PreviewCardPopup,
@@ -234,6 +236,8 @@ function ThreadHoverCardContent({ thread, status, lineage }: ThreadHoverCardPayl
       ? (serverProviders.find((snapshot) => snapshot.instanceId === instanceId)?.displayName ??
         null)
       : null;
+  // The run's task, which the row's top line marks with a glyph alone.
+  const scheduledRunLabel = useScheduledRunLabel(thread.environmentId, thread.scheduledRun);
   const activityAt = thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt;
   // A worktree is the more specific fact when present: it implies the branch
   // and tells you the checkout is isolated.
@@ -283,6 +287,15 @@ function ThreadHoverCardContent({ thread, status, lineage }: ThreadHoverCardPayl
         {lineage?.startedBy ? (
           <HoverCardDetailRow icon={<CornerDownRightIcon className="size-3.5" />}>
             Started by {lineage.startedBy}
+          </HoverCardDetailRow>
+        ) : null}
+        {scheduledRunLabel !== null ? (
+          <HoverCardDetailRow
+            icon={
+              <ScheduledRunIcon event={thread.scheduledRun?.event === true} className="size-3.5" />
+            }
+          >
+            {scheduledRunLabel}
           </HoverCardDetailRow>
         ) : null}
         {thread.outsideOrigin ? (

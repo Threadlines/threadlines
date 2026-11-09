@@ -98,6 +98,15 @@ export function formatRelativeTimeLabel(isoDate: string, nowMs: number) {
 }
 
 /**
+ * "5m", "now": the sidebar rows' time, where its place already says it is a
+ * moment past and every character comes out of the project name's room.
+ */
+export function formatRelativeTimeShortLabel(isoDate: string, nowMs: number) {
+  const relative = formatRelativeTime(isoDate, nowMs);
+  return relative.suffix ? relative.value : "now";
+}
+
+/**
  * Relative elapsed duration since an ISO instant, without an "ago" suffix.
  * Useful for labels like "Connected for 3m".
  */
