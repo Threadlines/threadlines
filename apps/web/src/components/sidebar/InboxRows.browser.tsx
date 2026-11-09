@@ -50,6 +50,7 @@ import {
 } from "../Sidebar.logic";
 import {
   InboxChildRow,
+  InboxDoneRow,
   InboxLinkRequestRow,
   InboxRemoteChildRow,
   InboxRemoteDoneRow,
@@ -638,6 +639,68 @@ describe("child thread families in the inbox", () => {
     await page.getByTestId("child-row-thread-wrapped-child").hover();
     await userEvent.click(page.getByTestId("child-reopen-thread-wrapped-child"));
     expect(reopenThread).toHaveBeenCalledWith(`${ENVIRONMENT_ID}:thread-wrapped-child`);
+  });
+
+  it("says when an agent comes back to a wrapped thread, in Wrapped and in a family", async () => {
+    // A child whose answer went back to its parent wraps unread, so its
+    // status would say Completed: the clock reads the check-back itself.
+    const checkBacks = [
+      {
+        id: "wake-1",
+        participantId: null,
+        scheduledFor: new Date(Date.now() + 3.5 * 60 * 60_000).toISOString(),
+        exact: false,
+        recurring: false,
+        durable: false,
+      },
+    ];
+    const wrapped: SidebarThreadSummary = {
+      ...THREAD,
+      id: ThreadId.make("thread-wrapped-checking-back"),
+      checkBacks,
+    };
+    const child: SidebarThreadSummary = {
+      ...THREAD,
+      id: ThreadId.make("thread-child-checking-back"),
+      checkBacks,
+    };
+    render(
+      <ThreadHoverCardProvider>
+        <ul>
+          <InboxDoneRow
+            thread={wrapped}
+            projectLabel={null}
+            doneAt="2026-09-01T09:00:00.000Z"
+            isActive={false}
+            appSettingsConfirmThreadArchive={false}
+            confirmingArchiveThreadKey={null}
+            setConfirmingArchiveThreadKey={() => undefined}
+            confirmArchiveButtonRefs={{ current: new Map() }}
+            navigateToThread={() => undefined}
+            handleThreadContextMenu={async () => undefined}
+            reopenThread={() => undefined}
+            attemptArchiveThread={async () => undefined}
+            listPullRequest={null}
+            linkedPullRequests={[]}
+            openPrLink={() => undefined}
+          />
+          <InboxChildRow
+            {...rowCallbacks}
+            thread={child}
+            status={{ label: "Completed", colorClass: "", dotClass: "", pulse: false }}
+            isDone
+            doneAt="2026-09-01T09:00:00.000Z"
+            isActive={false}
+            jumpLabel={null}
+            canMarkDone={false}
+            reopenThread={() => undefined}
+          />
+        </ul>
+      </ThreadHoverCardProvider>,
+    );
+
+    await expect.element(page.getByTestId(`done-time-${wrapped.id}`)).toHaveTextContent("3h");
+    await expect.element(page.getByTestId(`child-meta-${child.id}`)).toHaveTextContent("3h");
   });
 
   it("says which computer a family's thread runs on, and where a thread on its own came from", async () => {

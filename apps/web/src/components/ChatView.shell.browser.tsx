@@ -24,6 +24,7 @@ import { useTitleBarLayoutStore } from "./sidebar/titleBarSlot";
 
 import {
   THREAD_ID,
+  THREAD_TITLE,
   PROJECT_ID,
   LOCAL_ENVIRONMENT_ID,
   THREAD_REF,
@@ -1114,6 +1115,86 @@ describe("ChatView (full app): app shell", () => {
       );
       expect(mounted.router.state.location.pathname).toBe("/scheduled");
       await expect.element(allTasks).toHaveAttribute("aria-pressed", "true");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("lists a thread an agent will come back to on the Scheduled page, and opens it", async () => {
+    const base = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-check-back" as MessageId,
+      targetText: "check back",
+    });
+    const snapshot = {
+      ...base,
+      threads: base.threads.map((thread) =>
+        thread.id === THREAD_ID
+          ? {
+              ...thread,
+              checkBacks: [
+                {
+                  id: "wake-1",
+                  participantId: null,
+                  scheduledFor: new Date(Date.now() + 3 * 60 * 60_000).toISOString(),
+                  exact: false,
+                  recurring: false,
+                  description: "Confirm the docs index picked up the new manual.",
+                  durable: false,
+                },
+              ],
+            }
+          : thread,
+      ),
+    };
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot,
+      initialPath: "/scheduled",
+      configureFixture: (nextFixture) => {
+        const capabilities = { repositoryIdentity: true, scheduledTasks: true } as const;
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          environment: { ...nextFixture.serverConfig.environment, capabilities },
+        };
+        nextFixture.welcome = {
+          ...nextFixture.welcome,
+          environment: { ...nextFixture.welcome.environment, capabilities },
+        };
+      },
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      await vi.waitFor(
+        () =>
+          expect(
+            wsRequests.some((request) => request._tag === WS_METHODS.scheduledTasksSubscribe),
+          ).toBe(true),
+        { timeout: 8_000, interval: 16 },
+      );
+      rpcHarness.emitStreamValue(WS_METHODS.scheduledTasksSubscribe, {
+        tasks: [],
+        requests: [],
+        timeZone: "UTC",
+      });
+
+      // No tasks yet, but a check-back: the page lists it, not the empty state.
+      const row = page.getByTestId(`scheduled-check-back-${THREAD_ID}`);
+      await expect.element(row).toMatchTextContent(THREAD_TITLE);
+      await expect.element(row).toMatchTextContent(/Checks back (around|tomorrow)/);
+      await expect.element(row).toMatchTextContent("Confirm the docs index");
+      await expect.element(row).toMatchTextContent(/in [23]h/);
+      expect(document.querySelector('[data-testid="scheduled-empty"]')).toBeNull();
+      await expect
+        .element(page.getByTestId(`scheduled-check-back-cancel-${THREAD_ID}`))
+        .toBeVisible();
+
+      // The list beside the rail has it too, and it opens the thread.
+      await page.getByTestId(`scheduled-list-check-back-${THREAD_ID}`).click();
+      await vi.waitFor(() => expect(mounted.router.state.location.pathname).toContain(THREAD_ID), {
+        timeout: 8_000,
+        interval: 16,
+      });
     } finally {
       await mounted.cleanup();
     }

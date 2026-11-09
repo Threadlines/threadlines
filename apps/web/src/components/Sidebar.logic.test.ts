@@ -1317,6 +1317,79 @@ describe("inbox done lifecycle", () => {
     ).toBe(true);
   });
 
+  it("lets a thread an agent will come back to wrap up, and brings it back when the agent does", () => {
+    // Like a snoozed email: the check-back doesn't hold the thread in the
+    // list, and its turn returns the thread there by itself.
+    const settledTurn = {
+      turnId: "turn-settled" as TurnId,
+      state: "completed",
+      requestedAt: "2026-07-28T11:00:00.000Z",
+      startedAt: "2026-07-28T11:00:00.000Z",
+      completedAt: "2026-07-28T11:05:00.000Z",
+      assistantMessageId: null,
+    } as const;
+    const checkingBack = {
+      ...base,
+      latestUserMessageAt: "2026-07-28T11:00:00.000Z",
+      latestTurn: settledTurn,
+      session: { status: "ready", orchestrationStatus: "ready" } as never,
+      lastVisitedAt: "2026-07-28T11:06:00.000Z",
+      checkBacks: [
+        {
+          id: "wake-1",
+          participantId: null,
+          scheduledFor: "2026-07-28T15:00:00.000Z",
+          exact: false,
+          recurring: false,
+          durable: false,
+        },
+      ],
+    };
+    expect(resolveThreadStatusPill({ thread: checkingBack })?.label).toBe("Checking back");
+    expect(canMarkThreadDone(checkingBack, { now: NOW })).toBe(true);
+    expect(isThreadDone(checkingBack, doneMark, { now: NOW })).toBe(true);
+    // Its pull request landing files it too, as it would without one.
+    expect(
+      isThreadDone(checkingBack, null, {
+        now: NOW,
+        pullRequestSettledAt: "2026-07-28T11:30:00.000Z",
+      }),
+    ).toBe(true);
+
+    // It fires: the agent's turn is new work, and the thread is back.
+    const backAt = "2026-07-28T15:00:30.000Z";
+    const firing = {
+      ...checkingBack,
+      latestTurn: { ...settledTurn, state: "running", requestedAt: backAt, completedAt: null },
+      session: { status: "running", orchestrationStatus: "running" } as never,
+    } as const;
+    expect(isThreadDone(firing, doneMark, { now: backAt })).toBe(false);
+    // Finished and unread, it stays until the user has seen it.
+    const answered = {
+      ...firing,
+      latestTurn: {
+        ...settledTurn,
+        requestedAt: backAt,
+        startedAt: backAt,
+        completedAt: "2026-07-28T15:02:00.000Z",
+      },
+      session: { status: "ready", orchestrationStatus: "ready" } as never,
+    };
+    expect(isThreadDone(answered, doneMark, { now: "2026-07-28T15:03:00.000Z" })).toBe(false);
+
+    // Waiting out a usage limit still holds: that work was cut off, not finished.
+    const limited = {
+      ...checkingBack,
+      checkBacks: [],
+      session: {
+        status: "error",
+        orchestrationStatus: "error",
+        continueAtReset: { resetsAt: "2026-07-28T13:00:00.000Z", at: "2026-07-28T13:01:00.000Z" },
+      } as never,
+    };
+    expect(canMarkThreadDone(limited, { now: NOW })).toBe(false);
+  });
+
   it("never files a completion the user has not seen", () => {
     // Filing unread work is the sidebar reading your mail for you. The row
     // should offer Wrap up only after the completed thread has been inspected.
@@ -2456,7 +2529,7 @@ describe("families across computers", () => {
     expect(
       place(record("failed", filing({ handedBackAt: null, override: wrappedHere }), wrappedHere)),
     ).toMatchObject(inFamily);
-    // Bound to start again there (a check-back): kept, whatever was said.
+    // Bound to start again there (a usage reset): kept, whatever was said.
     expect(
       place(record("idle", filing({ waiting: true }), wrappedHere)).family.map(
         (child) => child.canWrap,

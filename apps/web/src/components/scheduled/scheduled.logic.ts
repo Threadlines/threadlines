@@ -1,11 +1,13 @@
 /**
  * The Scheduled page's pure parts (docs/design/fleet.md, Part 6): how runs
- * and times read, and the task form's state, checks and the draft it saves.
+ * and times read, the task form's state, checks and the draft it saves, and
+ * the agents' check-backs it lists beside the tasks.
  * Which computers it lists and its search params are in scheduledShell.logic.ts.
  */
 import {
   type EnvironmentId,
   type GitHubEventPreset,
+  type OrchestrationCheckBack,
   type GitHubEventTrigger,
   type ModelSelection,
   type ProjectId,
@@ -44,6 +46,7 @@ import {
 import * as Result from "effect/Result";
 
 import { viewerTimeZone } from "../../lib/timeZones";
+import { nextCheckBack } from "../chat/checkBacks";
 
 // ---------------------------------------------------------------------------
 // Where the page is (its search params are in scheduledShell.logic.ts)
@@ -1133,4 +1136,42 @@ export function eventTaskDetailRows(cadence: ScheduledTaskWebhookCadence): Reado
       value: cadence.includeEvent ? "Instructions, then the event" : "Instructions only",
     },
   ];
+}
+
+// ---------------------------------------------------------------------------
+// Check-backs: times agents set themselves to come back to a thread
+// ---------------------------------------------------------------------------
+
+/** A thread an agent will come back to, as the Scheduled page lists it. */
+export interface CheckBackThread<Thread> {
+  readonly thread: Thread;
+  /** The one the chat and the sidebar name, and the one Cancel ends. */
+  readonly soonest: OrchestrationCheckBack;
+  /** Its other check-backs (several agents, or one that set several). */
+  readonly more: number;
+}
+
+/**
+ * The threads agents will come back to, soonest first: one entry each, as the
+ * chat's line and the sidebar's countdown show one. An archived thread left
+ * the lists, so it isn't here either.
+ */
+export function checkBackThreads<
+  Thread extends {
+    readonly title: string;
+    readonly archivedAt: string | null;
+    readonly checkBacks?: ReadonlyArray<OrchestrationCheckBack> | undefined;
+  },
+>(threads: ReadonlyArray<Thread>): ReadonlyArray<CheckBackThread<Thread>> {
+  return threads
+    .flatMap((thread) => {
+      const soonest = nextCheckBack(thread.checkBacks);
+      if (thread.archivedAt !== null || soonest === null) return [];
+      return [{ thread, soonest, more: (thread.checkBacks?.length ?? 1) - 1 }];
+    })
+    .toSorted(
+      (left, right) =>
+        Date.parse(left.soonest.scheduledFor) - Date.parse(right.soonest.scheduledFor) ||
+        left.thread.title.localeCompare(right.thread.title),
+    );
 }

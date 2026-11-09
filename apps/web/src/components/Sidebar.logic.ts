@@ -78,6 +78,9 @@ export const THREAD_STATUS_DOT_CLASSES = {
   red: "bg-red-500 dark:bg-red-400/90",
 } as const;
 
+/** The text tone of statuses that start again by themselves (waiting, checking back), like their cyan dot. */
+export const WAITING_STATUS_TONE = "text-cyan-600 dark:text-cyan-300/90";
+
 type ThreadStatusInput = Pick<
   SidebarThreadSummary,
   | "hasActionableProposedPlan"
@@ -376,7 +379,7 @@ export function resolveThreadStatusPill(input: {
   if (continueAt !== null) {
     return {
       label: "Continues at reset",
-      colorClass: "text-cyan-600 dark:text-cyan-300/90",
+      colorClass: WAITING_STATUS_TONE,
       dotClass: THREAD_STATUS_DOT_CLASSES.cyan,
       pulse: false,
       checkBackAt: continueAt,
@@ -413,7 +416,7 @@ export function resolveThreadStatusPill(input: {
   if (isWaitingOnBackgroundTasks(thread.latestTurn, thread.session)) {
     return {
       label: "Waiting",
-      colorClass: "text-cyan-600 dark:text-cyan-300/90",
+      colorClass: WAITING_STATUS_TONE,
       dotClass: THREAD_STATUS_DOT_CLASSES.cyan,
       pulse: true,
     };
@@ -429,7 +432,7 @@ export function resolveThreadStatusPill(input: {
   ) {
     return {
       label: "Waiting",
-      colorClass: "text-cyan-600 dark:text-cyan-300/90",
+      colorClass: WAITING_STATUS_TONE,
       dotClass: THREAD_STATUS_DOT_CLASSES.cyan,
       pulse: true,
       childThreadCount: awaitedChildThreads,
@@ -451,7 +454,7 @@ export function resolveThreadStatusPill(input: {
   if (checkBack !== null && isLatestTurnSettled(thread.latestTurn, thread.session)) {
     return {
       label: "Checking back",
-      colorClass: "text-cyan-600 dark:text-cyan-300/90",
+      colorClass: WAITING_STATUS_TONE,
       dotClass: THREAD_STATUS_DOT_CLASSES.cyan,
       pulse: false,
       checkBackAt: checkBack.scheduledFor,
@@ -712,7 +715,10 @@ export function hasQueuedTurnStart(
  *
  * Waiting on the threads its agent started does not hold a thread open:
  * wrapping it up never stops them, so the check reads what the thread shows
- * beneath that wait.
+ * beneath that wait. Nor does a check-back: the agent's turn is over, and
+ * wrapping never cancels it. When it fires, that new work outranks the old
+ * word and brings the thread back by itself, like a snoozed email. (A usage
+ * reset still holds: that work was cut off, not finished.)
  */
 export function canMarkThreadDone(
   thread: InboxLifecycleInput,
@@ -728,7 +734,7 @@ export function canMarkThreadDone(
   // The same status resolution the row uses, so "can't be marked done" and
   // "shows a status that deserves attention" can never drift apart.
   const status = resolveThreadStatusPill({ thread, ignoreChildThreadWait: true });
-  if (status !== null) {
+  if (status !== null && status.label !== "Checking back") {
     const handedBack = status.label === "Completed" && options.handedBackCompletionSeen === true;
     if (!handedBack) {
       if (status.label !== "Failed") return false;
@@ -942,7 +948,8 @@ function fileByFacts(
  * failure the user hasn't opened, or a finished turn that didn't go back to
  * the parent; then the user's word (given there, or here and sent on), a pin
  * there, its answer having reached the parent, and sitting idle. Waiting to
- * start again (a check-back, a usage reset, a queued message) holds it too.
+ * start again (a usage reset, a queued message) holds it too; a check-back
+ * doesn't, as it doesn't here (`canMarkThreadDone`).
  * A Wrap up given here also marks it seen there (`peer.thread.wrap`), the
  * visit a child here gets before it can be wrapped, so until that computer
  * has it (`unsentWordHere`) it outranks what is unread there. Archived or
@@ -2214,7 +2221,7 @@ const REMOTE_PHASE_PILLS: Record<InboxRemoteChildPhase, ThreadStatusPill | null>
   },
   waiting: {
     label: "Waiting",
-    colorClass: "text-cyan-600 dark:text-cyan-300/90",
+    colorClass: WAITING_STATUS_TONE,
     dotClass: THREAD_STATUS_DOT_CLASSES.cyan,
     pulse: true,
   },

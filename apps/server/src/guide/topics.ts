@@ -45,7 +45,7 @@ After a reply to your message, Claude or Codex can suggest what you might send n
 
 When Claude or Codex asks multiple-choice questions, a card takes the place of the message box. Besides answering, you can Skip a question, close the card with its X (the agent goes on without answers), or choose Reply in chat: the message box comes back, and the next message you send, text only, is your answer. The agent is told exactly which you did. Questions from other agents, such as a yes/no confirmation, still need an answer or Stop.
 
-When a thread is done it wraps up and moves to the Wrapped shelf at the bottom of the sidebar; {place:threads.whenDone} says when that happens on its own. Old threads can be archived for you: {place:archived.cleanup}.`,
+When a thread is done it wraps up and moves to the Wrapped shelf at the bottom of the sidebar; {place:threads.whenDone} says when that happens on its own. An agent coming back later (a check-back) doesn't keep a thread out of Wrapped: the thread returns to the list when the agent does. Old threads can be archived for you: {place:archived.cleanup}.`,
   },
   {
     id: "access-levels",
@@ -124,12 +124,24 @@ A thread link from an assistant or a phone alert, opened in a computer's browser
   {
     id: "scheduled-tasks",
     title: "Scheduled and event tasks",
-    keywords: ["schedule", "cron", "recurring", "every day", "webhook", "event", "github event"],
+    keywords: [
+      "schedule",
+      "cron",
+      "recurring",
+      "every day",
+      "webhook",
+      "event",
+      "github event",
+      "check-back",
+      "check back",
+    ],
     body: `{place:scheduled} lists tasks that start an agent at set times (once, hourly, daily, weekdays, weekly or a cron rule) or when an event arrives at the task's address (a webhook, or GitHub events like a new issue or failed checks). Each run starts a new thread with the task's instructions, or sends them to one thread as a follow-up.
 
 Tasks run while Threadlines is running on that computer. A time missed while it was off or asleep gets one catch-up run when it's back, if the missed time was within the last 7 days. The desktop app can keep the computer awake for them.
 
-Agents can list, create and change scheduled tasks when {place:threads.agentThreads} isn't Off; with Ask me first, a card asks you before a change takes effect. A task an agent sets up on a model already in the room runs at the reasoning you set for that agent, unless the agent or you name another level.`,
+Agents can list, create and change scheduled tasks when {place:threads.agentThreads} isn't Off; with Ask me first, a card asks you before a change takes effect. A task an agent sets up on a model already in the room runs at the reasoning you set for that agent, unless the agent or you name another level.
+
+Below the tasks, Check-backs lists the threads an agent set itself to come back to, soonest first, with when and why. A row opens its thread, and Cancel ends the check-back (it stops that agent's session; one saved to the project has no Cancel). A thread with a check-back can still wrap up: in Wrapped its row shows a clock with the time left, and it comes back to the list when the agent does.`,
   },
   {
     id: "outside-agents",
