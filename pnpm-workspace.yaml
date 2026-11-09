@@ -47,6 +47,11 @@ overrides:
   "@effect/platform-node-shared": "catalog:"
   "@effect/sql-sqlite-bun": "catalog:"
   "@effect/vitest": "catalog:"
+  # Keep emnapi on 1.x. rolldown's wasm binding pins a 2.0 beta, and pnpm then hands
+  # that beta to astro check's wasm runtime next to a 1.x core, which crashes on load.
+  # Drop these once emnapi 2.0 is final and the astro checker runs on it.
+  "@emnapi/core": ^1.11.1
+  "@emnapi/runtime": ^1.11.1
   "@hono/node-server": 2.1.5
   "@types/node": "catalog:"
   "@xmldom/xmldom@0.8": 0.8.15
