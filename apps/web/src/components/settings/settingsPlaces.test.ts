@@ -20,6 +20,7 @@ const UNPLACED: ReadonlyArray<readonly [file: string, title: string, why: string
   ["components/scheduled/ScheduledTaskForm.tsx", "*", "a scheduled task's form, not settings"],
   ["components/scheduled/ScheduledTaskDetail.tsx", "*", "a scheduled task's details, not settings"],
   ["components/scheduled/EventTaskPanels.tsx", "*", "an event task's panels, not settings"],
+  ["components/scheduled/ScheduledCheckBacks.tsx", "*", "agents' check-backs, not settings"],
   ["components/settings/SourceControlSettings.tsx", "Server environment", "empty scan result"],
   ["components/settings/ConnectionsSettings.tsx", "Phone links changed", "one-time notice"],
   ["components/settings/ConnectionsSettings.tsx", "Connect your phone again", "one-time notice"],

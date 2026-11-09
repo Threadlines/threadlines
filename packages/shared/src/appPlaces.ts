@@ -483,9 +483,10 @@ const PAGES = [
     id: "scheduled",
     kind: "page",
     title: "Scheduled",
-    about: "Tasks that start an agent on a schedule or when an event arrives.",
+    about:
+      "Tasks that start an agent on a schedule or when an event arrives, and the threads an agent will come back to.",
     route: { to: "/scheduled" },
-    keywords: ["cron", "schedule", "webhook", "event", "recurring"],
+    keywords: ["cron", "schedule", "webhook", "event", "recurring", "check-back"],
     value: { kind: "state", state: "scheduledTasks" },
   },
   {
