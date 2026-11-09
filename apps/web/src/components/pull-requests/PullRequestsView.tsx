@@ -619,7 +619,7 @@ export function PullRequestsView({
             )}
           >
             {/* On a phone the strip above names the page. */}
-            <h1 className="mb-1 hidden text-lg font-medium tracking-tight md:block">
+            <h1 className="mb-1 hidden text-lg font-medium tracking-tight desktop:block">
               Pull requests
             </h1>
             <p className="text-sm text-muted-foreground/70">

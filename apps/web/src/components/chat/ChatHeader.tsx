@@ -37,6 +37,7 @@ import { HeaderSourceChanges } from "./HeaderSourceChanges";
 import type { WorkingTreeChanges } from "../ChatView.logic";
 import { cn } from "../../lib/utils";
 import { useComputerLabel } from "../sidebar/linkedComputers";
+import { useTitleBarHeaderRef } from "../sidebar/titleBarSlot";
 import { outsideOriginDescription } from "../../environments/outsideAgents/outsideAgents.logic";
 import { OutsideOriginMark } from "../outsideAgents/AssistantMark";
 
@@ -337,9 +338,13 @@ export const ChatHeader = memo(function ChatHeader({
   // its left it would only hang there. A narrow header drops it for the title.
   const hasLaunchers =
     activeProjectScripts !== undefined || fileBrowserAvailable || onContinueInProject !== undefined;
+  // Tells the title row how narrow this header can get: every chip and button
+  // at its width, the title at the room ChatView keeps for it.
+  const titleBarHeaderRef = useTitleBarHeaderRef();
 
   return (
     <div
+      ref={titleBarHeaderRef}
       className="@container/header-actions flex min-w-0 flex-1 items-center gap-2"
       data-active-project-name={activeProjectName}
       data-active-thread-title={activeThreadTitle}
@@ -347,9 +352,11 @@ export const ChatHeader = memo(function ChatHeader({
       <div className="flex min-w-0 flex-1 items-center gap-1.5 sm:gap-2">
         <SidebarOpenTrigger className="size-7 shrink-0" />
         {activeProjectName && (
-          // Hidden, not unmounted, on phones: the crumb menu owns the
-          // open-favorite shortcut, which should still work there.
-          <div className="hidden min-w-0 shrink items-center gap-1.5 sm:flex">
+          // Shown where the header has room for it beside the title (28rem:
+          // never on a phone, and not in a narrow window's title row). Hidden,
+          // not unmounted: the crumb menu owns the open-favorite shortcut,
+          // which should still work there.
+          <div className="hidden min-w-0 shrink items-center gap-1.5 @md/header-actions:flex">
             {openInCwd !== null && projectCwd !== null ? (
               <ProjectCrumbMenu
                 projectName={activeProjectName}

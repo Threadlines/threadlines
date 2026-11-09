@@ -64,7 +64,7 @@ function ConnectionStatusState({
         >
           <div className="flex items-center gap-2">
             {chrome === "sidebar-inset" ? <SidebarOpenTrigger className="size-7 shrink-0" /> : null}
-            <span className="text-sm font-medium text-foreground md:text-muted-foreground/60">
+            <span className="text-sm font-medium text-foreground desktop:text-muted-foreground/60">
               {APP_DISPLAY_NAME}
             </span>
           </div>
@@ -97,7 +97,7 @@ function ConnectionStatusState({
 
 function SidebarInsetShell({ children }: { children: ReactNode }) {
   return (
-    <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground md:h-auto">
+    <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground desktop:h-auto">
       {children}
     </SidebarInset>
   );

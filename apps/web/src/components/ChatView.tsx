@@ -446,7 +446,7 @@ import {
 } from "./ui/alert-dialog";
 import { Checkbox } from "./ui/checkbox";
 import { HeaderEdgeFade } from "./HeaderEdgeFade";
-import { TitleBarContent } from "./sidebar/titleBarSlot";
+import { TitleBarContent, useTitleBarRowPresent } from "./sidebar/titleBarSlot";
 import {
   canRequestProviderRateLimitResetCredit,
   isProviderUsageLimitErrorMessage,
@@ -480,6 +480,10 @@ const EMPTY_PROPOSED_PLANS: ProposedPlan[] = [];
 const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
 const EMPTY_MESSAGES: ChatMessage[] = [];
 const NO_THREAD_DERIVATION_KEY = "";
+// The room the window's title row keeps for a thread's title (and its
+// project's name) beside the header's chips and buttons. Narrower than that,
+// the header moves to a row of its own.
+const CHAT_HEADER_TITLE_MIN_WIDTH_PX = 160;
 const EMPTY_TURN_IDS: ReadonlyArray<TurnId> = [];
 const NO_SEEN_TURNS = { threadId: null, turnIds: EMPTY_TURN_IDS } as const;
 const EMPTY_QUEUED_FOLLOW_UPS: ReadonlyArray<OrchestrationQueuedFollowUp> = [];
@@ -1222,6 +1226,9 @@ export default function ChatView(props: ChatViewProps) {
   const timelineSearchTargetRef = useRef(timelineSearchTarget);
   timelineSearchTargetRef.current = timelineSearchTarget;
   const shouldUseRightPanelSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
+  // With a title row the header's own row (a window too narrow for the header
+  // up there) is the desktop one; without, it's a phone's.
+  const titleRowPresent = useTitleBarRowPresent();
   // Auto-focusing the composer on touch devices pops the on-screen keyboard
   // over the conversation, so thread-entry focus is desktop-only.
   const isCoarsePointer = useMediaQuery({ pointer: "coarse" });
@@ -8619,13 +8626,14 @@ export default function ChatView(props: ChatViewProps) {
       <TitleBarContent
         measureRef={chatHeaderBottomVarRef}
         findRegion="chat"
+        flexibleMinWidth={CHAT_HEADER_TITLE_MIN_WIDTH_PX}
         fallback={
           <header
             ref={chatHeaderBottomVarRef}
             data-find-region="chat"
             className={cn(
               "relative transition-[padding-left] duration-200 ease-linear motion-reduce:transition-none",
-              isElectron
+              isElectron || titleRowPresent
                 ? cn("drag-region flex items-center px-3 sm:px-5", ELECTRON_HEADER_HEIGHT_CLASS)
                 : "pb-2 pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] pt-2 sm:pb-3 sm:pl-[calc(env(safe-area-inset-left)+1.25rem)] sm:pr-[calc(env(safe-area-inset-right)+1.25rem)] sm:pt-3",
             )}

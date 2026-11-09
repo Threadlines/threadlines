@@ -146,9 +146,21 @@ export interface UiLayoutState {
   /**
    * Whether the thread list beside the rail is showing on wide screens.
    * Hiding it leaves the rail. Phones show the list as a sheet instead, which
-   * always starts closed.
+   * always starts closed. Kept on this device.
    */
   sidebarListOpen: boolean;
+  /**
+   * The window is too narrow for the list beside the page, so the list floats
+   * over the page instead (set by the app shell, which measures). Not kept:
+   * it follows the window.
+   */
+  sidebarListFloats: boolean;
+  /**
+   * Whether the floating list is showing. Starts closed whenever the list
+   * starts floating, and never changes `sidebarListOpen`, so a window made
+   * wide again shows the list as the user left it there.
+   */
+  sidebarFloatingListOpen: boolean;
 }
 
 export interface UiEndpointState {
@@ -188,6 +200,8 @@ const initialState: UiState = {
   collapsedInboxGroups: {},
   inboxWrappedOpen: false,
   sidebarListOpen: true,
+  sidebarListFloats: false,
+  sidebarFloatingListOpen: false,
   defaultAdvertisedEndpointKey: null,
 };
 
@@ -1116,6 +1130,20 @@ export function reorderProjects(
   };
 }
 
+/** Whether the list beside the rail is showing, floating or not. */
+export function selectSidebarListShown(state: UiLayoutState): boolean {
+  return state.sidebarListFloats ? state.sidebarFloatingListOpen : state.sidebarListOpen;
+}
+
+function setSidebarListShown<T extends UiLayoutState>(state: T, open: boolean): T {
+  if (state.sidebarListFloats) {
+    return state.sidebarFloatingListOpen === open
+      ? state
+      : { ...state, sidebarFloatingListOpen: open };
+  }
+  return state.sidebarListOpen === open ? state : { ...state, sidebarListOpen: open };
+}
+
 interface UiStateStore extends UiState {
   syncProjects: (projects: readonly SyncProjectInput[]) => void;
   syncThreads: (
@@ -1137,8 +1165,10 @@ interface UiStateStore extends UiState {
   setChildThreadFamilyOpen: (parentThreadKey: string, open: boolean) => void;
   setInboxGroupCollapsed: (groupKey: string, collapsed: boolean) => void;
   setInboxWrappedOpen: (open: boolean) => void;
-  setSidebarListOpen: (open: boolean) => void;
-  toggleSidebarListOpen: () => void;
+  /** Shows or hides the list as it is now: beside the page, or floating over it. */
+  setSidebarListShown: (open: boolean) => void;
+  toggleSidebarListShown: () => void;
+  setSidebarListFloats: (floats: boolean) => void;
   setThreadChangedFilesExpanded: (
     threadId: string,
     turnId: string,
@@ -1188,10 +1218,15 @@ export const useUiStateStore = create<UiStateStore>((set) => ({
     set((state) =>
       state.inboxWrappedOpen === open ? state : { ...state, inboxWrappedOpen: open },
     ),
-  setSidebarListOpen: (open) =>
-    set((state) => (state.sidebarListOpen === open ? state : { ...state, sidebarListOpen: open })),
-  toggleSidebarListOpen: () =>
-    set((state) => ({ ...state, sidebarListOpen: !state.sidebarListOpen })),
+  setSidebarListShown: (open) => set((state) => setSidebarListShown(state, open)),
+  toggleSidebarListShown: () =>
+    set((state) => setSidebarListShown(state, !selectSidebarListShown(state))),
+  setSidebarListFloats: (floats) =>
+    set((state) =>
+      state.sidebarListFloats === floats
+        ? state
+        : { ...state, sidebarListFloats: floats, sidebarFloatingListOpen: false },
+    ),
   setThreadChangedFilesExpanded: (threadId, turnId, expanded, defaultExpanded) =>
     set((state) =>
       setThreadChangedFilesExpanded(state, threadId, turnId, expanded, defaultExpanded),

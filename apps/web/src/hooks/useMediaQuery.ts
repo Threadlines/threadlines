@@ -1,5 +1,7 @@
 import { useCallback, useSyncExternalStore } from "react";
 
+import { isElectron } from "../env";
+
 const BREAKPOINTS = {
   "2xl": 1536,
   "3xl": 1600,
@@ -82,6 +84,28 @@ export function useMediaQuery(query: BreakpointQuery | MediaQueryInput | (string
   return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 }
 
+/**
+ * The phone layout: a page header with a sheet instead of the title row, the
+ * rail and the list beside the page. A browser narrower than `md` gets it; the
+ * desktop app never does, at any window width or zoom (the `desktop:` and
+ * `phone:` variants in index.css are the same switch in CSS).
+ */
 export function useIsMobile(): boolean {
-  return useMediaQuery("max-md");
+  return useMediaQuery("max-md") && !isElectron;
+}
+
+/**
+ * A phone-size browser (narrower than `sm`), for what only suits a phone:
+ * pickers as bottom sheets, letting the keyboard drop after a send. A narrow
+ * desktop app window is not one.
+ */
+export function useIsPhoneViewport(): boolean {
+  return useMediaQuery("max-sm") && !isElectron;
+}
+
+/** useIsMobile() outside React, read once: for decisions made before a render. */
+export function isMobileLayoutNow(): boolean {
+  return (
+    !isElectron && typeof window !== "undefined" && window.matchMedia(resolveMax("md")).matches
+  );
 }

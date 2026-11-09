@@ -18,6 +18,9 @@ import { isMacPlatform } from "../lib/utils";
 import { useOptimisticThreadMessagesStore } from "../optimisticThreadMessages";
 import { useTerminalStateStore } from "../terminalStateStore";
 import { useUiStateStore } from "../uiStateStore";
+import { nextFrames, readAfterEachPaint } from "../lib/frameProbe.browser-harness";
+import { readMainAreaBounds } from "../mainAreaLayout";
+import { useTitleBarLayoutStore } from "./sidebar/titleBarSlot";
 
 import {
   THREAD_ID,
@@ -688,8 +691,7 @@ describe("ChatView (full app): app shell", () => {
         () => document.querySelector<HTMLElement>('[data-testid="titlebar-slot"]'),
         "Unable to find the title row's page slot.",
       );
-      const cluster = document.querySelector('[data-testid="app-wordmark"]')!.parentElement!
-        .parentElement!;
+      const cluster = document.querySelector('[data-testid="titlebar-name"]')!.parentElement!;
       const thread = () => document.querySelector('[data-slot="sidebar-inset"]')!;
       // The whole header went up: its title and its panel toggles are in the
       // row, and no header row is left in the panel.
@@ -724,7 +726,7 @@ describe("ChatView (full app): app shell", () => {
       // applies to every frame of the list's slide, not just its two ends.
       // The frame is early in the slide, while the content column still
       // clears the title row's buttons; later the slot rests against them.
-      useUiStateStore.getState().setSidebarListOpen(false);
+      useUiStateStore.getState().setSidebarListShown(false);
       const slide = await vi.waitFor(() => {
         expect(titleRow.getAnimations()).not.toHaveLength(0);
         return document.getAnimations().filter((animation) => animation instanceof CSSTransition);
@@ -788,22 +790,28 @@ describe("ChatView (full app): app shell", () => {
       ).toBeLessThanOrEqual(controlsStart + 0.5);
       expect(slotControlsEnd()).toBeLessThanOrEqual(controlsStart);
 
-      // A list dragged wide before the window narrowed leaves the header
-      // less room than it needs: what doesn't fit is cut at the slot's end,
-      // never drawn under the controls.
+      // A list dragged wide before the window narrowed would leave the page
+      // too little room beside it, so it floats over the page instead, and
+      // the header keeps its room clear of the controls.
       const wrapper = document.querySelector<HTMLElement>('[data-slot="sidebar-wrapper"]')!;
-      const slot = document.querySelector<HTMLElement>('[data-testid="titlebar-slot"]')!;
+      const list = document.querySelector<HTMLElement>(
+        '[data-testid="app-panel"] > [data-slot="sidebar"]',
+      )!;
       const listWidth = wrapper.style.getPropertyValue("--sidebar-width");
       wrapper.style.setProperty("--sidebar-width", `${window.innerWidth - 300}px`);
       await vi.waitFor(() => {
-        expect(slotControlsEnd()).toBeGreaterThan(slot.getBoundingClientRect().right);
+        expect(list.hasAttribute("data-overlay")).toBe(true);
       });
-      expect(slot.getBoundingClientRect().right).toBeLessThanOrEqual(controlsStart + 0.5);
-      expect(getComputedStyle(slot).overflowX).toBe("clip");
+      expect(slotControlsEnd()).toBeLessThanOrEqual(controlsStart);
+      // The saved choice to show it beside the page is still there for a
+      // list that fits again.
+      expect(useUiStateStore.getState().sidebarListOpen).toBe(true);
       wrapper.style.setProperty("--sidebar-width", listWidth);
       await vi.waitFor(() => {
-        expect(slotControlsEnd()).toBeLessThanOrEqual(controlsStart);
+        expect(list.hasAttribute("data-overlay")).toBe(false);
+        expect(list.dataset.state).toBe("expanded");
       });
+      expect(slotControlsEnd()).toBeLessThanOrEqual(controlsStart);
 
       // A full page's controls go up there too, as clear of them.
       await mounted.router.navigate({ to: "/settings/general" });
@@ -820,9 +828,149 @@ describe("ChatView (full app): app shell", () => {
     }
   });
 
+  it("floats the list over the page in a window too narrow for both, never docking it first", async () => {
+    const listStates: string[] = [];
+    const pageLefts: number[] = [];
+    const stopReading = readAfterEachPaint(() => {
+      const list = document.querySelector<HTMLElement>(
+        '[data-testid="app-panel"] > [data-slot="sidebar"]',
+      );
+      if (list) listStates.push(`${list.dataset.state}:${list.hasAttribute("data-overlay")}`);
+      const thread = document.querySelector('[data-slot="sidebar-inset"]');
+      if (thread) pageLefts.push(Math.round(thread.getBoundingClientRect().left));
+    });
+    // 800px is the desktop layout, with too little room for a 560px page
+    // beside the list; the saved choice is to show the list.
+    const mounted = await mountChatView({
+      viewport: { ...DEFAULT_VIEWPORT, name: "list-floats", width: 800 },
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-list-floats" as MessageId,
+        targetText: "list floats",
+      }),
+    });
+
+    try {
+      const list = await waitForElement(
+        () =>
+          document.querySelector<HTMLElement>('[data-testid="app-panel"] > [data-slot="sidebar"]'),
+        "Unable to find the list beside the rail.",
+      );
+      await waitForLayout();
+      await nextFrames(20);
+      stopReading();
+      // It starts closed, floating, from its first frame, and the page never
+      // slides over from beside where a docked list would have been.
+      expect(listStates.length).toBeGreaterThan(0);
+      expect(new Set(listStates)).toEqual(new Set(["collapsed:true"]));
+      expect(new Set(pageLefts).size).toBe(1);
+      // The page starts at the panel's own edge, inside its hairline.
+      const panel = document.querySelector<HTMLElement>('[data-testid="app-panel"]')!;
+      const pageStart = Math.round(panel.getBoundingClientRect().left + panel.clientLeft);
+      expect(readMainAreaBounds().start).toBe(pageStart);
+
+      // Opened, it covers the page instead of moving it.
+      const toggle = page.getByTestId("titlebar-sidebar-toggle");
+      await toggle.click();
+      await vi.waitFor(() => expect(list.dataset.state).toBe("expanded"));
+      expect(readMainAreaBounds().start).toBe(pageStart);
+      expect(useUiStateStore.getState().sidebarListOpen).toBe(true);
+
+      // A press on the page closes it, and so does Escape.
+      const composer = await waitForComposerEditor();
+      await userEvent.click(composer);
+      await vi.waitFor(() => expect(list.dataset.state).toBe("collapsed"));
+      await toggle.click();
+      await vi.waitFor(() => expect(list.dataset.state).toBe("expanded"));
+      await userEvent.keyboard("{Escape}");
+      await vi.waitFor(() => expect(list.dataset.state).toBe("collapsed"));
+
+      // Wide again, it sits beside the page as the user left it there.
+      await mounted.setViewport(WIDE_FOOTER_VIEWPORT);
+      await vi.waitFor(() => {
+        expect(list.hasAttribute("data-overlay")).toBe(false);
+        expect(list.dataset.state).toBe("expanded");
+      });
+    } finally {
+      stopReading();
+      await mounted.cleanup();
+    }
+  });
+
+  it("folds the app's name away, then gives the thread's header its own row, as the title row runs out of room", async () => {
+    const root = document.documentElement;
+    root.classList.add("electron", "wco");
+    root.style.setProperty("--workspace-controls-right", "150px");
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-titlebar-room" as MessageId,
+        targetText: "titlebar room",
+      }),
+    });
+
+    try {
+      useUiStateStore.getState().setSidebarListShown(false);
+      const name = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-testid="titlebar-name"]'),
+        "Unable to find the app's name in the title row.",
+      );
+      const slot = document.querySelector<HTMLElement>('[data-testid="titlebar-slot"]')!;
+      const headerInRow = () => slot.querySelector("[data-active-thread-title]") !== null;
+      await vi.waitFor(() => {
+        expect(headerInRow()).toBe(true);
+        expect(useTitleBarLayoutStore.getState().headerNeed).not.toBeNull();
+      });
+      const nameWidth = name.firstElementChild!.getBoundingClientRect().width + 12;
+      // This thread's header fits beside the name's room once the name is
+      // gone (its controls only fold away as it narrows, so it never needs
+      // more than it does here).
+      expect(useTitleBarLayoutStore.getState().headerNeed!).toBeLessThan(390 + nameWidth);
+      // The window controls' reserve sets the row's room: the page's part of
+      // the row is the width less the 9px start, the name, the buttons and
+      // the slot's 12px start.
+      const squeezeTo = (room: number) => {
+        const buttons = document
+          .querySelector('[data-testid="titlebar-forward"]')!
+          .getBoundingClientRect().right;
+        const reserve = window.innerWidth - (buttons + (name.inert ? nameWidth : 0)) - 12 - room;
+        root.style.setProperty("--workspace-controls-right", `${reserve}px`);
+      };
+
+      // Too little room with the name, enough without it: the name goes.
+      squeezeTo(390);
+      await vi.waitFor(() => {
+        expect(name.inert).toBe(true);
+        expect(name.getBoundingClientRect().width).toBe(0);
+      });
+      expect(headerInRow()).toBe(true);
+      expect(slot.scrollWidth).toBeLessThanOrEqual(slot.clientWidth);
+
+      // Not enough even without it: the header gets a row of its own, title and all.
+      squeezeTo(150 - nameWidth);
+      await vi.waitFor(() => expect(headerInRow()).toBe(false));
+      const ownRow = document.querySelector<HTMLElement>('header[data-find-region="chat"]')!;
+      expect(ownRow.querySelector("h2")?.textContent).toBe("Browser test thread");
+      expect(ownRow.querySelector('[data-sidebar="trigger"]')?.checkVisibility()).toBeFalsy();
+      expect(ownRow.getBoundingClientRect().top).toBeGreaterThanOrEqual(
+        document.querySelector('[data-testid="app-titlebar"]')!.getBoundingClientRect().bottom,
+      );
+
+      // Room again: the header goes back up, and the name comes back.
+      root.style.setProperty("--workspace-controls-right", "150px");
+      await vi.waitFor(() => {
+        expect(headerInRow()).toBe(true);
+        expect(name.inert).toBe(false);
+      });
+    } finally {
+      await mounted.cleanup();
+      root.style.removeProperty("--workspace-controls-right");
+      root.classList.remove("electron", "wco");
+    }
+  });
+
   it("keeps the thread's own header in a window too narrow for the title row", async () => {
     const mounted = await mountChatView({
-      viewport: { ...DEFAULT_VIEWPORT, name: "narrow", width: 720 },
+      viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotForTargetUser({
         targetMessageId: "msg-user-titlebar-narrow" as MessageId,
         targetText: "titlebar narrow",
@@ -830,6 +978,14 @@ describe("ChatView (full app): app shell", () => {
     });
 
     try {
+      // Up in the title row while the browser is wide, then back in the page
+      // once it narrows into the phone layout: never left in a row that's gone.
+      await vi.waitFor(() => {
+        expect(
+          document.querySelector('[data-testid="titlebar-slot"] [data-active-thread-title]'),
+        ).not.toBeNull();
+      });
+      await mounted.setViewport({ ...DEFAULT_VIEWPORT, name: "narrow", width: 720 });
       const header = await waitForElement(
         () => document.querySelector<HTMLElement>('header[data-find-region="chat"]'),
         "The thread should keep its own header without a title row.",

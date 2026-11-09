@@ -61,12 +61,21 @@ The elevation ladder in `index.css` (deepest to highest; dark / light):
   than 12px, and slides with the list on the list's own curve. It ends 12px
   from the window's edge on macOS and clear of the Windows and Linux window
   controls. Pages with no controls of their own (Fleet, Pull Requests,
-  Usage) leave it empty. The work panel then has no header row at all on a
-  wide screen; a window too narrow for the title row, and a phone, keep the
-  page's own header with the sidebar trigger. Empty space in the row moves
-  the window; its controls never do. The app's name leads the row, before
-  the buttons, so it never reads as the first step of the page's
-  project / title path.
+  Usage) leave it empty. The work panel then has no header row at all.
+  When the row runs short, the app's name folds away first; a header still
+  too wide for what's left (measured: its chips and buttons, plus room for a
+  thread's title) gets a row of its own under the title row. The desktop app
+  keeps this layout at any window width, down to its 480px minimum; only a
+  phone (a browser narrower than `md`) gets the page's own header with the
+  sidebar trigger. Empty space in the row moves the window; its controls
+  never do. The app's name leads the row, before the buttons, so it never
+  reads as the first step of the page's project / title path.
+- **The list floats in a narrow window.** When keeping the list beside the
+  page would leave the page under 560px, the list floats over the page
+  instead: closed until opened, shadowed because it floats, and put away by
+  a press on the page, Escape, or picking something. The page doesn't move,
+  and the user's choice to show the list beside the page waits for a wider
+  window.
 - **The work panel is continuous.** The list, the page and the docked side
   panels (diff, source control, browser, tasks) sit edge to edge inside it,
   joined by one `--border` line. No floating rounded panes, no gaps between

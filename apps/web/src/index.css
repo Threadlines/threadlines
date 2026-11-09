@@ -6,6 +6,28 @@
    window controls, so only what covers the whole window (a sheet, setup)
    has to keep clear of them. */
 @custom-variant wco (&:is(.wco, .wco *):not([data-slot="app-panel"] *));
+/* The desktop layout (the title row, the rail, a list beside the page) or the
+   phone layout (a page header with a sheet). A browser switches at 48rem; the
+   desktop app keeps the desktop layout at any width, since its window can be
+   narrower than that and zooming in shouldn't turn it into a phone.
+   useIsMobile() is the same switch in script. Plain `md:` stays a width, for
+   spacing that only depends on room. Both sort after every breakpoint, so
+   don't pair them with `lg:` or `xl:` on the same property. */
+@custom-variant desktop {
+  @media (width >= 48rem) {
+    @slot;
+  }
+  &:where(.electron, .electron *) {
+    @slot;
+  }
+}
+@custom-variant phone {
+  @media (width < 48rem) {
+    &:not(:where(.electron, .electron *)) {
+      @slot;
+    }
+  }
+}
 /* The primary pointer can hover (mouse/trackpad). Hide-until-hover affordances
    are gated on this, so touch screens get them permanently visible instead. */
 @custom-variant can-hover (@media (hover: hover));
@@ -559,6 +581,14 @@ html[data-glass] [data-slot="navigation-rail"] {
 }
 html[data-glass] [data-slot="app-panel"] > [data-slot="sidebar"] [data-slot="sidebar-inner"] {
   background-color: color-mix(in srgb, var(--sidebar) var(--glass-list, 100%), transparent);
+}
+/* A list floating over the page (a window too narrow for both) covers the
+   page's text, so it stays solid, like a sheet. */
+html[data-glass]
+  [data-slot="app-panel"]
+  > [data-slot="sidebar"][data-overlay]
+  [data-slot="sidebar-inner"] {
+  background-color: var(--sidebar);
 }
 /* The search and compose strip sits outside the list's scroll, so nothing
    passes under it: it shows the list's glass, not a solid band. */

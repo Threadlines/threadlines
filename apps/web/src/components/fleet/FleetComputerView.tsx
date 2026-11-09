@@ -468,7 +468,7 @@ export function FleetComputerView({ entryKey }: { readonly entryKey: string }) {
           {...glassPage.column}
         >
           <header className="space-y-1 px-1">
-            <h1 className="hidden text-[22px] leading-7 font-semibold tracking-[-0.015em] text-foreground md:block">
+            <h1 className="hidden text-[22px] leading-7 font-semibold tracking-[-0.015em] text-foreground desktop:block">
               {entry.label}
             </h1>
             {metaLine ? (
