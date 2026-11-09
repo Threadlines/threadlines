@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
+import NodePath from "node:path";
 
 import type { ChatAttachment } from "@threadlines/contracts";
 
@@ -9,16 +10,22 @@ import {
   resolveAttachmentRelativePath,
 } from "./attachmentPaths.ts";
 import {
+  CANONICAL_FILE_ATTACHMENT_EXTENSIONS,
   fileAttachmentExtension,
-  SAFE_FILE_ATTACHMENT_EXTENSIONS,
 } from "@threadlines/shared/fileAttachments";
 import { inferImageExtension, SAFE_IMAGE_FILE_EXTENSIONS } from "./imageMime.ts";
 
-const ATTACHMENT_FILENAME_EXTENSIONS = [
+/** Extensions a stored attachment is served back under with its own content
+ *  type: pictures and the canonical file types. Any other file (a Word
+ *  document, but also an HTML page or a script) is served only as a
+ *  download, so nothing a user attached can run as a page of the app. */
+const SERVED_AS_OWN_TYPE_EXTENSIONS: ReadonlySet<string> = new Set([
   ...SAFE_IMAGE_FILE_EXTENSIONS,
-  ...SAFE_FILE_ATTACHMENT_EXTENSIONS,
-  ".bin",
-];
+  ...CANONICAL_FILE_ATTACHMENT_EXTENSIONS,
+]);
+
+/** Extensions tried first when looking an attachment up by id alone. */
+const ATTACHMENT_FILENAME_EXTENSIONS = [...SERVED_AS_OWN_TYPE_EXTENSIONS, ".bin"];
 const ATTACHMENT_ID_THREAD_SEGMENT_MAX_CHARS = 80;
 const ATTACHMENT_ID_THREAD_SEGMENT_PATTERN = "[a-z0-9_]+(?:-[a-z0-9_]+)*";
 const ATTACHMENT_ID_UUID_PATTERN = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
@@ -108,7 +115,28 @@ export function resolveAttachmentPathById(input: {
       return maybePath;
     }
   }
-  return null;
+  // Any other file keeps its own extension (`.docx`, `.xlsx`): find it by id.
+  // Only those files reach this listing.
+  let entries: ReadonlyArray<string>;
+  try {
+    entries = readdirSync(input.attachmentsDir);
+  } catch {
+    return null;
+  }
+  const entry = entries.find(
+    (name) =>
+      name.startsWith(`${normalizedId}.`) &&
+      parseAttachmentIdFromRelativePath(name) === normalizedId,
+  );
+  return entry === undefined
+    ? null
+    : resolveAttachmentRelativePath({ attachmentsDir: input.attachmentsDir, relativePath: entry });
+}
+
+/** Whether a stored attachment may be served under its own content type
+ *  (see SERVED_AS_OWN_TYPE_EXTENSIONS); otherwise only as a download. */
+export function isAttachmentServedAsOwnType(filePath: string): boolean {
+  return SERVED_AS_OWN_TYPE_EXTENSIONS.has(NodePath.extname(filePath).toLowerCase());
 }
 
 export function parseAttachmentIdFromRelativePath(relativePath: string): string | null {

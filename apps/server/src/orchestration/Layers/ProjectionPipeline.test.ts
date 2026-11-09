@@ -683,6 +683,7 @@ it.layer(
       const threadId = ThreadId.make("Thread Revert.Files");
       const keepAttachmentId = "thread-revert-files-00000000-0000-4000-8000-000000000001";
       const removeAttachmentId = "thread-revert-files-00000000-0000-4000-8000-000000000002";
+      const keepFileAttachmentId = "thread-revert-files-00000000-0000-4000-8000-000000000004";
       const otherThreadAttachmentId =
         "thread-revert-files-extra-00000000-0000-4000-8000-000000000003";
 
@@ -785,6 +786,14 @@ it.layer(
               mimeType: "image/png",
               sizeBytes: 5,
             },
+            {
+              type: "file",
+              kind: "other",
+              id: keepFileAttachmentId,
+              name: "keep.docx",
+              mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+              sizeBytes: 4,
+            },
           ],
           turnId: TurnId.make("turn-keep"),
           streaming: false,
@@ -849,9 +858,11 @@ it.layer(
       });
 
       const keepPath = path.join(attachmentsDir, `${keepAttachmentId}.png`);
+      const keepFilePath = path.join(attachmentsDir, `${keepFileAttachmentId}.docx`);
       const removePath = path.join(attachmentsDir, `${removeAttachmentId}.png`);
       yield* fileSystem.makeDirectory(attachmentsDir, { recursive: true });
       yield* fileSystem.writeFileString(keepPath, "keep");
+      yield* fileSystem.writeFileString(keepFilePath, "keep");
       yield* fileSystem.writeFileString(removePath, "remove");
       const otherThreadPath = path.join(attachmentsDir, `${otherThreadAttachmentId}.png`);
       yield* fileSystem.writeFileString(otherThreadPath, "other");
@@ -876,6 +887,8 @@ it.layer(
       });
 
       assert.isTrue(yield* exists(keepPath));
+      // A file attached to a kept turn keeps its bytes too.
+      assert.isTrue(yield* exists(keepFilePath));
       assert.isFalse(yield* exists(removePath));
       assert.isTrue(yield* exists(otherThreadPath));
     }),

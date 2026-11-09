@@ -23,7 +23,7 @@ import {
   normalizeAttachmentRelativePath,
   resolveAttachmentRelativePath,
 } from "./attachmentPaths.ts";
-import { resolveAttachmentPathById } from "./attachmentStore.ts";
+import { isAttachmentServedAsOwnType, resolveAttachmentPathById } from "./attachmentStore.ts";
 import { resolveStaticDir, ServerConfig, shouldEnableTransferCompression } from "./config.ts";
 import { BrowserTraceCollector } from "./observability/Services/BrowserTraceCollector.ts";
 import { ProjectFaviconResolver } from "./project/Services/ProjectFaviconResolver.ts";
@@ -311,11 +311,19 @@ export const attachmentsRouteLayer = HttpRouter.add(
       return HttpServerResponse.text("Not Found", { status: 404 });
     }
 
+    // An attached file must never run as a page of the app: anything but a
+    // picture or a canonical file type downloads, and the sandbox stops the
+    // scripts an SVG picture can carry when opened on its own. The app only
+    // loads attachments into <img> and fetch(), which the sandbox leaves be.
+    const servedAsOwnType = isAttachmentServedAsOwnType(filePath);
     return yield* HttpServerResponse.file(filePath, {
       status: 200,
+      ...(servedAsOwnType ? {} : { contentType: "application/octet-stream" }),
       headers: {
         "Cache-Control": "public, max-age=31536000, immutable",
         "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "sandbox",
+        ...(servedAsOwnType ? {} : { "Content-Disposition": "attachment" }),
       },
     }).pipe(
       Effect.catch(() =>

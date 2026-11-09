@@ -265,10 +265,13 @@ const UploadChatImageAttachment = Schema.Struct({
 export type UploadChatImageAttachment = typeof UploadChatImageAttachment.Type;
 
 /** Non-image attachment kinds. `pdf` maps to native provider document
- *  support where available; `text` covers plain text, markdown, and CSV
- *  payloads that providers receive as text documents. The server derives
- *  the kind from the validated MIME type — clients never choose it. */
-export const ChatFileAttachmentKind = Schema.Literals(["pdf", "text"]);
+ *  support where available; `text` covers text-shaped files (plain text,
+ *  markdown, CSV, JSON, code, logs) that providers receive as text
+ *  documents; `other` is any other file (a Word document, a spreadsheet, an
+ *  archive), which agents read from its staged path with their own tools.
+ *  The server derives the kind from the MIME type, the file name and the
+ *  bytes; clients never choose it. */
+export const ChatFileAttachmentKind = Schema.Literals(["pdf", "text", "other"]);
 export type ChatFileAttachmentKind = typeof ChatFileAttachmentKind.Type;
 
 export const ChatFileAttachment = Schema.Struct({

@@ -27,8 +27,8 @@ import { formatForkSourceExcerpt, truncate } from "@threadlines/shared/String";
 import { createAttachmentId, resolveAttachmentPath } from "../attachmentStore.ts";
 import { ServerConfig } from "../config.ts";
 import {
+  classifyFileAttachmentBytes,
   resolveFileAttachmentType,
-  sniffFileAttachmentBytes,
 } from "@threadlines/shared/fileAttachments";
 import { parseBase64DataUrl } from "../imageMime.ts";
 import { WorkspacePaths } from "../workspace/Services/WorkspacePaths.ts";
@@ -525,18 +525,15 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
               );
             }
 
-            const fileType = resolveFileAttachmentType({
-              mimeType: parsed.mimeType,
-              fileName: attachment.name,
-            });
+            // Any file is allowed; its bytes settle how it travels.
+            const fileType = classifyFileAttachmentBytes(
+              resolveFileAttachmentType({ mimeType: parsed.mimeType, fileName: attachment.name }),
+              attachment.name,
+              bytes,
+            );
             if (!fileType) {
               return yield* new OrchestrationDispatchCommandError({
-                message: `Unsupported file attachment type for '${attachment.name}'. Supported: PDF, plain text, Markdown, CSV.`,
-              });
-            }
-            if (!sniffFileAttachmentBytes(fileType.kind, bytes)) {
-              return yield* new OrchestrationDispatchCommandError({
-                message: `File attachment '${attachment.name}' does not look like a valid ${fileType.kind === "pdf" ? "PDF" : "text"} file.`,
+                message: `File attachment '${attachment.name}' does not look like a valid PDF file.`,
               });
             }
             return yield* persistAttachmentBytes(

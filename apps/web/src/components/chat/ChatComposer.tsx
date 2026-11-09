@@ -220,7 +220,7 @@ import {
   canRequestProviderRateLimitResetCredit,
   useProviderRateLimitResetCredit,
 } from "../ProviderRateLimitResetCredit";
-import { CircleAlertIcon, FileTextIcon, XIcon } from "lucide-react";
+import { CircleAlertIcon, FileIcon, FileTextIcon, XIcon } from "lucide-react";
 import { proposedPlanTitle } from "../../proposedPlan";
 import {
   getProviderDisplayName,
@@ -250,10 +250,7 @@ import {
   type ProviderAccountUsagePresentation,
 } from "../../lib/providerUsage";
 import { formatProviderSkillDisplayName } from "../../providerSkillPresentation";
-import {
-  FILE_ATTACHMENT_ACCEPT,
-  resolveFileAttachmentType,
-} from "@threadlines/shared/fileAttachments";
+import { resolveFileAttachmentType } from "@threadlines/shared/fileAttachments";
 import { searchProviderSkills } from "../../providerSkillSearch";
 import { resolveComposerSkillReferences } from "../../providerSkillReferences";
 import { useIsPhoneViewport } from "../../hooks/useMediaQuery";
@@ -261,7 +258,6 @@ import { ComposerDictationControl } from "./ComposerDictationControl";
 import { useDictation } from "../../dictation/useDictation";
 
 const ATTACHMENT_SIZE_LIMIT_LABEL = `${Math.round(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES / (1024 * 1024))}MB`;
-const ALL_ATTACHMENT_ACCEPT = `image/*,${FILE_ATTACHMENT_ACCEPT}`;
 
 const COMPOSER_PATH_QUERY_DEBOUNCE_MS = 120;
 const CODEX_AGENT_PROVIDER = ProviderDriverKind.make("codex");
@@ -3259,10 +3255,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       const fileType = isImage
         ? null
         : resolveFileAttachmentType({ mimeType: file.type, fileName: file.name });
-      if (!isImage && !fileType) {
-        error = `Unsupported file type for '${file.name}'. Attach images, PDFs, or text, Markdown, and CSV files.`;
-        continue;
-      }
       if (isImage && !selectedModelSupportsImages) {
         rejectedImageForModel = true;
         continue;
@@ -4077,6 +4069,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                                 onExpandImage(preview);
                               }}
                             />
+                          ) : attachment.type === "file" && attachment.kind === "other" ? (
+                            // Nothing to preview here: the agent opens it from disk.
+                            <div className="flex h-full w-full flex-col items-center justify-center gap-1 px-1 text-center">
+                              <FileIcon className="size-5 text-muted-foreground" />
+                              <span className="w-full truncate text-[9px] leading-tight text-muted-foreground/80">
+                                {attachment.name}
+                              </span>
+                            </div>
                           ) : (
                             <button
                               type="button"
@@ -4089,7 +4089,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                               )}
                               aria-label={`Preview ${attachment.name}`}
                               onClick={() => {
-                                if (attachment.type !== "file") return;
+                                if (attachment.type !== "file" || attachment.kind === "other") {
+                                  return;
+                                }
                                 onPreviewFile({
                                   name: attachment.name,
                                   kind: attachment.kind,
@@ -4310,10 +4312,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                         aria-hidden="true"
                         onChange={onAttachmentFileInputChange}
                       />
+                      {/* Any file: agents open what they can't take directly from disk. */}
                       <input
                         ref={attachmentFileInputRef}
                         type="file"
-                        accept={ALL_ATTACHMENT_ACCEPT}
                         multiple
                         className="sr-only"
                         tabIndex={-1}

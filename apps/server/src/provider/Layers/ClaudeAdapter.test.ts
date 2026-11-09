@@ -2640,6 +2640,79 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("hands Claude files it cannot take natively as staged-path notes", () => {
+    const baseDir = mkdtempSync(path.join(os.tmpdir(), "claude-file-attachments-"));
+    const harness = makeHarness({
+      cwd: "/tmp/project-claude-file-attachments",
+      baseDir,
+    });
+    return Effect.gen(function* () {
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() =>
+          rmSync(baseDir, {
+            recursive: true,
+            force: true,
+          }),
+        ),
+      );
+
+      const adapter = yield* ClaudeAdapter;
+      const { attachmentsDir } = yield* ServerConfig;
+
+      const docxAttachment = {
+        type: "file" as const,
+        kind: "other" as const,
+        id: "thread-claude-attachment-12345678-1234-1234-1234-123456789abe",
+        name: "Brief.docx",
+        mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        sizeBytes: 4,
+      };
+      const svgAttachment = {
+        type: "image" as const,
+        id: "thread-claude-attachment-12345678-1234-1234-1234-123456789abf",
+        name: "logo.svg",
+        mimeType: "image/svg+xml",
+        sizeBytes: 6,
+      };
+      const stagedPaths = [docxAttachment, svgAttachment].map((attachment) => {
+        const attachmentPath = path.join(attachmentsDir, attachmentRelativePath(attachment));
+        mkdirSync(path.dirname(attachmentPath), { recursive: true });
+        writeFileSync(attachmentPath, "PK\u0003\u0004");
+        return attachmentPath;
+      });
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "What does this say?",
+        attachments: [docxAttachment, svgAttachment],
+      });
+
+      const createInput = harness.getLastCreateQueryInput();
+      const promptMessage = yield* Effect.promise(() => readFirstPromptMessage(createInput));
+      const content = promptMessage?.message.content;
+      assert.isTrue(Array.isArray(content));
+      const blocks = content as ReadonlyArray<{ type: string; text?: string }>;
+      assert.deepEqual(
+        blocks.map((block) => block.type),
+        ["text", "text", "text"],
+      );
+      assert.include(blocks[1]?.text, '"Brief.docx"');
+      assert.include(blocks[1]?.text, stagedPaths[0]);
+      assert.include(blocks[1]?.text, "not plain text");
+      assert.include(blocks[2]?.text, '"logo.svg"');
+      assert.include(blocks[2]?.text, stagedPaths[1]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("maps Claude stream/runtime messages to canonical provider runtime events", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

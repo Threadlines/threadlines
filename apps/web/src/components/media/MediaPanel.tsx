@@ -309,11 +309,14 @@ export const MediaPanel = memo(function MediaPanel(props: MediaPanelProps) {
         openPictureAt(chatMediaKey(entry));
         return;
       }
-      if (entry.source.kind === "attachment" && entry.source.attachment.type === "file") {
-        const attachment = entry.source.attachment;
+      const attachment = entry.source.kind === "attachment" ? entry.source.attachment : null;
+      if (attachment?.type === "file") {
+        // Only PDFs are listed; any other file has nothing to show here.
+        const kind = attachment.kind;
+        if (kind === "other") return;
         setPreviewedFile({
           name: attachment.name,
-          kind: attachment.kind,
+          kind,
           loadBlob: () => loadChatAttachmentBlob({ environmentId, attachmentId: attachment.id }),
         });
         return;
