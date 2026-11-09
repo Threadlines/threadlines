@@ -250,8 +250,14 @@ export const embedThemeFonts = Effect.fn("themeFonts.embed")(function* (input: {
   const [ui, mono] = yield* Effect.all([embed(fonts.ui), embed(fonts.mono)], {
     concurrency: 2,
   });
+  // `fonts` spread first: a slot a newer build added rides along untouched.
+  const { ui: _ui, mono: _mono, ...others } = fonts;
   return {
     ...manifest,
-    fonts: { ...(ui !== undefined ? { ui } : {}), ...(mono !== undefined ? { mono } : {}) },
+    fonts: {
+      ...others,
+      ...(ui !== undefined ? { ui } : {}),
+      ...(mono !== undefined ? { mono } : {}),
+    },
   };
 });

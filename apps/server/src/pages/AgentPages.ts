@@ -601,7 +601,7 @@ const make = Effect.gen(function* () {
       if (scope.side !== undefined) return { outcome: "not_allowed" as const, detail: SIDE_DETAIL };
       const argument = yield* themeArgument(scope, input);
       if ("refused" in argument) return { outcome: "refused" as const, detail: argument.refused };
-      const check = checkThemeManifest(argument.value);
+      const check = checkThemeManifest(argument.value, { authoring: true });
       if (!check.ok) {
         return {
           outcome: "refused" as const,
@@ -637,9 +637,13 @@ const make = Effect.gen(function* () {
           title: manifest.name,
           content: workshop.embedFonts(manifest).pipe(
             Effect.flatMap(workshop.withStill),
-            Effect.map((prepared) => {
+            Effect.flatMap((prepared) => {
+              // Fonts and the still add up to a couple of megabytes: the offer as
+              // shown must still pass, or the app it's offered to refuses it.
+              const shown = checkThemeManifest(prepared.manifest);
+              if (!shown.ok) return Effect.fail(themeProblems(shown.errors));
               note = prepared.note;
-              return themePageContent(prepared.manifest);
+              return Effect.succeed(themePageContent(shown.manifest));
             }),
           ),
           message: Effect.sync(() =>
@@ -673,7 +677,7 @@ const make = Effect.gen(function* () {
       if (scope.side !== undefined) return { outcome: "not_allowed" as const, detail: SIDE_DETAIL };
       const argument = yield* themeArgument(scope, input);
       if ("refused" in argument) return { outcome: "refused" as const, detail: argument.refused };
-      const check = checkThemeManifest(argument.value);
+      const check = checkThemeManifest(argument.value, { authoring: true });
       // A theme that only fails rules past its shape (contrast, sizes) still
       // renders, so the agent sees what it is fixing.
       const decoded = check.ok ? Option.some(check.manifest) : decodeThemeManifest(argument.value);

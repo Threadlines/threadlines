@@ -3,6 +3,7 @@ import {
   type ThemeEntry,
   type ThemeError,
   type ThemeManifest,
+  ThemeMergeInput,
 } from "@threadlines/contracts";
 import { themeContentHash } from "@threadlines/shared/themeManifest";
 import { assert, it } from "@effect/vitest";
@@ -10,6 +11,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -245,6 +247,32 @@ it.layer(TestLayer)("ThemeLibrary", (it) => {
         manifest: aurora,
       });
       assert.strictEqual(recorded.length, 3);
+    }),
+  );
+
+  it.effect("takes a newer computer's theme with a field it doesn't know, and keeps it", () =>
+    Effect.gen(function* () {
+      const library = yield* ThemeLibrary;
+      // Through the wire as the RPC decodes it, then merged.
+      const manifest = { ...dunes, name: "From later", soundscape: { kind: "rain" } };
+      const hash = yield* Effect.promise(() => themeContentHash(manifest));
+      const input = yield* Schema.decodeUnknownEffect(ThemeMergeInput)({
+        entry: {
+          entryId: "from-a-newer-build",
+          name: "From later",
+          hash,
+          revision: 7,
+          revisedBy: "env-newer",
+          deleted: false,
+          createdAt: "2026-11-09T00:00:00.000Z",
+          updatedAt: "2026-11-09T00:00:00.000Z",
+        },
+        manifest,
+      });
+      const merged = yield* library.merge(input);
+      assert.strictEqual(merged.hash, hash);
+      const stored = (yield* library.read({ hash })).manifest as Record<string, unknown>;
+      assert.deepStrictEqual(stored["soundscape"], { kind: "rain" });
     }),
   );
 
