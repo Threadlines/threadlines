@@ -20,6 +20,6 @@
     "typescript": "catalog:",
     "vite": "catalog:",
     "vite-plus": "catalog:",
-    "wrangler": "^4.156.1"
+    "wrangler": "^4.158.0"
   }
 }
