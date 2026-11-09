@@ -78,23 +78,30 @@ describe("priceUsage", () => {
   });
 
   it("prices a model LiteLLM has not published from the built-in rates", () => {
-    // Claude Fable 5.1 launched with cache reads at $0.25/MTok, a quarter of
-    // Fable 5's. Guessing from the previous generation would be wrong; leaving
-    // it unpriced would zero out the most expensive model on the page.
+    // Claude Fable 5.2 launched cheaper than Fable 5.1 ($8/$40, cache reads
+    // $0.20/MTok). Guessing from the previous version would be wrong;
+    // leaving it unpriced would zero out the most expensive model on the page.
     const priced = priceUsage(new Map(), {
-      model: "claude-fable-5-1",
-      totals: { ...NO_TOKENS, uncachedInputTokens: 1_000_000, cachedInputTokens: 1_000_000 },
-      cacheCreation1hTokens: 0,
+      model: "claude-fable-5-2",
+      totals: {
+        ...NO_TOKENS,
+        uncachedInputTokens: 1_000_000,
+        cachedInputTokens: 1_000_000,
+        cacheCreationTokens: 2_000_000,
+        outputTokens: 1_000_000,
+      },
+      cacheCreation1hTokens: 1_000_000,
       reportedCostUsd: null,
     });
 
+    // Input, cache reads, 5-minute writes, 1-hour writes, output.
     expect(priced.costSource).toBe("modelPriced");
-    expect(priced.costUsd).toBeCloseTo(10 + 0.25, 9);
+    expect(priced.costUsd).toBeCloseTo(8 + 0.2 + 10 + 16 + 40, 9);
 
     // Once LiteLLM publishes the model, its entry wins.
     const table = parseRateTable({
-      "claude-fable-5-1": { input_cost_per_token: 1e-6, output_cost_per_token: 2e-6 },
+      "claude-fable-5-2": { input_cost_per_token: 1e-6, output_cost_per_token: 2e-6 },
     });
-    expect(lookupRate(table, "claude-fable-5-1")?.inputCostPerToken).toBe(1e-6);
+    expect(lookupRate(table, "claude-fable-5-2")?.inputCostPerToken).toBe(1e-6);
   });
 });
