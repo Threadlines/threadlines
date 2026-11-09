@@ -208,7 +208,19 @@ export const BackdropArtError = Schema.Struct({
 });
 export type BackdropArtError = typeof BackdropArtError.Type;
 
+/**
+ * The prelude has run and the theme's script starts. Sent once, first: the
+ * frame gives the script its time to call `threadlines.backdrop({...})` from
+ * here, so a worker slow to launch on a busy machine isn't blamed on the art.
+ */
+export const BackdropWorkerBooted = Schema.Struct({
+  type: Schema.Literal("booted"),
+  generation: Generation,
+});
+export type BackdropWorkerBooted = typeof BackdropWorkerBooted.Type;
+
 export const BackdropWorkerReply = Schema.Union([
+  BackdropWorkerBooted,
   BackdropArtDefinition,
   BackdropGridFrame,
   BackdropPixelsFrame,

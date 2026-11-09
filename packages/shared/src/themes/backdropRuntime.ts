@@ -58,6 +58,7 @@ export interface BackdropRuntimeTiming {
   readonly missesToFail: number;
   readonly heartbeatMs: number;
   readonly statsMs: number;
+  readonly launchTimeoutMs: number;
   readonly defineTimeoutMs: number;
   readonly restoreTimeoutMs: number;
   readonly energyMediumMsPerSecond: number;
@@ -369,7 +370,10 @@ export function backdropFrameRuntime(
     definition: Omit<BackdropArtDefinition, "type" | "generation"> | null;
     outstanding: Outstanding | null;
     misses: number;
-    defineTimer: number;
+    /** Whether the prelude said it ran ("booted"): the theme's script runs next. */
+    booted: boolean;
+    /** The worker's time to boot, then the script's time to define the art. */
+    startTimer: number;
   }
   let art: Art | null = null;
   let tickTimer: number | null = null;
@@ -422,6 +426,7 @@ export function backdropFrameRuntime(
   let fadeHeldAt: number | null = null;
   let fadeTimer: number | null = null;
   let fadeMs = timing.resumeFadeMs;
+  let launchTimeoutMs = timing.launchTimeoutMs;
   /** The theme's still, decoded: the art's very first frame fades in from it. */
   let stillImage: BackdropBitmap | null = null;
   /** The still is decoding: the art waits for it, at most `stillWaitMs`. */
@@ -1058,7 +1063,7 @@ void main() {
     if (!current) return;
     art = null;
     if (current.outstanding) win.clearTimeout(current.outstanding.timer);
-    win.clearTimeout(current.defineTimer);
+    win.clearTimeout(current.startTimer);
     // Stop listening first: nothing an ended worker queued reaches the handlers.
     current.listening.abort();
     current.worker.terminate();
@@ -1103,14 +1108,16 @@ void main() {
       definition: null,
       outstanding: null,
       misses: 0,
-      defineTimer: win.setTimeout(() => {
-        if (art === started && !started.definition) {
-          failWith(
-            "script-error",
-            "The art didn't start: threadlines.backdrop({...}) wasn't called in time.",
-          );
+      booted: false,
+      // Launching a worker can take seconds on a busy machine, and that
+      // isn't the script's time: its own clock starts on "booted". A worker
+      // that never boots (or a script that keeps the prelude's reply from
+      // getting out) still fails, later.
+      startTimer: win.setTimeout(() => {
+        if (art === started && !started.booted) {
+          failWith("script-error", "The art didn't start: its worker never reported in.");
         }
-      }, timing.defineTimeoutMs),
+      }, launchTimeoutMs),
     };
     art = started;
     const { signal } = started.listening;
@@ -1265,6 +1272,23 @@ void main() {
     }
     const message = data as unknown as BackdropWorkerReply;
     switch (message.type) {
+      case "booted": {
+        if (from.booted || from.definition) {
+          failWith("bad-output", "The art's worker started twice.");
+          return;
+        }
+        from.booted = true;
+        win.clearTimeout(from.startTimer);
+        from.startTimer = win.setTimeout(() => {
+          if (art === from && !from.definition) {
+            failWith(
+              "script-error",
+              "The art didn't start: threadlines.backdrop({...}) wasn't called in time.",
+            );
+          }
+        }, timing.defineTimeoutMs);
+        return;
+      }
       case "defined": {
         if (from.definition) {
           failWith("bad-output", "The art defined itself twice.");
@@ -1276,7 +1300,7 @@ void main() {
           return;
         }
         from.definition = definition;
-        win.clearTimeout(from.defineTimer);
+        win.clearTimeout(from.startTimer);
         schedule();
         return;
       }
@@ -2491,7 +2515,8 @@ void main() {
    * generation back to the reply handler, and `test:capture-shown` reads
    * back the composited pixels inside each zone's core on every frame,
    * keeping the darkest and brightest luminance shown (`worst` in the probe).
-   * `test:fade-ms` sets how long a resume fade lasts.
+   * `test:fade-ms` sets how long a resume fade lasts, and `test:launch-ms`
+   * how long a new worker has to boot.
    */
   const onTestMessage = (message: Record<string, unknown>) => {
     if (message.type === "test:probe") {
@@ -2540,6 +2565,10 @@ void main() {
     }
     if (message.type === "test:fade-ms") {
       if (isNum(message.ms, 1, 60_000)) fadeMs = message.ms;
+      return;
+    }
+    if (message.type === "test:launch-ms") {
+      if (isNum(message.ms, 1, 60_000)) launchTimeoutMs = message.ms;
       return;
     }
     if (message.type === "test:lose-context") {

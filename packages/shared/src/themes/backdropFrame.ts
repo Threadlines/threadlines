@@ -83,6 +83,10 @@ export const BACKDROP_FRAME_CONTENT_SECURITY_POLICY =
  * - The art holds while the app is busy (the window resizing, a divider
  *   dragged) and resumes `busyResumeMs` after. Typing, scrolling and a reply
  *   streaming in don't hold or slow it.
+ * - A theme's script has `defineTimeoutMs` to call `threadlines.backdrop`,
+ *   counted from its worker's "booted": launching the worker isn't the
+ *   script's time. A worker that hasn't booted after `launchTimeoutMs`
+ *   fails the art.
  * - After a pause the art restarts in a new worker, its own state fresh: the
  *   picture on screen dissolves into the restarted art over `resumeFadeMs`.
  *   A theme's first frame fades the same way from its still (what the app
@@ -121,6 +125,7 @@ export const BACKDROP_RUNTIME_TIMING: BackdropRuntimeTiming = {
   missesToFail: 6,
   heartbeatMs: 1_000,
   statsMs: 2_000,
+  launchTimeoutMs: 10_000,
   defineTimeoutMs: 2_000,
   restoreTimeoutMs: 1_500,
   energyMediumMsPerSecond: 15,
