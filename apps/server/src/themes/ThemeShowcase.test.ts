@@ -37,13 +37,18 @@ function pngChunk(type: string, data: Uint8Array): Buffer {
 }
 
 /** A PNG of one color, with any extra chunks after its header. */
-function solidPng(width: number, height: number, extra: Uint8Array[] = []): Uint8Array {
+function solidPng(
+  width: number,
+  height: number,
+  extra: Uint8Array[] = [],
+  fill = 0x40,
+): Uint8Array {
   const chunk = pngChunk;
   const header = Buffer.alloc(13);
   header.writeUInt32BE(width, 0);
   header.writeUInt32BE(height, 4);
   header.set([8, 2, 0, 0, 0], 8); // 8-bit RGB
-  const rows = Buffer.alloc(height * (1 + width * 3), 0x40);
+  const rows = Buffer.alloc(height * (1 + width * 3), fill);
   for (let row = 0; row < height; row++) rows[row * (1 + width * 3)] = 0;
   return Buffer.concat([
     Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
@@ -55,6 +60,9 @@ function solidPng(width: number, height: number, extra: Uint8Array[] = []): Uint
 }
 
 const PICTURE = solidPng(320, 200);
+/** What the art alone looks like, apart from the app's picture. */
+const ART_PNG = solidPng(320, 200, [], 0x90);
+const art = { fails: false };
 const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
 const harbor: ThemeManifest = {
@@ -233,17 +241,28 @@ const TestLayer = Layer.effect(
     Layer.effect(ThemeWorkshop, makeThemeWorkshop()).pipe(
       Layer.provide(
         Layer.mock(PagePreview)({
-          captureViewports: () =>
-            Effect.succeed([
-              {
-                // A browser's screenshot may carry text; the published picture never does.
-                png: Buffer.from(
-                  solidPng(320, 200, [pngChunk("tEXt", Buffer.from("Software\0Chrome"))]),
-                ).toString("base64"),
-                attributes: {},
-                consoleMessages: [],
-              },
-            ]),
+          // The art alone is drawn at twice the picture's size; it draws frames unless told to fail.
+          captureViewports: (input) =>
+            input.width === 640
+              ? Effect.succeed([
+                  {
+                    png: Buffer.from(ART_PNG).toString("base64"),
+                    attributes: art.fails
+                      ? { "data-tl-failure": JSON.stringify({ reason: "script-error" }) }
+                      : { "data-tl-frame": "12" },
+                    consoleMessages: [],
+                  },
+                ])
+              : Effect.succeed([
+                  {
+                    // A browser's screenshot may carry text; the published picture never does.
+                    png: Buffer.from(
+                      solidPng(320, 200, [pngChunk("tEXt", Buffer.from("Software\0Chrome"))]),
+                    ).toString("base64"),
+                    attributes: {},
+                    consoleMessages: [],
+                  },
+                ]),
         }),
       ),
     ),
@@ -506,6 +525,36 @@ it.layer(TestLayer)("ThemeShowcase", (it) => {
       // What that pull request holds, not what this try would have sent.
       assert.strictEqual(sent.publishedHash, "c".repeat(64));
       assert.deepStrictEqual(github.writes.slice(writesBefore), []);
+    }),
+  );
+
+  it.effect("pictures a theme with art by its art, and by the app when the art fails", () =>
+    Effect.gen(function* () {
+      const showcase = yield* ThemeShowcase;
+      const library = yield* ThemeLibrary;
+      const withArt = (accent: string): ThemeManifest => ({
+        ...harbor,
+        name: "Tidal Grid",
+        colors: { ...harbor.colors, accent },
+        glass: { frame: 0.6, list: 0.7, column: 0.85, composer: 0.85, blur: 16 },
+        backdrop: { mode: "grid", maxFps: 15, script: "threadlines.backdrop({ mode: 'grid' })" },
+      });
+      const pictureOf = (manifest: ThemeManifest) =>
+        Effect.gen(function* () {
+          const saved = yield* library.save({ manifest });
+          const ready = yield* showcase.prepare({
+            entryId: saved.entryId,
+            credits: null,
+            includePrompt: false,
+          });
+          assert.deepStrictEqual(ready.problems, []);
+          return Buffer.from(ready.thumbnail!.split(",")[1]!, "base64");
+        });
+      assert.deepStrictEqual(new Uint8Array(yield* pictureOf(withArt("#5ab0e8"))), ART_PNG);
+      art.fails = true;
+      // The app's picture, its screenshot text dropped.
+      assert.deepStrictEqual(new Uint8Array(yield* pictureOf(withArt("#5ae8c0"))), PICTURE);
+      art.fails = false;
     }),
   );
 

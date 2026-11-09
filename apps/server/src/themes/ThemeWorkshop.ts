@@ -13,6 +13,7 @@ import {
   type ThemeManifest,
 } from "@threadlines/contracts";
 import { checkThemeManifest } from "@threadlines/shared/themeManifest";
+import { THEME_SHOWCASE_THUMBNAIL } from "@threadlines/shared/themeShowcase";
 import {
   buildThemeArtDocument,
   buildThemeSpecimenDocument,
@@ -43,6 +44,13 @@ const ART_RUN_MS = 2_000;
 const STATS_WAIT_MS = 3_000;
 /** How long the art runs before a still or a live thumbnail. */
 const STILL_RUN_MS = 1_500;
+/** A still: the art alone, at the specimen's size. */
+const STILL_VIEW = {
+  width: THEME_SPECIMEN_WIDTH,
+  height: THEME_SPECIMEN_HEIGHT,
+  scale: 1,
+  installedOnly: true,
+} as const;
 
 const ArtStats = Schema.Struct({
   fps: Schema.Number,
@@ -87,8 +95,9 @@ export interface ThemeWorkshopShape {
   /** A small PNG data URL for the library, for a theme with art; null when there's none to make. */
   readonly thumbnail: (manifest: ThemeManifest) => Effect.Effect<string | null>;
   /**
-   * The new-thread specimen at thumbnail size, art or not: a Showcase
-   * theme's picture. Installs the preview browser when it has to.
+   * A Showcase theme's picture, at thumbnail size: its art alone when it has
+   * art (as the starters are pictured), else the new-thread specimen.
+   * Installs the preview browser when it has to.
    */
   readonly picture: (manifest: ThemeManifest) => Effect.Effect<string, ThemeError>;
 }
@@ -182,13 +191,18 @@ export const makeThemeWorkshop = Effect.fn("ThemeWorkshop.make")(function* (
     });
 
   /** One shot of the art alone, or why there is none. */
-  const captureArt = (manifest: ThemeManifest, scale: number) =>
+  const captureArt = (
+    manifest: ThemeManifest,
+    view: {
+      readonly width: number;
+      readonly height: number;
+      readonly scale: number;
+      readonly installedOnly: boolean;
+    },
+  ) =>
     previews
       .captureViewports({
-        width: THEME_SPECIMEN_WIDTH,
-        height: THEME_SPECIMEN_HEIGHT,
-        scale,
-        installedOnly: true,
+        ...view,
         shots: [
           {
             document: buildThemeArtDocument({ manifest }),
@@ -217,10 +231,10 @@ export const makeThemeWorkshop = Effect.fn("ThemeWorkshop.make")(function* (
     Effect.gen(function* () {
       const backdrop = manifest.backdrop;
       if (backdrop === undefined || backdrop.still !== undefined) return { manifest };
-      let captured = yield* captureArt(manifest, 1);
+      let captured = yield* captureArt(manifest, STILL_VIEW);
       // Busy art compresses badly; half size still fills a phone.
       if ("still" in captured && captured.still.length > THEME_MAX_STILL_CHARS) {
-        captured = yield* captureArt(manifest, 0.5);
+        captured = yield* captureArt(manifest, { ...STILL_VIEW, scale: 0.5 });
       }
       if ("skipped" in captured) {
         return { manifest, note: `It has no still yet: ${captured.skipped}.` };
@@ -266,8 +280,30 @@ export const makeThemeWorkshop = Effect.fn("ThemeWorkshop.make")(function* (
       ),
     );
 
+  /**
+   * A theme with art is pictured by its art alone, as the starters are: laid
+   * out at twice the picture's size so a grid's glyphs still read as texture.
+   * Art that fails, or a frame too busy to fit, falls back to the specimen.
+   */
+  const artPicture = (manifest: ThemeManifest) =>
+    captureArt(manifest, {
+      width: THEME_THUMBNAIL_WIDTH * 2,
+      height: THEME_THUMBNAIL_HEIGHT * 2,
+      scale: 0.5,
+      installedOnly: false,
+    }).pipe(
+      Effect.map((captured) =>
+        "still" in captured && (captured.still.length * 3) / 4 <= THEME_SHOWCASE_THUMBNAIL.maxBytes
+          ? captured.still
+          : null,
+      ),
+    );
+
   const picture: ThemeWorkshopShape["picture"] = (manifest) =>
-    smallSpecimen(manifest, false).pipe(
+    (manifest.backdrop === undefined ? Effect.succeed(null) : artPicture(manifest)).pipe(
+      Effect.flatMap((art) =>
+        art === null ? smallSpecimen(manifest, false) : Effect.succeed(art),
+      ),
       Effect.mapError((error) => error.message),
       Effect.flatMap((png) =>
         png === null ? Effect.fail("the preview browser took no picture") : Effect.succeed(png),

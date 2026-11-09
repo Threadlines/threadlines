@@ -690,8 +690,11 @@ the server and the checks):
   Google and Bunny subsets keep both.
 - The picture is a plain PNG of 320×200, at most 160 KB, with no chunk
   that could carry text, every checksum right and its image data unpacking
-  to exactly its rows (where zlib is at hand: the server and the checks). The app draws it (the new-thread specimen, art or
-  not) and drops what a browser screenshot adds (`plainPng`).
+  to exactly its rows (where zlib is at hand: the server and the checks).
+  The app draws it: a theme with art by its art alone, laid out at 640×400
+  as the starters' thumbnails are; one without (or whose art fails, or whose
+  frame is too busy to fit) by the new-thread specimen. It drops what a
+  browser screenshot adds (`plainPng`).
 - A pull request from anyone but a maintainer may add theme folders, change
   only folders it shared, claim only its own login, and touch nothing else.
 
