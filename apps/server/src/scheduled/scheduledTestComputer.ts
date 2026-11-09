@@ -27,6 +27,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
+import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import { TestClock } from "effect/testing";
 
@@ -48,6 +49,7 @@ import { OrchestrationCommandReceiptRepositoryLive } from "../persistence/Layers
 import { OrchestrationEventStoreLive } from "../persistence/Layers/OrchestrationEventStore.ts";
 import { ProjectionTurnRepositoryLive } from "../persistence/Layers/ProjectionTurns.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import { SystemWake } from "../power/Services/SystemWake.ts";
 import { ProjectSetupScriptRunner } from "../project/Services/ProjectSetupScriptRunner.ts";
 import { RepositoryIdentityResolver } from "../project/Services/RepositoryIdentityResolver.ts";
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
@@ -279,6 +281,8 @@ export const makeComputer = Effect.gen(function* () {
   const webhooks = Context.get(context, WebhookTaskRepository);
   const realBootstrap = Context.get(context, ThreadBootstrap);
   const relay = yield* makeFakeRelay;
+  /** Whether the computer is fully awake (SystemWake); false is a Mac woken only for upkeep. */
+  const fullyAwake = yield* Ref.make(true);
   const github = makeFakeGitHub();
   const secrets = makeFakeSecrets();
 
@@ -311,6 +315,7 @@ export const makeComputer = Effect.gen(function* () {
             Layer.mock(GitVcsDriver)({}),
             Layer.mock(GitWorkflowService)({}),
             ServerEnvironment.layerTest({ label: "Test Mac" }),
+            Layer.succeed(SystemWake, SystemWake.of({ fullyAwake: Ref.get(fullyAwake) })),
             ServerSettingsService.layerTest(patch.settings),
             relay.layer,
             github.layer,
@@ -373,6 +378,8 @@ export const makeComputer = Effect.gen(function* () {
     relay,
     github,
     secrets,
+    /** The computer wakes fully (true) or only for upkeep (false). */
+    setFullyAwake: (awake: boolean) => Ref.set(fullyAwake, awake),
   };
 });
 

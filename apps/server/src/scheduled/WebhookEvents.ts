@@ -11,7 +11,10 @@
  *
  * A task's queue is drained when an event is stored, when any scheduled run
  * ends, and on every scheduler tick (which also covers a restart), so nothing
- * strands. Made once by ScheduledTasks, which hands it its launch.
+ * strands. While the computer woke only for upkeep a drain still checks
+ * every event (signature, age, the waiting cap) but starts no run for one
+ * that came on its own: it waits for a full wake like any event that can't
+ * run yet. Made once by ScheduledTasks, which hands it its launch.
  */
 import * as Crypto from "node:crypto";
 
@@ -123,6 +126,10 @@ const eventRepository = (body: unknown): string | null => {
   return typeof repository.full_name === "string" ? repository.full_name : null;
 };
 
+/** Why an event that came on its own waits while the computer woke only for upkeep. */
+export const REASON_UPKEEP_WAKE =
+  "Waiting: this computer woke only for upkeep. It runs once the computer is fully awake.";
+
 /** Why a task's runs can't start now, while the event waits. */
 const BUSY_REASON = {
   task: `Waiting: ${EVENT_TASK_RUN_CAP} of this task's runs are still working.`,
@@ -216,6 +223,10 @@ const displayBody = (event: WebhookEventRow) => {
   };
 };
 
+/** An event the user sent from Threadlines, rather than one that came on its own. */
+const sentByUser = (event: Pick<WebhookEventRow, "source">) =>
+  event.source === "test" || event.source === "replay";
+
 class ClaimRaced extends Data.TaggedError("ClaimRaced")<{}> {}
 
 export interface WebhookPipelineDeps {
@@ -236,6 +247,14 @@ export interface WebhookPipelineDeps {
   readonly projectRoot: (task: ScheduledTaskRow) => Effect.Effect<string | null>;
   /** After a write the clients' snapshot shows. */
   readonly changed: Effect.Effect<void>;
+  /**
+   * False while the computer woke only for upkeep (SystemWake): events that
+   * came on their own are checked as usual but wait instead of starting a
+   * run, under the same cap as any waiting event, and the scheduler's first
+   * pass once it's fully awake runs them. Events the user sent ("Send a test
+   * event", "Run with this event") don't wait.
+   */
+  readonly fullyAwake: Effect.Effect<boolean>;
 }
 
 /**
@@ -597,9 +616,11 @@ export const makeWebhookEvents = (deps: WebhookPipelineDeps) =>
      * One queued event through the checks, to its end or to waiting. Its
      * result says when it waits for room, so the events behind it in the
      * same pass wait too: a place that frees up mid-pass never goes to a
-     * later event before an earlier one.
+     * later event before an earlier one. With `holdRuns` (an upkeep-only
+     * wake) an event that came on its own and passed its checks waits
+     * instead of starting; the user's own events behind it still run.
      */
-    const processOne = (queued: WebhookEventRow, roomBlocked: string | null) =>
+    const processOne = (queued: WebhookEventRow, roomBlocked: string | null, holdRuns: boolean) =>
       Effect.gen(function* () {
         for (let attempt = 0; attempt < 3; attempt += 1) {
           const now = yield* nowMillis;
@@ -633,6 +654,10 @@ export const makeWebhookEvents = (deps: WebhookPipelineDeps) =>
             yield* wait(event, verdict.reason, verdict, verdict.missingFields);
             return null;
           }
+          if (holdRuns && !sentByUser(event)) {
+            yield* wait(event, REASON_UPKEEP_WAKE, verdict, verdict.missingFields);
+            return roomBlocked;
+          }
           if (roomBlocked !== null) {
             yield* wait(event, roomBlocked, verdict, verdict.missingFields);
             return roomBlocked;
@@ -662,14 +687,20 @@ export const makeWebhookEvents = (deps: WebhookPipelineDeps) =>
         return yield* new ClaimRaced();
       });
 
-    /** A task's queue, in arrival order. */
+    /**
+     * A task's queue, in arrival order. While the computer woke only for
+     * upkeep, every event is still checked, and those that came on their own
+     * wait rather than run; ones the user sent ("Send a test event", "Run
+     * with this event") run as usual.
+     */
     const processQueue = (taskId: ScheduledTaskId) =>
       Effect.gen(function* () {
         const queued = yield* webhooks.listQueued(taskId);
         if (queued.length === 0) return;
+        const holdRuns = !queued.every(sentByUser) && !(yield* deps.fullyAwake);
         let roomBlocked: string | null = null;
         for (const event of queued) {
-          roomBlocked = yield* processOne(event, roomBlocked).pipe(
+          roomBlocked = yield* processOne(event, roomBlocked, holdRuns).pipe(
             Effect.catchCause((cause) =>
               Cause.hasInterruptsOnly(cause)
                 ? Effect.failCause(cause)

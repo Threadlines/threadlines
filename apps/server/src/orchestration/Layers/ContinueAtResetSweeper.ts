@@ -13,6 +13,7 @@ import {
   ProjectionThreadSessionRepository,
   type ProjectionThreadContinueAtReset,
 } from "../../persistence/Services/ProjectionThreadSessions.ts";
+import { SystemWake } from "../../power/Services/SystemWake.ts";
 import { freshOrCurrentSnapshot } from "../../provider/freshProviderSnapshot.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
 import {
@@ -38,6 +39,7 @@ const makeContinueAtResetSweeper = (options?: ContinueAtResetSweeperLiveOptions)
     const sessions = yield* ProjectionThreadSessionRepository;
     const providerRegistry = yield* ProviderRegistry;
     const orchestrationEngine = yield* OrchestrationEngineService;
+    const systemWake = yield* SystemWake;
     // The interval and `sweepNow` must not both continue one thread.
     const sweepSemaphore = yield* Semaphore.make(1);
 
@@ -135,6 +137,10 @@ const makeContinueAtResetSweeper = (options?: ContinueAtResetSweeperLiveOptions)
         if (continued > 0) {
           yield* Effect.sleep(options?.continueSpacing ?? CONTINUE_SPACING);
         }
+        // A Mac that woke only for upkeep sleeps again within seconds: the
+        // rest continue once it's fully awake. Asked before each thread, as
+        // the computer can sleep during the spacing.
+        if (!(yield* systemWake.fullyAwake)) break;
         if (yield* continueThread(entry)) continued += 1;
       }
       return continued;
