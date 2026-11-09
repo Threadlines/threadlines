@@ -3,7 +3,7 @@
  *
  * Unlike picking, this is not a question with an answer -- nothing is reported
  * back and nothing is attached. The marks are for the screenshot: they are real
- * nodes in the page, so Page.captureScreenshot renders them, and circling the
+ * nodes in the page, so a screenshot of the page has them, and circling the
  * broken thing and capturing it is the whole point. Turning the mode off clears
  * them, which is also how you start over.
  *

@@ -53,7 +53,6 @@ import {
 import {
   app,
   BrowserWindow,
-  nativeImage,
   powerMonitor,
   session,
   webContents,
@@ -128,6 +127,19 @@ const PAGE_DID_NOT_ANSWER = "the page did not answer in time";
  */
 const PAGE_DID_NOT_DRAW =
   "the page did not draw a new picture in time. browser_snapshot and browser_evaluate still work, and a later screenshot may succeed";
+/**
+ * Said when a capture comes back empty, which Electron does for a page with no
+ * size on screen. Refused rather than handed to the agent as a blank image.
+ */
+const PAGE_HAS_NO_PICTURE =
+  "the page has no picture to capture: it has no size on screen right now. browser_snapshot and browser_evaluate still work, and a later screenshot may succeed";
+/**
+ * Resolves once the page has drawn two more frames: by then whatever changed
+ * before it ran (the agent's click, the user's ink) is in the picture a
+ * capture copies. Never resolves while the page is not drawing at all.
+ */
+const NEXT_TWO_FRAMES_SCRIPT =
+  "new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))";
 /**
  * How long a capture may take while the screen is locked. A capture normally
  * answers in well under a second, and a locked Mac's waits until the user is
@@ -435,12 +447,13 @@ interface PickResult {
  * At the page's CSS pixels rather than the display's -- half the width and a
  * quarter of the bytes on a Retina screen -- so a point in the picture is the
  * same point on the page, then encoded as the cheapest picture that fits (see
- * `fitScreenshot`). Resized here rather than by asking CDP for a scaled clip:
- * a clipped capture re-renders the page at the new scale, which the user sees
- * as the page flashing at half size.
+ * `fitScreenshot`). Never given an empty capture: `screenshot` refuses one.
+ * Resized here, from the full capture: asking Chromium for a smaller one
+ * (CDP's scaled clip) re-renders the page at the new scale, which the user
+ * sees as the page flashing at half size.
  */
 const encodeForAgent = (
-  data: string,
+  captured: NativeImage,
   /**
    * The page's own `devicePixelRatio`: the display's scale times the page's
    * zoom. The capture is in device pixels and covers the whole page area,
@@ -451,10 +464,9 @@ const encodeForAgent = (
   /** Whether the server can carry a JPEG; see `DesktopPreviewScreenshotInputSchema`. */
   jpeg: boolean,
 ): { readonly dataUrl: string; readonly scale?: number } => {
-  const captured = nativeImage.createFromBuffer(Buffer.from(data, "base64"));
-  if (captured.isEmpty() || !Number.isFinite(devicePixelRatio) || devicePixelRatio <= 0) {
-    // Nothing to work with; passed on as it came, and the caller sees it empty.
-    return { dataUrl: `data:image/png;base64,${data}` };
+  if (!Number.isFinite(devicePixelRatio) || devicePixelRatio <= 0) {
+    // Nothing to size it by; passed on as it came.
+    return { dataUrl: `data:image/png;base64,${captured.toPNG().toString("base64")}` };
   }
   const capturedSize = captured.getSize();
   const width = capturedSize.width / devicePixelRatio;
@@ -2667,36 +2679,62 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
     ) {
       const contents = yield* resolveAttached(input.webContentsId);
       const forAgent = input.forAgent === true;
-      // Captured through CDP rather than capturePage so the image is the page
-      // itself, whether the window is covered, minimised or hidden (a hidden
-      // window's page has to be `working` on Windows; the panel makes an
-      // agent's pages so). Not while the screen is locked: nothing is
-      // painted, and the capture would wait until the user is back. So then
-      // it gets a short wait, and an answer that says why.
+      // Copied from the page's own surface, so the image is the page itself
+      // (device size, zoom and the panel's scaling as CDP's capture had them),
+      // whether the window is covered, minimised or hidden (a hidden window's
+      // page has to be `working` on Windows; the panel makes an agent's pages
+      // so). Through `capturePage` with `stayAwake` off rather than CDP's
+      // Page.captureScreenshot, which holds a keep-the-display-on lock until
+      // the page draws: one that never drew again -- behind a locked screen,
+      // or in a window closed to the tray -- kept the monitors on long after
+      // we had stopped waiting, and nothing short of closing the page let go.
+      // (Chromium still re-takes that lock while a capture runs on a page
+      // whose own DevTools took a screenshot; the frame wait keeps any one
+      // capture to a moment.)
+      //
+      // `capturePage` copies the page's latest picture rather than asking for
+      // a new one, so the page draws twice first, or the picture can predate
+      // the click or the ink it is meant to show. Behind a locked screen
+      // nothing is painted, so then the wait is short, and the answer says
+      // why.
       const lockedAtStart = isScreenLocked();
-      const shot = (yield* sendCommand(
-        contents,
-        "Page.captureScreenshot",
-        {
-          format: "png",
-          captureBeyondViewport: false,
-          // An agent's picture is decoded and re-encoded below, so a quicker,
-          // larger PNG is the better trade: on a busy page it holds up the
-          // main process for a fraction as long.
-          ...(forAgent ? { optimizeForSpeed: true } : {}),
-        },
-        {
-          timeout: lockedAtStart ? LOCKED_CAPTURE_TIMEOUT : CDP_COMMAND_TIMEOUT,
-          timedOut: () => (lockedAtStart || isScreenLocked() ? SCREEN_LOCKED : PAGE_DID_NOT_DRAW),
-        },
-      )) as { data?: string };
+      const captured = yield* Effect.gen(function* () {
+        // Bounded by the deadline below, which also says why it ran out.
+        yield* evaluateInjected(contents, NEXT_TWO_FRAMES_SCRIPT, {
+          returnByValue: true,
+          timeout: Duration.infinity,
+        });
+        return yield* Effect.tryPromise({
+          try: () => contents.capturePage(undefined, { stayHidden: false, stayAwake: false }),
+          catch: (cause) =>
+            new PreviewCommandError({ webContentsId: contents.id, method: "capturePage", cause }),
+        });
+      }).pipe(
+        Effect.timeoutOrElse({
+          duration: lockedAtStart ? LOCKED_CAPTURE_TIMEOUT : CDP_COMMAND_TIMEOUT,
+          orElse: () =>
+            failCommand(
+              contents,
+              "capturePage",
+              lockedAtStart || isScreenLocked() ? SCREEN_LOCKED : PAGE_DID_NOT_DRAW,
+            ),
+        }),
+      );
+      if (forAgent && captured.isEmpty()) {
+        return yield* failCommand(contents, "capturePage", PAGE_HAS_NO_PICTURE);
+      }
       const metrics = (yield* sendCommand(contents, "Page.getLayoutMetrics", {})) as {
         cssVisualViewport?: { clientWidth?: number; clientHeight?: number };
       };
       const width = Math.round(metrics.cssVisualViewport?.clientWidth ?? 0);
       const height = Math.round(metrics.cssVisualViewport?.clientHeight ?? 0);
       if (!forAgent) {
-        return { dataUrl: `data:image/png;base64,${shot.data ?? ""}`, width, height };
+        // An empty picture stays empty: the panel reads that as a failed capture.
+        return {
+          dataUrl: `data:image/png;base64,${captured.toPNG().toString("base64")}`,
+          width,
+          height,
+        };
       }
       // Read in the injected world, where the page cannot redefine it.
       const ratio = yield* evaluateInjected(contents, "window.devicePixelRatio", {
@@ -2704,7 +2742,7 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
       });
       const devicePixelRatio = typeof ratio.value === "number" ? ratio.value : 0;
       return {
-        ...encodeForAgent(shot.data ?? "", devicePixelRatio, input.jpeg === true),
+        ...encodeForAgent(captured, devicePixelRatio, input.jpeg === true),
         width,
         height,
       };
