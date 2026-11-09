@@ -29,6 +29,7 @@
 import { randomUUID } from "node:crypto";
 
 import {
+  THEME_PICK_VERSION,
   type ThemeContent,
   type ThemeEntry,
   type ThemeEntryIdInput,
@@ -129,8 +130,8 @@ const make = Effect.gen(function* () {
     const pick = Option.getOrNull(yield* repo.getPick);
     // A library pick that arrived without its content says so, for a client to send it again.
     const hash = pick?.theme.kind === "library" ? pick.theme.hash : undefined;
-    if (hash === undefined) return { entries, pick };
-    return { entries, pick, pickHasContent: yield* repo.hasContent(hash) };
+    const base = { entries, pick, pickVersion: THEME_PICK_VERSION };
+    return hash === undefined ? base : { ...base, pickHasContent: yield* repo.hasContent(hash) };
   }).pipe(stored);
 
   const changes: ThemeLibraryShape["changes"] = Stream.concat(

@@ -357,7 +357,16 @@ export const ThemeLibrarySnapshot = Schema.Struct({
    * with the content. Absent when there is nothing to hold, and from older servers.
    */
   pickHasContent: Schema.optional(Schema.Boolean),
+  /**
+   * What this server's `themes.pick` understands: 2 honors `onlyIfNone`.
+   * Absent from the first build that kept a pick, which a joining device
+   * therefore never offers its own theme to.
+   */
+  pickVersion: Schema.optional(NonNegativeInt),
 });
+
+/** The `pickVersion` a server of this build reports. */
+export const THEME_PICK_VERSION = 2;
 export type ThemeLibrarySnapshot = typeof ThemeLibrarySnapshot.Type;
 
 export const ThemesSubscribeInput = Schema.Struct({});

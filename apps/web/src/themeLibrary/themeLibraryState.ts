@@ -539,6 +539,7 @@ export function ThemeLibrarySync() {
         snapshots: () => useThemeLibraryStore.getState().byEnvironment,
         subscribe: (listener) => useThemeLibraryStore.subscribe(listener),
         pick: (environmentId, input) => clientOf(environmentId).pick(input),
+        mergePick: (environmentId, input) => clientOf(environmentId).mergePick(input),
       }),
     [],
   );

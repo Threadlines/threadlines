@@ -173,7 +173,7 @@ it.layer(TestLayer)("ThemeLibrary", (it) => {
   it.effect("keeps one shared pick, above any a device saw, merged by revision order", () =>
     Effect.gen(function* () {
       const library = yield* ThemeLibrary;
-      assert.isNull((yield* library.snapshot).pick);
+      assert.deepInclude(yield* library.snapshot, { pick: null, pickVersion: 2 });
       const dark = yield* library.pick({ theme: { kind: "builtin", id: "dark" }, atLeast: 0 });
       assert.strictEqual(dark.revisedBy, "env-test");
       // The same theme, already above what the device saw: nothing changes.
