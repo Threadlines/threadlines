@@ -660,31 +660,43 @@ the budget, no network) and places for the new Appearance rows.
   - A theme the user commits (a pick, Keep, a settings change; not a pick
     applied from elsewhere) becomes the `unsent` note, written before the
     device's theme so no window sees the theme under the old note. Its window
-    sends it with `themes.pick`, above every pick the device has heard of,
-    carrying a `pickId`; one send at a time, so a window's picks reach the
-    computer in the order they were made. The pick has landed when the shared
-    pick carries its id. A failed send is tried again after 30 seconds, or at
-    the next pick. If the window is gone (15 seconds without an attempt),
-    another sends it, also after a reload. A pick from elsewhere doesn't
-    replace it on screen while it is on its way; it gives way only when it
-    couldn't be sent for a minute and someone else picked meanwhile.
-  - A pick newer than the one the note knows is applied, after any trial,
-    never an older one, and never by a window under `?theme=default`. A theme
-    kept on this device only, or picked before the settings had loaded, is
-    `local`: it stays until a newer pick comes, and the device's own earlier
-    pick landing late doesn't count as one.
+    sends it with `themes.pick`, above every pick it has heard of (also from
+    a computer that has since dropped off), carrying a `pickId`; one send at
+    a time, so a window's picks reach the computer in the order they were
+    made. The pick is done when a computer answers for it or the shared pick
+    carries its id. A failed send is tried again after 30 seconds, or at the
+    next pick; a send unanswered for 15 seconds counts as lost. If the window
+    is gone (15 seconds without an attempt), another sends it, also after a
+    reload. A pick from elsewhere doesn't replace it on screen while it is on
+    its way; it gives way only when it couldn't be sent for a minute and
+    someone else picked meanwhile.
+  - A pick newer than the one the note knows is applied, after any trial in
+    that window, never an older one, and never by a window under
+    `?theme=default`. A theme kept on this device only, or picked before the
+    settings had loaded, is `local`: it stays until a newer pick comes.
+  - Every note carries `past`, the ids of the device's earlier picks. A send
+    can land late (a slow connection, a second attempt, another window's), so
+    one of them can come back as the newest shared pick. That is never news:
+    the device sends what it shows again, above it, or just keeps a theme
+    that is its own.
   - A window that sees the switch off writes `off`, which drops a pick that
-    hadn't gone; nothing picked while it is off is shared later. A window
-    that sees it turn on joins if the note still says `off`: once every
+    hadn't gone; nothing picked while it is off is shared later. With the
+    switch on, a note that says `off` means the device joins: once every
     followed computer has reported, it takes the shared pick, or keeps its
     theme when there is none. It never offers its own theme; that is shared
-    the next time the user picks. A window that hears of the switch late
-    finds the note already moved on and changes nothing.
+    the next time the user picks. A note that went `off` in the last 5
+    seconds waits first, since a window that hadn't heard of the switch yet
+    may have written it; a window that hears of the switch late finds the
+    note already moved on and changes nothing.
+  - The first build's single key is carried over once: the pick it showed
+    isn't taken again, and a pick it hadn't sent yet is sent.
   - Left as they are: a device that took a pick from a computer which dropped
     off before the others had it ignores their older picks until that
-    computer is back or someone picks again; and two windows writing the note
-    in the same instant leave whichever wrote last, put right by the next
-    pick anywhere.
+    computer is back or someone picks again; a send that failed but landed,
+    sent again within the minute, goes above a pick made elsewhere in
+    between; two windows writing the note in the same instant leave
+    whichever wrote last; and a pick applied by one window ends a trial
+    running in another, like any theme change there.
     Nothing changes until someone picks a theme after updating: no device's
     look is guessed and pushed to the others.
 - **Deleting changes no other device's look.** A device keeps using a cached
