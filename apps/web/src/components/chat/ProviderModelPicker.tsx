@@ -31,6 +31,7 @@ import {
   getTriggerDisplayModelLabel,
   getTriggerDisplayModelName,
 } from "./providerIconUtils";
+import { getKeptModelOptionForPick } from "../../modelSelection";
 import { setModelPickerOpen } from "../../modelPickerOpenState";
 import { useOnScreenKeyboardInset } from "~/hooks/useOnScreenKeyboardInset";
 import { useIsPhoneViewport } from "~/hooks/useMediaQuery";
@@ -148,7 +149,27 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
     return props.instanceEntries.find((entry) => entry.instanceId === activeInstanceId) ?? null;
   }, [activeInstanceId, props.instanceEntries]);
 
-  const selectedInstanceOptions = props.modelOptionsByInstance.get(activeInstanceId) ?? [];
+  // A model the provider stopped listing stays for whoever is already on it.
+  // That is this picker's own current pick (the thread's, a room agent's, a
+  // setting's), so it joins this picker's list and no other.
+  const keptPick = useMemo(
+    () => (activeEntry ? getKeptModelOptionForPick(activeEntry, activeModel) : undefined),
+    [activeEntry, activeModel],
+  );
+  const selectedInstanceOptions = useMemo(() => {
+    const listed = props.modelOptionsByInstance.get(activeInstanceId) ?? [];
+    return keptPick && !listed.some((option) => option.slug === keptPick.slug)
+      ? [...listed, keptPick]
+      : listed;
+  }, [activeInstanceId, keptPick, props.modelOptionsByInstance]);
+  // While the next pick is for a new agent, the list offers current models only.
+  const modelOptionsByInstance = useMemo(
+    () =>
+      keptPick && !adding
+        ? new Map(props.modelOptionsByInstance).set(activeInstanceId, selectedInstanceOptions)
+        : props.modelOptionsByInstance,
+    [activeInstanceId, adding, keptPick, props.modelOptionsByInstance, selectedInstanceOptions],
+  );
   const retirement =
     activeEntry?.driverKind === "codex" && addressedAgent === null
       ? codexModelRetirementNotice(activeModel, activeEntry.snapshot.auth.type)
@@ -406,7 +427,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
       footer={(adding ? props.settingsWhileAdding : props.settings) ?? null}
       instanceEntries={props.instanceEntries}
       {...(props.keybindings ? { keybindings: props.keybindings } : {})}
-      modelOptionsByInstance={props.modelOptionsByInstance}
+      modelOptionsByInstance={modelOptionsByInstance}
       terminalOpen={props.terminalOpen ?? false}
       onRequestClose={() => setIsMenuOpen(false)}
       onInstanceModelChange={handleInstanceModelChange}

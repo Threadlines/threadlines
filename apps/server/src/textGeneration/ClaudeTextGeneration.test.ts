@@ -1,4 +1,4 @@
-import { ClaudeSettings, ProviderInstanceId } from "@threadlines/contracts";
+import { ClaudeSettings, type ModelCapabilities, ProviderInstanceId } from "@threadlines/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -6,7 +6,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
-import { createModelSelection } from "@threadlines/shared/model";
+import { createModelCapabilities, createModelSelection } from "@threadlines/shared/model";
 import { expect } from "vite-plus/test";
 
 import { ServerConfig } from "../config.ts";
@@ -132,6 +132,8 @@ function withFakeClaudeEnv<A, E, R>(
     stdinMustContain?: string;
     homeMustBe?: string;
     claudeConfig?: Partial<ClaudeSettings>;
+    /** What the provider lists for a model, as the driver would answer. */
+    listedCapabilities?: ModelCapabilities;
   },
   effectFn: (textGeneration: TextGenerationShape) => Effect.Effect<A, E, R>,
 ) {
@@ -238,7 +240,14 @@ function withFakeClaudeEnv<A, E, R>(
     );
 
     const config = decodeClaudeSettings(input.claudeConfig ?? {});
-    const textGeneration = yield* makeClaudeTextGeneration(config);
+    const listedCapabilities = input.listedCapabilities;
+    const textGeneration = yield* makeClaudeTextGeneration(
+      config,
+      undefined,
+      listedCapabilities
+        ? { resolveModelCapabilities: () => Effect.succeed(listedCapabilities) }
+        : undefined,
+    );
     return yield* effectFn(textGeneration);
   }).pipe(Effect.scoped);
 }
@@ -447,6 +456,74 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGeneration", (it) => {
           });
 
           expect(generated.title).toBe("Use Haiku 5.5");
+        }),
+    ),
+  );
+
+  // A model newer than this build is known only from Claude Code's own
+  // list. Titles and commit messages take its options from there, so the
+  // level chosen for it is the one they run at.
+  const reportedOnlyCapabilities = createModelCapabilities({
+    optionDescriptors: [
+      {
+        id: "effort",
+        label: "Reasoning",
+        type: "select",
+        options: [
+          { id: "default", label: "Default", isDefault: true },
+          { id: "low", label: "Low" },
+          { id: "high", label: "High" },
+        ],
+      },
+    ],
+  });
+  const generateWithReportedOnlyModel = (
+    textGeneration: TextGenerationShape,
+    options: ReadonlyArray<{ id: string; value: string }>,
+  ) =>
+    textGeneration.generatePrContent({
+      cwd: process.cwd(),
+      baseBranch: "main",
+      headBranch: "feature/opus-9",
+      commitSummary: "Use Opus 9",
+      diffSummary: "1 file changed",
+      diffPatch: "diff --git a/README.md b/README.md",
+      modelSelection: createModelSelection(
+        ProviderInstanceId.make("claudeAgent"),
+        "claude-opus-9",
+        options,
+      ),
+    });
+
+  it.effect("runs a model known only from Claude Code's list at the level chosen for it", () =>
+    withFakeClaudeEnv(
+      {
+        output: JSON.stringify({ structured_output: { title: "Use Opus 9", body: "Body" } }),
+        argsMustContain: "--model claude-opus-9 --effort low",
+        listedCapabilities: reportedOnlyCapabilities,
+      },
+      (textGeneration) =>
+        Effect.gen(function* () {
+          const generated = yield* generateWithReportedOnlyModel(textGeneration, [
+            { id: "effort", value: "low" },
+          ]);
+          expect(generated.title).toBe("Use Opus 9");
+        }),
+    ),
+  );
+
+  it.effect("passes no effort for the Default reasoning choice", () =>
+    withFakeClaudeEnv(
+      {
+        output: JSON.stringify({ structured_output: { title: "Use Opus 9", body: "Body" } }),
+        argsMustContain: "--model claude-opus-9",
+        argsMustNotContain: "--effort",
+        listedCapabilities: reportedOnlyCapabilities,
+      },
+      (textGeneration) =>
+        Effect.gen(function* () {
+          const generated = yield* generateWithReportedOnlyModel(textGeneration, []);
+          expect(generated.title).toBe("Use Opus 9");
         }),
     ),
   );

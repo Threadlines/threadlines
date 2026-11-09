@@ -12,6 +12,14 @@ import {
 } from "@threadlines/contracts";
 
 const DEFAULT_PROVIDER_DRIVER_KIND = ProviderDriverKind.make("codex");
+const CLAUDE_PROVIDER_DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
+
+/**
+ * A Claude model written with a dotted version, `fable-5.3` or
+ * `claude-fable-5.3`. Claude's own id for it is `claude-fable-5-3`, so the
+ * spelling needs no alias entry per model.
+ */
+const CLAUDE_DOTTED_VERSION_SLUG = /^(?:claude-)?(fable|mythos|opus|sonnet|haiku)-(\d+)\.(\d+)$/i;
 
 /** ChatGPT retirements do not apply to API-key or third-party model providers. */
 export function codexModelRetirementNotice(
@@ -41,6 +49,8 @@ export function codexModelRetirementNotice(
 export interface SelectableModelOption {
   slug: string;
   name: string;
+  /** Other names the provider gives this model right now (`opus`). */
+  aliases?: ReadonlyArray<string> | undefined;
 }
 
 export function createModelCapabilities(input: {
@@ -410,7 +420,16 @@ export function normalizeModelSlug(
   const aliased = Object.prototype.hasOwnProperty.call(aliases, trimmed)
     ? aliases[trimmed]
     : undefined;
-  return typeof aliased === "string" ? aliased : trimmed;
+  if (typeof aliased === "string") {
+    return aliased;
+  }
+  if (provider === CLAUDE_PROVIDER_DRIVER_KIND) {
+    const dotted = CLAUDE_DOTTED_VERSION_SLUG.exec(trimmed);
+    if (dotted) {
+      return `claude-${dotted[1]!.toLowerCase()}-${dotted[2]}-${dotted[3]}`;
+    }
+  }
+  return trimmed;
 }
 
 export function resolveSelectableModel(
@@ -435,6 +454,15 @@ export function resolveSelectableModel(
   const byName = options.find((option) => option.name.toLowerCase() === trimmed.toLowerCase());
   if (byName) {
     return byName.slug;
+  }
+
+  // The provider's own name for a model, such as Claude Code's `opus`: it
+  // means the model the provider points it at today.
+  const byAlias = options.find((option) =>
+    option.aliases?.some((alias) => alias.toLowerCase() === trimmed.toLowerCase()),
+  );
+  if (byAlias) {
+    return byAlias.slug;
   }
 
   const normalized = normalizeModelSlug(trimmed, provider);

@@ -222,6 +222,8 @@ While this computer is asleep or Threadlines is closed, assistants are told it's
 
 {place:providers.community} adds agents from the open ACP registry; Threadlines hasn't tested those.
 
+Claude's models come from Claude Code itself, so a new one shows up without a Threadlines update. A model Threadlines has no settings of its own for starts on Default reasoning: no level is sent and Claude Code picks one. When Claude Code stops listing a model, the picker stops offering it, but a thread, room agent or setting already on it keeps it.
+
 How much of each plan you've used is on {place:usage}.
 
 A Claude sign-in made with Claude's own sign-in (not an API key or a long-lived token) ends on a date that renewing doesn't move: up to 3 days before the date Claude saved. From 10 days before, the Claude row in Settings and the notice above the message box say when, with Sign in again; signing in again sets a new date. The notice's X hides it until the next sign-in.

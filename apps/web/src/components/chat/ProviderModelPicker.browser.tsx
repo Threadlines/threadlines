@@ -745,6 +745,59 @@ describe("ProviderModelPicker", () => {
     }
   });
 
+  // The Fable before the current one, say: Claude Code no longer lists it.
+  // The thread already on it keeps seeing and using it; a thread on another
+  // model is offered the current ones only.
+  it("keeps a model the provider stopped listing for the thread already on it", async () => {
+    const providers: ReadonlyArray<ServerProvider> = [
+      {
+        ...TEST_PROVIDERS.find((provider) => provider.instanceId === CLAUDE_INSTANCE_ID)!,
+        models: [
+          { slug: "claude-fable-5-3", name: "Claude Fable 5.3", isCustom: false, capabilities: {} },
+          {
+            slug: "claude-fable-5-2",
+            name: "Claude Fable 5.2",
+            isCustom: false,
+            isHidden: true,
+            keptForExistingPicks: true,
+            capabilities: {},
+          },
+        ],
+      },
+    ];
+    const triggerText = () =>
+      document.querySelector<HTMLElement>('[data-chat-provider-model-picker="true"]')
+        ?.textContent ?? "";
+
+    const onOldModel = await mountPicker({
+      activeInstanceId: CLAUDE_INSTANCE_ID,
+      model: "claude-fable-5-2",
+      lockedProvider: null,
+      providers,
+    });
+    try {
+      expect(triggerText()).toContain("Fable 5.2");
+      await openModelPicker();
+      expect(getVisibleModelNames()).toEqual(["Fable 5.3", "Fable 5.2"]);
+    } finally {
+      await onOldModel.cleanup();
+    }
+
+    const onCurrentModel = await mountPicker({
+      activeInstanceId: CLAUDE_INSTANCE_ID,
+      model: "claude-fable-5-3",
+      lockedProvider: null,
+      providers,
+    });
+    try {
+      expect(triggerText()).toContain("Fable 5.3");
+      await openModelPicker();
+      expect(getVisibleModelNames()).toEqual(["Fable 5.3"]);
+    } finally {
+      await onCurrentModel.cleanup();
+    }
+  });
+
   it("uses the trigger label for locked provider rows with sub-provider labels", async () => {
     const providers: ReadonlyArray<ServerProvider> = [
       {

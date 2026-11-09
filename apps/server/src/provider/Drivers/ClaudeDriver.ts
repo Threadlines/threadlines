@@ -43,6 +43,8 @@ import {
   carryClaudeUsageAcrossChecks,
   checkClaudeProviderStatus,
   claudeChatAndUsageAccountsDiffer,
+  type ClaudeReportedModels,
+  claudeReportedModelsFromCache,
   makePendingClaudeProvider,
   claudeChatUsesStoredSignIn,
   probeClaudeCapabilities,
@@ -296,8 +298,6 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         continuationGroupKey,
       });
 
-      const textGeneration = yield* makeClaudeTextGeneration(effectiveConfig, processEnv);
-
       // The normal sign-in this instance's CLI would act on. A status check
       // reads it to avoid starting, or stopping, a CLI mid-renewal.
       const readStoredSignIn = readClaudeStoredSignIn(effectiveConfig, {
@@ -399,6 +399,11 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
       // slow keychain) keeps it; one that finds no end clears it, so signing
       // in again replaces the old date at the next check.
       const lastSignInEndsRef = yield* Ref.make<ServerProviderSignInEnds | undefined>(undefined);
+      // The models Claude Code last reported, starting from the ones the
+      // previous run saved. A check that cannot ask it lists them again.
+      const lastReportedModelsRef = yield* Ref.make<ClaudeReportedModels | undefined>(
+        claudeReportedModelsFromCache(cachedSnapshot, { instanceId, driver: DRIVER_KIND }),
+      );
       const checkProvider = Effect.gen(function* () {
         const provider = yield* checkClaudeProviderStatus(
           effectiveConfig,
@@ -418,6 +423,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
             ),
           readTokenUsage ? () => readTokenUsage : undefined,
           () => isSignInRenewalDue,
+          {
+            get: Ref.get(lastReportedModelsRef),
+            set: (reported) => Ref.set(lastReportedModelsRef, reported),
+          },
         );
         // Only the sign-in chat runs on has an end worth a warning; its date
         // is read from the stored sign-in, as Claude Code itself reads it.
@@ -497,6 +506,19 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
       const errorProbeScope = yield* Scope.make("sequential");
       yield* Effect.addFinalizer(() => Scope.close(errorProbeScope, Exit.void));
 
+      // A model as the snapshot lists it now. Chat and the title writer both
+      // read it, so a model known only from Claude Code's own list keeps the
+      // options the picker shows for it.
+      const resolveModelMetadata = (model: string) =>
+        snapshot.getSnapshot.pipe(
+          Effect.map((provider) => provider.models.find((candidate) => candidate.slug === model)),
+        );
+
+      const textGeneration = yield* makeClaudeTextGeneration(effectiveConfig, processEnv, {
+        resolveModelCapabilities: (model) =>
+          resolveModelMetadata(model).pipe(Effect.map((listed) => listed?.capabilities)),
+      });
+
       // The adapter is built after the snapshot so mid-turn `rate_limit_event`
       // messages can be folded straight into the live provider snapshot —
       // account usage then updates in real time instead of waiting for the
@@ -504,10 +526,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
       const adapter = yield* makeClaudeAdapter(effectiveConfig, {
         instanceId,
         environment: processEnv,
-        resolveModelMetadata: (model) =>
-          snapshot.getSnapshot.pipe(
-            Effect.map((provider) => provider.models.find((candidate) => candidate.slug === model)),
-          ),
+        resolveModelMetadata,
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
         // Read live, so turning Claude artifacts off stops a running
         // session's next upload. Unreadable settings count as off.

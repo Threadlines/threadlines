@@ -36,6 +36,7 @@ import {
   type ProviderOptions,
   type TraitsPersistence,
   useTraitsUpdater,
+  showsDefaultTag,
 } from "./traitControls";
 
 export interface TraitsMenuContentProps {
@@ -119,7 +120,7 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
                         >
                           {option.label}
                         </span>
-                        {option.isDefault ? (
+                        {showsDefaultTag(option) ? (
                           <span className="shrink-0 text-[10px] text-muted-foreground/60">
                             default
                           </span>

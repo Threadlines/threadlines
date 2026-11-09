@@ -8,6 +8,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { deriveProviderInstanceEntries } from "./providerInstances";
 import {
   getAppModelOptionsForInstance,
+  getKeptModelOptionForPick,
   resolveDefaultTextGenerationBackupModelSelectionState,
   resolveAppModelSelectionForInstance,
   resolveAppModelSelectionState,
@@ -23,6 +24,8 @@ function provider(input: {
         readonly slug: string;
         readonly isDefault?: boolean;
         readonly isHidden?: boolean;
+        readonly keptForExistingPicks?: boolean;
+        readonly aliases?: ReadonlyArray<string>;
       }
   >;
 }): ServerProvider {
@@ -48,6 +51,10 @@ function provider(input: {
         isCustom: false,
         ...(typeof entry !== "string" && entry.isDefault === true ? { isDefault: true } : {}),
         ...(typeof entry !== "string" && entry.isHidden === true ? { isHidden: true } : {}),
+        ...(typeof entry !== "string" && entry.keptForExistingPicks === true
+          ? { keptForExistingPicks: true }
+          : {}),
+        ...(typeof entry !== "string" && entry.aliases ? { aliases: entry.aliases } : {}),
         capabilities: {},
       };
     }),
@@ -207,6 +214,48 @@ describe("instance-scoped model selection", () => {
         (option) => option.slug,
       ),
     ).toEqual(["claude-sonnet-4-6"]);
+  });
+
+  // The Fable before the current one, say: Claude Code no longer lists it.
+  // A thread or a setting already on it keeps it; nothing else is offered it.
+  it("keeps a model the provider stopped listing for whoever already picked it", () => {
+    const providers = [
+      provider({
+        provider: ProviderDriverKind.make("claudeAgent"),
+        instanceId: "claudeAgent",
+        models: [
+          { slug: "claude-fable-5-3", isDefault: true, aliases: ["fable"] },
+          { slug: "claude-fable-5-2", isHidden: true, keptForExistingPicks: true },
+          { slug: "claude-opus-4-6", isHidden: true },
+        ],
+      }),
+    ];
+    const settings = settingsWithProviderInstances();
+    const instanceId = ProviderInstanceId.make("claudeAgent");
+    const stock = deriveProviderInstanceEntries(providers).find(
+      (entry) => entry.instanceId === instanceId,
+    )!;
+    const offered = (selectedModel?: string) =>
+      getAppModelOptionsForInstance(settings, stock, selectedModel).map((option) => option.slug);
+    const resolved = (selectedModel: string) =>
+      resolveAppModelSelectionForInstance(instanceId, settings, providers, selectedModel);
+
+    // Lists shown to the user leave it out; each picker adds its own pick.
+    expect(offered()).toEqual(["claude-fable-5-3"]);
+    expect(getKeptModelOptionForPick(stock, "claude-fable-5-3")).toBeUndefined();
+    expect(getKeptModelOptionForPick(stock, "claude-fable-5-2")?.slug).toBe("claude-fable-5-2");
+
+    // A pick of it keeps it, however the pick was spelled.
+    expect(offered("claude-fable-5-2")).toEqual(["claude-fable-5-3", "claude-fable-5-2"]);
+    expect(resolved("claude-fable-5-2")).toBe("claude-fable-5-2");
+    expect(resolved("fable-5.2")).toBe("claude-fable-5-2");
+
+    // A bare family name means the model Claude Code points it at today.
+    expect(resolved("fable")).toBe("claude-fable-5-3");
+
+    // A model hidden for any other reason is still not offered, picked or not.
+    expect(offered("claude-opus-4-6")).toEqual(["claude-fable-5-3"]);
+    expect(resolved("claude-opus-4-6")).toBe("claude-fable-5-3");
   });
 
   it("applies persisted per-instance model ordering", () => {
