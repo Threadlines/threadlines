@@ -26,6 +26,7 @@ import { TestClock } from "effect/testing";
 
 import { scheduledRunMessageId, scheduledRunThreadId } from "./scheduledRunIds.ts";
 import { type ScheduledTasksShape, snapshotForClient } from "./ScheduledTasks.ts";
+import { REASON_UPKEEP_WAKE } from "./WebhookEvents.ts";
 import {
   AT,
   draft,
@@ -216,7 +217,7 @@ it.layer(NodeServices.layer)("event tasks", (it) => {
   );
 
   it.effect(
-    "an event that comes while the Mac woke only for upkeep waits for a full wake; one the user sends runs at once",
+    "an event that comes while the Mac woke only for upkeep is checked, then waits for a full wake; one the user sends runs at once",
     () =>
       Effect.gen(function* () {
         const computer = yield* makeComputer;
@@ -239,15 +240,35 @@ it.layer(NodeServices.layer)("event tasks", (it) => {
           }),
           202,
         );
+        // Checked even now, so a bad one is turned away rather than kept:
+        // held events wait under the same cap as any other.
+        const forged = issueLabeled(13);
+        assert.equal(
+          yield* sendLocal(service, task.id, {
+            headers: githubHeaders({
+              event: "issues",
+              delivery: "g-2",
+              body: forged,
+              secret: "not-the-secret",
+            }),
+            body: forged,
+          }),
+          202,
+        );
         yield* service.tick;
-        assert.deepEqual(yield* statuses, [["local", "received"]]);
+        assert.deepEqual(yield* statuses, [
+          ["local", "waiting"],
+          ["local", "skipped"],
+        ]);
+        assert.equal((yield* eventsOf(computer, task.id))[0]?.reason, REASON_UPKEEP_WAKE);
         assert.deepEqual(yield* computer.runs(task.id), []);
 
         // The user's test event runs; the one that came on its own still waits.
         const tested = yield* service.testWebhook({ id: task.id, startRun: true });
         assert.equal(tested.event.status, "ran");
         assert.deepEqual(yield* statuses, [
-          ["local", "received"],
+          ["local", "waiting"],
+          ["local", "skipped"],
           ["test", "ran"],
         ]);
         assert.equal((yield* computer.runs(task.id)).length, 1);
@@ -257,6 +278,7 @@ it.layer(NodeServices.layer)("event tasks", (it) => {
         yield* service.tick;
         assert.deepEqual(yield* statuses, [
           ["local", "ran"],
+          ["local", "skipped"],
           ["test", "ran"],
         ]);
         assert.equal((yield* computer.runs(task.id)).length, 2);
