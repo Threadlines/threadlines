@@ -126,11 +126,11 @@ const eventRepository = (body: unknown): string | null => {
   return typeof repository.full_name === "string" ? repository.full_name : null;
 };
 
-/** Why a task's runs can't start now, while the event waits. */
 /** Why an event that came on its own waits while the computer woke only for upkeep. */
 export const REASON_UPKEEP_WAKE =
   "Waiting: this computer woke only for upkeep. It runs once the computer is fully awake.";
 
+/** Why a task's runs can't start now, while the event waits. */
 const BUSY_REASON = {
   task: `Waiting: ${EVENT_TASK_RUN_CAP} of this task's runs are still working.`,
   computer: `Waiting: ${SCHEDULED_TASK_RUN_CAP} scheduled runs are already working on this computer.`,
