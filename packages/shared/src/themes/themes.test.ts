@@ -156,15 +156,27 @@ describe("readability check", () => {
     ).toMatchObject({ ok: true });
   });
 
-  it("refuses a theme whose popover text is its fill, and unknown overrides", () => {
-    const check = checkThemeManifest({
-      ...aurora,
-      overrides: { "popover-foreground": "#1c243f", popover: "#1c243f", "not-a-token": "#ffffff" },
-    });
+  it("refuses a theme whose popover text is its fill, and names unknown overrides to an agent", () => {
+    const check = checkThemeManifest(
+      {
+        ...aurora,
+        overrides: {
+          "popover-foreground": "#1c243f",
+          popover: "#1c243f",
+          "not-a-token": "#ffffff",
+        },
+      },
+      { authoring: true },
+    );
     expect(check.ok).toBe(false);
     if (check.ok) return;
     expect(check.contrast.map((failure) => failure.id)).toContain("foreground/popover");
     expect(check.errors.some((error) => error.includes('"not-a-token"'))).toBe(true);
+    // Saved, synced or imported, it may be a newer build's token: kept, unused here.
+    const newer = checkThemeManifest({ ...aurora, overrides: { "not-a-token": "#ffffff" } });
+    expect(newer.ok ? newer.manifest.overrides : newer.errors).toEqual({
+      "not-a-token": "#ffffff",
+    });
   });
 
   it("refuses see-through surfaces and text, and unreadable code and terminal colors", () => {
@@ -360,6 +372,61 @@ describe("files a theme embeds", () => {
     // A few bytes can claim a picture far too big to open.
     expect(errors(withFiles(woff2, pngHead(30_000, 30_000)))).toEqual([
       "The backdrop still is 30000×30000 pixels; the most is 4096 on a side and 9216000 in all.",
+    ]);
+  });
+});
+
+describe("fields a newer build added", () => {
+  // As a newer build would write it: a field at the top, one inside glass.
+  const newer = {
+    ...aurora,
+    glass: { frame: 0.4, list: 0.5, column: 0.4, composer: 0.7, blur: 22, sheen: 0.3 },
+    backdrop: { mode: "grid", script: "x", maxFps: 15 },
+    soundscape: { kind: "rain", volume: 0.2 },
+  };
+
+  it("are kept through the check, counted in the hash, and shared along", async () => {
+    const check = checkThemeManifest(newer);
+    if (!check.ok) return expect.fail(check.errors.join("\n"));
+    expect(check.manifest).toMatchObject({
+      soundscape: { kind: "rain", volume: 0.2 },
+      glass: { sheen: 0.3 },
+    });
+    // Two builds that carry the field hash it alike; one that dropped it would not.
+    const { soundscape: _dropped, ...older } = newer;
+    expect(await themeContentHash(check.manifest)).not.toBe(
+      await themeContentHash(older as ThemeManifest),
+    );
+    const shared = themeForSharing(check.manifest, {
+      name: "Newer",
+      includePrompt: false,
+      credits: null,
+    });
+    expect(shared).toMatchObject({ soundscape: { kind: "rain", volume: 0.2 } });
+  });
+
+  it("ride along unchecked where a part holds colors or fonts, and in credits", () => {
+    const check = checkThemeManifest({
+      ...newer,
+      code: { keyword: "#c792ea", ligatures: { on: true } },
+      fonts: { emoji: { family: "Noto", data: 7 } },
+      credits: { author: "Mira", pronouns: "she/her" },
+    });
+    if (!check.ok) return expect.fail(check.errors.join("\n"));
+    const shared = themeForSharing(check.manifest, {
+      name: "Newer",
+      includePrompt: false,
+      credits: null,
+    });
+    expect(shared.credits).toEqual({ author: "Mira", pronouns: "she/her" });
+  });
+
+  it("can't nest deeper than anything that walks them can follow", () => {
+    let deep: unknown = "end";
+    for (let level = 0; level < 50_000; level++) deep = [deep];
+    const check = checkThemeManifest({ ...newer, soundscape: deep });
+    expect(check.ok ? [] : check.errors).toEqual([
+      "The theme nests its data more than 32 levels deep, or holds more than 500000 values.",
     ]);
   });
 });

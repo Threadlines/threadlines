@@ -31,6 +31,27 @@ export const THEME_MAX_STILL_PIXELS = 3840 * 2400;
 /** The highest frame rate a backdrop may ask for. */
 export const THEME_MAX_FPS = 30;
 
+/**
+ * A part of the theme format, read so that keys it doesn't know are kept:
+ * fields a newer build added pass through this one as they came (stored,
+ * hashed, synced and exported), so every build agrees on a theme's content
+ * hash. Without it, decoding drops them, and a build hashes a newer theme
+ * differently and refuses it in a merge. Its type stays the known fields.
+ *
+ * So a field added to the format must be safe for a build that doesn't know
+ * it to carry along: anything private goes under `createdBy`, which sharing
+ * always leaves out.
+ */
+function keepingUnknownKeys<const Fields extends Schema.Struct.Fields>(
+  struct: Schema.Struct<Fields>,
+): Schema.Struct<Fields> {
+  // The value is a struct with a rest record; its type is the known fields,
+  // which every consumer reads (none reach for `.fields` on these).
+  return Schema.StructWithRest(struct, [
+    Schema.Record(Schema.String, Schema.Unknown),
+  ]) as unknown as Schema.Struct<Fields>;
+}
+
 export const ThemeBase = Schema.Literals(["light", "dark"]);
 export type ThemeBase = typeof ThemeBase.Type;
 
@@ -48,37 +69,41 @@ const UnitInterval = Schema.Number.check(Schema.isBetween({ minimum: 0, maximum:
  * rest. `background` is the reading canvas; the frame, rails, cards and
  * popovers step from it the way the built-in themes do.
  */
-export const ThemeSeedColors = Schema.Struct({
-  background: ThemeColor,
-  foreground: ThemeColor,
-  mutedForeground: ThemeColor,
-  /** Selected, on, send: the theme's one accent. */
-  accent: ThemeColor,
-  /** Text and icons drawn on the accent. */
-  accentForeground: ThemeColor,
-  border: Schema.optional(ThemeColor),
-  success: Schema.optional(ThemeColor),
-  warning: Schema.optional(ThemeColor),
-  danger: Schema.optional(ThemeColor),
-  info: Schema.optional(ThemeColor),
-  codeBackground: Schema.optional(ThemeColor),
-  selection: Schema.optional(ThemeColor),
-});
+export const ThemeSeedColors = keepingUnknownKeys(
+  Schema.Struct({
+    background: ThemeColor,
+    foreground: ThemeColor,
+    mutedForeground: ThemeColor,
+    /** Selected, on, send: the theme's one accent. */
+    accent: ThemeColor,
+    /** Text and icons drawn on the accent. */
+    accentForeground: ThemeColor,
+    border: Schema.optional(ThemeColor),
+    success: Schema.optional(ThemeColor),
+    warning: Schema.optional(ThemeColor),
+    danger: Schema.optional(ThemeColor),
+    info: Schema.optional(ThemeColor),
+    codeBackground: Schema.optional(ThemeColor),
+    selection: Schema.optional(ThemeColor),
+  }),
+);
 export type ThemeSeedColors = typeof ThemeSeedColors.Type;
 
 /** Syntax colors for code blocks and diffs. Missing ones use the base's built-in theme. */
-export const ThemeCodePalette = Schema.Struct({
-  foreground: Schema.optional(ThemeColor),
-  comment: Schema.optional(ThemeColor),
-  keyword: Schema.optional(ThemeColor),
-  string: Schema.optional(ThemeColor),
-  number: Schema.optional(ThemeColor),
-  function: Schema.optional(ThemeColor),
-  type: Schema.optional(ThemeColor),
-  variable: Schema.optional(ThemeColor),
-  operator: Schema.optional(ThemeColor),
-  punctuation: Schema.optional(ThemeColor),
-});
+export const ThemeCodePalette = keepingUnknownKeys(
+  Schema.Struct({
+    foreground: Schema.optional(ThemeColor),
+    comment: Schema.optional(ThemeColor),
+    keyword: Schema.optional(ThemeColor),
+    string: Schema.optional(ThemeColor),
+    number: Schema.optional(ThemeColor),
+    function: Schema.optional(ThemeColor),
+    type: Schema.optional(ThemeColor),
+    variable: Schema.optional(ThemeColor),
+    operator: Schema.optional(ThemeColor),
+    punctuation: Schema.optional(ThemeColor),
+  }),
+);
 export type ThemeCodePalette = typeof ThemeCodePalette.Type;
 
 /** The 16 terminal colors: black, red, green, yellow, blue, magenta, cyan, white, then the bright eight. */
@@ -96,20 +121,26 @@ export type ThemeTerminalPalette = typeof ThemeTerminalPalette.Type;
  */
 const FontWeight = Schema.Int.check(Schema.isBetween({ minimum: 100, maximum: 900 }));
 
-export const ThemeFont = Schema.Struct({
-  family: TrimmedNonEmptyString.check(Schema.isMaxLength(80)),
-  source: Schema.Literals(["system", "google", "bunny"]),
-  weight: Schema.optional(FontWeight),
-  data: Schema.optional(Schema.String),
-  /** Set when `data` is a variable font: the weights it draws, so bold text keeps its weight. */
-  weights: Schema.optional(Schema.Struct({ min: FontWeight, max: FontWeight })),
-});
+export const ThemeFont = keepingUnknownKeys(
+  Schema.Struct({
+    family: TrimmedNonEmptyString.check(Schema.isMaxLength(80)),
+    source: Schema.Literals(["system", "google", "bunny"]),
+    weight: Schema.optional(FontWeight),
+    data: Schema.optional(Schema.String),
+    /** Set when `data` is a variable font: the weights it draws, so bold text keeps its weight. */
+    weights: Schema.optional(
+      keepingUnknownKeys(Schema.Struct({ min: FontWeight, max: FontWeight })),
+    ),
+  }),
+);
 export type ThemeFont = typeof ThemeFont.Type;
 
-export const ThemeFonts = Schema.Struct({
-  ui: Schema.optional(ThemeFont),
-  mono: Schema.optional(ThemeFont),
-});
+export const ThemeFonts = keepingUnknownKeys(
+  Schema.Struct({
+    ui: Schema.optional(ThemeFont),
+    mono: Schema.optional(ThemeFont),
+  }),
+);
 export type ThemeFonts = typeof ThemeFonts.Type;
 
 /**
@@ -125,38 +156,44 @@ export type GlassReadability = typeof GlassReadability.Type;
  * opaque) and the frost blur in CSS px. These are floors: the user's Glass
  * slider moves them, and readability can raise a tint, never lower it.
  */
-export const ThemeGlass = Schema.Struct({
-  frame: UnitInterval,
-  list: UnitInterval,
-  column: UnitInterval,
-  composer: UnitInterval,
-  blur: Schema.Int.check(Schema.isBetween({ minimum: 8, maximum: 48 })),
-  readability: Schema.optional(GlassReadability),
-});
+export const ThemeGlass = keepingUnknownKeys(
+  Schema.Struct({
+    frame: UnitInterval,
+    list: UnitInterval,
+    column: UnitInterval,
+    composer: UnitInterval,
+    blur: Schema.Int.check(Schema.isBetween({ minimum: 8, maximum: 48 })),
+    readability: Schema.optional(GlassReadability),
+  }),
+);
 export type ThemeGlass = typeof ThemeGlass.Type;
 
 /** How a backdrop draws (docs/design/custom-themes.md, "The backdrop runtime"). */
 export const ThemeBackdropMode = Schema.Literals(["grid", "pixels", "canvas"]);
 export type ThemeBackdropMode = typeof ThemeBackdropMode.Type;
 
-export const ThemeBackdrop = Schema.Struct({
-  mode: ThemeBackdropMode,
-  /** The art: a script that calls `threadlines.backdrop({...})`. Runs only in the walled-off worker. */
-  script: Schema.String.check(Schema.isMaxLength(THEME_MAX_SCRIPT_CHARS)),
-  /** The most frames a second it asks for; the runtime may give fewer. */
-  maxFps: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: THEME_MAX_FPS })),
-  /** A frame of the art as a PNG data URL, captured by the runtime. Shown on phones, in Still, and if the art fails. */
-  still: Schema.optional(Schema.String.check(Schema.isMaxLength(THEME_MAX_STILL_CHARS))),
-});
+export const ThemeBackdrop = keepingUnknownKeys(
+  Schema.Struct({
+    mode: ThemeBackdropMode,
+    /** The art: a script that calls `threadlines.backdrop({...})`. Runs only in the walled-off worker. */
+    script: Schema.String.check(Schema.isMaxLength(THEME_MAX_SCRIPT_CHARS)),
+    /** The most frames a second it asks for; the runtime may give fewer. */
+    maxFps: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: THEME_MAX_FPS })),
+    /** A frame of the art as a PNG data URL, captured by the runtime. Shown on phones, in Still, and if the art fails. */
+    still: Schema.optional(Schema.String.check(Schema.isMaxLength(THEME_MAX_STILL_CHARS))),
+  }),
+);
 export type ThemeBackdrop = typeof ThemeBackdrop.Type;
 
-export const ThemeOrigin = Schema.Struct({
-  kind: Schema.Literals(["agent", "user", "imported", "starter"]),
-  /** The agent's name, when an agent made it. */
-  agent: Schema.optional(TrimmedNonEmptyString),
-  /** The thread it was made in. */
-  threadId: Schema.optional(TrimmedNonEmptyString),
-});
+export const ThemeOrigin = keepingUnknownKeys(
+  Schema.Struct({
+    kind: Schema.Literals(["agent", "user", "imported", "starter"]),
+    /** The agent's name, when an agent made it. */
+    agent: Schema.optional(TrimmedNonEmptyString),
+    /** The thread it was made in. */
+    threadId: Schema.optional(TrimmedNonEmptyString),
+  }),
+);
 export type ThemeOrigin = typeof ThemeOrigin.Type;
 
 /**
@@ -173,36 +210,40 @@ export type ThemeLicense = typeof ThemeLicense.Type;
  * exported it (docs/design/custom-themes.md, "Sharing"). Never filled in by
  * an agent; every part is optional.
  */
-export const ThemeCredits = Schema.Struct({
-  /** The name the author wants shown. */
-  author: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(60))),
-  /** Their site or profile, an https address. */
-  link: Schema.optional(
-    Schema.String.check(Schema.isMaxLength(200), Schema.isPattern(/^https:\/\/[^\s/]+\S*$/)),
-  ),
-  license: Schema.optional(ThemeLicense),
-});
+export const ThemeCredits = keepingUnknownKeys(
+  Schema.Struct({
+    /** The name the author wants shown. */
+    author: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(60))),
+    /** Their site or profile, an https address. */
+    link: Schema.optional(
+      Schema.String.check(Schema.isMaxLength(200), Schema.isPattern(/^https:\/\/[^\s/]+\S*$/)),
+    ),
+    license: Schema.optional(ThemeLicense),
+  }),
+);
 export type ThemeCredits = typeof ThemeCredits.Type;
 
 /** A theme file. `name`, `prompt`, `createdBy` and `createdAt` are not part of the content hash. */
-export const ThemeManifest = Schema.Struct({
-  format: Schema.Literal(THEME_FILE_FORMAT),
-  name: TrimmedNonEmptyString.check(Schema.isMaxLength(60)),
-  base: ThemeBase,
-  colors: ThemeSeedColors,
-  /** Replaces derived tokens by name (without `--`); only names in THEME_OVERRIDABLE_TOKENS. */
-  overrides: Schema.optional(Schema.Record(Schema.String, ThemeColor)),
-  code: Schema.optional(ThemeCodePalette),
-  terminal: Schema.optional(ThemeTerminalPalette),
-  fonts: Schema.optional(ThemeFonts),
-  glass: Schema.optional(ThemeGlass),
-  backdrop: Schema.optional(ThemeBackdrop),
-  /** What was asked for, for "Copy prompt". Left out of an exported file unless its author keeps it. */
-  prompt: Schema.optional(Schema.String.check(Schema.isMaxLength(8000))),
-  credits: Schema.optional(ThemeCredits),
-  createdBy: Schema.optional(ThemeOrigin),
-  createdAt: Schema.optional(IsoDateTime),
-});
+export const ThemeManifest = keepingUnknownKeys(
+  Schema.Struct({
+    format: Schema.Literal(THEME_FILE_FORMAT),
+    name: TrimmedNonEmptyString.check(Schema.isMaxLength(60)),
+    base: ThemeBase,
+    colors: ThemeSeedColors,
+    /** Replaces derived tokens by name (without `--`); only names in THEME_OVERRIDABLE_TOKENS. */
+    overrides: Schema.optional(Schema.Record(Schema.String, ThemeColor)),
+    code: Schema.optional(ThemeCodePalette),
+    terminal: Schema.optional(ThemeTerminalPalette),
+    fonts: Schema.optional(ThemeFonts),
+    glass: Schema.optional(ThemeGlass),
+    backdrop: Schema.optional(ThemeBackdrop),
+    /** What was asked for, for "Copy prompt". Left out of an exported file unless its author keeps it. */
+    prompt: Schema.optional(Schema.String.check(Schema.isMaxLength(8000))),
+    credits: Schema.optional(ThemeCredits),
+    createdBy: Schema.optional(ThemeOrigin),
+    createdAt: Schema.optional(IsoDateTime),
+  }),
+);
 export type ThemeManifest = typeof ThemeManifest.Type;
 
 /** SHA-256 of a theme's canonical content, lowercase hex. */
