@@ -45,7 +45,7 @@ import {
   type MeasuredBackdropLayout,
   sameBackdropZones,
 } from "./backdropZones";
-import { cssGlassTints, glassFloors, glassTextRatio, glassTintCss } from "./glass";
+import { cssGlassTints, glassClarity, glassFloors, glassTextRatio, glassTintCss } from "./glass";
 import { useGlassLevel } from "./glassLevel";
 import { GLASS_PAGE_SELECTOR } from "./glassPage";
 import { applyGlassTints } from "./themeApply";
@@ -84,13 +84,14 @@ export function ThemeBackdropLayer(props: {
   const glassLevel = useGlassLevel();
   const motionSetting = useSettings((settings) => settings.themeMotion);
   const floors = useMemo(() => glassFloors(glass, glassLevel), [glass, glassLevel]);
+  const clarity = glassClarity(glassLevel);
   const status = useSyncExternalStore(subscribeTheme, () => readThemeState().backdropStatus);
   const tooHeavy = useBackdropTooHeavy();
   const slowdown = useBackdropSlowdown();
   const stillOnly = useIsMobile();
 
   // The tints the surfaces paint themselves while the art isn't running.
-  const tintCss = glassTintCss(cssGlassTints(floors, status, tooHeavy));
+  const tintCss = glassTintCss(cssGlassTints(floors, status, tooHeavy, clarity));
   useLayoutEffect(() => {
     applyGlassTints(tintCss);
   }, [tintCss]);
@@ -143,6 +144,7 @@ export function ThemeBackdropLayer(props: {
         tokens={tokens}
         blur={glass.blur}
         textRatio={glassTextRatio(glass, glassLevel)}
+        clarity={clarity}
         zones={layout.zones}
         conditions={conditions}
         activity={activity}

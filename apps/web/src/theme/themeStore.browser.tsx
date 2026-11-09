@@ -11,7 +11,7 @@ import { resetTestPage } from "../lib/testPage.browser-harness";
 import { resolveThemeTokens } from "@threadlines/shared/themeTokens";
 
 import { measureBackdropZones } from "./backdropZones";
-import { cssGlassTints, glassFloors, glassTextRatio, glassTintCss } from "./glass";
+import { cssGlassTints, glassClarity, glassFloors, glassTextRatio, glassTintCss } from "./glass";
 import { applyGlassTints } from "./themeApply";
 import {
   THEME_PAINT_STORAGE_KEY,
@@ -137,6 +137,8 @@ describe("theme store, applied", () => {
     ]);
     // A theme that puts its art first keeps 3:1 throughout.
     expect(glassTextRatio({ ...glass, readability: "relaxed" }, 0)).toBe(3);
+    // The last quarter fades the frost and the readability tint out: all gone at Clear.
+    expect([0, 50, 75, 87.5, 100].map(glassClarity)).toEqual([0, 0, 0, 0.5, 1]);
   });
 
   it("keeps a group's pinned header the group's own glass until it pins, then solid over what scrolls under", async () => {
@@ -228,6 +230,7 @@ describe("theme store, applied", () => {
             floors,
             { kind: "running", fps: 12, msPerSecond: 3, energy: "light", throttled: false },
             false,
+            0,
           ),
         ),
       );
@@ -242,6 +245,7 @@ describe("theme store, applied", () => {
             floors,
             { kind: "still", reason: "motion", minimumTint: 0.65, framed: true },
             false,
+            0,
           ),
         ),
       );
@@ -250,7 +254,7 @@ describe("theme store, applied", () => {
       // The still image instead: each surface paints its floor, raised to the still's minimum.
       applyGlassTints(
         glassTintCss(
-          cssGlassTints(floors, { kind: "still", reason: "motion", minimumTint: 0.65 }, false),
+          cssGlassTints(floors, { kind: "still", reason: "motion", minimumTint: 0.65 }, false, 0),
         ),
       );
       expect(alpha("title")).toBeCloseTo(0.7, 2);
@@ -258,6 +262,22 @@ describe("theme store, applied", () => {
       // The home screen's text keeps a tint over the still too.
       expect(alpha("home")).toBeCloseTo(0.65, 2);
       // Sticky headers hide what scrolls under them.
+      expect(alpha("sticky")).toBe(1);
+
+      // Glass at Clear: no floor and no readability raise, so the still shows as it is.
+      applyGlassTints(
+        glassTintCss(
+          cssGlassTints(
+            glassFloors(glass, 100),
+            { kind: "still", reason: "motion", minimumTint: 0.65 },
+            false,
+            glassClarity(100),
+          ),
+        ),
+      );
+      expect(alpha("title")).toBe(0);
+      expect(alpha("column")).toBe(0);
+      expect(alpha("home")).toBe(0);
       expect(alpha("sticky")).toBe(1);
     } finally {
       root().removeAttribute("data-glass-page");

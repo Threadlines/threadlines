@@ -88,6 +88,11 @@ export interface ThemeBackdropHostProps {
    * Default 4.5. It changes live: the frame keeps running.
    */
   readonly textRatio?: number;
+  /**
+   * How far the frost and the tint readability adds have faded toward Clear,
+   * 0 to 1 (glass.ts glassClarity). Default 0. It changes live too.
+   */
+  readonly clarity?: number;
   readonly zones: ReadonlyArray<BackdropZone>;
   readonly conditions: BackdropConditions;
   readonly activity: BackdropActivity;
@@ -346,6 +351,7 @@ function BackdropFrame(props: BackdropFrameProps) {
       textColors: texts.map((text) => text.color),
       textRatios: texts.map((text) => text.ratio),
       blur: current.blur,
+      clarity: current.clarity ?? 0,
       // Shown until the first frame: the art fades in from it.
       ...(current.backdrop.still ? { still: current.backdrop.still } : {}),
     });
@@ -474,17 +480,19 @@ function BackdropFrame(props: BackdropFrameProps) {
     state.lastProgressAt = performance.now();
     state.lastHeartbeatAt = performance.now();
   }, [conditionsKey, post]);
-  // The Glass slider moving, or new theme colors: new text bounds, same frame.
+  // The Glass slider moving, or new theme colors: new text bounds and clarity, same frame.
   const textsKey = JSON.stringify(textsFor(props.tokens, props.textRatio));
+  const clarity = props.clarity ?? 0;
   useEffect(() => {
     if (!session.current.started) return;
     const texts = JSON.parse(textsKey) as ReturnType<typeof textsFor>;
     post({
-      type: "texts",
+      type: "glass",
       textColors: texts.map((text) => text.color),
       textRatios: texts.map((text) => text.ratio),
+      clarity,
     });
-  }, [textsKey, post]);
+  }, [textsKey, clarity, post]);
   useEffect(() => {
     const state = session.current;
     if (!state.started || pulse === state.pulse) return;

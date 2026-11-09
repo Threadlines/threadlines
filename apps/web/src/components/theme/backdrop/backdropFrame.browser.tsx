@@ -401,9 +401,10 @@ describe("backdrop frame", () => {
     expect(before.tints.column).toBeCloseTo(COLUMN.tint, 2);
     // The Glass slider moved: the app's light text now needs 4.5:1 over that white.
     mounted.post({
-      type: "texts",
+      type: "glass",
       textColors: texts.map((text) => text.color),
       textRatios: texts.map(() => 4.5),
+      clarity: 0,
     });
     await waitForFrame(async () =>
       expect((await mounted!.probe(true)).tints.column).toBeGreaterThan(0.5),
@@ -437,6 +438,43 @@ describe("backdrop frame", () => {
     );
     await mounted.framesAbove((await mounted.probe()).drawnFrames + 3);
     expectReadable((await mounted.probe()).worst.column);
+  });
+
+  it("shows the art as it is at Clear: no frost and no readability tint", async () => {
+    mounted = await mountFrame();
+    // Black and white stripes, one cell wide: frost blends them to grey.
+    mounted.start(
+      "grid",
+      `threadlines.backdrop({ mode: "grid", cell: { width: 10, height: 14 }, glyphs: " #",
+        draw(grid, info) {
+          for (let i = 0; i < grid.glyph.length; i++) {
+            const value = (i % info.cols) % 2 === 0 ? 255 : 0;
+            grid.glyph[i] = 1;
+            grid.fg.fill(value, i * 4, i * 4 + 3);
+            grid.bg.fill(value, i * 4, i * 4 + 3);
+            grid.fg[i * 4 + 3] = 255;
+            grid.bg[i * 4 + 3] = 255;
+          }
+        } });`,
+      [{ ...COLUMN, tint: 0 }],
+    );
+    mounted.post({ type: "test:capture-shown", on: true });
+    // The theme's own: frosted to grey, and darkened further for the light text.
+    await waitForFrame(async () =>
+      expect((await mounted!.probe()).shown.column?.high).toBeLessThan(0.5),
+    );
+    mounted.post({
+      type: "glass",
+      textColors: texts.map((text) => text.color),
+      textRatios: texts.map((text) => text.ratio),
+      clarity: 1,
+    });
+    // Clear: the stripes come through sharp, full black and full white.
+    await waitForFrame(async () => {
+      const shown = (await mounted!.probe()).shown.column;
+      expect(shown?.low).toBeLessThan(0.02);
+      expect(shown?.high).toBeGreaterThan(0.98);
+    });
   });
 
   it("keeps column text readable over one-pixel white lines on black", async () => {

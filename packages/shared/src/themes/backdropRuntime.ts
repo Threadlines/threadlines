@@ -4,7 +4,8 @@
  * document. It owns the clock and the visible canvas, starts and terminates
  * the art worker, draws what the worker returns with WebGL2, frosts the
  * zones the app sends, and tints each zone as much as the text in it needs
- * over the pixels just drawn.
+ * over the pixels just drawn. Toward Clear (`clarity`) the frost and that
+ * tint fade out together, so at 1 the zones show the art as it is.
  *
  * `backdropFrameRuntime` is closed (it refers to nothing outside itself
  * except platform globals) so backdropFrame.ts can inline its source into
@@ -138,6 +139,8 @@ export function backdropFrameRuntime(
     base: Rgb;
     texts: Array<{ luminance: number; ratio: number }>;
     blur: number;
+    /** 0 to 1: how much of the frost and the readability tint fade (BackdropClarity). */
+    clarity: number;
     /** The still the app shows until the art's first frame, a data URL. */
     still: string | null;
   }
@@ -222,6 +225,8 @@ export function backdropFrameRuntime(
     }
     const texts = readTexts(textColors, textRatios);
     if (!texts) return null;
+    const clarity = message.clarity === undefined ? 0 : message.clarity;
+    if (!isNum(clarity, 0, 1)) return null;
     const solid = cleanPalette["surface-solid"] ?? cleanPalette.background;
     const baseColor =
       solid !== undefined && HEX.test(solid)
@@ -236,7 +241,17 @@ export function backdropFrameRuntime(
       /^data:image\/(?:png|jpeg|webp);base64,/.test(message.still)
         ? message.still
         : null;
-    return { mode, script, maxFps, palette: cleanPalette, base: baseColor, texts, blur, still };
+    return {
+      mode,
+      script,
+      maxFps,
+      palette: cleanPalette,
+      base: baseColor,
+      texts,
+      blur,
+      clarity,
+      still,
+    };
   };
 
   const readZones = (value: unknown): Zone[] | null => {
@@ -610,6 +625,8 @@ uniform vec4 uZone[24];
 uniform vec4 uRadii[24];
 uniform vec3 uTint[24];
 uniform float uChannel[24];
+// Toward Clear: the frost and the tint readability adds fade by this much.
+uniform float uClarity;
 out vec4 outColor;
 bool inside(vec2 p, vec4 r) {
   return p.x >= r.x && p.y >= r.y && p.x <= r.x + r.z && p.y <= r.y + r.w;
@@ -663,7 +680,7 @@ void main() {
     // The patch's tint for this zone's color and floor; a zone the map holds no channel for is opaque.
     float k = uChannel[i];
     float need = k < -0.5 ? 1.0 : k < 0.5 ? needs.r : k < 1.5 ? needs.g : k < 2.5 ? needs.b : needs.a;
-    float full = max(z.z, need);
+    float full = max(z.z, need * (1.0 - uClarity));
     if (hard ? mi >= 0.5 : inside(css, c)) {
       // Text can be here: a core's own color at its full tint, never another
       // zone's color at a strength worked out for a different one. (A hard
@@ -679,7 +696,7 @@ void main() {
   if (m <= 0.0) { outColor = vec4(art, 1.0); return; }
   vec2 frostUv = below * uFrostScale;
   vec3 frost = texture(uFrost, frostUv).rgb;
-  vec3 color = mix(art, frost, m);
+  vec3 color = mix(art, frost, m * (1.0 - uClarity));
   outColor = vec4(mix(color, tintColor, tintAlpha), 1.0);
 }`;
 
@@ -1551,7 +1568,10 @@ void main() {
           addColor(box, pixels[at]! / 255, pixels[at + 1]! / 255, pixels[at + 2]! / 255);
         }
       }
-      result.set(zone.id, { tint: math.minimumTint(zone.color, box, theme.texts, zone.tint), box });
+      // As the composite does: what readability adds over the floor fades toward Clear.
+      const needed = math.minimumTint(zone.color, box, theme.texts, zone.tint);
+      const tint = Math.max(zone.tint, needed * (1 - theme.clarity));
+      result.set(zone.id, { tint, box });
     }
     return result;
   };
@@ -1916,7 +1936,10 @@ void main() {
     return true;
   };
 
-  /** The composite: crisp art, frosted and tinted inside the zones, each patch as its tint map says. */
+  /**
+   * The composite: crisp art, frosted and tinted inside the zones, each patch
+   * as its tint map says; toward Clear the frost and that tint fade.
+   */
   const present = () => {
     if (!theme || !gl || !gpu || contextLost) return;
     const { art: artTarget, quarterA, tintMap } = gpu;
@@ -1985,6 +2008,7 @@ void main() {
     gl.uniform4fv(gpu.composite.uniform("uRadii[0]"), radii);
     gl.uniform3fv(gpu.composite.uniform("uTint[0]"), tints);
     gl.uniform1fv(gpu.composite.uniform("uChannel[0]"), channelOf);
+    gl.uniform1f(gpu.composite.uniform("uClarity"), theme.clarity);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindVertexArray(null);
@@ -2408,19 +2432,11 @@ void main() {
         schedule();
         return;
       }
-      case "texts": {
+      case "glass": {
         // The Glass slider moved, or the theme's colors changed: the art keeps running.
         const texts = readTexts(message.textColors, message.textRatios);
-        if (!texts || !theme) return;
-        theme = { ...theme, texts };
-        render();
-        return;
-      }
-      case "texts": {
-        // The Glass slider moved, or the theme's colors changed: the art keeps running.
-        const texts = readTexts(message.textColors, message.textRatios);
-        if (!texts || !theme) return;
-        theme = { ...theme, texts };
+        if (!texts || !theme || !isNum(message.clarity, 0, 1)) return;
+        theme = { ...theme, texts, clarity: message.clarity };
         render();
         return;
       }

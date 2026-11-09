@@ -107,11 +107,6 @@ export const ThemeFonts = Schema.Struct({
 export type ThemeFonts = typeof ThemeFonts.Type;
 
 /**
- * How much tint each glass surface gets over the backdrop (0 clear, 1
- * opaque) and the frost blur in CSS px. These are floors: the user's "Art in
- * threads" setting and readability can raise a tint, never lower it.
- */
-/**
  * How readable text over the art must stay: `standard` keeps 4.5:1 (normal
  * text), `relaxed` 3:1 (large text), for themes made for the art more than
  * long reading. Text on solid surfaces keeps its checks either way.
@@ -119,6 +114,11 @@ export type ThemeFonts = typeof ThemeFonts.Type;
 export const GlassReadability = Schema.Literals(["standard", "relaxed"]);
 export type GlassReadability = typeof GlassReadability.Type;
 
+/**
+ * How much tint each glass surface gets over the backdrop (0 clear, 1
+ * opaque) and the frost blur in CSS px. These are floors: the user's Glass
+ * slider moves them, and readability can raise a tint, never lower it.
+ */
 export const ThemeGlass = Schema.Struct({
   frame: UnitInterval,
   list: UnitInterval,
@@ -350,6 +350,14 @@ export const BackdropConditions = Schema.Struct({
 });
 export type BackdropConditions = typeof BackdropConditions.Type;
 
+/**
+ * How far the glass has gone past the theme's own toward Clear, 0 to 1 (the
+ * Glass slider's last quarter, web glass.ts glassClarity): the frost and the
+ * tint readability adds both fade by it, so at 1 the art shows as it is and
+ * only the floors (none at Clear) tint it.
+ */
+export const BackdropClarity = UnitInterval;
+
 export const BackdropHostMessage = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("init"),
@@ -366,6 +374,8 @@ export const BackdropHostMessage = Schema.Union([
       Schema.Number.check(Schema.isBetween({ minimum: 3, maximum: 21 })),
     ).check(Schema.isMaxLength(32)),
     blur: Schema.Int.check(Schema.isBetween({ minimum: 8, maximum: 48 })),
+    /** How clear the glass is past the theme's own (BackdropClarity); 0 when left out. */
+    clarity: Schema.optional(BackdropClarity),
     /** The theme's still (a data URL), shown until the art's first frame: the art fades in from it. */
     still: Schema.optional(Schema.String.check(Schema.isMaxLength(THEME_MAX_STILL_CHARS))),
   }),
@@ -383,15 +393,16 @@ export const BackdropHostMessage = Schema.Union([
   Schema.Struct({ type: Schema.Literal("pulse"), kind: Schema.Literals(["turn-done"]) }),
   Schema.Struct({ type: Schema.Literal("conditions"), conditions: BackdropConditions }),
   /**
-   * New text colors or ratios after `init` (the Glass slider moved, or the
-   * theme's colors changed): the frame keeps running and tints by them.
+   * New text colors, ratios or clarity after `init` (the Glass slider moved,
+   * or the theme's colors changed): the frame keeps running and tints by them.
    */
   Schema.Struct({
-    type: Schema.Literal("texts"),
+    type: Schema.Literal("glass"),
     textColors: Schema.Array(ThemeColor).check(Schema.isMaxLength(32)),
     textRatios: Schema.Array(
       Schema.Number.check(Schema.isBetween({ minimum: 3, maximum: 21 })),
     ).check(Schema.isMaxLength(32)),
+    clarity: BackdropClarity,
   }),
   /** Asks for a still; the frame answers with `still`. */
   Schema.Struct({
