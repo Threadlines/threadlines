@@ -16,7 +16,12 @@ import {
 import { glassTextColors, measureThemeContrast } from "./contrast.ts";
 import { cssFontFamilyList } from "./fontFamilies.ts";
 import { themeGlassLevel } from "./glassLevel.ts";
-import { reconcileThemeLibraries, winningThemeEntry } from "./library.ts";
+import {
+  reconcileThemeLibraries,
+  themeOfferKey,
+  themeWithoutOffer,
+  winningThemeEntry,
+} from "./library.ts";
 import { checkThemeManifest, themeContentHash } from "./manifest.ts";
 import { themeForSharing } from "./sharing.ts";
 import {
@@ -436,6 +441,21 @@ describe("fields a newer build added", () => {
     expect(check.ok ? [] : check.errors).toEqual([
       "The theme nests its data more than 32 levels deep, or holds more than 500000 values.",
     ]);
+  });
+});
+
+describe("a theme an agent offered", () => {
+  it("names its chat offer, and a copy of it names none but keeps its content", async () => {
+    const offered: ThemeManifest = {
+      ...aurora,
+      createdBy: { kind: "agent", threadId: "t1", offer: { threadId: "t1", pageId: "p1" } },
+    };
+    expect(themeOfferKey(offered)).toBe("t1/p1");
+    expect(themeOfferKey(aurora)).toBeNull();
+    const copy = themeWithoutOffer(offered);
+    expect(themeOfferKey(copy)).toBeNull();
+    expect(copy.createdBy).toEqual({ kind: "agent", threadId: "t1" });
+    expect(await themeContentHash(copy)).toBe(await themeContentHash(offered));
   });
 });
 

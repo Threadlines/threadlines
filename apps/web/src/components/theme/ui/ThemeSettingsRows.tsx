@@ -47,10 +47,13 @@ import {
 import {
   deleteLibraryTheme,
   duplicateLibraryTheme,
+  keepThemeInLibrary,
+  keptCopyOfOffer,
   renameLibraryTheme,
   restoreLibraryTheme,
   saveThemeToLibrary,
   useLibraryEntry,
+  useLibraryThemes,
 } from "~/themeLibrary/themeLibraryState";
 import {
   AlertDialog,
@@ -160,41 +163,56 @@ function DeletedElsewhereNotice() {
   );
 }
 
-/** "Only on this device": a kept theme that couldn't be saved to a library then. */
+/**
+ * "Only on this device": a kept theme that couldn't be saved to a library
+ * then. A later version of a theme kept from the same chat offer updates that
+ * copy, as the trial bar's Update does, or is saved as a new theme.
+ */
 function UnsavedNotice() {
   const choice = useThemeChoice();
   const active = useActiveTheme();
+  const library = useLibraryThemes();
   const [saving, setSaving] = useState(false);
   if (choice.kind !== "unsaved" || active.manifest === null) return null;
   const manifest = active.manifest;
+  const target = keptCopyOfOffer(library, manifest, choice.hash);
+  const keep = (asCopy: boolean) => {
+    setSaving(true);
+    void keepThemeInLibrary({ manifest, name: choice.name, hash: choice.hash }, { asCopy })
+      .then(({ entry, environmentId }) =>
+        chooseTheme(
+          {
+            kind: "library",
+            entryId: entry.entryId,
+            hash: entry.hash,
+            name: entry.name,
+            environmentId,
+          },
+          manifest,
+        ),
+      )
+      .catch(failed("Couldn't save it to your library"))
+      .finally(() => setSaving(false));
+  };
+  const linkClass =
+    "font-medium text-primary-readable underline-offset-2 hover:underline disabled:opacity-60";
   return (
     <span className="inline-flex flex-wrap items-center gap-x-2">
       {choice.name} is only on this device.
-      <button
-        type="button"
-        disabled={saving}
-        className="font-medium text-primary-readable underline-offset-2 hover:underline disabled:opacity-60"
-        onClick={() => {
-          setSaving(true);
-          void saveThemeToLibrary(manifest, choice.name)
-            .then(({ entry, environmentId }) =>
-              chooseTheme(
-                {
-                  kind: "library",
-                  entryId: entry.entryId,
-                  hash: entry.hash,
-                  name: entry.name,
-                  environmentId,
-                },
-                manifest,
-              ),
-            )
-            .catch(failed("Couldn't save it to your library"))
-            .finally(() => setSaving(false));
-        }}
-      >
-        Save to your library
-      </button>
+      {target === null ? (
+        <button type="button" disabled={saving} className={linkClass} onClick={() => keep(false)}>
+          Save to your library
+        </button>
+      ) : (
+        <>
+          <button type="button" disabled={saving} className={linkClass} onClick={() => keep(false)}>
+            Update {target.entry.name}
+          </button>
+          <button type="button" disabled={saving} className={linkClass} onClick={() => keep(true)}>
+            Save as new
+          </button>
+        </>
+      )}
     </span>
   );
 }
