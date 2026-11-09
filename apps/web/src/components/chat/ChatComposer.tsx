@@ -116,6 +116,11 @@ import {
 import { type ComposerPromptSuggestionDisplay } from "./ComposerPromptSuggestion";
 import { type ModelPickerTriggerSummary, ProviderModelPicker } from "./ProviderModelPicker";
 import { ModelPickerSettings, type ModelPickerTraitsTarget } from "./ModelPickerSettings";
+import {
+  ComposerRunControls,
+  type ComposerAccessControl,
+  type ComposerModeControl,
+} from "./ComposerRunControls";
 import { type ComposerCommandItem, ComposerCommandMenu } from "./ComposerCommandMenu";
 import { useComposerMenuRoom } from "./useComposerMenuRoom";
 import { ComposerPendingApprovalActions } from "./ComposerPendingApprovalActions";
@@ -179,7 +184,7 @@ import type { FilePreviewRequest } from "./FilePreviewDialog";
 import { basenameOfPath } from "../../vscode-icons";
 import { cn, randomUUID } from "~/lib/utils";
 import { Button } from "../ui/button";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { Tooltip, TooltipPopup, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
 import { failureNotice, toastManager } from "../ui/toast";
 import { useRoomAgents } from "./useRoomAgents";
 import { scopedThreadKey } from "@threadlines/client-runtime";
@@ -650,6 +655,9 @@ function ComposerImageAttachmentButton(props: {
     </button>
   );
 }
+
+/** Quick but not instant: hover labels on the composer's left-hand buttons. */
+const COMPOSER_ROW_TOOLTIP_DELAY_MS = 250;
 
 export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps) {
   const {
@@ -1723,8 +1731,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     selectedProviderStatus,
   ]);
 
-  // What the settings button says besides the model: the effort, and the
-  // settings worth seeing because they are not the usual.
+  // Build/Plan and the access level get buttons of their own beside the model
+  // button on desktop; on phones they live in the model button's panel, and
+  // Plan shows as the composer's blue ring.
+  const runControlsOnRow = !isMobileViewport;
+
+  // What the settings button says besides the model: the effort and Fast Mode.
   const settingsTraits = settingsTraitsTarget
     ? getTraitsSectionVisibility({
         provider: settingsTraitsTarget.provider,
@@ -1743,26 +1755,27 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           (control) => isFastModeControl(control) && control.checked,
         )
       : false,
-    plan: interactionMode === "plan",
-    fullAccess: accessLevel.shown === "full-access",
     working: settingsTraitsWorking,
   };
 
-  // The settings panel's Mode and Access rows. They keep focus in the panel,
-  // so several settings can change in one visit.
-  const settingsModeControl = composerProviderControls.showInteractionModeToggle
+  // Build/Plan and access, on the row's own buttons or in the panel. The
+  // panel's rows keep focus there, so several settings can change in one
+  // visit; the row's buttons put the cursor back in the prompt.
+  const modeControl: ComposerModeControl | null = composerProviderControls.showInteractionModeToggle
     ? {
         value: interactionMode,
-        onChange: (mode: ProviderInteractionMode) =>
-          handleInteractionModeChange(mode, { focusComposer: false }),
+        onChange: (mode) => handleInteractionModeChange(mode, { focusComposer: runControlsOnRow }),
       }
     : null;
-  const settingsAccessControl = {
+  const accessControl: ComposerAccessControl = {
     value: accessLevel.shown,
     options: accessLevel.options,
-    onChange: (mode: RuntimeMode) => handleRuntimeModeChange(mode, { focusComposer: false }),
+    // The row's menu returns the cursor itself once it has closed.
+    onChange: (mode) => handleRuntimeModeChange(mode, { focusComposer: false }),
     planning: interactionMode === "plan",
   };
+  const settingsModeControl = runControlsOnRow ? null : modeControl;
+  const settingsAccessControl = runControlsOnRow ? null : accessControl;
 
   // The context window meter, its usage card, and the prompt suggestion
   // describe the agent the next message goes to: in a room, an added agent's
@@ -4274,122 +4287,133 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     // the model name (container queries in ProviderModelPicker).
                     className="group/composer-left @container/composer-left -m-1 flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto p-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
                   >
-                    <input
-                      ref={imageFileInputRef}
-                      type="file"
-                      accept="image/*"
-                      multiple
-                      className="sr-only"
-                      tabIndex={-1}
-                      aria-hidden="true"
-                      onChange={onAttachmentFileInputChange}
-                    />
-                    <input
-                      ref={cameraFileInputRef}
-                      type="file"
-                      accept="image/*"
-                      capture="environment"
-                      className="sr-only"
-                      tabIndex={-1}
-                      aria-hidden="true"
-                      onChange={onAttachmentFileInputChange}
-                    />
-                    <input
-                      ref={attachmentFileInputRef}
-                      type="file"
-                      accept={ALL_ATTACHMENT_ACCEPT}
-                      multiple
-                      className="sr-only"
-                      tabIndex={-1}
-                      aria-hidden="true"
-                      onChange={onAttachmentFileInputChange}
-                    />
-                    <ComposerAddMenu
-                      isMobileViewport={isMobileViewport}
-                      disabled={attachmentsDisabled}
-                      disabledReason={attachmentsDisabledReason}
-                      canReferenceProjectFiles={canReferenceWorkspaceFiles}
-                      onAttachFiles={openAttachmentFilePicker}
-                      onAddPhotos={openImageFilePicker}
-                      onTakePhoto={openCameraPicker}
-                      onReferenceProjectFile={referenceProjectFile}
-                      stash={stashProps}
-                      open={isAddMenuOpen}
-                      onOpenChange={setIsAddMenuOpen}
-                      stashListOpen={isStashListOpen}
-                      onStashListOpenChange={setIsStashListOpen}
-                    />
-                    <ProviderModelPicker
-                      compact={isMobileViewport}
-                      // In a room the button names who the message goes to,
-                      // and the card lists the agents above the models.
-                      room={roomsShown ? roomAgents : null}
-                      activeInstanceId={selectedInstanceId}
-                      model={selectedModelForPickerWithCustomFallback}
-                      lockedProvider={lockedProvider}
-                      instanceEntries={providerInstanceEntries}
-                      keybindings={keybindings}
-                      modelOptionsByInstance={modelOptionsByInstance}
-                      terminalOpen={terminalOpen}
-                      providerSettingsShown={isAppBackendEnvironment(environmentId)}
-                      side="top"
-                      open={isComposerModelPickerOpen}
-                      summary={settingsTriggerSummary}
-                      settings={
-                        <ModelPickerSettings
-                          traits={settingsTraitsTarget}
-                          mode={settingsModeControl}
-                          access={settingsAccessControl}
+                    {/* Hover labels here wait a moment: the pointer crosses the model,
+                        mode and access buttons on its way along the row. */}
+                    <TooltipProvider delay={COMPOSER_ROW_TOOLTIP_DELAY_MS}>
+                      <input
+                        ref={imageFileInputRef}
+                        type="file"
+                        accept="image/*"
+                        multiple
+                        className="sr-only"
+                        tabIndex={-1}
+                        aria-hidden="true"
+                        onChange={onAttachmentFileInputChange}
+                      />
+                      <input
+                        ref={cameraFileInputRef}
+                        type="file"
+                        accept="image/*"
+                        capture="environment"
+                        className="sr-only"
+                        tabIndex={-1}
+                        aria-hidden="true"
+                        onChange={onAttachmentFileInputChange}
+                      />
+                      <input
+                        ref={attachmentFileInputRef}
+                        type="file"
+                        accept={ALL_ATTACHMENT_ACCEPT}
+                        multiple
+                        className="sr-only"
+                        tabIndex={-1}
+                        aria-hidden="true"
+                        onChange={onAttachmentFileInputChange}
+                      />
+                      <ComposerAddMenu
+                        isMobileViewport={isMobileViewport}
+                        disabled={attachmentsDisabled}
+                        disabledReason={attachmentsDisabledReason}
+                        canReferenceProjectFiles={canReferenceWorkspaceFiles}
+                        onAttachFiles={openAttachmentFilePicker}
+                        onAddPhotos={openImageFilePicker}
+                        onTakePhoto={openCameraPicker}
+                        onReferenceProjectFile={referenceProjectFile}
+                        stash={stashProps}
+                        open={isAddMenuOpen}
+                        onOpenChange={setIsAddMenuOpen}
+                        stashListOpen={isStashListOpen}
+                        onStashListOpenChange={setIsStashListOpen}
+                      />
+                      <ProviderModelPicker
+                        compact={isMobileViewport}
+                        // In a room the button names who the message goes to,
+                        // and the card lists the agents above the models.
+                        room={roomsShown ? roomAgents : null}
+                        activeInstanceId={selectedInstanceId}
+                        model={selectedModelForPickerWithCustomFallback}
+                        lockedProvider={lockedProvider}
+                        instanceEntries={providerInstanceEntries}
+                        keybindings={keybindings}
+                        modelOptionsByInstance={modelOptionsByInstance}
+                        terminalOpen={terminalOpen}
+                        providerSettingsShown={isAppBackendEnvironment(environmentId)}
+                        side="top"
+                        open={isComposerModelPickerOpen}
+                        summary={settingsTriggerSummary}
+                        settings={
+                          <ModelPickerSettings
+                            traits={settingsTraitsTarget}
+                            mode={settingsModeControl}
+                            access={settingsAccessControl}
+                          />
+                        }
+                        settingsWhileAdding={
+                          <ModelPickerSettings
+                            traits={null}
+                            traitsNote="The new agent starts at its model's usual effort. Change it once it joins."
+                            mode={settingsModeControl}
+                            access={settingsAccessControl}
+                          />
+                        }
+                        {...(composerProviderState.modelPickerIconClassName
+                          ? {
+                              activeProviderIconClassName:
+                                composerProviderState.modelPickerIconClassName,
+                            }
+                          : {})}
+                        onOpenChange={(open) => {
+                          setIsComposerModelPickerOpen(open);
+                        }}
+                        onInstanceModelChange={onProviderModelSelect}
+                      />
+                      {runControlsOnRow ? (
+                        <ComposerRunControls
+                          mode={modeControl}
+                          access={accessControl}
+                          focusComposer={focusComposer}
                         />
-                      }
-                      settingsWhileAdding={
-                        <ModelPickerSettings
-                          traits={null}
-                          traitsNote="The new agent starts at its model's usual effort. Change it once it joins."
-                          mode={settingsModeControl}
-                          access={settingsAccessControl}
-                        />
-                      }
-                      {...(composerProviderState.modelPickerIconClassName
-                        ? {
-                            activeProviderIconClassName:
-                              composerProviderState.modelPickerIconClassName,
-                          }
-                        : {})}
-                      onOpenChange={(open) => {
-                        setIsComposerModelPickerOpen(open);
-                      }}
-                      onInstanceModelChange={onProviderModelSelect}
-                    />
-                    {activeModelFallback && activeFallbackModelDisplayName ? (
-                      <Tooltip>
-                        <TooltipTrigger
-                          render={
-                            <span
-                              data-chat-model-fallback-chip="true"
-                              className={cn(
-                                "inline-flex h-7 shrink-0 cursor-help items-center gap-1.5 rounded-full border border-warning/25 bg-warning/8 px-2 text-[11px] font-medium text-warning-foreground sm:h-6",
-                                isMobileViewport ? "max-w-36" : "max-w-52",
-                              )}
-                            />
-                          }
-                        >
-                          <CircleAlertIcon aria-hidden="true" className="size-3 shrink-0" />
-                          <span className="min-w-0 truncate">
-                            {isMobileViewport
-                              ? activeFallbackModelDisplayName
-                              : `Fallback: ${activeFallbackModelDisplayName}`}
-                          </span>
-                        </TooltipTrigger>
-                        <TooltipPopup
-                          side="top"
-                          className="max-w-72 whitespace-normal leading-tight"
-                        >
-                          {activeModelFallback.detail ??
-                            `Using ${activeModelFallback.activeModel} instead of ${activeModelFallback.requestedModel}.`}
-                        </TooltipPopup>
-                      </Tooltip>
-                    ) : null}
+                      ) : null}
+                      {activeModelFallback && activeFallbackModelDisplayName ? (
+                        <Tooltip>
+                          <TooltipTrigger
+                            render={
+                              <span
+                                data-chat-model-fallback-chip="true"
+                                className={cn(
+                                  "inline-flex h-7 shrink-0 cursor-help items-center gap-1.5 rounded-full border border-warning/25 bg-warning/8 px-2 text-[11px] font-medium text-warning-foreground sm:h-6",
+                                  isMobileViewport ? "max-w-36" : "max-w-52",
+                                )}
+                              />
+                            }
+                          >
+                            <CircleAlertIcon aria-hidden="true" className="size-3 shrink-0" />
+                            <span className="min-w-0 truncate">
+                              {isMobileViewport
+                                ? activeFallbackModelDisplayName
+                                : `Fallback: ${activeFallbackModelDisplayName}`}
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipPopup
+                            side="top"
+                            className="max-w-72 whitespace-normal leading-tight"
+                          >
+                            {activeModelFallback.detail ??
+                              `Using ${activeModelFallback.activeModel} instead of ${activeModelFallback.requestedModel}.`}
+                          </TooltipPopup>
+                        </Tooltip>
+                      ) : null}
+                    </TooltipProvider>
                   </div>
 
                   {/* Right side: dictation, the context ring, send / stop */}
