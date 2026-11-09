@@ -439,8 +439,14 @@ describe("backdrop zones", () => {
               <p style={{ ...at(20, 380, 200, 20), margin: 0 }}>A notice</p>
               <div style={at(0, 500, 360, 160)}>
                 <form data-chat-composer-form="" style={at(10, 0, 340, 120)}>
-                  {/* In the form but on no glass surface of its own (the goal editor). */}
-                  <p style={{ ...at(10, 0, 200, 20), margin: 0 }}>Goal</p>
+                  {/* In the form but on no glass surface of its own (the goal editor):
+                      its label, and a field whose text is no text node. */}
+                  <p style={{ ...at(10, 0, 40, 20), margin: 0 }}>Goal</p>
+                  <input
+                    aria-label="Objective"
+                    placeholder="What should it reach?"
+                    style={{ ...at(60, 0, 260, 20), boxSizing: "border-box" }}
+                  />
                   <div
                     data-glass-surface="composer"
                     style={{ ...at(0, 30, 340, 90), borderRadius: 16 }}
@@ -494,6 +500,10 @@ describe("backdrop zones", () => {
       expect(covers("draft-3", "A notice")).toBe(true);
       expect(covers("draft-4", "Goal")).toBe(true);
       expect(covers("draft-5", "Current checkout")).toBe(true);
+      // The field beside the label is inside the label's patch, though it holds no text node.
+      const field = document.querySelector("input")!.getBoundingClientRect();
+      const goal = zones.find((zone) => zone.id === "draft-4")!.core;
+      expect(goal.x <= field.left + 1 && goal.x + goal.w >= field.right - 1).toBe(true);
       // The short line's patch is its own width: the art shows beside it.
       const patch = (id: string) => zones.find((zone) => zone.id === id)!.rect;
       expect(patch("draft-0").w).toBeLessThan(patch("draft-1").w);

@@ -149,8 +149,8 @@ same way: a patch behind its heading, line and buttons, and one behind the
 links under them. Where the new-thread screen keeps its composer at the
 bottom (a phone, or a pane too small for the roomy layout,
 `data-draft-stacked`), every line of text in the column gets its own patch
-(whatever the column holds: a notice, the goal editor above the composer, the
-line under it) and the composer its hard one, so the art shows there too,
+(whatever the column holds: a notice, the goal editor above the composer and
+its fields, the line under it) and the composer its hard one, so the art shows there too,
 beside a short line as well as between blocks. Lines are grouped into fewer
 patches when there would be more than the frame's zones allow, and past that
 the column is frosted whole. The moment the first message is sent the

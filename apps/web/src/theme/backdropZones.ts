@@ -194,6 +194,20 @@ function textBoxes(element: Element | null, bounds: Box, skip?: Skipped, fading 
 }
 
 /**
+ * The boxes of the fields an element shows: an input's value and placeholder
+ * aren't text nodes, so `textBoxes` can't see them. Leaves out fields inside
+ * `skip`, and the pixel-sized ones a control keeps for forms and screen readers.
+ */
+function fieldBoxes(element: Element | null, bounds: Box, skip?: Skipped): Box[] {
+  if (!element) return [];
+  const skipped = skip ? (Array.isArray(skip) ? skip : [skip]) : [];
+  return [...element.querySelectorAll("input, textarea, select, [contenteditable]")]
+    .filter((field) => !skipped.some((part: Element) => part.contains(field)))
+    .flatMap((field) => visibleBox(field, bounds) ?? [])
+    .filter((box) => box.right - box.left >= 8 && box.bottom - box.top >= 8);
+}
+
+/**
  * Text boxes grouped into blocks: a gap taller than `gap` px starts a new
  * block, so two lines far apart (the recent threads and the footer links)
  * each get a patch instead of one spanning the art between them.
@@ -293,21 +307,21 @@ export function measureBackdropZones(
   // links, a notice, the line under the composer), so none ever sits on raw
   // art. Only what has a hard patch of its own is left out: the composer's
   // glass surfaces, not the whole form, which can hold more (the goal editor
-  // above the composer). Text that rises in as it fades counts from the
-  // start, as on the home screen.
+  // above the composer, whose fields count by their boxes). Text that rises
+  // in as it fades counts from the start, as on the home screen.
   // A patch a line where that fits, so the art shows beside a short line next
   // to a long one; lines grouped into fewer, taller blocks when there are too
   // many for the frame's zones; and with too many even then (null), the
   // reading column as in a thread.
   const stackedDraft = hero ? null : (column?.querySelector("[data-draft-stacked]") ?? null);
+  const draftCovered = composerSurfaces.length > 0 ? composerSurfaces : composerForm;
   const draftLines =
     stackedDraft && column && columnBox
-      ? textBoxes(
-          column,
-          columnBox,
-          composerSurfaces.length > 0 ? composerSurfaces : composerForm,
-          true,
-        )
+      ? [
+          ...textBoxes(column, columnBox, draftCovered, true),
+          // What a field shows (a value, a placeholder) is no text node: its box counts whole.
+          ...fieldBoxes(column, columnBox, draftCovered),
+        ]
       : null;
   const draftBlocks =
     draftLines === null
