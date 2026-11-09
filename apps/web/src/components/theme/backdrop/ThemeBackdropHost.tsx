@@ -146,13 +146,15 @@ const LAYER_STYLE: CSSProperties = {
 };
 
 /** The art should be drawing frames under these conditions; any hold or pause exempts it. */
-const shouldDraw = (conditions: BackdropConditions) =>
-  conditions.motion === "live" &&
+/** The frame's runtime pauses the art under these whatever Motion says (its runState). */
+const mayRun = (conditions: BackdropConditions) =>
   conditions.visible &&
   !conditions.idle &&
-  !conditions.busy &&
   conditions.thermal !== "serious" &&
   conditions.thermal !== "critical";
+
+const shouldDraw = (conditions: BackdropConditions) =>
+  conditions.motion === "live" && mayRun(conditions) && !conditions.busy;
 
 export const ThemeBackdropHost = forwardRef<ThemeBackdropHostHandle, ThemeBackdropHostProps>(
   function ThemeBackdropHost(props, ref) {
@@ -513,9 +515,11 @@ function BackdropFrame(props: BackdropFrameProps) {
         return;
       }
       const silent = now - state.lastHeartbeatAt > BACKDROP_WATCHDOG_MS;
-      // Still draws one frame: until it has, the frame must show progress too.
+      // Still draws one frame: until it has, the frame must show progress too,
+      // unless it is paused (an idle phone tab hasn't drawn yet, and needn't).
       const expecting =
-        shouldDraw(conditions) || (conditions.motion === "still" && state.lastFrame === 0);
+        shouldDraw(conditions) ||
+        (conditions.motion === "still" && state.lastFrame === 0 && mayRun(conditions));
       const stalled = expecting && now - state.lastProgressAt > BACKDROP_WATCHDOG_MS;
       if (silent || stalled) {
         latest.current.onFailure({

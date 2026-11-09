@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
 import {
+  BACKDROP_WATCHDOG_MS,
   ThemeBackdropHost,
   type ThemeBackdropHostHandle,
   type ThemeBackdropStatus,
@@ -200,6 +201,17 @@ describe("ThemeBackdropHost", () => {
     );
     expect(frameElement()).not.toBeNull();
     expect(stillElement()).toBeNull();
+  });
+
+  it("doesn't fail a phone's frame that is paused before it drew (a tab left idle)", async () => {
+    const host = mountHost(
+      { mode: "grid", script: GRID_ART, maxFps: 20, still: halfAndHalfStill() },
+      { phone: true, conditions: { ...LIVE, motion: "still", idle: true }, framedStill: true },
+    );
+    // Past the watchdog's limit and its next check.
+    await new Promise((resolve) => setTimeout(resolve, BACKDROP_WATCHDOG_MS + 1_500));
+    expect(host.statuses.some((status) => status.kind === "failed")).toBe(false);
+    expect(frameElement()).not.toBeNull();
   });
 
   it("removes a failed frame and falls back to the still", async () => {
