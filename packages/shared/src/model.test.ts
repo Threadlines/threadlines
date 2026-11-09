@@ -288,9 +288,7 @@ describe("descriptor helpers", () => {
       true,
     );
     expect(offersSelectedReasoning(openCodeCaps, [{ id: "variant", value: "max" }])).toBe(true);
-    expect(findReasoningOptionDescriptor(openCodeCaps.optionDescriptors ?? [])?.id).toBe(
-      "variant",
-    );
+    expect(findReasoningOptionDescriptor(openCodeCaps.optionDescriptors ?? [])?.id).toBe("variant");
     expect(findReasoningSelection([{ id: "variant", value: "max" }])).toEqual({
       id: "variant",
       value: "max",
@@ -299,9 +297,7 @@ describe("descriptor helpers", () => {
     expect(offersSelectedReasoning(codexCaps, [{ id: "reasoningEffort", value: "ultra" }])).toBe(
       false,
     );
-    expect(offersSelectedReasoning(openCodeCaps, [{ id: "variant", value: "medium" }])).toBe(
-      false,
-    );
+    expect(offersSelectedReasoning(openCodeCaps, [{ id: "variant", value: "medium" }])).toBe(false);
     expect(offersSelectedReasoning(null, [{ id: "reasoningEffort", value: "high" }])).toBe(false);
     // Naming none leaves the choice to the provider, whatever else is picked.
     expect(offersSelectedReasoning(codexCaps, [{ id: "fastMode", value: true }])).toBe(true);
