@@ -256,7 +256,7 @@ import {
 } from "@threadlines/shared/fileAttachments";
 import { searchProviderSkills } from "../../providerSkillSearch";
 import { resolveComposerSkillReferences } from "../../providerSkillReferences";
-import { useMediaQuery } from "../../hooks/useMediaQuery";
+import { useIsPhoneViewport } from "../../hooks/useMediaQuery";
 import { ComposerDictationControl } from "./ComposerDictationControl";
 import { useDictation } from "../../dictation/useDictation";
 
@@ -1291,7 +1291,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   }, [activeThreadId]);
   const [, setIsComposerFocused] = useState(false);
   const [isCapturingScreenshot, setIsCapturingScreenshot] = useState(false);
-  const isMobileViewport = useMediaQuery("max-sm");
+  const isMobileViewport = useIsPhoneViewport();
   // Keep the real editor mounted on phones; the one-line proxy is fragile with mobile browser focus.
   const isComposerCollapsedMobile = false;
 

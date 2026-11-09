@@ -340,7 +340,7 @@ export function ScheduledTaskDetail({ located }: { readonly located: LocatedTask
       <header className="flex flex-col gap-3 px-1">
         <button
           type="button"
-          className="-ms-1 flex w-fit cursor-pointer items-center gap-0.5 rounded-md text-[12.5px] text-muted-foreground hover:text-foreground focus-ring md:hidden"
+          className="-ms-1 flex w-fit cursor-pointer items-center gap-0.5 rounded-md text-[12.5px] text-muted-foreground hover:text-foreground focus-ring desktop:hidden"
           onClick={() => navigation.showAll()}
         >
           <ChevronLeftIcon aria-hidden="true" className="size-4" />

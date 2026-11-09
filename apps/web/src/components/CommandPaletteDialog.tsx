@@ -103,7 +103,7 @@ import { useThreadMenu } from "../hooks/useThreadMenu";
 import type { ThreadMenuAction } from "./threadMenu.logic";
 import { useIsMobile } from "../hooks/useMediaQuery";
 import { useSettings } from "../hooks/useSettings";
-import { useUiStateStore } from "../uiStateStore";
+import { selectSidebarListShown, useUiStateStore } from "../uiStateStore";
 import { useRoomsEnabled } from "../hooks/useRoomsEnabled";
 import { readLocalApi } from "../localApi";
 import { closeRightPanelSearchParams } from "../diffRouteSearch";
@@ -544,7 +544,7 @@ export function OpenCommandPaletteDialog() {
   const keybindings = useServerKeybindings();
   const isHomeRoute = useLocation({ select: (location) => location.pathname === "/" });
   const isMobile = useIsMobile();
-  const sidebarListOpen = useUiStateStore((state) => state.sidebarListOpen);
+  const sidebarListOpen = useUiStateStore(selectSidebarListShown);
   const [viewStack, setViewStack] = useState<CommandPaletteView[]>([]);
   const currentView = viewStack.at(-1) ?? null;
   const [browseGeneration, setBrowseGeneration] = useState(0);
@@ -1891,7 +1891,7 @@ export function OpenCommandPaletteDialog() {
       ),
       shortcutCommand: "sidebar.toggle",
       run: async () => {
-        useUiStateStore.getState().toggleSidebarListOpen();
+        useUiStateStore.getState().toggleSidebarListShown();
       },
     });
   }

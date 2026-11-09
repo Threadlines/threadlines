@@ -73,7 +73,7 @@ vi.mock("../localApi", () => ({
 }));
 
 import ChatMarkdown from "./ChatMarkdown";
-import { ExpandedImageViewerHost } from "./chat/ExpandedImageDialog";
+import { ExpandedImageViewerHost } from "./chat/ExpandedImageViewerHost";
 import { ThreadPullRequestLinkContext } from "./chat/ThreadPullRequestLinkContext";
 import {
   CodeBlockRunScopeContext,

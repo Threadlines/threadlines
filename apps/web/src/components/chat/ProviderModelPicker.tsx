@@ -33,7 +33,7 @@ import {
 } from "./providerIconUtils";
 import { setModelPickerOpen } from "../../modelPickerOpenState";
 import { useOnScreenKeyboardInset } from "~/hooks/useOnScreenKeyboardInset";
-import { useMediaQuery } from "~/hooks/useMediaQuery";
+import { useIsPhoneViewport } from "~/hooks/useMediaQuery";
 import { type ProviderInstanceEntry, providerInstanceShowsBadge } from "../../providerInstances";
 import { useRoomRecipientStore } from "../../rooms";
 import { THREAD_STATUS_DOT_CLASSES } from "../Sidebar.logic";
@@ -128,7 +128,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   // by the covered height; ModelPickerContent shrinks its max-height by the
   // same amount (via --keyboard-inset) so the top stays on screen.
   // Phones get the picker as a sheet from the bottom, with thumb-sized rows.
-  const asSheet = useMediaQuery("max-sm");
+  const asSheet = useIsPhoneViewport();
   const keyboardInset = useOnScreenKeyboardInset(isMenuOpen && !asSheet);
   const summary = props.summary ?? null;
   const ultracodeGlintRef = useUltracodeGlint(

@@ -414,9 +414,9 @@ describe("defaultMainWindowSize", () => {
   it("never opens smaller than the window's own minimum", () => {
     // A cramped external display would otherwise produce a size Electron
     // silently enlarges, which is a default that never applies.
-    const onSmall = DesktopWindow.defaultMainWindowSize({ width: 800, height: 600 });
+    const onSmall = DesktopWindow.defaultMainWindowSize({ width: 500, height: 600 });
 
-    assert.isAtLeast(onSmall.width, 840);
+    assert.isAtLeast(onSmall.width, 480);
     assert.isAtLeast(onSmall.height, 620);
   });
 });

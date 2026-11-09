@@ -116,7 +116,7 @@ import {
 import { RelativeTimeLabel } from "../RelativeTimeLabel";
 
 /** The header actions are the main controls on a phone, so they grow to a touch size below md. */
-const PHONE_ACTION_CLASS = "max-md:h-8 max-md:px-3";
+const PHONE_ACTION_CLASS = "phone:h-8 phone:px-3";
 
 /**
  * The last hand-off written into each composer, so the next one can take its
@@ -1277,7 +1277,7 @@ function usePullRequestActions({
             render={
               <Button
                 size="xs"
-                className={cn(PHONE_ACTION_CLASS, "rounded-s-none px-1 max-md:px-2")}
+                className={cn(PHONE_ACTION_CLASS, "rounded-s-none px-1 phone:px-2")}
                 aria-label="Choose a merge method"
                 disabled={mergeDisabled}
               />
@@ -1426,7 +1426,7 @@ function usePullRequestActions({
                 <Button
                   variant="ghost"
                   size="icon-xs"
-                  className="max-md:size-8"
+                  className="phone:size-8"
                   aria-label={`More ${changeRequestWord(detail.provider)} actions`}
                   disabled={isRunning}
                 />

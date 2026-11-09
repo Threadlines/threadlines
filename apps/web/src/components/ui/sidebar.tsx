@@ -43,6 +43,8 @@ type SidebarContextProps = {
   openMobile: boolean;
   setOpenMobile: (open: boolean) => void;
   isMobile: boolean;
+  /** The list floats over the page instead of sitting beside it (SidebarProvider's `overlay`). */
+  overlay: boolean;
   toggleSidebar: () => void;
 };
 
@@ -96,21 +98,90 @@ function useSidebar() {
 }
 
 /**
- * For a list that can sit in the phone's sheet: call it when the user picks
- * something there, and the sheet gets out of the way of what opens. Beside
- * the rail on a wide screen it does nothing.
+ * For a list that can cover the page (the phone's sheet, or the list floating
+ * over a narrow window's page): call it when the user picks something there,
+ * and the list gets out of the way of what opens. Beside the page it does
+ * nothing.
  */
 function useCloseSidebarSheet(): () => void {
-  const { isMobile, setOpenMobile } = useSidebar();
+  const { isMobile, overlay, setOpen, setOpenMobile } = useSidebar();
   return React.useCallback(() => {
     if (isMobile) setOpenMobile(false);
-  }, [isMobile, setOpenMobile]);
+    else if (overlay) setOpen(false);
+  }, [isMobile, overlay, setOpen, setOpenMobile]);
+}
+
+/** Layers that take Escape for themselves before a floating list does. */
+const ESCAPE_OWNER_SELECTOR =
+  '[role="menu"], [role="listbox"], [role="dialog"], [role="alertdialog"]';
+
+/**
+ * Closes a floating list on a press anywhere else in the panel it floats over
+ * (the press still lands where it was aimed) and on Escape. Presses outside
+ * that panel (the title row, the rail, a menu the list opened in a portal)
+ * leave it to their own controls, and an Escape a menu or dialog takes, or
+ * anything else already handled, isn't the list's.
+ */
+function useFloatingListDismiss(
+  rootRef: React.RefObject<HTMLElement | null>,
+  active: boolean,
+  setOpen: (open: boolean) => void,
+): void {
+  React.useEffect(() => {
+    if (!active) return undefined;
+    const root = rootRef.current;
+    const panel = root?.parentElement;
+    if (!root || !panel) return undefined;
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node) || root.contains(target) || !panel.contains(target)) return;
+      setOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      if (event.target instanceof Element && event.target.closest(ESCAPE_OWNER_SELECTOR)) return;
+      event.preventDefault();
+      setOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown, true);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [active, rootRef, setOpen]);
+}
+
+/**
+ * Moving between beside the page and floating over it happens at once: the
+ * list's slide is for showing and hiding it. Most of all on the first paint,
+ * where the app learns the window is narrow only after laying the list out
+ * beside the page, and a slide would show it there. True from the render that
+ * switches until two frames later, past the style change, so the list's
+ * transitions sit that one out.
+ */
+function useSwitchingMode(overlay: boolean): boolean {
+  const [shownOverlay, setShownOverlay] = React.useState(overlay);
+  const [switching, setSwitching] = React.useState(false);
+  if (shownOverlay !== overlay) {
+    setShownOverlay(overlay);
+    setSwitching(true);
+  }
+  React.useEffect(() => {
+    if (!switching) return undefined;
+    let frame = requestAnimationFrame(() => {
+      frame = requestAnimationFrame(() => setSwitching(false));
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [switching]);
+  return switching;
 }
 
 function SidebarProvider({
   defaultOpen = true,
   open: openProp,
   onOpenChange: setOpenProp,
+  overlay = false,
   className,
   style,
   children,
@@ -119,6 +190,13 @@ function SidebarProvider({
   defaultOpen?: boolean;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
+  /**
+   * The list floats over the page rather than sitting beside it: a window too
+   * narrow for both. It doesn't move the page, can't be dragged wider, and
+   * closes on a press elsewhere in the page or Escape. Desktop layout only;
+   * a phone has its sheet.
+   */
+  overlay?: boolean;
 }) {
   const isMobile = useIsMobile();
   const [openMobile, setOpenMobile] = React.useState(false);
@@ -154,12 +232,13 @@ function SidebarProvider({
       isMobile,
       open,
       openMobile,
+      overlay,
       setOpen,
       setOpenMobile,
       state,
       toggleSidebar,
     }),
-    [state, open, setOpen, isMobile, openMobile, toggleSidebar],
+    [state, open, setOpen, isMobile, openMobile, overlay, toggleSidebar],
   );
 
   return (
@@ -202,9 +281,13 @@ function Sidebar({
   motion?: "animated" | "instant";
   resizable?: boolean | SidebarResizableOptions;
 }) {
-  const { isMobile, state, openMobile, setOpenMobile } = useSidebar();
+  const { isMobile, overlay, state, openMobile, setOpen, setOpenMobile } = useSidebar();
   const screenEdgeClaimed = useScreenEdgeClaimed();
   const animateLayout = motion === "animated";
+  const floatsOpen = overlay && state === "expanded" && !isMobile;
+  const rootRef = React.useRef<HTMLDivElement | null>(null);
+  useFloatingListDismiss(rootRef, floatsOpen, setOpen);
+  const switchingMode = useSwitchingMode(overlay);
   const resolvedResizable = React.useMemo<SidebarResolvedResizableOptions | null>(() => {
     if (isMobile || collapsible === "none" || !resizable) {
       return null;
@@ -288,8 +371,11 @@ function Sidebar({
   return (
     <SidebarInstanceContext value={instanceContextValue}>
       <div
-        className="group peer hidden text-sidebar-foreground md:block"
+        ref={rootRef}
+        className="group peer hidden text-sidebar-foreground desktop:block"
         data-collapsible={state === "collapsed" ? collapsible : ""}
+        data-overlay={overlay ? "" : undefined}
+        data-mode-switch={switchingMode ? "" : undefined}
         data-side={side}
         data-slot="sidebar"
         data-state={state}
@@ -302,6 +388,8 @@ function Sidebar({
             animateLayout &&
               "transition-[width] duration-[220ms] ease-[cubic-bezier(0.2,0.8,0.2,1)] motion-reduce:transition-none",
             "group-data-[collapsible=offcanvas]:w-0",
+            // Floating, the list takes no room from the page.
+            "group-data-overlay:w-0 group-data-mode-switch:transition-none",
             "group-data-[side=right]:rotate-180",
             variant === "floating" || variant === "inset"
               ? "group-data-[collapsible=icon]:w-[calc(var(--sidebar-width-icon)+(--spacing(4)))]"
@@ -314,7 +402,10 @@ function Sidebar({
             window's title row or the rail. */}
         <div
           className={cn(
-            "absolute inset-y-0 z-10 hidden w-(--sidebar-width) md:flex",
+            "absolute inset-y-0 z-10 hidden w-(--sidebar-width) desktop:flex",
+            // Floating over the page: above it, shadowed, and never so wide
+            // that a saved width covers all of it.
+            "group-data-overlay:z-40 group-data-overlay:w-[min(var(--sidebar-width),calc(100%-3rem))] group-data-overlay:group-data-[state=expanded]:elevate-overlay group-data-mode-switch:transition-none",
             animateLayout &&
               "transition-[left,right,width,opacity] duration-[220ms] ease-[cubic-bezier(0.2,0.8,0.2,1)] group-data-[collapsible=offcanvas]:opacity-0 motion-reduce:transition-none",
             side === "left"
@@ -386,7 +477,7 @@ function SidebarTrigger({ className, onClick, tooltip, ...props }: SidebarTrigge
  * toggle in the window's title row (AppTitleBar).
  */
 function SidebarOpenTrigger({ className, style, ...props }: React.ComponentProps<typeof Button>) {
-  return <SidebarTrigger className={cn(className, "md:hidden")} style={style} {...props} />;
+  return <SidebarTrigger className={cn(className, "desktop:hidden")} style={style} {...props} />;
 }
 
 function clampSidebarWidth(width: number, options: SidebarResolvedResizableOptions): number {
@@ -402,7 +493,7 @@ function SidebarRail({
   onPointerUp,
   ...props
 }: React.ComponentProps<"button">) {
-  const { open, toggleSidebar } = useSidebar();
+  const { open, overlay, toggleSidebar } = useSidebar();
   const sidebarInstance = React.use(SidebarInstanceContext);
   const railRef = React.useRef<HTMLButtonElement | null>(null);
   const suppressClickRef = React.useRef(false);
@@ -421,7 +512,9 @@ function SidebarRail({
     wrapper: HTMLElement;
   } | null>(null);
   const resolvedResizable = sidebarInstance?.resizable ?? null;
-  const canResize = resolvedResizable !== null && open;
+  // A floating list keeps the width it has beside the page; dragging it would
+  // only change that one, so its edge is a plain toggle.
+  const canResize = resolvedResizable !== null && open && !overlay;
   const railLabel = canResize ? "Resize Sidebar" : "Toggle Sidebar";
   const railTitle = canResize ? "Drag to resize sidebar" : "Toggle Sidebar";
 
@@ -456,7 +549,7 @@ function SidebarRail({
     (event: React.PointerEvent<HTMLButtonElement>) => {
       onPointerDown?.(event);
       if (event.defaultPrevented) return;
-      if (!resolvedResizable || !open || event.button !== 0) return;
+      if (!resolvedResizable || !canResize || event.button !== 0) return;
 
       const wrapper = event.currentTarget.closest<HTMLElement>("[data-slot='sidebar-wrapper']");
       const sidebarRoot = event.currentTarget.closest<HTMLElement>("[data-slot='sidebar']");
@@ -505,7 +598,7 @@ function SidebarRail({
       document.body.style.cursor = "col-resize";
       document.body.style.userSelect = "none";
     },
-    [onPointerDown, open, resolvedResizable, sidebarInstance?.side],
+    [canResize, onPointerDown, resolvedResizable, sidebarInstance?.side],
   );
 
   const handlePointerMove = React.useCallback(
@@ -596,16 +689,19 @@ function SidebarRail({
         event.preventDefault();
         return;
       }
-      if (resolvedResizable && open) {
+      if (canResize) {
         event.preventDefault();
         return;
       }
       toggleSidebar();
     },
-    [onClick, open, resolvedResizable, toggleSidebar],
+    [canResize, onClick, toggleSidebar],
   );
 
-  React.useEffect(() => {
+  // Before the first paint: the shell decides whether the list fits beside
+  // the page from this width, and a frame at the default width would show
+  // the list docked before it floats.
+  React.useLayoutEffect(() => {
     if (!resolvedResizable?.storageKey || typeof window === "undefined") return;
     const rail = railRef.current;
     if (!rail) return;
@@ -678,7 +774,7 @@ function SidebarInset({ className, ...props }: React.ComponentProps<"main">) {
     <main
       className={cn(
         "relative flex min-w-0 w-full flex-1 flex-col bg-background",
-        "md:peer-data-[variant=inset]:peer-data-[state=collapsed]:ms-2 md:peer-data-[variant=inset]:m-2 md:peer-data-[variant=inset]:ms-0 md:peer-data-[variant=inset]:rounded-xl md:peer-data-[variant=inset]:shadow-sm/5",
+        "desktop:peer-data-[variant=inset]:peer-data-[state=collapsed]:ms-2 desktop:peer-data-[variant=inset]:m-2 desktop:peer-data-[variant=inset]:ms-0 desktop:peer-data-[variant=inset]:rounded-xl desktop:peer-data-[variant=inset]:shadow-sm/5",
         className,
       )}
       data-slot="sidebar-inset"
@@ -783,7 +879,7 @@ function SidebarGroupAction({ className, render, ...props }: useRender.Component
     className: cn(
       "absolute top-3.5 right-3 flex aspect-square w-5 items-center justify-center rounded-lg p-0 text-sidebar-foreground outline-hidden transition-transform hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-ring [&>svg:not([class*='size-'])]:size-4 [&>svg]:shrink-0",
       // Increases the hit area of the button on mobile.
-      "after:-inset-2 after:absolute md:after:hidden",
+      "after:-inset-2 after:absolute desktop:after:hidden",
       "group-data-[collapsible=icon]:hidden",
       className,
     ),
@@ -918,13 +1014,13 @@ function SidebarMenuAction({
     className: cn(
       "absolute top-1.5 right-1 flex aspect-square w-5 cursor-pointer items-center justify-center rounded-lg p-0 text-sidebar-foreground outline-hidden transition-transform hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-ring peer-hover/menu-button:text-sidebar-accent-foreground [&>svg:not([class*='size-'])]:size-4 [&>svg]:shrink-0",
       // Increases the hit area of the button on mobile.
-      "after:-inset-2 after:absolute md:after:hidden",
+      "after:-inset-2 after:absolute desktop:after:hidden",
       "peer-data-[size=sm]/menu-button:top-1",
       "peer-data-[size=default]/menu-button:top-1.5",
       "peer-data-[size=lg]/menu-button:top-2.5",
       "group-data-[collapsible=icon]:hidden",
       showOnHover &&
-        "group-focus-within/menu-item:opacity-100 group-hover/menu-item:opacity-100 data-[state=open]:opacity-100 peer-data-[active=true]/menu-button:text-sidebar-accent-foreground md:opacity-0",
+        "group-focus-within/menu-item:opacity-100 group-hover/menu-item:opacity-100 data-[state=open]:opacity-100 peer-data-[active=true]/menu-button:text-sidebar-accent-foreground desktop:opacity-0",
       className,
     ),
     "data-sidebar": "menu-action",

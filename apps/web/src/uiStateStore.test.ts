@@ -36,6 +36,8 @@ function makeUiState(overrides: Partial<UiState> = {}): UiState {
     collapsedInboxGroups: {},
     inboxWrappedOpen: false,
     sidebarListOpen: true,
+    sidebarListFloats: false,
+    sidebarFloatingListOpen: false,
     defaultAdvertisedEndpointKey: null,
     ...overrides,
   };

@@ -78,7 +78,11 @@ const TITLEBAR_COLOR = "#01000000"; // #00000000 does not work correctly on Linu
 const DEFAULT_MAIN_WINDOW_SCREEN_FRACTION = 0.9;
 const MAX_DEFAULT_MAIN_WINDOW_WIDTH = 2200;
 const MAX_DEFAULT_MAIN_WINDOW_HEIGHT = 1400;
-const MIN_MAIN_WINDOW_WIDTH = 840;
+// Narrow enough for half of a 1280px screen or a third of a 1440px one. The
+// app keeps its desktop layout at any width: the list floats over the page,
+// and the title row folds its name away and gives a thread's header a row of
+// its own when it runs out of room.
+const MIN_MAIN_WINDOW_WIDTH = 480;
 const MIN_MAIN_WINDOW_HEIGHT = 620;
 const MAX_RESTORED_MAIN_WINDOW_DIMENSION = 10_000;
 const MAIN_WINDOW_STATE_FILE_NAME = "window-state.json";

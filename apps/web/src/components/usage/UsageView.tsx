@@ -247,7 +247,7 @@ export function UsageView() {
           <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
             <div className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1">
               {/* On a phone the strip above names the page. */}
-              <h1 className="hidden text-lg font-medium tracking-tight md:block">Usage</h1>
+              <h1 className="hidden text-lg font-medium tracking-tight desktop:block">Usage</h1>
               {view ? (
                 <span
                   className={cn(NUMBER_CLASS, "whitespace-nowrap text-xs text-muted-foreground")}

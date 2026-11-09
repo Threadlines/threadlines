@@ -57,9 +57,14 @@ export function SettingsPageHeader({
     <header className="space-y-1 px-1">
       {resolvedTitle || actions ? (
         // Below `md` the title is hidden, so the line exists only for actions.
-        <div className={cn("items-center gap-3 md:min-h-7", actions ? "flex" : "hidden md:flex")}>
+        <div
+          className={cn(
+            "items-center gap-3 desktop:min-h-7",
+            actions ? "flex" : "hidden desktop:flex",
+          )}
+        >
           {resolvedTitle ? (
-            <h1 className="hidden min-w-0 flex-1 truncate text-[22px] leading-7 font-semibold tracking-[-0.015em] text-foreground md:block">
+            <h1 className="hidden min-w-0 flex-1 truncate text-[22px] leading-7 font-semibold tracking-[-0.015em] text-foreground desktop:block">
               {resolvedTitle}
             </h1>
           ) : null}

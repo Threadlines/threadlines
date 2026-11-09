@@ -23,7 +23,7 @@ import {
 import { resetTestPage } from "../../lib/testPage.browser-harness";
 import { AppAtomRegistryProvider } from "../../rpc/atomRegistry";
 import { closeExpandedImagePreview } from "../chat/ExpandedImagePreview";
-import { ExpandedImageViewerHost } from "../chat/ExpandedImageDialog";
+import { ExpandedImageViewerHost } from "../chat/ExpandedImageViewerHost";
 import { MediaPanel } from "./MediaPanel";
 import {
   primeMediaThumbnail,

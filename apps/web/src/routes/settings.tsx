@@ -30,7 +30,7 @@ import { PageTitlebar } from "../components/PageTitlebar";
 import { SidebarInset, useSidebar } from "../components/ui/sidebar";
 import { isElectron } from "../env";
 import { cn } from "../lib/utils";
-import { useIsMobile } from "../hooks/useMediaQuery";
+import { isMobileLayoutNow, useIsMobile } from "../hooks/useMediaQuery";
 import { useNavigateBackWithinApp } from "../hooks/useNavigateBackWithinApp";
 import { usePlaceArrival } from "../hooks/usePlaceArrival";
 import { resolveShortcutCommand } from "../keybindings";
@@ -157,7 +157,7 @@ function SettingsContentLayout() {
   return (
     <SettingsSurfaceContext.Provider value={isHostedStatic ? "phone" : "full"}>
       <SettingsPlaceSignalsProvider>
-        <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground isolate md:h-auto">
+        <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground isolate desktop:h-auto">
           {/* Clear under a theme with art: the page's column is glass (index.css). */}
           <div
             {...glassPage.shell}
@@ -167,7 +167,7 @@ function SettingsContentLayout() {
               <header
                 {...glassPage.header}
                 className={cn(
-                  "border-b border-border pb-2 pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] pt-[calc(env(safe-area-inset-top)+0.5rem)] transition-[padding-left] duration-200 ease-linear motion-reduce:transition-none sm:px-5 md:hidden",
+                  "border-b border-border pb-2 pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] pt-[calc(env(safe-area-inset-top)+0.5rem)] transition-[padding-left] duration-200 ease-linear motion-reduce:transition-none sm:px-5 desktop:hidden",
                 )}
               >
                 <div className="flex min-h-7 items-center gap-2 sm:min-h-6">
@@ -176,15 +176,15 @@ function SettingsContentLayout() {
                       size="icon-xs"
                       variant="ghost"
                       aria-label="All settings"
-                      className="shrink-0 text-muted-foreground hover:text-foreground md:hidden"
+                      className="shrink-0 text-muted-foreground hover:text-foreground desktop:hidden"
                       onClick={() => void navigate({ to: "/settings", replace: true })}
                     >
                       <ArrowLeftIcon />
                     </Button>
                   ) : null}
                   <span className="text-sm font-medium text-foreground">
-                    <span className="md:hidden">{mobileHeaderTitle}</span>
-                    <span className="hidden md:inline">Settings</span>
+                    <span className="desktop:hidden">{mobileHeaderTitle}</span>
+                    <span className="hidden desktop:inline">Settings</span>
                   </span>
                   {isHostedStatic ? (
                     <span className="rounded-sm border border-border/70 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
@@ -253,10 +253,9 @@ export const Route = createFileRoute("/settings")({
 
     const isHostedStatic = context.authGateState.status === "hosted-static";
 
-    // Matches useIsMobile()'s max-md breakpoint. Checked here (outside React)
-    // because the redirect decision has to land before the route renders.
-    const isMobileViewport =
-      typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches;
+    // useIsMobile(), read here (outside React) because the redirect decision
+    // has to land before the route renders.
+    const isMobileViewport = isMobileLayoutNow();
     const redirectTo = resolveSettingsEntryRedirect({
       pathname: location.pathname,
       isHostedStatic,

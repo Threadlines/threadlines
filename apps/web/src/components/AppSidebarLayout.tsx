@@ -10,7 +10,7 @@ import {
 } from "react";
 import { scopeThreadRef } from "@threadlines/client-runtime";
 import type { EnvironmentId, ThreadId } from "@threadlines/contracts";
-import { useNavigate } from "@tanstack/react-router";
+import { useLocation, useNavigate } from "@tanstack/react-router";
 
 import { useAppHistory } from "../appHistory";
 import { useCommandPaletteStore } from "../commandPaletteStore";
@@ -19,11 +19,12 @@ import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { resolveShortcutCommand } from "../keybindings";
 import { startNewThreadFromContext } from "../lib/chatThreadActions";
 import { isTerminalFocused } from "../lib/terminalFocus";
+import { useIsMobile } from "../hooks/useMediaQuery";
 import { usePublishMainAreaStart } from "../mainAreaLayout";
 import { useServerKeybindings } from "../rpc/serverState";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
 import { buildThreadRouteParams } from "../threadRoutes";
-import { useUiStateStore } from "../uiStateStore";
+import { selectSidebarListShown, useUiStateStore } from "../uiStateStore";
 import ThreadSidebar from "./Sidebar";
 import { AppTitleBar } from "./sidebar/AppTitleBar";
 import { TitleBarSlotContext } from "./sidebar/titleBarSlot";
@@ -48,7 +49,10 @@ const THREAD_SIDEBAR_WIDTH_STORAGE_KEY = "chat_thread_sidebar_width";
 // that matter. The user can drag it wider (then persisted).
 const THREAD_SIDEBAR_MIN_WIDTH = 14 * 16;
 const THREAD_SIDEBAR_DEFAULT_WIDTH = `${15 * 16}px`;
-const THREAD_MAIN_CONTENT_MIN_WIDTH = 40 * 16;
+// The page keeps at least this much beside the list: dragging the list wider
+// stops there, and a window too narrow for both floats the list over the
+// page instead (about 850px wide with the list at its default width).
+const PAGE_MIN_WIDTH_BESIDE_LIST = 35 * 16;
 
 /**
  * The shell's own commands, wherever they come from: the sidebar and Fleet
@@ -205,15 +209,6 @@ function AppShellCommands({ hasList }: { readonly hasList: boolean }) {
 }
 
 /**
- * The app shell on every page but setup. A frame in one color wraps the
- * window's top-left: the title row (window controls, the list toggle, back
- * and forward, the app's name) and the navigation rail under it. Beside the
- * rail, one work panel with a rounded top-left corner holds the page's list
- * (the thread inbox, General chats, Computers, Settings; see destinationLists)
- * and the page. Hiding the list moves only the page's left edge; the list's
- * state is remembered across launches, and pages without a list ignore it.
- */
-/**
  * A quick cross-fade (0.14s, opacity only) when the rail's destination
  * changes: Threads to Fleet, say. Moving between threads, or anything else
  * inside one destination, never fades. Nothing runs under reduced motion.
@@ -233,12 +228,78 @@ function usePageCrossFade(panelRef: RefObject<HTMLDivElement | null>, destinatio
   }, [destination, panelRef]);
 }
 
+/** A width variable's value in px ("240px", or "15rem" at the root font size). */
+function readCssLength(element: Element, name: string): number {
+  const value = getComputedStyle(element).getPropertyValue(name).trim();
+  const amount = Number.parseFloat(value);
+  if (!Number.isFinite(amount)) return 0;
+  if (value.endsWith("rem")) {
+    return amount * (Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 16);
+  }
+  return amount;
+}
+
+/**
+ * Keeps `sidebarListFloats` in the UI store true while the work panel is too
+ * narrow for the list beside a page of at least PAGE_MIN_WIDTH_BESIDE_LIST.
+ * It reads the list's own width (its variable, which a floating list's capped
+ * box doesn't show), so floating never changes the answer. Measured before the
+ * first paint and on every resize of the panel or the docked list. A phone
+ * has its sheet instead, and never floats.
+ */
+function useSidebarListFloats(panelRef: RefObject<HTMLDivElement | null>, isMobile: boolean) {
+  useLayoutEffect(() => {
+    const { setSidebarListFloats } = useUiStateStore.getState();
+    const panel = panelRef.current;
+    if (isMobile || !panel || typeof ResizeObserver === "undefined") {
+      setSidebarListFloats(false);
+      return undefined;
+    }
+    const measure = () => {
+      const listWidth = readCssLength(panel, "--sidebar-width");
+      setSidebarListFloats(panel.clientWidth - listWidth < PAGE_MIN_WIDTH_BESIDE_LIST);
+    };
+    const observer = new ResizeObserver(measure);
+    observer.observe(panel);
+    // Beside the page the list's box follows its variable: a drag, a restored width.
+    const list = panel.querySelector(
+      ":scope > [data-slot='sidebar'] [data-slot='sidebar-container']",
+    );
+    if (list) observer.observe(list);
+    measure();
+    return () => observer.disconnect();
+  }, [isMobile, panelRef]);
+}
+
+/**
+ * The app shell on every page but setup. A frame in one color wraps the
+ * window's top-left: the title row (window controls, the list toggle, back
+ * and forward, the app's name) and the navigation rail under it. Beside the
+ * rail, one work panel with a rounded top-left corner holds the page's list
+ * (the thread inbox, General chats, Computers, Settings; see destinationLists)
+ * and the page. Hiding the list moves only the page's left edge; the list's
+ * state is remembered across launches, and pages without a list ignore it.
+ * In a window too narrow for both, the list floats over the page instead,
+ * starting closed, and its remembered state waits for a wider window.
+ */
 export function AppSidebarLayout({ children }: { children: ReactNode }) {
-  const sidebarListOpen = useUiStateStore((store) => store.sidebarListOpen);
-  const setSidebarListOpen = useUiStateStore((store) => store.setSidebarListOpen);
+  const listShown = useUiStateStore(selectSidebarListShown);
+  const listFloats = useUiStateStore((store) => store.sidebarListFloats);
+  const setSidebarListShown = useUiStateStore((store) => store.setSidebarListShown);
   const selectedDestination = useSelectedDestination();
   const hasList = destinationHasList(selectedDestination);
+  const isMobile = useIsMobile();
   const panelRef = useRef<HTMLDivElement>(null);
+  useSidebarListFloats(panelRef, isMobile);
+  // A floating list gets out of the way of whatever page opens next.
+  const pathname = useLocation({ select: (location) => location.pathname });
+  const shownPathname = useRef(pathname);
+  useEffect(() => {
+    if (shownPathname.current === pathname) return;
+    shownPathname.current = pathname;
+    const state = useUiStateStore.getState();
+    if (state.sidebarListFloats) state.setSidebarListShown(false);
+  }, [pathname]);
   usePageCrossFade(panelRef, selectedDestination);
   // Dialogs and other window-wide layers center over the page beside the list.
   usePublishMainAreaStart(panelRef);
@@ -246,9 +307,9 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
   const [titleBarSlot, setTitleBarSlot] = useState<HTMLElement | null>(null);
   const setListOpen = useCallback(
     (open: boolean) => {
-      if (hasList) setSidebarListOpen(open);
+      if (hasList) setSidebarListShown(open);
     },
-    [hasList, setSidebarListOpen],
+    [hasList, setSidebarListShown],
   );
   const sidebarStyle = {
     "--sidebar-width": THREAD_SIDEBAR_DEFAULT_WIDTH,
@@ -279,8 +340,9 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
   return (
     <SidebarProvider
       className="h-dvh! min-h-0! flex-col bg-frame"
-      open={sidebarListOpen && hasList}
+      open={listShown && hasList}
       onOpenChange={setListOpen}
+      overlay={listFloats}
       style={sidebarStyle}
     >
       <AppShellCommands hasList={hasList} />
@@ -291,7 +353,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
           ref={panelRef}
           data-slot="app-panel"
           data-testid="app-panel"
-          className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background md:rounded-tl-3xl md:border-t md:border-l md:border-border"
+          className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background desktop:rounded-tl-3xl desktop:border-t desktop:border-l desktop:border-border"
         >
           <Sidebar
             side="left"
@@ -307,7 +369,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
                 (sidebarRoot.parentElement?.clientWidth ??
                   wrapper.clientWidth - NAVIGATION_RAIL_WIDTH_PX) -
                   nextWidth >=
-                THREAD_MAIN_CONTENT_MIN_WIDTH,
+                PAGE_MIN_WIDTH_BESIDE_LIST,
               storageKey: THREAD_SIDEBAR_WIDTH_STORAGE_KEY,
             }}
           >

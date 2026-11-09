@@ -72,6 +72,7 @@ import {
   SidebarHeader,
   SidebarSeparator,
   SidebarTrigger,
+  useCloseSidebarSheet,
   useSidebar,
 } from "./ui/sidebar";
 import { useThreadSelectionStore } from "../threadSelectionStore";
@@ -647,7 +648,10 @@ export default function Sidebar() {
   const { activeDraftThread, activeThread, defaultProjectRef, handleNewThread } =
     useHandleNewThread();
   const { archiveThread } = useThreadActions();
-  const { isMobile, setOpenMobile } = useSidebar();
+  const { isMobile } = useSidebar();
+  // A pick gets the list out of the way where it covers the page: the phone's
+  // sheet, or the list floating over a narrow window.
+  const closeSheet = useCloseSidebarSheet();
   const routeThreadRef = useParams({
     strict: false,
     select: (params) => resolveThreadRouteRef(params),
@@ -1479,15 +1483,13 @@ export default function Sidebar() {
         clearSelection();
       }
       setSelectionAnchor(scopedThreadKey(threadRef));
-      if (isMobile) {
-        setOpenMobile(false);
-      }
+      closeSheet();
       void navigate({
         to: "/$environmentId/$threadId",
         params: buildThreadRouteParams(threadRef),
       });
     },
-    [clearSelection, isMobile, navigate, setOpenMobile, setSelectionAnchor],
+    [clearSelection, closeSheet, navigate, setSelectionAnchor],
   );
 
   // A request opens where it can be read in full: the thread that asked, when
@@ -1502,12 +1504,10 @@ export default function Sidebar() {
         navigateToThread(scopeThreadRef(request.parentEnvironmentId, request.parentThreadId));
         return;
       }
-      if (isMobile) {
-        setOpenMobile(false);
-      }
+      closeSheet();
       void navigate({ to: "/fleet/$environmentId", params: { environmentId } });
     },
-    [isMobile, navigate, navigateToThread, setOpenMobile],
+    [closeSheet, navigate, navigateToThread],
   );
 
   const navigateToDraft = useCallback(
@@ -1517,16 +1517,14 @@ export default function Sidebar() {
       // a row that is no longer the context. (clearSelection no-ops when there
       // is nothing to clear.)
       clearSelection();
-      if (isMobile) {
-        setOpenMobile(false);
-      }
+      closeSheet();
       void navigate({
         to: "/draft/$draftId",
         params: { draftId },
         search: preserveRightPanelSearchParamsForDraftNavigation,
       });
     },
-    [clearSelection, isMobile, navigate, setOpenMobile],
+    [clearSelection, closeSheet, navigate],
   );
 
   const handleThreadClick = useCallback(
@@ -1552,9 +1550,7 @@ export default function Sidebar() {
         clearSelection();
       }
       setSelectionAnchor(threadKey);
-      if (isMobile) {
-        setOpenMobile(false);
-      }
+      closeSheet();
       void navigate({
         to: "/$environmentId/$threadId",
         params: buildThreadRouteParams(threadRef),
@@ -1562,10 +1558,9 @@ export default function Sidebar() {
     },
     [
       clearSelection,
-      isMobile,
+      closeSheet,
       navigate,
       rangeSelectTo,
-      setOpenMobile,
       setSelectionAnchor,
       toggleThreadSelection,
     ],
@@ -1587,9 +1582,7 @@ export default function Sidebar() {
       event.stopPropagation();
 
       if (!(event.metaKey || event.ctrlKey || event.button === 1)) {
-        if (isMobile) {
-          setOpenMobile(false);
-        }
+        closeSheet();
         void navigate({
           to: "/$environmentId/$threadId",
           params: buildThreadRouteParams(threadRef),
@@ -1613,7 +1606,7 @@ export default function Sidebar() {
         );
       });
     },
-    [isMobile, navigate, setOpenMobile],
+    [closeSheet, navigate],
   );
 
   const attemptArchiveThread = useCallback(
@@ -1770,9 +1763,7 @@ export default function Sidebar() {
   // Compose follows the thread you are in, kept inside the scope while the
   // list is narrowed to projects (see resolveScopedComposeTarget).
   const handleComposeClick = useCallback(() => {
-    if (isMobile) {
-      setOpenMobile(false);
-    }
+    closeSheet();
     const openProjectRef = resolveThreadActionProjectRef({
       activeDraftThread,
       activeThread,
@@ -1806,12 +1797,11 @@ export default function Sidebar() {
     defaultProjectRef,
     generalChatProjectKeys,
     handleNewThread,
-    isMobile,
+    closeSheet,
     primaryEnvironmentId,
     resolveProjectKeyForRef,
     scopedEnvironmentIdValue,
     scopedProjectKeys,
-    setOpenMobile,
     sidebarProjectByKey,
   ]);
 
