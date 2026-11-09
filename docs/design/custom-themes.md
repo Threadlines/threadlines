@@ -148,10 +148,15 @@ home screen with no thread open (the first one a new user sees) works the
 same way: a patch behind its heading, line and buttons, and one behind the
 links under them. Where the new-thread screen keeps its composer at the
 bottom (a phone, or a pane too small for the roomy layout,
-`data-draft-stacked`), every block of text in the column gets its own patch
-and the composer its hard one, so the art shows there too; until Nov 9 that
-screen was frosted whole like a thread, which left a phone no screen where
-the art showed clear.
+`data-draft-stacked`), every line of text in the column gets its own patch
+(whatever the column holds: a notice, the goal editor above the composer, the
+line under it) and the composer its hard one, so the art shows there too,
+beside a short line as well as between blocks. Lines are grouped into fewer
+patches when there would be more than the frame's zones allow, and past that
+the column is frosted whole. The moment the first message is sent the
+patches give way to the reading column without the usual measuring wait.
+Until Nov 9 that screen was frosted whole like a thread, which left a phone
+no screen where the art showed clear.
 Inside a thread the reading column (composer width plus a margin) is frosted
 and tinted; the art shows crisp in the margins, and frosted through the
 thread list, title row and rail. The Glass slider (`themeGlass`, 0 to 100,

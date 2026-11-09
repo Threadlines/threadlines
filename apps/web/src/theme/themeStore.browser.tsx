@@ -429,22 +429,26 @@ describe("backdrop zones", () => {
           <div data-chat-view="" style={{ position: "absolute", inset: 0 }}>
             <div data-chat-column="" style={{ position: "absolute", inset: 0 }}>
               <div data-draft-stacked="" style={at(0, 40, 360, 300)}>
+                {/* A short line close above a long one: each gets a patch of its own width. */}
+                <p style={{ ...at(140, 4, 120, 16), margin: 0, fontSize: 12 }}>Nothing running</p>
                 {/* Mid fade-in, like the home screen's heading. */}
                 <h2 style={{ ...at(60, 40, 240, 28), margin: 0, opacity: 0 }}>What's next?</h2>
                 <p style={{ ...at(20, 200, 200, 20), margin: 0 }}>Active and recent</p>
               </div>
               {/* Something else the column holds: it must not sit on raw art either. */}
               <p style={{ ...at(20, 380, 200, 20), margin: 0 }}>A notice</p>
-              <div style={at(0, 520, 360, 140)}>
-                <form data-chat-composer-form="" style={at(10, 0, 340, 90)}>
+              <div style={at(0, 500, 360, 160)}>
+                <form data-chat-composer-form="" style={at(10, 0, 340, 120)}>
+                  {/* In the form but on no glass surface of its own (the goal editor). */}
+                  <p style={{ ...at(10, 0, 200, 20), margin: 0 }}>Goal</p>
                   <div
                     data-glass-surface="composer"
-                    style={{ ...at(0, 0, 340, 90), borderRadius: 16 }}
+                    style={{ ...at(0, 30, 340, 90), borderRadius: 16 }}
                   >
                     Ask anything
                   </div>
                 </form>
-                <p style={{ ...at(20, 104, 200, 20), margin: 0 }}>Current checkout</p>
+                <p style={{ ...at(20, 134, 200, 20), margin: 0 }}>Current checkout</p>
               </div>
             </div>
           </div>
@@ -459,12 +463,14 @@ describe("backdrop zones", () => {
         glassFloors({ frame: 0.7, list: 0.6, column: 0.5, composer: 0.8, blur: 16 }, 50),
       );
       expect(artShown).toBe(true);
-      // One soft patch a block of text (the composer's own words are its hard patch's), no reading column.
+      // One soft patch a line of text (the composer's own words are its hard patch's), no reading column.
       expect(zones.map((zone) => `${zone.id}:${zone.edge}`)).toEqual([
         "draft-0:soft",
         "draft-1:soft",
         "draft-2:soft",
         "draft-3:soft",
+        "draft-4:soft",
+        "draft-5:soft",
         "composer:hard",
       ]);
       const covers = (id: string, text: string) => {
@@ -482,12 +488,17 @@ describe("backdrop zones", () => {
           core.y + core.h >= box.bottom - 1
         );
       };
-      expect(covers("draft-0", "What's next?")).toBe(true);
-      expect(covers("draft-1", "Active and recent")).toBe(true);
-      expect(covers("draft-2", "A notice")).toBe(true);
-      expect(covers("draft-3", "Current checkout")).toBe(true);
+      expect(covers("draft-0", "Nothing running")).toBe(true);
+      expect(covers("draft-1", "What's next?")).toBe(true);
+      expect(covers("draft-2", "Active and recent")).toBe(true);
+      expect(covers("draft-3", "A notice")).toBe(true);
+      expect(covers("draft-4", "Goal")).toBe(true);
+      expect(covers("draft-5", "Current checkout")).toBe(true);
+      // The short line's patch is its own width: the art shows beside it.
+      const patch = (id: string) => zones.find((zone) => zone.id === id)!.rect;
+      expect(patch("draft-0").w).toBeLessThan(patch("draft-1").w);
       // The room between the text and the composer is left to the art.
-      const clear = { x: 300, y: 470 };
+      const clear = { x: 300, y: 450 };
       expect(
         zones.some(
           ({ rect }) =>
@@ -497,6 +508,42 @@ describe("backdrop zones", () => {
             clear.y <= rect.y + rect.h,
         ),
       ).toBe(false);
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("frosts that screen's column whole when its text would need more patches than the frame has zones", async () => {
+    const screen = await render(
+      <div style={{ position: "fixed", inset: 0 }}>
+        <div data-slot="app-panel" style={{ position: "absolute", inset: 0 }}>
+          <div data-chat-view="" style={{ position: "absolute", inset: 0 }}>
+            <div data-chat-column="" style={{ position: "absolute", inset: 0 }}>
+              <div data-draft-stacked="">
+                {/* Twenty lines, each too far from the next to share a patch. */}
+                {Array.from({ length: 20 }, (_, index) => (
+                  <p
+                    key={index}
+                    style={{ position: "absolute", left: 20, top: index * 80, margin: 0 }}
+                  >
+                    Line {index}
+                  </p>
+                ))}
+              </div>
+              <form data-chat-composer-form="" />
+            </div>
+          </div>
+        </div>
+      </div>,
+    );
+    try {
+      const { zones } = measureBackdropZones(
+        document,
+        { width: 400, height: 2000 },
+        resolveThemeTokens(darkTheme("#e7ecff")),
+        glassFloors({ frame: 0.7, list: 0.6, column: 0.5, composer: 0.8, blur: 16 }, 50),
+      );
+      expect(zones.map((zone) => zone.id)).toEqual(["column"]);
     } finally {
       await screen.unmount();
     }

@@ -12,7 +12,7 @@
  * - The new-thread screen: a soft patch around the heading, the composer
  *   and the line under it, and one around each line of text under them.
  *   Where the composer stays at the bottom (a phone, a small pane), a soft
- *   patch around each block of the column's text instead, the composer hard.
+ *   patch around each line of the column's text instead, the composer hard.
  * - The home screen with no thread open: a soft patch around each block of
  *   its text (the heading, line and buttons; the links under them).
  * - Any other page (Settings, Usage, Scheduled...): each content area's
@@ -34,6 +34,15 @@ export const COLUMN_MARGIN_PX = 48;
 
 /** How far the home screen's text rises as it fades in (index.css `no-thread-rise`), plus a px. */
 const HOME_RISE_PX = 8;
+
+/**
+ * The stacked new-thread screen's text patches: lines this far apart (px)
+ * share a patch, tried from a patch a line up to the blocks the other screens
+ * use, taking the first that needs no more patches than leave room for the
+ * frame's other zones (BACKDROP_MAX_ZONES).
+ */
+const STACKED_DRAFT_LINE_GAPS = [8, 24, 48] as const;
+const STACKED_DRAFT_MAX_PATCHES = 14;
 
 export interface MeasuredBackdropLayout {
   readonly zones: ReadonlyArray<BackdropZone>;
@@ -129,12 +138,14 @@ function surfaceBox(
   return { box, radii: radii.some((value) => value > 0) ? radii : null };
 }
 
+type Skipped = Element | ReadonlyArray<Element> | null;
+
 /**
  * The tight box around the text an element shows: every visible text node's
  * own box, so a wide wrapper with a short line in it frosts only the line.
  * Leaves out text inside `skip`. Null when it shows no text.
  */
-function textBox(element: Element | null, bounds: Box, skip?: Element | null): Box | null {
+function textBox(element: Element | null, bounds: Box, skip?: Skipped): Box | null {
   return union(textBoxes(element, bounds, skip));
 }
 
@@ -143,13 +154,9 @@ function textBox(element: Element | null, bounds: Box, skip?: Element | null): B
  * `fading`, text at zero opacity counts too: text that fades in is there a
  * moment later.
  */
-function textBoxes(
-  element: Element | null,
-  bounds: Box,
-  skip?: Element | null,
-  fading = false,
-): Box[] {
+function textBoxes(element: Element | null, bounds: Box, skip?: Skipped, fading = false): Box[] {
   if (!element) return [];
+  const skipped = skip ? (Array.isArray(skip) ? skip : [skip]) : [];
   const doc = element.ownerDocument;
   const walker = doc.createTreeWalker(element, NodeFilter.SHOW_TEXT);
   const range = doc.createRange();
@@ -157,7 +164,7 @@ function textBoxes(
   for (let node = walker.nextNode(); node; node = walker.nextNode()) {
     if (!node.textContent?.trim()) continue;
     const parent = node.parentElement;
-    if (!parent || (skip && skip.contains(parent))) continue;
+    if (!parent || skipped.some((part: Element) => part.contains(parent))) continue;
     const style = doc.defaultView?.getComputedStyle(parent);
     if (style && (style.visibility === "hidden" || (!fading && Number(style.opacity) === 0))) {
       continue;
@@ -276,9 +283,38 @@ export function measureBackdropZones(
   const columnBox = visibleBox(column, panel);
   const composerForm = column?.querySelector("[data-chat-composer-form]") ?? null;
   const composerBox = visibleBox(composerForm, panel);
+  // The composer's outline and the panels it opens above itself, each a hard patch of its own.
+  const composerSurfaces = [...(composerForm?.querySelectorAll("[data-glass-surface]") ?? [])];
   const hero = column?.querySelector("[data-draft-hero]") ?? null;
-  // The new-thread screen with its composer at the bottom: a phone, or a pane too small for the hero.
+  // The new-thread screen with its composer at the bottom: a phone, or a pane
+  // too small for the hero. Nothing to read yet, so the art shows here too:
+  // the column's text gets soft patches instead of the reading column. Every
+  // text the column holds counts (the question, the recent threads, the
+  // links, a notice, the line under the composer), so none ever sits on raw
+  // art. Only what has a hard patch of its own is left out: the composer's
+  // glass surfaces, not the whole form, which can hold more (the goal editor
+  // above the composer). Text that rises in as it fades counts from the
+  // start, as on the home screen.
+  // A patch a line where that fits, so the art shows beside a short line next
+  // to a long one; lines grouped into fewer, taller blocks when there are too
+  // many for the frame's zones; and with too many even then (null), the
+  // reading column as in a thread.
   const stackedDraft = hero ? null : (column?.querySelector("[data-draft-stacked]") ?? null);
+  const draftLines =
+    stackedDraft && column && columnBox
+      ? textBoxes(
+          column,
+          columnBox,
+          composerSurfaces.length > 0 ? composerSurfaces : composerForm,
+          true,
+        )
+      : null;
+  const draftBlocks =
+    draftLines === null
+      ? null
+      : (STACKED_DRAFT_LINE_GAPS.map((gap) => textBlocks(draftLines, gap)).find(
+          (blocks) => blocks.length <= STACKED_DRAFT_MAX_PATCHES,
+        ) ?? null);
 
   if (column && columnBox && hero) {
     // The new-thread screen: a frosted patch behind the heading, the
@@ -326,14 +362,8 @@ export function measureBackdropZones(
         });
       }
     });
-  } else if (column && columnBox && stackedDraft) {
-    // The same screen where the composer stays at the bottom: nothing to read
-    // yet, so the art shows here too. Every block of text in the column gets
-    // its own patch (the question, the recent threads, the links, a notice,
-    // the line under the composer), whatever the column holds, so no text
-    // ever sits on raw art; the composer keeps its hard patch below. Text
-    // that rises in as it fades counts from the start, as on the home screen.
-    textBlocks(textBoxes(column, columnBox, composerForm, true), 48).forEach((words, index) => {
+  } else if (column && columnBox && draftBlocks) {
+    draftBlocks.forEach((words, index) => {
       const core = clip(grow(words, 0, HOME_RISE_PX), columnBox);
       const rect = clip(grow(words, 36, 18), columnBox);
       if (core && rect) {
@@ -376,7 +406,7 @@ export function measureBackdropZones(
   }
   // The composer's outline and the panels it opens above itself (the theme
   // picker), each its own patch rounded as it is. Without them, the form.
-  const surfaces = [...(composerForm?.querySelectorAll("[data-glass-surface]") ?? [])];
+  const surfaces = composerSurfaces;
   surfaces.forEach((element) => {
     const surface = surfaceBox(element, panel);
     const id = element.getAttribute("data-glass-surface") || "composer";

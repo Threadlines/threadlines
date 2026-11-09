@@ -165,6 +165,9 @@ export function ThemeBackdropLayer(props: {
 
 const EMPTY_LAYOUT: MeasuredBackdropLayout = { zones: [], artShown: true };
 
+/** The new-thread screen, in either layout: its zones are patches around its text. */
+const DRAFT_SCREEN_SELECTOR = "[data-draft-hero], [data-draft-stacked]";
+
 const MEASURED_SELECTORS = [
   '[data-slot="app-titlebar"]',
   '[data-slot="navigation-rail"]',
@@ -196,6 +199,8 @@ function useBackdropLayout(
     let waiting: ReturnType<typeof setTimeout> | null = null;
     let settle: ReturnType<typeof setTimeout> | null = null;
     let lastRun = -Infinity;
+    // The last measure was of a new-thread screen, whose patches hug its text.
+    let draftPatches = false;
     const observed = new Set<Element>();
 
     const measure = () => {
@@ -207,6 +212,7 @@ function useBackdropLayout(
         tokens,
         floors,
       );
+      draftPatches = document.querySelector(DRAFT_SCREEN_SELECTOR) !== null;
       setLayout((previous) =>
         previous.artShown === next.artShown && sameBackdropZones(previous.zones, next.zones)
           ? previous
@@ -237,9 +243,18 @@ function useBackdropLayout(
         settle = null;
         run();
       }, ZONE_SETTLE_MS);
-      if (frame !== 0 || waiting !== null) return;
+      if (frame !== 0) return;
+      // The first message of a new thread: the screen's text patches give way
+      // to the reading column at once, not after the wait, so the message
+      // never shows between patches made for the screen before it.
+      const leftDraft = draftPatches && document.querySelector(DRAFT_SCREEN_SELECTOR) === null;
+      if (leftDraft && waiting !== null) {
+        clearTimeout(waiting);
+        waiting = null;
+      }
+      if (waiting !== null) return;
       const wait = ZONE_MIN_INTERVAL_MS - (performance.now() - lastRun);
-      if (wait <= 0) {
+      if (wait <= 0 || leftDraft) {
         run();
         return;
       }
@@ -254,6 +269,9 @@ function useBackdropLayout(
     mutationObserver.observe(document.body, {
       childList: true,
       subtree: true,
+      // Text that changes in place (a project renamed elsewhere) can outgrow
+      // its patch without resizing anything that is watched.
+      characterData: true,
       attributes: true,
       attributeFilter: [
         "data-state",
