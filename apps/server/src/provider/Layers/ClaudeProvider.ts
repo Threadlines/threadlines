@@ -101,6 +101,7 @@ const CLAUDE_AUTO_MODE_UNSUPPORTED_SLUGS: ReadonlySet<string> = new Set([
 export function claudeModelSupportsAutoRuntimeMode(modelSlug: string | null | undefined): boolean {
   return modelSlug ? !CLAUDE_AUTO_MODE_UNSUPPORTED_SLUGS.has(modelSlug) : true;
 }
+const MINIMUM_CLAUDE_FABLE_5_2_VERSION = "2.1.321";
 const MINIMUM_CLAUDE_HAIKU_5_5_VERSION = "2.1.293";
 const MINIMUM_CLAUDE_SONNET_5_5_VERSION = "2.1.284";
 // Claude Code 2.1.284 made Ultracode its own setting that works at any effort
@@ -120,6 +121,14 @@ const CLAUDE_FAST_MODE_DESCRIPTION =
   "Faster responses, higher cost. Usage credits, not subscription usage.";
 
 const CLAUDE_EFFORT_OPTIONS = {
+  // Claude Code runs Fable 5.2 at medium effort unless told otherwise.
+  fable52: [
+    { value: "low", label: "Low" },
+    { value: "medium", label: "Medium", isDefault: true },
+    { value: "high", label: "High" },
+    { value: "xhigh", label: "Extra High" },
+    { value: "max", label: "Max" },
+  ],
   fable51: [
     { value: "low", label: "Low" },
     { value: "medium", label: "Medium" },
@@ -214,6 +223,27 @@ const CLAUDE_ULTRACODE_OPTION = buildBooleanOptionDescriptor({
 });
 
 const BUILT_IN_MODEL_DEFINITIONS: ReadonlyArray<ServerProviderModel> = [
+  {
+    slug: "claude-fable-5-2",
+    name: "Claude Fable 5.2",
+    description: CLAUDE_FABLE_5_DESCRIPTION,
+    isCustom: false,
+    capabilities: createModelCapabilities({
+      optionDescriptors: [
+        buildSelectOptionDescriptor({
+          id: "effort",
+          label: "Reasoning",
+          options: CLAUDE_EFFORT_OPTIONS.fable52,
+        }),
+        CLAUDE_ULTRACODE_OPTION,
+        buildBooleanOptionDescriptor({
+          id: "fastMode",
+          label: "Fast Mode",
+          description: CLAUDE_FAST_MODE_DESCRIPTION,
+        }),
+      ],
+    }),
+  },
   {
     slug: "claude-fable-5-1",
     name: "Claude Fable 5.1",
@@ -490,6 +520,10 @@ function supportsClaudeFable51(version: string | null | undefined): boolean {
   return version ? compareSemverVersions(version, MINIMUM_CLAUDE_FABLE_5_1_VERSION) >= 0 : false;
 }
 
+function supportsClaudeFable52(version: string | null | undefined): boolean {
+  return version ? compareSemverVersions(version, MINIMUM_CLAUDE_FABLE_5_2_VERSION) >= 0 : false;
+}
+
 function supportsClaudeSonnet55(version: string | null | undefined): boolean {
   return version ? compareSemverVersions(version, MINIMUM_CLAUDE_SONNET_5_5_VERSION) >= 0 : false;
 }
@@ -587,6 +621,9 @@ function getBuiltInClaudeModelsForVersion(
   version: string | null | undefined,
 ): ReadonlyArray<ServerProviderModel> {
   return BUILT_IN_MODELS.filter((model) => {
+    if (model.slug === "claude-fable-5-2") {
+      return supportsClaudeFable52(version);
+    }
     if (model.slug === "claude-fable-5-1") {
       return supportsClaudeFable51(version);
     }
@@ -697,6 +734,13 @@ function formatClaudeUpgradeMessage(version: string | null): string | undefined 
       version,
       modelName: "Claude Haiku 5.5",
       minimumVersion: MINIMUM_CLAUDE_HAIKU_5_5_VERSION,
+    });
+  }
+  if (!supportsClaudeFable52(version)) {
+    return formatClaudeModelUpgradeMessage({
+      version,
+      modelName: "Claude Fable 5.2",
+      minimumVersion: MINIMUM_CLAUDE_FABLE_5_2_VERSION,
     });
   }
   return undefined;
@@ -1033,6 +1077,7 @@ type ClaudeCapabilitiesProbe = {
 // Models whose 1M window is their only window. The CLI lists them as
 // `<slug>[1m]` and nothing else, so the suffix is dropped from the slug.
 const CLAUDE_NATIVE_1M_MODEL_SLUGS: ReadonlySet<string> = new Set([
+  "claude-fable-5-2",
   "claude-fable-5-1",
   "claude-fable-5",
   "claude-opus-5-5",
