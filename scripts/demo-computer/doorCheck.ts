@@ -59,10 +59,44 @@ function rpcAnswer(contentType: string, body: string): Json {
   return JSON.parse(data) as Json;
 }
 
+/** A fetch cut off by its `AbortSignal.timeout`. */
+function isTimeout(cause: unknown): boolean {
+  return cause instanceof Error && cause.name === "TimeoutError";
+}
+
+function minutes(ms: number): string {
+  const whole = Math.round(ms / 60_000);
+  return whole < 1 ? "under a minute" : `${whole} min`;
+}
+
 function makeClient(url: string, key: string) {
   let sessionId: string | null = null;
   let nextId = 0;
+  /**
+   * One request, sent again once when this computer slept through it. A
+   * timer stops while the computer sleeps, so a request that timed out after
+   * far more wall-clock time than its timeout was cut off by sleep, not by
+   * the door; the checks only read, so a second try is safe.
+   */
   const post = async (message: Json): Promise<{ status: number; answer: Json | null }> => {
+    const sent = Date.now();
+    try {
+      return await postOnce(message);
+    } catch (cause) {
+      const slept = Date.now() - sent - TIMEOUT_MS;
+      if (!isTimeout(cause) || slept < TIMEOUT_MS) throw cause;
+      console.log(`     this computer slept ${minutes(slept)} during a request; trying it again`);
+      try {
+        return await postOnce(message);
+      } catch (retryCause) {
+        const words = retryCause instanceof Error ? retryCause.message : String(retryCause);
+        throw new Error(`${words} (on a second try, after this computer slept ${minutes(slept)})`, {
+          cause: retryCause,
+        });
+      }
+    }
+  };
+  const postOnce = async (message: Json): Promise<{ status: number; answer: Json | null }> => {
     const response = await fetch(url, {
       method: "POST",
       headers: {
