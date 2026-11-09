@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vite-plus/test";
+import { describe, expect, it } from "vite-plus/test";
 import {
   EnvironmentId,
   MessageId,
@@ -50,39 +50,29 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
 }
 
 describe("buildThreadActionItems", () => {
-  it("orders threads by most recent activity and formats timestamps from updatedAt", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-03-25T12:00:00.000Z"));
+  it("orders threads by most recent activity and dates them by updatedAt", () => {
+    const items = buildThreadActionItems({
+      threads: [
+        makeThread({
+          id: ThreadId.make("thread-older"),
+          title: "Older thread",
+          updatedAt: "2026-03-24T12:00:00.000Z",
+        }),
+        makeThread({
+          id: ThreadId.make("thread-newer"),
+          title: "Newer thread",
+          createdAt: "2026-03-20T00:00:00.000Z",
+          updatedAt: "2026-03-20T00:00:00.000Z",
+        }),
+      ],
+      projectTitleById: new Map([[PROJECT_ID, "Project"]]),
+      icon: null,
+      runThread: async (_thread) => undefined,
+    });
 
-    try {
-      const items = buildThreadActionItems({
-        threads: [
-          makeThread({
-            id: ThreadId.make("thread-older"),
-            title: "Older thread",
-            updatedAt: "2026-03-24T12:00:00.000Z",
-          }),
-          makeThread({
-            id: ThreadId.make("thread-newer"),
-            title: "Newer thread",
-            createdAt: "2026-03-20T00:00:00.000Z",
-            updatedAt: "2026-03-20T00:00:00.000Z",
-          }),
-        ],
-        projectTitleById: new Map([[PROJECT_ID, "Project"]]),
-        icon: null,
-        runThread: async (_thread) => undefined,
-      });
-
-      expect(items.map((item) => item.value)).toEqual([
-        "thread:thread-older",
-        "thread:thread-newer",
-      ]);
-      expect(items[0]?.timestamp).toBe("1d ago");
-      expect(items[1]?.timestamp).toBe("5d ago");
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(items.map((item) => item.value)).toEqual(["thread:thread-older", "thread:thread-newer"]);
+    expect(items[0]?.timestampAt).toBe("2026-03-24T12:00:00.000Z");
+    expect(items[1]?.timestampAt).toBe("2026-03-20T00:00:00.000Z");
   });
 
   it("ranks thread title matches ahead of contextual project-name matches", () => {

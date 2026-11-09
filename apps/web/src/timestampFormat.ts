@@ -68,10 +68,16 @@ export function formatDateAndTime(isoDate: string, timestampFormat: TimestampFor
  * Format a relative time string from an ISO date.
  * Returns `{ value: "20s", suffix: "ago" }` or `{ value: "just now", suffix: null }`
  * so callers can style the numeric portion independently.
+ *
+ * Every formatter here that measures from now takes `nowMs` and never reads
+ * the clock itself. In a component, take it from `useRelativeTimeTick` (or
+ * render `RelativeTimeLabel`): the React Compiler caches a call by its
+ * arguments, so a label that read `Date.now()` on its own froze until the
+ * instant it measured changed.
  */
 export function formatRelativeTime(
   isoDate: string,
-  nowMs: number = Date.now(),
+  nowMs: number,
 ): { value: string; suffix: string | null } {
   const diffMs = nowMs - new Date(isoDate).getTime();
   if (diffMs < 0) return { value: "just now", suffix: null };
@@ -85,7 +91,8 @@ export function formatRelativeTime(
   return { value: `${days}d`, suffix: "ago" };
 }
 
-export function formatRelativeTimeLabel(isoDate: string, nowMs: number = Date.now()) {
+/** "5m ago"; see {@link formatRelativeTime} for where `nowMs` comes from. */
+export function formatRelativeTimeLabel(isoDate: string, nowMs: number) {
   const relative = formatRelativeTime(isoDate, nowMs);
   return relative.suffix ? `${relative.value} ${relative.suffix}` : relative.value;
 }
@@ -94,7 +101,7 @@ export function formatRelativeTimeLabel(isoDate: string, nowMs: number = Date.no
  * Relative elapsed duration since an ISO instant, without an "ago" suffix.
  * Useful for labels like "Connected for 3m".
  */
-export function formatElapsedDurationLabel(isoDate: string, nowMs: number = Date.now()): string {
+export function formatElapsedDurationLabel(isoDate: string, nowMs: number): string {
   const diffMs = nowMs - new Date(isoDate).getTime();
   if (diffMs <= 0) return "just now";
 
@@ -118,7 +125,7 @@ export function formatElapsedDurationLabel(isoDate: string, nowMs: number = Date
  * "just now" for the first few seconds, which reads as nonsense next to a live
  * status ("working · just now") and is a different width every tick.
  */
-export function formatWorkingDurationLabel(isoDate: string, nowMs: number = Date.now()): string {
+export function formatWorkingDurationLabel(isoDate: string, nowMs: number): string {
   const diffMs = nowMs - new Date(isoDate).getTime();
   const totalSeconds = Math.max(0, Math.floor(diffMs / 1_000));
   if (totalSeconds < 60) return `${totalSeconds}s`;
@@ -154,8 +161,11 @@ export function formatSpanDurationLabel(durationMs: number): string {
 /**
  * Relative time until an ISO instant (e.g. expiry). Mirrors {@link formatRelativeTime} but for future times.
  */
-export function formatRelativeTimeUntil(isoDate: string): { value: string; suffix: string | null } {
-  const diffMs = new Date(isoDate).getTime() - Date.now();
+export function formatRelativeTimeUntil(
+  isoDate: string,
+  nowMs: number,
+): { value: string; suffix: string | null } {
+  const diffMs = new Date(isoDate).getTime() - nowMs;
   if (diffMs <= 0) return { value: "Expired", suffix: null };
   const seconds = Math.floor(diffMs / 1000);
   if (seconds < 5) return { value: "Soon", suffix: null };
@@ -168,16 +178,15 @@ export function formatRelativeTimeUntil(isoDate: string): { value: string; suffi
   return { value: `${days}d`, suffix: "left" };
 }
 
-export function formatRelativeTimeUntilLabel(isoDate: string): string {
-  const relative = formatRelativeTimeUntil(isoDate);
+export function formatRelativeTimeUntilLabel(isoDate: string, nowMs: number): string {
+  const relative = formatRelativeTimeUntil(isoDate, nowMs);
   return relative.suffix ? `${relative.value} ${relative.suffix}` : relative.value;
 }
 
 /**
  * Countdown for a future instant (e.g. link expiry): "Expires in 4m 12s", with second precision under one hour.
- * Pass `nowMs` when a parent tick drives re-renders so the diff matches that snapshot.
  */
-export function formatExpiresInLabel(isoDate: string, nowMs: number = Date.now()): string {
+export function formatExpiresInLabel(isoDate: string, nowMs: number): string {
   const diffMs = new Date(isoDate).getTime() - nowMs;
   if (diffMs <= 0) return "Expired";
 

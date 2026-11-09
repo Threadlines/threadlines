@@ -50,7 +50,6 @@ import {
 } from "../../lib/pullRequestsReactQuery";
 import { cn, pluralize } from "../../lib/utils";
 import { buildThreadRouteParams } from "../../threadRoutes";
-import { formatRelativeTimeLabel } from "../../timestampFormat";
 import type { SidebarThreadSummary } from "../../types";
 import { DiffStatLabel } from "../chat/DiffStatLabel";
 import { DiffWorkerPoolProvider } from "../DiffWorkerPoolProvider";
@@ -114,6 +113,7 @@ import {
   summarizePullRequestChecks,
   type PullRequestChecksSummary,
 } from "./pullRequests.logic";
+import { RelativeTimeLabel } from "../RelativeTimeLabel";
 
 /** The header actions are the main controls on a phone, so they grow to a touch size below md. */
 const PHONE_ACTION_CLASS = "max-md:h-8 max-md:px-3";
@@ -723,7 +723,9 @@ function PullRequestDetailHeader({
               <MetaSeparator />
             </>
           ) : null}
-          <span className="shrink-0">updated {formatRelativeTimeLabel(detail.updatedAt)}</span>
+          <span className="shrink-0">
+            updated <RelativeTimeLabel at={detail.updatedAt} />
+          </span>
         </span>
         <PullRequestCheckoutCommand provider={detail.provider} number={detail.number} />
       </div>

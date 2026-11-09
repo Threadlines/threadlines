@@ -147,6 +147,28 @@ const REMOTE_FILING = {
   linked: () => true,
 };
 
+describe("inbox relative times", () => {
+  it("keeps an unchanged row's age current as minutes and hours pass", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    try {
+      vi.setSystemTime(new Date("2026-09-01T09:33:00.000Z"));
+      renderRow(null);
+      const meta = page.getByTestId(`thread-meta-${THREAD_ID}`);
+      await expect.element(meta).toHaveTextContent("33m ago");
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      await expect.element(meta).toHaveTextContent("34m ago");
+
+      // A computer that slept wakes hours later, and the thread never changed.
+      vi.setSystemTime(new Date("2026-09-01T14:33:00.000Z"));
+      await vi.advanceTimersByTimeAsync(60_000);
+      await expect.element(meta).toHaveTextContent("5h ago");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("InboxThreadRow on a touch screen", () => {
   it("opens the thread's menu on a held finger, and the lift doesn't also open the thread", async () => {
     const handleThreadContextMenu = vi.fn(async () => undefined);

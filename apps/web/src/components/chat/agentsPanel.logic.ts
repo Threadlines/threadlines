@@ -21,7 +21,7 @@ import {
 } from "../../session-logic";
 import { formatContextWindowTokensCompact } from "../../lib/contextWindow";
 import { pluralize } from "../../lib/utils";
-import { formatElapsedDurationLabel, formatRelativeTimeLabel } from "../../timestampFormat";
+import { formatElapsedDurationLabel } from "../../timestampFormat";
 import { formatSubagentMetaParts, formatSubagentDuration } from "./subagentMeta";
 import { plainAgentStep } from "./activitySteps";
 import {
@@ -45,10 +45,12 @@ interface AgentBranchBase {
   readonly statusLabel: string;
   /** Mono meta parts, already ordered; joined with `·` by the row. */
   readonly meta: ReadonlyArray<string>;
-  /** When the branch last moved, for a row that puts time on its own right edge
-   *  rather than at the end of the meta run. Set for settled history rows; a
-   *  live branch keeps its elapsed inside `meta`, where it ticks. */
-  readonly time: string | null;
+  /** When the branch last moved, for a row that puts its age ("5m ago") on its
+   *  own right edge rather than at the end of the meta run. An instant, so the
+   *  row's label keeps itself current and the history never has to be rebuilt
+   *  for the clock. Set for settled history rows; a live branch keeps its
+   *  elapsed inside `meta`, which is rebuilt as the panel's clock ticks. */
+  readonly timeAt: string | null;
   /** One line describing what the branch was asked to do. */
   readonly task: string | null;
   /** One line of the freshest output; live-tinted while running. */
@@ -172,11 +174,11 @@ function subagentBranch(
       ...(live && item.isBackgrounded === true ? ["background"] : []),
       ...formatSubagentMetaParts(item, {
         context: details.context,
-        elapsed: live ? formatElapsedDurationLabel(item.createdAt, nowMs) : null,
+        elapsed: live ? formatElapsedDurationLabel(item.createdAt, nowMs ?? Date.now()) : null,
       }),
       ...agentDiffMetaParts(item),
     ],
-    time: null,
+    timeAt: null,
     task: details.goal,
     // The step the provider reports is the freshest signal; the agent's own
     // streamed prose is the fallback when there is no task stream.
@@ -203,6 +205,8 @@ export function buildAgentBranches(input: {
   /** Background runs that are already listed as subagents, keyed by the tool
    *  call that launched them. Lends each matching row its stop handle. */
   readonly subagentRuns?: ReadonlyMap<string, ThreadBackgroundRunItem> | undefined;
+  /** What the rows' times are measured against. A panel that shows them passes
+   *  a ticking clock (`useRelativeTimeTick`); left out, they are read once. */
   readonly nowMs?: number | undefined;
 }): ReadonlyArray<AgentBranch> {
   const branches = input.subagents.map((item) => ({
@@ -249,10 +253,7 @@ function formatAgentHistoryMeta(item: SubagentProgressItem): ReadonlyArray<strin
  * meta is a record rather than a running total, and its signal line is what it
  * reported back rather than what it is doing now.
  */
-function historyBranch(
-  entry: ThreadSubagentHistoryEntry,
-  nowMs: number | undefined,
-): AgentSubagentBranch {
+function historyBranch(entry: ThreadSubagentHistoryEntry): AgentSubagentBranch {
   const { item, resultBody } = entry;
   const details = deriveSubagentDisplayDetails(item);
   return {
@@ -262,7 +263,7 @@ function historyBranch(
     name: formatSubagentDisplayName(item),
     statusLabel: item.statusLabel,
     meta: formatAgentHistoryMeta(item),
-    time: formatRelativeTimeLabel(item.updatedAt, nowMs ?? Date.now()),
+    timeAt: item.updatedAt,
     // What it was asked to do stays on the record for the row's tooltip; the row
     // itself spends its one prose line on what came back, which is the more
     // useful half and the same slot a live agent puts its progress in.
@@ -368,21 +369,34 @@ export function buildAgentsPanelView(input: {
   readonly history?: ReadonlyArray<ThreadSubagentHistoryEntry> | undefined;
   readonly nowMs?: number | undefined;
 }): AgentsPanelView {
-  const current = buildAgentBranches(input);
+  return joinAgentsPanelView(buildAgentBranches(input), buildEarlierAgentBranches(input));
+}
+
+/**
+ * Everything this thread ran before the live turn, newest first. Needs no
+ * clock, so a panel can tick its live half every second without rebuilding
+ * this one.
+ */
+export function buildEarlierAgentBranches(input: {
+  readonly subagents: ReadonlyArray<SubagentProgressItem>;
+  readonly history?: ReadonlyArray<ThreadSubagentHistoryEntry> | undefined;
+}): ReadonlyArray<AgentSubagentBranch> {
   const currentAgentKeys = new Set(input.subagents.map(subagentIdentity));
-  const earlier = (input.history ?? [])
+  return (input.history ?? [])
     .filter((entry) => !currentAgentKeys.has(subagentIdentity(entry.item)))
-    .map((entry) => historyBranch(entry, input.nowMs))
+    .map(historyBranch)
     .toSorted(
       (left, right) =>
         (parseTimestamp(right.item.updatedAt) ?? 0) - (parseTimestamp(left.item.updatedAt) ?? 0),
     );
+}
 
-  return {
-    current,
-    earlier,
-    hasAny: current.length > 0 || earlier.length > 0,
-  };
+/** The panel's list from its two halves, built apart or together. */
+export function joinAgentsPanelView(
+  current: ReadonlyArray<AgentBranch>,
+  earlier: ReadonlyArray<AgentSubagentBranch>,
+): AgentsPanelView {
+  return { current, earlier, hasAny: current.length > 0 || earlier.length > 0 };
 }
 
 /** `agentThreadId` is the id every other surface addresses an agent by; the

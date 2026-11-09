@@ -6,6 +6,8 @@ import type {
 } from "@threadlines/contracts";
 import { ChevronRightIcon, WorkflowIcon, XIcon } from "lucide-react";
 import { memo, useCallback, useMemo, type CSSProperties } from "react";
+import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
+import { RelativeTimeLabel } from "../RelativeTimeLabel";
 
 import type {
   SubagentProgressItem,
@@ -34,11 +36,13 @@ import { AgentProviderGlyph } from "./ProviderInstanceIcon";
 import { SubagentInspector } from "./SubagentInspector";
 import { deriveSubagentDisplayDetails, type ThreadBackgroundRunItem } from "./threadActivity";
 import {
-  buildAgentsPanelView,
+  buildAgentBranches,
+  buildEarlierAgentBranches,
   findAgentsPanelSubagent,
   formatAgentsHeaderMeta,
   formatAgentsPanelSummary,
   hasRunningAgentActivity,
+  joinAgentsPanelView,
   resolveSubagentProvider,
   type AgentBranch,
   type AgentBranchStatus,
@@ -302,12 +306,12 @@ function BranchRow({
           ) : null}
           {/* Where a left thread row puts its time: end of the title line, mono,
               right-aligned. Only a settled row has one to put there. */}
-          {branch.time ? (
+          {branch.timeAt ? (
             <span
               className="shrink-0 font-mono text-[11px] leading-4 text-muted-foreground/45 tabular-nums"
               data-agent-branch-time="true"
             >
-              {branch.time}
+              <RelativeTimeLabel at={branch.timeAt} />
             </span>
           ) : null}
         </span>
@@ -496,16 +500,29 @@ export const AgentsPanel = memo(function AgentsPanel({
     ? workflowRuns.find((run) => run.taskId === selectedWorkflow.taskId)
     : undefined;
 
-  const view = useMemo(
-    () => buildAgentsPanelView({ subagents, subagentRuns, history }),
-    [history, subagentRuns, subagents],
+  const anyRunning = hasRunningAgentActivity({ subagents });
+  // A live agent's time counts up by the second; a settled one's says how
+  // long ago, by the minute.
+  const nowMs = useRelativeTimeTick(anyRunning ? 1_000 : 60_000);
+  // Built in two halves so the clock rebuilds only the live one; history rows
+  // keep their ages current themselves.
+  const current = useMemo(
+    () => buildAgentBranches({ subagents, subagentRuns, nowMs }),
+    [nowMs, subagentRuns, subagents],
   );
-  const headerMeta = useMemo(() => formatAgentsHeaderMeta({ subagents }), [subagents]);
+  const earlier = useMemo(
+    () => buildEarlierAgentBranches({ subagents, history }),
+    [history, subagents],
+  );
+  const view = useMemo(() => joinAgentsPanelView(current, earlier), [current, earlier]);
+  const headerMeta = useMemo(
+    () => formatAgentsHeaderMeta({ subagents, nowMs }),
+    [nowMs, subagents],
+  );
   const headerSummary = useMemo(
     () => formatAgentsPanelSummary(view, providerLabel),
     [providerLabel, view],
   );
-  const anyRunning = hasRunningAgentActivity({ subagents });
   const selectedSubagent = findAgentsPanelSubagent(view, selectedAgentId);
 
   const handleSelect = useCallback((branch: AgentBranch) => {

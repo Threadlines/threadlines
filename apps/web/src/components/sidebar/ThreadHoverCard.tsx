@@ -33,6 +33,7 @@ import { useGitStatus } from "../../lib/gitStatusState";
 import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
 import { createThreadSelectorByRef } from "../../storeSelectors";
 import { formatRelativeTimeLabel } from "../../timestampFormat";
+import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import type { SidebarThreadSummary } from "../../types";
 import { formatChildThreadCount, type ThreadStatusPill } from "../Sidebar.logic";
 import { ProjectFavicon } from "../ProjectFavicon";
@@ -188,6 +189,7 @@ function AwaitedTaskLines({ tasks }: { tasks: ReadonlyArray<OrchestrationAwaited
 }
 
 function ThreadHoverCardContent({ thread, status, lineage }: ThreadHoverCardPayload) {
+  const nowMs = useRelativeTimeTick(60_000);
   const projectRef = useMemo(
     () => scopeProjectRef(thread.environmentId, thread.projectId),
     [thread.environmentId, thread.projectId],
@@ -273,7 +275,7 @@ function ThreadHoverCardContent({ thread, status, lineage }: ThreadHoverCardPayl
       <HoverCardStatusLine
         status={status}
         label={waitLabel}
-        timestamp={formatRelativeTimeLabel(activityAt)}
+        timestamp={formatRelativeTimeLabel(activityAt, nowMs)}
       >
         {awaitedTasks ? <AwaitedTaskLines tasks={awaitedTasks} /> : null}
       </HoverCardStatusLine>

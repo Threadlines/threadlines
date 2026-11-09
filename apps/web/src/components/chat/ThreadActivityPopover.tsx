@@ -20,11 +20,7 @@ import {
 
 import type { PlanTaskBadgeState } from "../../planPanelState";
 import { proposedPlanTitle } from "../../proposedPlan";
-import {
-  formatRelativeTimeLabel,
-  formatSpanDurationLabel,
-  formatWorkingDurationLabel,
-} from "../../timestampFormat";
+import { formatSpanDurationLabel, formatWorkingDurationLabel } from "../../timestampFormat";
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import {
   type ActivePlanState,
@@ -50,6 +46,7 @@ import {
   type BackgroundRunKind,
   type ThreadBackgroundRunItem,
 } from "./threadActivity";
+import { RelativeTimeLabel } from "../RelativeTimeLabel";
 
 export interface ThreadTaskProgressState {
   activePlan: ActivePlanState | null;
@@ -661,7 +658,7 @@ function TaskSection({
           title="Plan ready"
           meta={
             <span className={cn("shrink-0 font-mono text-[10.5px]", toneTextClassName("ready"))}>
-              {formatRelativeTimeLabel(activeProposedPlan.createdAt)}
+              <RelativeTimeLabel at={activeProposedPlan.createdAt} />
             </span>
           }
         />

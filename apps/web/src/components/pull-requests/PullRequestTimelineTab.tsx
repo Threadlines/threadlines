@@ -20,7 +20,6 @@ import { useState, type ReactNode } from "react";
 
 import { openExternalUrl } from "../../lib/externalLinks";
 import { cn, pluralize } from "../../lib/utils";
-import { formatRelativeTimeLabel } from "../../timestampFormat";
 import ChatMarkdown from "../ChatMarkdown";
 import { Button } from "../ui/button";
 import { Skeleton } from "../ui/skeleton";
@@ -31,6 +30,7 @@ import {
   groupTimelineRows,
   type PullRequestTimelineEvent,
 } from "./pullRequests.logic";
+import { RelativeTimeLabel } from "../RelativeTimeLabel";
 
 export type PullRequestTimelineOrder = "newest" | "oldest";
 
@@ -121,7 +121,7 @@ function TimelineHeading({
       </span>
       <span className="flex min-w-0 flex-1 items-center gap-1.5">{children}</span>
       <span className="shrink-0 font-mono text-[11px] tabular-nums">
-        {formatRelativeTimeLabel(at)}
+        <RelativeTimeLabel at={at} />
       </span>
       {url === null ? null : (
         <Button
@@ -306,7 +306,7 @@ function TimelineCommentGroup({
         <MetaSeparator />
         <span className="min-w-0 truncate">{pluralize(authors.size, "author")}</span>
         <span className="ml-auto shrink-0 font-mono text-[11px] tabular-nums">
-          {formatRelativeTimeLabel(first.at)}
+          <RelativeTimeLabel at={first.at} />
         </span>
       </button>
       {open ? (

@@ -10,7 +10,6 @@ import {
   ImageIcon,
   XIcon,
 } from "lucide-react";
-import { formatRelativeTimeLabel } from "../../timestampFormat";
 import { Button } from "../ui/button";
 import { Drawer, DrawerPopup, DrawerTitle } from "../ui/drawer";
 import {
@@ -32,6 +31,7 @@ import {
   useComposerStashDelete,
   type ComposerStashProps,
 } from "./ComposerStashControl";
+import { RelativeTimeLabel } from "../RelativeTimeLabel";
 
 export interface ComposerAddMenuProps {
   /** Phones get a sheet with the camera and photo library as their own rows. */
@@ -254,7 +254,7 @@ function PhoneAddSheet(
                   <BookmarkIcon aria-hidden="true" />
                   <span className="min-w-0 flex-1 truncate">{stashEntrySnippet(entry)}</span>
                   <span className="shrink-0 font-mono text-muted-foreground text-xs tabular-nums">
-                    {formatRelativeTimeLabel(entry.createdAt)}
+                    <RelativeTimeLabel at={entry.createdAt} />
                   </span>
                 </button>
                 <Button

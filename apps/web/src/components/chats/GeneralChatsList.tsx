@@ -9,7 +9,7 @@ import { useTouchHoldMenu } from "../../hooks/useTouchHoldMenu";
 import { useThreadSeenSources } from "../../lib/threadInboxSync";
 import { cn } from "../../lib/utils";
 import { buildThreadRouteParams, resolveThreadRouteRef } from "../../threadRoutes";
-import { formatRelativeTimeLabel } from "../../timestampFormat";
+import { RelativeTimeLabel } from "../RelativeTimeLabel";
 import type { SidebarThreadSummary } from "../../types";
 import {
   isUnreadResultStatus,
@@ -113,7 +113,7 @@ function GeneralChatRow({
               thread={thread}
               status={status}
               testId="chats-list-row-status"
-              resting={formatRelativeTimeLabel(chatActivityAt(thread))}
+              resting={<RelativeTimeLabel at={chatActivityAt(thread)} />}
               restingClassName="text-muted-foreground"
             />
           </button>

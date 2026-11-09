@@ -215,8 +215,8 @@ function withoutProviderInstanceFavorites(
 }
 
 function ProviderLastChecked({ lastCheckedAt }: { lastCheckedAt: string | null }) {
-  useRelativeTimeTick();
-  const lastCheckedRelative = lastCheckedAt ? formatRelativeTime(lastCheckedAt) : null;
+  const nowMs = useRelativeTimeTick();
+  const lastCheckedRelative = lastCheckedAt ? formatRelativeTime(lastCheckedAt, nowMs) : null;
 
   if (!lastCheckedRelative) {
     return null;

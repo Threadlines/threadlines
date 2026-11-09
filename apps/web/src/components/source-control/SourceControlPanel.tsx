@@ -213,6 +213,7 @@ import {
   resolveBranchSelectionTarget,
 } from "../BranchToolbar.logic";
 import { threadWorkingCwdLabel } from "@threadlines/shared/threadCwd";
+import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 
 export interface SourceControlProjectTarget {
   readonly environmentId: EnvironmentId;
@@ -890,8 +891,9 @@ function CommitGraphHoverCard({
   readonly onOpenCommitUrl: (commit: VcsCommitGraphCommit) => void;
 }) {
   const [copyFullMessageState, setCopyFullMessageState] = useState<"idle" | "copied">("idle");
+  const nowMs = useRelativeTimeTick(60_000);
   const absoluteDate = formatCommitGraphDateTime(commit.committedAt);
-  const relativeDate = formatCommitGraphTimestamp(commit.committedAt);
+  const relativeDate = formatCommitGraphTimestamp(commit.committedAt, nowMs);
   const parentSummary = formatCommitGraphParentSummary(commit.parents.length);
   const displayRefs = buildCommitGraphDetailRefs(commit.refs, currentBranch);
   const messageBody = details?.body.trim() || details?.message.trim() || "";

@@ -34,7 +34,6 @@ import {
   useStore,
 } from "../../store";
 import { buildThreadRouteParams } from "../../threadRoutes";
-import { formatRelativeTimeLabel } from "../../timestampFormat";
 import type { SidebarThreadSummary } from "../../types";
 import { PageTitlebar } from "../PageTitlebar";
 import { PullRequestThreadDialog } from "../PullRequestThreadDialog";
@@ -94,6 +93,7 @@ import {
   type PullRequestSelection,
   type PullRequestSort,
 } from "./pullRequests.logic";
+import { RelativeTimeLabel } from "../RelativeTimeLabel";
 
 const STATE_TABS = [
   { value: "open", label: "Open" },
@@ -1145,7 +1145,7 @@ function PullRequestRow({
               {entry.title}
             </span>
             <span className="shrink-0 font-mono text-xs tabular-nums text-muted-foreground/50">
-              {formatRelativeTimeLabel(entry.updatedAt)}
+              <RelativeTimeLabel at={entry.updatedAt} />
             </span>
           </span>
           <span className="flex w-full min-w-0 items-center gap-2 text-xs text-muted-foreground/55">

@@ -54,18 +54,18 @@ function formatDuration(value: number): string {
   return `${(value / 1_000).toFixed(value >= 10_000 ? 1 : 2)} s`;
 }
 
-function formatRelative(value: DateTime.Utc | null): string {
+function formatRelative(value: DateTime.Utc | null, nowMs: number): string {
   if (!value) return "No trace records";
-  const relative = formatRelativeTime(DateTime.formatIso(value));
+  const relative = formatRelativeTime(DateTime.formatIso(value), nowMs);
   return relative.suffix ? `${relative.value} ${relative.suffix}` : relative.value;
 }
 
-function formatRelativeNoWrap(value: DateTime.Utc | null): string {
-  return formatRelative(value).replaceAll(" ", "\u00a0");
+function formatRelativeNoWrap(value: DateTime.Utc | null, nowMs: number): string {
+  return formatRelative(value, nowMs).replaceAll(" ", "\u00a0");
 }
 
-function formatRelativeIsoNoWrap(value: string): string {
-  const relative = formatRelativeTime(value);
+function formatRelativeIsoNoWrap(value: string, nowMs: number): string {
+  const relative = formatRelativeTime(value, nowMs);
   const label = relative.suffix ? `${relative.value} ${relative.suffix}` : relative.value;
   return label.replaceAll(" ", "\u00a0");
 }
@@ -433,7 +433,7 @@ function PendingRequestsSection() {
         />
         <StatBlock
           label="Oldest"
-          value={oldestStartedAt ? formatRelativeIsoNoWrap(oldestStartedAt) : "None"}
+          value={oldestStartedAt ? formatRelativeIsoNoWrap(oldestStartedAt, nowMs) : "None"}
         />
       </StatsGrid>
       {summary ? (
@@ -460,7 +460,7 @@ function PendingRequestsSection() {
                 {formatDuration(request.thresholdMs)}
               </td>
               <td className="whitespace-nowrap px-4 py-3 align-top font-mono tabular-nums text-muted-foreground">
-                {formatRelativeIsoNoWrap(request.startedAt)}
+                {formatRelativeIsoNoWrap(request.startedAt, nowMs)}
               </td>
               <td
                 className="min-w-0 truncate px-4 py-3 align-top font-mono text-[11px] text-muted-foreground last:sm:pr-5"
@@ -974,8 +974,8 @@ function ProcessResourceHistoryTable({
 }
 
 function DiagnosticsLastChecked({ checkedAt }: { checkedAt: DateTime.Utc | null }) {
-  useRelativeTimeTick();
-  const relative = checkedAt ? formatRelativeTime(DateTime.formatIso(checkedAt)) : null;
+  const nowMs = useRelativeTimeTick();
+  const relative = checkedAt ? formatRelativeTime(DateTime.formatIso(checkedAt), nowMs) : null;
 
   if (!relative) {
     return <span className="text-[11px] text-muted-foreground/50">Checking</span>;
@@ -1025,6 +1025,8 @@ function DiagnosticsRefreshButton({
 }
 
 export function DiagnosticsSettingsPanel() {
+  // The tables' "5m ago" ages read this clock.
+  const nowMs = useRelativeTimeTick(60_000);
   const observability = useServerObservability();
   const availableEditors = useServerAvailableEditors();
   const [resourceWindowMs, setResourceWindowMs] = useState(15 * 60_000);
@@ -1401,7 +1403,7 @@ export function DiagnosticsSettingsPanel() {
                   {formatDuration(failure.durationMs)}
                 </td>
                 <td className="whitespace-nowrap px-4 py-3 align-top font-mono tabular-nums text-muted-foreground last:sm:pr-5">
-                  {formatRelativeNoWrap(failure.endedAt)}
+                  {formatRelativeNoWrap(failure.endedAt, nowMs)}
                 </td>
               </tr>
             ))}
@@ -1431,7 +1433,7 @@ export function DiagnosticsSettingsPanel() {
                   <ExpandableText text={failure.cause} />
                 </td>
                 <td className="w-px whitespace-nowrap px-4 py-3 align-top font-mono tabular-nums text-muted-foreground last:sm:pr-5">
-                  {formatRelativeNoWrap(failure.lastSeenAt)}
+                  {formatRelativeNoWrap(failure.lastSeenAt, nowMs)}
                 </td>
               </tr>
             ))}
@@ -1509,7 +1511,7 @@ export function DiagnosticsSettingsPanel() {
                   {formatDuration(trace.maxDurationMs)}
                 </td>
                 <td className="whitespace-nowrap px-4 py-3 align-top font-mono tabular-nums text-muted-foreground last:sm:pr-5">
-                  {formatRelativeNoWrap(trace.endedAt)}
+                  {formatRelativeNoWrap(trace.endedAt, nowMs)}
                 </td>
               </tr>
             ))}
@@ -1539,7 +1541,7 @@ export function DiagnosticsSettingsPanel() {
                   {formatDuration(span.durationMs)}
                 </td>
                 <td className="w-px whitespace-nowrap px-4 py-3 align-top font-mono tabular-nums text-muted-foreground">
-                  {formatRelativeNoWrap(span.endedAt)}
+                  {formatRelativeNoWrap(span.endedAt, nowMs)}
                 </td>
                 <td className="min-w-0 whitespace-nowrap px-4 py-3 align-top text-muted-foreground last:sm:pr-5">
                   <TraceIdCell traceId={span.traceId} />
@@ -1570,7 +1572,7 @@ export function DiagnosticsSettingsPanel() {
                   {formatDuration(span.durationMs)}
                 </td>
                 <td className="w-px whitespace-nowrap px-4 py-3 align-top font-mono tabular-nums text-muted-foreground">
-                  {formatRelativeNoWrap(span.endedAt)}
+                  {formatRelativeNoWrap(span.endedAt, nowMs)}
                 </td>
                 <td className="min-w-0 whitespace-nowrap px-4 py-3 align-top text-muted-foreground last:sm:pr-5">
                   <TraceIdCell traceId={span.traceId} />
@@ -1623,7 +1625,7 @@ export function DiagnosticsSettingsPanel() {
                     className="hover:bg-muted/15"
                   >
                     <td className="whitespace-nowrap px-4 py-3 align-top font-mono tabular-nums text-muted-foreground sm:pl-5">
-                      {formatRelativeNoWrap(event.seenAt)}
+                      {formatRelativeNoWrap(event.seenAt, nowMs)}
                     </td>
                     <td className="px-4 py-3 align-top">
                       <span className="inline-flex rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] font-medium uppercase text-foreground/80">

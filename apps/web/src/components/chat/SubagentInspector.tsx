@@ -13,6 +13,7 @@ import {
   type WorkLogEntry,
 } from "../../session-logic";
 import { formatElapsedDurationLabel, formatRelativeTimeLabel } from "../../timestampFormat";
+import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import { useServerProviders } from "../../rpc/serverState";
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
@@ -83,6 +84,7 @@ export function SubagentInspector({
   const providers = useServerProviders();
   const displayName = formatSubagentDisplayName(item);
   const active = isActiveSubagentStatus(item.status);
+  const nowMs = useRelativeTimeTick(active ? 1_000 : 60_000);
   const transcriptAgentId = item.transcriptAgentId ?? item.agentThreadId;
   const directInput = !canSendInput
     ? "unsupported"
@@ -117,8 +119,8 @@ export function SubagentInspector({
   const metaParts = formatSubagentMetaParts(item, {
     context: details.context,
     elapsed: active
-      ? formatElapsedDurationLabel(item.createdAt)
-      : `Updated ${formatRelativeTimeLabel(item.updatedAt)}`,
+      ? formatElapsedDurationLabel(item.createdAt, nowMs)
+      : `Updated ${formatRelativeTimeLabel(item.updatedAt, nowMs)}`,
   });
 
   return (

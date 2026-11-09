@@ -194,7 +194,6 @@ import { ThreadRowLeadingStatus, ThreadRowTrailingStatus } from "./ThreadStatusI
 import { useServerKeybindings, useServerProviders } from "../rpc/serverState";
 import { resolveAppModelSelectionForInstance } from "../modelSelection";
 import { deriveProviderInstanceEntries } from "../providerInstances";
-import { formatRelativeTimeLabel } from "../timestampFormat";
 import {
   Command,
   CommandDialogPopup,
@@ -1565,7 +1564,7 @@ export function OpenCommandPaletteDialog() {
         title,
         description: candidate.unavailableReason ?? `${source} · ${candidate.preview}`,
         icon: <MessageSquareIcon className={ITEM_ICON_CLASS} />,
-        timestamp: formatRelativeTimeLabel(candidate.updatedAt),
+        timestampAt: candidate.updatedAt,
         disabled: !candidate.canImport || importingProviderThreadId !== null,
         ...(isImporting
           ? {

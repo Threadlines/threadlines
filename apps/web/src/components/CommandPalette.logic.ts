@@ -16,7 +16,6 @@ import {
   CONNECTIONS_SETTINGS_SECTION_PATH,
   type SettingsSectionPath,
 } from "./settings/settingsNavigation";
-import { formatRelativeTimeLabel } from "../timestampFormat";
 import { type Project, type SidebarThreadSummary, type Thread } from "../types";
 
 export const RECENT_THREAD_LIMIT = 12;
@@ -29,7 +28,8 @@ export interface CommandPaletteItem {
   readonly searchTerms: ReadonlyArray<string>;
   readonly title: ReactNode;
   readonly description?: string;
-  readonly timestamp?: string;
+  /** When the item last moved, shown as a relative age ("5m ago") that keeps itself current. */
+  readonly timestampAt?: string;
   readonly icon: ReactNode;
   readonly disabled?: boolean;
   /** Optional content rendered inline before the title text. */
@@ -184,9 +184,7 @@ export function buildThreadActionItems<TThread extends BuildThreadActionItemsThr
         searchTerms: [thread.title, projectTitle ?? ``, thread.branch ?? ``],
         title: thread.title,
         description: descriptionParts.join(` · `),
-        timestamp: formatRelativeTimeLabel(
-          thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt,
-        ),
+        timestampAt: thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt,
         icon: typeof input.icon === "function" ? input.icon(thread) : input.icon,
       },
       leadingContent ? { titleLeadingContent: leadingContent } : {},

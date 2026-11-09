@@ -3,7 +3,6 @@ import { memo, useCallback, useState } from "react";
 
 import { stripInlineTerminalContextPlaceholders } from "../../lib/terminalContext";
 import { stashEntryChipCount, type PromptStashEntry } from "../../promptStashStore";
-import { formatRelativeTimeLabel } from "../../timestampFormat";
 import {
   AlertDialog,
   AlertDialogClose,
@@ -15,6 +14,7 @@ import {
 } from "../ui/alert-dialog";
 import { Button } from "../ui/button";
 import { MenuItem } from "../ui/menu";
+import { RelativeTimeLabel } from "../RelativeTimeLabel";
 
 const SNIPPET_MAX_CHARS = 90;
 const MAX_ROW_THUMBNAILS = 3;
@@ -125,7 +125,7 @@ const StashEntryRow = memo(function StashEntryRow(props: {
         <span className="shrink-0 text-warning-foreground text-xs">{missingCount} dropped</span>
       ) : null}
       <span className="shrink-0 font-mono text-muted-foreground text-xs tabular-nums">
-        {formatRelativeTimeLabel(entry.createdAt)}
+        <RelativeTimeLabel at={entry.createdAt} />
       </span>
       <Button
         type="button"
