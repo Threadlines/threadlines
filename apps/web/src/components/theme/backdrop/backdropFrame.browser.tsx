@@ -257,21 +257,99 @@ describe("backdrop frame", { timeout: 60_000 }, () => {
     });
   });
 
+  it("refuses art that declares a name the runtime needs, and says which", async () => {
+    // A script's top-level `function` and `var` exist before any of the
+    // script runs, the prelude included: these replace or hide what the
+    // prelude reports, schedules and allocates with.
+    for (const [declaration, name] of [
+      ["function postMessage() {}", "postMessage"],
+      ["var performance;", "performance"],
+      ["function Uint8Array() {}", "Uint8Array"],
+    ] as const) {
+      mounted?.dispose();
+      mounted = await mountFrame();
+      mounted.start(
+        "grid",
+        `${declaration}
+        threadlines.backdrop({ mode: "grid", cell: { width: 10, height: 14 }, glyphs: " #", draw() {} });`,
+      );
+      const failure = await mounted.failure();
+      expect(failure.reason).toBe("script-error");
+      expect(failure.detail).toContain(`declares ${name},`);
+    }
+  });
+
+  it("takes the timers away from the art, the platform's copies too", async () => {
+    mounted = await mountFrame();
+    mounted.start(
+      "grid",
+      `const out = {};
+      const levels = [self];
+      for (let level = Object.getPrototypeOf(self); level; level = Object.getPrototypeOf(level)) levels.push(level);
+      for (const name of ["setTimeout", "setInterval", "clearTimeout", "clearInterval"]) {
+        out[name] = levels.some((level) => { try { level[name].call(self, () => {}, 0); return true; } catch { return false; } }) ? "open" : "closed";
+      }
+      threadlines.backdrop({ mode: "grid", cell: { width: 10, height: 14 }, glyphs: " #",
+        draw() { throw new Error("reach " + JSON.stringify(out)); } });`,
+    );
+    const failure = await mounted.failure();
+    expect(JSON.parse(failure.detail!.slice(failure.detail!.indexOf("{")))).toEqual({
+      setTimeout: "closed",
+      setInterval: "closed",
+      clearTimeout: "closed",
+      clearInterval: "closed",
+    });
+  });
+
+  it("reports the art's error even when the art makes errors unreadable", async () => {
+    mounted = await mountFrame();
+    mounted.start(
+      "grid",
+      `Object.defineProperty(Error, Symbol.hasInstance, { value() { throw 0; } });
+      threadlines.backdrop({ mode: "grid", cell: { width: 10, height: 14 }, glyphs: " #",
+        draw() { throw new Error("broken on purpose"); } });`,
+    );
+    expect((await mounted.failure()).reason).toBe("script-error");
+  });
+
   it("fails art whose worker never reports in, rather than waiting on it", async () => {
     mounted = await mountFrame();
     mounted.post({ type: "test:launch-ms", ms: 1_000 });
-    // A function declared at a script's top level exists before any of the
-    // script runs, the prelude included: this one swallows every reply.
-    mounted.start(
-      "grid",
-      `function postMessage() {}
-      threadlines.backdrop({ mode: "grid", cell: { width: 10, height: 14 }, glyphs: " #", draw() {} });`,
-    );
+    mounted.post({ type: "test:mute-workers", on: true });
+    mounted.start("grid", GRID_ART);
     const failure = await mounted.failure();
     expect([failure.reason, failure.detail]).toEqual([
       "script-error",
       "The art didn't start: its worker never reported in.",
     ]);
+  });
+
+  it("runs art that takes the global names for itself", async () => {
+    // `let` at a script's top level hides a global name from every identifier
+    // lookup in the script, the prelude's included.
+    const taken =
+      "Object, Math, Number, Array, Error, TypeError, ArrayBuffer, Int16Array, Uint8Array, " +
+      "Uint8ClampedArray, Uint32Array, OffscreenCanvas, performance, setTimeout, queueMicrotask, " +
+      "addEventListener, postMessage, globalThis, self, Date, JSON, Promise, Symbol, Reflect";
+    for (const [mode, art] of [
+      [
+        "grid",
+        `threadlines.backdrop({ mode: "grid", cell: { width: 10, height: 14 }, glyphs: " #", draw(grid) { grid.glyph.fill(1); } });`,
+      ],
+      [
+        "pixels",
+        `threadlines.backdrop({ mode: "pixels", width: 16, height: 10, draw(pixels) { pixels.data.fill(255); } });`,
+      ],
+      [
+        "canvas",
+        `threadlines.backdrop({ mode: "canvas", context: "2d", draw(ctx) { ctx.fillRect(0, 0, 10, 10); } });`,
+      ],
+    ] as const) {
+      mounted?.dispose();
+      mounted = await mountFrame();
+      mounted.start(mode, `let ${taken};\n${art}`);
+      await mounted.framesAbove(1);
+    }
   });
 
   it("terminates the worker while paused, remeasures new zones, and resumes the art's time", async () => {
@@ -434,6 +512,52 @@ describe("backdrop frame", { timeout: 60_000 }, () => {
     mounted.start(
       "grid",
       `threadlines.backdrop({ mode: "grid", cell: { width: 10, height: 14 }, glyphs: " #",
+        draw() { Promise.resolve().then(() => { const end = performance.now() + 30; while (performance.now() < end) {} }); } });`,
+    );
+    await waitForFrame(async () => expect((await mounted!.probe()).throttle).toBeGreaterThan(0), {
+      interval: 250,
+    });
+  });
+
+  it("counts work the art hides in reading its ticks", async () => {
+    mounted = await mountFrame();
+    // Every tick's data runs through the art's own getter, which spends 30 ms.
+    mounted.start(
+      "grid",
+      `const data = Object.getOwnPropertyDescriptor(MessageEvent.prototype, "data").get;
+      Object.defineProperty(MessageEvent.prototype, "data", { get() { const end = performance.now() + 30; while (performance.now() < end) {} return data.call(this); } });
+      threadlines.backdrop({ mode: "grid", cell: { width: 10, height: 14 }, glyphs: " #", draw() {} });`,
+    );
+    await waitForFrame(async () => expect((await mounted!.probe()).throttle).toBeGreaterThan(0), {
+      interval: 250,
+    });
+  });
+
+  it("counts work the art hides in the fields its reply is built from", async () => {
+    mounted = await mountFrame();
+    // The art owns the grid it draws into: a getter there runs as the reply is built.
+    mounted.start(
+      "grid",
+      `threadlines.backdrop({ mode: "grid", cell: { width: 10, height: 14 }, glyphs: " #",
+        draw(grid) {
+          if (Object.getOwnPropertyDescriptor(grid, "cols").get) return;
+          const cols = grid.cols;
+          Object.defineProperty(grid, "cols", { configurable: true, get() { const end = performance.now() + 30; while (performance.now() < end) {} return cols; } });
+        } });`,
+    );
+    await waitForFrame(async () => expect((await mounted!.probe()).throttle).toBeGreaterThan(0), {
+      interval: 250,
+    });
+  });
+
+  it("keeps counting work the art defers when the art patches the built-ins", async () => {
+    mounted = await mountFrame();
+    // The same hidden work, with Math.max made to say there was none: the
+    // prelude measures with its own copy.
+    mounted.start(
+      "grid",
+      `this.Math.max = () => 0;
+      threadlines.backdrop({ mode: "grid", cell: { width: 10, height: 14 }, glyphs: " #",
         draw() { Promise.resolve().then(() => { const end = performance.now() + 30; while (performance.now() < end) {} }); } });`,
     );
     await waitForFrame(async () => expect((await mounted!.probe()).throttle).toBeGreaterThan(0), {
