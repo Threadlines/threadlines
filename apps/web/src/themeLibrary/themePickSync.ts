@@ -331,15 +331,17 @@ function publish(
       (picked) => {
         const now = withoutOutgoing(readThemePickSyncState(window.localStorage), pending.theme);
         const sent = now.pending !== null && sameThemePickTheme(now.pending.theme, pending.theme);
+        const settled = sent || now.pending === null;
         writeThemePickSyncState({
           ...now,
           seen: newerThemeRevision(now.seen, picked),
           observed: newerThemeRevision(now.observed, picked),
           // Picked again while this went out: the newer pick still has to go, above this one.
-          pending:
-            sent || now.pending === null
-              ? null
-              : { ...now.pending, known: newerThemeRevision(now.pending.known, picked) },
+          pending: settled
+            ? null
+            : { ...now.pending!, known: newerThemeRevision(now.pending!.known, picked) },
+          // Nothing left to send: no send still out can matter (and none left behind by a crash).
+          outgoing: settled ? [] : now.outgoing,
         });
       },
       (error: unknown) => {
@@ -361,10 +363,14 @@ function publish(
     });
 }
 
-/** The theme the user just committed here becomes this device's pick to share. */
+/**
+ * The theme the user just committed here becomes this device's pick to share
+ * (a pick made under `?theme=default` too: it ends that load's bypass). The
+ * store announces it before its own update lands, so the send runs after.
+ */
 function onUserCommit(choice: ThemeChoice, base: ThemeBase | null): void {
   const theme = pickThemeOf(choice, base);
-  if (theme === null || readThemeState().bypass) return;
+  if (theme === null) return;
   const state = readThemePickSyncState(window.localStorage);
   const winning = library ? picksOf(library).winning : null;
   writeThemePickSyncState({
@@ -372,7 +378,7 @@ function onUserCommit(choice: ThemeChoice, base: ThemeBase | null): void {
     pending: { theme, known: newerThemeRevision(state.observed, winning) },
   });
   publishAfter = 0;
-  run();
+  queueMicrotask(run);
 }
 
 /**
