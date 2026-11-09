@@ -15,7 +15,7 @@ import {
   type ProviderInstanceId,
   type ServerProviderModel,
 } from "@threadlines/contracts";
-import { normalizeModelSlug } from "@threadlines/shared/model";
+import { findReasoningOptionDescriptor, normalizeModelSlug } from "@threadlines/shared/model";
 
 import { cn } from "../../lib/utils";
 import { Badge } from "../ui/badge";
@@ -334,16 +334,7 @@ export function ProviderModelsSection({
           if (caps?.supportsPersonality) {
             capLabels.push("Personality");
           }
-          if (
-            descriptors.some(
-              (descriptor) =>
-                descriptor.type === "select" &&
-                (descriptor.id === "reasoningEffort" ||
-                  descriptor.id === "effort" ||
-                  descriptor.id === "reasoning" ||
-                  descriptor.id === "variant"),
-            )
-          ) {
+          if (findReasoningOptionDescriptor(descriptors) !== undefined) {
             capLabels.push("Reasoning");
           }
           if (model.upgrade || model.upgradeInfo) {
