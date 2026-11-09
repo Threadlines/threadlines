@@ -16,7 +16,7 @@
  * themeChoice.ts). `threadlines:theme-paint` is the pre-paint record
  * index.html reads; `threadlines:theme-kept` the hashes this device kept.
  */
-import type { ThemeManifest } from "@threadlines/contracts";
+import type { ThemeBase, ThemeManifest } from "@threadlines/contracts";
 import type { StarterTheme } from "@threadlines/shared/themeStarters";
 import type { ThemeTokens } from "@threadlines/shared/themeTokens";
 import { useMemo, useSyncExternalStore } from "react";
@@ -476,15 +476,37 @@ export function holdThemeTrial(id: string, held: boolean): void {
   getCore().holdThemeTrial(id, held);
 }
 
+/** The content this window already holds for a library choice, so it applies without a wait. */
+const knownContent = (choice: ThemeChoice): ThemeManifest | undefined =>
+  (choice.kind === "library"
+    ? (pendingContent.get(choice.hash)?.manifest ??
+      contentSource.current()?.peekCachedTheme(choice.hash))
+    : null) ?? undefined;
+
 /** Commits a choice directly: built-ins, and themes this device kept before. */
 export function chooseTheme(choice: ThemeChoice, manifest?: ThemeManifest): void {
-  const known =
-    manifest ??
-    (choice.kind === "library"
-      ? (pendingContent.get(choice.hash)?.manifest ??
-        contentSource.current()?.peekCachedTheme(choice.hash))
-      : null);
-  getCore().chooseTheme(choice, known ?? undefined);
+  getCore().chooseTheme(choice, manifest ?? knownContent(choice));
+}
+
+/**
+ * Commits the theme another device picked ("Same theme on all my devices"),
+ * falling back to `base` while its content is nowhere. It isn't announced as
+ * this device's own pick (subscribeUserThemeCommits).
+ */
+export function applyThemePick(choice: ThemeChoice, base: ThemeBase | null): void {
+  getCore().applyPickedChoice(choice, base, knownContent(choice));
+}
+
+/** Calls `listener` after each theme the user commits in this window: what it shares with their other devices. */
+export function subscribeUserThemeCommits(
+  listener: (choice: ThemeChoice, base: ThemeBase | null) => void,
+): () => void {
+  return getCore().subscribeUserCommits(listener);
+}
+
+/** Looks again for the committed theme's content when it was nowhere (new content may have arrived). */
+export function retryUnavailableTheme(): void {
+  getCore().retryUnavailable();
 }
 
 /**

@@ -1,7 +1,8 @@
 /**
- * The theme library's tables (migrations 104 and 107): entries, with the chat
- * offer each was kept from, and the content they name. Content rows are only
- * ever added (and given a thumbnail); entries are written whole, by id.
+ * The theme library's tables (migrations 104, 107 and 108): entries, with the
+ * chat offer each was kept from, the content they name, and the shared pick.
+ * Content rows are only ever added (and given a thumbnail); entries are
+ * written whole, by id; the pick is one row, written whole.
  */
 import {
   IsoDateTime,
@@ -9,6 +10,8 @@ import {
   ThemeEntry,
   ThemeEntrySummary,
   ThemeManifest,
+  ThemePick,
+  ThemePickTheme,
 } from "@threadlines/contracts";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
@@ -39,6 +42,13 @@ const ManifestDbRow = Schema.Struct({
   createdAt: IsoDateTime,
 });
 const encodeManifest = Schema.encodeSync(Schema.fromJsonString(ThemeManifest));
+const PickDbRow = Schema.Struct({
+  theme: Schema.fromJsonString(ThemePickTheme),
+  revision: ThemePick.fields.revision,
+  revisedBy: ThemePick.fields.revisedBy,
+  updatedAt: ThemePick.fields.updatedAt,
+});
+const encodePickTheme = Schema.encodeSync(Schema.fromJsonString(ThemePickTheme));
 
 export interface ThemeLibraryRepositoryShape {
   /** Every entry with its content's summary, tombstones included, oldest first. */
@@ -68,6 +78,10 @@ export interface ThemeLibraryRepositoryShape {
   }) => Effect.Effect<void, ThemeLibraryRepositoryError>;
   /** Writes an entry whole, inserting or replacing it by id. */
   readonly putEntry: (entry: ThemeEntry) => Effect.Effect<void, ThemeLibraryRepositoryError>;
+  /** The shared pick; none until someone picks a theme. */
+  readonly getPick: Effect.Effect<Option.Option<ThemePick>, ThemeLibraryRepositoryError>;
+  /** Writes the shared pick whole. */
+  readonly putPick: (pick: ThemePick) => Effect.Effect<void, ThemeLibraryRepositoryError>;
 }
 
 export class ThemeLibraryRepository extends Context.Service<
@@ -221,6 +235,31 @@ const make = Effect.gen(function* () {
         offer_key = excluded.offer_key
     `.pipe(Effect.asVoid, wrap("putEntry"));
 
+  const getPick: ThemeLibraryRepositoryShape["getPick"] = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: PickDbRow,
+    execute: () =>
+      sql`
+        SELECT theme_json AS "theme", revision AS "revision", revised_by AS "revisedBy",
+          updated_at AS "updatedAt"
+        FROM theme_pick WHERE id = 1
+      `,
+  })(undefined).pipe(
+    Effect.map((rows) => Option.fromNullishOr(rows[0])),
+    wrap("getPick"),
+  );
+
+  const putPick: ThemeLibraryRepositoryShape["putPick"] = (pick) =>
+    sql`
+      INSERT INTO theme_pick (id, theme_json, revision, revised_by, updated_at)
+      VALUES (1, ${encodePickTheme(pick.theme)}, ${pick.revision}, ${pick.revisedBy}, ${pick.updatedAt})
+      ON CONFLICT (id) DO UPDATE SET
+        theme_json = excluded.theme_json,
+        revision = excluded.revision,
+        revised_by = excluded.revised_by,
+        updated_at = excluded.updated_at
+    `.pipe(Effect.asVoid, wrap("putPick"));
+
   return ThemeLibraryRepository.of({
     listSummaries,
     listEntries,
@@ -231,6 +270,8 @@ const make = Effect.gen(function* () {
     lacksThumbnail,
     setThumbnail,
     putEntry,
+    getPick,
+    putPick,
   });
 });
 

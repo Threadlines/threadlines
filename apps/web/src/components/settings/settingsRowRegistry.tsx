@@ -5,7 +5,11 @@ import {
   AlertsOnThisDeviceRow,
   AlertsQuietAtComputerRow,
 } from "../../pushAlerts/PushAlertsSettings";
-import { ThemeGlassRow, ThemeMotionRow } from "../theme/ui/ThemeSettingsRows";
+import {
+  ThemeGlassRow,
+  ThemeMotionRow,
+  ThemeSameEverywhereRow,
+} from "../theme/ui/ThemeSettingsRows";
 import { KeepAwakeForScheduledTasksRow, RunInBackgroundRow } from "./DesktopBackgroundRows";
 import { DownloadedModelsRow, HoldToRecordRow, SpeechModelRow } from "./DictationSettings";
 import type { SettingsRowPlaceId } from "./settingsPlaceAvailability";
@@ -118,6 +122,7 @@ export const SETTINGS_ROWS = {
   "general.phoneSettings": live(PhoneSettingsRow),
   // Appearance: the gallery's filter and dialogs are the page's, so a result opens it.
   "appearance.theme": LINK,
+  "appearance.sameEverywhere": live(ThemeSameEverywhereRow),
   "appearance.glass": live(ThemeGlassRow),
   "appearance.motion": live(ThemeMotionRow),
   // Threads

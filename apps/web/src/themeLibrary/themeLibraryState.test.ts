@@ -96,6 +96,45 @@ describe("theme library across computers", () => {
     expect(read).toHaveBeenCalledTimes(1);
   });
 
+  it("brings the winning theme pick, with its content, to computers that keep picks and hold an older one", async () => {
+    const hash = "d".repeat(64);
+    const picked = {
+      theme: { kind: "library", entryId: "e9", hash, name: "Night", base: "dark" },
+      revision: 9,
+      revisedBy: "env-mac",
+      updatedAt: "2026-11-09T12:00:00.000Z",
+    };
+    const merges: Array<{ target: string; revision: number; withContent: boolean }> = [];
+    const old = EnvironmentId.make("env-old");
+    const clients = (environmentId: EnvironmentId) => ({
+      read: async () => ({ hash, manifest }),
+      merge: async () => entry({}),
+      mergePick: async (input: { pick: typeof picked; manifest?: ThemeManifest }) => {
+        merges.push({
+          target: environmentId,
+          revision: input.pick.revision,
+          withContent: input.manifest !== undefined,
+        });
+        return input.pick;
+      },
+    });
+    reconcileFollowedLibraries(
+      {
+        [mac]: { entries: [entry({ entryId: "e9", hash })], pick: picked },
+        [pc]: {
+          entries: [],
+          pick: { ...picked, theme: { kind: "builtin", id: "dark" }, revision: 4 },
+        },
+        // A server too old to keep a pick: never sent one.
+        [old]: { entries: [] },
+      },
+      [mac, pc, old],
+      clients as never,
+    );
+    await vi.waitFor(() => expect(merges).toHaveLength(1));
+    expect(merges).toEqual([{ target: pc, revision: 9, withContent: true }]);
+  });
+
   it("tries a failed merge again later, with no new snapshot to prompt it", async () => {
     vi.useFakeTimers();
     try {

@@ -426,6 +426,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(!themeIsDefault ? ["Theme"] : []),
       ...(glassLevel !== THEME_GLASS_LEVEL_DEFAULT ? ["Glass"] : []),
       ...(settings.themeMotion !== DEFAULT_UNIFIED_SETTINGS.themeMotion ? ["Motion"] : []),
+      ...(settings.themeSameEverywhere !== DEFAULT_UNIFIED_SETTINGS.themeSameEverywhere
+        ? ["Same theme on all my devices"]
+        : []),
       ...(settings.timestampFormat !== DEFAULT_UNIFIED_SETTINGS.timestampFormat
         ? ["Time format"]
         : []),
@@ -583,6 +586,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.sidebarThreadPreviewCount,
       glassLevel,
       settings.themeMotion,
+      settings.themeSameEverywhere,
       settings.timestampFormat,
       themeIsDefault,
     ],
@@ -600,6 +604,7 @@ export function useSettingsRestore(onRestored?: () => void) {
     updateSettings({
       themeGlass: THEME_GLASS_LEVEL_DEFAULT,
       themeMotion: DEFAULT_UNIFIED_SETTINGS.themeMotion,
+      themeSameEverywhere: DEFAULT_UNIFIED_SETTINGS.themeSameEverywhere,
       timestampFormat: DEFAULT_UNIFIED_SETTINGS.timestampFormat,
       diffChangesOnly: DEFAULT_UNIFIED_SETTINGS.diffChangesOnly,
       diffWordWrap: DEFAULT_UNIFIED_SETTINGS.diffWordWrap,

@@ -699,6 +699,10 @@ const ThemesRpcLayer = WsThemesRpcGroup.toLayer(
         observeRpcEffect(WS_METHODS.themesRestore, themes.restore(input), aggregate),
       [WS_METHODS.themesMerge]: (input) =>
         observeRpcEffect(WS_METHODS.themesMerge, themes.merge(input), aggregate),
+      [WS_METHODS.themesPick]: (input) =>
+        observeRpcEffect(WS_METHODS.themesPick, themes.pick(input), aggregate),
+      [WS_METHODS.themesMergePick]: (input) =>
+        observeRpcEffect(WS_METHODS.themesMergePick, themes.mergePick(input), aggregate),
     });
   }),
 );

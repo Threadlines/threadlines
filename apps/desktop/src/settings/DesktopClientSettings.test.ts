@@ -56,6 +56,7 @@ const clientSettings: ClientSettings = {
   timestampFormat: "24-hour",
   themeArtInThreads: "some",
   themeMotion: "live",
+  themeSameEverywhere: false,
 };
 
 const decodeClientSettingsJson = Schema.decodeEffect(Schema.fromJsonString(ClientSettingsSchema));

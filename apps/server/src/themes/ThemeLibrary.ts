@@ -37,6 +37,9 @@ import {
   type ThemeLibrarySnapshot,
   type ThemeManifest,
   type ThemeMergeInput,
+  type ThemeMergePickInput,
+  type ThemePick,
+  type ThemePickInput,
   type ThemeReadInput,
   type ThemeRenameInput,
   type ThemeReplaceInput,
@@ -45,6 +48,7 @@ import {
 import {
   compareThemeRevisions,
   nextThemeRevision,
+  sameThemePickTheme,
   themeOfferKey,
 } from "@threadlines/shared/themeLibrary";
 import { checkThemeManifest, themeContentHash } from "@threadlines/shared/themeManifest";
@@ -85,6 +89,14 @@ export interface ThemeLibraryShape {
   readonly restore: (input: ThemeEntryIdInput) => Effect.Effect<ThemeEntrySummary, ThemeError>;
   /** Keeps whichever of this computer's copy and the given one wins the revision order. */
   readonly merge: (input: ThemeMergeInput) => Effect.Effect<ThemeEntrySummary, ThemeError>;
+  /**
+   * Makes a theme the shared pick ("Same theme on all my devices") at a
+   * revision above any the device has seen; the same theme, already picked
+   * above that, changes nothing.
+   */
+  readonly pick: (input: ThemePickInput) => Effect.Effect<ThemePick, ThemeError>;
+  /** Keeps whichever shared pick wins the revision order, storing the theme's content if sent. */
+  readonly mergePick: (input: ThemeMergePickInput) => Effect.Effect<ThemePick, ThemeError>;
 }
 
 export class ThemeLibrary extends Context.Service<ThemeLibrary, ThemeLibraryShape>()(
@@ -111,10 +123,10 @@ const make = Effect.gen(function* () {
   const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
   const stored = <A, E>(effect: Effect.Effect<A, E>) => effect.pipe(Effect.mapError(storageError));
 
-  const snapshot: ThemeLibraryShape["snapshot"] = repo.listSummaries.pipe(
-    Effect.map((entries) => ({ entries })),
-    stored,
-  );
+  const snapshot: ThemeLibraryShape["snapshot"] = Effect.all({
+    entries: repo.listSummaries,
+    pick: repo.getPick.pipe(Effect.map(Option.getOrNull)),
+  }).pipe(stored);
 
   const changes: ThemeLibraryShape["changes"] = Stream.concat(
     Stream.make(undefined),
@@ -156,11 +168,12 @@ const make = Effect.gen(function* () {
       }
     });
 
-  /** The next revision this computer gives a change, stamped as its own. */
+  /** The next revision this computer gives a change (entries and the pick count alike), stamped as its own. */
   const nextRevision = Effect.gen(function* () {
     const entries = yield* repo.listEntries.pipe(stored);
+    const pick = yield* repo.getPick.pipe(stored);
     const revisedBy = yield* environment.getEnvironmentId;
-    return { revision: nextThemeRevision(entries), revisedBy };
+    return { revision: nextThemeRevision([...entries, ...Option.toArray(pick)]), revisedBy };
   });
 
   /** Runs one change to the library, then tells subscribers. */
@@ -353,6 +366,59 @@ const make = Effect.gen(function* () {
       );
     });
 
+  const pick: ThemeLibraryShape["pick"] = (input) =>
+    write(
+      Effect.gen(function* () {
+        const current = Option.getOrNull(yield* repo.getPick.pipe(stored));
+        if (
+          current !== null &&
+          sameThemePickTheme(current.theme, input.theme) &&
+          current.revision > input.atLeast
+        ) {
+          return current;
+        }
+        const next = yield* nextRevision;
+        const picked: ThemePick = {
+          theme: input.theme,
+          revision: Math.max(next.revision, input.atLeast + 1),
+          revisedBy: next.revisedBy,
+          updatedAt: yield* nowIso,
+        };
+        yield* repo.putPick(picked).pipe(stored);
+        return picked;
+      }),
+    );
+
+  const mergePick: ThemeLibraryShape["mergePick"] = (input) =>
+    Effect.gen(function* () {
+      const incoming = input.pick;
+      const hash = incoming.theme.kind === "library" ? incoming.theme.hash : undefined;
+      // A library pick's content, for a computer that lacks it: checked like a merged entry's.
+      let content: ThemeManifest | undefined;
+      if (input.manifest !== undefined && hash !== undefined) {
+        const held = yield* repo.getContent(hash).pipe(stored);
+        if (Option.isNone(held)) {
+          const check = checkThemeManifest(input.manifest);
+          if (!check.ok) return yield* themeProblems(check.errors);
+          if ((yield* hashOf(check.manifest)) !== hash) {
+            return yield* new ThemeError({
+              detail: "The theme sent with that pick isn't the content the pick names.",
+            });
+          }
+          content = check.manifest;
+        }
+      }
+      return yield* write(
+        Effect.gen(function* () {
+          const current = Option.getOrNull(yield* repo.getPick.pipe(stored));
+          if (current !== null && compareThemeRevisions(current, incoming) >= 0) return current;
+          if (content !== undefined && hash !== undefined) yield* storeContent(hash, content);
+          yield* repo.putPick(incoming).pipe(stored);
+          return incoming;
+        }),
+      );
+    });
+
   return ThemeLibrary.of({
     snapshot,
     changes,
@@ -363,6 +429,8 @@ const make = Effect.gen(function* () {
     delete: remove,
     restore,
     merge,
+    pick,
+    mergePick,
   });
 });
 

@@ -303,9 +303,48 @@ export const ThemeEntrySummary = Schema.Struct({
 });
 export type ThemeEntrySummary = typeof ThemeEntrySummary.Type;
 
+/**
+ * The theme a shared pick names ("Same theme on all my devices"): a built-in
+ * (`id`), a starter (`id`), or a library entry (`entryId`, `hash`, `name`),
+ * with its `base` so a device without the content can still fall back to light
+ * or dark. Loose on purpose: a client takes the kinds and values it knows and
+ * ignores the rest, so a kind added later can't break an older client's
+ * library snapshot.
+ */
+export const ThemePickTheme = keepingUnknownKeys(
+  Schema.Struct({
+    kind: TrimmedNonEmptyString,
+    id: Schema.optional(Schema.String),
+    entryId: Schema.optional(Schema.String),
+    hash: Schema.optional(Schema.String),
+    name: Schema.optional(Schema.String),
+    base: Schema.optional(Schema.String),
+  }),
+);
+export type ThemePickTheme = typeof ThemePickTheme.Type;
+
+/**
+ * The theme every device with "Same theme on all my devices" on shows: kept
+ * on each computer beside the library and merged by `(revision, revisedBy)`
+ * like its entries, so the last pick reaches every computer.
+ */
+export const ThemePick = Schema.Struct({
+  theme: ThemePickTheme,
+  revision: NonNegativeInt,
+  /** The computer that made this pick (its environment id). */
+  revisedBy: TrimmedNonEmptyString,
+  updatedAt: IsoDateTime,
+});
+export type ThemePick = typeof ThemePick.Type;
+
 export const ThemeLibrarySnapshot = Schema.Struct({
   /** Every entry, tombstones included, so clients can reconcile computers. */
   entries: Schema.Array(ThemeEntrySummary),
+  /**
+   * The shared pick; null when nobody has picked one yet. Absent from a
+   * server too old to keep one, which clients don't publish to or merge into.
+   */
+  pick: Schema.optional(Schema.NullOr(ThemePick)),
 });
 export type ThemeLibrarySnapshot = typeof ThemeLibrarySnapshot.Type;
 
@@ -359,6 +398,29 @@ export const ThemeMergeInput = Schema.Struct({
   manifest: Schema.optional(ThemeManifest),
 });
 export type ThemeMergeInput = typeof ThemeMergeInput.Type;
+
+/**
+ * Makes `theme` the shared pick, at a revision above `atLeast` (the highest
+ * pick revision the device has seen on any computer), so it beats every pick
+ * the user could have seen before choosing. Picking the theme already picked,
+ * at or above `atLeast`, changes nothing.
+ */
+export const ThemePickInput = Schema.Struct({
+  theme: ThemePickTheme,
+  atLeast: NonNegativeInt,
+});
+export type ThemePickInput = typeof ThemePickInput.Type;
+
+/**
+ * Keeps whichever of this computer's pick and the given one wins the revision
+ * order; `manifest` is the picked library theme's content, for a computer
+ * that doesn't have it (stored only when its hash matches).
+ */
+export const ThemeMergePickInput = Schema.Struct({
+  pick: ThemePick,
+  manifest: Schema.optional(ThemeManifest),
+});
+export type ThemeMergePickInput = typeof ThemeMergePickInput.Type;
 
 export class ThemeError extends Schema.TaggedError<ThemeError>()("ThemeError", {
   detail: TrimmedNonEmptyString,

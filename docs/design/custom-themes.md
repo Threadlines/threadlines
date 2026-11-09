@@ -475,7 +475,9 @@ Glass mode turns on only when the active theme has a backdrop
 
 ## Applying a theme
 
-- **Choice per device.** `threadlines:theme` holds `system`, `light`, `dark`,
+- **Choice per device.** Each device commits its own choice, which "Same
+  theme on all my devices" (see Storage and devices) keeps in step with the
+  user's other devices. `threadlines:theme` holds `system`, `light`, `dark`,
   or `{ kind: "custom", hash, name }`. Every place that assumes three values
   (useTheme's `getStored`, the `index.html` pre-paint script, `THEME_LABELS`,
   `THEME_OPTIONS`, `isTheme` in settingsChangeClaims, the restore/dirty check,
@@ -620,6 +622,25 @@ the budget, no network) and places for the new Appearance rows.
   after a deletion is a restore with a newer revision.
 - **Every device on a computer** (desktop window, browser tabs, phone) sees
   that computer's library through the subscription.
+- **Same theme on all my devices** (a device switch, on by default, Nov 9).
+  Each computer also keeps one shared pick beside the library (`theme_pick`,
+  migration 108): the theme (a built-in, a starter, or a library entry with
+  its hash, name and base) and a `(revision, revisedBy)` in the same order as
+  entries, so the app reconciles it like an entry, sending the winner (with a
+  library theme's content when a computer lacks it) to computers holding an
+  older one. A server too old to keep one sends no `pick` in its snapshot and
+  is left out. On a device with the switch on (themePickSync.ts), a theme the
+  user commits there (a pick, Keep, a settings change; not a pick applied from
+  elsewhere, not another window's commit) is kept as a pending pick in
+  storage until a computer takes it (`themes.pick`, at a revision above every
+  pick the device has seen), and a pick newer than the newest the device has
+  seen is applied, after any trial running in that window, never under
+  `?theme=default`, and never an older one (a computer dropping off can't roll
+  the theme back). A pending pick that a newer one overtook is dropped and
+  the newer one followed. Themes kept on one device only aren't shared.
+  Turning the switch on takes the shared pick, or shares the device's own
+  theme when nobody has picked one. Nothing changes until someone picks a
+  theme after updating: no device's look is guessed and pushed to the others.
 - **Across linked computers, the app keeps libraries in step.** Keep saves the
   entry to every computer the app is connected to. When the app connects to
   computers it reconciles entry by entry: a missing entry is copied with its

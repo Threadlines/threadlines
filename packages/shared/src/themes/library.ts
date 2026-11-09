@@ -6,7 +6,7 @@
  * `(revision, revisedBy)` wins, compared the same way everywhere, so any order
  * of merges ends in the same library.
  */
-import type { ThemeEntry, ThemeManifest } from "@threadlines/contracts";
+import type { ThemeEntry, ThemeManifest, ThemePick, ThemePickTheme } from "@threadlines/contracts";
 
 type Revisioned = Pick<ThemeEntry, "revision" | "revisedBy">;
 
@@ -75,4 +75,25 @@ export function themeWithoutOffer(manifest: ThemeManifest): ThemeManifest {
   if (manifest.createdBy?.offer === undefined) return manifest;
   const { offer: _offer, ...createdBy } = manifest.createdBy;
   return { ...manifest, createdBy };
+}
+
+/** Whether two shared picks name the same theme (the same content, for a library one). */
+export function sameThemePickTheme(first: ThemePickTheme, second: ThemePickTheme): boolean {
+  return (
+    first.kind === second.kind &&
+    first.id === second.id &&
+    first.entryId === second.entryId &&
+    first.hash === second.hash
+  );
+}
+
+/** The shared pick that wins across computers' copies, by revision order; null for none. */
+export function winningThemePick(
+  picks: ReadonlyArray<ThemePick | null | undefined>,
+): ThemePick | null {
+  let winner: ThemePick | null = null;
+  for (const pick of picks) {
+    if (pick && (winner === null || compareThemeRevisions(pick, winner) > 0)) winner = pick;
+  }
+  return winner;
 }

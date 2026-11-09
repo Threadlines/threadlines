@@ -39,6 +39,7 @@ import {
   useThemeTiles,
 } from "~/themeLibrary/themeCatalog";
 import { importThemeFile } from "~/themeLibrary/themeFiles";
+import { joinSameThemeEverywhere } from "~/themeLibrary/themePickSync";
 import {
   SHOWCASE_SHARE_WORDS,
   useShowcaseEnvironments,
@@ -65,6 +66,7 @@ import {
   AlertDialogTitle,
 } from "../../ui/alert-dialog";
 import { Button } from "../../ui/button";
+import { Switch } from "../../ui/switch";
 import {
   Dialog,
   DialogFooter,
@@ -700,6 +702,37 @@ function MotionReset() {
 export function ThemeGlassRow() {
   return (
     <SettingsRow place="appearance.glass" resetAction={<GlassReset />} control={<GlassControl />} />
+  );
+}
+
+/**
+ * "Same theme on all my devices": on, picking a theme here switches every
+ * device with it on, and this one follows theirs (themePickSync.ts). Turning
+ * it on takes the theme they share, if they share one.
+ */
+export function ThemeSameEverywhereRow() {
+  const value = useSettings((settings) => settings.themeSameEverywhere);
+  const { updateSettings } = useUpdateSettings();
+  const set = (on: boolean) => {
+    updateSettings({ themeSameEverywhere: on });
+    if (on) joinSameThemeEverywhere();
+  };
+  return (
+    <SettingsRow
+      place="appearance.sameEverywhere"
+      resetAction={
+        value !== DEFAULT_UNIFIED_SETTINGS.themeSameEverywhere ? (
+          <SettingResetButton label="same theme on all my devices" onClick={() => set(true)} />
+        ) : null
+      }
+      control={
+        <Switch
+          checked={value}
+          onCheckedChange={(checked) => set(Boolean(checked))}
+          aria-label="Same theme on all my devices"
+        />
+      }
+    />
   );
 }
 

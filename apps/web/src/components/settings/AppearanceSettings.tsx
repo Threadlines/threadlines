@@ -2,16 +2,22 @@ import {
   ThemeActions,
   ThemeArtStrip,
   ThemeGallery,
+  ThemeSameEverywhereRow,
   ThemeStatusLines,
 } from "../theme/ui/ThemeSettingsRows";
-import { SettingsPageContainer, SettingsPageHeader, SettingsSection } from "./settingsLayout";
+import {
+  SettingsGroup,
+  SettingsPageContainer,
+  SettingsPageHeader,
+  SettingsSection,
+} from "./settingsLayout";
 
 /**
  * Settings › Appearance: the theme this device wears and how its art shows
  * (docs/design/custom-themes.md). One section: New theme and Import on its
- * title line, Glass and Motion side by side, a line on the art, then the
- * gallery under its filters. Every setting here is this device's own, so a
- * phone draws the same page.
+ * title line, Glass and Motion side by side, Same theme on all my devices,
+ * a line on the art, then the gallery under its filters. Every setting here
+ * is this device's own, so a phone draws the same page.
  */
 export function AppearanceSettingsPanel() {
   return (
@@ -24,6 +30,9 @@ export function AppearanceSettingsPanel() {
         contentClassName="flex flex-col gap-3"
       >
         <ThemeArtStrip />
+        <SettingsGroup>
+          <ThemeSameEverywhereRow />
+        </SettingsGroup>
         <ThemeStatusLines />
         <ThemeGallery />
       </SettingsSection>

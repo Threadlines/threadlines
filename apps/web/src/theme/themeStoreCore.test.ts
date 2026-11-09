@@ -281,6 +281,31 @@ describe("theme store", () => {
     });
   });
 
+  it("announces only the user's own commits, and a pick from another device keeps its base", async () => {
+    const { env, storage } = makeEnv({});
+    const store = createThemeStoreCore(env);
+    const announced: ThemeChoice[] = [];
+    store.subscribeUserCommits((choice) => announced.push(choice));
+    store.chooseTheme({ kind: "builtin", id: "dark" });
+    const trial = store.startThemeTrial({
+      choice: library(HASH_A, "Aurora"),
+      manifest: manifest("Aurora"),
+    });
+    store.commitThemeTrial(trial.id);
+
+    // Another device's pick, its content nowhere yet: its base shows meanwhile.
+    store.applyPickedChoice(library(HASH_B, "Night"), "light");
+    await flush();
+    expect(store.getState().active).toMatchObject({
+      choice: library(HASH_B, "Night"),
+      base: "light",
+    });
+    // Another window's commit is that window's to announce.
+    storage.setItem(THEME_STORAGE_KEY, "dark");
+    store.handleStorageChange(THEME_STORAGE_KEY);
+    expect(announced).toEqual([{ kind: "builtin", id: "dark" }, library(HASH_A, "Aurora")]);
+  });
+
   it("falls back to the theme's base when its content is nowhere, and recovers once a computer has it", async () => {
     const saved = library(HASH_A, "Aurora");
     const content: Record<string, ThemeManifest> = {};

@@ -300,6 +300,10 @@ export const ClientSettingsSchema = Schema.Struct({
   themeArtInThreads: ThemeArtInThreads.pipe(Schema.withDecodingDefault(Effect.succeed("some"))),
   // Live: a theme's art moves (within its pause rules). Still: one frame.
   themeMotion: ThemeMotion.pipe(Schema.withDecodingDefault(Effect.succeed("live"))),
+  // "Same theme on all my devices": this device shows the theme last picked on
+  // any device with it on, and its own picks become that theme
+  // (docs/design/custom-themes.md, "Storage and devices"). On by default.
+  themeSameEverywhere: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
 });
 export type ClientSettings = typeof ClientSettingsSchema.Type;
 
@@ -1348,5 +1352,6 @@ export const ClientSettingsPatch = Schema.Struct({
   // Kept so saving other settings doesn't drop an old choice before it's read.
   themeArtInThreads: Schema.optionalKey(ThemeArtInThreads),
   themeMotion: Schema.optionalKey(ThemeMotion),
+  themeSameEverywhere: Schema.optionalKey(Schema.Boolean),
 });
 export type ClientSettingsPatch = typeof ClientSettingsPatch.Type;
