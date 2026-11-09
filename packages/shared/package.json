@@ -95,6 +95,10 @@
       "types": "./src/themes/contrast.ts",
       "import": "./src/themes/contrast.ts"
     },
+    "./themeSharing": {
+      "types": "./src/themes/sharing.ts",
+      "import": "./src/themes/sharing.ts"
+    },
     "./themeManifest": {
       "types": "./src/themes/manifest.ts",
       "import": "./src/themes/manifest.ts"

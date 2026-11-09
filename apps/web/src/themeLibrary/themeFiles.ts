@@ -1,6 +1,7 @@
 /**
  * Theme files in and out (docs/design/custom-themes.md, "Storage and
- * devices" › Files). Export writes a `.threadlines-theme` file; import reads
+ * devices" › Files, and "Sharing"). Export writes a `.threadlines-theme` file
+ * the export dialog made ready to share; import reads
  * one (Settings, or a file dropped on the window), checks it the way the
  * server will, and holds it for the import dialog, which starts its trial.
  */
@@ -58,15 +59,15 @@ export function themeFileName(name: string): string {
   return `${safe || "Theme"}${THEME_FILE_EXTENSION}`;
 }
 
-/** Downloads a theme as a file. */
-export function exportThemeFile(manifest: ThemeManifest, name: string): void {
-  const blob = new Blob([`${JSON.stringify({ ...manifest, name }, null, 2)}\n`], {
+/** Downloads a theme as a file, as it is: make it ready to share first (`themeForSharing`). */
+export function exportThemeFile(manifest: ThemeManifest): void {
+  const blob = new Blob([`${JSON.stringify(manifest, null, 2)}\n`], {
     type: "application/json",
   });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = themeFileName(name);
+  anchor.download = themeFileName(manifest.name);
   anchor.click();
   window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
 }

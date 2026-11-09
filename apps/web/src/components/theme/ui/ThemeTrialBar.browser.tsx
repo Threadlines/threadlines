@@ -1,12 +1,13 @@
 import "../../../index.css";
 
 import { THEME_FILE_FORMAT, type ThemeManifest } from "@threadlines/contracts";
-import { afterEach, describe, expect, it } from "vite-plus/test";
+import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 import { page } from "vite-plus/test/browser";
 import { render } from "vitest-browser-react";
 
 import { resetTestPage } from "../../../lib/testPage.browser-harness";
 import { chooseTheme, startThemeTrial, useThemeChoice } from "../../../theme/themeStore";
+import { useThemeImportStore } from "../../../themeLibrary/themeImportState";
 import { ThemeTrialBar } from "./ThemeTrialBar";
 
 const glare: ThemeManifest = {
@@ -33,6 +34,13 @@ function Committed() {
 }
 
 describe("ThemeTrialBar", () => {
+  // The bar's code is its own chunk, fetched when a trial starts. Here it is
+  // compiled on first use, which on a busy machine takes seconds of the
+  // countdown the first test reads; fetch it before any trial starts.
+  beforeAll(async () => {
+    await import("./ThemeTrialBarContent");
+  });
+
   afterEach(() => {
     chooseTheme({ kind: "builtin", id: "dark" });
     resetTestPage();
@@ -63,6 +71,34 @@ describe("ThemeTrialBar", () => {
     await expect.element(bar).not.toBeInTheDocument();
     expect(document.documentElement.classList.contains("dark")).toBe(true);
     await expect.element(page.getByTestId("committed")).toHaveTextContent("dark");
+  });
+
+  it("shows who made an imported theme and what its license lets you do", async () => {
+    await render(<ThemeTrialBar />);
+    useThemeImportStore.getState().set({
+      ok: true,
+      fileName: "glare.threadlines-theme",
+      manifest: {
+        ...glare,
+        credits: { author: "Mira", link: "https://mira.example/", license: "CC0-1.0" },
+      },
+      hash: "d".repeat(64),
+    });
+    const credits = page.getByTestId("theme-import-credits");
+    await expect.element(credits).toBeVisible();
+    expect(credits.element().textContent).toBe(
+      "By Mira · CC0 · mira.exampleAnyone can use it for anything, no credit needed.",
+    );
+    // A link alone is a credit too.
+    useThemeImportStore.getState().set({
+      ok: true,
+      fileName: "glare.threadlines-theme",
+      manifest: { ...glare, credits: { link: "https://mira.example/" } },
+      hash: "e".repeat(64),
+    });
+    await expect.element(page.getByRole("button", { name: "mira.example" })).toBeVisible();
+    expect(credits.element().textContent).toBe("mira.example");
+    useThemeImportStore.getState().set(null);
   });
 
   it("keeps a built-in trial on Keep", async () => {

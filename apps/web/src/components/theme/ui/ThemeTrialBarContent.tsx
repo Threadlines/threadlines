@@ -11,7 +11,7 @@
 import type { ThemeBase } from "@threadlines/contracts";
 import { BUILTIN_THEME_TOKENS } from "@threadlines/shared/themeBuiltinTokens";
 import { THEME_TOKEN_NAMES } from "@threadlines/shared/themeTokens";
-import { type CSSProperties, useEffect, useState } from "react";
+import { type CSSProperties, useEffect, useRef, useState } from "react";
 
 import {
   endThemeTrial,
@@ -32,6 +32,7 @@ import {
   DialogPopup,
   DialogTitle,
 } from "../../ui/dialog";
+import { ThemeCreditsText } from "./ThemeCreditsText";
 import { keepThemeTrial } from "./themeTrialState";
 
 /** The built-in UI font, as index.css declares it. */
@@ -108,12 +109,18 @@ function ThemeImportDialog() {
   const pending = useThemeImportStore((state) => state.pending);
   const clear = () => useThemeImportStore.getState().set(null);
   const active = useActiveTheme();
+  // Try it, not the credit's link: Enter tries the theme.
+  const tryIt = useRef<HTMLButtonElement>(null);
   if (pending === null) return null;
   const manifest = pending.ok ? pending.manifest : null;
   const still = manifest?.backdrop?.still ?? null;
   return (
     <Dialog open onOpenChange={(open) => (open ? undefined : clear())}>
-      <DialogPopup className="max-w-md" style={builtinThemeStyle(active.base)}>
+      <DialogPopup
+        className="max-w-md"
+        style={builtinThemeStyle(active.base)}
+        {...(pending.ok ? { initialFocus: tryIt } : {})}
+      >
         <DialogHeader>
           <DialogTitle>{manifest ? manifest.name : "This theme can't be used"}</DialogTitle>
           <DialogDescription>
@@ -130,6 +137,11 @@ function ThemeImportDialog() {
               className="aspect-[16/10] w-full rounded-[var(--app-radius-surface)] object-cover ring-1 ring-border"
             />
           ) : null}
+          <ThemeCreditsText
+            credits={manifest?.credits}
+            showLicenseTerms
+            data-testid="theme-import-credits"
+          />
           {manifest?.backdrop ? (
             <p className="text-[13px] text-muted-foreground">
               Live art made by someone else. It runs walled off, with no internet, and stops when
@@ -150,6 +162,7 @@ function ThemeImportDialog() {
           </Button>
           {pending.ok ? (
             <Button
+              ref={tryIt}
               onClick={() => {
                 startThemeTrial({
                   choice: { kind: "unsaved", hash: pending.hash, name: pending.manifest.name },
