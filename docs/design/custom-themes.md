@@ -225,7 +225,9 @@ it:
 - **Paused means terminated.** When the window is hidden or minimized, after 2
   minutes with no input and no agent working, under "Motion: Still", Reduce
   Motion, or on phones, the frame keeps the last bitmap and terminates the
-  worker. A theme can't spend anything while paused. Resuming starts a new
+  worker. A theme can't spend anything while paused, save one tail: a worker
+  caught in a busy loop keeps its core for about 2 seconds after
+  `terminate()` before Chromium forces it to stop. Resuming starts a new
   worker and continues `t` from where it stopped (setup runs again).
 - **Still keeps the frame.** Under "Motion: Still" or Reduce Motion on a
   computer, the frame stays: it draws one frame of the art (or keeps the one
@@ -285,8 +287,12 @@ it:
   frame that answers but has stopped drawing counts as failed too. In the probe, a busy loop in the worker and one in the
   sandboxed frame's own thread both left the app's timers on time (the
   sandboxed frame got its own process), so a hung theme can't freeze the app
-  that removes it. The desktop main window gets the same probe during the
-  build before this claim ships.
+  that removes it. The same probe in a window set up like the desktop main
+  window (Electron 45.2.1, Nov 9) agrees: the frame got its own process, and
+  a 3-second busy loop on its thread delayed the page's timers by 1 ms. The
+  browser test suite's headless Chromium differs: there the frame shares the
+  page's main thread, so tests see the frame's own work, and its waits on the
+  GPU, in the page's timers.
 
 **Frosting and tint happen in the frame.** The frame draws with WebGL2: the
 grid as one instanced draw call over a glyph atlas built once, pixels as one
@@ -779,8 +785,9 @@ five minutes.
   `null`; `fetch`, `importScripts`, WebSocket and a Google Fonts `FontFace`
   were all blocked by the inherited CSP; the worker has no `location.replace`;
   a 3-second busy loop in the worker, and one in the frame's own thread, each
-  delayed the app's timers by 2 ms or less; `terminate()` stopped the worker
-  at once.
+  delayed the app's timers by 2 ms or less. `terminate()` looked immediate,
+  but measured by CPU time (Nov 9, Electron 45.2.1) a worker in a busy loop
+  ran on for about 2 seconds after it.
 
 ## Tests
 
@@ -795,7 +802,8 @@ five minutes.
   revert drops, refused after revert); Claude allow list contains the tools.
 - Runtime, in the real browser suite: worker busy loop leaves the app's timers
   on time; worker `fetch`, WebSocket, `importScripts` and fonts blocked; missed
-  ticks step down and then stop; pausing terminates the worker; art that turns
+  ticks step down and then stop; a worker that never reports in (a theme that
+  shadows `postMessage`) fails; pausing terminates the worker; art that turns
   white ten seconds in keeps column text at 4.5:1; one-pixel white lines on
   black art keep it too; zone changes while paused recomposite; replies from
   a terminated worker generation are ignored.
