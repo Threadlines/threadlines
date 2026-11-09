@@ -229,34 +229,65 @@ function readNameTable(table: Uint8Array): Woff2NoticeResult {
       data: table.subarray(start, end),
     });
   }
-  return {
-    ok: true,
-    notice: {
-      family: pickName(records, 16) ?? pickName(records, 1),
-      copyright: pickName(records, 0),
-      licenseDescription: pickName(records, 13),
-      licenseUrl: pickName(records, 14),
-    },
+  const reader = nameReader(records);
+  const notice: FontNotice = {
+    family: reader.pick(16) ?? reader.pick(1),
+    copyright: reader.pick(0),
+    licenseDescription: reader.pick(13),
+    licenseUrl: reader.pick(14),
   };
+  return reader.overBudget()
+    ? fail("font's name table is too large to read")
+    : { ok: true, notice };
 }
 
 /**
- * The best non-blank string for a name ID: Windows Unicode in English, then
- * Windows Unicode in any language, then Mac Roman (English first). Null when
- * none has one.
+ * Most bytes of name strings decoded for one font. Real tables hold a few
+ * kilobytes of text; records that point at the same or overlapping long
+ * strings could otherwise make a small font cost billions of steps.
  */
-function pickName(records: readonly NameRecord[], nameID: number): string | null {
-  const ranked = records
-    .flatMap((record) => {
-      const rank = record.nameID === nameID ? recordRank(record) : null;
-      return rank === null ? [] : [{ rank, record }];
-    })
-    .sort((a, b) => a.rank - b.rank);
-  for (const { record } of ranked) {
+const NAME_DECODE_BUDGET = 256 * 1024;
+
+/**
+ * Picks names from records with bounded work: each string range is decoded
+ * once (a blank one remembered as blank), and decoding stops past the budget.
+ */
+function nameReader(records: readonly NameRecord[]) {
+  const decoded = new Map<string, string | null>();
+  let left = NAME_DECODE_BUDGET;
+  const textOf = (record: NameRecord): string | null => {
+    const key = `${record.platformID}:${record.data.byteOffset}:${record.data.length}`;
+    const known = decoded.get(key);
+    if (known !== undefined) return known;
+    left -= record.data.length;
+    if (left < 0) return null;
     const text = record.platformID === 3 ? decodeUtf16Be(record.data) : decodeMacRoman(record.data);
-    if (text.trim() !== "") return text;
-  }
-  return null;
+    const kept = text.trim() === "" ? null : text;
+    decoded.set(key, kept);
+    return kept;
+  };
+  return {
+    /**
+     * The best non-blank string for a name ID: Windows Unicode in English,
+     * then Windows Unicode in any language, then Mac Roman (English first).
+     * Null when none has one.
+     */
+    pick: (nameID: number): string | null => {
+      const ranked = records
+        .flatMap((record) => {
+          const rank = record.nameID === nameID ? recordRank(record) : null;
+          return rank === null ? [] : [{ rank, record }];
+        })
+        .sort((a, b) => a.rank - b.rank);
+      for (const { record } of ranked) {
+        if (left < 0) return null;
+        const text = textOf(record);
+        if (text !== null) return text;
+      }
+      return null;
+    },
+    overBudget: () => left < 0,
+  };
 }
 
 /** Lower ranks win; null for platforms and encodings this reader doesn't decode. */

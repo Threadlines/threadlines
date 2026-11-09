@@ -42,7 +42,10 @@ const mac = (nameID: number, bytes: readonly number[]): TestRecord => ({
  * Packs name records into a WOFF2 file holding only a `name` table, written
  * with an explicit tag, for the record choices the starter fonts don't reach.
  */
-const packWoff2 = (records: readonly TestRecord[]) => {
+const packWoff2 = (records: readonly TestRecord[]) => wrapNameTable(nameTable(records));
+
+/** A `name` table holding the records, each string after the last. */
+const nameTable = (records: readonly TestRecord[]) => {
   const headerLength = 6 + records.length * 12;
   const table = new Uint8Array(headerLength + records.reduce((sum, r) => sum + r.data.length, 0));
   const tableView = new DataView(table.buffer);
@@ -60,6 +63,11 @@ const packWoff2 = (records: readonly TestRecord[]) => {
     table.set(record.data, headerLength + stringOffset);
     stringOffset += record.data.length;
   });
+  return table;
+};
+
+/** A WOFF2 file holding only this `name` table. */
+const wrapNameTable = (table: Uint8Array) => {
   // UIntBase128 for lengths under 16384.
   const length =
     table.length < 128 ? [table.length] : [0x80 | (table.length >> 7), table.length & 0x7f];
@@ -183,6 +191,33 @@ describe("readWoff2Notice", () => {
     for (const [bytes, decompress] of cases) {
       expect(readWoff2Notice(bytes, decompress)).toEqual({ ok: false, error: expect.any(String) });
     }
+  });
+});
+
+describe("readWoff2Notice on a hostile name table", () => {
+  it("reads overlapping strings with bounded work and gives up past the budget", () => {
+    // 600 copyright records over one 6 KB blank span, each starting a byte later:
+    // 3.6 MB of decoding unbounded, a 14 KB table.
+    const count = 600;
+    const span = 6000;
+    const headerLength = 6 + count * 12;
+    const table = new Uint8Array(headerLength + span + count).fill(0x20, headerLength);
+    const view = new DataView(table.buffer);
+    view.setUint16(2, count);
+    view.setUint16(4, headerLength);
+    for (let index = 0; index < count; index++) {
+      const at = 6 + index * 12;
+      view.setUint16(at, 1); // Mac Roman
+      view.setUint16(at + 6, 0); // copyright
+      view.setUint16(at + 8, span);
+      view.setUint16(at + 10, index);
+    }
+    const started = performance.now();
+    expect(readWoff2Notice(wrapNameTable(table), brotli)).toEqual({
+      ok: false,
+      error: "font's name table is too large to read",
+    });
+    expect(performance.now() - started).toBeLessThan(1000);
   });
 });
 
