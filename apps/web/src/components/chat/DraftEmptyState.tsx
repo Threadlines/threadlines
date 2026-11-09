@@ -144,7 +144,9 @@ export function DraftEmptyState({
       className="flex w-full min-w-0 max-w-xl flex-col items-center"
       // The chat view's hero layout keys off this marker: it is in the page
       // exactly while the timeline is showing this state in the roomy layout.
-      {...(layout === "hero" ? { "data-draft-hero": "" } : {})}
+      // Stacked has its own, so a theme's art shows around this screen's text
+      // on a phone too (backdropZones.ts).
+      {...(layout === "hero" ? { "data-draft-hero": "" } : { "data-draft-stacked": "" })}
     >
       {/* Chats have no branches to draw, so they keep the plain figure. */}
       {mapProjectRefs ? (

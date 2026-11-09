@@ -11,6 +11,8 @@
  *   of the chat column, feathered outside a core that covers the messages.
  * - The new-thread screen: a soft patch around the heading, the composer
  *   and the line under it, and one around each line of text under them.
+ *   Where the composer stays at the bottom (a phone, a small pane), a soft
+ *   patch around each block of the column's text instead, the composer hard.
  * - The home screen with no thread open: a soft patch around each block of
  *   its text (the heading, line and buttons; the links under them).
  * - Any other page (Settings, Usage, Scheduled...): each content area's
@@ -275,6 +277,8 @@ export function measureBackdropZones(
   const composerForm = column?.querySelector("[data-chat-composer-form]") ?? null;
   const composerBox = visibleBox(composerForm, panel);
   const hero = column?.querySelector("[data-draft-hero]") ?? null;
+  // The new-thread screen with its composer at the bottom: a phone, or a pane too small for the hero.
+  const stackedDraft = hero ? null : (column?.querySelector("[data-draft-stacked]") ?? null);
 
   if (column && columnBox && hero) {
     // The new-thread screen: a frosted patch behind the heading, the
@@ -317,6 +321,28 @@ export function measureBackdropZones(
           shape: "rect",
           rect: toRect(rect),
           core: toRect(words),
+          tint: floors.column,
+          tintColor: color("background"),
+        });
+      }
+    });
+  } else if (column && columnBox && stackedDraft) {
+    // The same screen where the composer stays at the bottom: nothing to read
+    // yet, so the art shows here too. Every block of text in the column gets
+    // its own patch (the question, the recent threads, the links, a notice,
+    // the line under the composer), whatever the column holds, so no text
+    // ever sits on raw art; the composer keeps its hard patch below. Text
+    // that rises in as it fades counts from the start, as on the home screen.
+    textBlocks(textBoxes(column, columnBox, composerForm, true), 48).forEach((words, index) => {
+      const core = clip(grow(words, 0, HOME_RISE_PX), columnBox);
+      const rect = clip(grow(words, 36, 18), columnBox);
+      if (core && rect) {
+        zones.push({
+          id: `draft-${index}`,
+          edge: "soft",
+          shape: "rect",
+          rect: toRect(rect),
+          core: toRect(core),
           tint: floors.column,
           tintColor: color("background"),
         });

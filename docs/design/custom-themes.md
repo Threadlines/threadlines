@@ -146,7 +146,12 @@ On the new-thread screen the art shows at full strength around a soft
 frosted patch behind the heading, the composer and the links under it. The
 home screen with no thread open (the first one a new user sees) works the
 same way: a patch behind its heading, line and buttons, and one behind the
-links under them.
+links under them. Where the new-thread screen keeps its composer at the
+bottom (a phone, or a pane too small for the roomy layout,
+`data-draft-stacked`), every block of text in the column gets its own patch
+and the composer its hard one, so the art shows there too; until Nov 9 that
+screen was frosted whole like a thread, which left a phone no screen where
+the art showed clear.
 Inside a thread the reading column (composer width plus a margin) is frosted
 and tinted; the art shows crisp in the margins, and frosted through the
 thread list, title row and rail. The Glass slider (`themeGlass`, 0 to 100,

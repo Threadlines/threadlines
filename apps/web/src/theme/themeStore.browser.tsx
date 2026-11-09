@@ -420,6 +420,88 @@ describe("backdrop zones", () => {
     }
   });
 
+  it("lets the art show on a phone's new-thread screen: a patch for each block of text, the composer hard, no column", async () => {
+    const at = (left: number, top: number, width: number, height: number) =>
+      ({ position: "absolute", left, top, width, height }) as const;
+    const screen = await render(
+      <div style={{ position: "fixed", inset: 0 }}>
+        <div data-slot="app-panel" style={{ position: "absolute", inset: 0 }}>
+          <div data-chat-view="" style={{ position: "absolute", inset: 0 }}>
+            <div data-chat-column="" style={{ position: "absolute", inset: 0 }}>
+              <div data-draft-stacked="" style={at(0, 40, 360, 300)}>
+                {/* Mid fade-in, like the home screen's heading. */}
+                <h2 style={{ ...at(60, 40, 240, 28), margin: 0, opacity: 0 }}>What's next?</h2>
+                <p style={{ ...at(20, 200, 200, 20), margin: 0 }}>Active and recent</p>
+              </div>
+              {/* Something else the column holds: it must not sit on raw art either. */}
+              <p style={{ ...at(20, 380, 200, 20), margin: 0 }}>A notice</p>
+              <div style={at(0, 520, 360, 140)}>
+                <form data-chat-composer-form="" style={at(10, 0, 340, 90)}>
+                  <div
+                    data-glass-surface="composer"
+                    style={{ ...at(0, 0, 340, 90), borderRadius: 16 }}
+                  >
+                    Ask anything
+                  </div>
+                </form>
+                <p style={{ ...at(20, 104, 200, 20), margin: 0 }}>Current checkout</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>,
+    );
+    try {
+      const { zones, artShown } = measureBackdropZones(
+        document,
+        { width: window.innerWidth, height: window.innerHeight },
+        resolveThemeTokens(darkTheme("#e7ecff")),
+        glassFloors({ frame: 0.7, list: 0.6, column: 0.5, composer: 0.8, blur: 16 }, 50),
+      );
+      expect(artShown).toBe(true);
+      // One soft patch a block of text (the composer's own words are its hard patch's), no reading column.
+      expect(zones.map((zone) => `${zone.id}:${zone.edge}`)).toEqual([
+        "draft-0:soft",
+        "draft-1:soft",
+        "draft-2:soft",
+        "draft-3:soft",
+        "composer:hard",
+      ]);
+      const covers = (id: string, text: string) => {
+        const { core } = zones.find((zone) => zone.id === id)!;
+        const element = [...document.querySelectorAll("h2, p")].find(
+          (candidate) => candidate.textContent === text,
+        )!;
+        const range = document.createRange();
+        range.selectNodeContents(element);
+        const box = range.getBoundingClientRect();
+        return (
+          core.x <= box.left + 1 &&
+          core.y <= box.top + 1 &&
+          core.x + core.w >= box.right - 1 &&
+          core.y + core.h >= box.bottom - 1
+        );
+      };
+      expect(covers("draft-0", "What's next?")).toBe(true);
+      expect(covers("draft-1", "Active and recent")).toBe(true);
+      expect(covers("draft-2", "A notice")).toBe(true);
+      expect(covers("draft-3", "Current checkout")).toBe(true);
+      // The room between the text and the composer is left to the art.
+      const clear = { x: 300, y: 470 };
+      expect(
+        zones.some(
+          ({ rect }) =>
+            clear.x >= rect.x &&
+            clear.x <= rect.x + rect.w &&
+            clear.y >= rect.y &&
+            clear.y <= rect.y + rect.h,
+        ),
+      ).toBe(false);
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("frosts a settings page's column the full height of the page, the art around it", async () => {
     const at = (left: number, top: number, width: number, height: number) =>
       ({ position: "absolute", left, top, width, height }) as const;
