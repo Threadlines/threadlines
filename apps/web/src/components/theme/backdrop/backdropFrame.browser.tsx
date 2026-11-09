@@ -87,6 +87,18 @@ async function mountFrame() {
       return found as unknown as Probe;
     });
   };
+  /**
+   * What each zone's core shows now: capture switched on reads back the
+   * picture on screen once, the probe carries it, and capture goes off again.
+   * Left on through a fade, it reads back every 33 ms step, and on a busy CI
+   * machine's shared software GPU that starves the frame past a probe's wait.
+   */
+  const shownNow = async () => {
+    post({ type: "test:capture-shown", on: true });
+    const answer = await probe();
+    post({ type: "test:capture-shown", on: false });
+    return answer.shown;
+  };
   const start = (
     mode: "grid" | "pixels" | "canvas",
     script: string,
@@ -120,10 +132,17 @@ async function mountFrame() {
       },
       { timeout, interval: 50 },
     );
+  /** Waits for a frame past `count`. Art the frame stopped says why, rather than a frame count. */
   const framesAbove = (count: number) =>
     waitForFrame(
       async () => {
         const answer = await probe();
+        const stopped = messages.find((message) => message.type === "failure");
+        if (stopped) {
+          throw new Error(
+            `The art stopped: ${String(stopped.reason)} ${String(stopped.detail ?? "")}`,
+          );
+        }
         expect(answer.drawnFrames).toBeGreaterThan(count);
         return answer;
       },
@@ -133,7 +152,7 @@ async function mountFrame() {
     window.removeEventListener("message", onMessage);
     frame.remove();
   };
-  return { post, messages, probe, start, failure, framesAbove, dispose };
+  return { post, messages, probe, shownNow, start, failure, framesAbove, dispose };
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -260,14 +279,13 @@ describe("backdrop frame", () => {
     // A minute-long fade: however slow the machine, the checks below land in
     // its first part. The test ends it on purpose further down.
     mounted.post({ type: "test:fade-ms", ms: 60_000 });
-    mounted.post({ type: "test:capture-shown", on: true });
     mounted.post({ type: "conditions", conditions: LIVE });
 
     const resumed = await mounted.framesAbove(paused.drawnFrames);
     expect(resumed.generation).toBe(paused.generation + 1);
     expect(resumed.fading).toBe(true);
     // The restarted art is black; the white from before the pause still shows over it.
-    expect((await mounted.probe()).shown.column?.high).toBeGreaterThan(0.25);
+    expect((await mounted.shownNow()).column?.high).toBeGreaterThan(0.25);
 
     // Held still mid-fade (the user drags a divider), the fade holds too:
     // even cut short to end at once, it waits for the art to run again.
@@ -282,7 +300,7 @@ describe("backdrop frame", () => {
       timeout: 8_000,
       interval: 100,
     });
-    expect((await mounted.probe()).shown.column?.high).toBeLessThan(0.05);
+    expect((await mounted.shownNow()).column?.high).toBeLessThan(0.05);
   });
 
   it("fades a theme's first frame in from the still the app shows until then", async () => {
@@ -294,7 +312,6 @@ describe("backdrop frame", () => {
     context.fillStyle = "#fff";
     context.fillRect(0, 0, white.width, white.height);
     mounted.post({ type: "test:fade-ms", ms: 60_000 });
-    mounted.post({ type: "test:capture-shown", on: true });
     // The art paints black; its still is white.
     mounted.start(
       "grid",
@@ -312,13 +329,13 @@ describe("backdrop frame", () => {
     );
     const first = await mounted.framesAbove(0);
     expect(first.fading).toBe(true);
-    expect((await mounted.probe()).shown.column?.high).toBeGreaterThan(0.25);
+    expect((await mounted.shownNow()).column?.high).toBeGreaterThan(0.25);
     mounted.post({ type: "test:fade-ms", ms: 1 });
     await waitForFrame(async () => expect((await mounted!.probe()).fading).toBe(false), {
       timeout: 6_000,
       interval: 100,
     });
-    expect((await mounted.probe()).shown.column?.high).toBeLessThan(0.05);
+    expect((await mounted.shownNow()).column?.high).toBeLessThan(0.05);
   });
 
   it("draws one frame for Motion: Still and stands on it, then moves on from it when Live", async () => {
