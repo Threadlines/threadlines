@@ -40,7 +40,6 @@ import {
   WOFF2_MAX_DECOMPRESSED_BYTES,
 } from "@threadlines/shared/themeFontNotice";
 import { checkThemeManifest, themeContentHash } from "@threadlines/shared/themeManifest";
-import { THEME_LICENSE_WORDS, themeCreditsLine } from "@threadlines/shared/themeSharing";
 import {
   showcaseFontProblems,
   showcasePngProblems,
@@ -201,8 +200,13 @@ const themeSlugs = (repo: string) => {
     .toSorted();
 };
 
+// stderr is kept with the error, not the log: a `git show` of a file a new folder lacks fails by design.
 const git = (repo: string, args: ReadonlyArray<string>) =>
-  execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  execFileSync("git", ["-C", repo, ...args], {
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
 
 export interface ShowcaseCheckOptions {
   /** The pull request's base commit: what it changed is checked too. */
@@ -292,32 +296,51 @@ function addedOn(repo: string, path: string): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-function noticeFor(theme: ShowcaseTheme): string {
-  const { manifest } = theme;
-  const credit = themeCreditsLine(manifest.credits);
-  const license = manifest.credits?.license;
+/** Each license a theme or font may carry, as a notice names and links it. */
+const NOTICE_LICENSES = {
+  "CC-BY-4.0": "[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)",
+  "CC0-1.0": "[CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/)",
+  MIT: "the MIT License",
+  "OFL-1.1": "the [SIL Open Font License 1.1](../../licenses/OFL-1.1.txt)",
+  "Apache-2.0": "the [Apache License 2.0](../../licenses/Apache-2.0.txt)",
+} as const;
+
+/** A sentence as a font's notice gives it, ending in a period. */
+const sentence = (text: string) => {
+  const trimmed = text.trim();
+  return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+};
+
+/**
+ * A theme's NOTICE.md: who made it and its license, then each embedded font
+ * with its own copyright notice and license, as OFL asks.
+ */
+export function noticeFor(theme: Pick<ShowcaseTheme, "manifest" | "fonts">): string {
+  const credits = theme.manifest.credits;
+  const author = credits?.author?.trim();
+  const link = credits?.link?.trim();
+  const license = credits?.license;
+  const byLine =
+    author === undefined || author === ""
+      ? null
+      : `By ${author}${link === undefined || link === "" ? "" : ` (${link})`}.`;
+  const licenseLine =
+    license === undefined ? "No license given." : `Shared under ${NOTICE_LICENSES[license]}.`;
   const lines = [
-    `# ${manifest.name}`,
+    `# ${theme.manifest.name}`,
     "",
-    credit === null ? "No credit given." : credit,
-    "",
-    license === undefined
-      ? "No license given."
-      : `The theme is shared under ${THEME_LICENSE_WORDS[license].name}.`,
+    byLine === null ? licenseLine : `${byLine} ${licenseLine}`,
   ];
   if (theme.fonts.length > 0) {
     lines.push("", "## Fonts", "");
     for (const font of theme.fonts) {
-      const text =
-        font.license === "Apache-2.0"
-          ? "../../licenses/Apache-2.0.txt"
-          : "../../licenses/OFL-1.1.txt";
-      lines.push(
-        `- ${font.family}: ${font.copyright ?? ""} Licensed under ${font.license === "Apache-2.0" ? "the Apache License 2.0" : "the SIL Open Font License 1.1"} ([text](${text})${font.notice === null ? "" : `, ${font.notice}`}).`,
-      );
+      const notice = font.copyright === null ? "" : ` ${sentence(font.copyright)}`;
+      const terms =
+        font.license === null ? "" : ` Licensed under ${NOTICE_LICENSES[font.license]}.`;
+      lines.push(`- **${font.family}**.${notice}${terms}`);
     }
   }
-  lines.push("", "Its picture was drawn by Threadlines from the theme.", "");
+  lines.push("", "The picture was drawn by Threadlines from the theme.", "");
   return lines.join("\n");
 }
 

@@ -100,8 +100,15 @@ describe("theme-showcase", () => {
     const file = readFileSync(join(repo, entry!.file.path));
     expect(entry?.file.bytes).toBe(file.length);
     expect(entry?.addedAt).toMatch(/^\d{4}-\d{2}-\d{2}$/);
-    expect(notices.get("harbor")).toContain("JetBrains Mono: Copyright");
-    expect(notices.get("harbor")).toContain("SIL Open Font License 1.1");
+    // One line for the credit and license; each font's notice as a sentence, then its license.
+    const notice = notices.get("harbor") ?? "";
+    expect(notice).toMatch(
+      /^By Sam\. Shared under \[CC BY 4\.0\]\(https:\/\/creativecommons\.org\/licenses\/by\/4\.0\/\)\.$/m,
+    );
+    expect(notice).toMatch(
+      /^- \*\*JetBrains Mono\*\*\. Copyright [^\n]+\. Licensed under the \[SIL Open Font License 1\.1\]\(\.\.\/\.\.\/licenses\/OFL-1\.1\.txt\)\.$/m,
+    );
+    expect(notice.match(/CC BY 4\.0/g)).toHaveLength(1);
   });
 
   it("lets an outside author add or change only their own theme folders", async () => {
