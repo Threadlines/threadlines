@@ -6,8 +6,8 @@ import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import { formatWorkingDurationLabel } from "../../timestampFormat";
 import { Button } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { AgentFace } from "./AgentFace";
 import type { LiveAgentIndicator } from "./agentsPanel.logic";
-import { AgentProviderGlyph } from "./ProviderInstanceIcon";
 
 /** Faces drawn before the rest fold into "+N"; a narrow header draws one. */
 const MAX_FACES = 3;
@@ -32,8 +32,8 @@ export function formatLiveAgentsTooltip(
 }
 
 /**
- * The header's live subagents: one small face per agent, outlined in the
- * accent while it works and amber while it waits on the user. Clicking opens the
+ * The header's live subagents: one small face per agent ({@link AgentFace}),
+ * outlined in the accent while it works and amber while it waits on the user. Clicking opens the
  * Agents tab; hovering names them. Renders nothing worth reading on its own
  * when no agent is live, so the caller drops it then.
  */
@@ -67,30 +67,25 @@ export const HeaderAgentFaces = memo(function HeaderAgentFaces({
           />
         }
       >
-        {/* A stack, first face on top. Each later face tucks 4px behind the
+        {/* A stack, first face on top. Each later face tucks 3px behind the
             one before it and has a notch masked out of it there, so the faces
             stay apart by a clear 1.5px on any background (hover included) and
-            no face's outline crosses a neighbor's mark. The notch stops where
-            the 9px mark begins, so marks are never clipped. */}
+            no face's outline crosses a neighbor's mark. The notch stops short
+            of the 10px mark, so marks are never clipped. */}
         <span aria-hidden="true" className="flex items-center">
           {shown.map((agent, index) => (
-            <span
+            <AgentFace
               key={agent.id}
-              data-agent-face={agent.waiting ? "waiting" : "running"}
-              className={cn(
-                "inline-flex size-5 shrink-0 items-center justify-center rounded-full border-[1.5px] bg-muted",
-                agent.waiting ? "border-amber-500" : "border-primary-graph",
-                index > 0 &&
-                  "-ms-1 [mask-image:radial-gradient(circle_at_-6px_50%,transparent_11.5px,#000_12px)] @max-xl/header-actions:hidden",
-              )}
-            >
-              <AgentProviderGlyph
-                agentProvider={agent.provider}
-                threadInstanceId={providerInstanceId}
-                threadDriverKind={providerDriverKind}
-                className="size-[9px]"
-              />
-            </span>
+              status={agent.waiting ? "waiting" : "running"}
+              provider={agent.provider}
+              threadInstanceId={providerInstanceId}
+              threadDriverKind={providerDriverKind}
+              className={
+                index > 0
+                  ? "-ms-[3px] [mask-image:radial-gradient(circle_at_-7px_50%,transparent_11.5px,#000_12px)] @max-xl/header-actions:hidden"
+                  : undefined
+              }
+            />
           ))}
         </span>
         {/* The overflow count follows how many faces the width draws: three
