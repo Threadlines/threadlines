@@ -410,9 +410,10 @@ const make = Effect.gen(function* () {
       }
       return yield* write(
         Effect.gen(function* () {
+          // Content sent is kept whichever pick wins: a pick already here may be missing it.
+          if (content !== undefined && hash !== undefined) yield* storeContent(hash, content);
           const current = Option.getOrNull(yield* repo.getPick.pipe(stored));
           if (current !== null && compareThemeRevisions(current, incoming) >= 0) return current;
-          if (content !== undefined && hash !== undefined) yield* storeContent(hash, content);
           yield* repo.putPick(incoming).pipe(stored);
           return incoming;
         }),

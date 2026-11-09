@@ -39,7 +39,6 @@ import {
   useThemeTiles,
 } from "~/themeLibrary/themeCatalog";
 import { importThemeFile } from "~/themeLibrary/themeFiles";
-import { joinSameThemeEverywhere } from "~/themeLibrary/themePickSync";
 import {
   SHOWCASE_SHARE_WORDS,
   useShowcaseEnvironments,
@@ -707,16 +706,13 @@ export function ThemeGlassRow() {
 
 /**
  * "Same theme on all my devices": on, picking a theme here switches every
- * device with it on, and this one follows theirs (themePickSync.ts). Turning
- * it on takes the theme they share, if they share one.
+ * device with it on, and this one follows theirs. Turning it on takes the
+ * theme they share, if they share one (themePickSync.ts, however it turns on).
  */
 export function ThemeSameEverywhereRow() {
   const value = useSettings((settings) => settings.themeSameEverywhere);
   const { updateSettings } = useUpdateSettings();
-  const set = (on: boolean) => {
-    updateSettings({ themeSameEverywhere: on });
-    if (on) joinSameThemeEverywhere();
-  };
+  const set = (on: boolean) => updateSettings({ themeSameEverywhere: on });
   return (
     <SettingsRow
       place="appearance.sameEverywhere"

@@ -415,7 +415,9 @@ async function sendPickMerge(
       }
     }
     await clients(target).mergePick(manifest === undefined ? { pick } : { pick, manifest });
-    sentMerges.set(key, "done");
+    // Without content it lacks, try again on the next change: a computer with it may connect.
+    if (hash !== undefined && manifest === undefined && !targetHas(hash)) sentMerges.delete(key);
+    else sentMerges.set(key, "done");
   } catch (error) {
     sentMerges.delete(key);
     retry();

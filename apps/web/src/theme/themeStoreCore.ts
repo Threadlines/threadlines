@@ -538,6 +538,9 @@ export function createThemeStoreCore(env: ThemeStoreEnv): ThemeStoreCore {
       markKept(content.hash);
     }
     writePaintRecord(choice, theme);
+    // Announced before subscribers hear the trial end, so the user's Keep is
+    // shared before anything waiting on that (a pick from elsewhere) applies.
+    if (by.user) for (const listener of userCommitListeners) listener(choice, base);
     update({
       committed: choice,
       committedBase: base,
@@ -554,7 +557,6 @@ export function createThemeStoreCore(env: ThemeStoreEnv): ThemeStoreCore {
     });
     if (choice.kind === "starter" && theme) fillStarterHash(choice, theme.manifest);
     if (choice.kind !== "builtin" && !theme) lookupCommitted(choice, sequence, content?.manifest);
-    if (by.user) for (const listener of userCommitListeners) listener(choice, base);
   };
 
   // The saved choice on load: built-ins are ready, the rest resolve.
@@ -636,9 +638,11 @@ export function createThemeStoreCore(env: ThemeStoreEnv): ThemeStoreCore {
     handleStorageChange: (key) => {
       if (key !== THEME_STORAGE_KEY && key !== null) return;
       // Another window committed a choice: this window's trial ends and the
-      // choice is adopted. (`null` means storage was cleared.)
+      // choice is adopted. (`null` means storage was cleared.) A load under
+      // `?theme=default` keeps showing System whatever is saved meanwhile.
       const raw = readStoredRaw();
       lastSeenRaw = raw;
+      if (state.bypass) return;
       const next = parseStoredThemeChoice(raw) ?? {
         choice: { kind: "builtin", id: "system" } as const,
         base: null,
