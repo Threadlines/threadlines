@@ -11,6 +11,8 @@ import {
   createModelCapabilities,
   codexModelRetirementNotice,
   createModelSelection,
+  findReasoningOptionDescriptor,
+  findReasoningSelection,
   getModelSelectionBooleanOptionValue,
   getModelSelectionStringOptionValue,
   getProviderOptionDescriptors,
@@ -64,6 +66,22 @@ const claudeCaps: ModelCapabilities = createModelCapabilities({
         { id: "1m", label: "1M", isDefault: true },
       ],
       currentValue: "1m",
+    },
+  ],
+});
+
+const openCodeCaps: ModelCapabilities = createModelCapabilities({
+  optionDescriptors: [
+    {
+      id: "variant",
+      label: "Reasoning",
+      type: "select",
+      options: [
+        { id: "low", label: "Low" },
+        { id: "high", label: "High", isDefault: true },
+        { id: "max", label: "Max" },
+      ],
+      currentValue: "high",
     },
   ],
 });
@@ -269,8 +287,19 @@ describe("descriptor helpers", () => {
     expect(offersSelectedReasoning(codexCaps, [{ id: "reasoningEffort", value: "high" }])).toBe(
       true,
     );
+    expect(offersSelectedReasoning(openCodeCaps, [{ id: "variant", value: "max" }])).toBe(true);
+    expect(findReasoningOptionDescriptor(openCodeCaps.optionDescriptors ?? [])?.id).toBe(
+      "variant",
+    );
+    expect(findReasoningSelection([{ id: "variant", value: "max" }])).toEqual({
+      id: "variant",
+      value: "max",
+    });
     // The level is gone, or the model lost the setting altogether.
     expect(offersSelectedReasoning(codexCaps, [{ id: "reasoningEffort", value: "ultra" }])).toBe(
+      false,
+    );
+    expect(offersSelectedReasoning(openCodeCaps, [{ id: "variant", value: "medium" }])).toBe(
       false,
     );
     expect(offersSelectedReasoning(null, [{ id: "reasoningEffort", value: "high" }])).toBe(false);

@@ -301,11 +301,13 @@ const REASONING_OPTION_IDS: ReadonlySet<string> = new Set([
   "reasoningEffort",
   "effort",
   "reasoning",
+  "variant",
 ]);
 
 /**
  * A model's reasoning setting among its options: Codex calls it
- * `reasoningEffort`, Claude `effort`. Undefined for a model without one.
+ * `reasoningEffort`, Claude `effort`, OpenCode `variant`. Undefined for a model
+ * without one.
  */
 export function findReasoningOptionDescriptor(
   descriptors: ReadonlyArray<ProviderOptionDescriptor>,
