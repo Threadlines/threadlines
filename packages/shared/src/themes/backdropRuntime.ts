@@ -88,7 +88,10 @@ export interface BackdropRuntimeLimits {
 }
 
 export interface BackdropFrameRuntimeOptions {
-  /** The worker prelude's source, a parenthesized function expression taking its config. */
+  /**
+   * The worker prelude's source, a parenthesized function expression taking
+   * the worker's global (the blob's top-level `this`) and its config.
+   */
   readonly prelude: string;
   /** Extra `test:*` messages for the browser tests (backdropFrame.ts documents them). */
   readonly testHooks: boolean;
@@ -427,6 +430,7 @@ export function backdropFrameRuntime(
   let fadeTimer: number | null = null;
   let fadeMs = timing.resumeFadeMs;
   let launchTimeoutMs = timing.launchTimeoutMs;
+  let muteWorkers = false;
   /** The theme's still, decoded: the art's very first frame fades in from it. */
   let stillImage: BackdropBitmap | null = null;
   /** The still is decoding: the art waits for it, at most `stillWaitMs`. */
@@ -1090,7 +1094,9 @@ void main() {
         maxCellGap: limits.maxCellGap,
       },
     };
-    const source = `${options.prelude}(${JSON.stringify(config)});\n${theme.script}\n`;
+    // `this` at the blob's top level is the worker's global whatever the
+    // theme's script declares: the prelude reaches the global only through it.
+    const source = `${options.prelude}(this, ${JSON.stringify(config)});\n${theme.script}\n`;
     const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
     let worker: BackdropWorker;
     try {
@@ -1260,6 +1266,7 @@ void main() {
   };
 
   const onWorkerMessage = (from: Art, data: unknown) => {
+    if (options.testHooks && muteWorkers) return;
     if (options.testHooks && isRecord(data) && data.type !== "defined") lastReplies.set(from, data);
     if (art !== from || !isRecord(data) || data.generation !== from.generation) {
       staleDropped += 1;
@@ -2515,8 +2522,9 @@ void main() {
    * generation back to the reply handler, and `test:capture-shown` reads
    * back the composited pixels inside each zone's core on every frame,
    * keeping the darkest and brightest luminance shown (`worst` in the probe).
-   * `test:fade-ms` sets how long a resume fade lasts, and `test:launch-ms`
-   * how long a new worker has to boot.
+   * `test:fade-ms` sets how long a resume fade lasts, `test:launch-ms` how
+   * long a new worker has to boot, and `test:mute-workers` drops every
+   * worker message, as if the workers never started.
    */
   const onTestMessage = (message: Record<string, unknown>) => {
     if (message.type === "test:probe") {
@@ -2569,6 +2577,10 @@ void main() {
     }
     if (message.type === "test:launch-ms") {
       if (isNum(message.ms, 1, 60_000)) launchTimeoutMs = message.ms;
+      return;
+    }
+    if (message.type === "test:mute-workers") {
+      muteWorkers = message.on === true;
       return;
     }
     if (message.type === "test:lose-context") {

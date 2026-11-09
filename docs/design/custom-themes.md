@@ -232,9 +232,17 @@ replies carry no `source` (it is null for dedicated workers), so the frame
 binds its handler to the current worker and tags every tick with a worker
 generation; replies from an older generation are dropped. The prelude runs
 before the theme's script in the same blob and removes `requestAnimationFrame`,
-`Worker`, `SharedWorker` and `importScripts` and locks timers, as defense in
-depth (so art can't spread to more cores), but enforcement does not depend on
-it:
+`Worker`, `SharedWorker` and `importScripts` and locks timers (setting and
+clearing them, on the global and the prototypes above it), as defense in depth
+(so art can't spread to more cores). The theme's top-level declarations
+exist before any of the blob runs, so the prelude reaches the global only
+through the blob's top-level `this`, takes each built-in it uses once, refusing
+art that declared one of their names (the message names it), and keeps its own
+copies: art can't swap its clock, its timers or its reply channel later
+either. Its clock starts when a tick arrives and the posting of each frame
+counts too, so work the art hides in a patched getter or iterator on that path
+is counted, and an error the art made unreadable still goes out. Enforcement
+does not depend on any of this:
 
 - **Paused means terminated.** When the window is hidden or minimized, after 2
   minutes with no input and no agent working, under "Motion: Still", Reduce
@@ -851,11 +859,16 @@ five minutes.
   revert drops, refused after revert); Claude allow list contains the tools.
 - Runtime, in the real browser suite: worker busy loop leaves the app's timers
   on time; worker `fetch`, WebSocket, `importScripts` and fonts blocked; missed
-  ticks step down and then stop; a worker that never reports in (a theme that
-  shadows `postMessage`) fails; pausing terminates the worker; art that turns
-  white ten seconds in keeps column text at 4.5:1; one-pixel white lines on
-  black art keep it too; zone changes while paused recomposite; replies from
-  a terminated worker generation are ignored.
+  ticks step down and then stop; art that declares a name the prelude needs is
+  refused with that name; art that hides every global name with `let` still
+  draws; deferred work still counts when the art patches `Math.max`, and work
+  in a patched `MessageEvent` `data` getter or a getter on the grid it draws
+  into counts; timers are gone from the whole prototype chain; an error the art
+  made unreadable still fails it as a script error; a worker that never reports
+  in fails; pausing terminates the worker; art that turns white ten seconds in
+  keeps column text at 4.5:1; one-pixel white lines on black art keep it too;
+  zone changes while paused recomposite; replies from a terminated worker
+  generation are ignored.
 - Web: trial → countdown → revert; Keep; reload mid-trial keeps the committed
   theme; a second window committing ends the first window's trial; `/theme`
   keyboard; glass off leaves default-theme surfaces unchanged; same-base

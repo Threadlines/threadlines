@@ -76,7 +76,7 @@ export interface BackdropWorkerConfig {
   };
 }
 
-export function backdropWorkerPrelude(config: BackdropWorkerConfig): void {
+export function backdropWorkerPrelude(global: object, config: BackdropWorkerConfig): void {
   "use strict";
   type Reply = BackdropWorkerReply;
   type Definition = {
@@ -87,22 +87,86 @@ export function backdropWorkerPrelude(config: BackdropWorkerConfig): void {
     setup?: (info: unknown, target: unknown) => void;
     draw: (target: unknown, info: unknown) => void;
   };
-  // The worker's global scope, typed by shape (backdropDom.ts): this module compiles without the DOM's types too.
-  const scope = globalThis as unknown as BackdropWorkerScope;
+  // The theme's script shares this blob, and its top-level declarations exist
+  // before any of the blob runs: `function` and `var` replace the global's own
+  // properties (postMessage, Math, the typed arrays) or hide inherited ones
+  // (setTimeout, performance, addEventListener), and `let`, `const` and
+  // `class` hide global names from identifier lookups. So the prelude reaches
+  // the global only through `global` (the blob's top-level `this`, which no
+  // declaration changes), takes each built-in it needs from it here, before
+  // any of the theme's statements run, checks it is the platform's own, and
+  // uses only these copies afterwards: art that reassigns or patches a
+  // built-in later doesn't reach them either.
+  const ObjectCtor = {}.constructor as ObjectConstructor;
+  const { defineProperty, freeze, getPrototypeOf } = ObjectCtor;
+  const hasOwn = ObjectCtor.prototype.hasOwnProperty;
+  const tagOf = ObjectCtor.prototype.toString;
+  const sourceOf = function () {}.toString;
+  // The language's own TypeError, from one it throws: the global's may be the art's.
+  const RefusalError = (() => {
+    try {
+      return (null as unknown as { constructor: TypeErrorConstructor }).constructor;
+    } catch (error) {
+      return (error as { constructor: TypeErrorConstructor }).constructor;
+    }
+  })();
+  const refuse = (name: string): never => {
+    throw new RefusalError(
+      `The art's script declares ${name}, a name the backdrop needs for itself. Rename it.`,
+    );
+  };
+  const globals = global as Record<string, unknown>;
+  /** The platform's function `name`, refusing one the art's script declared. */
+  const platform = <T>(name: string): T => {
+    const value = globals[name];
+    if (
+      typeof value !== "function" ||
+      sourceOf.call(value).replace(/\s+/g, " ") !== `function ${name}() { [native code] }`
+    ) {
+      return refuse(name);
+    }
+    return value as T;
+  };
+  /** The platform's object `name` (its tag `[object Tag]`), refusing one the art's script declared. */
+  const platformObject = <T>(name: string, tag: string): T => {
+    const value = globals[name];
+    return tagOf.call(value) === `[object ${tag}]` ? (value as T) : refuse(name);
+  };
+
   const generation = config.generation;
-  // Taken before the theme's script runs, so the work each frame reports is the real clock's.
-  const clockSource = (globalThis as { performance?: { now(): number } }).performance;
-  const clock = clockSource ? clockSource.now.bind(clockSource) : () => Date.now();
-  const post = scope.postMessage.bind(scope) as (
+  const post = platform<BackdropWorkerScope["postMessage"]>("postMessage").bind(global) as (
     message: Reply,
     transfer?: Array<ArrayBuffer | BackdropBitmap>,
   ) => void;
+  const listen = platform<BackdropWorkerScope["addEventListener"]>("addEventListener").bind(
+    global,
+  ) as BackdropWorkerScope["addEventListener"];
+  const afterMicrotasks =
+    platform<(handler: () => void, ms?: number) => unknown>("setTimeout").bind(global);
+  const queueMicrotaskNow = platform<(callback: () => void) => void>("queueMicrotask").bind(global);
+  const performanceObject = platformObject<{ now(): number }>("performance", "Performance");
+  // So the work each frame reports is the real clock's.
+  const clock = performanceObject.now.bind(performanceObject);
+  const { max: mathMax } = platformObject<Math>("Math", "Math");
+  const { isFinite: isFiniteNumber, isInteger: isIntegerNumber } =
+    platform<NumberConstructor>("Number");
+  const { isArray } = platform<ArrayConstructor>("Array");
+  const ErrorCtor = platform<ErrorConstructor>("Error");
+  const ArrayBufferCtor = platform<ArrayBufferConstructor>("ArrayBuffer");
+  const Int16ArrayCtor = platform<Int16ArrayConstructor>("Int16Array");
+  const Uint8ArrayCtor = platform<Uint8ArrayConstructor>("Uint8Array");
+  const Uint8ClampedArrayCtor = platform<Uint8ClampedArrayConstructor>("Uint8ClampedArray");
+  const Uint32ArrayCtor = platform<Uint32ArrayConstructor>("Uint32Array");
+  const OffscreenCanvasCtor =
+    globals.OffscreenCanvas === undefined
+      ? null
+      : platform<BackdropWorkerScope["OffscreenCanvas"]>("OffscreenCanvas");
 
   // Defense in depth: the content policy blocks the network and nested
   // scripts whatever happens here.
   const remove = (target: object, name: string) => {
     try {
-      Object.defineProperty(target, name, {
+      defineProperty(target, name, {
         value: undefined,
         writable: false,
         enumerable: false,
@@ -114,7 +178,7 @@ export function backdropWorkerPrelude(config: BackdropWorkerConfig): void {
   };
   const lock = (target: object, name: string, value: unknown) => {
     try {
-      Object.defineProperty(target, name, {
+      defineProperty(target, name, {
         value,
         writable: false,
         enumerable: false,
@@ -124,18 +188,40 @@ export function backdropWorkerPrelude(config: BackdropWorkerConfig): void {
       // As above.
     }
   };
-  const ownProto = Object.getPrototypeOf(globalThis) as object | null;
-  if (ownProto && Object.prototype.hasOwnProperty.call(ownProto, "postMessage")) {
-    try {
-      delete (ownProto as { postMessage?: unknown }).postMessage;
-    } catch {
-      // Non-configurable here; the shadow below still hides it.
+  /**
+   * Takes `name` off the global and every prototype above it (the platform
+   * keeps setTimeout and its kin there, where art could reach them past a
+   * lock on the global), then locks it on the global as `value`.
+   */
+  const strip = (name: string, value: unknown) => {
+    for (
+      let level = getPrototypeOf(global) as object | null;
+      level;
+      level = getPrototypeOf(level) as object | null
+    ) {
+      if (!hasOwn.call(level, name)) continue;
+      try {
+        delete (level as Record<string, unknown>)[name];
+      } catch {
+        // Non-configurable there; the lock on the global still hides it.
+      }
     }
+    lock(global, name, value);
+  };
+  for (const name of ["postMessage", "requestAnimationFrame", "cancelAnimationFrame"]) {
+    strip(name, undefined);
   }
+  const noTimers = () => {
+    throw new ErrorCtor("Backdrop art draws only when the frame asks: timers are not available.");
+  };
+  // Clearing too: art that clears every timer id would cancel the prelude's
+  // own measure of its deferred work.
+  for (const name of ["setTimeout", "setInterval", "clearTimeout", "clearInterval"]) {
+    strip(name, noTimers);
+  }
+  // importScripts stays on its prototype: the content policy blocks it there,
+  // and the browser tests reach for it to show the policy holds on its own.
   for (const name of [
-    "postMessage",
-    "requestAnimationFrame",
-    "cancelAnimationFrame",
     "Worker",
     "SharedWorker",
     "importScripts",
@@ -143,17 +229,8 @@ export function backdropWorkerPrelude(config: BackdropWorkerConfig): void {
     "BroadcastChannel",
     "scheduler",
   ]) {
-    remove(globalThis, name);
+    remove(global, name);
   }
-  // Kept for the prelude alone, before the theme's script can reach timers.
-  const timerSource = (globalThis as { setTimeout?: (handler: () => void, ms?: number) => unknown })
-    .setTimeout;
-  const afterMicrotasks = timerSource ? timerSource.bind(globalThis) : null;
-  const noTimers = () => {
-    throw new Error("Backdrop art draws only when the frame asks: timers are not available.");
-  };
-  lock(globalThis, "setTimeout", noTimers);
-  lock(globalThis, "setInterval", noTimers);
 
   let definition: Definition | null = null;
   /**
@@ -165,10 +242,9 @@ export function backdropWorkerPrelude(config: BackdropWorkerConfig): void {
   let trailingWork = 0;
   const TIMER_SLACK_MS = 1;
   const measureTrailing = () => {
-    if (!afterMicrotasks) return;
     const postedAt = clock();
     afterMicrotasks(() => {
-      trailingWork += Math.max(0, clock() - postedAt - TIMER_SLACK_MS);
+      trailingWork += mathMax(0, clock() - postedAt - TIMER_SLACK_MS);
     }, 0);
   };
   const takeWork = (startedAt: number) => {
@@ -176,17 +252,32 @@ export function backdropWorkerPrelude(config: BackdropWorkerConfig): void {
     trailingWork = 0;
     return work;
   };
+  /**
+   * Posts a frame and counts the posting with the next frame's work: the
+   * platform walks the transfer list with the array iterator, which the art
+   * can replace, after this frame's work was taken.
+   */
+  const send = (message: Reply, transfer: Array<ArrayBuffer | BackdropBitmap>) => {
+    const sending = clock();
+    post(message, transfer);
+    trailingWork += clock() - sending;
+  };
   let failed = false;
   let drawing = false;
 
+  /** The error as text. Art can make reading it throw (its own `instanceof`, a throwing getter): that still reads as something. */
   const describe = (error: unknown) => {
-    const text =
-      error instanceof Error
-        ? `${error.name}: ${error.message}`
-        : typeof error === "string"
-          ? error
-          : "Unknown error";
-    return text.length > 480 ? `${text.slice(0, 479)}…` : text;
+    try {
+      const text =
+        error instanceof ErrorCtor
+          ? `${error.name}: ${error.message}`
+          : typeof error === "string"
+            ? error
+            : "Unknown error";
+      return text.length > 480 ? `${text.slice(0, 479)}…` : text;
+    } catch {
+      return "The art threw something that can't be read.";
+    }
   };
   const fail = (phase: BackdropArtError["phase"], error: unknown) => {
     if (failed) return;
@@ -196,19 +287,19 @@ export function backdropWorkerPrelude(config: BackdropWorkerConfig): void {
 
   // Uncaught errors in the theme's script (top level, or anything it ran
   // outside draw) are reported once, with the phase they broke.
-  scope.addEventListener("error", (event) => {
+  listen("error", (event) => {
     event.preventDefault();
     fail(definition ? "draw" : "define", event.error ?? event.message);
   });
-  scope.addEventListener("unhandledrejection", (event) => {
+  listen("unhandledrejection", (event) => {
     event.preventDefault();
     fail(definition ? "draw" : "define", event.reason);
   });
 
   const isInt = (value: unknown, min: number, max: number): value is number =>
-    typeof value === "number" && Number.isInteger(value) && value >= min && value <= max;
+    typeof value === "number" && isIntegerNumber(value) && value >= min && value <= max;
   const isNumber = (value: unknown, min: number, max: number): value is number =>
-    typeof value === "number" && Number.isFinite(value) && value >= min && value <= max;
+    typeof value === "number" && isFiniteNumber(value) && value >= min && value <= max;
   const HEX = /^#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?$/;
 
   /** The theme's declaration, checked here so its author gets a precise message. */
@@ -227,7 +318,7 @@ export function backdropWorkerPrelude(config: BackdropWorkerConfig): void {
     if (raw.background !== undefined) {
       const stops = raw.background;
       if (
-        !Array.isArray(stops) ||
+        !isArray(stops) ||
         stops.length === 0 ||
         stops.length > config.limits.maxBackgroundStops ||
         !stops.every((stop) => typeof stop === "string" && HEX.test(stop))
@@ -312,23 +403,24 @@ export function backdropWorkerPrelude(config: BackdropWorkerConfig): void {
 
   const backdrop = (input: unknown) => {
     if (definition || failed) {
-      fail("define", new Error("Call threadlines.backdrop() once."));
+      fail("define", new ErrorCtor("Call threadlines.backdrop() once."));
       return;
     }
     const checked = check(input);
     if (typeof checked === "string") {
-      fail("define", new Error(checked));
+      fail("define", new ErrorCtor(checked));
       return;
     }
     definition = checked;
     const { draw: _draw, setup: _setup, ...declared } = checked;
     post({ type: "defined", generation, ...declared });
   };
-  lock(globalThis, "threadlines", Object.freeze({ backdrop }));
+  lock(global, "threadlines", freeze({ backdrop }));
 
   // Runs once the theme's script (the rest of this blob) has finished.
-  queueMicrotask(() => {
-    if (!definition) fail("define", new Error("The art never called threadlines.backdrop({...})."));
+  queueMicrotaskNow(() => {
+    if (!definition)
+      fail("define", new ErrorCtor("The art never called threadlines.backdrop({...})."));
   });
 
   // The drawing target and what it was sized for.
@@ -359,27 +451,27 @@ export function backdropWorkerPrelude(config: BackdropWorkerConfig): void {
 
   /** Reuses a spare buffer from the frame when it fits, so frames don't allocate. */
   const copyOut = (source: ArrayBufferView, spare: ArrayBuffer | undefined): ArrayBuffer => {
-    const bytes = new Uint8Array(source.buffer, source.byteOffset, source.byteLength);
+    const bytes = new Uint8ArrayCtor(source.buffer, source.byteOffset, source.byteLength);
     if (spare && spare.byteLength === bytes.byteLength) {
-      new Uint8Array(spare).set(bytes);
+      new Uint8ArrayCtor(spare).set(bytes);
       return spare;
     }
     return bytes.slice().buffer;
   };
 
-  const onTick = (tick: BackdropWorkerTick) => {
+  /** Draws for one tick; `startedAt` is when its message arrived. */
+  const onTick = (tick: BackdropWorkerTick, startedAt: number) => {
     const art = definition;
     if (!art || failed || drawing) return;
-    const startedAt = clock();
     const info: Record<string, unknown> = {
       t: tick.t,
       dt: tick.dt,
       frame: tick.frame,
       width: tick.size.width,
       height: tick.size.height,
-      state: Object.freeze({
+      state: freeze({
         ...tick.state,
-        pulse: Math.max(0, 1 - tick.state.sincePulse / 2),
+        pulse: mathMax(0, 1 - tick.state.sincePulse / 2),
       }),
       palette: config.palette,
     };
@@ -392,11 +484,11 @@ export function backdropWorkerPrelude(config: BackdropWorkerConfig): void {
       info.cell = { width: tick.grid.cellWidth, height: tick.grid.cellHeight };
       key = `${cols}x${rows}`;
       if (!grid || key !== sizedFor) {
-        const glyph = new Int16Array(cols * rows).fill(-1);
+        const glyph = new Int16ArrayCtor(cols * rows).fill(-1);
         grid = {
           glyph,
-          fg: new Uint8Array(cols * rows * 4),
-          bg: new Uint8Array(cols * rows * 4),
+          fg: new Uint8ArrayCtor(cols * rows * 4),
+          bg: new Uint8ArrayCtor(cols * rows * 4),
           cols,
           rows,
         };
@@ -408,10 +500,10 @@ export function backdropWorkerPrelude(config: BackdropWorkerConfig): void {
       info.rows = height;
       key = `${width}x${height}`;
       if (!pixels || key !== sizedFor) {
-        const buffer = new ArrayBuffer(width * height * 4);
+        const buffer = new ArrayBufferCtor(width * height * 4);
         pixels = {
-          data: new Uint8ClampedArray(buffer),
-          u32: new Uint32Array(buffer),
+          data: new Uint8ClampedArrayCtor(buffer),
+          u32: new Uint32ArrayCtor(buffer),
           width,
           height,
         };
@@ -423,7 +515,11 @@ export function backdropWorkerPrelude(config: BackdropWorkerConfig): void {
       info.rows = height;
       key = `${width}x${height}`;
       if (!canvas) {
-        canvas = new scope.OffscreenCanvas(width, height);
+        if (!OffscreenCanvasCtor) {
+          fail("setup", new ErrorCtor("This computer can't give the art a canvas."));
+          return;
+        }
+        canvas = new OffscreenCanvasCtor(width, height);
         context =
           art.context === "webgl2"
             ? canvas.getContext("webgl2", {
@@ -433,7 +529,10 @@ export function backdropWorkerPrelude(config: BackdropWorkerConfig): void {
               })
             : canvas.getContext("2d", { alpha: true });
         if (!context) {
-          fail("setup", new Error(`This computer can't give the art a ${art.context} context.`));
+          fail(
+            "setup",
+            new ErrorCtor(`This computer can't give the art a ${art.context} context.`),
+          );
           return;
         }
       } else if (key !== sizedFor) {
@@ -470,52 +569,37 @@ export function backdropWorkerPrelude(config: BackdropWorkerConfig): void {
     } finally {
       drawing = false;
     }
+    // Everything a reply reads from objects the art can reach (the grid and
+    // pixels it drew into hold its getters, if it set any) is read before the
+    // frame's work is taken, so that time counts.
     const spare = tick.spare ?? [];
+    const frame = tick.frame;
     if (art.mode === "grid" && grid) {
+      const { cols, rows } = grid;
       const glyph = copyOut(grid.glyph, spare[0]);
       const fg = copyOut(grid.fg, spare[1]);
       const bg = copyOut(grid.bg, spare[2]);
-      post(
-        {
-          type: "grid",
-          generation,
-          frame: tick.frame,
-          work: takeWork(startedAt),
-          cols: grid.cols,
-          rows: grid.rows,
-          glyph,
-          fg,
-          bg,
-        },
-        [glyph, fg, bg],
-      );
+      const work = takeWork(startedAt);
+      send({ type: "grid", generation, frame, work, cols, rows, glyph, fg, bg }, [glyph, fg, bg]);
     } else if (art.mode === "pixels" && pixels) {
+      const { width, height } = pixels;
       const data = copyOut(pixels.data, spare[0]);
-      post(
-        {
-          type: "pixels",
-          generation,
-          frame: tick.frame,
-          work: takeWork(startedAt),
-          width: pixels.width,
-          height: pixels.height,
-          data,
-        },
-        [data],
-      );
+      const work = takeWork(startedAt);
+      send({ type: "pixels", generation, frame, work, width, height, data }, [data]);
     } else if (canvas) {
       const bitmap = canvas.transferToImageBitmap();
-      post({ type: "canvas", generation, frame: tick.frame, work: takeWork(startedAt), bitmap }, [
-        bitmap,
-      ]);
+      const work = takeWork(startedAt);
+      send({ type: "canvas", generation, frame, work, bitmap }, [bitmap]);
     }
     measureTrailing();
   };
 
-  scope.addEventListener("message", (event) => {
+  listen("message", (event) => {
+    // The clock starts first: reading `data` runs a getter the art can replace.
+    const arrivedAt = clock();
     const message = event.data as BackdropWorkerTick | undefined;
     if (!message || message.type !== "tick" || message.generation !== generation) return;
-    onTick(message);
+    onTick(message, arrivedAt);
   });
 
   // The theme's script runs next: its time to define the art starts now.
