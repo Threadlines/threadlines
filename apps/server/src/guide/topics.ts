@@ -385,7 +385,7 @@ ${THEME_ART_RULES_GUIDE}
 
 ${THEME_DESIGN_GUIDE}
 
-The art is walled off: it runs in a worker in a sandboxed frame with no network, sees only agent counts and the theme's colors, and Threadlines stops it when it fails, gets too heavy, or nobody is looking. Text stays readable whatever the art draws: the frame raises the glass tint under text as needed. Appearance also has {place:appearance.glass} (a slider, Solid to Clear, for how much of the art shows through the glass on every page; the middle is the theme's own, and the same slider sits in the /theme picker) and {place:appearance.motion} (Live or Still). Switching a device to a theme by name, when the user asks, is a settings change to {place:appearance.theme}.`,
+The art is walled off: it runs in a worker in a sandboxed frame with no network, sees only agent counts and the theme's colors, and Threadlines stops it when it fails, gets too heavy, or nobody is looking. The frame raises the glass tint under text as needed, so text stays readable whatever the art draws, up to the last quarter of {place:appearance.glass}. That slider (Solid to Clear, the theme's own in the middle, the same slider in the /theme picker) sets how much of the art shows through the glass on every page; in its last quarter the frost and that extra tint fade out, so at Clear the art shows as it is and busy art can make text hard to read. Appearance also has {place:appearance.motion} (Live or Still). Switching a device to a theme by name, when the user asks, is a settings change to {place:appearance.theme}.`,
   },
   {
     id: "changing-settings",

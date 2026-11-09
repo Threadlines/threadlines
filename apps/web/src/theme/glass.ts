@@ -9,6 +9,10 @@
  * - Text over the art keeps 4.5:1, easing to 3:1 as the slider goes past the
  *   theme's own toward Clear (3:1 throughout for a theme that puts its art
  *   first). The frame raises any patch's tint until its text passes.
+ * - The last quarter, toward Clear, gives that up on purpose (`clarity`):
+ *   the frost and the tint readability adds fade out together, so Clear
+ *   shows the art as it is, with nothing between it and the text. The
+ *   user picked that; Solid to three quarters keeps every promise above.
  * - While the backdrop frame runs, it paints every zone's tint over the art
  *   itself (raising it for readability), so the app's own surfaces are clear
  *   and alpha never compounds.
@@ -44,6 +48,14 @@ export function glassFloorAt(themeFloor: number, level: number): number {
 }
 
 /**
+ * How far the frost and the readability tint have faded, 0 to 1: none up to
+ * three quarters of the way, all of it at Clear, linear between.
+ */
+export function glassClarity(level: number): number {
+  return clamp01((level / 100 - 0.75) / 0.25);
+}
+
+/**
  * The contrast text over the art keeps: 4.5:1 up to the theme's own glass,
  * easing to 3:1 by three quarters of the way to Clear. A theme that puts its
  * art first (`readability: "relaxed"`) keeps 3:1 at every level.
@@ -69,21 +81,23 @@ export function glassFloors(glass: ThemeGlass, level: number): GlassFloors {
 /**
  * The tint each surface paints in CSS. Opaque until the backdrop reports,
  * clear while it runs (the frame tints), floors raised to the still's
- * minimum otherwise. Frame, list and column never overlap; the composer
- * card lies on the column, and keeps its own tint there (so its fill stays
- * the card's color): that only ever makes it more opaque than asked.
+ * minimum otherwise, that raise fading by `clarity` as the frame's does.
+ * Frame, list and column never overlap; the composer card lies on the
+ * column, and keeps its own tint there (so its fill stays the card's
+ * color): that only ever makes it more opaque than asked.
  */
 export function cssGlassTints(
   floors: GlassFloors,
   status: ThemeBackdropStatus | null,
   tooHeavy: boolean,
+  clarity: number,
 ): GlassFloors {
   if (status === null) return { frame: 1, list: 1, column: 1, composer: 1, page: 1 };
   // The frame tints over the art itself: live, or one frame standing for Motion: Still.
   if ((status.kind === "running" && !tooHeavy) || (status.kind === "still" && status.framed)) {
     return { frame: 0, list: 0, column: 0, composer: 0, page: 0 };
   }
-  const minimum = status.kind === "running" ? 1 : clamp01(status.minimumTint);
+  const minimum = status.kind === "running" ? 1 : clamp01(status.minimumTint) * (1 - clarity);
   return {
     frame: Math.max(floors.frame, minimum),
     list: Math.max(floors.list, minimum),

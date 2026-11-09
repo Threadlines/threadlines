@@ -132,15 +132,20 @@ and tinted; the art shows crisp in the margins, and frosted through the
 thread list, title row and rail. The Glass slider (`themeGlass`, 0 to 100,
 a device setting) moves every surface's tint floor at once: frame, thread
 list, column, composer and pages. 0 is Solid (every floor opaque), 50 the
-theme's own glass, 100 Clear (no floor, only what readability needs),
+theme's own glass, 100 Clear (no floor, no frost, no tint at all),
 linear between. It replaced "Art in threads" (None, Some, Full, the reading
-column only), whose choices carry over as 0, 50 and 75. Readability can
-always raise a tint. Text over the art keeps 4.5:1 up to the theme's own,
-easing to 3:1 by 75; a theme whose `glass.readability` is `relaxed`
-(art-first themes, where the look matters more than long reading, Will's
-call for themes like Honu Lagoon) keeps 3:1 throughout. Text on solid
-surfaces keeps its checks either way. Dragging moves the glass live: the
-zones get new floors, and the frame takes new text ratios with a `texts`
+column only), whose choices carry over as 0, 50 and 75. Up to 75,
+readability can always raise a tint. Text over the art keeps 4.5:1 up to
+the theme's own, easing to 3:1 by 75; a theme whose `glass.readability` is
+`relaxed` (art-first themes, where the look matters more than long reading,
+Will's call for themes like Honu Lagoon) keeps 3:1 throughout. The last
+quarter gives readability up on purpose (Will asked for a Clear that is
+really clear, Nov 2026): its `clarity` (0 at 75, 1 at 100) fades the frost
+and the tint readability adds over the floor, in the frame and in the CSS
+over a still alike, so Clear shows the art as it is and busy art can make
+text hard to read. Text on solid surfaces (sticky headers, code, menus)
+keeps its checks either way. Dragging moves the glass live: the zones get
+new floors, and the frame takes new text ratios and clarity with a `glass`
 message instead of starting over; the setting is saved when the drag ends. Settings and every other page (Usage, Scheduled,
 Pull requests, General chats, Fleet) work like a thread: each marks its
 scrolling area and column (`glassPage.ts`), the column is frosted and tinted

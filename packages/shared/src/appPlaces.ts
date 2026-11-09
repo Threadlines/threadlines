@@ -957,7 +957,7 @@ const ROWS = [
     parent: "appearance.themes",
     title: "Glass",
     about:
-      "How much of a theme's art shows through the glass on every page. Text stays readable, a little lighter toward Clear.",
+      "How much of a theme's art shows through the glass on every page. At Clear the art shows as it is, so some text can get hard to read.",
     keywords: [
       "backdrop",
       "transparency",
@@ -968,7 +968,7 @@ const ROWS = [
       "wallpaper",
     ],
     scope: "device",
-    // 0 is Solid, 50 the theme's own glass, 100 Clear.
+    // 0 is Solid, 50 the theme's own glass, 100 Clear (no frost, no tint).
     edit: {
       lands: "device",
       control: { kind: "count", min: 0, max: 100, unit: "percent" },
