@@ -528,6 +528,7 @@ describe("wsApi", () => {
       sourceControlPanelDefaultOpen: false,
       themeArtInThreads: "some" as const,
       themeMotion: "live" as const,
+      themeSameEverywhere: true,
       timestampFormat: "24-hour" as const,
     };
     const getClientSettings = vi.fn().mockResolvedValue({
@@ -932,6 +933,7 @@ describe("wsApi", () => {
       sourceControlPanelDefaultOpen: false,
       themeArtInThreads: "some" as const,
       themeMotion: "live" as const,
+      themeSameEverywhere: true,
       timestampFormat: "24-hour" as const,
     };
 
