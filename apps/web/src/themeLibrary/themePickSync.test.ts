@@ -190,7 +190,7 @@ describe("same theme on all my devices: the next step", () => {
 // A device (its windows share storage and the theme storage holds), a computer
 // that keeps the pick, and sends that land and answer when the test lets them.
 
-function makeWorld() {
+function makeWorld(options: { readonly keepsIds?: boolean } = {}) {
   const stored = new Map<string, string>();
   const storage = {
     getItem: (key: string) => stored.get(key) ?? null,
@@ -209,8 +209,9 @@ function makeWorld() {
       return current;
     }
     server.counter = Math.max(server.counter + 1, input.atLeast + 1);
+    const { pickId: _pickId, ...plainTheme } = input.theme;
     server.pick = {
-      theme: input.theme,
+      theme: options.keepsIds === false ? plainTheme : input.theme,
       revision: server.counter,
       revisedBy: "env-mac",
       updatedAt: "2026-11-09T12:00:00.000Z",
@@ -245,6 +246,9 @@ function makeWorld() {
     bypass: false,
   };
   let applied = 0;
+  let noteWhenApplied: ThemePickNote | null = null;
+  /** Runs once, right after a pick's theme is written and before its note is. */
+  let afterApply: (() => void) | null = null;
   const timers: Array<{ at: number; callback: () => void; cancelled: boolean }> = [];
   let now = 1_000_000;
   let ids = 0;
@@ -268,7 +272,11 @@ function makeWorld() {
         state: () => ({ ...theme, committedBase: null }),
         applyPick: (choice) => {
           applied += 1;
+          noteWhenApplied = JSON.parse(stored.get(THEME_PICK_NOTE_KEY) ?? "null");
           theme.committed = choice;
+          const then = afterApply;
+          afterApply = null;
+          then?.();
         },
       },
       library: {
@@ -324,6 +332,15 @@ function makeWorld() {
     }
     await settle();
   };
+  /** Time passes with nothing else happening: only the windows' own timers wake them. */
+  const tick = async (ms: number) => {
+    now += ms;
+    for (const timer of timers.filter((entry) => !entry.cancelled && entry.at <= now)) {
+      timer.cancelled = true;
+      timer.callback();
+    }
+    for (let round = 0; round < 6; round++) await new Promise((resolve) => setTimeout(resolve, 0));
+  };
   const close = (sync: ThemePickSync) => {
     sync.stop();
     windows.splice(windows.indexOf(sync), 1);
@@ -353,6 +370,11 @@ function makeWorld() {
     },
     showing: () => (theme.committed.kind === "builtin" ? theme.committed.id : theme.committed.kind),
     applied: () => applied,
+    noteWhenApplied: () => noteWhenApplied,
+    afterNextApply: (then: () => void) => {
+      afterApply = then;
+    },
+    tick,
     note: () => JSON.parse(stored.get(THEME_PICK_NOTE_KEY) ?? "null") as ThemePickNote | null,
   };
 }
@@ -440,7 +462,7 @@ describe("same theme on all my devices: a device and its computer", () => {
     expect(world.note()).toMatchObject({ state: "taken", revision: 10 });
   });
 
-  it("takes the computer's word when it already held the theme the user picked", async () => {
+  it("sends a pick again for an id of its own when the computer answers with someone else's pick of that theme", async () => {
     const world = makeWorld();
     const window = world.openWindow();
     // Another device picked light already, at a revision this one hasn't been shown.
@@ -449,8 +471,30 @@ describe("same theme on all my devices: a device and its computer", () => {
     await world.settle();
     world.sends[0]!.answer();
     await world.settle();
-    expect(world.note()).toMatchObject({ state: "taken", revision: 1 });
-    expect(world.sends).toHaveLength(1);
+    expect(world.sends).toHaveLength(2);
+    world.sends[1]!.answer();
+    world.deliver();
+    await world.settle();
+    expect(world.server.pick).toMatchObject({
+      revision: 2,
+      theme: { id: "light", pickId: "id-1" },
+    });
+    expect(world.note()).toMatchObject({ state: "taken", revision: 2 });
+    expect(world.sends).toHaveLength(2);
+
+    // A computer that keeps no ids is done with after the second try.
+    const plain = makeWorld({ keepsIds: false });
+    const other = plain.openWindow();
+    plain.userPicks(other, "light");
+    await plain.settle();
+    plain.sends[0]!.answer();
+    await plain.settle();
+    plain.sends[1]!.answer();
+    plain.deliver();
+    await plain.settle();
+    expect(plain.note()).toMatchObject({ state: "taken" });
+    await plain.advance(THEME_PICK_RETRY_MS);
+    expect(plain.sends).toHaveLength(2);
   });
 
   it("sends a pick made in a second window once, from that window", async () => {
@@ -782,6 +826,62 @@ describe("same theme on all my devices: a device and its computer", () => {
     silent.sends[0]!.fail();
     await silent.settle();
     expect(silent.sends).toHaveLength(2);
+  });
+
+  it("looks at an unanswered send again by itself, with nothing else happening", async () => {
+    const world = makeWorld();
+    const window = world.openWindow();
+    // As in the app: the pick, one look, and then no event at all.
+    world.userPicks(window, "light");
+    window.run();
+    await world.tick(0);
+    expect(world.sends).toHaveLength(1);
+    await world.tick(THEME_PICK_CLAIM_MS);
+    expect(world.sends).toHaveLength(2);
+  });
+
+  it("shows a pick before noting it, so a window closed in between leaves it to be noted, not lost", async () => {
+    const world = makeWorld();
+    world.openWindow();
+    world.pickElsewhere("light");
+    world.deliver();
+    await world.settle();
+    expect(world.showing()).toBe("light");
+    expect(world.noteWhenApplied()).toBeNull();
+    expect(world.note()).toMatchObject({ state: "taken", revision: 1 });
+  });
+
+  it("keeps a pick the user makes in another window while this one is showing a pick from elsewhere", async () => {
+    const world = makeWorld();
+    world.openWindow();
+    const second = world.openWindow();
+    world.pickElsewhere("light");
+    world.deliver();
+    // The first window has written light's theme and not yet its note.
+    world.afterNextApply(() => world.userPicks(second, "dark"));
+    await world.settle();
+    expect(world.showing()).toBe("dark");
+    world.sends[0]!.answer();
+    world.deliver();
+    await world.settle();
+    expect(world.server.pick?.theme).toMatchObject({ id: "dark" });
+    expect(world.note()).toMatchObject({ state: "taken", revision: 2 });
+  });
+
+  it("knows a late pick as its own after many picks since", async () => {
+    const world = makeWorld();
+    const earlier = Array.from({ length: 20 }, (_, index) => `old-${index}`);
+    world.storage.setItem(
+      THEME_PICK_NOTE_KEY,
+      JSON.stringify({ ...taken(5), past: earlier } satisfies ThemePickNote),
+    );
+    world.server.pick = pick(6, "light", "old-0");
+    world.server.counter = 6;
+    world.deliver();
+    world.openWindow();
+    await world.settle();
+    expect(world.showing()).toBe("dark");
+    expect(world.sends[0]!.input.theme).toMatchObject({ id: "dark" });
   });
 
   it("sends above a pick it heard of from a computer that has since dropped off", async () => {
