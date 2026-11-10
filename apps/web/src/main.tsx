@@ -13,6 +13,7 @@ import "./index.css";
 import { StatusBarEdge } from "./components/StatusBarEdge";
 import { isElectron } from "./env";
 import { installOnScreenKeyboardFlag } from "./lib/onScreenKeyboard";
+import { isPageAttended, onPageAttentionChange } from "./lib/pageAttention";
 import { installPopupPickGuard } from "./lib/popupPickGuard";
 import { isMacPlatform } from "./lib/utils";
 import { getRouter } from "./router";
@@ -39,6 +40,15 @@ document.title = APP_DISPLAY_NAME;
 
 installPopupPickGuard();
 installOnScreenKeyboardFlag();
+// Shows loops that never stop (the working dots) 30 poses a second, not on
+// every refresh of the screen. Loaded after startup, which doesn't need it:
+// it picks up the loops already on screen, and without it they run at the
+// screen's own rate.
+void import("./lib/steppedLoops").then(
+  (module) =>
+    module.installSteppedLoops({ isAttended: isPageAttended, onChange: onPageAttentionChange }),
+  () => {},
+);
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>

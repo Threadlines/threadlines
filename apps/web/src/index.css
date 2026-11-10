@@ -1750,8 +1750,12 @@ label:has(> select#reasoning-effort) select {
 }
 
 /* The working anchor's status word: a soft sheen sweeps through it, then
-   rests for the second half of the cycle. Rides next to the dots below. */
+   rests for the second half of the cycle. Rides next to the dots below.
+   Shown 30 poses a second, in step with the dots (--loop-fps,
+   lib/steppedLoops.ts): left to itself it repaints on every refresh of the
+   screen. */
 .working-shimmer {
+  --loop-fps: 30;
   --shimmer-base: color-mix(in srgb, var(--muted-foreground) 72%, transparent);
   --shimmer-glint: color-mix(in srgb, var(--foreground) 95%, transparent);
   background-image: linear-gradient(
@@ -1807,8 +1811,13 @@ label:has(> select#reasoning-effort) select {
    Loops set --anim/--dur/--ease/--d instead of the `animation` shorthand so
    the shared .6s head start survives: on a state change the component hops
    each dot to its new pose with a script animation, and the head start keeps
-   the new loop from cutting in before the landing. */
+   the new loop from cutting in before the landing.
+   The loops are shown 30 poses a second (--loop-fps, lib/steppedLoops.ts):
+   the dots move too little between two refreshes of a fast screen to be worth
+   drawing the window for each. The hop between states runs at the screen's
+   own rate. */
 .working-dots {
+  --loop-fps: 30;
   --dots-out: cubic-bezier(0.22, 1, 0.36, 1);
   --dots-in: cubic-bezier(0.55, 0, 1, 0.45);
   --dots-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
