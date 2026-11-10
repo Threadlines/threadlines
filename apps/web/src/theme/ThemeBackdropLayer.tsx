@@ -36,6 +36,7 @@ import {
 } from "../components/theme/backdrop/ThemeBackdropHost";
 import { useIsMobile, useMediaQuery } from "../hooks/useMediaQuery";
 import { useSettings } from "../hooks/useSettings";
+import { isPageAttended, onPageAttentionChange } from "../lib/pageAttention";
 import {
   selectRunningSidebarThreadsAcrossEnvironments,
   selectSidebarThreadsAcrossEnvironments,
@@ -321,19 +322,13 @@ function useDocumentVisible(): boolean {
   );
 }
 
-/** The window is the one in front (the art runs at the theme's own rate). */
+/**
+ * The window is the one in front (the art runs at the theme's own rate). In
+ * the desktop app the window answers for itself: focus moving into a browser
+ * panel is still this window, not another app (pageAttention.ts).
+ */
 function useWindowFocused(): boolean {
-  return useSyncExternalStore(
-    (listener) => {
-      window.addEventListener("focus", listener);
-      window.addEventListener("blur", listener);
-      return () => {
-        window.removeEventListener("focus", listener);
-        window.removeEventListener("blur", listener);
-      };
-    },
-    () => document.hasFocus(),
-  );
+  return useSyncExternalStore(onPageAttentionChange, isPageAttended);
 }
 
 function useIdle(working: number): boolean {
