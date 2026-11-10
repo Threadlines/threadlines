@@ -22,11 +22,13 @@
  *   than what was known then is still taken.
  * - `off`: the switch is off. Nothing is sent or taken.
  *
- * Every note also carries `past`, the ids of the picks this device made
- * before. A send can land late (a slow connection, a second attempt, another
+ * Every note also carries `past`, the ids of the last 32 picks this device
+ * made. A send can land late (a slow connection, a second attempt, another
  * window's), so one of them can come back as the newest shared pick. That is
  * never news: the device sends what it shows again, above it, or just keeps a
- * theme that is its own.
+ * theme that is its own. So every pick needs an id of its own on the
+ * computer: one answered with someone else's pick of the same theme goes
+ * again, above that.
  *
  * The note is written before the device's theme whenever the user picks, so
  * no window sees the new theme under the old note. Every window runs the same
@@ -50,8 +52,16 @@
  *   it goes above a pick someone made elsewhere in between.
  * - Two windows writing the note in the same instant (the user picks in one
  *   as a pick from elsewhere arrives in the other) leave one of the two
- *   standing, whichever wrote last. Storage can't write both in order. The
- *   device then shows the shared pick, or the next pick anywhere puts it right.
+ *   standing, whichever wrote last. Storage can't write both in order. A
+ *   window showing a pick looks again before it notes it, which leaves only
+ *   the instant between that look and the write.
+ * - A window acts on the switch as it has it. In the moment before it hears
+ *   of a change made in another window, a theme picked in it is shared or
+ *   kept by the old value.
+ * - What the device shows again over its own late pick is a pick like any
+ *   other: it also goes above one made elsewhere in that same moment.
+ * - A send still out after more than 32 later picks is no longer known as
+ *   the device's own when it lands.
  * - A trial is one window's. A pick from elsewhere waits for a trial in the
  *   window that would apply it; applied by another window of the device, it
  *   ends the trial like any theme change there does.
@@ -103,7 +113,7 @@ export const THEME_PICK_FRESH_MS = 60_000;
 /** A note that went `off` this recently may be from a window behind on the switch: joining waits it out. */
 export const THEME_PICK_SETTLE_MS = 5_000;
 /** How many of the device's earlier pick ids a note remembers. */
-const PAST_PICKS = 8;
+const PAST_PICKS = 32;
 
 type Revision = Pick<ThemePick, "revision" | "revisedBy">;
 
@@ -429,6 +439,14 @@ export function createThemePickSync(env: ThemePickSyncEnv): ThemePickSync {
   let heard: Revision | null = null;
 
   const note = (value: ThemePickNote) => writeJson(storage, THEME_PICK_NOTE_KEY, value);
+  /** The note as storage holds it, to tell whether another window has written it since. */
+  const noteText = () => {
+    try {
+      return storage?.getItem(THEME_PICK_NOTE_KEY) ?? null;
+    } catch {
+      return null;
+    }
+  };
 
   // The first build's key. The pick the device took then isn't taken again. A
   // pick it hadn't sent yet goes on from here, for any window to send: its age
@@ -479,6 +497,9 @@ export function createThemePickSync(env: ThemePickSyncEnv): ThemePickSync {
     );
   };
 
+  /** The pick of this window's that a computer has answered once with another pick of its theme. */
+  let answeredWithAnother: string | null = null;
+
   /** Sends the unsent pick. Its answer is that computer's pick now, read like its snapshot. */
   const send = (home: EnvironmentId, unsent: UnsentNote) => {
     const out = { id: unsent.id, at: env.now() };
@@ -497,21 +518,24 @@ export function createThemePickSync(env: ThemePickSyncEnv): ThemePickSync {
           if (before === undefined || compareThemeRevisions(picked, before) > 0) {
             answers.set(home, picked);
           }
-          // The computer took it, or already held that theme above what the device knew. Done
-          // either way, whatever is newest by now: a newer pick is then taken like any other.
           const current = readThemePickNote(storage);
-          if (
-            current?.state === "unsent" &&
-            current.id === unsent.id &&
-            sameThemePickTheme(picked.theme, unsent.theme)
-          ) {
-            note({
-              state: "taken",
-              revision: picked.revision,
-              revisedBy: picked.revisedBy,
-              ...pastAfter(current),
-            });
+          if (current?.state !== "unsent" || current.id !== unsent.id) return;
+          // The computer answers with another pick when it already held that theme, picked by
+          // someone else above what the device knew. This pick goes again, above that, for an id
+          // of its own: taken as theirs, a late send of theirs could pass for this choice. Once
+          // only, so a computer that keeps no ids is still done with.
+          if (picked.theme.pickId !== unsent.id && answeredWithAnother !== unsent.id) {
+            answeredWithAnother = unsent.id;
+            return;
           }
+          // The computer took it. Done, whatever is newest by now: a newer pick is then taken
+          // like any other.
+          note({
+            state: "taken",
+            revision: picked.revision,
+            revisedBy: picked.revisedBy,
+            ...pastAfter(current),
+          });
         },
         (error: unknown) => {
           // Only this pick waits: one the user made since goes at once.
@@ -535,6 +559,7 @@ export function createThemePickSync(env: ThemePickSyncEnv): ThemePickSync {
     for (let pass = 0; pass < 4; pass++) {
       const theme = env.theme.state();
       const held = picks();
+      const read = noteText();
       const current = readThemePickNote(storage);
       const now = env.now();
       const shown = pickThemeOf(theme.committed, theme.committedBase);
@@ -564,17 +589,23 @@ export function createThemePickSync(env: ThemePickSyncEnv): ThemePickSync {
         case "take": {
           // Its send is done with, answered or not: the next pick needn't wait for it.
           if (sending !== null && sending.id === step.pick.theme.pickId) sending = null;
-          // The note first, then the theme: a window between the two sees the pick already taken.
-          note({
-            state: "taken",
-            revision: step.pick.revision,
-            revisedBy: step.pick.revisedBy,
-            ...pastAfter(current),
-          });
+          // The theme first, then the note. A window closed between the two leaves the pick still
+          // to be noted, which the next one does; the other way round it would never be shown.
+          // Another window in between finds the theme there already and only notes it.
           const next = choiceOfPickTheme(step.pick.theme);
           // A kind this build can't show is noted and passed over, not retried forever.
           if (next !== null && !sameThemeChoice(next.choice, theme.committed)) {
             env.theme.applyPick(next.choice, next.base);
+          }
+          // Showing it takes a moment. A note another window wrote meanwhile (the user picked
+          // there) stands, and the next pass goes by it.
+          if (noteText() === read) {
+            note({
+              state: "taken",
+              revision: step.pick.revision,
+              revisedBy: step.pick.revisedBy,
+              ...pastAfter(current),
+            });
           }
           continue;
         }
@@ -594,7 +625,11 @@ export function createThemePickSync(env: ThemePickSyncEnv): ThemePickSync {
           continue;
         }
         case "send":
-          if (held.home !== null) send(held.home, step.note);
+          if (held.home !== null) {
+            send(held.home, step.note);
+            // An answer that never comes announces nothing: looked at again when it counts as lost.
+            wakeAt(now + THEME_PICK_CLAIM_MS);
+          }
           return;
       }
     }

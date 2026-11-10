@@ -664,17 +664,24 @@ the budget, no network) and places for the new Appearance rows.
     a computer that has since dropped off), carrying a `pickId`; one send at
     a time, so a window's picks reach the computer in the order they were
     made. The pick is done when a computer answers for it or the shared pick
-    carries its id. A failed send is tried again after 30 seconds, or at the
-    next pick; a send unanswered for 15 seconds counts as lost. If the window
+    carries its id. A computer that already held that theme, picked by
+    someone else, answers with their pick; this one then goes again, above
+    it, so every choice has an id of its own. A failed send is tried again
+    after 30 seconds, or at the next pick; a send unanswered for 15 seconds
+    counts as lost. If the window
     is gone (15 seconds without an attempt), another sends it, also after a
     reload. A pick from elsewhere doesn't replace it on screen while it is on
     its way; it gives way only when it couldn't be sent for a minute and
     someone else picked meanwhile.
   - A pick newer than the one the note knows is applied, after any trial in
     that window, never an older one, and never by a window under
-    `?theme=default`. A theme kept on this device only, or picked before the
+    `?theme=default`. The theme is written before the note, so a window
+    closed between the two leaves the pick to be noted, not lost; the note is
+    written only if no other window wrote it meanwhile (the user picking
+    there), so that pick stands. A theme
+    kept on this device only, or picked before the
     settings had loaded, is `local`: it stays until a newer pick comes.
-  - Every note carries `past`, the ids of the device's earlier picks. A send
+  - Every note carries `past`, the ids of the device's last 32 picks. A send
     can land late (a slow connection, a second attempt, another window's), so
     one of them can come back as the newest shared pick. That is never news:
     the device sends what it shows again, above it, or just keeps a theme
@@ -695,8 +702,12 @@ the budget, no network) and places for the new Appearance rows.
     computer is back or someone picks again; a send that failed but landed,
     sent again within the minute, goes above a pick made elsewhere in
     between; two windows writing the note in the same instant leave
-    whichever wrote last; and a pick applied by one window ends a trial
-    running in another, like any theme change there.
+    whichever wrote last; a window that hasn't heard of a switch change yet
+    shares or keeps a theme picked in it by the old value; what the device
+    shows again over its own late pick also goes above a pick made elsewhere
+    in that moment; a send still out after 32 later picks isn't known as the
+    device's own; and a pick applied by one window ends a trial running in
+    another, like any theme change there.
     Nothing changes until someone picks a theme after updating: no device's
     look is guessed and pushed to the others.
 - **Deleting changes no other device's look.** A device keeps using a cached
