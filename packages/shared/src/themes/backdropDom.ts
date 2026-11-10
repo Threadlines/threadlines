@@ -19,26 +19,32 @@ export interface BackdropGL {
   readonly BLEND: number;
   readonly CLAMP_TO_EDGE: number;
   readonly COLOR_ATTACHMENT0: number;
+  readonly COLOR_BUFFER_BIT: number;
   readonly COMPILE_STATUS: number;
   readonly DYNAMIC_DRAW: number;
   readonly FLOAT: number;
   readonly FRAGMENT_SHADER: number;
   readonly FRAMEBUFFER: number;
+  readonly FUNC_ADD: number;
   readonly LINEAR: number;
   readonly LINEAR_MIPMAP_LINEAR: number;
   readonly LINK_STATUS: number;
+  readonly MAX: number;
   readonly NEAREST: number;
   readonly ONE: number;
   readonly ONE_MINUS_SRC_ALPHA: number;
   readonly PACK_ALIGNMENT: number;
   readonly RGBA: number;
   readonly RGBA8: number;
+  readonly SCISSOR_TEST: number;
   readonly SHORT: number;
   readonly STATIC_DRAW: number;
   readonly TEXTURE0: number;
   readonly TEXTURE1: number;
   readonly TEXTURE2: number;
+  readonly TEXTURE3: number;
   readonly TEXTURE_2D: number;
+  readonly TEXTURE_2D_ARRAY: number;
   readonly TEXTURE_MAG_FILTER: number;
   readonly TEXTURE_MIN_FILTER: number;
   readonly TEXTURE_WRAP_S: number;
@@ -55,9 +61,12 @@ export interface BackdropGL {
   bindFramebuffer(target: number, framebuffer: GLHandle | null): void;
   bindTexture(target: number, texture: GLHandle | null): void;
   bindVertexArray(vertexArray: GLHandle | null): void;
+  blendEquation(mode: number): void;
   blendFunc(source: number, destination: number): void;
   bufferData(target: number, data: ArrayBufferView, usage: number): void;
   bufferSubData(target: number, offset: number, data: ArrayBufferView): void;
+  clear(mask: number): void;
+  clearColor(red: number, green: number, blue: number, alpha: number): void;
   colorMask(red: boolean, green: boolean, blue: boolean, alpha: boolean): void;
   compileShader(shader: GLHandle): void;
   createBuffer(): GLHandle | null;
@@ -80,6 +89,13 @@ export interface BackdropGL {
     texture: GLHandle | null,
     level: number,
   ): void;
+  framebufferTextureLayer(
+    target: number,
+    attachment: number,
+    texture: GLHandle | null,
+    level: number,
+    layer: number,
+  ): void;
   generateMipmap(target: number): void;
   getExtension(name: "WEBGL_lose_context"): { loseContext(): void } | null;
   getProgramInfoLog(program: GLHandle): string | null;
@@ -98,6 +114,7 @@ export interface BackdropGL {
     type: number,
     pixels: ArrayBufferView,
   ): void;
+  scissor(x: number, y: number, width: number, height: number): void;
   shaderSource(shader: GLHandle, source: string): void;
   texImage2D(
     target: number,
@@ -125,6 +142,14 @@ export interface BackdropGL {
     internalFormat: number,
     width: number,
     height: number,
+  ): void;
+  texStorage3D(
+    target: number,
+    levels: number,
+    internalFormat: number,
+    width: number,
+    height: number,
+    depth: number,
   ): void;
   texSubImage2D(
     target: number,

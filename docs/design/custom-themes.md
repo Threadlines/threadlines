@@ -346,7 +346,16 @@ rounded like its outline so no square corner of tint shows past it;
 feathered shapes for the reading column and the new-thread patch) whenever
 layout changes. The
 frame blurs a quarter-resolution copy in a two-pass shader, masks it to the
-zones and adds the tint, all on the GPU. The tint is set **patch by patch**,
+zones and adds the tint, all on the GPU. Where the zones reach is drawn once,
+when the zones or the window change, into a **zone mask** the size of the
+canvas: zones that tint alike (the same color, floor and tint map channel)
+form a class, each class has one channel (four to a layer), 1 inside a core
+and under that how far a feather or an antialiased edge has faded. Every
+frame's composite reads the mask instead of working each zone's shape out
+again for each pixel, so a frame's cost no longer grows with the number of
+zones (the first build's did: see Performance), only a little with a fifth
+kind of zone, which takes a second layer. A layer is one more texture the
+size of the canvas (33 MB at 4K). The tint is set **patch by patch**,
 8 × 8 CSS px at a time, as the higher of the zone's floor and what readability
 needs **for the frost just shown under that patch**:
 
@@ -377,7 +386,9 @@ needs **for the frost just shown under that patch**:
   dark ones, how dark for the light ones); the search steps up from the
   floor, since a color can pass, fail and pass again as the tint rises. The
   map holds four tint colors and floors, one per channel; a zone past the
-  fourth stays opaque. A theme's text colors set how far the art can show:
+  fourth stays opaque. Each channel is drawn only over the patches its zones
+  can read (a zone's reach and a patch more each way, since the composite
+  reads the map smoothed between patches). A theme's text colors set how far the art can show:
   darker status and accent colors on a light theme need far less frost.
 - Nothing is read back to the CPU: the map is drawn and used in the same
   frame, so the tint is never a frame late and the GPU never waits on the page.
@@ -461,12 +472,57 @@ under 0.1 ms). The design leans on that:
   the art is held or paused. The copy (one full-window texture) lives only
   for the fade.
 - **An energy label.** The runtime keeps a running average of work per second
-  (frame cost times frame rate). Appearance shows each theme's label on this
+  (frame cost times frame rate, on the CPU: see The GPU's share). Appearance shows each theme's label on this
   computer (Light, Medium, Heavy) next to its thumbnail, and `preview_theme`
   reports the same number to the agent. Heavy themes step down on their own.
 - **No GPU read backs.** Tints are worked out on the GPU from the frost
-  (one small pass at an eighth of the window, per tint color) and used in the
-  same frame.
+  (small passes at an eighth of the window, over each zone's patches) and
+  used in the same frame.
+- **The GPU's share.** The frame's own measure is its work on the CPU; what
+  its draws cost the GPU shows nowhere in it, and on integrated graphics that
+  is the larger part. Measured Nov 9 2026 on a 12700K, Tokyo Rain in a real
+  Chrome window, each stage drawn in a loop that ends in a read back
+  (milliseconds of GPU time a frame):
+
+  | Canvas          | Zones        | RTX 3070 Ti, now | UHD 770, first build | UHD 770, now |
+  | --------------- | ------------ | ---------------- | -------------------- | ------------ |
+  | 1270×937        | 5 (3 kinds)  | 0.3              | 2.7                  | 1.5          |
+  | 1270×937        | 12 (6 kinds) | 0.2              | 4.9                  | 1.8          |
+  | 2560×1440       | 5            | 0.3              | 8.1                  | 4.0          |
+  | 2560×1440       | 12           | 0.4              | 15.0                 | 5.0          |
+  | 2880×1800 (@2x) | 5            | 0.5              | 10.0                 | 5.8          |
+  | 3840×2160 (@2x) | 5            | 0.5              | 16.3                 | 8.9          |
+
+  At 20 frames a second the first build took a third of the UHD 770 at 4K.
+  Three things were most of it, and none changed the picture (a standing
+  frame before and after differs by at most 2 of 255 a channel; where two
+  overlapping zones' tints tie, the line between them can sit a pixel over):
+  - The composite worked every zone's shape out for every pixel, every
+    frame: 0.3 ms a zone at 1270×937 on the UHD 770, so a new-thread screen
+    with a patch a line cost several times a thread. Now it reads the zone
+    mask.
+  - Every tint color's pass covered the whole window. Now each covers its
+    own zones' patches.
+  - The quarter-resolution copy was read from the art's smaller copies,
+    rebuilt whole every frame. Now it averages the art itself, and the
+    smaller copies are made only when a still is captured.
+
+  A grid whose cells all paint their own background and reach every edge of
+  the window is also drawn alone, without the ground under it or blending
+  (a tenth of a Tokyo Rain frame).
+
+- **The rate a theme asks for is the rate it gets.** Ticks are timers, and a
+  timer fires late (up to 16 ms on Windows). The first build counted each
+  tick's interval from when the last one went out, so the lateness added up:
+  a 20 fps theme ran at 17 on Windows and a 30 fps theme at 24. Each tick is
+  now due an interval after the last was due; a tick a whole interval late
+  starts the count over, so a stall is never made up in a burst.
+- **For scale.** On that computer the whole of Tokyo Rain at 20 fps cost 2%
+  of a core in the frame's process and 2.5% in the GPU process, under 0.5%
+  of the 3070 Ti, and no change in watts that could be told from noise. One
+  thing in the app moving on every refresh of a 143 Hz screen costs several
+  times that, because each refresh then draws the window again: the art
+  draws it 20 times a second.
 
 ## Glass in the app
 
