@@ -261,6 +261,26 @@ plain chip, even when its label happens to read like a sentence.
 - Selected, hover and active are three distinct treatments, checked in dark
   mode (see `polish-checklist.md`).
 
+## Loops
+
+Anything that moves makes the browser draw the window again, and a loop left
+to itself moves on every refresh of the screen. So a loop that never stops
+must not move that often:
+
+- A loop that glides (the working dots, the status word's sheen) sets
+  `--loop-fps: 30` on its element. It is then shown 30 poses a second, in
+  step with every other such loop so they share the same redraws, and 10
+  while another app is in front (`lib/steppedLoops.ts`). The motion is
+  its own, only sampled: each pose stands where the designed loop would be.
+  Measured Nov 2026 on a 143 Hz screen, the working anchor's dots and sheen
+  took 29% of a CPU core left to themselves and 10% stepped (four anchors:
+  37% and 12%).
+- A loop that moves in a few steps and rests between them (the thread halos,
+  the status pulse: `steps()` in its keyframes) needs nothing. Those two
+  together cost 4%, and stepping them at 30 would cost more.
+- Motion that ends (a hop between states, a panel opening) runs at the
+  screen's own rate.
+
 ## Spacing
 
 | Where                                              | Value                                                           |
