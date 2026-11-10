@@ -774,6 +774,44 @@ describe("backdrop frame", { timeout: 60_000 }, () => {
     expect(worst.round?.low).toBeLessThan(0.05);
   });
 
+  it("tints each zone in its own color however many kinds a layout has, and follows a zone that moves", async () => {
+    mounted = await mountFrame();
+    // Six opaque zones, each its own gray, over black art: more kinds of zone
+    // than one layer of the zone mask holds.
+    const grays = [40, 80, 120, 160, 200, 240];
+    const zoneAt = (index: number, y: number): BackdropZone => {
+      const rect = { x: 20 + index * 130, y, w: 100, h: 120 };
+      const gray = grays[index]!.toString(16).padStart(2, "0");
+      return {
+        id: `zone-${index}`,
+        edge: "hard",
+        shape: "rect",
+        rect,
+        core: rect,
+        tint: 1,
+        tintColor: `#${gray}${gray}${gray}`,
+      };
+    };
+    const zones = grays.map((_, index) => zoneAt(index, 60));
+    mounted.start(
+      "canvas",
+      `threadlines.backdrop({ mode: "canvas", context: "2d",
+        draw(ctx, info) { ctx.fillStyle = "#000"; ctx.fillRect(0, 0, info.width, info.height); } });`,
+      zones,
+    );
+    await mounted.framesAbove(2);
+    const expectOwnGray = (shown: Record<string, { low: number; high: number }>, index: number) => {
+      const own = relativeLuminance(color(zones[index]!.tintColor));
+      expect([index, shown[`zone-${index}`]?.low]).toEqual([index, expect.closeTo(own, 3)]);
+      expect([index, shown[`zone-${index}`]?.high]).toEqual([index, expect.closeTo(own, 3)]);
+    };
+    const first = await mounted.shownNow();
+    for (const index of grays.keys()) expectOwnGray(first, index);
+    // The last zone moves down: its gray shows where it stands now.
+    mounted.post({ type: "zones", zones: [...zones.slice(0, 5), zoneAt(5, 300)] });
+    expectOwnGray(await mounted.shownNow(), 5);
+  });
+
   it("keeps column text readable where a tint passes, fails, then passes again", async () => {
     mounted = await mountFrame();
     // Black text under green glass: red art passes with no tint, fails as

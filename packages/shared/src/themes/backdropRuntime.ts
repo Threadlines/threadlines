@@ -346,6 +346,13 @@ export function backdropFrameRuntime(
   let drawnFrames = 0;
   let artTime = 0;
   let lastTickAt: number | null = null;
+  /**
+   * When the last tick was due. The next is due an interval after this, not
+   * after when the last one went out: timers fire late (up to 16 ms on
+   * Windows), and counting from the late tick would run every theme under
+   * its rate.
+   */
+  let lastTickDue: number | null = null;
   let staleDropped = 0;
   /** Frame cost samples (the worker's work plus the frame's own) for the budget. */
   let budgetSamples: Array<{ at: number; cost: number }> = [];
@@ -400,6 +407,8 @@ export function backdropFrameRuntime(
         angle: number;
         /** Device px left open along each cell's top and left edges. */
         gap: number;
+        /** Every cell paints its whole background, so nothing under the grid shows. */
+        opaque: boolean;
       }
     | {
         kind: "pixels";
@@ -481,6 +490,7 @@ export function backdropFrameRuntime(
     downsample: Program;
     blur: Program;
     composite: Program;
+    zoneMask: Program;
     tint: Program;
     fade: Program;
     atlas: GLHandle | null;
@@ -495,6 +505,8 @@ export function backdropFrameRuntime(
     quarterB: Target | null;
     /** The tint each patch of glass needs, per tint color (one per channel), an eighth of the window. */
     tintMap: Target | null;
+    /** Where each class of zones reaches, a channel per class, four to a layer, at the canvas's size. */
+    mask: (Target & { layers: number }) | null;
     still: Target | null;
   } | null = null;
 
@@ -588,14 +600,31 @@ out vec4 outColor;
 void main() {
   outColor = vec4(texture(uSource, gl_FragCoord.xy / uSize).rgb * uAlpha, uAlpha);
 }`;
+  /**
+   * The art averaged down to a quarter of the window: each quarter pixel is
+   * the mean of the art under it, read as `uTaps` × `uTaps` smoothed samples
+   * spread evenly over that square (2 × 2 covers its 4 × 4 device px exactly,
+   * 4 × 4 its 8 × 8 at twice the density). The art's top level only, so no
+   * frame builds the art's smaller copies.
+   */
   const DOWNSAMPLE_FS = `#version 300 es
 precision highp float;
 uniform sampler2D uArt;
-uniform float uLod;
 uniform vec2 uStep;
+uniform int uTaps;
 out vec4 outColor;
 void main() {
-  outColor = vec4(textureLod(uArt, gl_FragCoord.xy * uStep, uLod).rgb, 1.0);
+  vec2 center = gl_FragCoord.xy * uStep;
+  vec3 sum = vec3(0.0);
+  for (int y = 0; y < 4; y++) {
+    if (y >= uTaps) break;
+    for (int x = 0; x < 4; x++) {
+      if (x >= uTaps) break;
+      vec2 offset = (vec2(float(x), float(y)) + 0.5) / float(uTaps) - 0.5;
+      sum += textureLod(uArt, center + offset * uStep, 0.0).rgb;
+    }
+  }
+  outColor = vec4(sum / float(uTaps * uTaps), 1.0);
 }`;
   const BLUR_FS = `#version 300 es
 precision highp float;
@@ -617,25 +646,24 @@ void main() {
   }
   outColor = vec4(c, 1.0);
 }`;
-  const COMPOSITE_FS = `#version 300 es
+  /** Most zone classes the mask and the composite hold: every zone could be a class of its own. */
+  const MAX_ZONE_CLASSES = limits.maxZones;
+  /**
+   * One zone's reach, into its class's channel of the zone mask (the
+   * channels of a class's zones combine by maximum): 1 inside its core, where
+   * text can be (a hard zone's core is its own shape), and under that how far
+   * its feather or its antialiased edge has faded, kept below 1 so the
+   * composite can tell the two apart.
+   */
+  const ZONE_MASK_FS = `#version 300 es
 precision highp float;
-uniform sampler2D uArt;
-uniform sampler2D uFrost;
 uniform vec2 uDevice;
-uniform vec2 uView;
 uniform float uDpr;
-uniform vec2 uFrostScale;
-uniform sampler2D uTintMap;
-uniform vec2 uMapScale;
-uniform int uZoneCount;
-uniform vec4 uRect[24];
-uniform vec4 uCore[24];
-uniform vec4 uZone[24];
-uniform vec4 uRadii[24];
-uniform vec3 uTint[24];
-uniform float uChannel[24];
-// Toward Clear: the frost and the tint readability adds fade by this much.
-uniform float uClarity;
+uniform vec4 uRect;
+uniform vec4 uCore;
+// x: soft (1) or hard (0); y: ellipse (1) or rectangle (0); z: where an ellipse starts to fade.
+uniform vec3 uZone;
+uniform vec4 uRadii;
 out vec4 outColor;
 bool inside(vec2 p, vec4 r) {
   return p.x >= r.x && p.y >= r.y && p.x <= r.x + r.z && p.y <= r.y + r.w;
@@ -651,60 +679,103 @@ float roundedDistance(vec2 p, vec4 r, vec4 k) {
   return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - radius;
 }
 void main() {
-  vec2 frag = gl_FragCoord.xy;
-  vec2 css = vec2(frag.x, uDevice.y - frag.y) / uDpr;
-  vec3 art = textureLod(uArt, frag / uDevice, 0.0).rgb;
+  vec2 css = vec2(gl_FragCoord.x, uDevice.y - gl_FragCoord.y) / uDpr;
+  vec4 r = uRect;
+  vec4 c = uCore;
+  float mi;
+  bool core;
+  if (uZone.x < 0.5) {
+    // Its edge antialiased over a device px, its corners rounded like its surface.
+    mi = clamp(0.5 - roundedDistance(css, r, uRadii) * uDpr, 0.0, 1.0);
+    core = mi >= 0.5;
+  } else if (inside(css, c)) {
+    mi = 1.0;
+    core = true;
+  } else if (uZone.y < 0.5) {
+    float fx = css.x < c.x ? (c.x - css.x) / max(c.x - r.x, 1.0)
+      : css.x > c.x + c.z ? (css.x - c.x - c.z) / max(r.x + r.z - c.x - c.z, 1.0) : 0.0;
+    float fy = css.y < c.y ? (c.y - css.y) / max(c.y - r.y, 1.0)
+      : css.y > c.y + c.w ? (css.y - c.y - c.w) / max(r.y + r.w - c.y - c.w, 1.0) : 0.0;
+    mi = 1.0 - smoothstep(0.0, 1.0, length(vec2(fx, fy)));
+    core = false;
+  } else {
+    vec2 radius = max(r.zw * 0.5, vec2(1.0));
+    float e = length((css - (r.xy + r.zw * 0.5)) / radius);
+    mi = 1.0 - smoothstep(uZone.z, 1.0, e);
+    core = false;
+  }
+  outColor = vec4(core ? 1.0 : mi * (254.0 / 255.0));
+}`;
+  /**
+   * The composite. Where zones reach was drawn into the zone mask when they
+   * last changed (ZONE_MASK_FS), so a pixel reads its classes' reach instead
+   * of working every zone's shape out again each frame: outside every zone
+   * that is one read and the art.
+   */
+  const COMPOSITE_FS = `#version 300 es
+precision highp float;
+precision highp sampler2DArray;
+uniform sampler2D uArt;
+uniform sampler2D uFrost;
+uniform vec2 uDevice;
+uniform vec2 uView;
+uniform float uDpr;
+uniform vec2 uFrostScale;
+uniform sampler2D uTintMap;
+uniform vec2 uMapScale;
+uniform sampler2DArray uMask;
+uniform int uClassCount;
+// rgb: the class's tint color; a: its tint floor.
+uniform vec4 uClass[${MAX_ZONE_CLASSES}];
+uniform float uChannel[${MAX_ZONE_CLASSES}];
+// Toward Clear: the frost and the tint readability adds fade by this much.
+uniform float uClarity;
+out vec4 outColor;
+void main() {
+  ivec2 at = ivec2(gl_FragCoord.xy);
+  vec3 art = texelFetch(uArt, at, 0).rgb;
+  vec2 css = vec2(gl_FragCoord.x, uDevice.y - gl_FragCoord.y) / uDpr;
   vec2 below = vec2(css.x, uView.y - css.y);
-  vec4 needs = texture(uTintMap, below * uMapScale);
+  vec4 needs = vec4(1.0);
+  bool needsRead = false;
   float m = 0.0;
   float tintAlpha = 0.0;
   vec3 tintColor = vec3(0.0);
   bool inCore = false;
   float coreAlpha = 0.0;
   vec3 coreColor = vec3(0.0);
-  for (int i = 0; i < 24; i++) {
-    if (i >= uZoneCount) break;
-    vec4 r = uRect[i];
-    vec4 c = uCore[i];
-    vec4 z = uZone[i];
-    float mi;
-    bool hard = z.x < 0.5;
-    if (hard) {
-      // Its edge antialiased over a device px, its corners rounded like its surface.
-      mi = clamp(0.5 - roundedDistance(css, r, uRadii[i]) * uDpr, 0.0, 1.0);
-    } else if (inside(css, c)) {
-      mi = 1.0;
-    } else if (z.y < 0.5) {
-      float fx = css.x < c.x ? (c.x - css.x) / max(c.x - r.x, 1.0)
-        : css.x > c.x + c.z ? (css.x - c.x - c.z) / max(r.x + r.z - c.x - c.z, 1.0) : 0.0;
-      float fy = css.y < c.y ? (c.y - css.y) / max(c.y - r.y, 1.0)
-        : css.y > c.y + c.w ? (css.y - c.y - c.w) / max(r.y + r.w - c.y - c.w, 1.0) : 0.0;
-      mi = 1.0 - smoothstep(0.0, 1.0, length(vec2(fx, fy)));
-    } else {
-      vec2 radius = max(r.zw * 0.5, vec2(1.0));
-      float e = length((css - (r.xy + r.zw * 0.5)) / radius);
-      mi = 1.0 - smoothstep(z.w, 1.0, e);
+  for (int layer = 0; layer * 4 < ${MAX_ZONE_CLASSES}; layer++) {
+    if (layer * 4 >= uClassCount) break;
+    vec4 reach = texelFetch(uMask, ivec3(at, layer), 0);
+    if (max(max(reach.r, reach.g), max(reach.b, reach.a)) <= 0.0) continue;
+    if (!needsRead) {
+      needs = textureLod(uTintMap, below * uMapScale, 0.0);
+      needsRead = true;
     }
-    m = max(m, mi);
-    // The patch's tint for this zone's color and floor; a zone the map holds no channel for is opaque.
-    float k = uChannel[i];
-    float need = k < -0.5 ? 1.0 : k < 0.5 ? needs.r : k < 1.5 ? needs.g : k < 2.5 ? needs.b : needs.a;
-    float full = max(z.z, need * (1.0 - uClarity));
-    if (hard ? mi >= 0.5 : inside(css, c)) {
-      // Text can be here: a core's own color at its full tint, never another
-      // zone's color at a strength worked out for a different one. (A hard
-      // zone's core is its own shape.)
-      inCore = true;
-      if (full > coreAlpha) { coreAlpha = full; coreColor = uTint[i]; }
-    } else if (full * mi > tintAlpha) {
-      tintAlpha = full * mi;
-      tintColor = uTint[i];
+    for (int j = 0; j < 4; j++) {
+      int i = layer * 4 + j;
+      if (i >= uClassCount) break;
+      float e = reach[j];
+      if (e <= 0.0) continue;
+      // The patch's tint for this class's color and floor; a class the map holds no channel for is opaque.
+      float k = uChannel[i];
+      float need = k < -0.5 ? 1.0 : k < 0.5 ? needs.r : k < 1.5 ? needs.g : k < 2.5 ? needs.b : needs.a;
+      float full = max(uClass[i].a, need * (1.0 - uClarity));
+      if (e > 0.998) {
+        // Text can be here: a core's own color at its full tint, never another
+        // zone's color at a strength worked out for a different one.
+        inCore = true;
+        if (full > coreAlpha) { coreAlpha = full; coreColor = uClass[i].rgb; }
+      } else {
+        float mi = e * (255.0 / 254.0);
+        m = max(m, mi);
+        if (full * mi > tintAlpha) { tintAlpha = full * mi; tintColor = uClass[i].rgb; }
+      }
     }
   }
   if (inCore) { m = 1.0; tintAlpha = coreAlpha; tintColor = coreColor; }
   if (m <= 0.0) { outColor = vec4(art, 1.0); return; }
-  vec2 frostUv = below * uFrostScale;
-  vec3 frost = texture(uFrost, frostUv).rgb;
+  vec3 frost = textureLod(uFrost, below * uFrostScale, 0.0).rgb;
   vec3 color = mix(art, frost, m * (1.0 - uClarity));
   outColor = vec4(mix(color, tintColor, tintAlpha), 1.0);
 }`;
@@ -877,6 +948,7 @@ void main() {
       downsample: link(FULLSCREEN_VS, DOWNSAMPLE_FS),
       blur: link(FULLSCREEN_VS, BLUR_FS),
       composite: link(FULLSCREEN_VS, COMPOSITE_FS),
+      zoneMask: link(FULLSCREEN_VS, ZONE_MASK_FS),
       tint: link(FULLSCREEN_VS, TINT_MAP_FS),
       fade: link(FULLSCREEN_VS, FADE_FS),
       atlas: null,
@@ -890,6 +962,7 @@ void main() {
       quarterA: null,
       quarterB: null,
       tintMap: null,
+      mask: null,
       still: null,
     };
   };
@@ -968,6 +1041,7 @@ void main() {
     if (canvas.height !== size.height) canvas.height = size.height;
     if (!gpu.art || gpu.art.width !== size.width || gpu.art.height !== size.height) {
       dropTarget(gl, gpu.art);
+      // Every level, for stills drawn smaller than the window (captureStill fills them in).
       gpu.artLevels = Math.floor(Math.log2(Math.max(size.width, size.height))) + 1;
       gpu.art = makeTarget(gl, size.width, size.height, gpu.artLevels);
       artHeld = false;
@@ -1063,6 +1137,7 @@ void main() {
     if (tickTimer !== null) win.clearTimeout(tickTimer);
     tickTimer = null;
     lastTickAt = null;
+    lastTickDue = null;
     const current = art;
     if (!current) return;
     art = null;
@@ -1360,6 +1435,11 @@ void main() {
         return;
       }
       const glyphs = [...(definition.glyphs ?? " ")];
+      const cellBackgrounds = new Uint8Array(bg);
+      let opaque = (definition.gap ?? 0) === 0;
+      for (let at = 3; opaque && at < cellBackgrounds.length; at += 4) {
+        opaque = cellBackgrounds[at] === 255;
+      }
       shown = {
         kind: "grid",
         cols,
@@ -1368,11 +1448,12 @@ void main() {
         cellHeight: pending.grid.cellHeight,
         glyph: new Int16Array(glyph),
         fg: new Uint8Array(fg),
-        bg: new Uint8Array(bg),
+        bg: cellBackgrounds,
         glyphCount: glyphs.length,
         background: definition.background ? definition.background.map(hexToRgb) : null,
         angle: definition.backgroundAngle ?? 180,
         gap: definition.gap ?? 0,
+        opaque,
       };
       if (previous && previous.kind === "grid") {
         spare = [previous.glyph.buffer, previous.fg.buffer, previous.bg.buffer] as ArrayBuffer[];
@@ -1755,6 +1836,7 @@ void main() {
     if (!theme || !gl || !gpu || contextLost) return;
     sizeTargets();
     if (!drawFrost()) return;
+    drawZoneMask();
     drawTintMap();
     present();
   };
@@ -1762,34 +1844,179 @@ void main() {
   /** Glass luminance kept spare for rounding the shown pixel to 8 bits. */
   const ROUNDING_MARGIN = 0.005;
 
-  /** Which tint map channel each zone reads (-1: none, so opaque), by index into `zones`. */
-  let zoneChannels: number[] = [];
+  /**
+   * How the zones tint, worked out when they change (`classifyZones`). The
+   * tint map holds up to four tint colors and floors, one per channel, shared
+   * by the zones that use them; a zone past the fourth pair, or opaque by its
+   * own floor, has no channel (-1) and stays opaque (the app's zones use four
+   * at most). Zones that tint alike (the same color, floor and channel) form a
+   * class: one channel of the zone mask, one entry in the composite.
+   */
+  let tintChannels: Array<{ color: Rgb; floor: number }> = [];
+  let zoneClasses: Array<{ color: Rgb; floor: number; channel: number }> = [];
+  /** Each zone's class, by index into `zones`. */
+  let zoneClassOf: number[] = [];
+  /** The zone mask was drawn for other zones (a new window size makes a new mask). */
+  let maskStale = true;
+
+  const classifyZones = () => {
+    const alike = (entry: { color: Rgb; floor: number }, zone: Zone) =>
+      entry.floor === zone.tint &&
+      entry.color.r === zone.color.r &&
+      entry.color.g === zone.color.g &&
+      entry.color.b === zone.color.b;
+    tintChannels = [];
+    zoneClasses = [];
+    zoneClassOf = zones.map((zone) => {
+      let channel = -1;
+      if (zone.tint < 1) {
+        channel = tintChannels.findIndex((entry) => alike(entry, zone));
+        if (channel < 0 && tintChannels.length < 4) {
+          tintChannels.push({ color: zone.color, floor: zone.tint });
+          channel = tintChannels.length - 1;
+        }
+      }
+      const found = zoneClasses.findIndex(
+        (entry) => entry.channel === channel && alike(entry, zone),
+      );
+      if (found >= 0) return found;
+      zoneClasses.push({ color: zone.color, floor: zone.tint, channel });
+      return zoneClasses.length - 1;
+    });
+    maskStale = true;
+  };
 
   /**
-   * The tint map: up to four tint colors and floors, one per channel, shared
-   * by the zones that use them. A zone past the fourth pair stays opaque; the
-   * app's zones use four at most.
+   * Everything a zone can touch, in CSS px: its rectangle and its core, and
+   * past them the px its antialiased edge fades over.
+   */
+  const zoneReach = (zone: Zone, dpr: number) => {
+    const margin = 1 + 1 / dpr;
+    return {
+      left: Math.min(zone.rect.x, zone.core.x) - margin,
+      top: Math.min(zone.rect.y, zone.core.y) - margin,
+      right: Math.max(zone.rect.x + zone.rect.w, zone.core.x + zone.core.w) + margin,
+      bottom: Math.max(zone.rect.y + zone.rect.h, zone.core.y + zone.core.h) + margin,
+    };
+  };
+
+  /**
+   * The zone mask: where each class of zones reaches, drawn when the zones
+   * or the window change, not every frame. The composite reads it, so a
+   * frame costs the same however many zones the layout has.
+   */
+  const drawZoneMask = () => {
+    if (!gl || !gpu || contextLost) return;
+    const size = deviceSize();
+    const layers = Math.max(1, Math.ceil(zoneClasses.length / 4));
+    let mask = gpu.mask;
+    if (
+      !mask ||
+      mask.width !== size.width ||
+      mask.height !== size.height ||
+      mask.layers !== layers
+    ) {
+      dropTarget(gl, mask);
+      const texture = gl.createTexture();
+      const framebuffer = gl.createFramebuffer();
+      if (!texture || !framebuffer) throw new Error("WebGL objects unavailable");
+      gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
+      gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, gl.RGBA8, size.width, size.height, layers);
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      mask = { texture, framebuffer, width: size.width, height: size.height, layers };
+      gpu.mask = mask;
+      maskStale = true;
+    }
+    if (!maskStale) return;
+    maskStale = false;
+    const target = mask;
+    const attach = (layer: number) => {
+      if (!gl) return;
+      gl.framebufferTextureLayer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, target.texture, 0, layer);
+    };
+    gl.bindFramebuffer(gl.FRAMEBUFFER, target.framebuffer);
+    gl.viewport(0, 0, target.width, target.height);
+    gl.disable(gl.BLEND);
+    gl.clearColor(0, 0, 0, 0);
+    for (let layer = 0; layer < layers; layer++) {
+      attach(layer);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+    }
+    gl.bindVertexArray(gpu.empty);
+    gl.useProgram(gpu.zoneMask.program);
+    gl.uniform2f(gpu.zoneMask.uniform("uDevice"), target.width, target.height);
+    gl.uniform1f(gpu.zoneMask.uniform("uDpr"), size.dpr);
+    // A class's zones combine by maximum, each drawn only over what it can touch.
+    gl.enable(gl.BLEND);
+    gl.blendEquation(gl.MAX);
+    gl.enable(gl.SCISSOR_TEST);
+    for (const [index, zone] of zones.entries()) {
+      const zoneClass = zoneClassOf[index] ?? 0;
+      const reach = zoneReach(zone, size.dpr);
+      const x0 = Math.max(0, Math.floor(reach.left * size.dpr));
+      const x1 = Math.min(target.width, Math.ceil(reach.right * size.dpr));
+      const y0 = Math.max(0, Math.floor(reach.top * size.dpr));
+      const y1 = Math.min(target.height, Math.ceil(reach.bottom * size.dpr));
+      if (x1 <= x0 || y1 <= y0) continue;
+      let edge = 0;
+      if (zone.ellipse && zone.soft) {
+        // An ellipse fades from where its core's farthest corner sits.
+        const cx = zone.rect.x + zone.rect.w / 2;
+        const cy = zone.rect.y + zone.rect.h / 2;
+        const rx = Math.max(1, zone.rect.w / 2);
+        const ry = Math.max(1, zone.rect.h / 2);
+        for (const [x, y] of [
+          [zone.core.x, zone.core.y],
+          [zone.core.x + zone.core.w, zone.core.y],
+          [zone.core.x, zone.core.y + zone.core.h],
+          [zone.core.x + zone.core.w, zone.core.y + zone.core.h],
+        ] as const) {
+          edge = Math.max(edge, Math.hypot((x - cx) / rx, (y - cy) / ry));
+        }
+        edge = Math.min(edge, 0.95);
+      }
+      attach(zoneClass >> 2);
+      const channel = zoneClass & 3;
+      gl.colorMask(channel === 0, channel === 1, channel === 2, channel === 3);
+      // The canvas counts rows from the bottom.
+      gl.scissor(x0, target.height - y1, x1 - x0, y1 - y0);
+      gl.uniform4f(
+        gpu.zoneMask.uniform("uRect"),
+        zone.rect.x,
+        zone.rect.y,
+        zone.rect.w,
+        zone.rect.h,
+      );
+      gl.uniform4f(
+        gpu.zoneMask.uniform("uCore"),
+        zone.core.x,
+        zone.core.y,
+        zone.core.w,
+        zone.core.h,
+      );
+      gl.uniform3f(gpu.zoneMask.uniform("uZone"), zone.soft ? 1 : 0, zone.ellipse ? 1 : 0, edge);
+      gl.uniform4f(gpu.zoneMask.uniform("uRadii"), ...zone.radii);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    }
+    gl.disable(gl.SCISSOR_TEST);
+    gl.blendEquation(gl.FUNC_ADD);
+    gl.disable(gl.BLEND);
+    gl.colorMask(true, true, true, true);
+  };
+
+  /**
+   * The tint map, each channel drawn only over the patches its zones can
+   * read: a zone's reach and a patch more each way, since the composite
+   * reads the map smoothed between patches.
    */
   const drawTintMap = () => {
     if (!theme || !gl || !gpu) return;
     const { quarterA, tintMap } = gpu;
     if (!quarterA || !tintMap) return;
-    const channels: Array<{ color: Rgb; floor: number }> = [];
-    zoneChannels = zones.map((zone) => {
-      if (zone.tint >= 1) return -1;
-      const found = channels.findIndex(
-        (channel) =>
-          channel.floor === zone.tint &&
-          channel.color.r === zone.color.r &&
-          channel.color.g === zone.color.g &&
-          channel.color.b === zone.color.b,
-      );
-      if (found >= 0) return found;
-      if (channels.length === 4) return -1;
-      channels.push({ color: zone.color, floor: zone.tint });
-      return channels.length - 1;
-    });
-    if (channels.length === 0) return;
+    if (tintChannels.length === 0) return;
     // Each text color as the glass luminance it needs: at least `darker` to
     // read as darker text, at most `lighter` to read as lighter text. The
     // margin covers rounding the shown pixel to 8 bits a channel (half a
@@ -1823,15 +2050,33 @@ void main() {
     eitherData.set(either);
     gl.uniform2fv(gpu.tint.uniform("uEither[0]"), eitherData);
     gl.uniform1i(gpu.tint.uniform("uEitherCount"), either.length / 2);
-    // One pass per tint color, each into its own channel.
+    // Each zone's patches, into its tint color's channel. A patch is
+    // PATCH CSS px a side; the map counts rows from the bottom.
+    const PATCH = QUARTER * 2;
+    const dpr = deviceSize().dpr;
     const tintColor = gpu.tint.uniform("uTintColor");
     const tintFloor = gpu.tint.uniform("uFloor");
-    for (const [index, channel] of channels.entries()) {
-      gl.colorMask(index === 0, index === 1, index === 2, index === 3);
-      gl.uniform3f(tintColor, channel.color.r, channel.color.g, channel.color.b);
-      gl.uniform1f(tintFloor, channel.floor);
+    gl.enable(gl.SCISSOR_TEST);
+    for (const [index, zone] of zones.entries()) {
+      const channel = zoneClasses[zoneClassOf[index] ?? 0]?.channel ?? -1;
+      const tinted = tintChannels[channel];
+      if (!tinted) continue;
+      const reach = zoneReach(zone, dpr);
+      const x0 = Math.max(0, Math.floor(reach.left / PATCH - 0.5));
+      const x1 = Math.min(tintMap.width, Math.floor(reach.right / PATCH - 0.5) + 2);
+      const y0 = Math.max(0, Math.floor((viewport.height - reach.bottom) / PATCH - 0.5));
+      const y1 = Math.min(
+        tintMap.height,
+        Math.floor((viewport.height - reach.top) / PATCH - 0.5) + 2,
+      );
+      if (x1 <= x0 || y1 <= y0) continue;
+      gl.scissor(x0, y0, x1 - x0, y1 - y0);
+      gl.colorMask(channel === 0, channel === 1, channel === 2, channel === 3);
+      gl.uniform3f(tintColor, tinted.color.r, tinted.color.g, tinted.color.b);
+      gl.uniform1f(tintFloor, tinted.floor);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
+    gl.disable(gl.SCISSOR_TEST);
     gl.colorMask(true, true, true, true);
   };
 
@@ -1848,20 +2093,37 @@ void main() {
     gl.viewport(0, 0, artTarget.width, artTarget.height);
     gl.disable(gl.BLEND);
     gl.bindVertexArray(gpu.empty);
-    const ground = frame && frame.kind !== "canvas" && frame.background ? frame : null;
-    const stops = ground?.background ?? [theme.base];
-    const direction = gradientDirection(ground?.angle ?? 180);
-    gl.useProgram(gpu.background.program);
-    const stopData = new Float32Array(8 * 3);
-    stops.slice(0, 8).forEach((stop, index) => stopData.set([stop.r, stop.g, stop.b], index * 3));
-    gl.uniform3fv(gpu.background.uniform("uStops[0]"), stopData);
-    gl.uniform1i(gpu.background.uniform("uStopCount"), Math.min(8, stops.length));
-    gl.uniform2f(gpu.background.uniform("uSize"), artTarget.width, artTarget.height);
-    gl.uniform2f(gpu.background.uniform("uDir"), direction.x, direction.y);
-    gl.drawArrays(gl.TRIANGLES, 0, 3);
-    gl.enable(gl.BLEND);
+    const gridReady =
+      frame !== null &&
+      frame.kind === "grid" &&
+      gpu.atlas !== null &&
+      gpu.gridCells === frame.cols * frame.rows;
+    // A grid that paints every cell's background and reaches every edge of
+    // the window hides the ground whole: it is drawn alone, with nothing to
+    // blend into.
+    const covers =
+      frame !== null &&
+      frame.kind === "grid" &&
+      gridReady &&
+      frame.opaque &&
+      frame.cols * frame.cellWidth >= viewport.width &&
+      frame.rows * frame.cellHeight >= viewport.height;
+    if (!covers) {
+      const ground = frame && frame.kind !== "canvas" && frame.background ? frame : null;
+      const stops = ground?.background ?? [theme.base];
+      const direction = gradientDirection(ground?.angle ?? 180);
+      gl.useProgram(gpu.background.program);
+      const stopData = new Float32Array(8 * 3);
+      stops.slice(0, 8).forEach((stop, index) => stopData.set([stop.r, stop.g, stop.b], index * 3));
+      gl.uniform3fv(gpu.background.uniform("uStops[0]"), stopData);
+      gl.uniform1i(gpu.background.uniform("uStopCount"), Math.min(8, stops.length));
+      gl.uniform2f(gpu.background.uniform("uSize"), artTarget.width, artTarget.height);
+      gl.uniform2f(gpu.background.uniform("uDir"), direction.x, direction.y);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      gl.enable(gl.BLEND);
+    }
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
-    if (frame && frame.kind === "grid" && gpu.atlas && gpu.gridCells === frame.cols * frame.rows) {
+    if (frame && frame.kind === "grid" && gridReady) {
       gl.useProgram(gpu.grid.program);
       gl.bindVertexArray(gpu.gridVao);
       gl.activeTexture(gl.TEXTURE0);
@@ -1899,6 +2161,7 @@ void main() {
     // Resuming: the picture from before the pause over it, fading out.
     const fading = fadeAlpha();
     if (fadeFrom && fading > 0) {
+      gl.enable(gl.BLEND);
       gl.useProgram(gpu.fade.program);
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, fadeFrom.texture);
@@ -1910,16 +2173,18 @@ void main() {
     gl.disable(gl.BLEND);
     artHeld = frame !== null;
 
-    // 2. A quarter-resolution copy, averaged through the art's mip levels.
-    gl.bindTexture(gl.TEXTURE_2D, artTarget.texture);
-    gl.generateMipmap(gl.TEXTURE_2D);
+    // 2. A quarter-resolution copy: each quarter pixel the average of the art under it.
     gl.bindFramebuffer(gl.FRAMEBUFFER, quarterA.framebuffer);
     gl.viewport(0, 0, quarterA.width, quarterA.height);
     gl.useProgram(gpu.downsample.program);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, artTarget.texture);
     gl.uniform1i(gpu.downsample.uniform("uArt"), 0);
-    gl.uniform1f(gpu.downsample.uniform("uLod"), Math.max(0, Math.log2(QUARTER * size.dpr)));
+    // A smoothed sample averages 2 × 2 device px: enough of them to cover the quarter pixel.
+    gl.uniform1i(
+      gpu.downsample.uniform("uTaps"),
+      Math.min(4, Math.max(1, Math.ceil((QUARTER * size.dpr) / 2))),
+    );
     gl.uniform2f(
       gpu.downsample.uniform("uStep"),
       QUARTER / viewport.width,
@@ -1968,13 +2233,14 @@ void main() {
   };
 
   /**
-   * The composite: crisp art, frosted and tinted inside the zones, each patch
-   * as its tint map says; toward Clear the frost and that tint fade.
+   * The composite: crisp art, frosted and tinted where the zone mask says
+   * zones reach, each patch as its tint map says; toward Clear the frost and
+   * that tint fade.
    */
   const present = () => {
     if (!theme || !gl || !gpu || contextLost) return;
-    const { art: artTarget, quarterA, tintMap } = gpu;
-    if (!artTarget || !quarterA || !tintMap) return;
+    const { art: artTarget, quarterA, tintMap, mask } = gpu;
+    if (!artTarget || !quarterA || !tintMap || !mask) return;
     const size = deviceSize();
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, canvas.width, canvas.height);
@@ -2001,43 +2267,19 @@ void main() {
       1 / (quarterA.width * QUARTER),
       1 / (quarterA.height * QUARTER),
     );
-    const count = Math.min(24, zones.length);
-    const rects = new Float32Array(24 * 4);
-    const cores = new Float32Array(24 * 4);
-    const params = new Float32Array(24 * 4);
-    const radii = new Float32Array(24 * 4);
-    const tints = new Float32Array(24 * 3);
-    const channelOf = new Float32Array(24).fill(-1);
-    zones.slice(0, count).forEach((zone, index) => {
-      rects.set([zone.rect.x, zone.rect.y, zone.rect.w, zone.rect.h], index * 4);
-      cores.set([zone.core.x, zone.core.y, zone.core.w, zone.core.h], index * 4);
-      let edge = 0;
-      if (zone.ellipse && zone.soft) {
-        const cx = zone.rect.x + zone.rect.w / 2;
-        const cy = zone.rect.y + zone.rect.h / 2;
-        const rx = Math.max(1, zone.rect.w / 2);
-        const ry = Math.max(1, zone.rect.h / 2);
-        for (const [x, y] of [
-          [zone.core.x, zone.core.y],
-          [zone.core.x + zone.core.w, zone.core.y],
-          [zone.core.x, zone.core.y + zone.core.h],
-          [zone.core.x + zone.core.w, zone.core.y + zone.core.h],
-        ] as const) {
-          edge = Math.max(edge, Math.hypot((x - cx) / rx, (y - cy) / ry));
-        }
-        edge = Math.min(edge, 0.95);
-      }
-      params.set([zone.soft ? 1 : 0, zone.ellipse ? 1 : 0, zone.tint, edge], index * 4);
-      radii.set(zone.radii, index * 4);
-      tints.set([zone.color.r, zone.color.g, zone.color.b], index * 3);
-      channelOf[index] = zoneChannels[index] ?? -1;
-    });
-    gl.uniform1i(gpu.composite.uniform("uZoneCount"), count);
-    gl.uniform4fv(gpu.composite.uniform("uRect[0]"), rects);
-    gl.uniform4fv(gpu.composite.uniform("uCore[0]"), cores);
-    gl.uniform4fv(gpu.composite.uniform("uZone[0]"), params);
-    gl.uniform4fv(gpu.composite.uniform("uRadii[0]"), radii);
-    gl.uniform3fv(gpu.composite.uniform("uTint[0]"), tints);
+    gl.activeTexture(gl.TEXTURE3);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, mask.texture);
+    gl.uniform1i(gpu.composite.uniform("uMask"), 3);
+    const count = Math.min(MAX_ZONE_CLASSES, zoneClasses.length);
+    const classes = new Float32Array(MAX_ZONE_CLASSES * 4);
+    const channelOf = new Float32Array(MAX_ZONE_CLASSES).fill(-1);
+    for (const [index, zoneClass] of zoneClasses.slice(0, count).entries()) {
+      const { color, floor, channel } = zoneClass;
+      classes.set([color.r, color.g, color.b, floor], index * 4);
+      channelOf[index] = channel;
+    }
+    gl.uniform1i(gpu.composite.uniform("uClassCount"), count);
+    gl.uniform4fv(gpu.composite.uniform("uClass[0]"), classes);
     gl.uniform1fv(gpu.composite.uniform("uChannel[0]"), channelOf);
     gl.uniform1f(gpu.composite.uniform("uClarity"), theme.clarity);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
@@ -2102,6 +2344,8 @@ void main() {
       gl.bindVertexArray(gpu.empty);
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, gpu.art.texture);
+      // A still smaller than the window reads the art's smaller copies, made here: no frame needs them.
+      if (attempt === 0) gl.generateMipmap(gl.TEXTURE_2D);
       gl.uniform1i(gpu.quad.uniform("uSource"), 0);
       gl.uniform1f(gpu.quad.uniform("uDpr"), 1);
       gl.uniform1f(gpu.quad.uniform("uDeviceHeight"), h);
@@ -2211,6 +2455,7 @@ void main() {
       if (tickTimer !== null) win.clearTimeout(tickTimer);
       tickTimer = null;
       lastTickAt = null;
+      lastTickDue = null;
       if (resumeTimer !== null) win.clearTimeout(resumeTimer);
       const wait = busyUntil - now();
       if (wait > 0) resumeTimer = win.setTimeout(schedule, wait + 1);
@@ -2226,7 +2471,7 @@ void main() {
     }
     if (!art.definition || art.outstanding) return;
     const interval = 1000 / targetFps();
-    const at = lastTickAt === null ? now() : Math.max(now(), lastTickAt + interval);
+    const at = lastTickDue === null ? now() : Math.max(now(), lastTickDue + interval);
     if (tickTimer !== null && Math.abs(at - nextTickAt) < 1) return;
     if (tickTimer !== null) win.clearTimeout(tickTimer);
     nextTickAt = at;
@@ -2242,6 +2487,10 @@ void main() {
     const dt = lastTickAt === null ? interval / 1000 : Math.min(1, (sentAt - lastTickAt) / 1000);
     artTime += dt;
     lastTickAt = sentAt;
+    // On time or a little late, the cadence holds; a whole interval late (a
+    // stall, a slower rate until now), it starts over from here.
+    const due = lastTickDue === null ? sentAt : lastTickDue + interval;
+    lastTickDue = sentAt - due < interval ? due : sentAt;
     tickSequence += 1;
     const shape = geometry(current.definition);
     const pending: Outstanding = {
@@ -2475,6 +2724,7 @@ void main() {
         const next = readZones(message.zones);
         if (!next) return;
         zones = next;
+        classifyZones();
         // Zones update while paused too: recomposite and remeasure the kept frame.
         render();
         return;
