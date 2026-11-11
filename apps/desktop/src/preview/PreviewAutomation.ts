@@ -91,6 +91,12 @@ import {
 } from "./frameAffine.ts";
 import { isHostInjectedConsoleEntry } from "./previewConsoleNoise.ts";
 import {
+  browserIdentity,
+  CHILD_TARGET_AUTO_ATTACH,
+  identityOverride,
+  presentIdentityToChild,
+} from "./previewIdentity.ts";
+import {
   buildDrawOverlayScript,
   DRAW_OVERLAY_BINDING,
   DRAW_OVERLAY_STASH,
@@ -161,17 +167,6 @@ const PAGE_FOCUS_POLL = "4 millis";
  * animation, a fetch), so it gets nearly all of the broker's deadline.
  */
 const AGENT_SCRIPT_TIMEOUT = "18 seconds";
-/**
- * CDP sessions of their own for a page's frames that run in other processes
- * (another site's, or a sandboxed one), and for theirs in turn: agent input
- * goes straight into them (`routePoint`). Nothing is enabled in them.
- */
-const FRAME_AUTO_ATTACH = {
-  autoAttach: true,
-  waitForDebuggerOnStart: false,
-  flatten: true,
-  filter: [{ type: "iframe" }],
-};
 /** How deep `routePoint` and `snapshot` follow frames inside frames. */
 const MAX_FRAME_DEPTH = 8;
 /** A snapshot ref in a frame: `f2e7` is element 7 in frame 2. */
@@ -325,6 +320,15 @@ export class PreviewAutomation extends Context.Service<
   PreviewAutomation,
   {
     readonly attach: (
+      webContentsId: number,
+    ) => Effect.Effect<DesktopPreviewStatus, PreviewAutomationError>;
+    /**
+     * `attach` for a guest the panel has not asked about yet, so its first
+     * page is told which browser this is (`previewIdentity.ts`). It leaves the
+     * navigation guard to `attach`: a project's first page has no policy yet,
+     * and guarding it this early would ask about sites the project allows.
+     */
+    readonly attachAhead: (
       webContentsId: number,
     ) => Effect.Effect<DesktopPreviewStatus, PreviewAutomationError>;
     readonly detach: (webContentsId: number) => Effect.Effect<void>;
@@ -1676,11 +1680,11 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
    * with "No target available" -- which reads as the whole browser being broken
    * rather than as one thing to redo.
    */
-  const attach = Effect.fn("PreviewAutomation.attach")(function* (webContentsId: number) {
+  const attachDebugger = Effect.fn("PreviewAutomation.attachDebugger")(function* (
+    webContentsId: number,
+  ) {
     const contents = yield* resolve(webContentsId);
-    // Before anything else, and outside the debugger's lifecycle: a guest that
-    // exists is a guest that can be sent somewhere by its own page.
-    ensureNavigationGuard(contents);
+    const identity = browserIdentity(app);
     if (attached.has(webContentsId) && contents.debugger.isAttached()) {
       return buildStatus(webContentsId, contents);
     }
@@ -1763,6 +1767,17 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
     contents.on("before-input-event", onBeforeInput);
     contents.on("before-mouse-event", onBeforeMouse);
 
+    // The page's console, its uncaught errors and the browser's own complaints
+    // about it, from every frame, as Electron reports them. Never through the
+    // debugger's `Runtime.enable`: a page can tell when that is on, and
+    // sign-in bot checks look (GoDaddy's refused a hand-typed sign-in for that
+    // alone). Nothing in this file may turn it on; bindings and evaluation
+    // work without it.
+    const onConsole = (details: { level: string; message: string }) => {
+      pushConsole({ level: details.level, text: details.message, at: new Date().toISOString() });
+    };
+    contents.on("console-message", onConsole);
+
     const onMessage = (
       _event: unknown,
       method: string,
@@ -1771,17 +1786,17 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
     ) => {
       if (method === "Target.attachedToTarget") {
         const info = params.targetInfo as { targetId?: unknown; type?: unknown } | undefined;
-        const frameSession = params.sessionId;
-        if (
-          info?.type === "iframe" &&
-          typeof info.targetId === "string" &&
-          typeof frameSession === "string"
-        ) {
+        const childSession = params.sessionId;
+        if (typeof childSession !== "string") return;
+        // A frame in another process (another site's, or a sandboxed one) or a
+        // worker, with a CDP session of its own. Each names the browser for
+        // itself, and reports the frames and workers inside it in turn.
+        // Nothing else is enabled in them.
+        presentIdentityToChild(contents.debugger, identity, childSession);
+        if (info?.type === "iframe" && typeof info.targetId === "string") {
+          // Agent input goes straight into a frame's session (`routePoint`).
           // An iframe target's id is its frame's id, as DOM.describeNode names it.
-          tab.frameSessions.set(info.targetId, frameSession);
-          contents.debugger
-            .sendCommand("Target.setAutoAttach", FRAME_AUTO_ATTACH, frameSession)
-            .catch(() => {});
+          tab.frameSessions.set(info.targetId, childSession);
         }
         return;
       }
@@ -1795,27 +1810,6 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
       // A frame's own session reports nothing else this reads. The page's own
       // messages come with an empty session id, not a missing one.
       if (sessionId !== undefined && sessionId !== "") return;
-      if (method === "Runtime.consoleAPICalled") {
-        const args = (params.args as ReadonlyArray<{ value?: unknown }> | undefined) ?? [];
-        pushConsole({
-          level: String(params.type ?? "log"),
-          text: args
-            .map((arg) => (arg.value === undefined ? "" : String(arg.value)))
-            .join(" ")
-            .trim(),
-          at: new Date().toISOString(),
-        });
-        return;
-      }
-      if (method === "Runtime.exceptionThrown") {
-        const details = params.exceptionDetails as { text?: string } | undefined;
-        pushConsole({
-          level: "error",
-          text: details?.text ?? "Uncaught exception",
-          at: new Date().toISOString(),
-        });
-        return;
-      }
       if (method === "Network.requestWillBeSent") {
         const requestId = String(params.requestId ?? "");
         const request = params.request as { url?: string } | undefined;
@@ -1837,13 +1831,16 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
         return;
       }
       if (method === "Log.entryAdded") {
-        // Browser-level messages the page never printed itself: CSP violations,
-        // CORS refusals, mixed content. Exactly the failures a developer asks
-        // an agent about, and invisible to Runtime.consoleAPICalled.
-        const entry = params.entry as { level?: string; text?: string } | undefined;
+        // Only what the page's console never carries: a resource that failed
+        // to load. The rest of this log (CSP violations, CORS refusals, mixed
+        // content) reaches `onConsole` too, and would be counted twice.
+        const entry = params.entry as
+          | { level?: string; text?: string; source?: string }
+          | undefined;
+        if (entry?.source !== "network") return;
         pushConsole({
-          level: entry?.level ?? "info",
-          text: entry?.text ?? "",
+          level: entry.level ?? "info",
+          text: entry.text ?? "",
           at: new Date().toISOString(),
         });
         return;
@@ -1898,22 +1895,26 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
       contents.off("destroyed", onDestroyed);
       contents.off("before-input-event", onBeforeInput);
       contents.off("before-mouse-event", onBeforeMouse);
+      contents.off("console-message", onConsole);
     };
     attached.set(webContentsId, tab);
 
-    for (const method of [
-      "Runtime.enable",
-      "Page.enable",
-      "Network.enable",
-      "Log.enable",
-      "Accessibility.enable",
-    ]) {
+    // First, ahead of everything that only the agent needs: a page that loads
+    // before this lands tells its site it is a different browser from the one
+    // its requests named (`previewIdentity.ts`). Both best effort. Without
+    // the second, frames in other processes and workers are not told
+    // separately, and input meant for such a frame lands as it did before,
+    // on the frame's element.
+    yield* sendCommand(contents, "Emulation.setUserAgentOverride", identityOverride(identity)).pipe(
+      Effect.ignore,
+    );
+    yield* sendCommand(contents, "Target.setAutoAttach", CHILD_TARGET_AUTO_ATTACH).pipe(
+      Effect.ignore,
+    );
+
+    for (const method of ["Page.enable", "Network.enable", "Log.enable", "Accessibility.enable"]) {
       yield* sendCommand(contents, method);
     }
-    // Best effort: without it, input meant for such a frame lands as it did
-    // before, on the frame's element.
-    yield* sendCommand(contents, "Target.setAutoAttach", FRAME_AUTO_ATTACH).pipe(Effect.ignore);
-
     // The guest believes it is focused even while the user's caret is
     // elsewhere in the embedding window. Agent input pulls focus onto the
     // <webview> and the web client hands it straight back (browserFocusGuard);
@@ -1926,6 +1927,14 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
     }).pipe(Effect.ignore);
 
     return buildStatus(webContentsId, contents);
+  });
+
+  const attach = Effect.fn("PreviewAutomation.attach")(function* (webContentsId: number) {
+    const contents = yield* resolve(webContentsId);
+    // Before anything else, and outside the debugger's lifecycle: a guest that
+    // exists is a guest that can be sent somewhere by its own page.
+    ensureNavigationGuard(contents);
+    return yield* attachDebugger(webContentsId);
   });
 
   /**
@@ -2268,6 +2277,7 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
 
   return PreviewAutomation.of({
     attach,
+    attachAhead: attachDebugger,
     detach: (webContentsId: number) =>
       Effect.sync(() => {
         const tab = attached.get(webContentsId);
@@ -2386,9 +2396,9 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
       pendingPicks.set(webContentsId, token);
 
       yield* sendCommand(contents, "DOM.enable", {});
-      yield* sendCommand(contents, "Runtime.enable", {});
       // The binding is how the injected overlay reports back. Adding it twice
       // is harmless, and it must exist before the script that calls it runs.
+      // It lasts as long as the document, which is as long as the overlay.
       yield* sendCommand(contents, "Runtime.addBinding", {
         name: PICK_OVERLAY_BINDING,
       }).pipe(Effect.ignore);
@@ -2538,7 +2548,6 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
     awaitDrawing: Effect.fn("PreviewAutomation.awaitDrawing")(function* (webContentsId: number) {
       const contents = yield* resolveAttached(webContentsId);
       yield* sendCommand(contents, "DOM.enable", {});
-      yield* sendCommand(contents, "Runtime.enable", {});
       yield* sendCommand(contents, "Runtime.addBinding", {
         name: DRAW_OVERLAY_BINDING,
       }).pipe(Effect.ignore);
@@ -2609,6 +2618,14 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
         // waiting rather than outlive the pen. Coming back to it starts a new
         // wait, and the ink is still there to attach.
         drawWaiters.get(webContentsId)?.();
+      }
+      if (mode !== null) {
+        // A binding lasts only as long as its document. Whoever is waiting on
+        // a drawing added it to the page they started on; the overlay drawn
+        // now may be on the next one.
+        yield* sendCommand(contents, "Runtime.addBinding", {
+          name: DRAW_OVERLAY_BINDING,
+        }).pipe(Effect.ignore);
       }
       // Nothing is read back, so this is a plain evaluation rather than the
       // binding round trip picking needs.

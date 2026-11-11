@@ -29,6 +29,7 @@ import { readdirSync } from "node:fs";
 import { join } from "node:path";
 
 import { isAppWindow } from "../electron/ElectronWindow.ts";
+import { browserIdentity } from "./previewIdentity.ts";
 import { choosePasskeyAccount } from "./previewPasskeys.ts";
 import { isPreviewPartition } from "./previewPartitions.ts";
 import { isPreviewPermissionAllowed } from "./previewPermissions.ts";
@@ -84,12 +85,11 @@ export class PreviewSession extends Context.Service<PreviewSession, PreviewSessi
   "@threadlines/desktop/preview/PreviewSession",
 ) {}
 
-// The user agent is deliberately left as Electron's own. Claiming to be Chrome
-// is a lie bot checks catch: Cloudflare Turnstile compares the claim with what
-// the page can observe, and an Electron guest lacks pieces of real Chrome, so
-// a Chrome user agent failed its sign-in check (error 600010) where the honest
-// Electron one passed.
+// The session carries the user agent string, which reaches every request and
+// page in it. The other half of the name, the brand list, is set per page:
+// see `previewIdentity.ts`, and why the two must agree.
 function configurePreviewSession(previewSession: Electron.Session): void {
+  previewSession.setUserAgent(browserIdentity(Electron.app).userAgent);
   previewSession.setPermissionRequestHandler((_contents, permission, callback, details) => {
     callback(isPreviewPermissionAllowed(permission, details.requestingUrl));
   });
