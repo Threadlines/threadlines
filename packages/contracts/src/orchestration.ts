@@ -3853,7 +3853,8 @@ const ThreadSessionSetCommand = Schema.Struct({
  * Server-internal: send "Continue where you left off." (or resume a goal the
  * limit paused) for the failure `lastErrorAt` names, if the thread still waits
  * for it. One decision checks the wait and starts the turn, so a message the
- * user sends meanwhile always wins.
+ * user sends meanwhile always wins. `resetEarly` continues before the wait's
+ * time: the account's usage showed the limit reset already.
  */
 const ThreadContinueAtResetFireCommand = Schema.Struct({
   type: Schema.Literal("thread.continue-at-reset.fire"),
@@ -3861,13 +3862,10 @@ const ThreadContinueAtResetFireCommand = Schema.Struct({
   threadId: ThreadId,
   lastErrorAt: IsoDateTime,
   messageId: MessageId,
+  resetEarly: Schema.optional(Schema.Boolean),
   createdAt: IsoDateTime,
 });
 
-/**
- * Server-internal: the limit hasn't reset yet. Continue at `at` instead, and
- * record `resetsAt` when the account's usage named a later reset.
- */
 /**
  * Server-internal: the user wrote before this "Continue where you left off."
  * message reached the agent, so it is not sent (OrchestrationMessage.notSent).
@@ -3880,6 +3878,10 @@ const ThreadContinueAtResetSkipCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/**
+ * Server-internal: the limit hasn't reset yet. Continue at `at` instead, and
+ * record `resetsAt` when the account's usage named a later reset.
+ */
 const ThreadContinueAtResetPostponeCommand = Schema.Struct({
   type: Schema.Literal("thread.continue-at-reset.postpone"),
   commandId: CommandId,

@@ -56,7 +56,10 @@ export type AccountUsageBlock =
   /** No reading to go by. */
   | { readonly state: "unknown" };
 
-function isUsedUpTo(window: ServerProviderUsageWindow, percent: number): boolean {
+function isUsedUpTo(
+  window: Pick<ServerProviderUsageWindow, "usedPercent" | "remainingPercent">,
+  percent: number,
+): boolean {
   return window.usedPercent >= percent || window.remainingPercent <= 100 - percent;
 }
 
@@ -130,6 +133,67 @@ export function readProviderUsageBlock(
     return { state: "unknown" };
   }
   return readAccountUsageBlock(provider.accountUsage, nowMs);
+}
+
+/** One window of a provider instance's usage reading: the plan's, or one model's own. */
+export interface ProviderUsageWindowReading {
+  /**
+   * Which window it is, the same from one reading to the next. Two windows a
+   * provider doesn't tell apart share a key.
+   */
+  readonly key: string;
+  /** Used up, and not yet reset at the time asked about. */
+  readonly spent: boolean;
+  readonly resetsAtMs: number | undefined;
+  /** When this window was last read: a reading can carry a window over from an earlier one. */
+  readonly readAtMs: number;
+}
+
+/**
+ * Every window on a provider instance's usage reading, one model's own
+ * windows included. `readProviderUsageBlock` says whether the account as a
+ * whole is out of room; this is for following one limit from reading to
+ * reading, whichever window it is. Null when there is no reading of the
+ * account the instance chats as.
+ */
+export function listProviderUsageWindows(
+  provider: Pick<ServerProvider, "auth" | "accountUsage">,
+  nowMs: number,
+): ReadonlyArray<ProviderUsageWindowReading> | null {
+  const accountUsage = provider.accountUsage;
+  if (
+    accountUsage === undefined ||
+    (provider.auth.usageEmail !== undefined && provider.auth.email !== undefined)
+  ) {
+    return null;
+  }
+  const windows: Array<ProviderUsageWindowReading> = [];
+  const add = (
+    key: string,
+    window: Pick<
+      ServerProviderUsageWindow,
+      "usedPercent" | "remainingPercent" | "resetsAt" | "checkedAt"
+    >,
+  ) => {
+    const resetsAtMs = usageResetTimeMs(window.resetsAt);
+    const readAtMs = Date.parse(window.checkedAt ?? accountUsage.checkedAt);
+    windows.push({
+      key,
+      spent: isUsedUpTo(window, 100) && (resetsAtMs === undefined || resetsAtMs > nowMs),
+      resetsAtMs,
+      readAtMs: Number.isFinite(readAtMs) ? readAtMs : 0,
+    });
+  };
+  accountUsage.limits.forEach((limit, index) => {
+    const limitKey = limit.limitId ?? String(index);
+    if (limit.primary) add(`${limitKey}:primary`, limit.primary);
+    if (limit.secondary) add(`${limitKey}:secondary`, limit.secondary);
+    // One label can name a model's session, daily and weekly windows at once.
+    for (const scoped of limit.scoped ?? []) {
+      add(`${limitKey}:scoped:${scoped.scopeLabel}:${scoped.windowDurationMins ?? ""}`, scoped);
+    }
+  });
+  return windows;
 }
 
 /**

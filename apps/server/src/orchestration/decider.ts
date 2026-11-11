@@ -4355,7 +4355,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       if (
         waiting === null ||
         session === null ||
-        Date.parse(waiting.at) > Date.parse(command.createdAt)
+        (command.resetEarly !== true && Date.parse(waiting.at) > Date.parse(command.createdAt))
       ) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,

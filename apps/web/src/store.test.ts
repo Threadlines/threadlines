@@ -2656,6 +2656,53 @@ describe("incremental orchestration updates", () => {
     expect(threadsOf(failedAgain)[0]?.error).toBe(offline);
   });
 
+  it("turns Continue at reset on and off for a thread a usage limit stopped", () => {
+    const thread = makeThread();
+    const lastErrorAt = "2026-02-27T00:00:02.000Z";
+    const resetsAt = "2026-02-28T03:00:00.000Z";
+    const waiting = { resetsAt, at: "2026-02-28T03:01:00.000Z" };
+    const limited = applyOrchestrationEvent(
+      makeState(thread),
+      makeEvent(
+        "thread.session-set",
+        {
+          threadId: thread.id,
+          session: {
+            threadId: thread.id,
+            status: "error",
+            providerName: "claudeAgent",
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: "You've hit your weekly limit",
+            lastErrorAt,
+            lastErrorUsageLimit: { window: "weekly", resetsAt },
+            updatedAt: lastErrorAt,
+          },
+        },
+        { sequence: 2 },
+      ),
+      localEnvironmentId,
+    );
+    const continueSet = (sequence: number, continueAtReset: typeof waiting | null) =>
+      makeEvent(
+        "thread.continue-at-reset-set",
+        {
+          threadId: thread.id,
+          lastErrorAt,
+          continueAtReset,
+          updatedAt: "2026-02-27T00:00:05.000Z",
+        },
+        { sequence },
+      );
+
+    const on = applyOrchestrationEvent(limited, continueSet(3, waiting), localEnvironmentId);
+    expect(threadsOf(on)[0]?.session?.continueAtReset).toEqual(waiting);
+
+    const off = applyOrchestrationEvent(on, continueSet(4, null), localEnvironmentId);
+    expect(threadsOf(off)[0]?.session?.continueAtReset).toBeUndefined();
+    expect(threadsOf(off)[0]?.session?.lastErrorUsageLimit).toEqual({ window: "weekly", resetsAt });
+  });
+
   it("keeps legacy assistant completion events non-terminal while their turn is active", () => {
     const thread = makeThread({
       latestTurn: {

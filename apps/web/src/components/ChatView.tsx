@@ -8899,7 +8899,6 @@ export default function ChatView(props: ChatViewProps) {
                     handleRuntimeModeChange={handleRuntimeModeChange}
                     handleInteractionModeChange={handleInteractionModeChange}
                     focusComposer={focusComposer}
-                    setThreadError={setThreadError}
                     onExpandImage={openExpandedImagePreview}
                     onPreviewFile={onPreviewFile}
                   />

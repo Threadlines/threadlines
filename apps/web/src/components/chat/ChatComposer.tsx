@@ -623,7 +623,6 @@ export interface ChatComposerProps {
   ) => void;
 
   focusComposer: () => void;
-  setThreadError: (threadId: ThreadId | null, error: string | null) => void;
   onExpandImage: (preview: ExpandedImagePreview) => void;
   onPreviewFile: (request: FilePreviewRequest) => void;
 }
@@ -738,7 +737,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     handleRuntimeModeChange,
     handleInteractionModeChange,
     focusComposer,
-    setThreadError,
     onExpandImage,
     onPreviewFile,
   } = props;
@@ -3304,7 +3302,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     } else if (nextAttachments.length > 1) {
       addComposerAttachmentsToDraft(nextAttachments);
     }
-    setThreadError(activeThreadId, error);
+    // Said in passing, like the other refusals here: the notice above the
+    // composer holds the thread's failed turn or usage limit, which attaching
+    // a file must neither replace nor close.
+    if (error !== null) {
+      toastManager.add({ type: "error", title: error });
+    }
     return nextAttachments.length > 0;
   };
 
