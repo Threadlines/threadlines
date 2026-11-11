@@ -1216,6 +1216,90 @@ describe("ChatView (full app): plans, questions and turn controls", () => {
     }
   });
 
+  it("keeps the usage limit notice through an attached file and flips Continue at reset", async () => {
+    const resetsAt = isoAt(3_600);
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-continue-at-reset" as MessageId,
+      targetText: "continue at reset target",
+      sessionStatus: "error",
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads: snapshot.threads.map((thread) =>
+          thread.id === THREAD_ID && thread.session
+            ? {
+                ...thread,
+                session: {
+                  ...thread.session,
+                  activeTurnId: null,
+                  lastError: "You've hit your weekly limit",
+                  lastErrorAt: NOW_ISO,
+                  lastErrorUsageLimit: { window: "weekly" as const, resetsAt },
+                },
+              }
+            : thread,
+        ),
+      },
+    });
+    try {
+      const continueSwitch = page.getByRole("switch", { name: "Continue at reset" });
+      await expect.element(continueSwitch).toHaveAttribute("aria-checked", "false");
+
+      // Attaching a file is not closing the notice.
+      const input = await waitForElement(
+        () =>
+          document.querySelector<HTMLInputElement>('input[type="file"][multiple]:not([accept])'),
+        "The attach-files picker did not render.",
+      );
+      const transfer = new DataTransfer();
+      transfer.items.add(new File(["# notes"], "notes.md", { type: "" }));
+      input.files = transfer.files;
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+      await expect
+        .element(page.getByRole("button", { name: "Preview notes.md" }))
+        .toBeInTheDocument();
+      await expect.element(continueSwitch).toBeVisible();
+
+      await continueSwitch.click();
+      await vi.waitFor(() => {
+        expect(
+          wsRequests.find(
+            (request) =>
+              request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+              request.type === "thread.continue-at-reset.set",
+          ),
+        ).toMatchObject({ threadId: THREAD_ID, lastErrorAt: NOW_ISO, enabled: true });
+      });
+      // The server's answer changes nothing on the session but the wait.
+      rpcHarness.emitStreamValue(ORCHESTRATION_WS_METHODS.subscribeThread, {
+        kind: "event",
+        event: {
+          sequence: fixture.snapshot.snapshotSequence + 1,
+          eventId: EventId.make("evt-continue-at-reset-on"),
+          aggregateKind: "thread",
+          aggregateId: THREAD_ID,
+          occurredAt: NOW_ISO,
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          type: "thread.continue-at-reset-set",
+          payload: {
+            threadId: THREAD_ID,
+            lastErrorAt: NOW_ISO,
+            continueAtReset: { resetsAt, at: isoAt(3_660) },
+            updatedAt: NOW_ISO,
+          },
+        },
+      });
+      await expect.element(continueSwitch).toHaveAttribute("aria-checked", "true");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("offers Stop for the background work a failed turn left running", async () => {
     // A turn that died on a usage limit while two dev servers it started kept
     // going: the thread still waits on them, and the agent can't be asked to

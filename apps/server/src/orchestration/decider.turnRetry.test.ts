@@ -583,6 +583,25 @@ describe("decider continue at reset", () => {
     ).rejects.toThrow("no longer waiting");
   });
 
+  it("continues before the wait's time only for a limit that reset early", async () => {
+    const armed = await run(makeReadModel(typed(makeThread())), limitHit(true));
+    const lastErrorAt = armed.session?.lastErrorAt ?? "";
+    const beforeReset = fire(lastErrorAt, "2026-01-01T03:00:00.000Z");
+    await expect(
+      Effect.runPromise(
+        decideOrchestrationCommand({ command: beforeReset, readModel: armed.readModel }),
+      ),
+    ).rejects.toThrow("no longer waiting");
+
+    const continued = await run(armed.readModel, { ...beforeReset, resetEarly: true });
+    expect(continued.session?.continueAtReset).toBeUndefined();
+    expect(continued.session?.status).toBe("starting");
+    expect(continued.readModel.threads[0]?.messages.at(-1)).toMatchObject({
+      text: "Continue where you left off.",
+      trigger: "usageLimitReset",
+    });
+  });
+
   it("lets the user's message overtake a continue on its way, never both", async () => {
     const armed = await run(makeReadModel(typed(makeThread())), limitHit(true));
     const continued = await run(

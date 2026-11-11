@@ -1101,7 +1101,8 @@ function threadSessionsEqual(
   if (left == null || right == null) return false;
   // The background-task fields count too: two updates can share a timestamp
   // (a task relisted as an agent in the same millisecond), and the second
-  // must not be dropped as a repeat of the first.
+  // must not be dropped as a repeat of the first. So do the usage-limit wait
+  // fields: "Continue at reset" changes them and nothing else on the session.
   return (
     left.provider === right.provider &&
     left.status === right.status &&
@@ -1114,6 +1115,10 @@ function threadSessionsEqual(
     left.lastError === right.lastError &&
     left.lastErrorAt === right.lastErrorAt &&
     left.lastErrorDismissedAt === right.lastErrorDismissedAt &&
+    left.lastErrorUsageLimit?.window === right.lastErrorUsageLimit?.window &&
+    left.lastErrorUsageLimit?.resetsAt === right.lastErrorUsageLimit?.resetsAt &&
+    left.continueAtReset?.resetsAt === right.continueAtReset?.resetsAt &&
+    left.continueAtReset?.at === right.continueAtReset?.at &&
     left.pendingBackgroundTaskCount === right.pendingBackgroundTaskCount &&
     left.awaitedBackgroundTaskCount === right.awaitedBackgroundTaskCount &&
     sameAwaitedBackgroundTasks(left.awaitedBackgroundTasks, right.awaitedBackgroundTasks)
