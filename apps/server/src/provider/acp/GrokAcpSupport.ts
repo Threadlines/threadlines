@@ -40,7 +40,11 @@ import {
   resolveGrokBinary,
 } from "../grok/GrokBinary.ts";
 import { makeProviderMaintenanceCapabilities } from "../providerMaintenance.ts";
-import { buildSelectOptionDescriptor } from "../providerSnapshot.ts";
+import {
+  buildSelectOptionDescriptor,
+  readCliStartFailure,
+  withStartFailureReason,
+} from "../providerSnapshot.ts";
 import type {
   AcpLaunch,
   AcpModelOptionMapping,
@@ -412,12 +416,21 @@ export const probeGrok = Effect.fn("probeGrok")(function* (
   }).pipe(Effect.scoped, Effect.timeoutOption(GROK_PROBE_TIMEOUT), Effect.result);
 
   if (outcome._tag === "Failure") {
+    // The agent failing to start has many causes; `--version` failing too
+    // means the CLI itself cannot start.
+    const startFailure = yield* readCliStartFailure({
+      binaryPath: resolveGrokBinary(settings.binaryPath, env),
+      environment: env,
+    });
     return {
       installed: true,
       version: null,
       status: "error",
+      ...(startFailure ? { runnable: false as const } : {}),
       auth: { status: "unknown" },
-      message: `Grok did not start: ${outcome.failure.message}`,
+      message: startFailure
+        ? withStartFailureReason("Grok is installed but cannot start.", startFailure)
+        : `Grok did not start: ${outcome.failure.message}`,
     };
   }
   if (outcome.success._tag === "None") {

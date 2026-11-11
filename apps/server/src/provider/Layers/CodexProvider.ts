@@ -7,7 +7,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Types from "effect/Types";
-import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { ChildProcessSpawner } from "effect/process";
 import * as CodexClient from "effect-codex-app-server/client";
 import * as CodexSchema from "effect-codex-app-server/schema";
 import * as CodexErrors from "effect-codex-app-server/errors";
@@ -33,17 +33,15 @@ import type {
 import { RUNTIME_MODES, ServerSettingsError } from "@threadlines/contracts";
 
 import { createModelCapabilities } from "@threadlines/shared/model";
-import { hideWindowsConsole } from "@threadlines/shared/childProcess";
 import { isCommandAvailable } from "@threadlines/shared/shell";
-import { planCliSpawn } from "../../cliSpawn.ts";
 import { DEFAULT_CODEX_SERVICE_TIER_SELECTION } from "../../codexServiceTier.ts";
 import { CODEX_APP_SERVER_ARGS, codexAppServerCommandOptions } from "../codexAppServerArgs.ts";
 import { detectProviderBinary } from "../providerDetection.ts";
 import {
   AUTH_PROBE_TIMEOUT_MS,
   buildServerProvider,
-  detailFromResult,
-  spawnAndCollect,
+  readCliStartFailure,
+  withStartFailureReason,
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
@@ -1013,53 +1011,6 @@ function accountProbeStatus(
   return { status: "ready", auth };
 }
 
-/** How long `codex --version` gets to answer when the app server died at start. */
-const CODEX_START_CHECK_TIMEOUT = Duration.seconds(10);
-
-/**
- * The line of a failed command's output that says what went wrong: the first
- * `Error:` line of a Node stack trace (npm's launcher throws one), else the
- * last line printed.
- */
-function startFailureReason(output: string | undefined): string | undefined {
-  const lines = (output ?? "")
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-  const errorLine = lines.find((line) => /^\w*Error: /.test(line));
-  return errorLine ? errorLine.replace(/^\w*Error: /, "") : lines.at(-1);
-}
-
-/**
- * Why the Codex CLI cannot start, asked with `codex --version` once the app
- * server has died before answering. Null when the CLI does run (the app
- * server failed for another reason, such as a config it rejects) or the
- * question went unanswered, so only a CLI known to be broken is called broken.
- */
-export const readCodexStartFailure = (input: {
-  readonly binaryPath: string;
-  readonly environment?: NodeJS.ProcessEnv;
-}) => {
-  const env = input.environment ?? process.env;
-  const plan = planCliSpawn(input.binaryPath, ["--version"], env);
-  return spawnAndCollect(
-    input.binaryPath,
-    ChildProcess.make(
-      plan.command,
-      [...plan.args],
-      hideWindowsConsole({ env, ...plan.options, forceKillAfter: "1 second" }),
-    ),
-  ).pipe(
-    Effect.timeoutOption(CODEX_START_CHECK_TIMEOUT),
-    Effect.map((result) =>
-      Option.isSome(result) && result.value.code !== 0
-        ? { reason: startFailureReason(detailFromResult(result.value)) }
-        : null,
-    ),
-    Effect.orElseSucceed(() => null),
-  );
-};
-
 export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(function* (
   codexSettings: CodexSettings,
   probe: (input: {
@@ -1108,7 +1059,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
     // by reinstalling.
     const startFailure =
       installed && isCodexAppServerProcessExitedError(error)
-        ? yield* readCodexStartFailure({ binaryPath: codexSettings.binaryPath, environment })
+        ? yield* readCliStartFailure({ binaryPath: codexSettings.binaryPath, environment })
         : null;
     return buildServerProvider({
       presentation: CODEX_PRESENTATION,
@@ -1123,7 +1074,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
         ...(startFailure ? { runnable: false as const } : {}),
         auth: { status: "unknown" },
         message: startFailure
-          ? `Codex is installed but cannot start.${startFailure.reason ? ` ${startFailure.reason}` : ""}`
+          ? withStartFailureReason("Codex is installed but cannot start.", startFailure)
           : installed
             ? `Codex app-server provider probe failed: ${error.message}.`
             : "Codex CLI (`codex`) is not installed or not on PATH. Install it from https://developers.openai.com/codex/cli and run `codex login`.",

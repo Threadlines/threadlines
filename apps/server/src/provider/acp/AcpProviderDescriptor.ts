@@ -280,6 +280,16 @@ export interface AcpProviderDescriptor<Settings extends AcpProviderSettings> {
    */
   readonly install?: Partial<Record<NodeJS.Platform, ProviderMaintenanceCommandDefinition>>;
   /**
+   * Where `install` puts the agent's command (every name it links). A copy
+   * found at one of these that cannot start is reinstalled by running
+   * `install` again; a copy anywhere else is not the installer's to replace.
+   * Leave out on platforms where the location is not known.
+   */
+  readonly installerBinaries?: (
+    env: NodeJS.ProcessEnv,
+    platform: NodeJS.Platform,
+  ) => ReadonlyArray<string>;
+  /**
    * How to start one agent process. An Effect may set up per-process state
    * (a private temp dir) that is torn down with the process's scope.
    */

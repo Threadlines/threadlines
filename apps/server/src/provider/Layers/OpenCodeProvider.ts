@@ -38,10 +38,12 @@ import type { OpenCodeServerManagerShape } from "../opencode/OpenCodeServerManag
 import { undetectableProvider } from "../providerDetection.ts";
 import {
   buildServerProvider,
+  cliStartFailureFrom,
   nonEmptyTrimmed,
   type ProviderProbeResult,
   providerModelsFromSettings,
   type ServerProviderDraft,
+  withStartFailureReason,
 } from "../providerSnapshot.ts";
 
 const PROVIDER = ProviderDriverKind.make("opencode");
@@ -301,12 +303,18 @@ export const checkOpenCodeProviderStatus = (input: {
             : probed.failure.detail,
         });
       }
-      version = probed.success.version ?? null;
+      // The exit code decides before any version is trusted: a crash's stack
+      // trace can end in a line that reads like one (`Node.js v22.23.4`).
+      const startFailure = cliStartFailureFrom(probed.success.result);
+      version = startFailure ? null : (probed.success.version ?? null);
       if (!version) {
         return failed({
           installed: true,
           version: null,
-          message: `Could not read OpenCode's version from \`${settings.binaryPath} --version\`.`,
+          ...(startFailure ? { runnable: false as const } : {}),
+          message: startFailure
+            ? withStartFailureReason("OpenCode is installed but cannot start.", startFailure)
+            : `Could not read OpenCode's version from \`${settings.binaryPath} --version\`.`,
         });
       }
       if (!isSupportedOpenCodeVersion(version)) {

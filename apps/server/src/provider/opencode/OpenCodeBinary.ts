@@ -312,8 +312,10 @@ export function openCodeOneMigrationCapabilities(
       environmentPatch,
     });
   })();
+  // The regular reinstall aims at the 1.x copy this move replaces.
+  const { repair: _sourceRepair, ...moved } = capabilities;
   return {
-    ...capabilities,
+    ...moved,
     update: action,
     install: null,
     manualUpdateCommand: null,

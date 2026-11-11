@@ -299,6 +299,9 @@ export const checkPiProviderStatus = (input: {
           installed: installation.kind === "unusable",
           version: installation.kind === "unusable" ? installation.version : null,
           status: "error",
+          ...(installation.kind === "unusable" && installation.startFailure
+            ? { runnable: false as const }
+            : {}),
           auth: { status: "unknown" },
           message: installation.message,
         },

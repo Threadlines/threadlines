@@ -1,5 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
-import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -125,6 +125,54 @@ describe("makeAcpProviderMaintenanceResolver", () => {
     expect(update?.args).toEqual(["update"]);
   });
 
+  it.skipIf(process.platform === "win32")(
+    "reinstalls with the installer only the copy the installer made",
+    () => {
+      const writeAgent = (dir: string) => {
+        mkdirSync(dir, { recursive: true });
+        const file = path.join(dir, "cursor-agent");
+        writeFileSync(file, "#!/bin/sh\n");
+        chmodSync(file, 0o755);
+        return dir;
+      };
+      const home = mkdtempSync(path.join(os.tmpdir(), "acp-repair-home-"));
+      const installerDir = writeAgent(path.join(home, ".local", "bin"));
+      const resolver = makeAcpProviderMaintenanceResolver(CURSOR_ACP_DESCRIPTOR);
+
+      const installersCopy = resolver.resolve({
+        binaryPath: "cursor-agent",
+        platform: process.platform,
+        env: { PATH: installerDir, HOME: home },
+      });
+      // Cursor's own installer, in the instance's home, under the update's lock.
+      expect(installersCopy.repair).toMatchObject({
+        command: "curl https://cursor.com/install -fsS | bash",
+        lockKey: installersCopy.update?.lockKey,
+        environmentPatch: { HOME: home },
+      });
+
+      // Naming that same file by its path changes nothing about whose copy it is.
+      expect(
+        resolver.resolve({
+          binaryPath: path.join(installerDir, "cursor-agent"),
+          platform: process.platform,
+          env: { PATH: "", HOME: home },
+        }).repair?.command,
+      ).toBe("curl https://cursor.com/install -fsS | bash");
+
+      // The same name found somewhere else: the installer would write a second copy.
+      const elsewhere = writeAgent(mkdtempSync(path.join(os.tmpdir(), "acp-repair-other-")));
+      const emptyHome = mkdtempSync(path.join(os.tmpdir(), "acp-repair-empty-home-"));
+      expect(
+        resolver.resolve({
+          binaryPath: "cursor-agent",
+          platform: process.platform,
+          env: { PATH: elsewhere, HOME: emptyHome },
+        }).repair,
+      ).toBeUndefined();
+    },
+  );
+
   it("never offers an install for an explicit binary path", () => {
     const resolver = makeAcpProviderMaintenanceResolver(FX_ACP_DESCRIPTOR);
     expect(
@@ -192,3 +240,70 @@ describe("checkAcpProviderStatus while turned off", () => {
     expect(spawned).toEqual([]);
   });
 });
+
+describe.skipIf(process.platform === "win32")(
+  "checkAcpProviderStatus for an agent that cannot start",
+  () => {
+    /** A stand-in agent that dies the way a half-installed CLI does, whatever it is asked. */
+    const brokenAgent = (name: string) => {
+      const dir = mkdtempSync(path.join(os.tmpdir(), "acp-broken-agent-"));
+      const file = path.join(dir, name);
+      writeFileSync(
+        file,
+        `#!/bin/sh\necho "$@" >> "${dir}/calls"\necho "Error: Cannot find module './core.js'" >&2\nexit 1\n`,
+      );
+      chmodSync(file, 0o755);
+      return {
+        file,
+        calls: () => readFileSync(path.join(dir, "calls"), "utf8").trim().split("\n"),
+      };
+    };
+    const run = <A, E>(
+      effect: Effect.Effect<A, E, HttpClient.HttpClient | NodeServices.NodeServices>,
+    ) =>
+      Effect.runPromise(
+        effect.pipe(
+          Effect.provideService(
+            HttpClient.HttpClient,
+            HttpClient.make(() => Effect.die("A broken agent has nothing to look up")),
+          ),
+          Effect.provide(NodeServices.layer),
+        ),
+      );
+
+    it("says so for Cursor and fx, and does not open a session to list models", async () => {
+      const cursorAgent = brokenAgent("cursor-agent");
+      const cursor = await run(
+        checkAcpProviderStatus(
+          CURSOR_ACP_DESCRIPTOR,
+          { enabled: true, binaryPath: cursorAgent.file, apiEndpoint: "", customModels: [] },
+          { PATH: process.env.PATH },
+        ),
+      );
+      expect(cursor).toMatchObject({
+        installed: true,
+        runnable: false,
+        status: "error",
+        message: "Cursor Agent CLI is installed but cannot start. Cannot find module './core.js'",
+      });
+      // `about`, then `--version` to tell a CLI that cannot start from a failed check; no `acp`.
+      expect(cursorAgent.calls().some((call) => call.includes("acp"))).toBe(false);
+      expect(cursorAgent.calls().at(-1)).toBe("--version");
+
+      const fxAgent = brokenAgent("fx");
+      const fx = await run(
+        checkAcpProviderStatus(
+          FX_ACP_DESCRIPTOR,
+          { enabled: true, binaryPath: fxAgent.file, customModels: [] },
+          { PATH: process.env.PATH },
+        ),
+      );
+      expect(fx).toMatchObject({
+        installed: true,
+        runnable: false,
+        message: "fx is installed but cannot start. Cannot find module './core.js'",
+      });
+      expect(fxAgent.calls()).toEqual(["--version"]);
+    });
+  },
+);

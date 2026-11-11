@@ -39,7 +39,9 @@ import {
   buildBooleanOptionDescriptor,
   buildSelectOptionDescriptor,
   isCommandMissingCause,
+  readCliStartFailure,
   spawnAndCollect,
+  withStartFailureReason,
   type CommandResult,
 } from "../providerSnapshot.ts";
 import type {
@@ -754,6 +756,25 @@ export const probeCursor = Effect.fn("probeCursor")(function* (
   }
 
   const parsed = parseCursorAboutOutput(aboutProbe.success.value);
+  // `about` fails for many reasons; `--version` failing too means the CLI
+  // itself cannot start.
+  const startFailure =
+    aboutProbe.success.value.code !== 0 && !parsed.version
+      ? yield* readCliStartFailure({ binaryPath: cursorSettings.binaryPath, environment })
+      : null;
+  if (startFailure) {
+    return {
+      installed: true,
+      version: null,
+      status: "error",
+      runnable: false,
+      auth: { status: "unknown" },
+      message: withStartFailureReason(
+        "Cursor Agent CLI is installed but cannot start.",
+        startFailure,
+      ),
+    };
+  }
   const latestVersion = parseCursorAboutLatestVersion(aboutProbe.success.value.stdout);
   const unsupportedMessage = getCursorParameterizedModelPickerUnsupportedMessage({
     version: parsed.version,
@@ -812,6 +833,12 @@ export const CURSOR_ACP_DESCRIPTOR: AcpProviderDescriptor<CursorSettings> = {
       displayCommand: "irm 'https://cursor.com/install?win32=true' | iex",
     },
   },
+  // Cursor's installer links both names into ~/.local/bin (seen on macOS;
+  // the Windows location is not known here).
+  installerBinaries: (env, platform) =>
+    platform === "win32" || !env.HOME
+      ? []
+      : ["cursor-agent", "agent"].map((name) => `${env.HOME}/.local/bin/${name}`),
   spawn: buildCursorAcpSpawnInput,
   authMethodId: "cursor_login",
   clientCapabilities: CURSOR_PARAMETERIZED_MODEL_PICKER_CAPABILITIES,

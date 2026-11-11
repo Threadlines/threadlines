@@ -117,6 +117,9 @@ export function isSupportedPiVersion(version: string): boolean {
   return compareSemverVersions(version, MINIMUM_PI_VERSION) >= 0;
 }
 
+/** Held by everything that writes the user's own Pi: its updater and a reinstall. */
+export const PI_UPDATE_LOCK = "pi-update";
+
 const isNixStorePath = (realCommandPath: string) =>
   normalizeCommandPath(realCommandPath).startsWith("/nix/store/");
 
@@ -144,7 +147,7 @@ export function piUserMaintenance(input: {
     packageName: PI_PACKAGE_NAME,
     updateExecutable: input.commandPath,
     updateArgs: ["update", "--self"],
-    updateLockKey: "pi-update",
+    updateLockKey: PI_UPDATE_LOCK,
     updateDisplayCommand: "pi update --self",
   });
 }

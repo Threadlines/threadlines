@@ -157,6 +157,20 @@ function makeClaudeMaintenanceResolver(channel: ClaudeUpdateChannel) {
   const encodedUpdate = Buffer.from(claudeWindowsNativeUpdateScript(channel), "utf16le").toString(
     "base64",
   );
+  const unixInstall = `curl -fsSL https://claude.ai/install.sh | bash -s ${channel}`;
+  const unixInstaller = {
+    executable: "bash",
+    args: ["-c", unixInstall],
+    lockKey: "claude-native",
+    displayCommand: unixInstall,
+  };
+  // Downloads and swaps in the release itself, without running the old one.
+  const windowsUpdate = {
+    executable: "powershell.exe",
+    args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encodedUpdate],
+    lockKey: "claude-native-verified-win32",
+    displayCommand: `powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodedUpdate}`,
+  };
   return makePackageManagedProviderMaintenanceResolver({
     provider: DRIVER_KIND,
     npmPackageName: "@anthropic-ai/claude-code",
@@ -167,20 +181,17 @@ function makeClaudeMaintenanceResolver(channel: ClaudeUpdateChannel) {
         lockKey: "claude-native-verified-win32",
       }),
     },
+    // For a Claude that cannot start, which `claude update` needs: Anthropic's
+    // installer on macOS and Linux, the verified download on Windows. Both
+    // stay on this install's channel.
+    nativeRepair: { darwin: unixInstaller, linux: unixInstaller, win32: windowsUpdate },
     nativeUpdate: {
       executable: "claude",
       args: ["update"],
       lockKey: "claude-native",
       isCommandPath: isClaudeNativeCommandPath,
       latestVersionSource: { kind: "releasePointer", url: `${DOWNLOAD_BASE_URL}/${channel}` },
-      platformUpdateOverrides: {
-        win32: {
-          executable: "powershell.exe",
-          args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encodedUpdate],
-          lockKey: "claude-native-verified-win32",
-          displayCommand: `powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodedUpdate}`,
-        },
-      },
+      platformUpdateOverrides: { win32: windowsUpdate },
     },
   });
 }

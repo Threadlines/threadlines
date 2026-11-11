@@ -53,11 +53,12 @@ function offeredInstall(
       ? { kind: "install", command: advisory.installCommand }
       : null;
   }
-  return provider.runnable === false &&
-    advisory?.canRepair === true &&
-    advisory.updateCommand !== null
-    ? { kind: "reinstall", command: advisory.updateCommand }
-    : null;
+  if (provider.runnable !== false || advisory?.canRepair !== true) {
+    return null;
+  }
+  // A server from before `repairCommand` reinstalled with its update command.
+  const command = advisory.repairCommand ?? advisory.updateCommand;
+  return command ? { kind: "reinstall", command } : null;
 }
 
 /**

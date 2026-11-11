@@ -31,6 +31,9 @@ import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment
 import { resolveCommandPath } from "@threadlines/shared/shell";
 
 import {
+  commandActionFrom,
+  installerReinstallAction,
+  normalizeCommandPath,
   type ProviderMaintenanceCapabilitiesResolver,
   resolveProviderMaintenanceCapabilitiesEffect,
 } from "../providerMaintenance.ts";
@@ -59,7 +62,9 @@ export type AcpProviderDriverEnv =
 /**
  * The descriptor's static update capabilities, plus its platform install
  * command while the binary is missing from PATH (a configured absolute path
- * is the user's business, so it never triggers an install offer).
+ * is the user's business, so it never triggers an install offer). A binary
+ * found where that installer puts it gets the installer as its reinstall,
+ * for when it cannot start: the update is the agent's own CLI.
  */
 export function makeAcpProviderMaintenanceResolver<Settings extends AcpProviderSettings>(
   descriptor: AcpProviderDescriptor<Settings>,
@@ -94,18 +99,28 @@ export function makeAcpProviderMaintenanceResolver<Settings extends AcpProviderS
             },
           }
         : descriptor.maintenance;
-      if (!install || !isBareName || resolves) {
+      if (!install) {
         return maintenance;
       }
-      return {
-        ...maintenance,
-        install: {
-          command: install.displayCommand ?? [install.executable, ...install.args].join(" "),
-          executable: install.executable,
-          args: install.args,
-          lockKey: install.lockKey,
-        },
-      };
+      if (isBareName && !resolves) {
+        return { ...maintenance, install: commandActionFrom(install) };
+      }
+      // Found, by name or by a configured path: the installer's own copy is
+      // the installer's to put back.
+      const env = options?.env ?? process.env;
+      const found = normalizeCommandPath(
+        resolveAcpBinaryPath(descriptor, binaryPath, env, platform),
+      );
+      const isInstallersCopy = (descriptor.installerBinaries?.(env, platform) ?? []).some(
+        (candidate) => normalizeCommandPath(candidate) === found,
+      );
+      return isInstallersCopy
+        ? {
+            ...maintenance,
+            // Under the update's lock when there is one: both write this copy.
+            repair: installerReinstallAction(install, update?.lockKey ?? install.lockKey, env),
+          }
+        : maintenance;
     },
   };
 }

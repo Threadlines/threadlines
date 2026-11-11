@@ -21,9 +21,12 @@ import { resolveCommandPath } from "@threadlines/shared/shell";
 
 import { detectProviderBinary, withKnownCliDirsOnPath } from "../providerDetection.ts";
 import {
+  homebrewReinstallAction,
   makeProviderMaintenanceCapabilities,
   normalizeCommandPath,
+  npmGlobalReinstallAction,
   type ProviderMaintenanceCapabilities,
+  type ProviderMaintenanceCommandAction,
   type ProviderMaintenanceCommandDefinition,
 } from "../providerMaintenance.ts";
 
@@ -127,6 +130,43 @@ function updateCommand(kind: GrokInstallKind, binary: string) {
 }
 
 /**
+ * Putting back a copy that cannot start, which `grok update` cannot do:
+ * `brew reinstall` for the cask, npm for a copy in an npm tree. xAI's
+ * installer is left out because it would move the user to the stable
+ * channel; Scoop and winget because their reinstall is untested here.
+ */
+function reinstallCommand(input: {
+  readonly kind: GrokInstallKind;
+  readonly commandPath: string;
+  readonly realPath: string;
+  readonly env: NodeJS.ProcessEnv;
+  readonly platform: NodeJS.Platform;
+}): ProviderMaintenanceCommandAction | undefined {
+  switch (input.kind) {
+    case "homebrew":
+      return homebrewReinstallAction({
+        target: { cask: "grok-build" },
+        commandPaths: [input.commandPath, input.realPath],
+        lockKey: GROK_UPDATE_LOCK,
+      });
+    case "own":
+      return (
+        npmGlobalReinstallAction({
+          packageName: GROK_NPM_PACKAGE,
+          commandPath: input.commandPath,
+          realCommandPath: input.realPath,
+          env: input.env,
+          platform: input.platform,
+          lockKey: GROK_UPDATE_LOCK,
+        }) ?? undefined
+      );
+    case "scoop":
+    case "winget":
+      return undefined;
+  }
+}
+
+/**
  * Install while the binary is missing; otherwise the update for how it was
  * installed. Run with the installation's own environment: an account's
  * `GROK_HOME` would make `grok update` install a private copy nobody runs.
@@ -157,12 +197,15 @@ export function grokMaintenance(
         : null,
     });
   }
-  const update = updateCommand(grokInstallKind(realPathOf(resolved)), resolved);
+  const realPath = realPathOf(resolved);
+  const kind = grokInstallKind(realPath);
+  const update = updateCommand(kind, resolved);
   return makeProviderMaintenanceCapabilities({
     provider: DRIVER_KIND,
     packageName: GROK_NPM_PACKAGE,
     updateExecutable: update.executable,
     updateArgs: update.args,
     updateLockKey: GROK_UPDATE_LOCK,
+    repair: reinstallCommand({ kind, commandPath: resolved, realPath, env, platform }),
   });
 }

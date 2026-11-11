@@ -12,11 +12,15 @@ import type {
   ServerProviderState,
   ServerProviderStatusReason,
 } from "@threadlines/contracts";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Data from "effect/Data";
+import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { hideWindowsConsole } from "@threadlines/shared/childProcess";
 import { normalizeModelSlug } from "@threadlines/shared/model";
+import { planCliSpawn } from "../cliSpawn.ts";
 import { isWindowsCommandNotFound } from "../processRunner.ts";
 import { createProviderVersionAdvisory } from "./providerMaintenance.ts";
 import { collectUint8StreamText } from "../stream/collectUint8StreamText.ts";
@@ -112,6 +116,82 @@ export function detailFromResult(
   }
   return undefined;
 }
+
+/** How long `<cli> --version` gets to answer when a check asks whether the CLI starts at all. */
+const CLI_START_CHECK_TIMEOUT = Duration.seconds(10);
+
+/** A CLI that says it does not know the flag did start; it is not broken. */
+const USAGE_ERROR =
+  /\b(?:unknown|unexpected|unrecognized|invalid) (?:option|argument|flag|command)\b|\busage:/iu;
+
+/**
+ * The line of a failed command's output that says what went wrong: the first
+ * `Error:` line of a Node stack trace (npm's launcher throws one), else the
+ * last line printed.
+ */
+function startFailureReason(output: string | undefined): string | undefined {
+  const lines = (output ?? "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  const errorLine = lines.find((line) => /^\w*Error: /.test(line));
+  return errorLine ? errorLine.replace(/^\w*Error: /, "") : lines.at(-1);
+}
+
+/** Why a CLI cannot start, for a snapshot's `runnable: false`. */
+export interface CliStartFailure {
+  /** The CLI's own last word on it, when it printed one. */
+  readonly reason: string | undefined;
+}
+
+/**
+ * Reads a finished `--version` run: a non-zero exit means the CLI is there
+ * and cannot start (an update that left a file out). Null when it ran, or
+ * when it only complained about the flag.
+ */
+export function cliStartFailureFrom(result: CommandResult): CliStartFailure | null {
+  if (result.code === 0 || USAGE_ERROR.test(`${result.stdout}\n${result.stderr}`)) {
+    return null;
+  }
+  return { reason: startFailureReason(detailFromResult(result)) };
+}
+
+/** `message` with the CLI's own reason after it, when there is one. */
+export function withStartFailureReason(message: string, failure: CliStartFailure): string {
+  return failure.reason ? `${message} ${failure.reason}` : message;
+}
+
+/**
+ * Why a CLI cannot start, asked with `<cli> --version` once its real check
+ * has failed without saying why. Null when the CLI does run (it failed for
+ * another reason, such as a config it rejects) or the question went
+ * unanswered, so only a CLI known to be broken is called broken.
+ */
+export const readCliStartFailure = (input: {
+  readonly binaryPath: string;
+  readonly environment?: NodeJS.ProcessEnv | undefined;
+  readonly cwd?: string | undefined;
+}) => {
+  const env = input.environment ?? process.env;
+  const plan = planCliSpawn(input.binaryPath, ["--version"], env);
+  return spawnAndCollect(
+    input.binaryPath,
+    ChildProcess.make(
+      plan.command,
+      [...plan.args],
+      hideWindowsConsole({
+        env,
+        ...(input.cwd ? { cwd: input.cwd } : {}),
+        ...plan.options,
+        forceKillAfter: "1 second",
+      }),
+    ),
+  ).pipe(
+    Effect.timeoutOption(CLI_START_CHECK_TIMEOUT),
+    Effect.map((result) => (Option.isSome(result) ? cliStartFailureFrom(result.value) : null)),
+    Effect.orElseSucceed(() => null),
+  );
+};
 
 export function extractAuthBoolean(value: unknown): boolean | undefined {
   if (globalThis.Array.isArray(value)) {

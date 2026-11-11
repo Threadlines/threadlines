@@ -43,9 +43,11 @@ import {
   type ProviderMaintenanceCommandDefinition,
 } from "../providerMaintenance.ts";
 import {
+  cliStartFailureFrom,
   isCommandMissingCause,
   parseGenericCliVersion,
   spawnAndCollect,
+  withStartFailureReason,
   type CommandResult,
 } from "../providerSnapshot.ts";
 import type {
@@ -351,6 +353,18 @@ export const probeFx = Effect.fn("probeFx")(function* (
   if (isMissingInsideWsl(versionResult)) {
     return notInstalled(fxNotInstalledMessage());
   }
+  // On the host only: inside WSL a non-zero exit can be WSL's, not fx's.
+  const startFailure = runsFxThroughWsl() ? null : cliStartFailureFrom(versionResult);
+  if (startFailure) {
+    return {
+      installed: true,
+      version: null,
+      status: "error",
+      runnable: false,
+      auth: { status: "unknown" },
+      message: withStartFailureReason("fx is installed but cannot start.", startFailure),
+    };
+  }
   const version = parseGenericCliVersion(versionResult.stdout);
 
   const statusProbe = yield* runFxCommand(settings, ["status", "--json"], environment);
@@ -458,6 +472,10 @@ export const FX_ACP_DESCRIPTOR: AcpProviderDescriptor<FxSettings> = {
     linux: FX_SHELL_INSTALL,
     win32: FX_WSL_INSTALL,
   },
+  // fx's installer puts it in ~/.local/bin (seen on macOS). Not through WSL:
+  // the copy lives inside the distro, out of sight from here.
+  installerBinaries: (env, platform) =>
+    runsFxThroughWsl(platform) || !env.HOME ? [] : [`${env.HOME}/.local/bin/fx`],
   spawn: buildFxAcpSpawnInput,
   // Inside WSL the name resolves in the distro's login shell, not on the host.
   resolveBinaryOnHost: (platform) => !runsFxThroughWsl(platform),

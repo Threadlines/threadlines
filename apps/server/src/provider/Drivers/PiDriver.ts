@@ -44,7 +44,12 @@ import {
 } from "../Layers/PiProvider.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
-import { isDefaultPiCommand, PI_PACKAGE_NAME, piUserMaintenance } from "../pi/PiBinary.ts";
+import {
+  isDefaultPiCommand,
+  PI_PACKAGE_NAME,
+  PI_UPDATE_LOCK,
+  piUserMaintenance,
+} from "../pi/PiBinary.ts";
 import { findPiInstallation, type PiInstallation, piLaunchFor } from "../pi/PiInstallation.ts";
 import { type PiLaunch, parsePiLaunchArgs, piProcessEnvironment } from "../pi/PiLaunch.ts";
 import { piManagedRuntime } from "../pi/PiRuntime.ts";
@@ -58,6 +63,7 @@ import type { ServerProviderDraft } from "../providerSnapshot.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
 import {
   enrichProviderSnapshotWithVersionAdvisory,
+  npmGlobalReinstallAction,
   type ProviderMaintenanceCapabilities,
   type ProviderMaintenanceCommandAction,
   resolveLatestProviderVersion,
@@ -183,14 +189,27 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
       ): ProviderMaintenanceCapabilities => {
         switch (current.kind) {
           case "user":
-          case "unusable":
+          case "unusable": {
+            // For a Pi that cannot start, which `pi update --self` cannot fix:
+            // npm puts back a copy found in its tree; otherwise Threadlines
+            // installs its own copy, which the next check then runs.
+            const reinstall =
+              npmGlobalReinstallAction({
+                packageName: PI_PACKAGE_NAME,
+                commandPath: current.command,
+                realCommandPath: realCommandPath ?? current.command,
+                env: lookupEnvironment(),
+                lockKey: PI_UPDATE_LOCK,
+              }) ?? managedAction("Install");
             return {
               ...piUserMaintenance({
                 commandPath: current.command,
                 realCommandPath: realCommandPath ?? current.command,
               }),
               install: managedAction("Install"),
+              ...(reinstall ? { repair: reinstall } : {}),
             };
+          }
           case "managed":
             return { ...NO_MAINTENANCE, update: managedAction("Update") };
           case "missing":

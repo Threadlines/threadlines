@@ -39,12 +39,15 @@ describe("openCodeMaintenanceResolver", () => {
       env: { PATH: "" },
       realCommandPath: input.realCommandPath ?? input.commandPath,
     });
-    return openCodeOneMigrationCapabilities(base, {
+    const moved = openCodeOneMigrationCapabilities(base, {
       commandPath: input.commandPath,
       realCommandPath: input.realCommandPath ?? input.commandPath,
       env,
       platform: input.platform,
-    }).update;
+    });
+    // The regular reinstall aims at the 1.x copy; the move must not carry it along.
+    expect(moved.repair).toBeUndefined();
+    return moved.update;
   };
 
   it.each([

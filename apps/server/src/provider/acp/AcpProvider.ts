@@ -507,6 +507,7 @@ export function buildAcpProviderSnapshot<Settings extends AcpProviderSettings>(i
       status:
         input.discoveryWarning && input.probe.status === "ready" ? "warning" : input.probe.status,
       ...(input.probe.statusReason ? { statusReason: input.probe.statusReason } : {}),
+      ...(input.probe.runnable === false ? { runnable: false as const } : {}),
       auth: input.probe.auth,
       ...(input.probe.accountUsage ? { accountUsage: input.probe.accountUsage } : {}),
       ...(message ? { message } : {}),
@@ -547,9 +548,11 @@ export const checkAcpProviderStatus = <Settings extends AcpProviderSettings>(
     const identity = acpCatalogIdentity(probe);
     const nowMs = yield* Clock.currentTimeMillis;
     const reusable = catalog?.reuse ? catalog.cache.reusable(identity, nowMs) : undefined;
+    // An agent that cannot start has no session to list models from.
     const readsCatalog =
       probe.models === undefined &&
       probe.installed &&
+      probe.runnable !== false &&
       probe.auth.status !== "unauthenticated" &&
       !probe.skipModelDiscovery;
     if (readsCatalog && reusable !== undefined) {

@@ -1,6 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import { afterEach, describe, expect, it } from "@effect/vitest";
-import { chmodSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import os from "node:os";
 import path from "node:path";
@@ -19,6 +19,7 @@ import {
   makeWindowsNativeInstaller,
   normalizeCommandPath,
   resolveProviderMaintenanceCapabilitiesEffect,
+  npmGlobalReinstallAction,
 } from "./providerMaintenance.ts";
 import { buildServerProvider } from "./providerSnapshot.ts";
 
@@ -172,13 +173,14 @@ describe("providerMaintenance", () => {
     expect(Buffer.from(encoded ?? "", "base64").toString("utf16le")).toContain(
       "irm 'https://example.test/install.ps1' | iex",
     );
-    expect(
-      nativeWindowsTool.resolve({
-        binaryPath: "C:\\Users\\alice\\.local\\bin\\package-tool.exe",
-        platform: "win32",
-        env: { PATH: "" },
-      }).update,
-    ).toEqual(install);
+    const found = nativeWindowsTool.resolve({
+      binaryPath: "C:\\Users\\alice\\.local\\bin\\package-tool.exe",
+      platform: "win32",
+      env: { PATH: "" },
+    });
+    expect(found.update).toEqual(install);
+    // A copy the installer made that cannot start is put back by the installer.
+    expect(found.repair).toEqual(install);
   });
 
   it.effect("preserves an explicit npm install prefix even when a native installer exists", () =>
@@ -352,6 +354,12 @@ describe("providerMaintenance", () => {
         const bunBinDir = path.join(tempDir, ".bun", "bin");
         mkdirSync(bunBinDir, { recursive: true });
         writeFileSync(path.join(bunBinDir, "native-package-tool.exe"), "MZ");
+        const bunUpdate = {
+          command: "bun i -g @example/native-package-tool@latest",
+          executable: "bun",
+          args: ["i", "-g", "@example/native-package-tool@latest"],
+          lockKey: "bun-global",
+        };
 
         expect(
           nativePackageToolUpdate.resolve({
@@ -365,14 +373,12 @@ describe("providerMaintenance", () => {
         ).toEqual({
           provider: driver("nativePackageTool"),
           packageName: "@example/native-package-tool",
-          update: {
-            command: "bun i -g @example/native-package-tool@latest",
-
-            executable: "bun",
-
-            args: ["i", "-g", "@example/native-package-tool@latest"],
-
-            lockKey: "bun-global",
+          update: bunUpdate,
+          // bun's install of `@latest` also fetches a platform package that went
+          // missing; the reinstall is aimed at the bun home this copy is in.
+          repair: {
+            ...bunUpdate,
+            environmentPatch: { BUN_INSTALL: path.join(tempDir, ".bun") },
           },
           ...noInstallOrManualUpdate,
         });
@@ -487,6 +493,13 @@ describe("providerMaintenance", () => {
 
         args: ["upgrade", "package-tool"],
 
+        lockKey: "homebrew",
+      },
+      repair: {
+        command: "brew reinstall package-tool",
+        // The Homebrew this copy belongs to, not whichever `brew` is first on PATH.
+        executable: "/opt/homebrew/bin/brew",
+        args: ["reinstall", "package-tool"],
         lockKey: "homebrew",
       },
       ...noInstallOrManualUpdate,
@@ -764,6 +777,13 @@ describe("providerMaintenance", () => {
 
         lockKey: "homebrew",
       },
+      repair: {
+        command: "brew reinstall native-package-tool",
+        // The Homebrew this copy belongs to, not whichever `brew` is first on PATH.
+        executable: "/opt/homebrew/bin/brew",
+        args: ["reinstall", "native-package-tool"],
+        lockKey: "homebrew",
+      },
       ...noInstallOrManualUpdate,
     });
   });
@@ -787,6 +807,13 @@ describe("providerMaintenance", () => {
 
         args: ["upgrade", "example/tap/scoped-package-tool"],
 
+        lockKey: "homebrew",
+      },
+      repair: {
+        command: "brew reinstall example/tap/scoped-package-tool",
+        // The Homebrew this copy belongs to, not whichever `brew` is first on PATH.
+        executable: "/opt/homebrew/bin/brew",
+        args: ["reinstall", "example/tap/scoped-package-tool"],
         lockKey: "homebrew",
       },
       ...noInstallOrManualUpdate,
@@ -821,6 +848,8 @@ describe("providerMaintenance", () => {
         },
       }).pipe(Effect.provide(NodeServices.layer));
 
+      // The link resolves through the temp folder's real path.
+      const npmPrefix = realpathSync(tempDir);
       const npmUpdate = {
         command: "npm install -g @example/package-tool@latest",
         executable: "npm",
@@ -831,12 +860,39 @@ describe("providerMaintenance", () => {
         provider: driver("packageTool"),
         packageName: "@example/package-tool",
         update: npmUpdate,
-        // Found in npm's folder: the update also reinstalls a copy that cannot start.
-        repair: npmUpdate,
+        // Found in npm's folder: the reinstall is aimed at that folder's prefix,
+        // not at whichever npm is first on PATH.
+        repair: {
+          ...npmUpdate,
+          command: `npm --prefix "${npmPrefix}" install -g @example/package-tool@latest`,
+          environmentPatch: { NPM_CONFIG_PREFIX: npmPrefix },
+        },
         ...noInstallOrManualUpdate,
       });
     }),
   );
+
+  it("aims an npm reinstall at the tree that holds the package, even one nested in another", () => {
+    const action = npmGlobalReinstallAction({
+      packageName: "@example/package-tool",
+      commandPath: "/srv/lib/node_modules/tools/bin/package-tool",
+      realCommandPath:
+        "/srv/lib/node_modules/tools/lib/node_modules/@example/package-tool/bin/tool.js",
+      platform: "linux",
+    });
+    expect(action?.environmentPatch).toEqual({
+      NPM_CONFIG_PREFIX: "/srv/lib/node_modules/tools",
+    });
+    // Another package's folder is not this one's tree.
+    expect(
+      npmGlobalReinstallAction({
+        packageName: "@example/package-tool",
+        commandPath: "/usr/local/bin/package-tool",
+        realCommandPath: "/usr/lib/node_modules/other-tool/bin/package-tool",
+        platform: "linux",
+      }),
+    ).toBeNull();
+  });
 
   it.effect("uses Effect FileSystem realPath when detecting pnpm global symlinks", () =>
     Effect.gen(function* () {
@@ -1024,6 +1080,7 @@ describe("providerMaintenance", () => {
           env: { PATH: "" },
         });
         expect(capabilities.update?.args).toEqual(["upgrade", "package-tool@latest"]);
+        expect(capabilities.repair?.args).toEqual(["reinstall", "--cask", "package-tool@latest"]);
 
         const { versionAdvisory, requested } = yield* advisoryFor({
           currentVersion: "2.1.314",

@@ -29,7 +29,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { planCliSpawn } from "../../cliSpawn.ts";
 import { isWindowsCommandNotFound } from "../../processRunner.ts";
-import { isCommandMissingCause } from "../providerSnapshot.ts";
+import { type CommandResult, isCommandMissingCause } from "../providerSnapshot.ts";
 import {
   makeOpenCodeClient,
   type OpenCodeClient,
@@ -326,7 +326,12 @@ export const probeOpenCodeVersion = (input: {
   readonly binaryPath: string;
   readonly environment: NodeJS.ProcessEnv;
 }): Effect.Effect<
-  { readonly version: string | undefined; readonly output: string },
+  {
+    readonly version: string | undefined;
+    readonly output: string;
+    /** The run as it ended, for telling a CLI that cannot start from an odd version line. */
+    readonly result: CommandResult;
+  },
   OpenCodeError,
   ChildProcessSpawner.ChildProcessSpawner
 > =>
@@ -359,7 +364,7 @@ export const probeOpenCodeVersion = (input: {
       });
     }
     const output = `${stdout}\n${stderr}`.trim();
-    return { version: parseOpenCodeVersion(output), output };
+    return { version: parseOpenCodeVersion(output), output, result: { stdout, stderr, code } };
   }).pipe(
     Effect.scoped,
     Effect.timeoutOption(Duration.seconds(15)),
