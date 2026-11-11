@@ -42,6 +42,8 @@ export interface ProviderProbeResult {
   readonly version: string | null;
   readonly status: Exclude<ServerProviderState, "disabled">;
   readonly statusReason?: ServerProviderStatusReason;
+  /** Set when the CLI is there but cannot start; see `ServerProvider.runnable`. */
+  readonly runnable?: false;
   readonly auth: ServerProviderAuth;
   readonly accountUsage?: ServerProviderAccountUsage;
   readonly message?: string;
@@ -242,6 +244,7 @@ export function buildServerProvider(input: {
     version: input.probe.version,
     status: input.enabled ? input.probe.status : "disabled",
     ...(input.probe.statusReason ? { statusReason: input.probe.statusReason } : {}),
+    ...(input.enabled && input.probe.runnable === false ? { runnable: false as const } : {}),
     auth: input.probe.auth,
     ...(input.probe.accountUsage ? { accountUsage: input.probe.accountUsage } : {}),
     checkedAt: input.checkedAt,

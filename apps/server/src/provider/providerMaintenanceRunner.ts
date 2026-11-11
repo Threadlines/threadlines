@@ -30,7 +30,10 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { ProviderRegistry } from "./Services/ProviderRegistry.ts";
 import { makeProviderMaintenanceCommandCoordinator } from "./providerMaintenanceCommandCoordinator.ts";
 import { enrichProviderSnapshotWithVersionAdvisory } from "./providerMaintenance.ts";
-import type { ProviderMaintenanceCapabilities } from "./providerMaintenance.ts";
+import type {
+  ProviderMaintenanceCapabilities,
+  ProviderMaintenanceCommandAction,
+} from "./providerMaintenance.ts";
 import { collectUint8StreamText } from "../stream/collectUint8StreamText.ts";
 import { planCliSpawn } from "../cliSpawn.ts";
 const isServerProviderUpdateError = Schema.is(ServerProviderUpdateError);
@@ -79,8 +82,10 @@ export interface ProviderMaintenanceRunnerShape {
    * Run one package-manager command for the target instance. `action`
    * selects which capability supplies the command: `"update"` (default)
    * refreshes an installed CLI, `"install"` puts a missing one on the
-   * machine. Both share this path so they also share the lock, the captured
-   * output, the progress state, and the post-command re-probe.
+   * machine, `"repair"` reinstalls one that cannot start. All share this
+   * path so they also share the lock, the captured output, the progress
+   * state, and the post-command re-probe. An update or install that leaves
+   * the CLI unable to start runs the reinstall once before reporting.
    */
   readonly updateProvider: (
     target:
@@ -253,6 +258,26 @@ function commandOutput(result: ProviderMaintenanceCommandResult): string | null 
   return truncateText(output, UPDATE_OUTPUT_MAX_BYTES);
 }
 
+/**
+ * A command's output with one closing line after it (why the CLI still cannot
+ * start), kept inside the size the wire allows by trimming the output, never
+ * the closing line: surfaces show the last line as the reason.
+ */
+function outputEndingWith(output: string | null, closing: string | undefined): string | null {
+  const lastLine = trimNullable(closing ?? "");
+  if (!lastLine) {
+    return output;
+  }
+  if (!output) {
+    return truncateText(lastLine, UPDATE_OUTPUT_MAX_BYTES);
+  }
+  const separator = "\n\n";
+  const room = UPDATE_OUTPUT_MAX_BYTES - lastLine.length - separator.length;
+  return room > 0
+    ? `${truncateText(output, room)}${separator}${lastLine}`
+    : truncateText(lastLine, UPDATE_OUTPUT_MAX_BYTES);
+}
+
 function commandStdout(result: ProviderMaintenanceCommandResult): string | null {
   return trimNullable(result.stdout);
 }
@@ -380,6 +405,8 @@ interface ProviderMaintenanceActionCopy {
   readonly timedOut: string;
   readonly failed: string;
   readonly unsupported: string;
+  /** The command exited cleanly and left a CLI that cannot start. */
+  readonly cannotStart: string;
   readonly exitCode: (exitCode: number) => string;
 }
 
@@ -396,6 +423,7 @@ const PROVIDER_MAINTENANCE_ACTION_COPY: Record<
     timedOut: "Update timed out.",
     failed: "Update command failed.",
     unsupported: "This provider does not support one-click updates.",
+    cannotStart: "Update command completed, but the provider cannot start. Reinstall it.",
     exitCode: (exitCode) => `Update command exited with code ${exitCode}.`,
   },
   install: {
@@ -406,20 +434,52 @@ const PROVIDER_MAINTENANCE_ACTION_COPY: Record<
     timedOut: "Install timed out.",
     failed: "Install command failed.",
     unsupported: "Threadlines cannot install this provider for you.",
+    cannotStart: "Install command completed, but the provider cannot start.",
     exitCode: (exitCode) => `Install command exited with code ${exitCode}.`,
+  },
+  repair: {
+    running: "Reinstalling provider.",
+    succeeded: "Provider reinstalled.",
+    unverified: "Reinstall command completed, but Threadlines could not verify the provider.",
+    incomplete: "Reinstall command completed, but Threadlines still cannot find the provider CLI.",
+    timedOut: "Reinstall timed out.",
+    failed: "Reinstall command failed.",
+    unsupported: "Threadlines cannot reinstall this provider for you.",
+    cannotStart: "Reinstall command completed, but the provider still cannot start.",
+    exitCode: (exitCode) => `Reinstall command exited with code ${exitCode}.`,
   },
 };
 
 /**
  * Did the command leave the provider in the state the user asked for? An
- * update has to move off the outdated version; an install has to produce a
- * CLI the probe can find.
+ * update has to move off the outdated version; an install or a reinstall has
+ * to produce a CLI the probe can find. A CLI that is found and cannot start
+ * is a failure of its own, see `cannotStart`.
  */
 function isProviderMaintenanceIncomplete(
   action: ServerProviderMaintenanceAction,
   provider: ServerProvider,
 ): boolean {
-  return action === "install" ? !provider.installed : isOutdatedProvider(provider);
+  return action === "update" ? isOutdatedProvider(provider) : !provider.installed;
+}
+
+/** The CLI is on this computer and fails to start, as the fresh check found. */
+function cannotStart(provider: ServerProvider): boolean {
+  return provider.runnable === false;
+}
+
+function maintenanceAction(
+  action: ServerProviderMaintenanceAction,
+  capabilities: ProviderMaintenanceCapabilities,
+): ProviderMaintenanceCommandAction | null {
+  switch (action) {
+    case "install":
+      return capabilities.install;
+    case "repair":
+      return capabilities.repair ?? null;
+    case "update":
+      return capabilities.update;
+  }
 }
 
 function shouldPrepareSessionsForUpdate(input: {
@@ -525,6 +585,32 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
       args,
       ...(environmentPatch ? { environmentPatch } : {}),
     });
+  /** Runs one maintenance action, in-process when it brings its own `run`. */
+  const runMaintenanceAction = (
+    action: ProviderMaintenanceCommandAction,
+  ): Effect.Effect<ProviderMaintenanceCommandResult, ProviderMaintenanceCommandError> =>
+    action.run
+      ? action.run.pipe(
+          Effect.map(({ output }): ProviderMaintenanceCommandResult => ({
+            stdout: output,
+            stderr: "",
+            exitCode: 0,
+            timedOut: false,
+            stdoutTruncated: false,
+            stderrTruncated: false,
+          })),
+          Effect.catch((failure) =>
+            Effect.succeed<ProviderMaintenanceCommandResult>({
+              stdout: "",
+              stderr: failure.message,
+              exitCode: 1,
+              timedOut: false,
+              stdoutTruncated: false,
+              stderrTruncated: false,
+            }),
+          ),
+        )
+      : runMaintenanceCommand(action.executable, action.args, action.environmentPatch);
   const commandCoordinator = yield* makeProviderMaintenanceCommandCoordinator({
     makeAlreadyRunningError: () =>
       new ServerProviderUpdateError({
@@ -675,7 +761,7 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
       instanceId,
       provider,
     );
-    const update = action === "install" ? capabilities.install : capabilities.update;
+    const update = maintenanceAction(action, capabilities);
     if (!update) {
       return yield* new ServerProviderUpdateError({
         provider,
@@ -742,51 +828,58 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
               );
             }
 
-            const result = update.run
-              ? yield* update.run.pipe(
-                  Effect.map(({ output }): ProviderMaintenanceCommandResult => ({
-                    stdout: output,
-                    stderr: "",
-                    exitCode: 0,
-                    timedOut: false,
-                    stdoutTruncated: false,
-                    stderrTruncated: false,
-                  })),
-                  Effect.catch((failure) =>
-                    Effect.succeed<ProviderMaintenanceCommandResult>({
-                      stdout: "",
-                      stderr: failure.message,
-                      exitCode: 1,
-                      timedOut: false,
-                      stdoutTruncated: false,
-                      stderrTruncated: false,
-                    }),
-                  ),
-                )
-              : yield* runMaintenanceCommand(
-                  update.executable,
-                  update.args,
-                  update.environmentPatch,
-                );
-            const finishedAt = yield* nowIso;
-            if (result.timedOut || result.exitCode !== 0) {
+            const firstResult = yield* runMaintenanceAction(update);
+            if (firstResult.timedOut || firstResult.exitCode !== 0) {
               return yield* finish(
                 makeUpdateState({
                   status: "failed",
                   startedAt,
-                  finishedAt,
-                  message: failureMessage(provider, result, action),
-                  output: commandOutput(result),
+                  finishedAt: yield* nowIso,
+                  message: failureMessage(provider, firstResult, action),
+                  output: commandOutput(firstResult),
                 }),
               );
             }
 
             yield* Effect.promise(() => refreshWindowsPath({ afterInstall: true }));
-            const { verifiedProviders } = yield* verifyRefreshedProvider(
-              provider,
-              capabilities,
-              instanceId,
-            );
+            const firstCheck = yield* verifyRefreshedProvider(provider, capabilities, instanceId);
+
+            // A clean exit is not proof. npm skips a platform package whose
+            // download failed and still reports success, which leaves a CLI
+            // that cannot start. Running the reinstall once fetches what the
+            // first run left out. Only under the lock this run already holds.
+            const repair = action === "repair" ? undefined : capabilities.repair;
+            const reinstalled =
+              repair !== undefined &&
+              repair.lockKey === update.lockKey &&
+              firstCheck.verifiedProviders.some(cannotStart)
+                ? yield* Effect.logWarning(
+                    "Provider cannot start after maintenance; reinstalling once",
+                    { provider, instanceId, action },
+                  ).pipe(Effect.andThen(runMaintenanceAction(repair)))
+                : null;
+            // What the reinstall printed is the story from here on, whether
+            // or not it worked, and the check after it is the current state.
+            const result = reinstalled ?? firstResult;
+            const { verifiedProviders } =
+              reinstalled === null
+                ? firstCheck
+                : yield* verifyRefreshedProvider(provider, capabilities, instanceId);
+            const finishedAt = yield* nowIso;
+
+            const broken = verifiedProviders.find(cannotStart);
+            if (broken) {
+              return yield* finish(
+                makeUpdateState({
+                  status: "failed",
+                  startedAt,
+                  finishedAt,
+                  message: copy.cannotStart,
+                  output: outputEndingWith(commandOutput(result), broken.message),
+                }),
+              );
+            }
+
             const couldNotVerify = verifiedProviders.length === 0;
             const isIncomplete =
               couldNotVerify ||

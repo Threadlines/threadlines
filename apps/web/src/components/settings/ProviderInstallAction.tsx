@@ -3,7 +3,8 @@
  * screen.
  *
  * Starting an install is one RPC: the same `server.updateProvider` the Update
- * button calls, with `action: "install"`. Everything after that arrives on the
+ * button calls, with `action: "install"` (`"repair"` to reinstall a CLI that
+ * cannot start). Everything after that arrives on the
  * provider snapshot, so both surfaces render progress from
  * `deriveProviderInstallView` and neither has to poll or hold its own copy of
  * the run. While the command is running the button gives way to the status
@@ -42,13 +43,16 @@ export function startProviderInstall(input: {
   readonly displayName: string | undefined;
   /** A community agent: the version the user confirmed (`community.confirmedRecipeDigest`). */
   readonly recipeDigest?: string | null | undefined;
+  /** `reinstall` puts back a CLI that is there but cannot start. Defaults to `install`. */
+  readonly kind?: ProviderInstallView["kind"] | undefined;
 }): Promise<void> {
   const { instanceId, driverKind, displayName, recipeDigest } = input;
+  const reinstall = input.kind === "reinstall";
   return ensureLocalApi()
     .server.updateProvider({
       provider: driverKind,
       instanceId,
-      action: "install",
+      action: reinstall ? "repair" : "install",
       ...(recipeDigest ? { recipeDigest } : {}),
     })
     .then(
@@ -56,7 +60,7 @@ export function startProviderInstall(input: {
       (error: unknown) => {
         toastManager.add(
           failureNotice({
-            title: `Couldn't install ${displayName ?? PROVIDER_DISPLAY_NAMES[driverKind] ?? driverKind}`,
+            title: `Couldn't ${reinstall ? "reinstall" : "install"} ${displayName ?? PROVIDER_DISPLAY_NAMES[driverKind] ?? driverKind}`,
             error,
           }),
         );
@@ -69,8 +73,9 @@ function useProviderInstallStart(input: {
   readonly driverKind: ProviderDriverKind;
   readonly displayName: string | undefined;
   readonly recipeDigest: string | null | undefined;
+  readonly kind: ProviderInstallView["kind"];
 }): { readonly isStarting: boolean; readonly start: () => void } {
-  const { instanceId, driverKind, displayName, recipeDigest } = input;
+  const { instanceId, driverKind, displayName, recipeDigest, kind } = input;
   const [isStarting, setIsStarting] = useState(false);
 
   const start = useCallback(() => {
@@ -78,10 +83,12 @@ function useProviderInstallStart(input: {
       return;
     }
     setIsStarting(true);
-    void startProviderInstall({ instanceId, driverKind, displayName, recipeDigest }).finally(() => {
-      setIsStarting(false);
-    });
-  }, [displayName, driverKind, instanceId, isStarting, recipeDigest]);
+    void startProviderInstall({ instanceId, driverKind, displayName, recipeDigest, kind }).finally(
+      () => {
+        setIsStarting(false);
+      },
+    );
+  }, [displayName, driverKind, instanceId, isStarting, kind, recipeDigest]);
 
   return { isStarting, start };
 }
@@ -109,7 +116,9 @@ export function ProviderInstallAction({
     driverKind,
     displayName,
     recipeDigest,
+    kind: view.kind,
   });
+  const verb = view.kind === "reinstall" ? "Reinstall" : "Install";
   const name = displayName ?? PROVIDER_DISPLAY_NAMES[driverKind] ?? String(driverKind);
   const statusText = providerInstallStatusText({ view, isStarting });
   const inFlight = isProviderInstallInFlight({ view, isStarting });
@@ -133,10 +142,14 @@ export function ProviderInstallAction({
         <Button
           size="xs"
           variant={buttonVariant ?? "default"}
-          aria-label={view.status === "idle" ? `Install ${name}` : `Retry installing ${name}`}
+          aria-label={
+            view.status === "idle" || view.kind === "reinstall"
+              ? `${verb} ${name}`
+              : `Retry installing ${name}`
+          }
           onClick={start}
         >
-          {view.status === "idle" ? "Install" : "Retry"}
+          {view.status === "idle" || view.kind === "reinstall" ? verb : "Retry"}
         </Button>
       )}
     </>

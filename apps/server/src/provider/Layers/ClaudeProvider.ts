@@ -1982,6 +1982,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
         installed: true,
         version: parsedVersion,
         status: "error",
+        runnable: false,
         auth: { status: "unknown" },
         message: detail
           ? `Claude Agent CLI is installed but failed to run. ${detail}`

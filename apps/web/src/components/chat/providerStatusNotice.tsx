@@ -124,6 +124,11 @@ export function resolveProviderStatusNoticeActions(
   if (!status.installed) {
     return { signIn: false, openSettings: true, refresh: true, diagnostics: false };
   }
+  // On the machine but unable to start. The providers page has the Reinstall
+  // that fixes it; a refresh shows a reinstall done somewhere else.
+  if (status.runnable === false) {
+    return { signIn: false, openSettings: true, refresh: true, diagnostics: false };
+  }
   // Installed and definitely signed out. Refreshing and reading diagnostics
   // both just confirm what the snapshot already says.
   if (

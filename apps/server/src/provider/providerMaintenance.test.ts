@@ -418,6 +418,13 @@ describe("providerMaintenance", () => {
   it("binds Windows npm updates to the prefix containing the resolved provider shim", () => {
     const appData = "C:\\Users\\Alice Smith\\AppData\\Roaming";
     const npmPrefix = `${appData}\\npm`;
+    const windowsNpmUpdate = {
+      command: `npm --prefix "${npmPrefix}" install -g @example/package-tool@latest`,
+      executable: "npm",
+      args: ["install", "-g", "@example/package-tool@latest"],
+      lockKey: "npm-global",
+      environmentPatch: { NPM_CONFIG_PREFIX: npmPrefix },
+    };
 
     expect(
       packageToolUpdate.resolve({
@@ -432,17 +439,9 @@ describe("providerMaintenance", () => {
     ).toEqual({
       provider: driver("packageTool"),
       packageName: "@example/package-tool",
-      update: {
-        command: `npm --prefix "${npmPrefix}" install -g @example/package-tool@latest`,
-
-        executable: "npm",
-
-        args: ["install", "-g", "@example/package-tool@latest"],
-
-        lockKey: "npm-global",
-
-        environmentPatch: { NPM_CONFIG_PREFIX: npmPrefix },
-      },
+      update: windowsNpmUpdate,
+      // Found in npm's folder: the same command, same prefix, reinstalls it.
+      repair: windowsNpmUpdate,
       ...noInstallOrManualUpdate,
     });
   });
@@ -822,18 +821,18 @@ describe("providerMaintenance", () => {
         },
       }).pipe(Effect.provide(NodeServices.layer));
 
+      const npmUpdate = {
+        command: "npm install -g @example/package-tool@latest",
+        executable: "npm",
+        args: ["install", "-g", "@example/package-tool@latest"],
+        lockKey: "npm-global",
+      };
       expect(capabilities).toEqual({
         provider: driver("packageTool"),
         packageName: "@example/package-tool",
-        update: {
-          command: "npm install -g @example/package-tool@latest",
-
-          executable: "npm",
-
-          args: ["install", "-g", "@example/package-tool@latest"],
-
-          lockKey: "npm-global",
-        },
+        update: npmUpdate,
+        // Found in npm's folder: the update also reinstalls a copy that cannot start.
+        repair: npmUpdate,
         ...noInstallOrManualUpdate,
       });
     }),

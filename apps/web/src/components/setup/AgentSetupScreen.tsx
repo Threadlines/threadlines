@@ -126,7 +126,10 @@ function tileStatus(
     case "notInstalled":
       return { text: "Not installed", found: false };
     case "installing":
-      return { text: "Installing…", found: false };
+      return {
+        text: status.install.kind === "reinstall" ? "Reinstalling…" : "Installing…",
+        found: status.install.kind === "reinstall",
+      };
     case "needsSignIn":
       return { text: `On ${computer} · not signed in`, found: true };
     case "ready":
@@ -269,7 +272,15 @@ function SetupAgentRow({
       }
       break;
     case "problem":
-      actions = updateControls.candidate ? (
+      actions = status.repair ? (
+        <ProviderInstallAction
+          instanceId={agent.row.instanceId}
+          driverKind={agent.driverKind}
+          displayName={agent.definition.label}
+          view={status.repair}
+          statusClassName="max-w-56"
+        />
+      ) : updateControls.candidate ? (
         <ProviderUpdatePopover
           liveProvider={agent.snapshot}
           displayName={agent.definition.label}

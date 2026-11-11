@@ -3718,6 +3718,71 @@ describe("GeneralSettingsPanel observability", () => {
     });
   });
 
+  it("reinstalls a provider CLI that cannot start, instead of offering a sign-in", async () => {
+    // What a half-finished update leaves: the CLI is there, fails to start,
+    // and the check could not read who is signed in.
+    const brokenClaude: ServerProvider = {
+      ...createClaudeProvider(),
+      version: null,
+      status: "error",
+      runnable: false,
+      auth: { status: "unknown" },
+      message: "Claude Agent CLI is installed but failed to run. Missing optional dependency.",
+      models: [],
+      versionAdvisory: {
+        status: "unknown",
+        currentVersion: null,
+        latestVersion: null,
+        updateCommand: "npm install -g @anthropic-ai/claude-code@latest",
+        canUpdate: true,
+        installCommand: null,
+        canInstall: false,
+        canRepair: true,
+        checkedAt: null,
+        message: null,
+      },
+    };
+    const updateProvider = vi.fn<LocalApi["server"]["updateProvider"]>().mockResolvedValue({
+      providers: [brokenClaude],
+    });
+    window.nativeApi = {
+      persistence: {
+        getClientSettings: vi.fn().mockResolvedValue(null),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
+      },
+      server: {
+        updateProvider,
+      },
+    } as unknown as LocalApi;
+
+    setServerConfigSnapshot({
+      ...createBaseServerConfig(),
+      providers: [brokenClaude],
+    });
+
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
+        <ProviderSettingsPanel />
+      </TestAppProviders>,
+    );
+
+    await expect.element(page.getByText("Reinstalling should fix it.")).toBeVisible();
+    await page.getByRole("button", { name: "Reinstall Claude" }).click();
+    expect(updateProvider).toHaveBeenCalledWith({
+      provider: ProviderDriverKind.make("claudeAgent"),
+      instanceId: ProviderInstanceId.make("claudeAgent"),
+      action: "repair",
+    });
+
+    // The Account tab says why signing in is not the fix.
+    await page.getByRole("button", { name: "Toggle Claude details" }).click();
+    await expect
+      .element(page.getByText("Signing in won't work until Claude can start. Reinstall it first."))
+      .toBeVisible();
+    await expect.element(page.getByRole("button", { name: /^Sign in/ })).not.toBeInTheDocument();
+  });
+
   it("adds another account from the header menu and starts signing it in", async () => {
     const workInstanceId = ProviderInstanceId.make("claudeAgent_work_ab12cd");
     const addProviderAccount = vi

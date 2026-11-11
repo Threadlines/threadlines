@@ -1888,7 +1888,9 @@ export function deriveProviderSendPreflight(input: {
   }
 
   const availability = getModelPickerProviderAvailability(provider);
-  if (availability === "available") {
+  // A CLI that cannot start already has the composer's status notice, which
+  // leads to the reinstall; holding the message would add nothing to do here.
+  if (availability === "available" || availability === "cannotStart") {
     return null;
   }
 

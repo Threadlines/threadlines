@@ -15,7 +15,12 @@ import type { ServerProvider } from "@threadlines/contracts";
 import { getProviderSummary } from "../settings/providerStatus";
 
 /** Why a configured provider cannot currently serve models. */
-export type ModelPickerProviderAvailability = "available" | "notInstalled" | "notAuthenticated";
+export type ModelPickerProviderAvailability =
+  | "available"
+  | "notInstalled"
+  /** On this computer but unable to start; a reinstall fixes it. */
+  | "cannotStart"
+  | "notAuthenticated";
 
 /**
  * The slice of a `ProviderInstanceEntry` the empty state needs. Declared
@@ -50,6 +55,9 @@ export function getModelPickerProviderAvailability(
   if (!provider.installed) {
     return "notInstalled";
   }
+  if (provider.runnable === false) {
+    return "cannotStart";
+  }
   const chatCapability = provider.auth.capabilities?.chat?.status;
   if (chatCapability === "verified" || chatCapability === "configured") {
     return "available";
@@ -83,9 +91,14 @@ function unavailableProviderLine(provider: ModelPickerProviderState): string {
       ? `${provider.displayName} is installed but turned off. Turn it on in Settings.`
       : `${provider.displayName} is turned off. Turn it on in Settings.`;
   }
-  return getModelPickerProviderAvailability(provider.snapshot) === "notInstalled"
-    ? `${provider.displayName} isn't installed. Install it and sign in from Settings.`
-    : `${provider.displayName} needs sign-in. Connect it from Settings.`;
+  switch (getModelPickerProviderAvailability(provider.snapshot)) {
+    case "notInstalled":
+      return `${provider.displayName} isn't installed. Install it and sign in from Settings.`;
+    case "cannotStart":
+      return `${provider.displayName} can't start. Reinstall it from Settings.`;
+    default:
+      return `${provider.displayName} needs sign-in. Connect it from Settings.`;
+  }
 }
 
 export function resolveModelPickerEmptyState(input: {

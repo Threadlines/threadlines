@@ -789,6 +789,12 @@ function ProviderAccountSignInSection(props: {
           <p className="text-xs text-muted-foreground">
             Install {props.displayName} first, then sign in here.
           </p>
+        ) : props.liveProvider?.runnable === false ? (
+          // A sign-in would fail the same way the check did: reinstall first.
+          <div className="grid gap-1 text-xs text-muted-foreground">
+            <p>Signing in won't work until {props.displayName} can start. Reinstall it first.</p>
+            {props.liveProvider.message ? <p>{props.liveProvider.message}</p> : null}
+          </div>
         ) : methodStep?.kind === "settings" && needsSignIn ? (
           // Only a field above can fix it: no button that would just fail.
           <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs">
@@ -1519,6 +1525,7 @@ export function ProviderInstanceCard({
       driverKind,
       displayName,
       recipeDigest: confirmedRecipeDigest,
+      kind: providerInstallView.kind,
     }).finally(() => {
       installStartedRef.current = false;
       setPendingInstall(false);

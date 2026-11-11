@@ -70,6 +70,62 @@ describe("deriveAgentStatus", () => {
     );
   });
 
+  it("offers a reinstall, not a sign-in, for a CLI that cannot start", () => {
+    const broken = snapshot({
+      version: null,
+      status: "error",
+      runnable: false,
+      // A half-finished update can leave the sign-in unreadable too.
+      auth: { status: "unauthenticated" },
+      message: "Codex is installed but cannot start. Missing optional dependency.",
+      versionAdvisory: {
+        ...INSTALL_ADVISORY,
+        installCommand: null,
+        canInstall: false,
+        updateCommand: "npm install -g @openai/codex@latest",
+        canUpdate: true,
+        canRepair: true,
+      },
+    });
+
+    expect(deriveAgentStatus({ enabled: true, driverKind: CODEX, snapshot: broken })).toEqual({
+      kind: "problem",
+      headline: "Can't start",
+      detail: "Reinstalling should fix it.",
+      repair: {
+        kind: "reinstall",
+        command: "npm install -g @openai/codex@latest",
+        status: "idle",
+        message: null,
+        lastOutputLine: null,
+      },
+    });
+    // An update that failed before the CLI broke is not a failed reinstall,
+    // and an older "still outdated" verdict says nothing about this.
+    const afterFailedUpdate = deriveAgentStatus({
+      enabled: true,
+      driverKind: CODEX,
+      snapshot: {
+        ...broken,
+        updateState: {
+          status: "unchanged",
+          startedAt: null,
+          finishedAt: null,
+          message: "Update command completed, but Threadlines still detects an outdated version.",
+          output: null,
+        },
+      },
+    });
+    expect(afterFailedUpdate).toMatchObject({ kind: "problem", repair: { status: "idle" } });
+    // No command Threadlines can run: the CLI's own reason is the diagnosis.
+    const { versionAdvisory: _advisory, ...manual } = broken;
+    expect(deriveAgentStatus({ enabled: true, driverKind: CODEX, snapshot: manual })).toEqual({
+      kind: "problem",
+      headline: "Can't start",
+      detail: "Codex is installed but cannot start.",
+    });
+  });
+
   it("never calls a provisional snapshot ready or missing", () => {
     // Codex's pending snapshot says installed: false, ACP's says true with
     // unknown auth; neither has been checked yet.

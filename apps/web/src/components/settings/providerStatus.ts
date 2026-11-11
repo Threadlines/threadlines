@@ -49,6 +49,17 @@ export function getProviderSummary(provider: ServerProvider | undefined) {
       detail: provider.message ?? "CLI not detected on PATH.",
     };
   }
+  if (provider.runnable === false) {
+    // With a Reinstall button next to it, the fix is the news; without one,
+    // the CLI's own reason is all there is to go on.
+    return {
+      headline: "Can't start",
+      detail:
+        provider.versionAdvisory?.canRepair === true
+          ? "Reinstalling should fix it."
+          : (provider.message ?? "The CLI is installed but fails to start."),
+    };
+  }
   const chatCapability = provider.auth.capabilities?.chat;
   const authLabel = provider.auth.label ?? provider.auth.type;
   if (chatCapability?.status === "verified") {

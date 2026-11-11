@@ -223,6 +223,24 @@ describe("resolveModelPickerEmptyState", () => {
     });
   });
 
+  it("says a provider that cannot start needs a reinstall, not a sign-in", () => {
+    const codexBroken = makeProvider("codex", "Codex", {
+      status: "error",
+      runnable: false,
+      auth: { status: "unknown" },
+    });
+    expect(
+      resolveModelPickerEmptyState({
+        searchQuery: "codex",
+        activeTabKind: "instance",
+        providers: [codexBroken],
+      }),
+    ).toEqual({
+      lines: ["Codex can't start. Reinstall it from Settings."],
+      showSettingsAction: true,
+    });
+  });
+
   it("keeps the plain no-match message when the query names no unusable provider", () => {
     expect(
       resolveModelPickerEmptyState({
