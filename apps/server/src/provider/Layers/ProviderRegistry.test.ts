@@ -917,6 +917,55 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
         }),
       );
 
+      it.effect("says the CLI cannot start when the app server and `--version` both die", () =>
+        Effect.gen(function* () {
+          const status = yield* checkCodexProviderStatus(defaultCodexSettings, () =>
+            Effect.fail(new CodexErrors.CodexAppServerProcessExitedError({ code: 1 })),
+          );
+          assert.strictEqual(status.installed, true);
+          assert.strictEqual(status.runnable, false);
+          assert.strictEqual(
+            status.message,
+            "Codex is installed but cannot start. Missing optional dependency @openai/codex-darwin-arm64. Reinstall Codex: npm install -g @openai/codex@latest",
+          );
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer(() => ({
+              stdout: "",
+              stderr: [
+                "file:///opt/homebrew/lib/node_modules/@openai/codex/bin/codex.js:108",
+                "  throw new Error(",
+                "        ^",
+                "",
+                "Error: Missing optional dependency @openai/codex-darwin-arm64. Reinstall Codex: npm install -g @openai/codex@latest",
+                "    at findCodexExecutable (file:///opt/homebrew/lib/node_modules/@openai/codex/bin/codex.js:108:9)",
+                "",
+                "Node.js v22.23.4",
+              ].join("\n"),
+              code: 1,
+            })),
+          ),
+        ),
+      );
+
+      it.effect("keeps the app server's own failure when the CLI itself still runs", () =>
+        Effect.gen(function* () {
+          const status = yield* checkCodexProviderStatus(defaultCodexSettings, () =>
+            Effect.fail(new CodexErrors.CodexAppServerProcessExitedError({ code: 1 })),
+          );
+          assert.strictEqual(status.installed, true);
+          assert.strictEqual(status.runnable, undefined);
+          assert.strictEqual(
+            status.message,
+            "Codex app-server provider probe failed: Codex App Server process exited with code 1.",
+          );
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer(() => ({ stdout: "codex-cli 0.167.1\n", stderr: "", code: 0 })),
+          ),
+        ),
+      );
+
       it.effect("closes the app-server probe scope when provider status times out", () =>
         Effect.gen(function* () {
           const fileSystem = yield* FileSystem.FileSystem;

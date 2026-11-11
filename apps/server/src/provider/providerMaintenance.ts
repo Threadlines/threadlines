@@ -43,6 +43,14 @@ export interface ProviderMaintenanceCapabilities {
    * `null` means the UI falls back to the provider's install guide.
    */
   readonly install: ProviderMaintenanceCommandAction | null;
+  /**
+   * The command that puts the whole CLI back when it is there but cannot
+   * start (an update that left a file out). Only where reinstalling in place
+   * is known to work and aims at the same copy: a CLI found in npm's global
+   * folder, or one about to be installed there, where npm's install of
+   * `@latest` fetches what is missing. Absent everywhere else.
+   */
+  readonly repair?: ProviderMaintenanceCommandAction;
   readonly manualUpdateCommand: string | null;
   readonly advisoryMessage: string | null;
 }
@@ -137,6 +145,7 @@ export function makeProviderMaintenanceCapabilities(input: {
   readonly updateDisplayCommand?: string | null | undefined;
   readonly updateEnvironmentPatch?: Readonly<Record<string, string>> | undefined;
   readonly install?: ProviderMaintenanceCommandAction | null | undefined;
+  readonly repair?: ProviderMaintenanceCommandAction | undefined;
   readonly manualUpdateCommand?: string | null | undefined;
   readonly advisoryMessage?: string | null | undefined;
   readonly latestVersionSource?: ProviderLatestVersionSource | undefined;
@@ -160,6 +169,7 @@ export function makeProviderMaintenanceCapabilities(input: {
     ...(input.latestVersionSource ? { latestVersionSource: input.latestVersionSource } : {}),
     update,
     install: input.install ?? null,
+    ...(input.repair ? { repair: input.repair } : {}),
     manualUpdateCommand: input.manualUpdateCommand ?? null,
     advisoryMessage: input.advisoryMessage ?? null,
   };
@@ -265,6 +275,8 @@ function makeNpmGlobalProviderMaintenanceCapabilities(
   options?: {
     readonly prefix?: string | undefined;
     readonly install?: ProviderMaintenanceCommandAction | null | undefined;
+    /** The CLI was found in npm's global folder, so the update also reinstalls that copy. */
+    readonly foundInNpmGlobal?: boolean | undefined;
   },
 ): ProviderMaintenanceCapabilities {
   const update = makeNpmGlobalCommandAction({
@@ -280,6 +292,13 @@ function makeNpmGlobalProviderMaintenanceCapabilities(
     updateDisplayCommand: update.command,
     ...(update.environmentPatch ? { updateEnvironmentPatch: update.environmentPatch } : {}),
     ...(options?.install ? { install: options.install } : {}),
+    // A missing CLI that npm is about to install is repaired by that same
+    // command, prefix included; one found in npm's folder by its update.
+    ...(options?.foundInNpmGlobal
+      ? { repair: update }
+      : options?.install?.lockKey === update.lockKey
+        ? { repair: options.install }
+        : {}),
   });
 }
 
@@ -573,10 +592,11 @@ export function resolvePackageManagedProviderMaintenance(
     if (windowsNpmPrefix) {
       return makeNpmGlobalProviderMaintenanceCapabilities(definition, {
         prefix: windowsNpmPrefix,
+        foundInNpmGlobal: true,
       });
     }
     if (commandPaths.some(isNpmGlobalCommandPath)) {
-      return makeNpmGlobalProviderMaintenanceCapabilities(definition);
+      return makeNpmGlobalProviderMaintenanceCapabilities(definition, { foundInNpmGlobal: true });
     }
     if (commandPaths.some(isHomebrewCommandPath)) {
       return makeHomebrewProviderMaintenanceCapabilities(definition, commandPaths);
@@ -701,6 +721,7 @@ export function createProviderVersionAdvisory(input: {
     canUpdate: capabilities.update !== null,
     installCommand: capabilities.install?.command ?? null,
     canInstall: capabilities.install !== null,
+    ...(capabilities.repair ? { canRepair: true } : {}),
     checkedAt: input.checkedAt ?? null,
     message: advisoryMessage,
   };

@@ -226,6 +226,8 @@ Claude's models come from Claude Code itself, so a new one shows up without a Th
 
 How much of each plan you've used is on {place:usage}.
 
+An agent's row that says Can't start means its program is on this computer but fails to launch, usually because an update stopped partway. It is not a sign-in problem: the sign-in is still saved. When the agent was installed with npm, the row has Reinstall, which puts the program back; otherwise reinstall it the way it was installed. An update that leaves an npm-installed agent like this reinstalls it once on its own before reporting. Threadlines checks this for Codex and Claude.
+
 A Claude sign-in made with Claude's own sign-in (not an API key or a long-lived token) ends on a date that renewing doesn't move: up to 3 days before the date Claude saved. From 10 days before, the Claude row in Settings and the notice above the message box say when, with Sign in again; signing in again sets a new date. The notice's X hides it until the next sign-in.
 
 When a Codex ChatGPT sign-in belongs to more than one workspace (a personal one and a company's, say), the Codex row shows the one in use, and its Account & Sign-in has Workspace: pick another and Switch. Switching first stops that Codex's running chats and holds new ones until it's done. A workspace behind company sign-on opens a sign-in page; Cancel keeps the current workspace. A chat whose data the old workspace keeps in another region may not continue after a switch; start a new thread for it. It needs Codex 0.167 or later.

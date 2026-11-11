@@ -171,6 +171,12 @@ describe("resolveProviderStatusNoticeActions", () => {
     ).toEqual({ signIn: false, openSettings: true, refresh: true, diagnostics: false });
   });
 
+  it("sends a CLI that cannot start to settings, where the reinstall is", () => {
+    expect(
+      resolveProviderStatusNoticeActions(makeProvider({ status: "error", runnable: false })),
+    ).toEqual({ signIn: false, openSettings: true, refresh: true, diagnostics: false });
+  });
+
   it("sends a disabled instance to settings and nowhere else", () => {
     expect(
       resolveProviderStatusNoticeActions(makeProvider({ enabled: false, status: "error" })),

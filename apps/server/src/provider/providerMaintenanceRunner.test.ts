@@ -281,6 +281,17 @@ function codexInstallCapabilities(): ProviderMaintenanceCapabilities {
   });
 }
 
+/** An npm-installed Codex: the update command also reinstalls it in place. */
+function codexRepairCapabilities(): ProviderMaintenanceCapabilities {
+  const reinstall = {
+    command: "npm install -g @openai/codex@latest",
+    executable: "npm",
+    args: ["install", "-g", "@openai/codex@latest"],
+    lockKey: "npm-global",
+  };
+  return { ...lifecycleFor(CODEX_DRIVER), repair: reinstall };
+}
+
 function claudeWindowsUpdateCapabilities(): ProviderMaintenanceCapabilities {
   return makeProviderMaintenanceCapabilities({
     provider: CLAUDE_DRIVER,
@@ -953,6 +964,145 @@ describe("providerMaintenanceRunner", () => {
       ),
     ),
   );
+
+  it.effect(
+    "reinstalls once when an update exits cleanly and leaves a CLI that cannot start",
+    () => {
+      const calls: Array<ReadonlyArray<string>> = [];
+      return Effect.gen(function* () {
+        // npm skipped the platform package on the first run; the second fetches it.
+        const { registry, updateStatesRef } = yield* makeRegistry(
+          { ...baseProvider, version: "1.0.0" },
+          {
+            onRefreshInstance: (providers) =>
+              providers.map((provider) =>
+                calls.length < 2
+                  ? { ...provider, version: null, status: "error" as const, runnable: false }
+                  : { ...baseProvider, version: "1.1.0" },
+              ),
+          },
+        );
+        const runner = yield* makeTestRunner({
+          ...registry,
+          getProviderMaintenanceCapabilitiesForInstance: () =>
+            Effect.succeed(codexRepairCapabilities()),
+        });
+
+        const result = yield* runner.updateProvider(CODEX_DRIVER);
+
+        assert.deepStrictEqual(calls, [
+          ["install", "-g", "@openai/codex@latest"],
+          ["install", "-g", "@openai/codex@latest"],
+        ]);
+        assert.deepStrictEqual(
+          (yield* Ref.get(updateStatesRef)).map((state) => state.status),
+          ["queued", "running", "succeeded"],
+        );
+        assert.strictEqual(result.providers[0]?.version, "1.1.0");
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            latestVersionHttpClient("1.1.0"),
+            mockSpawnerLayer((_command, args) => {
+              calls.push(args);
+              return { stdout: "changed 1 package" };
+            }),
+          ),
+        ),
+      );
+    },
+  );
+
+  it.effect("reports the reinstall's own failure when the retry after an update fails", () => {
+    const brokenMessage = "Codex is installed but cannot start. Missing optional dependency.";
+    let commandRuns = 0;
+    return Effect.gen(function* () {
+      const { registry } = yield* makeRegistry(
+        { ...baseProvider, version: "1.0.0" },
+        {
+          onRefreshInstance: (providers) =>
+            providers.map((provider) => ({
+              ...provider,
+              version: null,
+              status: "error" as const,
+              runnable: false,
+              message: brokenMessage,
+            })),
+        },
+      );
+      const runner = yield* makeTestRunner({
+        ...registry,
+        getProviderMaintenanceCapabilitiesForInstance: () =>
+          Effect.succeed(codexRepairCapabilities()),
+      });
+
+      const result = yield* runner.updateProvider(CODEX_DRIVER);
+      const state = result.providers[0]?.updateState;
+
+      assert.strictEqual(commandRuns, 2);
+      assert.strictEqual(state?.status, "failed");
+      assert.include(state?.message ?? "", "cannot start");
+      // The retry's error, not the first run's clean output, and the reason last.
+      assert.include(state?.output ?? "", "EACCES");
+      assert.isTrue(state?.output?.endsWith(brokenMessage));
+      assert.isAtMost(state?.output?.length ?? 0, 10_000);
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          latestVersionHttpClient("1.1.0"),
+          mockSpawnerLayer(() => {
+            commandRuns += 1;
+            return commandRuns === 1
+              ? { stdout: "changed 1 package" }
+              : {
+                  stderr: "npm error code EACCES",
+                  // More than the wire allows once the reason is added.
+                  stdout: "npm warn deprecated ".repeat(1_000),
+                  code: 243,
+                };
+          }),
+          Logger.layer([]),
+        ),
+      ),
+    );
+  });
+
+  it.effect("fails a reinstall that still leaves the CLI unable to start", () => {
+    const brokenMessage = "Codex is installed but cannot start. Missing optional dependency.";
+    let commandRuns = 0;
+    return Effect.gen(function* () {
+      const brokenProvider: ServerProvider = {
+        ...baseProvider,
+        status: "error",
+        runnable: false,
+        message: brokenMessage,
+      };
+      const { registry } = yield* makeRegistry(brokenProvider);
+      const runner = yield* makeTestRunner({
+        ...registry,
+        getProviderMaintenanceCapabilitiesForInstance: () =>
+          Effect.succeed(codexRepairCapabilities()),
+      });
+
+      const result = yield* runner.updateProvider({ provider: CODEX_DRIVER, action: "repair" });
+
+      assert.strictEqual(commandRuns, 1);
+      assert.strictEqual(result.providers[0]?.updateState?.status, "failed");
+      assert.include(result.providers[0]?.updateState?.message ?? "", "still cannot start");
+      assert.include(result.providers[0]?.updateState?.output ?? "", brokenMessage);
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          latestVersionHttpClient("1.0.0"),
+          mockSpawnerLayer(() => {
+            commandRuns += 1;
+            return { stdout: "changed 1 package" };
+          }),
+          Logger.layer([]),
+        ),
+      ),
+    );
+  });
 
   it.effect("queues an install behind an update holding the same package-manager lock", () => {
     const firstStartedLatch: { resolve: () => void } = { resolve: () => {} };

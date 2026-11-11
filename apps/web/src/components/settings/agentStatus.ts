@@ -34,7 +34,13 @@ export type AgentStatus =
   | { readonly kind: "installing"; readonly install: ProviderInstallView }
   | { readonly kind: "needsSignIn"; readonly canSignIn: boolean }
   | { readonly kind: "ready" }
-  | { readonly kind: "problem"; readonly headline: string; readonly detail: string | null }
+  | {
+      readonly kind: "problem";
+      readonly headline: string;
+      readonly detail: string | null;
+      /** Set when the CLI cannot start and Threadlines can reinstall it. */
+      readonly repair?: ProviderInstallView;
+    }
   /** Turned off. `detection` is the server's file-only look, when it sent one. */
   | { readonly kind: "off"; readonly detection: ServerProviderDetection | null };
 
@@ -64,6 +70,16 @@ export function deriveAgentStatus(input: {
   }
   if (!snapshot.installed) {
     return { kind: "notInstalled", install };
+  }
+  if (snapshot.runnable === false) {
+    // Before sign-in: a CLI that cannot start has no account state to read.
+    const summary = getProviderSummary(snapshot);
+    return {
+      kind: "problem",
+      headline: summary.headline,
+      detail: firstSentenceOf(summary.detail),
+      ...(install ? { repair: install } : {}),
+    };
   }
   if (getModelPickerProviderAvailability(snapshot) === "notAuthenticated") {
     return {

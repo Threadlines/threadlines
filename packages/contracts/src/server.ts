@@ -390,6 +390,12 @@ export const ServerProviderVersionAdvisory = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
   canInstall: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /**
+   * True when Threadlines can reinstall this provider's CLI in place, for one
+   * that is there but cannot start (`ServerProvider.runnable` false). Absent
+   * means it cannot.
+   */
+  canRepair: Schema.optionalKey(Schema.Boolean),
   checkedAt: Schema.NullOr(IsoDateTime),
   message: Schema.NullOr(TrimmedNonEmptyString),
 });
@@ -468,6 +474,12 @@ export const ServerProvider = Schema.Struct({
   version: Schema.NullOr(TrimmedNonEmptyString),
   status: ServerProviderState,
   statusReason: Schema.optional(ServerProviderStatusReason),
+  /**
+   * False when the CLI is on this computer but cannot start at all (an update
+   * that left a file out). A reinstall fixes it; a sign-in cannot. Absent when
+   * the check found nothing of the kind.
+   */
+  runnable: Schema.optionalKey(Schema.Boolean),
   auth: ServerProviderAuth,
   accountUsage: Schema.optional(ServerProviderAccountUsage),
   /** Set for providers that let the user trade training data for plan usage. */
@@ -1003,8 +1015,10 @@ export class ServerProviderDataSharingError extends Schema.TaggedError<ServerPro
  * Install and update share one request, one lock, and one progress state:
  * they are the same package-manager command with a different reason for
  * running it. Absent means `"update"` so older clients keep working.
+ * `"repair"` reinstalls a CLI that is there but cannot start; it is only
+ * offered when the advisory says `canRepair`.
  */
-export const ServerProviderMaintenanceAction = Schema.Literals(["update", "install"]);
+export const ServerProviderMaintenanceAction = Schema.Literals(["update", "install", "repair"]);
 export type ServerProviderMaintenanceAction = typeof ServerProviderMaintenanceAction.Type;
 
 export const ServerProviderUpdateInput = Schema.Struct({
