@@ -332,6 +332,8 @@ function makeTestLayer(input: {
         themeLayer,
         electronWindowLayer,
         Layer.succeed(PreviewAutomation.PreviewAutomation, {
+          // A new tab is attached to as it appears; these fake pages have no debugger.
+          attachAhead: () => Effect.die("no debugger on a fake page"),
           guardPopup: () => Effect.void,
           allowSite: () => Effect.void,
           ...input.previewAutomation,

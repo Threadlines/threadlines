@@ -10,6 +10,17 @@ describe("isPreviewPermissionAllowed", () => {
     expect(isPreviewPermissionAllowed("clipboard-sanitized-write", undefined)).toBe(true);
   });
 
+  it("answers as Chrome does for what Chrome gives every site without asking", () => {
+    for (const permission of [
+      "sensors",
+      "background-sync",
+      "payment-handler",
+      "screen-wake-lock",
+    ]) {
+      expect(isPreviewPermissionAllowed(permission, "https://example.com/"), permission).toBe(true);
+    }
+  });
+
   it("lets only local and network pages read the clipboard or notify", () => {
     for (const permission of ["clipboard-read", "notifications"]) {
       for (const url of [

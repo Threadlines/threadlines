@@ -55,6 +55,7 @@ import {
   type SignInPopupAnswer,
   type SignInPopupWindowOptions,
 } from "../preview/signInPopups.ts";
+import { browserIdentity, presentIdentityInWindow } from "../preview/previewIdentity.ts";
 import { makeWindowOpenBudget } from "../preview/windowOpenBudget.ts";
 
 /**
@@ -994,6 +995,10 @@ const make = Effect.gen(function* () {
           ),
         );
     window.webContents.on("did-attach-webview", (_event, guest) => {
+      // Now rather than when the panel asks: the debugger is what tells a
+      // page which browser this is (`previewIdentity.ts`), and its first page
+      // is already on its way. The panel's own attach then finds it started.
+      void runPromise(previewAutomation.attachAhead(guest.id)).catch(() => {});
       // Browser shortcuts pressed inside a guest page never reach the
       // renderer: the guest keeps its keystrokes, and the application menu's
       // reload/zoom accelerators would otherwise act on the whole app. Seen
@@ -1063,6 +1068,7 @@ const make = Effect.gen(function* () {
           throw new Error(`Could not open the sign-in window: ${String(created.cause)}`);
         }
         const popup = created.value;
+        presentIdentityInWindow(popup.webContents, browserIdentity(Electron.app));
         setUpSignInPopup(popup, url, {
           guard: (contents, onRefused) => {
             if (

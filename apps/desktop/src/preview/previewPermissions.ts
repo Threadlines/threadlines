@@ -11,6 +11,14 @@
  * - Reading the clipboard and showing notifications are allowed only for pages
  *   served from this machine or this network. The browser goes to public sites
  *   too, and a public page has no business reading what you copied.
+ * - Motion sensors, background sync, payment handlers and the screen wake lock
+ *   are allowed for every origin, because Chrome allows them for every site
+ *   without asking. A page can ask how each permission stands, and sign-in
+ *   bot checks do: a browser that answers "denied" to all of them, these
+ *   included, is one no person could have set up, and GoDaddy's check turned
+ *   a hand-typed sign-in away. Electron can only answer granted or denied, so
+ *   what Chrome would ask about still reads as denied, as it does for someone
+ *   who has turned those off.
  */
 
 import { isPrivateNetworkHost } from "@threadlines/shared/preview";
@@ -29,6 +37,10 @@ export function isPreviewPermissionAllowed(
 ): boolean {
   switch (permission) {
     case "clipboard-sanitized-write":
+    case "sensors":
+    case "background-sync":
+    case "payment-handler":
+    case "screen-wake-lock":
       return true;
     case "clipboard-read":
     case "notifications":
