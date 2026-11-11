@@ -396,6 +396,11 @@ export const ServerProviderVersionAdvisory = Schema.Struct({
    * means it cannot.
    */
   canRepair: Schema.optionalKey(Schema.Boolean),
+  /**
+   * The command that reinstall runs. Absent from a server that predates it,
+   * whose reinstall was always `updateCommand`.
+   */
+  repairCommand: Schema.optionalKey(TrimmedNonEmptyString),
   checkedAt: Schema.NullOr(IsoDateTime),
   message: Schema.NullOr(TrimmedNonEmptyString),
 });

@@ -2945,6 +2945,42 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
       );
     });
 
+    describe("checkOpenCodeProviderStatus for a CLI that cannot start", () => {
+      it.effect("says so when `opencode --version` dies instead of answering", () =>
+        Effect.gen(function* () {
+          const status = yield* checkOpenCodeProviderStatus({
+            settings: decodeOpenCodeSettings({ enabled: true }),
+            manager: {
+              server: Effect.die("A broken OpenCode must not start its server"),
+              lease: Effect.die("A broken OpenCode must not lease its server"),
+              retire: Effect.die("A broken OpenCode must not retire its server"),
+              withServer: () => Effect.die("A broken OpenCode must not use its server"),
+              signals: Stream.empty,
+            },
+            cwd: process.cwd(),
+            environment: { PATH: "" },
+            canMoveToOpenCodeTwo: false,
+          }).pipe(
+            Effect.provide(
+              mockCommandSpawnerLayer(() => ({
+                stdout: "",
+                // The last line reads like a version; the exit code says it is not one.
+                stderr:
+                  "Error: Cannot find module '@opencode/cli-darwin-arm64'\n    at require\n\nNode.js v22.23.4",
+                code: 1,
+              })),
+            ),
+          );
+          assert.strictEqual(status.installed, true);
+          assert.strictEqual(status.runnable, false);
+          assert.strictEqual(
+            status.message,
+            "OpenCode is installed but cannot start. Cannot find module '@opencode/cli-darwin-arm64'",
+          );
+        }),
+      );
+    });
+
     // ── checkClaudeProviderStatus tests ──────────────────────────
 
     describe("checkClaudeProviderStatus", () => {

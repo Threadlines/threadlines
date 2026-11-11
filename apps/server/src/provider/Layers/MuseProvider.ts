@@ -50,12 +50,14 @@ import {
 } from "../muse/MuseProtocol.ts";
 import {
   buildServerProvider,
+  cliStartFailureFrom,
   DEFAULT_TIMEOUT_MS,
   isCommandMissingCause,
   type ProviderProbeResult,
   providerModelsFromSettings,
   type ServerProviderDraft,
   spawnAndCollect,
+  withStartFailureReason,
 } from "../providerSnapshot.ts";
 
 const PROVIDER = ProviderDriverKind.make("muse");
@@ -339,10 +341,16 @@ export const checkMuseProviderStatus = (input: {
     const output = versionResult.success.value;
     const version = parseMuseVersion(`${output.stdout}\n${output.stderr}`);
     if (output.code !== 0 || !version) {
+      // The exit code decides: a crash's stack trace can end in a line that
+      // reads like a version (`Node.js v22.23.4`).
+      const startFailure = cliStartFailureFrom(output);
       return failed({
         installed: true,
-        version,
-        message: `Could not read Muse Code's version from \`${input.binaryPath} --version\`.`,
+        version: startFailure ? null : version,
+        ...(startFailure ? { runnable: false as const } : {}),
+        message: startFailure
+          ? withStartFailureReason("Muse Code is installed but cannot start.", startFailure)
+          : `Could not read Muse Code's version from \`${input.binaryPath} --version\`.`,
       });
     }
     if (!isSupportedMuseVersion(version)) {

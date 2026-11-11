@@ -15,7 +15,13 @@ import * as Option from "effect/Option";
 import { ChildProcess, type ChildProcessSpawner } from "effect/process";
 
 import { planCliSpawn } from "../../cliSpawn.ts";
-import { isCommandMissingCause, spawnAndCollect } from "../providerSnapshot.ts";
+import {
+  type CliStartFailure,
+  cliStartFailureFrom,
+  isCommandMissingCause,
+  spawnAndCollect,
+  withStartFailureReason,
+} from "../providerSnapshot.ts";
 import {
   findUserPi,
   isDefaultPiCommand,
@@ -40,12 +46,28 @@ export type PiInstallation =
       readonly command: string;
       readonly version: string | null;
       readonly message: string;
+      /** Set when it cannot start at all, so a reinstall is the fix. */
+      readonly startFailure?: CliStartFailure;
     }
   /** No Pi at all. */
   | { readonly kind: "missing"; readonly message: string };
 
+type PiVersionRead =
+  | { readonly kind: "version"; readonly version: string }
+  | { readonly kind: "missing" }
+  /** `startFailure` when Pi itself would not start, rather than answering oddly or late. */
+  | {
+      readonly kind: "failed";
+      readonly detail: string;
+      readonly startFailure: CliStartFailure | null;
+    };
+
 /** `pi --version`: the version, or why there is none. */
-const readVersion = (command: string, env: NodeJS.ProcessEnv, cwd: string) =>
+const readVersion = (
+  command: string,
+  env: NodeJS.ProcessEnv,
+  cwd: string,
+): Effect.Effect<PiVersionRead, never, ChildProcessSpawner.ChildProcessSpawner> =>
   Effect.gen(function* () {
     const plan = planCliSpawn(command, ["--version"], env);
     const result = yield* spawnAndCollect(
@@ -58,17 +80,28 @@ const readVersion = (command: string, env: NodeJS.ProcessEnv, cwd: string) =>
     ).pipe(Effect.timeoutOption(VERSION_TIMEOUT), Effect.result);
     if (result._tag === "Failure") {
       return isCommandMissingCause(result.failure)
-        ? ({ kind: "missing" } as const)
-        : ({ kind: "failed", detail: result.failure.message } as const);
+        ? { kind: "missing" }
+        : { kind: "failed", detail: result.failure.message, startFailure: null };
     }
     if (Option.isNone(result.success)) {
-      return { kind: "failed", detail: "it did not answer `--version` in time" } as const;
+      return {
+        kind: "failed",
+        detail: "it did not answer `--version` in time",
+        startFailure: null,
+      };
     }
     const output = result.success.value;
     const version = parsePiVersion(`${output.stdout}\n${output.stderr}`);
-    return output.code === 0 && version
-      ? ({ kind: "version", version } as const)
-      : ({ kind: "failed", detail: `\`${command} --version\` printed no version` } as const);
+    if (output.code === 0 && version) {
+      return { kind: "version", version };
+    }
+    // The exit code decides: a crash's stack trace can end in a line that
+    // reads like a version (`Node.js v22.23.4`).
+    return {
+      kind: "failed",
+      detail: `\`${command} --version\` printed no version`,
+      startFailure: cliStartFailureFrom(output),
+    };
   });
 
 const MISSING_MESSAGE = "Pi is not installed. Install it to use it in Threadlines.";
@@ -94,7 +127,7 @@ export const findPiInstallation = (input: {
     const command = findUserPi(input.binaryPath, input.environment);
     const read = command
       ? yield* readVersion(command, input.environment, input.cwd)
-      : ({ kind: "missing" } as const);
+      : ({ kind: "missing" } satisfies PiVersionRead);
     if (read.kind === "version" && isSupportedPiVersion(read.version)) {
       return { kind: "user", command: command!, version: read.version };
     }
@@ -119,11 +152,15 @@ export const findPiInstallation = (input: {
         message: `Pi ${read.version} is too old for Threadlines. Update it to ${MINIMUM_PI_VERSION} or newer.`,
       };
     }
+    const startFailure = read.kind === "failed" ? read.startFailure : null;
     return {
       kind: "unusable",
       command: command!,
       version: null,
-      message: `Could not run Pi (${command}): ${read.detail}.`,
+      message: startFailure
+        ? withStartFailureReason("Pi is installed but cannot start.", startFailure)
+        : `Could not run Pi (${command}): ${read.detail}.`,
+      ...(startFailure ? { startFailure } : {}),
     };
   });
 

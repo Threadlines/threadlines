@@ -100,6 +100,23 @@ describe("deriveAgentStatus", () => {
         lastOutputLine: null,
       },
     });
+    // The reinstall is its own command where the update runs the CLI itself;
+    // a server from before that field reinstalled with its update command.
+    const cursor = deriveAgentStatus({
+      enabled: true,
+      driverKind: CURSOR,
+      snapshot: {
+        ...broken,
+        versionAdvisory: {
+          ...broken.versionAdvisory!,
+          updateCommand: "cursor-agent update",
+          repairCommand: "curl https://cursor.com/install -fsS | bash",
+        },
+      },
+    });
+    expect(cursor).toMatchObject({
+      repair: { kind: "reinstall", command: "curl https://cursor.com/install -fsS | bash" },
+    });
     // An update that failed before the CLI broke is not a failed reinstall,
     // and an older "still outdated" verdict says nothing about this.
     const afterFailedUpdate = deriveAgentStatus({

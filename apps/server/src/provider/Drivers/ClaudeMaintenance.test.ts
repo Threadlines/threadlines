@@ -44,6 +44,21 @@ describe("ClaudeMaintenance", () => {
         url: `${POINTER_BASE}/stable`,
       });
       expect(encodedScript(windows.update?.args)).toContain('"$downloadBaseUrl/stable"');
+
+      // A Claude that cannot start cannot run `claude update`: the installer
+      // puts it back, on the same channel and under the update's lock.
+      expect(mac.repair).toMatchObject({
+        command: "curl -fsSL https://claude.ai/install.sh | bash -s stable",
+        lockKey: mac.update?.lockKey,
+      });
+      expect(windows.repair).toEqual(windows.update);
+      // An instance with its own home reinstalls there, not in the server's.
+      const elsewhere = yield* resolveClaudeMaintenanceCapabilities(stable, {
+        binaryPath: "/srv/agents/alice/.local/bin/claude",
+        platform: "linux",
+        env: { PATH: "", HOME: "/srv/agents/alice" },
+      }).pipe(Effect.provide(NodeServices.layer));
+      expect(elsewhere.repair?.environmentPatch).toEqual({ HOME: "/srv/agents/alice" });
     }),
   );
 
@@ -73,6 +88,8 @@ describe("ClaudeMaintenance", () => {
       );
       expect(capabilities.update?.executable).toBe("npm");
       expect(capabilities.latestVersionSource).toBeUndefined();
+      // Aimed at the npm tree Claude was found in.
+      expect(capabilities.repair?.environmentPatch).toEqual({ NPM_CONFIG_PREFIX: "/usr" });
     }),
   );
 });

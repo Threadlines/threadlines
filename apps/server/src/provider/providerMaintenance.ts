@@ -45,10 +45,12 @@ export interface ProviderMaintenanceCapabilities {
   readonly install: ProviderMaintenanceCommandAction | null;
   /**
    * The command that puts the whole CLI back when it is there but cannot
-   * start (an update that left a file out). Only where reinstalling in place
-   * is known to work and aims at the same copy: a CLI found in npm's global
-   * folder, or one about to be installed there, where npm's install of
-   * `@latest` fetches what is missing. Absent everywhere else.
+   * start (an update that left a file out). Only where reinstalling is known
+   * to work and aims at the copy Threadlines runs: npm's and bun's install of
+   * `@latest` (both fetch what is missing), `brew reinstall`, and the
+   * vendor's installer for a copy sitting where that installer puts it. It
+   * shares a lock with every other command that writes that copy. Absent
+   * everywhere else.
    */
   readonly repair?: ProviderMaintenanceCommandAction;
   readonly manualUpdateCommand: string | null;
@@ -97,6 +99,12 @@ export interface PackageManagedProviderMaintenanceDefinition {
   readonly npmPackageName: string;
   readonly homebrewFormula: string | null;
   readonly nativeInstall?: Partial<Record<NodeJS.Platform, ProviderMaintenanceCommandDefinition>>;
+  /**
+   * The vendor's installer for a native install that cannot start, where it
+   * differs from `nativeInstall` (a platform Threadlines installs through npm
+   * but whose native copies exist anyway). Run under the update's lock.
+   */
+  readonly nativeRepair?: Partial<Record<NodeJS.Platform, ProviderMaintenanceCommandDefinition>>;
   readonly nativeUpdate:
     | (ProviderMaintenanceCommandDefinition & {
         readonly isCommandPath: (commandPath: string) => boolean;
@@ -146,6 +154,8 @@ export function makeProviderMaintenanceCapabilities(input: {
   readonly updateEnvironmentPatch?: Readonly<Record<string, string>> | undefined;
   readonly install?: ProviderMaintenanceCommandAction | null | undefined;
   readonly repair?: ProviderMaintenanceCommandAction | undefined;
+  /** The update command reinstalls the whole CLI, so it is the repair too. */
+  readonly updateAlsoRepairs?: boolean | undefined;
   readonly manualUpdateCommand?: string | null | undefined;
   readonly advisoryMessage?: string | null | undefined;
   readonly latestVersionSource?: ProviderLatestVersionSource | undefined;
@@ -169,7 +179,11 @@ export function makeProviderMaintenanceCapabilities(input: {
     ...(input.latestVersionSource ? { latestVersionSource: input.latestVersionSource } : {}),
     update,
     install: input.install ?? null,
-    ...(input.repair ? { repair: input.repair } : {}),
+    ...(input.repair
+      ? { repair: input.repair }
+      : input.updateAlsoRepairs && update
+        ? { repair: update }
+        : {}),
     manualUpdateCommand: input.manualUpdateCommand ?? null,
     advisoryMessage: input.advisoryMessage ?? null,
   };
@@ -239,6 +253,81 @@ export function makeWindowsNativeInstaller(input: {
   };
 }
 
+/** A command definition as a runnable action, under `lockKey` when it must share another command's lock. */
+export function commandActionFrom(
+  definition: ProviderMaintenanceCommandDefinition,
+  lockKey: string = definition.lockKey,
+): ProviderMaintenanceCommandAction {
+  return {
+    executable: definition.executable,
+    args: definition.args,
+    lockKey,
+    command: definition.displayCommand ?? [definition.executable, ...definition.args].join(" "),
+    ...(definition.environmentPatch ? { environmentPatch: definition.environmentPatch } : {}),
+  };
+}
+
+/**
+ * A vendor's installer run again over a copy it made. Installers write under
+ * HOME, and the copy was found under the instance's: an instance with its own
+ * HOME reinstalls there, not in the server's.
+ */
+export function installerReinstallAction(
+  installer: ProviderMaintenanceCommandDefinition,
+  lockKey: string,
+  env: NodeJS.ProcessEnv | undefined,
+): ProviderMaintenanceCommandAction {
+  const action = commandActionFrom(installer, lockKey);
+  const home = env?.HOME;
+  return home && home !== process.env.HOME && !action.environmentPatch?.HOME
+    ? { ...action, environmentPatch: { ...action.environmentPatch, HOME: home } }
+    : action;
+}
+
+/**
+ * npm's prefix for a CLI whose real path is inside
+ * `<prefix>/lib/node_modules/<package>/` (macOS and Linux), so a reinstall
+ * lands on that copy and not on whichever npm is first on PATH. The package's
+ * own folder is the anchor: a prefix may itself sit under a `lib/node_modules`.
+ * Null for any other layout.
+ */
+export function npmGlobalPrefixOf(commandPath: string, packageName: string): string | null {
+  const index = normalizeCommandPath(commandPath).lastIndexOf(
+    `/lib/node_modules/${packageName.toLowerCase()}/`,
+  );
+  return index > 0 ? commandPath.slice(0, index) : null;
+}
+
+/**
+ * `npm install -g <pkg>@latest` aimed at the npm tree this CLI was found in
+ * (by its real path, or by npm's shim folder on Windows), or null when it is
+ * not in one. For drivers that update through the CLI itself, which a CLI
+ * that cannot start cannot do.
+ */
+export function npmGlobalReinstallAction(input: {
+  readonly packageName: string;
+  /** The command as Threadlines runs it; on Windows, npm's `.cmd` shim. */
+  readonly commandPath: string;
+  readonly realCommandPath: string;
+  readonly env?: NodeJS.ProcessEnv | undefined;
+  readonly platform?: NodeJS.Platform | undefined;
+  /** The lock of whatever else writes this copy, when that is not npm itself. */
+  readonly lockKey?: string | undefined;
+}): ProviderMaintenanceCommandAction | null {
+  const prefix =
+    npmGlobalPrefixOf(input.realCommandPath, input.packageName) ??
+    resolveWindowsNpmGlobalPrefix({
+      commandPath: input.commandPath,
+      env: input.env,
+      platform: input.platform ?? process.platform,
+    });
+  if (!prefix) {
+    return null;
+  }
+  const action = makeNpmGlobalCommandAction({ packageName: input.packageName, prefix });
+  return input.lockKey ? { ...action, lockKey: input.lockKey } : action;
+}
+
 /** Prefer a native platform installer, preserving an explicitly configured npm prefix. */
 function resolveDefaultInstallAction(
   definition: PackageManagedProviderMaintenanceDefinition,
@@ -249,16 +338,7 @@ function resolveDefaultInstallAction(
   const nativeInstall = definition.nativeInstall?.[platform];
   // An explicit npm prefix is a user's installation choice.
   if (nativeInstall && !nonEmptyString(env.NPM_CONFIG_PREFIX)) {
-    return {
-      executable: nativeInstall.executable,
-      args: nativeInstall.args,
-      lockKey: nativeInstall.lockKey,
-      command:
-        nativeInstall.displayCommand ?? [nativeInstall.executable, ...nativeInstall.args].join(" "),
-      ...(nativeInstall.environmentPatch
-        ? { environmentPatch: nativeInstall.environmentPatch }
-        : {}),
-    };
+    return commandActionFrom(nativeInstall);
   }
   if (!resolveCommandPath("npm", { platform, env })) {
     return null;
@@ -277,12 +357,21 @@ function makeNpmGlobalProviderMaintenanceCapabilities(
     readonly install?: ProviderMaintenanceCommandAction | null | undefined;
     /** The CLI was found in npm's global folder, so the update also reinstalls that copy. */
     readonly foundInNpmGlobal?: boolean | undefined;
+    /** That folder's prefix, when the path shows it: the reinstall is aimed there. */
+    readonly foundPrefix?: string | null | undefined;
   },
 ): ProviderMaintenanceCapabilities {
   const update = makeNpmGlobalCommandAction({
     packageName: definition.npmPackageName,
     ...(options?.prefix ? { prefix: options.prefix } : {}),
   });
+  const reinstall =
+    options?.foundPrefix && !options.prefix
+      ? makeNpmGlobalCommandAction({
+          packageName: definition.npmPackageName,
+          prefix: options.foundPrefix,
+        })
+      : update;
   return makeProviderMaintenanceCapabilities({
     provider: definition.provider,
     packageName: definition.npmPackageName,
@@ -295,22 +384,45 @@ function makeNpmGlobalProviderMaintenanceCapabilities(
     // A missing CLI that npm is about to install is repaired by that same
     // command, prefix included; one found in npm's folder by its update.
     ...(options?.foundInNpmGlobal
-      ? { repair: update }
+      ? { repair: reinstall }
       : options?.install?.lockKey === update.lockKey
         ? { repair: options.install }
         : {}),
   });
 }
 
+/** bun's home for a command found in `<home>/bin/` (`~/.bun` unless `BUN_INSTALL` moved it). */
+function bunInstallOf(commandPaths: ReadonlyArray<string>): string | null {
+  for (const commandPath of commandPaths) {
+    const index = normalizeCommandPath(commandPath).lastIndexOf("/.bun/bin/");
+    if (index >= 0) {
+      return commandPath.slice(0, index + "/.bun".length);
+    }
+  }
+  return null;
+}
+
 function makeBunGlobalProviderMaintenanceCapabilities(
   definition: PackageManagedProviderMaintenanceDefinition,
+  commandPaths: ReadonlyArray<string>,
 ): ProviderMaintenanceCapabilities {
+  const args = ["i", "-g", `${definition.npmPackageName}@latest`];
+  const bunInstall = bunInstallOf(commandPaths);
   return makeProviderMaintenanceCapabilities({
     provider: definition.provider,
     packageName: definition.npmPackageName,
     updateExecutable: "bun",
-    updateArgs: ["i", "-g", `${definition.npmPackageName}@latest`],
+    updateArgs: args,
     updateLockKey: "bun-global",
+    // Checked with bun 1.3: the same command fetches a platform package that
+    // went missing. Aimed at the bun home this copy was found in.
+    repair: {
+      command: ["bun", ...args].join(" "),
+      executable: "bun",
+      args,
+      lockKey: "bun-global",
+      ...(bunInstall ? { environmentPatch: { BUN_INSTALL: bunInstall } } : {}),
+    },
   });
 }
 
@@ -376,6 +488,43 @@ function homebrewLatestVersionSource(input: {
   return isCoreFormula ? { kind: "homebrewFormula", name: input.formula } : undefined;
 }
 
+/**
+ * The `brew` of the Homebrew a command belongs to, so a Mac with both an
+ * Intel and an Apple silicon Homebrew reinstalls into the right one. Null
+ * when the paths don't show a Homebrew prefix.
+ */
+function homebrewBrewPath(commandPaths: ReadonlyArray<string>): string | null {
+  for (const commandPath of commandPaths) {
+    const normalized = normalizeCommandPath(commandPath);
+    const keg = /\/(?:cellar|caskroom)\//u.exec(normalized);
+    const bin = /^(?:\/opt\/homebrew|\/usr\/local|.*\/\.linuxbrew)(?=\/bin\/)/u.exec(normalized);
+    const prefixLength = keg ? keg.index : bin ? bin[0].length : 0;
+    if (prefixLength > 0) {
+      return `${commandPath.slice(0, prefixLength)}/bin/brew`;
+    }
+  }
+  return null;
+}
+
+/** `brew reinstall`, which puts a formula's or cask's files back whatever state they are in. */
+export function homebrewReinstallAction(input: {
+  readonly target: { readonly cask: string } | { readonly formula: string };
+  /** Where the command was found (as run, and with links resolved). */
+  readonly commandPaths: ReadonlyArray<string>;
+  readonly lockKey?: string | undefined;
+}): ProviderMaintenanceCommandAction {
+  const args =
+    "cask" in input.target
+      ? ["reinstall", "--cask", input.target.cask]
+      : ["reinstall", input.target.formula];
+  return {
+    command: ["brew", ...args].join(" "),
+    executable: homebrewBrewPath(input.commandPaths) ?? "brew",
+    args,
+    lockKey: input.lockKey ?? "homebrew",
+  };
+}
+
 function makeHomebrewProviderMaintenanceCapabilities(
   definition: PackageManagedProviderMaintenanceDefinition,
   commandPaths: ReadonlyArray<string>,
@@ -394,6 +543,10 @@ function makeHomebrewProviderMaintenanceCapabilities(
     updateExecutable: "brew",
     updateArgs: ["upgrade", caskToken ?? definition.homebrewFormula],
     updateLockKey: "homebrew",
+    repair: homebrewReinstallAction({
+      target: caskToken ? { cask: caskToken } : { formula: definition.homebrewFormula },
+      commandPaths,
+    }),
     latestVersionSource: homebrewLatestVersionSource({
       formula: definition.homebrewFormula,
       caskToken,
@@ -404,12 +557,18 @@ function makeHomebrewProviderMaintenanceCapabilities(
 
 function makeNativeProviderMaintenanceCapabilities(
   definition: PackageManagedProviderMaintenanceDefinition,
+  platform: NodeJS.Platform,
+  env: NodeJS.ProcessEnv | undefined,
   updateOverride?: ProviderMaintenanceCommandDefinition,
 ): ProviderMaintenanceCapabilities | null {
   if (!definition.nativeUpdate) {
     return null;
   }
   const update = updateOverride ?? definition.nativeUpdate;
+  // The copy was found where the vendor's installer puts it, so running that
+  // installer again replaces it. The update often runs the CLI itself, which
+  // a CLI that cannot start cannot do.
+  const installer = definition.nativeRepair?.[platform] ?? definition.nativeInstall?.[platform];
 
   return makeProviderMaintenanceCapabilities({
     provider: definition.provider,
@@ -419,6 +578,7 @@ function makeNativeProviderMaintenanceCapabilities(
     updateLockKey: update.lockKey,
     updateDisplayCommand: update.displayCommand,
     ...(update.environmentPatch ? { updateEnvironmentPatch: update.environmentPatch } : {}),
+    ...(installer ? { repair: installerReinstallAction(installer, update.lockKey, env) } : {}),
     advisoryMessage: update.advisoryMessage ?? definition.nativeUpdate.advisoryMessage,
     latestVersionSource: update.latestVersionSource ?? definition.nativeUpdate.latestVersionSource,
   });
@@ -563,15 +723,19 @@ export function resolvePackageManagedProviderMaintenance(
       const platformUpdateOverride = nativeUpdate.platformUpdateOverrides?.[platform];
       if (platformUpdateOverride) {
         return (
-          makeNativeProviderMaintenanceCapabilities(definition, platformUpdateOverride) ??
-          makeNpmGlobalProviderMaintenanceCapabilities(definition)
+          makeNativeProviderMaintenanceCapabilities(
+            definition,
+            platform,
+            options?.env,
+            platformUpdateOverride,
+          ) ?? makeNpmGlobalProviderMaintenanceCapabilities(definition)
         );
       }
       if (nativeUpdate.unsupportedOneClickPlatforms?.includes(platform)) {
         return makeNativeManualOnlyProviderMaintenanceCapabilities(definition);
       }
       return (
-        makeNativeProviderMaintenanceCapabilities(definition) ??
+        makeNativeProviderMaintenanceCapabilities(definition, platform, options?.env) ??
         makeNpmGlobalProviderMaintenanceCapabilities(definition)
       );
     }
@@ -579,7 +743,7 @@ export function resolvePackageManagedProviderMaintenance(
       return makeVitePlusGlobalProviderMaintenanceCapabilities(definition);
     }
     if (commandPaths.some(isBunGlobalCommandPath)) {
-      return makeBunGlobalProviderMaintenanceCapabilities(definition);
+      return makeBunGlobalProviderMaintenanceCapabilities(definition, commandPaths);
     }
     if (commandPaths.some(isPnpmGlobalCommandPath)) {
       return makePnpmGlobalProviderMaintenanceCapabilities(definition);
@@ -596,7 +760,12 @@ export function resolvePackageManagedProviderMaintenance(
       });
     }
     if (commandPaths.some(isNpmGlobalCommandPath)) {
-      return makeNpmGlobalProviderMaintenanceCapabilities(definition, { foundInNpmGlobal: true });
+      return makeNpmGlobalProviderMaintenanceCapabilities(definition, {
+        foundInNpmGlobal: true,
+        foundPrefix: commandPaths
+          .map((commandPath) => npmGlobalPrefixOf(commandPath, definition.npmPackageName))
+          .find((prefix) => prefix !== null),
+      });
     }
     if (commandPaths.some(isHomebrewCommandPath)) {
       return makeHomebrewProviderMaintenanceCapabilities(definition, commandPaths);
@@ -721,7 +890,7 @@ export function createProviderVersionAdvisory(input: {
     canUpdate: capabilities.update !== null,
     installCommand: capabilities.install?.command ?? null,
     canInstall: capabilities.install !== null,
-    ...(capabilities.repair ? { canRepair: true } : {}),
+    ...(capabilities.repair ? { canRepair: true, repairCommand: capabilities.repair.command } : {}),
     checkedAt: input.checkedAt ?? null,
     message: advisoryMessage,
   };

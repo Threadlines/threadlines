@@ -29,6 +29,7 @@ import { HttpClient, HttpClientRequest } from "effect/http";
 
 import { detectProviderBinary, withKnownCliDirsOnPath } from "../providerDetection.ts";
 import {
+  homebrewReinstallAction,
   makeProviderMaintenanceCapabilities,
   normalizeCommandPath,
   type ProviderMaintenanceCapabilities,
@@ -153,11 +154,47 @@ function installAction(platform: NodeJS.Platform): ProviderMaintenanceCommandAct
 }
 
 /**
+ * Meta's installer run again over the copy it made, for one that cannot
+ * start: aimed at the same folder and channel that copy was found with, and
+ * under the lock of whatever else writes it. Undefined when the binary is
+ * not where the installer puts it.
+ */
+function installerReinstall(input: {
+  readonly commandPath: string;
+  readonly env: NodeJS.ProcessEnv;
+  readonly platform: NodeJS.Platform;
+  readonly lockKey: string;
+}): ProviderMaintenanceCommandAction | undefined {
+  const installerPath = museInstallerBinary(input.env, input.platform);
+  if (
+    !installerPath ||
+    normalizeCommandPath(installerPath) !== normalizeCommandPath(input.commandPath)
+  ) {
+    return undefined;
+  }
+  // Everything the installer reads to pick its folder and channel. The
+  // server's own values are already in the command's environment.
+  const environmentPatch = Object.fromEntries(
+    (["MUSE_CHANNEL", "MUSE_INSTALL_DIR", "HOME", "LOCALAPPDATA"] as const).flatMap((name) => {
+      const value = input.env[name]?.trim();
+      return value && value !== process.env[name] ? [[name, value]] : [];
+    }),
+  );
+  return {
+    ...installAction(input.platform),
+    lockKey: input.lockKey,
+    ...(Object.keys(environmentPatch).length > 0 ? { environmentPatch } : {}),
+  };
+}
+
+/**
  * Install: Meta's installer (bash on macOS and Linux, Windows PowerShell on
  * Windows). Update: the launcher's own synchronous update when the binary is
  * Meta's launcher, `brew upgrade --cask muse-code` for the Homebrew cask, and
  * the installer again on Windows (its launcher is not a script Threadlines
- * can drive). Anything else updates by hand.
+ * can drive). Anything else updates by hand. Reinstall (for a copy that
+ * cannot start): the installer over the copy it made, `brew reinstall` for
+ * the cask.
  */
 export function museMaintenanceCapabilities(input: {
   /** The binary Threadlines runs. */
@@ -194,6 +231,7 @@ export function museMaintenanceCapabilities(input: {
       updateLockKey: "muse-install",
       updateDisplayCommand: install.command,
       install,
+      repair: installerReinstall({ ...input, platform, lockKey: "muse-install" }),
     });
   }
   if (isHomebrewCask(input.realCommandPath)) {
@@ -204,6 +242,10 @@ export function museMaintenanceCapabilities(input: {
       updateArgs: ["upgrade", "--cask", "muse-code"],
       updateLockKey: "homebrew",
       install,
+      repair: homebrewReinstallAction({
+        target: { cask: "muse-code" },
+        commandPaths: [input.commandPath, input.realCommandPath],
+      }),
     });
   }
   if (input.isLauncher) {
@@ -222,6 +264,7 @@ export function museMaintenanceCapabilities(input: {
       ].join(" "),
       updateEnvironmentPatch: { ...channelPatch, ...MUSE_LAUNCHER_UPDATE_ENV },
       install,
+      repair: installerReinstall({ ...input, platform, lockKey: "muse-launcher" }),
     });
   }
   return makeProviderMaintenanceCapabilities({
@@ -231,6 +274,8 @@ export function museMaintenanceCapabilities(input: {
     updateArgs: [],
     updateLockKey: null,
     install,
+    // A launcher too damaged to recognize still sits where the installer put it.
+    repair: installerReinstall({ ...input, platform, lockKey: install.lockKey }),
     manualUpdateCommand: MUSE_INSTALL_COMMAND,
   });
 }

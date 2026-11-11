@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as os from "node:os";
 import * as path from "node:path";
-import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -21,7 +21,7 @@ import * as Layer from "effect/Layer";
 import { describe, expect } from "vite-plus/test";
 
 import { ServerConfig } from "../../config.ts";
-import { grokInstallKind } from "../grok/GrokBinary.ts";
+import { grokInstallKind, grokMaintenance } from "../grok/GrokBinary.ts";
 import { makeAcpAdapter } from "./AcpAdapter.ts";
 import {
   emptyGrokBackgroundWork,
@@ -210,6 +210,32 @@ describe("Grok launch", () => {
       ),
     ).toBe("winget");
     expect(grokInstallKind("/Users/me/.grok/downloads/grok-macos-aarch64")).toBe("own");
+  });
+
+  it("reinstalls a Grok that cannot start only where the same copy and channel come back", async () => {
+    const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "grok-repair-")));
+    const grokAt = async (...segments: ReadonlyArray<string>) => {
+      const file = path.join(root, ...segments);
+      await mkdir(path.dirname(file), { recursive: true });
+      await writeFile(file, "");
+      return file;
+    };
+    const repairOf = (binary: string) => grokMaintenance(binary, { PATH: "" }, "darwin").repair;
+
+    // npm puts back a copy in its own tree, aimed at that tree.
+    const npmCopy = await grokAt("lib", "node_modules", "@xai-official", "grok", "bin", "grok");
+    expect(repairOf(npmCopy)).toMatchObject({
+      executable: "npm",
+      args: ["install", "-g", "@xai-official/grok@latest"],
+      environmentPatch: { NPM_CONFIG_PREFIX: root },
+    });
+    // The brew that owns the cask, not whichever is first on PATH.
+    expect(repairOf(await grokAt("Caskroom", "grok-build", "1.0.52", "grok"))).toMatchObject({
+      executable: path.join(root, "bin", "brew"),
+      args: ["reinstall", "--cask", "grok-build"],
+    });
+    // xAI's installer would move the user to the stable channel, so it is not offered.
+    expect(repairOf(await grokAt(".grok", "bin", "grok"))).toBeUndefined();
   });
 });
 

@@ -1,4 +1,4 @@
-import { mkdtempSync, realpathSync } from "node:fs";
+import { chmodSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -11,6 +11,7 @@ import { describe, expect } from "vite-plus/test";
 
 import { makePiTextGeneration } from "../../textGeneration/PiTextGeneration.ts";
 import { isPiKeyEnvName } from "../pi/PiBinary.ts";
+import { findPiInstallation } from "../pi/PiInstallation.ts";
 import {
   makeTestPiHome,
   resolveTestPiCli,
@@ -98,6 +99,45 @@ describe("PiProvider", () => {
 
 const run = <A, E>(body: Effect.Effect<A, E, NodeServices.NodeServices>) =>
   body.pipe(Effect.provide(NodeServices.layer));
+
+describe.skipIf(process.platform === "win32")("PiProvider with a Pi that cannot start", () => {
+  it("reports it as there but unable to start, without launching it", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-broken-"));
+    const broken = join(dir, "pi");
+    // npm's launcher dies with a stack trace whose last line reads like a version.
+    writeFileSync(
+      broken,
+      "#!/bin/sh\necho \"Error: Cannot find module 'pi-core'\" >&2\necho 'Node.js v22.23.4' >&2\nexit 1\n",
+    );
+    chmodSync(broken, 0o755);
+
+    const snapshot = await Effect.runPromise(
+      Effect.gen(function* () {
+        const installation = yield* findPiInstallation({
+          binaryPath: broken,
+          environment: { PATH: process.env.PATH },
+          cwd: dir,
+          managed: undefined,
+        });
+        return yield* checkPiProviderStatus({
+          settings: { enabled: true, binaryPath: broken, launchArgs: "", customModels: [] },
+          installation,
+          launch: Effect.die("A Pi that cannot start is not launched"),
+          launchArgs: [],
+          cwd: dir,
+          instanceEnvironment: undefined,
+        });
+      }).pipe(Effect.provide(NodeServices.layer)),
+    );
+
+    expect(snapshot).toMatchObject({
+      installed: true,
+      runnable: false,
+      status: "error",
+      message: "Pi is installed but cannot start. Cannot find module 'pi-core'",
+    });
+  });
+});
 
 describe.skipIf(!piCli)("PiProvider with a real Pi", () => {
   const launch = Effect.succeed({ command: process.execPath, prefixArgs: [piCli!] });
