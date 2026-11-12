@@ -279,7 +279,17 @@ export function createStory(input: { engine: Engine; threadId: string; ui: Theme
   const untilTheme = (name: string) =>
     ui.until(`${name} to show`, async () => (await shownTheme()).name === name);
 
-  /** The studio as the take needs it: Dark showing, Speedcube kept, Honu Lagoon not. */
+  // What the studio had before the take changed it, for restore(). Null until
+  // set-up has read it: a take that failed earlier changed nothing.
+  let before: Json | null = null;
+
+  /**
+   * The studio as the take needs it: Dark showing, Speedcube kept, Honu
+   * Lagoon not, Glass at the themes' own. Remembers what it changes. It only
+   * removes a Honu Lagoon that lives in the studio's own library alone: one
+   * that another connected computer also holds is somebody's theme, and
+   * removing it here would remove it there.
+   */
   const dressStudio = async () => {
     // What show_theme records on a theme: the offer it is, so a later
     // version updates the copy kept from an earlier one.
@@ -292,7 +302,7 @@ export function createStory(input: { engine: Engine; threadId: string; ui: Theme
       ]),
     );
     const speedcube = themeFile("speedcube");
-    await ui.evaluate(
+    before = await ui.evaluate(
       async ({ honu, speedcube, pageId, offered, login }: Json) => {
         const [library, store, apiModule, runtime, { useStore }, settings] = await Promise.all([
           import("/src/themeLibrary/themeLibraryState.ts" as string),
@@ -303,18 +313,37 @@ export function createStory(input: { engine: Engine; threadId: string; ui: Theme
           import("/src/hooks/useSettings.ts" as string),
         ]);
         const env = useStore.getState().activeEnvironmentId;
-        // Glass back at the theme's own: the take moves it.
-        await settings.updateSettingsAndPersist({ themeGlass: 50 });
         const settle = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+        const creditsKey = "threadlines:theme-export-credits";
+        const leftovers = library
+          .currentLibraryThemes()
+          .filter((kept: any) => kept.entry.name === honu.name);
+        const elsewhere = leftovers.find(
+          (kept: any) => kept.holders.length !== 1 || kept.holders[0] !== env,
+        );
+        if (elsewhere) {
+          throw new Error(
+            `A connected computer has a ${honu.name} theme in its library. The take would have to remove it: disconnect that computer from the studio, or rename the theme, first.`,
+          );
+        }
+        // Read before anything changes.
+        const before = {
+          glass: settings.getClientSettings().themeGlass ?? null,
+          credits: localStorage.getItem(creditsKey),
+          choice: store.readThemeState().committed,
+          madeSpeedcube: null as string | null,
+        };
+        // Glass at the themes' own: the take moves it.
+        await settings.updateSettingsAndPersist({ themeGlass: 50 });
         const trial = store.readThemeState().trial;
         if (trial !== null) store.endThemeTrial(trial.id);
-        for (const kept of library.currentLibraryThemes()) {
-          if (kept.entry.name === honu.name) await library.deleteLibraryTheme(kept.entry.entryId);
-        }
+        // A Honu Lagoon an earlier take kept and never got to remove.
+        for (const kept of leftovers) await library.deleteLibraryTheme(kept.entry.entryId);
         if (
           !library.currentLibraryThemes().some((kept: any) => kept.entry.name === speedcube.name)
         ) {
-          await library.saveThemeToLibrary(speedcube, speedcube.name);
+          const saved = await library.saveThemeToLibrary(speedcube, speedcube.name);
+          before.madeSpeedcube = saved.entry.entryId;
           await settle(1500);
         }
         store.chooseTheme({ kind: "builtin", id: "dark" });
@@ -353,7 +382,7 @@ export function createStory(input: { engine: Engine; threadId: string; ui: Theme
           };
         };
         // The credit an earlier share left in the dialog.
-        localStorage.removeItem("threadlines:theme-export-credits");
+        localStorage.removeItem(creditsKey);
         // Capture-only: notices that aren't part of the story (an agent
         // update), and the slash menu's groups of this computer's own
         // plugin commands, which sit under Threadlines' /theme.
@@ -364,9 +393,44 @@ export function createStory(input: { engine: Engine; threadId: string; ui: Theme
           [data-slot=command-group]:not(:has([data-composer-item-id^="slash:"])){display:none!important}`;
         document.head.append(style);
         await settle(600);
+        return before;
       },
       { honu, speedcube, pageId, offered, login: LOGIN },
     );
+  };
+
+  /**
+   * Puts back what set-up and the take changed: the theme, the Glass level
+   * and the saved credit as they were, and out of the library the Honu Lagoon
+   * this take kept (by its own offer, nothing else by that name) and the
+   * Speedcube set-up added, if it did.
+   */
+  const undressStudio = async () => {
+    if (before === null) return;
+    await ui.evaluate(
+      async ({ before, offerKey }: Json) => {
+        const [library, store, settings] = await Promise.all([
+          import("/src/themeLibrary/themeLibraryState.ts" as string),
+          import("/src/theme/themeStore.ts" as string),
+          import("/src/hooks/useSettings.ts" as string),
+        ]);
+        const trial = store.readThemeState().trial;
+        if (trial !== null) store.endThemeTrial(trial.id);
+        store.chooseTheme(before.choice);
+        for (const kept of library.currentLibraryThemes()) {
+          if (kept.entry.offerKey === offerKey || kept.entry.entryId === before.madeSpeedcube) {
+            await library.deleteLibraryTheme(kept.entry.entryId);
+          }
+        }
+        if (before.glass !== null) {
+          await settings.updateSettingsAndPersist({ themeGlass: before.glass });
+        }
+        if (before.credits === null) localStorage.removeItem("threadlines:theme-export-credits");
+        else localStorage.setItem("threadlines:theme-export-credits", before.credits);
+      },
+      { before, offerKey: `${threadId}/${pageId}` },
+    );
+    before = null;
   };
 
   /** An earlier finished exchange, so the chat has words over the art. */
@@ -453,9 +517,9 @@ export function createStory(input: { engine: Engine; threadId: string; ui: Theme
       return {};
     },
 
-    /** After the take, recorded or not: the studio back on Dark, Honu Lagoon out. */
+    /** After the take, recorded or not: the studio as set-up found it. */
     async restore() {
-      await dressStudio();
+      await undressStudio();
     },
 
     async take() {

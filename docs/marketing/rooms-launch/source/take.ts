@@ -111,7 +111,19 @@ page.on("console", (message: any) => {
 // renderer's one "is this window in front" check is served answering yes
 // until the take ends; nothing on disk changes.
 const IN_FRONT = /\/src\/lib\/pageAttention\.ts/;
+/**
+ * A failure before the take's own cleanup (set-up, a refused command) must not
+ * leave the renderer answering "in front": take the answer away and reload.
+ */
+const leaveInFront = async (error: unknown) => {
+  console.error(error);
+  await page.unroute(IN_FRONT).catch(() => {});
+  await page.reload().catch(() => {});
+  console.error("The take failed before it started. Run `node take.ts --cleanup`.");
+  process.exit(1);
+};
 if (!cleanupOnly && storyModule.IN_FRONT === true) {
+  process.on("uncaughtException", leaveInFront);
   await page.route(IN_FRONT, async (route: any) => {
     const response = await route.fetch();
     const source: string = await response.text();
@@ -1210,6 +1222,7 @@ try {
   await poll.catch(() => {});
   // The reload in cleanup() below brings the app's own focus check back.
   await page.unroute(IN_FRONT).catch(() => {});
+  process.off("uncaughtException", leaveInFront);
   // The thread's story exists only in this renderer: the server's copy has no
   // agents and no session, so a message sent in it would start a real turn.
   // Delete it and reload, which also drops the intercepting API.

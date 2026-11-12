@@ -13,11 +13,11 @@ at 20 a second lands on every third frame; at 30 it can't land evenly).
 A take can name spans where nothing moved but live art (`steady` in take.json,
 pairs of marks). The art draws at a fixed rate, but its frames reach the
 recorder a few milliseconds early or late, which would show as a stutter. In
-those spans each art frame is shown for exactly its share of time instead.
+those spans the frames are shown in the order captured, each for exactly one
+period of the art's rate.
 """
 
 import json
-import math
 import os
 import subprocess
 import sys
@@ -45,8 +45,11 @@ for index, line in enumerate(lines):
         frames.append((at, line[6:-1]))
         at += float(lines[index + 1].split()[1])
 
-# Steady spans: the art's rate from the frames' median spacing, its phase from
-# where they fall in that period, and a sample in the middle of each slot.
+# Steady spans: the art's rate from the frames' median spacing, then the
+# span's frames in the order they were captured, one period each. Frames are
+# taken by order, not by when they arrived, so one that reached the recorder
+# late keeps its place and its full share of time, and nothing from outside
+# the span is ever shown inside it.
 ART_RATES = [10, 12, 15, 20, 24, 30]
 marks = {mark["name"]: mark["at"] for mark in take["marks"]}
 steady = []
@@ -58,30 +61,25 @@ for start_mark, end_mark in take.get("steady", []):
         continue
     median = gaps[len(gaps) // 2]
     rate = min(ART_RATES, key=lambda value: abs(1 / value - median))
-    period = 1 / rate
-    # Circular mean of each frame's place in the period.
-    angle = math.atan2(
-        sum(math.sin(2 * math.pi * (at % period) / period) for at in times),
-        sum(math.cos(2 * math.pi * (at % period) / period) for at in times),
-    )
-    phase = (angle / (2 * math.pi)) * period % period
-    spread = sorted(
-        min((at - phase) % period, period - (at - phase) % period) for at in times
-    )
-    steady.append((start, end, period, phase))
+    expected = round((end - start) * rate)
+    steady.append((start, end, 1 / rate, times))
+    note = ""
+    if abs(len(times) - expected) > max(1, expected * 0.02):
+        # Dropped frames, or something other than the art repainted.
+        note = f" (expected about {expected}: record this span again)"
     print(
-        f"steady {start_mark}: {rate}/s, {len(times)} frames in {end - start:.1f}s, "
-        f"90% within {spread[int(len(spread) * 0.9)] * 1000:.0f} ms of the beat",
+        f"steady {start_mark}: {rate}/s, {len(times)} frames in {end - start:.1f}s{note}",
         file=sys.stderr,
     )
 
 
 def source_time(t):
     """The capture time whose frame is shown at output time t."""
-    for start, end, period, phase in steady:
+    for start, end, period, times in steady:
         if start <= t <= end:
-            slot = math.floor((t - phase) / period)
-            return phase + slot * period + period / 2
+            # A slot edge that falls on an output tick goes to the later slot.
+            slot = int((t - start) / period + 1e-6)
+            return times[min(slot, len(times) - 1)]
     return t
 
 
@@ -93,9 +91,6 @@ count = int(take["seconds"] * FPS)
 cursor = 0
 for tick in range(count):
     t = source_time(tick / FPS)
-    # A steady span's sample can sit a little behind the last one: look again from there.
-    while cursor > 0 and frames[cursor][0] > t:
-        cursor -= 1
     while cursor + 1 < len(frames) and frames[cursor + 1][0] <= t:
         cursor += 1
     os.symlink(os.path.join(take_dir, frames[cursor][1]), os.path.join(cfr, f"{tick:06d}.jpg"))
