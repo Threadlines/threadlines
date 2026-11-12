@@ -2,10 +2,15 @@ import type { CollectionEntry } from "astro:content";
 
 export type ChangelogEntry = CollectionEntry<"changelog">;
 
+/** Newest release first. Two releases on one day, a fix shipped the day of a release, go by version. */
 export function sortChangelogEntries(
   entries: ReadonlyArray<ChangelogEntry>,
 ): ReadonlyArray<ChangelogEntry> {
-  return entries.toSorted((left, right) => right.data.date.getTime() - left.data.date.getTime());
+  return entries.toSorted(
+    (left, right) =>
+      right.data.date.getTime() - left.data.date.getTime() ||
+      compareVersions(right.data.version, left.data.version),
+  );
 }
 
 export function changelogEntryPath(entry: ChangelogEntry): string {
