@@ -1,5 +1,6 @@
 import type React from "react";
-import { AbsoluteFill, useCurrentFrame } from "remotion";
+import { AbsoluteFill } from "remotion";
+import { useFrame } from "../frame";
 import type { Layout } from "../layout";
 import { FPS } from "../config";
 import { accentAlpha, accentBrightAlpha, colors } from "../theme";
@@ -9,7 +10,7 @@ import { accentAlpha, accentBrightAlpha, colors } from "../theme";
  * paths, and a vignette. It never cuts, so transitions only move the content.
  */
 export const Background: React.FC<{ layout: Layout }> = ({ layout }) => {
-  const t = useCurrentFrame() / FPS;
+  const t = useFrame() / FPS;
   const { width, height } = layout;
   const reach = Math.max(width, height);
 

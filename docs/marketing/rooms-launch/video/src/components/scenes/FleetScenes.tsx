@@ -3,7 +3,8 @@
 // comes back. Each scene's first framing is the last one's, so the cuts
 // between them don't move.
 import type React from "react";
-import { AbsoluteFill, useCurrentFrame } from "remotion";
+import { AbsoluteFill } from "remotion";
+import { useFrame } from "../../frame";
 import type { CameraKey } from "../../camera";
 import type { Layout } from "../../layout";
 import { frameAt, type Plan, takeTimeAt } from "../../plan";
@@ -76,7 +77,7 @@ const insideFocus = (take: Take, t: number): Rect =>
  * start goes out to the PC and its thread shows up working.
  */
 export const AskThePc: React.FC<SceneProps> = ({ layout, plan, spec }) => {
-  const frame = useCurrentFrame();
+  const frame = useFrame();
   const take = plan.take;
   const m = (name: string) => mark(take, name);
   const f = (name: string, after = 0) => frameAt(plan, m(name) + after);
@@ -144,7 +145,7 @@ export const AskThePc: React.FC<SceneProps> = ({ layout, plan, spec }) => {
  * each one runs, and back to Opus's thread.
  */
 export const RunsOnThePc: React.FC<SceneProps> = ({ layout, plan, spec }) => {
-  const frame = useCurrentFrame();
+  const frame = useFrame();
   const take = plan.take;
   const m = (name: string) => mark(take, name);
   const f = (name: string, after = 0) => frameAt(plan, m(name) + after);
@@ -224,7 +225,7 @@ export const RunsOnThePc: React.FC<SceneProps> = ({ layout, plan, spec }) => {
  * settles on the answer and the result.
  */
 export const AnswerComesBack: React.FC<SceneProps> = ({ layout, plan, spec }) => {
-  const frame = useCurrentFrame();
+  const frame = useFrame();
   const take = plan.take;
   const m = (name: string) => mark(take, name);
   const f = (name: string, after = 0) => frameAt(plan, m(name) + after);

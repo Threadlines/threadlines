@@ -7,21 +7,25 @@ Records the app footage for `../video`, one story per video, in the Marketing Ca
 
 - **Fleet, "Screenshots on Windows"** (`story-fleet.ts`, 0.8.0): you ask Opus 5.5 on the MacBook Pro why an agent on your Windows PC couldn't take browser screenshots. It works on the Mac, so Opus asks to start a thread on the Windows PC; you click Start; the PC's thread (GPT-6.1-Sol) runs a probe there, you look inside it and at Fleet, and its answer comes back and changes Opus's plan. Two computers: the studio is the Mac, and a second Threadlines server, linked to it and set to allow its agents, is the PC.
 
+- **Themes** (`story-themes.ts`, 0.10.0): the new-thread screen with each starter theme's art behind it in turn; then, in a thread, you type /theme and keep Lantern Lake, ask Opus 5.5 for a theme from a page you link (it offers Honu Lagoon; you click Try it, Keep), ask for bolder text and click Update, drag the Glass slider toward Clear, and share your own theme to the Showcase. The picker, the trial, the library and the Share dialog are the app's own; the offered theme's files and the publish step of the share are stood in (no pull request is opened).
+
 No agent runs. The promo thread is created on the studio server; after that, every command for it (the user's clicks included) is caught in the renderer and decided by `engine.ts`, which runs the server's own decider and projector and applies the events to the renderer's store. So the screen shows exactly what the app shows for those events, and no quota is spent.
 
 The child-threads story is `isolated` (see `STORIES` in `take.ts`): its three child threads exist only in the engine and the renderer, because only the server's own services may create a child thread. For such a story the recorder also answers every thread-detail subscription for the take's threads itself (the studio server's copy would replace the story when a thread is opened), makes a real worktree in the studio's Orbit repo for each child and removes it afterwards, and fails a take during which the app reloaded its thread list from the server (that drops threads only the engine knows).
 
-| File                       | What it does                                                                                |
-| -------------------------- | ------------------------------------------------------------------------------------------- |
-| `engine.ts`                | A stand-in server for the take's threads: the real decider and projector, events to a sink. |
-| `story.ts`                 | Rooms: the agents' side as the commands the server would produce, and scene marks.          |
-| `story-child-threads.ts`   | Agents start threads: the same, plus the server's child-thread setup and answer delivery.   |
-| `dry-run.ts`               | The Rooms story through the decider with the clicks synthesized. Refusals show up here.     |
-| `dry-run-child-threads.ts` | The same for the child-threads story.                                                       |
-| `story-fleet.ts`           | Fleet: both computers' commands, the link's start and report, and the PC's thread.          |
-| `dry-run-fleet.ts`         | The same for the Fleet story, with one engine per computer.                                 |
-| `take.ts`                  | Drives the studio over CDP: clicks, typing, a drawn pointer, 2x screencast frames.          |
-| `encode-take.py`           | Frames to constant 30 fps video on the take's clock; `--export` writes it into the edit.    |
+| File                       | What it does                                                                                 |
+| -------------------------- | -------------------------------------------------------------------------------------------- |
+| `engine.ts`                | A stand-in server for the take's threads: the real decider and projector, events to a sink.  |
+| `story.ts`                 | Rooms: the agents' side as the commands the server would produce, and scene marks.           |
+| `story-child-threads.ts`   | Agents start threads: the same, plus the server's child-thread setup and answer delivery.    |
+| `dry-run.ts`               | The Rooms story through the decider with the clicks synthesized. Refusals show up here.      |
+| `dry-run-child-threads.ts` | The same for the child-threads story.                                                        |
+| `story-fleet.ts`           | Fleet: both computers' commands, the link's start and report, and the PC's thread.           |
+| `dry-run-fleet.ts`         | The same for the Fleet story, with one engine per computer.                                  |
+| `story-themes.ts`          | Themes: the starters on the new-thread screen, /theme, an agent's theme, Glass, sharing.     |
+| `dry-run-themes.ts`        | The same for the themes story; what happens in the app's page answers at once.               |
+| `take.ts`                  | Drives the studio over CDP: clicks, typing, a drawn pointer, 2x screencast frames.           |
+| `encode-take.py`           | Frames to constant 30 fps video (`--fps 60` for themes); `--export` writes it into the edit. |
 
 ## Recording
 
@@ -39,6 +43,8 @@ node take.ts --cleanup                                   # remove the promo thre
 For the 0.8.0 story, start a second server as the PC (its own `THREADLINES_HOME` with `"computerName": "Windows PC"` in its `settings.json`, and a `git clone --shared` of the Threadlines repo as its project), add it to the studio app (Settings › Connections, or `addSavedEnvironment` in the renderer), link the two from Fleet, set "MacBook Pro's agents can start work on Windows PC" to Allowed, and give the studio the same project. Then `node dry-run-fleet.ts` and `node take.ts <name> --story=fleet --pc-home=<PC home>` (add `--viewport=480x800` for the tall take). `PROMO_HOLD_AT=family-open` holds a rehearsal there, with the PC's thread at work, until `/tmp/rooms-promo/hold` is deleted: time for stills.
 
 For the 0.6.0 story, add `--story=child-threads` to every `take.ts` line and run `node dry-run-child-threads.ts`; a rehearsal with screenshots is `PROMO_SHOTS=/tmp/promo-shots node take.ts <name> --story=child-threads --rehearse`. `encode-take.py` reads the story from the take, so its exports land beside the Rooms ones (`public/threads-wide.mp4`, `src/takes/threads-wide.json`) instead of over them.
+
+For the 0.10.0 story, put three theme files in a folder (`honu-v1.json`, `honu-v2.json` with bolder text, `speedcube.json`; they aren't in the repo, Honu Lagoon is after @handsher_NGU's original) and run `node dry-run-themes.ts`, then `PROMO_THEMES_DIR=<folder> node take.ts <name> --story=themes` and `python3 encode-take.py /tmp/rooms-promo/takes/<name> --export wide --fps 60`. The story sets `IN_FRONT`, so the take is recorded as the app behaves in front of other apps, wherever the studio's window is (behind them, live art drops to 10 frames a second). The encoder prints each starter's measured art rate ("20/s, 100 frames in 5.0s"): fewer frames than that means the capture dropped some, so record again. There is no phone-width take yet, so only the wide video and the square clips cut from it exist.
 
 Then render in `../video` (`npm run render`, or `npm run render:threads`). The exported takes stay out of git (`../video/.gitignore`), so a fresh checkout records its own. Every take starts and ends by deleting the promo thread and reloading the renderer, so takes can be repeated and the studio is left clean. The story's pauses are reading time: the edit mostly plays the take at real speed. Frames go to `/tmp/rooms-promo/takes/<name>` (about 1 GB a take).
 

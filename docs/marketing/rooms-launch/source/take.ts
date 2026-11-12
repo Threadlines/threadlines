@@ -10,6 +10,8 @@
 //   node take.ts --cleanup          delete every promo thread from the studio
 //   --story=child-threads           record the 0.6.0 story (story-child-threads.ts);
 //                                   the default is the 0.5.0 Rooms story (story.ts)
+//   --story=themes                  record the 0.10.0 story (story-themes.ts);
+//                                   PROMO_THEMES_DIR holds its theme files
 //   --story=fleet                   record the 0.8.0 story (story-fleet.ts) on two
 //                                   computers: the studio and a second server
 //                                   added to it as "Windows PC" (--pc-label)
@@ -44,6 +46,7 @@ const STORIES = {
   rooms: { module: "./story.ts", isolated: false, remote: false },
   "child-threads": { module: "./story-child-threads.ts", isolated: true, remote: false },
   fleet: { module: "./story-fleet.ts", isolated: true, remote: true },
+  themes: { module: "./story-themes.ts", isolated: true, remote: false },
 } as const;
 const storyName = (args.find((arg) => arg.startsWith("--story="))?.slice("--story=".length) ??
   "rooms") as keyof typeof STORIES;
@@ -101,6 +104,30 @@ const cdp = await page.context().newCDPSession(page);
 page.on("console", (message: any) => {
   if (message.type() === "error") console.error("[renderer]", message.text().slice(0, 400));
 });
+
+// A story about what the app looks like in use (IN_FRONT) is recorded as the
+// app behaves in front of other apps, wherever the studio's window is: live
+// art runs at its own rate there, and at a calm 10 a second behind them. The
+// renderer's one "is this window in front" check is served answering yes
+// until the take ends; nothing on disk changes.
+const IN_FRONT = /\/src\/lib\/pageAttention\.ts/;
+if (!cleanupOnly && storyModule.IN_FRONT === true) {
+  await page.route(IN_FRONT, async (route: any) => {
+    const response = await route.fetch();
+    const source: string = await response.text();
+    const marker = "function isPageAttended() {";
+    if (!source.includes(marker)) {
+      throw new Error("pageAttention.ts changed shape: update IN_FRONT in take.ts.");
+    }
+    await route.fulfill({
+      response,
+      body: source.replace(
+        marker,
+        `${marker}\n  if (document.visibilityState === "visible") return true;`,
+      ),
+    });
+  });
+}
 
 /** Deletes the promo threads on the studio server, then reloads to drop staged state. */
 async function cleanup() {
@@ -179,12 +206,14 @@ const setup = await page.evaluate(
     isolated,
     projectName,
     pcLabel,
+    wrapUp,
   }: {
     threadId: string;
     studio: string;
     isolated: boolean;
     projectName: string;
     pcLabel: string | null;
+    wrapUp: boolean;
   }) => {
     const [{ useStore }, apiModule, runtime, settingsModule, catalog, links, branding] =
       await Promise.all([
@@ -198,7 +227,11 @@ const setup = await page.evaluate(
       ]);
     // Checked before anything is changed: finished child threads wrap
     // themselves only with this client setting.
-    if (isolated && settingsModule.getClientSettings().wrapUpChildThreadsOnFinish !== true) {
+    if (
+      isolated &&
+      wrapUp &&
+      settingsModule.getClientSettings().wrapUpChildThreadsOnFinish !== true
+    ) {
       throw new Error(
         'Turn on "Wrap up finished child threads" in the studio (Settings › Threads) first.',
       );
@@ -478,6 +511,8 @@ const setup = await page.evaluate(
     isolated: STORY.isolated,
     projectName: PROJECT_NAME,
     pcLabel: STORY.remote ? pcLabel : null,
+    // Only a story with child threads needs them to wrap themselves up.
+    wrapUp: storyModule.NEEDS_CHILD_WRAP_UP !== false,
   },
 );
 
@@ -706,6 +741,7 @@ async function startFrames() {
     document.body.append(dot);
     let on = false;
     setInterval(() => {
+      if ((window as any).__promo?.steady) return;
       on = !on;
       dot.style.background = on ? "rgba(0,0,0,0.02)" : "rgba(0,0,0,0.01)";
     }, 100);
@@ -889,7 +925,7 @@ const story = createStory({
           element.style.opacity = "0";
         }
       });
-      await composer.focus();
+      await page.locator('[data-lexical-editor="true"]').last().focus();
       mark("typing");
       await page.keyboard.type(text, { delay: 45 });
       await pause(600);
@@ -974,6 +1010,69 @@ const story = createStory({
       );
       await rest();
     },
+    evaluate: (fn: any, arg?: unknown) => page.evaluate(fn, arg),
+    async clickOn(selector: string, options: { hover?: number; hold?: number } = {}) {
+      await showPointer();
+      await click(page.locator(selector).last(), options);
+    },
+    async hoverOn(selector: string) {
+      await showPointer();
+      const box = await rect(page.locator(selector).last());
+      await move({ x: box.x + box.width / 2, y: box.y + box.height / 2 }, 700);
+    },
+    async dragAlong(thumb: string, track: string, to: number) {
+      await showPointer();
+      const knob = await rect(page.locator(thumb).last());
+      const rail = await rect(page.locator(track).last());
+      const from = { x: knob.x + knob.width / 2, y: knob.y + knob.height / 2 };
+      await move(from, 800);
+      await pause(350);
+      await cdp.send("Input.dispatchMouseEvent", {
+        type: "mousePressed",
+        ...from,
+        button: "left",
+        clickCount: 1,
+      });
+      await pause(250);
+      const target = { x: rail.x + rail.width * to, y: from.y };
+      const steps = 70;
+      for (let index = 1; index <= steps; index += 1) {
+        const t = index / steps;
+        const eased = t * t * (3 - 2 * t);
+        await cdp.send("Input.dispatchMouseEvent", {
+          type: "mouseMoved",
+          x: from.x + (target.x - from.x) * eased,
+          y: from.y,
+          button: "left",
+          buttons: 1,
+        });
+        await pause(32);
+      }
+      await pause(300);
+      await cdp.send("Input.dispatchMouseEvent", {
+        type: "mouseReleased",
+        ...target,
+        button: "left",
+        clickCount: 1,
+      });
+      position = target;
+    },
+    type: (text: string, delay = 55) => page.keyboard.type(text, { delay }),
+    press: (key: string) => page.keyboard.press(key),
+    // While the art is the only thing moving, the corner pixel rests, so every
+    // captured frame is one of the art's (encode-take.py evens out their timing).
+    steady: (on: boolean) =>
+      page.evaluate((value: boolean) => {
+        (window as any).__promo.steady = value;
+      }, on),
+    blur: () =>
+      page.evaluate(() => {
+        (document.activeElement as HTMLElement | null)?.blur();
+      }),
+    focusComposer: () => page.locator('[data-lexical-editor="true"]').last().focus(),
+    rest,
+    until,
+    narrow: viewport.width < 768,
     mark,
     track(name: string, messageId: string, part?: "row" | "body" | "end") {
       void track(name, { message: messageId, body: part === "body", end: part === "end" });
@@ -987,6 +1086,17 @@ const story = createStory({
     },
   },
 });
+
+/** Shows the pointer again after rest() or send() faded it. */
+async function showPointer() {
+  await page.evaluate(() => {
+    const element = document.getElementById("capture-pointer");
+    if (element) {
+      element.style.transition = "opacity 200ms ease";
+      element.style.opacity = "1";
+    }
+  });
+}
 
 /**
  * At phone width the sidebar is a sheet: open it before reaching a row in it.
@@ -1092,10 +1202,14 @@ try {
     .evaluate(() => (window as any).__promo?.shellResyncs ?? 0)
     .catch(() => 0);
   if (!rehearse) await cdp.send("Page.stopScreencast").catch(() => {});
+  // What the story changed in the studio outside its thread (its theme).
+  await story.restore?.().catch((error: unknown) => console.error("Restore failed.", error));
   if (hideSidebar) await toggleSidebar.click().catch(() => {});
   if (viewportArg) await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
   polling.abort();
   await poll.catch(() => {});
+  // The reload in cleanup() below brings the app's own focus check back.
+  await page.unroute(IN_FRONT).catch(() => {});
   // The thread's story exists only in this renderer: the server's copy has no
   // agents and no session, so a message sent in it would start a real turn.
   // Delete it and reload, which also drops the intercepting API.
@@ -1121,6 +1235,8 @@ if (!rehearse) {
         scale: SCALE,
         viewport,
         firstFrameAt: frames[0]?.at ?? 0,
+        // Spans where only live art moved, as [from mark, to mark] (encode-take.py).
+        steady: storyModule.STEADY_MARKS ?? [],
         shellResyncs,
         ...log,
         tracks,

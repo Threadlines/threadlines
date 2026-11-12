@@ -1,5 +1,5 @@
+import { useFrame } from "../frame";
 import type React from "react";
-import { useCurrentFrame } from "remotion";
 import type { Layout } from "../layout";
 import { balancedLines, useFontsReady } from "../measure";
 import { colors, fonts, tracking } from "../theme";
@@ -17,8 +17,10 @@ export const Caption: React.FC<{
   layout: Layout;
   kicker: string;
   caption: string;
-}> = ({ layout, kicker, caption }) => {
-  const frame = useCurrentFrame();
+  /** Already in place on the first frame (a clip's opening, which X shows as its picture). */
+  settled?: boolean;
+}> = ({ layout, kicker, caption, settled = false }) => {
+  const frame = useFrame() + (settled ? 60 : 0);
   const fontsReady = useFontsReady();
   // The site clip has no captions; its page says what it shows.
   if (layout.bare) return null;

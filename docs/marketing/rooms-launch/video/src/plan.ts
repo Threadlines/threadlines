@@ -7,7 +7,8 @@ import { jumpsBetween, type Take } from "./takes";
 
 export type Step =
   | { kind: "play"; from: number; to: number; rate: number }
-  | { kind: "hold"; at: number; seconds: number };
+  | { kind: "hold"; at: number; seconds: number }
+  | { kind: "skip"; from: number; to: number };
 
 /** Play take seconds `from`..`to`, at `rate` (1 is real time). */
 export const play = (from: number, to: number, rate = 1): Step => ({
@@ -18,6 +19,12 @@ export const play = (from: number, to: number, rate = 1): Step => ({
 });
 /** Hold the frame at take second `at` for `seconds`. */
 export const hold = (at: number, seconds: number): Step => ({ kind: "hold", at, seconds });
+
+/**
+ * Leave out take seconds `from`..`to` with a short crossfade, where nothing
+ * happens that the story needs (a long look already had, a pointer's trip).
+ */
+export const skip = (from: number, to: number): Step => ({ kind: "skip", from, to });
 
 type SegmentBody = { frames: number } & (
   | { kind: "play"; from: number; to: number; rate: number }
@@ -42,6 +49,10 @@ export const planScene = (take: Take, steps: ReadonlyArray<Step>): Plan => {
   for (const step of steps) {
     if (step.kind === "hold") {
       push({ kind: "hold", at: step.at, frames: Math.round(step.seconds * FPS) });
+      continue;
+    }
+    if (step.kind === "skip") {
+      push({ kind: "fade", from: step.from, to: step.to, frames: FADE_FRAMES });
       continue;
     }
     let from = step.from;
