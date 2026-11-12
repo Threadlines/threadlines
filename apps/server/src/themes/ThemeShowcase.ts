@@ -14,7 +14,12 @@
  * app mints; its branch is named by it, so every step can be taken again:
  * sending the same share twice updates one branch and finds one pull request
  * instead of opening another. Before posting anything, the service checks
- * the account is still the one the person saw.
+ * the account is still the one the person saw. The share's commit is made
+ * under the account's name and its GitHub no-reply address, so nobody's email
+ * is published with a theme.
+ *
+ * Taking a share back, until it's added: the same account removes the branch
+ * and closes its pull request. GitHub keeps the closed pull request.
  */
 import * as NodeOS from "node:os";
 import { brotliDecompressSync, inflateSync } from "node:zlib";
@@ -35,6 +40,7 @@ import {
   type ThemeShowcaseSubmission,
   type ThemeShowcaseSubmissions,
   type ThemeShowcaseSubmitInput,
+  type ThemeShowcaseTakeBackInput,
   type ThemeShowcaseTheme,
 } from "@threadlines/contracts";
 import {
@@ -118,6 +124,10 @@ export interface ThemeShowcaseShape {
   ) => Effect.Effect<ThemeShowcaseSubmission, ThemeShowcaseError>;
   /** This computer's shares, their states looked up again when old. */
   readonly submissions: Effect.Effect<ThemeShowcaseSubmissions, ThemeShowcaseError>;
+  /** Takes back a share that isn't added yet: closes its pull request and removes its branch. */
+  readonly takeBack: (
+    input: ThemeShowcaseTakeBackInput,
+  ) => Effect.Effect<ThemeShowcaseSubmission, ThemeShowcaseError>;
   /** Whether a theme with this content is in the list as last fetched. */
   readonly listed: (hash: string) => Effect.Effect<boolean>;
 }
@@ -145,6 +155,28 @@ const reasonFor = (error: GitHubCliError) => {
   return kind === "unknown" ? REASONS.unreachable : REASONS[kind];
 };
 
+/** The same failures, worded for taking a share back. */
+const TAKE_BACK_REASONS = {
+  noGitHubCli:
+    "Taking it back needs the GitHub command-line tool (gh) on this computer. Install it and sign in, then try again.",
+  signedOut: "This computer isn't signed in to GitHub. Sign in, then take it back.",
+  rateLimited: REASONS.rateLimited,
+  rejected: "GitHub didn't let this account close the pull request.",
+  unreachable: REASONS.unreachable,
+} as const;
+
+const takeBackReasonFor = (error: GitHubCliError) => {
+  const kind = gitHubFailureKind(error);
+  return kind === "unknown" ? TAKE_BACK_REASONS.unreachable : TAKE_BACK_REASONS[kind];
+};
+
+/**
+ * The address GitHub gives every account for commits that shouldn't carry a
+ * real one. A commit under it still shows as the account's.
+ */
+const noReplyEmail = (account: { readonly id: number; readonly login: string }) =>
+  `${account.id}+${account.login}@users.noreply.github.com`;
+
 const decodeIndexHead = Schema.decodeUnknownOption(
   Schema.Struct({ format: Schema.String, themes: Schema.Array(Schema.Unknown) }),
 );
@@ -158,7 +190,25 @@ const decodePullRequests = Schema.decodeUnknownOption(
 );
 const decodePullRequest = Schema.decodeUnknownOption(Schema.fromJsonString(PullRequestLink));
 const decodePullState = Schema.decodeUnknownOption(
-  Schema.fromJsonString(Schema.Struct({ state: Schema.String, merged: Schema.Boolean })),
+  Schema.fromJsonString(
+    Schema.Struct({
+      state: Schema.String,
+      merged: Schema.Boolean,
+      /** The fork and branch it comes from; gone once the fork is deleted. */
+      repo: Schema.NullOr(Schema.String),
+      ref: Schema.NullOr(Schema.String),
+    }),
+  ),
+);
+const PULL_STATE_JQ =
+  "{state, merged: (.merged_at != null), repo: .head.repo.full_name, ref: .head.ref}";
+const decodeAccount = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Struct({ login: Schema.String, id: Schema.Int })),
+);
+const decodeClose = Schema.decodeUnknownOption(
+  Schema.fromJsonString(
+    Schema.Struct({ author: Schema.NullOr(Schema.String), closedBy: Schema.NullOr(Schema.String) }),
+  ),
 );
 
 /** The list's entries that point where the format says they must; the rest are dropped. */
@@ -213,10 +263,11 @@ const toSubmission = (row: ThemeShowcaseSubmissionRow): ThemeShowcaseSubmission 
         login: row.login,
         pullRequestUrl: row.pullRequestUrl,
         state: row.state,
+        ...(row.state === "notAdded" && row.takenBack === true ? { takenBack: true } : {}),
         createdAt: row.createdAt,
       };
 
-/** The pull request's text, with the repository's checklist filled in (the app's share is how it's agreed to). */
+/** The pull request's text, with the repository's checklist filled in: the share dialog lists the same promises above its Share button. */
 function pullRequestBody(input: {
   readonly manifest: ThemeManifest;
   readonly fonts: ReadonlyArray<ThemeShowcaseFont>;
@@ -523,23 +574,37 @@ export const makeThemeShowcase = Effect.fn("ThemeShowcase.make")(function* (
       onSome: Effect.succeed,
     });
 
-  /** Fails unless GitHub is still signed in as the account the person saw. */
-  const expectLogin = (login: string, uncertain: boolean) =>
-    gh(["user", "--jq", ".login"]).pipe(
-      Effect.mapError((error) => showcaseError(reasonFor(error), uncertain)),
-      Effect.flatMap((current) =>
-        current.toLowerCase() === login.toLowerCase()
-          ? Effect.void
+  /**
+   * The account GitHub is signed in as, which must still be the one the person
+   * saw (`login`). `next` is what to do once it is again, for the message.
+   */
+  const expectLogin = (
+    login: string,
+    options: {
+      readonly uncertain?: boolean;
+      readonly next?: string;
+      readonly reason?: (error: GitHubCliError) => string;
+    } = {},
+  ) => {
+    const uncertain = options.uncertain ?? false;
+    return gh(["user", "--jq", "{login, id}"]).pipe(
+      Effect.mapError((error) => showcaseError((options.reason ?? reasonFor)(error), uncertain)),
+      Effect.flatMap((text) => {
+        const account = Option.getOrUndefined(decodeAccount(text));
+        if (account === undefined) {
+          return Effect.fail(showcaseError(REASONS.unreachable, uncertain));
+        }
+        return account.login.toLowerCase() === login.toLowerCase()
+          ? Effect.succeed(account)
           : Effect.fail(
               showcaseError(
-                current.length === 0
-                  ? REASONS.unreachable
-                  : `GitHub is now signed in as @${current}, not @${login}. Check the account, then share again.`,
+                `GitHub is now signed in as @${account.login}, not @${login}. Check the account, then ${options.next ?? "share again"}.`,
                 uncertain,
               ),
-            ),
-      ),
+            );
+      }),
     );
+  };
 
   /** The person's fork of the Showcase, made if they have none, once it answers. */
   const forkFor = (login: string) =>
@@ -582,12 +647,18 @@ export const makeThemeShowcase = Effect.fn("ThemeShowcase.make")(function* (
       }
     });
 
-  /** The share's branch in the fork, holding one commit that adds the theme's folder. */
+  /**
+   * The share's branch in the fork, holding one commit that adds the theme's
+   * folder. The commit names its author itself: left out, GitHub fills in the
+   * account's profile name and email, which may be private or someone's work
+   * address.
+   */
   const pushBranch = (input: {
     readonly fork: string;
     readonly branch: string;
     readonly files: ReadonlyArray<{ readonly path: string; readonly bytes: Uint8Array }>;
     readonly message: string;
+    readonly author: { readonly id: number; readonly login: string };
   }) =>
     Effect.gen(function* () {
       const fail = (error: GitHubCliError) => showcaseError(reasonFor(error));
@@ -618,7 +689,15 @@ export const makeThemeShowcase = Effect.fn("ThemeShowcase.make")(function* (
       ).pipe(Effect.mapError(fail), Effect.flatMap(nonEmpty));
       const commit = yield* gh(
         ["--method", "POST", `repos/${input.fork}/git/commits`, "--jq", ".sha"],
-        { body: { message: input.message, tree: treeSha, parents: [base] } },
+        {
+          body: {
+            message: input.message,
+            tree: treeSha,
+            parents: [base],
+            // The committer follows the author when it isn't given.
+            author: { name: input.author.login, email: noReplyEmail(input.author) },
+          },
+        },
       ).pipe(Effect.mapError(fail), Effect.flatMap(nonEmpty));
       // A branch a try before this made is moved to the new commit.
       yield* gh(["--method", "POST", `repos/${input.fork}/git/refs`, "--jq", ".ref"], {
@@ -662,7 +741,7 @@ export const makeThemeShowcase = Effect.fn("ThemeShowcase.make")(function* (
       );
       if (Option.isSome(earlier)) return earlier.value;
       // The pull request is what makes the share public: check the account once more.
-      yield* expectLogin(input.login, false);
+      yield* expectLogin(input.login);
       const outcome = yield* gh(
         [
           "--method",
@@ -746,7 +825,7 @@ export const makeThemeShowcase = Effect.fn("ThemeShowcase.make")(function* (
           rows.find((row) => row.pullRequestUrl === null && row.entryId === share.entry.entryId);
         const submissionId = before?.submissionId ?? input.submissionId;
         const branch = `showcase/${submissionId}`;
-        yield* expectLogin(input.login, before !== undefined);
+        const account = yield* expectLogin(input.login, { uncertain: before !== undefined });
         const slug =
           before?.slug ??
           showcaseSlugFor(share.manifest.name, new Set(showcase.themes.map((entry) => entry.id)));
@@ -760,6 +839,7 @@ export const makeThemeShowcase = Effect.fn("ThemeShowcase.make")(function* (
           pullRequestNumber: null,
           pullRequestUrl: null,
           state: "inReview",
+          takenBack: null,
           createdAt: before?.createdAt ?? (yield* nowIso),
           checkedAt: null,
         };
@@ -800,6 +880,7 @@ export const makeThemeShowcase = Effect.fn("ThemeShowcase.make")(function* (
           fork: fork.name,
           branch,
           message: `Add ${share.manifest.name}`,
+          author: account,
           files: [
             {
               path: `themes/${slug}/theme.threadlines-theme`,
@@ -827,28 +908,60 @@ export const makeThemeShowcase = Effect.fn("ThemeShowcase.make")(function* (
     );
 
   /**
+   * Whether a closed pull request was closed by the account that opened it:
+   * null when GitHub doesn't name one of them (a deleted account), and
+   * "unreachable" when it couldn't be asked just now. Who closed it is on the
+   * pull request's issue, not on the pull request.
+   */
+  const closedByAuthor = (pullRequestNumber: number) =>
+    gh([
+      `repos/${THEME_SHOWCASE_REPOSITORY}/issues/${pullRequestNumber}`,
+      "--jq",
+      "{author: .user.login, closedBy: .closed_by.login}",
+    ]).pipe(
+      Effect.map((text) => Option.getOrUndefined(decodeClose(text))),
+      Effect.catch(() => Effect.succeed(undefined)),
+      Effect.map((close) => {
+        if (close === undefined) return "unreachable" as const;
+        if (close.author === null || close.closedBy === null) return null;
+        return close.author.toLowerCase() === close.closedBy.toLowerCase();
+      }),
+    );
+
+  /**
    * A share's state now: listed once the list has it (its content, or its
    * folder after a merge, in case a maintainer touched it up); not added when
-   * its pull request closed unmerged; in review until then, merged or not.
+   * its pull request closed unmerged, and taken back when the account that
+   * opened it is the one that closed it; in review until then, merged or not.
+   * A lookup that fails leaves the share as it was, to look again later, and
+   * so is a closed one while GitHub doesn't name who closed it.
    */
   const recheck = (
     row: ThemeShowcaseSubmissionRow,
     listed: { readonly hashes: ReadonlySet<string>; readonly ids: ReadonlySet<string> },
   ) =>
     Effect.gen(function* () {
-      if (listed.hashes.has(row.publishedHash)) return "listed" as const;
-      if (row.pullRequestNumber === null) return row.state;
-      const text = yield* gh([
-        `repos/${THEME_SHOWCASE_REPOSITORY}/pulls/${row.pullRequestNumber}`,
-        "--jq",
-        "{state, merged: (.merged_at != null)}",
-      ]).pipe(Effect.catch(() => Effect.succeed("")));
-      const pull = Option.getOrUndefined(decodePullState(text));
-      if (pull === undefined) return row.state;
+      const known = { state: row.state, takenBack: row.takenBack };
+      if (listed.hashes.has(row.publishedHash))
+        return { state: "listed", takenBack: null } as const;
+      if (row.pullRequestNumber === null) return known;
+      const pulls = `repos/${THEME_SHOWCASE_REPOSITORY}/pulls/${row.pullRequestNumber}`;
+      const pull = Option.getOrUndefined(
+        decodePullState(
+          yield* gh([pulls, "--jq", PULL_STATE_JQ]).pipe(Effect.catch(() => Effect.succeed(""))),
+        ),
+      );
+      if (pull === undefined) return known;
       // Merged but not in the list yet (the list rebuilds after a merge): still on its way.
-      if (pull.merged)
-        return listed.ids.has(row.slug) ? ("listed" as const) : ("inReview" as const);
-      return pull.state === "closed" ? ("notAdded" as const) : ("inReview" as const);
+      if (pull.merged) {
+        return {
+          state: listed.ids.has(row.slug) ? "listed" : "inReview",
+          takenBack: null,
+        } as const;
+      }
+      if (pull.state !== "closed") return { state: "inReview", takenBack: null } as const;
+      const takenBack = row.takenBack ?? (yield* closedByAuthor(row.pullRequestNumber));
+      return takenBack === "unreachable" ? known : ({ state: "notAdded", takenBack } as const);
     });
 
   const submissions: ThemeShowcaseShape["submissions"] = Effect.gen(function* () {
@@ -856,7 +969,8 @@ export const makeThemeShowcase = Effect.fn("ThemeShowcase.make")(function* (
     const due = rows.filter(
       (row) =>
         row.pullRequestUrl !== null &&
-        row.state === "inReview" &&
+        // In review, or closed before this build noted who closed it.
+        (row.state === "inReview" || (row.state === "notAdded" && row.takenBack === null)) &&
         (row.checkedAt === null || now() - Date.parse(row.checkedAt) >= STATE_CHECK_MS),
     );
     if (due.length > 0) {
@@ -870,8 +984,8 @@ export const makeThemeShowcase = Effect.fn("ThemeShowcase.make")(function* (
         due,
         (row) =>
           recheck(row, listed).pipe(
-            Effect.flatMap((state) =>
-              storedShares(submissionsRepo.put({ ...row, state, checkedAt })),
+            Effect.flatMap((found) =>
+              storedShares(submissionsRepo.put({ ...row, ...found, checkedAt })),
             ),
           ),
         { concurrency: 4, discard: true },
@@ -886,7 +1000,87 @@ export const makeThemeShowcase = Effect.fn("ThemeShowcase.make")(function* (
     };
   });
 
-  return ThemeShowcase.of({ list, picture, read, prepare, submit, submissions, listed });
+  const takeBack: ThemeShowcaseShape["takeBack"] = (input) =>
+    shareLock.withPermits(1)(
+      Effect.gen(function* () {
+        const fail = (error: GitHubCliError) => showcaseError(takeBackReasonFor(error));
+        const row = Option.getOrUndefined(
+          yield* storedShares(submissionsRepo.get(input.submissionId)),
+        );
+        const settled = row === undefined ? null : toSubmission(row);
+        if (row === undefined || settled === null || row.pullRequestNumber === null) {
+          return yield* showcaseError("That share isn't on this computer.");
+        }
+        if (row.state === "notAdded" && row.takenBack !== null) return settled;
+        const added = () =>
+          showcaseError(
+            "It's already in the Showcase. To have it removed, open a takedown request in the Threadlines/themes repository on GitHub.",
+          );
+        if (row.state === "listed") return yield* added();
+        // Only the account that opened the pull request (or a maintainer) can close it.
+        yield* expectLogin(row.login, { next: "take it back", reason: takeBackReasonFor });
+        const pulls = `repos/${THEME_SHOWCASE_REPOSITORY}/pulls/${row.pullRequestNumber}`;
+        const pull = yield* gh([pulls, "--jq", PULL_STATE_JQ]).pipe(
+          Effect.mapError(fail),
+          Effect.flatMap((text) => parsed(text, decodePullState)),
+        );
+        if (pull.merged) return yield* added();
+        // The branch goes first: it holds the theme, and a failure here leaves the share
+        // whole and in review, to take back again. Gone already (404, or 422 for a
+        // missing branch) is fine.
+        if (pull.repo !== null && pull.ref === `showcase/${row.submissionId}`) {
+          yield* gh(["--method", "DELETE", `repos/${pull.repo}/git/refs/heads/${pull.ref}`], {
+            timeoutMs: WRITE_TIMEOUT_MS,
+          }).pipe(
+            Effect.asVoid,
+            Effect.catch((error) => {
+              const status = gitHubHttpStatus(error);
+              return status === 404 || status === 422 ? Effect.void : Effect.fail(fail(error));
+            }),
+          );
+        }
+        // Closed already (on GitHub, by them or by a maintainer): only note who did.
+        const closedBefore = pull.state === "closed";
+        if (!closedBefore) {
+          // GitHub may have closed it when its branch went; asking again is harmless.
+          // It answers with the pull request as it is now: one a maintainer merged in
+          // the meantime isn't taken back.
+          const after = yield* gh(["--method", "PATCH", pulls, "--jq", PULL_STATE_JQ], {
+            body: { state: "closed" },
+            timeoutMs: WRITE_TIMEOUT_MS,
+          }).pipe(
+            Effect.mapError(fail),
+            Effect.flatMap((text) => parsed(text, decodePullState)),
+          );
+          if (after.merged) return yield* added();
+        }
+        // Who closed it. A maintainer may have got there first, so GitHub is asked even
+        // after closing it here; when it can't say, the close above is taken as ours.
+        const closer = yield* closedByAuthor(row.pullRequestNumber);
+        const takenBack =
+          (closer === "unreachable" ? null : closer) ?? (closedBefore ? null : true);
+        const done: ThemeShowcaseSubmissionRow = {
+          ...row,
+          state: "notAdded",
+          takenBack,
+          checkedAt: yield* nowIso,
+        };
+        yield* storedShares(submissionsRepo.put(done));
+        if (takenBack === true) yield* analytics.record("theme.showcase.takenBack", {});
+        return toSubmission(done) ?? (yield* showcaseError(REASONS.unreachable));
+      }),
+    );
+
+  return ThemeShowcase.of({
+    list,
+    picture,
+    read,
+    prepare,
+    submit,
+    submissions,
+    takeBack,
+    listed,
+  });
 });
 
 export const ThemeShowcaseLive = Layer.effect(ThemeShowcase, makeThemeShowcase());

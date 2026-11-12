@@ -3,9 +3,15 @@
  * the library goes to the public Threadlines/themes repository as a pull
  * request from the person's own GitHub account, on the computer that holds
  * it. The dialog shows what gets published (the picture, the credit, the
- * fonts and their licenses) and why it can't be yet, before anything is sent.
- * A share keeps its id while the dialog is open, so sending again after an
- * unclear failure picks the same share up instead of opening another.
+ * fonts and their licenses) and why it can't be yet, before anything is sent,
+ * and says in two short lines what sharing does: it's public at once, under
+ * which account, and it's the person's own work. Kept light on purpose:
+ * sharing a theme should feel friendly, not like signing something. A share
+ * keeps its id while the dialog is open, so sending again after an unclear
+ * failure picks the same share up instead of opening another.
+ *
+ * Take back (ThemeTakeBackDialog) is the quiet way out until a theme is
+ * added: in the theme's menu, never advertised here.
  */
 import {
   type EnvironmentId,
@@ -24,12 +30,14 @@ import {
   TransportRequestRetriesExhaustedError,
 } from "~/rpc/transportError";
 import { useSourceControlSetup } from "~/lib/sourceControlDiscoveryState";
+import { cn } from "~/lib/utils";
 import { describeTheme } from "~/themeLibrary/themeCatalog";
 import {
   newShowcaseSubmissionId,
   prepareShowcaseShare,
   readShowcaseAccount,
   submitShowcaseShare,
+  takeBackShowcaseShare,
 } from "~/themeLibrary/themeShowcase";
 import { GitHubSignInAction } from "../../settings/GitHubSignInAction";
 import { Button } from "../../ui/button";
@@ -43,6 +51,7 @@ import {
   DialogTitle,
 } from "../../ui/dialog";
 import { Spinner } from "../../ui/spinner";
+import { toastManager } from "../../ui/toast";
 import { useThemeCreditsDraft } from "./ThemeCreditsFields";
 import { ThemePromptSwitch } from "./ThemePromptSwitch";
 
@@ -112,10 +121,12 @@ function useGitHubAccount(environmentId: EnvironmentId) {
 function AccountLine({
   account,
   environmentId,
+  keepsEmailPrivate,
   onCheck,
 }: {
   readonly account: Account;
   readonly environmentId: EnvironmentId;
+  readonly keepsEmailPrivate: boolean;
   readonly onCheck: () => void;
 }) {
   const line = "text-[12.5px] leading-[18px] text-muted-foreground";
@@ -124,11 +135,19 @@ function AccountLine({
       return <p className={line}>Checking GitHub…</p>;
     case "signedIn":
       return (
-        <p className={line}>
-          Opens a public pull request from your GitHub account,{" "}
-          <span className="font-medium text-foreground">@{account.login}</span>. Your account name
-          shows with the theme once it's added.
-        </p>
+        <div className={cn("grid gap-1.5", line)} data-testid="theme-share-terms">
+          <p>
+            Shared from <span className="font-medium text-foreground">@{account.login}</span> on
+            GitHub, where it's public right away.
+            {keepsEmailPrivate
+              ? null
+              : " An older Threadlines on that computer also shows your GitHub email there. Update it first to keep the email private."}
+          </p>
+          <p>
+            By sharing, you're saying it's your own work, with nothing copied from a game, film or
+            brand.
+          </p>
+        </div>
       );
     case "signedOut":
       return (
@@ -171,6 +190,7 @@ function AccountLine({
 
 export function ThemeShareDialog({
   environmentId,
+  keepsEmailPrivate,
   entryId,
   name,
   manifest,
@@ -178,6 +198,11 @@ export function ThemeShareDialog({
 }: {
   /** A computer holding the theme whose server shares (`themeShowcase`). */
   readonly environmentId: EnvironmentId;
+  /**
+   * That server leaves the account's email out of the share
+   * (`themeShowcaseTakeBack`). An older one publishes it, and the dialog says so.
+   */
+  readonly keepsEmailPrivate: boolean;
   readonly entryId: string;
   readonly name: string;
   /** The theme as the library holds it, for its credits and prompt. */
@@ -333,7 +358,12 @@ export function ThemeShareDialog({
               </ul>
             </div>
           ) : null}
-          <AccountLine account={account} environmentId={environmentId} onCheck={check} />
+          <AccountLine
+            account={account}
+            environmentId={environmentId}
+            keepsEmailPrivate={keepsEmailPrivate}
+            onCheck={check}
+          />
           {sending.state === "idle" && sending.error !== null ? (
             <p role="alert" className="text-[12.5px] whitespace-pre-line text-warning">
               {sending.error}
@@ -347,6 +377,84 @@ export function ThemeShareDialog({
           <Button disabled={!canShare} onClick={share}>
             {sending.state === "sending" ? <Spinner className="size-3.5" /> : null}
             {uncertain ? "Check and share" : "Share"}
+          </Button>
+        </DialogFooter>
+      </DialogPopup>
+    </Dialog>
+  );
+}
+
+/**
+ * Take back: closes a share's pull request before it's added, from the
+ * computer and GitHub account that shared it. Says, briefly, that the closed
+ * pull request stays on GitHub, and puts the pull request a click away when
+ * GitHub won't close it.
+ */
+export function ThemeTakeBackDialog({
+  environmentId,
+  submission,
+  name,
+  onClose,
+}: {
+  /** The computer that made the share. */
+  readonly environmentId: EnvironmentId;
+  readonly submission: ThemeShowcaseSubmission;
+  readonly name: string;
+  readonly onClose: () => void;
+}) {
+  const [taking, setTaking] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const takeBack = () => {
+    setTaking(true);
+    setError(null);
+    void takeBackShowcaseShare(environmentId, submission.submissionId)
+      .then((taken) => {
+        // A maintainer may have closed it first: then it wasn't taken back, and the tile says so.
+        toastManager.add(
+          taken.takenBack === true
+            ? { type: "success", title: `${name} was taken back from the Showcase` }
+            : { type: "info", title: `${name}'s pull request was already closed` },
+        );
+        onClose();
+      })
+      .catch((cause: unknown) => {
+        setTaking(false);
+        setError(
+          isShowcaseError(cause)
+            ? cause.detail
+            : messageOf(cause, "Couldn't take the theme back. Try again."),
+        );
+      });
+  };
+  return (
+    <Dialog open onOpenChange={(open) => (open ? undefined : onClose())}>
+      <DialogPopup className="max-w-md" data-testid="theme-take-back-dialog">
+        <DialogHeader>
+          <DialogTitle>Take {name} back?</DialogTitle>
+          <DialogDescription>
+            It won't be added to the Showcase, and you can share it again any time. Its closed pull
+            request stays on GitHub.
+          </DialogDescription>
+        </DialogHeader>
+        {error !== null ? (
+          <DialogPanel>
+            <p role="alert" className="text-[12.5px] whitespace-pre-line text-warning">
+              {error}
+            </p>
+          </DialogPanel>
+        ) : null}
+        <DialogFooter>
+          {error !== null ? (
+            <Button variant="outline" onClick={() => openExternalUrl(submission.pullRequestUrl)}>
+              Open pull request
+            </Button>
+          ) : null}
+          <Button variant="outline" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button disabled={taking} onClick={takeBack}>
+            {taking ? <Spinner className="size-3.5" /> : null}
+            Take back
           </Button>
         </DialogFooter>
       </DialogPopup>

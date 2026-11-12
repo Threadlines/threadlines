@@ -137,9 +137,9 @@ const output = (stdout: string): VcsProcess.VcsProcessOutput => ({
 
 /**
  * `gh api` against github.com, faked: who is signed in, the fork, the git
- * objects a share writes, and the pull requests. `pullPost` decides how
- * opening one goes ("ok", or "lost": GitHub opens it but the answer never
- * comes back).
+ * objects a share writes, and the pull requests (and who closed each).
+ * `pullPost` decides how opening one goes ("ok", or "lost": GitHub opens it
+ * but the answer never comes back).
  */
 const github = {
   login: "octocat",
@@ -147,8 +147,18 @@ const github = {
   writes: [] as string[],
   blobs: [] as Array<{ sha: string; bytes: Buffer }>,
   trees: [] as Array<{ base_tree: string; tree: Array<{ path: string; sha: string }> }>,
+  commits: [] as Array<{ author?: { name: string; email: string } }>,
   refs: new Map<string, string>(),
-  pulls: [] as Array<{ number: number; url: string; head: string; state: string; merged: boolean }>,
+  /** Deleting a branch fails, as when GitHub drops the connection. */
+  deleteFails: false,
+  pulls: [] as Array<{
+    number: number;
+    url: string;
+    head: string;
+    state: string;
+    merged: boolean;
+    closedBy?: string;
+  }>,
 };
 const execute: GitHubCli.GitHubCliShape["execute"] = (input) => {
   const args = input.args.slice(3).filter((arg) => arg !== "--input" && arg !== "-");
@@ -157,7 +167,7 @@ const execute: GitHubCli.GitHubCliShape["execute"] = (input) => {
   const body = input.stdin === undefined ? {} : JSON.parse(input.stdin);
   if (method !== "GET") github.writes.push(`${method} ${path}`);
   const json = (value: unknown) => Effect.succeed(output(`${JSON.stringify(value)}\n`));
-  if (path === "user") return Effect.succeed(output(`${github.login}\n`));
+  if (path === "user") return json({ login: github.login, id: 583231 });
   if (path === "repos/Threadlines/themes/forks") {
     return json({ name: `${github.login}/themes`, owner: github.login });
   }
@@ -175,7 +185,10 @@ const execute: GitHubCli.GitHubCliShape["execute"] = (input) => {
     github.trees.push(body);
     return Effect.succeed(output(`tree${github.trees.length + 1}\n`));
   }
-  if (path.endsWith("/git/commits")) return Effect.succeed(output("commit1\n"));
+  if (path.endsWith("/git/commits")) {
+    github.commits.push(body);
+    return Effect.succeed(output("commit1\n"));
+  }
   if (path.endsWith("/git/refs") && method === "POST") {
     if (github.refs.has(body.ref)) {
       return Effect.fail(
@@ -189,6 +202,19 @@ const execute: GitHubCli.GitHubCliShape["execute"] = (input) => {
     return Effect.succeed(output(`${body.ref}\n`));
   }
   if (method === "PATCH" && path.includes("/git/refs/heads/")) return json({});
+  if (method === "DELETE" && path.includes("/git/refs/heads/")) {
+    const ref = path.slice(path.indexOf("/git/") + "/git/".length);
+    const refused = github.deleteFails
+      ? "context deadline exceeded"
+      : github.refs.has(ref)
+        ? null
+        : "Reference does not exist (HTTP 422)";
+    if (refused !== null) {
+      return Effect.fail(new GitHubCli.GitHubCliError({ operation: "execute", detail: refused }));
+    }
+    github.refs.delete(ref);
+    return Effect.succeed(output(""));
+  }
   if (path.startsWith("repos/Threadlines/themes/pulls?head=")) {
     const head = decodeURIComponent(/head=([^&]+)/.exec(path)![1]!);
     return json(
@@ -215,7 +241,17 @@ const execute: GitHubCli.GitHubCliShape["execute"] = (input) => {
   const pullNumber = /^repos\/Threadlines\/themes\/pulls\/(\d+)$/.exec(path)?.[1];
   if (pullNumber !== undefined) {
     const pull = github.pulls.find((candidate) => candidate.number === Number(pullNumber));
-    return json({ state: pull?.state, merged: pull?.merged });
+    if (pull !== undefined && method === "PATCH" && pull.state !== "closed") {
+      pull.state = body.state;
+      pull.closedBy = github.login;
+    }
+    const [owner, ref] = pull?.head.split(":") ?? [];
+    return json({ state: pull?.state, merged: pull?.merged, repo: `${owner}/themes`, ref });
+  }
+  const issueNumber = /^repos\/Threadlines\/themes\/issues\/(\d+)$/.exec(path)?.[1];
+  if (issueNumber !== undefined) {
+    const pull = github.pulls.find((candidate) => candidate.number === Number(issueNumber));
+    return json({ author: pull?.head.split(":")[0] ?? null, closedBy: pull?.closedBy ?? null });
   }
   return Effect.die(new Error(`unexpected gh call: ${input.args.join(" ")}`));
 };
@@ -412,6 +448,11 @@ it.layer(TestLayer)("ThemeShowcase", (it) => {
       assert.isUndefined(published.createdBy);
       assert.isFalse(blob(1).includes("tEXt"));
       assert.deepStrictEqual(JSON.parse(blob(2).toString("utf8")), { sharedBy: "octocat" });
+      // The commit is the account's without its email: GitHub's no-reply address, not the profile's.
+      assert.deepStrictEqual(github.commits.at(-1)?.author, {
+        name: "octocat",
+        email: "583231+octocat@users.noreply.github.com",
+      });
       assert.deepInclude(recorded.at(-1), { event: "theme.showcase.shared" });
 
       // Sent again (a second click, a retry after a restart): the same pull request.
@@ -497,6 +538,7 @@ it.layer(TestLayer)("ThemeShowcase", (it) => {
         pullRequestNumber: null,
         pullRequestUrl: null,
         state: "inReview",
+        takenBack: null,
         createdAt: "2026-11-09T12:00:00.000Z",
         checkedAt: null,
       });
@@ -525,6 +567,111 @@ it.layer(TestLayer)("ThemeShowcase", (it) => {
       // What that pull request holds, not what this try would have sent.
       assert.strictEqual(sent.publishedHash, "c".repeat(64));
       assert.deepStrictEqual(github.writes.slice(writesBefore), []);
+    }),
+  );
+
+  it.effect("takes a share back, and tells a share its owner closed from one we didn't add", () =>
+    Effect.gen(function* () {
+      const showcase = yield* ThemeShowcase;
+      const library = yield* ThemeLibrary;
+      const share = (name: string, accent: string, submissionId: string) =>
+        library.save({ manifest: { ...harbor, name, colors: { ...harbor.colors, accent } } }).pipe(
+          Effect.flatMap((saved) =>
+            showcase.submit({
+              entryId: saved.entryId,
+              credits: null,
+              includePrompt: false,
+              submissionId,
+              login: "octocat",
+            }),
+          ),
+        );
+      const stateOf = (submissionId: string) =>
+        showcase.submissions.pipe(
+          Effect.map(({ submissions }) => {
+            const found = submissions.find((row) => row.submissionId === submissionId)!;
+            return { state: found.state, takenBack: found.takenBack };
+          }),
+        );
+      const sent = yield* share("Ebb", "#7fd1b9", "takeback0001");
+      const pull = github.pulls.find((candidate) => candidate.url === sent.pullRequestUrl)!;
+      const branch = "refs/heads/showcase/takeback0001";
+      assert.isTrue(github.refs.has(branch));
+
+      // Signed in as someone else: that account can't close it, and nothing is tried.
+      const writesBefore = github.writes.length;
+      github.login = "someone-else";
+      const wrongAccount = yield* failure(showcase.takeBack({ submissionId: "takeback0001" }));
+      github.login = "octocat";
+      assert.match(wrongAccount.detail, /not @octocat\. Check the account, then take it back/);
+      assert.deepStrictEqual(github.writes.slice(writesBefore), []);
+
+      // GitHub drops the branch's removal: nothing is half done, and the share stays in
+      // review to take back again.
+      github.deleteFails = true;
+      const dropped = yield* failure(showcase.takeBack({ submissionId: "takeback0001" }));
+      github.deleteFails = false;
+      assert.match(dropped.detail, /Couldn't reach GitHub/);
+      assert.strictEqual(pull.state, "open");
+      assert.isTrue(github.refs.has(branch));
+      assert.strictEqual((yield* stateOf("takeback0001")).state, "inReview");
+
+      const back = yield* showcase.takeBack({ submissionId: "takeback0001" });
+      assert.deepInclude(back, { state: "notAdded", takenBack: true });
+      assert.strictEqual(pull.state, "closed");
+      assert.isFalse(github.refs.has(branch));
+      assert.deepInclude(recorded.at(-1), { event: "theme.showcase.takenBack" });
+      assert.deepStrictEqual(yield* stateOf("takeback0001"), {
+        state: "notAdded",
+        takenBack: true,
+      });
+      // Taken back, it can be shared again: a new pull request, not the closed one.
+      const again = yield* showcase.submit({
+        entryId: sent.entryId,
+        credits: null,
+        includePrompt: false,
+        submissionId: "takeback0002",
+        login: "octocat",
+      });
+      assert.notStrictEqual(again.pullRequestUrl, sent.pullRequestUrl);
+      assert.strictEqual(again.state, "inReview");
+
+      // Closed on GitHub by the person who shared it: taken back too.
+      const theirs = yield* share("Neap", "#c9a0ff", "byhand000001");
+      const closedByHand = github.pulls.find(
+        (candidate) => candidate.url === theirs.pullRequestUrl,
+      )!;
+      closedByHand.state = "closed";
+      closedByHand.closedBy = "octocat";
+      // Closed by a maintainer: not added.
+      const ours = yield* share("Spring Tide", "#ffb86b", "declined0001");
+      const declined = github.pulls.find((candidate) => candidate.url === ours.pullRequestUrl)!;
+      declined.state = "closed";
+      declined.closedBy = "maintainer";
+      clock += 10 * 60_000;
+      assert.deepStrictEqual(yield* stateOf("byhand000001"), {
+        state: "notAdded",
+        takenBack: true,
+      });
+      assert.deepStrictEqual(yield* stateOf("declined0001"), {
+        state: "notAdded",
+        takenBack: undefined,
+      });
+      // Nothing left to take back from a share we didn't add.
+      const writesAfter = github.writes.length;
+      const kept = yield* showcase.takeBack({ submissionId: "declined0001" });
+      assert.isUndefined(kept.takenBack);
+      assert.deepStrictEqual(github.writes.slice(writesAfter), []);
+
+      // A maintainer closes it just before Take back does: it isn't called taken back.
+      const raced = yield* share("Rip Current", "#ff8fa3", "raced0000001");
+      const racedPull = github.pulls.find((candidate) => candidate.url === raced.pullRequestUrl)!;
+      racedPull.state = "closed";
+      racedPull.closedBy = "maintainer";
+      const late = yield* showcase.takeBack({ submissionId: "raced0000001" });
+      assert.deepInclude(late, { state: "notAdded" });
+      assert.isUndefined(late.takenBack);
+      assert.isFalse(github.refs.has("refs/heads/showcase/raced0000001"));
     }),
   );
 

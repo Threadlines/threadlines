@@ -40,7 +40,8 @@ import {
 } from "~/themeLibrary/themeCatalog";
 import { importThemeFile } from "~/themeLibrary/themeFiles";
 import {
-  SHOWCASE_SHARE_WORDS,
+  type ShowcaseShare,
+  showcaseShareWords,
   useShowcaseEnvironments,
   useShowcaseShares,
 } from "~/themeLibrary/themeShowcase";
@@ -83,7 +84,7 @@ import { moveBetweenTabs, pageTabId } from "../../ui/page-tabs";
 import { NEW_THEME_PROMPT } from "./NewThemeHint";
 import { ThemeExportDialog } from "./ThemeExportDialog";
 import { ThemeGlassSlider } from "./ThemeGlassSlider";
-import { ThemeShareDialog } from "./ThemeShareDialog";
+import { ThemeShareDialog, ThemeTakeBackDialog } from "./ThemeShareDialog";
 import { ThemeShowcaseView } from "./ThemeShowcaseView";
 import { ThemeTileView } from "./ThemeTileView";
 
@@ -267,8 +268,8 @@ function RenameDialog({
 /**
  * A starter's or your theme's options: Duplicate (a copy in your themes, to
  * change), Export file (its dialog makes the file ready to share) and Copy
- * prompt for both; Share to Showcase, Rename and Delete for your own.
- * Built-ins have none.
+ * prompt for both; Share to Showcase, Rename and Delete for your own, and
+ * Take back while a share of it is in review. Built-ins have none.
  */
 function ThemeTileMenu({
   tile,
@@ -276,6 +277,7 @@ function ThemeTileMenu({
   onRename,
   onExport,
   onShare,
+  onTakeBack,
   onDelete,
 }: {
   readonly tile: ThemeTile;
@@ -284,6 +286,8 @@ function ThemeTileMenu({
   readonly onExport: () => void;
   /** Null when no computer holding it can share (an older Threadlines). */
   readonly onShare: (() => void) | null;
+  /** Null unless a share of it is in review on a computer that can take it back. */
+  readonly onTakeBack: (() => void) | null;
   readonly onDelete: () => void;
 }) {
   const { copyToClipboard } = useCopyToClipboard();
@@ -318,6 +322,9 @@ function ThemeTileMenu({
         <MenuItem onClick={duplicate}>Duplicate</MenuItem>
         <MenuItem onClick={onExport}>Export file…</MenuItem>
         {library && onShare ? <MenuItem onClick={onShare}>Share to Showcase…</MenuItem> : null}
+        {library && onTakeBack ? (
+          <MenuItem onClick={onTakeBack}>Take back from Showcase…</MenuItem>
+        ) : null}
         <MenuItem
           onClick={() =>
             void loadTileManifest(tile)
@@ -486,6 +493,15 @@ function OwnThemes({ switcher }: { readonly switcher: ReactNode }) {
         });
       })
       .catch(failed("Couldn't share the theme"));
+  const takesBack = (environmentId: EnvironmentId) =>
+    sharing.some(
+      (environment) =>
+        environment.environmentId === environmentId &&
+        environment.capabilities.themeShowcaseTakeBack === true,
+    );
+  const [takingBack, setTakingBack] = useState<(ShowcaseShare & { readonly name: string }) | null>(
+    null,
+  );
   const [renaming, setRenaming] = useState<ThemeTile | null>(null);
   const [exporting, setExporting] = useState<{
     readonly manifest: ThemeManifest;
@@ -565,7 +581,7 @@ function OwnThemes({ switcher }: { readonly switcher: ReactNode }) {
               return (
                 <div key={tile.key} className="group/tile relative">
                   <ThemeTileView
-                    tile={share ? { ...tile, detail: SHOWCASE_SHARE_WORDS[share.state] } : tile}
+                    tile={share ? { ...tile, detail: showcaseShareWords(share.submission) } : tile}
                     selected={sameThemeChoice(tile.choice, committed)}
                     onSelect={() => pick(tile)}
                     className="w-full"
@@ -577,6 +593,11 @@ function OwnThemes({ switcher }: { readonly switcher: ReactNode }) {
                       onRename={() => setRenaming(tile)}
                       onExport={() => exportTile(tile)}
                       onShare={sharer === null ? null : () => shareTile(tile, sharer)}
+                      onTakeBack={
+                        share?.submission.state === "inReview" && takesBack(share.environmentId)
+                          ? () => setTakingBack({ ...share, name: tile.name })
+                          : null
+                      }
                       onDelete={() =>
                         sameThemeChoice(tile.choice, committed)
                           ? setConfirmDelete(tile)
@@ -598,7 +619,19 @@ function OwnThemes({ switcher }: { readonly switcher: ReactNode }) {
       </div>
       {renaming ? <RenameDialog tile={renaming} onClose={() => setRenaming(null)} /> : null}
       {sharingTile ? (
-        <ThemeShareDialog {...sharingTile} onClose={() => setSharingTile(null)} />
+        <ThemeShareDialog
+          {...sharingTile}
+          keepsEmailPrivate={takesBack(sharingTile.environmentId)}
+          onClose={() => setSharingTile(null)}
+        />
+      ) : null}
+      {takingBack ? (
+        <ThemeTakeBackDialog
+          environmentId={takingBack.environmentId}
+          submission={takingBack.submission}
+          name={takingBack.name}
+          onClose={() => setTakingBack(null)}
+        />
       ) : null}
       {exporting ? (
         <ThemeExportDialog
