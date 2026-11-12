@@ -358,3 +358,25 @@ vp run dist:desktop:artifact -- --platform linux --target AppImage --arch x64 --
 
 Stable and nightly GitHub Releases include the Linux x64 AppImage. The release
 workflow performs a repeatable headless boot check before it publishes the asset.
+
+### Oldest supported Linux
+
+The AppImage runs on systems with glibc 2.34 or newer: Ubuntu 22.04, Debian 12,
+RHEL 9 and later. Electron itself needs less. The limit comes from the
+terminal's native module (node-pty), which is compiled on the build machine and
+takes that machine's glibc. 0.9.0 and 0.10.0 were built on `ubuntu-latest` after
+it became Ubuntu 26.04, needed glibc 2.42, and failed to start on anything
+older with a misleading "Failed to load native module: pty.node" error.
+
+Three things keep that from happening again:
+
+- The Linux build jobs in `release.yml` and `desktop-smoke.yml` run on
+  `ubuntu-24.04`, not `ubuntu-latest`. Move them to a newer image only together
+  with the floor below.
+- `scripts/build-desktop-artifact.ts` reads every binary in the packaged app and
+  fails the build when one needs a newer glibc, libstdc++ or libgcc than
+  `LINUX_LIBRARY_FLOOR` in `scripts/lib/linux-library-floor.ts`.
+- After the boot check, `scripts/verify-linux-app-on-old-system.ts` unpacks the
+  finished AppImage, runs the same check over everything in it, and opens the
+  packaged terminal inside an Ubuntu 22.04 container. The boot check alone
+  cannot catch this: it runs on the machine that built the file.
