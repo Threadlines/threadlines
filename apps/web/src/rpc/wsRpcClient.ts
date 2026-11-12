@@ -440,6 +440,7 @@ export interface WsRpcClient {
     readonly prepare: RpcUnaryMethod<typeof WS_METHODS.themeShowcasePrepare>;
     readonly submit: RpcUnaryMethod<typeof WS_METHODS.themeShowcaseSubmit>;
     readonly submissions: RpcUnaryMethod<typeof WS_METHODS.themeShowcaseSubmissions>;
+    readonly takeBack: RpcUnaryMethod<typeof WS_METHODS.themeShowcaseTakeBack>;
   };
   /** This computer's scheduled tasks (docs/design/fleet.md, Part 6). */
   readonly scheduledTasks: {
@@ -1281,6 +1282,8 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.request((client) => client[WS_METHODS.themeShowcaseSubmit](input)),
       submissions: (input) =>
         transport.request((client) => client[WS_METHODS.themeShowcaseSubmissions](input)),
+      takeBack: (input) =>
+        transport.request((client) => client[WS_METHODS.themeShowcaseTakeBack](input)),
     },
     scheduledTasks: {
       subscribe: (listener, options) =>

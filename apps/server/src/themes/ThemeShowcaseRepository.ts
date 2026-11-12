@@ -1,6 +1,7 @@
 /**
- * Themes this computer shared to the Showcase (migration 106): a row per
- * share, written when it starts and settled once GitHub has its pull request.
+ * Themes this computer shared to the Showcase (migrations 106 and 109): a row
+ * per share, written when it starts and settled once GitHub has its pull
+ * request.
  */
 import {
   GitHubLogin,
@@ -35,6 +36,11 @@ export const ThemeShowcaseSubmissionRow = Schema.Struct({
   pullRequestNumber: Schema.NullOr(Schema.Int),
   pullRequestUrl: Schema.NullOr(Schema.String),
   state: ThemeShowcaseSubmissionState,
+  /**
+   * For a share that wasn't added: whether the person who shared it closed
+   * its pull request. Null while that isn't known (or doesn't apply).
+   */
+  takenBack: Schema.NullOr(Schema.BooleanFromBit),
   createdAt: Schema.String,
   /** When the pull request's state was last looked up. */
   checkedAt: Schema.NullOr(Schema.String),
@@ -81,6 +87,7 @@ const make = Effect.gen(function* () {
       pull_request_number AS "pullRequestNumber",
       pull_request_url AS "pullRequestUrl",
       state AS "state",
+      taken_back AS "takenBack",
       created_at AS "createdAt",
       checked_at AS "checkedAt"
     FROM theme_showcase_submissions
@@ -107,7 +114,7 @@ const make = Effect.gen(function* () {
     sql`
       INSERT INTO theme_showcase_submissions (
         submission_id, entry_id, source_hash, published_hash, slug, login,
-        pull_request_number, pull_request_url, state, created_at, checked_at
+        pull_request_number, pull_request_url, state, taken_back, created_at, checked_at
       ) VALUES (
         ${row.submissionId},
         ${row.entryId},
@@ -118,6 +125,7 @@ const make = Effect.gen(function* () {
         ${row.pullRequestNumber},
         ${row.pullRequestUrl},
         ${row.state},
+        ${row.takenBack === null ? null : row.takenBack ? 1 : 0},
         ${row.createdAt},
         ${row.checkedAt}
       )
@@ -130,6 +138,7 @@ const make = Effect.gen(function* () {
         pull_request_number = excluded.pull_request_number,
         pull_request_url = excluded.pull_request_url,
         state = excluded.state,
+        taken_back = excluded.taken_back,
         created_at = excluded.created_at,
         checked_at = excluded.checked_at
     `.pipe(Effect.asVoid, wrap("put"));

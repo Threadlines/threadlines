@@ -165,6 +165,8 @@ export const ThemeShowcaseSubmission = Schema.Struct({
   login: GitHubLogin,
   pullRequestUrl: Schema.String,
   state: ThemeShowcaseSubmissionState,
+  /** Not added because the person who shared it closed its pull request (Take back, or on GitHub). */
+  takenBack: Schema.optional(Schema.Boolean),
   createdAt: Schema.String,
 });
 export type ThemeShowcaseSubmission = typeof ThemeShowcaseSubmission.Type;
@@ -176,6 +178,12 @@ export type ThemeShowcaseSubmissions = typeof ThemeShowcaseSubmissions.Type;
 
 export const ThemeShowcaseSubmissionsInput = Schema.Struct({});
 export type ThemeShowcaseSubmissionsInput = typeof ThemeShowcaseSubmissionsInput.Type;
+
+/** A share to take back, on the computer that made it. */
+export const ThemeShowcaseTakeBackInput = Schema.Struct({
+  submissionId: ThemeShowcaseSubmissionId,
+});
+export type ThemeShowcaseTakeBackInput = typeof ThemeShowcaseTakeBackInput.Type;
 
 /**
  * A share that went wrong. `uncertain`: GitHub may have taken part of it;

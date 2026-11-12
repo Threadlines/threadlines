@@ -154,14 +154,40 @@ export async function submitShowcaseShare(
   return submission;
 }
 
+/**
+ * Takes a share back on the computer that made it: its pull request closes and
+ * its branch goes. Fails with the reason when GitHub won't.
+ */
+export async function takeBackShowcaseShare(
+  environmentId: EnvironmentId,
+  submissionId: string,
+): Promise<ThemeShowcaseSubmission> {
+  const submission = await clientOf(environmentId).takeBack({ submissionId });
+  useShowcaseStore.setState((state) => ({
+    shares: {
+      ...state.shares,
+      [environmentId]: (state.shares[environmentId] ?? []).map((share) =>
+        share.submissionId === submission.submissionId ? submission : share,
+      ),
+    },
+  }));
+  return submission;
+}
+
 /** A share's id: sending it again resumes that share instead of starting another. */
 export const newShowcaseSubmissionId = () => randomUUID().replaceAll("-", "").slice(0, 24);
 
+/** A share, and the computer that made it: the one that can take it back. */
+export interface ShowcaseShare {
+  readonly submission: ThemeShowcaseSubmission;
+  readonly environmentId: EnvironmentId;
+}
+
 /**
  * The newest share of each library entry, across the computers that share:
- * what its tile says (In review, In the Showcase, Not added).
+ * what its tile says (In review, In the Showcase, Taken back, Not added).
  */
-export function useShowcaseShares(): ReadonlyMap<string, ThemeShowcaseSubmission> {
+export function useShowcaseShares(): ReadonlyMap<string, ShowcaseShare> {
   const environments = useShowcaseEnvironments();
   const shares = useShowcaseStore((state) => state.shares);
   useEffect(() => {
@@ -177,20 +203,34 @@ export function useShowcaseShares(): ReadonlyMap<string, ThemeShowcaseSubmission
     }
   }, [environments]);
   return useMemo(() => {
-    const newest = new Map<string, ThemeShowcaseSubmission>();
-    for (const list of Object.values(shares)) {
-      for (const share of list) {
-        const seen = newest.get(share.entryId);
-        if (seen === undefined || share.createdAt > seen.createdAt)
-          newest.set(share.entryId, share);
+    const newest = new Map<string, ShowcaseShare>();
+    for (const [environmentId, list] of Object.entries(shares)) {
+      for (const submission of list) {
+        const seen = newest.get(submission.entryId);
+        if (seen === undefined || submission.createdAt > seen.submission.createdAt) {
+          newest.set(submission.entryId, {
+            submission,
+            environmentId: environmentId as EnvironmentId,
+          });
+        }
       }
     }
     return newest;
   }, [shares]);
 }
 
-export const SHOWCASE_SHARE_WORDS: Record<ThemeShowcaseSubmission["state"], string> = {
-  inReview: "In review for the Showcase",
-  listed: "In the Showcase",
-  notAdded: "Not added to the Showcase",
-};
+/** What a shared theme's tile says under its name. */
+export function showcaseShareWords(
+  share: Pick<ThemeShowcaseSubmission, "state" | "takenBack">,
+): string {
+  switch (share.state) {
+    case "inReview":
+      return "In review for the Showcase";
+    case "listed":
+      return "In the Showcase";
+    case "notAdded":
+      return share.takenBack === true
+        ? "Taken back from the Showcase"
+        : "Not added to the Showcase";
+  }
+}

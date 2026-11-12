@@ -729,6 +729,8 @@ const ThemeShowcaseRpcLayer = WsThemeShowcaseRpcGroup.toLayer(
         observeRpcEffect(WS_METHODS.themeShowcaseSubmit, showcase.submit(input), aggregate),
       [WS_METHODS.themeShowcaseSubmissions]: (_input) =>
         observeRpcEffect(WS_METHODS.themeShowcaseSubmissions, showcase.submissions, aggregate),
+      [WS_METHODS.themeShowcaseTakeBack]: (input) =>
+        observeRpcEffect(WS_METHODS.themeShowcaseTakeBack, showcase.takeBack(input), aggregate),
     });
   }),
 );

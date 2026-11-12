@@ -74,6 +74,11 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   themes: Schema.optionalKey(Schema.Boolean),
   /** The server reads the Showcase and shares to it (`themeShowcase.*`, docs/design/custom-themes.md). */
   themeShowcase: Schema.optionalKey(Schema.Boolean),
+  /**
+   * The server takes a share back (`themeShowcase.takeBack`) and shares without
+   * the GitHub account's email. Absent on servers from before both.
+   */
+  themeShowcaseTakeBack: Schema.optionalKey(Schema.Boolean),
   /** The server moves threads to linked computers. Absent until a server ships it. */
   threadMove: Schema.optionalKey(Schema.Boolean),
   /** The server sets up projects copied from another computer (`projectSetups.*`). */

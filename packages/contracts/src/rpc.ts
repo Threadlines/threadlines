@@ -92,6 +92,7 @@ import {
   ThemeShowcaseSubmissions,
   ThemeShowcaseSubmissionsInput,
   ThemeShowcaseSubmitInput,
+  ThemeShowcaseTakeBackInput,
   ThemeShowcaseTheme,
 } from "./themeShowcase.ts";
 import {
@@ -773,6 +774,7 @@ export const WS_METHODS = {
   themeShowcasePrepare: "themeShowcase.prepare",
   themeShowcaseSubmit: "themeShowcase.submit",
   themeShowcaseSubmissions: "themeShowcase.submissions",
+  themeShowcaseTakeBack: "themeShowcase.takeBack",
   // Moving a thread to a linked computer (docs/design/fleet.md, Part 3).
   movesPreview: "moves.preview",
   movesStart: "moves.start",
@@ -2677,6 +2679,13 @@ export const WsThemeShowcaseSubmissionsRpc = Rpc.make(WS_METHODS.themeShowcaseSu
   error: ThemeShowcaseError,
 });
 
+/** Takes a share back before it's added: closes its pull request and removes its branch. */
+export const WsThemeShowcaseTakeBackRpc = Rpc.make(WS_METHODS.themeShowcaseTakeBack, {
+  payload: ThemeShowcaseTakeBackInput,
+  success: ThemeShowcaseSubmission,
+  error: ThemeShowcaseError,
+});
+
 /** The Showcase, a group of its own for the same reason as the themes' group. */
 export const WsThemeShowcaseRpcGroup = RpcGroup.make(
   WsThemeShowcaseListRpc,
@@ -2685,6 +2694,7 @@ export const WsThemeShowcaseRpcGroup = RpcGroup.make(
   WsThemeShowcasePrepareRpc,
   WsThemeShowcaseSubmitRpc,
   WsThemeShowcaseSubmissionsRpc,
+  WsThemeShowcaseTakeBackRpc,
 );
 
 /** Everything else the WebSocket serves; with the outside agents', themes' and Showcase's groups, WsRpcGroup. */

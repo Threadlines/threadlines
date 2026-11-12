@@ -887,8 +887,18 @@ the usual trial, and Keep saves it to the library (`theme.saved` with origin
 file…, which stays for sharing by hand). Its dialog shows the picture, the
 fonts and their licenses, the same credit fields as export, Include the
 prompt, and the GitHub account it would post as (Sign in when there is
-none), plus anything that stops it from being shared. Share opens the pull
-request; the tile then says In review, In the Showcase or Not added.
+none), plus anything that stops it from being shared. Above Share, two
+short lines say what sharing does: it's public right away under that
+account, and sharing says it's the person's own work with nothing copied
+(the pull request's checklist in a sentence). It stays that short on
+purpose (Will, Nov 12): sharing should feel friendly, so the dialog doesn't
+list the fork, the email it leaves out or how to take a share back. Share
+opens the pull request; the tile then says In review, In the Showcase,
+Taken back or Not added. While a share is in review, the theme's menu has
+Take back from Showcase…, the quiet way out, mentioned nowhere else: it
+removes the branch and closes the pull request, after one line saying the
+closed pull request stays on GitHub. A share its owner closed on GitHub
+reads Taken back too; Not added is for one a maintainer closed.
 
 **Sharing, step by step** (`apps/server/src/themes/ThemeShowcase.ts`). The
 server rebuilds the file itself from the library entry (never the client's
@@ -896,12 +906,27 @@ copy), checks the account is the one the person saw, records the share
 (`theme_showcase_submissions`, migration 106), forks the repository (GitHub
 returns the existing fork), writes the folder as one commit on branch
 `showcase/<share id>`, and opens the pull request, or finds the one that
-branch already has. Every step can be taken again: sending the same share
+branch already has. The commit names its author as the account's login and
+its GitHub no-reply address (`<id>+<login>@users.noreply.github.com`): left
+to GitHub, it would carry the profile's name and email, which nobody sharing
+a theme agreed to publish. Every step can be taken again: sending the same share
 twice updates one branch and finds one pull request, and a pull request
 GitHub opened without answering is looked for before saying so. The account
 is checked again just before the pull request, which is what makes it
 public. A share's state follows its pull request, looked up at most every
-five minutes.
+five minutes; a closed one is taken back when the account that opened it is
+the one that closed it (`taken_back`, migration 109, asked of the pull
+request's issue).
+
+**Taking a share back** (`themeShowcase.takeBack`, on the computer that
+shared it). The server checks GitHub is still signed in as the account that
+shared, deletes the share's branch when it's still there, then closes the
+pull request. The branch goes first so a failure leaves the share whole and
+in review, to take back again. A merged one is refused, with the takedown
+form named, and one a maintainer closed first stays Not added. Servers
+that do this, and that share without the email, report
+`themeShowcaseTakeBack`; for an older one the menu item is hidden and the
+share dialog adds a line saying the email shows.
 
 **Takedown.** An issue form in the repository; maintainers remove the folder.
 
