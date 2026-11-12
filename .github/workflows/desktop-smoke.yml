@@ -113,7 +113,9 @@ jobs:
 
   linux-build:
     name: Linux build smoke
-    runs-on: ubuntu-latest
+    # The same machine as the Linux release build (.github/workflows/release.yml),
+    # so this builds the terminal's native module against the same glibc.
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - name: Checkout
@@ -190,6 +192,14 @@ jobs:
           echo "Backend serving at $url"
           curl --connect-timeout 1 --max-time 1 -s "$url" | head -c 400
           probe_url "$url"
+
+      # The boot check above runs on this machine, whose glibc is new enough
+      # for anything it just compiled. This reads what every binary in the
+      # AppImage needs, then opens the app's terminal on an older system, where
+      # a native module built against a newer glibc fails.
+      - name: Check the AppImage runs on older systems
+        timeout-minutes: 5
+        run: node scripts/verify-linux-app-on-old-system.ts release
 
       - name: Dump app log on failure
         if: failure()

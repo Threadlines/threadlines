@@ -11,6 +11,7 @@ import {
 } from "@threadlines/shared/previewInjectedScript";
 import { BRAND_ASSET_PATHS } from "./lib/brand-assets.ts";
 import { getDefaultBuildArch } from "./lib/build-target-arch.ts";
+import { checkLinuxAppLibraryFloor } from "./lib/linux-library-floor.ts";
 import {
   MAC_ADAPTIVE_ICON_ASSETS_CAR_FILE_NAME,
   MAC_ADAPTIVE_ICON_NAME,
@@ -1414,6 +1415,9 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   if (options.platform === "mac") {
     yield* applyMacMinimumSystemVersion(stageDistDir, stageEntries);
   }
+  if (options.platform === "linux") {
+    yield* checkLinuxLibraryFloor(stageDistDir, stageEntries);
+  }
   yield* fs.makeDirectory(options.outputDir, { recursive: true });
 
   const copiedArtifacts: string[] = [];
@@ -1467,6 +1471,42 @@ const applyMacMinimumSystemVersion = Effect.fn("applyMacMinimumSystemVersion")(f
       }
     }
   }
+});
+
+/**
+ * Fails the build when a binary in the packaged Linux app needs newer system
+ * libraries than the oldest systems we support have (LINUX_LIBRARY_FLOOR).
+ */
+const checkLinuxLibraryFloor = Effect.fn("checkLinuxLibraryFloor")(function* (
+  stageDistDir: string,
+  stageEntries: ReadonlyArray<string>,
+) {
+  const path = yield* Path.Path;
+  // electron-builder leaves the app it packaged in linux-unpacked
+  // (linux-arm64-unpacked for arm64) next to the AppImage.
+  const unpackedDirs = stageEntries.filter(
+    (name) => name.startsWith("linux") && name.endsWith("-unpacked"),
+  );
+  if (unpackedDirs.length === 0) {
+    return yield* new BuildScriptError({
+      message: `Found no unpacked Linux app in ${stageDistDir} to check for system library needs.`,
+    });
+  }
+  for (const entry of unpackedDirs) {
+    const appDir = path.join(stageDistDir, entry);
+    const problem = yield* Effect.try({
+      try: () => checkLinuxAppLibraryFloor(appDir),
+      catch: (cause) =>
+        new BuildScriptError({
+          message: `Could not check the system libraries ${appDir} needs.`,
+          cause,
+        }),
+    });
+    if (problem !== null) {
+      return yield* new BuildScriptError({ message: problem });
+    }
+  }
+  yield* Effect.log("[desktop-artifact] Linux binaries load on the oldest supported systems.");
 });
 
 const buildDesktopArtifactCli = Command.make("build-desktop-artifact", {

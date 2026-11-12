@@ -773,7 +773,11 @@ jobs:
       - preflight
       - prepare_release
     if: ${{ needs.preflight.outputs.build_linux == 'true' }}
-    runs-on: ubuntu-latest
+    # Pinned, not ubuntu-latest: the terminal's native module (node-pty) is
+    # compiled here and takes this machine's glibc. Built on ubuntu-26.04 it
+    # needed glibc 2.42 and the app would not start on Ubuntu 24.04 or older.
+    # The build fails if a binary needs more than scripts/lib/linux-library-floor.ts allows.
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - name: Checkout
@@ -917,6 +921,14 @@ jobs:
           fi
 
           echo "Backend serving at $url"
+
+      # The boot check above runs on this machine, whose glibc is new enough
+      # for anything it just compiled. This reads what every binary in the
+      # AppImage needs, then opens the app's terminal on an older system, where
+      # a native module built against a newer glibc fails.
+      - name: Check the AppImage runs on older systems
+        timeout-minutes: 5
+        run: node scripts/verify-linux-app-on-old-system.ts release
 
       - name: Dump Linux app log on failure
         if: failure()
