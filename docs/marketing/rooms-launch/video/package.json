@@ -21,6 +21,8 @@
     "render:threads:x": "ffmpeg -v error -y -ss 1.8 -i out/threads-promo-square.mp4 -vf tpad=start_duration=0.8:start_mode=clone -an -c:v libx264 -crf 18 -preset slow -pix_fmt yuv420p -movflags +faststart out/threads-promo-x.mp4",
     "render:threads:site": "remotion render ThreadsSiteClip out/threads-site.mp4 --crf 23 && remotion still ThreadsSitePoster out/threads-site-poster.png && remotion render ThreadsSiteClipTall out/threads-site-tall.mp4 --crf 23 && remotion still ThreadsSitePosterTall out/threads-site-tall-poster.png",
     "render:threads:posters": "remotion still ThreadsPosterLandscape out/threads-promo-landscape-poster.png && remotion still ThreadsPosterPortrait out/threads-promo-portrait-poster.png && remotion still ThreadsPosterSquare out/threads-promo-square-poster.png",
+    "render:themes": "remotion render ThemesPromoLandscape out/themes-promo-landscape.mp4",
+    "render:themes:clips": "remotion render ThemesClipMontageSquare out/themes-clip-montage-square.mp4 && remotion render ThemesClipHonuSquare out/themes-clip-honu-square.mp4",
     "render:fleet": "npm run render:fleet:landscape && npm run render:fleet:portrait && npm run render:fleet:square && npm run render:fleet:posters",
     "render:fleet:landscape": "remotion render FleetPromoLandscape out/fleet-promo-landscape.mp4",
     "render:fleet:portrait": "remotion render FleetPromoPortrait out/fleet-promo-portrait.mp4",

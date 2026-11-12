@@ -1,6 +1,6 @@
+import { useFrame } from "../frame";
 import type React from "react";
 import { createContext, useContext } from "react";
-import { useCurrentFrame } from "remotion";
 import { type Camera, type CameraKey, type CameraOptions, cameraAt } from "../camera";
 import type { Plan } from "../plan";
 import { full } from "../takes";
@@ -39,7 +39,7 @@ export const Stage: React.FC<{
   float?: Float;
   renderOverlay?: (camera: Camera) => React.ReactNode;
 }> = ({ plan, keys, options, radius, float = STILL, renderOverlay }) => {
-  const frame = useCurrentFrame();
+  const frame = useFrame();
   const whole = useContext(WholeWindow);
   const camera = cameraAt(
     plan.take,

@@ -4,6 +4,7 @@
 import { SITE_URL } from "./config";
 import { type PosterSpec, ROOMS_POSTER, ROOMS_SCENES, type SceneSpec } from "./scenes";
 import { FLEET_POSTER, FLEET_SCENES } from "./scenes-fleet";
+import { THEMES_POSTER, THEMES_SCENES } from "./scenes-themes";
 import { THREADS_POSTER, THREADS_SCENES } from "./scenes-threads";
 import { type StoryId, type Take, type TakeId, TAKES } from "./takes";
 
@@ -60,5 +61,18 @@ export const STORIES: Record<StoryId, Story> = {
     takes: TAKES.fleet,
     scenes: FLEET_SCENES,
     poster: FLEET_POSTER,
+  },
+  themes: {
+    id: "themes",
+    release: "0.10.0",
+    intro: { title: "Themes", line: "Live art behind your work. Make it anything you want." },
+    outro: {
+      title: "Themes",
+      line: "Start with ours, or ask an agent for anything.",
+      url: SITE_URL,
+    },
+    takes: TAKES.themes,
+    scenes: THEMES_SCENES,
+    poster: THEMES_POSTER,
   },
 };

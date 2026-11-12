@@ -1,5 +1,6 @@
 import type React from "react";
-import { AbsoluteFill, useCurrentFrame } from "remotion";
+import { AbsoluteFill } from "remotion";
+import { useFrame } from "../../frame";
 import type { CameraKey } from "../../camera";
 import type { Layout } from "../../layout";
 import { frameAt, type Plan, takeTimeAt } from "../../plan";
@@ -23,7 +24,7 @@ export const AskFirst: React.FC<{ layout: Layout; plan: Plan; spec: SceneSpec }>
   plan,
   spec,
 }) => {
-  const frame = useCurrentFrame();
+  const frame = useFrame();
   const take = plan.take;
   const m = (name: string) => mark(take, name);
   const f = (name: string, after = 0) => frameAt(plan, m(name) + after);

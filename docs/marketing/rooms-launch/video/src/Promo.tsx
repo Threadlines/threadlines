@@ -12,21 +12,31 @@ import { AnswersComeBack } from "./components/scenes/AnswersComeBack";
 import { AskFirst } from "./components/scenes/AskFirst";
 import { AnswerComesBack, AskThePc, RunsOnThePc } from "./components/scenes/FleetScenes";
 import { TalkToAgent } from "./components/scenes/TalkToAgent";
+import {
+  AskForYourOwn,
+  LiveArt,
+  MakeItYours,
+  SetTheGlass,
+  ShareIt,
+  TypeTheme,
+} from "./components/scenes/ThemesScenes";
 import { ThreeAtOnce } from "./components/scenes/ThreeAtOnce";
 import { WorkTogether } from "./components/scenes/WorkTogether";
 import { LAYOUTS, SITE_LAYOUT, SITE_TALL_LAYOUT, type Format, type Layout } from "./layout";
 import type { Plan } from "./plan";
 import type { SceneSpec } from "./scenes";
+import { useOutScale } from "./frame";
 import { STORIES } from "./stories";
 import type { StoryId } from "./takes";
 import { INTRO_FRAMES, OUTRO_FRAMES, posterFrame, scenesFor, TRANSITION_FRAMES } from "./timeline";
 
 export type PromoProps = { story: StoryId; format: Format };
 
-const fadeTiming = linearTiming({
-  durationInFrames: TRANSITION_FRAMES,
-  easing: Easing.bezier(0.33, 0, 0.2, 1),
-});
+const fadeTiming = (out: number) =>
+  linearTiming({
+    durationInFrames: TRANSITION_FRAMES * out,
+    easing: Easing.bezier(0.33, 0, 0.2, 1),
+  });
 
 type SceneView = React.FC<{ layout: Layout; plan: Plan; spec: SceneSpec }>;
 
@@ -47,6 +57,14 @@ const VIEWS: Record<StoryId, Record<string, SceneView>> = {
     "runs-on-the-pc": RunsOnThePc,
     "answer-comes-back": AnswerComesBack,
   },
+  themes: {
+    "live-art": LiveArt,
+    "type-theme": TypeTheme,
+    "ask-for-your-own": AskForYourOwn,
+    "make-it-yours": MakeItYours,
+    "set-the-glass": SetTheGlass,
+    "share-it": ShareIt,
+  },
 };
 
 const viewOf = (story: StoryId, spec: SceneSpec): SceneView => {
@@ -64,12 +82,19 @@ export const Promo: React.FC<PromoProps> = ({ story: storyId, format }) => {
   const story = STORIES[storyId];
   const layout = LAYOUTS[format];
   const { fps } = useVideoConfig();
+  // The timeline is in FPS frames; sequences are in the composition's own.
+  const out = useOutScale();
+  const timing = fadeTiming(out);
 
   return (
     <AbsoluteFill>
       <Background layout={layout} />
       <TransitionSeries>
-        <TransitionSeries.Sequence name="Intro" durationInFrames={INTRO_FRAMES} premountFor={fps}>
+        <TransitionSeries.Sequence
+          name="Intro"
+          durationInFrames={INTRO_FRAMES * out}
+          premountFor={fps}
+        >
           <Intro layout={layout} story={story} />
         </TransitionSeries.Sequence>
         {scenesFor(story, layout).map(({ spec, plan, frames }, index) => {
@@ -77,11 +102,11 @@ export const Promo: React.FC<PromoProps> = ({ story: storyId, format }) => {
           return (
             <Fragment key={spec.id}>
               {index === 0 ? (
-                <TransitionSeries.Transition presentation={fade()} timing={fadeTiming} />
+                <TransitionSeries.Transition presentation={fade()} timing={timing} />
               ) : null}
               <TransitionSeries.Sequence
                 name={spec.kicker}
-                durationInFrames={frames}
+                durationInFrames={Math.round(frames * out)}
                 premountFor={fps}
               >
                 <View layout={layout} plan={plan} spec={spec} />
@@ -89,8 +114,12 @@ export const Promo: React.FC<PromoProps> = ({ story: storyId, format }) => {
             </Fragment>
           );
         })}
-        <TransitionSeries.Transition presentation={fade()} timing={fadeTiming} />
-        <TransitionSeries.Sequence name="Outro" durationInFrames={OUTRO_FRAMES} premountFor={fps}>
+        <TransitionSeries.Transition presentation={fade()} timing={timing} />
+        <TransitionSeries.Sequence
+          name="Outro"
+          durationInFrames={OUTRO_FRAMES * out}
+          premountFor={fps}
+        >
           <Outro layout={layout} story={story} />
         </TransitionSeries.Sequence>
       </TransitionSeries>
@@ -99,11 +128,14 @@ export const Promo: React.FC<PromoProps> = ({ story: storyId, format }) => {
 };
 
 /** One frame of a video (its story's poster moment), for the poster PNGs. */
-export const Poster: React.FC<PromoProps> = ({ story, format }) => (
-  <Freeze frame={posterFrame(STORIES[story], LAYOUTS[format])}>
-    <Promo story={story} format={format} />
-  </Freeze>
-);
+export const Poster: React.FC<PromoProps> = ({ story, format }) => {
+  const out = useOutScale();
+  return (
+    <Freeze frame={Math.round(posterFrame(STORIES[story], LAYOUTS[format]) * out)}>
+      <Promo story={story} format={format} />
+    </Freeze>
+  );
+};
 
 export type SiteClipProps = { story: StoryId; variant: "wide" | "tall" };
 

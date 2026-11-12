@@ -1,5 +1,6 @@
 import type React from "react";
-import { AbsoluteFill, useCurrentFrame } from "remotion";
+import { AbsoluteFill } from "remotion";
+import { useFrame } from "../frame";
 import type { Layout } from "../layout";
 import type { Story } from "../stories";
 import { TRANSITION_FRAMES } from "../timeline";
@@ -10,7 +11,7 @@ import { TitleBlock, titleBlockHeight } from "./TitleBlock";
 
 /** Glyph, the story's title, the closing line, and the release and site address. */
 export const Outro: React.FC<{ layout: Layout; story: Story }> = ({ layout, story }) => {
-  const frame = useCurrentFrame();
+  const frame = useFrame();
   const { width, height, title } = layout;
   const start = TRANSITION_FRAMES - 4;
 

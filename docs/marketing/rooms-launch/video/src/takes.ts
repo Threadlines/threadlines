@@ -5,12 +5,13 @@
 import fleetTallTake from "./takes/fleet-tall.json";
 import fleetWideTake from "./takes/fleet-wide.json";
 import tallTake from "./takes/tall.json";
+import themesWideTake from "./takes/themes-wide.json";
 import threadsTallTake from "./takes/threads-tall.json";
 import threadsWideTake from "./takes/threads-wide.json";
 import wideTake from "./takes/wide.json";
 
 /** The videos this project cuts: Rooms (0.5.0), agents starting threads (0.6.0), Fleet (0.8.0). */
-export type StoryId = "rooms" | "threads" | "fleet";
+export type StoryId = "rooms" | "threads" | "fleet" | "themes";
 export type TakeId = "wide" | "tall";
 
 /** A region of a take, in its pixels. */
@@ -59,6 +60,8 @@ export const TAKES: Record<StoryId, Record<TakeId, Take>> = {
   rooms: takesOf("rooms", wideTake, tallTake),
   threads: takesOf("threads", threadsWideTake, threadsTallTake),
   fleet: takesOf("fleet", fleetWideTake, fleetTallTake),
+  // Wide only so far: no phone-width take is recorded, so only the landscape cut is made.
+  themes: takesOf("themes", themesWideTake, themesWideTake),
 };
 
 export const full = (take: Take): Rect => ({ x: 0, y: 0, w: take.width, h: take.height });
@@ -130,6 +133,12 @@ const NOT_THREAD_ROWS = new Set([
   "child-row",
   // Fleet's page: its own layout, not the thread's.
   "fleet",
+  // The themes story: the picker, the Keep bar, the Share dialog, Settings tiles.
+  "strip",
+  "offer",
+  "trial-bar",
+  "share-dialog",
+  "tiles",
 ]);
 const isThreadRow = (name: string) => !NOT_THREAD_ROWS.has(name) && !name.startsWith("child-row-");
 

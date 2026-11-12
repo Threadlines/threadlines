@@ -2,7 +2,8 @@
 // everything but its target, a ring for each click, and a note that explains
 // one step, pinned to the line it is about.
 import type React from "react";
-import { Easing, interpolate, useCurrentFrame } from "remotion";
+import { Easing, interpolate } from "remotion";
+import { useFrame } from "../frame";
 import type { Box } from "../camera";
 import { textWidth, useFontsReady } from "../measure";
 import { accentAlpha, accentBrightAlpha, colors, fonts } from "../theme";
@@ -70,7 +71,7 @@ export const Spotlight: React.FC<{ clip: Box; target: Box; amount: number; radiu
 
 /** A soft ring pulsing out from a click. */
 export const ClickRing: React.FC<{ x: number; y: number; at: number }> = ({ x, y, at }) => {
-  const frame = useCurrentFrame();
+  const frame = useFrame();
   const local = frame - at;
   if (local < 0 || local >= 22) return null;
   const q = local / 22;
@@ -113,7 +114,7 @@ export const Note: React.FC<{
   dot?: string;
   side?: "after" | "above" | "below";
 }> = ({ anchor, clip, text, size, at, out, dot, side = "after" }) => {
-  const frame = useCurrentFrame();
+  const frame = useFrame();
   const fontsReady = useFontsReady();
   const line = presence(frame, at, 12, out);
   const pill = presence(frame, at + 6, 14, out);

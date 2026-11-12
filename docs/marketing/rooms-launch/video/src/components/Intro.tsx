@@ -1,5 +1,6 @@
 import type React from "react";
-import { AbsoluteFill, Easing, interpolate, spring, useCurrentFrame } from "remotion";
+import { AbsoluteFill, Easing, interpolate, spring } from "remotion";
+import { useFrame } from "../frame";
 import type { Layout } from "../layout";
 import { textWidth, useFontsReady } from "../measure";
 import { FPS } from "../config";
@@ -25,7 +26,7 @@ const TITLE_AT = 24; // the title, its line and the release tag rise in together
  * into the Threadlines lockup while the story's title rises in beneath.
  */
 export const Intro: React.FC<{ layout: Layout; story: Story }> = ({ layout, story }) => {
-  const frame = useCurrentFrame();
+  const frame = useFrame();
   const { width, height, title } = layout;
 
   const morph = spring({
