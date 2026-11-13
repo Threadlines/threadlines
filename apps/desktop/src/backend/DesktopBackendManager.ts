@@ -48,7 +48,16 @@ const MAX_STARTUP_ATTEMPTS = 3;
 const OUTPUT_TAIL_MAX_CHARS = 8_192;
 // How long a finished process's output drains may lag its exit.
 const DRAIN_FLUSH_TIMEOUT = Duration.seconds(1);
+// How long the report of a finished start may take before it is dropped.
+const START_REPORT_TIMEOUT = Duration.seconds(3);
 const DEFAULT_BACKEND_READINESS_TIMEOUT = Duration.minutes(1);
+// A backend still alive at that deadline, with no window yet, is usually slow
+// rather than stuck: a cold start on a busy Windows machine (a scan of the
+// freshly updated app, a disk at full load) has taken more than a minute with
+// the process healthy throughout, and killing it only made the user start the
+// same slow work again. So it gets a visible "still starting" notice and this
+// much longer before the run is given up on.
+const SLOW_START_EXTRA_WAIT = Duration.minutes(4);
 // A normal backend answers within a couple of seconds, and every poll gap is
 // time the window could already be loading, so probe often at first. Past
 // that the backend is migrating or wedged, and a slower pace is plenty.
@@ -118,10 +127,14 @@ class BackendProcessSpawnError extends Data.TaggedError("BackendProcessSpawnErro
 type BackendProcessError = BackendProcessBootstrapEncodeError | BackendProcessSpawnError;
 
 /**
- * What to do when the readiness deadline passes: give up on this run, or drop
- * the deadline and keep probing until the backend answers or the process dies.
+ * What to do when a readiness deadline passes: give up on this run, drop the
+ * deadline and keep probing until the backend answers or the process dies, or
+ * set one more deadline and be asked again when it passes too.
  */
-export type BackendReadinessTimeoutDecision = "give-up" | "keep-waiting";
+export type BackendReadinessTimeoutDecision =
+  | "give-up"
+  | "keep-waiting"
+  | { readonly waitAgainFor: Duration.Duration };
 
 interface RunBackendProcessOptions extends DesktopBackendStartConfig {
   readonly readinessTimeout?: Duration.Duration;
@@ -400,18 +413,28 @@ const runBackendProcess = Effect.fn("runBackendProcess")(function* (
     waitForHttpReady(options.httpBaseUrl, timeout, options.bootstrap.desktopLaunchId).pipe(
       Effect.tap(() => options.onReady?.() ?? Effect.void),
     );
-  yield* awaitReady(options.readinessTimeout ?? DEFAULT_BACKEND_READINESS_TIMEOUT).pipe(
-    Effect.catch((error) =>
-      (options.onReadinessTimeout?.(error) ?? Effect.succeed("give-up" as const)).pipe(
-        // "keep-waiting" drops the deadline rather than the probe: if the
-        // process dies meanwhile, the exit path below ends the run anyway.
-        Effect.flatMap((decision) =>
-          decision === "keep-waiting"
-            ? awaitReady(Duration.infinity).pipe(Effect.ignore)
-            : Effect.void,
+  const awaitReadyWithin = (
+    timeout: Duration.Duration,
+  ): Effect.Effect<void, never, HttpClient.HttpClient> =>
+    awaitReady(timeout).pipe(
+      Effect.catch((error) =>
+        (
+          options.onReadinessTimeout?.(error) ??
+          Effect.succeed<BackendReadinessTimeoutDecision>("give-up")
+        ).pipe(
+          Effect.flatMap((decision) => {
+            if (decision === "give-up") return Effect.void;
+            // "keep-waiting" drops the deadline rather than the probe: if the
+            // process dies meanwhile, the exit path below ends the run anyway.
+            if (decision === "keep-waiting") {
+              return awaitReady(Duration.infinity).pipe(Effect.ignore);
+            }
+            return awaitReadyWithin(decision.waitAgainFor);
+          }),
         ),
       ),
-    ),
+    );
+  yield* awaitReadyWithin(options.readinessTimeout ?? DEFAULT_BACKEND_READINESS_TIMEOUT).pipe(
     Effect.forkScoped,
   );
 
@@ -434,6 +457,7 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
   const desktopWindow = yield* DesktopWindow.DesktopWindow;
   const startupFailurePrompt = yield* DesktopStartupFailurePrompt.DesktopStartupFailurePrompt;
   const databaseRecovery = yield* DesktopDatabaseRecovery.DesktopDatabaseRecovery;
+  const crashReport = yield* DesktopCrashReport.DesktopCrashReport;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const httpClient = yield* HttpClient.HttpClient;
   const state = yield* Ref.make(initialState);
@@ -577,6 +601,13 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
         const stdoutDecoder = new TextDecoder();
         const stderrDecoder = new TextDecoder();
         const readinessTimeoutRef = yield* Ref.make(Option.none<BackendTimeoutError>());
+        // When this run's process started (on the clock that never jumps),
+        // for how long the start took; how long readiness has been waited for
+        // across its deadlines; and whether the "still starting" notice has
+        // had its turn.
+        const startedAtRef = yield* Ref.make(Option.none<bigint>());
+        const readinessWaitedMsRef = yield* Ref.make(0);
+        const stillStartingShownRef = yield* Ref.make(false);
         // The "still migrating" dialog belongs to this run. A watcher fiber
         // shows it once a migration has kept the first startup busy for
         // MIGRATION_NOTICE_DELAY, and holds it open; readiness and the run
@@ -611,6 +642,9 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
             });
           }
         });
+        // One slot for whichever waiting notice this run has up: the
+        // migration watcher (and its dialog), or the "still starting" notice.
+        // Never two at once.
         const migrationNoticeRef = yield* Ref.make(Option.none<Fiber.Fiber<void, never>>());
         const closeMigrationNotice = Ref.getAndSet(
           migrationNoticeRef,
@@ -809,6 +843,7 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
               ...run,
               pid: Option.some(pid),
             }));
+            yield* Ref.set(startedAtRef, Option.some(yield* Clock.monotonicTimeNanos));
             yield* backendOutputLog.writeSessionBoundary({
               phase: "START",
               details: `pid=${pid} port=${config.bootstrap.port} cwd=${config.cwd}`,
@@ -818,7 +853,7 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
             yield* Ref.set(migrationNoticeRef, Option.some(noticeFiber));
           }),
           onReady: Effect.fn("desktop.backendManager.onReady")(function* () {
-            const { isCurrentRun, recoveryNotice } = yield* Ref.modify(
+            const { isCurrentRun, recoveryNotice, firstStart } = yield* Ref.modify(
               state,
               (
                 latest,
@@ -826,6 +861,8 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
                 {
                   readonly isCurrentRun: boolean;
                   readonly recoveryNotice: Option.Option<DesktopDatabaseRecovery.DesktopDatabaseRecoveryResult>;
+                  /** Set for the app session's first readiness: how many processes it took. */
+                  readonly firstStart: Option.Option<{ readonly attempts: number }>;
                 },
                 BackendManagerState,
               ] => {
@@ -836,6 +873,7 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
                       isCurrentRun: false,
                       recoveryNotice:
                         Option.none<DesktopDatabaseRecovery.DesktopDatabaseRecoveryResult>(),
+                      firstStart: Option.none(),
                     },
                     latest,
                   ] as const;
@@ -845,6 +883,9 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
                   {
                     isCurrentRun: true,
                     recoveryNotice: latest.pendingDatabaseRecoveryNotice,
+                    firstStart: latest.everReady
+                      ? Option.none()
+                      : Option.some({ attempts: latest.restartAttempt + 1 }),
                   },
                   {
                     ...latest,
@@ -863,6 +904,23 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
 
             yield* closeMigrationNotice;
             yield* Ref.set(desktopState.backendReady, true);
+            // How long the first start took, so the deadlines above can be
+            // judged against real machines. Beside the window, never before it.
+            const startedAt = yield* Ref.get(startedAtRef);
+            if (Option.isSome(firstStart) && Option.isSome(startedAt)) {
+              yield* Effect.forkIn(
+                crashReport
+                  .reportBackendStarted({
+                    startupMs: Number(
+                      ((yield* Clock.monotonicTimeNanos) - startedAt.value) / 1_000_000n,
+                    ),
+                    attempts: firstStart.value.attempts,
+                    slowStart: yield* Ref.get(stillStartingShownRef),
+                  })
+                  .pipe(Effect.timeoutOption(START_REPORT_TIMEOUT), Effect.asVoid),
+                parentScope,
+              );
+            }
             yield* desktopWindow.handleBackendReady.pipe(
               Effect.catch((error) =>
                 logBackendManagerError("failed to open main window after backend readiness", {
@@ -881,15 +939,16 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
               );
             }
           }),
-          // Three ways the deadline can pass, and only one of them is a
-          // failure. Once a window exists, an unresponsive restart is visible
-          // and recoverable, so keep probing quietly. Before the first window
-          // a migration still running is healthy work that a kill would only
+          // Four ways a deadline can pass, and only the last is a failure.
+          // Once a window exists, an unresponsive restart is visible and
+          // recoverable, so keep probing quietly. Before the first window a
+          // migration still running is healthy work that a kill would only
           // make restart from zero, so keep probing and say so, unless the
-          // migration watcher already did. Anything else
-          // is a process that is alive but unresponsive and would sit
-          // invisible forever: mark the run and kill it so finalizeRun
-          // surfaces the failure instead of scheduling a restart.
+          // migration watcher already did. A process that is alive and not
+          // migrating at the first deadline is most often just slow, so it
+          // gets a notice and one longer deadline. One that has used that
+          // up too is alive but unresponsive: mark the run and kill it so
+          // finalizeRun surfaces the failure instead of scheduling a restart.
           onReadinessTimeout: (error) =>
             Effect.gen(function* () {
               yield* logBackendManagerWarning("backend readiness check failed during bootstrap", {
@@ -899,6 +958,11 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
               if (latest.everReady) {
                 return "keep-waiting" as const;
               }
+              const waitedMs = yield* Ref.updateAndGet(
+                readinessWaitedMsRef,
+                (waited) => waited + error.timeoutMs,
+              );
+              const stillStartingShown = yield* Ref.get(stillStartingShownRef);
               const migration = findMigrationInProgress(yield* Ref.get(outputTailRef));
               if (Option.isSome(migration)) {
                 yield* logBackendManagerInfo("backend still migrating at readiness deadline", {
@@ -906,19 +970,53 @@ const makeDesktopBackendManager = Effect.fn("makeDesktopBackendManager")(functio
                   migrationName: migration.value.name,
                   totalMigrations: migration.value.total,
                 });
-                if (!startupFailurePrompt.migrationNoticeClosesItself) {
+                // The watcher has already said so where its box closes itself,
+                // unless the "still starting" notice took its place.
+                if (!startupFailurePrompt.migrationNoticeClosesItself || stillStartingShown) {
+                  yield* closeMigrationNotice;
+                  // In the run's scope, like the watcher: a notice put up as
+                  // the run ends must end with it, not sit over the next run.
                   const noticeFiber = yield* Effect.forkIn(
                     startupFailurePrompt.notifyMigrationInProgress({
                       migrationId: migration.value.id,
                       totalMigrations: migration.value.total,
                     }),
-                    parentScope,
+                    runScope,
                   );
                   yield* Ref.set(migrationNoticeRef, Option.some(noticeFiber));
                 }
                 return "keep-waiting" as const;
               }
-              yield* Ref.set(readinessTimeoutRef, Option.some(error));
+              if (!stillStartingShown) {
+                yield* Ref.set(stillStartingShownRef, true);
+                yield* logBackendManagerInfo(
+                  "backend alive but not ready at the readiness deadline; waiting longer",
+                  { waitedMs, extraWaitMs: Duration.toMillis(SLOW_START_EXTRA_WAIT) },
+                );
+                // In place of the migration watcher: one notice at a time.
+                yield* closeMigrationNotice;
+                if (startupFailurePrompt.migrationNoticeClosesItself) {
+                  const noticeFiber = yield* Effect.forkIn(
+                    startupFailurePrompt.notifyStillStarting,
+                    runScope,
+                  );
+                  yield* Ref.set(migrationNoticeRef, Option.some(noticeFiber));
+                } else {
+                  // A box that holds the main process holds the readiness
+                  // checks and the timers with it. Started beside the longer
+                  // wait, it would let that wait run out unseen while the box
+                  // sat open, and a backend that got ready meanwhile would be
+                  // killed the moment it was answered. So the longer wait
+                  // starts once it has been.
+                  yield* startupFailurePrompt.notifyStillStarting;
+                }
+                return { waitAgainFor: SLOW_START_EXTRA_WAIT };
+              }
+              // The whole wait, not just its last stretch, is what failed.
+              yield* Ref.set(
+                readinessTimeoutRef,
+                Option.some(new BackendTimeoutError({ url: error.url, timeoutMs: waitedMs })),
+              );
               const run = Option.getOrUndefined(latest.active);
               if (run?.id === runId) {
                 yield* Effect.forkIn(closeRun(run), parentScope);

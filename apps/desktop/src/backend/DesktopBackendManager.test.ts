@@ -25,6 +25,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as DesktopBackendManager from "./DesktopBackendManager.ts";
 import * as DesktopBackendConfiguration from "./DesktopBackendConfiguration.ts";
 import * as DesktopDatabaseRecovery from "./DesktopDatabaseRecovery.ts";
+import * as DesktopCrashReport from "../app/DesktopCrashReport.ts";
 import * as DesktopObservability from "../app/DesktopObservability.ts";
 import * as DesktopState from "../app/DesktopState.ts";
 import * as DesktopStartupFailurePrompt from "../window/DesktopStartupFailurePrompt.ts";
@@ -115,6 +116,7 @@ function makeManagerLayer(input: {
   readonly config?: DesktopBackendManager.DesktopBackendStartConfig;
   readonly startupFailurePrompt?: Partial<DesktopStartupFailurePrompt.DesktopStartupFailurePromptShape>;
   readonly databaseRecovery?: Partial<DesktopDatabaseRecovery.DesktopDatabaseRecoveryShape>;
+  readonly crashReport?: Partial<DesktopCrashReport.DesktopCrashReportShape>;
   readonly entryExists?: boolean;
 }) {
   return DesktopBackendManager.layer.pipe(
@@ -140,8 +142,14 @@ function makeManagerLayer(input: {
           handle: () => Effect.die("unexpected startup failure prompt"),
           notifyDatabaseRecovery: () => Effect.void,
           notifyMigrationInProgress: () => Effect.die("unexpected migration notice"),
+          notifyStillStarting: Effect.die("unexpected still-starting notice"),
           migrationNoticeClosesItself: true,
           ...input.startupFailurePrompt,
+        }),
+        Layer.succeed(DesktopCrashReport.DesktopCrashReport, {
+          reportStartupFailure: () => Effect.void,
+          reportBackendStarted: () => Effect.void,
+          ...input.crashReport,
         }),
         Layer.succeed(DesktopDatabaseRecovery.DesktopDatabaseRecovery, {
           completePendingRecovery: Effect.succeed(Option.none()),
@@ -925,11 +933,15 @@ describe("DesktopBackendManager", () => {
           ),
         );
 
+        const stillStartingNotices = yield* Ref.make(0);
         const managerLayer = makeManagerLayer({
           spawnerLayer,
           httpClientLayer: httpClientLayer(() => Effect.never),
           startupFailurePrompt: {
             handle: (report) => Queue.offer(promptReports, report).pipe(Effect.as("quit" as const)),
+            notifyStillStarting: Ref.update(stillStartingNotices, (count) => count + 1).pipe(
+              Effect.andThen(Effect.never),
+            ),
           },
         });
 
@@ -939,12 +951,20 @@ describe("DesktopBackendManager", () => {
           assert.equal(yield* Queue.take(starts), 1);
 
           // The 60s readiness budget elapses without a single healthy answer.
+          // The process is still alive, so it is told apart from a crash: a
+          // notice, and more time.
           yield* TestClock.adjust(Duration.minutes(1));
+          assert.equal(yield* Ref.get(stillStartingNotices), 1);
+          assert.equal(yield* Queue.size(promptReports), 0);
 
+          // The longer wait runs out as well, and now it is a failure. The
+          // report names the whole wait, not its last stretch.
+          yield* TestClock.adjust(Duration.minutes(4));
           const report = yield* Queue.take(promptReports);
           assert.equal(report.failureKind, "readiness-timeout");
           assert.equal(report.attempts, 1);
-          assert.include(report.lastReason, "Timed out");
+          assert.include(report.lastReason, "Timed out waiting 300000ms");
+          assert.equal(yield* Ref.get(stillStartingNotices), 1);
           assert.include(report.outputTail, "EADDRINUSE");
           assert.include(report.outputTail, "node exited");
 
@@ -953,6 +973,305 @@ describe("DesktopBackendManager", () => {
           assert.equal(yield* Queue.size(starts), 0);
         }).pipe(Effect.provide(Layer.merge(TestClock.layer(), managerLayer)));
       }),
+  );
+
+  it.effect(
+    "keeps a slow first start alive past the deadline, says so, and opens when it answers",
+    () =>
+      Effect.gen(function* () {
+        const noticeShown = yield* Deferred.make<void>();
+        const noticeClosed = yield* Deferred.make<void>();
+        const windowOpened = yield* Deferred.make<void>();
+        const answersReadiness = yield* Ref.make(false);
+        const terminations = yield* Ref.make(0);
+        const failurePrompts = yield* Ref.make(0);
+        const startReports =
+          yield* Queue.unbounded<DesktopCrashReport.DesktopBackendStartedReport>();
+
+        const spawnerLayer = Layer.succeed(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make(() =>
+            Effect.gen(function* () {
+              const scope = yield* Scope.Scope;
+              const closed = yield* Deferred.make<void>();
+              const close = Ref.update(terminations, (count) => count + 1).pipe(
+                Effect.andThen(Deferred.succeed(closed, void 0)),
+                Effect.asVoid,
+              );
+              yield* Scope.addFinalizer(scope, close);
+              return makeProcess({
+                // What the field reports looked like: migrations long done,
+                // then silence.
+                stdout: Stream.make(
+                  new TextEncoder().encode(
+                    "[14:57:03.975] INFO (#34): Running all migrations...\n" +
+                      "[14:57:04.083] INFO (#34): Migrations ran successfully\n",
+                  ),
+                ),
+                exitCode: Deferred.await(closed).pipe(Effect.as(ChildProcessSpawner.ExitCode(0))),
+                kill: () => close,
+              });
+            }),
+          ),
+        );
+
+        const managerLayer = makeManagerLayer({
+          spawnerLayer,
+          httpClientLayer: httpClientLayer((request) =>
+            Effect.flatMap(Ref.get(answersReadiness), (ready) =>
+              ready ? Effect.succeed(responseForRequest(request, 200)) : Effect.never,
+            ),
+          ),
+          startupFailurePrompt: {
+            handle: () =>
+              Ref.update(failurePrompts, (count) => count + 1).pipe(Effect.as("quit" as const)),
+            notifyStillStarting: Deferred.succeed(noticeShown, void 0).pipe(
+              Effect.andThen(
+                Effect.never.pipe(
+                  Effect.onInterrupt(() =>
+                    Deferred.succeed(noticeClosed, void 0).pipe(Effect.asVoid),
+                  ),
+                ),
+              ),
+            ),
+          },
+          crashReport: {
+            reportBackendStarted: (report) => Queue.offer(startReports, report).pipe(Effect.asVoid),
+          },
+          desktopWindow: {
+            handleBackendReady: Deferred.succeed(windowOpened, void 0).pipe(Effect.asVoid),
+          },
+        });
+
+        yield* Effect.gen(function* () {
+          const manager = yield* DesktopBackendManager.DesktopBackendManager;
+          yield* manager.start;
+
+          // A minute in, alive and silent: not killed, and the wait gets a face.
+          yield* TestClock.adjust(Duration.minutes(1));
+          yield* Deferred.await(noticeShown);
+          assert.equal(yield* Ref.get(terminations), 0);
+          assert.equal(yield* Ref.get(failurePrompts), 0);
+
+          // It answers a minute and a half later. The window opens, the notice
+          // closes itself, and nobody was asked to try again.
+          yield* TestClock.adjust(Duration.seconds(90));
+          yield* Ref.set(answersReadiness, true);
+          yield* TestClock.adjust(Duration.seconds(2));
+          yield* Deferred.await(windowOpened);
+          yield* Deferred.await(noticeClosed);
+          assert.equal(yield* Ref.get(terminations), 0);
+          assert.equal(yield* Ref.get(failurePrompts), 0);
+          assert.isTrue((yield* manager.snapshot).ready);
+
+          // And how long it took is reported, marked as a slow start.
+          const report = yield* Queue.take(startReports);
+          assert.equal(report.slowStart, true);
+          assert.equal(report.attempts, 1);
+          assert.isAtLeast(report.startupMs, 150_000);
+          assert.isAtMost(report.startupMs, 153_000);
+        }).pipe(Effect.provide(Layer.merge(TestClock.layer(), managerLayer)));
+      }),
+  );
+
+  it.effect(
+    "swaps the still-starting notice for the migration one when a slow start turns out to be migrating",
+    () =>
+      Effect.gen(function* () {
+        const output = yield* Queue.unbounded<Uint8Array>();
+        const stillStartingClosed = yield* Deferred.make<void>();
+        const migrationNotices = yield* Queue.unbounded<number>();
+        const terminations = yield* Ref.make(0);
+        const failurePrompts = yield* Ref.make(0);
+
+        const spawnerLayer = Layer.succeed(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make(() =>
+            Effect.gen(function* () {
+              const scope = yield* Scope.Scope;
+              const closed = yield* Deferred.make<void>();
+              const close = Ref.update(terminations, (count) => count + 1).pipe(
+                Effect.andThen(Deferred.succeed(closed, void 0)),
+                Effect.asVoid,
+              );
+              yield* Scope.addFinalizer(scope, close);
+              return makeProcess({
+                stdout: Stream.fromQueue(output),
+                exitCode: Deferred.await(closed).pipe(Effect.as(ChildProcessSpawner.ExitCode(0))),
+                kill: () => close,
+              });
+            }),
+          ),
+        );
+
+        const managerLayer = makeManagerLayer({
+          spawnerLayer,
+          httpClientLayer: httpClientLayer(() => Effect.never),
+          startupFailurePrompt: {
+            handle: () =>
+              Ref.update(failurePrompts, (count) => count + 1).pipe(Effect.as("quit" as const)),
+            notifyStillStarting: Effect.never.pipe(
+              Effect.onInterrupt(() =>
+                Deferred.succeed(stillStartingClosed, void 0).pipe(Effect.asVoid),
+              ),
+            ),
+            notifyMigrationInProgress: (info) =>
+              Queue.offer(migrationNotices, info.migrationId).pipe(Effect.andThen(Effect.never)),
+          },
+        });
+
+        yield* Effect.gen(function* () {
+          const manager = yield* DesktopBackendManager.DesktopBackendManager;
+          yield* manager.start;
+
+          // Nothing printed in the first minute: it reads as a slow start.
+          yield* TestClock.adjust(Duration.minutes(1));
+          assert.equal(yield* Queue.size(migrationNotices), 0);
+
+          // Then it gets going, and what it gets going on is a long migration.
+          yield* Queue.offer(
+            output,
+            new TextEncoder().encode(
+              "[00:01:30.000] INFO (#42): Running migration 50_ProjectionTranscriptEventSequence (50 of 51)\n",
+            ),
+          );
+
+          // At the longer deadline it is busy, not stuck: the notice now says
+          // what is really happening, alone on screen, and nothing is killed.
+          yield* TestClock.adjust(Duration.minutes(4));
+          assert.equal(yield* Queue.take(migrationNotices), 50);
+          yield* Deferred.await(stillStartingClosed);
+          assert.equal(yield* Ref.get(terminations), 0);
+          assert.equal(yield* Ref.get(failurePrompts), 0);
+        }).pipe(Effect.provide(Layer.merge(TestClock.layer(), managerLayer)));
+      }),
+  );
+
+  it.effect("starts the longer wait only once a notice that holds the app has been answered", () =>
+    Effect.gen(function* () {
+      // As on macOS, where the box holds the main process until answered.
+      const noticeShown = yield* Deferred.make<void>();
+      const answerKeepWaiting = yield* Deferred.make<void>();
+      const windowOpened = yield* Deferred.make<void>();
+      const answersReadiness = yield* Ref.make(false);
+      const terminations = yield* Ref.make(0);
+      const failurePrompts = yield* Ref.make(0);
+
+      const spawnerLayer = Layer.succeed(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make(() =>
+          Effect.gen(function* () {
+            const scope = yield* Scope.Scope;
+            const closed = yield* Deferred.make<void>();
+            const close = Ref.update(terminations, (count) => count + 1).pipe(
+              Effect.andThen(Deferred.succeed(closed, void 0)),
+              Effect.asVoid,
+            );
+            yield* Scope.addFinalizer(scope, close);
+            return makeProcess({
+              exitCode: Deferred.await(closed).pipe(Effect.as(ChildProcessSpawner.ExitCode(0))),
+              kill: () => close,
+            });
+          }),
+        ),
+      );
+
+      const managerLayer = makeManagerLayer({
+        spawnerLayer,
+        httpClientLayer: httpClientLayer((request) =>
+          Effect.flatMap(Ref.get(answersReadiness), (ready) =>
+            ready ? Effect.succeed(responseForRequest(request, 200)) : Effect.never,
+          ),
+        ),
+        startupFailurePrompt: {
+          migrationNoticeClosesItself: false,
+          handle: () =>
+            Ref.update(failurePrompts, (count) => count + 1).pipe(Effect.as("quit" as const)),
+          notifyStillStarting: Deferred.succeed(noticeShown, void 0).pipe(
+            Effect.andThen(Deferred.await(answerKeepWaiting)),
+          ),
+        },
+        desktopWindow: {
+          handleBackendReady: Deferred.succeed(windowOpened, void 0).pipe(Effect.asVoid),
+        },
+      });
+
+      yield* Effect.gen(function* () {
+        const manager = yield* DesktopBackendManager.DesktopBackendManager;
+        yield* manager.start;
+        yield* TestClock.adjust(Duration.minutes(1));
+        yield* Deferred.await(noticeShown);
+
+        // The box sits unanswered for far longer than the extra wait. The
+        // backend got ready behind it; that time must not count against it.
+        yield* Ref.set(answersReadiness, true);
+        yield* TestClock.adjust(Duration.minutes(10));
+        assert.equal(yield* Ref.get(terminations), 0);
+        assert.equal(yield* Ref.get(failurePrompts), 0);
+
+        // Answered: the checks run again and find it ready.
+        yield* Deferred.succeed(answerKeepWaiting, void 0);
+        yield* TestClock.adjust(Duration.seconds(2));
+        yield* Deferred.await(windowOpened);
+        assert.equal(yield* Ref.get(terminations), 0);
+        assert.equal(yield* Ref.get(failurePrompts), 0);
+      }).pipe(Effect.provide(Layer.merge(TestClock.layer(), managerLayer)));
+    }),
+  );
+
+  it.effect("closes the still-starting notice when the slow backend dies under it", () =>
+    Effect.gen(function* () {
+      const noticeShown = yield* Deferred.make<void>();
+      const noticeClosed = yield* Deferred.make<void>();
+      const crash = yield* Deferred.make<void>();
+      const starts = yield* Ref.make(0);
+
+      const spawnerLayer = Layer.succeed(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make(() =>
+          Ref.updateAndGet(starts, (count) => count + 1).pipe(
+            Effect.map((start) =>
+              makeProcess({
+                // The first process hangs, then crashes; later ones just hang.
+                exitCode: (start === 1 ? Deferred.await(crash) : Effect.never).pipe(
+                  Effect.as(ChildProcessSpawner.ExitCode(1)),
+                ),
+              }),
+            ),
+          ),
+        ),
+      );
+
+      const managerLayer = makeManagerLayer({
+        spawnerLayer,
+        httpClientLayer: httpClientLayer(() => Effect.never),
+        startupFailurePrompt: {
+          notifyStillStarting: Deferred.succeed(noticeShown, void 0).pipe(
+            Effect.andThen(
+              Effect.never.pipe(
+                Effect.onInterrupt(() =>
+                  Deferred.succeed(noticeClosed, void 0).pipe(Effect.asVoid),
+                ),
+              ),
+            ),
+          ),
+        },
+      });
+
+      yield* Effect.gen(function* () {
+        const manager = yield* DesktopBackendManager.DesktopBackendManager;
+        yield* manager.start;
+        yield* TestClock.adjust(Duration.minutes(1));
+        yield* Deferred.await(noticeShown);
+
+        // The process exits on its own: its notice goes with it, and the
+        // ordinary restart takes over.
+        yield* Deferred.succeed(crash, void 0);
+        yield* Deferred.await(noticeClosed);
+        yield* TestClock.adjust(Duration.seconds(1));
+        assert.equal(yield* Ref.get(starts), 2);
+      }).pipe(Effect.provide(Layer.merge(TestClock.layer(), managerLayer)));
+    }),
   );
 
   // A first start whose backend sits in migration 50 of 51 until the test

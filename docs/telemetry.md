@@ -11,6 +11,9 @@ Settings.
 Threadlines sends product and reliability events such as:
 
 - app/server startup heartbeat;
+- in the desktop app, how long its background service took to answer after
+  the app started it, in milliseconds, how many tries that took, and whether
+  it was slow enough to show the "still starting" notice;
 - whether each coding agent (Codex, Claude, and the other supported agents) is
   turned on, installed, and signed in (yes, no, or unknown), and whether its
   startup check timed out. Community agents are answered together, as whether

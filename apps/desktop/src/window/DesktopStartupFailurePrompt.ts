@@ -32,7 +32,7 @@ const OPEN_LOGS_BUTTON_INDEX = 1;
 const QUIT_BUTTON_INDEX = 2;
 const OPEN_RECOVERY_FOLDER_BUTTON_INDEX = 1;
 const KEEP_WAITING_BUTTON_INDEX = 0;
-const MIGRATION_QUIT_BUTTON_INDEX = 1;
+const WAITING_QUIT_BUTTON_INDEX = 1;
 
 export type DesktopStartupFailureAction = "retry" | "quit";
 
@@ -57,10 +57,17 @@ export interface DesktopStartupFailurePromptShape {
     readonly totalMigrations: number;
   }) => Effect.Effect<void>;
   /**
-   * Whether interrupting notifyMigrationInProgress closes its box. Not on
-   * macOS: a message box with no parent window runs there as a synchronous
-   * modal that ignores the abort signal (see Electron's dialog docs), so it
-   * holds the main process, readiness checks included, until it is answered.
+   * Tells the user the backend is alive but slow to answer on a first
+   * startup, so the wait has a face and a way out. Closes itself when
+   * interrupted, like the migration notice. Never fails.
+   */
+  readonly notifyStillStarting: Effect.Effect<void>;
+  /**
+   * Whether interrupting a waiting notice (migration, still starting) closes
+   * its box. Not on macOS: a message box with no parent window runs there as a
+   * synchronous modal that ignores the abort signal (see Electron's dialog
+   * docs), so it holds the main process, readiness checks included, until it
+   * is answered.
    */
   readonly migrationNoticeClosesItself: boolean;
 }
@@ -237,16 +244,40 @@ const makeDesktopStartupFailurePrompt = Effect.gen(function* () {
           cancelId: KEEP_WAITING_BUTTON_INDEX,
           noLink: true,
         });
-        if (result.response === MIGRATION_QUIT_BUTTON_INDEX) {
+        if (result.response === WAITING_QUIT_BUTTON_INDEX) {
           yield* electronApp.quit;
         }
       }).pipe(Effect.catchCause(() => Effect.void)),
     );
 
+  const notifyStillStarting: DesktopStartupFailurePromptShape["notifyStillStarting"] = Effect.gen(
+    function* () {
+      // Owned by the backend manager like the migration notice: readiness or
+      // the run ending interrupts this fiber, which closes the box.
+      const result = yield* electronDialog.showMessageBox({
+        type: "info",
+        title: `${environment.displayName} is still starting`,
+        message: `${environment.displayName} is still starting`,
+        detail: `Its background service is taking longer than usual. This can happen right after an update or when the computer is busy. ${environment.displayName} opens on its own once it's ready.\n\nQuitting now is safe.`,
+        buttons: ["Keep Waiting", "Quit"],
+        defaultId: KEEP_WAITING_BUTTON_INDEX,
+        cancelId: KEEP_WAITING_BUTTON_INDEX,
+        noLink: true,
+      });
+      if (result.response === WAITING_QUIT_BUTTON_INDEX) {
+        yield* electronApp.quit;
+      }
+    },
+  ).pipe(
+    Effect.catchCause(() => Effect.void),
+    Effect.withSpan("desktop.startupFailurePrompt.notifyStillStarting"),
+  );
+
   return DesktopStartupFailurePrompt.of({
     handle,
     notifyDatabaseRecovery,
     notifyMigrationInProgress,
+    notifyStillStarting,
     migrationNoticeClosesItself: environment.platform !== "darwin",
   });
 });
