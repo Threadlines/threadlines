@@ -48,7 +48,13 @@ const DEFAULT_ENTRY_GZIP_BUDGET_BYTES = 255_000;
 // everything else (color math, art, library, picker) behind lazy()
 // boundaries. CI's build reads about 1.6 KB above a local one (905,480 B in
 // CI for a commit measured at 903,835 B here); main measured ~890 KB here.
-const DEFAULT_STARTUP_GZIP_BUDGET_BYTES = 912_000;
+// Raised to 915 KB (2026-11-13, Will's OK): main sat 49 B under the budget
+// (911,951 B in CI), so the browser's search engine setting (#907), about
+// 200 B of Settings catalog and schema once its address rules and search URLs
+// were moved behind the browser panel, read 912,165 B. Worth trimming next:
+// the browser panel's host and automation load at startup on the web and
+// phones too, which have no browser panel.
+const DEFAULT_STARTUP_GZIP_BUDGET_BYTES = 915_000;
 
 const entryBudgetBytes = Number(
   process.env.THREADLINES_WEB_ENTRY_GZIP_BUDGET_BYTES ?? DEFAULT_ENTRY_GZIP_BUDGET_BYTES,

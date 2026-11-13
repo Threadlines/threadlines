@@ -149,6 +149,7 @@ The first list:
 | Alerts: Needs you, Finished, Failed, Quiet        | device   | switch                                               | alert store                                                                            |
 | Open links in                                     | device   | choice: Built-in browser, External browser           | `openLinksIn`                                                                          |
 | Browser page size                                 | device   | choice: Responsive, Phone, Tablet, Laptop, Desktop   | `browserNewTabSize`                                                                    |
+| Browser search engine                             | device   | choice: Google, DuckDuckGo, Bing, Brave, Kagi        | `browserSearchEngine`                                                                  |
 
 The wrap-up switches only change how each app files its own thread lists
 (Wrapped is reversible filing, not archiving).

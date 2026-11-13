@@ -158,7 +158,7 @@ export const BrowserDragTool = changesThePage(
 export const BrowserTypeTool = changesThePage(
   Tool.make("browser_type", {
     description:
-      "Type into a field. Set `clear` to replace what is already there rather than appending, and `submit` to press Enter afterwards, which is how most single-field forms are sent.",
+      "Type into a field. Set `clear` to replace what is already there rather than appending, and `submit` to press Enter afterwards, which is how most single-field forms are sent. Name the text field itself: the field is clicked first, and when that click lands on something that takes no text (a button, a label, a date picker), nothing is typed and the call fails.",
     parameters: PreviewAutomationTypeInputSchema,
     success: PreviewAutomationActionStatusSchema,
     failure: PreviewAutomationErrorSchema,

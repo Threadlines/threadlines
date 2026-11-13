@@ -19,6 +19,7 @@ import type {
   ClientSettings,
   ClientSettingsPatch,
   ComputerLinkAccess,
+  BrowserSearchEngine,
   LinkOpenTarget,
   ModelSelection,
   NewWorktreeBaseFrom,
@@ -326,6 +327,15 @@ export const NEW_WORKTREE_BASE_LABELS: Readonly<Record<NewWorktreeBaseFrom, stri
 export const OPEN_LINKS_IN_LABELS: Readonly<Record<LinkOpenTarget, string>> = {
   "browser-panel": "Built-in browser",
   external: "External browser",
+};
+
+/** "Browser search engine", as its menu words each choice. */
+export const BROWSER_SEARCH_ENGINE_LABELS: Readonly<Record<BrowserSearchEngine, string>> = {
+  google: "Google",
+  duckduckgo: "DuckDuckGo",
+  bing: "Bing",
+  brave: "Brave Search",
+  kagi: "Kagi",
 };
 
 /** "Browser page size": Responsive and the named sizes, as its menu words them. */
@@ -1214,6 +1224,23 @@ const ROWS = [
             preset === undefined ? null : { width: preset.width, height: preset.height },
         };
       },
+    },
+  },
+  {
+    id: "general.browserSearchEngine",
+    kind: "row",
+    parent: "general.thisComputer",
+    title: "Browser search engine",
+    about: "Where the browser's address bar searches when you type words instead of an address.",
+    keywords: ["address bar", "google", "duckduckgo", "bing", "brave", "kagi"],
+    scope: "device",
+    appliesWhen: "desktop",
+    edit: {
+      lands: "device",
+      control: { kind: "choice", options: BROWSER_SEARCH_ENGINE_LABELS },
+      leaves: ["browserSearchEngine"],
+      read: (settings) => settings.browserSearchEngine,
+      patch: (value) => ({ browserSearchEngine: value as BrowserSearchEngine }),
     },
   },
   {
