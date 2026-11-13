@@ -275,7 +275,9 @@ When a Claude or Codex usage limit stops a thread, the notice above the composer
 
 {place:general.browserSignIns} is Shared by default: every project on a computer uses one browser, so you sign in to a site once and every project's agents can use that sign-in. Local sites are shared too, so two projects on localhost:3000 see each other's cookies and storage. Per project gives each project its own. Each project still has its own allowed sites. The browser can't use Chrome's saved passwords or your Chrome sign-ins.
 
-Show device toolbar, in the browser's options menu (⋮), sets the page's size: Responsive fills the panel, and a Phone, Tablet, Laptop or Desktop size shrinks to fit it. New tabs open at {place:general.browserPageSize}, which the size menu can also set.`,
+Show device toolbar, in the browser's options menu (⋮), sets the page's size: Responsive fills the panel, and a Phone, Tablet, Laptop or Desktop size shrinks to fit it. New tabs open at {place:general.browserPageSize}, which the size menu can also set.
+
+Words typed in the browser's address bar are searched for, with the search engine set in {place:general.browserSearchEngine}. An address loads as it always did.`,
   },
   {
     id: "file-viewer",

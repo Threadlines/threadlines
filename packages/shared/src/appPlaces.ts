@@ -19,6 +19,7 @@ import type {
   ClientSettings,
   ClientSettingsPatch,
   ComputerLinkAccess,
+  BrowserSearchEngine,
   LinkOpenTarget,
   ModelSelection,
   NewWorktreeBaseFrom,
@@ -37,6 +38,7 @@ import {
   RESPONSIVE_PAGE_SIZE_ID,
   RESPONSIVE_PAGE_SIZE_LABEL,
 } from "./browserPageSizes.ts";
+import { BROWSER_SEARCH_ENGINE_LABELS } from "./browserSearch.ts";
 import { agentInvitesChoice, agentThreadsMode } from "./serverSettings.ts";
 import { themeGlassLevel } from "./themes/glassLevel.ts";
 
@@ -1214,6 +1216,23 @@ const ROWS = [
             preset === undefined ? null : { width: preset.width, height: preset.height },
         };
       },
+    },
+  },
+  {
+    id: "general.browserSearchEngine",
+    kind: "row",
+    parent: "general.thisComputer",
+    title: "Browser search engine",
+    about: "Where the browser's address bar searches when you type words instead of an address.",
+    keywords: ["browser", "search", "address bar", "google", "duckduckgo", "bing", "brave", "kagi"],
+    scope: "device",
+    appliesWhen: "desktop",
+    edit: {
+      lands: "device",
+      control: { kind: "choice", options: BROWSER_SEARCH_ENGINE_LABELS },
+      leaves: ["browserSearchEngine"],
+      read: (settings) => settings.browserSearchEngine,
+      patch: (value) => ({ browserSearchEngine: value as BrowserSearchEngine }),
     },
   },
   {

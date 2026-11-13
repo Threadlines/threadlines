@@ -1,7 +1,7 @@
 import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
 import { EnvironmentId, ProjectId, ThreadId } from "@threadlines/contracts";
-import { page } from "vite-plus/test/browser";
-import { describe, expect, it } from "vite-plus/test";
+import { page, userEvent } from "vite-plus/test/browser";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
 import { makeBrowserTab, useBrowserPanelStore } from "../../browserPanelStore";
@@ -150,6 +150,35 @@ describe("BrowserPanel untrusted local certificate", () => {
       screen.unmount();
       resetBrowserPanel();
       updateSettings({ agentBrowserTrustedCertificates: {} });
+    }
+  });
+});
+
+describe("BrowserPanel address bar", () => {
+  it("searches for typed words with the chosen search engine, and still loads an address", async () => {
+    seedBrowserPanel({ width: null, height: null });
+    updateSettings({ browserSearchEngine: "duckduckgo" });
+    const screen = await render(
+      <BrowserPanel threadRef={THREAD_REF} flexGrow={1} onClose={() => {}} />,
+    );
+    const tabUrl = () =>
+      useBrowserPanelStore.getState().browserStateByThreadKey[THREAD_KEY]?.tabs[0]?.url;
+
+    try {
+      const address = page.getByTestId("browser-panel-address");
+      await address.fill("how to center a div");
+      await userEvent.keyboard("{Enter}");
+      await vi.waitFor(() =>
+        expect(tabUrl()).toBe("https://duckduckgo.com/?q=how+to+center+a+div"),
+      );
+
+      await address.fill("localhost:5173");
+      await userEvent.keyboard("{Enter}");
+      await vi.waitFor(() => expect(tabUrl()).toBe("http://localhost:5173/"));
+    } finally {
+      screen.unmount();
+      resetBrowserPanel();
+      updateSettings({ browserSearchEngine: "google" });
     }
   });
 });

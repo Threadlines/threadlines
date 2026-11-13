@@ -427,6 +427,10 @@
       "types": "./src/browserPageSizes.ts",
       "import": "./src/browserPageSizes.ts"
     },
+    "./browserSearch": {
+      "types": "./src/browserSearch.ts",
+      "import": "./src/browserSearch.ts"
+    },
     "./settingsEdits": {
       "types": "./src/settingsEdits.ts",
       "import": "./src/settingsEdits.ts"

@@ -112,6 +112,20 @@ export const LinkOpenTarget = Schema.Literals(["browser-panel", "external"]);
 export type LinkOpenTarget = typeof LinkOpenTarget.Type;
 export const DEFAULT_LINK_OPEN_TARGET: LinkOpenTarget = "browser-panel";
 
+/**
+ * Where the browser panel's address bar sends words that are not an address.
+ * Kept on this computer, like the browser itself.
+ */
+export const BrowserSearchEngine = Schema.Literals([
+  "google",
+  "duckduckgo",
+  "bing",
+  "brave",
+  "kagi",
+]);
+export type BrowserSearchEngine = typeof BrowserSearchEngine.Type;
+export const DEFAULT_BROWSER_SEARCH_ENGINE: BrowserSearchEngine = "google";
+
 /** A certificate trusted for a project's pages; see `isBrowserCertificateTrusted`. */
 export const BrowserTrustedCertificate = Schema.Struct({
   host: TrimmedNonEmptyString,
@@ -164,6 +178,9 @@ export const ClientSettingsSchema = Schema.Struct({
   // the browser itself.
   browserNewTabSize: Schema.NullOr(BrowserPageSize).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  browserSearchEngine: BrowserSearchEngine.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_BROWSER_SEARCH_ENGINE)),
   ),
   // Whether the browser panel's projects share one profile (and so their
   // sign-ins) or each keep their own. Kept on this computer, like the browser.
@@ -1292,6 +1309,7 @@ export const ClientSettingsPatch = Schema.Struct({
     Schema.Record(ProjectId, Schema.Array(BrowserTrustedCertificate)),
   ),
   browserNewTabSize: Schema.optionalKey(Schema.NullOr(BrowserPageSize)),
+  browserSearchEngine: Schema.optionalKey(BrowserSearchEngine),
   browserSignIns: Schema.optionalKey(BrowserSignIns),
   autoOpenAgentsPanel: Schema.optionalKey(Schema.Boolean),
   chatChangedFilesDefaultExpanded: Schema.optionalKey(Schema.Boolean),

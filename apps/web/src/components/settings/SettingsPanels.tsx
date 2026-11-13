@@ -14,6 +14,7 @@ import {
   ACP_REGISTRY_DRIVER_KIND,
   AUTO_ARCHIVE_INACTIVE_THREADS_DAY_OPTIONS,
   type AutoArchiveInactiveThreadsDays,
+  BrowserSearchEngine,
   defaultInstanceIdForDriver,
   type DesktopUpdateChannel,
   ProviderDriverKind,
@@ -23,6 +24,7 @@ import {
   type UsageWindowDays,
 } from "@threadlines/contracts";
 import { scopeThreadRef } from "@threadlines/client-runtime";
+import { BROWSER_SEARCH_ENGINE_LABELS } from "@threadlines/shared/browserSearch";
 import { themeGlassLevel } from "@threadlines/shared/themeGlassLevel";
 import { agentInvitesChoice, agentThreadsMode } from "@threadlines/shared/serverSettings";
 import {
@@ -499,6 +501,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.newThreadRoomAgents.length > 0 ? ["New thread room"] : []),
       ...(settings.openLinksIn !== DEFAULT_UNIFIED_SETTINGS.openLinksIn ? ["Open links in"] : []),
       ...(settings.browserNewTabSize !== null ? ["Browser page size"] : []),
+      ...(settings.browserSearchEngine !== DEFAULT_UNIFIED_SETTINGS.browserSearchEngine
+        ? ["Browser search engine"]
+        : []),
       ...(settings.terminalFontSize !== DEFAULT_UNIFIED_SETTINGS.terminalFontSize
         ? ["Terminal text size"]
         : []),
@@ -570,6 +575,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.addProjectBaseDirectory,
       settings.openLinksIn,
       settings.browserNewTabSize,
+      settings.browserSearchEngine,
       settings.terminalFontSize,
       settings.terminalScreenReaderMode,
       settings.agentBrowserSitePolicy,
@@ -629,6 +635,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       newThreadRoomAgents: DEFAULT_UNIFIED_SETTINGS.newThreadRoomAgents,
       openLinksIn: DEFAULT_UNIFIED_SETTINGS.openLinksIn,
       browserNewTabSize: DEFAULT_UNIFIED_SETTINGS.browserNewTabSize,
+      browserSearchEngine: DEFAULT_UNIFIED_SETTINGS.browserSearchEngine,
       terminalFontSize: DEFAULT_UNIFIED_SETTINGS.terminalFontSize,
       terminalScreenReaderMode: DEFAULT_UNIFIED_SETTINGS.terminalScreenReaderMode,
       agentBrowserSitePolicy: DEFAULT_UNIFIED_SETTINGS.agentBrowserSitePolicy,
@@ -835,6 +842,52 @@ export function OpenLinksRow() {
           <SelectPopup align="end" alignItemWithTrigger={false}>
             <SelectItem value="browser-panel">{OPEN_LINKS_IN_LABELS["browser-panel"]}</SelectItem>
             <SelectItem value="external">{OPEN_LINKS_IN_LABELS.external}</SelectItem>
+          </SelectPopup>
+        </Select>
+      }
+    />
+  );
+}
+
+/**
+ * Where the built-in browser's address bar searches when what was typed is
+ * not an address. Kept on this computer with the browser.
+ */
+export function BrowserSearchEngineRow() {
+  const searchEngine = useSettings((current) => current.browserSearchEngine);
+  const { updateSettings } = useUpdateSettings();
+  return (
+    <SettingsRow
+      place="general.browserSearchEngine"
+      resetAction={
+        searchEngine !== DEFAULT_UNIFIED_SETTINGS.browserSearchEngine ? (
+          <SettingResetButton
+            label="browser search engine"
+            onClick={() =>
+              updateSettings({
+                browserSearchEngine: DEFAULT_UNIFIED_SETTINGS.browserSearchEngine,
+              })
+            }
+          />
+        ) : null
+      }
+      control={
+        <Select
+          value={searchEngine}
+          onValueChange={(value) => {
+            const engine = BrowserSearchEngine.literals.find((candidate) => candidate === value);
+            if (engine !== undefined) updateSettings({ browserSearchEngine: engine });
+          }}
+        >
+          <SelectTrigger className="w-full sm:w-44" aria-label="Browser search engine">
+            <SelectValue>{BROWSER_SEARCH_ENGINE_LABELS[searchEngine]}</SelectValue>
+          </SelectTrigger>
+          <SelectPopup align="end" alignItemWithTrigger={false}>
+            {BrowserSearchEngine.literals.map((engine) => (
+              <SelectItem key={engine} value={engine}>
+                {BROWSER_SEARCH_ENGINE_LABELS[engine]}
+              </SelectItem>
+            ))}
           </SelectPopup>
         </Select>
       }
@@ -1340,6 +1393,9 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
           </ShownPlace>
           <ShownPlace place="general.browserPageSize">
             <BrowserPageSizeRow />
+          </ShownPlace>
+          <ShownPlace place="general.browserSearchEngine">
+            <BrowserSearchEngineRow />
           </ShownPlace>
           <ShownPlace place="general.sitesAgentsCanVisit">
             <AgentBrowserSitesRow />

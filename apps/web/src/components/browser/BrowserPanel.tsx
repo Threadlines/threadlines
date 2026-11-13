@@ -61,7 +61,8 @@ import {
   type BrowserAppearance,
   type BrowserTab,
 } from "../../browserPanelStore";
-import { updateSettings, useSettings } from "../../hooks/useSettings";
+import { browserSearchUrl } from "@threadlines/shared/browserSearch";
+import { getClientSettings, updateSettings, useSettings } from "../../hooks/useSettings";
 import {
   BROWSER_PAGE_SIZE_PRESETS,
   RESPONSIVE_PAGE_SIZE_ID,
@@ -116,7 +117,7 @@ import { answerBrowserApproval, type BrowserApprovalDecision } from "./browserAp
 import { noteBrowserUserIntent } from "./browserFocusGuard";
 import { completeUrl } from "./urlCompletion";
 import { type AgentActivity } from "./previewAutomationHost";
-import { hostOf, normalizePreviewUrl } from "./previewUrl";
+import { hostOf, resolveAddressEntry } from "./previewUrl";
 
 /** Cmd (Ctrl off a Mac) with the key and nothing else. */
 function isPlainModShortcut(event: KeyboardEvent): boolean {
@@ -391,11 +392,16 @@ export function BrowserPanel({
   const submitAddress = useCallback(
     (event: React.FormEvent) => {
       event.preventDefault();
-      const normalized = normalizePreviewUrl(addressDraft);
-      if (normalized === null || activeTabId === "") {
+      const entry = resolveAddressEntry(addressDraft);
+      if (entry === null || activeTabId === "") {
         return;
       }
-      openAddress(activeTabId, normalized);
+      openAddress(
+        activeTabId,
+        entry.kind === "url"
+          ? entry.url
+          : browserSearchUrl(getClientSettings().browserSearchEngine, entry.query),
+      );
     },
     [activeTabId, addressDraft, openAddress],
   );
