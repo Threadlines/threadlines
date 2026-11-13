@@ -172,9 +172,11 @@ describe("BrowserPanel address bar", () => {
         expect(tabUrl()).toBe("https://duckduckgo.com/?q=how+to+center+a+div"),
       );
 
-      await address.fill("localhost:5173");
+      // An address no other test visits: the bar completes an address from
+      // the pages this browser has been to, and that history is shared.
+      await address.fill("address-bar.example/docs");
       await userEvent.keyboard("{Enter}");
-      await vi.waitFor(() => expect(tabUrl()).toBe("http://localhost:5173/"));
+      await vi.waitFor(() => expect(tabUrl()).toBe("https://address-bar.example/docs"));
     } finally {
       screen.unmount();
       resetBrowserPanel();
