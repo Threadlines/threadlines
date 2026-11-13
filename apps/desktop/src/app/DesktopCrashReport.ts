@@ -1,10 +1,11 @@
 /**
- * DesktopCrashReport - anonymous startup-failure telemetry for the desktop
- * shell.
+ * DesktopCrashReport - anonymous startup telemetry for the desktop shell.
  *
- * The server owns regular usage analytics, but when the backend never boots
- * there is no server to report anything — so the shell sends one sanitized
- * event itself. It honors the same consent as the server (`settings.json`
+ * The server owns regular usage analytics, but two things about startup only
+ * the shell knows: that the backend never booted (there is no server to say
+ * so), and how long it took to answer, measured from the moment the shell
+ * started it. The shell sends one sanitized event for each itself. It honors
+ * the same consent as the server (`settings.json`
  * `usageAnalyticsEnabled`, `THREADLINES_TELEMETRY_ENABLED` override, silence
  * in throwaway runs), reuses
  * the same anonymous install id file, and never sends raw paths: everything
@@ -67,9 +68,25 @@ export interface DesktopStartupFailureReport {
   readonly outputTail: string;
 }
 
+/** How a start that reached readiness went; see reportBackendStarted. */
+export interface DesktopBackendStartedReport {
+  /** From starting the backend process to its first healthy answer. */
+  readonly startupMs: number;
+  /** 1 when the first process made it; more when earlier ones died first. */
+  readonly attempts: number;
+  /** Whether it outlasted the readiness deadline and got the "still starting" notice. */
+  readonly slowStart: boolean;
+}
+
 export interface DesktopCrashReportShape {
   /** Best-effort: resolves void on success and on any failure alike. */
   readonly reportStartupFailure: (report: DesktopStartupFailureReport) => Effect.Effect<void>;
+  /**
+   * How long the app's first start of the backend took. The readiness
+   * deadline is a guess until this says what starts really cost in the field.
+   * Best-effort, like reportStartupFailure.
+   */
+  readonly reportBackendStarted: (report: DesktopBackendStartedReport) => Effect.Effect<void>;
 }
 
 export class DesktopCrashReport extends Context.Service<
@@ -139,7 +156,8 @@ const makeDesktopCrashReport = Effect.gen(function* () {
     return persisted ? Option.some(hashIdentifier(generated)) : Option.none<string>();
   });
 
-  const reportStartupFailure: DesktopCrashReportShape["reportStartupFailure"] = (report) =>
+  /** Sends one event when telemetry is allowed and the install can be named. */
+  const sendEvent = (event: string, properties: Record<string, unknown>) =>
     Effect.gen(function* () {
       // Same env overrides the server's AnalyticsService honors.
       const posthogKey = process.env.THREADLINES_POSTHOG_KEY?.trim() || bundledPosthogKey.trim();
@@ -165,13 +183,11 @@ const makeDesktopCrashReport = Effect.gen(function* () {
 
       const identifier = yield* getIdentifier;
       if (Option.isNone(identifier)) return;
-      const scrub = (text: string) =>
-        redactSecrets(scrubUserPaths(text, environment.homeDirectory));
       const payload = {
         api_key: posthogKey,
         batch: [
           {
-            event: "desktop.backend.startup_failed",
+            event,
             distinct_id: identifier.value,
             properties: {
               $process_person_profile: false,
@@ -179,11 +195,7 @@ const makeDesktopCrashReport = Effect.gen(function* () {
               arch: environment.processArch,
               threadlinesVersion: environment.appVersion,
               clientType: "desktop-app",
-              failureKind: report.failureKind,
-              attempts: report.attempts,
-              exitCode: Option.getOrNull(report.lastExitCode),
-              reason: scrub(report.lastReason),
-              outputTail: scrub(truncateTail(report.outputTail)),
+              ...properties,
             },
             timestamp: new Date().toISOString(),
           },
@@ -196,6 +208,17 @@ const makeDesktopCrashReport = Effect.gen(function* () {
         Effect.flatMap(HttpClientResponse.filterStatusOk),
         Effect.asVoid,
       );
+    });
+
+  const scrub = (text: string) => redactSecrets(scrubUserPaths(text, environment.homeDirectory));
+
+  const reportStartupFailure: DesktopCrashReportShape["reportStartupFailure"] = (report) =>
+    sendEvent("desktop.backend.startup_failed", {
+      failureKind: report.failureKind,
+      attempts: report.attempts,
+      exitCode: Option.getOrNull(report.lastExitCode),
+      reason: scrub(report.lastReason),
+      outputTail: scrub(truncateTail(report.outputTail)),
     }).pipe(
       Effect.catch((error) =>
         Effect.logDebug("startup failure crash report not sent", { cause: error }),
@@ -203,7 +226,17 @@ const makeDesktopCrashReport = Effect.gen(function* () {
       Effect.withSpan("desktop.crashReport.reportStartupFailure"),
     );
 
-  return DesktopCrashReport.of({ reportStartupFailure });
+  const reportBackendStarted: DesktopCrashReportShape["reportBackendStarted"] = (report) =>
+    sendEvent("desktop.backend.started", {
+      startupMs: Math.round(report.startupMs),
+      attempts: report.attempts,
+      slowStart: report.slowStart,
+    }).pipe(
+      Effect.catch((error) => Effect.logDebug("backend start report not sent", { cause: error })),
+      Effect.withSpan("desktop.crashReport.reportBackendStarted"),
+    );
+
+  return DesktopCrashReport.of({ reportStartupFailure, reportBackendStarted });
 });
 
 export const layer = Layer.effect(DesktopCrashReport, makeDesktopCrashReport);
