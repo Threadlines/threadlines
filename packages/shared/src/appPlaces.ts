@@ -38,7 +38,6 @@ import {
   RESPONSIVE_PAGE_SIZE_ID,
   RESPONSIVE_PAGE_SIZE_LABEL,
 } from "./browserPageSizes.ts";
-import { BROWSER_SEARCH_ENGINE_LABELS } from "./browserSearch.ts";
 import { agentInvitesChoice, agentThreadsMode } from "./serverSettings.ts";
 import { themeGlassLevel } from "./themes/glassLevel.ts";
 
@@ -328,6 +327,15 @@ export const NEW_WORKTREE_BASE_LABELS: Readonly<Record<NewWorktreeBaseFrom, stri
 export const OPEN_LINKS_IN_LABELS: Readonly<Record<LinkOpenTarget, string>> = {
   "browser-panel": "Built-in browser",
   external: "External browser",
+};
+
+/** "Browser search engine", as its menu words each choice. */
+export const BROWSER_SEARCH_ENGINE_LABELS: Readonly<Record<BrowserSearchEngine, string>> = {
+  google: "Google",
+  duckduckgo: "DuckDuckGo",
+  bing: "Bing",
+  brave: "Brave Search",
+  kagi: "Kagi",
 };
 
 /** "Browser page size": Responsive and the named sizes, as its menu words them. */
@@ -1224,7 +1232,7 @@ const ROWS = [
     parent: "general.thisComputer",
     title: "Browser search engine",
     about: "Where the browser's address bar searches when you type words instead of an address.",
-    keywords: ["browser", "search", "address bar", "google", "duckduckgo", "bing", "brave", "kagi"],
+    keywords: ["address bar", "google", "duckduckgo", "bing", "brave", "kagi"],
     scope: "device",
     appliesWhen: "desktop",
     edit: {

@@ -1,17 +1,9 @@
 /**
- * The search engines the browser panel's address bar can use: the Settings
- * row's choices, and where a search for some words goes.
+ * Where the browser panel's address bar sends a search. The engines' names
+ * are with the Settings choices (BROWSER_SEARCH_ENGINE_LABELS in appPlaces.ts);
+ * this is apart from them so only the browser panel loads it.
  */
 import type { BrowserSearchEngine } from "@threadlines/contracts";
-
-/** "Browser search engine", as its menu words each choice. */
-export const BROWSER_SEARCH_ENGINE_LABELS: Readonly<Record<BrowserSearchEngine, string>> = {
-  google: "Google",
-  duckduckgo: "DuckDuckGo",
-  bing: "Bing",
-  brave: "Brave Search",
-  kagi: "Kagi",
-};
 
 const SEARCH_PAGES: Readonly<Record<BrowserSearchEngine, string>> = {
   google: "https://www.google.com/search",

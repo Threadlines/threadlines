@@ -117,7 +117,8 @@ import { answerBrowserApproval, type BrowserApprovalDecision } from "./browserAp
 import { noteBrowserUserIntent } from "./browserFocusGuard";
 import { completeUrl } from "./urlCompletion";
 import { type AgentActivity } from "./previewAutomationHost";
-import { hostOf, resolveAddressEntry } from "./previewUrl";
+import { resolveAddressEntry } from "./addressEntry";
+import { hostOf } from "./previewUrl";
 
 /** Cmd (Ctrl off a Mac) with the key and nothing else. */
 function isPlainModShortcut(event: KeyboardEvent): boolean {

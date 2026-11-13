@@ -1,5 +1,5 @@
 import type { BrowserSearchEngine } from "@threadlines/contracts";
-import { BROWSER_SEARCH_ENGINE_LABELS } from "@threadlines/shared/browserSearch";
+import { BROWSER_SEARCH_ENGINE_LABELS } from "@threadlines/shared/appPlaces";
 
 import type { Icon } from "../Icons";
 
