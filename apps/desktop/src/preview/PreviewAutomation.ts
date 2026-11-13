@@ -105,6 +105,11 @@ import {
 import * as PreviewScopes from "./PreviewScopes.ts";
 import { buildRevealElementScript } from "./revealElementScript.ts";
 import {
+  buildTextReceiverScript,
+  isTextReceiver,
+  type TextReceiver,
+} from "./textReceiverScript.ts";
+import {
   buildPickOverlayScript,
   PICK_OVERLAY_BINDING,
   PICK_OVERLAY_STASH,
@@ -162,6 +167,18 @@ const SCREEN_LOCKED =
  */
 const PAGE_FOCUS_WAIT_MS = 250;
 const PAGE_FOCUS_POLL = "4 millis";
+/**
+ * How long typing waits for the click before it to put focus in a field. A
+ * page may focus its field a moment after the click (a search button that
+ * opens the box it then focuses). Together with the wait above this stays well
+ * inside the time the page holds the keyboard (PREVIEW_AGENT_KEYS_DEADLINE_MS).
+ */
+const TEXT_FIELD_WAIT_MS = 400;
+const TEXT_FIELD_POLL = "20 millis";
+/** How long a page has to select a field's contents before typing gives up. */
+const TEXT_FIELD_CLEAR_MS = 200;
+const NO_TEXT_FIELD =
+  "the click did not put the cursor in a field that takes text, so nothing was typed; aim at the text field itself, or press keys one at a time for a control like a date picker";
 /**
  * An agent's script may wait on purpose (a promise that settles after an
  * animation, a fetch), so it gets nearly all of the broker's deadline.
@@ -897,6 +914,15 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
         method: string,
         params: Record<string, unknown>,
       ) => Effect.Effect<unknown, PreviewCommandError>,
+      page: {
+        readonly contents: WebContents;
+        /**
+         * The same check `send` makes, for a step that is not a CDP command:
+         * a reason not to touch the page now, or null. Ask in the same
+         * synchronous step as the act.
+         */
+        readonly refusal: () => string | null;
+      },
     ) => Effect.Effect<A, E, R>,
   ) =>
     Effect.suspend(() => {
@@ -924,30 +950,27 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
               yield* Effect.sleep(PAGE_FOCUS_POLL);
             }
             let sent = 0;
+            const refusal = () => {
+              const tab = attached.get(webContentsId);
+              const reason =
+                controlEpoch !== undefined && tab !== undefined && tab.controlEpoch !== controlEpoch
+                  ? "the user took control of this tab"
+                  : contents.focusedFrame === null
+                    ? "the page did not have keyboard focus"
+                    : Date.now() - startedAt > PREVIEW_AGENT_KEYS_DEADLINE_MS
+                      ? "the page took too long to take the keys"
+                      : null;
+              if (reason === null) {
+                sent += 1;
+                return null;
+              }
+              return sent === 0
+                ? `${reason}, so nothing was typed; try again`
+                : `${reason}, so only part of the input reached it; check the field before trying again`;
+            };
             const send = (method: string, params: Record<string, unknown>) =>
-              sendCommand(contents, method, params, {
-                refusal: () => {
-                  const tab = attached.get(webContentsId);
-                  const refusal =
-                    controlEpoch !== undefined &&
-                    tab !== undefined &&
-                    tab.controlEpoch !== controlEpoch
-                      ? "the user took control of this tab"
-                      : contents.focusedFrame === null
-                        ? "the page did not have keyboard focus"
-                        : Date.now() - startedAt > PREVIEW_AGENT_KEYS_DEADLINE_MS
-                          ? "the page took too long to take the keys"
-                          : null;
-                  if (refusal === null) {
-                    sent += 1;
-                    return null;
-                  }
-                  return sent === 0
-                    ? `${refusal}, so nothing was typed; try again`
-                    : `${refusal}, so only part of the input reached it; check the field before trying again`;
-                },
-              });
-            return yield* keys(send);
+              sendCommand(contents, method, params, { refusal });
+            return yield* keys(send, { contents, refusal });
           }),
         ),
       );
@@ -955,6 +978,57 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
 
   const failCommand = (contents: WebContents, method: string, cause: string) =>
     Effect.fail(new PreviewCommandError({ webContentsId: contents.id, method, cause }));
+
+  /** One run of the text-receiver script in the frame that holds the keyboard. */
+  const askTextReceiver = (contents: WebContents, script: string) =>
+    Effect.tryPromise(async (): Promise<unknown> =>
+      contents.focusedFrame?.executeJavaScript(script),
+    ).pipe(
+      Effect.map((answer): TextReceiver => (isTextReceiver(answer) ? answer : "none")),
+      // A page that cannot be asked has nothing to type into.
+      Effect.orElseSucceed((): TextReceiver => "none"),
+    );
+
+  /**
+   * What would take text typed now (`textReceiverScript.ts`), waiting a
+   * moment for the page to focus a field. Only looks; changes nothing.
+   */
+  const findTextReceiver = (contents: WebContents) =>
+    Effect.gen(function* () {
+      const script = buildTextReceiverScript();
+      for (;;) {
+        const receiver = yield* askTextReceiver(contents, script);
+        if (receiver !== "none") return receiver;
+        yield* Effect.sleep(TEXT_FIELD_POLL);
+      }
+    }).pipe(
+      Effect.timeoutOrElse({
+        duration: TEXT_FIELD_WAIT_MS,
+        orElse: () => Effect.succeed<TextReceiver>("none"),
+      }),
+    );
+
+  /**
+   * Selects a field's contents so the text typed next replaces them, in the
+   * same step in the page that checks the field still has focus, and says
+   * what it found there. The page is told when to give up, so one that
+   * answers late changes nothing.
+   */
+  const clearTextReceiver = (contents: WebContents, refusal: () => string | null) =>
+    Effect.suspend(() => {
+      const reason = refusal();
+      return reason === null
+        ? askTextReceiver(
+            contents,
+            buildTextReceiverScript({ clearBefore: Date.now() + TEXT_FIELD_CLEAR_MS }),
+          ).pipe(
+            Effect.timeoutOrElse({
+              duration: TEXT_FIELD_CLEAR_MS,
+              orElse: () => Effect.succeed<TextReceiver>("none"),
+            }),
+          )
+        : failCommand(contents, "Input.insertText", reason);
+    });
 
   const targetDescription = (target: PreviewAutomationTarget): string =>
     "ref" in target
@@ -2843,28 +2917,31 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
     // Into whatever the page has focused: the renderer clicks the field first,
     // as its own step, so the page needs the keyboard only for the keys.
     type: Effect.fn("PreviewAutomation.type")(function* (input: DesktopPreviewTypeInput) {
-      yield* agentKeys(input.webContentsId, input.controlEpoch, (send) =>
+      yield* agentKeys(input.webContentsId, input.controlEpoch, (send, { contents, refusal }) =>
         Effect.gen(function* () {
-          if (input.clear === true) {
-            // `commands` invokes the editing command directly, which is what a
-            // modifier chord ultimately triggers. Dispatching Meta+A as a raw key
-            // does not: the browser resolves shortcuts to editing commands above
-            // the layer CDP injects at, so the keypress arrives and selects
-            // nothing, and the insert below lands wherever the caret happened to
-            // be -- mid-word, since a click centres it.
-            yield* send("Input.dispatchKeyEvent", {
-              type: "keyDown",
+          // The click may have landed on something that takes no text: a
+          // button, a label, a layer over the field. Then nothing is sent,
+          // and the agent hears that nothing was typed. Sending "select all"
+          // regardless is what used to highlight the whole page.
+          let receiver = yield* findTextReceiver(contents);
+          if (receiver === "field" && input.clear === true) {
+            receiver = yield* clearTextReceiver(contents, refusal);
+          }
+          if (receiver === "none") {
+            return yield* failCommand(contents, "Input.insertText", NO_TEXT_FIELD);
+          }
+          if (receiver === "editContext" && input.clear === true) {
+            // The editor draws its own text and selects it on its own
+            // shortcut, so it gets the chord a person would press. No `text`:
+            // the chord must not also type an "a".
+            const chord = {
               key: "a",
               code: "KeyA",
               windowsVirtualKeyCode: 65,
-              commands: ["selectAll"],
-            });
-            yield* send("Input.dispatchKeyEvent", {
-              type: "keyUp",
-              key: "a",
-              code: "KeyA",
-              windowsVirtualKeyCode: 65,
-            });
+              modifiers: toCdpModifierBitmask([process.platform === "darwin" ? "Meta" : "Control"]),
+            };
+            yield* send("Input.dispatchKeyEvent", { type: "keyDown", ...chord });
+            yield* send("Input.dispatchKeyEvent", { type: "keyUp", ...chord });
           }
           yield* send("Input.insertText", { text: input.text });
           if (input.submit === true) {
