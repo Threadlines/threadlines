@@ -24,7 +24,6 @@ import {
   type UsageWindowDays,
 } from "@threadlines/contracts";
 import { scopeThreadRef } from "@threadlines/client-runtime";
-import { BROWSER_SEARCH_ENGINE_LABELS } from "@threadlines/shared/browserSearch";
 import { themeGlassLevel } from "@threadlines/shared/themeGlassLevel";
 import { agentInvitesChoice, agentThreadsMode } from "@threadlines/shared/serverSettings";
 import {
@@ -121,6 +120,7 @@ import {
   viewportForPageSizeChoice,
 } from "../browser/pageSizes";
 import { PageSizeLabel } from "../browser/PageSizeLabel";
+import { SearchEngineLabel } from "../browser/SearchEngineLabel";
 import {
   SettingsSurfaceContext,
   ShownPlace,
@@ -880,12 +880,14 @@ export function BrowserSearchEngineRow() {
           }}
         >
           <SelectTrigger className="w-full sm:w-44" aria-label="Browser search engine">
-            <SelectValue>{BROWSER_SEARCH_ENGINE_LABELS[searchEngine]}</SelectValue>
+            <SelectValue>
+              <SearchEngineLabel engine={searchEngine} />
+            </SelectValue>
           </SelectTrigger>
           <SelectPopup align="end" alignItemWithTrigger={false}>
             {BrowserSearchEngine.literals.map((engine) => (
               <SelectItem key={engine} value={engine}>
-                {BROWSER_SEARCH_ENGINE_LABELS[engine]}
+                <SearchEngineLabel engine={engine} />
               </SelectItem>
             ))}
           </SelectPopup>
