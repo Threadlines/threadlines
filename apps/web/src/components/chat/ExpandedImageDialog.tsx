@@ -137,7 +137,7 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
           type="button"
           size="icon"
           variant="ghost"
-          className="absolute left-[calc(--spacing(2)+var(--safe-area-left))] top-1/2 z-20 -translate-y-1/2 text-white/90 hover:bg-white/10 hover:text-white sm:left-[calc(--spacing(6)+var(--safe-area-left))]"
+          className="absolute left-2 top-1/2 z-20 ml-(--safe-area-left) -translate-y-1/2 text-white/90 hover:bg-white/10 hover:text-white sm:left-6"
           aria-label="Previous image"
           onClick={() => navigateImage(-1)}
         >
@@ -212,7 +212,7 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
           type="button"
           size="icon"
           variant="ghost"
-          className="absolute right-[calc(--spacing(2)+var(--safe-area-right))] top-1/2 z-20 -translate-y-1/2 text-white/90 hover:bg-white/10 hover:text-white sm:right-[calc(--spacing(6)+var(--safe-area-right))]"
+          className="absolute right-2 top-1/2 z-20 mr-(--safe-area-right) -translate-y-1/2 text-white/90 hover:bg-white/10 hover:text-white sm:right-6"
           aria-label="Next image"
           onClick={() => navigateImage(1)}
         >

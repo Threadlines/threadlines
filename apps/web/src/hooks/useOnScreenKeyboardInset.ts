@@ -1,6 +1,10 @@
 import { type CSSProperties, useCallback, useSyncExternalStore } from "react";
 
-import { readVisualViewportInset, type VisualViewportEdge } from "~/lib/onScreenKeyboard";
+import {
+  readVisualViewportInset,
+  type VisualViewportEdge,
+  watchOnScreenKeyboard,
+} from "~/lib/onScreenKeyboard";
 
 function getServerSnapshot(): number {
   return 0;
@@ -9,15 +13,8 @@ function getServerSnapshot(): number {
 function useVisualViewportInset(edge: VisualViewportEdge, enabled: boolean): number {
   const subscribe = useCallback(
     (callback: () => void) => {
-      if (!enabled || typeof window === "undefined") return () => {};
-      const viewport = window.visualViewport;
-      if (!viewport) return () => {};
-      viewport.addEventListener("resize", callback);
-      viewport.addEventListener("scroll", callback);
-      return () => {
-        viewport.removeEventListener("resize", callback);
-        viewport.removeEventListener("scroll", callback);
-      };
+      if (!enabled) return () => {};
+      return watchOnScreenKeyboard(callback);
     },
     [enabled],
   );
