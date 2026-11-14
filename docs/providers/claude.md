@@ -66,6 +66,26 @@ turn as usual.
 Threadlines offers `Sign in` only when the message says the sign-in itself was rejected. A `403`
 means the service knew the account and refused the request, so signing in again would not help.
 
+## When Claude Code Won't Start
+
+Sometimes Claude Code refuses to start at all: a settings file that is not valid JSON, a proxy
+address it cannot read, a version too old for Anthropic, an organization that blocks the account.
+Claude Code says why before it exits, and the chat shows those words once, as the reason the turn
+failed. For a broken settings file that includes the file's path and where its backup is.
+
+- Threadlines does not keep retrying: the same start would fail the same way. Fix what the
+  message names, then `Retry`.
+- Threadlines offers `Sign in` only when the reason is a sign-in that ended (a gateway sign-in, or
+  an organization that refused the account).
+- A Claude Code too old to report its reason still shows `Claude Code process exited with code 1`.
+
+## Subagent Reports That Arrive Together
+
+Since Claude Code 2.1.321, reports from background subagents that are waiting at the same moment
+are answered in one reply. Claude Code still marks each report as handled on its own. Threadlines
+counts only the reply as a turn, so a message you send while reports are landing keeps its own
+turn, and the suggested next message stays with the reply it belongs to.
+
 ## Usage Numbers And The Normal Sign-In
 
 Threadlines asks Claude Code for the 5h, Weekly and per-model numbers, the same ones its `/usage`

@@ -12,7 +12,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
-const CODEX_PROTOCOL_VERSION = "0.167.0";
+const CODEX_PROTOCOL_VERSION = "0.169.0";
 const UPSTREAM_REF = `rust-v${CODEX_PROTOCOL_VERSION}`;
 const CODEX_SCHEMA_BINARY_ENV = "THREADLINES_CODEX_SCHEMA_BINARY";
 /**
@@ -611,6 +611,7 @@ function resolveResponseTypeName(
     "account/gatewayOAuth/read": "GatewayOAuthReadResponse",
     "account/logout": "LogoutAccountResponse",
     "account/rateLimits/read": "GetAccountRateLimitsResponse",
+    "account/securitySetup/read": "GetAccountSecuritySetupResponse",
     "account/usage/read": "GetAccountTokenUsageResponse",
     "account/workspaceMessages/read": "GetWorkspaceMessagesResponse",
     "config/batchWrite": "ConfigWriteResponse",

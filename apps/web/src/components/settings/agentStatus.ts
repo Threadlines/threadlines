@@ -142,7 +142,10 @@ export function agentStatusLine(input: {
       return `Not signed in · ${needs}`;
     case "ready": {
       const authLabel = snapshot?.auth.label ?? snapshot?.auth.type ?? null;
-      return authLabel ? `Signed in · ${authLabel}` : "Ready";
+      if (authLabel) return `Signed in · ${authLabel}`;
+      // No sign-in, and none needed: its chats run on a gateway from its own config.
+      const modelProvider = snapshot?.auth.modelProvider?.name;
+      return modelProvider ? `Runs on ${modelProvider}` : "Ready";
     }
     case "problem":
       return status.detail ? `${status.headline}. ${status.detail}` : status.headline;

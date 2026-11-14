@@ -685,6 +685,12 @@ interface ClaudeSessionContext {
   /** Append-only messages sent whose own empty result has not come back yet.
    *  The CLI answers each with a zero-turn result that ends nothing. */
   pendingAppendOnlyResults: number;
+  /** Set once Claude Code said why it refused to start; it exits right after,
+   *  and that exit must not be reported as a second, vaguer failure. */
+  startFailure: ClaudeStartFailure | undefined;
+  /** Whether this session began a conversation rather than resuming one: only
+   *  such a session, refused at start, is known to hold nothing to restore. */
+  readonly startedFresh: boolean;
   /** The session's goal as Claude recorded it (see ClaudeGoals.ts); null
    *  when it has none. */
   goal: ClaudeGoalState | null;
@@ -1411,6 +1417,75 @@ function resultDisplayError(
     );
   }
   return result.errors.find((error) => !error.startsWith("[ede_diagnostic]"));
+}
+
+/**
+ * Asks Claude Code to write a refused start as a result before it exits.
+ * Without it most refusals reach us only as "exited with code 1"; a CLI too
+ * old to know the variable ignores it.
+ */
+const CLAUDE_STARTUP_FAILURE_RESULTS_ENVIRONMENT = { CLAUDE_CODE_STARTUP_FAILURE_RESULTS: "1" };
+
+/** The CLI's start-failure text is written for a terminal and can run long. */
+const MAX_CLAUDE_START_FAILURE_TEXT = 1_200;
+
+/** Refused starts kept for the next start to recognize; far more than can be waiting at once. */
+const MAX_REMEMBERED_UNSTARTED_SESSIONS = 256;
+
+export interface ClaudeStartFailure {
+  /** Claude Code's reason code, such as `config_file_invalid`. New ones arrive as text. */
+  readonly reason: string;
+  /** Claude Code's own words: what is wrong and how to fix it. */
+  readonly message: string;
+}
+
+/**
+ * Why Claude Code refused to start, read from the result it writes before it
+ * exits. Undefined for every result that ends a turn Claude ran.
+ */
+export function claudeStartFailure(result: SDKResultMessage): ClaudeStartFailure | undefined {
+  if (result.subtype === "success" || result.startup_failure_reason === undefined) {
+    return undefined;
+  }
+  const text = result.errors
+    .map((error) => error.trim())
+    .filter((error) => error !== "" && !error.startsWith("[ede_diagnostic]"))
+    .join("\n");
+  return {
+    reason: result.startup_failure_reason,
+    message:
+      text === ""
+        ? "Claude Code could not start."
+        : text.length > MAX_CLAUDE_START_FAILURE_TEXT
+          ? `${text.slice(0, MAX_CLAUDE_START_FAILURE_TEXT - 1)}…`
+          : text,
+  };
+}
+
+/** The refused starts whose fix is signing in again. */
+function claudeStartFailureCategory(reason: string): ProviderFailureCategory | undefined {
+  return reason === "gateway_signin_required" || reason === "org_config_refused"
+    ? "auth"
+    : undefined;
+}
+
+/**
+ * Whether a result is the empty one Claude Code writes for a queued subagent
+ * report or task notice that was answered by another's model call (reports
+ * that wait together share one call since 2.1.321). Nothing ran for it, so
+ * it ends no turn: the shared call's own result does. Such a result names
+ * what queued it in `origin`; a person's message and Threadlines' own sends
+ * never match.
+ */
+export function isClaudeSharedCallResult(result: SDKResultMessage): boolean {
+  return (
+    result.subtype === "success" &&
+    !result.is_error &&
+    result.num_turns === 0 &&
+    result.result === "" &&
+    result.origin !== undefined &&
+    result.origin.kind !== "human"
+  );
 }
 
 /**
@@ -4152,6 +4227,26 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       >(undefined));
 
   const sessions = new Map<ThreadId, ClaudeSessionContext>();
+  /**
+   * Sessions Claude Code refused to start, by id. A thread keeps the id of
+   * its session for the next start to resume, and one that never began left
+   * no transcript: that start begins fresh without warning of lost context.
+   * Kept in memory only; after a restart the warning shows as it always did.
+   */
+  const sessionsNeverBegan = new Set<string>();
+  const rememberSessionNeverBegan = (sessionId: string) => {
+    if (sessionsNeverBegan.size >= MAX_REMEMBERED_UNSTARTED_SESSIONS) {
+      sessionsNeverBegan.clear();
+    }
+    sessionsNeverBegan.add(sessionId);
+  };
+  /**
+   * The refused start each thread was last told about with no turn open, in
+   * Claude Code's words. A send right after starts Claude again and is refused
+   * the same way: its turn fails with those words without a second copy of
+   * the error. Forgotten once Claude starts for the thread.
+   */
+  const startFailuresTold = new Map<ThreadId, string>();
   const runtimeEventQueue = yield* Queue.unbounded<ProviderRuntimeEvent>();
 
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
@@ -6874,6 +6969,58 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     );
   });
 
+  /**
+   * Fails the open turn on a refused start, in Claude Code's words. The error
+   * itself is left out when the thread was just told the same thing with no
+   * turn open (the start a send retries).
+   */
+  const failTurnOnStartFailure = Effect.fn("failTurnOnStartFailure")(function* (
+    context: ClaudeSessionContext,
+    failure: ClaudeStartFailure,
+    result?: SDKResultMessage,
+  ) {
+    const threadId = context.session.threadId;
+    const failureCategory = claudeStartFailureCategory(failure.reason);
+    const alreadyTold = startFailuresTold.get(threadId) === failure.message;
+    startFailuresTold.delete(threadId);
+    if (!alreadyTold) {
+      yield* emitRuntimeError(context, failure.message, undefined, failureCategory);
+    }
+    yield* completeTurn(context, "failed", failure.message, result, failureCategory);
+  });
+
+  /**
+   * Claude Code refused to start and is about to exit. With a turn open, the
+   * refusal is how that turn ends. With none (a session started ahead of its
+   * message, or restarted for a setting), the thread is told once, here.
+   */
+  const handleStartFailure = Effect.fn("handleStartFailure")(function* (
+    context: ClaudeSessionContext,
+    failure: ClaudeStartFailure,
+    result: SDKResultMessage,
+  ) {
+    context.startFailure = failure;
+    if (context.startedFresh && context.resumeSessionId !== undefined) {
+      rememberSessionNeverBegan(context.resumeSessionId);
+    }
+    yield* Effect.logWarning("claude.session.start-refused", {
+      threadId: context.session.threadId,
+      reason: failure.reason,
+      message: failure.message,
+    });
+    if (context.turnState) {
+      yield* failTurnOnStartFailure(context, failure, result);
+      return;
+    }
+    yield* emitRuntimeError(
+      context,
+      failure.message,
+      undefined,
+      claudeStartFailureCategory(failure.reason),
+    );
+    startFailuresTold.set(context.session.threadId, failure.message);
+  });
+
   const handleResultMessage = Effect.fn("handleResultMessage")(function* (
     context: ClaudeSessionContext,
     message: SDKMessage,
@@ -6884,6 +7031,16 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     // A `/goal` answer kept out of the thread ends with a result of its own.
     if (context.goalCommandResultsToSkip > 0 && isClaudeGoalCommandResult(message)) {
       context.goalCommandResultsToSkip -= 1;
+      return;
+    }
+    // Before the append-only count below, which would take it for one of
+    // its own and then end the user's turn on the real one.
+    if (isClaudeSharedCallResult(message)) {
+      return;
+    }
+    const startFailure = claudeStartFailure(message);
+    if (startFailure) {
+      yield* handleStartFailure(context, startFailure, message);
       return;
     }
     // A context message sent ahead of the user's words (shouldQuery: false)
@@ -7229,6 +7386,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
     switch (message.subtype) {
       case "init": {
+        // Claude started: a refusal the thread was told about is behind it.
+        startFailuresTold.delete(context.session.threadId);
         const cliVersion = nonEmptyString(
           (message as { readonly claude_code_version?: unknown }).claude_code_version,
         );
@@ -8127,6 +8286,28 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       return;
     }
 
+    if (context.startFailure !== undefined) {
+      // Claude Code already said why it would not start. Its exit adds only
+      // "exited with code 1", so it is not reported again.
+      const failure = context.startFailure;
+      if (context.turnState) {
+        yield* failTurnOnStartFailure(context, failure);
+      }
+      // Whoever asked about the goal hears why, not just that it stopped.
+      const goalCommand = context.goalCommand;
+      if (goalCommand !== undefined) {
+        context.goalCommand = undefined;
+        yield* Deferred.succeed(goalCommand.reply, { accepted: false, text: failure.message });
+      }
+      yield* stopSessionInternal(context, {
+        emitExitEvent: true,
+        exitKind: "error",
+        exitReason: failure.message,
+        recoverable: true,
+      });
+      return;
+    }
+
     if (Exit.isFailure(exit)) {
       if (isClaudeInterruptedCause(exit.cause)) {
         if (context.turnState) {
@@ -8447,6 +8628,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             threadId,
             detail: `Claude conversation ${requestedResumeState.resume} was not found to resume.`,
           });
+        } else if (
+          transcriptResolution?.outcome === "missing" &&
+          sessionsNeverBegan.delete(requestedResumeState.resume)
+        ) {
+          // Claude refused to start that session, so it holds nothing to
+          // restore and a fresh start loses nothing worth a warning.
+          resumeState = undefined;
         } else if (transcriptResolution?.outcome === "missing") {
           yield* Effect.logWarning("claude.resume.transcript-missing", {
             threadId,
@@ -9288,6 +9476,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const sdkEnvironment = {
         ...withUsualCommandLookup(claudeEnvironment),
         ...(artifacts ? CLAUDE_ARTIFACT_ENVIRONMENT : CLAUDE_ARTIFACT_OFF_ENVIRONMENT),
+        ...CLAUDE_STARTUP_FAILURE_RESULTS_ENVIRONMENT,
       };
       // Asked of the very binary, folder and environment the SDK gets below.
       const guardFailure = claudeGuardFailure(
@@ -9623,6 +9812,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         planTracker: new Map(),
         workflowRuns: new ClaudeWorkflowRunTracker(),
         pendingAppendOnlyResults: 0,
+        startFailure: undefined,
+        startedFresh: existingResumeSessionId === undefined,
         goal: null,
         goalsTracked: !lockdown,
         goalCommand: undefined,

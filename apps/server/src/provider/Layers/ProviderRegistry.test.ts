@@ -40,6 +40,7 @@ import {
   checkCodexProviderStatus,
   parseCodexModelListResponse,
   type CodexAppServerProviderSnapshot,
+  type CodexSecurityNoticeMemory,
   type CodexWorkspaceMemory,
 } from "./CodexProvider.ts";
 import {
@@ -462,6 +463,183 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
             }),
           );
           assert.strictEqual(other.auth.workspaces, undefined);
+        }),
+      );
+
+      it.effect("names the gateway Codex runs on beside the ChatGPT sign-in it still holds", () =>
+        Effect.gen(function* () {
+          const providers = (defaultProviderId: string) => ({
+            canChangeDefault: true,
+            defaultProviderId,
+            data: [
+              {
+                id: "acme",
+                name: " Acme\nGateway ",
+                canEdit: true,
+                baseUrl: "https://llm.acme.example/v1",
+                settings: {
+                  type: "customGateway" as const,
+                  auth: { mode: "environmentVariable" as const, envKey: "ACME_API_KEY" },
+                },
+              },
+              {
+                id: "openai",
+                name: "OpenAI",
+                canEdit: false,
+                settings: { type: "openai" as const },
+              },
+            ],
+          });
+          const onGateway = yield* checkCodexProviderStatus(defaultCodexSettings, () =>
+            Effect.succeed(makeCodexProbeSnapshot({ modelProviders: providers("acme") })),
+          );
+          assert.deepStrictEqual(onGateway.auth.modelProvider, {
+            id: "acme",
+            name: "Acme Gateway",
+          });
+          // The sign-in is still there to sign out of or switch workspaces on.
+          assert.strictEqual(onGateway.auth.status, "authenticated");
+          assert.strictEqual(onGateway.auth.type, "chatgpt");
+
+          const onOpenAi = yield* checkCodexProviderStatus(defaultCodexSettings, () =>
+            Effect.succeed(makeCodexProbeSnapshot({ modelProviders: providers("openai") })),
+          );
+          assert.strictEqual(onOpenAi.auth.modelProvider, undefined);
+
+          // No account at all: Codex is ready on the gateway alone.
+          const gatewayOnly = yield* checkCodexProviderStatus(defaultCodexSettings, () =>
+            Effect.succeed(
+              makeCodexProbeSnapshot({
+                account: { account: null, requiresOpenaiAuth: false },
+                modelProviders: providers("acme"),
+              }),
+            ),
+          );
+          assert.strictEqual(gatewayOnly.status, "ready");
+          assert.strictEqual(gatewayOnly.auth.status, "unknown");
+          assert.deepStrictEqual(gatewayOnly.auth.modelProvider, {
+            id: "acme",
+            name: "Acme Gateway",
+          });
+        }),
+      );
+
+      it.effect("shows OpenAI's security notice only to the account it is for", () =>
+        Effect.gen(function* () {
+          const securityNoticeMemory: CodexSecurityNoticeMemory = {};
+          const check = (snapshot: CodexAppServerProviderSnapshot) =>
+            checkCodexProviderStatus(
+              defaultCodexSettings,
+              () => Effect.succeed(snapshot),
+              process.env,
+              undefined,
+              securityNoticeMemory,
+            );
+          const accountIn = (workspaceId: string) => ({
+            ...makeCodexProbeSnapshot().account,
+            userId: "user-1",
+            workspaceRouting: {
+              chatgptAccountId: workspaceId,
+              backendOrigin: "https://chatgpt.com",
+              accountRoutingOverride: "NO_CONSTRAINT",
+            },
+          });
+          const notice = (overrides?: { accountId?: string; url?: string }) => ({
+            notice: {
+              accountId: overrides?.accountId ?? "acct-work",
+              userId: "user-1",
+              title: " Turn on\ntwo-step sign-in ",
+              description: "Your workspace requires it by Dec 1.",
+              action: {
+                label: "Set up",
+                url: overrides?.url ?? "https://chatgpt.com/settings/security",
+              },
+            },
+          });
+
+          const shown = yield* check(
+            makeCodexProbeSnapshot({ account: accountIn("acct-work"), securitySetup: notice() }),
+          );
+          const expected = {
+            title: "Turn on two-step sign-in",
+            description: "Your workspace requires it by Dec 1.",
+            action: { label: "Set up", url: "https://chatgpt.com/settings/security" },
+          };
+          assert.deepStrictEqual(shown.auth.securityNotice, expected);
+
+          // A check OpenAI didn't answer keeps it for the same user and workspace.
+          const slow = yield* check(makeCodexProbeSnapshot({ account: accountIn("acct-work") }));
+          assert.deepStrictEqual(slow.auth.securityNotice, expected);
+
+          // After a workspace switch an unanswered check shows nothing: the
+          // notice was the other workspace's.
+          const switched = yield* check(
+            makeCodexProbeSnapshot({ account: accountIn("acct-home") }),
+          );
+          assert.strictEqual(switched.auth.securityNotice, undefined);
+          const back = yield* check(makeCodexProbeSnapshot({ account: accountIn("acct-work") }));
+          assert.strictEqual(back.auth.securityNotice, undefined);
+
+          // A check that could not read the account at all forgets it too: a
+          // sign-out may sit behind the failure.
+          yield* check(
+            makeCodexProbeSnapshot({ account: accountIn("acct-work"), securitySetup: notice() }),
+          );
+          yield* checkCodexProviderStatus(
+            defaultCodexSettings,
+            () =>
+              Effect.fail(
+                new CodexErrors.CodexAppServerSpawnError({ command: "codex", cause: "missing" }),
+              ),
+            process.env,
+            undefined,
+            securityNoticeMemory,
+          );
+          const afterFailedCheck = yield* check(
+            makeCodexProbeSnapshot({ account: accountIn("acct-work") }),
+          );
+          assert.strictEqual(afterFailedCheck.auth.securityNotice, undefined);
+
+          // A notice bound to another account is not this one's to act on.
+          const foreign = yield* check(
+            makeCodexProbeSnapshot({
+              account: accountIn("acct-work"),
+              securitySetup: notice({ accountId: "acct-other" }),
+            }),
+          );
+          assert.strictEqual(foreign.auth.securityNotice, undefined);
+
+          // A link that leaves OpenAI's sites is dropped; the words stay.
+          for (const url of [
+            "https://chatgpt.com.evil.example/settings",
+            "http://chatgpt.com/settings",
+            "javascript:alert(1)",
+            "https://user@chatgpt.com/settings",
+          ]) {
+            const unsafe = yield* check(
+              makeCodexProbeSnapshot({
+                account: accountIn("acct-work"),
+                securitySetup: notice({ url }),
+              }),
+            );
+            assert.deepStrictEqual(unsafe.auth.securityNotice, {
+              title: expected.title,
+              description: expected.description,
+            });
+          }
+
+          // OpenAI's answer that nothing is needed clears it.
+          const cleared = yield* check(
+            makeCodexProbeSnapshot({
+              account: accountIn("acct-work"),
+              securitySetup: { notice: null },
+            }),
+          );
+          assert.strictEqual(cleared.auth.securityNotice, undefined);
+          const afterCleared = yield* check(
+            makeCodexProbeSnapshot({ account: accountIn("acct-work") }),
+          );
+          assert.strictEqual(afterCleared.auth.securityNotice, undefined);
         }),
       );
 

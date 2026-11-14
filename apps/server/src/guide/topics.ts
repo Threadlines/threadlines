@@ -219,6 +219,9 @@ While this computer is asleep or Threadlines is closed, assistants are told it's
       "continue at reset",
       "workspace",
       "chatgpt",
+      "gateway",
+      "model provider",
+      "security notice",
     ],
     body: `{place:settings.providers} lists the agents this computer can run (Claude, Codex, Cursor, OpenCode, Pi and others), in use and not in use. Each card has its account and sign-in, its models, how it appears (name and color), and how it launches (command and environment variables).
 
@@ -233,6 +236,12 @@ An agent's row that says Can't start means its program is on this computer but f
 A Claude sign-in made with Claude's own sign-in (not an API key or a long-lived token) ends on a date that renewing doesn't move: up to 3 days before the date Claude saved. From 10 days before, the Claude row in Settings and the notice above the message box say when, with Sign in again; signing in again sets a new date. The notice's X hides it until the next sign-in.
 
 When a Codex ChatGPT sign-in belongs to more than one workspace (a personal one and a company's, say), the Codex row shows the one in use, and its Account & Sign-in has Workspace: pick another and Switch. Switching first stops that Codex's running chats and holds new ones until it's done. A workspace behind company sign-on opens a sign-in page; Cancel keeps the current workspace. A chat whose data the old workspace keeps in another region may not continue after a switch; start a new thread for it. It needs Codex 0.167 or later.
+
+When Codex's own config points it at a gateway or another model provider instead of OpenAI, the Codex row says Runs on and the provider's name, and Account & Sign-in has a Model provider line. Threadlines only shows it; change it in Codex's config. A ChatGPT sign-in beside it keeps its email, workspace and Sign out. It needs Codex 0.168 or later.
+
+When OpenAI asks a ChatGPT account to do something about its security, the Codex row says Security notice, and Account & Sign-in shows OpenAI's words with a button that opens the page on OpenAI's site. It needs Codex 0.169 or later.
+
+When Claude Code refuses to start (a settings file that is not valid JSON, a bad proxy address, a version too old), the chat shows Claude Code's own reason once, with the file and its backup for a broken settings file. Fix what it names, then Retry.
 
 If Codex's sign-in goes stale in a chat before it has started on your message, Threadlines restarts Codex and sends the message again, once, with a note in the chat. If that fails too, the chat asks you to sign in.
 

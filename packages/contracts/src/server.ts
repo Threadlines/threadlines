@@ -124,6 +124,36 @@ export const ServerProviderWorkspace = Schema.Struct({
 });
 export type ServerProviderWorkspace = typeof ServerProviderWorkspace.Type;
 
+/**
+ * The service an agent sends its requests to when that is not its maker's own:
+ * a gateway the user set up in the agent's configuration (Codex's
+ * `model_provider`). It says where chats run, not who is signed in: a sign-in
+ * can sit beside it unused, so the account fields stay as they are.
+ */
+export const ServerProviderModelProvider = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  name: TrimmedNonEmptyString,
+});
+export type ServerProviderModelProvider = typeof ServerProviderModelProvider.Type;
+
+/**
+ * Something the provider's own service asks the signed-in person to do about
+ * their account's security, in its words (Codex's `account/securitySetup/read`).
+ * `action.url` is always an https page on the provider's own site: the server
+ * drops any other before it gets here.
+ */
+export const ServerProviderSecurityNotice = Schema.Struct({
+  title: TrimmedNonEmptyString,
+  description: Schema.optional(TrimmedNonEmptyString),
+  action: Schema.optional(
+    Schema.Struct({
+      label: TrimmedNonEmptyString,
+      url: TrimmedNonEmptyString,
+    }),
+  ),
+});
+export type ServerProviderSecurityNotice = typeof ServerProviderSecurityNotice.Type;
+
 export const ServerProviderAuth = Schema.Struct({
   status: ServerProviderAuthStatus,
   type: Schema.optional(TrimmedNonEmptyString),
@@ -134,6 +164,9 @@ export const ServerProviderAuth = Schema.Struct({
   signInEnds: Schema.optional(ServerProviderSignInEnds),
   /** The workspaces this sign-in can switch between (the `switch-workspace` sign-in flow). */
   workspaces: Schema.optional(Schema.Array(ServerProviderWorkspace)),
+  /** Set only when chats run somewhere other than the provider's own service. */
+  modelProvider: Schema.optional(ServerProviderModelProvider),
+  securityNotice: Schema.optional(ServerProviderSecurityNotice),
 });
 export type ServerProviderAuth = typeof ServerProviderAuth.Type;
 

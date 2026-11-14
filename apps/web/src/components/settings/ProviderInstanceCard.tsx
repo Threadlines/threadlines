@@ -65,6 +65,11 @@ import {
 import { AddProviderAccountForm } from "./AddProviderAccountForm";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import {
+  ProviderModelProviderRow,
+  ProviderSecurityNoticeRow,
+  providerRunsOnText,
+} from "./ProviderAccountNotes";
 import { Checkbox } from "../ui/checkbox";
 import { Collapsible, CollapsibleContent } from "../ui/collapsible";
 import { DraftInput } from "../ui/draft-input";
@@ -583,7 +588,10 @@ export function providerAuthBadge(input: ServerProvider["auth"] | undefined): {
     case "unauthenticated":
       return { label: "Needs sign in", variant: "warning" };
     default:
-      return { label: "Checking", variant: "secondary" };
+      // Running on a gateway from its own config, it has no sign-in to check.
+      return input?.modelProvider
+        ? { label: "No sign-in needed", variant: "secondary" }
+        : { label: "Checking", variant: "secondary" };
   }
 }
 
@@ -726,6 +734,10 @@ function ProviderAccountSignInSection(props: {
 }) {
   const authBadge = providerAuthBadge(props.liveProvider?.auth);
   const needsSignIn = authBadge.variant === "warning";
+  // Ready on a gateway with no account: signing in is a first sign-in, not a repeat.
+  const notSignedInOnGateway =
+    props.liveProvider?.auth.modelProvider !== undefined &&
+    props.liveProvider.auth.status !== "authenticated";
   // A saved sign-in close to its end: Sign in again becomes the main action.
   const signInEndsWarning = useSignInEndsWarning(props.liveProvider);
   // Antigravity's and Grok's sign-in follow their method: a browser sign-in,
@@ -817,7 +829,7 @@ function ProviderAccountSignInSection(props: {
                 ? needsSignIn
                   ? methodStep.label
                   : methodCopy.again
-                : needsSignIn
+                : needsSignIn || notSignedInOnGateway
                   ? "Sign in"
                   : "Sign in again"
             }
@@ -879,11 +891,19 @@ function ProviderAccountSignInSection(props: {
         )}
 
         {props.liveProvider?.enabled !== false && props.liveProvider ? (
+          <ProviderSecurityNoticeRow provider={props.liveProvider} />
+        ) : null}
+
+        {props.liveProvider?.enabled !== false && props.liveProvider ? (
           <ProviderWorkspaceSwitch
             instanceId={props.instanceId}
             displayName={props.displayName}
             provider={props.liveProvider}
           />
+        ) : null}
+
+        {props.liveProvider?.enabled !== false && props.liveProvider ? (
+          <ProviderModelProviderRow displayName={props.displayName} provider={props.liveProvider} />
         ) : null}
 
         {signOut && props.liveProvider?.auth.status === "authenticated" ? (
@@ -1368,6 +1388,8 @@ export function ProviderInstanceCard({
     : null;
   // Which workspace it uses, where the sign-in has more than one.
   const workspaceName = hasAuthenticatedEmail ? currentWorkspaceName(liveProvider?.auth) : null;
+  // The gateway its chats run on, where that is not the provider's own service.
+  const runsOnText = providerRunsOnText(liveProvider);
   const signInEndsWarning = useSignInEndsWarning(liveProvider);
   const versionLabel = getProviderVersionLabel(liveProvider?.version);
   const providerInstallView = deriveProviderInstallView(liveProvider);
@@ -1670,8 +1692,13 @@ export function ProviderInstanceCard({
     ) : hasAuthenticatedEmail ? (
       <span className="inline-flex min-w-0 items-center gap-x-1">
         <ProviderAuthEmail email={authEmail} />
+        {/* Ahead of the plan and workspace, which a narrow row cuts off first. */}
+        {liveProvider?.auth.securityNotice ? (
+          <span className="shrink-0 text-warning">· Security notice</span>
+        ) : null}
         {authenticatedDetail ? <span>· {authenticatedDetail}</span> : null}
         {workspaceName ? <span className="truncate">· {workspaceName}</span> : null}
+        {runsOnText ? <span className="truncate">· {runsOnText}</span> : null}
         <ProviderAuthEmail email={usageEmailForDisplay} separator prefix="Usage" />
         {signInEndsWarning ? (
           <span className="text-warning">· {signInEndsShortText(signInEndsWarning)}</span>
@@ -1690,6 +1717,10 @@ export function ProviderInstanceCard({
     ) : (
       <span className="inline-flex min-w-0 items-center gap-x-1">
         <span className="shrink-0">{summary.headline}</span>
+        {/* A sign-in with no email (an API key) beside a gateway: the headline names the key. */}
+        {runsOnText && summary.headline !== runsOnText ? (
+          <span className="shrink-0">· {runsOnText}</span>
+        ) : null}
         {diagnosis ? (
           <span className="min-w-0 truncate">
             · {isCommunityAgent ? diagnosis : <LinkifiedText text={diagnosis} />}

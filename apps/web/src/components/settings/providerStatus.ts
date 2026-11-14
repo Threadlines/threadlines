@@ -105,6 +105,14 @@ export function getProviderSummary(provider: ServerProvider | undefined) {
       detail: provider.message ?? "The provider failed its startup checks.",
     };
   }
+  if (provider.auth.modelProvider) {
+    // Ready on a gateway from the agent's own config: there is no sign-in of
+    // ours to verify, and saying one "could not be verified" would mislead.
+    return {
+      headline: `Runs on ${provider.auth.modelProvider.name}`,
+      detail: provider.message ?? null,
+    };
+  }
   return {
     headline: "Available",
     detail: provider.message ?? "Installed and ready, but authentication could not be verified.",

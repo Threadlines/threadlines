@@ -2333,6 +2333,284 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  // Claude Code 2.1.321 answers subagent reports that wait together in one
+  // model call. Every other member gets an empty result of its own, which
+  // names what queued it and ends nothing.
+  it.effect("keeps a turn open through the empty results of batched subagent reports", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const configuredFiber = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "session.configured",
+      ).pipe(Stream.take(1), Stream.runCollect, Effect.forkChild);
+      const completedFiber = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "turn.completed",
+      ).pipe(Stream.take(1), Stream.runCollect, Effect.forkChild);
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      harness.query.emit(claudeInitMessage("2.1.325"));
+      yield* Fiber.join(configuredFiber);
+
+      // A message with context ahead of it also waits on an empty result of
+      // its own: a report's must not be counted as that one.
+      const turn = yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "<room-catch-up>Sol: done</room-catch-up>\n\nwhat did they find?",
+        typed: {
+          text: "what did they find?",
+          context: "<room-catch-up>Sol: done</room-catch-up>",
+        },
+        attachments: [],
+      });
+      const emptyResult = (uuid: string, origin?: object) =>
+        ({
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          num_turns: 0,
+          result: "",
+          errors: [],
+          session_id: "sdk-session-batch",
+          uuid,
+          ...(origin ? { origin } : {}),
+        }) as unknown as SDKMessage;
+      harness.query.emit(
+        emptyResult("result-notice", { kind: "task-notification", producer: "session-task" }),
+      );
+      harness.query.emit(
+        emptyResult("result-report", { kind: "peer", from: "a1", handback: true }),
+      );
+      harness.query.emit(emptyResult("result-append"));
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        num_turns: 1,
+        result: "They found two bugs.",
+        stop_reason: "end_turn",
+        errors: [],
+        session_id: "sdk-session-batch",
+        uuid: "result-turn",
+      } as unknown as SDKMessage);
+
+      const [completed] = Array.from(yield* Fiber.join(completedFiber));
+      assert.equal(completed?.type, "turn.completed");
+      if (completed?.type === "turn.completed") {
+        assert.equal(String(completed.turnId), String(turn.turnId));
+        assert.equal(completed.payload.stopReason, "end_turn");
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("keeps the last turn's suggestion when a batched report's empty result follows", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const context = yield* Effect.context<never>();
+      const runFork = Effect.runForkWith(context);
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const runtimeEventsFiber = runFork(
+        Stream.runForEach(adapter.streamEvents, (event) =>
+          Effect.sync(() => {
+            runtimeEvents.push(event);
+          }),
+        ),
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      const turn = yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        attachments: [],
+      });
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        num_turns: 1,
+        result: "Hi.",
+        errors: [],
+        session_id: "sdk-session-batch",
+        uuid: "result-turn",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        num_turns: 0,
+        result: "",
+        errors: [],
+        origin: { kind: "task-notification", producer: "session-task" },
+        session_id: "sdk-session-batch",
+        uuid: "result-notice",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "prompt_suggestion",
+        suggestion: "Run the tests.",
+        session_id: "sdk-session-batch",
+        uuid: "prompt-suggestion-1",
+      } as unknown as SDKMessage);
+
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      runtimeEventsFiber.interruptUnsafe();
+
+      const suggestion = runtimeEvents.find(
+        (event) => event.type === "turn.prompt-suggestion.updated",
+      );
+      assert.equal(suggestion?.type, "turn.prompt-suggestion.updated");
+      if (suggestion?.type === "turn.prompt-suggestion.updated") {
+        assert.equal(String(suggestion.turnId), String(turn.turnId));
+      }
+      // The empty result ended no turn of its own.
+      assert.equal(runtimeEvents.filter((event) => event.type === "turn.completed").length, 1);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  // Claude Code writes why it refused to start as a result, then exits with
+  // code 1. The turn fails once, in Claude's words.
+  it.effect("fails the turn once, with Claude's reason, when Claude refuses to start", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const context = yield* Effect.context<never>();
+      const runFork = Effect.runForkWith(context);
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const runtimeEventsFiber = runFork(
+        Stream.runForEach(adapter.streamEvents, (event) =>
+          Effect.sync(() => {
+            runtimeEvents.push(event);
+          }),
+        ),
+      );
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      const turn = yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "hello",
+        attachments: [],
+      });
+      const reason =
+        'Invalid proxy URL in HTTPS_PROXY: "notaurl" cannot be parsed as a URL.\nFix or unset HTTPS_PROXY and restart Claude Code.';
+      harness.query.emit({
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        num_turns: 0,
+        startup_failure_reason: "proxy_invalid",
+        errors: [reason],
+        session_id: "sdk-session-refused",
+        uuid: "result-refused",
+      } as unknown as SDKMessage);
+      harness.query.fail(new Error("Claude Code process exited with code 1"));
+
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      runtimeEventsFiber.interruptUnsafe();
+
+      const errors = runtimeEvents.filter((event) => event.type === "runtime.error");
+      assert.deepEqual(
+        errors.map((event) => (event.type === "runtime.error" ? event.payload.message : "")),
+        [reason],
+      );
+      const completions = runtimeEvents.filter((event) => event.type === "turn.completed");
+      assert.equal(completions.length, 1);
+      const [completed] = completions;
+      if (completed?.type === "turn.completed") {
+        assert.equal(String(completed.turnId), String(turn.turnId));
+        assert.equal(completed.payload.state, "failed");
+        assert.equal(completed.payload.errorMessage, reason);
+      }
+      const exited = runtimeEvents.find((event) => event.type === "session.exited");
+      assert.equal(exited?.type, "session.exited");
+      if (exited?.type === "session.exited") {
+        assert.equal(exited.payload.exitKind, "error");
+      }
+      assert.equal(yield* adapter.hasSession(THREAD_ID), false);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  // A session restarted for a setting, or started ahead of its message, has
+  // no turn to fail: the thread still hears why Claude would not start.
+  it.effect("tells the thread once when Claude refuses to start with no turn open", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const context = yield* Effect.context<never>();
+      const runFork = Effect.runForkWith(context);
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const runtimeEventsFiber = runFork(
+        Stream.runForEach(adapter.streamEvents, (event) =>
+          Effect.sync(() => {
+            runtimeEvents.push(event);
+          }),
+        ),
+      );
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      const reason = "Configuration error in /home/me/.claude.json: JSON Parse error";
+      harness.query.emit({
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        num_turns: 0,
+        startup_failure_reason: "config_file_invalid",
+        errors: [reason],
+        session_id: "sdk-session-refused",
+        uuid: "result-refused",
+      } as unknown as SDKMessage);
+      harness.query.fail(new Error("Claude Code process exited with code 1"));
+
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      runtimeEventsFiber.interruptUnsafe();
+
+      assert.deepEqual(
+        runtimeEvents.flatMap((event) =>
+          event.type === "runtime.error" ? [event.payload.message] : [],
+        ),
+        [reason],
+      );
+      assert.equal(
+        runtimeEvents.some((event) => event.type === "turn.completed"),
+        false,
+      );
+      assert.equal(yield* adapter.hasSession(THREAD_ID), false);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("sends a CLI too old to append context the single unmarked message", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
