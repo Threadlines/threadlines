@@ -148,6 +148,14 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
    * merge switch by number only for a pull request already linked.
    */
   pullRequestSwitchesByNumber: Schema.optionalKey(Schema.Boolean),
+  /**
+   * The server lists the worktrees a repository has that Threadlines did not
+   * make (`vcs.listWorktrees` with `scope: "elsewhere"`) and records a thread
+   * started in one as a guest there (ThreadWorktreeOrigin `existing`), so it
+   * is never renamed, set up or offered for deletion. Older servers omit it;
+   * clients then don't offer to pick worktrees up.
+   */
+  worktreePickup: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 

@@ -225,6 +225,9 @@ export function buildLocalDraftThread(
     latestTurn: null,
     branch: draftThread.branch,
     worktreePath: draftThread.worktreePath,
+    ...(draftThread.existingWorktree === true && draftThread.worktreePath !== null
+      ? { worktreeOrigin: { kind: "existing" as const } }
+      : {}),
     effectiveCwd: null,
     goal: null,
     turnDiffSummaries: [],
@@ -1760,6 +1763,23 @@ export function firstWorkNeedsWorktree(input: {
  * them before the work starts, so an agent never starts in the project folder
  * on a thread meant for a worktree. Undefined when there is nothing to make.
  */
+/**
+ * The guest marker for a thread made in `thread`'s worktree
+ * (ThreadWorktreeOrigin `existing`): a draft pointed at a worktree made
+ * outside Threadlines, or a thread that continues where a guest works. Empty
+ * for a computer that predates worktree pickup, which would refuse it.
+ */
+export function existingWorktreeCreateFields(input: {
+  readonly thread: Pick<Thread, "worktreePath" | "worktreeOrigin">;
+  readonly supported: boolean;
+}): { readonly worktreeOrigin?: { readonly kind: "existing" } } {
+  return input.supported &&
+    input.thread.worktreePath !== null &&
+    (input.thread.worktreeOrigin ?? null) !== null
+    ? { worktreeOrigin: { kind: "existing" } }
+    : {};
+}
+
 export function buildThreadStartBootstrap(input: {
   readonly createThread: ThreadBootstrapCreateThread | null;
   readonly worktree: { readonly projectCwd: string; readonly baseBranch: string } | null;

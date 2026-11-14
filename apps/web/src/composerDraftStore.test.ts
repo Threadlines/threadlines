@@ -1562,6 +1562,37 @@ describe("composerDraftStore project draft thread mapping", () => {
     });
   });
 
+  it("remembers a worktree made outside Threadlines until the draft is pointed elsewhere", () => {
+    const store = useComposerDraftStore.getState();
+    store.setProjectDraftThreadId(projectRef, draftId, { threadId });
+    store.setDraftThreadContext(draftId, {
+      branch: "fix/checkout-retry",
+      worktreePath: "/code/shop-checkout-retry",
+      existingWorktree: true,
+    });
+    // Changes that leave the worktree alone keep it: another setting, and a
+    // branch made or switched inside it (the branch picker names the folder
+    // again).
+    store.setDraftThreadContext(draftId, { runtimeMode: "full-access" });
+    store.setDraftThreadContext(draftId, {
+      branch: "fix/checkout-retry-2",
+      worktreePath: "/code/shop-checkout-retry",
+      envMode: "worktree",
+    });
+    expect(useComposerDraftStore.getState().getDraftThread(draftId)).toMatchObject({
+      worktreePath: "/code/shop-checkout-retry",
+      existingWorktree: true,
+    });
+    // Another worktree named without it is one of Threadlines' own.
+    store.setDraftThreadContext(draftId, {
+      branch: "feature/next",
+      worktreePath: "/tmp/feature-next",
+    });
+    expect(
+      useComposerDraftStore.getState().getDraftThread(draftId)?.existingWorktree,
+    ).toBeUndefined();
+  });
+
   it("preserves existing branch and worktree when setProjectDraftThreadId receives undefined", () => {
     const store = useComposerDraftStore.getState();
     store.setProjectDraftThreadId(projectRef, draftId, {

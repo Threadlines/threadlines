@@ -261,11 +261,15 @@ function ChatThreadRouteView() {
     };
   }, [activeProject, isGeneralChatThread, sourceControlThread, threadEffectiveCwd, threadRef]);
   const handleDraftSourceControlBranchChange = useCallback(
-    (branch: string | null, worktreePath: string | null) => {
+    (
+      branch: string | null,
+      worktreePath: string | null,
+      guest?: { readonly existingWorktree: true },
+    ) => {
       if (!threadRef) {
         return;
       }
-      setDraftThreadContext(threadRef, { branch, worktreePath });
+      setDraftThreadContext(threadRef, { branch, worktreePath, ...guest });
     },
     [setDraftThreadContext, threadRef],
   );

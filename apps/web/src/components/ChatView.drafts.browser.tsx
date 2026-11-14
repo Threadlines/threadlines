@@ -1,4 +1,10 @@
-import { MessageId, ProviderInstanceId, WS_METHODS, type ThreadId } from "@threadlines/contracts";
+import {
+  MessageId,
+  ORCHESTRATION_WS_METHODS,
+  ProviderInstanceId,
+  WS_METHODS,
+  type ThreadId,
+} from "@threadlines/contracts";
 import { createModelSelection } from "@threadlines/shared/model";
 import { page, userEvent } from "vite-plus/test/browser";
 import { describe, expect, it, vi } from "vite-plus/test";
@@ -334,6 +340,103 @@ describe("ChatView (full app): new threads and drafts", () => {
       });
 
       await vi.waitFor(() => expect(asked()).toBe(1), { timeout: 8_000, interval: 16 });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("offers the project's worktrees made elsewhere, for the draft to work in or to add as threads", async () => {
+    const worktree = (name: string, refName: string, facts: Record<string, unknown>) => ({
+      path: `/repo/code/${name}`,
+      refName,
+      isRoot: false,
+      dirty: false,
+      dirtyUnknown: false,
+      unmergedCommitCount: 0,
+      unrelatedHistory: false,
+      mergedByContent: false,
+      missing: false,
+      lockReason: null,
+      managed: false,
+      changedFileCount: 0,
+      lastCommitAt: null,
+      ...facts,
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-worktree-pickup-test" as MessageId,
+        targetText: "worktree pickup test",
+      }),
+      resolveRpc: (body) =>
+        body._tag === WS_METHODS.vcsListWorktrees && body.scope === "elsewhere"
+          ? {
+              worktrees: [
+                worktree("shop-checkout-retry", "fix/checkout-retry", {
+                  dirty: true,
+                  changedFileCount: 3,
+                  unmergedCommitCount: 2,
+                }),
+                // Nothing left to ship in it: the list starts it unticked.
+                worktree("shop-old-banner", "chore/old-banner", {}),
+              ],
+            }
+          : undefined,
+    });
+
+    try {
+      await page.getByTestId("new-thread-button").click();
+      const draftPath = await waitForURL(
+        mounted.router,
+        (path) => UUID_ROUTE_RE.test(path),
+        "Route should change to a new draft thread.",
+      );
+      const draftId = draftIdFromPath(draftPath);
+      // A server from before worktree pickup is never asked.
+      expect(document.querySelector('[data-testid="worktree-pickup-fold"]')).toBeNull();
+      const descriptor = readPrimaryEnvironmentDescriptor();
+      updatePrimaryEnvironmentDescriptor({
+        ...descriptor!,
+        capabilities: { ...descriptor!.capabilities, worktreePickup: true },
+      });
+
+      // A project added earlier only gets the count, folded beside "recent".
+      const fold = page.getByTestId("worktree-pickup-fold");
+      await expect.element(fold).toHaveTextContent("2 worktrees");
+      await fold.click();
+      await expect.element(page.getByText("3 changed · 2 ahead")).toBeVisible();
+
+      await page.getByRole("button", { name: "Work in fix/checkout-retry" }).click();
+      await vi.waitFor(() => {
+        expect(useComposerDraftStore.getState().getDraftSession(draftId)).toMatchObject({
+          branch: "fix/checkout-retry",
+          worktreePath: "/repo/code/shop-checkout-retry",
+          existingWorktree: true,
+          envMode: "worktree",
+        });
+      });
+      await expect.element(page.getByText("This thread")).toBeVisible();
+
+      // Laid out for picking, the one with work in it is the one ticked.
+      await page.getByRole("button", { name: "Add as threads…" }).click();
+      await page.getByRole("button", { name: "Add 1 thread", exact: true }).click();
+      await vi.waitFor(() => {
+        const created = wsRequests.filter(
+          (request) =>
+            request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+            request.type === "thread.create",
+        );
+        expect(created).toHaveLength(1);
+        expect(created[0]).toMatchObject({
+          title: "Checkout retry",
+          branch: "fix/checkout-retry",
+          worktreePath: "/repo/code/shop-checkout-retry",
+          worktreeOrigin: { kind: "existing" },
+        });
+      });
+      // Answered: the list folds back to its count.
+      await expect.element(page.getByTestId("worktree-pickup-fold")).toBeInTheDocument();
+      expect(document.querySelector('[data-testid="worktree-pickup-offer"]')).toBeNull();
     } finally {
       await mounted.cleanup();
     }

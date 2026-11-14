@@ -668,18 +668,26 @@ export type ThreadScheduledRun = typeof ThreadScheduledRun.Type;
 
 /**
  * Where a thread's worktree came from, when Threadlines did not make it for
- * that thread: another thread's, which the agent steering both pointed this
- * one at (thread_start and thread_send `checkout`, docs/design/child-threads.md,
- * "Workspaces"). The thread works there without owning it: its first turn
- * never renames the branch, the project's setup script is not run for it, and
- * deleting it never offers to remove the folder. It describes the current
- * `worktreePath`, and goes when the thread moves to another checkout.
+ * that thread. The thread works there without owning it: its first turn
+ * never renames the branch, the project's setup script is not run for it,
+ * deleting it never offers to remove the folder, and a revert in it only
+ * undoes its own edits. It describes the current `worktreePath`, and goes
+ * when the thread moves to another checkout.
+ *
+ * - `thread`: another thread's, which the agent steering both pointed this
+ *   one at (thread_start and thread_send `checkout`,
+ *   docs/design/child-threads.md, "Workspaces").
+ * - `existing`: one the repository already had, made outside Threadlines,
+ *   that the user picked up (docs/design/worktree-pickup.md).
  */
-export const ThreadWorktreeOrigin = Schema.Struct({
-  kind: Schema.Literal("thread"),
-  /** The thread whose worktree it is. It may be archived or deleted since. */
-  threadId: ThreadId,
-});
+export const ThreadWorktreeOrigin = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("thread"),
+    /** The thread whose worktree it is. It may be archived or deleted since. */
+    threadId: ThreadId,
+  }),
+  Schema.Struct({ kind: Schema.Literal("existing") }),
+]);
 export type ThreadWorktreeOrigin = typeof ThreadWorktreeOrigin.Type;
 
 /**
@@ -2976,7 +2984,10 @@ const ThreadCreateLineageFields = {
   scheduledRun: Schema.optional(ThreadScheduledRun),
   /** Started by an outside agent: see OutsideAgentRef. Only `/mcp/connect` sets it. */
   outsideOrigin: Schema.optional(OutsideAgentRef),
-  /** Started in another thread's worktree: see ThreadWorktreeOrigin. Only a child's setup sets it. */
+  /**
+   * Started in a worktree it does not own: see ThreadWorktreeOrigin. `thread`
+   * is the server's alone (a child's setup); a client may say `existing`.
+   */
   worktreeOrigin: Schema.optional(ThreadWorktreeOrigin),
 };
 // The normalizer refuses these on commands that arrive from a client.
@@ -3261,6 +3272,12 @@ const ThreadCheckoutSelectCommand = Schema.Struct({
   threadId: ThreadId,
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  /**
+   * The worktree was made outside Threadlines (ThreadWorktreeOrigin
+   * `existing`): the thread works there as a guest. Ignored for the project
+   * folder, and by a server older than worktree pickup.
+   */
+  existingWorktree: Schema.optional(Schema.Boolean),
 });
 
 const ThreadRuntimeModeSetCommand = Schema.Struct({

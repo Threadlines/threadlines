@@ -1,12 +1,13 @@
 import { scopedProjectKey, scopeProjectRef } from "@threadlines/client-runtime";
 import type { ScopedProjectRef } from "@threadlines/contracts";
 import { CloudIcon, MessagesSquareIcon, MonitorIcon } from "lucide-react";
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 
 import { usePrimaryEnvironmentId } from "../../environments/primary";
 import { useSavedEnvironmentRegistryStore } from "../../environments/runtime";
 import { useHandleNewThread } from "../../hooks/useHandleNewThread";
 import { useSidebarProjectSnapshots } from "../../hooks/useSidebarProjectSnapshots";
+import { useWorktreePickup } from "../../hooks/useWorktreePickup";
 import { startNewGeneralChatThread } from "../../lib/chatThreadActions";
 import { resolveGeneralChatsProjectRef } from "../../lib/generalChats";
 import { orderSnapshotsByProjectRefs } from "../../sidebarProjectGrouping";
@@ -14,6 +15,12 @@ import { selectGeneralChatsProjectAcrossEnvironments, useStore } from "../../sto
 import { cn } from "../../lib/utils";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { RecentThreadsList } from "../RecentThreadsList";
+import { useWorktreePickupStore } from "../../worktreePickup";
+import {
+  type WorktreePickupActions,
+  WorktreePickupOffer,
+  WorktreePickupRows,
+} from "./WorktreePickup";
 import { OpenSourceSupportLinks } from "../OpenSourceSupportLinks";
 import { riseDelay, ThreadlinesFigure } from "../ThreadlinesFigure";
 import { ProjectThreadMap } from "./ProjectThreadMap";
@@ -38,31 +45,83 @@ import {
  */
 export type DraftEmptyStateLayout = "hero" | "stacked";
 
+/** The worktree pickup a draft's screen offers; null for a general chat. */
+export type DraftWorktreePickup = WorktreePickupActions;
+
 interface DraftEmptyStateProps {
   currentProjectRef: ScopedProjectRef | null;
   currentProjectName: string | null;
   isGeneralChat: boolean;
   layout: DraftEmptyStateLayout;
+  worktreePickup: DraftWorktreePickup | null;
 }
 
 /**
- * What follows the question: where the user left off, and the repository links.
- * `foldKey` is for the hero layout, whose popups open over this list.
+ * What follows the question: the project's worktrees to pick up, where the
+ * user left off, and the repository links. `foldKey` is for the hero layout,
+ * whose popups open over this list.
  */
 export function DraftRecentThreads({
   isGeneralChat,
   foldKey,
+  worktreePickup,
 }: {
   isGeneralChat: boolean;
   foldKey?: string;
+  worktreePickup: DraftWorktreePickup | null;
 }) {
+  const pickup = useWorktreePickup({
+    projectRef: worktreePickup?.projectRef ?? null,
+    projectCwd: worktreePickup?.projectCwd ?? null,
+  });
+  const { projectKey, candidates, loaded } = pickup;
+  const offer = useWorktreePickupStore((state) => state.offer);
+  const closeOffer = useWorktreePickupStore((state) => state.closeOffer);
+  const hide = useWorktreePickupStore((state) => state.hide);
+  // An offer with nothing in it is over: a repository added without worktrees
+  // must not lay the list out months later, when it gets its first.
+  const offerIsEmpty = pickup.offered && loaded && candidates.length === 0;
+  useEffect(() => {
+    if (offerIsEmpty && projectKey !== null) {
+      closeOffer(projectKey);
+    }
+  }, [closeOffer, offerIsEmpty, projectKey]);
+
+  const hasWorktrees = worktreePickup !== null && projectKey !== null && candidates.length > 0;
+  const showsOffer = hasWorktrees && pickup.offered;
   return (
     <>
+      {showsOffer ? (
+        <WorktreePickupOffer
+          actions={worktreePickup}
+          className="no-thread-rise mt-8 w-full [--no-thread-delay:0.26s]"
+          onClose={() => closeOffer(projectKey)}
+        />
+      ) : null}
       <RecentThreadsList
-        className="no-thread-rise mt-10 w-full [--no-thread-delay:0.26s]"
+        className={
+          showsOffer
+            ? "no-thread-rise mt-6 w-full [--no-thread-delay:0.26s]"
+            : "no-thread-rise mt-10 w-full [--no-thread-delay:0.26s]"
+        }
         {...(foldKey !== undefined ? { foldKey } : {})}
         limit={5}
         scope={isGeneralChat ? "chats" : "projects"}
+        sideFold={
+          hasWorktrees && !showsOffer && !pickup.hidden
+            ? {
+                label: `${candidates.length} ${candidates.length === 1 ? "worktree" : "worktrees"}`,
+                testId: "worktree-pickup-fold",
+                panel: (
+                  <WorktreePickupRows
+                    actions={worktreePickup}
+                    onHide={() => hide(projectKey)}
+                    onOffer={() => offer(projectKey)}
+                  />
+                ),
+              }
+            : undefined
+        }
         testId="draft-empty-recent-thread"
       />
       <OpenSourceSupportLinks />
@@ -75,6 +134,7 @@ export function DraftEmptyState({
   currentProjectName,
   isGeneralChat,
   layout,
+  worktreePickup,
 }: DraftEmptyStateProps) {
   const { handleNewThread, orderedProjects } = useHandleNewThread();
   const activeEnvironmentId = useStore((state) => state.activeEnvironmentId);
@@ -281,7 +341,9 @@ export function DraftEmptyState({
         ?
       </h2>
 
-      {layout === "stacked" ? <DraftRecentThreads isGeneralChat={isGeneralChat} /> : null}
+      {layout === "stacked" ? (
+        <DraftRecentThreads isGeneralChat={isGeneralChat} worktreePickup={worktreePickup} />
+      ) : null}
     </div>
   );
 }

@@ -1200,6 +1200,63 @@ describe("decider child threads in another thread's checkout", () => {
   });
 });
 
+describe("decider threads in a worktree the repository already had", () => {
+  const pickUp = (
+    overrides: Partial<Extract<OrchestrationCommand, { type: "thread.create" }>> = {},
+  ): Extract<OrchestrationCommand, { type: "thread.create" }> => ({
+    type: "thread.create",
+    commandId: CommandId.make("pick-up"),
+    threadId: CHILD,
+    projectId,
+    title: "Checkout retry",
+    modelSelection: model,
+    runtimeMode: "auto-accept-edits",
+    interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+    branch: "fix/checkout-retry",
+    worktreePath: "/code/shop-checkout-retry",
+    worktreeOrigin: { kind: "existing" },
+    createdAt: at(1),
+    ...overrides,
+  });
+
+  it("makes the thread a guest there with no thread starting it, and never in the project folder", async () => {
+    const picked = await run(readModel([]), pickUp());
+    expect(threadIn(picked.model, CHILD)).toMatchObject({
+      worktreePath: "/code/shop-checkout-retry",
+      branch: "fix/checkout-retry",
+      worktreeOrigin: { kind: "existing" },
+      parentThreadId: null,
+    });
+    // The project folder is nobody's to be a guest in.
+    expect(await refused(readModel([]), pickUp({ worktreePath: null }))).toBe(true);
+    expect(await refused(readModel([]), pickUp({ worktreePath: "/repo" }))).toBe(true);
+  });
+
+  it("makes a saved thread a guest when the user moves it into one, until it leaves", async () => {
+    const select = (
+      worktreePath: string | null,
+    ): Extract<OrchestrationCommand, { type: "thread.checkout.select" }> => ({
+      type: "thread.checkout.select",
+      commandId: CommandId.make(`select-${worktreePath ?? "root"}`),
+      threadId: PARENT,
+      branch: worktreePath === null ? "main" : "fix/checkout-retry",
+      worktreePath,
+      existingWorktree: true,
+    });
+    const moved = await run(readModel([thread(PARENT)]), select("/code/shop-checkout-retry"));
+    expect(threadIn(moved.model, PARENT)).toMatchObject({
+      worktreePath: "/code/shop-checkout-retry",
+      worktreeOrigin: { kind: "existing" },
+    });
+    // Back in the project folder it is nobody's guest, whatever the client says.
+    const back = await run(moved.model, select(null));
+    expect(threadIn(back.model, PARENT)).toMatchObject({
+      worktreePath: null,
+      worktreeOrigin: null,
+    });
+  });
+});
+
 describe("decider child threads on a linked computer", () => {
   it("keeps a start for a linked computer on the parent only, waiting to be sent", async () => {
     const { started, model: family } = await familyWithRemoteChild();

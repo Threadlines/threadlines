@@ -102,6 +102,12 @@ export interface WorktreeCleanupRow {
   readonly blockingThreadTitles: readonly string[];
   /** Archived threads could not be read, so one may still point here. */
   readonly archiveUnknown: boolean;
+  /**
+   * Outside Threadlines' own worktrees folder: the user or another tool made
+   * it (docs/design/worktree-pickup.md). False when the computer's server
+   * cannot say, which is every worktree on one from before worktree pickup.
+   */
+  readonly madeElsewhere: boolean;
 }
 
 const threadTitle = (thread: { readonly title?: string | null | undefined }): string =>
@@ -114,6 +120,8 @@ export function classifyWorktreesForCleanup(input: {
   readonly archivedThreads: readonly WorktreeUsageThread[];
   /** The archived thread list failed to load. */
   readonly archivedThreadsUnknown?: boolean;
+  /** The server says which worktrees Threadlines made (`VcsWorktreeStatus.managed`). */
+  readonly managedKnown?: boolean;
 }): readonly WorktreeCleanupRow[] {
   return input.worktrees
     .filter((worktree) => !worktree.isRoot)
@@ -140,6 +148,7 @@ export function classifyWorktreesForCleanup(input: {
         archivedThreadTitles: archived.map((thread) => thread.title ?? "Untitled thread"),
         blockingThreadTitles: live.map((thread) => threadTitle(thread)),
         archiveUnknown: input.archivedThreadsUnknown === true,
+        madeElsewhere: input.managedKnown === true && !worktree.managed,
       } satisfies WorktreeCleanupRow;
     });
 }
@@ -161,7 +170,8 @@ function isBranchShipped(row: WorktreeCleanupRow): boolean {
  * of its branch's work already on the default branch, no lock, and nothing
  * pointing at it. A registration whose folder is already gone holds no files
  * at all. These are the rows the cleanup dialog pre-checks; everything else
- * the user opts into. Unknown is never safe: a status git could not read, a
+ * the user opts into, and a folder Threadlines did not make is always the
+ * user's to pick. Unknown is never safe: a status git could not read, a
  * commit count it could not take (a detached checkout, unrelated histories, no
  * resolvable default branch), or an archived thread list that did not load.
  */
@@ -170,7 +180,8 @@ export function isWorktreeSafeToDelete(row: WorktreeCleanupRow): boolean {
     row.state !== "unused" ||
     row.archiveUnknown ||
     row.archivedThreadTitles.length > 0 ||
-    row.lockReason !== null
+    row.lockReason !== null ||
+    (row.madeElsewhere && !row.missing)
   ) {
     return false;
   }
@@ -194,6 +205,9 @@ export function describeWorktreeNotes(
   if (row.missing) {
     notes.push("folder already gone");
   } else {
+    if (row.madeElsewhere) {
+      notes.push("made outside Threadlines");
+    }
     if (row.refName === null) {
       notes.push("detached checkout");
     }

@@ -302,6 +302,7 @@ const PersistedDraftThreadState = Schema.Struct({
   branch: Schema.NullOr(Schema.String),
   branchFromSetting: Schema.optionalKey(Schema.Boolean),
   worktreePath: Schema.NullOr(Schema.String),
+  existingWorktree: Schema.optionalKey(Schema.Boolean),
   envMode: DraftThreadEnvModeSchema,
   room: Schema.optionalKey(DraftRoomSchema),
   promotedTo: Schema.optionalKey(
@@ -417,6 +418,14 @@ export interface DraftSessionState {
    */
   branchFromSetting?: true;
   worktreePath: string | null;
+  /**
+   * `worktreePath` is a worktree the thread did not get from Threadlines: one
+   * made outside it that the user picked up, or the one a guest thread it
+   * continues from works in. Its thread is made a guest there
+   * (ThreadWorktreeOrigin `existing`). Goes whenever the draft is pointed
+   * somewhere else.
+   */
+  existingWorktree?: true;
   envMode: DraftThreadEnvMode;
   /**
    * Agents added before the first message; absent while it has none. Part of
@@ -496,6 +505,8 @@ interface ComposerDraftStoreState {
       threadId?: ThreadId;
       branch?: string | null;
       worktreePath?: string | null;
+      /** With `worktreePath`: see `DraftThreadState.existingWorktree`. */
+      existingWorktree?: boolean;
       createdAt?: string;
       envMode?: DraftThreadEnvMode;
       runtimeMode?: RuntimeMode;
@@ -510,6 +521,8 @@ interface ComposerDraftStoreState {
       threadId?: ThreadId;
       branch?: string | null;
       worktreePath?: string | null;
+      /** With `worktreePath`: see `DraftThreadState.existingWorktree`. */
+      existingWorktree?: boolean;
       createdAt?: string;
       envMode?: DraftThreadEnvMode;
       runtimeMode?: RuntimeMode;
@@ -524,6 +537,8 @@ interface ComposerDraftStoreState {
       /** With `branch`: it came from the "New worktrees from" setting. */
       branchFromSetting?: boolean;
       worktreePath?: string | null;
+      /** With `worktreePath`: see `DraftThreadState.existingWorktree`. */
+      existingWorktree?: boolean;
       projectRef?: ScopedProjectRef;
       /** The sidebar project the draft now belongs to, when `projectRef` moves it to another. */
       logicalProjectKey?: string;
@@ -1628,6 +1643,7 @@ function createDraftThreadState(
     threadId?: ThreadId;
     branch?: string | null;
     worktreePath?: string | null;
+    existingWorktree?: boolean;
     createdAt?: string;
     envMode?: DraftThreadEnvMode;
     runtimeMode?: RuntimeMode;
@@ -1678,6 +1694,13 @@ function createDraftThreadState(
       ? { branchFromSetting: true as const }
       : {}),
     worktreePath: nextWorktreePath,
+    ...(keepsExistingWorktree({
+      nextWorktreePath,
+      requested: options,
+      previous: projectChanged ? undefined : existingThread,
+    })
+      ? { existingWorktree: true as const }
+      : {}),
     envMode:
       options?.envMode ??
       (nextWorktreePath
@@ -1693,6 +1716,32 @@ function createDraftThreadState(
     ...(existingThread?.room !== undefined && !projectChanged ? { room: existingThread.room } : {}),
     promotedTo: null,
   };
+}
+
+/**
+ * Whether a draft's worktree is one it did not get from Threadlines
+ * (`DraftThreadState.existingWorktree`): what the caller says when it says,
+ * otherwise what the draft already held while it stays in that worktree. A
+ * caller that names the same worktree again (a branch made or switched
+ * inside it) does not take it away.
+ */
+function keepsExistingWorktree(input: {
+  readonly nextWorktreePath: string | null;
+  readonly requested:
+    | { readonly worktreePath?: string | null; readonly existingWorktree?: boolean }
+    | undefined;
+  readonly previous: Pick<DraftThreadState, "worktreePath" | "existingWorktree"> | undefined;
+}): boolean {
+  if (input.nextWorktreePath === null) {
+    return false;
+  }
+  if (input.requested?.existingWorktree !== undefined) {
+    return input.requested.existingWorktree;
+  }
+  return (
+    input.previous?.existingWorktree === true &&
+    input.previous.worktreePath === input.nextWorktreePath
+  );
 }
 
 function scopedThreadRefsEqual(
@@ -1721,6 +1770,7 @@ function draftThreadsEqual(left: DraftThreadState | undefined, right: DraftThrea
     left.interactionMode === right.interactionMode &&
     left.branch === right.branch &&
     left.worktreePath === right.worktreePath &&
+    left.existingWorktree === right.existingWorktree &&
     left.envMode === right.envMode &&
     left.room === right.room &&
     scopedThreadRefsEqual(left.promotedTo, right.promotedTo)
@@ -1884,6 +1934,9 @@ function normalizePersistedDraftThreads(
           ? { branchFromSetting: true }
           : {}),
         worktreePath: normalizedWorktreePath,
+        ...(candidateDraftThread.existingWorktree === true && normalizedWorktreePath !== null
+          ? { existingWorktree: true }
+          : {}),
         envMode: normalizeDraftThreadEnvMode(candidateDraftThread.envMode, normalizedWorktreePath),
         ...normalizeDraftRoom(candidateDraftThread.room),
         promotedTo,
@@ -2562,6 +2615,9 @@ function toHydratedDraftThreadState(
       ? { branchFromSetting: true as const }
       : {}),
     worktreePath: persistedDraftThread.worktreePath,
+    ...(persistedDraftThread.existingWorktree === true && persistedDraftThread.worktreePath !== null
+      ? { existingWorktree: true as const }
+      : {}),
     envMode: persistedDraftThread.envMode,
     ...(persistedDraftThread.room !== undefined ? { room: persistedDraftThread.room } : {}),
     promotedTo: persistedDraftThread.promotedTo
@@ -2880,6 +2936,13 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               branch: nextBranch,
               ...(nextBranchFromSetting ? { branchFromSetting: true as const } : {}),
               worktreePath: nextWorktreePath,
+              ...(keepsExistingWorktree({
+                nextWorktreePath,
+                requested: options,
+                previous: projectChanged ? undefined : existing,
+              })
+                ? { existingWorktree: true as const }
+                : {}),
               envMode:
                 options.envMode ??
                 (nextWorktreePath
@@ -2900,6 +2963,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               nextDraftThread.branch === existing.branch &&
               nextDraftThread.branchFromSetting === existing.branchFromSetting &&
               nextDraftThread.worktreePath === existing.worktreePath &&
+              nextDraftThread.existingWorktree === existing.existingWorktree &&
               nextDraftThread.envMode === existing.envMode &&
               nextDraftThread.room === existing.room &&
               scopedThreadRefsEqual(nextDraftThread.promotedTo, existing.promotedTo);

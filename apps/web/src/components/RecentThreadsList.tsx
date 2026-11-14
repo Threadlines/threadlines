@@ -1,7 +1,7 @@
 import { scopedProjectKey, scopeProjectRef, scopeThreadRef } from "@threadlines/client-runtime";
 import { useNavigate } from "@tanstack/react-router";
 import { ChevronDownIcon, MessagesSquareIcon } from "lucide-react";
-import { useId, useMemo, useState } from "react";
+import { type ReactNode, useId, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
@@ -16,6 +16,17 @@ import { buildThreadRouteParams } from "../threadRoutes";
 import { ProjectFavicon } from "./ProjectFavicon";
 import { ThreadRowLeadingStatus } from "./ThreadStatusIndicators";
 import { RelativeTimeLabel } from "./RelativeTimeLabel";
+
+/**
+ * A second list this screen keeps beside the recent threads (a project's
+ * worktrees to pick up): its own count in the counts line, and a panel that
+ * takes the rows' place while it is open. One of the two is open at a time.
+ */
+export interface RecentThreadsSideFold {
+  readonly label: string;
+  readonly testId: string;
+  readonly panel: ReactNode;
+}
 
 interface RecentThreadsListProps {
   limit?: number;
@@ -33,6 +44,7 @@ interface RecentThreadsListProps {
    * A new key starts folded again.
    */
   foldKey?: string;
+  sideFold?: RecentThreadsSideFold | undefined;
 }
 
 export function RecentThreadsList({
@@ -41,11 +53,22 @@ export function RecentThreadsList({
   className,
   scope = "all",
   foldKey,
+  sideFold,
 }: RecentThreadsListProps) {
   const foldable = foldKey !== undefined;
-  const [unfoldedKey, setUnfoldedKey] = useState<string | null>(null);
-  const unfolded = foldable && unfoldedKey === foldKey;
+  // Which list is open, and for which key: a new key starts folded again.
+  // Without a key the recent rows always show, and only the side list folds.
+  const [opened, setOpened] = useState<{
+    readonly key: string | undefined;
+    readonly list: "recent" | "side";
+  } | null>(null);
+  const openList = opened !== null && opened.key === foldKey ? opened.list : null;
+  const unfolded = foldable && openList === "recent";
+  const sideOpen = sideFold !== undefined && openList === "side";
+  const toggle = (list: "recent" | "side") =>
+    setOpened(openList === list ? null : { key: foldKey, list });
   const rowsId = useId();
+  const sidePanelId = useId();
   const navigate = useNavigate();
   const { orderedProjects } = useHandleNewThread();
   const threads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
@@ -79,7 +102,7 @@ export function RecentThreadsList({
     [orderedProjects],
   );
 
-  if (recentThreads.length === 0) {
+  if (recentThreads.length === 0 && sideFold === undefined) {
     return null;
   }
 
@@ -88,35 +111,71 @@ export function RecentThreadsList({
   ).length;
   const recentCount = recentThreads.length - workingCount;
 
+  const foldToggleClassName =
+    "inline-flex cursor-pointer items-center gap-1 rounded-xs text-xs font-medium text-muted-foreground transition-colors focus-ring hover:text-foreground";
+  const sideToggle =
+    sideFold !== undefined ? (
+      <button
+        aria-controls={sidePanelId}
+        aria-expanded={sideOpen}
+        className={foldToggleClassName}
+        data-testid={sideFold.testId}
+        onClick={() => toggle("side")}
+        type="button"
+      >
+        <span>{sideFold.label}</span>
+        <ChevronDownIcon className={cn("size-3", sideOpen && "rotate-180")} />
+      </button>
+    ) : null;
+  const hasRecentThreads = recentThreads.length > 0;
+
   return (
     <div className={className}>
       {foldable ? (
-        <div className="mb-2 flex justify-center">
-          <button
-            aria-controls={rowsId}
-            aria-expanded={unfolded}
-            className="inline-flex cursor-pointer items-center gap-1 rounded-xs text-xs font-medium text-muted-foreground transition-colors focus-ring hover:text-foreground"
-            data-testid={`${testId}-fold`}
-            onClick={() => setUnfoldedKey(unfolded ? null : foldKey)}
-            type="button"
-          >
-            {workingCount > 0 ? (
-              <span className="text-foreground">{workingCount} working</span>
-            ) : null}
-            {workingCount > 0 && recentCount > 0 ? <span aria-hidden="true">·</span> : null}
-            {recentCount > 0 ? <span>{recentCount} recent</span> : null}
-            <ChevronDownIcon className={cn("size-3", unfolded && "rotate-180")} />
-          </button>
+        <div className="mb-2 flex items-center justify-center gap-3">
+          {hasRecentThreads ? (
+            <button
+              aria-controls={rowsId}
+              aria-expanded={unfolded}
+              className={foldToggleClassName}
+              data-testid={`${testId}-fold`}
+              onClick={() => toggle("recent")}
+              type="button"
+            >
+              {workingCount > 0 ? (
+                <span className="text-foreground">{workingCount} working</span>
+              ) : null}
+              {workingCount > 0 && recentCount > 0 ? <span aria-hidden="true">·</span> : null}
+              {recentCount > 0 ? <span>{recentCount} recent</span> : null}
+              <ChevronDownIcon className={cn("size-3", unfolded && "rotate-180")} />
+            </button>
+          ) : null}
+          {sideToggle}
         </div>
       ) : (
-        <div className="mb-2 text-center text-xs font-medium text-muted-foreground">
-          {scope === "chats" ? "Active and recent chats" : "Active and recent"}
-        </div>
+        <>
+          {sideToggle !== null ? (
+            <div className="mb-2 flex justify-center">{sideToggle}</div>
+          ) : null}
+          {sideOpen ? (
+            <div className="mb-6" id={sidePanelId}>
+              {sideFold?.panel}
+            </div>
+          ) : null}
+          {hasRecentThreads ? (
+            <div className="mb-2 text-center text-xs font-medium text-muted-foreground">
+              {scope === "chats" ? "Active and recent chats" : "Active and recent"}
+            </div>
+          ) : null}
+        </>
       )}
+      {foldable && sideOpen ? <div id={sidePanelId}>{sideFold?.panel}</div> : null}
       <div
         className={cn(
           "flex flex-col divide-y divide-border/50",
           foldable && !unfolded && "invisible",
+          // The side list is in the rows' place while it is open.
+          foldable && sideOpen && "hidden",
         )}
         id={rowsId}
       >

@@ -30,12 +30,25 @@ export const GUIDE_TOPICS: ReadonlyArray<GuideTopic> = [
   {
     id: "threads-and-worktrees",
     title: "Threads and worktrees",
-    keywords: ["thread", "worktree", "branch", "checkout", "setup script", "wrap", "archive"],
+    keywords: [
+      "thread",
+      "worktree",
+      "existing worktree",
+      "pick up",
+      "import",
+      "branch",
+      "checkout",
+      "setup script",
+      "wrap",
+      "archive",
+    ],
     body: `A thread is one conversation with an agent in a project. Threads are listed in the sidebar; one that needs you, finished or failed says so there. In a narrow window the sidebar floats over the thread instead of sitting beside it: the sidebar button at the top left, or Cmd+B (Ctrl+B on Windows and Linux), opens it, and picking a thread or clicking the thread puts it away.
 
 The sliders button beside the project picker at the top of the sidebar groups the list by project or computer and sorts it: recent activity, newest, oldest, title, or a custom order. In the custom order you drag rows to arrange them, or use Move up and Move down in a thread's menu, and only you move a row; new threads go to the bottom, and the same button can reset the order. Pinned threads stay above a thin line in every sort. When the list is grouped, drag a group's header to move the whole group, in any sort; its menu has Move up, Move down and Use automatic order. These orders are kept per device, so a phone has its own.
 
 A new thread starts either in the project folder as it is, or in a worktree of its own: a separate git checkout on a new branch, so its changes stay apart until you merge them. You pick per thread in the composer; the default is {place:threads.startIn}, and new worktrees branch from {place:threads.worktreesFrom}. A project's setup script runs once in each new worktree.
+
+A repository can already have worktrees that Threadlines did not make (git worktree add, or another app). Right after such a repository is added as a project, the new-thread screen lists them under the message box with a checkbox each, and "Add N threads" makes a thread for every ticked one, named from its branch; nothing runs until you send a message there. After that the screen shows only a count beside the recent threads ("4 worktrees"); opening it lists them with Work here, which points the thread you are about to start at that worktree, Add as threads…, and Hide for this project. The Workspace picker under the message box lists the same worktrees under Existing worktree, and the command palette has Add existing worktrees as threads…, which also brings a hidden count back. A thread in one of these is a guest: no setup script runs, the branch is not renamed, deleting the thread never offers to delete the folder, and undoing a turn only undoes that thread's own edits. Worktrees a thread already works in are left out. The computer's server needs to be on a version that has this; with an older one none of it shows.
 
 The agent and model a new thread starts with is {place:threads.agent}. You can switch model or agent at any time from the model button in the composer, which also holds the agent's effort. Beside it sit Build or Plan (one click switches, as does Shift+Tab in the message box) and the access level; on a narrow window they show just their icons, and on phones both live in the model button's panel instead.
 

@@ -30,6 +30,7 @@ import { usePrimaryEnvironmentId } from "../../environments/primary";
 import { useServerProviders } from "../../rpc/serverState";
 import { selectProjectByRef, useStore } from "../../store";
 import { useThreadTitle } from "../../hooks/useThreadTitle";
+import { lendingThreadId } from "../../worktreeOrigin";
 import { useGitStatus } from "../../lib/gitStatusState";
 import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
 import { createThreadSelectorByRef } from "../../storeSelectors";
@@ -244,7 +245,7 @@ function ThreadHoverCardContent({ thread, status, lineage }: ThreadHoverCardPayl
   // and tells you the checkout is isolated.
   const worktreeName = thread.worktreePath ? thread.worktreePath.split("/").pop() : null;
   // Another thread's worktree it was put in (ThreadWorktreeOrigin): say whose.
-  const worktreeLenderId = thread.worktreeOrigin?.threadId ?? null;
+  const worktreeLenderId = lendingThreadId(thread.worktreeOrigin);
   const worktreeLenderTitle = useThreadTitle(thread.environmentId, worktreeLenderId);
   // The row prints only a pinned branch; here there is room to answer the
   // question a branchless thread leaves open -- which ref its checkout is on.

@@ -1,4 +1,7 @@
-import { useConnectedComputerCapability } from "../environments/computerCapabilities";
+import {
+  readConnectedComputerCapability,
+  useConnectedComputerCapability,
+} from "../environments/computerCapabilities";
 import {
   type ClientOrchestrationCommand,
   type OrchestrationAgentPage,
@@ -301,7 +304,13 @@ import {
   type TimelineProposedPlanState,
   type TimelineTurnAgentsState,
 } from "./chat/MessagesTimeline";
-import { DraftEmptyState, DraftRecentThreads } from "./chat/DraftEmptyState";
+import {
+  DraftEmptyState,
+  DraftRecentThreads,
+  type DraftWorktreePickup,
+} from "./chat/DraftEmptyState";
+import { addWorktreeThreads } from "../worktreePickup";
+import { ExistingWorktreeThreadEmptyState } from "./chat/WorktreePickup";
 import { useDraftHeroCapable, useDraftHeroComposerSlide } from "./chat/useDraftHero";
 import { ProviderModelPicker } from "./chat/ProviderModelPicker";
 import {
@@ -408,6 +417,7 @@ import {
   requestSetupTerminalReveal,
   settleSetupTerminalReveal,
   buildThreadStartBootstrap,
+  existingWorktreeCreateFields,
   firstWorkNeedsWorktree,
 } from "./ChatView.logic";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
@@ -1599,6 +1609,71 @@ export default function ChatView(props: ChatViewProps) {
     heroCapable: draftHeroCapable,
   });
 
+  // The project's worktrees made outside Threadlines, offered under the
+  // composer (docs/design/worktree-pickup.md): a row points this draft at
+  // one, and the list makes threads with the composer's model and access.
+  const draftProjectId = draftThread?.projectId ?? null;
+  const draftWorktreePath = draftThread?.worktreePath ?? null;
+  const pickupProjectCwd = activeProject?.cwd ?? null;
+  const worktreePickup = useMemo<DraftWorktreePickup | null>(() => {
+    if (
+      !isLocalDraftThread ||
+      draftProjectId === null ||
+      pickupProjectCwd === null ||
+      isGeneralChatThread
+    ) {
+      return null;
+    }
+    return {
+      projectRef: scopeProjectRef(environmentId, draftProjectId),
+      projectCwd: pickupProjectCwd,
+      draftWorktreePath,
+      onWorkHere: (worktree) => {
+        setDraftThreadContext(composerDraftTarget, {
+          branch: worktree.refName,
+          worktreePath: worktree.path,
+          existingWorktree: true,
+          envMode: "worktree",
+        });
+        // The next thing is the message: whoever picked the folder types it.
+        window.requestAnimationFrame(() => composerRef.current?.focusAtEnd());
+      },
+      onAddThreads: async (worktrees) => {
+        try {
+          const sendCtx = composerRef.current?.getSendContext();
+          if (!sendCtx) {
+            throw new Error("The message box isn't ready yet. Try again.");
+          }
+          await addWorktreeThreads({
+            environmentId,
+            projectId: draftProjectId,
+            worktrees,
+            modelSelection: createModelSelection(
+              sendCtx.selectedModelSelection.instanceId,
+              sendCtx.selectedModel || DEFAULT_MODEL,
+              sendCtx.selectedModelSelection.options,
+            ),
+            runtimeMode,
+          });
+        } catch (error) {
+          toastManager.add(failureNotice({ title: "Couldn't add the threads", error }));
+          throw error;
+        }
+      },
+    };
+  }, [
+    composerDraftTarget,
+    composerRef,
+    draftProjectId,
+    draftWorktreePath,
+    environmentId,
+    isGeneralChatThread,
+    isLocalDraftThread,
+    pickupProjectCwd,
+    runtimeMode,
+    setDraftThreadContext,
+  ]);
+
   const draftTimelineEmptyState = useMemo(
     () =>
       isLocalDraftThread && draftThread ? (
@@ -1607,6 +1682,7 @@ export default function ChatView(props: ChatViewProps) {
           currentProjectName={activeProject?.name ?? null}
           isGeneralChat={isGeneralChatThread}
           layout={draftHeroCapable ? "hero" : "stacked"}
+          worktreePickup={worktreePickup}
         />
       ) : undefined,
     [
@@ -1616,7 +1692,27 @@ export default function ChatView(props: ChatViewProps) {
       draftThread?.projectId,
       isGeneralChatThread,
       isLocalDraftThread,
+      worktreePickup,
     ],
+  );
+
+  // A thread added for a worktree made outside Threadlines has no draft
+  // screen to open on: before its first message it says where it works.
+  const pickedUpWorktreePath =
+    isServerThread && activeThread?.worktreeOrigin?.kind === "existing"
+      ? activeThread.worktreePath
+      : null;
+  const pickedUpBranch = activeThread?.branch ?? null;
+  const existingWorktreeEmptyState = useMemo(
+    () =>
+      pickedUpWorktreePath !== null ? (
+        <ExistingWorktreeThreadEmptyState
+          branch={pickedUpBranch}
+          projectCwd={pickupProjectCwd}
+          worktreePath={pickedUpWorktreePath}
+        />
+      ) : undefined,
+    [pickedUpBranch, pickedUpWorktreePath, pickupProjectCwd],
   );
 
   const shouldRetainThreadDetailSubscription = routeKind === "server" || serverThread !== undefined;
@@ -6048,6 +6144,10 @@ export default function ChatView(props: ChatViewProps) {
               interactionMode,
               branch: activeThreadBranch,
               worktreePath: activeThread.worktreePath,
+              ...existingWorktreeCreateFields({
+                thread: activeThread,
+                supported: readConnectedComputerCapability(environmentId, "worktreePickup"),
+              }),
               ...draftRoomCreateFields,
               createdAt: activeThread.createdAt,
             }
@@ -6631,6 +6731,10 @@ export default function ChatView(props: ChatViewProps) {
                 interactionMode: "default" as const,
                 branch: activeThreadBranch,
                 worktreePath: activeThread.worktreePath,
+                ...existingWorktreeCreateFields({
+                  thread: activeThread,
+                  supported: readConnectedComputerCapability(environmentId, "worktreePickup"),
+                }),
                 ...draftRoomCreateFields,
                 createdAt: new Date().toISOString(),
               }
@@ -8104,6 +8208,10 @@ export default function ChatView(props: ChatViewProps) {
             interactionMode: "default",
             branch: activeThreadBranch,
             worktreePath: activeThread.worktreePath,
+            ...existingWorktreeCreateFields({
+              thread: activeThread,
+              supported: readConnectedComputerCapability(environmentId, "worktreePickup"),
+            }),
             createdAt,
           },
         },
@@ -8680,7 +8788,7 @@ export default function ChatView(props: ChatViewProps) {
               <CommandRunActionsContext value={commandRunActions}>
                 <MessagesTimeline
                   key={activeThread.id}
-                  emptyState={draftTimelineEmptyState}
+                  emptyState={draftTimelineEmptyState ?? existingWorktreeEmptyState}
                   detailPending={isServerThread && !threadDetailLoaded}
                   savedEnvironmentConnected={
                     activeSavedEnvironmentRecord === null
@@ -8981,7 +9089,11 @@ export default function ChatView(props: ChatViewProps) {
             {isLocalDraftThread && draftHeroCapable ? (
               <div className="hidden w-full flex-col items-center px-4 pb-8 draft-hero:mb-auto draft-hero:flex">
                 <div className="flex w-full max-w-[45rem] flex-col items-center">
-                  <DraftRecentThreads foldKey={threadId} isGeneralChat={isGeneralChatThread} />
+                  <DraftRecentThreads
+                    foldKey={threadId}
+                    isGeneralChat={isGeneralChatThread}
+                    worktreePickup={worktreePickup}
+                  />
                 </div>
               </div>
             ) : null}

@@ -11,6 +11,7 @@ import {
   invalidateGitQueries,
   vcsListWorktreesQueryOptions,
 } from "~/lib/gitReactQuery";
+import { useConnectedComputerCapability } from "~/environments/computerCapabilities";
 import { cn } from "~/lib/utils";
 import { selectThreadsForEnvironment, useStore } from "~/store";
 import {
@@ -65,6 +66,8 @@ function useWorktreeCleanupRows(
   // Any failed read leaves the archived threads unknown, even with an older
   // list in hand: a thread archived since then would read as unused.
   const archivedThreadsUnknown = archived.error !== null;
+  // A server with worktree pickup says which worktrees Threadlines made.
+  const managedKnown = useConnectedComputerCapability(environmentId, "worktreePickup");
   const rows = useMemo(
     () =>
       classifyWorktreesForCleanup({
@@ -72,8 +75,9 @@ function useWorktreeCleanupRows(
         liveThreads,
         archivedThreads,
         archivedThreadsUnknown,
+        managedKnown,
       }),
-    [archivedThreads, archivedThreadsUnknown, liveThreads, worktrees],
+    [archivedThreads, archivedThreadsUnknown, liveThreads, managedKnown, worktrees],
   );
   return {
     rows,
