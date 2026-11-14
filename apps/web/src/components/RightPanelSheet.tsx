@@ -1,6 +1,7 @@
 import { type CSSProperties, type ReactNode } from "react";
 
 import { isElectron } from "../env";
+import { useIsMobile } from "../hooks/useMediaQuery";
 import { cn } from "../lib/utils";
 import {
   RIGHT_PANEL_RAIL_SHEET_CLASS_NAME,
@@ -28,6 +29,11 @@ export function RightPanelSheet(props: {
   size?: keyof typeof SHEET_CLASS_NAME_BY_SIZE;
 }) {
   const size = props.size ?? "default";
+  // On a phone the page dims behind the sheet and a press on it puts the
+  // sheet away. In the desktop layout (a narrow window, a folding phone's
+  // open screen) the sheet floats: the page beside it stays in use, and the
+  // sheet closes from its own button or the header's.
+  const phoneLayout = useIsMobile();
 
   return (
     <Drawer
@@ -38,7 +44,7 @@ export function RightPanelSheet(props: {
       // That needs a non-modal dialog (the header must stay interactive) with
       // pointer dismissal disabled: an outside-press dismissal on a header
       // toggle would close the sheet before the toggle's click reopens it.
-      // The backdrop closes it explicitly instead.
+      // On a phone the backdrop closes it explicitly instead.
       modal={false}
       disablePointerDismissal
       onOpenChange={(open) => {
@@ -50,6 +56,7 @@ export function RightPanelSheet(props: {
       <DrawerPopup
         side="right"
         keepMounted
+        backdrop={phoneLayout}
         viewportClassName={RIGHT_PANEL_SHEET_VIEWPORT_CLASS_NAME}
         backdropProps={{
           className: RIGHT_PANEL_SHEET_BACKDROP_CLASS_NAME,
@@ -57,7 +64,10 @@ export function RightPanelSheet(props: {
         }}
         className={cn(
           SHEET_CLASS_NAME_BY_SIZE[size],
-          isElectron && "pe-[var(--app-window-resize-edge-inset)]",
+          // The panel keeps out of what the window's right edge is kept
+          // for: the desktop app's resize grip, or a phone's strip down that
+          // side, where the sheet shows the panel's own fill.
+          isElectron ? "pe-[var(--app-window-resize-edge-inset)]" : "bg-rail pr-safe",
         )}
         style={{ "--right-panel-rail-width": `${RIGHT_PANEL_RAIL_WIDTH}px` } as CSSProperties}
       >

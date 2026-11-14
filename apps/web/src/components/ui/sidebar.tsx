@@ -200,6 +200,14 @@ function SidebarProvider({
 }) {
   const isMobile = useIsMobile();
   const [openMobile, setOpenMobile] = React.useState(false);
+  // The phone's sheet is put away when the layout stops being a phone's (a
+  // folding phone opens, a browser window widens), so coming back to the
+  // phone layout doesn't land the sheet on top of the page again.
+  const [wasMobile, setWasMobile] = React.useState(isMobile);
+  if (wasMobile !== isMobile) {
+    setWasMobile(isMobile);
+    if (!isMobile) setOpenMobile(false);
+  }
 
   // This is the internal state of the sidebar. A caller that keeps the state
   // somewhere lasting (the app's thread list remembers it across launches)

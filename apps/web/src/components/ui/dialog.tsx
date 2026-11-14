@@ -8,6 +8,11 @@ import { useMainAreaCenterStyle } from "~/mainAreaLayout";
 import { CoveringBackdrop } from "~/components/ui/noticeLayer";
 import { Button } from "~/components/ui/button";
 import { ScrollArea } from "~/components/ui/scroll-area";
+import {
+  BOTTOM_SHEET_SIDE_STRIPS_CLASS_NAME,
+  SHEET_FOOTER_SIDE_STRIPS_CLASS_NAME,
+  VIEWPORT_SIDE_STRIPS_CLASS_NAME,
+} from "~/sideStrips";
 
 const DialogCreateHandle = DialogPrimitive.createHandle;
 
@@ -40,8 +45,9 @@ function DialogBackdrop({ className, ...props }: DialogPrimitive.Backdrop.Props)
 /**
  * Lays the dialog out in the part of the screen the on-screen keyboard leaves
  * free: iPhone Safari slides the keyboard over the page instead of shrinking
- * it, so without this a bottom sheet's field sits under the keys. Mounted only
- * while the dialog is open, so closed dialogs don't watch the keyboard.
+ * it, so without this a bottom sheet's field sits under the keys. A centered
+ * dialog also keeps clear of the screen's side strips (~/sideStrips). Mounted
+ * only while the dialog is open, so closed dialogs don't watch the keyboard.
  */
 function DialogViewport({ className, ...props }: Omit<DialogPrimitive.Viewport.Props, "style">) {
   const keyboardInsetVars = useOnScreenKeyboardInsetVars(true);
@@ -49,7 +55,8 @@ function DialogViewport({ className, ...props }: Omit<DialogPrimitive.Viewport.P
   return (
     <DialogPrimitive.Viewport
       className={cn(
-        "fixed inset-0 z-50 grid grid-rows-[1fr_auto_3fr] justify-items-center bg-white/48 p-4 pt-[calc(1rem+var(--keyboard-inset-top))] pb-[calc(1rem+var(--keyboard-inset-bottom))] backdrop-blur-[2px] dark:bg-black/28",
+        "fixed inset-0 z-50 grid grid-rows-[1fr_auto_3fr] justify-items-center bg-white/48 pt-[calc(1rem+var(--keyboard-inset-top))] pb-[calc(1rem+var(--keyboard-inset-bottom))] backdrop-blur-[2px] dark:bg-black/28",
+        VIEWPORT_SIDE_STRIPS_CLASS_NAME,
         className,
       )}
       data-slot="dialog-viewport"
@@ -83,6 +90,7 @@ function DialogPopup({
             "center-on-main-area transform-[translateY(calc(-1.25rem*var(--nested-dialogs)))] relative row-start-2 flex max-h-full min-h-0 w-full min-w-0 max-w-lg scale-[calc(1-0.1*var(--nested-dialogs))] flex-col rounded-4xl border bg-popover not-dark:bg-clip-padding text-popover-foreground opacity-[calc(1-0.1*var(--nested-dialogs))] elevate-overlay transition-[scale,opacity,transform] duration-200 ease-in-out will-change-transform before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-4xl)-1px)] before:shadow-[0_1px_--theme(--color-black/4%)] data-nested:data-ending-style:transform-[translateY(--spacing(8))] data-nested:data-starting-style:transform-[translateY(--spacing(8))] data-nested-dialog-open:origin-top data-ending-style:scale-98 data-starting-style:scale-98 data-ending-style:opacity-0 data-starting-style:opacity-0 dark:before:shadow-[0_-1px_--theme(--color-white/6%)]",
             bottomStickOnMobile &&
               "max-sm:max-w-none max-sm:rounded-none max-sm:border-x-0 max-sm:border-t max-sm:border-b-0 max-sm:opacity-[calc(1-min(var(--nested-dialogs),1))] max-sm:data-ending-style:transform-[translateY(--spacing(4))] max-sm:data-starting-style:transform-[translateY(--spacing(4))] max-sm:before:hidden max-sm:before:rounded-none",
+            bottomStickOnMobile && BOTTOM_SHEET_SIDE_STRIPS_CLASS_NAME,
             className,
           )}
           data-slot="dialog-popup"
@@ -92,7 +100,7 @@ function DialogPopup({
           {showCloseButton && (
             <DialogPrimitive.Close
               aria-label="Close"
-              className="absolute end-2 top-2"
+              className="absolute top-2 right-[calc(--spacing(2)+var(--sheet-strip-right,0px))]"
               render={<Button size="icon" variant="ghost" />}
             >
               <XIcon />
@@ -127,8 +135,9 @@ function DialogFooter({
   return (
     <div
       className={cn(
-        "flex flex-col-reverse gap-2 px-6 sm:flex-row sm:justify-end sm:rounded-b-[calc(var(--radius-4xl)-1px)]",
+        "flex flex-col-reverse gap-2 sm:flex-row sm:justify-end sm:rounded-b-[calc(var(--radius-4xl)-1px)]",
         variant === "default" && "border-t bg-muted/72 py-4",
+        variant === "default" ? SHEET_FOOTER_SIDE_STRIPS_CLASS_NAME : "px-6",
         variant === "bare" &&
           "in-[[data-slot=dialog-popup]:has([data-slot=dialog-panel])]:pt-3 pt-4 pb-6",
         className,

@@ -5,7 +5,14 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
 import { showOnScreenKeyboard } from "../../hooks/useOnScreenKeyboardInset.browser-harness";
-import { Dialog, DialogHeader, DialogPanel, DialogPopup, DialogTitle } from "./dialog";
+import {
+  Dialog,
+  DialogFooter,
+  DialogHeader,
+  DialogPanel,
+  DialogPopup,
+  DialogTitle,
+} from "./dialog";
 import { nextFrames, readAfterEachPaint } from "../../lib/frameProbe.browser-harness";
 import { resetTestPage } from "../../lib/testPage.browser-harness";
 import { publishMainAreaEndInset, publishMainAreaStart } from "../../mainAreaLayout";
@@ -22,6 +29,7 @@ describe("Dialog", () => {
     vi.restoreAllMocks();
     publishMainAreaStart(0);
     publishMainAreaEndInset(0);
+    document.documentElement.style.removeProperty("--safe-area-right");
     await resetTestPage();
     await page.viewport(DESKTOP_VIEWPORT.width, DESKTOP_VIEWPORT.height);
   });
@@ -135,6 +143,49 @@ describe("Dialog", () => {
       await vi.waitFor(() => {
         expect(popupRect()?.left).toBeCloseTo(0, 0);
         expect(popupRect()?.right).toBeCloseTo(window.innerWidth, 0);
+      });
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
+  it("keeps clear of a strip the screen holds back down its right side", async () => {
+    // An iPhone Duo's status dock hangs down the right edge of the screen.
+    const strip = 85;
+    document.documentElement.style.setProperty("--safe-area-right", `${strip}px`);
+    await page.viewport(PHONE_VIEWPORT.width, PHONE_VIEWPORT.height);
+    const mounted = await render(
+      <Dialog open>
+        <DialogPopup>
+          <DialogHeader>
+            <DialogTitle>Rename this computer</DialogTitle>
+          </DialogHeader>
+          <DialogFooter>
+            <button type="button">Save</button>
+          </DialogFooter>
+        </DialogPopup>
+      </Dialog>,
+    );
+    const rightOf = (selector: string) =>
+      document.querySelector<HTMLElement>(selector)?.getBoundingClientRect().right;
+
+    try {
+      // A phone's bottom sheet: its fill and its footer's fill run under the
+      // strip, the close button and the footer's buttons stop at it.
+      await vi.waitFor(() => {
+        expect(popupRect()?.right).toBeCloseTo(window.innerWidth, 0);
+        expect(rightOf('[data-slot="dialog-footer"]')).toBeCloseTo(window.innerWidth, 0);
+        expect(rightOf('[aria-label="Close"]')).toBeLessThanOrEqual(window.innerWidth - strip);
+        expect(rightOf('[data-slot="dialog-footer"] button')).toBeLessThanOrEqual(
+          window.innerWidth - strip,
+        );
+      });
+
+      // A centered dialog pushed toward that edge stops 1rem short of the strip.
+      await page.viewport(DESKTOP_VIEWPORT.width, DESKTOP_VIEWPORT.height);
+      publishMainAreaStart(DESKTOP_VIEWPORT.width - 200);
+      await vi.waitFor(() => {
+        expect(popupRect()?.right).toBeCloseTo(window.innerWidth - strip - 16, 0);
       });
     } finally {
       await mounted.unmount();

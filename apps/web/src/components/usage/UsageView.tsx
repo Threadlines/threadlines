@@ -234,7 +234,7 @@ export function UsageView() {
       {/* The pane-wide element scrolls so the scrollbar hugs the pane's edge
           (like Settings); the reading column centers inside it. */}
       <div
-        className="min-h-0 flex-1 overflow-y-auto"
+        className="page-gutters min-h-0 flex-1 overflow-y-auto"
         data-testid="usage-scroll"
         {...glassPage.content}
       >

@@ -1,6 +1,7 @@
 import { PreviewCard as PreviewCardPrimitive } from "@base-ui/react/preview-card";
 
 import { cn } from "~/lib/utils";
+import { useCollisionPadding } from "~/sideStrips";
 
 /**
  * The hover-card primitive, distinct from Tooltip on purpose.
@@ -35,6 +36,7 @@ export function PreviewCardPopup({
   sideOffset?: PreviewCardPrimitive.Positioner.Props["sideOffset"];
   align?: PreviewCardPrimitive.Positioner.Props["align"];
 }) {
+  const collisionPadding = useCollisionPadding();
   return (
     <PreviewCardPrimitive.Portal>
       <PreviewCardPrimitive.Positioner
@@ -42,6 +44,7 @@ export function PreviewCardPopup({
         side={side}
         sideOffset={sideOffset}
         className="z-50 max-w-(--available-width)"
+        collisionPadding={collisionPadding}
         data-slot="preview-card-positioner"
       >
         <PreviewCardPrimitive.Popup

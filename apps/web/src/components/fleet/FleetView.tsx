@@ -111,7 +111,7 @@ export function FleetView() {
       {...glassPage.shell}
     >
       <PageTitlebar label="Fleet" />
-      <div className="min-h-0 flex-1 overflow-y-auto" {...glassPage.content}>
+      <div className="page-gutters min-h-0 flex-1 overflow-y-auto" {...glassPage.content}>
         <div
           className="mx-auto flex w-full max-w-[960px] flex-col px-4 pt-5 pb-12 sm:px-8 sm:pt-8"
           {...glassPage.column}

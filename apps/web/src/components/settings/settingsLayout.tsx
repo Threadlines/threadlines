@@ -305,7 +305,7 @@ export function SettingsPageContainer({
   return (
     <div
       {...glassPage.content}
-      className="flex-1 overflow-y-auto px-4 pt-5 pb-8 sm:px-8 sm:pt-8 sm:pb-12"
+      className="page-gutters flex-1 overflow-y-auto pt-5 pb-8 [--side-gutter:--spacing(4)] sm:pt-8 sm:pb-12 sm:[--side-gutter:--spacing(8)]"
     >
       <div
         {...glassPage.column}

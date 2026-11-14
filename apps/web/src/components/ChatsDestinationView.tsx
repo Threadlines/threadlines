@@ -49,7 +49,7 @@ function StartGeneralChat() {
     <div className="flex h-full min-h-0 w-full min-w-0 flex-col" data-testid="chats-view">
       <PageTitlebar label="General chats" />
       <div
-        className="flex min-h-0 flex-1 flex-col items-center justify-center gap-4 px-6 pb-16 text-center"
+        className="page-gutters flex min-h-0 flex-1 flex-col items-center justify-center gap-4 pb-16 text-center [--side-gutter:--spacing(6)]"
         {...glassPage.content}
       >
         <MessagesSquareIcon aria-hidden="true" className="size-6 text-muted-foreground" />
@@ -112,7 +112,7 @@ function GeneralChatsPage() {
         </PageTitlebar>
         {/* The pane-wide element scrolls so the scrollbar hugs the pane's edge
             (like Settings); the reading column centers inside it. */}
-        <div className="min-h-0 flex-1 overflow-y-auto" {...glassPage.content}>
+        <div className="page-gutters min-h-0 flex-1 overflow-y-auto" {...glassPage.content}>
           <div
             className="mx-auto flex min-h-full w-full max-w-2xl flex-col px-6 py-6"
             {...glassPage.column}

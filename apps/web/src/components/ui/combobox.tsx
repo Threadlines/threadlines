@@ -5,6 +5,7 @@ import { CheckIcon, ChevronsUpDownIcon, XIcon } from "lucide-react";
 import * as React from "react";
 
 import { cn } from "~/lib/utils";
+import { useCollisionPadding } from "~/sideStrips";
 import { Input } from "~/components/ui/input";
 import { ScrollArea } from "~/components/ui/scroll-area";
 
@@ -154,6 +155,7 @@ function ComboboxPopup({
   const { chipsRef } = React.use(ComboboxContext);
   const anchor = anchorProp ?? chipsRef;
 
+  const collisionPadding = useCollisionPadding();
   return (
     <ComboboxPrimitive.Portal>
       <ComboboxPrimitive.Positioner
@@ -161,6 +163,7 @@ function ComboboxPopup({
         alignOffset={alignOffset}
         anchor={anchor}
         className="z-50 select-none"
+        collisionPadding={collisionPadding}
         data-slot="combobox-positioner"
         side={side}
         sideOffset={sideOffset}

@@ -106,7 +106,11 @@ export function ChatRightPanelInlineSidebar(props: {
         collapsible="offcanvas"
         className={cn(
           "border-l border-border bg-rail text-foreground",
-          isElectron && "pe-[var(--app-window-resize-edge-inset)]",
+          // Out of what the window's right edge is kept for: the desktop
+          // app's resize grip, or a screen's strip down that side. The strip
+          // comes out of the panel's own width here (no screen this wide has
+          // one yet); the sheet in RightPanelSheet adds it instead.
+          isElectron ? "pe-[var(--app-window-resize-edge-inset)]" : "pr-safe",
         )}
         motion="instant"
         resizable={{

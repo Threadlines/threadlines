@@ -93,7 +93,7 @@ export function TerminalFindBar({
       placeholder="Find in terminal"
       inputRef={inputRef}
       testIdPrefix="terminal-find"
-      className="absolute top-2 right-3 z-20"
+      className="absolute top-2 right-[calc(--spacing(3)+var(--safe-area-right))] z-20"
       canStep={query !== ""}
     />
   );

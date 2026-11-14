@@ -462,7 +462,7 @@ export function FleetComputerView({ entryKey }: { readonly entryKey: string }) {
           </button>
         ) : null}
       </PageTitlebar>
-      <div className="min-h-0 flex-1 overflow-y-auto" {...glassPage.content}>
+      <div className="page-gutters min-h-0 flex-1 overflow-y-auto" {...glassPage.content}>
         <div
           className="mx-auto flex w-full max-w-[720px] flex-col gap-7 px-4 pt-5 pb-12 sm:px-8 sm:pt-8"
           {...glassPage.column}

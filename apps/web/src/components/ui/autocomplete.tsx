@@ -4,6 +4,7 @@ import { Autocomplete as AutocompletePrimitive } from "@base-ui/react/autocomple
 import { ChevronsUpDownIcon, XIcon } from "lucide-react";
 
 import { cn } from "~/lib/utils";
+import { useCollisionPadding } from "~/sideStrips";
 import { Input } from "~/components/ui/input";
 import { ScrollArea } from "~/components/ui/scroll-area";
 
@@ -91,6 +92,7 @@ function AutocompletePopup({
   side?: AutocompletePrimitive.Positioner.Props["side"];
   anchor?: AutocompletePrimitive.Positioner.Props["anchor"];
 }) {
+  const collisionPadding = useCollisionPadding();
   return (
     <AutocompletePrimitive.Portal>
       <AutocompletePrimitive.Positioner
@@ -98,6 +100,7 @@ function AutocompletePopup({
         alignOffset={alignOffset}
         anchor={anchor}
         className="z-50 select-none"
+        collisionPadding={collisionPadding}
         data-slot="autocomplete-positioner"
         side={side}
         sideOffset={sideOffset}

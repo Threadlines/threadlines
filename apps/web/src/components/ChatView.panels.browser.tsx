@@ -12,6 +12,7 @@ import { page, userEvent } from "vite-plus/test/browser";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import { useComposerDraftStore, DraftId } from "../composerDraftStore";
+import { nextFrames } from "../lib/frameProbe.browser-harness";
 import { isMacPlatform } from "../lib/utils";
 import { RIGHT_PANEL_RAIL_WIDTH } from "../rightPanelLayout";
 import { useTerminalStateStore } from "../terminalStateStore";
@@ -360,6 +361,144 @@ describe("ChatView (full app): right panel and header actions", () => {
         },
         { timeout: 8_000, interval: 16 },
       );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps the overlay panel's controls off a strip the screen holds back down its right side", async () => {
+    // An iPhone Duo, folded: its status dock hangs down the right edge, and
+    // the sheet's close button used to sit under it.
+    const strip = 85;
+    document.documentElement.style.setProperty("--safe-area-right", `${strip}px`);
+    const mounted = await mountChatView({
+      viewport: { ...PHONE_VIEWPORT, width: 466, height: 678 },
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-rail-sheet-strip" as MessageId,
+        targetText: "rail sheet strip",
+      }),
+    });
+
+    try {
+      const railToggle = await waitForElement(
+        () =>
+          document.querySelector('button[aria-label="Toggle panel"]') as HTMLButtonElement | null,
+        "Unable to find the rail toggle.",
+      );
+      railToggle.click();
+      const closeButton = await waitForElement(
+        () =>
+          document.querySelector('button[aria-label="Close panel"]') as HTMLButtonElement | null,
+        "The sheet never showed its close button.",
+      );
+      const popup = closeButton.closest('[data-slot="drawer-popup"]') as HTMLElement;
+      const panel = closeButton.closest("[data-chat-right-panel='true']") as HTMLElement;
+
+      await vi.waitFor(
+        () => {
+          // The sheet's fill reaches the screen's edge, under the strip; the
+          // panel stops at the strip and keeps its own width beside it (the
+          // rail's, less the sheet's hairline).
+          expect(popup.getBoundingClientRect().right).toBeCloseTo(window.innerWidth, 0);
+          expect(panel.getBoundingClientRect().right).toBeCloseTo(window.innerWidth - strip, 0);
+          expect(panel.getBoundingClientRect().width).toBeCloseTo(RIGHT_PANEL_RAIL_WIDTH - 1, 0);
+          expect(closeButton.getBoundingClientRect().right).toBeLessThanOrEqual(
+            window.innerWidth - strip,
+          );
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      document.documentElement.style.removeProperty("--safe-area-right");
+      await mounted.cleanup();
+    }
+  });
+
+  it("puts the overlay panel away on a press on the page beside it", async () => {
+    const mounted = await mountChatView({
+      viewport: { ...PHONE_VIEWPORT, width: 466, height: 678 },
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-rail-sheet-press" as MessageId,
+        targetText: "rail sheet press",
+      }),
+    });
+
+    try {
+      const railToggle = await waitForElement(
+        () =>
+          document.querySelector('button[aria-label="Toggle panel"]') as HTMLButtonElement | null,
+        "Unable to find the rail toggle.",
+      );
+      railToggle.click();
+      const launcher = await waitForElement(
+        () => document.querySelector("[data-right-panel-launcher='true']") as HTMLElement | null,
+        "The sidebar never opened on a phone width.",
+      );
+      const popup = launcher.closest('[data-slot="drawer-popup"]') as HTMLElement;
+      await vi.waitFor(
+        () => {
+          expect(popup.getBoundingClientRect().right).toBeCloseTo(window.innerWidth, 0);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      // The slice of the conversation left of the sheet, below the header:
+      // whatever is on top there takes the press.
+      const beside = document.elementFromPoint(
+        popup.getBoundingClientRect().left / 2,
+        window.innerHeight / 2,
+      ) as HTMLElement;
+      beside.click();
+
+      await vi.waitFor(
+        () => {
+          expect(document.querySelector("[data-right-panel-launcher='true']")).toBeNull();
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("floats the panel over a narrow window's page, which stays undimmed and in use beside it", async () => {
+    const mounted = await mountChatView({
+      viewport: { ...DEFAULT_VIEWPORT, name: "narrow-sheet", width: 800 },
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-narrow-sheet" as MessageId,
+        targetText: "narrow sheet",
+      }),
+    });
+
+    try {
+      const railToggle = await waitForElement(
+        () =>
+          document.querySelector('button[aria-label="Toggle panel"]') as HTMLButtonElement | null,
+        "Unable to find the rail toggle.",
+      );
+      railToggle.click();
+      const launcher = await waitForElement(
+        () => document.querySelector("[data-right-panel-launcher='true']") as HTMLElement | null,
+        "The panel never opened in a narrow window.",
+      );
+      const popup = launcher.closest('[data-slot="drawer-popup"]') as HTMLElement;
+      await vi.waitFor(
+        () => {
+          expect(popup.getBoundingClientRect().right).toBeCloseTo(window.innerWidth, 0);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      // What is on top of the page beside the panel is the page itself, not
+      // a layer over it, and a press there leaves the panel open.
+      const beside = document.elementFromPoint(
+        popup.getBoundingClientRect().left / 2,
+        window.innerHeight / 2,
+      ) as HTMLElement;
+      expect(beside.closest('[data-testid="app-panel"]')).not.toBeNull();
+      beside.click();
+      await nextFrames(10);
+      expect(document.querySelector("[data-right-panel-launcher='true']")).not.toBeNull();
     } finally {
       await mounted.cleanup();
     }
