@@ -1,3 +1,7 @@
+import * as NodeFs from "node:fs";
+import * as NodeOs from "node:os";
+import * as NodePath from "node:path";
+
 import { assert, describe, it } from "@effect/vitest";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
@@ -45,6 +49,31 @@ describe("ensureWorktreeRemovable", () => {
       });
     }),
   );
+
+  // git names a worktree by its real path; a thread can record the same
+  // folder through a symlink, and must still be in the way.
+  it.effect("sees a thread that recorded the folder through a symlink", () => {
+    const base = NodeFs.realpathSync(NodeFs.mkdtempSync(NodePath.join(NodeOs.tmpdir(), "guard-")));
+    const real = NodePath.join(base, "feature");
+    const linked = NodePath.join(base, "linked");
+    NodeFs.mkdirSync(real);
+    NodeFs.symlinkSync(real, linked);
+    return Effect.gen(function* () {
+      const exit = yield* ensureWorktreeRemovable({
+        worktreePath: real,
+        readThreads: Effect.succeed([thread({ worktreePath: linked })]),
+      }).pipe(Effect.exit);
+      assert.isTrue(Exit.isFailure(exit));
+
+      // Another folder beside it is still free to go.
+      yield* ensureWorktreeRemovable({
+        worktreePath: NodePath.join(base, "other"),
+        readThreads: Effect.succeed([thread({ worktreePath: linked })]),
+      });
+    }).pipe(
+      Effect.ensuring(Effect.sync(() => NodeFs.rmSync(base, { recursive: true, force: true }))),
+    );
+  });
 
   // The guard protects against a common mistake; it must not become a reason
   // that deleting a folder stops working when an unrelated query fails.
