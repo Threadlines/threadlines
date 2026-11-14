@@ -208,15 +208,65 @@ const make = Effect.gen(function* () {
         };
       }
 
-      // Turns from before an agent moved it into another checkout changed the
-      // folder it left: undoing them here would rewrite files it never touched.
-      const movedAtTurnCount = turnCountAtLastCheckoutMove(thread);
-      if (movedAtTurnCount !== null && input.turnCount < movedAtTurnCount) {
-        return {
-          kind: "unavailable" as const,
-          detail:
-            "This thread moved into another checkout after that point. Its earlier changes are in the folder it left, so they can't be undone from here.",
-        };
+      // A thread can move to another checkout between turns (the user's own
+      // switch, an agent's move, a session that settled somewhere else), and
+      // every checkout of the repository shares these snapshots. Each one
+      // says where it was taken. A turn whose snapshots come from another
+      // checkout changed that folder: undoing it here would rewrite files it
+      // never touched, so such a revert is refused.
+      const undone = thread.checkpoints
+        .filter((checkpoint) => checkpoint.checkpointTurnCount > input.turnCount)
+        .toSorted((left, right) => left.checkpointTurnCount - right.checkpointTurnCount);
+      // Per turn: its completion snapshot, then the two refs its starting
+      // snapshot can be under (by count, or by turn id on older threads).
+      const snapshotsOf = (checkpoint: RevertCheckpointContext) =>
+        [
+          checkpoint.checkpointRef,
+          checkpointPreTurnRefForThreadTurnCount(input.threadId, checkpoint.checkpointTurnCount),
+          checkpointPreTurnRefForThreadTurn(input.threadId, checkpoint.turnId),
+        ] as const;
+      const [targetTakenIn = "unknown", ...undoneTakenIn] =
+        yield* checkpointStore.checkpointCheckouts({
+          cwd,
+          checkpointRefs: [targetCheckpointRef, ...undone.flatMap(snapshotsOf)],
+        });
+      const takenIn = (index: number, snapshot: 0 | 1 | 2) =>
+        undoneTakenIn[index * 3 + snapshot] ?? "unknown";
+      // Snapshots from before they recorded their checkout say nothing. For
+      // turns like that, the move an agent made is still on the thread's record.
+      const unrecorded = undone.some((_, index) => takenIn(index, 0) === "unknown");
+      const movedAtTurnCount = unrecorded ? turnCountAtLastCheckoutMove(thread) : null;
+      const movedSince = {
+        kind: "unavailable" as const,
+        detail:
+          "This thread moved to another checkout after that point. Its earlier changes are in the folder it left, so they can't be undone from here.",
+      };
+      if (
+        undoneTakenIn.includes("elsewhere") ||
+        (movedAtTurnCount !== null && input.turnCount < movedAtTurnCount)
+      ) {
+        return movedSince;
+      }
+
+      // The target is what files are restored from. One taken in another
+      // checkout (the turn the thread moved after) holds that folder's files;
+      // this folder as it was right before the first turn being undone is
+      // that turn's own starting snapshot, so the revert restores from it.
+      let revertTargetRef = targetCheckpointRef;
+      if (targetTakenIn === "elsewhere") {
+        const first = undone[0];
+        const start =
+          first === undefined || first.checkpointTurnCount !== input.turnCount + 1
+            ? undefined
+            : takenIn(0, 1) === "here"
+              ? snapshotsOf(first)[1]
+              : takenIn(0, 2) === "here"
+                ? snapshotsOf(first)[2]
+                : undefined;
+        if (start === undefined) {
+          return movedSince;
+        }
+        revertTargetRef = start;
       }
 
       const isolated = yield* isIsolatedWorkspaceForThread({
@@ -236,7 +286,7 @@ const make = Effect.gen(function* () {
           cwd,
           hasProviderSession: sessionCwd !== undefined,
           mode: isolated ? ("workspace" as const) : ("selective" as const),
-          targetCheckpointRef,
+          targetCheckpointRef: revertTargetRef,
           thread,
         },
       };
@@ -252,6 +302,8 @@ const make = Effect.gen(function* () {
     readonly checkpoints: ReadonlyArray<RevertCheckpointContext>;
     readonly cwd: string;
     readonly targetTurnCount: number;
+    /** What the revert restores from: where the first turn's gap starts. */
+    readonly targetCheckpointRef: CheckpointRef;
     readonly currentTurnCount: number;
   }) {
     const contested = new Set<string>();
@@ -285,8 +337,10 @@ const make = Effect.gen(function* () {
       }
 
       const previousCheckpointRef =
-        input.checkpoints.find((entry) => entry.checkpointTurnCount === turnCount - 1)
-          ?.checkpointRef ?? checkpointRefForThreadTurn(input.threadId, turnCount - 1);
+        turnCount === input.targetTurnCount + 1
+          ? input.targetCheckpointRef
+          : (input.checkpoints.find((entry) => entry.checkpointTurnCount === turnCount - 1)
+              ?.checkpointRef ?? checkpointRefForThreadTurn(input.threadId, turnCount - 1));
       const previousCommit = yield* checkpointStore.resolveCheckpointCommit({
         cwd: input.cwd,
         checkpointRef: previousCheckpointRef,
@@ -367,6 +421,7 @@ const make = Effect.gen(function* () {
       checkpoints: thread.checkpoints,
       cwd: context.cwd,
       targetTurnCount: context.turnCount,
+      targetCheckpointRef: context.targetCheckpointRef,
       currentTurnCount: context.currentTurnCount,
     });
 

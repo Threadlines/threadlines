@@ -20,6 +20,7 @@ export function makeCheckpointStoreStub(
     hasCheckpointRef: () => Effect.succeed(false),
     restoreCheckpoint: () => Effect.succeed(true),
     resolveCheckpointCommit: () => Effect.succeed(null),
+    checkpointCheckouts: (input) => Effect.succeed(input.checkpointRefs.map(() => "here" as const)),
     diffCheckpoints: () => Effect.succeed(""),
     listHeadMovementPaths: () => Effect.succeed([]),
     diffCheckpointAgainstHead: () => Effect.succeed(null),

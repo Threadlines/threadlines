@@ -199,6 +199,63 @@ it.layer(TestLayer)("CheckpointStoreLive", (it) => {
     );
   });
 
+  describe("checkpointCheckouts", () => {
+    it.effect("says which checkout of the repository each snapshot was taken in", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        const worktree = path.join(yield* makeTmpDir("checkpoint-store-worktree-"), "feature");
+        yield* initRepoWithCommit(tmp);
+        yield* git(tmp, ["worktree", "add", "-b", "feature", worktree]);
+        const checkpointStore = yield* CheckpointStore;
+        const threadId = ThreadId.make("thread-two-checkouts");
+        const inProject = checkpointRefForThreadTurn(threadId, 1);
+        const inWorktree = checkpointRefForThreadTurn(threadId, 2);
+        const older = checkpointRefForThreadTurn(threadId, 3);
+        const gone = checkpointRefForThreadTurn(threadId, 4);
+
+        // A thread that worked in the project folder, then moved to the worktree.
+        yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef: inProject });
+        // Taken from a folder inside it: a checkout is its root, however deep the cwd.
+        yield* git(worktree, ["mv", "README.md", "docs.md"]);
+        const fileSystem = yield* FileSystem.FileSystem;
+        yield* fileSystem.makeDirectory(path.join(worktree, "src"));
+        yield* checkpointStore.captureCheckpoint({
+          cwd: path.join(worktree, "src"),
+          checkpointRef: inWorktree,
+        });
+        // A snapshot from before they recorded their checkout.
+        const tree = yield* git(tmp, ["rev-parse", "HEAD^{tree}"]);
+        const legacy = yield* git(tmp, [
+          "commit-tree",
+          tree,
+          "-m",
+          `threadlines checkpoint ref=${older}`,
+        ]);
+        yield* git(tmp, ["update-ref", older, legacy]);
+
+        const checkpointRefs = [inProject, inWorktree, older, gone];
+        expect(yield* checkpointStore.checkpointCheckouts({ cwd: tmp, checkpointRefs })).toEqual([
+          "here",
+          "elsewhere",
+          "unknown",
+          "unknown",
+        ]);
+        // The same snapshots, asked from the worktree it moved to.
+        expect(
+          yield* checkpointStore.checkpointCheckouts({ cwd: worktree, checkpointRefs }),
+        ).toEqual(["elsewhere", "here", "unknown", "unknown"]);
+
+        // A checkout is still itself after its folder is renamed: its
+        // snapshots stay revertible there.
+        const renamed = path.join(path.dirname(worktree), "renamed");
+        yield* git(tmp, ["worktree", "move", worktree, renamed]);
+        expect(
+          yield* checkpointStore.checkpointCheckouts({ cwd: renamed, checkpointRefs }),
+        ).toEqual(["elsewhere", "here", "unknown", "unknown"]);
+      }),
+    );
+  });
+
   describe("diffCheckpoints", () => {
     it.effect("returns full oversized checkpoint diffs without truncation", () =>
       Effect.gen(function* () {

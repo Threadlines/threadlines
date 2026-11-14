@@ -125,6 +125,18 @@ export interface VcsCheckpointRefInput {
   readonly checkpointRef: CheckpointRef;
 }
 
+export interface VcsCheckpointCheckoutsInput {
+  readonly cwd: string;
+  readonly checkpointRefs: ReadonlyArray<CheckpointRef>;
+}
+
+/**
+ * Where a snapshot was taken, seen from the checkout that asks: this one,
+ * another checkout of the repository, or not recorded (a snapshot from before
+ * snapshots recorded it, or a ref that is gone).
+ */
+export type VcsCheckpointCheckout = "here" | "elsewhere" | "unknown";
+
 /** Line counts for one repository-root-relative path. */
 export interface VcsCheckpointFileStat {
   readonly path: string;
@@ -162,6 +174,10 @@ export interface VcsCheckpointOps {
   readonly resolveCheckpointCommit: (
     input: VcsResolveCheckpointCommitInput,
   ) => Effect.Effect<string | null, VcsError>;
+  /** One answer per ref, in order: see VcsCheckpointCheckout. */
+  readonly checkpointCheckouts: (
+    input: VcsCheckpointCheckoutsInput,
+  ) => Effect.Effect<ReadonlyArray<VcsCheckpointCheckout>, VcsError>;
   readonly diffCheckpoints: (input: VcsDiffCheckpointsInput) => Effect.Effect<string, VcsError>;
   readonly listHeadMovementPaths: (
     input: VcsCheckpointRangeInput,
