@@ -115,8 +115,15 @@ async function mountProgress() {
   );
 }
 
+/**
+ * The titles of the notices on screen. A closed one stays in the page for the
+ * half second it takes to fade out, and longer on a busy machine: it stops
+ * counting the moment it starts leaving, so no check here waits on that fade.
+ */
 const noticeTitles = () =>
-  Array.from(document.querySelectorAll("[data-slot='toast-title']"), (el) => el.textContent);
+  Array.from(document.querySelectorAll("[data-slot='toast-title']"))
+    .filter((title) => title.closest("[data-ending-style]") === null)
+    .map((title) => title.textContent);
 
 describe("ProviderUpdateProgress", () => {
   afterEach(async () => {
