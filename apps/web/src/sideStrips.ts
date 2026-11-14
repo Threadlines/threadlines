@@ -33,7 +33,6 @@ function watchSideStrips(): void {
   if (typeof document === "undefined" || typeof ResizeObserver === "undefined") return;
   const probe = document.createElement("div");
   probe.setAttribute("aria-hidden", "true");
-  probe.dataset.sideStripsProbe = "";
   probe.style.cssText =
     "position:fixed;top:0;left:0;visibility:hidden;pointer-events:none;width:var(--safe-area-right,0px);height:var(--safe-area-left,0px)";
   new ResizeObserver(() => {
@@ -83,11 +82,11 @@ export function useCollisionPadding(padding?: CollisionPadding): CollisionPaddin
 }
 
 /**
- * A centered layer's viewport: the layer stays a rem off each strip. Add it
- * after the viewport's own `p-4`.
+ * A centered layer's viewport: the layer stays a rem off each strip and each
+ * edge of the window (`window-gutters` in index.css). It is the viewport's
+ * side padding, in place of a `px-4`.
  */
-export const VIEWPORT_SIDE_STRIPS_CLASS_NAME =
-  "pr-[calc(1rem+var(--safe-area-right))] pl-[calc(1rem+var(--safe-area-left))]";
+export const VIEWPORT_SIDE_STRIPS_CLASS_NAME = "window-gutters [--side-gutter:--spacing(4)]";
 
 /**
  * A phone's bottom sheet (a dialog below `sm`): it is as wide as the window,
@@ -96,12 +95,11 @@ export const VIEWPORT_SIDE_STRIPS_CLASS_NAME =
  * parts that reach its edges themselves: a footer's fill
  * (SHEET_FOOTER_SIDE_STRIPS_CLASS_NAME) and the close button.
  */
-export const BOTTOM_SHEET_SIDE_STRIPS_CLASS_NAME =
-  "max-sm:[--sheet-strip-left:var(--safe-area-left)] max-sm:[--sheet-strip-right:var(--safe-area-right)] max-sm:pr-(--sheet-strip-right) max-sm:pl-(--sheet-strip-left)";
+export const BOTTOM_SHEET_SIDE_STRIPS_CLASS_NAME = "max-sm:sheet-strips";
 
 /**
  * A filled footer inside such a sheet: the fill reaches the sheet's edges,
- * the buttons stay out of the strips. Goes after the footer's `px-6`.
+ * the buttons stay out of the strips. It is the footer's side padding, in
+ * place of its `px-6`.
  */
-export const SHEET_FOOTER_SIDE_STRIPS_CLASS_NAME =
-  "-mr-(--sheet-strip-right,0px) -ml-(--sheet-strip-left,0px) pr-[calc(--spacing(6)+var(--sheet-strip-right,0px))] pl-[calc(--spacing(6)+var(--sheet-strip-left,0px))]";
+export const SHEET_FOOTER_SIDE_STRIPS_CLASS_NAME = "sheet-footer-strips";

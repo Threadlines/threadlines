@@ -79,7 +79,7 @@ function AlertDialogViewport({
   return (
     <AlertDialogPrimitive.Viewport
       className={cn(
-        "fixed inset-0 z-50 grid grid-rows-[1fr_auto_3fr] justify-items-center bg-white/48 p-4 pt-[calc(1rem+var(--keyboard-inset-top))] pb-[calc(1rem+var(--keyboard-inset-bottom))] backdrop-blur-[2px] dark:bg-black/28",
+        "fixed inset-0 z-50 grid grid-rows-[1fr_auto_3fr] justify-items-center bg-white/48 pt-[calc(1rem+var(--keyboard-inset-top))] pb-[calc(1rem+var(--keyboard-inset-bottom))] backdrop-blur-[2px] dark:bg-black/28",
         VIEWPORT_SIDE_STRIPS_CLASS_NAME,
         className,
       )}
@@ -151,9 +151,9 @@ function AlertDialogFooter({
   return (
     <div
       className={cn(
-        "flex flex-col-reverse gap-2 px-6 sm:flex-row sm:justify-end sm:rounded-b-[calc(var(--radius-4xl)-1px)]",
+        "flex flex-col-reverse gap-2 sm:flex-row sm:justify-end sm:rounded-b-[calc(var(--radius-4xl)-1px)]",
         variant === "default" && "border-t bg-muted/72 py-4",
-        variant === "default" && SHEET_FOOTER_SIDE_STRIPS_CLASS_NAME,
+        variant === "default" ? SHEET_FOOTER_SIDE_STRIPS_CLASS_NAME : "px-6",
         variant === "bare" && "pb-6",
         className,
       )}

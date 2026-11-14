@@ -797,7 +797,7 @@ function Toasts({ position = "top-right" }: { position: ToastPosition }) {
           // A dimmed backdrop is the exception: the user is in a dialog, and
           // a notice raised then must not sit blurred underneath it.
           raisedAboveBackdrops ? "z-60" : "z-40",
-          "fixed mx-auto flex w-[calc(100%-var(--toast-inset)*2-var(--safe-area-left)-var(--safe-area-right))] max-w-[20rem] [--toast-header-offset:52px] [--toast-inset:--spacing(4)] sm:[--toast-inset:--spacing(6)]",
+          "fixed mx-auto flex w-[calc(100%-var(--toast-inset)*2)] max-w-[20rem] [--toast-header-offset:52px] [--toast-inset:--spacing(4)] sm:[--toast-inset:--spacing(6)]",
           // Vertical positioning
           "data-[position*=top]:top-[calc(var(--toast-inset)+var(--toast-header-offset))]",
           "data-[position*=bottom]:bottom-(--toast-inset)",
@@ -805,13 +805,12 @@ function Toasts({ position = "top-right" }: { position: ToastPosition }) {
           // right panel rather than on top of it: the panel publishes its width
           // (mainAreaLayout.ts, carried here as `--right-panel-inset`, 0px when
           // closed) because this viewport is fixed to the window and the
-          // layout cannot push it aside. They also stay off the strips a
-          // screen keeps down its sides (--safe-area-left and
-          // --safe-area-right in index.css); an open panel that covers the
-          // right strip already accounts for it.
-          "data-[position*=left]:left-[calc(var(--toast-inset)+var(--safe-area-left))]",
+          // layout cannot push it aside. They also stay off a strip the
+          // screen keeps down that side (--safe-area-right in index.css);
+          // an open panel that covers the strip already accounts for it.
+          "data-[position*=left]:left-(--toast-inset)",
           "data-[position*=right]:right-[calc(var(--toast-inset)+max(var(--right-panel-inset,0px),var(--safe-area-right)))]",
-          "data-[position*=center]:-translate-x-1/2 data-[position*=center]:left-[calc(50%+(var(--safe-area-left)-var(--safe-area-right))/2)]",
+          "data-[position*=center]:-translate-x-1/2 data-[position*=center]:left-1/2",
         )}
         data-position={position}
         data-slot="toast-viewport"

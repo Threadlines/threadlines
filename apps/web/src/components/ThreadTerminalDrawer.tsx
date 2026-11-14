@@ -1846,7 +1846,7 @@ export default function ThreadTerminalDrawer({
         <div className="h-px w-full bg-transparent transition-colors group-hover/terminal-edge:bg-ring group-focus-visible/terminal-edge:bg-ring" />
       </div>
 
-      <div className="flex h-8 shrink-0 items-stretch gap-1 bg-rail pt-1 pr-[calc(--spacing(1.5)+var(--safe-area-right))] pl-[calc(--spacing(1.5)+var(--safe-area-left))]">
+      <div className="flex h-8 shrink-0 items-stretch gap-1 window-gutters bg-rail pt-1 [--side-gutter:--spacing(1.5)]">
         <TerminalTabStrip
           groups={stripGroups}
           activeTerminalId={resolvedActiveTerminalId}

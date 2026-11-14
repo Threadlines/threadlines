@@ -116,7 +116,7 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
     <div
       ref={dialogRef}
       tabIndex={-1}
-      className="fixed inset-0 z-50 flex touch-none items-center justify-center overflow-hidden bg-black/75 py-6 pr-[calc(1rem+var(--safe-area-right))] pl-[calc(1rem+var(--safe-area-left))] outline-none [-webkit-app-region:no-drag]"
+      className="fixed inset-0 z-50 flex touch-none items-center justify-center overflow-hidden bg-black/75 window-gutters py-6 outline-none [--side-gutter:--spacing(4)] [-webkit-app-region:no-drag]"
       role="dialog"
       aria-modal="true"
       aria-label="Expanded image preview"

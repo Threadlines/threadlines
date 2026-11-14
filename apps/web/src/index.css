@@ -288,6 +288,21 @@ html.electron.mac:not([data-marketing-capture]) {
   padding-right: calc(var(--side-gutter) + var(--safe-area-right));
   padding-left: calc(var(--side-gutter) + var(--safe-area-left));
 }
+/* A phone's bottom sheet and a filled footer inside it (sideStrips.ts): the
+   sheet pads its content out of the strips and says how far, and the footer
+   carries its fill back to the sheet's edges, keeping its 1.5rem gutter. */
+@utility sheet-strips {
+  --sheet-strip-left: var(--safe-area-left);
+  --sheet-strip-right: var(--safe-area-right);
+  padding-right: var(--safe-area-right);
+  padding-left: var(--safe-area-left);
+}
+@utility sheet-footer-strips {
+  margin-right: calc(var(--sheet-strip-right, 0px) * -1);
+  margin-left: calc(var(--sheet-strip-left, 0px) * -1);
+  padding-right: calc(1.5rem + var(--sheet-strip-right, 0px));
+  padding-left: calc(1.5rem + var(--sheet-strip-left, 0px));
+}
 @utility page-gutters {
   padding-right: calc(var(--side-gutter) + var(--safe-area-right));
   padding-left: var(--side-gutter);
