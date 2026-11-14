@@ -241,6 +241,20 @@ html.electron.mac:not([data-marketing-capture]) {
   --safe-area-bottom: 0px;
 }
 
+/* The strips down the sides of the screen that the device keeps for itself:
+   the notch side of a phone held sideways, and the status dock down the right
+   edge of an iPhone Duo (clock, battery and signal), which is there in every
+   posture. The strip runs the whole height, though the dock only hangs from
+   the top of it; nothing on the web says how far down the dock reaches.
+   A surface that touches a side of the window carries its fill into the strip
+   and keeps its controls out of it: a layer that slides in from the right
+   pads by --safe-area-right, a layer fixed to the window stays that far off
+   the edge. 0 on every screen without one. */
+:root {
+  --safe-area-left: env(safe-area-inset-left, 0px);
+  --safe-area-right: env(safe-area-inset-right, 0px);
+}
+
 /* Safe-area inset utilities for surfaces that opt into edge-to-edge rendering.
    Insets resolve to 0 when the browser already constrains the layout viewport
    to the safe area. */
@@ -251,26 +265,53 @@ html.electron.mac:not([data-marketing-capture]) {
   padding-bottom: max(env(safe-area-inset-bottom), 0px);
 }
 @utility pl-safe {
-  padding-left: max(env(safe-area-inset-left), 0px);
+  padding-left: var(--safe-area-left);
 }
 @utility pr-safe {
-  padding-right: max(env(safe-area-inset-right), 0px);
+  padding-right: var(--safe-area-right);
+}
+
+/* Side padding for a surface that scrolls or paints to the window's edge and
+   keeps what it holds off the screen's side strips: its own gutter plus the
+   strip. Set the gutter beside it, `[--side-gutter:--spacing(4)]` (none by
+   default; it is not inherited, so a surface inside another starts from 0).
+   - window-gutters: a surface as wide as the window (setup, pairing).
+   - page-gutters: a page's body beside the rail and the list. Its right edge
+     is the window's; its left edge is only on a phone, where no list sits
+     beside it. */
+@property --side-gutter {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+@utility window-gutters {
+  padding-right: calc(var(--side-gutter) + var(--safe-area-right));
+  padding-left: calc(var(--side-gutter) + var(--safe-area-left));
+}
+@utility page-gutters {
+  padding-right: calc(var(--side-gutter) + var(--safe-area-right));
+  padding-left: var(--side-gutter);
+  @variant phone {
+    padding-left: calc(var(--side-gutter) + var(--safe-area-left));
+  }
 }
 
 /* Centers a layer that is portaled to the window (a dialog, the command
    palette) over the page beside the thread list and the right panel, not over
-   the whole window. The layer lays itself out centered on the window and
-   carries --main-area-offset inline (useMainAreaCenterStyle in
-   mainAreaLayout.ts); this slides it that far, but no closer than 1rem to the
-   window's edge, and not at all once it is as wide as the window (a phone's
-   bottom sheet). Percentages in translate are the layer's own width. Leave
-   translate out of the layer's transitions (slide it with transform): a popup
-   gliding to a new spot after a resize pokes past the window's edge. */
+   the whole window. The layer lays itself out centered between the window's
+   side strips (--safe-area-left and --safe-area-right, so on the window where
+   there are none) and carries --main-area-offset inline
+   (useMainAreaCenterStyle in mainAreaLayout.ts); this slides it that far, but
+   no closer than 1rem to a strip or the window's edge, and not at all once it
+   is as wide as the window (a phone's bottom sheet). Percentages in translate
+   are the layer's own width. Leave translate out of the layer's transitions
+   (slide it with transform): a popup gliding to a new spot after a resize
+   pokes past the window's edge. */
 @utility center-on-main-area {
   --tw-translate-x: clamp(
-    min(0px, 50% - 50vw + 1rem),
+    min(0px, 50% - 50vw + 1rem + (var(--safe-area-left) + var(--safe-area-right)) / 2),
     var(--main-area-offset, 0px),
-    max(0px, 50vw - 50% - 1rem)
+    max(0px, 50vw - 50% - 1rem - (var(--safe-area-left) + var(--safe-area-right)) / 2)
   );
   translate: var(--tw-translate-x) var(--tw-translate-y, 0);
 }

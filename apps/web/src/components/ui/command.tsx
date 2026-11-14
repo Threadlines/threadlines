@@ -6,6 +6,7 @@ import type * as React from "react";
 import { cn } from "~/lib/utils";
 import { useMainAreaCenterStyle } from "~/mainAreaLayout";
 import { CoveringBackdrop } from "~/components/ui/noticeLayer";
+import { VIEWPORT_SIDE_STRIPS_CLASS_NAME } from "~/sideStrips";
 import {
   Autocomplete,
   AutocompleteCollection,
@@ -42,7 +43,7 @@ function CommandDialogBackdrop({ className, ...props }: CommandDialogPrimitive.B
   );
 }
 
-/** Centers the palette over the page beside the sidebar, not the whole window. */
+/** Centers the palette over the page beside the sidebar, not the whole window, and off the screen's side strips. */
 function CommandDialogViewport({
   className,
   ...props
@@ -52,6 +53,7 @@ function CommandDialogViewport({
     <CommandDialogPrimitive.Viewport
       className={cn(
         "pointer-events-none fixed inset-0 z-50 flex flex-col items-center px-4 py-[max(--spacing(4),4vh)] sm:py-[10vh]",
+        VIEWPORT_SIDE_STRIPS_CLASS_NAME,
         className,
       )}
       data-slot="command-dialog-viewport"

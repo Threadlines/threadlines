@@ -3,6 +3,7 @@
 import { Popover as PopoverPrimitive } from "@base-ui/react/popover";
 
 import { cn } from "~/lib/utils";
+import { useCollisionPadding } from "~/sideStrips";
 
 const PopoverCreateHandle = PopoverPrimitive.createHandle;
 
@@ -28,7 +29,7 @@ function PopoverPopup({
   tooltipStyle = false,
   anchor,
   collisionAvoidance,
-  collisionPadding,
+  collisionPadding: requestedCollisionPadding,
   ...props
 }: PopoverPrimitive.Popup.Props & {
   /**
@@ -47,10 +48,11 @@ function PopoverPopup({
   /** How the popup moves when it would leave the screen; the positioner's
    *  default flips it to the other alignment. */
   collisionAvoidance?: PopoverPrimitive.Positioner.Props["collisionAvoidance"];
-  /** The closest the popup may come to a screen edge. */
+  /** The closest the popup may come to a screen edge (and to a screen's side strips). */
   collisionPadding?: PopoverPrimitive.Positioner.Props["collisionPadding"];
   positionerClassName?: string;
 }) {
+  const collisionPadding = useCollisionPadding(requestedCollisionPadding);
   return (
     <PopoverPrimitive.Portal>
       <PopoverPrimitive.Positioner

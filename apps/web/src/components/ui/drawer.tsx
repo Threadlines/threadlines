@@ -52,13 +52,16 @@ function DrawerViewport({ className, ...props }: Omit<DrawerPrimitive.Viewport.P
  *
  * `side="bottom"` is a phone sheet: full width, as tall as its content up to
  * most of the screen, rounded on top, swiped down to close (the Drawer's
- * default swipe direction).
+ * default swipe direction). Its fill runs under the strips a screen keeps down
+ * its sides (--safe-area-left and --safe-area-right in index.css) and its
+ * content is padded out of them.
  */
 function DrawerPopup({
   className,
   children,
   side = "left",
   keepMounted = false,
+  backdrop = true,
   backdropProps,
   viewportClassName,
   ...props
@@ -66,20 +69,34 @@ function DrawerPopup({
   side?: "left" | "right" | "bottom";
   /** Keeps the panel in the page while closed, so what it holds keeps its state. */
   keepMounted?: boolean;
+  /**
+   * Whether the page dims behind the panel and a press on it is the
+   * backdrop's. Without one the panel floats: the page beside it stays as it
+   * is and takes its own presses.
+   */
+  backdrop?: boolean;
   backdropProps?: DrawerPrimitive.Backdrop.Props | undefined;
   viewportClassName?: string | undefined;
 }) {
   return (
     <DrawerPrimitive.Portal keepMounted={keepMounted}>
-      <DrawerPrimitive.Backdrop
-        {...backdropProps}
-        className={cn(
-          "fixed inset-0 z-50 bg-black/32 opacity-[calc(1-var(--drawer-swipe-progress))] backdrop-blur-sm transition-opacity duration-200 data-ending-style:opacity-0 data-starting-style:opacity-0 data-swiping:transition-none",
-          typeof backdropProps?.className === "string" ? backdropProps.className : undefined,
-        )}
-        data-slot="drawer-backdrop"
-        render={(renderProps, state) => <CoveringBackdrop {...renderProps} open={state.open} />}
-      />
+      {backdrop ? (
+        <DrawerPrimitive.Backdrop
+          // Always drawn when asked for. The whole app sits inside the command
+          // palette's dialog (CommandPalette wraps it so its triggers work
+          // anywhere), and Base UI leaves the backdrop out of a drawer inside
+          // another dialog: the page beside the panel stayed bright, and a
+          // press on it did not close a sheet that closes from its backdrop.
+          forceRender
+          {...backdropProps}
+          className={cn(
+            "fixed inset-0 z-50 bg-black/32 opacity-[calc(1-var(--drawer-swipe-progress))] backdrop-blur-sm transition-opacity duration-200 data-ending-style:opacity-0 data-starting-style:opacity-0 data-swiping:transition-none",
+            typeof backdropProps?.className === "string" ? backdropProps.className : undefined,
+          )}
+          data-slot="drawer-backdrop"
+          render={(renderProps, state) => <CoveringBackdrop {...renderProps} open={state.open} />}
+        />
+      ) : null}
       <DrawerViewport
         className={cn(
           side === "left"
@@ -97,7 +114,7 @@ function DrawerPopup({
               ? "h-full border-e [transform:translateX(var(--drawer-swipe-movement-x))] data-ending-style:[transform:translateX(-100%)] data-starting-style:[transform:translateX(-100%)]"
               : side === "right"
                 ? "h-full border-s [transform:translateX(var(--drawer-swipe-movement-x))] data-ending-style:[transform:translateX(100%)] data-starting-style:[transform:translateX(100%)]"
-                : "max-h-[88dvh] w-full rounded-t-2xl border-t pb-(--safe-area-bottom) [transform:translateY(var(--drawer-swipe-movement-y))] data-ending-style:[transform:translateY(100%)] data-starting-style:[transform:translateY(100%)]",
+                : "max-h-[88dvh] w-full rounded-t-2xl border-t pr-safe pb-(--safe-area-bottom) pl-safe [transform:translateY(var(--drawer-swipe-movement-y))] data-ending-style:[transform:translateY(100%)] data-starting-style:[transform:translateY(100%)]",
             className,
           )}
           data-slot="drawer-popup"

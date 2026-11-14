@@ -8,6 +8,7 @@ import { ChevronDownIcon, ChevronsUpDownIcon, ChevronUpIcon } from "lucide-react
 import type * as React from "react";
 
 import { cn } from "~/lib/utils";
+import { useCollisionPadding, useSideStrips } from "~/sideStrips";
 
 const Select = SelectPrimitive.Root;
 
@@ -157,14 +158,21 @@ function SelectPopup({
   matchTriggerWidth?: boolean;
   anchor?: SelectPrimitive.Positioner.Props["anchor"];
 }) {
+  const collisionPadding = useCollisionPadding();
+  // Lining the chosen item up with the trigger places the list by a path of
+  // Base UI's own that only keeps 5px off the window's edges, so on a screen
+  // with side strips the list opens beside the trigger instead.
+  const strips = useSideStrips();
+  const besideStrips = strips.left > 0 || strips.right > 0;
   return (
     <SelectPrimitive.Portal>
       <SelectPrimitive.Positioner
         align={align}
-        alignItemWithTrigger={alignItemWithTrigger}
+        alignItemWithTrigger={alignItemWithTrigger && !besideStrips}
         alignOffset={alignOffset}
         anchor={anchor}
         className="z-50 select-none"
+        collisionPadding={collisionPadding}
         data-slot="select-positioner"
         side={side}
         sideOffset={sideOffset}

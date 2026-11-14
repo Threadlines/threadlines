@@ -427,7 +427,10 @@ function ChatFindSession(props: ChatFindProps) {
         : { kind: "matches", current: chatFindMatchNumber(result, current), total: result.total };
 
   return (
-    <div ref={barRef} className="absolute top-2 right-3 z-20 max-w-[calc(100%-1.5rem)]">
+    <div
+      ref={barRef}
+      className="absolute top-2 right-[calc(--spacing(3)+var(--safe-area-right))] z-20 max-w-[calc(100%-1.5rem-var(--safe-area-right))]"
+    >
       <FindBar
         query={query}
         onQueryChange={setQuery}

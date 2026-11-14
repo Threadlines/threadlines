@@ -38,14 +38,20 @@ export const COMPOSER_COMPACT_MIN_LEFT_CONTROLS_WIDTH_PX = 208;
 // them to let presses over the header reach the header.
 const RIGHT_PANEL_SHEET_BELOW_HEADER_CLASS_NAME =
   "pointer-events-auto mt-[var(--chat-header-bottom)] h-[calc(100%-var(--chat-header-bottom))] max-h-[calc(100%-var(--chat-header-bottom))] p-0";
+// Both sheets sit against the window's right edge, so on a screen with a
+// strip down that side (--safe-area-right in index.css: an iPhone Duo's status
+// dock) the sheet's fill runs under the strip and RightPanelSheet pads the
+// panel out of it. Every width below is the panel's own plus that strip, so
+// the panel keeps its size instead of losing the strip's width.
+//
 // Diff sheet width tiers: desktop keeps the fixed panel, the 640-760px band
 // keeps the near-full 88vw sheet (disjoint `sm:max-[760px]:` so no cascade
 // ordering is relied on), and phones go full width.
-export const RIGHT_PANEL_SHEET_CLASS_NAME = `${RIGHT_PANEL_SHEET_BELOW_HEADER_CLASS_NAME} w-[min(42vw,28rem)] min-w-80 max-w-[28rem] sm:max-[760px]:w-[min(88vw,24rem)] sm:max-[760px]:min-w-0 max-sm:w-full max-sm:min-w-0 max-sm:max-w-none`;
-// The rail overlays as a partial sheet: 400px where it fits, and as much of
+export const RIGHT_PANEL_SHEET_CLASS_NAME = `${RIGHT_PANEL_SHEET_BELOW_HEADER_CLASS_NAME} w-[calc(min(42vw,28rem)+var(--safe-area-right))] min-w-[calc(20rem+var(--safe-area-right))] max-w-[calc(28rem+var(--safe-area-right))] sm:max-[760px]:w-[min(88vw,calc(24rem+var(--safe-area-right)))] sm:max-[760px]:min-w-0 max-sm:w-full max-sm:min-w-0 max-sm:max-w-none`;
+// The rail overlays as a partial sheet: 330px where it fits, and as much of
 // the viewport as fits below that, so a slice of the conversation stays
 // visible and tappable to dismiss.
-export const RIGHT_PANEL_RAIL_SHEET_CLASS_NAME = `${RIGHT_PANEL_SHEET_BELOW_HEADER_CLASS_NAME} w-[min(92vw,var(--right-panel-rail-width))] max-w-[var(--right-panel-rail-width)]`;
+export const RIGHT_PANEL_RAIL_SHEET_CLASS_NAME = `${RIGHT_PANEL_SHEET_BELOW_HEADER_CLASS_NAME} w-[min(92vw,calc(var(--right-panel-rail-width)+var(--safe-area-right)))] max-w-[calc(var(--right-panel-rail-width)+var(--safe-area-right))]`;
 export const RIGHT_PANEL_SHEET_VIEWPORT_CLASS_NAME = "pointer-events-none";
 export const RIGHT_PANEL_SHEET_BACKDROP_CLASS_NAME = "mt-[var(--chat-header-bottom)]";
 

@@ -82,7 +82,7 @@ function TrialBar({ trial }: { readonly trial: ThemeTrial }) {
       aria-label={question}
       data-theme-trial-bar
       style={{ ...builtinThemeStyle(active.base), ...mainAreaCenterStyle }}
-      className="center-on-main-area fixed inset-x-0 top-[calc(env(safe-area-inset-top)+var(--app-titlebar-height,38px)+12px)] z-[60] mx-auto flex w-[min(460px,calc(100vw-24px))] items-center gap-3 rounded-[var(--app-radius-large)] border border-border bg-popover px-4 py-2.5 text-popover-foreground shadow-lg"
+      className="center-on-main-area fixed right-(--safe-area-right) left-(--safe-area-left) top-[calc(env(safe-area-inset-top)+var(--app-titlebar-height,38px)+12px)] z-[60] mx-auto flex w-[min(460px,calc(100vw-24px-var(--safe-area-left)-var(--safe-area-right)))] items-center gap-3 rounded-[var(--app-radius-large)] border border-border bg-popover px-4 py-2.5 text-popover-foreground shadow-lg"
       onKeyDown={(event) => {
         if (event.key === "Escape") {
           event.preventDefault();

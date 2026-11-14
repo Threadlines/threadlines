@@ -982,10 +982,10 @@ export function AgentSetupScreen({ routeStep }: { readonly routeStep: SetupStep 
           {gate === "pending" ? "Set up later" : "Close"}
         </Button>
       </header>
-      <main className="min-h-0 flex-1 overflow-y-auto px-5 pt-10 pb-8 sm:px-10 sm:pt-12">
+      <main className="window-gutters min-h-0 flex-1 overflow-y-auto pt-10 pb-8 [--side-gutter:--spacing(5)] sm:pt-12 sm:[--side-gutter:--spacing(10)]">
         <div className="mx-auto w-full max-w-[42rem]">{body}</div>
       </main>
-      <footer className="flex h-15 shrink-0 justify-center border-t border-border/60 px-5 sm:px-10">
+      <footer className="window-gutters flex h-15 shrink-0 justify-center border-t border-border/60 [--side-gutter:--spacing(5)] sm:[--side-gutter:--spacing(10)]">
         <div className="flex w-full max-w-[42rem] items-center gap-3">{footer}</div>
       </footer>
     </div>

@@ -5,6 +5,7 @@ import { ChevronRightIcon, SearchIcon } from "lucide-react";
 import type * as React from "react";
 
 import { cn } from "~/lib/utils";
+import { useCollisionPadding } from "~/sideStrips";
 
 const MenuCreateHandle = MenuPrimitive.createHandle;
 
@@ -38,6 +39,7 @@ function MenuPopup({
   anchor?: MenuPrimitive.Positioner.Props["anchor"];
   backdrop?: boolean;
 }) {
+  const collisionPadding = useCollisionPadding();
   return (
     <MenuPrimitive.Portal>
       {backdrop ? (
@@ -48,6 +50,7 @@ function MenuPopup({
         alignOffset={alignOffset}
         anchor={anchor}
         className="z-50"
+        collisionPadding={collisionPadding}
         data-slot="menu-positioner"
         side={side}
         sideOffset={sideOffset}

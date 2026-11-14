@@ -1487,6 +1487,42 @@ describe("ChatView (full app): app shell", () => {
     }
   });
 
+  it("finds the list's sheet closed when a phone folds again after unfolding with it open", async () => {
+    // A folding phone: the folded screen has the phone layout, the open one
+    // the desktop layout. The sheet used to stay open behind the scenes while
+    // unfolded and cover the chat on the way back.
+    const sheet = () => document.querySelector('[data-slot="sidebar"][data-mobile="true"]');
+    const mounted = await mountChatView({
+      viewport: PHONE_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-phone-fold" as MessageId,
+        targetText: "phone fold",
+      }),
+    });
+
+    try {
+      const trigger = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('button[data-sidebar="trigger"]'),
+        "Unable to find mobile sidebar trigger.",
+      );
+      trigger.click();
+      await vi.waitFor(() => expect(sheet()).not.toBeNull(), { timeout: 4_000, interval: 16 });
+
+      await mounted.setViewport(DEFAULT_VIEWPORT);
+      await vi.waitFor(() => expect(sheet()).toBeNull(), { timeout: 4_000, interval: 16 });
+
+      await mounted.setViewport(PHONE_VIEWPORT);
+      await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('button[data-sidebar="trigger"]'),
+        "The phone layout never came back.",
+      );
+      await nextFrames(10);
+      expect(sheet()).toBeNull();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("on a phone, lists the open page's own items in the sheet, names its icons, and closes on a pick", async () => {
     const readingChatId = "thread-phone-chat-reading" as ThreadId;
     const otherChatId = "thread-phone-chat-other" as ThreadId;

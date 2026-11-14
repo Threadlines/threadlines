@@ -1,6 +1,8 @@
 import { type CSSProperties, type RefObject, useEffect } from "react";
 import { create } from "zustand";
 
+import { useSideStrips } from "./sideStrips";
+
 /**
  * Where the main area sits in the window: the page beside the thread list on
  * the left and the right panel on the right. Layers portaled to the body are
@@ -75,11 +77,20 @@ export function usePublishMainAreaStart(panelRef: RefObject<HTMLElement | null>)
 
 /**
  * Inline style for a layer that centers itself with `center-on-main-area`:
- * how far right of the window's center the page's center sits (negative when
- * it sits left of it).
+ * how far right of the layer's own resting center the page's center sits
+ * (negative when it sits left of it). The layer rests centered between the
+ * screen's side strips (sideStrips.ts), which is the window's center on every
+ * screen without them, so the page's edges are counted from the strips: a
+ * list or a panel that covers a strip only pushes the page by what it takes
+ * beyond it.
  */
 export function useMainAreaCenterStyle(): CSSProperties {
-  const offset = useMainAreaStore((bounds) => Math.round((bounds.start - bounds.endInset) / 2));
+  const strips = useSideStrips();
+  const offset = useMainAreaStore((bounds) =>
+    Math.round(
+      (Math.max(bounds.start - strips.left, 0) - Math.max(bounds.endInset - strips.right, 0)) / 2,
+    ),
+  );
   return { "--main-area-offset": `${offset}px` } as CSSProperties;
 }
 

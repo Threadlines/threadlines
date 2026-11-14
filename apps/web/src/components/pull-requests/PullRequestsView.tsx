@@ -604,8 +604,11 @@ export function PullRequestsView({
           {...glassPage.content}
           className={cn(
             "min-h-0 min-w-0 flex-1 overflow-y-auto",
-            selectedReference &&
-              "hidden lg:block lg:w-[400px] lg:flex-none lg:border-r lg:border-border",
+            // Whichever column reaches the window's edge keeps its rows off
+            // a strip the screen holds back there (page-gutters in index.css).
+            selectedReference
+              ? "hidden lg:block lg:w-[400px] lg:flex-none lg:border-r lg:border-border"
+              : "page-gutters",
           )}
         >
           <div
@@ -714,7 +717,7 @@ export function PullRequestsView({
 
         {selectedReference && selection ? (
           <div
-            className="flex min-h-0 min-w-0 flex-1 flex-col"
+            className="page-gutters flex min-h-0 min-w-0 flex-1 flex-col"
             data-testid="pull-requests-detail-column"
           >
             {/* Several pull requests stay open at once, and the strip is where

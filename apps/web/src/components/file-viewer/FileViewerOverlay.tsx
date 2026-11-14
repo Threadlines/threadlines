@@ -1778,10 +1778,12 @@ export default function FileViewerOverlay() {
     >
       {/* Desktop sizes are `sm:`-scoped so the popup's bottom-sheet mobile
           styling wins below that: a full-width sheet filling the viewport
-          under the 3rem (pt-12) backdrop reveal. */}
+          under the 3rem (pt-12) backdrop reveal. The desktop width is the
+          dialog viewport's own room less a rem each side (2rem off each edge
+          of the window), which keeps it off a screen's side strips too. */}
       <DialogPopup
         showCloseButton={false}
-        className="flex h-[calc(100dvh-3rem)] flex-col gap-0 overflow-hidden p-0 sm:h-[86vh] sm:w-[calc(100vw-4rem)] sm:max-w-[1400px]"
+        className="flex h-[calc(100dvh-3rem)] flex-col gap-0 overflow-hidden p-0 sm:h-[86vh] sm:w-[calc(100%-2rem)] sm:max-w-[1400px]"
       >
         <DialogTitle className="sr-only">Project files</DialogTitle>
         <DiffWorkerPoolProvider>

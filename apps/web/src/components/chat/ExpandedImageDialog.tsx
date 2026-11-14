@@ -116,7 +116,7 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
     <div
       ref={dialogRef}
       tabIndex={-1}
-      className="fixed inset-0 z-50 flex touch-none items-center justify-center overflow-hidden bg-black/75 px-4 py-6 outline-none [-webkit-app-region:no-drag]"
+      className="fixed inset-0 z-50 flex touch-none items-center justify-center overflow-hidden bg-black/75 py-6 pr-[calc(1rem+var(--safe-area-right))] pl-[calc(1rem+var(--safe-area-left))] outline-none [-webkit-app-region:no-drag]"
       role="dialog"
       aria-modal="true"
       aria-label="Expanded image preview"
@@ -137,14 +137,14 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
           type="button"
           size="icon"
           variant="ghost"
-          className="absolute left-2 top-1/2 z-20 -translate-y-1/2 text-white/90 hover:bg-white/10 hover:text-white sm:left-6"
+          className="absolute left-[calc(--spacing(2)+var(--safe-area-left))] top-1/2 z-20 -translate-y-1/2 text-white/90 hover:bg-white/10 hover:text-white sm:left-[calc(--spacing(6)+var(--safe-area-left))]"
           aria-label="Previous image"
           onClick={() => navigateImage(-1)}
         >
           <ChevronLeftIcon className="size-5" />
         </Button>
       )}
-      <div className="relative isolate z-10 max-h-[92vh] max-w-[92vw]">
+      <div className="relative isolate z-10 max-h-[92vh] max-w-[calc(92vw-var(--safe-area-left)-var(--safe-area-right))]">
         <Button
           type="button"
           size="icon-xs"
@@ -189,7 +189,7 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
             onClose={onClose}
           />
         ) : (
-          <div className="flex h-[40vh] w-[min(560px,80vw)] items-center justify-center rounded-lg border border-white/10 bg-black/40 text-sm text-white/70">
+          <div className="flex h-[40vh] w-[min(560px,calc(80vw-var(--safe-area-left)-var(--safe-area-right)))] items-center justify-center rounded-lg border border-white/10 bg-black/40 text-sm text-white/70">
             {picture.status === "loading"
               ? "Loading picture…"
               : side === "before"
@@ -197,12 +197,12 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
                 : "Couldn't load this picture."}
           </div>
         )}
-        <p className="mt-2 max-w-[92vw] truncate text-center text-xs text-muted-foreground/80">
+        <p className="mt-2 max-w-[calc(92vw-var(--safe-area-left)-var(--safe-area-right))] truncate text-center text-xs text-muted-foreground/80">
           {item.name}
           {preview.images.length > 1 ? ` (${preview.index + 1}/${preview.images.length})` : ""}
         </p>
         {item.detail ? (
-          <p className="max-w-[92vw] truncate text-center text-xs text-muted-foreground/60">
+          <p className="max-w-[calc(92vw-var(--safe-area-left)-var(--safe-area-right))] truncate text-center text-xs text-muted-foreground/60">
             {item.detail}
           </p>
         ) : null}
@@ -212,7 +212,7 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
           type="button"
           size="icon"
           variant="ghost"
-          className="absolute right-2 top-1/2 z-20 -translate-y-1/2 text-white/90 hover:bg-white/10 hover:text-white sm:right-6"
+          className="absolute right-[calc(--spacing(2)+var(--safe-area-right))] top-1/2 z-20 -translate-y-1/2 text-white/90 hover:bg-white/10 hover:text-white sm:right-[calc(--spacing(6)+var(--safe-area-right))]"
           aria-label="Next image"
           onClick={() => navigateImage(1)}
         >
@@ -575,7 +575,7 @@ function ZoomableImage(props: {
         src={props.src}
         alt={props.alt}
         className={cn(
-          "block max-h-[86vh] max-w-[92vw] select-none rounded-lg border border-border/70 bg-background object-contain shadow-2xl",
+          "block max-h-[86vh] max-w-[calc(92vw-var(--safe-area-left)-var(--safe-area-right))] select-none rounded-lg border border-border/70 bg-background object-contain shadow-2xl",
           zoomed ? (dragging ? "cursor-grabbing" : "cursor-grab") : "cursor-zoom-in",
         )}
         style={{
