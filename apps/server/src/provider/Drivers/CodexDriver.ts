@@ -45,6 +45,7 @@ import { makeCodexAdapter } from "../Layers/CodexAdapter.ts";
 import { freshOrCurrentSnapshot } from "../freshProviderSnapshot.ts";
 import {
   checkCodexProviderStatus,
+  type CodexSecurityNoticeMemory,
   type CodexWorkspaceMemory,
   consumeCodexRateLimitResetCredit,
   makePendingCodexProvider,
@@ -199,11 +200,13 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
       // updates. Pre-provide `ChildProcessSpawner` so the check fits
       // `makeManagedServerProvider.checkProvider`'s `R = never`.
       const workspaceMemory: CodexWorkspaceMemory = {};
+      const securityNoticeMemory: CodexSecurityNoticeMemory = {};
       const checkProvider = checkCodexProviderStatus(
         effectiveConfig,
         undefined,
         processEnv,
         workspaceMemory,
+        securityNoticeMemory,
       ).pipe(
         Effect.map(stampIdentity),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),

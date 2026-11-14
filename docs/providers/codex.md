@@ -73,6 +73,34 @@ It needs Codex 0.167 or later; an older Codex shows no `Workspace` setting.
 - A chat whose data the old workspace keeps in another region may not continue in the new one.
   Start a new thread for it.
 
+## Codex On A Gateway Or Another Model Provider
+
+Codex can send its requests somewhere other than OpenAI: a company gateway, or any provider set as
+`model_provider` in Codex's own `config.toml`. When it does, the Codex row says `Runs on` and the
+provider's name, and `Account & Sign-in` has a `Model provider` line. It needs Codex 0.168 or
+later.
+
+- Threadlines only reads this. Change the provider in Codex's config, or with Codex in your
+  terminal.
+- A ChatGPT sign-in can sit beside a gateway. Its email, workspace and `Sign out` stay on the row.
+- With no account at all the row reads `No sign-in needed`: Codex is ready on the gateway alone.
+  Threadlines can't check the gateway's key, so a wrong key shows up when a chat fails.
+- Codex lists OpenAI's models whatever the provider. If your gateway serves other models, add
+  their ids under the Codex row's `Models` as custom models.
+- Titles and commit messages written by Codex still go to OpenAI, not the gateway. Pick another
+  agent for them in `Settings` if Codex has no OpenAI sign-in.
+
+## Security Notices From OpenAI
+
+OpenAI can ask a ChatGPT account to do something about its security, such as turning on two-step
+sign-in. When it does, the Codex row says `Security notice`, and `Account & Sign-in` shows OpenAI's
+words with a button to the page. It needs Codex 0.169 or later.
+
+- The button only opens pages on `openai.com` and `chatgpt.com`. A notice that links anywhere else
+  shows its words without a button.
+- The notice is for the signed-in user and workspace. Switching workspace or signing out clears it.
+- It goes away once OpenAI stops sending it, at the next status check.
+
 ## Suggested Next Message
 
 After Codex replies to a message you sent, the message box shows a suggestion of what you might

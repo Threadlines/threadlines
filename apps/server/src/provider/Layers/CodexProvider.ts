@@ -27,6 +27,8 @@ import type {
   ModelInputModality,
   ModelUpgradeInfo,
   ServerProviderModel,
+  ServerProviderModelProvider,
+  ServerProviderSecurityNotice,
   ServerProviderSkill,
   ServerProviderWorkspace,
 } from "@threadlines/contracts";
@@ -66,6 +68,14 @@ export interface CodexAppServerProviderSnapshot {
   readonly accountSessions?: CodexSchema.V2AccountSessionsResponse;
   readonly rateLimits?: CodexSchema.V2GetAccountRateLimitsResponse;
   readonly tokenUsage?: CodexSchema.V2GetAccountTokenUsageResponse;
+  /** Codex's model providers and which one new chats use (`modelProvider/list`). */
+  readonly modelProviders?: CodexSchema.V2ModelProviderListResponse;
+  /**
+   * What OpenAI asks this account to do about its security
+   * (`account/securitySetup/read`). Absent when Codex gave no answer; a
+   * `notice` of null is its answer that there is nothing to do.
+   */
+  readonly securitySetup?: CodexSchema.V2GetAccountSecuritySetupResponse;
   readonly version: string | undefined;
   readonly models: ReadonlyArray<ServerProviderModel>;
   readonly skills: ReadonlyArray<ServerProviderSkill>;
@@ -772,7 +782,15 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
     } satisfies CodexAppServerProviderSnapshot;
   }
 
-  const [skillsResponse, models, rateLimits, tokenUsage, accountSessions] = yield* Effect.all(
+  const [
+    skillsResponse,
+    models,
+    rateLimits,
+    tokenUsage,
+    accountSessions,
+    modelProviders,
+    securitySetup,
+  ] = yield* Effect.all(
     [
       client.request("skills/list", {
         cwds: [input.cwd],
@@ -783,6 +801,10 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
       accountResponse.account?.type === "chatgpt"
         ? readCodexAccountSessions(client)
         : Effect.succeed(undefined),
+      readCodexModelProviders(client),
+      accountResponse.account?.type === "chatgpt"
+        ? readCodexSecuritySetup(client)
+        : Effect.succeed(undefined),
     ],
     { concurrency: "unbounded" },
   );
@@ -792,6 +814,8 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
     ...(accountSessions ? { accountSessions } : {}),
     ...(rateLimits ? { rateLimits } : {}),
     ...(tokenUsage ? { tokenUsage } : {}),
+    ...(modelProviders ? { modelProviders } : {}),
+    ...(securitySetup ? { securitySetup } : {}),
     version,
     models: appendCustomCodexModels(models, input.customModels ?? []),
     skills: parseCodexSkillsListResponse(skillsResponse, input.cwd),
@@ -816,6 +840,150 @@ export const readCodexAccountSessions = (client: CodexClient.CodexAppServerClien
     Effect.map(Option.getOrUndefined),
     Effect.orElseSucceed(() => undefined),
   );
+
+/**
+ * How long the status check waits for an answer it can do without. A request
+ * Codex never answers would otherwise hold the whole check until it times out
+ * and reports nothing at all.
+ */
+const CODEX_OPTIONAL_READ_TIMEOUT = Duration.seconds(8);
+
+/**
+ * Codex's model providers and its default one. Undefined from a Codex without
+ * the request (before 0.168), on a failure (a kind of provider these bindings
+ * don't know yet fails to decode), or when it doesn't answer in time.
+ */
+export const readCodexModelProviders = (client: CodexClient.CodexAppServerClientShape) =>
+  client.request("modelProvider/list", {}).pipe(
+    Effect.timeoutOption(CODEX_OPTIONAL_READ_TIMEOUT),
+    Effect.map(Option.getOrUndefined),
+    Effect.orElseSucceed(() => undefined),
+  );
+
+/**
+ * OpenAI's security reminder for the signed-in ChatGPT account, asked of its
+ * servers. Undefined from a Codex without the request (before 0.169), on a
+ * failure, or when it doesn't answer in time.
+ */
+export const readCodexSecuritySetup = (client: CodexClient.CodexAppServerClientShape) =>
+  client.request("account/securitySetup/read", undefined).pipe(
+    Effect.timeoutOption(CODEX_OPTIONAL_READ_TIMEOUT),
+    Effect.map(Option.getOrUndefined),
+    Effect.orElseSucceed(() => undefined),
+  );
+
+/**
+ * Where new Codex chats run, when that is not OpenAI: the default model
+ * provider of the user's Codex config, such as a company gateway. None for
+ * OpenAI itself, and none when the account already is the provider (Amazon
+ * Bedrock and Google Cloud sign in as accounts and are named there).
+ */
+export function codexModelProviderForCheck(
+  account: CodexAppServerProviderSnapshot["account"],
+  providers: CodexAppServerProviderSnapshot["modelProviders"],
+): ServerProviderModelProvider | undefined {
+  if (!providers) return undefined;
+  const accountType = account.account?.type;
+  if (accountType === "amazonBedrock" || accountType === "gcp") return undefined;
+  const provider = providers.data.find((entry) => entry.id === providers.defaultProviderId);
+  if (!provider || provider.settings.type === "openai") return undefined;
+  const id = provider.id.trim();
+  if (!id) return undefined;
+  return { id, name: singleLine(provider.name, MAX_MODEL_PROVIDER_NAME) ?? id };
+}
+
+const MAX_MODEL_PROVIDER_NAME = 60;
+const MAX_SECURITY_NOTICE_TITLE = 120;
+const MAX_SECURITY_NOTICE_DESCRIPTION = 400;
+const MAX_SECURITY_NOTICE_ACTION_LABEL = 40;
+
+/** Text from outside, as one bounded line: no line breaks or control characters. */
+function singleLine(value: string | null | undefined, maxLength: number): string | undefined {
+  // oxlint-disable-next-line no-control-regex
+  const flat = (value ?? "").replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/gu, " ");
+  const trimmed = flat.replace(/\s+/gu, " ").trim();
+  if (!trimmed) return undefined;
+  return trimmed.length > maxLength ? `${trimmed.slice(0, maxLength - 1).trimEnd()}…` : trimmed;
+}
+
+/** OpenAI's own sites: the only places a security notice's button may lead. */
+const CODEX_SECURITY_NOTICE_HOSTS = ["openai.com", "chatgpt.com"] as const;
+
+/**
+ * A security notice's link, kept only when it is an https page on one of
+ * OpenAI's sites. The address comes from a server, and the row opens it on a
+ * click, so anything else is dropped rather than shown.
+ */
+function codexSecurityNoticeUrl(value: string): string | undefined {
+  let url: URL;
+  try {
+    url = new URL(value.trim());
+  } catch {
+    return undefined;
+  }
+  if (url.protocol !== "https:" || url.username !== "" || url.password !== "") return undefined;
+  const host = url.hostname.toLowerCase();
+  return CODEX_SECURITY_NOTICE_HOSTS.some((site) => host === site || host.endsWith(`.${site}`))
+    ? url.toString()
+    : undefined;
+}
+
+/**
+ * The last security notice a status check read and the account it was for,
+ * kept for the checks that get no answer (OpenAI slow). One per Codex
+ * instance. It is shown again only to the very same user and workspace: a
+ * workspace switch, another login or a sign-out forgets it.
+ */
+export interface CodexSecurityNoticeMemory {
+  last?:
+    | {
+        readonly identity: string;
+        readonly notice: ServerProviderSecurityNotice;
+      }
+    | undefined;
+}
+
+/**
+ * The security notice for a check: the one it read, when it is for the
+ * account in use, else the remembered one of the same user and workspace.
+ */
+export function codexSecurityNoticeForCheck(
+  account: CodexAppServerProviderSnapshot["account"],
+  read: CodexAppServerProviderSnapshot["securitySetup"],
+  memory: CodexSecurityNoticeMemory | undefined,
+): ServerProviderSecurityNotice | undefined {
+  const userId = optionalString(account.userId);
+  const workspaceId = optionalString(account.workspaceRouting?.chatgptAccountId);
+  if (account.account?.type !== "chatgpt" || !userId || !workspaceId) {
+    if (memory) memory.last = undefined;
+    return undefined;
+  }
+  const identity = `${userId}\n${workspaceId}`;
+  if (read === undefined) {
+    const last = memory?.last;
+    if (last?.identity === identity) return last.notice;
+    if (memory) memory.last = undefined;
+    return undefined;
+  }
+  const raw = read.notice;
+  const title = singleLine(raw?.title, MAX_SECURITY_NOTICE_TITLE);
+  // Codex binds a notice to the account that fetched it; one for anyone else
+  // is not this person's to act on.
+  if (!raw || !title || raw.userId !== userId || raw.accountId !== workspaceId) {
+    if (memory) memory.last = undefined;
+    return undefined;
+  }
+  const description = singleLine(raw.description, MAX_SECURITY_NOTICE_DESCRIPTION);
+  const label = singleLine(raw.action.label, MAX_SECURITY_NOTICE_ACTION_LABEL);
+  const url = codexSecurityNoticeUrl(raw.action.url);
+  const notice: ServerProviderSecurityNotice = {
+    title,
+    ...(description ? { description } : {}),
+    ...(label && url ? { action: { label, url } } : {}),
+  };
+  if (memory) memory.last = { identity, notice };
+  return notice;
+}
 
 /**
  * The workspaces of the login in use, for the snapshot: the active session's,
@@ -973,14 +1141,18 @@ const makePendingCodexProvider = (
   });
 
 function accountProbeStatus(
-  account: CodexAppServerProviderSnapshot["account"],
-  accountSessions: CodexAppServerProviderSnapshot["accountSessions"],
+  snapshot: Pick<
+    CodexAppServerProviderSnapshot,
+    "account" | "accountSessions" | "modelProviders" | "securitySetup"
+  >,
   workspaceMemory: CodexWorkspaceMemory | undefined,
+  securityNoticeMemory: CodexSecurityNoticeMemory | undefined,
 ): {
   readonly status: Exclude<ServerProviderState, "disabled">;
   readonly auth: ServerProvider["auth"];
   readonly message?: string;
 } {
+  const { account, accountSessions } = snapshot;
   const authLabel = codexAccountAuthLabel(account.account);
   const authEmail = codexAccountEmail(account.account);
   const workspaces = codexWorkspacesForCheck(
@@ -988,12 +1160,20 @@ function accountProbeStatus(
     account.account?.type === "chatgpt" ? codexWorkspacesFromSessions(accountSessions) : undefined,
     workspaceMemory,
   );
+  const modelProvider = codexModelProviderForCheck(account, snapshot.modelProviders);
+  const securityNotice = codexSecurityNoticeForCheck(
+    account,
+    snapshot.securitySetup,
+    securityNoticeMemory,
+  );
   const auth = {
     status: account.account ? ("authenticated" as const) : ("unknown" as const),
     ...(account.account?.type ? { type: account.account?.type } : {}),
     ...(authLabel ? { label: authLabel } : {}),
     ...(authEmail ? { email: authEmail } : {}),
     ...(workspaces ? { workspaces } : {}),
+    ...(modelProvider ? { modelProvider } : {}),
+    ...(securityNotice ? { securityNotice } : {}),
   } satisfies ServerProvider["auth"];
 
   if (account.account) {
@@ -1027,6 +1207,8 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
   environment: NodeJS.ProcessEnv = process.env,
   /** The instance's last workspace list, kept through checks that can't read one. */
   workspaceMemory?: CodexWorkspaceMemory,
+  /** The instance's last security notice, kept the same way. */
+  securityNoticeMemory?: CodexSecurityNoticeMemory,
 ): Effect.fn.Return<
   ServerProviderDraft,
   ServerSettingsError,
@@ -1036,6 +1218,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
   const emptyModels = emptyCodexModelsFromSettings(codexSettings);
 
   if (!codexSettings.enabled) {
+    if (securityNoticeMemory) securityNoticeMemory.last = undefined;
     return makeDisabledCodexProvider(codexSettings, checkedAt, environment);
   }
 
@@ -1050,6 +1233,16 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
     Effect.timeoutOption(Duration.millis(AUTH_PROBE_TIMEOUT_MS)),
     Effect.result,
   );
+
+  // A check that could not read the account can't tell who is signed in now
+  // (a sign-out may have happened behind it), so the kept security notice goes
+  // with it. It comes back with OpenAI's next answer.
+  if (
+    securityNoticeMemory &&
+    (Result.isFailure(probeResult) || Option.isNone(probeResult.success))
+  ) {
+    securityNoticeMemory.last = undefined;
+  }
 
   if (Result.isFailure(probeResult)) {
     const error = probeResult.failure;
@@ -1101,11 +1294,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
   }
 
   const snapshot = probeResult.success.value;
-  const accountStatus = accountProbeStatus(
-    snapshot.account,
-    snapshot.accountSessions,
-    workspaceMemory,
-  );
+  const accountStatus = accountProbeStatus(snapshot, workspaceMemory, securityNoticeMemory);
   const accountUsage = normalizeCodexAccountUsage(
     snapshot.rateLimits,
     snapshot.tokenUsage,

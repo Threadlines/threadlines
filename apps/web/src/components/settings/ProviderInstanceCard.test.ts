@@ -196,3 +196,44 @@ describe("Claude authentication presentation", () => {
     });
   });
 });
+
+describe("Codex on a gateway from its own config", () => {
+  const provider = {
+    instanceId: ProviderInstanceId.make("codex"),
+    driver: ProviderDriverKind.make("codex"),
+    enabled: true,
+    installed: true,
+    version: "0.169.0",
+    status: "ready",
+    auth: { status: "unknown", modelProvider: { id: "acme", name: "Acme Gateway" } },
+    checkedAt: "2026-11-14T00:00:00.000Z",
+    models: [],
+    slashCommands: [],
+    skills: [],
+  } satisfies ServerProvider;
+
+  it("names the gateway instead of saying a sign-in could not be verified", () => {
+    expect(getProviderSummary(provider)).toEqual({
+      headline: "Runs on Acme Gateway",
+      detail: null,
+    });
+    expect(providerAuthBadge(provider.auth)).toEqual({
+      label: "No sign-in needed",
+      variant: "secondary",
+    });
+  });
+
+  it("keeps the account's words when a sign-in sits beside the gateway", () => {
+    const signedIn = {
+      ...provider,
+      auth: { ...provider.auth, status: "authenticated", label: "ChatGPT Pro 5x Subscription" },
+    } satisfies ServerProvider;
+    expect(getProviderSummary(signedIn).headline).toBe(
+      "Authenticated · ChatGPT Pro 5x Subscription",
+    );
+    expect(providerAuthBadge(signedIn.auth)).toEqual({
+      label: "Authenticated",
+      variant: "success",
+    });
+  });
+});
