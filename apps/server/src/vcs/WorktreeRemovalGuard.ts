@@ -13,10 +13,17 @@
  * skip the step that keeps the thread usable.
  *
  * The classification itself lives in `@threadlines/shared/worktreeUsage` so the
- * client's cleanup list greys out exactly the folders this guard would refuse.
+ * client's cleanup list greys out the folders this guard would refuse. The
+ * guard goes one step further than the list can: it compares folders as the
+ * disk resolves them. git names a worktree by its real path, and a thread may
+ * have recorded the same folder through a symlink (a data folder under
+ * macOS's `/var`, which is `/private/var`); by spelling alone that thread
+ * would not be in the way.
  *
  * @module WorktreeRemovalGuard
  */
+import * as NodeFs from "node:fs/promises";
+
 import * as Effect from "effect/Effect";
 import { VcsWorktreeInUseError } from "@threadlines/contracts";
 import {
@@ -45,9 +52,34 @@ export const ensureWorktreeRemovable = <E>(input: {
         }).pipe(Effect.as([] as ReadonlyArray<WorktreeUsageThread>)),
       ),
     );
+    // Each distinct folder is resolved once; one that is gone keeps its spelling.
+    const resolved = new Map<string, string>();
+    const realPath = (path: string) =>
+      Effect.promise(async () => {
+        const known = resolved.get(path);
+        if (known !== undefined) return known;
+        const real = await NodeFs.realpath(path).catch(() => path);
+        resolved.set(path, real);
+        return real;
+      });
+    const realPathOrNull = (path: string | null | undefined) =>
+      typeof path === "string" && path.length > 0 ? realPath(path) : Effect.succeed(path);
     const blockingThreads = findWorktreeBlockingThreads({
-      worktreePath: input.worktreePath,
-      threads,
+      worktreePath: yield* realPath(input.worktreePath),
+      threads: yield* Effect.forEach(threads, (thread) =>
+        Effect.gen(function* () {
+          const session = thread.session;
+          return {
+            ...thread,
+            worktreePath: (yield* realPathOrNull(thread.worktreePath)) ?? null,
+            effectiveCwd: yield* realPathOrNull(thread.effectiveCwd),
+            session:
+              session === null || session === undefined
+                ? session
+                : { ...session, checkoutCwd: yield* realPathOrNull(session.checkoutCwd) },
+          } satisfies WorktreeUsageThread;
+        }),
+      ),
     });
     if (blockingThreads.length === 0) {
       return;
