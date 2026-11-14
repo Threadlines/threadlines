@@ -243,6 +243,46 @@ it.layer(NodeServices.layer)("providerStatusCache", (it) => {
     );
   });
 
+  // On a gateway, Codex's default is the model its config names, which the
+  // user may also have added by hand. Before the first check the fallback
+  // holds only that custom entry: the cached default must not be lost to it.
+  it("keeps a cached default that shares its slug with a custom model", () => {
+    const cachedCodex = makeProvider(CODEX_DRIVER, {
+      models: [
+        { slug: "gpt-5.4", name: "GPT-5.4", isCustom: false, capabilities: emptyCapabilities },
+        {
+          slug: "acme-coder-1",
+          name: "acme-coder-1",
+          isCustom: false,
+          isDefault: true,
+          capabilities: emptyCapabilities,
+        },
+      ],
+    });
+    const fallbackCodex = makeProvider(CODEX_DRIVER, {
+      models: [
+        {
+          slug: "acme-coder-1",
+          name: "acme-coder-1",
+          isCustom: true,
+          capabilities: emptyCapabilities,
+        },
+      ],
+    });
+
+    const hydrated = hydrateCachedProvider({
+      cachedProvider: cachedCodex,
+      fallbackProvider: fallbackCodex,
+    });
+    assert.deepStrictEqual(
+      hydrated.models.map((model) => [model.slug, model.isDefault === true, model.isCustom]),
+      [
+        ["acme-coder-1", true, false],
+        ["gpt-5.4", false, false],
+      ],
+    );
+  });
+
   it("ignores stale cached enabled state when the provider is now disabled", () => {
     const cachedCodex = makeProvider(CODEX_DRIVER, {
       checkedAt: "2026-04-10T12:00:00.000Z",

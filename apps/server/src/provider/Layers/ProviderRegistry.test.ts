@@ -39,7 +39,10 @@ import { applyServerSettingsPatch } from "@threadlines/shared/serverSettings";
 import {
   checkCodexProviderStatus,
   parseCodexModelListResponse,
+  codexGatewayConfigFromReads,
+  withCodexConfigModel,
   type CodexAppServerProviderSnapshot,
+  type CodexModelProviderMemory,
   type CodexSecurityNoticeMemory,
   type CodexWorkspaceMemory,
 } from "./CodexProvider.ts";
@@ -521,6 +524,210 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
             id: "acme",
             name: "Acme Gateway",
           });
+        }),
+      );
+
+      it("makes the model Codex's config names the one default on a gateway", () => {
+        const catalog = [
+          { slug: "gpt-6.1-sol", name: "GPT-6.1-Sol", isCustom: false, isDefault: true },
+          { slug: "gpt-6-astra", name: "GPT-6-Astra", isCustom: false, isHidden: true },
+        ].map((model) => ({ ...model, capabilities: null }));
+
+        // Not in Codex's list: added, and the only default.
+        const added = withCodexConfigModel(catalog, " acme-coder-1 ");
+        assert.deepStrictEqual(
+          added.map((model) => [model.slug, model.isDefault === true, model.isCustom]),
+          [
+            ["gpt-6.1-sol", false, false],
+            ["gpt-6-astra", false, false],
+            ["acme-coder-1", true, false],
+          ],
+        );
+
+        // Already listed, even hidden: shown, and the only default.
+        const listed = withCodexConfigModel(catalog, "gpt-6-astra");
+        assert.deepStrictEqual(
+          listed.map((model) => [model.slug, model.isDefault === true, model.isHidden === true]),
+          [
+            ["gpt-6.1-sol", false, false],
+            ["gpt-6-astra", true, false],
+          ],
+        );
+
+        // Added by hand before: Codex's own from here on, so it can be the default.
+        const custom = withCodexConfigModel(
+          [
+            ...catalog,
+            { slug: "acme-coder-1", name: "acme-coder-1", isCustom: true, capabilities: null },
+          ],
+          "acme-coder-1",
+        );
+        assert.deepStrictEqual(
+          custom
+            .filter((model) => model.isDefault === true)
+            .map((model) => [model.slug, model.isCustom]),
+          [["acme-coder-1", false]],
+        );
+
+        // No model in the config: Codex's own list stands.
+        assert.strictEqual(withCodexConfigModel(catalog, undefined), catalog);
+      });
+
+      it("reads the gateway's model and definition out of Codex's config", () => {
+        const providers = {
+          canChangeDefault: true,
+          defaultProviderId: "acme",
+          data: [
+            {
+              id: "acme",
+              name: "Acme Gateway",
+              canEdit: true,
+              settings: {
+                type: "customGateway" as const,
+                auth: { mode: "externallyConfigured" as const, envKey: null },
+              },
+            },
+            { id: "openai", name: "OpenAI", canEdit: false, settings: { type: "openai" as const } },
+          ],
+        };
+        const definition = {
+          name: "Acme Gateway",
+          base_url: "https://llm.acme.example/v1",
+          env_key: null,
+          experimental_bearer_token: "sk-secret-token",
+        };
+        // As `config/read` answers: the keys Codex's schema names, and the rest as JSON.
+        const config = {
+          config: {
+            model: "acme-coder-1",
+            model_provider: "acme",
+            model_providers: { acme: definition },
+          },
+          origins: {},
+        };
+
+        assert.deepStrictEqual(codexGatewayConfigFromReads(providers, config), {
+          providerId: "acme",
+          configRead: true,
+          model: "acme-coder-1",
+          definition,
+        });
+        // No answer from `config/read`: the provider is known, the rest is not.
+        assert.deepStrictEqual(codexGatewayConfigFromReads(providers, undefined), {
+          providerId: "acme",
+          configRead: false,
+        });
+        // On OpenAI, or with no provider list at all, there is no gateway.
+        assert.strictEqual(
+          codexGatewayConfigFromReads({ ...providers, defaultProviderId: "openai" }, config),
+          undefined,
+        );
+        assert.strictEqual(codexGatewayConfigFromReads(undefined, config), undefined);
+      });
+
+      it.effect("remembers the gateway until Codex itself says it is on OpenAI", () =>
+        Effect.gen(function* () {
+          const modelProviderMemory: CodexModelProviderMemory = {};
+          const check = (probe: Parameters<typeof checkCodexProviderStatus>[1]) =>
+            checkCodexProviderStatus(
+              defaultCodexSettings,
+              probe,
+              {},
+              undefined,
+              undefined,
+              modelProviderMemory,
+            );
+          const providers = (defaultProviderId: string) => ({
+            canChangeDefault: true,
+            defaultProviderId,
+            data: [
+              {
+                id: "acme",
+                name: "Acme Gateway",
+                canEdit: true,
+                settings: {
+                  type: "customGateway" as const,
+                  auth: { mode: "environmentVariable" as const, envKey: "ACME_API_KEY" },
+                },
+              },
+              {
+                id: "openai",
+                name: "OpenAI",
+                canEdit: false,
+                settings: { type: "openai" as const },
+              },
+            ],
+          });
+          const defaultModels = (status: Pick<ServerProvider, "models">) =>
+            status.models.filter((model) => model.isDefault === true).map((model) => model.slug);
+          const onGateway = makeCodexProbeSnapshot({
+            modelProviders: providers("acme"),
+            gateway: {
+              providerId: "acme",
+              configRead: true,
+              model: "acme-coder-1",
+              definition: { base_url: "https://llm.acme.example/v1", env_key: "ACME_API_KEY" },
+            },
+          });
+
+          const first = yield* check(() => Effect.succeed(onGateway));
+          assert.deepStrictEqual(defaultModels(first), ["acme-coder-1"]);
+          assert.strictEqual(
+            modelProviderMemory.last?.launch?.config,
+            [
+              'model_provider = "acme"',
+              'model_providers = {"acme" = {"base_url" = "https://llm.acme.example/v1", "env_key" = "ACME_API_KEY"}}',
+              "",
+            ].join("\n"),
+          );
+
+          // Codex did not say which providers it has: nothing is known to have changed.
+          const noProviderList = yield* check(() => Effect.succeed(makeCodexProbeSnapshot()));
+          assert.deepStrictEqual(defaultModels(noProviderList), ["acme-coder-1"]);
+          assert.strictEqual(modelProviderMemory.last?.launch?.providerId, "acme");
+
+          // It named the gateway but did not answer with its config: what was
+          // known of that gateway stands.
+          const noConfig = yield* check(() =>
+            Effect.succeed(
+              makeCodexProbeSnapshot({
+                modelProviders: providers("acme"),
+                gateway: { providerId: "acme", configRead: false },
+              }),
+            ),
+          );
+          assert.deepStrictEqual(defaultModels(noConfig), ["acme-coder-1"]);
+          assert.strictEqual(modelProviderMemory.last?.launch?.providerId, "acme");
+
+          // A check that could not reach Codex at all says nothing either.
+          yield* check(() =>
+            Effect.fail(
+              new CodexErrors.CodexAppServerSpawnError({ command: "codex", cause: "missing" }),
+            ),
+          );
+          assert.strictEqual(modelProviderMemory.last?.launch?.providerId, "acme");
+
+          // Codex's own answer that it is on OpenAI forgets the gateway.
+          const onOpenAi = yield* check(() =>
+            Effect.succeed(makeCodexProbeSnapshot({ modelProviders: providers("openai") })),
+          );
+          assert.strictEqual(modelProviderMemory.last, undefined);
+          assert.strictEqual(
+            onOpenAi.models.some((model) => model.slug === "acme-coder-1"),
+            false,
+          );
+
+          // A gateway Codex has not named for a while is not assumed to be
+          // there still: the user may have removed it behind a Codex that can
+          // no longer be asked.
+          yield* check(() => Effect.succeed(onGateway));
+          yield* TestClock.adjust("16 minutes");
+          const lapsed = yield* check(() => Effect.succeed(makeCodexProbeSnapshot()));
+          assert.strictEqual(modelProviderMemory.last, undefined);
+          assert.strictEqual(
+            lapsed.models.some((model) => model.slug === "acme-coder-1"),
+            false,
+          );
         }),
       );
 

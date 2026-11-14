@@ -85,10 +85,26 @@ later.
 - A ChatGPT sign-in can sit beside a gateway. Its email, workspace and `Sign out` stay on the row.
 - With no account at all the row reads `No sign-in needed`: Codex is ready on the gateway alone.
   Threadlines can't check the gateway's key, so a wrong key shows up when a chat fails.
-- Codex lists OpenAI's models whatever the provider. If your gateway serves other models, add
-  their ids under the Codex row's `Models` as custom models.
-- Titles and commit messages written by Codex still go to OpenAI, not the gateway. Pick another
-  agent for them in `Settings` if Codex has no OpenAI sign-in.
+- The model Codex's config names (`model`) is in the model picker and is the default for new
+  threads. Codex lists OpenAI's models beside it whatever the provider. If your gateway serves
+  others, add their ids under the Codex row's `Models` as custom models.
+- Titles and commit messages written by Codex go through the gateway too. If the gateway refuses
+  the model picked for them in `Settings`, Threadlines tries once more with the model from
+  Codex's config.
+- Those short runs leave the rest of your Codex config out (MCP servers, notify hooks), as they
+  always have. Each gets a Codex folder of its own holding the provider's settings alone,
+  readable only by you and removed when the run ends. Nothing from those settings is passed on
+  the command line.
+- One setup keeps those short runs on OpenAI, as before: a provider you add that signs in with
+  what Codex's own folder stores (a ChatGPT sign-in, a gateway's OAuth, Amazon Bedrock or Google
+  Cloud credentials). A folder made for one run has no sign-in. A provider built into Codex runs
+  in Codex's own folder, so its sign-in is there.
+- If such a run fails, the error shown has the provider's token, headers and address keys struck
+  out.
+- If Codex can't be asked which provider it is on for 15 minutes, Threadlines stops assuming the
+  gateway until Codex names it again.
+- A Codex agent answering on the side in a room still runs on OpenAI with your ChatGPT sign-in,
+  not on the gateway.
 
 ## Security Notices From OpenAI
 

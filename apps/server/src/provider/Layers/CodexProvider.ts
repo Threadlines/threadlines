@@ -1,3 +1,4 @@
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -38,6 +39,10 @@ import { createModelCapabilities } from "@threadlines/shared/model";
 import { isCommandAvailable } from "@threadlines/shared/shell";
 import { DEFAULT_CODEX_SERVICE_TIER_SELECTION } from "../../codexServiceTier.ts";
 import { CODEX_APP_SERVER_ARGS, codexAppServerCommandOptions } from "../codexAppServerArgs.ts";
+import {
+  codexModelProviderLaunch,
+  type CodexModelProviderLaunch,
+} from "../codexModelProviderLaunch.ts";
 import { detectProviderBinary } from "../providerDetection.ts";
 import {
   AUTH_PROBE_TIMEOUT_MS,
@@ -71,6 +76,12 @@ export interface CodexAppServerProviderSnapshot {
   /** Codex's model providers and which one new chats use (`modelProvider/list`). */
   readonly modelProviders?: CodexSchema.V2ModelProviderListResponse;
   /**
+   * What Codex's config says about the provider its chats run on, when that
+   * is not OpenAI (`config/read`). Absent on OpenAI, or when Codex gave no
+   * answer.
+   */
+  readonly gateway?: CodexGatewayConfig;
+  /**
    * What OpenAI asks this account to do about its security
    * (`account/securitySetup/read`). Absent when Codex gave no answer; a
    * `notice` of null is its answer that there is nothing to do.
@@ -79,6 +90,24 @@ export interface CodexAppServerProviderSnapshot {
   readonly version: string | undefined;
   readonly models: ReadonlyArray<ServerProviderModel>;
   readonly skills: ReadonlyArray<ServerProviderSkill>;
+}
+
+/** The parts of Codex's config that matter when its chats run on another provider. */
+export interface CodexGatewayConfig {
+  readonly providerId: string;
+  /**
+   * Whether Codex answered with its config. When it did not, the model and
+   * definition below are unknown, not absent.
+   */
+  readonly configRead: boolean;
+  /** The config's `model`: what Codex itself uses on that provider. */
+  readonly model?: string;
+  /**
+   * The provider's entry in the config's `model_providers`, as Codex reports
+   * it. It can hold secrets, so it stays on the server. Absent for a provider
+   * Codex has built in.
+   */
+  readonly definition?: unknown;
 }
 
 const REASONING_EFFORT_LABELS: Record<CodexSchema.V2ModelListResponse__ReasoningEffort, string> = {
@@ -772,42 +801,42 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
   const versionMatch = initialize.userAgent.match(/\/([^\s]+)/);
   const version = versionMatch ? versionMatch[1] : undefined;
 
-  const accountResponse = yield* client.request("account/read", {});
+  // The provider list is read beside the account, ahead of the signed-out
+  // return below: a Codex moved back to OpenAI while signed out must still
+  // say so, or the gateway it left would stay remembered.
+  const [accountResponse, modelProviders] = yield* Effect.all(
+    [client.request("account/read", {}), readCodexModelProviders(client)],
+    { concurrency: "unbounded" },
+  );
   if (!accountResponse.account && accountResponse.requiresOpenaiAuth) {
     return {
       account: accountResponse,
+      ...(modelProviders ? { modelProviders } : {}),
       version,
       models: appendCustomCodexModels([], input.customModels ?? []),
       skills: [],
     } satisfies CodexAppServerProviderSnapshot;
   }
 
-  const [
-    skillsResponse,
-    models,
-    rateLimits,
-    tokenUsage,
-    accountSessions,
-    modelProviders,
-    securitySetup,
-  ] = yield* Effect.all(
-    [
-      client.request("skills/list", {
-        cwds: [input.cwd],
-      }),
-      requestAllCodexModels(client),
-      client.request("account/rateLimits/read", null).pipe(Effect.orElseSucceed(() => undefined)),
-      client.request("account/usage/read", {}).pipe(Effect.orElseSucceed(() => undefined)),
-      accountResponse.account?.type === "chatgpt"
-        ? readCodexAccountSessions(client)
-        : Effect.succeed(undefined),
-      readCodexModelProviders(client),
-      accountResponse.account?.type === "chatgpt"
-        ? readCodexSecuritySetup(client)
-        : Effect.succeed(undefined),
-    ],
-    { concurrency: "unbounded" },
-  );
+  const [skillsResponse, models, rateLimits, tokenUsage, accountSessions, gateway, securitySetup] =
+    yield* Effect.all(
+      [
+        client.request("skills/list", {
+          cwds: [input.cwd],
+        }),
+        requestAllCodexModels(client),
+        client.request("account/rateLimits/read", null).pipe(Effect.orElseSucceed(() => undefined)),
+        client.request("account/usage/read", {}).pipe(Effect.orElseSucceed(() => undefined)),
+        accountResponse.account?.type === "chatgpt"
+          ? readCodexAccountSessions(client)
+          : Effect.succeed(undefined),
+        readCodexGatewayConfig(client, modelProviders),
+        accountResponse.account?.type === "chatgpt"
+          ? readCodexSecuritySetup(client)
+          : Effect.succeed(undefined),
+      ],
+      { concurrency: "unbounded" },
+    );
 
   return {
     account: accountResponse,
@@ -816,6 +845,7 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
     ...(tokenUsage ? { tokenUsage } : {}),
     ...(modelProviders ? { modelProviders } : {}),
     ...(securitySetup ? { securitySetup } : {}),
+    ...(gateway ? { gateway } : {}),
     version,
     models: appendCustomCodexModels(models, input.customModels ?? []),
     skills: parseCodexSkillsListResponse(skillsResponse, input.cwd),
@@ -872,6 +902,205 @@ export const readCodexSecuritySetup = (client: CodexClient.CodexAppServerClientS
     Effect.orElseSucceed(() => undefined),
   );
 
+/** Codex's default model provider, when it is not OpenAI's own. */
+function codexNonOpenAiDefaultProvider(
+  providers: CodexSchema.V2ModelProviderListResponse | undefined,
+) {
+  const provider = providers?.data.find((entry) => entry.id === providers.defaultProviderId);
+  return provider && provider.settings.type !== "openai" && provider.id.trim() !== ""
+    ? provider
+    : undefined;
+}
+
+/**
+ * What Codex's config says about the provider its chats run on: the model it
+ * names, and the provider's own definition. `config` is the answer to
+ * `config/read`, or undefined when Codex gave none. Undefined on OpenAI.
+ */
+export function codexGatewayConfigFromReads(
+  providers: CodexSchema.V2ModelProviderListResponse | undefined,
+  config: CodexSchema.V2ConfigReadResponse | undefined,
+): CodexGatewayConfig | undefined {
+  const provider = codexNonOpenAiDefaultProvider(providers);
+  if (!provider) return undefined;
+  if (!config) return { providerId: provider.id, configRead: false };
+  const model = optionalString(config.config.model);
+  const definitions: unknown = config.config.model_providers;
+  const definition =
+    typeof definitions === "object" && definitions !== null
+      ? (definitions as { readonly [id: string]: unknown })[provider.id]
+      : undefined;
+  return {
+    providerId: provider.id,
+    configRead: true,
+    ...(model ? { model } : {}),
+    ...(definition !== undefined && definition !== null ? { definition } : {}),
+  };
+}
+
+/** Reads Codex's config only when its chats run somewhere other than OpenAI. */
+const readCodexGatewayConfig = (
+  client: CodexClient.CodexAppServerClientShape,
+  providers: CodexSchema.V2ModelProviderListResponse | undefined,
+) =>
+  codexNonOpenAiDefaultProvider(providers) === undefined
+    ? Effect.succeed(undefined)
+    : client.request("config/read", {}).pipe(
+        Effect.timeoutOption(CODEX_OPTIONAL_READ_TIMEOUT),
+        Effect.map(Option.getOrUndefined),
+        Effect.orElseSucceed(() => undefined),
+        Effect.map((config) => codexGatewayConfigFromReads(providers, config)),
+      );
+
+/**
+ * The model list with the model Codex's config names, as the default. On a
+ * gateway Codex still lists OpenAI's models and marks one of them default,
+ * which the gateway may not serve; the config's model is the one known to
+ * work there. Added when the list lacks it, shown when the list hides it,
+ * and no longer a custom model when the user had added it by hand.
+ */
+export function withCodexConfigModel(
+  models: ReadonlyArray<ServerProviderModel>,
+  configModel: string | undefined,
+): ReadonlyArray<ServerProviderModel> {
+  const slug = configModel?.trim();
+  if (!slug) return models;
+  const withoutDefault = models.map(({ isDefault: _isDefault, ...model }) => model);
+  const index = withoutDefault.findIndex((model) => model.slug === slug);
+  if (index >= 0) {
+    return withoutDefault.map((model, position) => {
+      if (position !== index) return model;
+      // One the user also added by hand is Codex's own from here on: only a
+      // model that is not custom can be the default.
+      const { isHidden: _isHidden, ...shown } = model;
+      return { ...shown, isCustom: false, isDefault: true };
+    });
+  }
+  return [
+    ...withoutDefault,
+    {
+      slug,
+      name: slug,
+      description: "The model set in Codex's config.",
+      isCustom: false,
+      isDefault: true,
+      capabilities: models.find((model) => model.capabilities)?.capabilities ?? null,
+    },
+  ];
+}
+
+/**
+ * What the last status checks learned about the provider Codex's chats run
+ * on, for what reads it between checks: one-shot runs (titles, commit
+ * messages) and the model list. One per Codex instance. Read it through
+ * `currentCodexModelProvider`, which lets it lapse.
+ */
+export interface CodexModelProviderMemory {
+  /** When Codex last said which providers it has, whatever the answer. */
+  answeredAtMs?: number | undefined;
+  last?:
+    | {
+        readonly providerId: string;
+        /** When Codex last named this provider as its default. */
+        readonly confirmedAtMs: number;
+        readonly model?: string | undefined;
+        /** Absent when the config was never read, or the provider needs Codex's stored sign-in. */
+        readonly launch?: CodexModelProviderLaunch | undefined;
+      }
+    | undefined;
+}
+
+/**
+ * How long a gateway stays remembered without Codex naming it again: three
+ * scheduled checks. Past it, a Codex that can no longer be asked (an older
+ * version put back, a check that keeps failing) is not assumed to still be on
+ * a gateway the user may have removed.
+ */
+const CODEX_MODEL_PROVIDER_MEMORY_MS = 15 * 60_000;
+
+/** The remembered gateway, while Codex named it recently enough to go by. */
+export function currentCodexModelProvider(
+  memory: CodexModelProviderMemory,
+  nowMs: number,
+): CodexModelProviderMemory["last"] {
+  const last = memory.last;
+  if (last && nowMs - last.confirmedAtMs > CODEX_MODEL_PROVIDER_MEMORY_MS) {
+    memory.last = undefined;
+  }
+  return memory.last;
+}
+
+/**
+ * Whether Codex said recently enough which providers it has for the memory to
+ * be gone by. Not so right after a start, or while its status checks fail.
+ */
+export function isCodexModelProviderKnown(
+  memory: CodexModelProviderMemory,
+  nowMs: number,
+): boolean {
+  return (
+    memory.answeredAtMs !== undefined &&
+    nowMs - memory.answeredAtMs <= CODEX_MODEL_PROVIDER_MEMORY_MS
+  );
+}
+
+/**
+ * Asks Codex only which provider its chats run on: two reads of its own
+ * config, with none of a status check's calls to OpenAI. For a title or
+ * commit message that cannot wait out a slow check and must not guess.
+ * Undefined when Codex does not say.
+ */
+export const probeCodexGateway = Effect.fn("probeCodexGateway")(function* (input: {
+  readonly binaryPath: string;
+  readonly homePath?: string;
+  readonly cwd: string;
+  readonly environment?: NodeJS.ProcessEnv;
+}) {
+  const client = yield* makeCodexAppServerClient(input);
+  yield* initializeCodexAppServerClient(client);
+  const modelProviders = yield* readCodexModelProviders(client);
+  if (!modelProviders) return undefined;
+  const gateway = yield* readCodexGatewayConfig(client, modelProviders);
+  return { modelProviders, ...(gateway ? { gateway } : {}) } satisfies Pick<
+    CodexAppServerProviderSnapshot,
+    "modelProviders" | "gateway"
+  >;
+});
+
+/**
+ * The gateway a check goes by, remembered for the next one. A check that
+ * could not ask Codex which providers it has says nothing, so what was known
+ * stands for a while; one that got the provider but not its config keeps
+ * what was known of that same provider. Codex's own answer that it is on
+ * OpenAI forgets it at once.
+ */
+export function codexGatewayForCheck(
+  snapshot: Pick<CodexAppServerProviderSnapshot, "modelProviders" | "gateway">,
+  memory: CodexModelProviderMemory,
+  nowMs: number,
+): CodexModelProviderMemory["last"] {
+  if (snapshot.modelProviders === undefined) return currentCodexModelProvider(memory, nowMs);
+  memory.answeredAtMs = nowMs;
+  const gateway = snapshot.gateway;
+  if (!gateway) {
+    memory.last = undefined;
+  } else if (gateway.configRead) {
+    memory.last = {
+      providerId: gateway.providerId,
+      confirmedAtMs: nowMs,
+      model: gateway.model,
+      launch: codexModelProviderLaunch(gateway),
+    };
+  } else {
+    memory.last = {
+      ...(memory.last?.providerId === gateway.providerId ? memory.last : {}),
+      providerId: gateway.providerId,
+      confirmedAtMs: nowMs,
+    };
+  }
+  return memory.last;
+}
+
 /**
  * Where new Codex chats run, when that is not OpenAI: the default model
  * provider of the user's Codex config, such as a company gateway. None for
@@ -885,10 +1114,9 @@ export function codexModelProviderForCheck(
   if (!providers) return undefined;
   const accountType = account.account?.type;
   if (accountType === "amazonBedrock" || accountType === "gcp") return undefined;
-  const provider = providers.data.find((entry) => entry.id === providers.defaultProviderId);
-  if (!provider || provider.settings.type === "openai") return undefined;
+  const provider = codexNonOpenAiDefaultProvider(providers);
+  if (!provider) return undefined;
   const id = provider.id.trim();
-  if (!id) return undefined;
   return { id, name: singleLine(provider.name, MAX_MODEL_PROVIDER_NAME) ?? id };
 }
 
@@ -1209,6 +1437,8 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
   workspaceMemory?: CodexWorkspaceMemory,
   /** The instance's last security notice, kept the same way. */
   securityNoticeMemory?: CodexSecurityNoticeMemory,
+  /** What the instance knows of the provider Codex is on, kept between checks. */
+  modelProviderMemory: CodexModelProviderMemory = {},
 ): Effect.fn.Return<
   ServerProviderDraft,
   ServerSettingsError,
@@ -1294,6 +1524,11 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
   }
 
   const snapshot = probeResult.success.value;
+  const gateway = codexGatewayForCheck(
+    snapshot,
+    modelProviderMemory,
+    yield* Clock.currentTimeMillis,
+  );
   const accountStatus = accountProbeStatus(snapshot, workspaceMemory, securityNoticeMemory);
   const accountUsage = normalizeCodexAccountUsage(
     snapshot.rateLimits,
@@ -1305,7 +1540,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
     presentation: CODEX_PRESENTATION,
     enabled: codexSettings.enabled,
     checkedAt,
-    models: snapshot.models,
+    models: withCodexConfigModel(snapshot.models, gateway?.model),
     skills: snapshot.skills,
     probe: {
       installed: true,
