@@ -38,6 +38,7 @@ import {
 import { worktreeFolderNameForBranch } from "@threadlines/shared/git";
 import { areFilesystemPathsEqual } from "@threadlines/shared/path";
 import { setupProjectScript } from "@threadlines/shared/projectScripts";
+import * as NodeFs from "node:fs/promises";
 import { basename, join } from "node:path";
 
 import * as Cause from "effect/Cause";
@@ -316,7 +317,10 @@ const make = Effect.gen(function* () {
   /**
    * Stage 1 for a thread put in another thread's worktree: nothing is made.
    * The folder must still be one of this project's worktrees; its branch is
-   * read now, whatever it was when the thread was asked for.
+   * read now, whatever it was when the thread was asked for. Folders are
+   * compared as the disk resolves them: git lists a worktree by its real
+   * path, and a thread may have recorded it through a symlink (macOS's
+   * `/var` for `/private/var`).
    */
   const findLentWorktree = (projectId: ProjectId, lent: NonNullable<SetupPlan["lentWorktree"]>) =>
     Effect.gen(function* () {
@@ -327,7 +331,12 @@ const make = Effect.gen(function* () {
         project === undefined
           ? []
           : yield* gitWorkflow.listWorktrees({ cwd: project.workspaceRoot });
-      const found = worktrees.find((entry) => areFilesystemPathsEqual(entry.path, lent.path));
+      const real = (path: string) => Effect.promise(() => NodeFs.realpath(path).catch(() => path));
+      const lentPath = yield* real(lent.path);
+      const listed = yield* Effect.forEach(worktrees, (entry) =>
+        Effect.map(real(entry.path), (path) => ({ entry, path })),
+      );
+      const found = listed.find(({ path }) => areFilesystemPathsEqual(path, lentPath))?.entry;
       if (found === undefined) {
         return yield* new LentWorktreeGoneError(lent);
       }
