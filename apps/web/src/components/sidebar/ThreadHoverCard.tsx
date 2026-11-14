@@ -29,7 +29,7 @@ import {
 import { usePrimaryEnvironmentId } from "../../environments/primary";
 import { useServerProviders } from "../../rpc/serverState";
 import { selectProjectByRef, useStore } from "../../store";
-import { useThreadTitle } from "../../childThreads";
+import { useThreadTitle } from "../../hooks/useThreadTitle";
 import { useGitStatus } from "../../lib/gitStatusState";
 import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
 import { createThreadSelectorByRef } from "../../storeSelectors";

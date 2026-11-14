@@ -28,6 +28,7 @@ import { useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { formatChildThreadCount } from "./components/Sidebar.logic";
+import { useThreadTitle } from "./hooks/useThreadTitle";
 import { toSortableTimestamp } from "./lib/threadSort";
 import type { ProviderInstanceEntry } from "./providerInstances";
 import { getProviderModelCapabilities } from "./providerModels";
@@ -44,17 +45,7 @@ import type { SidebarThreadSummary } from "./types";
 
 const NO_CHILD_THREADS: readonly SidebarThreadSummary[] = [];
 
-/** Another thread's title, live, for a link to it; null when this device does not know it. */
-export function useThreadTitle(
-  environmentId: EnvironmentId | null,
-  threadId: ThreadId | null | undefined,
-): string | null {
-  return useStore((state) =>
-    threadId == null || environmentId === null
-      ? null
-      : (selectEnvironmentState(state, environmentId).threadShellById[threadId]?.title ?? null),
-  );
-}
+export { useThreadTitle };
 
 const NO_REMOTE_CHILDREN: readonly RemoteChildThread[] = [];
 

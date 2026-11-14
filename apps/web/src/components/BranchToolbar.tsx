@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 import { memo, useMemo } from "react";
 
-import { useThreadTitle } from "../childThreads";
+import { useThreadTitle } from "../hooks/useThreadTitle";
 import { useComposerDraftStore, type DraftId } from "../composerDraftStore";
 import { useIsMobile } from "../hooks/useMediaQuery";
 import { useStore } from "../store";
