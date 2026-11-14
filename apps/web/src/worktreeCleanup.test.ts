@@ -162,6 +162,7 @@ describe("worktree cleanup selection", () => {
       archivedThreadTitles: [],
       blockingThreadTitles: [],
       archiveUnknown: false,
+      madeElsewhere: false,
       ...overrides,
     };
   }
@@ -183,6 +184,8 @@ describe("worktree cleanup selection", () => {
     expect(isWorktreeSafeToDelete(makeRow({ archiveUnknown: true }))).toBe(false);
     // A lock usually means an agent is still working there.
     expect(isWorktreeSafeToDelete(makeRow({ lockReason: "" }))).toBe(false);
+    // A folder Threadlines did not make is the user's to pick, however clean.
+    expect(isWorktreeSafeToDelete(makeRow({ madeElsewhere: true }))).toBe(false);
   });
 
   // Squash merges ship a branch under new commits, and a folder that is

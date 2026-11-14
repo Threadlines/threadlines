@@ -4271,16 +4271,35 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       .pipe(Effect.catch(() => Effect.succeed(path.resolve(candidate))));
 
   /**
-   * Uncommitted changes in one checkout, or null when git could not read it (a
-   * timeout, a broken checkout). Unknown stays unknown: the cleanup dialog
-   * force-deletes whatever this reports as clean.
+   * How many paths have uncommitted changes in one checkout, or null when git
+   * could not read it (a timeout, a broken checkout). Unknown stays unknown:
+   * the cleanup dialog force-deletes whatever this reports as clean.
    */
-  const readWorktreeDirty = (cwd: string): Effect.Effect<boolean | null> =>
+  const readWorktreeChangedFileCount = (cwd: string): Effect.Effect<number | null> =>
     executeGit("GitVcsDriver.listWorktreeStatuses.status", cwd, ["status", "--porcelain"], {
       timeoutMs: 10_000,
       allowNonZeroExit: true,
     }).pipe(
-      Effect.map((result) => (result.exitCode === 0 ? result.stdout.trim().length > 0 : null)),
+      Effect.map((result) =>
+        result.exitCode === 0
+          ? result.stdout.split("\n").filter((line) => line.trim().length > 0).length
+          : null,
+      ),
+      Effect.catch(() => Effect.succeed(null)),
+    );
+
+  /** When the commit a checkout is on was made, or null (no commit yet, unreadable). */
+  const readWorktreeLastCommitAt = (cwd: string): Effect.Effect<string | null> =>
+    executeGit(
+      "GitVcsDriver.listWorktreeStatuses.lastCommit",
+      cwd,
+      ["log", "-1", "--format=%cI", "HEAD"],
+      { timeoutMs: 5_000, allowNonZeroExit: true },
+    ).pipe(
+      Effect.map((result) => {
+        const at = result.exitCode === 0 ? result.stdout.trim() : "";
+        return at.length > 0 ? at : null;
+      }),
       Effect.catch(() => Effect.succeed(null)),
     );
 
@@ -4631,14 +4650,26 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     }
     const mainWorktreePath = yield* resolveMainWorktreePath(input.cwd);
     const mainRealPath = mainWorktreePath === null ? null : yield* realPathOrSelf(mainWorktreePath);
+    const managedRoot = yield* realPathOrSelf(worktreesDir);
     const freshenedBaseRefs = new Map<string, string>();
 
     const worktrees = yield* Effect.forEach(
       registrations,
       (registration) =>
         Effect.gen(function* () {
-          const isRoot =
-            mainRealPath !== null && (yield* realPathOrSelf(registration.path)) === mainRealPath;
+          const realPath = yield* realPathOrSelf(registration.path);
+          const isRoot = mainRealPath !== null && realPath === mainRealPath;
+          // One Threadlines made for a thread: it lives in its own folder.
+          const relativeToManaged = path.relative(managedRoot, realPath);
+          const managed =
+            relativeToManaged.length > 0 &&
+            !relativeToManaged.startsWith("..") &&
+            !path.isAbsolute(relativeToManaged);
+          // Only what a user could pick up: its statuses are the costly part,
+          // and a repository can hold hundreds Threadlines made itself.
+          if (input.scope === "elsewhere" && (isRoot || managed)) {
+            return null;
+          }
           const exists = yield* fileSystem
             .exists(registration.path)
             .pipe(Effect.catch(() => Effect.succeed(true)));
@@ -4654,11 +4685,37 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
               mergedByContent: false,
               missing: true,
               lockReason: registration.lockReason,
+              managed,
+              changedFileCount: null,
+              lastCommitAt: null,
+            } satisfies VcsWorktreeStatus;
+          }
+          if (input.statuses === false) {
+            // Named, not read: what is in it is for whoever asks next.
+            return {
+              path: registration.path,
+              refName: registration.branch,
+              isRoot,
+              dirty: true,
+              dirtyUnknown: true,
+              unmergedCommitCount: null,
+              unrelatedHistory: false,
+              mergedByContent: false,
+              missing: false,
+              lockReason: registration.lockReason,
+              managed,
+              changedFileCount: null,
+              lastCommitAt: null,
             } satisfies VcsWorktreeStatus;
           }
           // A registration git would prune has lost its `.git` link, so
           // `git status` there would read whatever repository encloses it.
-          const dirty = registration.prunable ? null : yield* readWorktreeDirty(registration.path);
+          const changedFileCount = registration.prunable
+            ? null
+            : yield* readWorktreeChangedFileCount(registration.path);
+          const lastCommitAt = registration.prunable
+            ? null
+            : yield* readWorktreeLastCommitAt(registration.path);
           // Branches are shared by every checkout, so the repository answers
           // for all of them, including a half-deleted one.
           const shipping = yield* readBranchShipping(
@@ -4670,18 +4727,21 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
             path: registration.path,
             refName: registration.branch,
             isRoot,
-            dirty: dirty !== false,
-            dirtyUnknown: dirty === null,
+            dirty: changedFileCount !== 0,
+            dirtyUnknown: changedFileCount === null,
             unmergedCommitCount: shipping.count,
             unrelatedHistory: shipping.unrelatedHistory,
             mergedByContent: shipping.mergedByContent,
             missing: false,
             lockReason: registration.lockReason,
+            managed,
+            changedFileCount,
+            lastCommitAt,
           } satisfies VcsWorktreeStatus;
         }),
       { concurrency: WORKTREE_STATUS_CONCURRENCY },
     );
-    return { worktrees };
+    return { worktrees: worktrees.filter((worktree) => worktree !== null) };
   });
 
   const readListRefsRepositoryContext = Effect.fn("readListRefsRepositoryContext")(function* (

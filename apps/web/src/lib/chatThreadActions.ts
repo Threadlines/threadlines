@@ -1,5 +1,10 @@
 import { scopeProjectRef } from "@threadlines/client-runtime";
-import type { EnvironmentId, ProjectId, ScopedProjectRef } from "@threadlines/contracts";
+import type {
+  EnvironmentId,
+  ProjectId,
+  ScopedProjectRef,
+  ThreadWorktreeOrigin,
+} from "@threadlines/contracts";
 import type { DraftThreadEnvMode } from "../composerDraftStore";
 
 interface ThreadContextLike {
@@ -7,10 +12,14 @@ interface ThreadContextLike {
   projectId: ProjectId;
   branch: string | null;
   worktreePath: string | null;
+  /** A saved thread's: set while it is a guest in its worktree. */
+  worktreeOrigin?: ThreadWorktreeOrigin | null | undefined;
 }
 
 interface DraftThreadContextLike extends ThreadContextLike {
   envMode: DraftThreadEnvMode;
+  /** See `DraftThreadState.existingWorktree`. */
+  existingWorktree?: true;
 }
 
 interface NewThreadHandler {
@@ -37,6 +46,8 @@ export interface NewThreadPlacement {
   readonly branch: string | null;
   readonly worktreePath: string | null;
   readonly envMode: DraftThreadEnvMode;
+  /** The worktree is not one Threadlines made for it (`DraftThreadState.existingWorktree`). */
+  readonly existingWorktree?: true;
 }
 
 /**
@@ -50,8 +61,10 @@ export interface NewThreadPlacement {
  * `continueActiveCheckout` is off or that checkout is known to be gone (one
  * deleted worktree must not spread to every thread started from it). A draft
  * has a checkout to continue only once it points at a worktree: "New
- * worktree" picked on one draft is for that thread, not the next. The result
- * is always whole, so a reused draft never keeps where it was last pointed.
+ * worktree" picked on one draft is for that thread, not the next. A thread
+ * that is a guest in its worktree hands that on: the one continuing there is
+ * a guest too. The result is always whole, so a reused draft never keeps
+ * where it was last pointed.
  */
 export function resolveNewThreadPlacement(input: {
   readonly projectRef: ScopedProjectRef;
@@ -85,6 +98,7 @@ export function resolveNewThreadPlacement(input: {
       branch: input.activeDraftThread.branch,
       worktreePath: input.activeDraftThread.worktreePath,
       envMode: input.activeDraftThread.envMode,
+      ...(input.activeDraftThread.existingWorktree === true ? { existingWorktree: true } : {}),
     };
   }
   if (canContinue(input.activeThread)) {
@@ -92,6 +106,10 @@ export function resolveNewThreadPlacement(input: {
       branch: input.activeThread.branch,
       worktreePath: input.activeThread.worktreePath,
       envMode: input.activeThread.worktreePath ? "worktree" : "local",
+      ...(input.activeThread.worktreePath !== null &&
+      (input.activeThread.worktreeOrigin ?? null) !== null
+        ? { existingWorktree: true }
+        : {}),
     };
   }
   return projectRoot;

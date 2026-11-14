@@ -1322,7 +1322,7 @@ function sidebarThreadSummariesEqual(
     (left.pendingScheduleApproval ?? false) === (right.pendingScheduleApproval ?? false) &&
     (left.queuedFollowUpCount ?? 0) === (right.queuedFollowUpCount ?? 0) &&
     scheduledRunsEqual(left.scheduledRun, right.scheduledRun) &&
-    (left.worktreeOrigin?.threadId ?? null) === (right.worktreeOrigin?.threadId ?? null) &&
+    worktreeOriginsEqual(left.worktreeOrigin, right.worktreeOrigin) &&
     outsideOriginsEqual(left.outsideOrigin, right.outsideOrigin) &&
     remoteOriginsEqual(left.remoteOrigin, right.remoteOrigin) &&
     remoteChildrenEqual(left.remoteChildren, right.remoteChildren) &&
@@ -1330,6 +1330,18 @@ function sidebarThreadSummariesEqual(
     localChildStartsEqual(left.localChildStarts, right.localChildStarts) &&
     left.moveStatus === right.moveStatus
   );
+}
+
+function worktreeOriginsEqual(
+  left: ThreadWorktreeOrigin | null | undefined,
+  right: ThreadWorktreeOrigin | null | undefined,
+): boolean {
+  const a = left ?? null;
+  const b = right ?? null;
+  return a === null || b === null
+    ? a === b
+    : a.kind === b.kind &&
+        (a.kind === "thread" ? a.threadId : null) === (b.kind === "thread" ? b.threadId : null);
 }
 
 function scheduledRunsEqual(
@@ -1420,7 +1432,7 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     (left.pendingChildApproval ?? false) === (right.pendingChildApproval ?? false) &&
     (left.pendingSettingsChange ?? false) === (right.pendingSettingsChange ?? false) &&
     scheduledRunsEqual(left.scheduledRun, right.scheduledRun) &&
-    (left.worktreeOrigin?.threadId ?? null) === (right.worktreeOrigin?.threadId ?? null) &&
+    worktreeOriginsEqual(left.worktreeOrigin, right.worktreeOrigin) &&
     outsideOriginsEqual(left.outsideOrigin, right.outsideOrigin) &&
     outsideWorkEqual(left.outsideWork, right.outsideWork) &&
     remoteOriginsEqual(left.remoteOrigin, right.remoteOrigin) &&

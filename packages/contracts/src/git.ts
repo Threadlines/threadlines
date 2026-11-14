@@ -157,6 +157,14 @@ export const VcsWorktreeStatus = Schema.Struct({
    * works in it.
    */
   lockReason: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  /** Inside Threadlines' own worktrees folder: one it made for a thread. */
+  managed: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /** How many paths `git status` lists as changed; null when it could not be read. */
+  changedFileCount: Schema.NullOr(NonNegativeInt).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  /** When the commit the checkout is on was made; null when it has none. */
+  lastCommitAt: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
 });
 export type VcsWorktreeStatus = typeof VcsWorktreeStatus.Type;
 const GitResolvedPullRequest = Schema.Struct({
@@ -414,6 +422,20 @@ export type VcsCreateWorktreeInput = typeof VcsCreateWorktreeInput.Type;
 
 export const VcsListWorktreesInput = Schema.Struct({
   cwd: TrimmedNonEmptyStringSchema,
+  /**
+   * `elsewhere`: only the checkouts Threadlines did not make (not the main
+   * one, and none in its own worktrees folder), the ones a user can pick up.
+   * Left out: every checkout. An older server ignores it and lists them all.
+   */
+  scope: Schema.optional(Schema.Literal("elsewhere")),
+  /**
+   * False lists the checkouts without reading what is in them: only `path`,
+   * `refName`, `isRoot`, `missing`, `lockReason` and `managed` are real, and
+   * the rest say "unknown" (`dirtyUnknown`, nulls). Reading a checkout costs
+   * a `git status` there, which adds up to seconds across a few dozen; a
+   * count or a menu needs none of it. An older server reads them anyway.
+   */
+  statuses: Schema.optional(Schema.Boolean),
 });
 export type VcsListWorktreesInput = typeof VcsListWorktreesInput.Type;
 

@@ -27,7 +27,8 @@ const ServerConfigLayer = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-git-vcs-driver-test-",
 });
 const TestLayer = GitVcsDriver.layer.pipe(
-  Layer.provide(ServerConfigLayer),
+  // Merged, not just provided: a test reads where Threadlines keeps its own worktrees.
+  Layer.provideMerge(ServerConfigLayer),
   Layer.provideMerge(NodeServices.layer),
 );
 
@@ -373,6 +374,67 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         );
         assert.isFalse(clean?.unrelatedHistory);
         assert.isFalse(messy?.unrelatedHistory);
+      }),
+    );
+
+    // Picking up worktrees a repository already had: only the ones made
+    // outside Threadlines are offered, each with what its row shows.
+    it.effect("lists the checkouts made elsewhere, apart from the ones Threadlines made", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const path = yield* Path.Path;
+        const { worktreesDir } = yield* ServerConfig;
+
+        const elsewherePath = path.join(yield* makeTmpDir(), "retry");
+        const managedPath = path.join(worktreesDir, "repo", "made-for-a-thread");
+        yield* git(cwd, ["worktree", "add", "-b", "fix/retry", elsewherePath]);
+        yield* git(cwd, ["worktree", "add", "-b", "threadlines/abc", managedPath]);
+        yield* writeTextFile(elsewherePath, "one.ts", "export const one = 1;\n");
+        yield* writeTextFile(elsewherePath, "two.ts", "export const two = 2;\n");
+
+        const all = (yield* driver.listWorktreeStatuses({ cwd })).worktrees;
+        assert.deepStrictEqual(
+          all.map((worktree) => [worktree.refName, worktree.managed]).toSorted(),
+          [
+            [all.find((worktree) => worktree.isRoot)?.refName ?? null, false],
+            ["fix/retry", false],
+            ["threadlines/abc", true],
+          ].toSorted(),
+        );
+
+        const { worktrees } = yield* driver.listWorktreeStatuses({ cwd, scope: "elsewhere" });
+        assert.deepStrictEqual(
+          worktrees.map((worktree) => worktree.refName),
+          ["fix/retry"],
+        );
+        assert.strictEqual(worktrees[0]?.changedFileCount, 2);
+        // The commit it is on is the repository's first one, made just now.
+        assert.isBelow(Math.abs(Date.parse(worktrees[0]?.lastCommitAt ?? "") - Date.now()), 60_000);
+
+        // Named without being read: what is in it stays unknown, never "clean".
+        const named = (yield* driver.listWorktreeStatuses({
+          cwd,
+          scope: "elsewhere",
+          statuses: false,
+        })).worktrees;
+        assert.deepStrictEqual(
+          named.map((worktree) => ({
+            refName: worktree.refName,
+            dirtyUnknown: worktree.dirtyUnknown,
+            changedFileCount: worktree.changedFileCount,
+            unmergedCommitCount: worktree.unmergedCommitCount,
+          })),
+          [
+            {
+              refName: "fix/retry",
+              dirtyUnknown: true,
+              changedFileCount: null,
+              unmergedCommitCount: null,
+            },
+          ],
+        );
       }),
     );
 

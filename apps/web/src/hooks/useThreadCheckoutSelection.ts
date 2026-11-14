@@ -37,7 +37,12 @@ export function useThreadCheckoutSelection(input: {
   const restoreThreadCheckout = useStore((store) => store.restoreThreadCheckout);
 
   return useCallback(
-    (branch: string | null, worktreePath: string | null): boolean => {
+    (
+      branch: string | null,
+      worktreePath: string | null,
+      /** The worktree was made outside Threadlines: the thread is a guest there. */
+      options?: { readonly existingWorktree?: boolean },
+    ): boolean => {
       if (!threadRef || !thread) {
         return false;
       }
@@ -67,6 +72,9 @@ export function useThreadCheckoutSelection(input: {
           threadId: threadRef.threadId,
           branch,
           worktreePath,
+          ...(options?.existingWorktree === true && worktreePath !== null
+            ? { existingWorktree: true }
+            : {}),
         })
         .then(
           () => {

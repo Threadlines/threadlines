@@ -148,6 +148,28 @@ describe("resolveNewThreadPlacement", () => {
     });
   });
 
+  // A thread that does not own its worktree hands that on, not ownership.
+  it("continues a guest's worktree as a guest", () => {
+    const place = {
+      branch: "feature/existing",
+      worktreePath: "/repo/.threadlines/worktrees/existing",
+      envMode: "worktree",
+      existingWorktree: true,
+    };
+    expect(
+      resolveNewThreadPlacement({
+        ...base,
+        activeThread: { ...worktreeThread, worktreeOrigin: { kind: "existing" } },
+      }),
+    ).toEqual(place);
+    expect(
+      resolveNewThreadPlacement({
+        ...base,
+        activeDraftThread: { ...worktreeThread, envMode: "worktree", existingWorktree: true },
+      }),
+    ).toEqual(place);
+  });
+
   it("starts at the project root when the active thread is somewhere else", () => {
     // Another project, and the same project id on another computer.
     for (const activeThread of [

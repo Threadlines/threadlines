@@ -1,3 +1,4 @@
+import type { VcsWorktreeStatus } from "@threadlines/contracts";
 import { FolderGit2Icon, FolderGitIcon, FolderIcon } from "lucide-react";
 import { memo, type ReactNode, useMemo } from "react";
 
@@ -20,6 +21,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "./ui/select";
+import { worktreePathLabel } from "../worktreePickup";
 
 interface BranchToolbarEnvModeSelectorProps {
   /** `sentence` sets the picker in running words: plain text, dotted underline. */
@@ -33,7 +35,18 @@ interface BranchToolbarEnvModeSelectorProps {
    */
   sharedWorktreeOwner?: string | null | undefined;
   onEnvModeChange: (mode: EnvMode) => void;
+  /**
+   * The repository's worktrees made outside Threadlines that no thread works
+   * in: the third choice, listed under its own heading.
+   */
+  existingWorktrees?: ReadonlyArray<VcsWorktreeStatus> | undefined;
+  /** The project's folder, which their paths are written from. */
+  projectCwd?: string | undefined;
+  onExistingWorktreeSelect?: ((worktree: VcsWorktreeStatus) => void) | undefined;
 }
+
+/** A menu value for an existing worktree, beside the two modes. */
+const EXISTING_WORKTREE_VALUE_PREFIX = "existing:";
 
 /** A workspace choice in the menu: its name, and one line on what picking it does. */
 function WorkspaceOption(props: { icon: ReactNode; label: string; description: string }) {
@@ -55,6 +68,9 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
   activeWorktreePath,
   sharedWorktreeOwner,
   onEnvModeChange,
+  existingWorktrees,
+  projectCwd,
+  onExistingWorktreeSelect,
 }: BranchToolbarEnvModeSelectorProps) {
   // The trigger shows the chosen item's label, so the sentence gets the
   // phrasing that reads mid-sentence and the chip keeps its title.
@@ -107,7 +123,17 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
     <Select
       modal={false}
       value={effectiveEnvMode}
-      onValueChange={(value) => onEnvModeChange(value as EnvMode)}
+      onValueChange={(value) => {
+        // An existing worktree is a place, not a mode: picking one points the
+        // thread there, and the menu then reads "Current worktree".
+        if (typeof value === "string" && value.startsWith(EXISTING_WORKTREE_VALUE_PREFIX)) {
+          const path = value.slice(EXISTING_WORKTREE_VALUE_PREFIX.length);
+          const worktree = existingWorktrees?.find((candidate) => candidate.path === path);
+          if (worktree) onExistingWorktreeSelect?.(worktree);
+          return;
+        }
+        onEnvModeChange(value as EnvMode);
+      }}
       items={envModeItems}
     >
       {presentation === "sentence" ? (
@@ -154,6 +180,26 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
             />
           </SelectItem>
         </SelectGroup>
+        {existingWorktrees !== undefined &&
+        existingWorktrees.length > 0 &&
+        onExistingWorktreeSelect !== undefined ? (
+          <SelectGroup>
+            <SelectGroupLabel>Existing worktree</SelectGroupLabel>
+            {existingWorktrees.map((worktree) => (
+              <SelectItem
+                className="items-start py-1.5"
+                key={worktree.path}
+                value={`${EXISTING_WORKTREE_VALUE_PREFIX}${worktree.path}`}
+              >
+                <WorkspaceOption
+                  description={worktreePathLabel(worktree.path, projectCwd ?? worktree.path)}
+                  icon={<FolderGitIcon className="size-3" />}
+                  label={worktree.refName ?? "Detached"}
+                />
+              </SelectItem>
+            ))}
+          </SelectGroup>
+        ) : null}
       </SelectPopup>
     </Select>
   );

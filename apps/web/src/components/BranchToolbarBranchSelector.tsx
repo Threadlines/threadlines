@@ -32,6 +32,7 @@ import { useStore } from "../store";
 import { createProjectSelectorByRef, createThreadSelectorByRef } from "../storeSelectors";
 import { useNewWorktreeBaseBranch } from "../hooks/useNewWorktreeBaseBranch";
 import { useThreadCheckoutSelection } from "../hooks/useThreadCheckoutSelection";
+import { useWorktreesMadeElsewhere } from "../hooks/useWorktreePickup";
 import {
   annotateMissingCheckoutLabel,
   deriveLocalBranchNameFromRemoteRef,
@@ -170,6 +171,13 @@ export function BranchToolbarBranchSelector({
       ? activeThreadBranchOverrideFromSetting === true
       : !serverThread && draftThread?.branchFromSetting === true;
   const activeProjectCwd = activeProject?.cwd ?? null;
+  // A branch can live in a worktree made outside Threadlines: a thread sent
+  // there by this picker is a guest in it, as one picked up from the
+  // new-thread screen is (docs/design/worktree-pickup.md).
+  const { isMadeElsewhere } = useWorktreesMadeElsewhere({
+    environmentId,
+    cwd: activeProject?.kind === "workspace" ? activeProjectCwd : null,
+  });
   const storedWorktreePath = serverThread?.worktreePath ?? draftThread?.worktreePath ?? null;
   const activeWorktreePath = resolveActiveWorktreePath(activeProjectCwd, storedWorktreePath);
   const branchCwd = activeProjectCwd
@@ -204,8 +212,14 @@ export function BranchToolbarBranchSelector({
       options?: { readonly fromSetting?: boolean },
     ) => {
       if (!activeThreadId || !activeProject) return;
+      // Left unsaid when it is not one: a thread already a guest where it
+      // stays keeps that.
+      const guest =
+        worktreePath !== null && isMadeElsewhere(worktreePath)
+          ? ({ existingWorktree: true } as const)
+          : undefined;
       if (hasServerThread) {
-        selectServerThreadCheckout(branch, worktreePath);
+        selectServerThreadCheckout(branch, worktreePath, guest);
         return;
       }
       const nextDraftEnvMode = resolveDraftEnvModeAfterBranchChange({
@@ -217,6 +231,7 @@ export function BranchToolbarBranchSelector({
         branch,
         branchFromSetting: options?.fromSetting === true,
         worktreePath,
+        ...guest,
         envMode: nextDraftEnvMode,
         projectRef: scopeProjectRef(environmentId, activeProject.id),
       });
@@ -226,6 +241,7 @@ export function BranchToolbarBranchSelector({
       activeProject,
       activeWorktreePath,
       hasServerThread,
+      isMadeElsewhere,
       selectServerThreadCheckout,
       setDraftThreadContext,
       draftId,

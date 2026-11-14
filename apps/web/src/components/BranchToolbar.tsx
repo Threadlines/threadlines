@@ -1,5 +1,6 @@
 import { scopeProjectRef, scopeThreadRef } from "@threadlines/client-runtime";
-import type { EnvironmentId, ThreadId } from "@threadlines/contracts";
+import type { EnvironmentId, ThreadId, VcsWorktreeStatus } from "@threadlines/contracts";
+import { areFilesystemPathsEqual } from "@threadlines/shared/path";
 import {
   ChevronDownIcon,
   CloudIcon,
@@ -9,13 +10,17 @@ import {
   FolderSyncIcon,
   MonitorIcon,
 } from "lucide-react";
-import { memo, useMemo } from "react";
+import { memo, useCallback, useMemo } from "react";
 
+import { useThreadCheckoutSelection } from "../hooks/useThreadCheckoutSelection";
 import { useThreadTitle } from "../hooks/useThreadTitle";
+import { useWorktreePickup } from "../hooks/useWorktreePickup";
+import { lendingThreadId } from "../worktreeOrigin";
 import { useComposerDraftStore, type DraftId } from "../composerDraftStore";
 import { useIsMobile } from "../hooks/useMediaQuery";
 import { useStore } from "../store";
 import { createProjectSelectorByRef, createThreadSelectorByRef } from "../storeSelectors";
+import { worktreePathLabel } from "../worktreePickup";
 import {
   type EnvMode,
   type EnvironmentOption,
@@ -89,6 +94,10 @@ interface MobileRunContextSelectorProps {
   /** See BranchToolbarEnvModeSelector's `sharedWorktreeOwner`. */
   sharedWorktreeOwner: string | null | undefined;
   onEnvModeChange: (mode: EnvMode) => void;
+  /** See BranchToolbarEnvModeSelector's `existingWorktrees`. */
+  existingWorktrees: ReadonlyArray<VcsWorktreeStatus>;
+  projectCwd: string;
+  onExistingWorktreeSelect: (worktree: VcsWorktreeStatus) => void;
 }
 
 const MobileRunContextSelector = memo(function MobileRunContextSelector({
@@ -103,6 +112,9 @@ const MobileRunContextSelector = memo(function MobileRunContextSelector({
   activeWorktreePath,
   sharedWorktreeOwner,
   onEnvModeChange,
+  existingWorktrees,
+  projectCwd,
+  onExistingWorktreeSelect,
 }: MobileRunContextSelectorProps) {
   const activeEnvironment = useMemo(
     () => availableEnvironments?.find((env) => env.environmentId === environmentId) ?? null,
@@ -220,6 +232,27 @@ const MobileRunContextSelector = memo(function MobileRunContextSelector({
             </MenuRadioItem>
           </MenuRadioGroup>
         </MenuGroup>
+        {!envModeLocked && existingWorktrees.length > 0 ? (
+          <>
+            <MenuSeparator />
+            <MenuGroup>
+              <MenuGroupLabel>Existing worktree</MenuGroupLabel>
+              {existingWorktrees.map((worktree) => (
+                <MenuItem key={worktree.path} onClick={() => onExistingWorktreeSelect(worktree)}>
+                  <span className="flex min-w-0 flex-col gap-0.5">
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      <FolderGitIcon className="size-3 shrink-0" />
+                      <span className="min-w-0 truncate">{worktree.refName ?? "Detached"}</span>
+                    </span>
+                    <span className="min-w-0 truncate ps-[1.125rem] text-xs text-muted-foreground">
+                      {worktreePathLabel(worktree.path, projectCwd)}
+                    </span>
+                  </span>
+                </MenuItem>
+              ))}
+            </MenuGroup>
+          </>
+        ) : null}
       </MenuPopup>
     </Menu>
   );
@@ -276,7 +309,7 @@ export const BranchToolbar = memo(function BranchToolbar({
   // session works there: the label says it is shared, and whose it is.
   const worktreeLenderId =
     serverThread?.effectiveCwd == null && activeWorktreePath !== null
-      ? (serverThread?.worktreeOrigin?.threadId ?? null)
+      ? lendingThreadId(serverThread?.worktreeOrigin)
       : null;
   const worktreeLenderTitle = useThreadTitle(environmentId, worktreeLenderId);
   const sharedWorktreeOwner = worktreeLenderId === null ? undefined : worktreeLenderTitle;
@@ -297,6 +330,53 @@ export const BranchToolbar = memo(function BranchToolbar({
       draftThreadEnvMode: draftThread?.envMode,
     });
   const envModeLocked = envLocked || (serverThread !== undefined && activeWorktreePath !== null);
+
+  // The repository's worktrees made outside Threadlines, while the workspace
+  // can still be chosen (docs/design/worktree-pickup.md). A draft is pointed
+  // at the one picked; a saved thread that has not started moves into it.
+  const setDraftThreadContext = useComposerDraftStore((store) => store.setDraftThreadContext);
+  const { candidates: pickupCandidates } = useWorktreePickup({
+    projectRef: activeProject?.kind === "workspace" ? activeProjectRef : null,
+    projectCwd: activeProject?.cwd ?? null,
+    enabled: hasActiveThread && !envModeLocked,
+  });
+  // The one the thread is pointed at already is "Current worktree" above them.
+  const existingWorktrees = useMemo(
+    () =>
+      activeWorktreePath === null
+        ? pickupCandidates
+        : pickupCandidates.filter(
+            (worktree) => !areFilesystemPathsEqual(worktree.path, activeWorktreePath),
+          ),
+    [activeWorktreePath, pickupCandidates],
+  );
+  const selectServerThreadCheckout = useThreadCheckoutSelection({
+    threadRef: serverThread ? threadRef : null,
+    thread: serverThread ?? null,
+  });
+  const onExistingWorktreeSelect = useCallback(
+    (worktree: VcsWorktreeStatus) => {
+      if (serverThread !== undefined) {
+        selectServerThreadCheckout(worktree.refName, worktree.path, { existingWorktree: true });
+      } else {
+        setDraftThreadContext(draftId ?? threadRef, {
+          branch: worktree.refName,
+          worktreePath: worktree.path,
+          existingWorktree: true,
+          envMode: "worktree",
+        });
+      }
+      onComposerFocusRequest?.();
+    },
+    [
+      draftId,
+      onComposerFocusRequest,
+      selectServerThreadCheckout,
+      serverThread,
+      setDraftThreadContext,
+      threadRef,
+    ],
+  );
 
   // Two computers to pick from, or one and a way to add another.
   const showEnvironmentPicker = Boolean(
@@ -357,6 +437,9 @@ export const BranchToolbar = memo(function BranchToolbar({
           effectiveEnvMode={effectiveEnvMode}
           activeWorktreePath={displayWorktreePath}
           onEnvModeChange={onEnvModeChange}
+          existingWorktrees={existingWorktrees}
+          projectCwd={activeProject.cwd}
+          onExistingWorktreeSelect={onExistingWorktreeSelect}
         />{" "}
         {sentence.branchPreposition}{" "}
         <BranchToolbarBranchSelector
@@ -394,6 +477,9 @@ export const BranchToolbar = memo(function BranchToolbar({
           activeWorktreePath={displayWorktreePath}
           sharedWorktreeOwner={sharedWorktreeOwner}
           onEnvModeChange={onEnvModeChange}
+          existingWorktrees={existingWorktrees}
+          projectCwd={activeProject.cwd}
+          onExistingWorktreeSelect={onExistingWorktreeSelect}
         />
       ) : (
         <div className="flex min-w-0 shrink-0 items-center gap-1">
@@ -415,6 +501,9 @@ export const BranchToolbar = memo(function BranchToolbar({
             activeWorktreePath={displayWorktreePath}
             sharedWorktreeOwner={sharedWorktreeOwner}
             onEnvModeChange={onEnvModeChange}
+            existingWorktrees={existingWorktrees}
+            projectCwd={activeProject.cwd}
+            onExistingWorktreeSelect={onExistingWorktreeSelect}
           />
         </div>
       )}

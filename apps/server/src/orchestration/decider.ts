@@ -1099,16 +1099,20 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: "A thread an outside agent starts has no other origin.",
         });
       }
-      // Another thread's worktree is lent only to a thread an agent started
-      // here (ThreadWorktreeOrigin), and only as a worktree.
+      // A worktree the thread does not own (ThreadWorktreeOrigin) is a
+      // worktree, never the project folder; another thread's is lent only to
+      // a thread an agent started here.
       const createdWorktreePath = normalizeWorktreePath(
         command.worktreePath,
         project.workspaceRoot,
       );
-      if (
-        command.worktreeOrigin !== undefined &&
-        (parentThreadId === undefined || createdWorktreePath === null)
-      ) {
+      if (command.worktreeOrigin !== undefined && createdWorktreePath === null) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "A thread is a guest only in a worktree, never in the project folder.",
+        });
+      }
+      if (command.worktreeOrigin?.kind === "thread" && parentThreadId === undefined) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: "Only a thread another thread started can work in that thread's worktree.",
@@ -2703,10 +2707,17 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         projectId: thread.projectId,
       });
       const occurredAt = yield* nowIso;
+      const selectedWorktreePath = normalizeWorktreePath(
+        command.worktreePath,
+        project.workspaceRoot,
+      );
       return checkoutSelectedEvents({
         thread,
         branch: command.branch,
-        worktreePath: normalizeWorktreePath(command.worktreePath, project.workspaceRoot),
+        worktreePath: selectedWorktreePath,
+        ...(command.existingWorktree === true && selectedWorktreePath !== null
+          ? { worktreeOrigin: { kind: "existing" as const } }
+          : {}),
         occurredAt,
         base: () =>
           withEventBase({

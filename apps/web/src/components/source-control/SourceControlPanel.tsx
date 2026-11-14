@@ -106,6 +106,7 @@ import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { useSettings } from "~/hooks/useSettings";
 import { useCheckoutRecovery } from "~/hooks/useCheckoutRecovery";
 import { useThreadCheckoutSelection } from "~/hooks/useThreadCheckoutSelection";
+import { useWorktreesMadeElsewhere } from "~/hooks/useWorktreePickup";
 import { readLocalApi } from "~/localApi";
 import { useComposerDraftStore } from "~/composerDraftStore";
 import {
@@ -235,7 +236,12 @@ interface SourceControlPanelProps {
   readonly target: SourceControlProjectTarget | null;
   readonly activeThreadRef: ScopedThreadRef | null;
   readonly onActiveBranchChange?:
-    | ((branch: string | null, worktreePath: string | null) => void)
+    | ((
+        branch: string | null,
+        worktreePath: string | null,
+        /** The worktree was made outside Threadlines (`DraftThreadState.existingWorktree`). */
+        guest?: { readonly existingWorktree: true },
+      ) => void)
     | undefined;
   readonly onOpenDiff?: (filePath?: string) => void;
   /**
@@ -1413,7 +1419,12 @@ function SourceControlBranchMenu({
   readonly target: SourceControlProjectTarget;
   readonly activeThreadRef: ScopedThreadRef | null;
   readonly onActiveBranchChange?:
-    | ((branch: string | null, worktreePath: string | null) => void)
+    | ((
+        branch: string | null,
+        worktreePath: string | null,
+        /** The worktree was made outside Threadlines (`DraftThreadState.existingWorktree`). */
+        guest?: { readonly existingWorktree: true },
+      ) => void)
     | undefined;
   readonly status: VcsStatusResult | null | undefined;
   readonly isBusy: boolean;
@@ -1502,18 +1513,39 @@ function SourceControlBranchMenu({
     repositorySafetyReason,
   });
 
+  // A thread this panel sends into a worktree made outside Threadlines is a
+  // guest there (docs/design/worktree-pickup.md).
+  const { isMadeElsewhere } = useWorktreesMadeElsewhere({
+    environmentId: target.environmentId,
+    cwd: target.projectCwd,
+  });
   const syncActiveThreadBranch = useCallback(
     (branch: string | null, worktreePath: string | null = target.worktreePath) => {
+      // Left unsaid when it is not one: a guest that stays where it is keeps that.
+      const guest =
+        worktreePath !== null && isMadeElsewhere(worktreePath)
+          ? ({ existingWorktree: true } as const)
+          : undefined;
       if (onActiveBranchChange) {
-        onActiveBranchChange(branch, worktreePath);
+        if (guest) {
+          onActiveBranchChange(branch, worktreePath, guest);
+        } else {
+          onActiveBranchChange(branch, worktreePath);
+        }
         return;
       }
       if (!activeThreadRef) {
         return;
       }
-      selectServerThreadCheckout(branch, worktreePath);
+      selectServerThreadCheckout(branch, worktreePath, guest);
     },
-    [activeThreadRef, onActiveBranchChange, selectServerThreadCheckout, target.worktreePath],
+    [
+      activeThreadRef,
+      isMadeElsewhere,
+      onActiveBranchChange,
+      selectServerThreadCheckout,
+      target.worktreePath,
+    ],
   );
 
   /**

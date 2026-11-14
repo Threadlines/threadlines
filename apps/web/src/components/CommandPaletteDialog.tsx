@@ -39,6 +39,7 @@ import {
   EraserIcon,
   FileTextIcon,
   FolderIcon,
+  FolderGitIcon,
   FolderPlusIcon,
   GitPullRequestIcon,
   HomeIcon,
@@ -100,10 +101,12 @@ import { holdThreadDetailForOpen, prewarmHighlightedThread } from "../environmen
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { useInboxThreads } from "../hooks/useInboxThreads";
 import { useThreadMenu } from "../hooks/useThreadMenu";
+import { useWorktreePickup } from "../hooks/useWorktreePickup";
 import type { ThreadMenuAction } from "./threadMenu.logic";
 import { useIsMobile } from "../hooks/useMediaQuery";
 import { useSettings } from "../hooks/useSettings";
 import { selectSidebarListShown, useUiStateStore } from "../uiStateStore";
+import { useWorktreePickupStore } from "../worktreePickup";
 import { useRoomsEnabled } from "../hooks/useRoomsEnabled";
 import { readLocalApi } from "../localApi";
 import { closeRightPanelSearchParams } from "../diffRouteSearch";
@@ -756,6 +759,19 @@ export function OpenCommandPaletteDialog() {
         ) ?? null)
       : null;
   const currentProjectCwd = currentProject?.cwd ?? null;
+  // The project's worktrees made outside Threadlines, asked for while the
+  // palette is open: the action below shows only when there is one to add.
+  const currentProjectRef = useMemo(
+    () =>
+      currentProject?.kind === "workspace"
+        ? scopeProjectRef(currentProject.environmentId, currentProject.id)
+        : null,
+    [currentProject?.environmentId, currentProject?.id, currentProject?.kind],
+  );
+  const worktreePickup = useWorktreePickup({
+    projectRef: currentProjectRef,
+    projectCwd: currentProjectRef === null ? null : currentProjectCwd,
+  });
   const currentEnvironmentProviders = useMemo(
     () =>
       currentProjectEnvironmentId && currentProjectEnvironmentId === primaryEnvironmentId
@@ -1660,6 +1676,24 @@ export function OpenCommandPaletteDialog() {
           },
         });
       }
+
+      if (currentProjectRef !== null && worktreePickup.candidates.length > 0) {
+        const projectRef = currentProjectRef;
+        actionItems.push({
+          kind: "action",
+          value: "action:pick-up-worktrees",
+          searchTerms: ["worktree", "existing", "pick up", "import", "branch", "add threads"],
+          title: "Add existing worktrees as threads…",
+          description: "Worktrees this repository already has, made outside Threadlines",
+          icon: <FolderGitIcon className={ITEM_ICON_CLASS} />,
+          // Lays the list out on the new-thread screen, where each worktree
+          // can be ticked; it also brings a hidden count back.
+          run: async () => {
+            useWorktreePickupStore.getState().offer(scopedProjectKey(projectRef));
+            await handleNewThread(projectRef, { continueActiveCheckout: false });
+          },
+        });
+      }
     }
 
     actionItems.push({
@@ -2292,6 +2326,9 @@ export function OpenCommandPaletteDialog() {
           createdAt: new Date().toISOString(),
         });
         const createdProjectRef = scopeProjectRef(browseEnvironmentId, projectId);
+        // A repository added with worktrees already in it lays them out for
+        // picking on the screen that opens next (worktree pickup).
+        useWorktreePickupStore.getState().offer(scopedProjectKey(createdProjectRef));
         // Let the created project reach the store first so the draft is keyed
         // to the project's real identity. If it does not arrive in time the
         // draft is adopted (re-keyed) on the next new-thread call instead.

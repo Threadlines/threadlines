@@ -132,10 +132,13 @@ vi.mock("~/environments/runtime", () => {
       environmentRuntimeMock.connectionListeners.add(listener);
       return () => environmentRuntimeMock.connectionListeners.delete(listener);
     }),
+    // No saved computers: both stores are empty, in their real shape.
     useSavedEnvironmentRegistryStore: vi.fn((selector: (state: unknown) => unknown) =>
-      selector({}),
+      selector({ byId: {} }),
     ),
-    useSavedEnvironmentRuntimeStore: vi.fn((selector: (state: unknown) => unknown) => selector({})),
+    useSavedEnvironmentRuntimeStore: vi.fn((selector: (state: unknown) => unknown) =>
+      selector({ byId: {} }),
+    ),
     waitForSavedEnvironmentRegistryHydration: vi.fn(async () => undefined),
   };
 });
@@ -357,6 +360,9 @@ function makeWorktreeStatus(
     mergedByContent: false,
     missing: false,
     lockReason: null,
+    managed: false,
+    changedFileCount: 0,
+    lastCommitAt: null,
     ...overrides,
   };
 }

@@ -63,6 +63,19 @@ export const gitQueryKeys = {
     ["git", "stashes", environmentId ?? null, cwd] as const,
   worktrees: (environmentId: EnvironmentId | null, cwd: string | null) =>
     ["git", "worktrees", environmentId ?? null, cwd] as const,
+  worktreesMadeElsewhere: (
+    environmentId: EnvironmentId | null,
+    cwd: string | null,
+    statuses: boolean,
+  ) =>
+    [
+      "git",
+      "worktrees",
+      environmentId ?? null,
+      cwd,
+      "elsewhere",
+      statuses ? "statuses" : "names",
+    ] as const,
 };
 
 export const gitMutationKeys = {
@@ -1004,6 +1017,39 @@ export function vcsListWorktreesQueryOptions(input: {
     },
     enabled: input.environmentId !== null && input.cwd !== null && (input.enabled ?? true),
     staleTime: 5_000,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  });
+}
+
+/**
+ * The repository's worktrees that Threadlines did not make, for picking up
+ * (docs/design/worktree-pickup.md). Without `statuses` they are only named,
+ * which is one git call: the new-thread screen asks that for every project
+ * it shows, and keeps the answer for minutes. With `statuses` each is read
+ * (what changed, how far ahead), which takes seconds on a repository with
+ * dozens: only a list that is laid out asks for it.
+ */
+export function vcsWorktreesMadeElsewhereQueryOptions(input: {
+  environmentId: EnvironmentId | null;
+  cwd: string | null;
+  statuses: boolean;
+  enabled?: boolean;
+}) {
+  return queryOptions({
+    queryKey: gitQueryKeys.worktreesMadeElsewhere(input.environmentId, input.cwd, input.statuses),
+    queryFn: async () => {
+      if (!input.cwd || !input.environmentId) {
+        throw new Error("Worktrees are unavailable.");
+      }
+      return ensureEnvironmentApi(input.environmentId).vcs.listWorktrees({
+        cwd: input.cwd,
+        scope: "elsewhere",
+        statuses: input.statuses,
+      });
+    },
+    enabled: input.environmentId !== null && input.cwd !== null && (input.enabled ?? true),
+    staleTime: input.statuses ? 30_000 : 5 * 60_000,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
   });

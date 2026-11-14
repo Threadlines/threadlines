@@ -267,8 +267,12 @@ function DraftChatThreadRouteView() {
     openDiffOnThreadRoute(rightPanel.diffTarget ?? { diffMode: "workingTree" });
   }, [activeTab, openDiffOnThreadRoute, rightPanel.diffTarget]);
   const handleSourceControlBranchChange = useCallback(
-    (branch: string | null, worktreePath: string | null) => {
-      setDraftThreadContext(draftId, { branch, worktreePath });
+    (
+      branch: string | null,
+      worktreePath: string | null,
+      guest?: { readonly existingWorktree: true },
+    ) => {
+      setDraftThreadContext(draftId, { branch, worktreePath, ...guest });
     },
     [draftId, setDraftThreadContext],
   );

@@ -125,7 +125,9 @@ export function claimsServerLineage(fields: {
     fields.remoteOrigin !== undefined ||
     fields.scheduledRun !== undefined ||
     fields.outsideOrigin !== undefined ||
-    fields.worktreeOrigin !== undefined
+    // Picking up a worktree the repository already had is the user's to say.
+    (fields.worktreeOrigin !== undefined &&
+      (fields.worktreeOrigin as { readonly kind?: unknown } | null)?.kind !== "existing")
   );
 }
 

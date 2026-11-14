@@ -114,6 +114,7 @@ export const makeServerEnvironment = Effect.fn("makeServerEnvironment")(function
       deviceNames: true,
       draftGoalSetup: true,
       pullRequestSwitchesByNumber: true,
+      worktreePickup: true,
     },
   } satisfies Omit<ExecutionEnvironmentDescriptor, "label" | "systemLabel">;
 
