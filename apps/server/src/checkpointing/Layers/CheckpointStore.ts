@@ -69,6 +69,13 @@ const makeCheckpointStore = Effect.gen(function* () {
     return yield* checkpoints.resolveCheckpointCommit(input);
   });
 
+  const checkpointCheckouts: CheckpointStoreShape["checkpointCheckouts"] = Effect.fn(
+    "checkpointCheckouts",
+  )(function* (input) {
+    const checkpoints = yield* resolveCheckpoints("CheckpointStore.checkpointCheckouts", input.cwd);
+    return yield* checkpoints.checkpointCheckouts(input);
+  });
+
   const diffCheckpoints: CheckpointStoreShape["diffCheckpoints"] = Effect.fn("diffCheckpoints")(
     function* (input) {
       const checkpoints = yield* resolveCheckpoints("CheckpointStore.diffCheckpoints", input.cwd);
@@ -156,6 +163,7 @@ const makeCheckpointStore = Effect.gen(function* () {
     hasCheckpointRef,
     restoreCheckpoint,
     resolveCheckpointCommit,
+    checkpointCheckouts,
     diffCheckpoints,
     listHeadMovementPaths,
     diffCheckpointAgainstHead,

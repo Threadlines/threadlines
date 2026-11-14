@@ -1,3 +1,7 @@
+import * as NodeFs from "node:fs";
+import * as NodeOs from "node:os";
+import * as NodePath from "node:path";
+
 import { describe, expect, it } from "@effect/vitest";
 import {
   ChildRequestId,
@@ -489,6 +493,42 @@ describe("ThreadBootstrap.startChild", () => {
       });
       expect(start?.setupScriptClaim).toBeUndefined();
     }).pipe(Effect.provide(world.layer));
+  });
+
+  it.effect("finds a lent worktree that was recorded through a symlink", () => {
+    // git lists a worktree by its real path; the thread it belongs to may
+    // have recorded another spelling of it (macOS's /var for /private/var).
+    const base = NodeFs.realpathSync(NodeFs.mkdtempSync(NodePath.join(NodeOs.tmpdir(), "lent-")));
+    const realPath = NodePath.join(base, "coder");
+    const linkedPath = NodePath.join(base, "linked");
+    NodeFs.mkdirSync(realPath);
+    NodeFs.symlinkSync(realPath, linkedPath);
+    const world = makeWorld();
+    world.worktrees.push({ path: realPath, branch: "feature/retry" });
+    return Effect.gen(function* () {
+      yield* startChild(
+        input({
+          launch: launch({
+            workspace: { kind: "project_folder" },
+            runSetup: false,
+            checkout: {
+              threadId: "coder" as OrchestrationThread["id"],
+              title: "Build the retry",
+              worktreePath: linkedPath,
+              branch: "feature/retry",
+            },
+          }),
+        }),
+      );
+      // The thread keeps the spelling the checkout was lent under.
+      expect(world.starts()[0]?.create).toMatchObject({
+        branch: "feature/retry",
+        worktreePath: linkedPath,
+      });
+    }).pipe(
+      Effect.provide(world.layer),
+      Effect.ensuring(Effect.sync(() => NodeFs.rmSync(base, { recursive: true, force: true }))),
+    );
   });
 
   it.effect(

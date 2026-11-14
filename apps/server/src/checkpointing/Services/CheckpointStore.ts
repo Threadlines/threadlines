@@ -14,7 +14,11 @@ import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 
 import type { CheckpointStoreError } from "../Errors.ts";
-import type { VcsReadRevisionFileInput, VcsRevisionFile } from "../../vcs/VcsDriver.ts";
+import type {
+  VcsCheckpointCheckout,
+  VcsReadRevisionFileInput,
+  VcsRevisionFile,
+} from "../../vcs/VcsDriver.ts";
 import { CheckpointRef } from "@threadlines/contracts";
 
 export interface CaptureCheckpointInput {
@@ -52,6 +56,11 @@ export interface CheckpointRangeInput {
 export interface CheckpointRefInput {
   readonly cwd: string;
   readonly checkpointRef: CheckpointRef;
+}
+
+export interface CheckpointCheckoutsInput {
+  readonly cwd: string;
+  readonly checkpointRefs: ReadonlyArray<CheckpointRef>;
 }
 
 /** Line counts for one repository-root-relative path. */
@@ -182,6 +191,17 @@ export interface CheckpointStoreShape {
   readonly resolveCheckpointCommit: (
     input: ResolveCheckpointCommitInput,
   ) => Effect.Effect<string | null, CheckpointStoreError>;
+
+  /**
+   * Where each snapshot was taken, seen from the checkout `cwd` is in, one
+   * answer per ref in order: `here`, `elsewhere` (another checkout of the
+   * repository: a thread that moved since), or `unknown` (a snapshot from
+   * before they recorded it, or a ref that is gone). A revert never applies
+   * a snapshot from elsewhere to this checkout.
+   */
+  readonly checkpointCheckouts: (
+    input: CheckpointCheckoutsInput,
+  ) => Effect.Effect<ReadonlyArray<VcsCheckpointCheckout>, CheckpointStoreError>;
 
   /**
    * Compute patch diff between two checkpoint refs.

@@ -576,15 +576,33 @@ function parseDiffTreeEntries(stdout: string): RawCheckpointEntry[] {
 // snapshot was taken rides along as a trailer. Diffs use it to tell edits made
 // in the checkout apart from history that moved HEAD (a merge, a checkout).
 const CHECKPOINT_HEAD_TRAILER = "threadlines-head";
+// A repository's checkouts share its refs, so a snapshot says which one it
+// was taken in (checkoutId). A thread can move to another checkout between
+// turns, and a revert must never apply one checkout's snapshots to another
+// (checkpointCheckouts).
+const CHECKPOINT_CHECKOUT_TRAILER = "threadlines-checkout";
 
-function checkpointCommitMessage(checkpointRef: string, headCommit: string | null): string {
+function checkpointCommitMessage(
+  checkpointRef: string,
+  headCommit: string | null,
+  checkoutId: string | null,
+): string {
   const subject = `threadlines checkpoint ref=${checkpointRef}`;
-  return headCommit === null ? subject : `${subject}\n\n${CHECKPOINT_HEAD_TRAILER}: ${headCommit}`;
+  const trailers = [
+    ...(headCommit === null ? [] : [`${CHECKPOINT_HEAD_TRAILER}: ${headCommit}`]),
+    // A trailer is one line: a worktree whose name can't be one goes unrecorded.
+    ...(checkoutId === null || /[\r\n]/u.test(checkoutId)
+      ? []
+      : [`${CHECKPOINT_CHECKOUT_TRAILER}: ${checkoutId}`]),
+  ];
+  return trailers.length === 0 ? subject : `${subject}\n\n${trailers.join("\n")}`;
 }
 
 interface CheckpointCommitMetadata {
   /** HEAD when the snapshot was taken; null on an unborn branch or for older snapshots. */
   readonly head: string | null;
+  /** The checkout the snapshot was taken in (checkoutId); null for older snapshots. */
+  readonly checkout: string | null;
   /** Committer time of the snapshot commit, in epoch seconds. */
   readonly capturedAtSeconds: number | null;
 }
@@ -596,8 +614,10 @@ function parseCheckpointCommitMetadata(raw: string): CheckpointCommitMetadata {
   const body = separator === -1 ? "" : raw.slice(separator + 2);
   const committer = /^committer .* (\d+) [+-]\d{4}$/mu.exec(headers);
   const trailer = new RegExp(`^${CHECKPOINT_HEAD_TRAILER}: ([0-9a-f]{40,64})$`, "mu").exec(body);
+  const checkout = new RegExp(`^${CHECKPOINT_CHECKOUT_TRAILER}: (.+)$`, "mu").exec(body);
   return {
     head: trailer?.[1] ?? null,
+    checkout: checkout?.[1] ?? null,
     capturedAtSeconds: committer?.[1] === undefined ? null : Number(committer[1]),
   };
 }
@@ -927,6 +947,29 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
       }),
     );
 
+  // Which checkout of its repository `cwd` is in: `.` for the main one, else
+  // its worktree's place under the repository's git folder
+  // (`worktrees/<name>`). Unlike its path, that survives the folder being
+  // renamed or moved, and reads the same through a symlink. Null when git
+  // can't say (a folder that is gone, a git too old for `--path-format`):
+  // the snapshot then records nothing, as older ones do.
+  const resolveCheckoutId = (cwd: string) =>
+    execute({
+      operation: "GitVcsDriver.checkpoints.resolveCheckoutId",
+      cwd,
+      args: ["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"],
+      allowNonZeroExit: true,
+    }).pipe(
+      Effect.map((result) => {
+        const [gitDir, commonDir] = result.exitCode === 0 ? result.stdout.split(/\r?\n/u) : [];
+        if (!gitDir || !commonDir) {
+          return null;
+        }
+        const place = nodePath.relative(commonDir, gitDir).replaceAll("\\", "/");
+        return place.length === 0 ? "." : place;
+      }),
+    );
+
   const readCheckpointMetadata = (cwd: string, checkpointRef: string) =>
     execute({
       operation: "GitVcsDriver.checkpoints.readCheckpointMetadata",
@@ -1205,7 +1248,11 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
       };
       // Read by oid so the recorded head is exactly the commit the snapshot
       // was layered on, even if HEAD moves while the capture runs.
-      const headCommit = yield* resolveHeadCommit(input.cwd);
+      // Read together: a capture holds up the turn it is taken for.
+      const [headCommit, checkoutId] = yield* Effect.all(
+        [resolveHeadCommit(input.cwd), resolveCheckoutId(input.cwd)],
+        { concurrency: 2 },
+      );
 
       const commitOid = yield* scratchIndexes.withScratchIndex({
         cwd: input.cwd,
@@ -1239,7 +1286,7 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
               });
             }
 
-            const message = checkpointCommitMessage(input.checkpointRef, headCommit);
+            const message = checkpointCommitMessage(input.checkpointRef, headCommit, checkoutId);
             const commitTreeResult = yield* execute({
               operation,
               cwd: input.cwd,
@@ -1311,6 +1358,25 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
 
       return true;
     }),
+
+    checkpointCheckouts: Effect.fn("GitVcsDriver.checkpoints.checkpointCheckouts")(
+      function* (input) {
+        yield* ensureLegacyCheckpointRefsMigrated(input.cwd);
+        const here = yield* resolveCheckoutId(input.cwd);
+        return yield* Effect.forEach(
+          input.checkpointRefs,
+          (checkpointRef) =>
+            Effect.map(readCheckpointMetadata(input.cwd, checkpointRef), (metadata) =>
+              here === null || metadata === null || metadata.checkout === null
+                ? ("unknown" as const)
+                : metadata.checkout === here
+                  ? ("here" as const)
+                  : ("elsewhere" as const),
+            ),
+          { concurrency: 4 },
+        );
+      },
+    ),
 
     resolveCheckpointCommit: Effect.fn("GitVcsDriver.checkpoints.resolveCheckpointCommit")(
       function* (input) {
