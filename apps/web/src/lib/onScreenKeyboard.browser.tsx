@@ -24,4 +24,25 @@ describe("installOnScreenKeyboardFlag", () => {
     window.visualViewport?.dispatchEvent(new Event("resize"));
     expect(root.hasAttribute(ON_SCREEN_KEYBOARD_ATTRIBUTE)).toBe(false);
   });
+
+  it("does not take a page that is off screen for a moment for a keyboard", () => {
+    const root = document.documentElement;
+    uninstall = installOnScreenKeyboardFlag();
+
+    // A folding phone moving the page from one of its screens to the other:
+    // for a moment none of the page shows.
+    showOnScreenKeyboard({ height: window.visualViewport!.height, pageScrolledUpBy: 0 });
+    expect(root.hasAttribute(ON_SCREEN_KEYBOARD_ATTRIBUTE)).toBe(false);
+  });
+
+  it("looks again when the window resizes with no word from the visual viewport", () => {
+    const root = document.documentElement;
+    uninstall = installOnScreenKeyboardFlag();
+    const viewport = window.visualViewport!;
+
+    vi.spyOn(viewport, "height", "get").mockReturnValue(viewport.height - 260);
+    expect(root.hasAttribute(ON_SCREEN_KEYBOARD_ATTRIBUTE)).toBe(false);
+    window.dispatchEvent(new Event("resize"));
+    expect(root.hasAttribute(ON_SCREEN_KEYBOARD_ATTRIBUTE)).toBe(true);
+  });
 });

@@ -429,7 +429,7 @@ function ChatFindSession(props: ChatFindProps) {
   return (
     <div
       ref={barRef}
-      className="absolute top-2 right-[calc(--spacing(3)+var(--safe-area-right))] z-20 max-w-[calc(100%-1.5rem-var(--safe-area-right))]"
+      className="absolute top-2 right-3 z-20 mr-(--safe-area-right) max-w-[calc(100%-1.5rem-var(--safe-area-right))]"
     >
       <FindBar
         query={query}

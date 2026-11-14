@@ -62,6 +62,37 @@ describe("Dialog", () => {
     }
   });
 
+  it("keeps a phone's bottom sheet whole while the page reads as off screen for a moment", async () => {
+    await page.viewport(PHONE_VIEWPORT.width, PHONE_VIEWPORT.height);
+    const mounted = await render(
+      <Dialog open>
+        <DialogPopup>
+          <DialogHeader>
+            <DialogTitle>Connect to a computer</DialogTitle>
+          </DialogHeader>
+          <input aria-label="Code" className="m-6" />
+        </DialogPopup>
+      </Dialog>,
+    );
+
+    try {
+      await vi.waitFor(() => {
+        expect(popupRect()?.bottom).toBeCloseTo(window.innerHeight, 0);
+      });
+      const height = popupRect()!.height;
+
+      // A folding phone moving the page between its screens: none of it
+      // shows, and read as a keyboard that squeezed the sheet to nothing.
+      showOnScreenKeyboard({ height: window.visualViewport!.height, pageScrolledUpBy: 0 });
+      await nextFrames(5);
+
+      expect(popupRect()?.height).toBeCloseTo(height, 0);
+      expect(popupRect()?.bottom).toBeCloseTo(window.innerHeight, 0);
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
   it("keeps a tall sheet inside what's visible when Safari scrolls the page up for the keyboard", async () => {
     await page.viewport(PHONE_VIEWPORT.width, PHONE_VIEWPORT.height);
     const mounted = await render(
