@@ -21,7 +21,16 @@ const mergeProviderModels = (
   cachedModels: ReadonlyArray<ServerProvider["models"][number]>,
 ): ReadonlyArray<ServerProvider["models"][number]> => {
   const fallbackSlugs = new Set(fallbackModels.map((model) => model.slug));
-  return [...fallbackModels, ...cachedModels.filter((model) => !fallbackSlugs.has(model.slug))];
+  // The fallback names no default of its own (Codex's is just the user's
+  // custom models): a cached default with the same slug as one of them stays
+  // the default, or the list would come back with none until the first check.
+  const cachedDefault = fallbackModels.some((model) => model.isDefault === true)
+    ? undefined
+    : cachedModels.find((model) => model.isDefault === true && fallbackSlugs.has(model.slug));
+  return [
+    ...fallbackModels.map((model) => (model.slug === cachedDefault?.slug ? cachedDefault : model)),
+    ...cachedModels.filter((model) => !fallbackSlugs.has(model.slug)),
+  ];
 };
 
 export const orderProviderSnapshots = (

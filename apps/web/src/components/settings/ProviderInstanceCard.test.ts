@@ -47,6 +47,24 @@ describe("deriveProviderModelsForDisplay", () => {
       }).map((model) => model.slug),
     ).toEqual(["server-model", "kept-custom"]);
   });
+
+  // Codex on a gateway lists the model from its own config, which the user
+  // may have added by hand before: one row, the provider's.
+  it("shows a model the provider lists itself once, not again as a custom one", () => {
+    const liveModels: ReadonlyArray<ServerProviderModel> = [
+      { slug: "acme-coder-1", name: "acme-coder-1", isCustom: false, capabilities: null },
+    ];
+
+    expect(
+      deriveProviderModelsForDisplay({
+        liveModels,
+        customModels: ["acme-coder-1", "acme-coder-mini"],
+      }).map((model) => [model.slug, model.isCustom]),
+    ).toEqual([
+      ["acme-coder-1", false],
+      ["acme-coder-mini", true],
+    ]);
+  });
 });
 
 describe("Claude credential preference helpers", () => {

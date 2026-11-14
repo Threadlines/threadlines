@@ -211,15 +211,20 @@ export function deriveProviderModelsForDisplay(input: {
       .map((model) => [model.slug, model] as const),
   );
   const serverModels = input.liveModels?.filter((model) => !model.isCustom) ?? [];
-  const customModels = input.customModels.map(
-    (slug) =>
-      liveCustomModelsBySlug.get(slug) ?? {
-        slug,
-        name: slug,
-        isCustom: true,
-        capabilities: null,
-      },
-  );
+  // A model the provider now lists itself (Codex's own config model, say) is
+  // shown once, as the provider's: the user's entry of the same id is spent.
+  const serverSlugs = new Set(serverModels.map((model) => model.slug));
+  const customModels = input.customModels
+    .filter((slug) => !serverSlugs.has(slug))
+    .map(
+      (slug) =>
+        liveCustomModelsBySlug.get(slug) ?? {
+          slug,
+          name: slug,
+          isCustom: true,
+          capabilities: null,
+        },
+    );
   return [...serverModels, ...customModels];
 }
 

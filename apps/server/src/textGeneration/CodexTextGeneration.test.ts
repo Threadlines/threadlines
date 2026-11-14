@@ -20,6 +20,7 @@ import {
 import { ServerConfig } from "../config.ts";
 import { type TextGenerationShape } from "./TextGeneration.ts";
 import { makeCodexTextGeneration } from "./CodexTextGeneration.ts";
+import { codexModelProviderLaunch } from "../provider/codexModelProviderLaunch.ts";
 const decodeCodexSettings = Schema.decodeSync(CodexSettings);
 
 const DEFAULT_TEST_MODEL_SELECTION = createModelSelection(
@@ -56,6 +57,7 @@ function makeFakeCodexBinary(
     failForModelExitCode?: number;
     stdinMustContain?: string;
     stdinMustNotContain?: string;
+    recordInvocationTo?: string;
   },
 ) {
   return Effect.gen(function* () {
@@ -268,6 +270,15 @@ function makeFakeCodexBinary(
       codexPath,
       [
         "#!/bin/sh",
+        ...(input.recordInvocationTo !== undefined
+          ? [
+              // The arguments one per line, then the provider's secret variables.
+              // @effect-diagnostics-next-line preferSchemaOverJson:off
+              `printf "%s\n" "$@" > ${JSON.stringify(`${input.recordInvocationTo}.args`)}`,
+              // @effect-diagnostics-next-line preferSchemaOverJson:off
+              `env | grep "^THREADLINES_CODEX_PROVIDER_" > ${JSON.stringify(`${input.recordInvocationTo}.env`)}`,
+            ]
+          : []),
         'output_path=""',
         'seen_image="0"',
         'seen_fast_service_tier="0"',
@@ -471,15 +482,18 @@ function withFakeCodexEnv<A, E, R>(
     failForModelExitCode?: number;
     stdinMustContain?: string;
     stdinMustNotContain?: string;
+    /** POSIX only: writes the run's arguments and provider variables to `<path>.args` and `<path>.env`. */
+    recordInvocationTo?: string;
   },
   effectFn: (textGeneration: TextGenerationShape) => Effect.Effect<A, E, R>,
+  options?: Parameters<typeof makeCodexTextGeneration>[2],
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "threadlines-codex-text-" });
     const codexPath = yield* makeFakeCodexBinary(tempDir, input);
     const config = decodeCodexSettings({ binaryPath: codexPath });
-    const textGeneration = yield* makeCodexTextGeneration(config);
+    const textGeneration = yield* makeCodexTextGeneration(config, process.env, options);
     return yield* effectFn(textGeneration);
   }).pipe(Effect.scoped);
 }
@@ -673,6 +687,67 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
     ),
   );
 
+  // The built-in pick for titles is an OpenAI model, which a gateway may not
+  // serve. The model Codex's own config names is the one known to work there.
+  it.effect("falls back to the gateway's own model when the picked one is refused", () =>
+    withFakeCodexEnv(
+      {
+        output: JSON.stringify({ title: "Investigate reconnect regressions" }),
+        failForModel: DEFAULT_GIT_TEXT_GENERATION_MODEL,
+        failForModelStderr: "ERROR: unknown model",
+        requireModel: "acme-coder-1",
+      },
+      (textGeneration) =>
+        Effect.gen(function* () {
+          const generated = yield* textGeneration.generateThreadTitle({
+            cwd: process.cwd(),
+            message: "Please investigate websocket reconnect regressions.",
+            modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+          });
+
+          expect(generated.title).toBe("Investigate reconnect regressions");
+        }),
+      {
+        modelProviderLaunch: Effect.succeed(
+          codexModelProviderLaunch({ providerId: "acme", model: "acme-coder-1", environment: {} }),
+        ),
+      },
+    ),
+  );
+
+  // Another model would not help a failed sign-in: the failure is reported as
+  // it is. Codex prints the prompt above its error, and a line of the prompt
+  // that reads like a model error is not one.
+  it.effect("does not try the gateway's model for a failure that names no model", () =>
+    withFakeCodexEnv(
+      {
+        output: JSON.stringify({ title: "unused" }),
+        failForModel: DEFAULT_GIT_TEXT_GENERATION_MODEL,
+        failForModelStderr: "user\nERROR: model cache is corrupt\nERROR: 401 Unauthorized",
+      },
+      (textGeneration) =>
+        Effect.gen(function* () {
+          const result = yield* textGeneration
+            .generateThreadTitle({
+              cwd: process.cwd(),
+              message: "Please investigate websocket reconnect regressions.",
+              modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+            })
+            .pipe(Effect.result);
+
+          expect(Result.isFailure(result)).toBe(true);
+          if (Result.isFailure(result)) {
+            expect(result.failure.detail).toContain("401 Unauthorized");
+          }
+        }),
+      {
+        modelProviderLaunch: Effect.succeed(
+          codexModelProviderLaunch({ providerId: "acme", model: "acme-coder-1", environment: {} }),
+        ),
+      },
+    ),
+  );
+
   it.effect("generates commit message with branch when includeBranch is true", () =>
     withFakeCodexEnv(
       {
@@ -767,6 +842,52 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
           expect(generated.title).toBe("Investigate reconnect regressions");
         }),
     ),
+  );
+
+  // Titles and commit messages leave the user's Codex config out, and with it
+  // the gateway Codex runs on. The gateway alone is handed back, and a secret
+  // in its definition travels in the environment, never on the command line.
+  it.effect.skipIf(process.platform === "win32")(
+    "runs on the gateway Codex is configured for, with its secrets out of the arguments",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const recordDir = yield* fs.makeTempDirectoryScoped({ prefix: "threadlines-codex-args-" });
+        const record = path.join(recordDir, "run");
+        const launch = codexModelProviderLaunch({
+          providerId: "acme",
+          definition: {
+            name: "Acme Gateway",
+            base_url: "https://llm.acme.example/v1",
+            experimental_bearer_token: "sk-secret-token",
+            env_key: null,
+          },
+          environment: {},
+        });
+        yield* withFakeCodexEnv(
+          {
+            output: JSON.stringify({ title: "Investigate reconnect regressions" }),
+            requireIgnoreUserConfig: true,
+            recordInvocationTo: record,
+          },
+          (textGeneration) =>
+            textGeneration.generateThreadTitle({
+              cwd: process.cwd(),
+              message: "Please investigate websocket reconnect regressions.",
+              modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+            }),
+          { modelProviderLaunch: Effect.succeed(launch) },
+        );
+
+        const args = (yield* fs.readFileString(`${record}.args`)).split("\n");
+        expect(args).toContain('model_provider="acme"');
+        expect(args.some((arg) => arg.startsWith('model_providers={"acme" = {'))).toBe(true);
+        expect(args.join("\n")).not.toContain("sk-secret-token");
+        expect(yield* fs.readFileString(`${record}.env`)).toContain(
+          "THREADLINES_CODEX_PROVIDER_TOKEN=sk-secret-token",
+        );
+      }).pipe(Effect.scoped),
   );
 
   it.effect("retries without --ignore-user-config when the codex CLI rejects the flag", () =>

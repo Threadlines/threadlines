@@ -85,10 +85,23 @@ later.
 - A ChatGPT sign-in can sit beside a gateway. Its email, workspace and `Sign out` stay on the row.
 - With no account at all the row reads `No sign-in needed`: Codex is ready on the gateway alone.
   Threadlines can't check the gateway's key, so a wrong key shows up when a chat fails.
-- Codex lists OpenAI's models whatever the provider. If your gateway serves other models, add
-  their ids under the Codex row's `Models` as custom models.
-- Titles and commit messages written by Codex still go to OpenAI, not the gateway. Pick another
-  agent for them in `Settings` if Codex has no OpenAI sign-in.
+- The model Codex's config names (`model`) is in the model picker and is the default for new
+  threads. Codex lists OpenAI's models beside it whatever the provider. If your gateway serves
+  others, add their ids under the Codex row's `Models` as custom models.
+- Titles and commit messages written by Codex go through the gateway too. If the gateway refuses
+  the model picked for them in `Settings`, Threadlines tries once more with the model from
+  Codex's config.
+- Those short runs leave the rest of your Codex config out (MCP servers, notify hooks), as they
+  always have. A token or header written into the provider's entry in `config.toml` reaches them
+  through their environment, never their command line.
+- Two setups keep those short runs on OpenAI, as before. One is a provider with a secret that
+  only the command line could carry: a password or key in its address or `query_params`, or a
+  secret among its `auth` command's arguments. The other is, on Windows, a Codex that starts
+  through a batch file other than npm's own launcher.
+- If Codex can't be asked which provider it is on for 15 minutes, Threadlines stops assuming the
+  gateway until Codex names it again.
+- A Codex agent answering on the side in a room still runs on OpenAI with your ChatGPT sign-in,
+  not on the gateway.
 
 ## Security Notices From OpenAI
 

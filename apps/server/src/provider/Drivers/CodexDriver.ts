@@ -24,6 +24,7 @@
 import { CodexSettings, ProviderDriverKind, type ServerProvider } from "@threadlines/contracts";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -45,6 +46,8 @@ import { makeCodexAdapter } from "../Layers/CodexAdapter.ts";
 import { freshOrCurrentSnapshot } from "../freshProviderSnapshot.ts";
 import {
   checkCodexProviderStatus,
+  currentCodexModelProvider,
+  type CodexModelProviderMemory,
   type CodexSecurityNoticeMemory,
   type CodexWorkspaceMemory,
   consumeCodexRateLimitResetCredit,
@@ -83,6 +86,12 @@ const decodeCodexSettings = Schema.decodeSync(CodexSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("codex");
 const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
+/**
+ * How long a title or commit message waits for the instance's first status
+ * check, which normally takes a second or two. Past it the run goes ahead
+ * without the check's answer rather than hold the user's commit.
+ */
+const FIRST_CHECK_WAIT = Duration.seconds(20);
 const WINDOWS_NATIVE_INSTALL = makeWindowsNativeInstaller({
   url: "https://chatgpt.com/codex/install.ps1",
   lockKey: "codex-native-win32",
@@ -193,7 +202,19 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
       // here; the registry only has to worry about snapshot-build and
       // spawner-availability failures surfaced from `checkCodexProviderStatus`
       // below.
-      const textGeneration = yield* makeCodexTextGeneration(effectiveConfig, processEnv);
+      // Filled in by each status check; titles and commit messages read it
+      // at the moment they run. The first check starts with the instance, and
+      // a run asked for before it ends waits for it: without its answer the
+      // run would go to OpenAI, gateway or not.
+      const modelProviderMemory: CodexModelProviderMemory = {};
+      const firstCheckEnded = yield* Deferred.make<void>();
+      const textGeneration = yield* makeCodexTextGeneration(effectiveConfig, processEnv, {
+        modelProviderLaunch: Deferred.await(firstCheckEnded).pipe(
+          Effect.timeoutOption(FIRST_CHECK_WAIT),
+          Effect.andThen(Clock.currentTimeMillis),
+          Effect.map((nowMs) => currentCodexModelProvider(modelProviderMemory, nowMs)?.launch),
+        ),
+      });
 
       // Build a managed snapshot whose settings never change — mutations come
       // in as instance rebuilds from the registry rather than in-place
@@ -207,9 +228,11 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         processEnv,
         workspaceMemory,
         securityNoticeMemory,
+        modelProviderMemory,
       ).pipe(
         Effect.map(stampIdentity),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Effect.ensuring(Deferred.succeed(firstCheckEnded, undefined)),
       );
       const snapshot = yield* makeManagedServerProvider<CodexSettings>({
         get maintenanceCapabilities() {
