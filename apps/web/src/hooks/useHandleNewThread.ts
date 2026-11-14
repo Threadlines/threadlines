@@ -20,6 +20,7 @@ import {
 import { preserveRightPanelSearchParamsForDraftNavigation } from "../diffRouteSearch";
 import { resolveNewThreadPlacement } from "../lib/chatThreadActions";
 import { newDraftId, newThreadId } from "../lib/utils";
+import { requestNewThreadComposerFocus } from "../newThreadComposerFocus";
 import {
   applyNewThreadDefaultsToDraft,
   placeDraftFromSettings,
@@ -68,6 +69,10 @@ function useNewThreadState() {
          *  from one in the same project can continue in its checkout. */
         continueActiveCheckout?: boolean;
         replace?: boolean;
+        /** False leaves the keyboard where it is, for a draft the app opens
+         *  by itself (the launch landing). By default the new thread's
+         *  composer takes focus: whoever asked for it is about to type. */
+        focusComposer?: boolean;
         /** Words the draft opens with, for surfaces that hand work over. Only
          *  ever written into a draft with nothing of the user's in it. A
          *  trailing space is kept, for a sentence the user finishes. */
@@ -91,6 +96,11 @@ function useNewThreadState() {
       const writeInitialPrompt = (draftId: DraftId) => {
         if (initialPrompt.trim().length > 0) {
           setPrompt(draftId, initialPrompt);
+        }
+      };
+      const focusComposer = (draftId: DraftId) => {
+        if (options?.focusComposer !== false) {
+          requestNewThreadComposerFocus(draftId);
         }
       };
       const currentRouteTarget = getCurrentRouteTarget();
@@ -186,6 +196,7 @@ function useNewThreadState() {
           );
           placeFromSettings(emptyStoredDraftThread.draftId);
           writeInitialPrompt(emptyStoredDraftThread.draftId);
+          focusComposer(emptyStoredDraftThread.draftId);
           // A reused draft can hold the model and agents it was set up with
           // long ago; "new thread" means today's, so the defaults are applied
           // again, after the draft is on its project (moving it drops a room).
@@ -229,6 +240,7 @@ function useNewThreadState() {
         });
         placeFromSettings(currentDraftId);
         writeInitialPrompt(currentDraftId);
+        focusComposer(currentDraftId);
         return applyNewThreadDefaultsToDraft(currentDraftId, projectRef.environmentId);
       }
 
@@ -247,6 +259,7 @@ function useNewThreadState() {
         });
         placeFromSettings(draftId);
         writeInitialPrompt(draftId);
+        focusComposer(draftId);
         const defaultsApplied = applyNewThreadDefaultsToDraft(draftId, projectRef.environmentId);
 
         await router.navigate({

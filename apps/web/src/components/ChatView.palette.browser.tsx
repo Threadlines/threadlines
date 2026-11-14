@@ -1079,6 +1079,14 @@ describe("ChatView (full app): command palette and search", () => {
       const draftThread = useComposerDraftStore.getState().getDraftSession(nextDraftId);
       expect(draftThread?.projectId).toBe(SECOND_PROJECT_ID);
       expect(draftThread?.envMode).toBe("worktree");
+
+      // The new thread's composer keeps the keyboard once the palette is gone.
+      await expect.element(palette).not.toBeInTheDocument();
+      await vi.waitFor(() => {
+        const editor = document.querySelector<HTMLElement>('[data-testid="composer-editor"]');
+        expect(editor).not.toBeNull();
+        expect(document.activeElement).toBe(editor);
+      });
     } finally {
       await mounted.cleanup();
     }

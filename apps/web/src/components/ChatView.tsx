@@ -226,6 +226,7 @@ import { newCommandId, newMessageId, newThreadId } from "~/lib/utils";
 import { formatProviderDriverKindLabel } from "../providerModels";
 import { useSettings, useUpdateSettings } from "../hooks/useSettings";
 import { roomsEnabledFor } from "../hooks/useRoomsEnabled";
+import { useNewThreadComposerFocus } from "../newThreadComposerFocus";
 import {
   applyMovedDraftDefaults,
   buildNewThreadParticipants,
@@ -4848,7 +4849,13 @@ export default function ChatView(props: ChatViewProps) {
 
   // Pristine drafts (the home surface) open without stealing focus; the
   // composer takes focus once a conversation exists or via an explicit action.
+  // Asking for a new thread is one: useNewThreadHandler requests focus for it.
   const skipEntryComposerFocus = isLocalDraftThread && (activeThread?.messages.length ?? 0) === 0;
+  useNewThreadComposerFocus({
+    draftId,
+    enabled: !isCoarsePointer,
+    focus: scheduleComposerFocus,
+  });
   useEffect(() => {
     if (
       !activeThread?.id ||

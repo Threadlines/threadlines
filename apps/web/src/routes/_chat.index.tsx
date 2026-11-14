@@ -135,7 +135,8 @@ function DefaultProjectDraftRedirect() {
       return;
     }
     if (defaultProjectRef) {
-      void handleNewThread(defaultProjectRef, { replace: true });
+      // The app opened this draft, not the user: it leaves the keyboard alone.
+      void handleNewThread(defaultProjectRef, { replace: true, focusComposer: false });
     }
   });
 
