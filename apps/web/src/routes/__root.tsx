@@ -16,7 +16,7 @@ import {
   useNavigate,
   useRouter,
 } from "@tanstack/react-router";
-import { useCallback, useEffect, useEffectEvent, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useEffectEvent, useRef, useState } from "react";
 import { QueryClient, useQueryClient } from "@tanstack/react-query";
 
 import { APP_DISPLAY_NAME } from "../branding";
@@ -24,7 +24,6 @@ import { AppSidebarLayout } from "../components/AppSidebarLayout";
 import { CommandPalette, preloadCommandPaletteDialog } from "../components/CommandPalette";
 import { preloadDestinationLists } from "../components/sidebar/destinationLists";
 import { PushAlertsRuntime } from "../pushAlerts/PushAlertsRuntime";
-import { BrowserHostLayer } from "../components/browser/BrowserHostLayer";
 import { BrowserProfileReconciler } from "../components/desktop/BrowserProfileReconciler";
 import { DesktopUpdateInstallDialog } from "../components/desktop/DesktopUpdateInstallDialog";
 import { SshPasswordPromptDialog } from "../components/desktop/SshPasswordPromptDialog";
@@ -163,6 +162,17 @@ import {
   type StaleBuildRecovery,
 } from "../staleBuild";
 
+// Every thread's browser pages and this window's browser connection for
+// agents: the desktop app only, since the web build has no `<webview>`. A
+// chunk of its own, so a browser tab or a phone never downloads it; the
+// desktop app fetches it as it starts, beside everything else.
+const BrowserHostLayerLazy = lazyWithPreload(() =>
+  import("../components/browser/BrowserHostLayer").then((module) => module.BrowserHostLayer),
+);
+if (isElectron) {
+  void BrowserHostLayerLazy.preload();
+}
+
 // The theme library's sync across computers: after first paint, never at startup.
 const ThemeLibrarySyncLazy = lazyWithPreload(() =>
   import("../themeLibrary/themeLibraryState").then((module) => module.ThemeLibrarySync),
@@ -276,7 +286,12 @@ function RootRouteView() {
         {/* The Keep bar every theme trial shows, the import dialog, theme file drops. */}
         <ThemeTrialBar />
         {isElectron ? <BrowserProfileReconciler /> : null}
-        {isElectron ? <BrowserHostLayer /> : null}
+        {/* Plain Suspense: the browser panel needs it, so a failure shows. */}
+        {isElectron ? (
+          <Suspense fallback={null}>
+            <BrowserHostLayerLazy.Component />
+          </Suspense>
+        ) : null}
         <SshPasswordPromptDialog />
         <QuitConfirmationDialog />
         <DesktopUpdateInstallDialog />

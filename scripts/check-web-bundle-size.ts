@@ -51,9 +51,11 @@ const DEFAULT_ENTRY_GZIP_BUDGET_BYTES = 255_000;
 // Raised to 915 KB (2026-11-13, Will's OK): main sat 49 B under the budget
 // (911,951 B in CI), so the browser's search engine setting (#907), about
 // 200 B of Settings catalog and schema once its address rules and search URLs
-// were moved behind the browser panel, read 912,165 B. Worth trimming next:
-// the browser panel's host and automation load at startup on the web and
-// phones too, which have no browser panel.
+// were moved behind the browser panel, read 912,165 B.
+// Measured 890,863 B here (2026-11-14) once the browser panel's host and
+// automation, which only the desktop app has a use for, became a chunk only
+// it fetches (routes/__root.tsx): about 22 KB back. The budget stays, as
+// headroom.
 const DEFAULT_STARTUP_GZIP_BUDGET_BYTES = 915_000;
 
 const entryBudgetBytes = Number(

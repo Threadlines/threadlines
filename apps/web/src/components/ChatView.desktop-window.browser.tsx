@@ -94,4 +94,25 @@ describe("ChatView (full app): the desktop app's window", () => {
       root.classList.remove("electron", "wco");
     }
   });
+
+  it("mounts the layer that holds every thread's browser pages", async () => {
+    // Its code is a chunk only the desktop app fetches (routes/__root.tsx), so
+    // the window has to load it and mount it by itself, with no panel open.
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-desktop-browser-host" as MessageId,
+        targetText: "desktop browser host",
+      }),
+    });
+
+    try {
+      await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-testid="browser-host-layer"]'),
+        "The desktop app should mount the browser host layer at its root.",
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
 });
