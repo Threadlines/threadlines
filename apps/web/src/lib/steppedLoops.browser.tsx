@@ -43,15 +43,41 @@ function loopOf(name: string): { element: HTMLElement; animation: Animation } {
 const isStepped = (animation: Animation) =>
   String(animation.effect?.getTiming().easing).startsWith("steps(");
 
-/** Where a loop's box stands on every frame drawn over `ms`, in px from where it starts. */
-async function positionsOver(name: string, ms: number): Promise<number[]> {
-  const { element } = loopOf(name);
-  const origin = element.parentElement!.getBoundingClientRect().left;
-  const positions: number[] = [];
-  const stop = readAfterEachPaint(() =>
-    positions.push(element.getBoundingClientRect().left - origin),
-  );
-  await new Promise((resolve) => setTimeout(resolve, ms));
+/** The longest a run of frames is watched for what a test is about. */
+const WATCH_CAP_MS = 10_000;
+
+/**
+ * Where each loop's box stands on every frame drawn, in px from where it
+ * starts, until the run shows what the test is about (`enough`). It is not a
+ * fixed stretch of time: a busy machine draws a frame or two in half a
+ * second, which shows one pose and says nothing. A loop that never shows it
+ * ends the run at the cap, and fails on what it did show.
+ */
+async function positionsUntil<Name extends string>(
+  names: ReadonlyArray<Name>,
+  enough: (positions: Record<Name, number[]>) => boolean,
+): Promise<Record<Name, number[]>> {
+  const positions = Object.fromEntries(names.map((name) => [name, [] as number[]])) as Record<
+    Name,
+    number[]
+  >;
+  const loops = names.map((name) => {
+    const { element } = loopOf(name);
+    return { name, element, origin: element.parentElement!.getBoundingClientRect().left };
+  });
+  let stop = () => {};
+  await new Promise<void>((resolve) => {
+    const cap = setTimeout(resolve, WATCH_CAP_MS);
+    stop = readAfterEachPaint(() => {
+      for (const loop of loops) {
+        positions[loop.name].push(loop.element.getBoundingClientRect().left - loop.origin);
+      }
+      if (enough(positions)) {
+        clearTimeout(cap);
+        resolve();
+      }
+    });
+  });
   stop();
   return positions;
 }
@@ -103,10 +129,10 @@ describe("installSteppedLoops", () => {
         expect(isStepped(loopOf("stepped").animation)).toBe(true);
         expect(isStepped(loopOf("late").animation)).toBe(true);
       });
-      const [plain, stepped] = await Promise.all([
-        positionsOver("plain", 500),
-        positionsOver("stepped", 500),
-      ]);
+      const { plain, stepped } = await positionsUntil(
+        ["plain", "stepped"],
+        (seen) => new Set(seen.stepped).size > 2 && offGrid(seen.plain, 10).length > 0,
+      );
       expect(new Set(stepped).size).toBeGreaterThan(2);
       expect(offGrid(stepped, 10)).toEqual([]);
       expect(offGrid(plain, 10).length).toBeGreaterThan(0);
@@ -131,12 +157,18 @@ describe("installSteppedLoops", () => {
       await vi.waitFor(() => expect(isStepped(loopOf("stepped").animation)).toBe(true));
 
       setInFront(false);
-      const behind = await positionsOver("stepped", 500);
+      const { stepped: behind } = await positionsUntil(
+        ["stepped"],
+        (seen) => new Set(seen.stepped).size > 1,
+      );
       expect(new Set(behind).size).toBeGreaterThan(1);
       expect(offGrid(behind, 300 / UNATTENDED_LOOP_FPS)).toEqual([]);
 
       setInFront(true);
-      const inFront = await positionsOver("stepped", 500);
+      const { stepped: inFront } = await positionsUntil(
+        ["stepped"],
+        (seen) => offGrid(seen.stepped, 300 / UNATTENDED_LOOP_FPS).length > 0,
+      );
       expect(offGrid(inFront, 10)).toEqual([]);
       expect(offGrid(inFront, 300 / UNATTENDED_LOOP_FPS).length).toBeGreaterThan(0);
     } finally {

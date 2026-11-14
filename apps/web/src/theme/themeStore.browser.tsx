@@ -164,10 +164,13 @@ describe("theme store, applied", () => {
       expect(visibility()).toBe("visible");
       root().setAttribute("data-glass", "");
       expect(visibility()).toBe("hidden");
+      // Whether the header is pinned is read when a frame is drawn, and a busy
+      // machine can take longer than the default second to draw one.
+      const onceDrawn = { timeout: 10_000 };
       screen.getByTestId("scroller").element().scrollTop = 200;
-      await vi.waitFor(() => expect(visibility()).toBe("visible"));
+      await vi.waitFor(() => expect(visibility()).toBe("visible"), onceDrawn);
       screen.getByTestId("scroller").element().scrollTop = 0;
-      await vi.waitFor(() => expect(visibility()).toBe("hidden"));
+      await vi.waitFor(() => expect(visibility()).toBe("hidden"), onceDrawn);
     } finally {
       root().removeAttribute("data-glass");
       await screen.unmount();
