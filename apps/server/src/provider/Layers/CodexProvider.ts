@@ -996,6 +996,8 @@ export function withCodexConfigModel(
  * `currentCodexModelProvider`, which lets it lapse.
  */
 export interface CodexModelProviderMemory {
+  /** When Codex last said which providers it has, whatever the answer. */
+  answeredAtMs?: number | undefined;
   last?:
     | {
         readonly providerId: string;
@@ -1029,18 +1031,56 @@ export function currentCodexModelProvider(
 }
 
 /**
+ * Whether Codex said recently enough which providers it has for the memory to
+ * be gone by. Not so right after a start, or while its status checks fail.
+ */
+export function isCodexModelProviderKnown(
+  memory: CodexModelProviderMemory,
+  nowMs: number,
+): boolean {
+  return (
+    memory.answeredAtMs !== undefined &&
+    nowMs - memory.answeredAtMs <= CODEX_MODEL_PROVIDER_MEMORY_MS
+  );
+}
+
+/**
+ * Asks Codex only which provider its chats run on: two reads of its own
+ * config, with none of a status check's calls to OpenAI. For a title or
+ * commit message that cannot wait out a slow check and must not guess.
+ * Undefined when Codex does not say.
+ */
+export const probeCodexGateway = Effect.fn("probeCodexGateway")(function* (input: {
+  readonly binaryPath: string;
+  readonly homePath?: string;
+  readonly cwd: string;
+  readonly environment?: NodeJS.ProcessEnv;
+}) {
+  const client = yield* makeCodexAppServerClient(input);
+  yield* initializeCodexAppServerClient(client);
+  const modelProviders = yield* readCodexModelProviders(client);
+  if (!modelProviders) return undefined;
+  const gateway = yield* readCodexGatewayConfig(client, modelProviders);
+  return { modelProviders, ...(gateway ? { gateway } : {}) } satisfies Pick<
+    CodexAppServerProviderSnapshot,
+    "modelProviders" | "gateway"
+  >;
+});
+
+/**
  * The gateway a check goes by, remembered for the next one. A check that
  * could not ask Codex which providers it has says nothing, so what was known
  * stands for a while; one that got the provider but not its config keeps
  * what was known of that same provider. Codex's own answer that it is on
  * OpenAI forgets it at once.
  */
-function codexGatewayForCheck(
+export function codexGatewayForCheck(
   snapshot: Pick<CodexAppServerProviderSnapshot, "modelProviders" | "gateway">,
   memory: CodexModelProviderMemory,
   nowMs: number,
 ): CodexModelProviderMemory["last"] {
   if (snapshot.modelProviders === undefined) return currentCodexModelProvider(memory, nowMs);
+  memory.answeredAtMs = nowMs;
   const gateway = snapshot.gateway;
   if (!gateway) {
     memory.last = undefined;

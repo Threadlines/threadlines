@@ -95,9 +95,12 @@ later.
   always have. Each gets a Codex folder of its own holding the provider's settings alone,
   readable only by you and removed when the run ends. Nothing from those settings is passed on
   the command line.
-- One setup keeps those short runs on OpenAI, as before: a provider that signs in with what
-  Codex's own folder stores (a ChatGPT sign-in, or a gateway's OAuth). A folder made for one run
-  has no sign-in.
+- One setup keeps those short runs on OpenAI, as before: a provider you add that signs in with
+  what Codex's own folder stores (a ChatGPT sign-in, a gateway's OAuth, Amazon Bedrock or Google
+  Cloud credentials). A folder made for one run has no sign-in. A provider built into Codex runs
+  in Codex's own folder, so its sign-in is there.
+- If such a run fails, the error shown has the provider's token, headers and address keys struck
+  out.
 - If Codex can't be asked which provider it is on for 15 minutes, Threadlines stops assuming the
   gateway until Codex names it again.
 - A Codex agent answering on the side in a room still runs on OpenAI with your ChatGPT sign-in,

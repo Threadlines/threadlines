@@ -27,6 +27,7 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
@@ -46,7 +47,10 @@ import { makeCodexAdapter } from "../Layers/CodexAdapter.ts";
 import { freshOrCurrentSnapshot } from "../freshProviderSnapshot.ts";
 import {
   checkCodexProviderStatus,
+  codexGatewayForCheck,
   currentCodexModelProvider,
+  isCodexModelProviderKnown,
+  probeCodexGateway,
   type CodexModelProviderMemory,
   type CodexSecurityNoticeMemory,
   type CodexWorkspaceMemory,
@@ -88,10 +92,12 @@ const DRIVER_KIND = ProviderDriverKind.make("codex");
 const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
 /**
  * How long a title or commit message waits for the instance's first status
- * check, which normally takes a second or two. Past it the run goes ahead
- * without the check's answer rather than hold the user's commit.
+ * check, which normally takes a second or two. Past it the run asks Codex
+ * itself which provider it is on, rather than hold the user's commit.
  */
-const FIRST_CHECK_WAIT = Duration.seconds(20);
+const FIRST_CHECK_WAIT = Duration.seconds(5);
+/** How long that question may take: two reads of Codex's own config. */
+const GATEWAY_PROBE_TIMEOUT = Duration.seconds(10);
 const WINDOWS_NATIVE_INSTALL = makeWindowsNativeInstaller({
   url: "https://chatgpt.com/codex/install.ps1",
   lockKey: "codex-native-win32",
@@ -203,17 +209,35 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
       // spawner-availability failures surfaced from `checkCodexProviderStatus`
       // below.
       // Filled in by each status check; titles and commit messages read it
-      // at the moment they run. The first check starts with the instance, and
-      // a run asked for before it ends waits for it: without its answer the
-      // run would go to OpenAI, gateway or not.
+      // at the moment they run. Without an answer they would go to OpenAI,
+      // gateway or not, so a run that finds none waits a moment for the first
+      // check (it starts with the instance) and then asks Codex itself.
       const modelProviderMemory: CodexModelProviderMemory = {};
       const firstCheckEnded = yield* Deferred.make<void>();
+      const modelProviderLaunch = Effect.gen(function* () {
+        yield* Deferred.await(firstCheckEnded).pipe(Effect.timeoutOption(FIRST_CHECK_WAIT));
+        const nowMs = yield* Clock.currentTimeMillis;
+        if (!isCodexModelProviderKnown(modelProviderMemory, nowMs)) {
+          const reads = yield* probeCodexGateway({
+            binaryPath: effectiveConfig.binaryPath,
+            ...(effectiveConfig.homePath ? { homePath: effectiveConfig.homePath } : {}),
+            cwd: process.cwd(),
+            environment: processEnv,
+          }).pipe(
+            Effect.scoped,
+            Effect.timeoutOption(GATEWAY_PROBE_TIMEOUT),
+            Effect.map(Option.getOrUndefined),
+            Effect.orElseSucceed(() => undefined),
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          );
+          if (reads) {
+            codexGatewayForCheck(reads, modelProviderMemory, nowMs);
+          }
+        }
+        return currentCodexModelProvider(modelProviderMemory, nowMs)?.launch;
+      });
       const textGeneration = yield* makeCodexTextGeneration(effectiveConfig, processEnv, {
-        modelProviderLaunch: Deferred.await(firstCheckEnded).pipe(
-          Effect.timeoutOption(FIRST_CHECK_WAIT),
-          Effect.andThen(Clock.currentTimeMillis),
-          Effect.map((nowMs) => currentCodexModelProvider(modelProviderMemory, nowMs)?.launch),
-        ),
+        modelProviderLaunch,
       });
 
       // Build a managed snapshot whose settings never change — mutations come

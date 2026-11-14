@@ -20,7 +20,11 @@ import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@threadlines/
 import { resolveAttachmentPath } from "../attachmentStore.ts";
 import { ServerConfig } from "../config.ts";
 import { expandHomePath } from "../pathExpansion.ts";
-import type { CodexModelProviderLaunch } from "../provider/codexModelProviderLaunch.ts";
+import {
+  redactCodexProviderSecrets,
+  type CodexModelProviderLaunch,
+} from "../provider/codexModelProviderLaunch.ts";
+import { sweepStaleCodexSideAnswerHomes } from "../provider/codexSideAnswerHome.ts";
 import { TextGenerationError } from "@threadlines/contracts";
 import {
   type BranchNameGenerationInput,
@@ -234,19 +238,24 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
   /**
    * A Codex home for one run on a gateway: a folder only this user can open,
    * with the gateway's config in it, removed when the run's scope closes. It
-   * is named like a side-answer home so that the sweep of those also removes
-   * one a killed server left behind.
+   * is named like a side-answer home so that the sweep of those, run here
+   * before the first one is made, also removes any a killed server left.
    */
+  let sweptGatewayHomes = false;
   const makeGatewayHome = (
     operation: CodexTextGenerationOperation,
-    launch: CodexModelProviderLaunch,
+    config: string,
   ): Effect.Effect<string, TextGenerationError, Scope.Scope> =>
     Effect.gen(function* () {
+      if (!sweptGatewayHomes) {
+        sweptGatewayHomes = true;
+        yield* sweepStaleCodexSideAnswerHomes.pipe(Effect.forkDetach);
+      }
       const home = yield* fileSystem.makeTempDirectoryScoped({
         prefix: "threadlines-side-textgen-",
       });
       yield* fileSystem.chmod(home, 0o700);
-      yield* fileSystem.writeFileString(path.join(home, "config.toml"), launch.config, {
+      yield* fileSystem.writeFileString(path.join(home, "config.toml"), config, {
         mode: 0o600,
       });
       return home;
@@ -299,8 +308,8 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       // alone (see codexModelProviderLaunch.ts). That stands in for
       // --ignore-user-config: there is no user config in it to ignore.
       const gatewayHome =
-        options.ignoreUserConfig && gatewayLaunch !== undefined
-          ? yield* makeGatewayHome(operation, gatewayLaunch)
+        options.ignoreUserConfig && gatewayLaunch?.config !== undefined
+          ? yield* makeGatewayHome(operation, gatewayLaunch.config)
           : undefined;
       const env = {
         ...environment,
@@ -318,8 +327,10 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
           // One-shot text generation should not inherit agent-oriented user
           // config (MCP servers, notify hooks, memories) from
           // $CODEX_HOME/config.toml; auth still uses CODEX_HOME.
+          // A built-in provider is named beside the flag, in the user's own
+          // home: it has no definition to give a home of its own.
           ...(options.ignoreUserConfig && gatewayHome === undefined
-            ? ["--ignore-user-config"]
+            ? ["--ignore-user-config", ...(gatewayLaunch?.args ?? [])]
             : []),
           "--skip-git-repo-check",
           ...(operation === "generateCommitMessage" ? ["--ignore-rules"] : []),
@@ -376,7 +387,12 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       if (exitCode !== 0) {
         const stderrDetail = stderr.trim();
         const stdoutDetail = stdout.trim();
-        const detail = stderrDetail.length > 0 ? stderrDetail : stdoutDetail;
+        // Codex's errors can repeat a gateway's address, and with it a key the
+        // address carries. This text is logged and shown to the user.
+        const detail = redactCodexProviderSecrets(
+          stderrDetail.length > 0 ? stderrDetail : stdoutDetail,
+          gatewayLaunch,
+        );
         return yield* new TextGenerationError({
           operation,
           detail:

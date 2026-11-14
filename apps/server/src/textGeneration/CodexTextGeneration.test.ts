@@ -901,6 +901,82 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
       }).pipe(Effect.scoped),
   );
 
+  // Codex's error names the address of the request that failed, and this text
+  // is logged and shown to the user.
+  it.effect("strikes the gateway's secrets from a failed run's error", () =>
+    withFakeCodexEnv(
+      {
+        output: JSON.stringify({ title: "unused" }),
+        exitCode: 1,
+        stderr:
+          "ERROR: unexpected status 503 for https://llm.acme.example/v1/responses?code=fn-key-secret",
+      },
+      (textGeneration) =>
+        Effect.gen(function* () {
+          const result = yield* textGeneration
+            .generateThreadTitle({
+              cwd: process.cwd(),
+              message: "Please investigate websocket reconnect regressions.",
+              modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+            })
+            .pipe(Effect.result);
+
+          expect(Result.isFailure(result)).toBe(true);
+          if (Result.isFailure(result)) {
+            expect(result.failure.detail).toContain("responses?code=[redacted]");
+            expect(result.failure.detail).not.toContain("fn-key-secret");
+          }
+        }),
+      {
+        modelProviderLaunch: Effect.succeed(
+          codexModelProviderLaunch({
+            providerId: "acme",
+            definition: {
+              base_url: "https://llm.acme.example/v1",
+              query_params: { code: "fn-key-secret" },
+            },
+          }),
+        ),
+      },
+    ),
+  );
+
+  // A provider Codex has built in has no definition to hand over, and may
+  // sign in with what Codex's own home stores: it runs there, named by id.
+  it.effect.skipIf(process.platform === "win32")(
+    "runs a built-in provider in the user's own home, named beside --ignore-user-config",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const recordDir = yield* fs.makeTempDirectoryScoped({ prefix: "threadlines-codex-args-" });
+        const record = path.join(recordDir, "run");
+        yield* withFakeCodexEnv(
+          {
+            output: JSON.stringify({ title: "Investigate reconnect regressions" }),
+            requireIgnoreUserConfig: true,
+            recordInvocationTo: record,
+          },
+          (textGeneration) =>
+            textGeneration.generateThreadTitle({
+              cwd: process.cwd(),
+              message: "Please investigate websocket reconnect regressions.",
+              modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+            }),
+          {
+            modelProviderLaunch: Effect.succeed(codexModelProviderLaunch({ providerId: "ollama" })),
+          },
+        );
+
+        const args = (yield* fs.readFileString(`${record}.args`)).split("\n");
+        expect(args).toContain('model_provider="ollama"');
+        // No home of its own was made for it.
+        expect(yield* fs.readFileString(`${record}.home`)).not.toContain(
+          "threadlines-side-textgen-",
+        );
+      }).pipe(Effect.scoped),
+  );
+
   it.effect("retries without --ignore-user-config when the codex CLI rejects the flag", () =>
     withFakeCodexEnv(
       {
