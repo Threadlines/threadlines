@@ -89,6 +89,18 @@ describe("getOrphanedWorktreePathForThread", () => {
     expect(result).toBeNull();
   });
 
+  // A thread put in another thread's worktree never made that folder, so it
+  // never offers it, even as the last thread still pointing there.
+  it("returns null for a guest in another thread's worktree", () => {
+    const threads = [
+      makeThread({
+        worktreePath: "/tmp/repo/worktrees/feature-a",
+        worktreeOrigin: { kind: "thread", threadId: ThreadId.make("thread-coder") },
+      }),
+    ];
+    expect(getOrphanedWorktreePathForThread(threads, ThreadId.make("thread-1"))).toBeNull();
+  });
+
   // An archived thread can bring its checkout back through checkout recovery,
   // so its link has to count in both directions.
   it("returns null when only an archived thread links to the same worktree", () => {

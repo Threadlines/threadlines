@@ -129,7 +129,12 @@ interface Harness {
 /** The reactor over fakes: threads in a map, dispatches recorded, setup scripted. */
 function withReactor<A, E>(
   threads: ReadonlyArray<OrchestrationThread>,
-  options: { readonly setupFails?: boolean; readonly completedTurnFor?: MessageId },
+  options: {
+    readonly setupFails?: boolean;
+    readonly completedTurnFor?: MessageId;
+    /** "Threads can share a checkout" (default off, as the setting is). */
+    readonly shareWorktrees?: boolean;
+  },
   body: (harness: Harness) => Effect.Effect<A, E>,
 ) {
   return Effect.gen(function* () {
@@ -204,7 +209,9 @@ function withReactor<A, E>(
                 ],
           ),
       } as unknown as ProjectionTurnRepositoryShape),
-      ServerSettingsService.layerTest(),
+      ServerSettingsService.layerTest(
+        options.shareWorktrees === true ? { agentThreadsShareWorktrees: true } : {},
+      ),
     );
     return yield* Effect.gen(function* () {
       const reactor = yield* makeChildThreadReactor;
@@ -400,6 +407,62 @@ describe("ChildThreadReactor", () => {
           expect(harness.startChildRuntimeModes).toEqual(["approval-required"]);
         }),
     ),
+  );
+
+  it.effect(
+    "checks a lent checkout again when the child is set up: the setting, then its thread",
+    () => {
+      const CODER = ThreadId.make("coder");
+      const inCoderCheckout = request({
+        status: "starting",
+        launch: {
+          ...request().launch!,
+          title: "Review the retry",
+          // The project folder: nothing on disk to look for here.
+          checkout: { threadId: CODER, title: "Build the retry", worktreePath: null, branch: null },
+        },
+      });
+      const coder = (overrides: Partial<OrchestrationThread> = {}) =>
+        thread(CODER, {
+          title: "Build the retry",
+          parentThreadId: PARENT,
+          attachedToParent: true,
+          ...overrides,
+        });
+      const run = (
+        threads: ReadonlyArray<OrchestrationThread>,
+        shareWorktrees: boolean,
+        check: (harness: Harness) => void,
+      ) =>
+        withReactor(threads, { shareWorktrees }, (harness) =>
+          Effect.gen(function* () {
+            yield* settle;
+            check(harness);
+          }),
+        );
+      return Effect.gen(function* () {
+        // Asked while it was allowed, approved after it was turned off.
+        yield* run([parentWith([inCoderCheckout]), coder()], false, (harness) => {
+          expect(harness.startChildCalls).toEqual([]);
+          expect(settles(harness)).toMatchObject([{ outcome: "failed" }]);
+          expect(settles(harness)[0]?.reply?.text).toContain("turned off in Settings");
+        });
+        // Its thread took up work again while the user decided.
+        const working = coder({
+          session: { status: "running", activeTurnId: TurnId.make("coder-turn") } as never,
+        });
+        yield* run([parentWith([inCoderCheckout]), working], true, (harness) => {
+          expect(harness.startChildCalls).toEqual([]);
+          expect(settles(harness)[0]?.reply?.text).toContain(
+            "'Build the retry' is working in that checkout now",
+          );
+        });
+        yield* run([parentWith([inCoderCheckout]), coder()], true, (harness) => {
+          expect(harness.startChildCalls).toEqual([REQUEST]);
+          expect(settles(harness)).toEqual([]);
+        });
+      });
+    },
   );
 
   it.effect("after a restart, sends a report that was queued but never sent", () =>

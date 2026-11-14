@@ -8,11 +8,18 @@
  *
  * @module CheckpointRevertLive
  */
-import type { CheckpointRef, OrchestrationThread, ThreadId } from "@threadlines/contracts";
+import {
+  type CheckpointRef,
+  type OrchestrationThread,
+  ThreadCheckoutMovedActivityKind,
+  ThreadCheckoutMovedPayload,
+  type ThreadId,
+} from "@threadlines/contracts";
 import { normalizeWorkspacePath } from "@threadlines/shared/path";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 
 import { CheckpointUnavailableError } from "../Errors.ts";
 import { isGitRepository } from "../../git/Utils.ts";
@@ -46,6 +53,22 @@ const MAX_CONTESTED_GAP_SCANS = 100;
 
 type RevertCheckpointContext = OrchestrationThread["checkpoints"][number];
 
+const decodeCheckoutMoved = Schema.decodeUnknownOption(ThreadCheckoutMovedPayload);
+
+/**
+ * How many checkpointed turns a thread had when an agent last moved it into
+ * another checkout (the `thread.checkout.moved` activity), or null if it
+ * never was.
+ */
+function turnCountAtLastCheckoutMove(thread: OrchestrationThread): number | null {
+  for (const activity of thread.activities.toReversed()) {
+    if (activity.kind !== ThreadCheckoutMovedActivityKind) continue;
+    const payload = decodeCheckoutMoved(activity.payload);
+    if (Option.isSome(payload)) return payload.value.turnCount;
+  }
+  return null;
+}
+
 function sameId(left: string | null | undefined, right: string | null | undefined): boolean {
   if (left === null || left === undefined || right === null || right === undefined) {
     return false;
@@ -78,15 +101,19 @@ const make = Effect.gen(function* () {
   // owner of its checkout: a dedicated worktree that is not the project
   // workspace root and is not shared with any other thread or provider
   // session. Everything else must use selective revert so other actors' work
-  // survives (issue #37).
+  // survives (issue #37). A guest in another thread's worktree
+  // (ThreadWorktreeOrigin) never is, even once that thread is archived or
+  // deleted and nothing else points at the folder: what is in it was never
+  // only the guest's.
   const isIsolatedWorkspaceForThread = Effect.fn("isIsolatedWorkspaceForThread")(function* (input: {
     readonly threadId: ThreadId;
     readonly worktreePath: string | null;
+    readonly guest: boolean;
     readonly workspaceRoot: string | undefined;
     readonly cwd: string;
   }) {
     const worktreePath = input.worktreePath;
-    if (!worktreePath) {
+    if (!worktreePath || input.guest) {
       return false;
     }
     const normalizedCwd = normalizeWorkspacePath(input.cwd);
@@ -181,9 +208,21 @@ const make = Effect.gen(function* () {
         };
       }
 
+      // Turns from before an agent moved it into another checkout changed the
+      // folder it left: undoing them here would rewrite files it never touched.
+      const movedAtTurnCount = turnCountAtLastCheckoutMove(thread);
+      if (movedAtTurnCount !== null && input.turnCount < movedAtTurnCount) {
+        return {
+          kind: "unavailable" as const,
+          detail:
+            "This thread moved into another checkout after that point. Its earlier changes are in the folder it left, so they can't be undone from here.",
+        };
+      }
+
       const isolated = yield* isIsolatedWorkspaceForThread({
         threadId: input.threadId,
         worktreePath: thread.worktreePath,
+        guest: (thread.worktreeOrigin ?? null) !== null,
         workspaceRoot: project?.workspaceRoot,
         cwd,
       });

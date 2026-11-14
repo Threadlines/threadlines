@@ -667,6 +667,22 @@ export const ThreadScheduledRun = Schema.Struct({
 export type ThreadScheduledRun = typeof ThreadScheduledRun.Type;
 
 /**
+ * Where a thread's worktree came from, when Threadlines did not make it for
+ * that thread: another thread's, which the agent steering both pointed this
+ * one at (thread_start and thread_send `checkout`, docs/design/child-threads.md,
+ * "Workspaces"). The thread works there without owning it: its first turn
+ * never renames the branch, the project's setup script is not run for it, and
+ * deleting it never offers to remove the folder. It describes the current
+ * `worktreePath`, and goes when the thread moves to another checkout.
+ */
+export const ThreadWorktreeOrigin = Schema.Struct({
+  kind: Schema.Literal("thread"),
+  /** The thread whose worktree it is. It may be archived or deleted since. */
+  threadId: ThreadId,
+});
+export type ThreadWorktreeOrigin = typeof ThreadWorktreeOrigin.Type;
+
+/**
  * Always-on assistants Threadlines knows by name and mark
  * (docs/design/assistants.md). Several sign in through someone else's
  * service (Grok Bot through Cursor's), so which one it is is a guess from
@@ -980,6 +996,26 @@ export const ThreadCheckoutSwitchDeferredPayload = Schema.Struct({
   pendingBackgroundTaskCount: NonNegativeInt,
 });
 export type ThreadCheckoutSwitchDeferredPayload = typeof ThreadCheckoutSwitchDeferredPayload.Type;
+
+/**
+ * Payload of the `thread.checkout.moved` activity: the agent that steers a
+ * thread moved it into another thread's checkout with a message (thread_send
+ * `checkout`). Its turns up to `turnCount` worked in the folder it left, so
+ * their changes can't be undone from the new one: a revert to an earlier
+ * turn is refused (CheckpointRevert).
+ */
+export const ThreadCheckoutMovedActivityKind = "thread.checkout.moved";
+export const ThreadCheckoutMovedPayload = Schema.Struct({
+  /** The thread whose checkout it moved into, with its title then. */
+  ownerThreadId: ThreadId,
+  ownerTitle: TrimmedNonEmptyString,
+  /** The checkout it left and the one it moved into; null is the project folder. */
+  fromWorktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  toWorktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  /** How many of its turns had a checkpoint when it moved. */
+  turnCount: NonNegativeInt,
+});
+export type ThreadCheckoutMovedPayload = typeof ThreadCheckoutMovedPayload.Type;
 
 /**
  * Payload of the `thread.access.raise-deferred` activity. A raise in the
@@ -2077,6 +2113,23 @@ export const ChildThreadWorkspace = Schema.Union([
 ]);
 export type ChildThreadWorkspace = typeof ChildThreadWorkspace.Type;
 
+/**
+ * An existing checkout a thread works in instead of a new worktree of its
+ * own: another thread's, named by the agent that steers both (thread_start
+ * and thread_send `checkout`) and resolved to a folder at that moment, so an
+ * approval or a restart later puts the thread in the same place.
+ */
+export const ChildThreadCheckout = Schema.Struct({
+  /** The thread whose checkout it is, with its title when it was asked for. */
+  threadId: ThreadId,
+  title: TrimmedNonEmptyString,
+  /** Its folder: a worktree's, or null for the project folder. */
+  worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  /** The branch checked out there then; null when none is. */
+  branch: Schema.NullOr(TrimmedNonEmptyString),
+});
+export type ChildThreadCheckout = typeof ChildThreadCheckout.Type;
+
 /** The linked computer a child runs on (docs/design/fleet.md, Part 2). */
 export const ChildThreadTarget = Schema.Struct({
   environmentId: EnvironmentId,
@@ -2087,7 +2140,8 @@ export type ChildThreadTarget = typeof ChildThreadTarget.Type;
 /**
  * Everything it takes to set up a child, saved with its request when it is
  * asked for, so approval and a restart rebuild it exactly. Its access is the
- * asking thread's at that moment, never more.
+ * asking thread's at that moment, or a lower level the agent asked for,
+ * never more.
  */
 export const ChildThreadLaunch = Schema.Struct({
   title: TrimmedNonEmptyString,
@@ -2099,6 +2153,12 @@ export const ChildThreadLaunch = Schema.Struct({
   reportBack: Schema.Boolean,
   runSetup: Schema.Boolean,
   workspace: ChildThreadWorkspace,
+  /**
+   * Another thread's checkout to work in (ChildThreadCheckout). `workspace`
+   * is then `project_folder`, which here means only that no worktree is made:
+   * an older client reads it as a shared folder, which it is.
+   */
+  checkout: Schema.optional(ChildThreadCheckout),
   /**
    * A linked computer to start it on, instead of this one. `modelSelection`
    * then names one of that computer's own agents (its instance id).
@@ -2461,6 +2521,8 @@ export const OrchestrationThread = Schema.Struct({
   remoteOrigin: Schema.optional(Schema.NullOr(ThreadRemoteOrigin)),
   /** See OrchestrationThreadShell.scheduledRun. */
   scheduledRun: Schema.optional(Schema.NullOr(ThreadScheduledRun)),
+  /** See OrchestrationThreadShell.worktreeOrigin. */
+  worktreeOrigin: Schema.optional(Schema.NullOr(ThreadWorktreeOrigin)),
   /** See OrchestrationThreadShell.outsideOrigin. */
   outsideOrigin: Schema.optional(Schema.NullOr(OutsideAgentRef)),
   /** See OrchestrationThreadShell.outsideWork. */
@@ -2699,6 +2761,11 @@ export const OrchestrationThreadShell = Schema.Struct({
    */
   scheduledRun: Schema.optional(Schema.NullOr(ThreadScheduledRun)),
   /**
+   * Its worktree is another thread's (ThreadWorktreeOrigin): it works there
+   * without owning it. Absent or null: its own, or the project folder.
+   */
+  worktreeOrigin: Schema.optional(Schema.NullOr(ThreadWorktreeOrigin)),
+  /**
    * Started by an outside agent (OutsideAgentRef): labelled with its name.
    * Absent or null: started in Threadlines.
    */
@@ -2909,6 +2976,8 @@ const ThreadCreateLineageFields = {
   scheduledRun: Schema.optional(ThreadScheduledRun),
   /** Started by an outside agent: see OutsideAgentRef. Only `/mcp/connect` sets it. */
   outsideOrigin: Schema.optional(OutsideAgentRef),
+  /** Started in another thread's worktree: see ThreadWorktreeOrigin. Only a child's setup sets it. */
+  worktreeOrigin: Schema.optional(ThreadWorktreeOrigin),
 };
 // The normalizer refuses these on commands that arrive from a client.
 
@@ -4449,6 +4518,11 @@ const ThreadChildSendCommand = Schema.Struct({
   childThreadId: ThreadId,
   childMessageId: MessageId,
   text: TrimmedNonEmptyString,
+  /**
+   * Another thread's checkout the child moves to before it reads the message
+   * (ChildThreadCheckout): it keeps its conversation. Only an idle child moves.
+   */
+  checkout: Schema.optional(ChildThreadCheckout),
   createdAt: IsoDateTime,
 });
 
@@ -4949,6 +5023,8 @@ export const ThreadCreatedPayload = Schema.Struct({
   remoteOrigin: Schema.optional(ThreadRemoteOrigin),
   /** See OrchestrationThreadShell.scheduledRun. */
   scheduledRun: Schema.optional(ThreadScheduledRun),
+  /** See OrchestrationThreadShell.worktreeOrigin. */
+  worktreeOrigin: Schema.optional(ThreadWorktreeOrigin),
   /** See OrchestrationThreadShell.outsideOrigin. */
   outsideOrigin: Schema.optional(OutsideAgentRef),
   /** Imported by a move: see ThreadMovedFrom and OrchestrationThread.historySeedOwed. */
@@ -5278,6 +5354,11 @@ export const ThreadMetaUpdatedPayload = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  /**
+   * Whose worktree the thread is in from this event on (ThreadWorktreeOrigin);
+   * null: its own again, or none. Absent: unchanged.
+   */
+  worktreeOrigin: Schema.optional(Schema.NullOr(ThreadWorktreeOrigin)),
   updatedAt: IsoDateTime,
 });
 

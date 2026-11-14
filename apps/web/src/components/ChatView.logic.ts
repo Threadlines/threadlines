@@ -2651,10 +2651,12 @@ export function resolveRemoteBehindCount(
  * being read is that worktree's: a shared checkout's ref says nothing about
  * any one thread in it, and a status read from elsewhere says nothing about
  * this one. Temporary worktree branches are the server's to rename, so those
- * are left alone on both sides. Null when there is nothing to record.
+ * are left alone on both sides; a guest in another thread's worktree
+ * (ThreadWorktreeOrigin) is never renamed for, so it follows that thread's
+ * rename off a temporary name. Null when there is nothing to record.
  */
 export function resolveThreadBranchToRecord(input: {
-  readonly thread: Pick<Thread, "branch" | "worktreePath"> | undefined;
+  readonly thread: Pick<Thread, "branch" | "worktreePath" | "worktreeOrigin"> | undefined;
   readonly cwd: string | null;
   readonly checkoutRef: string | null;
 }): string | null {
@@ -2665,7 +2667,13 @@ export function resolveThreadBranchToRecord(input: {
   if (!isFilesystemPathWithin(cwd, thread.worktreePath)) return null;
   if (checkoutRef === thread.branch) return null;
   if (isTemporaryWorktreeBranch(checkoutRef)) return null;
-  if (thread.branch !== null && isTemporaryWorktreeBranch(thread.branch)) return null;
+  if (
+    thread.branch !== null &&
+    isTemporaryWorktreeBranch(thread.branch) &&
+    (thread.worktreeOrigin ?? null) === null
+  ) {
+    return null;
+  }
   return checkoutRef;
 }
 

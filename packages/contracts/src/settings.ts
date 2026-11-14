@@ -1030,6 +1030,16 @@ export const ServerSettings = Schema.Struct({
    */
   agentThreads: AgentThreadsMode.pipe(Schema.withDecodingDefault(Effect.succeed("ask" as const))),
   /**
+   * Whether a thread an agent starts or messages may work in another
+   * thread's worktree instead of one of its own (thread_start and thread_send
+   * `checkout`, docs/design/child-threads.md, "Workspaces"). Read at every
+   * call and again when the thread is set up, so turning it off applies at
+   * once. Threads already working in one stay. Never chosen: off.
+   */
+  agentThreadsShareWorktrees: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
+  /**
    * Rooms: more than one agent in a thread. Gates every entry point in the
    * clients (agents in the model picker, the Rooms filter) and agents
    * bringing in others; the server accepts room commands either way. It
@@ -1280,6 +1290,7 @@ export const ServerSettingsPatch = Schema.Struct({
   providerInstances: Schema.optionalKey(Schema.Record(ProviderInstanceId, ProviderInstanceConfig)),
   agentInvites: Schema.optionalKey(AgentInvitesMode),
   agentThreads: Schema.optionalKey(AgentThreadsMode),
+  agentThreadsShareWorktrees: Schema.optionalKey(Schema.Boolean),
   enableRooms: Schema.optionalKey(Schema.Boolean),
   enableAgentPages: Schema.optionalKey(Schema.Boolean),
   enableClaudeArtifacts: Schema.optionalKey(Schema.Boolean),

@@ -975,6 +975,37 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
                         createdAt: isoAt(301),
                       },
                       {
+                        requestId: ChildRequestId.make("request-start-review"),
+                        batchId,
+                        kind: "start" as const,
+                        from: { participantId: null },
+                        callerTurnId: "turn-start" as TurnId,
+                        deliveryEpoch: 0,
+                        status: "awaiting_user" as const,
+                        childThreadId: "thread-child-review" as ThreadId,
+                        childMessageId: "msg-child-review" as MessageId,
+                        launch: {
+                          title: "Review the changelog",
+                          prompt: "Review the uncommitted changelog.",
+                          modelSelection: {
+                            instanceId: ProviderInstanceId.make("codex"),
+                            model: "gpt-5",
+                          },
+                          runtimeMode: "approval-required" as const,
+                          interactionMode: "default" as const,
+                          reportBack: true,
+                          runSetup: false,
+                          workspace: { kind: "project_folder" as const },
+                          checkout: {
+                            threadId: childThreadId,
+                            title: "Write the changelog",
+                            worktreePath: "/repo/worktrees/changelog",
+                            branch: "docs/changelog",
+                          },
+                        },
+                        createdAt: isoAt(301),
+                      },
+                      {
                         requestId: ChildRequestId.make("request-start-2"),
                         batchId,
                         kind: "start" as const,
@@ -1030,10 +1061,19 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
         () => document.querySelector<HTMLElement>('[data-testid="child-threads-panel"]'),
         "Unable to find the approval card.",
       );
-      expect(panel.textContent).toContain("wants to start 2 threads");
+      expect(panel.textContent).toContain("wants to start 3 threads");
       expect(panel.textContent).toContain("Fix the flaky cleanup test");
       // No git to isolate it in: the card says it shares the folder.
       expect(panel.textContent).toContain("shares this folder");
+      // One put in another thread's checkout names that thread, and its
+      // access where the agent asked for less than its own.
+      const review = [...panel.querySelectorAll('[data-testid="child-threads-panel-thread"]')].find(
+        (row) => row.textContent?.includes("Review the changelog"),
+      );
+      expect(review?.querySelector("[data-child-thread-checkout]")?.textContent).toBe(
+        "in\u00a0Write the changelog's checkout",
+      );
+      expect(review?.querySelector("[data-child-thread-access]")?.textContent).toBe("Supervised");
       // One for a linked computer says where it would run, and at the
       // reasoning the agent settled for it there.
       expect(panel.textContent).toContain("on Windows PC");

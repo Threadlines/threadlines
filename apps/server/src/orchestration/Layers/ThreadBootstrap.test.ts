@@ -453,6 +453,44 @@ describe("ThreadBootstrap.startChild", () => {
     }).pipe(Effect.provide(world.layer));
   });
 
+  it.effect("puts a child in another thread's worktree as a guest: no worktree, no setup", () => {
+    const world = makeWorld();
+    const coder = "coder" as OrchestrationThread["id"];
+    const inCoderWorktree = input({
+      launch: launch({
+        workspace: { kind: "project_folder" },
+        // A saved launch that still asks for setup never runs it there.
+        runSetup: true,
+        checkout: {
+          threadId: coder,
+          title: "Build the retry",
+          worktreePath: "/worktrees/coder",
+          branch: "feature/retry",
+        },
+      }),
+    });
+    return Effect.gen(function* () {
+      // Asked for, then removed before the user said yes: nothing starts there.
+      const gone = yield* Effect.flip(startChild(inCoderWorktree));
+      expect(gone.detail).toContain("no longer a worktree of this project");
+      expect(world.starts()).toHaveLength(0);
+
+      // Still this project's worktree, on a branch renamed since it was asked for.
+      world.worktrees.push({ path: "/worktrees/coder", branch: "feature/retry-backoff" });
+      yield* startChild(inCoderWorktree);
+
+      expect(world.createWorktreeCalls).toHaveLength(0);
+      expect(world.setupRuns).toHaveLength(0);
+      const [start] = world.starts();
+      expect(start?.create).toMatchObject({
+        branch: "feature/retry-backoff",
+        worktreePath: "/worktrees/coder",
+        worktreeOrigin: { kind: "thread", threadId: coder },
+      });
+      expect(start?.setupScriptClaim).toBeUndefined();
+    }).pipe(Effect.provide(world.layer));
+  });
+
   it.effect(
     "finishes a child an older build made without its first turn, never claiming its setup twice",
     () => {

@@ -53,6 +53,7 @@ import type {
   OutsideAgentRef,
   ThreadId,
   ThreadScheduledRun,
+  ThreadWorktreeOrigin,
   TurnId,
 } from "@threadlines/contracts";
 import * as Schema from "effect/Schema";
@@ -419,6 +420,7 @@ function threadLineage(thread: {
   readonly handedBackAt?: string | null | undefined;
   readonly handedBackTurnId?: TurnId | null | undefined;
   readonly scheduledRun?: ThreadScheduledRun | null | undefined;
+  readonly worktreeOrigin?: ThreadWorktreeOrigin | null | undefined;
   readonly outsideOrigin?: OutsideAgentRef | null | undefined;
 }): Pick<
   ThreadShell,
@@ -428,6 +430,7 @@ function threadLineage(thread: {
   | "handedBackAt"
   | "handedBackTurnId"
   | "scheduledRun"
+  | "worktreeOrigin"
   | "outsideOrigin"
 > {
   return {
@@ -437,6 +440,7 @@ function threadLineage(thread: {
     handedBackAt: thread.handedBackAt ?? null,
     handedBackTurnId: thread.handedBackTurnId ?? null,
     scheduledRun: thread.scheduledRun ?? null,
+    worktreeOrigin: thread.worktreeOrigin ?? null,
     outsideOrigin: thread.outsideOrigin ?? null,
   };
 }
@@ -660,6 +664,7 @@ function sidebarLineage(
     | "pendingChildApproval"
     | "queuedFollowUps"
     | "scheduledRun"
+    | "worktreeOrigin"
     | "outsideOrigin"
     | "remoteOrigin"
     | "remoteChildren"
@@ -678,6 +683,7 @@ function sidebarLineage(
   | "pendingChildApproval"
   | "queuedFollowUpCount"
   | "scheduledRun"
+  | "worktreeOrigin"
   | "outsideOrigin"
   | "remoteOrigin"
   | "remoteChildren"
@@ -688,6 +694,7 @@ function sidebarLineage(
   const moveStatus = threadMoveStatus(thread.move);
   return {
     scheduledRun: thread.scheduledRun ?? null,
+    worktreeOrigin: thread.worktreeOrigin ?? null,
     outsideOrigin: thread.outsideOrigin ?? null,
     parentThreadId: thread.parentThreadId ?? null,
     parentTurnId: thread.parentTurnId ?? null,
@@ -1315,6 +1322,7 @@ function sidebarThreadSummariesEqual(
     (left.pendingScheduleApproval ?? false) === (right.pendingScheduleApproval ?? false) &&
     (left.queuedFollowUpCount ?? 0) === (right.queuedFollowUpCount ?? 0) &&
     scheduledRunsEqual(left.scheduledRun, right.scheduledRun) &&
+    (left.worktreeOrigin?.threadId ?? null) === (right.worktreeOrigin?.threadId ?? null) &&
     outsideOriginsEqual(left.outsideOrigin, right.outsideOrigin) &&
     remoteOriginsEqual(left.remoteOrigin, right.remoteOrigin) &&
     remoteChildrenEqual(left.remoteChildren, right.remoteChildren) &&
@@ -1412,6 +1420,7 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     (left.pendingChildApproval ?? false) === (right.pendingChildApproval ?? false) &&
     (left.pendingSettingsChange ?? false) === (right.pendingSettingsChange ?? false) &&
     scheduledRunsEqual(left.scheduledRun, right.scheduledRun) &&
+    (left.worktreeOrigin?.threadId ?? null) === (right.worktreeOrigin?.threadId ?? null) &&
     outsideOriginsEqual(left.outsideOrigin, right.outsideOrigin) &&
     outsideWorkEqual(left.outsideWork, right.outsideWork) &&
     remoteOriginsEqual(left.remoteOrigin, right.remoteOrigin) &&
@@ -2609,6 +2618,7 @@ function applyEnvironmentOrchestrationEvent(
           archivedWithParentAt: null,
           childRequests: EMPTY_CHILD_REQUEST_STATE,
           scheduledRun: event.payload.scheduledRun ?? null,
+          worktreeOrigin: event.payload.worktreeOrigin ?? null,
           outsideOrigin: event.payload.outsideOrigin ?? null,
           ...(event.payload.remoteOrigin ? { remoteOrigin: event.payload.remoteOrigin } : {}),
           ...(event.payload.movedFrom ? { movedFrom: event.payload.movedFrom } : {}),
@@ -2771,6 +2781,9 @@ function applyEnvironmentOrchestrationEvent(
         ...(event.payload.branch !== undefined ? { branch: event.payload.branch } : {}),
         ...(event.payload.worktreePath !== undefined
           ? { worktreePath: event.payload.worktreePath }
+          : {}),
+        ...(event.payload.worktreeOrigin !== undefined
+          ? { worktreeOrigin: event.payload.worktreeOrigin }
           : {}),
         updatedAt: event.payload.updatedAt,
       }));

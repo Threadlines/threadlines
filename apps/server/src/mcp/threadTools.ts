@@ -14,6 +14,7 @@ import {
   AgentThreadReadResult,
   AgentThreadStatusWord,
   AgentThreadSummary,
+  RuntimeMode,
 } from "@threadlines/contracts";
 import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/ai";
@@ -97,9 +98,10 @@ export const ThreadStartResult = Schema.Struct({
         reasoning: Schema.optional(Schema.String),
         /**
          * `worktree`: its own new worktree. `project_folder`: shares the
-         * project folder. `remote`: on a linked computer, in its own checkout.
+         * project folder. `checkout`: works in the checkout of the thread its
+         * `checkout` named. `remote`: on a linked computer, in its own checkout.
          */
-        workspace: Schema.Literals(["worktree", "project_folder", "remote"]),
+        workspace: Schema.Literals(["worktree", "project_folder", "checkout", "remote"]),
         /** The linked computer it runs on; absent: this one. */
         computer: Schema.optional(Schema.String),
       }),
@@ -153,6 +155,12 @@ export type ThreadStopResult = typeof ThreadStopResult.Type;
 const ThreadIdParameter = Schema.String.annotate({
   description: "The thread's id, from thread_start or thread_list.",
 });
+
+/** thread_start's and thread_send's `checkout`: `what` says what the named thread's folder is for. */
+const checkoutParameter = (what: string) =>
+  Schema.String.annotate({
+    description: `${what} \`self\` for your own, or the id of a thread you started (thread_list). That thread must not be working. The user allows this in Settings; a refusal says where.`,
+  });
 
 /** What a thread runs at when an agent in a room names a model but no reasoning. */
 export const ROOM_REASONING =
@@ -217,7 +225,7 @@ export const ThreadAgentsTool = readsThreads(
 export const ThreadStartTool = drivesThreads(
   Tool.make("thread_start", {
     description:
-      "Start new threads in this project to work in parallel. Each gets its own agent session and its own git worktree off your current commit (in a project without git they share the project folder). Give each a short `title` and a self-contained `prompt`: the new thread sees none of this conversation, only its prompt. `agent` picks a model from thread_agents; leave it out to use your own model and reasoning. Unless the user asked for a model or reasoning, prefer your own model or one already in this room (thread_agents' `room`), here or on another computer: a thread on a room agent's model runs at the reasoning the user set for that agent. `agent.reasoning` sets a level instead. Threads get your current access and interaction modes, never more. `runSetup: false` skips the project's setup script, for quick research. `computer` starts them on another linked computer (a name or id from thread_agents' `computers`) in its copy of this project: from your branch when you pushed it, otherwise from that computer's default branch, without your unpushed changes. With `reportBack` (default true) each thread's final reply comes back to you as a message when it finishes; with false they run on their own and nothing comes back. Returns as soon as they are recorded and does not wait for them, so don't poll: carry on, or end your turn if you have nothing else to do. At most 5 threads per call and 5 per user message.",
+      "Start new threads in this project to work in parallel. Each gets its own agent session and its own git worktree off your current commit (in a project without git they share the project folder). Give each a short `title` and a self-contained `prompt`: the new thread sees none of this conversation, only its prompt. `agent` picks a model from thread_agents; leave it out to use your own model and reasoning. Unless the user asked for a model or reasoning, prefer your own model or one already in this room (thread_agents' `room`), here or on another computer: a thread on a room agent's model runs at the reasoning the user set for that agent. `agent.reasoning` sets a level instead. Threads get your current access and interaction modes, never more; `access` asks for less. `runSetup: false` skips the project's setup script, for quick research. `checkout` puts a thread in a checkout that already exists instead of a new worktree, so it sees the files as they are there, uncommitted changes included (a reviewer for work another thread just finished): no worktree or branch is made and the setup script is not run. It shares that folder with the thread it belongs to, so have only one of them work at a time. `computer` starts them on another linked computer (a name or id from thread_agents' `computers`) in its copy of this project: from your branch when you pushed it, otherwise from that computer's default branch, without your unpushed changes. With `reportBack` (default true) each thread's final reply comes back to you as a message when it finishes; with false they run on their own and nothing comes back. Returns as soon as they are recorded and does not wait for them, so don't poll: carry on, or end your turn if you have nothing else to do. At most 5 threads per call and 5 per user message.",
     parameters: Schema.Struct({
       threads: Schema.Array(
         Schema.Struct({
@@ -227,6 +235,15 @@ export const ThreadStartTool = drivesThreads(
           }),
           agent: Schema.optional(AgentParameter),
           runSetup: Schema.optional(Schema.Boolean),
+          checkout: Schema.optional(
+            checkoutParameter("Work in an existing checkout instead of a new worktree:"),
+          ),
+          access: Schema.optional(
+            RuntimeMode.annotate({
+              description:
+                "Its access: `approval-required` (Supervised: the user approves its commands and edits), `auto-accept-edits`, `auto` or `full-access`. Left out, or more than your own: your own.",
+            }),
+          ),
         }),
       ),
       reportBack: Schema.optional(Schema.Boolean),
@@ -284,10 +301,13 @@ export const ThreadReadTool = readsThreads(
 export const ThreadSendTool = drivesThreads(
   Tool.make("thread_send", {
     description:
-      "Send one of your threads a message: more work, a correction or a question. If it is idle it starts on it now; if it is busy it takes it after its current turn. Its reply comes back to you as a message, like a start. Only threads you started whose replies still come back to you. Don't poll; end your turn if you have nothing else to do.",
+      "Send one of your threads a message: more work, a correction or a question. If it is idle it starts on it now; if it is busy it takes it after its current turn. Its reply comes back to you as a message, like a start. Only threads you started whose replies still come back to you. `checkout` first moves an idle thread into another thread's checkout, keeping its conversation, so it reads your message there (a thread that planned the work looks at what another thread built). Don't poll; end your turn if you have nothing else to do.",
     parameters: Schema.Struct({
       threadId: ThreadIdParameter,
       message: Schema.String.annotate({ description: "What you want it to do or answer." }),
+      checkout: Schema.optional(
+        checkoutParameter("Move the thread into another checkout before it reads the message:"),
+      ),
     }),
     success: ThreadSendResult,
   }).annotate(Tool.Title, "Message a thread"),

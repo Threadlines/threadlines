@@ -339,7 +339,9 @@ describe("the approval card", () => {
     };
     const card = pendingChildThreads(
       {
+        id: ThreadId.make("thread-parent"),
         modelSelection: sol("xhigh"),
+        runtimeMode: "full-access",
         childRequests: {
           ...EMPTY_CHILD_REQUEST_STATE,
           open: [
@@ -358,6 +360,53 @@ describe("the approval card", () => {
       "Extra High",
       "max",
       null,
+    ]);
+  });
+
+  it("says whose checkout a thread would share, and its access when it is lower", () => {
+    const base = waitingRequest("reviewer", "batch-1");
+    const inCheckout = (
+      id: string,
+      owner: string,
+      patch: Partial<NonNullable<OrchestrationChildRequest["launch"]>> = {},
+    ): OrchestrationChildRequest => ({
+      ...waitingRequest(id, "batch-1"),
+      launch: {
+        ...base.launch!,
+        title: id,
+        checkout: {
+          threadId: ThreadId.make(owner),
+          title: "Coder",
+          worktreePath: "/worktrees/coder",
+          branch: "feature/retry",
+        },
+        ...patch,
+      },
+    });
+    const card = pendingChildThreads(
+      {
+        id: ThreadId.make("thread-parent"),
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-astra" },
+        runtimeMode: "full-access",
+        childRequests: {
+          ...EMPTY_CHILD_REQUEST_STATE,
+          open: [
+            base,
+            inCheckout("reviewer", "thread-coder", { runtimeMode: "approval-required" }),
+            inCheckout("architect", "thread-parent"),
+          ],
+        },
+      },
+      [],
+      (model) => model.name,
+    );
+    expect(
+      card?.threads.map((thread) => ({ checkout: thread.checkout, access: thread.access })),
+    ).toEqual([
+      { checkout: null, access: null },
+      { checkout: { title: "Coder" }, access: "Supervised" },
+      // The asking thread's own checkout has no other thread to name.
+      { checkout: { title: null }, access: null },
     ]);
   });
 });

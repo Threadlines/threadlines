@@ -200,6 +200,10 @@ const makeTools = (options: {
   readonly gitRepository?: boolean;
   readonly links?: ThreadToolLinks;
   readonly userDefault?: ModelSelection;
+  /** "Threads can share a checkout" (default off, as the setting is). */
+  readonly shareWorktrees?: boolean;
+  /** The branch checked out in a folder; any other folder has none. */
+  readonly branches?: Readonly<Record<string, string>>;
 }) =>
   Effect.gen(function* () {
     let caller = options.caller ?? makeThread();
@@ -253,11 +257,23 @@ const makeTools = (options: {
       providers: Effect.succeed(PROVIDERS),
       userDefaultModel: Effect.succeed(options.userDefault ?? null),
       threadsMode: Effect.succeed(options.mode ?? "auto"),
+      shareWorktrees: Effect.succeed(options.shareWorktrees ?? false),
       git: {
         execute: (input) =>
           Effect.succeed({
-            exitCode: (options.gitRepository === false ? 128 : 0) as never,
-            stdout: input.args.includes("--is-inside-work-tree") ? "true\n" : `${HEAD}\n`,
+            exitCode: (options.gitRepository === false ||
+            (input.args[0] === "symbolic-ref" && options.branches?.[input.cwd] === undefined)
+              ? 128
+              : 0) as never,
+            stdout: input.args.includes("--is-inside-work-tree")
+              ? "true\n"
+              : input.args.includes("--git-common-dir")
+                ? "/project/.git\n"
+                : input.args.includes("--show-toplevel")
+                  ? `${input.cwd}\n`
+                  : input.args[0] === "symbolic-ref"
+                    ? `${options.branches?.[input.cwd] ?? ""}\n`
+                    : `${HEAD}\n`,
             stderr:
               options.gitRepository === false ? "fatal: not a git repository (or any parent)" : "",
             stdoutTruncated: false,
@@ -611,6 +627,214 @@ describe("thread_send", () => {
         message: "Now the tests.",
       });
       expect(queued.outcome).toBe("queued");
+    }),
+  );
+});
+
+describe("an existing checkout", () => {
+  /** A thread the parent started that has finished its work, on its own branch. */
+  const coder = (patch: Partial<OrchestrationThread> = {}) =>
+    makeChild({
+      title: "Coder",
+      branch: "feature/retry",
+      activities: [],
+      proposedPlans: [],
+      ...patch,
+    });
+  const reviewer = {
+    title: "Review the retry change",
+    prompt: "Review the uncommitted changes.",
+    checkout: CHILD,
+  };
+  const branches = { "/worktrees/child": "feature/retry", "/checkout": "main" };
+
+  it.effect("starts a thread in a finished thread's checkout, with no worktree or setup", () =>
+    Effect.gen(function* () {
+      const tools = yield* makeTools({ others: [coder()], shareWorktrees: true, branches });
+      const result = yield* tools.handlers.thread_start(mainCaller(), {
+        threads: [
+          { ...reviewer, runSetup: true, access: "approval-required" },
+          oneThread.threads[0]!,
+        ],
+      });
+      const [start] = ofType(tools.dispatched, "thread.child.start");
+
+      expect(result.outcome).toBe("started");
+      expect(result.threads?.map((thread) => thread.workspace)).toEqual(["checkout", "worktree"]);
+      expect(start?.children[0]?.launch).toMatchObject({
+        // The folder and branch as git has them now, saved with the request.
+        checkout: {
+          threadId: CHILD,
+          title: "Coder",
+          worktreePath: "/worktrees/child",
+          branch: "feature/retry",
+        },
+        workspace: { kind: "project_folder" },
+        runSetup: false,
+        // Less than the caller's own access, because it asked for less.
+        runtimeMode: "approval-required",
+      });
+      // The thread beside it still gets a worktree of its own.
+      expect(start?.children[1]?.launch).toMatchObject({
+        workspace: { kind: "worktree", baseRef: HEAD },
+        runSetup: true,
+        runtimeMode: "auto-accept-edits",
+      });
+      expect(start?.children[1]?.launch.checkout).toBeUndefined();
+    }),
+  );
+
+  it.effect("`self` is the caller's own checkout, and never more access than its own", () =>
+    Effect.gen(function* () {
+      const tools = yield* makeTools({ shareWorktrees: true, branches });
+      yield* tools.handlers.thread_start(mainCaller(), {
+        threads: [{ ...reviewer, checkout: "self", access: "full-access" }],
+      });
+      const [start] = ofType(tools.dispatched, "thread.child.start");
+      expect(start?.children[0]?.launch).toMatchObject({
+        checkout: { threadId: PARENT, worktreePath: "/checkout", branch: "main" },
+        runtimeMode: "auto-accept-edits",
+      });
+
+      // In the project folder itself, there is no worktree to name.
+      const inProject = yield* makeTools({
+        caller: makeThread({ worktreePath: null }),
+        shareWorktrees: true,
+      });
+      yield* inProject.handlers.thread_start(mainCaller(), {
+        threads: [{ ...reviewer, checkout: "self" }],
+      });
+      expect(
+        ofType(inProject.dispatched, "thread.child.start")[0]?.children[0]?.launch.checkout,
+      ).toEqual({ threadId: PARENT, title: "Parent", worktreePath: null, branch: null });
+    }),
+  );
+
+  it.effect("is refused while it is off, its thread is working, or it isn't the caller's", () =>
+    Effect.gen(function* () {
+      const off = yield* makeTools({ others: [coder()] });
+      const whenOff = yield* off.handlers.thread_start(mainCaller(), { threads: [reviewer] });
+      expect(whenOff).toMatchObject({ outcome: "refused" });
+      expect(whenOff.detail).toContain("threadlines-place:threads.agentThreadsShareWorktrees");
+
+      const working = yield* makeTools({
+        others: [coder({ queuedFollowUps: [{}] as never })],
+        shareWorktrees: true,
+      });
+      const whileWorking = yield* working.handlers.thread_start(mainCaller(), {
+        threads: [reviewer],
+      });
+      expect(whileWorking).toMatchObject({ outcome: "refused" });
+      expect(whileWorking.detail).toContain("'Coder' is still working");
+
+      const stranger = coder({ id: STRANGER, parentThreadId: null, attachedToParent: false });
+      const notMine = yield* makeTools({ others: [stranger], shareWorktrees: true });
+      const someoneElses = yield* notMine.handlers.thread_start(mainCaller(), {
+        threads: [{ ...reviewer, checkout: STRANGER }],
+      });
+      expect(someoneElses).toMatchObject({ outcome: "refused" });
+
+      // A checkout is on this computer, so it can't go with another one.
+      const elsewhere = yield* working.handlers.thread_start(mainCaller(), {
+        threads: [reviewer],
+        computer: "Mac mini",
+      });
+      expect(elsewhere).toMatchObject({ outcome: "refused" });
+
+      for (const tools of [off, working, notMine]) {
+        expect(tools.dispatched).toHaveLength(0);
+      }
+    }),
+  );
+
+  it.effect("moves an idle thread into another checkout with its message", () =>
+    Effect.gen(function* () {
+      const architect = coder({
+        id: STRANGER,
+        title: "Architect",
+        worktreePath: null,
+        branch: null,
+      });
+      const tools = yield* makeTools({
+        others: [coder(), architect],
+        shareWorktrees: true,
+        branches,
+      });
+      const moved = yield* tools.handlers.thread_send(mainCaller(), {
+        threadId: STRANGER,
+        message: "Does the build match the design?",
+        checkout: CHILD,
+      });
+      expect(moved.outcome).toBe("sent");
+      expect(moved.detail).toContain("'Coder's checkout");
+      expect(ofType(tools.dispatched, "thread.child.send")[0]).toMatchObject({
+        childThreadId: STRANGER,
+        checkout: { threadId: CHILD, worktreePath: "/worktrees/child", branch: "feature/retry" },
+      });
+
+      // Already there: a plain message, nothing to move.
+      const again = yield* tools.handlers.thread_send(mainCaller(), {
+        threadId: CHILD,
+        message: "One more thing.",
+        checkout: CHILD,
+      });
+      expect(again.outcome).toBe("refused");
+      const there = yield* makeTools({
+        others: [coder(), coder({ id: STRANGER, title: "Architect" })],
+        shareWorktrees: true,
+        branches,
+      });
+      yield* there.handlers.thread_send(mainCaller(), {
+        threadId: STRANGER,
+        message: "One more thing.",
+        checkout: CHILD,
+      });
+      expect(ofType(there.dispatched, "thread.child.send")[0]?.checkout).toBeUndefined();
+
+      // A busy thread only moves between its turns.
+      const busy = yield* makeTools({
+        others: [
+          coder(),
+          coder({ id: STRANGER, queuedFollowUps: [{}] as never, worktreePath: null }),
+        ],
+        shareWorktrees: true,
+        branches,
+      });
+      const refused = yield* busy.handlers.thread_send(mainCaller(), {
+        threadId: STRANGER,
+        message: "Look at this.",
+        checkout: CHILD,
+      });
+      expect(refused.outcome).toBe("refused");
+      expect(busy.dispatched).toHaveLength(0);
+
+      // Nor one that left a dev server running: its session would stay put.
+      const serving = yield* makeTools({
+        others: [
+          coder(),
+          coder({
+            id: STRANGER,
+            title: "Architect",
+            worktreePath: null,
+            session: {
+              status: "ready",
+              activeTurnId: null,
+              pendingBackgroundTaskCount: 1,
+              awaitedBackgroundTaskCount: 0,
+            } as never,
+          }),
+        ],
+        shareWorktrees: true,
+        branches,
+      });
+      const stays = yield* serving.handlers.thread_send(mainCaller(), {
+        threadId: STRANGER,
+        message: "Look at this.",
+        checkout: CHILD,
+      });
+      expect(stays.outcome).toBe("refused");
+      expect(stays.detail).toContain("'Architect' still has background work running");
+      expect(serving.dispatched).toHaveLength(0);
     }),
   );
 });

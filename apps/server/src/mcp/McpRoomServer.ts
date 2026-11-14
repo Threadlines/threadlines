@@ -16,7 +16,11 @@
  * (scheduleTools.ts) are served here too: they need the same caller identity
  * and the same per-runtime grant.
  */
-import { agentInvitesMode, agentThreadsMode } from "@threadlines/shared/serverSettings";
+import {
+  agentInvitesMode,
+  agentThreadsMode,
+  agentThreadsShareWorktrees,
+} from "@threadlines/shared/serverSettings";
 import type { ThreadId } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -263,6 +267,10 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
       threadsMode: settings.getSettings.pipe(
         Effect.map(agentThreadsMode),
         Effect.orElseSucceed(() => "off" as const),
+      ),
+      shareWorktrees: settings.getSettings.pipe(
+        Effect.map(agentThreadsShareWorktrees),
+        Effect.orElseSucceed(() => false),
       ),
       git,
       requests,

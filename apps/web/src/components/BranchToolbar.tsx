@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { memo, useMemo } from "react";
 
+import { useThreadTitle } from "../childThreads";
 import { useComposerDraftStore, type DraftId } from "../composerDraftStore";
 import { useIsMobile } from "../hooks/useMediaQuery";
 import { useStore } from "../store";
@@ -85,6 +86,8 @@ interface MobileRunContextSelectorProps {
   onSetUpElsewhere: (() => void) | undefined;
   effectiveEnvMode: EnvMode;
   activeWorktreePath: string | null;
+  /** See BranchToolbarEnvModeSelector's `sharedWorktreeOwner`. */
+  sharedWorktreeOwner: string | null | undefined;
   onEnvModeChange: (mode: EnvMode) => void;
 }
 
@@ -98,6 +101,7 @@ const MobileRunContextSelector = memo(function MobileRunContextSelector({
   onSetUpElsewhere,
   effectiveEnvMode,
   activeWorktreePath,
+  sharedWorktreeOwner,
   onEnvModeChange,
 }: MobileRunContextSelectorProps) {
   const activeEnvironment = useMemo(
@@ -111,7 +115,7 @@ const MobileRunContextSelector = memo(function MobileRunContextSelector({
         ? FolderGitIcon
         : FolderIcon;
   const workspaceLabel = envModeLocked
-    ? resolveLockedWorkspaceLabel(activeWorktreePath)
+    ? resolveLockedWorkspaceLabel(activeWorktreePath, sharedWorktreeOwner !== undefined)
     : effectiveEnvMode === "worktree"
       ? resolveEnvModeLabel("worktree")
       : resolveCurrentWorkspaceLabel(activeWorktreePath);
@@ -268,6 +272,14 @@ export const BranchToolbar = memo(function BranchToolbar({
   // matches the source-control surfaces. Mode/lock semantics stay keyed to
   // the configured worktree.
   const displayWorktreePath = serverThread?.effectiveCwd ?? activeWorktreePath;
+  // A worktree another thread lent it (ThreadWorktreeOrigin), while its
+  // session works there: the label says it is shared, and whose it is.
+  const worktreeLenderId =
+    serverThread?.effectiveCwd == null && activeWorktreePath !== null
+      ? (serverThread?.worktreeOrigin?.threadId ?? null)
+      : null;
+  const worktreeLenderTitle = useThreadTitle(environmentId, worktreeLenderId);
+  const sharedWorktreeOwner = worktreeLenderId === null ? undefined : worktreeLenderTitle;
   // A checkout switch only takes effect on the next turn, so say so while the
   // live session still runs in the checkout it started in.
   const pendingCheckoutSwitch = resolvePendingCheckoutSwitch({
@@ -380,6 +392,7 @@ export const BranchToolbar = memo(function BranchToolbar({
           onSetUpElsewhere={onSetUpElsewhere}
           effectiveEnvMode={effectiveEnvMode}
           activeWorktreePath={displayWorktreePath}
+          sharedWorktreeOwner={sharedWorktreeOwner}
           onEnvModeChange={onEnvModeChange}
         />
       ) : (
@@ -400,6 +413,7 @@ export const BranchToolbar = memo(function BranchToolbar({
             envLocked={envModeLocked}
             effectiveEnvMode={effectiveEnvMode}
             activeWorktreePath={displayWorktreePath}
+            sharedWorktreeOwner={sharedWorktreeOwner}
             onEnvModeChange={onEnvModeChange}
           />
         </div>

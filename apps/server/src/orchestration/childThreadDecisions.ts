@@ -17,6 +17,8 @@ import {
   ChildRequestBatchId,
   ChildRequestId,
   type ChildRequestOutcome,
+  type ChildThreadCheckout,
+  EventId,
   MessageId,
   type OrchestrationChildRequest,
   type OrchestrationCommand,
@@ -26,6 +28,8 @@ import {
   type OrchestrationThread,
   type ProviderInteractionMode,
   type RuntimeMode,
+  ThreadCheckoutMovedActivityKind,
+  type ThreadCheckoutMovedPayload,
   type ThreadId,
   type RemoteChildThread,
 } from "@threadlines/contracts";
@@ -47,6 +51,7 @@ import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
 import { activeParticipants } from "@threadlines/shared/threadParticipants";
 
 import { handOffReplyText } from "./agentRequestDecisions.ts";
+import { checkoutSelectedEvents } from "./threadCheckout.ts";
 import { currentAgentModel, messageAgentModels } from "./messageAgentModels.ts";
 
 type PlannedEvent = Omit<OrchestrationEvent, "sequence">;
@@ -111,6 +116,7 @@ export function claimsServerLineage(fields: {
   readonly remoteOrigin?: unknown;
   readonly scheduledRun?: unknown;
   readonly outsideOrigin?: unknown;
+  readonly worktreeOrigin?: unknown;
 }): boolean {
   return (
     fields.parentThreadId !== undefined ||
@@ -118,7 +124,8 @@ export function claimsServerLineage(fields: {
     fields.attachedToParent !== undefined ||
     fields.remoteOrigin !== undefined ||
     fields.scheduledRun !== undefined ||
-    fields.outsideOrigin !== undefined
+    fields.outsideOrigin !== undefined ||
+    fields.worktreeOrigin !== undefined
   );
 }
 
@@ -337,6 +344,64 @@ const quotedList = (titles: ReadonlyArray<string>) =>
     ? `'${titles[0]}'`
     : `${titles.length} threads (${titles.map((title) => `'${title}'`).join(", ")})`;
 
+/**
+ * Why `parent`'s agent may not put a thread in `checkout`, or null: a
+ * checkout is lent only by the parent itself or by a thread it started, in
+ * the same project. Whether its owner is working is the caller's to check
+ * when the thread is about to work there (thread_start, a child's setup,
+ * thread_send); a request waiting for the user's yes outlives that moment.
+ */
+export function checkoutLendingRefusal(
+  readModel: OrchestrationReadModel,
+  parent: OrchestrationThread,
+  checkout: ChildThreadCheckout,
+): string | null {
+  const owner = findThread(readModel, checkout.threadId);
+  if (owner === null) {
+    return `'${checkout.title}' is gone, so no thread can be put in its checkout.`;
+  }
+  if (
+    owner.projectId !== parent.projectId ||
+    (owner.id !== parent.id && owner.parentThreadId !== parent.id)
+  ) {
+    return "A thread can only be put in the checkout of the thread that starts it, or of one that thread started.";
+  }
+  return null;
+}
+
+/**
+ * Why a checkout can't take another thread right now, or null: the thread it
+ * belongs to is at work in it. The parent's own is always free to lend: it is
+ * in its turn whenever it asks.
+ */
+export function checkoutOwnerBusy(
+  readModel: OrchestrationReadModel,
+  parent: OrchestrationThread,
+  checkout: ChildThreadCheckout,
+): string | null {
+  const owner = checkout.threadId === parent.id ? null : findThread(readModel, checkout.threadId);
+  return owner !== null && childHasLiveWork(owner)
+    ? `'${owner.title}' is working in its checkout. Wait for it to finish, then try again.`
+    : null;
+}
+
+/**
+ * Why a thread can't move to another checkout now, as the rest of a sentence
+ * about it ("... is busy"), or null. It moves only between its turns, and
+ * only with nothing of its still running: a session with background work
+ * left (a dev server, say) stays in the folder it is in until that ends, so
+ * its next turn would read the message there, not where it was sent.
+ */
+export function checkoutMoveRefusal(thread: OrchestrationThread): string | null {
+  if (childHasLiveWork(thread)) {
+    return "is busy, and a thread only moves to another checkout between its turns.";
+  }
+  if ((thread.session?.pendingBackgroundTaskCount ?? 0) > 0) {
+    return "still has background work running where it is (a dev server, say), and it can't move while that runs. Stop it first.";
+  }
+  return null;
+}
+
 /** Start threads (`thread.child.start`). */
 export function decideChildStart(
   readModel: OrchestrationReadModel,
@@ -369,6 +434,18 @@ export function decideChildStart(
     }
     if ((child.launch.target === undefined) !== (child.launch.workspace.kind !== "remote")) {
       return refuse("A thread on another computer needs that computer's workspace, and only it.");
+    }
+    const checkout = child.launch.checkout;
+    if (checkout !== undefined) {
+      if (child.launch.workspace.kind !== "project_folder" || child.launch.runSetup) {
+        return refuse(
+          "A thread that works in another thread's checkout gets no worktree or setup of its own.",
+        );
+      }
+      const lent = checkoutLendingRefusal(readModel, parent, checkout);
+      if (lent !== null) {
+        return refuse(lent);
+      }
     }
   }
   return command.children.map((child): PlannedEvent => ({
@@ -469,12 +546,70 @@ export function decideChildSend(
   ) {
     return refuse("That message was already sent.");
   }
+  // A move into another thread's checkout first: only between the child's
+  // turns, with nothing of its still running in the folder it leaves, and
+  // not while the thread that checkout belongs to is at work in it.
+  const checkout = command.checkout;
+  if (checkout !== undefined) {
+    const stays = checkoutMoveRefusal(child);
+    const lent =
+      checkout.threadId === child.id
+        ? "A thread moves into another thread's checkout, never its own."
+        : (checkoutLendingRefusal(readModel, parent, checkout) ??
+          checkoutOwnerBusy(readModel, parent, checkout) ??
+          (stays !== null ? `That thread ${stays}` : null));
+    if (lent !== null) {
+      return refuse(lent);
+    }
+  }
   const fromThread = {
     threadId: parent.id,
     requestId: command.requestId,
     kind: "request" as const,
   };
   return [
+    ...(checkout === undefined
+      ? []
+      : [
+          ...checkoutSelectedEvents({
+            thread: child,
+            branch: checkout.branch,
+            worktreePath: checkout.worktreePath,
+            // The project folder is nobody's worktree: only a worktree is lent.
+            ...(checkout.worktreePath !== null
+              ? { worktreeOrigin: { kind: "thread" as const, threadId: checkout.threadId } }
+              : {}),
+            occurredAt: command.createdAt,
+            base: () => baseFor(child.id),
+          }),
+          // The move, on the child's record: its line in the chat, and the
+          // point no revert reaches back past (CheckpointRevert).
+          {
+            ...baseFor(child.id),
+            type: "thread.activity-appended",
+            payload: {
+              threadId: child.id,
+              activity: {
+                id: EventId.make(crypto.randomUUID()),
+                tone: "info",
+                kind: ThreadCheckoutMovedActivityKind,
+                summary: `Moved into the checkout of '${checkout.threadId === parent.id ? parent.title : checkout.title}'`,
+                payload: {
+                  ownerThreadId: checkout.threadId,
+                  ownerTitle: checkout.title,
+                  fromWorktreePath: child.worktreePath,
+                  toWorktreePath: checkout.worktreePath,
+                  turnCount: child.checkpoints.reduce(
+                    (latest, checkpoint) => Math.max(latest, checkpoint.checkpointTurnCount),
+                    0,
+                  ),
+                } satisfies ThreadCheckoutMovedPayload,
+                turnId: null,
+                createdAt: command.createdAt,
+              },
+            },
+          } satisfies PlannedEvent,
+        ]),
     {
       ...baseFor(parent.id),
       type: "thread.child-request-submitted",

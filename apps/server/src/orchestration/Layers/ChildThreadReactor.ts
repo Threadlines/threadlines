@@ -1,5 +1,6 @@
 import {
   type ChildRequestId,
+  type ChildThreadCheckout,
   CommandId,
   type MessageId,
   type OrchestrationChildRequest,
@@ -9,7 +10,7 @@ import {
   type ThreadId,
 } from "@threadlines/contracts";
 import { makeDrainableWorker } from "@threadlines/shared/DrainableWorker";
-import { agentThreadsMode } from "@threadlines/shared/serverSettings";
+import { agentThreadsMode, agentThreadsShareWorktrees } from "@threadlines/shared/serverSettings";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -23,7 +24,11 @@ import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/Projectio
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
-import { childReportMessageId, clampLaunchToCeiling } from "../childThreadDecisions.ts";
+import {
+  childHasLiveWork,
+  childReportMessageId,
+  clampLaunchToCeiling,
+} from "../childThreadDecisions.ts";
 import {
   childDeliveryAfterRestart,
   childDeliveryForQuietCandidate,
@@ -119,6 +124,34 @@ export const makeChildThreadReactor = Effect.gen(function* () {
       );
     });
 
+  /**
+   * Why a child can't start in the checkout its launch names, or null. The
+   * checkout was resolved when it was asked for, and the user's yes may come
+   * much later: the setting may be off by then, or the thread it belongs to
+   * at work in it again. Its setup looks the folder itself up again
+   * (ThreadBootstrap).
+   */
+  const lentCheckoutBlock = (parent: OrchestrationThread, checkout: ChildThreadCheckout) =>
+    Effect.gen(function* () {
+      const allowed = yield* settingsService.getSettings.pipe(
+        Effect.map(agentThreadsShareWorktrees),
+        Effect.orElseSucceed(() => false),
+      );
+      if (!allowed) {
+        return "putting a thread in another thread's checkout was turned off in Settings.";
+      }
+      if (checkout.threadId !== parent.id) {
+        const owner = yield* readThread(checkout.threadId);
+        if (owner !== undefined && childHasLiveWork(owner)) {
+          return `'${owner.title}' is working in that checkout now. Start it again once that thread has finished.`;
+        }
+        if (owner !== undefined && (owner.move ?? null) !== null) {
+          return `'${owner.title}' is moving to another computer, so its checkout here can't be shared.`;
+        }
+      }
+      return null;
+    });
+
   // One setup per request at a time: the same request seen twice (its event
   // replayed, a restart resuming it) never runs two. Likewise one pending
   // quiet check per request and one stop check per child, however many
@@ -159,6 +192,22 @@ export const makeChildThreadReactor = Effect.gen(function* () {
             error: "The request had no launch details.",
           });
           return;
+        }
+        // Checked once, before the child exists: a setup resumed after its
+        // start landed must not fail a thread that is already working.
+        if (
+          launch.checkout !== undefined &&
+          (yield* readThread(request.childThreadId)) === undefined
+        ) {
+          const blocked = yield* lentCheckoutBlock(parent, launch.checkout);
+          if (blocked !== null) {
+            yield* settle(parent, request, {
+              outcome: "failed",
+              text: `Couldn't start '${launch.title}': ${blocked}`,
+              error: blocked,
+            });
+            return;
+          }
         }
         const exit = yield* Effect.exit(
           bootstrap.startChild({
