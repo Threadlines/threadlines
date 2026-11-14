@@ -1011,6 +1011,195 @@ async function familyWithRemoteChild() {
   return { started, model: recorded.model };
 }
 
+describe("decider child threads in another thread's checkout", () => {
+  const CODER = ThreadId.make("coder");
+  const ARCHITECT = ThreadId.make("architect");
+  const ours = { parentThreadId: PARENT, attachedToParent: true };
+  const coderCheckout = {
+    threadId: CODER,
+    title: "Build the retry",
+    worktreePath: "/worktrees/coder",
+    branch: "feature/retry",
+  };
+  const inCoderCheckout: Partial<ChildThreadLaunch> = {
+    workspace: { kind: "project_folder" },
+    runSetup: false,
+    checkout: coderCheckout,
+  };
+  /** A parent mid-turn with a finished coder in its own worktree and an architect in the project folder. */
+  const family = (architect: Partial<OrchestrationThread> = {}) =>
+    readModel([
+      thread(PARENT, { session: session(PARENT) }),
+      thread(CODER, { ...ours, worktreePath: "/worktrees/coder", branch: "feature/retry" }),
+      thread(ARCHITECT, { ...ours, ...architect }),
+    ]);
+  const sendToArchitect = (
+    checkout: typeof coderCheckout,
+  ): Extract<OrchestrationCommand, { type: "thread.child.send" }> => ({
+    type: "thread.child.send",
+    commandId: CommandId.make("send-architect"),
+    threadId: PARENT,
+    requestId: ChildRequestId.make("send-architect"),
+    from: PRIMARY,
+    callerTurnId: CALLER_TURN,
+    childThreadId: ARCHITECT,
+    childMessageId: MessageId.make("architect-message"),
+    text: "Does the build match the design?",
+    checkout,
+    createdAt: at(2),
+  });
+
+  it("starts a thread only in the checkout of its parent or a sibling, with nothing of its own", async () => {
+    const started = await run(family(), startCommand("auto", inCoderCheckout));
+    expect(threadIn(started.model, PARENT).childRequests.open[0]?.launch?.checkout).toEqual(
+      coderCheckout,
+    );
+    // A checkout that is lent comes with no worktree or setup of the thread's own.
+    expect(
+      await refused(family(), startCommand("auto", { ...inCoderCheckout, runSetup: true })),
+    ).toBe(true);
+    expect(
+      await refused(family(), startCommand("auto", { checkout: coderCheckout, runSetup: false })),
+    ).toBe(true);
+    // Nor is a thread outside the family's ever lent.
+    const stranger = readModel([
+      thread(PARENT, { session: session(PARENT) }),
+      thread(CODER, { worktreePath: "/worktrees/coder" }),
+    ]);
+    expect(await refused(stranger, startCommand("auto", inCoderCheckout))).toBe(true);
+  });
+
+  it("makes the thread a guest in that worktree until it moves somewhere else", async () => {
+    const created = await run(family(), {
+      type: "thread.create",
+      commandId: CommandId.make("create-reviewer"),
+      threadId: CHILD,
+      projectId,
+      title: "Review the retry",
+      modelSelection: model,
+      runtimeMode: "auto-accept-edits",
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      branch: "feature/retry",
+      worktreePath: "/worktrees/coder",
+      worktreeOrigin: { kind: "thread", threadId: CODER },
+      ...ours,
+      parentTurnId: CALLER_TURN,
+      createdAt: at(2),
+    });
+    expect(threadIn(created.model, CHILD)).toMatchObject({
+      worktreePath: "/worktrees/coder",
+      worktreeOrigin: { kind: "thread", threadId: CODER },
+    });
+    // A branch-only update (the owner's rename, followed) keeps it a guest.
+    const renamed = await run(created.model, {
+      type: "thread.meta.update",
+      commandId: CommandId.make("follow-rename"),
+      threadId: CHILD,
+      branch: "feature/retry-backoff",
+      worktreePath: "/worktrees/coder",
+    });
+    expect(threadIn(renamed.model, CHILD).worktreeOrigin).toEqual({
+      kind: "thread",
+      threadId: CODER,
+    });
+    // The user moving it to the project folder ends the stay.
+    const moved = await run(renamed.model, {
+      type: "thread.checkout.select",
+      commandId: CommandId.make("move-reviewer"),
+      threadId: CHILD,
+      branch: "main",
+      worktreePath: null,
+    });
+    expect(threadIn(moved.model, CHILD)).toMatchObject({
+      worktreePath: null,
+      worktreeOrigin: null,
+    });
+    // Only a thread another thread started is ever a guest.
+    expect(
+      await refused(family(), {
+        type: "thread.create",
+        commandId: CommandId.make("create-loose"),
+        threadId: CHILD,
+        projectId,
+        title: "Loose",
+        modelSelection: model,
+        runtimeMode: "auto-accept-edits",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        branch: "feature/retry",
+        worktreePath: "/worktrees/coder",
+        worktreeOrigin: { kind: "thread", threadId: CODER },
+        createdAt: at(2),
+      }),
+    ).toBe(true);
+  });
+
+  it("moves an idle child into the checkout before its message, and never a busy one", async () => {
+    const sent = await run(family(), sendToArchitect(coderCheckout));
+    const architect = threadIn(sent.model, ARCHITECT);
+    expect(architect).toMatchObject({
+      worktreePath: "/worktrees/coder",
+      branch: "feature/retry",
+      worktreeOrigin: { kind: "thread", threadId: CODER },
+    });
+    expect(architect.queuedFollowUps?.map((entry) => entry.text)).toEqual([
+      "Does the build match the design?",
+    ]);
+    // The move is decided before the message that is read there, and stays
+    // on the thread's record: no revert reaches back past it.
+    expect(sent.events.map((event) => event.type)).toEqual([
+      "thread.meta-updated",
+      "thread.activity-appended",
+      "thread.child-request-submitted",
+      "thread.message-sent",
+      "thread.follow-up-queued",
+    ]);
+    expect(architect.activities.at(-1)).toMatchObject({
+      kind: "thread.checkout.moved",
+      summary: "Moved into the checkout of 'Build the retry'",
+      payload: { ownerThreadId: CODER, fromWorktreePath: null, toWorktreePath: "/worktrees/coder" },
+    });
+
+    // Its first message still waits to run, so a second move is refused.
+    expect(
+      await refused(sent.model, {
+        ...sendToArchitect(coderCheckout),
+        commandId: CommandId.make("send-architect-again"),
+        requestId: ChildRequestId.make("send-architect-again"),
+        childMessageId: MessageId.make("architect-message-again"),
+      }),
+    ).toBe(true);
+
+    const busy = family({ session: session(ARCHITECT, { activeTurnId: TurnId.make("turn-a") }) });
+    expect(await refused(busy, sendToArchitect(coderCheckout))).toBe(true);
+    // Idle, but with a dev server left running: its session would stay where
+    // it is, and read the message there.
+    const servesStill = family({
+      session: session(ARCHITECT, {
+        status: "ready",
+        activeTurnId: null,
+        pendingBackgroundTaskCount: 1,
+        awaitedBackgroundTaskCount: 0,
+      }),
+    });
+    expect(await refused(servesStill, sendToArchitect(coderCheckout))).toBe(true);
+    // The coder took up work again between the call and the decision.
+    const coderWorking = readModel([
+      thread(PARENT, { session: session(PARENT) }),
+      thread(CODER, {
+        ...ours,
+        worktreePath: "/worktrees/coder",
+        session: session(CODER, { activeTurnId: TurnId.make("coder-turn") }),
+      }),
+      thread(ARCHITECT, ours),
+    ]);
+    expect(await refused(coderWorking, sendToArchitect(coderCheckout))).toBe(true);
+    // A thread is never moved into its own checkout.
+    expect(
+      await refused(family(), sendToArchitect({ ...coderCheckout, threadId: ARCHITECT })),
+    ).toBe(true);
+  });
+});
+
 describe("decider child threads on a linked computer", () => {
   it("keeps a start for a linked computer on the parent only, waiting to be sent", async () => {
     const { started, model: family } = await familyWithRemoteChild();

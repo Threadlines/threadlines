@@ -5,6 +5,7 @@ import {
   resolveCurrentWorkspaceLabel,
   resolveEnvModeLabel,
   resolveLockedWorkspaceLabel,
+  resolveSharedWorktreeTitle,
   resolveWorkspaceDescription,
   resolveWorkspacePhrase,
   type EnvMode,
@@ -26,6 +27,11 @@ interface BranchToolbarEnvModeSelectorProps {
   envLocked: boolean;
   effectiveEnvMode: EnvMode;
   activeWorktreePath: string | null;
+  /**
+   * The thread works in another thread's worktree: that thread's title, or
+   * null when this device doesn't know it. Absent: its own, or none.
+   */
+  sharedWorktreeOwner?: string | null | undefined;
   onEnvModeChange: (mode: EnvMode) => void;
 }
 
@@ -47,6 +53,7 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
   envLocked,
   effectiveEnvMode,
   activeWorktreePath,
+  sharedWorktreeOwner,
   onEnvModeChange,
 }: BranchToolbarEnvModeSelectorProps) {
   // The trigger shows the chosen item's label, so the sentence gets the
@@ -75,11 +82,16 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
 
   if (envLocked) {
     return (
-      <span className="inline-flex items-center gap-1 border border-transparent px-[calc(--spacing(3)-1px)] text-sm font-medium text-muted-foreground/70 sm:text-xs">
+      <span
+        className="inline-flex items-center gap-1 border border-transparent px-[calc(--spacing(3)-1px)] text-sm font-medium text-muted-foreground/70 sm:text-xs"
+        {...(activeWorktreePath && sharedWorktreeOwner !== undefined
+          ? { title: resolveSharedWorktreeTitle(sharedWorktreeOwner) }
+          : {})}
+      >
         {activeWorktreePath ? (
           <>
             <FolderGitIcon className="size-3" />
-            {resolveLockedWorkspaceLabel(activeWorktreePath)}
+            {resolveLockedWorkspaceLabel(activeWorktreePath, sharedWorktreeOwner !== undefined)}
           </>
         ) : (
           <>

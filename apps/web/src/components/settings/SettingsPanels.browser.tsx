@@ -4218,6 +4218,27 @@ describe("ThreadsSettingsPanel new thread defaults", () => {
     });
   });
 
+  it("lets threads share a checkout only when chosen, and only while agents can start threads", async () => {
+    const updateSettings = await mountWith({});
+    const sharing = page.getByRole("switch", { name: "Threads can share a checkout" });
+    await expect.element(sharing).not.toBeChecked();
+    await sharing.click();
+    await vi.waitFor(() => {
+      expect(updateSettings).toHaveBeenCalledWith({ agentThreadsShareWorktrees: true });
+    });
+
+    const teardown = mounted?.cleanup ?? mounted?.unmount;
+    await teardown?.call(mounted);
+    // Chosen, but agents can't start threads at all: it reads off and can't be changed.
+    await mountWith({ agentThreads: "off", agentThreadsShareWorktrees: true });
+    const riding = page.getByRole("switch", { name: "Threads can share a checkout" });
+    await expect.element(riding).not.toBeChecked();
+    await expect.element(riding).toBeDisabled();
+    await expect
+      .element(page.getByText("Turn on Agents can start threads to use this."))
+      .toBeInTheDocument();
+  });
+
   it("picks the branch new worktrees start from among every project's branches", async () => {
     const environmentId = createBaseServerConfig().environment.environmentId;
     const project = (id: string, title: string) => ({

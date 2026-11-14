@@ -28,6 +28,7 @@ import {
   type PeerModelReasoning,
   ChildRequestBatchId,
   ChildRequestId,
+  type ChildThreadCheckout,
   ChildThreadLaunch,
   type ChildThreadWorkspace,
   CommandId,
@@ -40,11 +41,14 @@ import {
   type ProviderInteractionMode,
   ProviderInstanceId,
   type RoomAgentRef,
+  type RuntimeMode,
   type ServerProvider,
   ThreadId,
   TurnId,
 } from "@threadlines/contracts";
 import { placeMarkdownLink } from "@threadlines/shared/appPlaces";
+import { areFilesystemPathsEqual } from "@threadlines/shared/path";
+import { saferRuntimeMode } from "@threadlines/shared/runtimeMode";
 import {
   type ChildRequestRefusal,
   childSendRefusal,
@@ -58,7 +62,11 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import { childRequestCommandId, derivedUuid } from "../orchestration/childRequestIds.ts";
-import { pendingChildRequest } from "../orchestration/childThreadDecisions.ts";
+import {
+  checkoutMoveRefusal,
+  childHasLiveWork,
+  pendingChildRequest,
+} from "../orchestration/childThreadDecisions.ts";
 import type { ProjectPlace } from "../project/projectPlace.ts";
 import { linkMessageId, linkThreadId } from "../links/linkIds.ts";
 import {
@@ -123,6 +131,8 @@ export interface ThreadToolDeps {
   readonly userDefaultModel: Effect.Effect<ModelSelection | null>;
   /** Whether agents may start threads, read live at every call. */
   readonly threadsMode: Effect.Effect<AgentThreadsMode>;
+  /** Whether a thread may be put in another thread's checkout, read live at every call. */
+  readonly shareWorktrees: Effect.Effect<boolean>;
   readonly git: Pick<GitVcsDriverShape, "execute">;
   readonly requests: RoomRequestRegistry;
   /** Linked computers (docs/design/fleet.md); absent on a server without links. */
@@ -177,6 +187,10 @@ const NOT_FOUND = "No open thread with that id is in this project. thread_list s
 /** A child its start is still setting up: its thread appears once its worktree is ready. */
 const STILL_SETTING_UP =
   "That thread is still being set up: its worktree is being made. Try again in a moment.";
+
+const CHECKOUT_OFF = `Putting a thread in another thread's checkout is turned off (${placeMarkdownLink("threads.agentThreadsShareWorktrees")}). Leave \`checkout\` out: a thread you start then gets a worktree of its own.`;
+const CHECKOUT_REFERENCE =
+  "`checkout` takes `self` or the id of an open thread you started on this computer. thread_list shows them.";
 
 /** A turn id no thread has: a caller outside its turn never matches it. */
 const NO_TURN = TurnId.make("no-turn");
@@ -298,6 +312,22 @@ const childIsBusy = (child: OrchestrationThread, parent: OrchestrationThread) =>
       (request.status === "starting" || request.status === "queued"),
   );
 
+/** A started thread's access: the caller's, or a lower level the call asked for, never more. */
+const launchAccess = (
+  spec: { readonly access: RuntimeMode | undefined },
+  caller: Pick<OrchestrationThread, "runtimeMode">,
+): RuntimeMode =>
+  spec.access === undefined
+    ? caller.runtimeMode
+    : saferRuntimeMode(spec.access, caller.runtimeMode);
+
+/** Whether a thread already works in `checkout`, with its session there too. */
+const isInCheckout = (thread: OrchestrationThread, checkout: ChildThreadCheckout) =>
+  thread.effectiveCwd === null &&
+  (thread.worktreePath === null || checkout.worktreePath === null
+    ? thread.worktreePath === checkout.worktreePath
+    : areFilesystemPathsEqual(thread.worktreePath, checkout.worktreePath));
+
 interface StartSpec {
   readonly title: string;
   readonly prompt: string;
@@ -305,6 +335,10 @@ interface StartSpec {
   /** A reasoning level the call named, settled with the agent (settleChildReasoning). */
   readonly reasoning: string | undefined;
   readonly runSetup: boolean;
+  /** `self` or a thread's id: work in that thread's checkout (resolveCheckout). */
+  readonly checkout: string | undefined;
+  /** An access level the call asked for; the thread gets the safer of it and the caller's. */
+  readonly access: RuntimeMode | undefined;
 }
 
 interface StartInput {
@@ -322,6 +356,8 @@ interface StartInput {
         }
       | undefined;
     readonly runSetup?: boolean | undefined;
+    readonly checkout?: string | undefined;
+    readonly access?: RuntimeMode | undefined;
   }>;
   readonly reportBack?: boolean | undefined;
   /** A linked computer's name or environment id: start them there. */
@@ -542,6 +578,133 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
       };
     });
 
+  /**
+   * The checkout a `checkout` names (docs/design/child-threads.md,
+   * "Workspaces"), resolved to a folder now: the caller's own, or that of a
+   * thread it started, which must not be working. The folder and its branch
+   * are read from git here and saved with the request, so an approval or a
+   * restart later puts the thread in the same place. `mover` is the thread
+   * that would move there (thread_send); a start has none.
+   */
+  const resolveCheckout = (
+    caller: OrchestrationThread,
+    reference: string,
+    mover?: ThreadId,
+  ): Effect.Effect<{ readonly checkout: ChildThreadCheckout } | { readonly refused: string }> =>
+    Effect.gen(function* () {
+      if (!(yield* deps.shareWorktrees)) {
+        return { refused: CHECKOUT_OFF };
+      }
+      const project = yield* deps.readProject(caller.projectId);
+      if (project === undefined) {
+        return { refused: "This thread's project is gone." };
+      }
+      if (project.kind === "general-chat") {
+        return { refused: "A general chat has no checkout to share." };
+      }
+      const wanted = reference.trim();
+      let owner = caller;
+      if (wanted.toLowerCase() !== "self") {
+        const ownerId = ThreadId.make(wanted);
+        if (remoteChildOf(caller.childRequests, ownerId) !== undefined) {
+          return {
+            refused:
+              "That thread is on another computer, and a checkout is only shared on the computer it is on.",
+          };
+        }
+        if (wanted.length > 0 && pendingChildRequest(caller, ownerId) !== undefined) {
+          return { refused: STILL_SETTING_UP };
+        }
+        const found = wanted.length > 0 ? yield* deps.readThread(ownerId) : undefined;
+        if (
+          found === undefined ||
+          found.parentThreadId !== caller.id ||
+          found.projectId !== caller.projectId
+        ) {
+          return { refused: CHECKOUT_REFERENCE };
+        }
+        if (found.id === mover) {
+          return {
+            refused:
+              "`checkout` names another thread's checkout to move into, never the thread's own. Leave it out.",
+          };
+        }
+        if (childHasLiveWork(found)) {
+          return {
+            refused: `'${found.title}' is still working in its checkout. Wait for it to finish, then try again.`,
+          };
+        }
+        owner = found;
+      }
+      // Its files are being packed for another computer, or went there.
+      if ((owner.move ?? null) !== null) {
+        return {
+          refused: `${owner === caller ? "This thread" : `'${owner.title}'`} is moving to another computer, so its checkout here can't be shared.`,
+        };
+      }
+      const projectCwd = project.workspaceRoot;
+      const git = (cwd: string, args: ReadonlyArray<string>) =>
+        deps.git
+          .execute({
+            operation: "ThreadTools.resolveCheckout",
+            cwd,
+            args,
+            allowNonZeroExit: true,
+            timeoutMs: GIT_TIMEOUT_MS,
+            maxOutputBytes: 16_384,
+          })
+          .pipe(
+            Effect.map((result) => (result.exitCode === 0 ? result.stdout.trim() : null)),
+            Effect.orElseSucceed(() => null),
+          );
+      const commonDir = ["rev-parse", "--path-format=absolute", "--git-common-dir"];
+      const repository = yield* git(projectCwd, commonDir);
+      if (repository === null) {
+        return {
+          refused:
+            "This project has no git repository to read, so its threads share its folder already. Leave `checkout` out.",
+        };
+      }
+      const whose = owner === caller ? "Your" : `'${owner.title}'s`;
+      const folder = roomCheckoutCwd(owner, projectCwd) ?? projectCwd;
+      const inProjectFolder = areFilesystemPathsEqual(folder, projectCwd);
+      const [folderRepository, topLevel] = inProjectFolder
+        ? [repository, projectCwd]
+        : yield* Effect.all([
+            git(folder, commonDir),
+            git(folder, ["rev-parse", "--show-toplevel"]),
+          ]);
+      if (folderRepository === null || topLevel === null) {
+        return {
+          refused: `${whose} checkout (${folder}) is gone or is no longer a git checkout, so no thread can work there.`,
+        };
+      }
+      if (!areFilesystemPathsEqual(folderRepository, repository)) {
+        return {
+          refused: `${whose} checkout is not part of this project's repository, so it can't be shared.`,
+        };
+      }
+      // The folder as the owner records it, so both threads name it alike;
+      // where its session moved somewhere else, that checkout's root.
+      const worktreePath = inProjectFolder
+        ? null
+        : owner.effectiveCwd === null && owner.worktreePath !== null
+          ? owner.worktreePath
+          : topLevel;
+      const branch = yield* git(folder, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+      return {
+        checkout: {
+          threadId: owner.id,
+          title: owner.title,
+          worktreePath:
+            worktreePath !== null && areFilesystemPathsEqual(worktreePath, projectCwd)
+              ? null
+              : worktreePath,
+          branch: branch !== null && branch.length > 0 ? branch : null,
+        },
+      };
+    });
+
   interface StartIds {
     readonly batchId: ChildRequestBatchId;
     readonly children: ReadonlyArray<{
@@ -565,6 +728,8 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
     readonly count: number;
     readonly reportBack: boolean;
     readonly sharedFolder: boolean;
+    /** How many of them work in another thread's checkout (`checkout`). */
+    readonly inCheckouts?: number;
   }) => {
     const threads = plural(input.count, "thread");
     const these = input.count === 1 ? "it" : "them";
@@ -576,9 +741,14 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
         : input.reportBack
           ? `The user decides whether to start ${threads}. If they agree, each one's final reply comes back to you as a message; if they say no, you'll hear at your next turn. Don't ask again, and end your turn if you have nothing else to do.`
           : `The user decides whether to start ${threads}. If started, ${input.count === 1 ? "it runs" : "they run"} on ${input.count === 1 ? "its" : "their"} own and nothing comes back. Don't ask again.`;
+    const inCheckouts = input.inCheckouts ?? 0;
+    const shared =
+      inCheckouts === 0
+        ? ""
+        : ` ${input.count === 1 ? "It works" : inCheckouts === input.count ? "They work" : `${inCheckouts} of them work`} in a checkout another thread has, with the same files: have only one thread work there at a time.`;
     return input.sharedFolder
-      ? `${base} This project has no git repository, so ${input.count === 1 ? "it shares" : "they share"} its folder and can change the same files you do.`
-      : base;
+      ? `${base}${shared} This project has no git repository, so ${input.count === 1 ? "it shares" : "they share"} its folder and can change the same files you do.`
+      : `${base}${shared}`;
   };
 
   /**
@@ -601,11 +771,19 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
           ? ("asked_user" as const)
           : ("started" as const);
         const sharedFolder = open.some(
-          (request) => request.launch?.workspace.kind === "project_folder",
+          (request) =>
+            request.launch?.workspace.kind === "project_folder" &&
+            request.launch.checkout === undefined,
         );
         return {
           outcome,
-          detail: startedDetail({ outcome, count: open.length, reportBack, sharedFolder }),
+          detail: startedDetail({
+            outcome,
+            count: open.length,
+            reportBack,
+            sharedFolder,
+            inCheckouts: open.filter((request) => request.launch?.checkout !== undefined).length,
+          }),
           threads: open.map((request) => ({
             threadId: request.childThreadId,
             title: request.launch?.title ?? request.childThreadId,
@@ -614,7 +792,10 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
                 ? modelLabel(request.launch.modelSelection, providers)
                 : "",
             ...(request.launch !== undefined ? withReasoningOf(request.launch.modelSelection) : {}),
-            workspace: request.launch?.workspace.kind ?? "worktree",
+            workspace:
+              request.launch?.checkout !== undefined
+                ? ("checkout" as const)
+                : (request.launch?.workspace.kind ?? "worktree"),
           })),
         } satisfies ThreadStartResult;
       }
@@ -637,7 +818,12 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
           title: shell.title,
           model: modelLabel(shell.modelSelection, providers),
           ...withReasoningOf(shell.modelSelection),
-          workspace: shell.worktreePath !== null ? "worktree" : "project_folder",
+          workspace:
+            (shell.worktreeOrigin ?? null) !== null
+              ? "checkout"
+              : shell.worktreePath !== null
+                ? "worktree"
+                : "project_folder",
         })),
       } satisfies ThreadStartResult;
     });
@@ -691,7 +877,17 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
           } satisfies ThreadStartResult;
         }
         const reasoning = entry.agent?.reasoning?.trim() || undefined;
-        specs.push({ title, prompt, agent, reasoning, runSetup: entry.runSetup ?? true });
+        const checkout = entry.checkout?.trim() || undefined;
+        specs.push({
+          title,
+          prompt,
+          agent,
+          reasoning,
+          // An existing checkout was set up by the thread it belongs to.
+          runSetup: checkout === undefined && (entry.runSetup ?? true),
+          checkout,
+          access: entry.access,
+        });
       }
       const callerTurnId = thread.session?.activeTurnId ?? null;
       if (callerTurnId === null) {
@@ -713,6 +909,13 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
         }),
       ].join("\u0000");
       if (computerName !== undefined) {
+        if (specs.some((spec) => spec.checkout !== undefined)) {
+          return {
+            outcome: "refused",
+            detail:
+              "`checkout` names a checkout on this computer, so it can't go with `computer`. Leave one of them out.",
+          } satisfies ThreadStartResult;
+        }
         return yield* remoteStart({
           scope,
           thread,
@@ -788,21 +991,41 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
             }
             selections.push(settled);
           }
-          const placement = yield* resolveWorkspace(current);
-          if ("refused" in placement) {
+          // Each existing checkout is resolved once, however many threads name it.
+          const checkouts = new Map<string, ChildThreadCheckout>();
+          for (const spec of specs) {
+            if (spec.checkout === undefined || checkouts.has(spec.checkout)) continue;
+            const resolved = yield* resolveCheckout(current, spec.checkout);
+            if ("refused" in resolved) {
+              return { outcome: "refused", detail: resolved.refused } satisfies ThreadStartResult;
+            }
+            checkouts.set(spec.checkout, resolved.checkout);
+          }
+          // The rest get worktrees of their own (or the folder of a project without git).
+          const placement = specs.some((spec) => spec.checkout === undefined)
+            ? yield* resolveWorkspace(current)
+            : undefined;
+          if (placement !== undefined && "refused" in placement) {
             return { outcome: "refused", detail: placement.refused } satisfies ThreadStartResult;
           }
-          const { workspace, sharedFolder } = placement;
-          const launches = specs.map((spec, index): ChildThreadLaunch => ({
-            title: spec.title,
-            prompt: spec.prompt,
-            modelSelection: selections[index]!,
-            runtimeMode: current.runtimeMode,
-            interactionMode,
-            reportBack,
-            runSetup: spec.runSetup,
-            workspace,
-          }));
+          const sharedFolder = placement?.sharedFolder ?? false;
+          const launches = specs.map((spec, index): ChildThreadLaunch => {
+            const checkout = spec.checkout === undefined ? undefined : checkouts.get(spec.checkout);
+            return {
+              title: spec.title,
+              prompt: spec.prompt,
+              modelSelection: selections[index]!,
+              runtimeMode: launchAccess(spec, current),
+              interactionMode,
+              reportBack,
+              runSetup: spec.runSetup,
+              workspace:
+                checkout !== undefined || placement === undefined
+                  ? { kind: "project_folder" }
+                  : placement.workspace,
+              ...(checkout !== undefined ? { checkout } : {}),
+            };
+          });
           if (!launches.every(isLaunch)) {
             return {
               outcome: "refused",
@@ -837,13 +1060,17 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
               count: launches.length,
               reportBack,
               sharedFolder,
+              inCheckouts: launches.filter((launch) => launch.checkout !== undefined).length,
             }),
             threads: ids.children.map((child, index) => ({
               threadId: child.childThreadId,
               title: launches[index]!.title,
               model: modelLabel(launches[index]!.modelSelection, providers),
               ...withReasoningOf(launches[index]!.modelSelection),
-              workspace: workspace.kind,
+              workspace:
+                launches[index]!.checkout !== undefined
+                  ? ("checkout" as const)
+                  : launches[index]!.workspace.kind,
             })),
           } satisfies ThreadStartResult;
         }),
@@ -1110,7 +1337,7 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
             title: spec.title,
             prompt: spec.prompt,
             modelSelection: selections[index]!,
-            runtimeMode: current.runtimeMode,
+            runtimeMode: launchAccess(spec, current),
             interactionMode: current.interactionMode,
             reportBack,
             runSetup: spec.runSetup,
@@ -1395,7 +1622,11 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
 
   const threadSend = (
     scope: McpInvocationScope,
-    input: { readonly threadId: string; readonly message: string },
+    input: {
+      readonly threadId: string;
+      readonly message: string;
+      readonly checkout?: string | undefined;
+    },
   ): Effect.Effect<ThreadSendResult> =>
     Effect.gen(function* () {
       const gated = yield* gate(scope, "thread_send");
@@ -1403,8 +1634,17 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
         return gated.refusal satisfies ThreadSendResult;
       }
       const { thread } = gated;
+      const checkoutReference = input.checkout?.trim() || undefined;
       const remoteChild = remoteChildOf(thread.childRequests, ThreadId.make(input.threadId.trim()));
       if (remoteChild !== undefined) {
+        if (checkoutReference !== undefined) {
+          return {
+            outcome: "refused",
+            detail:
+              "That thread is on another computer, so it can't move into a checkout here. Leave `checkout` out.",
+            threadId: input.threadId.trim(),
+          } satisfies ThreadSendResult;
+        }
         return yield* remoteSend(scope, thread, remoteChild, input.message);
       }
       if (pendingChildRequest(thread, ThreadId.make(input.threadId.trim())) !== undefined) {
@@ -1437,6 +1677,7 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
         "thread_send",
         childThreadId,
         text,
+        ...(checkoutReference !== undefined ? [checkoutReference] : []),
       ].join("\u0000");
       const requestId = ChildRequestId.make(derivedUuid(key, "request"));
       const childMessageId = MessageId.make(derivedUuid(key, "message"));
@@ -1482,6 +1723,30 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
               detail: refusal.detail,
             } satisfies ThreadSendResult;
           }
+          // A move into another checkout: only between the child's turns, and
+          // only when it isn't there already.
+          let checkout: ChildThreadCheckout | undefined;
+          if (checkoutReference !== undefined && child !== undefined) {
+            const resolved = yield* resolveCheckout(caller, checkoutReference, child.id);
+            if ("refused" in resolved) {
+              return {
+                outcome: "refused",
+                detail: resolved.refused,
+                threadId: childThreadId,
+              } satisfies ThreadSendResult;
+            }
+            const stays = checkoutMoveRefusal(child);
+            if (stays !== null) {
+              return {
+                outcome: "refused",
+                detail: `'${child.title}' ${stays} Send this again after that.`,
+                threadId: childThreadId,
+              } satisfies ThreadSendResult;
+            }
+            if (!isInCheckout(child, resolved.checkout)) {
+              checkout = resolved.checkout;
+            }
+          }
           const outcome =
             child !== undefined && childIsBusy(child, caller)
               ? ("queued" as const)
@@ -1496,6 +1761,7 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
             childThreadId,
             childMessageId,
             text,
+            ...(checkout !== undefined ? { checkout } : {}),
             createdAt: yield* nowIso,
           });
           if (rejected !== undefined) {
@@ -1503,7 +1769,16 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
           }
           return {
             outcome,
-            detail: sentDetail[outcome],
+            detail:
+              checkout === undefined
+                ? sentDetail[outcome]
+                : `It moved into ${checkout.threadId === caller.id ? "your" : `'${checkout.title}'s`} checkout, with its conversation, and reads your message there.${
+                    child !== undefined &&
+                    child.worktreePath !== null &&
+                    (child.worktreeOrigin ?? null) === null
+                      ? " The worktree it had stays on disk, untouched."
+                      : ""
+                  } ${sentDetail[outcome]}`,
             threadId: childThreadId,
           } satisfies ThreadSendResult;
         }),

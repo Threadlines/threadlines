@@ -448,6 +448,9 @@ export function projectEvent(
             attachedToParent: payload.attachedToParent ?? false,
             ...(payload.remoteOrigin !== undefined ? { remoteOrigin: payload.remoteOrigin } : {}),
             ...(payload.scheduledRun !== undefined ? { scheduledRun: payload.scheduledRun } : {}),
+            ...(payload.worktreeOrigin !== undefined
+              ? { worktreeOrigin: payload.worktreeOrigin }
+              : {}),
             ...(payload.outsideOrigin !== undefined
               ? { outsideOrigin: payload.outsideOrigin }
               : {}),
@@ -1290,6 +1293,9 @@ export function projectEvent(
               : {}),
             ...(payload.branch !== undefined ? { branch: payload.branch } : {}),
             ...(payload.worktreePath !== undefined ? { worktreePath: payload.worktreePath } : {}),
+            ...(payload.worktreeOrigin !== undefined
+              ? { worktreeOrigin: payload.worktreeOrigin }
+              : {}),
             updatedAt: payload.updatedAt,
           }),
         })),

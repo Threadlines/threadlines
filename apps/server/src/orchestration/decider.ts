@@ -104,6 +104,7 @@ import {
 } from "./childThreadDecisions.ts";
 import { childDeliveryForQuietCandidate } from "./childThreadDelivery.ts";
 import { projectEvent } from "./projector.ts";
+import { checkoutSelectedEvents, leavesLentWorktree, movesCheckout } from "./threadCheckout.ts";
 import { canReplaceThreadTitle } from "./threadTitle.ts";
 import {
   decideHistorySeedDelivered,
@@ -1098,6 +1099,21 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: "A thread an outside agent starts has no other origin.",
         });
       }
+      // Another thread's worktree is lent only to a thread an agent started
+      // here (ThreadWorktreeOrigin), and only as a worktree.
+      const createdWorktreePath = normalizeWorktreePath(
+        command.worktreePath,
+        project.workspaceRoot,
+      );
+      if (
+        command.worktreeOrigin !== undefined &&
+        (parentThreadId === undefined || createdWorktreePath === null)
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Only a thread another thread started can work in that thread's worktree.",
+        });
+      }
       // A thread set up as a room before its first message starts with its
       // agents: all of them are checked before any is recorded.
       const startingAgents = command.participants ?? [];
@@ -1137,7 +1153,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           runtimeMode: command.runtimeMode,
           interactionMode: command.interactionMode,
           branch: command.branch,
-          worktreePath: normalizeWorktreePath(command.worktreePath, project.workspaceRoot),
+          worktreePath: createdWorktreePath,
           ...(parentThreadId !== undefined
             ? {
                 parentThreadId,
@@ -1149,6 +1165,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             : {}),
           ...(command.remoteOrigin !== undefined ? { remoteOrigin: command.remoteOrigin } : {}),
           ...(command.scheduledRun !== undefined ? { scheduledRun: command.scheduledRun } : {}),
+          ...(command.worktreeOrigin !== undefined
+            ? { worktreeOrigin: command.worktreeOrigin }
+            : {}),
           ...(command.outsideOrigin !== undefined ? { outsideOrigin: command.outsideOrigin } : {}),
           createdAt: command.createdAt,
           updatedAt: command.createdAt,
@@ -1225,6 +1244,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         });
       }
 
+      const forkWorktreePath = normalizeWorktreePath(command.worktreePath, project.workspaceRoot);
+      // A fork that stays in a worktree its source was lent is a guest there too.
+      const forkWorktreeOrigin =
+        forkWorktreePath !== null && !movesCheckout(sourceThread, forkWorktreePath)
+          ? (sourceThread.worktreeOrigin ?? null)
+          : null;
       const createdEvent: Omit<OrchestrationEvent, "sequence"> = {
         ...withEventBase({
           aggregateKind: "thread",
@@ -1241,7 +1266,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           runtimeMode: command.runtimeMode,
           interactionMode: command.interactionMode,
           branch: command.branch,
-          worktreePath: normalizeWorktreePath(command.worktreePath, project.workspaceRoot),
+          worktreePath: forkWorktreePath,
+          ...(forkWorktreeOrigin !== null ? { worktreeOrigin: forkWorktreeOrigin } : {}),
           createdAt: command.createdAt,
           updatedAt: command.createdAt,
         },
@@ -2612,6 +2638,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           ? undefined
           : normalizeWorktreePath(command.worktreePath, project.workspaceRoot);
       const occurredAt = yield* nowIso;
+      const checkoutChanged = worktreePath !== undefined && movesCheckout(thread, worktreePath);
       const metaUpdatedEvent = {
         ...withEventBase({
           aggregateKind: "thread",
@@ -2628,6 +2655,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             : {}),
           ...(command.branch !== undefined ? { branch: command.branch } : {}),
           ...(worktreePath !== undefined ? { worktreePath } : {}),
+          ...(checkoutChanged ? leavesLentWorktree(thread) : {}),
           updatedAt: occurredAt,
         },
       } as const;
@@ -2639,11 +2667,6 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // already know what thread.effective-cwd-set means. Only an actual
       // move clears — branch-only updates carry the unchanged worktree path
       // and must not wipe a valid cwd-follow value.
-      const checkoutChanged =
-        worktreePath !== undefined &&
-        (worktreePath === null || thread.worktreePath === null
-          ? worktreePath !== thread.worktreePath
-          : !areFilesystemPathsEqual(worktreePath, thread.worktreePath));
       const sessionInactive = thread.session == null || thread.session.status === "stopped";
       if (!checkoutChanged || !sessionInactive || thread.effectiveCwd == null) {
         return metaUpdatedEvent;
@@ -2679,54 +2702,20 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         projectId: thread.projectId,
       });
-      const worktreePath = normalizeWorktreePath(command.worktreePath, project.workspaceRoot);
       const occurredAt = yield* nowIso;
-      const metaUpdatedEvent = {
-        ...withEventBase({
-          aggregateKind: "thread",
-          aggregateId: command.threadId,
-          occurredAt,
-          commandId: command.commandId,
-        }),
-        type: "thread.meta-updated",
-        payload: {
-          threadId: command.threadId,
-          branch: command.branch,
-          worktreePath,
-          updatedAt: occurredAt,
-        },
-      } as const;
-      const hasLiveWork =
-        thread.session?.status === "starting" ||
-        thread.session?.status === "running" ||
-        thread.session?.activeTurnId != null ||
-        (thread.session?.pendingBackgroundTaskCount ?? 0) > 0;
-      const selectionAuthorityRequired = thread.effectiveCwd !== null || hasLiveWork;
-      if (!selectionAuthorityRequired && thread.effectiveCwdSource !== "selection") {
-        return metaUpdatedEvent;
-      }
-      if (selectionAuthorityRequired && thread.effectiveCwdSource === "selection") {
-        return metaUpdatedEvent;
-      }
-      return [
-        metaUpdatedEvent,
-        {
-          ...withEventBase({
+      return checkoutSelectedEvents({
+        thread,
+        branch: command.branch,
+        worktreePath: normalizeWorktreePath(command.worktreePath, project.workspaceRoot),
+        occurredAt,
+        base: () =>
+          withEventBase({
             aggregateKind: "thread",
             aggregateId: command.threadId,
             occurredAt,
             commandId: command.commandId,
           }),
-          causationEventId: metaUpdatedEvent.eventId,
-          type: "thread.effective-cwd-set",
-          payload: {
-            threadId: command.threadId,
-            effectiveCwd: null,
-            ...(selectionAuthorityRequired ? { effectiveCwdSource: "selection" as const } : {}),
-            updatedAt: occurredAt,
-          },
-        },
-      ];
+      });
     }
 
     case "thread.runtime-mode.set": {

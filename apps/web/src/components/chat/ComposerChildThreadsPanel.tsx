@@ -12,6 +12,26 @@ import { addComputerNotConnectedNotice } from "../computerConnectionNotices";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 
 /**
+ * Where a thread that gets no worktree of its own would work: another
+ * thread's checkout, or the asking thread's (`title` null). A long title is
+ * cut short, never the words around it, so the line always says "checkout".
+ */
+function ChildThreadCheckoutLabel(props: { title: string | null }) {
+  if (props.title === null) {
+    return <span data-child-thread-checkout>in this thread's checkout</span>;
+  }
+  return (
+    <span className="flex min-w-0 items-baseline" data-child-thread-checkout>
+      <span className="shrink-0">in&nbsp;</span>
+      <span className="max-w-28 truncate" title={props.title}>
+        {props.title}
+      </span>
+      <span className="shrink-0">'s checkout</span>
+    </span>
+  );
+}
+
+/**
  * An agent asks to start threads of its own (child threads, "Ask me first").
  * Docked above the message box like an invite: the box stays usable, so the
  * user can answer or write something else first. Each line names the thread,
@@ -70,11 +90,21 @@ export const ComposerChildThreadsPanel = memo(function ComposerChildThreadsPanel
           {request.threads.map((thread) => (
             <li
               key={thread.requestId}
-              className="flex min-w-0 items-center gap-2 text-sm"
+              className={cn(
+                "flex min-w-0 items-center gap-x-2 gap-y-0.5 text-sm",
+                // Whose checkout it shares is a longer line: where the two
+                // don't fit side by side (a phone), it goes under the title.
+                thread.checkout !== null && "flex-wrap",
+              )}
               data-testid="child-threads-panel-thread"
             >
               <span className="min-w-0 truncate text-foreground">{thread.title}</span>
-              <span className="ms-auto flex shrink-0 items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
+              <span
+                className={cn(
+                  "ms-auto flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground",
+                  thread.checkout !== null ? "max-w-full min-w-0" : "shrink-0",
+                )}
+              >
                 {thread.entry ? (
                   <ProviderInstanceIcon
                     instanceId={thread.entry.instanceId}
@@ -86,21 +116,29 @@ export const ComposerChildThreadsPanel = memo(function ComposerChildThreadsPanel
                     iconClassName="size-3"
                   />
                 ) : null}
-                <span className="max-w-40 truncate">{thread.modelName}</span>
+                <span className="max-w-40 shrink-0 truncate">{thread.modelName}</span>
                 {thread.reasoning !== null ? (
                   <>
                     <span className="text-muted-foreground/50">·</span>
                     <span data-child-thread-reasoning>{thread.reasoning}</span>
                   </>
                 ) : null}
+                {thread.access !== null ? (
+                  <>
+                    <span className="text-muted-foreground/50">·</span>
+                    <span className="shrink-0" data-child-thread-access>
+                      {thread.access}
+                    </span>
+                  </>
+                ) : null}
                 <span className="text-muted-foreground/50">·</span>
-                <span>
-                  {thread.computer !== null
-                    ? `on ${thread.computer}`
-                    : thread.ownWorktree
-                      ? "own worktree"
-                      : "shares this folder"}
-                </span>
+                {thread.computer !== null ? (
+                  <span>on {thread.computer}</span>
+                ) : thread.checkout !== null ? (
+                  <ChildThreadCheckoutLabel title={thread.checkout.title} />
+                ) : (
+                  <span>{thread.ownWorktree ? "own worktree" : "shares this folder"}</span>
+                )}
               </span>
             </li>
           ))}

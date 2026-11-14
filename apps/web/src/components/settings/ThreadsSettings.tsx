@@ -16,7 +16,11 @@ import {
   THREAD_ENV_MODE_LABELS,
 } from "@threadlines/shared/appPlaces";
 import { createModelSelection } from "@threadlines/shared/model";
-import { agentInvitesChoice, agentThreadsMode } from "@threadlines/shared/serverSettings";
+import {
+  agentInvitesChoice,
+  agentThreadsMode,
+  agentThreadsShareWorktrees,
+} from "@threadlines/shared/serverSettings";
 import * as Equal from "effect/Equal";
 import { useState } from "react";
 
@@ -71,6 +75,7 @@ export function ThreadsSettingsPanel({ surface = "full" }: { surface?: "full" | 
         <DefaultThreadEnvModeRow />
         <NewWorktreeBaseRow />
         <AgentThreadsRow />
+        <AgentThreadsShareWorktreesRow />
         <AgentPagesRow />
         <ClaudeArtifactsRow />
         <ClaudeWorkflowSizeRow />
@@ -853,6 +858,48 @@ export function AgentThreadsRow() {
             <SelectItem value="auto">{AGENT_THREADS_LABELS.auto}</SelectItem>
           </SelectPopup>
         </Select>
+      }
+    />
+  );
+}
+
+/**
+ * Whether a thread an agent starts or messages may work in another thread's
+ * checkout instead of a new worktree (docs/design/child-threads.md,
+ * "Workspaces"). Off unless chosen: two threads then share one set of files.
+ * It rides on agents starting threads, so it is off while that is.
+ */
+export function AgentThreadsShareWorktreesRow() {
+  const threadsOn = useSettings((settings) => agentThreadsMode(settings) !== "off");
+  const sharing = useSettings((settings) => agentThreadsShareWorktrees(settings));
+  const { updateSettings } = useUpdateSettings();
+  return (
+    <SettingsRow
+      place="threads.agentThreadsShareWorktrees"
+      description={
+        !threadsOn
+          ? "Turn on Agents can start threads to use this."
+          : sharing
+            ? "An agent can put a thread in another thread's checkout, so it works on that thread's files. Only one of them should work at a time."
+            : "A thread an agent starts never works in another thread's checkout."
+      }
+      resetAction={
+        sharing ? (
+          <SettingResetButton
+            label="threads can share a checkout"
+            onClick={() => updateSettings({ agentThreadsShareWorktrees: false })}
+          />
+        ) : null
+      }
+      control={
+        <Switch
+          checked={sharing && threadsOn}
+          disabled={!threadsOn}
+          onCheckedChange={(checked) =>
+            updateSettings({ agentThreadsShareWorktrees: Boolean(checked) })
+          }
+          aria-label="Threads can share a checkout"
+        />
       }
     />
   );

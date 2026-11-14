@@ -202,3 +202,13 @@ export const agentInvitesMode = (settings: RoomsSettings): AgentInvitesMode =>
 export const agentThreadsMode = (
   settings: Pick<Partial<ServerSettings>, "agentThreads"> | null | undefined,
 ): AgentThreadsMode => settings?.agentThreads ?? "ask";
+
+/**
+ * Whether a thread an agent starts or messages may work in another thread's
+ * worktree (child threads, "Workspaces"): the user's choice, never chosen
+ * meaning no. The thread tools, a child's setup and the settings page all
+ * read this one rule.
+ */
+export const agentThreadsShareWorktrees = (
+  settings: Pick<Partial<ServerSettings>, "agentThreadsShareWorktrees"> | null | undefined,
+): boolean => settings?.agentThreadsShareWorktrees === true;

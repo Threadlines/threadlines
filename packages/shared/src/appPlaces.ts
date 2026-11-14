@@ -38,7 +38,11 @@ import {
   RESPONSIVE_PAGE_SIZE_ID,
   RESPONSIVE_PAGE_SIZE_LABEL,
 } from "./browserPageSizes.ts";
-import { agentInvitesChoice, agentThreadsMode } from "./serverSettings.ts";
+import {
+  agentInvitesChoice,
+  agentThreadsMode,
+  agentThreadsShareWorktrees,
+} from "./serverSettings.ts";
 import { themeGlassLevel } from "./themes/glassLevel.ts";
 
 /** Where a page lives in the app, and which computer it can show. */
@@ -1401,6 +1405,17 @@ const ROWS = [
       read: (settings) => agentThreadsMode(settings),
       options: AGENT_THREADS_LABELS,
     },
+    widensAgents: true,
+  },
+  {
+    id: "threads.agentThreadsShareWorktrees",
+    kind: "row",
+    parent: "threads.newThreads",
+    title: "Threads can share a checkout",
+    about:
+      "An agent can put a thread it starts or messages in another thread's checkout instead of a new worktree, so both work on the same files.",
+    keywords: ["worktree", "same folder", "existing checkout", "reviewer", "thread_start"],
+    value: onOff((settings) => agentThreadsShareWorktrees(settings)),
     widensAgents: true,
   },
   {

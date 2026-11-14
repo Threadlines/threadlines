@@ -18,6 +18,8 @@ const isGitCommandError = Schema.is(GitCommandError);
 export interface WorktreeLinkedThread {
   readonly id: string;
   readonly worktreePath: string | null;
+  /** Its worktree is another thread's (ThreadWorktreeOrigin): never its to remove. */
+  readonly worktreeOrigin?: unknown;
 }
 
 function normalizeWorktreePath(path: string | null): string | null {
@@ -36,6 +38,10 @@ function normalizeWorktreePath(path: string | null): string | null {
  * checkout recovery, so deleting a live thread must not offer to remove the
  * folder an archived one is waiting on -- and the same in reverse. The target
  * thread may come from either list.
+ *
+ * A thread put in another thread's worktree leaves nothing behind either: the
+ * folder was never its own, so deleting it never offers the folder, even
+ * once the thread it belongs to is gone. The cleanup list still shows it.
  */
 export function getOrphanedWorktreePathForThread(
   threads: readonly WorktreeLinkedThread[],
@@ -50,7 +56,7 @@ export function getOrphanedWorktreePathForThread(
   }
 
   const targetWorktreePath = normalizeWorktreePath(targetThread.worktreePath);
-  if (!targetWorktreePath) {
+  if (!targetWorktreePath || (targetThread.worktreeOrigin ?? null) !== null) {
     return null;
   }
 

@@ -36,6 +36,7 @@ import {
   type ThreadId,
 } from "@threadlines/contracts";
 import { worktreeFolderNameForBranch } from "@threadlines/shared/git";
+import { areFilesystemPathsEqual } from "@threadlines/shared/path";
 import { setupProjectScript } from "@threadlines/shared/projectScripts";
 import { basename, join } from "node:path";
 
@@ -131,6 +132,16 @@ class LockedWorktreeError extends Data.TaggedError("LockedWorktreeError")<{
   }
 }
 
+/** Another thread's worktree a thread was to be put in that the project no longer has. */
+class LentWorktreeGoneError extends Data.TaggedError("LentWorktreeGoneError")<{
+  readonly path: string;
+  readonly title: string;
+}> {
+  get detail(): string {
+    return `'${this.title}'s checkout (${this.path}) is no longer a worktree of this project.`;
+  }
+}
+
 const failedAt = (stage: ChildBootstrapStage) => (cause: unknown) =>
   new SetupStageFailure({ stage, cause });
 
@@ -174,6 +185,14 @@ interface SetupPlan {
         readonly base: WorktreeBase;
       }
     | undefined;
+  /**
+   * Another thread's worktree the new thread is put in instead of one of its
+   * own (ChildThreadLaunch.checkout). It was resolved when it was asked for;
+   * the worktree stage finds it again among this project's worktrees, so a
+   * yes given much later never lands in a folder that has become something
+   * else, and the thread records the branch it is on now.
+   */
+  readonly lentWorktree?: { readonly path: string; readonly title: string } | undefined;
   readonly runSetup: boolean;
   /**
    * The first work (a turn, or a goal set on a draft); its command id is the
@@ -292,6 +311,27 @@ const make = Effect.gen(function* () {
         madeWorktree: true,
         madeBranch: !branchExists,
       } satisfies PlacedWorktree;
+    });
+
+  /**
+   * Stage 1 for a thread put in another thread's worktree: nothing is made.
+   * The folder must still be one of this project's worktrees; its branch is
+   * read now, whatever it was when the thread was asked for.
+   */
+  const findLentWorktree = (projectId: ProjectId, lent: NonNullable<SetupPlan["lentWorktree"]>) =>
+    Effect.gen(function* () {
+      const project = yield* projectionSnapshotQuery
+        .getProjectShellById(projectId)
+        .pipe(Effect.map(Option.getOrUndefined));
+      const worktrees =
+        project === undefined
+          ? []
+          : yield* gitWorkflow.listWorktrees({ cwd: project.workspaceRoot });
+      const found = worktrees.find((entry) => areFilesystemPathsEqual(entry.path, lent.path));
+      if (found === undefined) {
+        return yield* new LentWorktreeGoneError(lent);
+      }
+      return { branch: found.branch ?? null };
     });
 
   /**
@@ -457,6 +497,13 @@ const make = Effect.gen(function* () {
           ? undefined
           : yield* ensureWorktree(plan.worktree).pipe(Effect.mapError(failedAt("worktree")));
 
+      const lent =
+        plan.lentWorktree === undefined || existing !== undefined || plan.create === undefined
+          ? undefined
+          : yield* findLentWorktree(plan.create.projectId, plan.lentWorktree).pipe(
+              Effect.mapError(failedAt("worktree")),
+            );
+
       yield* plan.proceed("turn");
       const projectId = existing?.projectId ?? plan.create?.projectId;
       const worktreePath =
@@ -479,6 +526,7 @@ const make = Effect.gen(function* () {
                   ...(placed !== undefined
                     ? { branch: placed.branch, worktreePath: placed.path }
                     : {}),
+                  ...(lent !== undefined ? { branch: lent.branch } : {}),
                 },
               }
             : {}),
@@ -616,8 +664,13 @@ const make = Effect.gen(function* () {
     modelSelection: launch.modelSelection,
     runtimeMode: launch.runtimeMode,
     interactionMode: launch.interactionMode,
-    branch: null,
-    worktreePath: null,
+    // Another thread's checkout, as it was when it was asked for; its own
+    // worktree, when it gets one, is made and filled in by the worktree stage.
+    branch: launch.checkout?.branch ?? null,
+    worktreePath: launch.checkout?.worktreePath ?? null,
+    ...(launch.checkout !== undefined && launch.checkout.worktreePath !== null
+      ? { worktreeOrigin: { kind: "thread" as const, threadId: launch.checkout.threadId } }
+      : {}),
     ...(input.lineage.kind === "local"
       ? {
           parentThreadId: input.lineage.parentThreadId,
@@ -644,14 +697,20 @@ const make = Effect.gen(function* () {
         },
         create: childCreate(input, launch),
         worktree:
-          workspace.kind === "worktree"
+          workspace.kind === "worktree" && launch.checkout === undefined
             ? {
                 projectCwd: workspace.projectCwd,
                 branch: childWorktreeBranch(input.requestId),
                 base: { kind: "ref", ref: workspace.baseRef },
               }
             : undefined,
-        runSetup: launch.runSetup,
+        ...(launch.checkout !== undefined && launch.checkout.worktreePath !== null
+          ? {
+              lentWorktree: { path: launch.checkout.worktreePath, title: launch.checkout.title },
+            }
+          : {}),
+        // Another thread's checkout was set up by that thread.
+        runSetup: launch.runSetup && launch.checkout === undefined,
         first: {
           type: "thread.turn.start",
           commandId: childRequestCommandId(input.requestId, "turn"),

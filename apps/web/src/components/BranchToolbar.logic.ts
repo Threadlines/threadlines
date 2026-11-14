@@ -57,8 +57,20 @@ export function resolveCurrentWorkspaceLabel(activeWorktreePath: string | null):
   return activeWorktreePath ? "Current worktree" : resolveEnvModeLabel("local");
 }
 
-export function resolveLockedWorkspaceLabel(activeWorktreePath: string | null): string {
-  return activeWorktreePath ? "Worktree" : "Local checkout";
+/**
+ * Where a started thread works, as the row under the message box names it.
+ * `shared`: its worktree is another thread's (ThreadWorktreeOrigin).
+ */
+export function resolveLockedWorkspaceLabel(
+  activeWorktreePath: string | null,
+  shared = false,
+): string {
+  return activeWorktreePath ? (shared ? "Shared worktree" : "Worktree") : "Local checkout";
+}
+
+/** Whose worktree a shared one is, for the label's hover text. */
+export function resolveSharedWorktreeTitle(ownerTitle: string | null): string {
+  return ownerTitle === null ? "Another thread's worktree" : `${ownerTitle}'s worktree`;
 }
 
 /**

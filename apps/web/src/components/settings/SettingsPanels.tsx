@@ -25,7 +25,11 @@ import {
 } from "@threadlines/contracts";
 import { scopeThreadRef } from "@threadlines/client-runtime";
 import { themeGlassLevel } from "@threadlines/shared/themeGlassLevel";
-import { agentInvitesChoice, agentThreadsMode } from "@threadlines/shared/serverSettings";
+import {
+  agentInvitesChoice,
+  agentThreadsMode,
+  agentThreadsShareWorktrees,
+} from "@threadlines/shared/serverSettings";
 import {
   OPEN_LINKS_IN_LABELS,
   placeById,
@@ -537,6 +541,9 @@ export function useSettingsRestore(onRestored?: () => void) {
         : []),
       ...(agentInvitesChoice(settings) !== "ask" ? [placeById("threads.agentInvites").title] : []),
       ...(agentThreadsMode(settings) !== "ask" ? [placeById("threads.agentThreads").title] : []),
+      ...(agentThreadsShareWorktrees(settings)
+        ? [placeById("threads.agentThreadsShareWorktrees").title]
+        : []),
       ...(settings.wrapUpChildThreadsOnFinish !==
       DEFAULT_UNIFIED_SETTINGS.wrapUpChildThreadsOnFinish
         ? ["Wrap up finished child threads"]
@@ -571,6 +578,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.startAgentsWhileTyping,
       settings.agentInvites,
       settings.agentThreads,
+      settings.agentThreadsShareWorktrees,
       settings.wrapUpChildThreadsOnFinish,
       settings.addProjectBaseDirectory,
       settings.openLinksIn,
@@ -651,6 +659,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       startAgentsWhileTyping: true,
       agentInvites: "ask",
       agentThreads: "ask",
+      agentThreadsShareWorktrees: false,
       wrapUpChildThreadsOnFinish: DEFAULT_UNIFIED_SETTINGS.wrapUpChildThreadsOnFinish,
       textGenerationModelSelection: DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
       textGenerationBackupModelSelection:

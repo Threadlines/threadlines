@@ -66,6 +66,7 @@ import {
   ThreadMovedFrom,
   ThreadRemoteOrigin,
   ThreadScheduledRun,
+  ThreadWorktreeOrigin,
   OrchestrationOutsideWork,
   OutsideAgentRef,
   RoomReviewInput,
@@ -168,6 +169,7 @@ type ThreadLineageRow = Pick<
   | "childRequests"
   | "remoteOrigin"
   | "scheduledRun"
+  | "worktreeOrigin"
   | "outsideOrigin"
   | "outsideWork"
   | "move"
@@ -188,6 +190,7 @@ const threadLineageFields = (row: ThreadLineageRow) => ({
   childRequests: row.childRequests ?? EMPTY_CHILD_REQUEST_STATE,
   ...(row.remoteOrigin ? { remoteOrigin: row.remoteOrigin } : {}),
   ...(row.scheduledRun ? { scheduledRun: row.scheduledRun } : {}),
+  ...(row.worktreeOrigin ? { worktreeOrigin: row.worktreeOrigin } : {}),
   ...(row.outsideOrigin ? { outsideOrigin: row.outsideOrigin } : {}),
   ...(row.outsideWork && row.outsideWork.length > 0 ? { outsideWork: row.outsideWork } : {}),
   ...threadMoveFields(row),
@@ -222,6 +225,7 @@ const shellLineageFields = (row: ThreadLineageRow) => {
     pendingChildApproval: hasPendingChildApproval(childRequests),
     ...(row.remoteOrigin ? { remoteOrigin: row.remoteOrigin } : {}),
     ...(row.scheduledRun ? { scheduledRun: row.scheduledRun } : {}),
+    ...(row.worktreeOrigin ? { worktreeOrigin: row.worktreeOrigin } : {}),
     ...(row.outsideOrigin ? { outsideOrigin: row.outsideOrigin } : {}),
     ...(row.outsideWork && row.outsideWork.length > 0 ? { outsideWork: row.outsideWork } : {}),
     ...threadMoveFields(row),
@@ -292,6 +296,7 @@ const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
     ),
     remoteOrigin: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadRemoteOrigin))),
     scheduledRun: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadScheduledRun))),
+    worktreeOrigin: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadWorktreeOrigin))),
     outsideOrigin: Schema.optional(Schema.NullOr(Schema.fromJsonString(OutsideAgentRef))),
     outsideWork: Schema.optional(
       Schema.NullOr(Schema.fromJsonString(Schema.Array(OrchestrationOutsideWork))),
@@ -936,6 +941,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           settings_requests AS "settingsRequests",
           remote_origin_json AS "remoteOrigin",
           scheduled_run_json AS "scheduledRun",
+          worktree_origin_json AS "worktreeOrigin",
           outside_origin_json AS "outsideOrigin",
           outside_work_json AS "outsideWork",
           move_json AS "move",
@@ -1003,6 +1009,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           settings_requests AS "settingsRequests",
           remote_origin_json AS "remoteOrigin",
           scheduled_run_json AS "scheduledRun",
+          worktree_origin_json AS "worktreeOrigin",
           outside_origin_json AS "outsideOrigin",
           outside_work_json AS "outsideWork",
           move_json AS "move",
@@ -1072,6 +1079,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           settings_requests AS "settingsRequests",
           remote_origin_json AS "remoteOrigin",
           scheduled_run_json AS "scheduledRun",
+          worktree_origin_json AS "worktreeOrigin",
           outside_origin_json AS "outsideOrigin",
           outside_work_json AS "outsideWork",
           move_json AS "move",
@@ -1904,6 +1912,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           settings_requests AS "settingsRequests",
           remote_origin_json AS "remoteOrigin",
           scheduled_run_json AS "scheduledRun",
+          worktree_origin_json AS "worktreeOrigin",
           outside_origin_json AS "outsideOrigin",
           outside_work_json AS "outsideWork",
           move_json AS "move",
@@ -3699,6 +3708,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     settings_requests AS "settingsRequests",
     remote_origin_json AS "remoteOrigin",
     scheduled_run_json AS "scheduledRun",
+    worktree_origin_json AS "worktreeOrigin",
     outside_origin_json AS "outsideOrigin",
     outside_work_json AS "outsideWork",
     move_json AS "move",

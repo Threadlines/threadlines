@@ -558,6 +558,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             attachedToParent: event.payload.attachedToParent === true ? 1 : 0,
             remoteOrigin: event.payload.remoteOrigin ?? null,
             scheduledRun: event.payload.scheduledRun ?? null,
+            worktreeOrigin: event.payload.worktreeOrigin ?? null,
             outsideOrigin: event.payload.outsideOrigin ?? null,
             move: null,
             movedFrom: event.payload.movedFrom ?? null,
@@ -1147,6 +1148,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...(event.payload.branch !== undefined ? { branch: event.payload.branch } : {}),
             ...(event.payload.worktreePath !== undefined
               ? { worktreePath: event.payload.worktreePath }
+              : {}),
+            ...(event.payload.worktreeOrigin !== undefined
+              ? { worktreeOrigin: event.payload.worktreeOrigin }
               : {}),
             updatedAt: event.payload.updatedAt,
           });

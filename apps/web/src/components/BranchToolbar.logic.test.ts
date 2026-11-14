@@ -191,6 +191,14 @@ describe("resolveLockedWorkspaceLabel", () => {
   it("uses a shorter label for an attached worktree", () => {
     expect(resolveLockedWorkspaceLabel("/repo/.threadlines/worktrees/feature-a")).toBe("Worktree");
   });
+
+  it("says when the worktree is another thread's", () => {
+    expect(resolveLockedWorkspaceLabel("/repo/.threadlines/worktrees/feature-a", true)).toBe(
+      "Shared worktree",
+    );
+    // The project folder is nobody's worktree.
+    expect(resolveLockedWorkspaceLabel(null, true)).toBe("Local checkout");
+  });
 });
 
 describe("resolveActiveWorktreePath", () => {

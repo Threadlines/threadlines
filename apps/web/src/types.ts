@@ -41,6 +41,7 @@ import type {
   ProjectScript as ContractProjectScript,
   ThreadId,
   ThreadScheduledRun,
+  ThreadWorktreeOrigin,
   SideTurnId,
   ThreadParticipantId,
   ProjectId,
@@ -266,6 +267,8 @@ export interface Thread {
   handedBackTurnId?: TurnId | null;
   /** Started by a scheduled task's run: "Scheduled · <task>" on its inbox row. */
   scheduledRun?: ThreadScheduledRun | null;
+  /** Its worktree is another thread's (ThreadWorktreeOrigin): a guest there, not its owner. */
+  worktreeOrigin?: ThreadWorktreeOrigin | null;
   /** See ThreadShell.outsideOrigin. */
   outsideOrigin?: OutsideAgentRef | null;
   /** See ThreadShell.outsideWork. */
@@ -379,6 +382,8 @@ export interface ThreadShell {
   handedBackTurnId?: TurnId | null;
   /** Started by a scheduled task's run: "Scheduled · <task>" on its inbox row. */
   scheduledRun?: ThreadScheduledRun | null;
+  /** Its worktree is another thread's (ThreadWorktreeOrigin): a guest there, not its owner. */
+  worktreeOrigin?: ThreadWorktreeOrigin | null;
   /**
    * Started by an agent outside Threadlines (docs/design/outside-agents.md):
    * labelled with its name. Absent or null: started in Threadlines.
@@ -499,6 +504,8 @@ export interface SidebarThreadSummary {
   attachedToParent?: boolean;
   /** See ThreadShell.scheduledRun. */
   scheduledRun?: ThreadScheduledRun | null;
+  /** Its worktree is another thread's (ThreadWorktreeOrigin): a guest there, not its owner. */
+  worktreeOrigin?: ThreadWorktreeOrigin | null;
   /** See ThreadShell.outsideOrigin. */
   outsideOrigin?: OutsideAgentRef | null;
   /** See ThreadShell.handedBackTurnId: drives "wrap up finished child threads". */

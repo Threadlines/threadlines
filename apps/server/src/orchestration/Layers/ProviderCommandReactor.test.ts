@@ -5776,6 +5776,52 @@ describe("ProviderCommandReactor", () => {
     expect(harness.refreshStatus.mock.calls[0]?.[0]).toBe(PROJECT_WORKTREE_ROOT);
   });
 
+  it("never renames the branch of a worktree another thread lent", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const guest = ThreadId.make("thread-guest");
+
+    // A reviewer put in thread-1's worktree, whose branch still has its temporary name.
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-thread-create-guest"),
+        threadId: guest,
+        projectId: asProjectId("project-1"),
+        title: "Review it",
+        modelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5-codex"),
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: "threadlines/1234abcd",
+        worktreePath: PROJECT_WORKTREE_ROOT,
+        parentThreadId: ThreadId.make("thread-1"),
+        attachedToParent: false,
+        worktreeOrigin: { kind: "thread", threadId: ThreadId.make("thread-1") },
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-guest"),
+        threadId: guest,
+        message: {
+          messageId: asMessageId("user-message-guest"),
+          role: "user",
+          text: "Review the uncommitted changes.",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    expect(harness.generateBranchName).not.toHaveBeenCalled();
+    expect(harness.renameBranch).not.toHaveBeenCalled();
+  });
+
   it("forwards codex model options through session start and turn send", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

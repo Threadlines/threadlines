@@ -3218,6 +3218,21 @@ describe("resolveThreadBranchToRecord", () => {
       }),
     ).toBeNull();
   });
+
+  it("follows the owner's rename for a guest still on the temporary name", () => {
+    // Nothing renames a branch for a guest, so only this catches it up.
+    expect(
+      resolveThreadBranchToRecord({
+        thread: {
+          ...thread,
+          branch: buildTemporaryWorktreeBranchName(),
+          worktreeOrigin: { kind: "thread", threadId: ThreadId.make("thread-coder") },
+        },
+        cwd: "C:/wt/one",
+        checkoutRef: "feature/two",
+      }),
+    ).toBe("feature/two");
+  });
 });
 
 describe("createUpwardScrollDetector", () => {

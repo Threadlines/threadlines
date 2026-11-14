@@ -12,11 +12,13 @@ import type {
   OrchestrationChildRequest,
   OrchestrationChildRequestState,
   RemoteChildThread,
+  RuntimeMode,
   ThreadId,
   ThreadMessageOrigin,
   TurnId,
 } from "@threadlines/contracts";
 import { awaitingChildBatch } from "@threadlines/shared/childThreads";
+import { RUNTIME_MODE_LABELS } from "@threadlines/shared/runtimeMode";
 import {
   findReasoningOptionDescriptor,
   findReasoningSelection,
@@ -26,6 +28,7 @@ import { useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { formatChildThreadCount } from "./components/Sidebar.logic";
+import { useThreadTitle } from "./hooks/useThreadTitle";
 import { toSortableTimestamp } from "./lib/threadSort";
 import type { ProviderInstanceEntry } from "./providerInstances";
 import { getProviderModelCapabilities } from "./providerModels";
@@ -42,17 +45,7 @@ import type { SidebarThreadSummary } from "./types";
 
 const NO_CHILD_THREADS: readonly SidebarThreadSummary[] = [];
 
-/** Another thread's title, live, for a link to it; null when this device does not know it. */
-export function useThreadTitle(
-  environmentId: EnvironmentId | null,
-  threadId: ThreadId | null | undefined,
-): string | null {
-  return useStore((state) =>
-    threadId == null || environmentId === null
-      ? null
-      : (selectEnvironmentState(state, environmentId).threadShellById[threadId]?.title ?? null),
-  );
-}
+export { useThreadTitle };
 
 const NO_REMOTE_CHILDREN: readonly RemoteChildThread[] = [];
 
@@ -200,6 +193,13 @@ export interface PendingChildThread {
   readonly entry: ProviderInstanceEntry | undefined;
   /** False in a project without git: it shares the project folder. */
   readonly ownWorktree: boolean;
+  /**
+   * Another thread's checkout it would work in instead: that thread's title
+   * when it was asked for, or null when it is the asking thread's own.
+   */
+  readonly checkout: { readonly title: string | null } | null;
+  /** The access it would run at, by name ("Supervised"), when below the asking thread's. */
+  readonly access: string | null;
   /** The linked computer it would run on (by its name), or null for this one. */
   readonly computer: string | null;
 }
@@ -243,7 +243,9 @@ function launchReasoning(
 /** The batch the approval card asks about, or null when none waits. */
 export function pendingChildThreads(
   thread: RoomThreadLike & {
+    readonly id: ThreadId;
     readonly modelSelection: ModelSelection;
+    readonly runtimeMode: RuntimeMode;
     readonly agentRole?: string | undefined;
     readonly childRequests?: OrchestrationChildRequestState | undefined;
   },
@@ -287,6 +289,14 @@ export function pendingChildThreads(
           ),
           entry,
           ownWorktree: launch.workspace.kind === "worktree",
+          checkout:
+            launch.checkout === undefined
+              ? null
+              : { title: launch.checkout.threadId === thread.id ? null : launch.checkout.title },
+          access:
+            launch.runtimeMode !== thread.runtimeMode
+              ? RUNTIME_MODE_LABELS[launch.runtimeMode]
+              : null,
           computer: launch.workspace.kind === "remote" ? (launch.target?.label ?? null) : null,
         },
       ];
