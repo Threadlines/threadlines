@@ -620,6 +620,24 @@ describe("ChatView (full app): new threads and drafts", () => {
       expect(
         useComposerDraftStore.getState().getDraftSession(draftIdFromPath(newThreadPath)),
       ).toMatchObject({ envMode: "worktree", worktreePath: null });
+
+      // Whoever asks for a new thread is about to type: its composer has the
+      // keyboard, though an empty draft that just opens leaves it alone.
+      const expectNewThreadComposerFocused = () =>
+        vi.waitFor(() => {
+          const editor = document.querySelector<HTMLElement>('[data-testid="composer-editor"]');
+          expect(editor).not.toBeNull();
+          expect(document.activeElement).toBe(editor);
+        });
+      await expectNewThreadComposerFocused();
+
+      // Asking again on the same empty draft navigates nowhere and still
+      // brings the keyboard back.
+      (document.activeElement as HTMLElement).blur();
+      expect(document.activeElement).toBe(document.body);
+      dispatchChatNewShortcut();
+      await expectNewThreadComposerFocused();
+      expect(mounted.router.state.location.pathname).toBe(newThreadPath);
     } finally {
       await mounted.cleanup();
     }
