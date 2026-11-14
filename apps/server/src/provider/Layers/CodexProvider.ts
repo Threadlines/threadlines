@@ -1002,7 +1002,7 @@ export interface CodexModelProviderMemory {
         /** When Codex last named this provider as its default. */
         readonly confirmedAtMs: number;
         readonly model?: string | undefined;
-        /** Absent when the config was never read, or holds a secret only arguments could carry. */
+        /** Absent when the config was never read, or the provider needs Codex's stored sign-in. */
         readonly launch?: CodexModelProviderLaunch | undefined;
       }
     | undefined;
@@ -1038,7 +1038,6 @@ export function currentCodexModelProvider(
 function codexGatewayForCheck(
   snapshot: Pick<CodexAppServerProviderSnapshot, "modelProviders" | "gateway">,
   memory: CodexModelProviderMemory,
-  environment: NodeJS.ProcessEnv,
   nowMs: number,
 ): CodexModelProviderMemory["last"] {
   if (snapshot.modelProviders === undefined) return currentCodexModelProvider(memory, nowMs);
@@ -1050,7 +1049,7 @@ function codexGatewayForCheck(
       providerId: gateway.providerId,
       confirmedAtMs: nowMs,
       model: gateway.model,
-      launch: codexModelProviderLaunch({ ...gateway, environment }),
+      launch: codexModelProviderLaunch(gateway),
     };
   } else {
     memory.last = {
@@ -1488,7 +1487,6 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
   const gateway = codexGatewayForCheck(
     snapshot,
     modelProviderMemory,
-    environment,
     yield* Clock.currentTimeMillis,
   );
   const accountStatus = accountProbeStatus(snapshot, workspaceMemory, securityNoticeMemory);

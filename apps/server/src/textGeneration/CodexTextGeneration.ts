@@ -92,6 +92,9 @@ function isCodexModelRefusal(error: TextGenerationError): boolean {
   return /^ERROR:.*\bmodel\b/iu.test(lastLine);
 }
 
+/** A model id made of the characters model ids are made of, safe as an argument on any platform. */
+const PLAIN_MODEL_NAME = /^[A-Za-z0-9_\-+=.,:/@]+$/u;
+
 function isUnsupportedIgnoreUserConfigFlagError(error: TextGenerationError): boolean {
   const detail = error.detail.toLowerCase();
   return (
@@ -228,6 +231,36 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
     return { imagePaths };
   });
 
+  /**
+   * A Codex home for one run on a gateway: a folder only this user can open,
+   * with the gateway's config in it, removed when the run's scope closes. It
+   * is named like a side-answer home so that the sweep of those also removes
+   * one a killed server left behind.
+   */
+  const makeGatewayHome = (
+    operation: CodexTextGenerationOperation,
+    launch: CodexModelProviderLaunch,
+  ): Effect.Effect<string, TextGenerationError, Scope.Scope> =>
+    Effect.gen(function* () {
+      const home = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-side-textgen-",
+      });
+      yield* fileSystem.chmod(home, 0o700);
+      yield* fileSystem.writeFileString(path.join(home, "config.toml"), launch.config, {
+        mode: 0o600,
+      });
+      return home;
+    }).pipe(
+      Effect.mapError(
+        (cause) =>
+          new TextGenerationError({
+            operation,
+            detail: "Failed to prepare a Codex home for the gateway",
+            cause,
+          }),
+      ),
+    );
+
   const runCodexJson = Effect.fn("runCodexJson")(function* <S extends Schema.Top>({
     operation,
     cwd,
@@ -262,47 +295,50 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
         getModelSelectionStringOptionValue(modelSelection, "reasoningEffort") ??
         DEFAULT_GIT_TEXT_GENERATION_REASONING_EFFORT;
       const serviceTier = resolveCodexCliServiceTier(modelSelection);
-      const baseEnv = {
+      // On a gateway the run gets a home of its own, holding the provider
+      // alone (see codexModelProviderLaunch.ts). That stands in for
+      // --ignore-user-config: there is no user config in it to ignore.
+      const gatewayHome =
+        options.ignoreUserConfig && gatewayLaunch !== undefined
+          ? yield* makeGatewayHome(operation, gatewayLaunch)
+          : undefined;
+      const env = {
         ...environment,
-        ...(codexConfig.homePath ? { CODEX_HOME: expandHomePath(codexConfig.homePath) } : {}),
+        ...(gatewayHome !== undefined
+          ? { CODEX_HOME: gatewayHome }
+          : codexConfig.homePath
+            ? { CODEX_HOME: expandHomePath(codexConfig.homePath) }
+            : {}),
       };
-      const planFor = (providerLaunch: CodexModelProviderLaunch | undefined) => {
-        const env = { ...baseEnv, ...providerLaunch?.environment };
-        return {
-          env,
-          plan: planCliSpawn(
-            codexConfig.binaryPath || "codex",
-            [
-              "exec",
-              "--ephemeral",
-              // One-shot text generation should not inherit agent-oriented user
-              // config (MCP servers, notify hooks, memories) from
-              // $CODEX_HOME/config.toml; auth still uses CODEX_HOME.
-              ...(options.ignoreUserConfig ? ["--ignore-user-config"] : []),
-              ...(providerLaunch?.args ?? []),
-              "--skip-git-repo-check",
-              ...(operation === "generateCommitMessage" ? ["--ignore-rules"] : []),
-              "-s",
-              "read-only",
-              "--model",
-              modelSelection.model,
-              "--config",
-              `model_reasoning_effort="${reasoningEffort}"`,
-              ...(serviceTier ? ["--config", `service_tier="${serviceTier}"`] : []),
-              "--output-schema",
-              schemaPath,
-              "--output-last-message",
-              outputPath,
-              ...imagePaths.flatMap((imagePath) => ["--image", imagePath]),
-              "-",
-            ],
-            env,
-          ),
-        };
-      };
-      // The gateway goes along only beside --ignore-user-config: a run without
-      // the flag loads the user's own config, provider and all.
-      const { env, plan } = planFor(options.ignoreUserConfig ? gatewayLaunch : undefined);
+      const plan = planCliSpawn(
+        codexConfig.binaryPath || "codex",
+        [
+          "exec",
+          "--ephemeral",
+          // One-shot text generation should not inherit agent-oriented user
+          // config (MCP servers, notify hooks, memories) from
+          // $CODEX_HOME/config.toml; auth still uses CODEX_HOME.
+          ...(options.ignoreUserConfig && gatewayHome === undefined
+            ? ["--ignore-user-config"]
+            : []),
+          "--skip-git-repo-check",
+          ...(operation === "generateCommitMessage" ? ["--ignore-rules"] : []),
+          "-s",
+          "read-only",
+          "--model",
+          modelSelection.model,
+          "--config",
+          `model_reasoning_effort="${reasoningEffort}"`,
+          ...(serviceTier ? ["--config", `service_tier="${serviceTier}"`] : []),
+          "--output-schema",
+          schemaPath,
+          "--output-last-message",
+          outputPath,
+          ...imagePaths.flatMap((imagePath) => ["--image", imagePath]),
+          "-",
+        ],
+        env,
+      );
       const command = ChildProcess.make(
         plan.command,
         [...plan.args],
@@ -409,26 +445,20 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
   >(
     input: RunCodexJsonInput<S>,
   ): Effect.fn.Return<S["Type"], TextGenerationError, S["DecodingServices"]> {
-    const knownLaunch = textGenerationOptions?.modelProviderLaunch
+    const providerLaunch = textGenerationOptions?.modelProviderLaunch
       ? yield* textGenerationOptions.modelProviderLaunch
       : undefined;
-    // A batch file that only cmd.exe can start takes its arguments as one
-    // command line, where the quotes in the gateway's settings would let an
-    // `&` or a `%NAME%` in them (or in its model's name) act as a command.
-    // Such a Codex runs without the gateway, as it did before.
-    const startsThroughShell =
-      knownLaunch !== undefined &&
-      planCliSpawn(codexConfig.binaryPath || "codex", [], {
-        ...environment,
-        ...(codexConfig.homePath ? { CODEX_HOME: expandHomePath(codexConfig.homePath) } : {}),
-      }).options.shell === true;
-    const providerLaunch = startsThroughShell ? undefined : knownLaunch;
     const run = { ...input, providerLaunch };
     // On a gateway, the model picked for titles and commit messages may be one
     // only OpenAI serves (the built-in pick is). The model Codex's config names
     // is known to work there, so a run refused for its model is tried once
     // more on that one.
-    const gatewayModel = providerLaunch?.model;
+    // The name comes from the user's Codex config and becomes an argument:
+    // one with anything but plain characters is left alone.
+    const gatewayModel =
+      providerLaunch?.model !== undefined && PLAIN_MODEL_NAME.test(providerLaunch.model)
+        ? providerLaunch.model
+        : undefined;
     return yield* runCodexJson(run).pipe(
       Effect.catchIf(
         (error) =>

@@ -272,11 +272,16 @@ function makeFakeCodexBinary(
         "#!/bin/sh",
         ...(input.recordInvocationTo !== undefined
           ? [
-              // The arguments one per line, then the provider's secret variables.
+              // The arguments one per line, the home the run was given, its
+              // config, and who may read them.
               // @effect-diagnostics-next-line preferSchemaOverJson:off
               `printf "%s\n" "$@" > ${JSON.stringify(`${input.recordInvocationTo}.args`)}`,
               // @effect-diagnostics-next-line preferSchemaOverJson:off
-              `env | grep "^THREADLINES_CODEX_PROVIDER_" > ${JSON.stringify(`${input.recordInvocationTo}.env`)}`,
+              `printf "%s" "$CODEX_HOME" > ${JSON.stringify(`${input.recordInvocationTo}.home`)}`,
+              // @effect-diagnostics-next-line preferSchemaOverJson:off
+              `cat "$CODEX_HOME/config.toml" > ${JSON.stringify(`${input.recordInvocationTo}.config`)}`,
+              // @effect-diagnostics-next-line preferSchemaOverJson:off
+              `ls -ld "$CODEX_HOME" "$CODEX_HOME/config.toml" | cut -c1-10 > ${JSON.stringify(`${input.recordInvocationTo}.modes`)}`,
             ]
           : []),
         'output_path=""',
@@ -482,7 +487,7 @@ function withFakeCodexEnv<A, E, R>(
     failForModelExitCode?: number;
     stdinMustContain?: string;
     stdinMustNotContain?: string;
-    /** POSIX only: writes the run's arguments and provider variables to `<path>.args` and `<path>.env`. */
+    /** POSIX only: writes the run's arguments, home, config and their modes to `<path>.*`. */
     recordInvocationTo?: string;
   },
   effectFn: (textGeneration: TextGenerationShape) => Effect.Effect<A, E, R>,
@@ -709,7 +714,7 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
         }),
       {
         modelProviderLaunch: Effect.succeed(
-          codexModelProviderLaunch({ providerId: "acme", model: "acme-coder-1", environment: {} }),
+          codexModelProviderLaunch({ providerId: "acme", model: "acme-coder-1" }),
         ),
       },
     ),
@@ -742,7 +747,7 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
         }),
       {
         modelProviderLaunch: Effect.succeed(
-          codexModelProviderLaunch({ providerId: "acme", model: "acme-coder-1", environment: {} }),
+          codexModelProviderLaunch({ providerId: "acme", model: "acme-coder-1" }),
         ),
       },
     ),
@@ -845,10 +850,10 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
   );
 
   // Titles and commit messages leave the user's Codex config out, and with it
-  // the gateway Codex runs on. The gateway alone is handed back, and a secret
-  // in its definition travels in the environment, never on the command line.
+  // the gateway Codex runs on. The run gets a home of its own with the gateway
+  // alone, in a file only this user can read: its secrets are never arguments.
   it.effect.skipIf(process.platform === "win32")(
-    "runs on the gateway Codex is configured for, with its secrets out of the arguments",
+    "runs on the gateway Codex is configured for, from a private home of its own",
     () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -861,14 +866,12 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
             name: "Acme Gateway",
             base_url: "https://llm.acme.example/v1",
             experimental_bearer_token: "sk-secret-token",
-            env_key: null,
+            query_params: { code: "fn-key" },
           },
-          environment: {},
         });
         yield* withFakeCodexEnv(
           {
             output: JSON.stringify({ title: "Investigate reconnect regressions" }),
-            requireIgnoreUserConfig: true,
             recordInvocationTo: record,
           },
           (textGeneration) =>
@@ -880,13 +883,21 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
           { modelProviderLaunch: Effect.succeed(launch) },
         );
 
-        const args = (yield* fs.readFileString(`${record}.args`)).split("\n");
-        expect(args).toContain('model_provider="acme"');
-        expect(args.some((arg) => arg.startsWith('model_providers={"acme" = {'))).toBe(true);
-        expect(args.join("\n")).not.toContain("sk-secret-token");
-        expect(yield* fs.readFileString(`${record}.env`)).toContain(
-          "THREADLINES_CODEX_PROVIDER_TOKEN=sk-secret-token",
-        );
+        const args = yield* fs.readFileString(`${record}.args`);
+        expect(args).not.toContain("sk-secret-token");
+        expect(args).not.toContain("fn-key");
+        expect(args).not.toContain("acme");
+        // The home holds no user config to ignore.
+        expect(args.split("\n")).not.toContain("--ignore-user-config");
+        expect(yield* fs.readFileString(`${record}.config`)).toBe(launch?.config);
+        expect((yield* fs.readFileString(`${record}.modes`)).split("\n").slice(0, 2)).toEqual([
+          "drwx------",
+          "-rw-------",
+        ]);
+        // Gone with the run.
+        const home = yield* fs.readFileString(`${record}.home`);
+        expect(home).not.toBe("");
+        expect(yield* fs.exists(home)).toBe(false);
       }).pipe(Effect.scoped),
   );
 

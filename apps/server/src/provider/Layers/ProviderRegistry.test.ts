@@ -672,12 +672,14 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
 
           const first = yield* check(() => Effect.succeed(onGateway));
           assert.deepStrictEqual(defaultModels(first), ["acme-coder-1"]);
-          assert.deepStrictEqual(modelProviderMemory.last?.launch?.args, [
-            "-c",
-            'model_provider="acme"',
-            "-c",
-            'model_providers={"acme" = {"base_url" = "https://llm.acme.example/v1", "env_key" = "ACME_API_KEY"}}',
-          ]);
+          assert.strictEqual(
+            modelProviderMemory.last?.launch?.config,
+            [
+              'model_provider = "acme"',
+              'model_providers = {"acme" = {"base_url" = "https://llm.acme.example/v1", "env_key" = "ACME_API_KEY"}}',
+              "",
+            ].join("\n"),
+          );
 
           // Codex did not say which providers it has: nothing is known to have changed.
           const noProviderList = yield* check(() => Effect.succeed(makeCodexProbeSnapshot()));
