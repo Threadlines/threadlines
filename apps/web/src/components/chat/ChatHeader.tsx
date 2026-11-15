@@ -101,7 +101,7 @@ interface ChatHeaderProps {
   workingTreeChanges: WorkingTreeChanges | null;
   /**
    * Commits the branch is behind its upstream, shown beside the change count;
-   * right-clicking it pulls without opening the Source tab. Null when there is
+   * ⌘-clicking or right-clicking it pulls without opening the Source tab. Null when there is
    * nothing to pull or the status has not loaded.
    */
   remoteBehindCount: number | null;

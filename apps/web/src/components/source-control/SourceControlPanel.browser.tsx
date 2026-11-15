@@ -46,6 +46,7 @@ import { useStore } from "../../store";
 import { resetGitActionProgressStateForTests } from "../gitActionProgressState";
 import { resetParentRepositoryApprovalForTests } from "./parentRepositoryApproval";
 import { gitCheckoutMutationOptions } from "~/lib/gitReactQuery";
+import { isMacPlatform } from "~/lib/utils";
 import { RightPanelSheet } from "../RightPanelSheet";
 import { HeaderSourceChanges } from "../chat/HeaderSourceChanges";
 import { SourceControlPanel, type SourceControlProjectTarget } from "./SourceControlPanel";
@@ -1156,6 +1157,49 @@ describe("SourceControlPanel changes", () => {
         { x: 9, y: 9 },
       );
       expect(onOpenSourceTab).not.toHaveBeenCalled();
+    } finally {
+      await screen.unmount();
+      queryClient.clear();
+    }
+  });
+
+  it("pulls on a quick-pull click of the header's behind count, and opens the Source tab on a plain one", async () => {
+    const pull: EnvironmentApi["vcs"]["pull"] = vi.fn(async () => ({
+      status: "pulled" as const,
+      refName: "main",
+      upstreamRef: "origin/main",
+    }));
+    gitStatusMock.data = makeStatus({ behindCount: 2 });
+    __setEnvironmentApiOverrideForTests(ENVIRONMENT_ID, makeEnvironmentApi({ vcs: { pull } }));
+    const onOpenSourceTab = vi.fn();
+    const queryClient = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+    const screen = await render(
+      <AppAtomRegistryProvider>
+        <QueryClientProvider client={queryClient}>
+          <HeaderSourceChanges
+            environmentId={ENVIRONMENT_ID}
+            cwd={CWD}
+            threadRef={null}
+            workingTreeChanges={null}
+            remoteBehindCount={2}
+            onOpenSourceTab={onOpenSourceTab}
+          />
+        </QueryClientProvider>
+      </AppAtomRegistryProvider>,
+    );
+    const clickCount = (modifiers: { metaKey?: boolean; ctrlKey?: boolean }) =>
+      document
+        .querySelector("[data-header-source-changes]")
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, ...modifiers }));
+
+    try {
+      clickCount({});
+      expect(onOpenSourceTab).toHaveBeenCalledTimes(1);
+      expect(pull).not.toHaveBeenCalled();
+
+      clickCount(isMacPlatform(navigator.platform) ? { metaKey: true } : { ctrlKey: true });
+      await vi.waitFor(() => expect(pull).toHaveBeenCalledWith({ cwd: CWD }));
+      expect(onOpenSourceTab).toHaveBeenCalledTimes(1);
     } finally {
       await screen.unmount();
       queryClient.clear();

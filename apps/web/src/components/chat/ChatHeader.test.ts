@@ -2,7 +2,11 @@ import { EnvironmentId } from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import { resolveContinueInProjectHeaderState, shouldShowOpenInEditor } from "./ChatHeader";
-import { buildHeaderSourceMenuItems, formatSourceChangesLabel } from "./HeaderSourceChanges";
+import {
+  buildHeaderSourceMenuItems,
+  formatSourceChangesLabel,
+  isQuickPullClick,
+} from "./HeaderSourceChanges";
 
 describe("shouldShowOpenInEditor", () => {
   const primaryEnvironmentId = EnvironmentId.make("environment-primary");
@@ -113,5 +117,17 @@ describe("buildHeaderSourceMenuItems", () => {
       { id: "pull", label: "Can't pull: Git action in progress", disabled: true },
       { id: "open-source-tab", label: "Open Source tab", separatorBefore: true },
     ]);
+  });
+});
+
+describe("isQuickPullClick", () => {
+  it("pulls on ⌘-click on a Mac, where Ctrl+click is a right-click", () => {
+    expect(isQuickPullClick({ metaKey: true, ctrlKey: false }, "MacIntel")).toBe(true);
+    expect(isQuickPullClick({ metaKey: false, ctrlKey: true }, "MacIntel")).toBe(false);
+  });
+
+  it("pulls on Ctrl+click elsewhere, leaving the Windows key alone", () => {
+    expect(isQuickPullClick({ metaKey: false, ctrlKey: true }, "Win32")).toBe(true);
+    expect(isQuickPullClick({ metaKey: true, ctrlKey: false }, "Linux x86_64")).toBe(false);
   });
 });

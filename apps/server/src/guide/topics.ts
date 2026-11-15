@@ -385,7 +385,7 @@ In the Diff tab, a changed picture shows its Before and After side by side inste
     ],
     body: `The panel button at the right of the chat header opens a side panel, and so does Cmd+D, or Ctrl+D on Windows and Linux. Its Source tab is where you work with Git in the thread's checkout. {place:sourceControl.openPanelByDefault} opens it as you enter a thread.
 
-Beside that button the header shows uncommitted lines added and removed, and ↓ with how many commits the branch is behind its remote. Click the counts to open the Source tab. Right-click the ↓ count, or hold it on a touch screen, to pull without opening the panel. A narrow header hides the counts.
+Beside that button the header shows uncommitted lines added and removed, and ↓ with how many commits the branch is behind its remote. Click the counts to open the Source tab. ⌘-click the ↓ count (Ctrl+click on Windows and Linux) to pull without opening the panel, or right-click it, or hold it on a touch screen, for a menu with the same pull. A narrow header hides the counts.
 
 The Source tab lists staged and unstaged changes; click a file for its diff. The main button commits and pushes, writing the message unless you pick Write message from its menu first. With nothing to commit, it only pushes. The same menu has Commit only, Push only, Stash changes, View stashes and Review changes with Codex. Below it are Pull, New PR or Open PR, and the branch menu for creating, switching and merging branches. Graph shows the history. Right-click a commit to copy it, tag it or open it on the site that hosts the repository.
 
