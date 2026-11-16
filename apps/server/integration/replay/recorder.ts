@@ -35,11 +35,14 @@ const dashed = (path: string) => path.replace(/[^A-Za-z0-9]/g, "-");
  * Transcripts store paths with forward slashes, so a recording plays on any
  * system. On Windows a frame's path after a placeholder uses backslashes:
  * the scrubber turns them into slashes, and the materializer turns them back.
+ * A folder name may hold spaces (`my dir`), so a path runs on past them; a
+ * backslash left behind would be part of a file name on Linux.
  */
 const WINDOWS = process.platform === "win32";
 const PLACEHOLDER = "<(?:workspace|root|tmp|home)>";
-const PLACEHOLDER_THEN_BACKSLASHES = new RegExp(`${PLACEHOLDER}(?:\\\\[^\\\\/\\s"'\`<>|]+)+`, "g");
-const PLACEHOLDER_THEN_SLASHES = new RegExp(`${PLACEHOLDER}(?:/[^\\\\/\\s"'\`<>|]+)+`, "g");
+const PATH_SEGMENT = "[^\\\\/\\r\\n\\t\"'`<>|]+";
+const PLACEHOLDER_THEN_BACKSLASHES = new RegExp(`${PLACEHOLDER}(?:\\\\${PATH_SEGMENT})+`, "g");
+const PLACEHOLDER_THEN_SLASHES = new RegExp(`${PLACEHOLDER}(?:/${PATH_SEGMENT})+`, "g");
 
 /**
  * Every form of `path` a frame may hold: as given, with symlinks resolved
