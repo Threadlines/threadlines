@@ -76,20 +76,37 @@ export function readThreadMoveOffered(
   });
 }
 
+/** The descriptor of the computer `environmentId`, kept current; null when not known. */
+function useEnvironmentDescriptor(
+  environmentId: EnvironmentId | null,
+): ExecutionEnvironmentDescriptor | null {
+  const primary = usePrimaryEnvironmentDescriptor();
+  const saved = useSavedEnvironmentRuntimeStore((state) =>
+    environmentId === null ? null : (state.byId[environmentId]?.descriptor ?? null),
+  );
+  if (environmentId === null) return null;
+  return primary?.environmentId === environmentId ? primary : saved;
+}
+
+/**
+ * Whether the computer `environmentId` queues moves (`moves.queue`, Part 3b),
+ * kept current. With it every move goes through the queue, a free thread's
+ * included; without it, only `moves.start` exists there.
+ */
+export function useThreadMoveQueueSupported(environmentId: EnvironmentId | null): boolean {
+  return useEnvironmentDescriptor(environmentId)?.capabilities.threadMoveQueue === true;
+}
+
 /** isThreadMoveOffered for a thread on `environmentId`, kept current. */
 export function useThreadMoveOffered(
   environmentId: EnvironmentId | null,
   moveStatus: ThreadMoveStatus | undefined,
 ): boolean {
-  const primary = usePrimaryEnvironmentDescriptor();
-  const saved = useSavedEnvironmentRuntimeStore((state) =>
-    environmentId === null ? null : (state.byId[environmentId]?.descriptor ?? null),
-  );
+  const descriptor = useEnvironmentDescriptor(environmentId);
   const outbound = useComputerLinksStore((state) =>
     environmentId === null ? null : liveOutbound(state.byEnvironmentId[environmentId]),
   );
   if (environmentId === null) return false;
-  const descriptor = primary?.environmentId === environmentId ? primary : saved;
   return isThreadMoveOffered({
     supportsThreadMove: supportsThreadMove(descriptor),
     outbound,

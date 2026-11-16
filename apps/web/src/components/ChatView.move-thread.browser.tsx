@@ -83,8 +83,20 @@ vi.mock("../lib/gitStatusState", () => ({
 
 /** This computer's server takes links and moves threads to linked computers. */
 function withThreadMoveFixture(nextFixture: TestFixture): void {
+  withMoveCapabilities(nextFixture, { threadMove: true });
+}
+
+/** Like withThreadMoveFixture, on a server that also queues moves (Part 3b). */
+function withThreadMoveQueueFixture(nextFixture: TestFixture): void {
+  withMoveCapabilities(nextFixture, { threadMove: true, threadMoveQueue: true });
+}
+
+function withMoveCapabilities(
+  nextFixture: TestFixture,
+  moves: { readonly threadMove: true; readonly threadMoveQueue?: true },
+): void {
   withComputerLinksFixture(nextFixture);
-  const capabilities = { ...nextFixture.serverConfig.environment.capabilities, threadMove: true };
+  const capabilities = { ...nextFixture.serverConfig.environment.capabilities, ...moves };
   nextFixture.serverConfig = {
     ...nextFixture.serverConfig,
     environment: { ...nextFixture.serverConfig.environment, capabilities },
@@ -447,7 +459,7 @@ describe("ChatView (full app): moving a thread to another computer", () => {
         targetMessageId: "msg-user-move-busy" as MessageId,
         targetText: "move busy",
       }),
-      configureFixture: withThreadMoveFixture,
+      configureFixture: withThreadMoveQueueFixture,
       resolveRpc: (body) => {
         if (body._tag === WS_METHODS.movesPreview) {
           return {
@@ -509,6 +521,80 @@ describe("ChatView (full app): moving a thread to another computer", () => {
           mode: "stop-now",
         }),
       ]);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("queues a free thread's move too, to a computer out of reach with the agent it suggests", async () => {
+    setPrimaryLinksSnapshot(
+      fleetLinksSnapshot({
+        outbound: [fleetOutboundLink(FLEET_OFFLINE_ENVIRONMENT_ID, "Mac mini")],
+      }),
+    );
+    const queues: Array<NormalizedWsRpcRequestBody> = [];
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-move-offline" as MessageId,
+        targetText: "move offline",
+      }),
+      configureFixture: withThreadMoveQueueFixture,
+      resolveRpc: (body) => {
+        if (body._tag === WS_METHODS.movesPreview) {
+          return {
+            changes: FLEET_MOVE_PREVIEW.changes,
+            targets: [
+              {
+                environmentId: FLEET_OFFLINE_ENVIRONMENT_ID,
+                label: "Mac mini",
+                refusal: "Mac mini can't be reached right now.",
+                refusalCode: "unreachable",
+                agents: [],
+              },
+            ],
+          } satisfies ThreadMovePreview;
+        }
+        if (body._tag === WS_METHODS.movesQueue) {
+          queues.push(body);
+          return { requestId: QUEUED_REQUEST_ID };
+        }
+        return undefined;
+      },
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      await saveMacMini("disconnected");
+      await vi.waitFor(() => {
+        expect(readThreadMoveOffered(LOCAL_ENVIRONMENT_ID, undefined)).toBe(true);
+      });
+      await openCommandPaletteFromTrigger();
+      await page
+        .getByTestId("command-palette")
+        .getByText("Move to another computer", { exact: true })
+        .click();
+      const dialog = page.getByTestId("thread-move-dialog");
+      await expect
+        .element(dialog.getByTestId("thread-move-waits-to-connect"))
+        .toHaveTextContent(
+          "Mac mini can't be reached right now. The move waits for it to connect, then uses the agent Mac mini suggests.",
+        );
+      await expect
+        .element(dialog.getByTestId("thread-move-confirm"))
+        .toHaveTextContent("Move when it connects");
+      await dialog.getByTestId("thread-move-confirm").click();
+      await expect.element(page.getByTestId("thread-move-dialog")).not.toBeInTheDocument();
+      expect(queues).toHaveLength(1);
+      expect(queues[0]).toEqual(
+        expect.objectContaining({
+          threadId: THREAD_ID,
+          targetEnvironmentId: FLEET_OFFLINE_ENVIRONMENT_ID,
+          mode: "when-done",
+        }),
+      );
+      // No agent: Mac mini's suggestion is picked once the move starts.
+      expect(queues[0]).not.toHaveProperty("agent");
     } finally {
       await mounted.cleanup();
     }

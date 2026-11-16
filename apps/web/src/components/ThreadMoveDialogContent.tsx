@@ -17,7 +17,10 @@ import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { describeComputerLinkFailure } from "../environments/links/computerLinks";
-import { requireThreadMovesClient } from "../environments/links/threadMoves";
+import {
+  requireThreadMovesClient,
+  useThreadMoveQueueSupported,
+} from "../environments/links/threadMoves";
 import {
   useProjectSetupComputerReady,
   useProjectSetupTargets,
@@ -71,13 +74,9 @@ export function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThread
   const projectId = useStore(
     (state) => selectSidebarThreadSummaryByRef(state, threadRef)?.projectId ?? null,
   );
-  // The agent a move to a computer that can't be reached asks for: the
-  // thread's own, since that computer can't say which it has.
-  const threadModelSelection = useStore(
-    (state) =>
-      state.environmentStateById[threadRef.environmentId]?.threadShellById[threadRef.threadId]
-        ?.modelSelection ?? null,
-  );
+  // The thread's computer queues moves (Part 3b): every move goes through
+  // the queue, and a free thread's starts at once. Older servers only start.
+  const queues = useThreadMoveQueueSupported(threadRef.environmentId);
   const computerLabel = useComputerLabel()(threadRef.environmentId, threadRef.environmentId);
   const [previewState, setPreviewState] = useState<PreviewState>({ status: "loading" });
   const [targetId, setTargetId] = useState<EnvironmentId | null>(null);
@@ -133,44 +132,36 @@ export function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThread
   const preview = previewState.status === "ready" ? previewState.preview : null;
   const target = preview?.targets.find((candidate) => candidate.environmentId === targetId) ?? null;
   // Busy: the move can wait for the thread to be free, or stop it first.
-  const waits = preview?.waitsFor ?? [];
+  const waits = queues ? (preview?.waitsFor ?? []) : [];
   const busy = waits.length > 0;
-  // Out of reach: a move to it waits for it to connect.
-  const unreachable = target?.refusalCode === "unreachable";
-  // Only a server that queues moves says either, so asking it to queue is
-  // safe; anything else starts the move at once, as every server does.
-  const queues = busy || unreachable;
+  // Out of reach: a queued move to it waits for it to connect, and runs
+  // with the agent it suggests then (no agent sent).
+  const unreachable = queues && target?.refusalCode === "unreachable";
   const agentSelection: ModelSelection | null =
-    target === null
-      ? null
-      : unreachable
-        ? threadModelSelection
-        : agent !== null
-          ? threadMoveAgentSelection(target, agent)
-          : null;
+    target !== null && agent !== null ? threadMoveAgentSelection(target, agent) : null;
   const canMove =
     preview !== null &&
     preview.refusal === undefined &&
     target !== null &&
-    isThreadMoveTargetPickable(target) &&
-    agentSelection !== null &&
+    (target.refusal === undefined || unreachable) &&
+    (agentSelection !== null || unreachable) &&
     !starting;
 
   const start = async () => {
-    if (!canMove || target === null || agentSelection === null) return;
+    if (!canMove || target === null) return;
     setStarting(true);
     setStartError(null);
     try {
       const client = requireThreadMovesClient(threadRef.environmentId, computerLabel);
-      const input = {
-        threadId: threadRef.threadId,
-        targetEnvironmentId: target.environmentId,
-        agent: agentSelection,
-      };
+      const input = { threadId: threadRef.threadId, targetEnvironmentId: target.environmentId };
       if (queues) {
-        await client.queue({ ...input, mode: busy ? mode : "when-done" });
-      } else {
-        await client.start(input);
+        await client.queue({
+          ...input,
+          ...(unreachable || agentSelection === null ? {} : { agent: agentSelection }),
+          mode: busy ? mode : "when-done",
+        });
+      } else if (agentSelection !== null) {
+        await client.start({ ...input, agent: agentSelection });
       }
       closeThreadMoveDialog();
     } catch (error) {
@@ -283,8 +274,8 @@ export function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThread
                     className="text-[12.5px] leading-[18px] text-muted-foreground"
                     data-testid="thread-move-waits-to-connect"
                   >
-                    {target.refusal} The move waits for it to connect, and keeps the agent this
-                    thread uses here.
+                    {target.refusal} The move waits for it to connect, then uses the agent{" "}
+                    {target.label} suggests.
                   </p>
                 ) : (
                   <AgentField
