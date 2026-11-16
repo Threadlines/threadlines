@@ -64,15 +64,17 @@ describe("deriveSideAnswers", () => {
           ...(input.answered ? [answer(sideTurnId, "2026-01-01T00:00:05Z")] : []),
         ],
         activities: input.outcome ? [outcome(sideTurnId, input.outcome)] : [],
-        sideTurn: input.running
-          ? {
-              sideTurnId,
-              participantId: astra,
-              messageId: MessageId.make(`question-${sideTurnId}`),
-              status: input.running,
-              startedAt: "2026-01-01T00:00:01Z",
-            }
-          : null,
+        sideTurns: input.running
+          ? [
+              {
+                sideTurnId,
+                participantId: astra,
+                messageId: MessageId.make(`question-${sideTurnId}`),
+                status: input.running,
+                startedAt: "2026-01-01T00:00:01Z",
+              },
+            ]
+          : [],
       }).map((view) => [view.state, view.error]);
 
     expect(stateOf({ running: "running", answered: true })).toEqual([["answering", null]]);
@@ -110,7 +112,7 @@ describe("deriveSideAnswers", () => {
     const [view] = deriveSideAnswers({
       messages: [request, answer(sideTurnId, "2026-01-01T00:00:05Z")],
       activities: [],
-      sideTurn: null,
+      sideTurns: [],
     });
     expect(view).toMatchObject({
       kind: "review",

@@ -28,6 +28,7 @@ import {
   PositiveInt,
   ProjectId,
   ProviderItemId,
+  RoomAgentBatchId,
   RoomAgentRequestId,
   RuntimeTaskId,
   ScheduledTaskId,
@@ -2082,9 +2083,10 @@ export const OrchestrationSideTurnStatus = Schema.Literals(["starting", "running
 export type OrchestrationSideTurnStatus = typeof OrchestrationSideTurnStatus.Type;
 
 /**
- * A side answer in progress: a room agent answering the user read-only, in
- * its own locked-down runtime, while another agent holds the thread. At most
- * one per thread. See docs/design/rooms-slice-2.md.
+ * A side answer in progress: a room agent answering read-only, in its own
+ * locked-down runtime, while another agent holds the thread. A thread runs at
+ * most MAX_LIVE_SIDE_TURNS at once, one per agent. See
+ * docs/design/rooms-slice-2.md.
  */
 export const OrchestrationSideTurn = Schema.Struct({
   sideTurnId: SideTurnId,
@@ -2110,6 +2112,9 @@ export const OrchestrationSideTurn = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
 });
 export type OrchestrationSideTurn = typeof OrchestrationSideTurn.Type;
+
+/** How many side answers a thread runs at once (a council of three reviewers). */
+export const MAX_LIVE_SIDE_TURNS = 3;
 
 /**
  * An open room request: made, not yet over. A hand-off is `pending` until
@@ -2140,6 +2145,8 @@ export const OrchestrationAgentRequest = Schema.Struct({
   requestMessageId: MessageId,
   /** Asks, reviews and invites: the side turn answering it. */
   sideTurnId: Schema.optional(SideTurnId),
+  /** A review asked of several agents in one call: its requests share this. */
+  batchId: Schema.optional(RoomAgentBatchId),
   /**
    * An ask or review whose caller stopped waiting for it (the call ran out of
    * time, or the user wrote to the caller): its answer comes back to the caller
@@ -2152,7 +2159,8 @@ export type OrchestrationAgentRequest = typeof OrchestrationAgentRequest.Type;
 
 /**
  * How many requests agents may make of each other before they wait for the
- * user. The user's next submission resets the count.
+ * user. The user's next submission resets the count. A review asked of
+ * several agents in one call counts once.
  */
 export const ROOM_AGENT_REQUEST_LIMIT = 3;
 
@@ -2169,6 +2177,14 @@ export const OrchestrationAgentRequestState = Schema.Struct({
   chainEpoch: NonNegativeInt,
   requestsSinceUser: NonNegativeInt,
   invitesPaused: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /**
+   * The batches (one review call for several agents) counted since the user
+   * last wrote: a request of a counted batch is neither counted again nor
+   * refused by the limit, however its siblings have settled.
+   */
+  batchesSinceUser: Schema.Array(RoomAgentBatchId).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
 });
 export type OrchestrationAgentRequestState = typeof OrchestrationAgentRequestState.Type;
 
@@ -2178,6 +2194,7 @@ export const EMPTY_AGENT_REQUEST_STATE: OrchestrationAgentRequestState = {
   chainEpoch: 0,
   requestsSinceUser: 0,
   invitesPaused: false,
+  batchesSinceUser: [],
 };
 
 /**
@@ -2617,6 +2634,8 @@ export const OrchestrationThread = Schema.Struct({
   ),
   /** See OrchestrationThreadShell.sideTurn. */
   sideTurn: Schema.optional(Schema.NullOr(OrchestrationSideTurn)),
+  /** See OrchestrationThreadShell.sideTurns. */
+  sideTurns: Schema.optional(Schema.Array(OrchestrationSideTurn)),
   /** See OrchestrationThreadShell.agentRole. */
   agentRole: Schema.optional(RoomAgentRole),
   /** Room tools: open agent requests, the Stop hold and the limit's count. */
@@ -2837,9 +2856,16 @@ export const OrchestrationThreadShell = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
   /**
-   * In a room, the side answer in progress, if any. It counts as live work
-   * everywhere the app counts work, next to the session. Absent or null:
-   * none.
+   * In a room, the side answers in progress, oldest first: up to
+   * MAX_LIVE_SIDE_TURNS, one per agent. They count as live work everywhere
+   * the app counts work, next to the session. Absent: an older server, whose
+   * one side answer is `sideTurn`. Read both through `liveSideTurns`
+   * (`@threadlines/shared/threadParticipants`).
+   */
+  sideTurns: Schema.optional(Schema.Array(OrchestrationSideTurn)),
+  /**
+   * The first of `sideTurns`, or null, for clients older than `sideTurns`:
+   * they see one side answer at a time.
    */
   sideTurn: Schema.optional(Schema.NullOr(OrchestrationSideTurn)),
   /** In a room, the user's name for the thread's own agent (RoomAgentRole). */
@@ -4579,6 +4605,8 @@ const ThreadAgentRequestSubmitCommand = Schema.Struct({
   }),
   /** Asks, reviews and invites: the side turn that answers. */
   sideTurnId: Schema.optional(SideTurnId),
+  /** Reviews: the batch, when one call asked several agents (counts once). */
+  batchId: Schema.optional(RoomAgentBatchId),
   /** Reviews and invites: what the reviewer gets besides the request. */
   reviewInput: Schema.optional(RoomReviewInput),
   /**

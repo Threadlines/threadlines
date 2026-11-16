@@ -15,7 +15,7 @@ import { sortThreads } from "../lib/threadSort";
 import {
   CONNECTIONS_SETTINGS_SECTION_PATH,
   type SettingsSectionPath,
-} from "./settings/settingsNavigation";
+} from "./settings/settingsPaths";
 import { type Project, type SidebarThreadSummary, type Thread } from "../types";
 
 export const RECENT_THREAD_LIMIT = 12;

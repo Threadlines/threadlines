@@ -56,6 +56,11 @@ const DEFAULT_ENTRY_GZIP_BUDGET_BYTES = 255_000;
 // automation, which only the desktop app has a use for, became a chunk only
 // it fetches (routes/__root.tsx): about 22 KB back. The budget stays, as
 // headroom.
+// Measured 864,104 B here (2026-11-16): the settings routes' paths and search
+// params left the menu module (settingsPaths.ts), so the app guide's place
+// catalog loads with Settings, not at startup (about 14 KB), and the
+// Antigravity icon's PNG became a file of its own while the editor and
+// Jujutsu icons moved to ToolIcons.tsx (about 17 KB).
 const DEFAULT_STARTUP_GZIP_BUDGET_BYTES = 915_000;
 
 const entryBudgetBytes = Number(

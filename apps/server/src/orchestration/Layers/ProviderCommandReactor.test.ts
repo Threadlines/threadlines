@@ -3706,6 +3706,50 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.queuedFollowUps ?? []).toHaveLength(0);
   });
 
+  it("keeps a message for one agent waiting while another agent's side answer ends", async () => {
+    const { harness, threadId, dispatch, settle, settleSide, sentToAstra, now } =
+      await startRoomWithAstraAnswering();
+    // Sol joins and answers a side question too, next to astra.
+    const solId = ThreadParticipantId.make("9c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f");
+    const solSideTurnId = SideTurnId.make("3c4d5e6f-7081-4923-8b4c-5d6e7f809102");
+    await dispatch({
+      type: "thread.participant.add",
+      commandId: CommandId.make("cmd-add-sol"),
+      threadId,
+      participant: {
+        id: solId,
+        handle: "sol",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6.1-sol" },
+      },
+      createdAt: now,
+    });
+    await dispatch({
+      type: "thread.side-turn.start",
+      commandId: CommandId.make("cmd-side-ask-sol"),
+      threadId,
+      sideTurnId: solSideTurnId,
+      participantId: solId,
+      message: { messageId: asMessageId("side-question-sol"), role: "user", text: "and you?" },
+      createdAt: now,
+    });
+    // Turn-1 ends, so astra's queued message waits only for astra's answer.
+    await settle(0, 0, "cmd-two-sides-turn-1-done");
+    await harness.drain();
+    await dispatch({
+      type: "thread.side-turn.settle",
+      commandId: CommandId.make("cmd-side-settle-sol"),
+      threadId,
+      sideTurnId: solSideTurnId,
+      outcome: "completed",
+      createdAt: now,
+    });
+    await harness.drain();
+    expect(sentToAstra()).toBe(false);
+    // Astra's own answer ending lets it go.
+    await settleSide();
+    await waitFor(sentToAstra);
+  });
+
   it("keeps the queue held when a newer turn fails before the side answer ends", async () => {
     const { harness, threadId, dispatch, settle, settleSide, sentToAstra, now } =
       await startRoomWithAstraAnswering();

@@ -1958,7 +1958,7 @@ describe("incremental orchestration updates", () => {
     );
     const answering = selectThreadByRef(state, ref);
     expect(answering?.messages[0]?.sideTurnId).toBe(sideTurnId);
-    expect(answering?.sideTurn?.status).toBe("running");
+    expect(answering?.sideTurns?.[0]?.status).toBe("running");
 
     state = apply(
       state,
@@ -1971,7 +1971,7 @@ describe("incremental orchestration updates", () => {
         settledAt: "2026-02-27T00:00:09.000Z",
       }),
     );
-    expect(selectThreadByRef(state, ref)?.sideTurn ?? null).toBeNull();
+    expect(selectThreadByRef(state, ref)?.sideTurns).toEqual([]);
   });
 
   it("follows an agent's request live, from its message to the user writing again", () => {
@@ -2054,7 +2054,10 @@ describe("incremental orchestration updates", () => {
       requestKind: "review",
       reviewInput,
     });
-    expect(running?.sideTurn).toMatchObject({ kind: "review", askedBy: { participantId: null } });
+    expect(running?.sideTurns?.[0]).toMatchObject({
+      kind: "review",
+      askedBy: { participantId: null },
+    });
     expect(running?.agentRequests).toMatchObject({
       open: [{ requestId, status: "running" }],
       requestsSinceUser: 1,
@@ -3358,13 +3361,15 @@ describe("selectRunningSidebarThreadsAcrossEnvironments", () => {
   it("keeps a room live while an agent answers on the side and the others are idle", () => {
     const answering = makeSidebarSummary({
       id: ThreadId.make("thread-answering"),
-      sideTurn: {
-        sideTurnId: SideTurnId.make("side-1"),
-        participantId: null,
-        messageId: MessageId.make("question-1"),
-        status: "running",
-        startedAt: "2026-02-13T00:06:00.000Z",
-      },
+      sideTurns: [
+        {
+          sideTurnId: SideTurnId.make("side-1"),
+          participantId: null,
+          messageId: MessageId.make("question-1"),
+          status: "running",
+          startedAt: "2026-02-13T00:06:00.000Z",
+        },
+      ],
     });
     const state = makeEmptyState({
       threadIds: [answering.id],

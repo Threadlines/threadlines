@@ -827,28 +827,40 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           if (Option.isNone(existingRow)) {
             return;
           }
-          const current = existingRow.value.sideTurn ?? null;
-          const nextSideTurn =
+          // The same steps as the in-memory projector (projector.ts): started
+          // appends, running and interrupt update by id, settled removes by
+          // id. An event about an answer that is not live changes nothing.
+          const current = existingRow.value.sideTurns ?? [];
+          const nextSideTurns =
             event.type === "thread.side-turn-started"
-              ? { ...event.payload.sideTurn, modelSelection: event.payload.modelSelection }
-              : current === null || current.sideTurnId !== event.payload.sideTurnId
+              ? current.some((entry) => entry.sideTurnId === event.payload.sideTurn.sideTurnId)
+                ? current
+                : [
+                    ...current,
+                    { ...event.payload.sideTurn, modelSelection: event.payload.modelSelection },
+                  ]
+              : !current.some((entry) => entry.sideTurnId === event.payload.sideTurnId)
                 ? current
                 : event.type === "thread.side-turn-settled"
-                  ? null
-                  : {
-                      ...current,
-                      status:
-                        event.type === "thread.side-turn-interrupt-requested" ||
-                        current.status === "cancelling"
-                          ? ("cancelling" as const)
-                          : ("running" as const),
-                    };
-          if (nextSideTurn === current) {
+                  ? current.filter((entry) => entry.sideTurnId !== event.payload.sideTurnId)
+                  : current.map((entry) =>
+                      entry.sideTurnId !== event.payload.sideTurnId
+                        ? entry
+                        : {
+                            ...entry,
+                            status:
+                              event.type === "thread.side-turn-interrupt-requested" ||
+                              entry.status === "cancelling"
+                                ? ("cancelling" as const)
+                                : ("running" as const),
+                          },
+                    );
+          if (nextSideTurns === current) {
             return;
           }
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
-            sideTurn: nextSideTurn,
+            sideTurns: nextSideTurns,
             updatedAt: event.occurredAt,
           });
           return;

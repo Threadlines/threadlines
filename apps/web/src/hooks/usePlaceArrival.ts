@@ -3,7 +3,8 @@ import { type PlaceId, placeRoute } from "@threadlines/shared/appPlaces";
 import { useLocation, useNavigate, useSearch } from "@tanstack/react-router";
 import { useEffect, useRef } from "react";
 
-import { placeIdFromArrivalHash, placeScopeFromSearch } from "../appPlaceLinks";
+import { placeIdFromArrivalHash } from "../appPlaceLinks";
+import { placeScopeFromSearch } from "../appPlaceScope";
 
 /** How long a page may take to draw the place before the arrival gives up. */
 const PLACE_ARRIVAL_WAIT_MS = 3_000;

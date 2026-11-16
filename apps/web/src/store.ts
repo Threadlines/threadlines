@@ -1,3 +1,4 @@
+import { hasLiveSideTurn, liveSideTurns } from "@threadlines/shared/sideTurns";
 import { replaceAgentCheckBacks, sameCheckBacks } from "@threadlines/shared/checkBacks";
 import {
   applyLinkedPullRequestSwitches,
@@ -829,7 +830,7 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     ...dismissedPullRequestsField(thread.dismissedPullRequests),
     queuedFollowUps: thread.queuedFollowUps ?? [],
     participants: thread.participants ?? [],
-    sideTurn: thread.sideTurn ?? null,
+    sideTurns: liveSideTurns(thread),
     ...(thread.agentRole !== undefined ? { agentRole: thread.agentRole } : {}),
     ...outsideWorkField(thread.outsideWork),
     agentRequests: thread.agentRequests,
@@ -888,7 +889,7 @@ function mapThreadShell(
     ...dismissedPullRequestsField(thread.dismissedPullRequests),
     queuedFollowUps: thread.queuedFollowUps ?? [],
     participants: thread.participants ?? [],
-    sideTurn: thread.sideTurn ?? null,
+    sideTurns: liveSideTurns(thread),
     ...(thread.agentRole !== undefined ? { agentRole: thread.agentRole } : {}),
     ...outsideWorkField(thread.outsideWork),
     ...threadLineage(thread),
@@ -939,7 +940,7 @@ function mapThreadShell(
     cumulativeDiffStat: thread.cumulativeDiffStat,
     linkedPullRequests: thread.linkedPullRequests ?? [],
     participants: thread.participants ?? [],
-    sideTurn: thread.sideTurn ?? null,
+    sideTurns: liveSideTurns(thread),
     ...(thread.agentRole !== undefined ? { agentRole: thread.agentRole } : {}),
     roomSlotModelSelection: roomSlotModelSelection(thread),
     roomSlotRole: roomSlotRole(thread),
@@ -976,7 +977,7 @@ function toThreadShell(thread: Thread): ThreadShell {
     ...dismissedPullRequestsField(thread.dismissedPullRequests),
     queuedFollowUps: thread.queuedFollowUps ?? [],
     participants: thread.participants ?? [],
-    sideTurn: thread.sideTurn ?? null,
+    sideTurns: liveSideTurns(thread),
     ...(thread.agentRole !== undefined ? { agentRole: thread.agentRole } : {}),
     ...outsideWorkField(thread.outsideWork),
     ...threadLineage(thread),
@@ -1096,7 +1097,7 @@ function toSidebarThreadSummary(
       : (previous?.cumulativeDiffStat ?? null),
     linkedPullRequests: thread.linkedPullRequests ?? [],
     participants: thread.participants ?? [],
-    sideTurn: thread.sideTurn ?? null,
+    sideTurns: liveSideTurns(thread),
     ...(thread.agentRole !== undefined ? { agentRole: thread.agentRole } : {}),
     roomSlotModelSelection: roomSlotModelSelection(thread),
     roomSlotRole: roomSlotRole(thread),
@@ -1337,7 +1338,7 @@ function sidebarThreadSummariesEqual(
     threadDiffStatsEqual(left.cumulativeDiffStat, right.cumulativeDiffStat) &&
     linkedPullRequestsEqual(left.linkedPullRequests, right.linkedPullRequests) &&
     participantsEqual(left.participants, right.participants) &&
-    sideTurnsEqual(left.sideTurn, right.sideTurn) &&
+    sideTurnsEqual(left.sideTurns, right.sideTurns) &&
     (left.roomSlotModelSelection?.instanceId ?? null) ===
       (right.roomSlotModelSelection?.instanceId ?? null) &&
     (left.roomSlotModelSelection?.model ?? null) ===
@@ -1409,19 +1410,25 @@ function outsideOriginsEqual(
 }
 
 function sideTurnsEqual(
-  left: OrchestrationSideTurn | null | undefined,
-  right: OrchestrationSideTurn | null | undefined,
+  left: ReadonlyArray<OrchestrationSideTurn> | undefined,
+  right: ReadonlyArray<OrchestrationSideTurn> | undefined,
 ): boolean {
-  const a = left ?? null;
-  const b = right ?? null;
-  return a === null || b === null
-    ? a === b
-    : a.sideTurnId === b.sideTurnId &&
+  const as = left ?? [];
+  const bs = right ?? [];
+  return (
+    as.length === bs.length &&
+    as.every((a, index) => {
+      const b = bs[index]!;
+      return (
+        a.sideTurnId === b.sideTurnId &&
         a.status === b.status &&
         a.participantId === b.participantId &&
         a.kind === b.kind &&
         a.askedBy?.participantId === b.askedBy?.participantId &&
-        a.requestId === b.requestId;
+        a.requestId === b.requestId
+      );
+    })
+  );
 }
 
 /**
@@ -1460,7 +1467,7 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     dismissedPullRequestsEqual(left.dismissedPullRequests, right.dismissedPullRequests) &&
     queuedFollowUpsEqual(left.queuedFollowUps, right.queuedFollowUps) &&
     participantsEqual(left.participants, right.participants) &&
-    sideTurnsEqual(left.sideTurn, right.sideTurn) &&
+    sideTurnsEqual(left.sideTurns, right.sideTurns) &&
     (left.agentRole ?? null) === (right.agentRole ?? null) &&
     (left.parentThreadId ?? null) === (right.parentThreadId ?? null) &&
     (left.parentTurnId ?? null) === (right.parentTurnId ?? null) &&
@@ -3512,32 +3519,47 @@ function applyEnvironmentOrchestrationEvent(
         ),
       }));
 
-    // A room's side answer in progress; see OrchestrationThread.sideTurn.
+    // A room's side answers in progress; see OrchestrationThread.sideTurns.
+    // The same steps as the server's projector: started appends, running and
+    // interrupt update by id, settled removes by id.
     case "thread.side-turn-started":
-      return updateThreadState(state, event.payload.threadId, (thread) => ({
-        ...thread,
-        sideTurn: event.payload.sideTurn,
-        updatedAt: event.occurredAt,
-      }));
+      return updateThreadState(state, event.payload.threadId, (thread) => {
+        const sideTurns = liveSideTurns(thread);
+        if (sideTurns.some((entry) => entry.sideTurnId === event.payload.sideTurn.sideTurnId)) {
+          return thread;
+        }
+        return {
+          ...thread,
+          sideTurns: [...sideTurns, event.payload.sideTurn],
+          updatedAt: event.occurredAt,
+        };
+      });
 
     case "thread.side-turn-running":
     case "thread.side-turn-interrupt-requested":
     case "thread.side-turn-settled":
       return updateThreadState(state, event.payload.threadId, (thread) => {
-        const current = thread.sideTurn ?? null;
-        // Events for an answer that is no longer the current one change nothing.
-        if (current === null || current.sideTurnId !== event.payload.sideTurnId) {
+        const sideTurns = liveSideTurns(thread);
+        // Events for an answer that is no longer live change nothing.
+        if (!sideTurns.some((entry) => entry.sideTurnId === event.payload.sideTurnId)) {
           return thread;
         }
         return {
           ...thread,
-          sideTurn:
+          sideTurns:
             event.type === "thread.side-turn-settled"
-              ? null
-              : {
-                  ...current,
-                  status: event.type === "thread.side-turn-running" ? "running" : "cancelling",
-                },
+              ? sideTurns.filter((entry) => entry.sideTurnId !== event.payload.sideTurnId)
+              : sideTurns.map((entry) =>
+                  entry.sideTurnId !== event.payload.sideTurnId
+                    ? entry
+                    : {
+                        ...entry,
+                        status:
+                          event.type === "thread.side-turn-running" && entry.status !== "cancelling"
+                            ? "running"
+                            : "cancelling",
+                      },
+                ),
           updatedAt: event.occurredAt,
         };
       });
@@ -4019,7 +4041,7 @@ export function isSidebarThreadRunning(thread: SidebarThreadSummary): boolean {
     thread.session?.status === "running" ||
     thread.session?.orchestrationStatus === "running" ||
     isWaitingOnBackgroundTasks(thread.latestTurn, thread.session) ||
-    (thread.sideTurn ?? null) !== null
+    hasLiveSideTurn(thread)
   );
 }
 

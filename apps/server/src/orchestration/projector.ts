@@ -1,3 +1,4 @@
+import { liveSideTurns, withSideTurns } from "@threadlines/shared/sideTurns";
 import { compareTranscriptOrder } from "@threadlines/shared/transcriptOrder";
 import type {
   OrchestrationEvent,
@@ -174,15 +175,24 @@ function updateSideTurnStatus(
   sideTurnId: SideTurnId,
   next: (status: OrchestrationSideTurnStatus) => OrchestrationSideTurnStatus,
 ): OrchestrationReadModel {
-  const sideTurn = model.threads.find((entry) => entry.id === threadId)?.sideTurn ?? null;
-  if (sideTurn === null || sideTurn.sideTurnId !== sideTurnId) {
+  const thread = model.threads.find((entry) => entry.id === threadId);
+  const sideTurns = thread === undefined ? [] : liveSideTurns(thread);
+  if (!sideTurns.some((sideTurn) => sideTurn.sideTurnId === sideTurnId)) {
     return model;
   }
   return {
     ...model,
-    threads: updateThread(model.threads, threadId, {
-      sideTurn: { ...sideTurn, status: next(sideTurn.status) },
-    }),
+    threads: updateThread(
+      model.threads,
+      threadId,
+      withSideTurns(
+        sideTurns.map((sideTurn) =>
+          sideTurn.sideTurnId === sideTurnId
+            ? { ...sideTurn, status: next(sideTurn.status) }
+            : sideTurn,
+        ),
+      ),
+    ),
   };
 }
 
@@ -697,13 +707,24 @@ export function projectEvent(
         event.type,
         "payload",
       ).pipe(
-        Effect.map((payload) => ({
-          ...nextBase,
-          threads: updateThread(nextBase.threads, payload.threadId, {
-            sideTurn: { ...payload.sideTurn, modelSelection: payload.modelSelection },
-            updatedAt: event.occurredAt,
-          }),
-        })),
+        Effect.map((payload) => {
+          const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+          const sideTurns = thread === undefined ? [] : liveSideTurns(thread);
+          // Seen twice (a replay), it is already live.
+          if (sideTurns.some((entry) => entry.sideTurnId === payload.sideTurn.sideTurnId)) {
+            return nextBase;
+          }
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.threadId, {
+              ...withSideTurns([
+                ...sideTurns,
+                { ...payload.sideTurn, modelSelection: payload.modelSelection },
+              ]),
+              updatedAt: event.occurredAt,
+            }),
+          };
+        }),
       );
 
     case "thread.side-turn-running":
@@ -741,13 +762,16 @@ export function projectEvent(
       ).pipe(
         Effect.map((payload) => {
           const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
-          if ((thread?.sideTurn ?? null)?.sideTurnId !== payload.sideTurnId) {
+          const sideTurns = thread === undefined ? [] : liveSideTurns(thread);
+          if (!sideTurns.some((entry) => entry.sideTurnId === payload.sideTurnId)) {
             return nextBase;
           }
           return {
             ...nextBase,
             threads: updateThread(nextBase.threads, payload.threadId, {
-              sideTurn: null,
+              ...withSideTurns(
+                sideTurns.filter((entry) => entry.sideTurnId !== payload.sideTurnId),
+              ),
               updatedAt: event.occurredAt,
             }),
           };

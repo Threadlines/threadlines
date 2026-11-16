@@ -132,10 +132,13 @@ describe("ChatView (full app): the desktop app's window", () => {
         if (event.layers) layers = event.layers;
       });
       await session.send("LayerTree.enable");
-      // The tree is reported on the next frame the page draws.
+      // The tree is reported on the next frame the page draws, and again as
+      // it changes: wait for the one where the chat's scroller is drawn on
+      // its own, so there is something to mask (an early frame can come
+      // before it is).
       await vi.waitFor(() => {
         document.body.style.outline = document.body.style.outline ? "" : "0 solid transparent";
-        expect(layers).not.toBeNull();
+        expect(layers?.some((layer) => layer.drawsContent && layer.backendNodeId)).toBe(true);
       });
       const masks = layers!.filter(
         (layer) =>
@@ -143,8 +146,6 @@ describe("ChatView (full app): the desktop app's window", () => {
           layer.backendNodeId === undefined &&
           layer.width * layer.height >= panelArea * 0.5,
       );
-      // The chat's scroller is drawn on its own: there is something to mask.
-      expect(layers!.some((layer) => layer.drawsContent && layer.backendNodeId)).toBe(true);
       expect(masks).toEqual([]);
     } finally {
       await session.send("LayerTree.disable");

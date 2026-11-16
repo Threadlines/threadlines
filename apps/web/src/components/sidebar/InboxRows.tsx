@@ -503,7 +503,7 @@ function resolveRowStatusParts(thread: SidebarThreadSummary, status: ThreadStatu
     : isWaiting
       ? (thread.latestTurn?.completedAt ?? null)
       : isAnswering
-        ? (thread.sideTurn?.startedAt ?? null)
+        ? (thread.sideTurns?.[0]?.startedAt ?? null)
         : null;
   const isLive = isInFlight || isWaiting || isAnswering;
   // An agent will come back: a countdown to when.

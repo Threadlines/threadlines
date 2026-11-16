@@ -12,6 +12,7 @@
  * `baseFor`. The rules for who may ask live in `@threadlines/shared/childThreads`,
  * shared with the room MCP server.
  */
+import { hasLiveSideTurn } from "@threadlines/shared/sideTurns";
 import { exceedsRuntimeMode, saferRuntimeMode } from "@threadlines/shared/runtimeMode";
 import {
   ChildRequestBatchId,
@@ -1310,7 +1311,7 @@ export function childHasLiveWork(thread: OrchestrationThread): boolean {
     session?.status === "starting" ||
     (session?.awaitedBackgroundTaskCount ?? session?.pendingBackgroundTaskCount ?? 0) > 0 ||
     (thread.queuedFollowUps ?? []).length > 0 ||
-    (thread.sideTurn ?? null) !== null ||
+    hasLiveSideTurn(thread) ||
     thread.childRequests.open.length > 0
   );
 }

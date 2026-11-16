@@ -1,3 +1,4 @@
+import { hasLiveSideTurn } from "@threadlines/shared/sideTurns";
 import * as React from "react";
 import type {
   AgentThreadStatusWord,
@@ -90,7 +91,7 @@ type ThreadStatusInput = Pick<
   | "interactionMode"
   | "latestTurn"
   | "session"
-  | "sideTurn"
+  | "sideTurns"
   | "pendingChildApproval"
   | "pendingScheduleApproval"
   | "pendingSettingsChange"
@@ -358,7 +359,7 @@ export function resolveThreadStatusPill(input: {
   }
 
   // In a room, an agent answering on the side while the others are idle.
-  if ((thread.sideTurn ?? null) !== null) {
+  if (hasLiveSideTurn(thread)) {
     return {
       label: "Answering",
       colorClass: "text-primary-readable",

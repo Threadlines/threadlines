@@ -16,7 +16,7 @@ import { desktopAppThreadLink, tryDesktopAppLinkOnce } from "../desktopAppLinks"
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { cn } from "../lib/utils";
 import { openConnectComputerDialog } from "./settings/connections/JoinComputerDialog";
-import { CONNECTIONS_SETTINGS_SECTION_PATH } from "./settings/settingsNavigation";
+import { CONNECTIONS_SETTINGS_SECTION_PATH } from "./settings/settingsPaths";
 import { Button } from "./ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "./ui/empty";
 import { SidebarInset, SidebarOpenTrigger } from "./ui/sidebar";

@@ -1148,7 +1148,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     primaryModelSelection: selectedModelSelection,
     instanceEntries: providerInstanceEntries,
     workingId: roomWorkingId,
-    answeringId: activeThread?.sideTurn?.participantId,
+    sideTurns: activeThread?.sideTurns,
   });
   // An agent's invite waiting for the user, with every agent it names. Shown
   // whether or not this device shows rooms: the thread waits on it either way.
@@ -1216,7 +1216,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     if (roomAgentLabels === null || activeThread === undefined || !isRoom(activeThread)) {
       return [];
     }
-    const answeringId = activeThread.sideTurn?.participantId;
+    const answering = activeThread.sideTurns ?? [];
     return [
       null,
       ...activeParticipants({ participants: activeThread.participants ?? [] }).map((p) => p.id),
@@ -1229,7 +1229,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         status:
           roomWorkingId !== undefined && roomWorkingId === participantId
             ? "working"
-            : answeringId !== undefined && answeringId === participantId
+            : answering.some((sideTurn) => sideTurn.participantId === participantId)
               ? "answering"
               : participantId === null
                 ? "main"
@@ -1810,7 +1810,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     () => deriveLatestContextWindowSnapshot(activeThreadActivities ?? [], isFromRecipientAgent),
     [activeThreadActivities, isFromRecipientAgent],
   );
-  const sideAnswerInProgress = (activeThread?.sideTurn ?? null) !== null;
+  const sideAnswerInProgress = (activeThread?.sideTurns?.length ?? 0) > 0;
   const recipientDriverKind = addressedRoomAgent
     ? addressedRoomAgentEntry?.driverKind
     : selectedProvider;

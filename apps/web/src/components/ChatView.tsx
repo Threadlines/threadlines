@@ -3,6 +3,7 @@ import {
   useConnectedComputerCapability,
 } from "../environments/computerCapabilities";
 import {
+  MAX_LIVE_SIDE_TURNS,
   type ClientOrchestrationCommand,
   type OrchestrationAgentPage,
   type OrchestrationCheckBack,
@@ -40,6 +41,7 @@ import {
   RuntimeMode,
   RuntimeTaskId,
 } from "@threadlines/contracts";
+import { liveSideTurns } from "@threadlines/shared/sideTurns";
 import { composerForTypedMessage } from "@threadlines/shared/workflowRuns";
 import { providerNotReady } from "@threadlines/shared/providerAuth";
 import { CONTINUE_AT_RESET_MESSAGE, readProviderUsageBlock } from "@threadlines/shared/usageLimits";
@@ -2807,9 +2809,9 @@ export default function ChatView(props: ChatViewProps) {
         derivationThreadKey,
         timelineMessages,
         allThreadActivities,
-        activeThread?.sideTurn,
+        activeThread?.sideTurns,
       ),
-    [activeThread?.sideTurn, allThreadActivities, derivationThreadKey, timelineMessages],
+    [activeThread?.sideTurns, allThreadActivities, derivationThreadKey, timelineMessages],
   );
   // Every turn that has come near the screen in this thread. Those whose steps
   // the live feed cut are fetched, and stay fetched while the thread is open.
@@ -5794,34 +5796,40 @@ export default function ChatView(props: ChatViewProps) {
     }
     setProviderSendPreflight(null);
     if (!activeProject) return;
-    // One agent answers on the side at a time, a side question is text only,
-    // and an agent answering on the side cannot take the thread until it is
-    // done. Each way the draft stays, so nothing is lost and a read-only
-    // question never quietly becomes a queued editing turn.
-    const answeringOnTheSide = roomsActive ? (activeThread.sideTurn ?? null) : null;
-    if (
-      askOnTheSide ||
-      (roomDelivery === "direct" && answeringOnTheSide?.participantId === roomRecipientId)
-    ) {
+    // An agent answers one side question at a time, up to three answer at
+    // once, a side question is text only, and an agent answering on the side
+    // cannot take the thread until it is done. Each way the draft stays, so
+    // nothing is lost and a read-only question never quietly becomes a queued
+    // editing turn.
+    const liveOnTheSide = roomsActive ? liveSideTurns(activeThread) : [];
+    const recipientAnswering = liveOnTheSide.some(
+      (sideTurn) => sideTurn.participantId === roomRecipientId,
+    );
+    if (askOnTheSide || (roomDelivery === "direct" && recipientAnswering)) {
       const nameOf = (participantId: ThreadParticipantId | null) =>
         roomAgentLabels?.get(roomAgentKey(participantId))?.name ?? "The agent";
       const refusal =
-        answeringOnTheSide !== null && !askOnTheSide
+        recipientAnswering && !askOnTheSide
           ? {
               title: `${nameOf(roomRecipientId)} is answering on the side`,
               description: "Send this once it finishes, or stop its answer.",
             }
-          : answeringOnTheSide !== null
+          : recipientAnswering
             ? {
-                title: `${nameOf(answeringOnTheSide.participantId)} is already answering on the side`,
+                title: `${nameOf(roomRecipientId)} is already answering on the side`,
                 description: `Wait for it to finish, or pick "After ${nameOf(roomHolderId)}" in the send menu.`,
               }
-            : composerAttachments.length > 0 || composerDrawingContexts.length > 0
+            : liveOnTheSide.length >= MAX_LIVE_SIDE_TURNS
               ? {
-                  title: "Pictures and files can't go with a side question",
-                  description: `Pick "After ${nameOf(roomHolderId)}" in the send menu to send them then.`,
+                  title: `${MAX_LIVE_SIDE_TURNS} agents are already answering on the side`,
+                  description: `Wait for one to finish, or pick "After ${nameOf(roomHolderId)}" in the send menu.`,
                 }
-              : null;
+              : composerAttachments.length > 0 || composerDrawingContexts.length > 0
+                ? {
+                    title: "Pictures and files can't go with a side question",
+                    description: `Pick "After ${nameOf(roomHolderId)}" in the send menu to send them then.`,
+                  }
+                : null;
       if (refusal) {
         toastManager.add(stackedThreadToast({ type: "warning", ...refusal }));
         return;

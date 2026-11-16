@@ -233,8 +233,8 @@ export interface Thread {
   queuedFollowUps?: readonly OrchestrationQueuedFollowUp[];
   /** See ThreadShell.participants. */
   participants?: readonly OrchestrationThreadParticipant[];
-  /** See OrchestrationThreadShell.sideTurn: the side answer in progress, if any. */
-  sideTurn?: OrchestrationSideTurn | null;
+  /** See OrchestrationThreadShell.sideTurns: the side answers in progress, oldest first. */
+  sideTurns?: ReadonlyArray<OrchestrationSideTurn>;
   /** See OrchestrationThreadShell.agentRole: the user's name for the thread's own agent. */
   agentRole?: string | undefined;
   /**
@@ -367,8 +367,8 @@ export interface ThreadShell {
    * a room. Absent means none.
    */
   participants?: readonly OrchestrationThreadParticipant[];
-  /** See OrchestrationThreadShell.sideTurn: the side answer in progress, if any. */
-  sideTurn?: OrchestrationSideTurn | null;
+  /** See OrchestrationThreadShell.sideTurns: the side answers in progress, oldest first. */
+  sideTurns?: ReadonlyArray<OrchestrationSideTurn>;
   /** See OrchestrationThreadShell.agentRole: the user's name for the thread's own agent. */
   agentRole?: string | undefined;
   /**
@@ -496,8 +496,8 @@ export interface SidebarThreadSummary {
   linkedPullRequests?: readonly OrchestrationThreadLinkedPullRequest[];
   /** See ThreadShell.participants; the inbox marks rooms and names who is working. */
   participants?: readonly OrchestrationThreadParticipant[];
-  /** See OrchestrationThreadShell.sideTurn: the side answer in progress, if any. */
-  sideTurn?: OrchestrationSideTurn | null;
+  /** See OrchestrationThreadShell.sideTurns: the side answers in progress, oldest first. */
+  sideTurns?: ReadonlyArray<OrchestrationSideTurn>;
   /** See OrchestrationThreadShell.agentRole: the user's name for the thread's own agent. */
   agentRole?: string | undefined;
   /** In a room, the model of the agent working or last at work; null otherwise. */

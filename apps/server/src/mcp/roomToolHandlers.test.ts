@@ -239,6 +239,15 @@ const until = (done: () => boolean) =>
     }
   });
 
+/** A side answer in progress, by `participantId`. */
+const liveSideTurn = (n: string, participantId: ThreadParticipantId | null) => ({
+  sideTurnId: SideTurnId.make(`22222222-3333-4444-8555-66666666666${n}`),
+  participantId,
+  messageId: MessageId.make(`m-side-${n}`),
+  status: "running" as const,
+  startedAt: AT,
+});
+
 describe("room_ask", () => {
   it.effect("brings the other agent's answer back into the call", () =>
     Effect.gen(function* () {
@@ -300,16 +309,19 @@ describe("room_ask", () => {
           thread: makeThread({ session: { ...makeThread().session!, participantId: REVIEWER } }),
           outcome: "refused",
         },
-        // A side answer is already running.
+        // The agent asked is already answering on the side.
+        {
+          thread: makeThread({ sideTurns: [liveSideTurn("1", REVIEWER)] }),
+          outcome: "busy",
+        },
+        // The most side answers at once are running, by other agents.
         {
           thread: makeThread({
-            sideTurn: {
-              sideTurnId: SideTurnId.make("22222222-3333-4444-8555-666666666666"),
-              participantId: CURSOR_AGENT,
-              messageId: MessageId.make("m-side"),
-              status: "running",
-              startedAt: AT,
-            },
+            sideTurns: [
+              liveSideTurn("2", null),
+              liveSideTurn("3", CURSOR_AGENT),
+              liveSideTurn("4", ThreadParticipantId.make("8b3e1c5a-4d9f-4c77-a021-be5f4d3c2a66")),
+            ],
           }),
           outcome: "busy",
         },
@@ -685,16 +697,109 @@ describe("room_review", () => {
   );
 });
 
+/** The room with a Codex agent, Sol, beside the reviewer. */
+const SOL = ThreadParticipantId.make("8b3e1c5a-4d9f-4c77-a021-be5f4d3c2a66");
+const withSol = () =>
+  makeThread({
+    participants: [
+      ...makeThread().participants,
+      {
+        id: SOL,
+        handle: "Sol",
+        modelSelection: { instanceId: CODEX, model: "gpt-6.1-sol" },
+        joinedAt: AT,
+        leftAt: null,
+      },
+    ],
+  });
+
+describe("room_review of several agents", () => {
+  it.effect("reviews the same capture side by side in one batch, listing every review", () =>
+    Effect.gen(function* () {
+      const room = yield* makeRoom({
+        thread: withSol(),
+        onSubmit: (command) => ({
+          answer: `Reviewed by ${command.to.participantId}.`,
+          events: [
+            settledEvent({
+              sideTurnId: command.sideTurnId,
+              outcome: "completed",
+              answerMessageId: sideAnswerMessageId(command.sideTurnId!),
+            }),
+          ],
+        }),
+      });
+      const result = yield* room.handlers.room_review(mainCaller(), {
+        agents: ["Opus 5.5", "Sol"],
+        request: "Check the retry logic.",
+      });
+
+      const sent = submits(room.dispatched);
+      expect(sent.map((submit) => submit.to.participantId).toSorted()).toEqual(
+        [REVIEWER, SOL].toSorted(),
+      );
+      // One batch, one capture: both review exactly the same changes.
+      expect(sent[0]!.batchId).toBeDefined();
+      expect(sent[1]!.batchId).toBe(sent[0]!.batchId);
+      expect(sent[1]!.reviewInput).toEqual(sent[0]!.reviewInput);
+      expect(result.outcome).toBe("answered");
+      expect(result.reviews?.map((review) => [review.agent?.key, review.answer])).toEqual([
+        [REVIEWER, `Reviewed by ${REVIEWER}.`],
+        [SOL, `Reviewed by ${SOL}.`],
+      ]);
+    }),
+  );
+
+  it.effect("refuses a batch it can't run, and starts nothing", () =>
+    Effect.gen(function* () {
+      const cases: ReadonlyArray<{
+        readonly input: { readonly agent?: string; readonly agents?: ReadonlyArray<string> };
+        readonly thread?: OrchestrationThread;
+        readonly outcome: string;
+      }> = [
+        { input: { agent: "Opus 5.5", agents: ["Sol", "Opus 5.5"] }, outcome: "refused" },
+        { input: { agents: ["Sol"] }, outcome: "refused" },
+        { input: { agents: ["Sol", "Sol"] }, outcome: "refused" },
+        // Two answering already: only one more fits.
+        {
+          input: { agents: ["Opus 5.5", "Sol"] },
+          thread: {
+            ...withSol(),
+            sideTurns: [
+              liveSideTurn("5", CURSOR_AGENT),
+              liveSideTurn("6", ThreadParticipantId.make("1e4f5a6b-7c8d-4e9f-8a1b-2c3d4e5f6a7b")),
+            ],
+          },
+          outcome: "busy",
+        },
+      ];
+      for (const entry of cases) {
+        const room = yield* makeRoom({ thread: entry.thread ?? withSol() });
+        const result = yield* room.handlers.room_review(mainCaller(), {
+          ...entry.input,
+          request: "Check it.",
+        });
+        expect(result.outcome).toBe(entry.outcome);
+        expect(result.detail).toBeTruthy();
+        expect(room.dispatched).toEqual([]);
+      }
+    }),
+  );
+});
+
 describe("request lifecycle", () => {
   it.effect("sends nothing when the caller leaves while a review is still being captured", () =>
     Effect.gen(function* () {
       const captureGate = yield* Deferred.make<void>();
-      const room = yield* makeRoom({ captureGate, onSubmit: () => ({}) });
-      const waiter = yield* Effect.forkChild(
-        room.handlers.room_review(mainCaller(), { agent: "Opus 5.5", request: "Check it." }),
-      );
-      yield* until(() => false);
-      yield* Fiber.interrupt(waiter);
+      const room = yield* makeRoom({ captureGate, onSubmit: () => ({}), thread: withSol() });
+      // One agent, and several in one call.
+      for (const input of [{ agent: "Opus 5.5" }, { agents: ["Opus 5.5", "Sol"] }]) {
+        const waiter = yield* Effect.forkChild(
+          room.handlers.room_review(mainCaller(), { ...input, request: "Check it." }),
+        );
+        yield* until(() => false);
+        yield* Fiber.interrupt(waiter);
+      }
       yield* Deferred.succeed(captureGate, undefined);
       yield* until(() => false);
 
