@@ -1,0 +1,20 @@
+{
+  "claudeSystemAppendBytes": 7052,
+  "upFrontTools": [
+    "app_guide",
+    "ask_user_to_run",
+    "browser_click",
+    "browser_navigate",
+    "browser_screenshot",
+    "browser_snapshot",
+    "browser_type",
+    "preview_page",
+    "room_agents",
+    "room_ask",
+    "room_diff",
+    "room_history",
+    "show_page"
+  ],
+  "upFrontToolDefinitionBytes": 16802,
+  "onDemandToolDefinitionBytes": 46770
+}

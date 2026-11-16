@@ -135,6 +135,13 @@ export const PreviewPageTool = Tool.make(AGENT_PAGE_PREVIEW_TOOL_NAME, {
  */
 export function buildAgentPageInstructions(input: {
   readonly assetsDir: string;
+  /**
+   * How to find the folder, for a provider whose harness already lists it,
+   * in place of its path. The path holds the thread's id; in Claude Code's
+   * system prompt it made the prompt differ thread to thread, so nothing
+   * after it could be read back from the prompt cache.
+   */
+  readonly assetsDirListedAs?: string;
   /** What precedes each page tool's name for this provider. */
   readonly toolPrefix?: string;
   /** This provider's own way of showing visuals, which Threadlines does not display. */
@@ -142,7 +149,7 @@ export function buildAgentPageInstructions(input: {
 }): string {
   const prefix = input.toolPrefix ?? `mcp__${PAGES_MCP_SERVER_NAME}__`;
   return `<threadlines_pages>
-When a chart, table, diagram, image collage, UI mockup or written document would say more than prose, show it as a page with \`${prefix}${AGENT_PAGE_SHOW_TOOL_NAME}\` (check it first with \`${prefix}${AGENT_PAGE_PREVIEW_TOOL_NAME}\`); it appears in the chat above your reply. Do not write HTML files for the user to open instead.${input.rival !== undefined ? ` ${input.rival}` : ""} Local images for a page go in ${input.assetsDir}; reference them there by absolute path.
+When a chart, table, diagram, image collage, UI mockup or written document would say more than prose, show it as a page with \`${prefix}${AGENT_PAGE_SHOW_TOOL_NAME}\` (check it first with \`${prefix}${AGENT_PAGE_PREVIEW_TOOL_NAME}\`); it appears in the chat above your reply. Do not write HTML files for the user to open instead.${input.rival !== undefined ? ` ${input.rival}` : ""} Local images for a page go in ${input.assetsDirListedAs ?? input.assetsDir}; reference them there by absolute path.
 When the user wants Threadlines itself to look different (a theme: colors, fonts, live art behind the app), make it with \`${prefix}${THEME_PREVIEW_TOOL_NAME}\` and offer it with \`${prefix}${THEME_SHOW_TOOL_NAME}\`; theme files go in the same folder.
 </threadlines_pages>`;
 }
