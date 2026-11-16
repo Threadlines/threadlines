@@ -121,7 +121,31 @@ loaded everything:
   - `canUseTool` denies instead of prompting.
 - **No questions**: any unexpected question or approval request is denied
   immediately, and it can never reach the user.
-- **ACP drivers** (Cursor, fx) and OpenCode: side answers are refused.
+- **Grok** (macOS only; `provider/grok/GrokSideRuntime.ts`, through the
+  generic ACP core's `sideRuntime` hook):
+  - Grok's kernel sandbox, `--sandbox read-only`, over the whole process.
+    Grok carries on unsandboxed when the kernel refuses, so the start is
+    trusted only once Grok's own record (`sessions/sandbox-events.jsonl`)
+    says the profile was enforced and none of its writable folders overlaps
+    the checkout. A checkout at the home folder or the disk root (which Grok
+    always trusts) is refused, as is a computer with an administrator's Grok
+    policy.
+  - A throwaway `GROK_HOME`: folder trust forced on, the other harnesses'
+    settings unscanned, team settings unfetched, memory, subagents and
+    workflows off, and its shell never runs the user's login profile.
+  - Linux is refused: Landlock leaves a file's mode, timestamps and extended
+    attributes writable, and its length too before kernel 6.2.
+  - Grok ends its whole turn on a declined step, so its approval requests are
+    allowed once (never "always"), and the verified sandbox is what refuses a
+    write (`AcpSideRuntime.approvals`). Questions are declined.
+  - The sign-in is copied without its refresh token, so the copy can never
+    rotate the user's own. One close to expiring is renewed first through the
+    user's own Grok.
+  - The generic core passes only the room's read tools, answers every
+    request unseen, never sets a mode, and never forks.
+- **Other ACP drivers** (Cursor, fx, Antigravity, community agents), OpenCode,
+  Muse and Pi: side answers are refused. `provider/sideAnswerDrivers.ts` is
+  the one list.
 
 **Life**: settles on any terminal outcome (below).
 

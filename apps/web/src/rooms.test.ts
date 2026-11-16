@@ -319,6 +319,7 @@ describe("rooms", () => {
         holderId: null,
         holderBusy: true,
         recipientDriverKind: "codex",
+        grokAnswersOnTheSide: false,
         waitChosen: false,
         ...overrides,
       });
@@ -326,6 +327,9 @@ describe("rooms", () => {
     expect(delivery({ waitChosen: true })).toBe("queue");
     // A provider that cannot answer read-only on the side always waits.
     expect(delivery({ recipientDriverKind: "cursor" })).toBe("queue");
+    // Grok asks only where the thread's computer can lock it down.
+    expect(delivery({ recipientDriverKind: "grok" })).toBe("queue");
+    expect(delivery({ recipientDriverKind: "grok", grokAnswersOnTheSide: true })).toBe("ask");
     // The agent at work gets a steer, and an idle room just sends.
     expect(delivery({ holderId: astraId })).toBe("direct");
     expect(delivery({ holderBusy: false })).toBe("direct");

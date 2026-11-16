@@ -108,6 +108,25 @@ folder and its sign-in.
   Threadlines), a revert says Grok still remembers, and a fork starts from a recap of the chat. So
   does a fork from a reply that Grok followed with one of its own.
 
+## Reviews and Side Questions in a Room
+
+On a Mac, a Grok agent in a room can answer a question or review the work while another
+agent is busy, like Claude and Codex agents can. It runs in a locked-down copy of Grok:
+
+- **It can't change anything.** Grok's own read-only sandbox blocks every write to your files, for
+  its file tools and every command it runs. If the sandbox can't start on your computer, Grok won't
+  answer.
+- **None of your setup loads.** It runs in a throwaway Grok folder: no settings, hooks, plugins, MCP
+  servers, skills or memory, yours or the project's. Its shell skips your `.zshrc` and login profile.
+- **It never asks you anything.** Its questions are turned down. A step that would need your OK runs
+  inside the sandbox, which still blocks any write.
+- **Your sign-in stays safe.** It gets a copy of your sign-in that can't renew itself, so it can never
+  sign you out. If yours is close to expiring, your own Grok renews it first.
+
+It isn't available on Windows or Linux, in a project inside a temp folder, or in your home folder
+itself. On Linux, Grok's sandbox still lets a command change a file's permissions and dates, so it
+isn't read-only enough.
+
 ## Not Supported Yet
 
 - **MCP servers that ask you something.** A question from an MCP server mid-turn is declined, and

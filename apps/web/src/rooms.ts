@@ -660,14 +660,18 @@ export function resolveRoomSend(input: {
 }
 
 /**
- * Providers whose agents can answer on the side: in a locked-down, read-only
- * copy of their conversation (docs/design/rooms-slice-2.md). The server
- * refuses the rest; this keeps the composer from offering it.
+ * Whether an agent can answer on the side: in a locked-down, read-only
+ * runtime (docs/design/rooms-slice-2.md). Codex and Claude always can; Grok
+ * can where the thread's computer says so (`grokAnswersOnTheSide`, macOS
+ * only). The server refuses the rest; this keeps the composer from offering it.
  */
-const SIDE_ANSWER_DRIVER_KINDS: ReadonlySet<string> = new Set(["codex", "claudeAgent"]);
-
-export const canAnswerOnTheSide = (driverKind: string | undefined): boolean =>
-  driverKind !== undefined && SIDE_ANSWER_DRIVER_KINDS.has(driverKind);
+export const canAnswerOnTheSide = (
+  driverKind: string | undefined,
+  grokAnswersOnTheSide: boolean,
+): boolean =>
+  driverKind === "codex" ||
+  driverKind === "claudeAgent" ||
+  (driverKind === "grok" && grokAnswersOnTheSide);
 
 /**
  * How a message goes out in a room. "direct": to the agent at work (a steer)
@@ -684,13 +688,18 @@ export function resolveRoomDelivery(input: {
   /** The agent holding the thread has a turn in flight or background work. */
   readonly holderBusy: boolean;
   readonly recipientDriverKind: string | undefined;
+  /** The thread's computer runs Grok's side answers (see canAnswerOnTheSide). */
+  readonly grokAnswersOnTheSide: boolean;
   /** The user picked "Send when done" for this message. */
   readonly waitChosen: boolean;
 }): "direct" | "ask" | "queue" {
   if (!input.holderBusy || input.recipientId === input.holderId) {
     return "direct";
   }
-  return !input.waitChosen && canAnswerOnTheSide(input.recipientDriverKind) ? "ask" : "queue";
+  return !input.waitChosen &&
+    canAnswerOnTheSide(input.recipientDriverKind, input.grokAnswersOnTheSide)
+    ? "ask"
+    : "queue";
 }
 
 /**

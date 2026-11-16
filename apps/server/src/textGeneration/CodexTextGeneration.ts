@@ -24,7 +24,7 @@ import {
   redactCodexProviderSecrets,
   type CodexModelProviderLaunch,
 } from "../provider/codexModelProviderLaunch.ts";
-import { sweepStaleCodexSideAnswerHomes } from "../provider/codexSideAnswerHome.ts";
+import { sweepStaleSideRuntimeHomes } from "../provider/sideRuntimeHome.ts";
 import { TextGenerationError } from "@threadlines/contracts";
 import {
   type BranchNameGenerationInput,
@@ -249,7 +249,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
     Effect.gen(function* () {
       if (!sweptGatewayHomes) {
         sweptGatewayHomes = true;
-        yield* sweepStaleCodexSideAnswerHomes.pipe(Effect.forkDetach);
+        yield* sweepStaleSideRuntimeHomes.pipe(Effect.forkDetach);
       }
       const home = yield* fileSystem.makeTempDirectoryScoped({
         prefix: "threadlines-side-textgen-",

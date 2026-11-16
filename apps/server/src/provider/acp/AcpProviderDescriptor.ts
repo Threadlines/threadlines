@@ -252,6 +252,35 @@ export interface AcpLaunch {
   readonly runtimeMode?: RuntimeMode;
 }
 
+/** What a descriptor's `sideRuntime` hook is handed. */
+export interface AcpSideRuntimeInput<Settings extends AcpProviderSettings> {
+  readonly settings: Settings;
+  /** The thread's checkout, which the side runtime reads. */
+  readonly cwd: string;
+  readonly environment: NodeJS.ProcessEnv;
+  /** `review` is an independent review: also no project instructions or memory. */
+  readonly kind: "ask" | "review";
+  readonly childProcessSpawner: ChildProcessSpawner.ChildProcessSpawner["Service"];
+}
+
+/** A locked-down agent process for a room's side answer. */
+export interface AcpSideRuntime {
+  /** Replaces the descriptor's `spawn` for this process. */
+  readonly spawn: AcpSpawnInput;
+  /**
+   * How the agent's approval requests are answered, never by the user.
+   * `decline`: each is turned down once. `approve-once`: each is allowed once,
+   * for an agent whose own kernel sandbox (checked by `verifyStarted`) is
+   * what keeps it read-only, and that ends its whole turn on a declined step.
+   */
+  readonly approvals: "decline" | "approve-once";
+  /**
+   * Run once the agent has started its session. Fails when the agent did not
+   * come up locked down, and the side answer is then refused.
+   */
+  readonly verifyStarted: Effect.Effect<void, EffectAcpErrors.AcpError>;
+}
+
 /** What a descriptor's `detect` hook is handed. */
 export interface AcpDetectionInput<Settings extends AcpProviderSettings> {
   readonly settings: Settings;
@@ -299,6 +328,18 @@ export interface AcpProviderDescriptor<Settings extends AcpProviderSettings> {
     environment?: NodeJS.ProcessEnv,
     launch?: AcpLaunch,
   ) => AcpSpawnInput | Effect.Effect<AcpSpawnInput, EffectAcpErrors.AcpError, Scope.Scope>;
+  /**
+   * How this agent runs a room's side answer or review (docs/design/
+   * rooms-slice-2.md): read-only, never asking the user, with nothing from the
+   * user's or the project's settings loaded. Absent: the agent never answers
+   * on the side. Fails when it cannot promise that here; whatever it sets up
+   * lives in the scope and is torn down with the process. The generic core
+   * adds the rest: only the room's read tools, every approval and question
+   * declined, no mode changes, and a fresh start (never a fork).
+   */
+  readonly sideRuntime?: (
+    input: AcpSideRuntimeInput<Settings>,
+  ) => Effect.Effect<AcpSideRuntime, EffectAcpErrors.AcpError, Scope.Scope>;
   /** `_meta` sent with `initialize` (Grok asks a GUI client to say what it is). */
   readonly initializeMeta?: Readonly<Record<string, unknown>>;
   /** `_meta` sent with `session/cancel`. */

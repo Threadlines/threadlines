@@ -13,6 +13,7 @@ import { layer as ProcessRunnerLive } from "../../processRunner.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ServerEnvironment, type ServerEnvironmentShape } from "../Services/ServerEnvironment.ts";
 import { resolveServerEnvironmentLabel } from "./ServerEnvironmentLabel.ts";
+import { driverAnswersOnTheSide } from "../../provider/sideAnswerDrivers.ts";
 
 function platformOs(): ExecutionEnvironmentDescriptor["platform"]["os"] {
   switch (process.platform) {
@@ -116,6 +117,7 @@ export const makeServerEnvironment = Effect.fn("makeServerEnvironment")(function
       draftGoalSetup: true,
       pullRequestSwitchesByNumber: true,
       worktreePickup: true,
+      ...(driverAnswersOnTheSide("grok") ? { grokAnswersOnTheSide: true } : {}),
     },
   } satisfies Omit<ExecutionEnvironmentDescriptor, "label" | "systemLabel">;
 

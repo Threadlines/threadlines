@@ -83,7 +83,7 @@ export const RoomAgentsResult = Schema.Struct({
       name: Schema.String,
       model: Schema.String,
       status: Schema.Literals(["working", "answering", "idle"]),
-      /** Can answer an ask or a review on the side (Codex and Claude can). */
+      /** Can answer an ask or a review on the side (see provider/sideAnswerDrivers.ts). */
       canAnswer: Schema.Boolean,
       /**
        * Whether it can use the room tools itself: `attached`, `unavailable`
