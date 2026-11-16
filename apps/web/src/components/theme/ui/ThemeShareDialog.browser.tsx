@@ -61,10 +61,10 @@ const open = (keepsEmailPrivate = true) =>
   );
 
 describe("ThemeShareDialog", () => {
-  afterEach(() => {
+  afterEach(async () => {
     vi.clearAllMocks();
     localStorage.removeItem("threadlines:theme-export-credits");
-    resetTestPage();
+    await resetTestPage();
   });
 
   it("won't share while something stands in the way, and says what", async () => {

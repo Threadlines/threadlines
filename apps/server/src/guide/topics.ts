@@ -105,12 +105,26 @@ A thread on another computer stays under its parent on both computers and shows 
   {
     id: "linking-computers",
     title: "Linking computers (Fleet)",
-    keywords: ["fleet", "link", "computer", "pc", "mac", "windows", "remote", "another machine"],
+    keywords: [
+      "fleet",
+      "link",
+      "computer",
+      "pc",
+      "mac",
+      "windows",
+      "remote",
+      "another machine",
+      "move",
+      "transfer",
+      "shut down",
+    ],
     body: `Fleet, in the left bar, lists the computers this app knows. Use + at the top of its Computers list to link another computer running Threadlines. Each computer's page shows its connection, {place:fleet.worksWith}, and its devices.
 
 Linking is two-way, with a permission for each direction: "<A>'s agents can start work on <B>" is Allowed, Ask first or Off, with the most access those threads get ("Up to Auto"). Each direction is stored on the computer the work would run on, so the Mac's setting decides what the PC's agents may do on the Mac, and the other way round. Unlink from the same group.
 
-With a link allowed, an agent can start a thread on the other computer in that computer's copy of the project, read it and message it, and its reply comes back. A computer you only open from this app (Settings › Connections › Computers you use from here) is not a link: you see its threads here, but agents can't work across. This app's sign-in to it renews whenever they connect and ends after 90 days without one, or when that computer removes it. Fleet's All computers page and its own page then say the sign-in ended and offer to connect again with a new code; its threads stay on it.`,
+With a link allowed, an agent can start a thread on the other computer in that computer's copy of the project, read it and message it, and its reply comes back. A computer you only open from this app (Settings › Connections › Computers you use from here) is not a link: you see its threads here, but agents can't work across. This app's sign-in to it renews whenever they connect and ends after 90 days without one, or when that computer removes it. Fleet's All computers page and its own page then say the sign-in ended and offer to connect again with a new code; its threads stay on it.
+
+To carry on a thread on a linked computer, for example before shutting this one down, right-click it in the sidebar (or use the command palette) and pick Move to another computer. The thread goes with its messages and its code changes, including files not yet committed; staged changes arrive unstaged. It lands in a new worktree of that computer's copy of the project; the dialog offers to set the project up there when it's missing. When that computer's permission for this one is Ask first, its user allows the move there. The copy left here stays, read-only, with a link to the new one. On the other computer the agent starts a fresh session with the conversation so far, and turns from before the move can't be undone there. A thread that is working, waiting on you, in a room, that started other threads, or that has a goal, a check-back or pull request auto-fix on can't move yet; the dialog says what to finish first. General Chats don't move.`,
   },
   {
     id: "devices",
@@ -128,6 +142,7 @@ With a link allowed, an agent can start a thread on the other computer in that c
       "alerts",
       "notifications",
       "mute",
+      "sound",
     ],
     body: `{place:settings.connections} is where other devices use this computer. {place:connections.devices} lists every phone, tablet, browser and linked computer paired with it; Connect a phone, tablet, or computer there to pair a new one.
 
@@ -135,7 +150,7 @@ With a link allowed, an agent can start a thread on the other computer in that c
 
 A thread link from an assistant or a phone alert, opened in a computer's browser that isn't paired, offers Open in the Threadlines app: it opens the thread in the desktop app on that computer, no pairing needed. On Linux only the .deb install opens these links; with the AppImage, pair the browser instead.
 
-{place:general.alerts} on a phone turns its alerts on and picks which ones it gets. {place:general.alertsQuietAtComputer} holds them while you're using Threadlines on a computer that's connected to the thread's computer: a request that still needs you comes through once you've stepped away, and finished or failed alerts from that time don't. To stop one project's alerts on every phone, choose Mute phone alerts from that project's menu in the project list at the top of the sidebar.
+{place:general.alertSound} plays a short sound in the open app, on any device, when an agent finishes or needs you; a thread you're looking at stays quiet. {place:general.alerts} on a phone turns its alerts on and picks which ones it gets. {place:general.alertsQuietAtComputer} holds them while you're using Threadlines on a computer that's connected to the thread's computer: a request that still needs you comes through once you've stepped away, and finished or failed alerts from that time don't. To stop one project's alerts on every phone, choose Mute phone alerts from that project's menu in the project list at the top of the sidebar.
 
 {place:connections.thisComputer} is this computer's name as the others see it.`,
   },

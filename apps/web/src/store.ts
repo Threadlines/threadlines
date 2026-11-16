@@ -225,6 +225,13 @@ export interface EnvironmentState {
    * summary written here carries it as `pendingScheduleApproval`.
    */
   scheduleApprovalThreadIds?: Record<ThreadId, true>;
+  /**
+   * How many whole shell snapshots this environment has applied: one on
+   * connect and one more on each reconnect. What changed with a snapshot
+   * happened out of sight, so the alert sound (lib/alertSound.ts) reads a
+   * change here as a fresh start rather than news.
+   */
+  shellSnapshotCount?: number;
 
   bootstrapComplete: boolean;
 }
@@ -2417,6 +2424,7 @@ function syncEnvironmentShellSnapshot(
       state.settingsRequestsByThreadId ?? {},
       nextThreadIds,
     ),
+    shellSnapshotCount: (state.shellSnapshotCount ?? 0) + 1,
     bootstrapComplete: true,
   };
 
@@ -3870,6 +3878,19 @@ const sidebarThreadsOfEnvironment = keyedMemo(
       return thread && thread.environmentId === environmentId ? [thread] : [];
     }),
 );
+
+/**
+ * Each environment's count of applied shell snapshots (EnvironmentState's
+ * `shellSnapshotCount`), by environment id. Read it through `useShallow`.
+ */
+export function selectShellSnapshotCounts(state: AppState): Record<string, number> {
+  return Object.fromEntries(
+    getEnvironmentEntries(state).map(([environmentId, environmentState]) => [
+      environmentId,
+      environmentState.shellSnapshotCount ?? 0,
+    ]),
+  );
+}
 
 let lastSidebarThreads: {
   readonly parts: ReadonlyArray<ReadonlyArray<SidebarThreadSummary>>;

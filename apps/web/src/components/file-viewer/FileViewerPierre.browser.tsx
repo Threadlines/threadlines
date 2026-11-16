@@ -14,6 +14,8 @@ import { DiffWorkerPoolProvider } from "../DiffWorkerPoolProvider";
 import { applyEditSeedToEditor, findRenderedPierreLineElement } from "./FileViewerOverlay.logic";
 import { FILE_VIEWER_UNSAFE_CSS } from "./FileViewerOverlay";
 import { codeThemeNameFor } from "../../theme/codeTheme";
+import { BUILTIN_THEME_TOKENS } from "@threadlines/shared/themeBuiltinTokens";
+import { editorSelectionHex } from "@threadlines/shared/themeCodeColors";
 import { composite, contrastRatio, type Rgba } from "@threadlines/shared/themeColor";
 import { parseCssColor } from "../theme/ui/themeInspect";
 import { resetTestPage } from "../../lib/testPage.browser-harness";
@@ -261,11 +263,15 @@ function EditableHarness({
   contents,
   editorOptions,
   onEditChange,
+  theme = "pierre-dark",
+  themeType = "dark",
 }: {
   path: string;
   contents: string;
   editorOptions: EditorOptions<"file", undefined, undefined>;
   onEditChange?: (contents: string) => void;
+  theme?: string;
+  themeType?: "light" | "dark";
 }) {
   return (
     <DiffWorkerPoolProvider>
@@ -281,8 +287,8 @@ function EditableHarness({
               : {})}
             options={{
               disableFileHeader: true,
-              theme: "pierre-dark",
-              themeType: "dark",
+              theme,
+              themeType,
               unsafeCSS: DIFF_PANEL_UNSAFE_CSS,
             }}
           />
@@ -330,6 +336,64 @@ describe("FileViewer pierre editing", () => {
     expect(changes.at(-1)).toContain("const value = 1;");
 
     screen.unmount();
+  });
+
+  it("gives selected text the fitted selection color, and the cursor line no fill of its own", async () => {
+    const theme = codeThemeNameFor({
+      choice: { kind: "builtin", id: "light" },
+      manifest: null,
+      tokens: null,
+      base: "light",
+      hash: null,
+      name: "Light",
+    });
+    const attach = attachedEditor();
+    const screen = await render(
+      <EditableHarness
+        path="sel.ts"
+        contents={'const label = "ready";\nlet count = 42;\n'}
+        editorOptions={attach.editorOptions}
+        theme={theme}
+        themeType="light"
+      />,
+    );
+    try {
+      const editor = await attach.ready();
+      editor.setSelections([
+        { start: { line: 0, character: 0 }, end: { line: 0, character: 5 }, direction: "none" },
+      ]);
+      editor.focus();
+      const root = [...document.querySelectorAll("diffs-container")].at(-1)!.shadowRoot!;
+      const expected = editorSelectionHex(BUILTIN_THEME_TOKENS.light);
+      await expect
+        .poll(
+          () => {
+            const code = root.querySelector<HTMLElement>("[data-line]");
+            return code
+              ? getComputedStyle(code).getPropertyValue("--diffs-editor-selection-bg").trim()
+              : "";
+          },
+          { timeout: 15_000 },
+        )
+        .toBe(expected);
+      // The cursor's line (a caret, not a range) is drawn like any other: an outline marks it.
+      editor.setSelections([
+        { start: { line: 1, character: 0 }, end: { line: 1, character: 0 }, direction: "none" },
+      ]);
+      editor.focus();
+      await expect
+        .poll(() => root.querySelector("[data-line][data-editor-active-line]") !== null, {
+          timeout: 15_000,
+        })
+        .toBe(true);
+      const active = root.querySelector<HTMLElement>("[data-line][data-editor-active-line]")!;
+      const other = root.querySelector<HTMLElement>("[data-line]:not([data-editor-active-line])")!;
+      expect(getComputedStyle(active).backgroundColor).toBe(
+        getComputedStyle(other).backgroundColor,
+      );
+    } finally {
+      screen.unmount();
+    }
   });
 
   it("accepts typed input through the editable surface", async () => {

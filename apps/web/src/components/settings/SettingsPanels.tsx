@@ -462,6 +462,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       DEFAULT_UNIFIED_SETTINGS.chatChangedFilesDefaultExpanded
         ? ["Changed files in chat"]
         : []),
+      ...(settings.alertSound !== DEFAULT_UNIFIED_SETTINGS.alertSound ? ["Play a sound"] : []),
       ...(settings.autoOpenAgentsPanel !== DEFAULT_UNIFIED_SETTINGS.autoOpenAgentsPanel
         ? ["Agents panel"]
         : []),
@@ -569,6 +570,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       isGitWritingModelDirty,
       isSourceControlWriterModelDirty,
       isSourceControlWritingStyleDirty,
+      settings.alertSound,
       settings.autoArchiveInactiveThreadsDays,
       settings.autoOpenAgentsPanel,
       settings.chatChangedFilesDefaultExpanded,
@@ -637,6 +639,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       diffWordWrap: DEFAULT_UNIFIED_SETTINGS.diffWordWrap,
       diffIgnoreWhitespace: DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace,
       chatChangedFilesDefaultExpanded: DEFAULT_UNIFIED_SETTINGS.chatChangedFilesDefaultExpanded,
+      alertSound: DEFAULT_UNIFIED_SETTINGS.alertSound,
       autoOpenAgentsPanel: DEFAULT_UNIFIED_SETTINGS.autoOpenAgentsPanel,
       sidebarThreadPreviewCount: DEFAULT_UNIFIED_SETTINGS.sidebarThreadPreviewCount,
       autoArchiveInactiveThreadsDays: DEFAULT_UNIFIED_SETTINGS.autoArchiveInactiveThreadsDays,
