@@ -88,6 +88,7 @@ import {
   CODEX_PREVIEW_PANEL_DEVELOPER_INSTRUCTIONS,
 } from "../CodexDeveloperInstructions.ts";
 import { FILE_LINK_INSTRUCTIONS } from "../fileLinkInstructions.ts";
+import { processExit, type TrackedAgentProcess } from "../agentProcessLedger.ts";
 import {
   CODEX_BROWSER_TOKEN_ENV_VAR,
   codexAppServerArgs,
@@ -431,6 +432,11 @@ export interface CodexSessionRuntimeShape {
   ) => Effect.Effect<void, CodexSessionRuntimeError>;
   readonly events: Stream.Stream<ProviderEvent, never>;
   readonly close: Effect.Effect<void>;
+  /**
+   * The app-server process, for proof it is gone after a stop
+   * (agentProcessLedger). Absent only for test doubles that run none.
+   */
+  readonly process?: TrackedAgentProcess;
 }
 
 export type CodexThreadGoal = EffectCodexSchema.V2ThreadGoalSetResponse__ThreadGoal;
@@ -3407,5 +3413,6 @@ const makeCodexSessionRuntimeIn = (
         }),
       events: Stream.fromQueue(events),
       close,
+      process: { pid: child.pid, exited: processExit(child.pid, child.exitCode) },
     } satisfies CodexSessionRuntimeShape;
   });

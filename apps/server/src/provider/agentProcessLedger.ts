@@ -23,6 +23,7 @@ import type { ThreadId } from "@threadlines/contracts";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+
 import type * as Scope from "effect/Scope";
 
 import type { ProviderStopConfirmation } from "./Services/ProviderAdapter.ts";
@@ -77,6 +78,24 @@ export const realProcessProbe: ProcessProbe = {
     });
   },
 };
+
+/**
+ * A spawned process's exit as an effect that can't fail: its handle's own
+ * exit, or, when that can't be read, its pid going away.
+ */
+export const processExit = <E>(
+  pid: number,
+  exitCode: Effect.Effect<unknown, E>,
+  probe: ProcessProbe = realProcessProbe,
+): Effect.Effect<void> =>
+  exitCode.pipe(
+    Effect.asVoid,
+    Effect.catchCause(() =>
+      Effect.gen(function* () {
+        while (probe.exists(pid)) yield* Effect.sleep(Duration.millis(100));
+      }),
+    ),
+  );
 
 export interface AgentProcessLedger {
   /** A process started for `sessionKey`. Forgotten once it and all it started are gone. */
@@ -142,6 +161,8 @@ export const makeAgentProcessLedger = (
 
     const track: AgentProcessLedger["track"] = (sessionKey, agent) =>
       Effect.gen(function* () {
+        // Signalling pid 0 or below would reach this server's own group.
+        if (!Number.isInteger(agent.pid) || agent.pid <= 0) return;
         const entry: Entry = {
           sessionKey,
           pid: agent.pid,
