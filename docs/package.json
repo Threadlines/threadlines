@@ -1,0 +1,5 @@
+{
+  "name": "@threadlines/docs",
+  "private": true,
+  "description": "Repo notes. A workspace package only so Vercel's skip-unaffected-projects setting treats docs changes as touching nothing it deploys (docs/vercel.md)."
+}

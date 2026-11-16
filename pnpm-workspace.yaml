@@ -1,5 +1,6 @@
 packages:
   - apps/*
+  - docs
   - oxlint-plugin-threadlines
   - packages/*
   - scripts

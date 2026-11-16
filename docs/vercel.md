@@ -20,7 +20,11 @@ roots separate so unrelated commits do not trigger the marketing site build.
 - Purpose: marketing site for `threadlines.dev` and `www.threadlines.dev`
 - Build and Deployment setting: enable the Root Directory `Skip deployment`
   switch so Vercel skips this project when commits do not affect
-  `apps/marketing` or its workspace dependencies.
+  `apps/marketing` or its workspace dependencies. Vercel treats a change to
+  any file outside a workspace package as a change to every project, which is
+  why `docs/` is a workspace package (`@threadlines/docs`, nothing depends on
+  it): docs-only commits would otherwise rebuild the marketing site. Root
+  files and `.github/` still count as global.
 - Production builds hide changelog entries newer than the latest published
   GitHub release; the release workflow redeploys this project once a stable
   release publishes (see `docs/release.md`).
