@@ -74,6 +74,7 @@ import {
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { AnalyticsService } from "../../telemetry/Services/AnalyticsService.ts";
 import { makeAdapterRegistryMock } from "../testUtils/providerAdapterRegistryMock.ts";
+import { ThreadSessionAdmissionPermissive } from "../Services/ThreadSessionAdmission.ts";
 
 const defaultServerSettingsLayer = ServerSettingsService.layerTest();
 
@@ -437,6 +438,7 @@ function makeProviderServiceLayer() {
   const layer = it.layer(
     Layer.mergeAll(
       makeProviderServiceLive().pipe(
+        Layer.provide(ThreadSessionAdmissionPermissive),
         Layer.provide(providerAdapterLayer),
         Layer.provide(directoryLayer),
         Layer.provide(defaultServerSettingsLayer),
@@ -480,6 +482,7 @@ it.effect("ProviderServiceLive catches stopAll failures during shutdown", () =>
     const directoryLayer = ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer));
     const providerLayer = Layer.mergeAll(
       makeProviderServiceLive().pipe(
+        Layer.provide(ThreadSessionAdmissionPermissive),
         Layer.provide(providerAdapterLayer),
         Layer.provide(directoryLayer),
         Layer.provide(defaultServerSettingsLayer),
@@ -554,6 +557,7 @@ it.effect(
         Layer.provide(runtimeRepositoryLayer),
       );
       const providerLayer = makeProviderServiceLive().pipe(
+        Layer.provide(ThreadSessionAdmissionPermissive),
         Layer.provide(providerAdapterLayer),
         Layer.provide(directoryLayer),
         Layer.provide(serverSettingsLayer),
@@ -616,6 +620,7 @@ it.effect("ProviderServiceLive rejects new sessions for disabled custom instance
     );
     const directoryLayer = ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer));
     const providerLayer = makeProviderServiceLive().pipe(
+      Layer.provide(ThreadSessionAdmissionPermissive),
       Layer.provide(providerAdapterLayer),
       Layer.provide(directoryLayer),
       Layer.provide(defaultServerSettingsLayer),
@@ -666,6 +671,7 @@ it.effect("ProviderServiceLive writes canonical events to the emitting thread se
         close: () => Effect.void,
       },
     }).pipe(
+      Layer.provide(ThreadSessionAdmissionPermissive),
       Layer.provide(Layer.succeed(ProviderAdapterRegistry, registry)),
       Layer.provide(directoryLayer),
       Layer.provide(defaultServerSettingsLayer),
@@ -714,6 +720,7 @@ it.effect(
         Layer.provide(runtimeRepositoryLayer),
       );
       const providerLayer = makeProviderServiceLive().pipe(
+        Layer.provide(ThreadSessionAdmissionPermissive),
         Layer.provide(Layer.succeed(ProviderAdapterRegistry, registry)),
         Layer.provide(directoryLayer),
         Layer.provide(defaultServerSettingsLayer),
@@ -813,6 +820,7 @@ it.effect("ProviderServiceLive reports a failure under the category the agent na
       ),
     );
     const providerLayer = makeProviderServiceLive().pipe(
+      Layer.provide(ThreadSessionAdmissionPermissive),
       Layer.provide(Layer.succeed(ProviderAdapterRegistry, registry)),
       Layer.provide(directoryLayer),
       Layer.provide(defaultServerSettingsLayer),
@@ -886,6 +894,7 @@ const makeEarlyStartHarness = () => {
   );
   const directoryLayer = ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer));
   const layer = makeProviderServiceLive().pipe(
+    Layer.provide(ThreadSessionAdmissionPermissive),
     Layer.provide(Layer.succeed(ProviderAdapterRegistry, registry)),
     Layer.provide(directoryLayer),
     Layer.provide(defaultServerSettingsLayer),
@@ -1274,6 +1283,7 @@ it.effect("ProviderServiceLive keeps persisted resumable sessions on startup", (
     }).pipe(Effect.provide(directoryLayer));
 
     const providerLayer = makeProviderServiceLive().pipe(
+      Layer.provide(ThreadSessionAdmissionPermissive),
       Layer.provide(Layer.succeed(ProviderAdapterRegistry, registry)),
       Layer.provide(directoryLayer),
       Layer.provide(defaultServerSettingsLayer),
@@ -1333,6 +1343,7 @@ it.effect(
         Layer.provide(runtimeRepositoryLayer),
       );
       const firstProviderLayer = makeProviderServiceLive().pipe(
+        Layer.provide(ThreadSessionAdmissionPermissive),
         Layer.provide(Layer.succeed(ProviderAdapterRegistry, firstRegistry)),
         Layer.provide(firstDirectoryLayer),
         Layer.provide(defaultServerSettingsLayer),
@@ -1385,6 +1396,7 @@ it.effect(
         Layer.provide(runtimeRepositoryLayer),
       );
       const secondProviderLayer = makeProviderServiceLive().pipe(
+        Layer.provide(ThreadSessionAdmissionPermissive),
         Layer.provide(Layer.succeed(ProviderAdapterRegistry, secondRegistry)),
         Layer.provide(secondDirectoryLayer),
         Layer.provide(defaultServerSettingsLayer),
@@ -2384,6 +2396,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
         Layer.provide(runtimeRepositoryLayer),
       );
       const firstProviderLayer = makeProviderServiceLive().pipe(
+        Layer.provide(ThreadSessionAdmissionPermissive),
         Layer.provide(Layer.succeed(ProviderAdapterRegistry, firstRegistry)),
         Layer.provide(firstDirectoryLayer),
         Layer.provide(defaultServerSettingsLayer),
@@ -2415,6 +2428,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
         Layer.provide(runtimeRepositoryLayer),
       );
       const secondProviderLayer = makeProviderServiceLive().pipe(
+        Layer.provide(ThreadSessionAdmissionPermissive),
         Layer.provide(Layer.succeed(ProviderAdapterRegistry, secondRegistry)),
         Layer.provide(secondDirectoryLayer),
         Layer.provide(defaultServerSettingsLayer),
@@ -2498,6 +2512,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
       };
       const providerLayerFor = (adapter: ReturnType<typeof makeFakeCodexAdapter>["adapter"]) =>
         makeProviderServiceLive().pipe(
+          Layer.provide(ThreadSessionAdmissionPermissive),
           Layer.provide(Layer.succeed(ProviderAdapterRegistry, accountsRegistry(adapter))),
           Layer.provide(ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer))),
           Layer.provide(defaultServerSettingsLayer),
@@ -2560,6 +2575,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
           Layer.provide(runtimeRepositoryLayer),
         );
         const firstProviderLayer = makeProviderServiceLive().pipe(
+          Layer.provide(ThreadSessionAdmissionPermissive),
           Layer.provide(Layer.succeed(ProviderAdapterRegistry, firstRegistry)),
           Layer.provide(firstDirectoryLayer),
           Layer.provide(defaultServerSettingsLayer),
@@ -2586,6 +2602,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
           Layer.provide(runtimeRepositoryLayer),
         );
         const secondProviderLayer = makeProviderServiceLive().pipe(
+          Layer.provide(ThreadSessionAdmissionPermissive),
           Layer.provide(Layer.succeed(ProviderAdapterRegistry, secondRegistry)),
           Layer.provide(secondDirectoryLayer),
           Layer.provide(defaultServerSettingsLayer),

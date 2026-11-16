@@ -457,7 +457,25 @@ export interface ProviderAdapterShape<TError> {
   readonly stopAll: () => Effect.Effect<void, TError>;
 
   /**
+   * Proves that nothing this adapter ran for a thread is still running
+   * (docs/design/fleet.md, Part 3b, "Confirmed teardown"): every runtime of
+   * every session key whose thread is `threadId` (its own agent, room
+   * agents, side answers, early starts), and what those runtimes started.
+   * Called after their sessions were stopped; never starts anything. Waits
+   * (bounded) for the agent's processes to exit and ends what outlived the
+   * stop. `unconfirmed` when it can't prove it, with why; never a guess.
+   * Absent: the driver can't confirm, which counts as unconfirmed for a
+   * thread it ran.
+   */
+  readonly confirmThreadStopped?: (threadId: ThreadId) => Effect.Effect<ProviderStopConfirmation>;
+
+  /**
    * Canonical runtime event stream emitted by this adapter.
    */
   readonly streamEvents: Stream.Stream<ProviderRuntimeEvent>;
 }
+
+/** Whether a thread's agents are proven stopped (ProviderAdapterShape.confirmThreadStopped). */
+export type ProviderStopConfirmation =
+  | { readonly confirmed: true }
+  | { readonly confirmed: false; readonly reason: string };

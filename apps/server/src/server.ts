@@ -59,6 +59,7 @@ import { ProviderSessionRuntimeRepositoryLive } from "./persistence/Layers/Provi
 import { ProviderAdapterRegistryLive } from "./provider/Layers/ProviderAdapterRegistry.ts";
 import { ProviderEventLoggersLive } from "./provider/Layers/ProviderEventLoggers.ts";
 import { ProviderServiceLive } from "./provider/Layers/ProviderService.ts";
+import { ThreadSessionAdmissionLive } from "./provider/Layers/ThreadSessionAdmission.ts";
 import { ProviderSessionReaperLive } from "./provider/Layers/ProviderSessionReaper.ts";
 import { ThreadAutoArchiveSweeperLive } from "./orchestration/Layers/ThreadAutoArchiveSweeper.ts";
 import { ContinueAtResetSweeperLive } from "./orchestration/Layers/ContinueAtResetSweeper.ts";
@@ -398,6 +399,8 @@ const ProviderSessionDirectoryLayerLive = ProviderSessionDirectoryLive.pipe(
 const ProviderLayerLive = ProviderServiceLive.pipe(
   Layer.provide(ProviderAdapterRegistryLive),
   Layer.provideMerge(ProviderSessionDirectoryLayerLive),
+  // The session fence reads the thread's row (docs/design/fleet.md, Part 3b).
+  Layer.provide(ThreadSessionAdmissionLive.pipe(Layer.provide(ProjectionThreadRepositoryLive))),
 );
 
 const PersistenceLayerLive = Layer.empty.pipe(Layer.provideMerge(SqlitePersistenceLayerLive));

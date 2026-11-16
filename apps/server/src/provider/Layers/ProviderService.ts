@@ -67,6 +67,7 @@ import {
 } from "../../observability/Metrics.ts";
 import { type ProviderAdapterError, ProviderValidationError } from "../Errors.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
+import { ThreadSessionAdmission } from "../Services/ThreadSessionAdmission.ts";
 import { ProviderAdapterRegistry } from "../Services/ProviderAdapterRegistry.ts";
 import { ProviderService, type ProviderServiceShape } from "../Services/ProviderService.ts";
 import {
@@ -381,6 +382,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
 
   const registry = yield* ProviderAdapterRegistry;
   const directory = yield* ProviderSessionDirectory;
+  const admission = yield* ThreadSessionAdmission;
   const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
   const turnLatency = makeTurnLatencyTracker();
@@ -728,10 +730,22 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     () => reconcileInstanceSubscriptions,
   ).pipe(Effect.forkScoped);
 
+  /**
+   * The session fence (ThreadSessionAdmission): no session of a thread that
+   * is moving, moved, or having its sessions ended for a move starts or
+   * recovers, whatever its key and whoever asks.
+   */
+  const requireAdmission = (operation: string, sessionKey: ThreadId) =>
+    Effect.gen(function* () {
+      const refusal = yield* admission.refusal(parseSessionKey(sessionKey).threadId);
+      if (refusal !== null) return yield* toValidationError(operation, refusal);
+    });
+
   const recoverSessionForThread = Effect.fn("recoverSessionForThread")(function* (input: {
     readonly binding: ProviderRuntimeBinding;
     readonly operation: string;
   }) {
+    yield* requireAdmission(input.operation, input.binding.threadId);
     const bindingInstanceId = yield* requireBindingInstanceId(input.operation, input.binding);
     yield* Effect.annotateCurrentSpan({
       "provider.operation": "recover-session",
@@ -950,6 +964,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       schema: ProviderSessionStartInput,
       payload: rawInput,
     });
+    yield* requireAdmission("ProviderService.startSession", threadId);
 
     const resolvedInstanceId = yield* requireBindingInstanceId(
       "ProviderService.startSession",
@@ -2945,10 +2960,14 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     const input = { threadId };
     let metricProvider = "unknown";
     return yield* Effect.gen(function* () {
+      // A fenced thread's runtime isn't brought back just to delete its
+      // transcript: only its binding goes (and a live runtime, if any).
+      const admitted =
+        (yield* admission.refusal(parseSessionKey(input.threadId).threadId)) === null;
       const routed = yield* resolveRoutableSession({
         threadId: input.threadId,
         operation: "ProviderService.deleteThread",
-        allowRecovery: true,
+        allowRecovery: admitted,
       });
       turnLatency.sessionStopped(input.threadId);
       earlySessions.forget(input.threadId);
@@ -2959,7 +2978,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         "provider.thread_id": input.threadId,
         "provider.native_delete_supported": routed.adapter.deleteThread !== undefined,
       });
-      if (routed.adapter.deleteThread) {
+      if (routed.adapter.deleteThread && (admitted || routed.isActive)) {
         yield* routed.adapter.deleteThread(routed.threadId);
       } else if (routed.isActive) {
         yield* routed.adapter.stopSession(routed.threadId);
@@ -2979,6 +2998,58 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       }),
     );
   });
+
+  const quiesceThread: ProviderServiceShape["quiesceThread"] = Effect.fn("quiesceThread")(
+    function* (threadId) {
+      const ofThread = (key: string) => parseSessionKey(ThreadId.make(key)).threadId === threadId;
+      const liveOfThread = Effect.forEach(yield* getAdapterEntries, ([instanceId, adapter]) =>
+        adapter
+          .listSessions()
+          .pipe(
+            Effect.map((sessions) =>
+              sessions
+                .filter((session) => session.status !== "closed" && ofThread(session.threadId))
+                .map((session) => ({ instanceId, adapter, key: session.threadId })),
+            ),
+          ),
+      ).pipe(Effect.map((perAdapter) => perAdapter.flat()));
+      const live = yield* liveOfThread;
+      const ran = new Set<ProviderInstanceId>(live.map((entry) => entry.instanceId));
+      // Early starts still starting have no session to list yet.
+      const keys = new Set<ThreadId>(live.map((entry) => entry.key));
+      for (const key of earlyStartRuns.keys()) {
+        if (ofThread(key)) keys.add(ThreadId.make(key));
+      }
+      const problems: string[] = [];
+      for (const key of keys) {
+        yield* stopSession({ threadId: key }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.sync(() => {
+              const error = Cause.squash(cause);
+              problems.push(
+                `stopping it failed (${error instanceof Error ? error.message : String(error)})`,
+              );
+            }),
+          ),
+        );
+      }
+      for (const entry of yield* liveOfThread) {
+        problems.push(`${entry.adapter.provider} still lists its session`);
+      }
+      // Each driver proves its processes, and what they started, are gone.
+      for (const [instanceId, adapter] of yield* getAdapterEntries) {
+        if (adapter.confirmThreadStopped === undefined) {
+          if (ran.has(instanceId)) problems.push(`${adapter.provider} can't confirm it stopped`);
+          continue;
+        }
+        const confirmation = yield* adapter.confirmThreadStopped(threadId);
+        if (!confirmation.confirmed) problems.push(confirmation.reason);
+      }
+      return problems.length === 0
+        ? ({ confirmed: true } as const)
+        : ({ confirmed: false, reason: problems.join("; ") } as const);
+    },
+  );
 
   const runStopAll = Effect.fn("runStopAll")(function* () {
     const threadIds = yield* directory.listThreadIds();
@@ -3078,6 +3149,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     respondToUserInput,
     stopSession,
     listSessions,
+    quiesceThread,
     getCapabilities,
     getInstanceInfo,
     rollbackConversation,

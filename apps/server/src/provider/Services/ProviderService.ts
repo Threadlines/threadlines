@@ -56,7 +56,11 @@ import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
 
 import type { ProviderAdapterError, ProviderServiceError } from "../Errors.ts";
-import type { ProviderAdapterCapabilities, ProviderAdapterShape } from "./ProviderAdapter.ts";
+import type {
+  ProviderAdapterCapabilities,
+  ProviderAdapterShape,
+  ProviderStopConfirmation,
+} from "./ProviderAdapter.ts";
 import type { ProviderInstanceRoutingInfo } from "./ProviderAdapterRegistry.ts";
 
 /**
@@ -306,6 +310,17 @@ export interface ProviderServiceShape {
    * Aggregates runtime session lists from all registered adapters.
    */
   readonly listSessions: () => Effect.Effect<ReadonlyArray<ProviderSession>>;
+
+  /**
+   * Ends every runtime of a thread and proves it gone, before the thread
+   * moves to another computer (docs/design/fleet.md, Part 3b, "The
+   * barrier"): each session whose key belongs to the thread (its own agent,
+   * room agents, side answers, early starts) is stopped, then every driver
+   * confirms its processes, and what they started, exited. `unconfirmed`
+   * when any can't be proven, with why. It doesn't fence the thread: the
+   * caller must already have stopped new sessions (ThreadSessionAdmission).
+   */
+  readonly quiesceThread: (threadId: ThreadId) => Effect.Effect<ProviderStopConfirmation>;
 
   /**
    * Read capabilities for the adapter bound to a configured provider instance.
