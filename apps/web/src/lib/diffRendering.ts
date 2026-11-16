@@ -8,9 +8,10 @@ export const DIFF_THEME_NAMES = {
   dark: "pierre-dark",
 } as const;
 
-/** A base's Pierre theme, or a custom theme's code palette (theme/codeTheme.ts). */
+/** A base's Pierre theme, or the fitted code colors of a built-in or custom theme (theme/codeTheme.ts). */
 export type DiffThemeName =
   | (typeof DIFF_THEME_NAMES)[keyof typeof DIFF_THEME_NAMES]
+  | `tl-code-${"light" | "dark"}`
   | `tl-custom-${string}`;
 
 export type RenderablePatch =
