@@ -322,6 +322,8 @@ describe("ProviderSessionReaper", () => {
             );
           },
           getTurnActivities: () => Effect.succeed([]),
+          getThreadMessage: () => Effect.succeed(Option.none()),
+          hasAssistantMessageForTurn: () => Effect.succeed(false),
           getThreadDetailById: () => Effect.die("unused"),
         }),
       ),

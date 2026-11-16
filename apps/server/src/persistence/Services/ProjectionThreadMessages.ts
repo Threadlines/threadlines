@@ -116,6 +116,15 @@ export interface ProjectionThreadMessageRepositoryShape {
   ) => Effect.Effect<void, ProjectionRepositoryError>;
 
   /**
+   * A streaming message's next words: inserts the row when it is new, else
+   * adds `message.text` to the end of the stored text without reading it.
+   * The stored row keeps its creation time, sequence, media and skills.
+   */
+  readonly appendStreamedText: (
+    message: ProjectionThreadMessage,
+  ) => Effect.Effect<void, ProjectionRepositoryError>;
+
+  /**
    * Read a projected thread message by id.
    */
   readonly getByMessageId: (

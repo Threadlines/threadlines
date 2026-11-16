@@ -8,6 +8,7 @@ import {
   MessageId,
   type OrchestrationCheckpointFile,
   type OrchestrationEvent,
+  type OrchestrationSession,
   type OrchestrationThreadActivity,
   type OrchestrationMessage,
   type OrchestrationProposedPlanId,
@@ -78,6 +79,12 @@ import { RemoteRequestTurnEnds } from "../Services/RemoteRequestTurnEnds.ts";
 import { ScheduledRunTurnEnds } from "../Services/ScheduledRunTurnEnds.ts";
 import { RealtimeVoiceDevices } from "../Services/RealtimeVoiceDevices.ts";
 import {
+  splitStreamingAssistantMarkdownFlush,
+  STREAMING_MARKDOWN_START,
+  streamingMarkdownStateAfter,
+  type StreamingMarkdownState,
+} from "../streamingMarkdownFlush.ts";
+import {
   carriedBackgroundTasks,
   NO_BACKGROUND_TASKS,
   sameAwaitedBackgroundTasks,
@@ -109,7 +116,6 @@ const STREAMING_ASSISTANT_DELTA_FLUSH_INTERVAL = Duration.millis(
 );
 
 const SUBAGENT_RESULT_ACTIVITY_FLUSH_INTERVAL = Duration.millis(100);
-const MARKDOWN_FENCE_INDENT_LIMIT = 3;
 type ContentDeltaStreamKind = Extract<
   ProviderRuntimeEvent,
   { type: "content.delta" }
@@ -469,394 +475,31 @@ function maxCheckpointTurnCount(
   return maxTurnCount;
 }
 
-function detectMarkdownFenceAtLineStart(
-  text: string,
-  index: number,
-): { marker: "`" | "~"; length: number; end: number } | null {
-  if (index > 0 && text[index - 1] !== "\n") {
-    return null;
-  }
-
-  let cursor = index;
-  let indent = 0;
-  while (text[cursor] === " " && indent < MARKDOWN_FENCE_INDENT_LIMIT + 1) {
-    cursor += 1;
-    indent += 1;
-  }
-  if (indent > MARKDOWN_FENCE_INDENT_LIMIT) {
-    return null;
-  }
-
-  const marker = text[cursor];
-  if (marker !== "`" && marker !== "~") {
-    return null;
-  }
-
-  let end = cursor;
-  while (text[end] === marker) {
-    end += 1;
-  }
-  const length = end - cursor;
-  return length >= 3 ? { marker, length, end } : null;
-}
-
-function isEscapedMarkdownCharacter(text: string, index: number): boolean {
-  let slashCount = 0;
-  for (let cursor = index - 1; cursor >= 0 && text[cursor] === "\\"; cursor -= 1) {
-    slashCount += 1;
-  }
-  return slashCount % 2 === 1;
-}
-
-function isAsciiAlphaNumeric(char: string | undefined): boolean {
-  return char !== undefined && /^[A-Za-z0-9]$/u.test(char);
-}
-
-function isMarkdownBoundaryBefore(char: string | undefined): boolean {
-  return (
-    char === undefined ||
-    /\s/u.test(char) ||
-    char === "(" ||
-    char === "[" ||
-    char === "{" ||
-    char === "<" ||
-    char === '"' ||
-    char === "'"
-  );
-}
-
-interface MarkdownLine {
-  readonly text: string;
-  readonly start: number;
-  readonly end: number;
-  readonly hasLineEnding: boolean;
-}
-
-function splitMarkdownLines(text: string): MarkdownLine[] {
-  const lines: MarkdownLine[] = [];
-  let start = 0;
-  for (let index = 0; index < text.length; index += 1) {
-    if (text[index] !== "\n") {
-      continue;
-    }
-    lines.push({
-      text: text.slice(start, index),
-      start,
-      end: index,
-      hasLineEnding: true,
-    });
-    start = index + 1;
-  }
-  lines.push({
-    text: text.slice(start),
-    start,
-    end: text.length,
-    hasLineEnding: false,
-  });
-  return lines;
-}
-
-function isSyntheticTrailingMarkdownLine(line: MarkdownLine, sourceText: string): boolean {
-  return !line.hasLineEnding && line.start === sourceText.length && line.text.length === 0;
-}
-
-function stripOuterTablePipes(line: string): string {
-  let value = line.trim();
-  if (value.startsWith("|")) {
-    value = value.slice(1);
-  }
-  if (value.endsWith("|")) {
-    value = value.slice(0, -1);
-  }
-  return value;
-}
-
-function isPotentialMarkdownTableRow(line: string): boolean {
-  const trimmed = line.trim();
-  if (!trimmed || trimmed.startsWith(">")) {
-    return false;
-  }
-  if (trimmed.startsWith("|")) {
-    return stripOuterTablePipes(trimmed).includes("|");
-  }
-  const firstPipe = trimmed.indexOf("|");
-  return firstPipe >= 0 && trimmed.indexOf("|", firstPipe + 1) >= 0;
-}
-
-function isMarkdownTableSeparatorRow(line: string): boolean {
-  if (!isPotentialMarkdownTableRow(line)) {
-    return false;
-  }
-  const cells = stripOuterTablePipes(line)
-    .split("|")
-    .map((cell) => cell.trim());
-  return cells.length >= 2 && cells.every((cell) => /^:?-{3,}:?$/u.test(cell));
-}
-
-function findPendingMarkdownTableStart(
-  text: string,
-  options?: { readonly continuingTable?: boolean },
-): number | null {
-  const lines = splitMarkdownLines(text);
-  let tableActive = options?.continuingTable === true;
-
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index]!;
-    const nextLine = lines[index + 1];
-    if (isSyntheticTrailingMarkdownLine(line, text)) {
-      break;
-    }
-
-    if (tableActive) {
-      if (!isPotentialMarkdownTableRow(line.text)) {
-        tableActive = false;
-        continue;
-      }
-      if (!line.hasLineEnding) {
-        return line.start;
-      }
-      continue;
-    }
-
-    if (!isPotentialMarkdownTableRow(line.text)) {
-      continue;
-    }
-
-    if (!nextLine) {
-      return line.start;
-    }
-    if (!nextLine.hasLineEnding && !isMarkdownTableSeparatorRow(nextLine.text)) {
-      return line.start;
-    }
-    if (!isMarkdownTableSeparatorRow(nextLine.text)) {
-      continue;
-    }
-    if (!nextLine.hasLineEnding) {
-      return line.start;
-    }
-
-    tableActive = true;
-    index += 1;
-  }
-
-  return null;
-}
-
-function markdownTableContinuesAfterFlush(
-  text: string,
-  options?: { readonly continuingTable?: boolean },
+/**
+ * Whether a session update would leave `current` as it is apart from its
+ * time: every field the update sets already holds the same value there.
+ */
+function sessionUpdateChangesNothing(
+  current: OrchestrationSession | null | undefined,
+  next: Partial<OrchestrationSession>,
 ): boolean {
-  const lines = splitMarkdownLines(text);
-  let tableActive = options?.continuingTable === true;
-
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index]!;
-    if (isSyntheticTrailingMarkdownLine(line, text)) {
-      break;
-    }
-
-    if (tableActive) {
-      if (isPotentialMarkdownTableRow(line.text)) {
-        continue;
-      }
-      tableActive = false;
-      continue;
-    }
-
-    if (!isPotentialMarkdownTableRow(line.text)) {
-      continue;
-    }
-
-    const nextLine = lines[index + 1];
-    if (
-      nextLine &&
-      !isSyntheticTrailingMarkdownLine(nextLine, text) &&
-      isMarkdownTableSeparatorRow(nextLine.text)
-    ) {
-      tableActive = true;
-      index += 1;
-    }
+  if (current === null || current === undefined) {
+    return false;
   }
-
-  return tableActive;
-}
-
-function findClosingMarkdownParenthesis(text: string, startIndex: number): number | null {
-  let depth = 0;
-  for (let index = startIndex; index < text.length; index += 1) {
-    const char = text[index];
-    if (isEscapedMarkdownCharacter(text, index)) {
-      continue;
+  return Object.entries(next).every(([key, value]) => {
+    if (key === "updatedAt") {
+      return true;
     }
-    if (char === "(") {
-      depth += 1;
-      continue;
-    }
-    if (char !== ")") {
-      continue;
-    }
-    if (depth === 0) {
-      return index;
-    }
-    depth -= 1;
-  }
-  return null;
-}
-
-function findUnclosedInlineCodeSpanStart(text: string): number | null {
-  let inlineCode: { start: number; tickCount: number } | null = null;
-  let codeFence: { marker: "`" | "~"; length: number } | null = null;
-
-  for (let index = 0; index < text.length; index += 1) {
-    if (inlineCode === null) {
-      const fence = detectMarkdownFenceAtLineStart(text, index);
-      if (fence) {
-        if (codeFence === null) {
-          codeFence = { marker: fence.marker, length: fence.length };
-        } else if (codeFence.marker === fence.marker && fence.length >= codeFence.length) {
-          codeFence = null;
-        }
-        index = fence.end - 1;
-        continue;
-      }
-    }
-
-    if (codeFence !== null) {
-      continue;
-    }
-
-    const char = text[index];
-    if (char === "\\") {
-      index += 1;
-      continue;
-    }
-    if (char !== "`") {
-      continue;
-    }
-
-    const runStart = index;
-    let runEnd = index;
-    while (text[runEnd] === "`") {
-      runEnd += 1;
-    }
-    const tickCount = runEnd - runStart;
-
-    if (inlineCode && tickCount === inlineCode.tickCount) {
-      inlineCode = null;
-    } else if (inlineCode === null) {
-      inlineCode = { start: runStart, tickCount };
-    }
-
-    index = runEnd - 1;
-  }
-
-  return inlineCode?.start ?? null;
-}
-
-function findUnclosedLinkStart(text: string): number | null {
-  const labelStack: number[] = [];
-
-  for (let index = 0; index < text.length; index += 1) {
-    const char = text[index];
-    if (isEscapedMarkdownCharacter(text, index)) {
-      continue;
-    }
-
-    if (char === "[") {
-      labelStack.push(text[index - 1] === "!" ? index - 1 : index);
-      continue;
-    }
-
-    if (char !== "]" || labelStack.length === 0) {
-      continue;
-    }
-
-    const labelStart = labelStack.pop()!;
-    const nextChar = text[index + 1];
-    if (nextChar === "(") {
-      const closeIndex = findClosingMarkdownParenthesis(text, index + 2);
-      if (closeIndex === null) {
-        return labelStart;
-      }
-      index = closeIndex;
-      continue;
-    }
-
-    if (nextChar === "[") {
-      const closeReferenceIndex = text.indexOf("]", index + 2);
-      if (closeReferenceIndex < 0) {
-        return labelStart;
-      }
-      index = closeReferenceIndex;
-    }
-  }
-
-  return labelStack[0] ?? null;
-}
-
-function findUnclosedEmphasisStart(text: string): number | null {
-  const markerStack: Array<{ marker: "*" | "~"; length: 1 | 2; start: number }> = [];
-
-  for (let index = 0; index < text.length; index += 1) {
-    const marker = text[index];
-    if ((marker !== "*" && marker !== "~") || isEscapedMarkdownCharacter(text, index)) {
-      continue;
-    }
-
-    let runEnd = index;
-    while (text[runEnd] === marker) {
-      runEnd += 1;
-    }
-    const runLength = runEnd - index;
-    const length = Math.min(runLength, 2) as 1 | 2;
-    const previousChar = text[index - 1];
-    const nextChar = text[index + length];
-    const canOpen =
-      isMarkdownBoundaryBefore(previousChar) &&
-      isAsciiAlphaNumeric(nextChar) &&
-      (marker === "*" || length === 2);
-    // Closing only needs a non-space character before the run (CommonMark's
-    // right-flanking rule). Requiring more — e.g. an alphanumeric — misses
-    // closers like "**done.**" or "**Note:**", leaving a phantom open span
-    // that wedges the streaming flush until the message completes.
-    const canClose = previousChar !== undefined && !/\s/u.test(previousChar);
-    const openIndex = markerStack.findLastIndex(
-      (entry) => entry.marker === marker && entry.length === length,
+    const held: unknown = current[key as keyof OrchestrationSession];
+    return (
+      held === value ||
+      (typeof held === "object" &&
+        held !== null &&
+        typeof value === "object" &&
+        value !== null &&
+        JSON.stringify(held) === JSON.stringify(value))
     );
-
-    if (openIndex >= 0 && canClose) {
-      markerStack.splice(openIndex, 1);
-    } else if (canOpen) {
-      markerStack.push({ marker, length, start: index });
-    }
-
-    index = runEnd - 1;
-  }
-
-  return markerStack.length > 0 ? Math.min(...markerStack.map((entry) => entry.start)) : null;
-}
-
-function splitStreamingAssistantMarkdownFlush(
-  text: string,
-  options?: { readonly continuingTable?: boolean },
-): {
-  readyText: string;
-  pendingText: string;
-} {
-  const pendingStarts = [
-    findUnclosedInlineCodeSpanStart(text),
-    findUnclosedLinkStart(text),
-    findUnclosedEmphasisStart(text),
-    findPendingMarkdownTableStart(text, options),
-  ].filter((start): start is number => start !== null);
-  if (pendingStarts.length === 0) {
-    return { readyText: text, pendingText: "" };
-  }
-  const pendingStart = Math.min(...pendingStarts);
-  return {
-    readyText: text.slice(0, pendingStart),
-    pendingText: text.slice(pendingStart),
-  };
+  });
 }
 
 function checkpointFileChangeActivity(input: {
@@ -1326,7 +969,15 @@ const make = Effect.gen(function* () {
   const subagentResultFlushQueued = yield* Ref.make(false);
   const subagentResultFlushRequests = yield* Queue.unbounded<void>();
   const realtimeAssistantMessageIds = yield* Ref.make(new Map<ThreadId, MessageId>());
-  const streamingAssistantTableMessageIds = yield* Ref.make(new Set<MessageId>());
+  // When a provider last reported a session state that matched the stored one,
+  // for threads whose last reports were not stored (see the session update
+  // below). The stored session's own time is older then, and an idle signal
+  // must be compared with the latest report, not the latest stored one.
+  const unstoredSessionReportAt = yield* Ref.make(new Map<ThreadId, string>());
+  // What each streaming reply's sent batches left open (see streamingMarkdownFlush.ts).
+  const streamingMarkdownStateByMessageId = yield* Ref.make(
+    new Map<MessageId, StreamingMarkdownState>(),
+  );
 
   const assistantSegmentStateByTurnKey = yield* Cache.make<string, AssistantSegmentState>({
     capacity: TURN_MESSAGE_IDS_BY_TURN_CACHE_CAPACITY,
@@ -1994,30 +1645,32 @@ const make = Effect.gen(function* () {
       return next;
     });
 
-  const isStreamingAssistantTableActive = (messageId: MessageId) =>
-    Ref.get(streamingAssistantTableMessageIds).pipe(
-      Effect.map((messageIds) => messageIds.has(messageId)),
+  const getStreamingMarkdownState = (messageId: MessageId) =>
+    Ref.get(streamingMarkdownStateByMessageId).pipe(
+      Effect.map((states) => states.get(messageId) ?? STREAMING_MARKDOWN_START),
     );
 
-  const setStreamingAssistantTableActive = (messageId: MessageId, active: boolean) =>
-    Ref.update(streamingAssistantTableMessageIds, (messageIds) => {
-      if (active && messageIds.has(messageId)) {
-        return messageIds;
-      }
-      if (!active && !messageIds.has(messageId)) {
-        return messageIds;
-      }
-      const next = new Set(messageIds);
-      if (active) {
-        next.add(messageId);
-      } else {
-        next.delete(messageId);
-      }
+  /** Records that `sentText` went out for `messageId`, after what `state` describes. */
+  const recordStreamingMarkdownSent = (
+    messageId: MessageId,
+    state: StreamingMarkdownState,
+    sentText: string,
+  ) =>
+    Ref.update(streamingMarkdownStateByMessageId, (states) => {
+      const next = new Map(states);
+      next.set(messageId, streamingMarkdownStateAfter(sentText, state));
       return next;
     });
 
-  const clearStreamingAssistantTableState = (messageId: MessageId) =>
-    setStreamingAssistantTableActive(messageId, false);
+  const clearStreamingMarkdownState = (messageId: MessageId) =>
+    Ref.update(streamingMarkdownStateByMessageId, (states) => {
+      if (!states.has(messageId)) {
+        return states;
+      }
+      const next = new Map(states);
+      next.delete(messageId);
+      return next;
+    });
 
   const flushPendingStreamingAssistantMessage = (
     input: PendingStreamingAssistantMessage,
@@ -2025,10 +1678,11 @@ const make = Effect.gen(function* () {
   ) =>
     Effect.gen(function* () {
       const bufferedText = yield* peekBufferedAssistantText(input.messageId);
-      const continuingTable = yield* isStreamingAssistantTableActive(input.messageId);
-      const { readyText, pendingText } = splitStreamingAssistantMarkdownFlush(bufferedText, {
-        continuingTable,
-      });
+      const markdownState = yield* getStreamingMarkdownState(input.messageId);
+      const { readyText, pendingText } = splitStreamingAssistantMarkdownFlush(
+        bufferedText,
+        markdownState,
+      );
       if (
         !hasRenderableAssistantText(readyText) ||
         (options?.onlyWithWords === true && !hasAssistantWords(readyText))
@@ -2037,10 +1691,7 @@ const make = Effect.gen(function* () {
       }
 
       yield* replaceBufferedAssistantText(input.messageId, pendingText);
-      yield* setStreamingAssistantTableActive(
-        input.messageId,
-        markdownTableContinuesAfterFlush(readyText, { continuingTable }),
-      );
+      yield* recordStreamingMarkdownSent(input.messageId, markdownState, readyText);
       yield* dispatchAssistantDelta({
         ...input,
         delta: readyText,
@@ -2086,6 +1737,11 @@ const make = Effect.gen(function* () {
       const spillChunk = yield* appendBufferedAssistantText(input.messageId, input.delta);
       if (spillChunk.length > 0) {
         yield* clearPendingStreamingAssistantMessage(input.messageId);
+        yield* recordStreamingMarkdownSent(
+          input.messageId,
+          yield* getStreamingMarkdownState(input.messageId),
+          spillChunk,
+        );
         yield* dispatchAssistantDelta({
           ...input,
           delta: spillChunk,
@@ -2193,7 +1849,7 @@ const make = Effect.gen(function* () {
 
   const clearAssistantMessageState = (messageId: MessageId) =>
     clearPendingStreamingAssistantMessage(messageId).pipe(
-      Effect.andThen(clearStreamingAssistantTableState(messageId)),
+      Effect.andThen(clearStreamingMarkdownState(messageId)),
       Effect.andThen(clearBufferedAssistantText(messageId)),
       Effect.andThen(Cache.invalidate(streamedAssistantMessageIds, messageId)),
     );
@@ -3599,34 +3255,56 @@ const make = Effect.gen(function* () {
             );
           }
 
-          yield* orchestrationEngine.dispatch({
-            type: "thread.session.set",
-            commandId: providerCommandId(event, "thread-session-set"),
+          const session = {
             threadId: thread.id,
-            session: {
+            status,
+            providerName: event.provider,
+            ...(event.providerInstanceId !== undefined
+              ? { providerInstanceId: event.providerInstanceId }
+              : {}),
+            providerSessionId: thread.session?.providerSessionId ?? null,
+            providerThreadId:
+              event.type === "thread.started"
+                ? (event.payload?.providerThreadId ?? thread.session?.providerThreadId ?? null)
+                : (thread.session?.providerThreadId ?? null),
+            runtimeMode: thread.session?.runtimeMode ?? "full-access",
+            checkoutCwd: thread.session?.checkoutCwd ?? null,
+            activeTurnId: nextActiveTurnId,
+            ...(event.type === "session.started" || event.type === "session.exited"
+              ? NO_BACKGROUND_TASKS
+              : carriedBackgroundTasks(thread.session)),
+            lastError,
+            updatedAt: sessionUpdatedAt,
+          };
+          // A provider repeats its state while a turn runs (Claude reports each
+          // request it makes, several a second), and an update that changes
+          // nothing but the time would still be stored, sent to every client
+          // and read by every reactor.
+          // An error is always stored: its time says whether the user has seen it.
+          if (
+            status !== "error" &&
+            failedUsageLimit === undefined &&
+            sessionUpdateChangesNothing(thread.session, session)
+          ) {
+            yield* Ref.update(unstoredSessionReportAt, (reports) =>
+              new Map(reports).set(thread.id, sessionUpdatedAt),
+            );
+          } else {
+            yield* orchestrationEngine.dispatch({
+              type: "thread.session.set",
+              commandId: providerCommandId(event, "thread-session-set"),
               threadId: thread.id,
-              status,
-              providerName: event.provider,
-              ...(event.providerInstanceId !== undefined
-                ? { providerInstanceId: event.providerInstanceId }
-                : {}),
-              providerSessionId: thread.session?.providerSessionId ?? null,
-              providerThreadId:
-                event.type === "thread.started"
-                  ? (event.payload?.providerThreadId ?? thread.session?.providerThreadId ?? null)
-                  : (thread.session?.providerThreadId ?? null),
-              runtimeMode: thread.session?.runtimeMode ?? "full-access",
-              checkoutCwd: thread.session?.checkoutCwd ?? null,
-              activeTurnId: nextActiveTurnId,
-              ...(event.type === "session.started" || event.type === "session.exited"
-                ? NO_BACKGROUND_TASKS
-                : carriedBackgroundTasks(thread.session)),
-              lastError,
-              updatedAt: sessionUpdatedAt,
-            },
-            ...usageLimitFields,
-            createdAt: now,
-          });
+              session,
+              ...usageLimitFields,
+              createdAt: now,
+            });
+            yield* Ref.update(unstoredSessionReportAt, (reports) => {
+              if (!reports.has(thread.id)) return reports;
+              const next = new Map(reports);
+              next.delete(thread.id);
+              return next;
+            });
+          }
         }
       }
 
@@ -3634,12 +3312,21 @@ const make = Effect.gen(function* () {
       // turn/completed notification is lost under load, use a fresh idle
       // observation to settle the matching projected session instead of
       // leaving the UI's working timer running forever.
+      const latestSessionReportAt = (session: { readonly updatedAt: string }) =>
+        Ref.get(unstoredSessionReportAt).pipe(
+          Effect.map((reports) => {
+            const unstored = reports.get(thread.id);
+            return unstored !== undefined && unstored > session.updatedAt
+              ? unstored
+              : session.updatedAt;
+          }),
+        );
       if (
         event.type === "thread.state.changed" &&
         event.payload.state === "idle" &&
         thread.session?.status === "running" &&
         thread.session.activeTurnId !== null &&
-        event.createdAt >= thread.session.updatedAt
+        event.createdAt >= (yield* latestSessionReportAt(thread.session))
       ) {
         yield* orchestrationEngine.dispatch({
           type: "thread.session.set",
@@ -3922,27 +3609,34 @@ const make = Effect.gen(function* () {
           });
           yield* Cache.set(settledSubagentResultActivityKeys, bufferKey, true);
         } else {
-          const detailedThread = yield* getLoadedThreadDetail();
-          const messages = detailedThread?.messages ?? [];
+          // Every agent message that finishes lands here, many a turn while
+          // an agent works, so this reads the one message and asks one
+          // question of the turn instead of loading the thread's history.
           const turnId = toTurnId(event.turnId);
           const activeAssistantMessageId = turnId
             ? yield* getActiveAssistantMessageIdForTurn(thread.id, turnId)
             : Option.none<MessageId>();
-          const hasAssistantMessagesForTurn =
-            turnId !== undefined ? hasAssistantMessageForTurn(messages, turnId) : false;
           const assistantMessageId = Option.getOrElse(
             activeAssistantMessageId,
             () => assistantCompletion.messageId,
           );
-          const existingAssistantMessage = findMessageById(messages, assistantMessageId);
+          const existingAssistantMessage = Option.getOrUndefined(
+            yield* projectionSnapshotQuery.getThreadMessage({
+              threadId: thread.id,
+              messageId: assistantMessageId,
+            }),
+          );
           const shouldApplyFallbackCompletionText =
             !existingAssistantMessage || existingAssistantMessage.text.length === 0;
 
           const shouldSkipRedundantCompletion =
             Option.isNone(activeAssistantMessageId) &&
             turnId !== undefined &&
-            hasAssistantMessagesForTurn &&
-            (assistantCompletion.fallbackText?.trim().length ?? 0) === 0;
+            (assistantCompletion.fallbackText?.trim().length ?? 0) === 0 &&
+            (yield* projectionSnapshotQuery.hasAssistantMessageForTurn({
+              threadId: thread.id,
+              turnId,
+            }));
 
           if (!shouldSkipRedundantCompletion) {
             if (turnId && Option.isNone(activeAssistantMessageId)) {

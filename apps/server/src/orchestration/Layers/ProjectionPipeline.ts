@@ -1316,6 +1316,12 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                 }
               : {}),
           });
+          // An agent's reply changes nothing the summary counts (the user's
+          // last message, plans, prompts, approvals), and while it streams it
+          // arrives many times a second.
+          if (event.type === "thread.message-sent" && event.payload.role === "assistant") {
+            return;
+          }
           yield* refreshThreadShellSummary(event.payload.threadId);
           return;
         }
@@ -1559,16 +1565,19 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         }
 
         case "thread.message-sent": {
-          const existingMessage = yield* projectionThreadMessageRepository.getByMessageId({
-            messageId: event.payload.messageId,
-          });
+          // A streaming reply's words are added to the stored text where it
+          // lies, never read back: a long reply would otherwise be copied out
+          // and back in full every time a few words arrive.
+          const streamedOnly = event.payload.streaming;
+          const existingMessage = streamedOnly
+            ? Option.none()
+            : yield* projectionThreadMessageRepository.getByMessageId({
+                messageId: event.payload.messageId,
+              });
           const previousMessage = Option.getOrUndefined(existingMessage);
           const nextText = Option.match(existingMessage, {
             onNone: () => event.payload.text,
             onSome: (message) => {
-              if (event.payload.streaming) {
-                return `${message.text}${event.payload.text}`;
-              }
               if (event.payload.text.length === 0) {
                 return message.text;
               }
@@ -1582,7 +1591,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                 })
               : previousMessage?.attachments;
           const nextSkills = event.payload.skills ?? previousMessage?.skills;
-          yield* projectionThreadMessageRepository.upsert({
+          const write = streamedOnly
+            ? projectionThreadMessageRepository.appendStreamedText
+            : projectionThreadMessageRepository.upsert;
+          yield* write({
             messageId: event.payload.messageId,
             eventSequence: previousMessage?.eventSequence ?? event.sequence,
             threadId: event.payload.threadId,

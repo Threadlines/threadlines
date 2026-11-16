@@ -434,6 +434,8 @@ function makeSnapshotQuery(input: {
         return Option.fromUndefinedOr(input.readThreads().find((thread) => thread.id === threadId));
       }),
     getTurnActivities: () => Effect.succeed([]),
+    getThreadMessage: () => Effect.succeed(Option.none()),
+    hasAssistantMessageForTurn: () => Effect.succeed(false),
     getThreadDetailById: () => Effect.succeed(Option.none()),
   };
 }

@@ -49,6 +49,8 @@ const makeProjectionSnapshotQueryLayer = (project: OrchestrationProject) =>
     listThreadShells: () => Effect.succeed([]),
     getThreadShellById: () => Effect.die("unused"),
     getTurnActivities: () => Effect.succeed([]),
+    getThreadMessage: () => Effect.succeed(Option.none()),
+    hasAssistantMessageForTurn: () => Effect.succeed(false),
     getThreadDetailById: () => Effect.die("unused"),
   });
 
