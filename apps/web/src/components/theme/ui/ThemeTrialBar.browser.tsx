@@ -41,9 +41,9 @@ describe("ThemeTrialBar", () => {
     await import("./ThemeTrialBarContent");
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     chooseTheme({ kind: "builtin", id: "dark" });
-    resetTestPage();
+    await resetTestPage();
   });
 
   it("asks to keep a trial in the built-in colors, and Undo puts the old theme back", async () => {
