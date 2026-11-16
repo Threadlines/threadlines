@@ -12,6 +12,8 @@ import {
   formatProviderTokenCount,
   headlineUsageMeter,
   isProviderUsageNearLimit,
+  modelOwnUsageLimit,
+  modelUsageLimitLabel,
   providerRateLimitResetCreditsExpirationUrgency,
   providerRateLimitResetCreditExpirationUrgency,
   providerUsageNearLimitColor,
@@ -487,6 +489,7 @@ describe("deriveProviderAccountUsagePresentation", () => {
         remainingPercent: 22,
         reachedLimit: false,
         warning: true,
+        scope: { name: "Fable", period: "Weekly", resetDetail: "resets in 7d" },
       },
     ]);
     expect(presentation?.reachedLimit).toBe(false);
@@ -540,6 +543,7 @@ describe("deriveProviderAccountUsagePresentation", () => {
         remainingPercent: 0,
         reachedLimit: true,
         warning: true,
+        scope: { name: "Fable", period: "Weekly", resetDetail: "resets in 7d" },
       },
     ]);
     expect(presentation?.reachedLimit).toBe(true);
@@ -1038,6 +1042,79 @@ describe("isProviderUsageNearLimit", () => {
       ],
     };
     expect(isProviderUsageNearLimit(deriveProviderAccountUsagePresentation(usage))).toBe(true);
+  });
+});
+
+describe("a model's own usage limit", () => {
+  const NOW = 1_800_000_000_000;
+  /** Claude this week: the account at `weekly`%, Fable's own week at `fable`%. */
+  const claude = (weekly: number, fable: number) =>
+    deriveProviderAccountUsagePresentation(
+      {
+        source: "claude-oauth-usage",
+        checkedAt: "2026-07-03T00:00:00.000Z",
+        primaryLimitId: "claude",
+        limits: [
+          {
+            limitId: "claude",
+            secondary: {
+              usedPercent: weekly,
+              remainingPercent: 100 - weekly,
+              resetsAt: NOW + 3 * 86_400_000 + 16 * 3_600_000,
+              windowDurationMins: 10_080,
+            },
+            scoped: [
+              {
+                scopeLabel: "Fable",
+                usedPercent: fable,
+                remainingPercent: 100 - fable,
+                resetsAt: NOW + 3 * 86_400_000 + 16 * 3_600_000,
+                windowDurationMins: 10_080,
+              },
+            ],
+          },
+        ],
+      },
+      NOW,
+    );
+
+  it("matches every model named after the limit, as whole words only", () => {
+    const usage = claude(40, 64);
+    expect(modelOwnUsageLimit(usage, "Claude Fable 5.2")?.usedPercent).toBe(64);
+    expect(modelOwnUsageLimit(usage, "Claude Fable 5.1")?.usedPercent).toBe(64);
+    expect(modelOwnUsageLimit(usage, "Claude Opus 5.5")).toBeNull();
+    expect(modelOwnUsageLimit(usage, "Fablesque 1")).toBeNull();
+  });
+
+  it("reads grey, then amber, then red with when it resets", () => {
+    const label = (fable: number) =>
+      modelUsageLimitLabel(modelOwnUsageLimit(claude(40, fable), "Claude Fable 5.2")!);
+    expect(label(64)).toMatchObject({ text: "64% of week", tone: "normal" });
+    expect(label(82)).toMatchObject({ text: "82% of week", tone: "warning" });
+    expect(label(100)).toMatchObject({ text: "Limit · resets in 3d 16h", tone: "reached" });
+  });
+
+  it("leaves a model's own limit out of the account's near-limit mark", () => {
+    // Fable's week is used up, the account's is not: only Fable's row says so.
+    expect(isProviderUsageNearLimit(claude(40, 100), { modelLimits: false })).toBe(false);
+    expect(isProviderUsageNearLimit(claude(40, 100))).toBe(true);
+    expect(isProviderUsageNearLimit(claude(84, 10), { modelLimits: false })).toBe(true);
+    // An account out of its plan, with no windows to say so.
+    const outOfPlan = deriveProviderAccountUsagePresentation(
+      {
+        source: "codex-rate-limits",
+        checkedAt: "2026-07-03T00:00:00.000Z",
+        limits: [
+          {
+            limitId: "codex",
+            rateLimitReachedType: "rate_limit_reached",
+            primary: { usedPercent: 40, remainingPercent: 60 },
+          },
+        ],
+      },
+      NOW,
+    );
+    expect(isProviderUsageNearLimit(outOfPlan, { modelLimits: false })).toBe(true);
   });
 });
 

@@ -33,6 +33,15 @@ export const ModelListRow = memo(function ModelListRow(props: {
   useProviderScopedLabel?: boolean;
   useTriggerLabel?: boolean;
   jumpLabel?: string | null;
+  /**
+   * The model's own usage limit, when its account reports one (modelUsageLimitLabel):
+   * in the row's grey slot, amber near it, red with a grey name once reached.
+   */
+  usageLimit?: {
+    readonly text: string;
+    readonly tone: "normal" | "warning" | "reached";
+    readonly title: string;
+  } | null;
   /** What picking it does when that is not "use this model" (ModelPickerContent rowAction). */
   action?: { readonly kind: "add" | "switch"; readonly label: string } | null;
   /** Set while no model can be picked; the list says why on hover. */
@@ -74,7 +83,14 @@ export const ModelListRow = memo(function ModelListRow(props: {
       <div className="min-w-0 flex-1 text-left">
         <div className="flex items-center justify-between gap-2 min-w-0">
           <div
-            className="text-xs font-medium leading-snug flex items-center gap-1.5 min-w-0 group-data-selected:text-primary-readable"
+            className={cn(
+              "text-xs font-medium leading-snug flex items-center gap-1.5 min-w-0",
+              // A model at its own limit reads grey, picked or not; the
+              // picked row keeps its fill.
+              props.usageLimit?.tone === "reached"
+                ? "text-muted-foreground"
+                : "group-data-selected:text-primary-readable",
+            )}
             data-model-picker-model-name
           >
             <span className="truncate" title={getDisplayModelName(props.model)}>
@@ -98,6 +114,22 @@ export const ModelListRow = memo(function ModelListRow(props: {
                   <ArrowLeftRightIcon aria-hidden="true" className="size-3" />
                 )}
                 <span className="min-w-0 truncate">{props.action.label}</span>
+              </span>
+            ) : null}
+            {props.usageLimit ? (
+              <span
+                data-model-usage-limit={props.usageLimit.tone}
+                className={cn(
+                  "min-w-0 truncate font-mono text-[10px] font-normal",
+                  props.usageLimit.tone === "reached"
+                    ? "text-destructive-foreground"
+                    : props.usageLimit.tone === "warning"
+                      ? "text-warning"
+                      : "text-muted-foreground/60",
+                )}
+                title={props.usageLimit.title}
+              >
+                {props.usageLimit.text}
               </span>
             ) : null}
             {props.model.metaLabel ? (
