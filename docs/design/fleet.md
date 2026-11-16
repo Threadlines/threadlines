@@ -880,6 +880,104 @@ The plan above is corrected as follows. Where they differ, this wins.
 - Moving General Chats, rooms, families (step 4).
 - Native session carry (step 3).
 
+## Part 3d: The agent keeps its memory when a thread moves (Nov 16, v2 step 3)
+
+Today a moved thread's agent starts a fresh session on the other computer with a text summary of the conversation (the handoff seed). It loses its tool history, the files it read, its subagents' work and anything it held in context but never wrote into a message. Step 3 carries the agent's own session file to the other computer, so it resumes where it was. The summary stays as the fallback for every case that can't carry one, or where the carried session fails to resume.
+
+### Which agents
+
+- **Claude, Codex and Pi** keep their sessions as files, and Threadlines already resumes each from a file (`ClaudeSessionTranscripts.ts`, Codex's resume by path in `CodexSessionRuntime.ts`, Pi's `--session`/`--fork`). These three carry.
+- **OpenCode** keeps sessions in its server's SQLite database, with no export call in our code. **Muse** and the **ACP agents** (fx, Cursor, Grok, Antigravity, community) keep them where we don't know. They all get the summary, as today.
+- A session carries only when the agent picked on the other computer is the **same driver** (Claude to Claude, and so on). A different driver gets the summary. The model may differ.
+
+### What the user sees
+
+- **Move dialog** (single thread and batch), one quiet line per thread: "The agent keeps its full memory." or "The agent gets a summary of the conversation." It updates with the agent picked. A session too large to send reads "…a summary (its session is too large to send)".
+- **On the other computer**, the moved-in line in the timeline says which it was: "Moved here from Mac with its agent's memory" or "…with a summary of the conversation". If a carried session fails and falls back: "Couldn't resume the agent's session here, so it got a summary instead."
+
+### Export (the computer the thread leaves)
+
+`ThreadMoves` reads the thread's provider binding (ProviderSessionDirectory: instance, `resumeCursor`) while the thread is frozen and quiesced (Part 3b). With a confirmed stop, the files are no longer written. It asks the driver's new `exportNativeSession(binding) → NativeSessionExport | null`:
+
+- **Claude:**
+  - `projects/<slug>/<sessionId>.jsonl` from the instance's config folder;
+  - the `<sessionId>/subagents/` tree, so subagent transcripts open on the other side;
+  - not `file-history`, `todos`, `plans` or `shell-snapshots`. Checkpoints don't cross a move (Part 3), and the rest is per-machine state.
+  - The cursor keeps `resume` and `resumeSessionAt`.
+- **Codex:** the rollout file (`sessions/YYYY/MM/DD/rollout-*<threadId>.jsonl`, or `.zst` as found), plus the cursor `{threadId}`.
+- **Pi:** the session file named in the cursor, plus the cursor with `sessionFile` made relative.
+
+The export becomes a new manifest part kind, `session`: `{ driver, cliVersion?, files: [{ relPath, bytes, sha256 }], cursor }`. Paths are relative to the driver's home, checked for traversal on both sides. Sizes:
+
+- The session counts against the move's existing 100 MB cap, with a per-session cap of 50 MB.
+- Past either, no session part is sent, and the manifest says `sessionOmitted: "too_large"`.
+- The preview reports the expected outcome (`carries | summary | too_large`) per thread and target agent, so the dialog line is right before the move starts.
+
+The part is only sent to a target whose peer descriptor has `moveNativeSession: true` (a new capability). Older targets refuse unknown part kinds (`moveManifestRefusal`), so they never get one.
+
+### Import (the computer the thread arrives at)
+
+In `commitStage`, before `thread.import`, under the per-transfer lock:
+
+- The chosen instance's driver gets `importNativeSession(export, { worktreePath }) → { cursor } | { refused }`. It writes the files into **that instance's own home** (its account folder or CODEX_HOME or Pi dir) and returns the cursor for this computer:
+  - **Claude:** writes under `projects/<slug of the new worktree path>/`. The transcript's `worktree-state` line names the old worktree, so the existing `forkResumeOutOfWorktree` resumes it as a fork in the new place. No file is rewritten.
+  - **Codex:** writes the rollout under this home's `sessions/` with the same relative path. The cursor gains the rollout's path, so the first start resumes it by path with the new cwd (the side-answer path already does this). Codex's state database learns it from that resume.
+  - **Pi:** writes the session file under this computer's Pi sessions folder and returns a cursor with the new absolute `sessionFile` and the old `cwd`. The cwd differs, so Pi forks it into the new folder, as it already does.
+- The import writes the thread's provider binding (`ProviderSessionDirectory.upsert`) with that cursor, inside the same commit step, so a crash between the two is redone by the existing import recovery. The import is idempotent per transfer key: files land under names derived from the session id, and are rewritten on retry.
+- `thread.import` records `nativeSession: "carried"` on the thread, alongside the existing `historySeedOwed`.
+
+### Resume, and falling back to the summary
+
+The seed debt stays owed on a carried thread until the carried session proves itself:
+
+1. The first start resumes from the imported cursor.
+   - If the driver reports it couldn't resume (Claude's resume-fallback, Codex's `onResumeFallback`, Pi failing to open the file), the reactor pays the seed as today. It records `nativeSession: "fell_back"`, with the timeline line.
+   - `ProviderService.startSession` must return whether it truly resumed. Add that signal where a driver lacks a clean one; don't infer it from warnings.
+2. If the first turn after a carried resume fails with an error showing the session's contents can't be used on this account or version, the reactor:
+   - drops the carried session;
+   - starts a seeded session;
+   - sends the user's message again, once;
+   - records the fallback.
+
+   Codex examples: encrypted reasoning from another account, or a rollout written by a newer Codex. Claude example: a rejected thinking-block signature.
+
+   The exact error signatures come from each provider's real errors. Verify them against the Codex open-source repo and real Claude errors; don't guess. An unrecognized failure is an ordinary failed turn.
+
+3. Once a turn succeeds on the carried session, the debt is cleared: `nativeSession: "resumed"`, no seed. A later revert past the move boundary still re-owes the seed, as Part 3 already does.
+
+### Review changes (Nov 16, outside review of this plan)
+
+Where they differ, these win.
+
+1. **The target names every file itself.** A manifest's paths are never used to write. `importNativeSession` takes the session id from the cursor, checks its shape (Claude: a UUID; Codex: its thread id format; Pi: its session id), and computes each destination from it with the driver's own layout:
+   - **Claude:** `projects/<slug>/<sessionId>.jsonl`, plus `<sessionId>/subagents/` files named `agent-<id>.jsonl` or `.meta.json`, and `workflows/<runId>/` under it.
+   - **Codex:** `sessions/YYYY/MM/DD/rollout-<timestamp>-<threadId>.jsonl` or `.zst`, with the date taken from the rollout's own name.
+   - **Pi:** `sessions/<slug>/<timestamp>_<id>.jsonl`.
+
+   Anything else in the part is refused, and the move carries no session (summary). No credential, settings or other home file can be named.
+
+   **Ownership:** a destination that already exists is overwritten only if it was written by this same transfer (a marker beside it, or the same SHA-256). Otherwise the session isn't carried, rather than overwriting someone else's.
+
+2. **A fallback never sends without context.** For a thread whose context is owed (moved, or a fallen-back carried session), a send that can't build its seed is not sent. The turn fails visibly with "Couldn't give the agent this conversation, so the message wasn't sent." and the debt stays owed. That replaces today's path, which drops both seeds and sends anyway (ProviderCommandReactor.ts ~2353, ~2498). Retrying the send tries again.
+
+### Not in this step
+
+- OpenCode, Muse and ACP native carry. Each needs its own export or import story.
+- Carrying sessions between different drivers.
+- Checkpoints and file history across a move.
+
+### Tests (focused)
+
+- Export picks the right files per driver, skips the per-machine folders, and respects both caps with `sessionOmitted`.
+- Import writes under the target instance's home with traversal refused, writes the binding in the commit step, and is idempotent on retry.
+- Preview outcome per agent choice.
+- Reactor:
+  - a resumed session pays no seed;
+  - a resume fallback pays it;
+  - a first-turn signature error falls back once and resends;
+  - an ordinary failure doesn't.
+- Live, on the two-server stack: real Claude and Codex runs need Will's OK for usage. Without it, a stand-in Pi or Claude CLI isn't feasible, so the live part tests the file placement and binding with a fake session file, and states that a real resume is unverified.
+
 ## Part 4: The rail and the Fleet page
 
 ### Rail

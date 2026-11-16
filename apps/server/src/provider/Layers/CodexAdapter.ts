@@ -96,6 +96,10 @@ import {
   prepareCodexSideAnswerHome,
 } from "../codexSideAnswerHome.ts";
 import { removeSideRuntimeHome, sweepStaleSideRuntimeHomes } from "../sideRuntimeHome.ts";
+import {
+  exportCodexNativeSession,
+  importCodexNativeSession,
+} from "../Drivers/CodexNativeSession.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { initializeCodexAppServerClient, makeCodexAppServerClient } from "./CodexProvider.ts";
 import { holdLaunchGate, type LaunchGate } from "../managedRuntime/LaunchGate.ts";
@@ -4630,6 +4634,17 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     listSessions,
     hasSession,
     stopAll,
+    // The home this instance's own sessions live in, found as its runtime finds it.
+    exportNativeSession: ({ resumeCursor }) =>
+      exportCodexNativeSession({
+        home: codexSignInHome(codexConfig.homePath, options?.environment ?? process.env),
+        resumeCursor,
+      }),
+    importNativeSession: (input) =>
+      importCodexNativeSession({
+        ...input,
+        home: codexSignInHome(codexConfig.homePath, options?.environment ?? process.env),
+      }),
     noteBeforeStop: processes.beforeStop,
     confirmThreadStopped: processes.confirm,
     get streamEvents() {

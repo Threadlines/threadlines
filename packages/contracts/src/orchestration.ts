@@ -942,6 +942,33 @@ export const ThreadMoveNotStartedPayload = Schema.Struct({
 });
 export type ThreadMoveNotStartedPayload = typeof ThreadMoveNotStartedPayload.Type;
 
+/**
+ * A moved thread's agent session, when the move carried it (docs/design/fleet.md,
+ * Part 3d): `carried`, it arrived with the thread and hasn't proven itself yet;
+ * `resumed`, a turn succeeded on it; `fell_back`, it couldn't be used here,
+ * so the agent got a summary of the conversation instead. Absent: the move
+ * carried no session (the summary), or the thread didn't move here. Only
+ * ever an optional field: an older app that doesn't know it never reads it.
+ */
+export const ThreadNativeSession = Schema.Literals(["carried", "resumed", "fell_back"]);
+export type ThreadNativeSession = typeof ThreadNativeSession.Type;
+
+/**
+ * Activity appended when a moved thread's carried agent session couldn't be
+ * used here and its agent got a summary instead: "Couldn't resume the agent's
+ * session here, so it got a summary instead." Its payload is a
+ * ThreadNativeSessionFellBackPayload.
+ */
+export const ThreadNativeSessionFellBackActivityKind = "thread.native-session-fell-back";
+export const ThreadNativeSessionFellBackReason = Schema.Literals(["resume_failed", "turn_failed"]);
+export const ThreadNativeSessionFellBackPayload = Schema.Struct({
+  /** `resume_failed`: the session wouldn't open here; `turn_failed`: its first turn was refused. */
+  reason: ThreadNativeSessionFellBackReason,
+  /** `turn_failed`: the message the refused turn sent, sent again once on a seeded session. */
+  resendMessageId: Schema.optional(MessageId),
+});
+export type ThreadNativeSessionFellBackPayload = typeof ThreadNativeSessionFellBackPayload.Type;
+
 /** A thread that moved here from another computer, and where it came from. */
 export const ThreadMovedFrom = Schema.Struct({
   environmentId: EnvironmentId,
@@ -2774,6 +2801,13 @@ export const OrchestrationThread = Schema.Struct({
    * revert that takes that message away owes the conversation again.
    */
   historySeedMessageId: Schema.optional(MessageId),
+  /**
+   * Moved here with its agent's own session (ThreadNativeSession). While
+   * `carried`, `historySeedOwed` stays set but no seed is sent: the carried
+   * session holds the conversation, and only a turn that succeeds on it
+   * clears the debt (`resumed`). One that can't be used pays it (`fell_back`).
+   */
+  nativeSession: Schema.optional(ThreadNativeSession),
   /** Child threads this thread started: open requests, limits and notes. */
   childRequests: OrchestrationChildRequestState.pipe(
     Schema.withDecodingDefault(Effect.succeed(EMPTY_CHILD_REQUEST_STATE)),
@@ -5109,6 +5143,8 @@ const ThreadImportCommand = Schema.Struct({
   movedFrom: ThreadMovedFrom,
   messages: Schema.Array(ThreadImportMessage),
   activities: Schema.Array(OrchestrationThreadActivity),
+  /** The move carried its agent's session, and this computer's binding holds it. */
+  nativeSession: Schema.optional(Schema.Literal("carried")),
   createdAt: IsoDateTime,
 });
 
@@ -5149,6 +5185,27 @@ const ThreadHistorySeedDeliveredCommand = Schema.Struct({
   threadId: ThreadId,
   /** The message whose send carried the conversation. */
   messageId: MessageId,
+  /**
+   * A carried session's turn succeeded (OrchestrationThread.nativeSession):
+   * the session itself held the conversation, so nothing more is owed.
+   */
+  nativeSession: Schema.optional(Schema.Literal("resumed")),
+  createdAt: IsoDateTime,
+});
+
+/**
+ * A moved thread's carried agent session can't be used here
+ * (docs/design/fleet.md, Part 3d): it is recorded as `fell_back`, and its
+ * conversation stays owed, paid by the next send's summary. Only while it is
+ * `carried`, so it happens once. With `resendMessageId`, the reactor drops
+ * the carried session and sends that message again on a seeded one.
+ */
+const ThreadNativeSessionFallBackCommand = Schema.Struct({
+  type: Schema.Literal("thread.native-session.fall-back"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  reason: ThreadNativeSessionFellBackReason,
+  resendMessageId: Schema.optional(MessageId),
   createdAt: IsoDateTime,
 });
 
@@ -5184,6 +5241,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadImportCommand,
   ThreadStartCommand,
   ThreadHistorySeedDeliveredCommand,
+  ThreadNativeSessionFallBackCommand,
   ThreadChildStartCommand,
   ThreadChildSendCommand,
   ThreadChildRequestUpdateCommand,
@@ -5407,6 +5465,8 @@ export const ThreadCreatedPayload = Schema.Struct({
   /** Imported by a move: see ThreadMovedFrom and OrchestrationThread.historySeedOwed. */
   movedFrom: Schema.optional(ThreadMovedFrom),
   historySeedOwed: Schema.optional(Schema.Boolean),
+  /** Imported with its agent's own session: see OrchestrationThread.nativeSession. */
+  nativeSession: Schema.optional(Schema.Literal("carried")),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -5710,6 +5770,8 @@ export const ThreadHistorySeedDeliveredPayload = Schema.Struct({
   threadId: ThreadId,
   /** The message whose send carried the conversation; absent on events from before it was recorded. */
   messageId: Schema.optional(MessageId),
+  /** A carried session's turn succeeded: OrchestrationThread.nativeSession becomes `resumed`. */
+  nativeSession: Schema.optional(Schema.Literal("resumed")),
   updatedAt: IsoDateTime,
 });
 
@@ -5781,6 +5843,11 @@ export const ThreadMetaUpdatedPayload = Schema.Struct({
    * null: its own again, or none. Absent: unchanged.
    */
   worktreeOrigin: Schema.optional(Schema.NullOr(ThreadWorktreeOrigin)),
+  /**
+   * A moved thread's carried session couldn't be used here
+   * (OrchestrationThread.nativeSession). Absent: unchanged.
+   */
+  nativeSession: Schema.optional(Schema.Literal("fell_back")),
   updatedAt: IsoDateTime,
 });
 

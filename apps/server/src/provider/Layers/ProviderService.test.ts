@@ -2445,9 +2445,9 @@ routing.layer("ProviderServiceLive routing", (it) => {
 
       secondClaude.startSession.mockClear();
 
-      yield* Effect.gen(function* () {
+      const resumed = yield* Effect.gen(function* () {
         const provider = yield* ProviderService;
-        yield* provider.startSession(initial.threadId, {
+        return yield* provider.startSession(initial.threadId, {
           provider: ProviderDriverKind.make("claudeAgent"),
           providerInstanceId: claudeAgentInstanceId,
           threadId: initial.threadId,
@@ -2455,6 +2455,9 @@ routing.layer("ProviderServiceLive routing", (it) => {
           runtimeMode: "full-access",
         });
       }).pipe(Effect.provide(secondProviderLayer));
+      // Only a start that reopened a conversation says so.
+      assert.equal(initial.resumed, undefined);
+      assert.equal(resumed.resumed, true);
 
       assert.equal(secondClaude.startSession.mock.calls.length, 1);
       const resumedStartInput = secondClaude.startSession.mock.calls[0]?.[0];
@@ -2471,6 +2474,32 @@ routing.layer("ProviderServiceLive routing", (it) => {
         assert.deepEqual(startPayload.resumeCursor, initial.resumeCursor);
         assert.equal(startPayload.threadId, initial.threadId);
       }
+
+      // A session a move carried here: bound with no runtime, resumed by the first start.
+      const carriedThread = asThreadId("thread-claude-carried");
+      const carriedCursor = { resume: "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b" };
+      secondClaude.startSession.mockClear();
+      yield* Effect.gen(function* () {
+        const provider = yield* ProviderService;
+        yield* provider.adoptNativeSession({
+          threadId: carriedThread,
+          instanceId: claudeAgentInstanceId,
+          cursor: carriedCursor,
+          runtimeMode: "full-access",
+        });
+        yield* provider.startSession(carriedThread, {
+          provider: ProviderDriverKind.make("claudeAgent"),
+          providerInstanceId: claudeAgentInstanceId,
+          threadId: carriedThread,
+          cwd: "/tmp/moved-here",
+          runtimeMode: "full-access",
+        });
+      }).pipe(Effect.provide(secondProviderLayer));
+      const carriedStart = secondClaude.startSession.mock.calls[0]?.[0] as
+        | { readonly resumeCursor?: unknown; readonly cwd?: string }
+        | undefined;
+      assert.deepEqual(carriedStart?.resumeCursor, carriedCursor);
+      assert.equal(carriedStart?.cwd, "/tmp/moved-here");
 
       fs.rmSync(tempDir, { recursive: true, force: true });
     }).pipe(Effect.provide(NodeServices.layer)),

@@ -225,6 +225,8 @@ describe("ProviderCommandReactor", () => {
     readonly failThreadRead?: (threadId: ThreadId) => boolean;
     /** Runs before each of the reactor's reads of a thread (it may hold the read). */
     readonly beforeThreadRead?: (threadId: ThreadId) => Effect.Effect<void>;
+    /** The seed builder finds no conversation to give while this says so. */
+    readonly seedUnavailable?: () => boolean;
   }) {
     const now = "2026-01-01T00:00:00.000Z";
     const baseDir =
@@ -432,6 +434,13 @@ describe("ProviderCommandReactor", () => {
         }
       }),
     );
+    // Like ProviderService: the runtime goes, and the next start opens a new conversation.
+    const dropResumeCursor = vi.fn<ProviderServiceShape["dropResumeCursor"]>((threadId) =>
+      Effect.sync(() => {
+        const index = runtimeSessions.findIndex((session) => session.threadId === threadId);
+        if (index >= 0) runtimeSessions.splice(index, 1);
+      }),
+    );
     const renameBranch = vi.fn((input: unknown) =>
       Effect.succeed({
         branch:
@@ -548,6 +557,11 @@ describe("ProviderCommandReactor", () => {
       stopSession: stopSession as ProviderServiceShape["stopSession"],
       listSessions: () => Effect.succeed(runtimeSessions),
       quiesceThread: () => Effect.succeed({ confirmed: true } as const),
+      exportNativeSession: () => Effect.succeed(null),
+      importNativeSession: () => Effect.succeed({ refused: "not in this test" }),
+      adoptNativeSession: () => Effect.void,
+      forgetNativeSession: () => Effect.void,
+      dropResumeCursor,
       getCapabilities: (_provider) =>
         Effect.succeed({
           sessionModelSwitch: input?.sessionModelSwitch ?? "in-session",
@@ -658,6 +672,7 @@ describe("ProviderCommandReactor", () => {
         Layer.succeed(ThreadContextSeedBuilder, {
           build: (seedInput) => {
             seedBuildInputs.push(seedInput);
+            if (input?.seedUnavailable?.() === true) return Effect.succeed(Option.none());
             return Effect.succeed(
               Option.some({
                 version: 1,
@@ -791,6 +806,7 @@ describe("ProviderCommandReactor", () => {
       respondToRequest,
       respondToUserInput,
       stopSession,
+      dropResumeCursor,
       renameBranch,
       refreshStatus,
       refreshLocalStatus,
@@ -1655,6 +1671,239 @@ describe("ProviderCommandReactor", () => {
       );
     },
   );
+
+  describe("a thread moved here with its agent's own session", () => {
+    const now = "2026-01-01T00:00:00.000Z";
+    const moved = ThreadId.make("thread-carried");
+
+    /** Imports a moved thread, carried or not, and returns how to send it a message. */
+    const importMoved = async (
+      harness: Awaited<ReturnType<typeof createHarness>>,
+      carried: boolean,
+    ) => {
+      const own = (await harness.readModel()).threads.find((thread) => thread.id === "thread-1");
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.import",
+          commandId: CommandId.make("cmd-thread-import-carried"),
+          threadId: moved,
+          projectId: asProjectId("project-1"),
+          title: "Moved here",
+          modelSelection: own!.modelSelection,
+          runtimeMode: "approval-required",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          branch: null,
+          worktreePath: null,
+          movedFrom: {
+            environmentId: EnvironmentId.make("environment-windows"),
+            label: "Windows PC",
+            threadId: ThreadId.make("thread-there"),
+            movedAt: now,
+          },
+          messages: [
+            {
+              messageId: asMessageId("moved-question"),
+              role: "user",
+              text: "what we said there",
+              turnId: null,
+              createdAt: now,
+            },
+          ],
+          activities: [],
+          ...(carried ? { nativeSession: "carried" as const } : {}),
+          createdAt: now,
+        }),
+      );
+      return (id: string, text: string) =>
+        Effect.runPromise(
+          harness.engine.dispatch({
+            type: "thread.turn.start",
+            commandId: CommandId.make(`cmd-carried-turn-${id}`),
+            threadId: moved,
+            message: {
+              messageId: asMessageId(`carried-message-${id}`),
+              role: "user",
+              text,
+              attachments: [],
+            },
+            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            runtimeMode: "approval-required",
+            createdAt: now,
+          }),
+        );
+    };
+    /** The next start reports how its resume went. */
+    const nextStart = (
+      harness: Awaited<ReturnType<typeof createHarness>>,
+      outcome: Partial<ProviderSession>,
+    ) => {
+      const start = harness.startSession.getMockImplementation();
+      if (!start) throw new Error("expected the harness start implementation");
+      harness.startSession.mockImplementationOnce((key, input) =>
+        start(key, input).pipe(Effect.map((session) => ({ ...session, ...outcome }))),
+      );
+    };
+    const movedThread = async (harness: Awaited<ReturnType<typeof createHarness>>) =>
+      (await harness.readModel()).threads.find((thread) => thread.id === moved);
+    const sentInput = (harness: Awaited<ReturnType<typeof createHarness>>, index: number) =>
+      (harness.sendTurn.mock.calls[index]?.[0] as { readonly input?: string } | undefined)?.input;
+
+    it("a session that reopened holds the conversation: no summary goes with the send", async () => {
+      const harness = await createHarness();
+      const send = await importMoved(harness, true);
+      nextStart(harness, { resumed: true });
+      await send("1", "first here");
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+      expect(sentInput(harness, 0)).toBe("first here");
+      // Owed until a turn succeeds on it (ProviderRuntimeIngestion says so).
+      expect(await movedThread(harness)).toMatchObject({
+        nativeSession: "carried",
+        historySeedOwed: true,
+      });
+    });
+
+    it("a session that wouldn't reopen falls back, and its send pays the summary", async () => {
+      const harness = await createHarness();
+      const send = await importMoved(harness, true);
+      nextStart(harness, { resumeFailed: true });
+      await send("1", "first here");
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+      expect(sentInput(harness, 0)).toContain("prior context");
+      await waitFor(async () => (await movedThread(harness))?.nativeSession === "fell_back");
+      expect((await movedThread(harness))?.activities.at(-1)).toMatchObject({
+        kind: "thread.native-session-fell-back",
+        payload: { reason: "resume_failed" },
+      });
+    });
+
+    it("a first turn the session's contents were refused for goes again once, seeded", async () => {
+      const harness = await createHarness();
+      const send = await importMoved(harness, true);
+      nextStart(harness, { resumed: true });
+      await send("1", "first here");
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+      await waitFor(async () => (await movedThread(harness))?.session?.status === "running");
+      // The turn failed (ProviderRuntimeIngestion read the refusal in it).
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("cmd-carried-turn-failed"),
+          threadId: moved,
+          session: {
+            threadId: moved,
+            status: "error",
+            providerName: "codex",
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            runtimeMode: "approval-required",
+            activeTurnId: null,
+            lastError: "invalid_encrypted_content",
+            updatedAt: now,
+          },
+          createdAt: now,
+        }),
+      );
+      const fallBack = (id: string) =>
+        Effect.runPromise(
+          harness.engine.dispatch({
+            type: "thread.native-session.fall-back",
+            commandId: CommandId.make(`cmd-carried-fall-back-${id}`),
+            threadId: moved,
+            reason: "turn_failed",
+            resendMessageId: asMessageId("carried-message-1"),
+            createdAt: now,
+          }),
+        );
+      await fallBack("1");
+      await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+      expect(harness.dropResumeCursor).toHaveBeenCalledWith(moved);
+      expect(sentInput(harness, 1)).toContain("prior context");
+      expect(sentInput(harness, 1)?.endsWith("first here")).toBe(true);
+      expect((await movedThread(harness))?.nativeSession).toBe("fell_back");
+      // Once: a second refusal is an ordinary failed turn.
+      await expect(fallBack("2")).rejects.toThrow("no carried agent session");
+      await harness.drain();
+      expect(harness.sendTurn.mock.calls.length).toBe(2);
+      expect(harness.dropResumeCursor).toHaveBeenCalledTimes(1);
+    });
+
+    it("a resend that can't go says so, and one with no known message isn't tried", async () => {
+      const harness = await createHarness();
+      const send = await importMoved(harness, true);
+      nextStart(harness, { resumed: true });
+      await send("1", "first here");
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+      // Still running when it falls back: the resend is refused, visibly.
+      await waitFor(async () => (await movedThread(harness))?.session?.status === "running");
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.native-session.fall-back",
+          commandId: CommandId.make("cmd-carried-fall-back-running"),
+          threadId: moved,
+          reason: "turn_failed",
+          resendMessageId: asMessageId("carried-message-1"),
+          createdAt: now,
+        }),
+      );
+      await waitFor(async () =>
+        ((await movedThread(harness))?.activities ?? []).some(
+          (activity) =>
+            activity.kind === "provider.turn.start.failed" &&
+            (activity.payload as { detail?: string }).detail ===
+              "Your message didn't go again on the new session. Send it again.",
+        ),
+      );
+      expect(harness.sendTurn.mock.calls.length).toBe(1);
+
+      // A turn whose message isn't known falls back without sending anything again.
+      const other = await createHarness();
+      const sendOther = await importMoved(other, true);
+      nextStart(other, { resumed: true });
+      await sendOther("1", "first here");
+      await waitFor(() => other.sendTurn.mock.calls.length === 1);
+      await Effect.runPromise(
+        other.engine.dispatch({
+          type: "thread.native-session.fall-back",
+          commandId: CommandId.make("cmd-carried-fall-back-unknown"),
+          threadId: moved,
+          reason: "turn_failed",
+          createdAt: now,
+        }),
+      );
+      await other.drain();
+      expect((await movedThread(other))?.nativeSession).toBe("fell_back");
+      expect(other.sendTurn.mock.calls.length).toBe(1);
+    });
+
+    it("a moved thread whose conversation can't be built doesn't send without it", async () => {
+      let seedUnavailable = true;
+      const harness = await createHarness({ seedUnavailable: () => seedUnavailable });
+      const send = await importMoved(harness, false);
+      await send("1", "first here");
+      await waitFor(async () =>
+        ((await movedThread(harness))?.activities ?? []).some(
+          (activity) => activity.kind === "provider.turn.start.failed",
+        ),
+      );
+      expect(harness.sendTurn).not.toHaveBeenCalled();
+      const thread = await movedThread(harness);
+      expect(thread?.session?.lastError).toBe(
+        "Couldn't give the agent this conversation, so the message wasn't sent.",
+      );
+      expect(thread?.historySeedOwed).toBe(true);
+      // Sending again tries again, and goes with the conversation once it can.
+      seedUnavailable = false;
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.retry",
+          commandId: CommandId.make("cmd-carried-retry"),
+          threadId: moved,
+          createdAt: now,
+        }),
+      );
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+      expect(sentInput(harness, 0)).toContain("prior context");
+    });
+  });
 
   it("says in the chat why an access change could not restart the session", async () => {
     const harness = await createHarness();

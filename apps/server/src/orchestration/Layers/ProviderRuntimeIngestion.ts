@@ -55,6 +55,7 @@ import {
 import { resolveThreadProviderCwd } from "../generalChats.ts";
 import { withoutLaunchMark } from "../sessionLaunches.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
+import { isCarriedSessionRejection } from "../../provider/nativeSession.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
 import { checkoutEndsTurnsWithCheckpoints, turnEndStateFromRuntime } from "../turnEnd.ts";
@@ -2455,6 +2456,81 @@ const make = Effect.gen(function* () {
   });
 
   /**
+   * A moved thread's carried agent session ended a turn (docs/design/fleet.md,
+   * Part 3d). One that succeeded proves the session: its conversation is no
+   * longer owed (`resumed`). One that failed because the session's contents
+   * can't be used on this account or version (isCarriedSessionRejection)
+   * falls back once: the session is dropped and its cursor forgotten first,
+   * and only then is the fall-back recorded, naming the message that started
+   * the turn for the reactor to send again on a seeded session. A drop that
+   * fails records nothing: the session stays carried, and its next refused
+   * turn tries again. Any other failure is an ordinary failed turn.
+   */
+  const settleCarriedSession = Effect.fn("settleCarriedSession")(function* (input: {
+    readonly thread: OrchestrationThread;
+    readonly event: ProviderRuntimeEvent;
+    readonly turnId: TurnId;
+    readonly outcome: "completed" | "failed" | "interrupted";
+    readonly error: string | undefined;
+    readonly now: string;
+  }) {
+    const rejected =
+      input.outcome === "failed" &&
+      input.error !== undefined &&
+      isCarriedSessionRejection(input.error);
+    if (input.outcome !== "completed" && !rejected) return;
+    const endedTurn = yield* projectionTurnRepository
+      .getByTurnId({ threadId: input.thread.id, turnId: input.turnId })
+      .pipe(
+        Effect.map(Option.getOrUndefined),
+        Effect.orElseSucceed(() => undefined),
+      );
+    // The message that started this turn. Only that one goes again; a turn
+    // whose message isn't known (one the provider started) sends nothing
+    // again, and the line tells the user to.
+    const startedBy = endedTurn?.pendingMessageId ?? undefined;
+    if (rejected) {
+      // Off the ingestion queue: ending the session waits for its process,
+      // whose last events come through here.
+      yield* providerService.dropResumeCursor(input.thread.id).pipe(
+        Effect.andThen(
+          orchestrationEngine.dispatch({
+            type: "thread.native-session.fall-back",
+            commandId: providerCommandId(input.event, "native-session-fall-back"),
+            threadId: input.thread.id,
+            reason: "turn_failed",
+            ...(startedBy !== undefined ? { resendMessageId: startedBy } : {}),
+            createdAt: input.now,
+          }),
+        ),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("a carried session's refused turn couldn't fall back yet", {
+            threadId: input.thread.id,
+            cause: Cause.pretty(cause),
+          }),
+        ),
+        Effect.forkDetach,
+      );
+      return;
+    }
+    // The message whose send the session proved itself on, for a revert that takes it away.
+    const messageId =
+      startedBy ??
+      input.thread.messages.findLast(
+        (message) => message.role === "user" && message.imported !== true,
+      )?.id;
+    if (messageId === undefined) return;
+    yield* orchestrationEngine.dispatch({
+      type: "thread.history-seed.delivered",
+      commandId: providerCommandId(input.event, "native-session-resumed"),
+      threadId: input.thread.id,
+      messageId,
+      nativeSession: "resumed",
+      createdAt: input.now,
+    });
+  });
+
+  /**
    * Child threads: a child's turn ended and its words were just flushed. If
    * that turn answers a request its parent's agent made (the request's message
    * started it, or it is the follow-up its own background work started), the
@@ -3822,6 +3898,22 @@ const make = Effect.gen(function* () {
               error: turnError,
               pendingMessageId: endedTurn?.pendingMessageId ?? null,
             });
+          }
+          // A moved thread's carried session proves itself by its first turn
+          // (docs/design/fleet.md, Part 3d).
+          if (
+            detailedThread?.nativeSession === "carried" &&
+            (event.participantId ?? null) === null &&
+            event.threadId === thread.id
+          ) {
+            yield* settleCarriedSession({
+              thread: detailedThread,
+              event,
+              turnId,
+              outcome: turnOutcome,
+              error: turnError,
+              now,
+            }).pipe(Effect.ignoreCause({ log: true }));
           }
 
           yield* finalizeBufferedProposedPlan({

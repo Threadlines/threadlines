@@ -1085,6 +1085,13 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       const sessionWithInstance = {
         ...session,
         providerInstanceId: resolvedInstanceId,
+        // It reopened the conversation its cursor named: the adapter took a
+        // cursor and didn't report that it couldn't (resumeFailed).
+        ...(effectiveResumeCursor !== undefined &&
+        effectiveResumeCursor !== null &&
+        session.resumeFailed !== true
+          ? { resumed: true }
+          : {}),
       };
 
       yield* stopStaleSessionsForThread({
@@ -3020,6 +3027,60 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     );
   });
 
+  const exportNativeSession: ProviderServiceShape["exportNativeSession"] = Effect.fn(
+    "exportNativeSession",
+  )(function* (threadId) {
+    const binding = Option.getOrUndefined(
+      yield* directory.getBinding(threadId).pipe(Effect.orElseSucceed(() => Option.none())),
+    );
+    const instanceId = binding?.providerInstanceId;
+    const cursor = binding?.resumeCursor;
+    if (instanceId === undefined || cursor === undefined || cursor === null) return null;
+    // An early start nobody used never began a conversation to carry.
+    if (readPersistedEarlyUnused(binding?.runtimePayload)) return null;
+    const adapter = yield* registry.getByInstance(instanceId).pipe(Effect.option);
+    if (Option.isNone(adapter) || adapter.value.exportNativeSession === undefined) return null;
+    return yield* adapter.value.exportNativeSession({ resumeCursor: cursor });
+  });
+
+  const importNativeSession: ProviderServiceShape["importNativeSession"] = Effect.fn(
+    "importNativeSession",
+  )(function* ({ instanceId, ...input }) {
+    const adapter = yield* registry.getByInstance(instanceId).pipe(Effect.option);
+    if (Option.isNone(adapter) || adapter.value.importNativeSession === undefined) {
+      return { refused: "this agent can't take a carried session" };
+    }
+    return yield* adapter.value.importNativeSession(input);
+  });
+
+  const adoptNativeSession: ProviderServiceShape["adoptNativeSession"] = Effect.fn(
+    "adoptNativeSession",
+  )(function* (input) {
+    const info = yield* registry.getInstanceInfo(input.instanceId);
+    yield* directory.upsert({
+      threadId: input.threadId,
+      provider: info.driverKind,
+      providerInstanceId: input.instanceId,
+      status: "stopped",
+      resumeCursor: input.cursor,
+      runtimeMode: input.runtimeMode,
+      runtimePayload: { activeTurnId: null },
+    });
+  });
+
+  const forgetNativeSession: ProviderServiceShape["forgetNativeSession"] = (threadId) =>
+    directory.deleteBinding(threadId);
+
+  const dropResumeCursor: ProviderServiceShape["dropResumeCursor"] = Effect.fn("dropResumeCursor")(
+    function* (threadId) {
+      const binding = Option.getOrUndefined(yield* directory.getBinding(threadId));
+      if (binding === undefined) return;
+      const live = (yield* listSessions()).some((session) => session.threadId === threadId);
+      if (live) yield* stopSession({ threadId });
+      yield* directory.upsert({ ...binding, status: "stopped", resumeCursor: null });
+    },
+  );
+
   const quiesceThread: ProviderServiceShape["quiesceThread"] = Effect.fn("quiesceThread")(
     function* (threadId) {
       const ofThread = (key: string) => parseSessionKey(ThreadId.make(key)).threadId === threadId;
@@ -3217,6 +3278,11 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     stopSession,
     listSessions,
     quiesceThread,
+    exportNativeSession,
+    importNativeSession,
+    adoptNativeSession,
+    forgetNativeSession,
+    dropResumeCursor,
     getCapabilities,
     getInstanceInfo,
     rollbackConversation,

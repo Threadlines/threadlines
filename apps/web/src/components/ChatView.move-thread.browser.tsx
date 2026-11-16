@@ -1185,7 +1185,9 @@ describe("ChatView (full app): moving a thread to another computer", () => {
 
     try {
       const boundary = page.getByTestId("moved-in-boundary");
-      await expect.element(boundary).toMatchTextContent(/^Moved here from Mac mini · /u);
+      await expect
+        .element(boundary)
+        .toMatchTextContent(/^Moved here from Mac mini with a summary of the conversation · /u);
       // Between the history it brought and what was said here.
       const lastImported = page.getByText(`assistant filler ${importedCount / 2 - 1}`, {
         exact: true,

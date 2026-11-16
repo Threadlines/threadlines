@@ -374,6 +374,14 @@ function CandidateList({
                 >
                   {words.words}
                 </span>
+                {words.session !== undefined ? (
+                  <span
+                    className="block text-[12.5px] leading-[18px] text-muted-foreground"
+                    data-testid={`move-threads-session-${candidate.threadId}`}
+                  >
+                    {words.session}
+                  </span>
+                ) : null}
               </span>
             </label>
           </li>

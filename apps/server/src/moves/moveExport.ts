@@ -8,8 +8,9 @@
  * manifest. Written once to temp names and renamed, so a finished export is
  * whole; a resumed move re-reads it and checks its hash.
  */
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import * as NodeFs from "node:fs/promises";
+import * as os from "node:os";
 import * as NodePath from "node:path";
 
 import type {
@@ -27,6 +28,7 @@ import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 
 import { resolveAttachmentPath } from "../attachmentStore.ts";
+import { NATIVE_SESSION_MAX_BYTES, type NativeSessionExport } from "../provider/nativeSession.ts";
 import type { GitVcsDriverShape } from "../vcs/GitVcsDriver.ts";
 
 /** A move that can't go on, with the reason in words for the user. */
@@ -313,6 +315,73 @@ export function exportThreadHistory(thread: OrchestrationThread): {
   return { messages, activities };
 }
 
+/**
+ * About how many bytes a move of this thread carries besides its agent's
+ * session, without packing it: the commits the remote lacks (their objects'
+ * size on disk), the tracked changes as the export writes them, the new
+ * files and the attachments. The preview weighs a session against it as the
+ * export does (nativeSessionFits). A part it can't read counts nothing.
+ */
+export function estimateMoveOtherBytes(input: {
+  readonly git: GitVcsDriverShape;
+  readonly checkout: MoveCheckout;
+  readonly thread: OrchestrationThread;
+  readonly attachmentsDir: string;
+}) {
+  const { git, checkout } = input;
+  const sizeOf = (path: string) =>
+    Effect.promise(() =>
+      NodeFs.stat(path)
+        .then((stat) => stat.size)
+        .catch(() => 0),
+    );
+  return Effect.gen(function* () {
+    let bytes = 0;
+    if (checkout.baseSha !== null) {
+      const used = yield* gitMaybe(git, checkout.root, [
+        "rev-list",
+        "--objects",
+        "--disk-usage",
+        `${checkout.baseSha}..${checkout.headSha}`,
+      ]);
+      bytes += Number.parseInt(used ?? "", 10) || 0;
+    }
+    // The diff holds the checkout's private changes: it is written inside a
+    // folder only this user can open (mkdtemp makes it 0700), and the folder
+    // goes however the estimate ends.
+    bytes += yield* Effect.acquireUseRelease(
+      Effect.promise(() =>
+        NodeFs.mkdtemp(NodePath.join(os.tmpdir(), "threadlines-move-estimate-")),
+      ),
+      (dir) =>
+        Effect.gen(function* () {
+          const diffPath = NodePath.join(dir, "changes.diff");
+          const diffed = yield* gitMaybe(git, checkout.root, [
+            ...TRANSPORT_DIFF_FLAGS,
+            `--output=${diffPath}`,
+            "HEAD",
+          ]);
+          return diffed === null ? 0 : yield* sizeOf(diffPath);
+        }),
+      (dir) => Effect.promise(() => NodeFs.rm(dir, { recursive: true, force: true })),
+    );
+    const { untracked } = yield* summarizeMoveChanges(git, checkout.root).pipe(
+      Effect.orElseSucceed(() => ({ untracked: [] as ReadonlyArray<string> })),
+    );
+    for (const path of untracked) bytes += yield* sizeOf(NodePath.join(checkout.root, path));
+    const seen = new Set<string>();
+    for (const message of exportThreadHistory(input.thread).messages) {
+      for (const attachment of message.attachments ?? []) {
+        if (seen.has(attachment.id)) continue;
+        seen.add(attachment.id);
+        const path = resolveAttachmentPath({ attachmentsDir: input.attachmentsDir, attachment });
+        if (path !== null) bytes += yield* sizeOf(path);
+      }
+    }
+    return bytes;
+  });
+}
+
 export interface MoveExportInput {
   readonly git: GitVcsDriverShape;
   readonly checkout: MoveCheckout;
@@ -331,7 +400,20 @@ export interface MoveExportInput {
     readonly threadId: ThreadId;
   };
   readonly agent: ModelSelection;
+  /**
+   * The agent session to carry (docs/design/fleet.md, Part 3d), when the
+   * other computer takes it and its agent is the same driver. It goes only
+   * within both caps; past either, the move goes without it and says why.
+   */
+  readonly nativeSession?: NativeSessionExport | null | undefined;
 }
+
+/**
+ * Whether a session of `sessionBytes` fits a move whose other parts come to
+ * `otherBytes`: at most 50 MB itself, and the move at most its 100 MB.
+ */
+export const nativeSessionFits = (sessionBytes: number, otherBytes: number) =>
+  sessionBytes <= NATIVE_SESSION_MAX_BYTES && otherBytes + sessionBytes <= MOVE_MAX_BYTES;
 
 /** Where the export lives: `payload.bin` and `manifest.json` in the transfer's folder. */
 export const movePayloadPath = (dir: string) => NodePath.join(dir, "payload.bin");
@@ -504,12 +586,45 @@ export function writeMoveExport(
       }
     }
 
-    const totalBytes = parts.reduce((sum, part) => sum + part.size, 0);
-    if (totalBytes > MOVE_MAX_BYTES) {
+    const otherBytes = parts.reduce((sum, part) => sum + part.size, 0);
+    if (otherBytes > MOVE_MAX_BYTES) {
       return yield* fail(
-        `This thread's changes come to ${Math.ceil(totalBytes / (1024 * 1024))} MB. Moves carry at most 100 MB.`,
+        `This thread's changes come to ${Math.ceil(otherBytes / (1024 * 1024))} MB. Moves carry at most 100 MB.`,
       );
     }
+    // The agent's session goes last, and only within both caps: past them,
+    // the move goes without it and the agent gets a summary.
+    const session = input.nativeSession ?? null;
+    const sessionBytes = session?.files.reduce((sum, file) => sum + file.size, 0) ?? 0;
+    const carriesSession = session !== null && nativeSessionFits(sessionBytes, otherBytes);
+    // Read up front (both caps bound it): a session file that can't be read,
+    // or vanished since it was found, leaves the session behind and the move
+    // goes on with a summary, never failing the move itself.
+    const sessionBytesRead =
+      session !== null && carriesSession
+        ? yield* Effect.tryPromise(() =>
+            Promise.all(session.files.map((file) => NodeFs.readFile(file.absolutePath))),
+          ).pipe(Effect.orElseSucceed(() => null))
+        : null;
+    const sessionPacked =
+      session !== null &&
+      sessionBytesRead !== null &&
+      nativeSessionFits(
+        sessionBytesRead.reduce((sum, bytes) => sum + bytes.length, 0),
+        otherBytes,
+      );
+    if (session !== null && sessionBytesRead !== null && sessionPacked) {
+      session.files.forEach((file, index) => {
+        const bytes = sessionBytesRead[index]!;
+        parts.push({
+          kind: "session",
+          path: file.relPath,
+          size: bytes.length,
+          read: () => Promise.resolve(bytes),
+        });
+      });
+    }
+    const totalBytes = parts.reduce((sum, part) => sum + part.size, 0);
 
     const payloadTemp = NodePath.join(dir, "payload.bin.tmp");
     const whole = createHash("sha256");
@@ -578,6 +693,20 @@ export function writeMoveExport(
         untrackedFiles: untracked.length,
         unpushedCommits: checkout.unpushedCommits,
       },
+      ...(session !== null && sessionPacked
+        ? {
+            session: {
+              driver: session.driver,
+              ...(session.cliVersion !== undefined ? { cliVersion: session.cliVersion } : {}),
+              cursor: session.cursor,
+            },
+          }
+        : {}),
+      // Too large when it was sized, or when it was read: an unreadable
+      // session is simply left behind.
+      ...(session !== null && (!carriesSession || (sessionBytesRead !== null && !sessionPacked))
+        ? { sessionOmitted: "too_large" as const }
+        : {}),
     };
     const manifestTemp = `${moveManifestPath(dir)}.tmp`;
     yield* fsCall("Couldn't write the packed thread.", async () => {

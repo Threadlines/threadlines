@@ -1050,6 +1050,37 @@ describe("openCodexThread", () => {
     });
   });
 
+  it("resumes a carried rollout by its path in this home", async () => {
+    const payloads: unknown[] = [];
+    const client = {
+      request: <M extends "thread/start" | "thread/resume" | "thread/fork">(
+        method: M,
+        payload: CodexRpc.ClientRequestParamsByMethod[M],
+      ) => {
+        payloads.push(payload);
+        return Effect.succeed(
+          makeThreadOpenResponse("carried-thread") as CodexRpc.ClientRequestResponsesByMethod[M],
+        );
+      },
+    };
+    await Effect.runPromise(
+      openCodexThread({
+        client,
+        threadId: ThreadId.make("thread-1"),
+        runtimeMode: "full-access",
+        cwd: "/tmp/moved",
+        requestedModel: undefined,
+        serviceTier: undefined,
+        resumeThreadId: "carried-thread",
+        resumePath: "/home/b/.codex/sessions/2026/07/15/rollout-x-carried-thread.jsonl",
+      }),
+    );
+    const resumed = payloads[0] as Record<string, unknown>;
+    assert.equal(resumed.threadId, "carried-thread");
+    assert.equal(resumed.path, "/home/b/.codex/sessions/2026/07/15/rollout-x-carried-thread.jsonl");
+    assert.equal(resumed.cwd, "/tmp/moved");
+  });
+
   it("does not fall back to a fresh thread when native resume is required", async () => {
     const calls: string[] = [];
     const client = {
@@ -1828,6 +1859,42 @@ describe("Codex room tools", () => {
       const token = typeof tokenValue === "string" ? tokenValue : "";
       return { runtime, args: (spawned?.args ?? []).map(String), token };
     });
+
+  it("a conversation it couldn't reopen starts fresh and says so, so the thread is given its history", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const { runtime } = yield* spawnRuntime({
+          threadId: ThreadId.make("resume-gone-thread"),
+          serverPort: 0,
+          runtimeMode: "full-access",
+          resumeCursor: { threadId: "019f6910-960c-7d83-87f7-074ab55a95fb" },
+        });
+        const session = yield* runtime.start();
+        assert.equal(session.resumeFailed, true);
+        assert.equal((yield* runtime.getSession).resumeFailed, true);
+        yield* runtime.close;
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer), Effect.timeout("10 seconds")),
+    );
+  });
+
+  it("a rollout carried from another computer that Codex can't read starts fresh and says so", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const { runtime } = yield* spawnRuntime({
+          threadId: ThreadId.make("resume-carried-thread"),
+          serverPort: 0,
+          runtimeMode: "full-access",
+          resumeCursor: {
+            threadId: "019f6910-960c-7d83-87f7-074ab55a95fb",
+            rolloutPath: "/home/sessions/2026/07/15/rollout-x.jsonl",
+          },
+        });
+        const session = yield* runtime.start();
+        assert.equal(session.resumeFailed, true);
+        yield* runtime.close;
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer), Effect.timeout("10 seconds")),
+    );
+  });
 
   it("attaches the room endpoint on the runtime's own credential, which ends with it", async () => {
     await Effect.runPromise(

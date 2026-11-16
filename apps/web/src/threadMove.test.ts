@@ -16,14 +16,17 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   countMoveBatch,
   describeMoveBatchProgress,
+  describeMoveCandidate,
   describePendingMove,
   describeThreadMoveProgress,
+  describeThreadMoveSession,
   formatThreadMoveChanges,
   isThreadMoveOffered,
   isThreadMoveStalled,
   pickDefaultMoveAgent,
   pickDefaultMoveTarget,
   threadMoveAgentSelection,
+  threadMoveSessionOutcome,
 } from "./threadMove";
 
 const MAC_MINI = EnvironmentId.make("environment-mac-mini");
@@ -258,6 +261,40 @@ describe("picking where and with whom", () => {
     expect(
       threadMoveAgentSelection(withSuggestion, { instanceId: "codex", model: "gpt-5-mini" }),
     ).toEqual({ instanceId: "codex", model: "gpt-5-mini" });
+  });
+
+  it("says under the agent whether it keeps its memory, for the agent picked", () => {
+    const withOutcomes = target({
+      sessionOutcomes: [
+        { instanceId: "codex", outcome: "carries" },
+        { instanceId: "big", outcome: "too_large" },
+      ],
+    });
+    const said = (instanceId: string | null) =>
+      describeThreadMoveSession(threadMoveSessionOutcome(withOutcomes, instanceId));
+    expect(said("codex")).toBe("The agent keeps its full memory.");
+    expect(said("big")).toBe("The agent gets a summary (its session is too large to send).");
+    // Another agent, none picked yet, or a computer from before sessions travelled.
+    expect(said("claudeAgent")).toBe("The agent gets a summary of the conversation.");
+    expect(said(null)).toBe("The agent gets a summary of the conversation.");
+
+    // A batch row says it for the computer picked; a refused row says why instead.
+    const row = {
+      threadId: ThreadId.make("thread-1"),
+      sessionOutcomes: [{ environmentId: MAC_MINI, outcome: "carries" as const }],
+    };
+    expect(describeMoveCandidate(row, MAC_MINI)).toEqual({
+      kind: "now",
+      words: "Moves now",
+      session: "The agent keeps its full memory.",
+    });
+    expect(describeMoveCandidate(row, EnvironmentId.make("environment-windows")).session).toBe(
+      "The agent gets a summary of the conversation.",
+    );
+    expect(describeMoveCandidate({ ...row, refusal: "Has a goal set." }, MAC_MINI)).toEqual({
+      kind: "refused",
+      words: "Has a goal set.",
+    });
   });
 });
 

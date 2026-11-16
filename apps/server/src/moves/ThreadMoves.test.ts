@@ -4,6 +4,7 @@ import {
   type OrchestrationThread,
   type PeerDescriptor,
   type PeerMoveState,
+  ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
   type ThreadMovePreview,
@@ -20,6 +21,8 @@ import {
   previewManyThread,
   targetPreviewOf,
 } from "./ThreadMoves.ts";
+import { MOVE_MAX_BYTES, nativeSessionFits } from "./moveExport.ts";
+import { NATIVE_SESSION_MAX_BYTES, type NativeSessionExport } from "../provider/nativeSession.ts";
 
 const THREAD = ThreadId.make("thread-1");
 
@@ -107,6 +110,64 @@ describe("checkMoveTarget", () => {
     // A computer no thread can reach isn't repeated for each thread.
     const gone = targetPreviewOf({ ...target, described: Option.none() }, null);
     expect(previewManyThread(THREAD, { targets: [gone] }, [gone])).toEqual({ threadId: THREAD });
+  });
+
+  it("says per agent whether the thread's session goes with it, in one dialog and in a batch", () => {
+    const peer = {
+      environmentId: MAC_MINI,
+      label: "Mac mini",
+      agents,
+      defaultAgent: claude,
+      projects: [{ canonicalKey: "example.com/repo", name: "Threadlines" }],
+      moves: true,
+      access: "allowed",
+      moveNativeSession: true,
+    } as unknown as PeerDescriptor;
+    const target = { environmentId: MAC_MINI, label: "Mac mini", described: Option.some(peer) };
+    const place = { canonicalKey: "example.com/repo", subdirectory: "", rootPath: "/repo" };
+    const thread = { modelSelection: claude } as OrchestrationThread;
+    const claudeSession = (size: number): NativeSessionExport => ({
+      driver: ProviderDriverKind.make("claudeAgent"),
+      cursor: { resume: "s" },
+      files: [{ relPath: "projects/-r/s.jsonl", absolutePath: "/c/s.jsonl", size }],
+    });
+    const outcomes = (session: NativeSessionExport | null, described = peer) =>
+      targetPreviewOf({ ...target, described: Option.some(described) }, { thread, place, session })
+        .sessionOutcomes;
+
+    // The same driver keeps its memory; another driver gets the summary.
+    expect(outcomes(claudeSession(1024))).toEqual([
+      { instanceId: "mac-claude", outcome: "carries" },
+      { instanceId: "mac-codex", outcome: "summary" },
+    ]);
+    expect(outcomes(claudeSession(NATIVE_SESSION_MAX_BYTES + 1))?.[0]).toEqual({
+      instanceId: "mac-claude",
+      outcome: "too_large",
+    });
+    // No session here, or a computer that can't take one: the summary for every agent.
+    expect(outcomes(null)?.map((entry) => entry.outcome)).toEqual(["summary", "summary"]);
+    const older = { ...peer, moveNativeSession: undefined } as unknown as PeerDescriptor;
+    expect(outcomes(claudeSession(1024), older)?.map((entry) => entry.outcome)).toEqual([
+      "summary",
+      "summary",
+    ]);
+    // A batch row says it for the agent the computer suggests for that thread.
+    const own = targetPreviewOf(target, { thread, place, session: claudeSession(1024) });
+    expect(previewManyThread(THREAD, { targets: [own] }, [own]).sessionOutcomes).toEqual([
+      { environmentId: MAC_MINI, outcome: "carries" },
+    ]);
+    // Both caps: the session itself, and the move with it.
+    expect(nativeSessionFits(NATIVE_SESSION_MAX_BYTES, 0)).toBe(true);
+    expect(nativeSessionFits(NATIVE_SESSION_MAX_BYTES + 1, 0)).toBe(false);
+    expect(nativeSessionFits(10, MOVE_MAX_BYTES - 9)).toBe(false);
+    // The dialog weighs the thread's own changes as the export does.
+    const heavy = targetPreviewOf(target, {
+      thread,
+      place,
+      session: claudeSession(1024),
+      otherBytes: MOVE_MAX_BYTES - 100,
+    });
+    expect(heavy.sessionOutcomes?.[0]).toEqual({ instanceId: "mac-claude", outcome: "too_large" });
   });
 
   it("waits on an unreachable target, whatever the agent", () => {

@@ -23,6 +23,8 @@ import {
   type ThreadMoveNotStartedPayload,
   type ThreadMoveWait,
   type ThreadMoveWaitCode,
+  ThreadNativeSessionFellBackActivityKind,
+  type ThreadNativeSessionFellBackPayload,
   type ThreadPendingMove,
 } from "@threadlines/contracts";
 import { threadPullRequestAutomationArmed } from "@threadlines/shared/linkedPullRequests";
@@ -949,6 +951,7 @@ export function decideThreadImport(
       worktreePath: command.worktreePath,
       movedFrom: command.movedFrom,
       historySeedOwed: true,
+      ...(command.nativeSession !== undefined ? { nativeSession: command.nativeSession } : {}),
       createdAt: command.createdAt,
       updatedAt: command.createdAt,
     },
@@ -997,6 +1000,8 @@ export function decideThreadImport(
           fromLabel: command.movedFrom.label,
           fromThreadId: command.movedFrom.threadId,
           movedAt: command.movedFrom.movedAt,
+          // Which the agent got: its own session, or (absent) a summary.
+          ...(command.nativeSession !== undefined ? { nativeSession: command.nativeSession } : {}),
         },
         turnId: null,
         createdAt: command.createdAt,
@@ -1014,11 +1019,68 @@ export function decideHistorySeedDelivered(
   // Recorded for any thread that moved here, owed or not as this read model
   // has it: the projections agree on where the conversation went.
   if ((thread.movedFrom ?? null) === null) return [];
+  // A carried session's success counts only while it is still the one in
+  // use: one that fell back meanwhile still owes its summary.
+  if (command.nativeSession === "resumed" && thread.nativeSession !== "carried") {
+    return refuse("This thread's agent session is no longer the one it carried.");
+  }
   return [
     {
       ...baseFor(thread.id),
       type: "thread.history-seed-delivered",
-      payload: { threadId: thread.id, messageId: command.messageId, updatedAt: command.createdAt },
+      payload: {
+        threadId: thread.id,
+        messageId: command.messageId,
+        ...(command.nativeSession !== undefined ? { nativeSession: command.nativeSession } : {}),
+        updatedAt: command.createdAt,
+      },
     },
   ];
 }
+
+/**
+ * A moved thread's carried session can't be used here (docs/design/fleet.md,
+ * Part 3d): recorded as fallen back, with the line that says so, and the
+ * conversation stays owed for the next send's summary. Only while it is
+ * `carried`, so a thread falls back once and its message is sent again once.
+ */
+export function decideNativeSessionFallBack(
+  thread: OrchestrationThread,
+  command: CommandOf<"thread.native-session.fall-back">,
+  baseFor: EventBase,
+): ThreadMoveDecision {
+  if (thread.nativeSession !== "carried") {
+    return refuse("This thread has no carried agent session to fall back from.");
+  }
+  const payload: ThreadNativeSessionFellBackPayload = {
+    reason: command.reason,
+    ...(command.resendMessageId !== undefined ? { resendMessageId: command.resendMessageId } : {}),
+  };
+  return [
+    {
+      ...baseFor(thread.id),
+      type: "thread.meta-updated",
+      payload: { threadId: thread.id, nativeSession: "fell_back", updatedAt: command.createdAt },
+    },
+    {
+      ...baseFor(thread.id),
+      type: "thread.activity-appended",
+      payload: {
+        threadId: thread.id,
+        activity: {
+          id: EventId.make(`native-session-fell-back:${thread.id}`),
+          tone: "info",
+          kind: ThreadNativeSessionFellBackActivityKind,
+          summary: NATIVE_SESSION_FELL_BACK_WORDS,
+          payload,
+          turnId: null,
+          createdAt: command.createdAt,
+        },
+      },
+    },
+  ];
+}
+
+/** The timeline's words for a carried session that fell back. */
+export const NATIVE_SESSION_FELL_BACK_WORDS =
+  "Couldn't resume the agent's session here, so it got a summary instead.";

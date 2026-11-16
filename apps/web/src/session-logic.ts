@@ -37,6 +37,7 @@ import {
   type ThreadForkContextPayload,
   type ThreadParticipantId,
   ThreadForkSeedOutcomeActivityKind,
+  ThreadNativeSessionFellBackActivityKind,
   type ThreadForkSeedOutcomePayload,
   type ToolLifecycleItemType,
   type UserInputQuestion,
@@ -598,6 +599,13 @@ export interface MovedInEntry {
   /** The computer it came from, by the name it had then. */
   readonly fromLabel: string;
   readonly movedAt: string;
+  /**
+   * What its agent got here (docs/design/fleet.md, Part 3d): its own session
+   * (`memory`), or a summary of the conversation. `fell_back`: the later
+   * line that says a carried session couldn't be resumed here, so it got a
+   * summary instead.
+   */
+  readonly agentGot: "memory" | "summary" | "fell_back";
 }
 
 /** An MCP app card: the finished tool call whose tool ships the app
@@ -1808,30 +1816,46 @@ export function deriveForkContextEntries(
     .toSorted((left, right) => left.createdAt.localeCompare(right.createdAt));
 }
 
-/** The moved-in boundaries a thread's activities hold: one for a thread that moved here. */
+/**
+ * The moved-in boundaries a thread's activities hold (one for a thread that
+ * moved here), and after it the line that says its carried session fell back.
+ */
 export function deriveMovedInEntries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): MovedInEntry[] {
-  return activities
-    .filter((activity) => activity.kind === THREAD_MOVED_IN_ACTIVITY_KIND)
-    .flatMap((activity) => {
-      const payload = asRecord(activity.payload);
-      const fromLabel = asTrimmedString(payload?.fromLabel);
-      if (!fromLabel) {
-        return [];
-      }
-      return [
-        {
-          id: activity.id,
-          createdAt: activity.createdAt,
-          ...(activity.eventSequence !== undefined
-            ? { eventSequence: activity.eventSequence }
-            : {}),
-          fromLabel,
-          movedAt: asTrimmedString(payload?.movedAt) ?? activity.createdAt,
-        },
-      ];
-    });
+  let boundary: MovedInEntry | undefined;
+  return activities.flatMap((activity): MovedInEntry[] => {
+    const base = {
+      id: activity.id,
+      createdAt: activity.createdAt,
+      ...(activity.eventSequence !== undefined ? { eventSequence: activity.eventSequence } : {}),
+    };
+    if (activity.kind === ThreadNativeSessionFellBackActivityKind) {
+      return boundary === undefined
+        ? []
+        : [
+            {
+              ...base,
+              fromLabel: boundary.fromLabel,
+              movedAt: boundary.movedAt,
+              agentGot: "fell_back",
+            },
+          ];
+    }
+    if (activity.kind !== THREAD_MOVED_IN_ACTIVITY_KIND) return [];
+    const payload = asRecord(activity.payload);
+    const fromLabel = asTrimmedString(payload?.fromLabel);
+    if (!fromLabel) {
+      return [];
+    }
+    boundary = {
+      ...base,
+      fromLabel,
+      movedAt: asTrimmedString(payload?.movedAt) ?? activity.createdAt,
+      agentGot: payload?.nativeSession === "carried" ? "memory" : "summary",
+    };
+    return [boundary];
+  });
 }
 
 interface TurnModelSelection {
@@ -3188,8 +3212,10 @@ export function deriveWorkLogEntries(
     .filter((activity) => activity.kind !== "subagent.result")
     .filter((activity) => activity.kind !== "subagent.metadata")
     .filter((activity) => activity.kind !== "thread.fork.context")
-    // A moved thread's boundary is its own row (deriveMovedInEntries).
+    // A moved thread's boundary is its own row, and so is the line that says
+    // its carried session fell back (deriveMovedInEntries).
     .filter((activity) => activity.kind !== THREAD_MOVED_IN_ACTIVITY_KIND)
+    .filter((activity) => activity.kind !== ThreadNativeSessionFellBackActivityKind)
     .filter((activity) => activity.kind !== "context-window.updated")
     // Account telemetry; belongs in a usage meter, not the work narrative.
     .filter((activity) => activity.kind !== "account.rate-limits.updated")

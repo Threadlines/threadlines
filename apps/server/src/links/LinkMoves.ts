@@ -44,6 +44,8 @@ import {
   type PeerMoveAbortCode,
   type PeerMoveRefusalCode,
   type PeerMoveState,
+  type ProviderInstanceId,
+  type RuntimeMode,
   PEER_MOVE_CHUNK_MAX_BYTES,
   PeerRpcError,
   ThreadId,
@@ -52,6 +54,7 @@ import {
   type ThreadMoveRespondManyResult,
   TurnId,
 } from "@threadlines/contracts";
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
 import * as DateTime from "effect/DateTime";
@@ -75,6 +78,8 @@ import { clampLaunchToCeiling } from "../orchestration/childThreadDecisions.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ProjectionThreadRepository } from "../persistence/Services/ProjectionThreads.ts";
+import { discardSessionFiles, releaseSessionFiles } from "../provider/nativeSession.ts";
+import { ProviderService } from "../provider/Services/ProviderService.ts";
 import { RepositoryIdentityResolver } from "../project/Services/RepositoryIdentityResolver.ts";
 import { RelayDeviceRepository } from "../relay/RelayDeviceRepository.ts";
 import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
@@ -213,6 +218,11 @@ export function moveManifestRefusal(manifest: PeerMoveManifest): string | null {
     if (part.kind === "attachment" && part.attachmentId === undefined) {
       return "an attachment has no id";
     }
+    // Its path only tells the session's files apart; the agent names where they go.
+    if (part.kind === "session" && part.path === undefined) return "a session file has no name";
+  }
+  if (count("session") > 0 !== (manifest.session !== undefined)) {
+    return "its session doesn't match its files";
   }
   return null;
 }
@@ -308,6 +318,7 @@ const make = Effect.gen(function* () {
   const identities = yield* RepositoryIdentityResolver;
   const setupScripts = yield* ProjectSetupScriptRunner;
   const environment = yield* ServerEnvironment;
+  const providers = yield* ProviderService;
   // Read at each use: the computer can be renamed while this runs.
   const ownLabel = environment.currentLabel;
   const pendingHub = yield* PubSub.sliding<void>(1);
@@ -458,12 +469,17 @@ const make = Effect.gen(function* () {
    */
   const cleanUp = (row: LinkMoveRow) =>
     Effect.gen(function* () {
-      let clean = yield* Effect.tryPromise(() =>
-        NodeFs.rm(stagingDir(row), { recursive: true, force: true }),
-      ).pipe(
-        Effect.as(true),
-        Effect.orElseSucceed(() => false),
-      );
+      // A carried agent session first: its record lives in the staging, and
+      // stays there until its files and binding are taken back.
+      const sessionGone = yield* discardCarried(row);
+      let clean =
+        sessionGone &&
+        (yield* Effect.tryPromise(() =>
+          NodeFs.rm(stagingDir(row), { recursive: true, force: true }),
+        ).pipe(
+          Effect.as(true),
+          Effect.orElseSucceed(() => false),
+        ));
       // The repository recorded when the import began (nothing was made in
       // git before that). One deleted since took its refs and worktree list
       // with it; one that is there but can't be read, or can't be told
@@ -1372,6 +1388,120 @@ const make = Effect.gen(function* () {
       return remapped;
     });
 
+  /**
+   * The moved thread's agent session, into the chosen agent's own home, and
+   * the thread's binding to it (docs/design/fleet.md, Part 3d): true when
+   * its first start will resume it. Only an agent of the driver that wrote
+   * it takes it; anything that can't be placed leaves the thread to its
+   * summary, never the move undone. Runs in the commit step, under the
+   * transfer's lock, before the thread exists: a crash in between is redone
+   * by the import's recovery, and the files are named from the session id,
+   * so a retry finds its own.
+   */
+  /** Where a carried session's written files are kept on record, in the move's staging. */
+  const carriedRecordPath = (row: Pick<LinkMoveRow, "transferKey">) =>
+    NodePath.join(stagingDir(row), "carried-session.json");
+
+  const writeCarriedRecord = (row: LinkMoveRow, written: ReadonlyArray<string>) =>
+    Effect.tryPromise(async () => {
+      await NodeFs.mkdir(stagingDir(row), { recursive: true });
+      await NodeFs.writeFile(carriedRecordPath(row), JSON.stringify({ written }));
+    });
+
+  /** The files a carried session wrote, as on record; none when it carried none. */
+  const readCarriedRecord = (row: Pick<LinkMoveRow, "transferKey">) =>
+    Effect.promise(async (): Promise<ReadonlyArray<string> | null> => {
+      try {
+        const parsed: unknown = JSON.parse(await NodeFs.readFile(carriedRecordPath(row), "utf8"));
+        const written = (parsed as { written?: unknown } | null)?.written;
+        return Array.isArray(written) && written.every((entry) => typeof entry === "string")
+          ? written
+          : null;
+      } catch {
+        return null;
+      }
+    });
+
+  /**
+   * Takes back a carried session of a move that didn't land: the files it
+   * wrote (only where its own marker still matches) and its binding. True
+   * once nothing of it is left; the record stays until then.
+   */
+  const discardCarried = (row: LinkMoveRow) =>
+    Effect.gen(function* () {
+      const written = yield* readCarriedRecord(row);
+      if (written === null) return true;
+      const gone = yield* discardSessionFiles(written, row.transferKey);
+      const unbound = yield* providers.forgetNativeSession(row.threadId).pipe(
+        Effect.as(true),
+        Effect.orElseSucceed(() => false),
+      );
+      if (!gone || !unbound) return false;
+      yield* Effect.promise(() => NodeFs.rm(carriedRecordPath(row), { force: true }));
+      return true;
+    });
+
+  const carrySession = (
+    row: LinkMoveRow,
+    instanceId: ProviderInstanceId,
+    runtimeMode: RuntimeMode,
+  ) =>
+    Effect.gen(function* () {
+      const session = row.manifest.session;
+      const worktreePath = row.worktreePath;
+      if (session === undefined || worktreePath === null) return false;
+      const info = yield* providers.getInstanceInfo(instanceId).pipe(Effect.option);
+      if (Option.isNone(info) || info.value.driverKind !== session.driver) return false;
+      const files = yield* Effect.forEach(
+        row.manifest.parts.filter((part) => part.kind === "session"),
+        (part) =>
+          partBytes(row, part).pipe(Effect.map((bytes) => ({ relPath: part.path ?? "", bytes }))),
+      );
+      const imported = yield* providers.importNativeSession({
+        instanceId,
+        cursor: session.cursor,
+        files,
+        worktreePath,
+        transferKey: row.transferKey,
+        // On record before any file is written, so an abort after a crash
+        // partway still finds them (discardCarried only touches its own).
+        journal: (destinations) => Effect.runPromise(writeCarriedRecord(row, destinations)),
+      });
+      if ("refused" in imported) {
+        yield* Effect.logWarning("link move carried no agent session", {
+          transferId: row.transferId,
+          reason: imported.refused,
+        });
+        return false;
+      }
+      // Narrowed to what it really wrote, still before the binding, so an
+      // abort from here on (cleanUp) takes back the files and the binding.
+      yield* writeCarriedRecord(row, imported.written);
+      const adopted = yield* providers
+        .adoptNativeSession({
+          threadId: row.threadId,
+          instanceId,
+          cursor: imported.cursor,
+          runtimeMode,
+        })
+        .pipe(Effect.exit);
+      if (Exit.isFailure(adopted)) {
+        yield* discardCarried(row);
+        return yield* Effect.failCause(adopted.cause);
+      }
+      return true;
+    }).pipe(
+      // Not carried is the summary, never a failed move.
+      Effect.catchCause((cause) =>
+        Cause.hasInterruptsOnly(cause)
+          ? Effect.interrupt
+          : Effect.logWarning("link move couldn't carry the agent session", {
+              transferId: row.transferId,
+              cause,
+            }).pipe(Effect.as(false)),
+      ),
+    );
+
   /** The thread itself, and with it the commit. Waits for the engine's answer without letting go. */
   const commitStage = (row: LinkMoveRow) =>
     Effect.gen(function* () {
@@ -1430,6 +1560,12 @@ const make = Effect.gen(function* () {
       const device = yield* devices
         .getDevice(row.linkDeviceId)
         .pipe(Effect.orElseSucceed(Option.none));
+      // A thread that already landed carried its session then (or didn't):
+      // its agent may have used it since, so it is never written again.
+      const carried =
+        row.manifest.session !== undefined && !(yield* importLanded(row))
+          ? yield* carrySession(row, agent.selection.instanceId, capped.runtimeMode)
+          : false;
       const now = yield* nowIso;
       const dispatched = yield* engine
         .dispatch({
@@ -1453,12 +1589,16 @@ const make = Effect.gen(function* () {
           },
           messages,
           activities,
+          ...(carried ? { nativeSession: "carried" as const } : {}),
           createdAt: now,
         })
         .pipe(Effect.uninterruptible, Effect.exit);
       if (Exit.isFailure(dispatched) && !(yield* importLanded(row))) {
         return yield* stop(`${ownLabel()} couldn't create the thread.`);
       }
+      // Landed: a carried session's files are the thread's now.
+      const carriedFiles = yield* readCarriedRecord(row);
+      if (carriedFiles !== null) yield* releaseSessionFiles(carriedFiles, row.transferKey);
       yield* settleLanded(row).pipe(Effect.ignore);
     });
 

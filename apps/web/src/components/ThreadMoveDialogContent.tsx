@@ -27,6 +27,7 @@ import {
 import { cn } from "../lib/utils";
 import { selectSidebarThreadSummaryByRef, useStore } from "../store";
 import {
+  describeThreadMoveSession,
   describeThreadMoveWaits,
   formatThreadMoveChanges,
   isThreadMoveTargetPickable,
@@ -34,6 +35,7 @@ import {
   pickDefaultMoveTarget,
   threadMoveAgentKey,
   threadMoveAgentSelection,
+  threadMoveSessionOutcome,
   threadMoveStopNowRefusal,
   type ThreadMoveAgentChoice,
 } from "../threadMove";
@@ -281,15 +283,27 @@ export function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThread
                     {target.label} suggests.
                   </p>
                 ) : (
-                  <AgentField
-                    target={target}
-                    agent={agent}
-                    disabled={starting}
-                    onChange={(next) => {
-                      setAgent(next);
-                      setStartError(null);
-                    }}
-                  />
+                  <>
+                    <AgentField
+                      target={target}
+                      agent={agent}
+                      disabled={starting}
+                      onChange={(next) => {
+                        setAgent(next);
+                        setStartError(null);
+                      }}
+                    />
+                    {target.agents.length > 0 ? (
+                      <p
+                        className="text-[12.5px] leading-[18px] text-muted-foreground"
+                        data-testid="thread-move-session"
+                      >
+                        {describeThreadMoveSession(
+                          threadMoveSessionOutcome(target, agentSelection?.instanceId ?? null),
+                        )}
+                      </p>
+                    ) : null}
+                  </>
                 )}
                 {working ? (
                   <MoveWhenField

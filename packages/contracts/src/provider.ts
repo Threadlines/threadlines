@@ -74,6 +74,13 @@ export const ProviderSession = Schema.Struct({
    * the thread's history (see ProviderCommandReactor).
    */
   resumeFailed: Schema.optional(Schema.Boolean),
+  /**
+   * The session reopened the conversation its resume cursor named (set by
+   * ProviderService.startSession). Absent: it started without one, or the
+   * reopen failed (`resumeFailed`). A moved thread's carried session counts
+   * as arrived only on this (docs/design/fleet.md, Part 3d).
+   */
+  resumed: Schema.optional(Schema.Boolean),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   lastError: Schema.optional(TrimmedNonEmptyString),

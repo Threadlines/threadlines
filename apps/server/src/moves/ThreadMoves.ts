@@ -38,6 +38,7 @@ import {
   type ThreadMovePreview,
   type ThreadMovePreviewMany,
   type ThreadMovePreviewManyThread,
+  type ThreadMoveSessionOutcome,
   type ThreadMoveStartInput,
   type ThreadMoveTargetPreview,
 } from "@threadlines/contracts";
@@ -65,6 +66,7 @@ import {
   threadMoveRefusal,
   threadMoveRefusals,
 } from "../orchestration/threadMoveDecisions.ts";
+import type { NativeSessionExport } from "../provider/nativeSession.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
 import { makeThreadMoveContextReader } from "./threadMoveView.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
@@ -74,7 +76,10 @@ import { RepositoryIdentityResolver } from "../project/Services/RepositoryIdenti
 import { type ProjectPlace, resolveProjectPlace } from "../project/projectPlace.ts";
 import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
 import {
+  estimateMoveOtherBytes,
   inspectMoveCheckout,
+  type MoveCheckout,
+  nativeSessionFits,
   movePayloadPath,
   readMoveExport,
   sha256OfFile,
@@ -178,16 +183,42 @@ function suggestAgent(
 }
 
 /**
+ * What moving to `peer` with its agent `instanceId` does with the thread's
+ * own agent session (docs/design/fleet.md, Part 3d): it carries when there
+ * is one, that computer takes sessions, and its agent is the same driver;
+ * a session past 50 MB, or one that would take the move past its 100 MB
+ * with the `otherBytes` it carries besides, stays behind (`too_large`).
+ * Anything else: a summary.
+ */
+export function sessionOutcomeFor(
+  session: NativeSessionExport | null,
+  peer: PeerDescriptor,
+  instanceId: string,
+  otherBytes = 0,
+): ThreadMoveSessionOutcome {
+  if (session === null || peer.moveNativeSession !== true) return "summary";
+  const agent = peer.agents.find((entry) => entry.instanceId === instanceId);
+  if (agent === undefined || agent.driver !== session.driver) return "summary";
+  const bytes = session.files.reduce((sum, file) => sum + file.size, 0);
+  return nativeSessionFits(bytes, otherBytes) ? "carries" : "too_large";
+}
+
+/**
  * What a linked computer means for a move: whether it can be reached, takes
  * moves from here, and has agents. For a thread (`forThread`), also whether
- * it has the thread's project, and the agent to suggest; without one, only
- * what holds for every thread (its default agent is the suggestion).
+ * it has the thread's project, the agent to suggest, and what each agent
+ * would get of its session; without one, only what holds for every thread
+ * (its default agent is the suggestion).
  */
 export function targetPreviewOf(
   target: DescribedTarget,
   forThread: {
     readonly thread: OrchestrationThread;
     readonly place: ProjectPlace | null;
+    /** The thread's own agent session as it would travel; absent: not looked at. */
+    readonly session?: NativeSessionExport | null | undefined;
+    /** What the move carries besides the session (estimateMoveOtherBytes). */
+    readonly otherBytes?: number | undefined;
   } | null,
 ): ThreadMoveTargetPreview {
   const { environmentId, label } = target;
@@ -225,6 +256,14 @@ export function targetPreviewOf(
     forThread !== null
       ? suggestAgent(peer, forThread.thread)
       : ((peer.defaultAgent ?? undefined) as ModelSelection | undefined);
+  const session = forThread?.session;
+  const sessionOutcomes =
+    session === undefined
+      ? []
+      : peer.agents.map((agent) => ({
+          instanceId: agent.instanceId,
+          outcome: sessionOutcomeFor(session, peer, agent.instanceId, forThread?.otherBytes),
+        }));
   return {
     environmentId,
     label: peer.label,
@@ -237,6 +276,7 @@ export function targetPreviewOf(
     agents: peer.agents,
     ...(suggested !== undefined ? { suggestedAgent: suggested } : {}),
     ...(peer.moveStagedApproval === true ? { stagedApproval: true } : {}),
+    ...(sessionOutcomes.length > 0 ? { sessionOutcomes } : {}),
   };
 }
 
@@ -263,6 +303,17 @@ export function previewManyThread(
       },
     ];
   });
+  // A batch moves each thread with the agent its target suggests for it.
+  const sessionOutcomes = shown.targets.flatMap((own) => {
+    const agent = own.suggestedAgent;
+    const outcome =
+      agent === undefined
+        ? undefined
+        : own.sessionOutcomes?.find((entry) => entry.instanceId === agent.instanceId)?.outcome;
+    return outcome === undefined || outcome === "summary"
+      ? []
+      : [{ environmentId: own.environmentId, outcome }];
+  });
   return {
     threadId,
     ...(shown.refusal !== undefined ? { refusal: shown.refusal } : {}),
@@ -270,6 +321,7 @@ export function previewManyThread(
       ? { waitsFor: shown.waitsFor }
       : {}),
     ...(targetRefusals.length > 0 ? { targetRefusals } : {}),
+    ...(sessionOutcomes.length > 0 ? { sessionOutcomes } : {}),
   };
 }
 
@@ -433,6 +485,8 @@ const make = Effect.gen(function* () {
       readonly forQueued?: ThreadMoveRequestId | undefined;
       readonly targets?: ReadonlyArray<DescribedTarget> | undefined;
       readonly withChanges?: boolean;
+      /** Say what each agent would get of the thread's own session (the dialogs). */
+      readonly withSession?: boolean;
     } = {},
   ) =>
     Effect.gen(function* () {
@@ -453,10 +507,12 @@ const make = Effect.gen(function* () {
           : null);
       let changes: ThreadMovePreview["changes"];
       let place: ProjectPlace | null = null;
+      let checkout: MoveCheckout | null = null;
       if (project !== undefined && project.kind !== "general-chat") {
         const source = yield* whereFrom(thread, project.workspaceRoot).pipe(Effect.result);
         if (source._tag === "Success") {
           place = source.success.place;
+          checkout = source.success.checkout;
           if (options.withChanges !== false) {
             const { tracked, untracked } = yield* summarizeMoveChanges(
               git,
@@ -475,7 +531,23 @@ const make = Effect.gen(function* () {
         }
       }
       const described = options.targets ?? (yield* describeTargets);
-      const targets = described.map((target) => targetPreviewOf(target, { thread, place }));
+      // Sizes only: the files are read when the move packs them.
+      const session =
+        options.withSession === true ? yield* providers.exportNativeSession(thread.id) : undefined;
+      // What else the move carries, weighed with the session as the export
+      // weighs it; only worth measuring when there is a session.
+      const otherBytes =
+        session !== undefined && session !== null && checkout !== null
+          ? yield* estimateMoveOtherBytes({
+              git,
+              checkout,
+              thread,
+              attachmentsDir: config.attachmentsDir,
+            })
+          : 0;
+      const targets = described.map((target) =>
+        targetPreviewOf(target, { thread, place, session, otherBytes }),
+      );
       const waitsFor = moveWaitsOf(refusals);
       return {
         thread,
@@ -491,7 +563,7 @@ const make = Effect.gen(function* () {
     });
 
   const preview: ThreadMovesShape["preview"] = (threadId) =>
-    inspect(threadId).pipe(Effect.map((inspected) => inspected.preview));
+    inspect(threadId, { withSession: true }).pipe(Effect.map((inspected) => inspected.preview));
 
   const previewMany: ThreadMovesShape["previewMany"] = (threadIds) =>
     Effect.gen(function* () {
@@ -500,7 +572,7 @@ const make = Effect.gen(function* () {
       const threads = yield* Effect.forEach(
         threadIds,
         (threadId) =>
-          inspect(threadId, { targets: described, withChanges: false }).pipe(
+          inspect(threadId, { targets: described, withChanges: false, withSession: true }).pipe(
             Effect.map(({ preview: shown }) => previewManyThread(threadId, shown, targets)),
             Effect.catch((error) => Effect.succeed({ threadId, refusal: error.detail })),
           ),
@@ -815,6 +887,7 @@ const make = Effect.gen(function* () {
     agent: ModelSelection,
     transferId: ThreadMoveId,
     offered: boolean,
+    targetEnvironmentId: EnvironmentId,
   ) =>
     Effect.gen(function* () {
       const dir = moveDir(transferId);
@@ -847,6 +920,7 @@ const make = Effect.gen(function* () {
         return yield* new ThreadMoveFailure({ reason: "This thread couldn't be read." });
       }
       const { place, checkout } = yield* whereFrom(detail.value, project.workspaceRoot);
+      const nativeSession = yield* sessionToCarry(thread.id, targetEnvironmentId, agent);
       return yield* writeMoveExport({
         git,
         checkout,
@@ -863,7 +937,32 @@ const make = Effect.gen(function* () {
           threadId: thread.id,
         },
         agent,
+        nativeSession,
       });
+    });
+
+  /**
+   * The thread's own agent session to pack, read while the thread is
+   * quiesced (docs/design/fleet.md, Part 3d): only for a target that takes
+   * sessions (an older one refuses the part kind) and an agent there of the
+   * same driver. A target that doesn't answer gets none; the move goes on
+   * with the summary.
+   */
+  const sessionToCarry = (
+    threadId: ThreadId,
+    environmentId: EnvironmentId,
+    agent: ModelSelection,
+  ) =>
+    Effect.gen(function* () {
+      const peer = yield* client
+        .describe(environmentId)
+        .pipe(Effect.timeout(DESCRIBE_WAIT), Effect.option);
+      if (Option.isNone(peer)) return null;
+      const session = yield* providers.exportNativeSession(threadId);
+      // Too large still goes to the export, which leaves it behind and says so.
+      return sessionOutcomeFor(session, peer.value, agent.instanceId) === "summary"
+        ? null
+        : session;
     });
 
   /** Sends the payload from where the other computer's copy ends, reporting every 10%. */
@@ -993,9 +1092,13 @@ const make = Effect.gen(function* () {
             reason: `Couldn't confirm the agent stopped: ${quiesced.reason}.`,
           });
         }
-        const manifest = yield* exportFor(thread, move.agent, transferId, false).pipe(
-          Effect.result,
-        );
+        const manifest = yield* exportFor(
+          thread,
+          move.agent,
+          transferId,
+          false,
+          environmentId,
+        ).pipe(Effect.result);
         if (manifest._tag === "Failure") {
           yield* dispatchStep(threadId, transferId, {
             kind: "abort",
@@ -1074,9 +1177,13 @@ const make = Effect.gen(function* () {
           case "receiving": {
             const thread = (yield* readModel).threads.find((entry) => entry.id === threadId);
             if (thread === undefined) return;
-            const manifest = yield* exportFor(thread, move.agent, transferId, true).pipe(
-              Effect.result,
-            );
+            const manifest = yield* exportFor(
+              thread,
+              move.agent,
+              transferId,
+              true,
+              environmentId,
+            ).pipe(Effect.result);
             if (manifest._tag === "Failure") {
               // The other computer has part of it: drop it there first.
               yield* drop(environmentId, manifest.failure.reason);

@@ -193,6 +193,12 @@ export const PeerDescriptor = Schema.Struct({
    */
   moveStagedApproval: Schema.optional(Schema.Boolean),
   /**
+   * Takes a moved thread's agent session (`session` parts and
+   * PeerMoveManifest.session, docs/design/fleet.md, Part 3d). Absent: an older
+   * server, which refuses a manifest with them, so it is never sent one.
+   */
+  moveNativeSession: Schema.optional(Schema.Boolean),
+  /**
    * Says how the caller's threads here are filed (`filing` on `thread` watch
    * events) and takes `peer.thread.wrap`. Absent: an older server that can't.
    */
@@ -427,20 +433,41 @@ export type PeerReportAckInput = typeof PeerReportAckInput.Type;
  * One piece of a move's payload: a slice of one byte stream, described by
  * where it sits and its hash. `bundle` is the git bundle of the commits the
  * remote doesn't have, `diff` the tracked changes (`git diff --binary`),
- * `file` one untracked file, `attachment` one message attachment.
+ * `file` one untracked file, `attachment` one message attachment, `session`
+ * one file of the agent's own session (PeerMoveManifest.session; only to a
+ * computer that says `moveNativeSession`).
  */
 export const PeerMovePart = Schema.Struct({
-  kind: Schema.Literals(["bundle", "diff", "file", "attachment"]),
+  kind: Schema.Literals(["bundle", "diff", "file", "attachment", "session"]),
   offset: NonNegativeInt,
   length: NonNegativeInt,
   sha256: TrimmedNonEmptyString,
-  /** `file`: its path from the repository root, `/`-separated. */
+  /**
+   * `file`: its path from the repository root, `/`-separated. `session`: its
+   * path in the agent's home on the sending computer, `/`-separated; the
+   * receiving computer only reads it to tell the files apart, and names
+   * every file it writes itself.
+   */
   path: Schema.optional(TrimmedNonEmptyString),
   mode: Schema.optional(Schema.Literals(["file", "executable", "symlink"])),
   /** `attachment`: the id the moved messages use for it on the sending computer. */
   attachmentId: Schema.optional(TrimmedNonEmptyString),
 });
 export type PeerMovePart = typeof PeerMovePart.Type;
+
+/**
+ * A moved thread's agent session: which driver wrote it (`claudeAgent`,
+ * `codex`, `pi`), the CLI version when known, and the driver's own resume
+ * cursor as the sending computer had it. Only a receiving agent of the same
+ * driver takes it; the driver checks the cursor's shape and computes every
+ * path from it.
+ */
+export const PeerMoveSession = Schema.Struct({
+  driver: TrimmedNonEmptyString,
+  cliVersion: Schema.optional(TrimmedNonEmptyString),
+  cursor: Schema.Unknown,
+});
+export type PeerMoveSession = typeof PeerMoveSession.Type;
 
 /** What a moved thread brings and how to rebuild it here. */
 export const PeerMoveManifest = Schema.Struct({
@@ -480,6 +507,14 @@ export const PeerMoveManifest = Schema.Struct({
     untrackedFiles: NonNegativeInt,
     unpushedCommits: NonNegativeInt,
   }),
+  /**
+   * The agent's own session, carried so it resumes where it was
+   * (docs/design/fleet.md, Part 3d): its files are the `session` parts.
+   * Absent: the agent gets a summary of the conversation.
+   */
+  session: Schema.optional(PeerMoveSession),
+  /** Why no session came although one could have: it was too large to send. */
+  sessionOmitted: Schema.optional(Schema.Literal("too_large")),
 });
 export type PeerMoveManifest = typeof PeerMoveManifest.Type;
 
