@@ -1319,8 +1319,6 @@ export function makePiAdapter(options: PiAdapterOptions) {
         if (!proc) return;
         proc.closing = true;
         ctx.proc = undefined;
-        // What Pi started, noted while it still runs (agentProcessLedger).
-        yield* processes.beforeStop(ctx.threadId);
         yield* Scope.close(proc.scope, Exit.void);
       });
 
@@ -2405,6 +2403,7 @@ export function makePiAdapter(options: PiAdapterOptions) {
         })),
       rollbackThread,
       stopAll,
+      noteBeforeStop: processes.beforeStop,
       confirmThreadStopped: processes.confirm,
       streamEvents: Stream.fromPubSub(runtimeEvents),
     } satisfies PiAdapterShape;

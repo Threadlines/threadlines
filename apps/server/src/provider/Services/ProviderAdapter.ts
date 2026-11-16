@@ -470,6 +470,15 @@ export interface ProviderAdapterShape<TError> {
   readonly confirmThreadStopped?: (threadId: ThreadId) => Effect.Effect<ProviderStopConfirmation>;
 
   /**
+   * One session key's runtime is about to stop for a move: note what its
+   * processes started, so `confirmThreadStopped` can find what outlives the
+   * stop (an agent's shell in a process group of its own). ProviderService
+   * calls it only for a thread the session fence holds, so other stops pay
+   * nothing. Reads the process table off the event loop, bounded.
+   */
+  readonly noteBeforeStop?: (sessionKey: ThreadId) => Effect.Effect<void>;
+
+  /**
    * Canonical runtime event stream emitted by this adapter.
    */
   readonly streamEvents: Stream.Stream<ProviderRuntimeEvent>;

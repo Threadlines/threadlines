@@ -3402,6 +3402,8 @@ it.live.skipIf(process.platform === "win32")(
         threadId,
         runtimeMode: "full-access",
       });
+      // A stop for a move notes what it started first (ProviderService does).
+      yield* adapter.noteBeforeStop!(threadId);
       yield* adapter.stopSession(threadId);
       // The stop ended the app server; a shell it put in a group of its own lives on.
       assert.equal(isProcessRunning(agent.shellPid), true);

@@ -3065,12 +3065,13 @@ function makeFencedProviderServiceLayer() {
   const codex = makeFakeCodexAdapter();
   const claude = makeFakeCodexAdapter(CLAUDE_AGENT_DRIVER);
   const fenced = new Set<string>();
+  const noteBeforeStop = vi.fn((_sessionKey: ThreadId): Effect.Effect<void> => Effect.void);
   const confirmThreadStopped = vi.fn(
     (_threadId: ThreadId): Effect.Effect<ProviderStopConfirmation> =>
       Effect.succeed({ confirmed: true }),
   );
   const registry = makeAdapterRegistryMock({
-    [ProviderDriverKind.make("codex")]: { ...codex.adapter, confirmThreadStopped },
+    [ProviderDriverKind.make("codex")]: { ...codex.adapter, confirmThreadStopped, noteBeforeStop },
     // A driver that can't prove its stop.
     [ProviderDriverKind.make("claudeAgent")]: claude.adapter,
   });
@@ -3100,7 +3101,7 @@ function makeFencedProviderServiceLayer() {
       NodeServices.layer,
     ),
   );
-  return { codex, claude, fenced, confirmThreadStopped, layer };
+  return { codex, claude, fenced, confirmThreadStopped, noteBeforeStop, layer };
 }
 
 const fence = makeFencedProviderServiceLayer();
@@ -3157,11 +3158,23 @@ fence.layer("ProviderServiceLive moving threads", (it) => {
       yield* startOn(codexInstanceId, MOVING);
       yield* startOn(codexInstanceId, participantSessionKey(MOVING, ROOM_AGENT));
       yield* startOn(codexInstanceId, other);
+      // The move's fence is up before its sessions stop.
+      fence.fenced.add(MOVING);
+      fence.noteBeforeStop.mockClear();
 
       assert.deepEqual(yield* provider.quiesceThread(MOVING), { confirmed: true });
       const left = (yield* provider.listSessions()).map((session) => session.threadId);
       assert.deepEqual(left, [other]);
       assert.deepEqual(fence.confirmThreadStopped.mock.calls.at(-1), [MOVING]);
+      // What each stopping runtime started was noted first; a stop that isn't
+      // for a move never reads the process table.
+      assert.deepEqual(
+        fence.noteBeforeStop.mock.calls.map(([key]) => key).toSorted(),
+        [MOVING, participantSessionKey(MOVING, ROOM_AGENT)].toSorted(),
+      );
+      yield* provider.stopSession({ threadId: other });
+      assert.equal(fence.noteBeforeStop.mock.calls.length, 2);
+      fence.fenced.delete(MOVING);
 
       // A driver that can't prove its stop never passes for a thread it ran.
       yield* startOn(ProviderInstanceId.make("claudeAgent"), MOVING);

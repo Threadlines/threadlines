@@ -57,6 +57,8 @@ async function harness(options?: { readonly model?: OrchestrationReadModel }) {
     quiesceCalls: 0,
     starts: 0,
     cancels: 0,
+    /** Commands the queue sent that recorded nothing (the real engine refuses them). */
+    emptyCommands: 0,
     /** Runs right before a start, as if a provider turn slipped in. */
     beforeStart: null as null | (() => Promise<void>),
   };
@@ -66,9 +68,15 @@ async function harness(options?: { readonly model?: OrchestrationReadModel }) {
       const decided = yield* decideOrchestrationCommand({ command, readModel: model }).pipe(
         Effect.mapError((error) => new ThreadMoveError({ detail: error.message })),
       );
-      for (const planned of Array.isArray(decided) ? decided : [decided]) {
+      const planned = Array.isArray(decided) ? decided : [decided];
+      // As the real engine: a command that records nothing is refused.
+      if (planned.length === 0) {
+        state.emptyCommands += 1;
+        return yield* new ThreadMoveError({ detail: "Command produced no events." });
+      }
+      for (const next of planned) {
         sequence += 1;
-        const event = { ...planned, sequence } as OrchestrationEvent;
+        const event = { ...next, sequence } as OrchestrationEvent;
         model = yield* projectEvent(model, event).pipe(Effect.orDie);
         yield* PubSub.publish(events, event);
         if (event.type === "thread.session-stop-requested" && state.stopsLand) {
@@ -257,6 +265,8 @@ describe("MoveQueue", () => {
     expect(h.thread().pendingMove ?? null).toBeNull();
     expect(h.thread().move?.queuedRequestId).toBeDefined();
     expect(h.state.quiesceCalls).toBeGreaterThan(0);
+    // It never sent a command that would record nothing.
+    expect(h.state.emptyCommands).toBe(0);
     await h.close();
   });
 
@@ -326,6 +336,8 @@ describe("MoveQueue", () => {
     h.state.online = true;
     await h.linkChanged();
     await waitFor(() => (h.thread().move ?? null) !== null, "the move to start on reconnect");
+    // Retrying the same hold sent nothing the engine would refuse.
+    expect(h.state.emptyCommands).toBe(0);
     await h.close();
   });
 

@@ -4550,8 +4550,6 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     }
     session.stopped = true;
     sessions.delete(session.threadId);
-    // What the app-server started, noted while it still runs (agentProcessLedger).
-    yield* processes.beforeStop(session.threadId);
     yield* session.runtime.close.pipe(Effect.ignore);
     yield* Effect.ignore(Scope.close(session.scope, Exit.void));
     if (options?.interruptEventFiber !== false) {
@@ -4633,6 +4631,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     listSessions,
     hasSession,
     stopAll,
+    noteBeforeStop: processes.beforeStop,
     confirmThreadStopped: processes.confirm,
     get streamEvents() {
       return Stream.fromQueue(runtimeEventQueue);

@@ -35,6 +35,7 @@ import {
   type ThreadMoveRetryInput,
   type ThreadMoveUnqueueInput,
   type ThreadMoveWait,
+  type ThreadPendingMove,
 } from "@threadlines/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -52,6 +53,7 @@ import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSna
 import {
   firstMoveBlock,
   moveWaitsOf,
+  sameMoveStatus,
   type ThreadMoveRefusalEntry,
   threadMoveRefusals,
 } from "../orchestration/threadMoveDecisions.ts";
@@ -154,13 +156,19 @@ export const makeMoveQueue = (
     const commandId = (requestId: string, step: string) =>
       CommandId.make(`server:thread-move-queue:${requestId}:${step}:${randomUUID()}`);
 
+    /**
+     * Says what the move waits for and what holds it, when that changed: the
+     * engine refuses a command that records nothing.
+     */
     const report = (
       threadId: ThreadId,
-      requestId: ThreadMoveRequestId,
+      pending: ThreadPendingMove,
       waitsFor: ReadonlyArray<ThreadMoveWait>,
       hold: ThreadMoveHold | null,
     ) =>
       Effect.gen(function* () {
+        if (sameMoveStatus(pending, waitsFor, hold)) return;
+        const requestId = pending.requestId;
         yield* dispatchIgnoringRefusal({
           type: "thread.move.queue-status",
           commandId: commandId(requestId, "status"),
@@ -296,18 +304,18 @@ export const makeMoveQueue = (
     /** Reports what it waits for, or ends it when something only the user can clear stands in the way. */
     const settleRefusals = (
       threadId: ThreadId,
-      requestId: ThreadMoveRequestId,
+      pending: ThreadPendingMove,
       refusals: ReadonlyArray<ThreadMoveRefusalEntry>,
     ) =>
       Effect.gen(function* () {
         const block = firstMoveBlock(refusals);
         if (block !== null) {
           const gone = block.code === "archived" || block.code === "deleted";
-          yield* end(threadId, requestId, gone ? "gone" : "blocked", block.words);
+          yield* end(threadId, pending.requestId, gone ? "gone" : "blocked", block.words);
           return true;
         }
         if (refusals.length > 0) {
-          yield* report(threadId, requestId, moveWaitsOf(refusals), null);
+          yield* report(threadId, pending, moveWaitsOf(refusals), null);
           return true;
         }
         return false;
@@ -322,13 +330,11 @@ export const makeMoveQueue = (
         yield* track(threadId, pending.requestId);
         const requestId = pending.requestId;
         // From the thread alone first: while it works, nothing else needs reading.
-        if (yield* settleRefusals(threadId, requestId, localRefusals(thread))) return;
+        if (yield* settleRefusals(threadId, pending, localRefusals(thread))) return;
         const model = yield* deps.readModel;
         const current = model.threads.find((candidate) => candidate.id === threadId) ?? thread;
-        if (yield* settleRefusals(threadId, requestId, threadMoveRefusals(model, current))) return;
-        if ((pending.waitsFor ?? []).length > 0) {
-          yield* report(threadId, requestId, [], pending.hold ?? null);
-        }
+        if (yield* settleRefusals(threadId, pending, threadMoveRefusals(model, current))) return;
+        yield* report(threadId, pending, [], pending.hold ?? null);
 
         // The barrier: the fence goes up and its sessions stop.
         if (pending.stage === "waiting" || !sessionStopped(thread)) {
@@ -353,7 +359,9 @@ export const makeMoveQueue = (
         // Every driver proves its agent's processes are gone.
         const confirmation = yield* deps.quiesce(threadId);
         if (!confirmation.confirmed) {
-          yield* report(threadId, requestId, [], {
+          const latest = (yield* deps.readThread(threadId))?.pendingMove ?? null;
+          if (latest === null || latest.requestId !== requestId) return;
+          yield* report(threadId, latest, [], {
             kind: "stop_unconfirmed",
             words: `Couldn't confirm the agent stopped: ${confirmation.reason}.`,
           });
@@ -365,7 +373,7 @@ export const makeMoveQueue = (
           entry.again = true;
           return;
         }
-        if (yield* settleRefusals(threadId, requestId, localRefusals(after))) return;
+        if (yield* settleRefusals(threadId, after.pendingMove, localRefusals(after))) return;
         if (after.pendingMove.stage !== "quiescing" || !sessionStopped(after)) {
           // The stop is still landing in the projection; its event looks again.
           return yield* schedule(threadId, retryDelay(0));
@@ -381,7 +389,7 @@ export const makeMoveQueue = (
             yield* forget(threadId);
             return;
           case "unreachable":
-            yield* report(threadId, requestId, [], {
+            yield* report(threadId, after.pendingMove, [], {
               kind: "target_unreachable",
               words: outcome.words,
             });

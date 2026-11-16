@@ -6151,6 +6151,7 @@ describe("ClaudeAdapterLive", () => {
             provider: ProviderDriverKind.make("claudeAgent"),
             runtimeMode: "full-access",
           });
+          yield* adapter.noteBeforeStop!(THREAD_ID);
           yield* adapter.stopSession(THREAD_ID);
           return yield* adapter.confirmThreadStopped!(THREAD_ID);
         }).pipe(Effect.provideService(Random.Random, makeDeterministicRandomService()));

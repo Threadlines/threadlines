@@ -451,6 +451,8 @@ it.live.skipIf(isWindows)(
         }),
       );
 
+      // A stop for a move notes what it started first (ProviderService does).
+      yield* adapter.noteBeforeStop!(threadId);
       yield* adapter.stopSession(threadId);
       // The stop ended the agent's own process group; the shell lives on.
       assert.isTrue(isProcessRunning(shellPid));

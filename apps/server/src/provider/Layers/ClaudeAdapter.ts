@@ -8387,8 +8387,6 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     if (context.stopped) return;
 
     context.stopped = true;
-    // What Claude Code started, noted while it still runs (agentProcessLedger).
-    yield* processes.beforeStop(context.session.threadId);
     // First, so nothing this runtime left running can use its tools again.
     if (context.mcpCredentialGeneration !== undefined) {
       yield* mcpSessionRegistry.revoke(context.session.threadId, context.mcpCredentialGeneration);
@@ -10975,6 +10973,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     listSessions,
     hasSession,
     stopAll,
+    noteBeforeStop: processes.beforeStop,
     confirmThreadStopped: (threadId) =>
       [...unreportedProcesses].some((key) => parseSessionKey(key).threadId === threadId)
         ? Effect.succeed({

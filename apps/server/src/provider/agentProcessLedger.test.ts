@@ -40,7 +40,7 @@ describe.skipIf(process.platform === "win32")("agent process ledger", () => {
             ...realProcessProbe,
             exists: () => true,
             signal: () => {},
-            descendants: () => [],
+            descendants: () => Effect.succeed([]),
           },
         });
         yield* ledger.track(THREAD, { pid: 424242, exited: Effect.never });

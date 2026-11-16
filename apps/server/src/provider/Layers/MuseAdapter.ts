@@ -2035,8 +2035,6 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
         if (!state) return;
         state.closing = true;
         ctx.host = undefined;
-        // What the host started, noted while it still runs (agentProcessLedger).
-        yield* processes.beforeStop(ctx.threadId);
         yield* Scope.close(state.scope, Exit.void);
       });
 
@@ -2895,6 +2893,7 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
       rollbackThread,
       readSubagentTranscript,
       stopAll,
+      noteBeforeStop: processes.beforeStop,
       confirmThreadStopped: processes.confirm,
       streamEvents: Stream.fromPubSub(runtimeEvents),
     } satisfies MuseAdapterShape;

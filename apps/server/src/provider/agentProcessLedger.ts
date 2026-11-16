@@ -15,9 +15,9 @@
  * exited after its whole tree was killed (`taskkill /T`), which can miss a
  * process that left the tree.
  */
-import { spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 
-import { listDescendantProcessIds } from "@threadlines/shared/processTree";
+import { listDescendantProcessIdsAsync } from "@threadlines/shared/processTree";
 import { parseSessionKey } from "@threadlines/shared/threadParticipants";
 import type { ThreadId } from "@threadlines/contracts";
 import * as Duration from "effect/Duration";
@@ -46,11 +46,17 @@ export interface ProcessProbe {
   /** The process (or, with a negative pid, any process of the group) still exists. */
   readonly exists: (pid: number) => boolean;
   readonly signal: (pid: number, signal: NodeJS.Signals) => void;
-  /** Every live descendant, from one snapshot of the process table. */
-  readonly descendants: (pid: number) => ReadonlyArray<number>;
+  /**
+   * Every live descendant, from one snapshot of the process table, read off
+   * the event loop. Null when the table couldn't be read in time.
+   */
+  readonly descendants: (pid: number) => Effect.Effect<ReadonlyArray<number> | null>;
   /** Windows: kills the process and its tree. */
-  readonly killTree: (pid: number) => void;
+  readonly killTree: (pid: number) => Effect.Effect<void>;
 }
+
+/** How long one look at the process table, or one tree kill, may take. */
+const PROCESS_TABLE_TIMEOUT_MS = 2_000;
 
 export const realProcessProbe: ProcessProbe = {
   platform: process.platform,
@@ -70,13 +76,20 @@ export const realProcessProbe: ProcessProbe = {
       // Already gone.
     }
   },
-  descendants: listDescendantProcessIds,
-  killTree: (pid) => {
-    spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], {
-      stdio: "ignore",
-      windowsHide: true,
-    });
-  },
+  descendants: (pid) =>
+    Effect.promise(() => listDescendantProcessIdsAsync(pid, PROCESS_TABLE_TIMEOUT_MS)),
+  killTree: (pid) =>
+    Effect.promise(
+      () =>
+        new Promise<void>((resolve) => {
+          execFile(
+            "taskkill",
+            ["/pid", String(pid), "/T", "/F"],
+            { timeout: PROCESS_TABLE_TIMEOUT_MS, windowsHide: true },
+            () => resolve(),
+          );
+        }),
+    ),
 };
 
 /**
@@ -101,9 +114,11 @@ export interface AgentProcessLedger {
   /** A process started for `sessionKey`. Forgotten once it and all it started are gone. */
   readonly track: (sessionKey: ThreadId, agent: TrackedAgentProcess) => Effect.Effect<void>;
   /**
-   * The driver is about to stop `sessionKey`'s runtime: note what its
-   * processes started, while they can still be told apart from anyone
-   * else's (once a process dies its children belong to pid 1).
+   * `sessionKey`'s runtime is about to stop for a move (ProviderService asks,
+   * only for a thread its session fence holds): note what its processes
+   * started, while they can still be told apart from anyone else's (once a
+   * process dies its children belong to pid 1). Reads the process table off
+   * the event loop, for at most 2 seconds.
    */
   readonly beforeStop: (sessionKey: ThreadId) => Effect.Effect<void>;
   /** Everything tracked for `threadId`'s session keys is gone, or why that can't be said. */
@@ -130,8 +145,11 @@ interface Entry {
   readonly exited: Effect.Effect<void>;
   readonly ownGroup: boolean;
   leaderGone: boolean;
-  /** What it had started when its stop began, and when that was noted. */
-  noted: ReadonlyArray<number>;
+  /**
+   * What it had started when its stop began, and when that was noted. Null:
+   * the process table couldn't be read then, so what it left can't be known.
+   */
+  noted: ReadonlyArray<number> | null;
   notedAt: number;
 }
 
@@ -155,7 +173,7 @@ export const makeAgentProcessLedger = (
       posix && entry.ownGroup
         ? probe.exists(-entry.pid)
         : !entry.leaderGone && probe.exists(entry.pid);
-    const notedAlive = (entry: Entry) => entry.noted.filter((pid) => probe.exists(pid));
+    const notedAlive = (entry: Entry) => (entry.noted ?? []).filter((pid) => probe.exists(pid));
     const settled = (entry: Entry) =>
       entry.leaderGone && !groupAlive(entry) && notedAlive(entry).length === 0;
 
@@ -186,13 +204,17 @@ export const makeAgentProcessLedger = (
       });
 
     const beforeStop: AgentProcessLedger["beforeStop"] = (sessionKey) =>
-      Effect.sync(() => {
-        for (const entry of entries) {
-          if (entry.sessionKey !== sessionKey || entry.leaderGone) continue;
-          entry.noted = probe.descendants(entry.pid);
-          entry.notedAt = Date.now();
-        }
-      });
+      Effect.forEach(
+        [...entries].filter((entry) => entry.sessionKey === sessionKey && !entry.leaderGone),
+        (entry) =>
+          probe.descendants(entry.pid).pipe(
+            Effect.map((noted) => {
+              entry.noted = noted;
+              entry.notedAt = Date.now();
+            }),
+          ),
+        { discard: true, concurrency: "unbounded" },
+      );
 
     /** Waits for one tracked process and what it left; the problems that remain. */
     const settle = (entry: Entry) =>
@@ -201,7 +223,7 @@ export const makeAgentProcessLedger = (
         if (Option.isNone(yield* entry.exited.pipe(Effect.timeoutOption(exitWait)))) {
           if (posix && entry.ownGroup) probe.signal(-entry.pid, "SIGKILL");
           else if (posix) probe.signal(entry.pid, "SIGKILL");
-          else probe.killTree(entry.pid);
+          else yield* probe.killTree(entry.pid);
           if (Option.isNone(yield* entry.exited.pipe(Effect.timeoutOption(settleWait)))) {
             problems.push(`its process ${entry.pid} didn't exit`);
             return problems;
@@ -223,6 +245,9 @@ export const makeAgentProcessLedger = (
         }
         if (groupAlive(entry)) {
           problems.push(`processes in its process group ${entry.pid} are still running`);
+        }
+        if (entry.noted === null) {
+          problems.push("the process list couldn't be read when it stopped");
         }
         const left = notedAlive(entry);
         if (left.length > 0) {

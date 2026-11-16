@@ -2587,6 +2587,15 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         lastResumeCursor = (yield* routed.adapter.listSessions()).find(
           (session) => session.threadId === routed.threadId,
         )?.resumeCursor;
+        // A thread the session fence holds is stopping for a move: what its
+        // agent started is noted first, so the move can prove it gone
+        // (quiesceThread). Every other stop skips the process table.
+        if (
+          routed.adapter.noteBeforeStop !== undefined &&
+          (yield* admission.refusal(parseSessionKey(routed.threadId).threadId)) !== null
+        ) {
+          yield* routed.adapter.noteBeforeStop(routed.threadId);
+        }
         yield* routed.adapter.stopSession(routed.threadId);
       }
       // A side answer's runtime is disposable: nothing ever resumes it, so

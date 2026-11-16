@@ -1,5 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 
 /**
  * Live descendant pids of a process (children, grandchildren, …) from a
@@ -19,7 +19,33 @@ export function listDescendantProcessIds(rootPid: number): number[] {
   } catch {
     return [];
   }
+  return descendantsFromTable(table, rootPid);
+}
 
+/**
+ * listDescendantProcessIds without blocking the event loop: `ps` runs as a
+ * child process, given at most `timeoutMs`. Null when the table couldn't be
+ * read (it timed out or failed); empty on Windows, which has no `ps`.
+ */
+export function listDescendantProcessIdsAsync(
+  rootPid: number,
+  timeoutMs: number,
+): Promise<number[] | null> {
+  if (process.platform === "win32") return Promise.resolve([]);
+  return new Promise((resolve) => {
+    execFile(
+      "ps",
+      ["-eo", "pid=,ppid="],
+      { encoding: "utf8", timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 },
+      (error, stdout) => {
+        resolve(error === null ? descendantsFromTable(stdout, rootPid) : null);
+      },
+    );
+  });
+}
+
+/** The descendants of `rootPid` in a `ps -eo pid=,ppid=` table. */
+export function descendantsFromTable(table: string, rootPid: number): number[] {
   const childrenByParent = new Map<number, number[]>();
   for (const line of table.split("\n")) {
     const match = /^\s*(\d+)\s+(\d+)\s*$/.exec(line);

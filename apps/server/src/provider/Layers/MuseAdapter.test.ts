@@ -252,6 +252,8 @@ describe("MuseAdapter", () => {
         const agent = yield* startTestAgentProcess;
         const { adapter, threadId, start } = yield* setup({ agent });
         yield* start();
+        // A stop for a move notes what the host started first (ProviderService does).
+        yield* adapter.noteBeforeStop!(threadId);
         yield* adapter.stopSession(threadId);
         // The host is gone; a shell it put in a group of its own lives on.
         expect(isProcessRunning(agent.shellPid)).toBe(true);

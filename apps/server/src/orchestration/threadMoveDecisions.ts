@@ -18,10 +18,12 @@ import {
   type OrchestrationReadModel,
   type OrchestrationThread,
   type ThreadId,
+  type ThreadMoveHold,
   ThreadMoveNotStartedActivityKind,
   type ThreadMoveNotStartedPayload,
   type ThreadMoveWait,
   type ThreadMoveWaitCode,
+  type ThreadPendingMove,
 } from "@threadlines/contracts";
 import { threadPullRequestAutomationArmed } from "@threadlines/shared/linkedPullRequests";
 import {
@@ -652,11 +654,27 @@ export function decideMoveQuiesce(
   ];
 }
 
-const sameWaits = (left: ReadonlyArray<ThreadMoveWait>, right: ReadonlyArray<ThreadMoveWait>) =>
-  left.length === right.length &&
-  left.every(
-    (entry, index) => entry.code === right[index]?.code && entry.words === right[index].words,
+/**
+ * Whether a queued move already says it waits for `waitsFor` and is held by
+ * `hold`: a status that would change nothing isn't sent or recorded.
+ */
+export function sameMoveStatus(
+  pending: ThreadPendingMove,
+  waitsFor: ReadonlyArray<ThreadMoveWait>,
+  hold: ThreadMoveHold | null,
+): boolean {
+  const shown = pending.waitsFor ?? [];
+  const held = pending.hold ?? null;
+  return (
+    shown.length === waitsFor.length &&
+    shown.every(
+      (entry, index) =>
+        entry.code === waitsFor[index]?.code && entry.words === waitsFor[index].words,
+    ) &&
+    held?.kind === hold?.kind &&
+    held?.words === hold?.words
   );
+}
 
 /** What the queued move waits for now, and what holds it; unchanged is no news. */
 export function decideMoveQueueStatus(
@@ -665,15 +683,7 @@ export function decideMoveQueueStatus(
   baseFor: EventBase,
 ): ThreadMoveDecision {
   const pending = currentPendingMove(thread, command.requestId);
-  if (pending === null) return [];
-  const hold = pending.hold ?? null;
-  if (
-    sameWaits(pending.waitsFor ?? [], command.waitsFor) &&
-    hold?.kind === command.hold?.kind &&
-    hold?.words === command.hold?.words
-  ) {
-    return [];
-  }
+  if (pending === null || sameMoveStatus(pending, command.waitsFor, command.hold)) return [];
   return [
     {
       ...baseFor(thread.id),

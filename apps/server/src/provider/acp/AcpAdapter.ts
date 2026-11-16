@@ -1011,9 +1011,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         if (ctx.notificationFiber) {
           yield* Fiber.interrupt(ctx.notificationFiber);
         }
-        // What the agent started (Grok's shells live in process groups of
-        // their own), noted while it still runs (agentProcessLedger).
-        yield* processes.beforeStop(ctx.threadId);
+
         yield* Effect.ignore(Scope.close(ctx.scope, Exit.void));
         sessions.delete(ctx.threadId);
         yield* offerRuntimeEvent({
@@ -2462,6 +2460,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
       listSessions,
       hasSession,
       stopAll,
+      noteBeforeStop: processes.beforeStop,
       confirmThreadStopped: processes.confirm,
       streamEvents: Stream.fromPubSub(runtimeEventPubSub),
     } satisfies AcpAdapterShape;
