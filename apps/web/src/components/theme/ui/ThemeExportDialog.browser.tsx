@@ -35,10 +35,10 @@ function catchExports() {
 }
 
 describe("ThemeExportDialog", () => {
-  afterEach(() => {
+  afterEach(async () => {
     vi.restoreAllMocks();
     localStorage.removeItem("threadlines:theme-export-credits");
-    resetTestPage();
+    await resetTestPage();
   });
 
   it("writes a file without the thread or the prompt, with the credit given, and remembers it", async () => {

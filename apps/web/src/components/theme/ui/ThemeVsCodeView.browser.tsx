@@ -81,10 +81,10 @@ vi.mock("~/themeLibrary/themeVsCode", () => ({
 const { ThemeVsCodeView } = await import("./ThemeVsCodeView");
 
 describe("ThemeVsCodeView", () => {
-  afterEach(() => {
+  afterEach(async () => {
     vi.clearAllMocks();
     shown = pack;
-    resetTestPage();
+    await resetTestPage();
   });
 
   it("tries the one theme picked, adds several straight to the library, and says what can't come over", async () => {
