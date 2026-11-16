@@ -31,6 +31,7 @@ import { shortcutLabelForCommand } from "../../keybindings";
 import { useComposerDraftStore, type DraftId } from "../../composerDraftStore";
 import { useServerKeybindings } from "../../rpc/serverState";
 import {
+  type AppState,
   selectProjectsAcrossEnvironments,
   selectSidebarThreadsAcrossEnvironments,
   useStore,
@@ -232,43 +233,64 @@ function useDestinationAttention(): {
   /** Whether any general chat holds a result nobody has seen. */
   readonly chatsUnread: boolean;
 } {
-  const threads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
-  const projects = useStore(useShallow(selectProjectsAcrossEnvironments));
   const seenSources = useThreadSeenSources();
   const pendingLinkRequestCount = usePendingLinkRequests().length;
-  return useMemo(() => {
-    const generalChatProjectKeys = new Set(
-      projects
-        .filter((project) => project.kind === "general-chat")
-        .map((project) => scopedProjectKey(scopeProjectRef(project.environmentId, project.id))),
-    );
-    const threadAttention: Array<ThreadAttention | null> = [];
-    const chatAttention: Array<ThreadAttention | null> = [];
-    let chatsUnread = false;
-    for (const thread of threads) {
-      if (thread.archivedAt !== null) continue;
-      const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
-      const { lastVisitedAt, status } = resolveSeenThreadStatus(thread, threadKey, seenSources);
-      const attention = resolveThreadAttention(
-        { ...thread, ...(lastVisitedAt !== undefined ? { lastVisitedAt } : {}) },
-        status,
-      );
-      const isGeneralChat = generalChatProjectKeys.has(
-        scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
-      );
-      (isGeneralChat ? chatAttention : threadAttention).push(attention);
-      if (isGeneralChat && isUnreadResultStatus(status)) chatsUnread = true;
-    }
-    const threadCounts = countThreadAttention(threadAttention);
-    return {
-      threads:
-        pendingLinkRequestCount === 0
-          ? threadCounts
-          : { ...threadCounts, needsYou: threadCounts.needsYou + pendingLinkRequestCount },
-      chats: countThreadAttention(chatAttention),
-      chatsUnread,
-    };
-  }, [pendingLinkRequestCount, projects, seenSources, threads]);
+  // Counted inside the store read, so only a changed count redraws the rail:
+  // a streaming thread changes its sidebar row many times a second.
+  const counts = useStore(
+    useShallow(
+      useCallback(
+        (state: AppState) => {
+          const generalChatProjectKeys = new Set(
+            selectProjectsAcrossEnvironments(state)
+              .filter((project) => project.kind === "general-chat")
+              .map((project) =>
+                scopedProjectKey(scopeProjectRef(project.environmentId, project.id)),
+              ),
+          );
+          const threadAttention: Array<ThreadAttention | null> = [];
+          const chatAttention: Array<ThreadAttention | null> = [];
+          let chatsUnread = false;
+          for (const thread of selectSidebarThreadsAcrossEnvironments(state)) {
+            if (thread.archivedAt !== null) continue;
+            const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+            const { lastVisitedAt, status } = resolveSeenThreadStatus(
+              thread,
+              threadKey,
+              seenSources,
+            );
+            const attention = resolveThreadAttention(
+              { ...thread, ...(lastVisitedAt !== undefined ? { lastVisitedAt } : {}) },
+              status,
+            );
+            const isGeneralChat = generalChatProjectKeys.has(
+              scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
+            );
+            (isGeneralChat ? chatAttention : threadAttention).push(attention);
+            if (isGeneralChat && isUnreadResultStatus(status)) chatsUnread = true;
+          }
+          const threadCounts = countThreadAttention(threadAttention);
+          const chatCounts = countThreadAttention(chatAttention);
+          return {
+            threadsNeedYou: threadCounts.needsYou + pendingLinkRequestCount,
+            threadsWorking: threadCounts.working,
+            chatsNeedYou: chatCounts.needsYou,
+            chatsWorking: chatCounts.working,
+            chatsUnread,
+          };
+        },
+        [pendingLinkRequestCount, seenSources],
+      ),
+    ),
+  );
+  return useMemo(
+    () => ({
+      threads: { needsYou: counts.threadsNeedYou, working: counts.threadsWorking },
+      chats: { needsYou: counts.chatsNeedYou, working: counts.chatsWorking },
+      chatsUnread: counts.chatsUnread,
+    }),
+    [counts],
+  );
 }
 
 function describeWorking(count: number): string | null {

@@ -1431,6 +1431,64 @@ describe("decider rooms", () => {
         expect(Exit.isFailure(await decide(revert, model))).toBe(true);
       });
 
+      it("lets the user accept an invite while another review runs, and starts it when that one settles", async () => {
+        let model = plainThread();
+        const first = invite();
+        model = await apply(model, await decideEvents(first, model));
+        model = await apply(model, await decideEvents(respond(first.requestId, "review"), model));
+
+        const secondGuestId = ThreadParticipantId.make("7e6f5a4b-3c2d-4e1f-8a9b-0c1d2e3f4a5b");
+        const opus = (level: string) => ({
+          handle: "Opus 5.5",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("claudeAgent"),
+            model: "claude-opus-5-5",
+            options: [{ id: "effort", value: level }],
+          },
+        });
+        const second = {
+          ...invite({ guest: opus("high") }),
+          to: { participantId: secondGuestId },
+        };
+        model = await apply(model, await decideEvents(second, model));
+        model = await apply(model, await decideEvents(respond(second.requestId, "review"), model));
+        // Asked again at another level while the accepted one waits.
+        const third = { ...invite({ guest: opus("low") }), to: { participantId: secondGuestId } };
+        model = await apply(model, await decideEvents(third, model));
+        let thread = threadOf(model);
+        // The first review keeps running; the second waits its turn.
+        expect(thread.sideTurn).toMatchObject({ participantId: guestId });
+        expect(thread.agentRequests.open).toMatchObject([
+          { requestId: first.requestId, status: "running" },
+          { requestId: second.requestId, status: "queued" },
+          { requestId: third.requestId, status: "awaiting_user" },
+        ]);
+        expect(
+          thread.messages.find((message) => message.id === second.message.messageId),
+        ).toMatchObject({ invite: { choice: "review", automatic: false } });
+
+        model = await answered(model, "The backoff never caps.");
+        thread = threadOf(model);
+        // It starts at the level the user accepted, not the later one.
+        expect(thread.sideTurn).toMatchObject({
+          participantId: secondGuestId,
+          kind: "review",
+          requestId: second.requestId,
+          modelSelection: opus("high").modelSelection,
+        });
+        expect(thread.agentRequests.open).toMatchObject([
+          { requestId: second.requestId, status: "running" },
+          { requestId: third.requestId, status: "awaiting_user" },
+        ]);
+        expect(
+          thread.messages.find((message) => message.id === thread.sideTurn?.messageId),
+        ).toMatchObject({ requestKind: "review", reviewInput: second.reviewInput });
+        // The first review still goes back to the agent that asked.
+        expect(thread.queuedFollowUps).toMatchObject([
+          { text: "The backoff never caps.", requestId: first.requestId },
+        ]);
+      });
+
       it("invites an earlier guest again at the reasoning the new invite names", async () => {
         const astra = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-astra" };
         const model = readModel({

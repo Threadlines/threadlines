@@ -1,7 +1,7 @@
 import { EMPTY_CHILD_REQUEST_STATE, type ScopedThreadRef } from "@threadlines/contracts";
 import { scopedThreadKey, scopeProjectRef, scopeThreadRef } from "@threadlines/client-runtime";
 import { childAttachRefusal } from "@threadlines/shared/childThreads";
-import { useCallback } from "react";
+import { useCallback, useMemo } from "react";
 
 import {
   attachedParentKeyOf,
@@ -409,5 +409,10 @@ export function useThreadMenu() {
     [archiveThread, confirmArchive, confirmDelete, deleteThread, pinThread, unpinThread],
   );
 
-  return { describe, run, open, openSelection };
+  // One object while its functions hold, so the rows it is handed to through
+  // the sidebar's menu handlers can skip their redraws.
+  return useMemo(
+    () => ({ describe, run, open, openSelection }),
+    [describe, run, open, openSelection],
+  );
 }

@@ -1,5 +1,5 @@
 ---
-import { getCollection } from "astro:content";
+import { getPublishedChangelog } from "../lib/publishedChangelog";
 
 import AgentMark from "../components/AgentMark.astro";
 import Icon from "../components/Icon.astro";
@@ -22,7 +22,7 @@ import {
   SITE_X_URL,
 } from "../lib/site";
 
-const changelog = await getCollection("changelog");
+const changelog = await getPublishedChangelog();
 
 // The hero names three agents and counts the rest of the logo row, in words.
 const NUMBER_WORDS = ["no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve"];

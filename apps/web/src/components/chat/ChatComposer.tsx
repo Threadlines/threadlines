@@ -139,6 +139,7 @@ import {
 import { useConnectedComputerCapability } from "../../environments/computerCapabilities";
 import { useEnvironmentServerSetting } from "../../hooks/useEnvironmentServerSetting";
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
+import { useStableHandlers } from "../../hooks/useStableIdentity";
 import { useAgentWarmUp } from "../../hooks/useAgentWarmUp";
 import { getThreadInFlightStatus } from "../../lib/threadSort";
 import { ComposerAgentInvitePanel } from "./ComposerAgentInvitePanel";
@@ -1765,19 +1766,24 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // Build/Plan and access, on the row's own buttons or in the panel. The
   // panel's rows keep focus there, so several settings can change in one
   // visit; the row's buttons put the cursor back in the prompt.
-  const modeControl: ComposerModeControl | null = composerProviderControls.showInteractionModeToggle
-    ? {
-        value: interactionMode,
-        onChange: (mode) => handleInteractionModeChange(mode, { focusComposer: runControlsOnRow }),
-      }
-    : null;
-  const accessControl: ComposerAccessControl = {
+  // Kept while their values hold, so the row's buttons skip the composer's
+  // redraws while a reply streams.
+  const modeControl = useStableHandlers<ComposerModeControl | null>(
+    composerProviderControls.showInteractionModeToggle
+      ? {
+          value: interactionMode,
+          onChange: (mode) =>
+            handleInteractionModeChange(mode, { focusComposer: runControlsOnRow }),
+        }
+      : null,
+  );
+  const accessControl = useStableHandlers<ComposerAccessControl>({
     value: accessLevel.shown,
     options: accessLevel.options,
     // The row's menu returns the cursor itself once it has closed.
     onChange: (mode) => handleRuntimeModeChange(mode, { focusComposer: false }),
     planning: interactionMode === "plan",
-  };
+  });
   const settingsModeControl = runControlsOnRow ? null : modeControl;
   const settingsAccessControl = runControlsOnRow ? null : accessControl;
 
@@ -3364,6 +3370,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       }),
     );
   };
+  // The add menu is memoized; these are rebuilt on every composer redraw.
+  const addMenuHandlers = useStableHandlers({
+    onAttachFiles: openAttachmentFilePicker,
+    onAddPhotos: openImageFilePicker,
+    onTakePhoto: openCameraPicker,
+    onReferenceProjectFile: referenceProjectFile,
+  });
 
   const onAttachmentFileInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files ?? []);
@@ -4353,10 +4366,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                         disabled={attachmentsDisabled}
                         disabledReason={attachmentsDisabledReason}
                         canReferenceProjectFiles={canReferenceWorkspaceFiles}
-                        onAttachFiles={openAttachmentFilePicker}
-                        onAddPhotos={openImageFilePicker}
-                        onTakePhoto={openCameraPicker}
-                        onReferenceProjectFile={referenceProjectFile}
+                        onAttachFiles={addMenuHandlers.onAttachFiles}
+                        onAddPhotos={addMenuHandlers.onAddPhotos}
+                        onTakePhoto={addMenuHandlers.onTakePhoto}
+                        onReferenceProjectFile={addMenuHandlers.onReferenceProjectFile}
                         stash={stashProps}
                         open={isAddMenuOpen}
                         onOpenChange={setIsAddMenuOpen}

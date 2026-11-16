@@ -1,5 +1,5 @@
 ---
-import { getCollection } from "astro:content";
+import { getPublishedChangelog } from "../../lib/publishedChangelog";
 
 import AgentMark from "../../components/AgentMark.astro";
 import Faq from "../../components/Faq.astro";
@@ -25,7 +25,7 @@ interface Props {
 
 const { agent } = Astro.props;
 const canonicalPath = agentPath(agent);
-const stableVersion = latestStableVersion(await getCollection("changelog"));
+const stableVersion = latestStableVersion(await getPublishedChangelog());
 const inStable = isInStableRelease(agent, stableVersion);
 // Features newer than the stable app stay off the page until that release ships.
 const features = agent.features.filter((feature) => isInStableRelease(feature, stableVersion));
