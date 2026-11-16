@@ -1,5 +1,6 @@
 import { ThreadId } from "@threadlines/contracts";
 import { it } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import { describe, expect } from "vite-plus/test";
 
@@ -50,6 +51,32 @@ describe.skipIf(process.platform === "win32")("agent process ledger", () => {
         });
         // Another thread's agents aren't its business.
         expect(yield* ledger.confirm(ThreadId.make("thread-other"))).toEqual({ confirmed: true });
+      }),
+    ),
+  );
+
+  it.live("never reads a process table it couldn't read as nothing started", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const ledger = yield* makeAgentProcessLedger({
+          settleWait: "50 millis",
+          probe: {
+            ...realProcessProbe,
+            // The agent and its group are gone; what it started can't be known.
+            exists: () => false,
+            signal: () => {},
+            descendants: () => Effect.succeed(null),
+          },
+        });
+        const exited = yield* Deferred.make<void>();
+        yield* ledger.track(THREAD, { pid: 424242, exited: Deferred.await(exited) });
+        yield* ledger.beforeStop(THREAD);
+        yield* Deferred.succeed(exited, undefined);
+        yield* Effect.sleep("20 millis");
+        expect(yield* ledger.confirm(THREAD)).toEqual({
+          confirmed: false,
+          reason: "the process list couldn't be read when it stopped",
+        });
       }),
     ),
   );

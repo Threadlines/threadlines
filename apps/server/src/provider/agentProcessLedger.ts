@@ -174,8 +174,13 @@ export const makeAgentProcessLedger = (
         ? probe.exists(-entry.pid)
         : !entry.leaderGone && probe.exists(entry.pid);
     const notedAlive = (entry: Entry) => (entry.noted ?? []).filter((pid) => probe.exists(pid));
+    // A stop whose process table couldn't be read left nothing known: the
+    // entry stays, and confirm says so, rather than reading it as nothing.
     const settled = (entry: Entry) =>
-      entry.leaderGone && !groupAlive(entry) && notedAlive(entry).length === 0;
+      entry.noted !== null &&
+      entry.leaderGone &&
+      !groupAlive(entry) &&
+      notedAlive(entry).length === 0;
 
     const track: AgentProcessLedger["track"] = (sessionKey, agent) =>
       Effect.gen(function* () {
