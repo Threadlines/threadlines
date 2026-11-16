@@ -143,7 +143,14 @@ async function harness(options?: { readonly model?: OrchestrationReadModel }) {
       linkChanges: Stream.fromPubSub(linkChanges),
       readThread: (threadId) =>
         Effect.sync(() => model.threads.find((entry) => entry.id === threadId) ?? null),
-      readModel: Effect.sync(() => model),
+      readContext: (threadId) =>
+        Effect.sync(() => {
+          const thread = model.threads.find((entry) => entry.id === threadId);
+          return thread === undefined ? null : { thread, view: model };
+        }),
+      pendingThreadIds: Effect.sync(() =>
+        model.threads.filter((thread) => (thread.pendingMove ?? null) !== null).map((t) => t.id),
+      ),
       quiesce: () =>
         Effect.sync(() => {
           state.quiesceCalls += 1;

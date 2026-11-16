@@ -23,7 +23,6 @@ import {
   CommandId,
   type OrchestrationCommand,
   type OrchestrationEvent,
-  type OrchestrationReadModel,
   type OrchestrationThread,
   type ThreadId,
   ThreadMoveError,
@@ -46,6 +45,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import { ComputerLinks } from "../links/ComputerLinks.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
@@ -60,6 +60,7 @@ import {
 import type { ProviderStopConfirmation } from "../provider/Services/ProviderAdapter.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
 import { type QueuedMoveStart, ThreadMoves, type ThreadMovesShape } from "./ThreadMoves.ts";
+import { makeThreadMoveContextReader, type ThreadMoveContext } from "./threadMoveView.ts";
 
 export interface MoveQueueShape {
   readonly queue: (
@@ -86,7 +87,10 @@ export interface MoveQueueDeps {
   readonly linkChanges: Stream.Stream<unknown>;
   /** The thread, archived ones too; null when it's gone. A read that fails is a defect: the look is tried again. */
   readonly readThread: (threadId: ThreadId) => Effect.Effect<OrchestrationThread | null>;
-  readonly readModel: Effect.Effect<OrchestrationReadModel>;
+  /** What the move checks read about a thread (threadMoveView.ts); null when it's gone. */
+  readonly readContext: (threadId: ThreadId) => Effect.Effect<ThreadMoveContext | null>;
+  /** Threads with a queued move, for the startup scan. */
+  readonly pendingThreadIds: Effect.Effect<ReadonlyArray<ThreadId>>;
   readonly quiesce: (threadId: ThreadId) => Effect.Effect<ProviderStopConfirmation>;
   readonly checkQueue: ThreadMovesShape["checkQueue"];
   readonly startQueued: ThreadMovesShape["startQueued"];
@@ -331,9 +335,10 @@ export const makeMoveQueue = (
         const requestId = pending.requestId;
         // From the thread alone first: while it works, nothing else needs reading.
         if (yield* settleRefusals(threadId, pending, localRefusals(thread))) return;
-        const model = yield* deps.readModel;
-        const current = model.threads.find((candidate) => candidate.id === threadId) ?? thread;
-        if (yield* settleRefusals(threadId, pending, threadMoveRefusals(model, current))) return;
+        const context = yield* deps.readContext(threadId);
+        if (context === null) return yield* forget(threadId);
+        const refusals = threadMoveRefusals(context.view, context.thread);
+        if (yield* settleRefusals(threadId, pending, refusals)) return;
         yield* report(threadId, pending, [], pending.hold ?? null);
 
         // The barrier: the fence goes up and its sessions stop.
@@ -472,12 +477,11 @@ export const makeMoveQueue = (
         const events = yield* deps.subscribeEvents;
         // The moves the last process left, read off the startup path.
         yield* Effect.gen(function* () {
-          const model = yield* deps.readModel;
-          for (const thread of model.threads) {
-            const pending = thread.pendingMove ?? null;
+          for (const threadId of yield* deps.pendingThreadIds) {
+            const pending = (yield* deps.readThread(threadId))?.pendingMove ?? null;
             if (pending !== null) {
-              yield* track(thread.id, pending.requestId);
-              yield* schedule(thread.id, Duration.zero);
+              yield* track(threadId, pending.requestId);
+              yield* schedule(threadId, Duration.zero);
             }
           }
         }).pipe(
@@ -547,6 +551,8 @@ export const MoveQueueLive = Layer.effect(
     const providers = yield* ProviderService;
     const threadMoves = yield* ThreadMoves;
     const links = yield* ComputerLinks;
+    const sql = yield* SqlClient.SqlClient;
+    const readContext = yield* makeThreadMoveContextReader;
     return yield* makeMoveQueue({
       dispatch: engine.dispatch,
       subscribeEvents: engine.subscribeDomainEvents,
@@ -555,7 +561,15 @@ export const MoveQueueLive = Layer.effect(
         snapshots
           .getThreadDetailById(threadId, { includeArchived: true })
           .pipe(Effect.map(Option.getOrNull), Effect.orDie),
-      readModel: snapshots.getCommandReadModel().pipe(Effect.orDie),
+      readContext: (threadId) => readContext(threadId).pipe(Effect.orDie),
+      pendingThreadIds: sql<{ readonly threadId: ThreadId }>`
+        SELECT thread_id AS "threadId"
+        FROM projection_threads
+        WHERE pending_move_json IS NOT NULL AND deleted_at IS NULL
+      `.pipe(
+        Effect.map((rows) => rows.map((row) => row.threadId)),
+        Effect.orDie,
+      ),
       quiesce: providers.quiesceThread,
       checkQueue: threadMoves.checkQueue,
       startQueued: threadMoves.startQueued,

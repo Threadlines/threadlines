@@ -106,7 +106,12 @@ const blocked = (code: ThreadMoveBlockCode, words: string): ThreadMoveRefusalEnt
 });
 
 /** What the move checks read: the projects, and the threads they can see. */
-export type ThreadMoveView = Pick<OrchestrationReadModel, "projects" | "threads">;
+export interface ThreadMoveView {
+  readonly projects: ReadonlyArray<
+    Pick<OrchestrationReadModel["projects"][number], "id" | "kind" | "workspaceRoot">
+  >;
+  readonly threads: ReadonlyArray<OrchestrationThread>;
+}
 
 /** A thread's checkout: its worktree, else its project's folder. */
 function checkoutOf(readModel: ThreadMoveView, thread: OrchestrationThread) {
@@ -292,7 +297,7 @@ export function firstMoveBlock(refusals: ReadonlyArray<ThreadMoveRefusalEntry>) 
  * it can: a move that doesn't wait (`moves.start`) refuses waits too.
  */
 export function threadMoveRefusal(
-  readModel: OrchestrationReadModel,
+  readModel: ThreadMoveView,
   thread: OrchestrationThread,
 ): string | null {
   const refusals = threadMoveRefusals(readModel, thread);

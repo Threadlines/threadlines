@@ -59,6 +59,7 @@ import {
   threadMoveRefusals,
 } from "../orchestration/threadMoveDecisions.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
+import { makeThreadMoveContextReader } from "./threadMoveView.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ProjectionThreadRepository } from "../persistence/Services/ProjectionThreads.ts";
@@ -162,6 +163,7 @@ const make = Effect.gen(function* () {
 
   const moveDir = (transferId: string) => NodePath.join(config.stateDir, "moves", transferId);
 
+  const readMoveContext = yield* makeThreadMoveContextReader;
   const readModel = snapshots
     .getCommandReadModel()
     .pipe(Effect.mapError(() => moveError("This computer's threads couldn't be read.")));
@@ -248,11 +250,15 @@ const make = Effect.gen(function* () {
    */
   const inspect = (threadId: ThreadId, forQueued?: ThreadMoveRequestId) =>
     Effect.gen(function* () {
-      const model = yield* readModel;
-      const thread = model.threads.find((entry) => entry.id === threadId);
-      if (thread === undefined) return yield* moveError("That thread doesn't exist.");
-      const project = model.projects.find((entry) => entry.id === thread.projectId);
-      const refusals = threadMoveRefusals(model, thread);
+      // Only what the checks read: the whole read model costs about half a
+      // second on a big install (threadMoveView.ts).
+      const context = yield* readMoveContext(threadId).pipe(
+        Effect.mapError(() => moveError("This computer's threads couldn't be read.")),
+      );
+      if (context === null) return yield* moveError("That thread doesn't exist.");
+      const { thread, view } = context;
+      const project = view.projects.find((entry) => entry.id === thread.projectId);
+      const refusals = threadMoveRefusals(view, thread);
       const pending = thread.pendingMove ?? null;
       let refusal: string | null =
         firstMoveBlock(refusals)?.words ??
@@ -288,10 +294,9 @@ const make = Effect.gen(function* () {
       );
       const waitsFor = moveWaitsOf(refusals);
       return {
-        model,
         thread,
         // A move that doesn't wait refuses a busy thread too.
-        busy: threadMoveRefusal(model, thread),
+        busy: threadMoveRefusal(view, thread),
         preview: {
           ...(refusal !== null ? { refusal } : {}),
           ...(waitsFor.length > 0 ? { waitsFor } : {}),
