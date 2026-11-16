@@ -75,6 +75,7 @@ import type {
   ThemeLibrarySnapshot,
   ThemePick,
   ThemePickInput,
+  ThemePickSide,
   ThemePickTheme,
 } from "@threadlines/contracts";
 import {
@@ -95,7 +96,7 @@ import {
   subscribeTheme,
   subscribeUserThemeCommits,
 } from "../theme/themeStore";
-import type { ThemeChoice } from "../theme/themeTypes";
+import type { ThemeChoice, ThemePairSide } from "../theme/themeTypes";
 
 /** The device's note. */
 export const THEME_PICK_NOTE_KEY = "threadlines:theme-pick:note";
@@ -197,12 +198,27 @@ function pastAfter(note: ThemePickNote | null): { readonly past?: ReadonlyArray<
   return ids.length === 0 ? {} : { past: ids.slice(-PAST_PICKS) };
 }
 
+/** A side of System's pair as a pick names it. */
+function pickSideOf(side: ThemePairSide): ThemePickSide {
+  return side.kind === "library"
+    ? { kind: "library", entryId: side.entryId, hash: side.hash, name: side.name }
+    : { kind: side.kind, id: side.id };
+}
+
 /** A device's choice as a pick's theme; null for one kept on this device only. */
 export function pickThemeOf(choice: ThemeChoice, base: ThemeBase | null): ThemePickTheme | null {
   const withBase = base === null ? {} : { base };
   switch (choice.kind) {
     case "builtin":
       return { kind: "builtin", id: choice.id };
+    case "pair":
+      // System with its sides: an older build takes it as plain System.
+      return {
+        kind: "builtin",
+        id: "system",
+        light: pickSideOf(choice.light),
+        dark: pickSideOf(choice.dark),
+      };
     case "starter":
       return { kind: "starter", id: choice.id, ...withBase };
     case "library":
@@ -224,8 +240,32 @@ export function choiceOfPickTheme(
 ): { readonly choice: ThemeChoice; readonly base: ThemeBase | null } | null {
   if (theme.kind === "unsaved") return null;
   // The stored-choice parser already validates every field of every kind.
-  const { kind, id, entryId, hash, name, base } = theme;
-  return parseStoredThemeChoice(JSON.stringify({ v: 1, kind, id, entryId, hash, name, base }));
+  const { kind, id, entryId, hash, name, base, light, dark } = theme;
+  const side = (value: ThemePickSide | undefined) =>
+    value === undefined
+      ? undefined
+      : {
+          kind: value.kind,
+          id: value.id,
+          entryId: value.entryId,
+          hash: value.hash,
+          name: value.name,
+          // A side is read from whichever computer has it.
+          environmentId: null,
+        };
+  return parseStoredThemeChoice(
+    JSON.stringify({
+      v: 1,
+      kind,
+      id,
+      entryId,
+      hash,
+      name,
+      base,
+      light: side(light),
+      dark: side(dark),
+    }),
+  );
 }
 
 /** The next step: pure, so every case is testable apart from the stores. */

@@ -104,17 +104,22 @@ const opaqueHex = (value: string) => (/^#[0-9a-fA-F]{8}$/.test(value) ? value.sl
 
 /**
  * What the desktop window is told: the native preference apart from colors.
- * Built-in System stays `system` so the OS keeps driving it; a custom theme
- * sets its base and the window's own colors.
+ * System stays `system` so the OS keeps driving it, a pair too (or the
+ * window would stop hearing the computer switch modes); any other custom
+ * theme sets its base, and every custom theme the window's own colors.
  */
 export function desktopThemeAppearance(theme: ActiveTheme): DesktopThemeAppearance {
+  const choice = theme.choice;
+  const followsComputer =
+    choice.kind === "pair" || (choice.kind === "builtin" && choice.id === "system");
   if (!theme.tokens) {
     // A built-in, or a custom theme whose content is nowhere (its base shows).
-    const choice = theme.choice;
-    return { nativeSource: choice.kind === "builtin" ? choice.id : theme.base };
+    return {
+      nativeSource: followsComputer ? "system" : choice.kind === "builtin" ? choice.id : theme.base,
+    };
   }
   return {
-    nativeSource: theme.base,
+    nativeSource: followsComputer ? "system" : theme.base,
     colors: {
       windowBackground: opaqueHex(theme.tokens["surface-solid"]),
       titleBarSymbol: opaqueHex(theme.tokens.foreground),

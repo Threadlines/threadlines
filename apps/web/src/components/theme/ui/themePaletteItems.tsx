@@ -10,7 +10,9 @@ import { useMemo } from "react";
 import { chooseTheme, useThemeChoice } from "~/theme/themeStore";
 import {
   sameThemeChoice,
+  shownThemeChoice,
   switchToTheme,
+  tileIsChosen,
   type ThemeTile,
   useThemeTiles,
 } from "~/themeLibrary/themeCatalog";
@@ -33,9 +35,7 @@ export function useThemePaletteItems(classes: {
       value: `theme:${tile.key}`,
       searchTerms: [tile.name, tile.detail, "theme"],
       title: tile.name,
-      description: sameThemeChoice(tile.choice, committed)
-        ? `${tile.detail} · in use`
-        : tile.detail,
+      description: tileIsChosen(tile, committed) ? `${tile.detail} · in use` : tile.detail,
       icon: (
         <span
           aria-hidden
@@ -85,16 +85,8 @@ export function useThemePaletteItems(classes: {
         icon: <PaintbrushIcon className={classes.item} />,
         run: async () => {
           const tiles = [...builtins, ...starters, ...library];
-          // System is whichever of Light and Dark the computer shows now.
-          const shown =
-            committed.kind === "builtin" && committed.id === "system"
-              ? {
-                  kind: "builtin" as const,
-                  id: document.documentElement.classList.contains("dark")
-                    ? ("dark" as const)
-                    : ("light" as const),
-                }
-              : committed;
+          // System, and its pair, show one theme at a time: the one the computer's mode picks.
+          const shown = shownThemeChoice(committed);
           const tile = tiles.find((candidate) => sameThemeChoice(candidate.choice, shown));
           if (tile !== undefined) openThemeEditor(tile);
           else
