@@ -1199,6 +1199,70 @@ describe("ProviderRuntimeIngestion", () => {
     });
   });
 
+  it("does not let an idle signal older than an unstored running report settle the turn", async () => {
+    const harness = await createHarness();
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-before-repeat-running"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      turnId: asTurnId("turn-repeat-running"),
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) => thread.session?.activeTurnId === "turn-repeat-running",
+    );
+    // Says nothing new, so it is not stored, but it is the latest word.
+    harness.emit({
+      type: "session.state.changed",
+      eventId: asEventId("evt-repeat-running"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:03.000Z",
+      payload: { state: "running" },
+    });
+    harness.emit({
+      type: "thread.state.changed",
+      eventId: asEventId("evt-idle-older-than-repeat"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:02.000Z",
+      payload: { state: "idle" },
+    });
+    await harness.drain();
+
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === asThreadId("thread-1"));
+    expect(thread?.session).toMatchObject({
+      status: "running",
+      activeTurnId: "turn-repeat-running",
+    });
+  });
+
+  it("stores a repeated error, so its time says when it last failed", async () => {
+    const harness = await createHarness();
+    const fail = (id: string, createdAt: string) =>
+      harness.emit({
+        type: "session.state.changed",
+        eventId: asEventId(id),
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-1"),
+        createdAt,
+        payload: { state: "error", reason: "it broke" },
+      });
+
+    fail("evt-error-first", "2026-01-01T00:00:01.000Z");
+    await waitForThread(harness.readModel, (thread) => thread.session?.status === "error");
+    fail("evt-error-again", "2026-01-01T00:00:03.000Z");
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.updatedAt === "2026-01-01T00:00:03.000Z",
+    );
+    expect(thread.session?.status).toBe("error");
+  });
+
   it("settles orphaned roster subagents when a fresh provider session starts", async () => {
     const harness = await createHarness();
 
@@ -2555,6 +2619,43 @@ describe("ProviderRuntimeIngestion", () => {
     expect(
       thread.subagents?.find((subagent) => subagent.spawnCallId === "call-background")?.status,
     ).toBe("running");
+  });
+
+  it("stores no session update when a provider repeats the state it is in", async () => {
+    const harness = await createHarness();
+    const report = (id: string, createdAt: string, state: "running" | "error") =>
+      harness.emit({
+        type: "session.state.changed",
+        eventId: asEventId(id),
+        provider: ProviderDriverKind.make("claudeAgent"),
+        threadId: asThreadId("thread-1"),
+        createdAt,
+        payload: { state, reason: state === "error" ? "it broke" : "status:requesting" },
+      });
+
+    report("evt-repeat-running-1", "2026-01-01T00:00:01.000Z", "running");
+    await waitForThread(harness.readModel, (entry) => entry.session?.status === "running");
+    // Claude reports each request it makes; nothing changes with them.
+    report("evt-repeat-running-2", "2026-01-01T00:00:02.000Z", "running");
+    report("evt-repeat-running-3", "2026-01-01T00:00:03.000Z", "running");
+    report("evt-repeat-error", "2026-01-01T00:00:04.000Z", "error");
+    await waitForThread(harness.readModel, (entry) => entry.session?.status === "error");
+
+    const sessionUpdates = Array.from(
+      await Effect.runPromise(
+        harness.engine.readEvents(0).pipe(
+          Stream.filter((event) => event.type === "thread.session-set"),
+          Stream.runCollect,
+        ),
+      ),
+    )
+      .flatMap((event) => (event.type === "thread.session-set" ? [event.payload.session] : []))
+      // The harness starts the thread with a session of its own.
+      .filter((session) => session.updatedAt >= "2026-01-01T00:00:01.000Z");
+    expect(sessionUpdates.map((session) => [session.status, session.updatedAt])).toEqual([
+      ["running", "2026-01-01T00:00:01.000Z"],
+      ["error", "2026-01-01T00:00:04.000Z"],
+    ]);
   });
 
   it("applies provider session.state.changed transitions directly", async () => {

@@ -8,6 +8,8 @@
  */
 import type {
   CheckpointRef,
+  MessageId,
+  OrchestrationMessage,
   OrchestrationCheckpointSummary,
   OrchestrationProject,
   OrchestrationProjectCatalogSnapshot,
@@ -312,6 +314,21 @@ export interface ProjectionSnapshotQueryShape {
     readonly threadId: ThreadId;
     readonly turnId: TurnId;
   }) => Effect.Effect<ReadonlyArray<OrchestrationThreadActivity>, ProjectionRepositoryError>;
+
+  /**
+   * Read one message of a thread, without the rest of its history: for work
+   * that runs on every event of a streaming reply.
+   */
+  readonly getThreadMessage: (input: {
+    readonly threadId: ThreadId;
+    readonly messageId: MessageId;
+  }) => Effect.Effect<Option.Option<OrchestrationMessage>, ProjectionRepositoryError>;
+
+  /** Whether a turn has any message from the thread's agent yet. */
+  readonly hasAssistantMessageForTurn: (input: {
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId;
+  }) => Effect.Effect<boolean, ProjectionRepositoryError>;
 }
 
 /**

@@ -1948,12 +1948,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
-  const listThreadMessageRowsByThread = SqlSchema.findAll({
-    Request: ThreadIdLookupInput,
-    Result: ProjectionThreadMessageDbRowSchema,
-    execute: ({ threadId }) =>
-      sql`
-        SELECT
+  /** Every column a thread message row is read with. */
+  const threadMessageColumns = sql`
           message_id AS "messageId",
           event_sequence AS "eventSequence",
           thread_id AS "threadId",
@@ -1982,9 +1978,40 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
+  `;
+
+  const listThreadMessageRowsByThread = SqlSchema.findAll({
+    Request: ThreadIdLookupInput,
+    Result: ProjectionThreadMessageDbRowSchema,
+    execute: ({ threadId }) =>
+      sql`
+        SELECT ${threadMessageColumns}
         FROM projection_thread_messages
         WHERE thread_id = ${threadId}
         ORDER BY event_sequence ASC, created_at ASC, message_id ASC
+      `,
+  });
+
+  const getThreadMessageRow = SqlSchema.findOneOption({
+    Request: Schema.Struct({ threadId: ThreadId, messageId: MessageId }),
+    Result: ProjectionThreadMessageDbRowSchema,
+    execute: ({ threadId, messageId }) =>
+      sql`
+        SELECT ${threadMessageColumns}
+        FROM projection_thread_messages
+        WHERE thread_id = ${threadId} AND message_id = ${messageId}
+      `,
+  });
+
+  const getAssistantMessageIdForTurnRow = SqlSchema.findOneOption({
+    Request: Schema.Struct({ threadId: ThreadId, turnId: TurnId }),
+    Result: Schema.Struct({ messageId: MessageId }),
+    execute: ({ threadId, turnId }) =>
+      sql`
+        SELECT message_id AS "messageId"
+        FROM projection_thread_messages
+        WHERE thread_id = ${threadId} AND turn_id = ${turnId} AND role = 'assistant'
+        LIMIT 1
       `,
   });
 
@@ -3895,6 +3922,30 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       );
     });
 
+  const getThreadMessage: ProjectionSnapshotQueryShape["getThreadMessage"] = (input) =>
+    getThreadMessageRow(input).pipe(
+      Effect.map(Option.map(mapThreadMessageRow)),
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.getThreadMessage:query",
+          "ProjectionSnapshotQuery.getThreadMessage:decodeRow",
+        ),
+      ),
+    );
+
+  const hasAssistantMessageForTurn: ProjectionSnapshotQueryShape["hasAssistantMessageForTurn"] = (
+    input,
+  ) =>
+    getAssistantMessageIdForTurnRow(input).pipe(
+      Effect.map(Option.isSome),
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.hasAssistantMessageForTurn:query",
+          "ProjectionSnapshotQuery.hasAssistantMessageForTurn:decodeRow",
+        ),
+      ),
+    );
+
   const getTurnActivities: ProjectionSnapshotQueryShape["getTurnActivities"] = (input) =>
     listThreadActivityRowsByTurn(input).pipe(
       Effect.map((rows) => rows.map(mapThreadActivityRow)),
@@ -4127,6 +4178,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     getThreadShellById,
     getThreadDetailById,
     getTurnActivities,
+    getThreadMessage,
+    hasAssistantMessageForTurn,
   } satisfies ProjectionSnapshotQueryShape;
 });
 

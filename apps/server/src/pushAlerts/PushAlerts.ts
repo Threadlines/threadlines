@@ -555,8 +555,15 @@ const make = Effect.gen(function* () {
 
   const start: PushAlertsShape["start"] = () =>
     Effect.gen(function* () {
+      // Woken only by events that can start or end an alert: a streaming
+      // reply sends many a second, and each wake reads the log and saves the
+      // cursor. The idle wake moves the cursor past the rest.
       yield* Effect.forkScoped(
-        Stream.runForEach(engine.streamDomainEvents, () => Queue.offer(discoveryBell, undefined)),
+        Stream.runForEach(engine.streamDomainEvents, (event) =>
+          pushAlertActionsForEvent(event).length > 0
+            ? Queue.offer(discoveryBell, undefined)
+            : Effect.void,
+        ),
       );
       if (Option.isSome(scheduledTasks)) {
         yield* Effect.forkScoped(

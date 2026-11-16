@@ -104,13 +104,19 @@ function toProjectionThreadMessage(
 const makeProjectionThreadMessageRepository = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
 
-  const upsertProjectionThreadMessageRow = SqlSchema.void({
-    Request: ProjectionThreadMessage,
-    execute: (row) => {
-      const nextAttachmentsJson =
-        row.attachments !== undefined ? JSON.stringify(row.attachments) : null;
-      const nextSkillsJson = row.skills !== undefined ? JSON.stringify(row.skills) : null;
-      return sql`
+  /**
+   * Writes a message row. With `appendText` an existing row gets `row.text`
+   * added to the end of its own text and keeps its creation time, so a
+   * streaming reply is never read back to grow it.
+   */
+  const writeProjectionThreadMessageRow = (
+    row: typeof ProjectionThreadMessage.Encoded,
+    appendText: boolean,
+  ) => {
+    const nextAttachmentsJson =
+      row.attachments !== undefined ? JSON.stringify(row.attachments) : null;
+    const nextSkillsJson = row.skills !== undefined ? JSON.stringify(row.skills) : null;
+    return sql`
         INSERT INTO projection_thread_messages (
           message_id,
           event_sequence,
@@ -190,7 +196,9 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           thread_id = excluded.thread_id,
           turn_id = excluded.turn_id,
           role = excluded.role,
-          text = excluded.text,
+          text = CASE WHEN ${appendText ? 1 : 0} = 1
+            THEN projection_thread_messages.text || excluded.text
+            ELSE excluded.text END,
           attachments_json = COALESCE(
             excluded.attachments_json,
             projection_thread_messages.attachments_json
@@ -222,10 +230,21 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           message_trigger = COALESCE(projection_thread_messages.message_trigger, excluded.message_trigger),
           not_sent = COALESCE(excluded.not_sent, projection_thread_messages.not_sent),
           is_streaming = excluded.is_streaming,
-          created_at = excluded.created_at,
+          created_at = CASE WHEN ${appendText ? 1 : 0} = 1
+            THEN projection_thread_messages.created_at
+            ELSE excluded.created_at END,
           updated_at = excluded.updated_at
       `;
-    },
+  };
+
+  const upsertProjectionThreadMessageRow = SqlSchema.void({
+    Request: ProjectionThreadMessage,
+    execute: (row) => writeProjectionThreadMessageRow(row, false),
+  });
+
+  const appendProjectionThreadMessageText = SqlSchema.void({
+    Request: ProjectionThreadMessage,
+    execute: (row) => writeProjectionThreadMessageRow(row, true),
   });
 
   const getProjectionThreadMessageRow = SqlSchema.findOneOption({
@@ -345,6 +364,13 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
       Effect.mapError(toPersistenceSqlError("ProjectionThreadMessageRepository.upsert:query")),
     );
 
+  const appendStreamedText: ProjectionThreadMessageRepositoryShape["appendStreamedText"] = (row) =>
+    appendProjectionThreadMessageText(row).pipe(
+      Effect.mapError(
+        toPersistenceSqlError("ProjectionThreadMessageRepository.appendStreamedText:query"),
+      ),
+    );
+
   const getByMessageId: ProjectionThreadMessageRepositoryShape["getByMessageId"] = (input) =>
     getProjectionThreadMessageRow(input).pipe(
       Effect.mapError(
@@ -381,6 +407,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
 
   return {
     upsert,
+    appendStreamedText,
     getByMessageId,
     listByThreadId,
     getLatestUserWrittenAt,

@@ -1,7 +1,7 @@
 import {
   makeLocalFileTracer,
   makeTraceSink,
-  type TraceRecord,
+  type TraceRecordHead,
 } from "@threadlines/shared/observability";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -28,7 +28,7 @@ const PROVIDER_MESSAGE_TRACE_SAMPLE_MODULO = 100;
 // 4.1.2 a transaction's BEGIN, COMMIT and the like are spans of their own, so
 // any span the SQL client tags with its database is sampled too.
 const sampledSqlSpanNames = new Set(["sqlite", "sql.execute", "sql.transaction"]);
-const isSqlSpan = (record: TraceRecord): boolean =>
+const isSqlSpan = (record: TraceRecordHead): boolean =>
   sampledSqlSpanNames.has(record.name) || record.attributes["db.system.name"] !== undefined;
 const sampledProjectionSpanNames = new Set([
   "applyPendingApprovalsProjection",
@@ -70,11 +70,11 @@ function traceSampleHash(input: string): number {
   return hash >>> 0;
 }
 
-function shouldKeepSampledTraceRecord(record: TraceRecord, modulo: number): boolean {
+function shouldKeepSampledTraceRecord(record: TraceRecordHead, modulo: number): boolean {
   return traceSampleHash(`${record.traceId}:${record.spanId}:${record.name}`) % modulo === 0;
 }
 
-function hasWarningOrErrorEvent(record: TraceRecord): boolean {
+function hasWarningOrErrorEvent(record: TraceRecordHead): boolean {
   return record.events.some((event) => {
     const level = event.attributes["effect.logLevel"];
     if (typeof level !== "string") {
@@ -90,12 +90,16 @@ function hasWarningOrErrorEvent(record: TraceRecord): boolean {
   });
 }
 
-export function shouldRecordServerLocalTrace(record: TraceRecord): boolean {
+export function shouldRecordServerLocalTrace(record: TraceRecordHead): boolean {
   if (record.durationMs >= SLOW_TRACE_RECORD_THRESHOLD_MS || hasWarningOrErrorEvent(record)) {
     return true;
   }
 
-  if (record.type === "effect-span" && record.exit._tag !== "Success") {
+  if (
+    record.type === "effect-span" &&
+    record.exit !== undefined &&
+    record.exit._tag !== "Success"
+  ) {
     return true;
   }
 
