@@ -203,6 +203,15 @@ The stable release workflow refuses to publish when the matching reviewed entry
 is missing. Its GitHub release body places those highlights first and keeps the
 complete compact technical change list in a collapsed details section.
 
+Merging the content PR doesn't put the notes on threadlines.dev yet. Production
+builds of the marketing site hide changelog entries newer than the latest
+published GitHub release (`apps/marketing/src/lib/publishedChangelog.ts`), so the
+notes for a release that is still building, or whose build failed, stay off the
+site. If GitHub can't say which release is out, the production build fails and
+the live site stays as it was. Vercel previews show every entry. Once the
+release publishes, the **Stable release follow-ups** job rebuilds the live
+marketing site, and the new notes and the homepage's "New in" badge appear.
+
 The release assets should include:
 
 - `Threadlines-<version>-win-x64.exe`
@@ -268,6 +277,17 @@ After the first package exists, configure npm Trusted Publishing for
 `.github/workflows/npm-package.yml`. Then use the **npm Package** workflow to
 dry-run or publish future versions. Stable builds should use the `latest`
 dist-tag; nightly builds should use the `nightly` dist-tag.
+
+## When a release fails
+
+The installers, the hosted app and the marketing notes wait for the GitHub
+release to publish, which needs every platform build to pass. If one fails, the
+**Cleanup failed draft release** job deletes the draft (and, for a run started
+from the Actions tab, the tag it made). It only ever deletes a draft: once a
+release is public, a later failure leaves it in place. The stable follow-ups
+(npm, WinGet, the marketing rebuild) run in their own job after publishing, so
+one of them failing shows red without undoing the release or skipping the
+hosted app deploy. Re-run that job, or the one workflow, by hand.
 
 ## Docker Image
 
