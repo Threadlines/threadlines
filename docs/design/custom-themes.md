@@ -930,6 +930,45 @@ share dialog adds a line saying the email shows.
 
 **Takedown.** An issue form in the repository; maintainers remove the folder.
 
+## Editing colors
+
+Nov 15: changing one color used to mean asking an agent. Edit colors… (a
+theme's options on Appearance, Light and Dark included; "Edit theme colors…"
+in the command palette for the theme in use) opens a panel beside the app
+(`ThemeColorEditor.tsx`, loaded only when it opens; a bottom sheet on phones).
+
+- **What it edits.** The theme's own colors: background, text, quiet text,
+  accent, text on accent, and the optional borders, success, warning, error,
+  info, code background and selected text, which show the app's color until
+  set (× takes one back to the app's). Colors the theme sets directly
+  (`overrides`) are listed under them. Light and Dark become a theme file
+  from their colors first.
+- **Preview.** Every change is a held trial (a drag on the color picker
+  settles for 150 ms first, since each preview restarts a theme's art; an
+  embedded font is named by its own bytes, so previews share one face), so
+  the whole app is the preview and the Keep bar hides for that trial only;
+  Cancel, × or Esc ends it. The panel itself keeps the built-in colors, so
+  it stays readable whatever is being tried. When something else takes the
+  theme (another theme picked, a pick from another device, another window,
+  the /theme strip open or opening; also before the first preview), the
+  editor closes rather than show colors the app isn't wearing. Opening it
+  again on the same theme keeps the edits. A save that finishes after Cancel stays in the library
+  and changes nothing on screen.
+- **Readability.** Each color lists where it fails the readability check
+  (once per surface); Save waits until nothing does, and until the theme
+  passes every other check (an override that must be opaque, say). Fix for me
+  runs `fitThemeColors` (themes/fit.ts, shared with VS Code import): failing
+  colors move, hue kept, a text color the theme sets directly before the seed
+  it overrides, and the background never does.
+- **Pick from the app.** The next click anywhere (outside the panel) is
+  swallowed and answered: the element's background (its own or the nearest
+  behind it), text and border are matched against the theme's app colors
+  and traced back to the color that makes each (`themeTokenSeed`), and those
+  rows are marked. When two app colors are the same color, one the theme sets
+  directly wins, then the one made for that part.
+- **Saving.** A library theme saves back to itself (Save), or Save as new; any
+  other theme saves as a new one, named in the panel.
+
 ## VS Code themes
 
 Nov 15: thousands of color themes already exist for VS Code. The VS Code tab

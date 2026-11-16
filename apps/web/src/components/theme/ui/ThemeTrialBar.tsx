@@ -1,7 +1,8 @@
 /**
  * The theme layer every window carries (docs/design/custom-themes.md,
  * "Trying"): the "Keep Aurora?" bar that every trial shows, the import
- * dialog, and dropping a theme file anywhere on the window. The bar and the
+ * dialog, the color editor while it's open, and dropping a theme file
+ * anywhere on the window. The bar and the
  * dialog are a chunk of their own (ThemeTrialBarContent.tsx), fetched the
  * first time a trial starts or a file waits to import; the drop handling
  * (themeFileDrop.ts) loads once the window is idle.
@@ -11,10 +12,14 @@ import { Suspense, useEffect } from "react";
 import { lazyWithPreload } from "~/lib/lazyWithPreload";
 import { useThemeTrial } from "~/theme/themeStore";
 import { useThemeImportStore } from "~/themeLibrary/themeImportState";
+import { useThemeEditorStore } from "./themeEditorState";
 import { useThemePickerOpenStore } from "./themePickerOpen";
 
 const Content = lazyWithPreload(() =>
   import("./ThemeTrialBarContent").then((module) => module.ThemeTrialBarContent),
+);
+const ColorEditor = lazyWithPreload(() =>
+  import("./ThemeColorEditor").then((module) => module.ThemeColorEditor),
 );
 
 /** Installs the window's theme-file drop handling once the window is idle (themeFileDrop.ts). */
@@ -48,11 +53,25 @@ export function ThemeTrialBar() {
   const trial = useThemeTrial();
   const pickerOpen = useThemePickerOpenStore((state) => state.open);
   const importing = useThemeImportStore((state) => state.pending !== null);
+  const editing = useThemeEditorStore((state) => state.tile);
+  const editorTrial = useThemeEditorStore((state) => state.trialId);
   useThemeFileDrop();
-  if (trial === null && !importing) return null;
   return (
-    <Suspense fallback={null}>
-      <Content.Component trial={trial} pickerOpen={pickerOpen} />
-    </Suspense>
+    <>
+      {trial !== null || importing ? (
+        <Suspense fallback={null}>
+          {/* The color editor previews as a trial and has its own Save and Cancel. */}
+          <Content.Component
+            trial={trial}
+            pickerOpen={pickerOpen || (trial !== null && trial.id === editorTrial)}
+          />
+        </Suspense>
+      ) : null}
+      {editing !== null ? (
+        <Suspense fallback={null}>
+          <ColorEditor.Component key={editing.key} tile={editing} />
+        </Suspense>
+      ) : null}
+    </>
   );
 }

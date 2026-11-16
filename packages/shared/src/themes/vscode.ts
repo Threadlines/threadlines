@@ -8,7 +8,7 @@
  * side bar's background, the syntax colors (from the theme's token rules)
  * and the 16 terminal colors. VS Code themes have no fonts or art, so none
  * come over. A color that would fail the readability check is moved, its hue
- * kept, until it passes (`fitVsCodeTheme`); the number moved is reported so
+ * kept, until it passes (`fitThemeColors`, fit.ts); the number moved is reported so
  * the person sees how faithful the copy is.
  */
 import {
@@ -26,17 +26,13 @@ import {
   color,
   composite,
   contrastRatio,
-  ensureContrast,
   formatHex,
-  rgbToOklch,
-  shiftLightness,
   parseColor,
   relativeLuminance,
+  rgbToOklch,
   type Rgba,
 } from "./color.ts";
-import { contrastPairSurface, THEME_CONTRAST_PAIRS, themeContrastFailures } from "./contrast.ts";
-import { checkThemeManifest } from "./manifest.ts";
-import { resolveThemeTokens } from "./tokens.ts";
+import { fitThemeColors } from "./fit.ts";
 
 /** A VS Code theme file, as far as this reads it. */
 export interface VsCodeThemeFile {
@@ -539,224 +535,11 @@ export function convertVsCodeTheme(input: {
     credits,
     createdBy: { kind: "imported", vscode },
   };
-  return fitVsCodeTheme(manifest);
-}
-
-// ---------------------------------------------------------------------------
-// Making it readable
-
-/** What the fit may change, by where it lives in the theme file. */
-type Slot =
-  | { readonly kind: "seed"; readonly key: keyof ThemeSeedColors }
-  | { readonly kind: "override"; readonly key: string }
-  | { readonly kind: "code"; readonly key: keyof ThemeCodePalette }
-  | { readonly kind: "terminal"; readonly index: number };
-
-/** The seed a status pair's colors come from, by the pair's id. */
-const STATUS_SEEDS: ReadonlyArray<readonly [RegExp, keyof ThemeSeedColors]> = [
-  [/success/, "success"],
-  [/warning/, "warning"],
-  [/destructive|error/, "danger"],
-  [/info/, "info"],
-];
-
-/** A little over the ratio asked, so rounding never lands just under it. */
-const MARGIN = 0.1;
-const MAX_ROUNDS = 24;
-
-function slotValue(manifest: ThemeManifest, slot: Slot): string | undefined {
-  switch (slot.kind) {
-    case "seed":
-      return manifest.colors[slot.key];
-    case "override":
-      return manifest.overrides?.[slot.key];
-    case "code":
-      return manifest.code?.[slot.key];
-    case "terminal":
-      return manifest.terminal?.[slot.index];
-  }
-}
-
-function withSlot(manifest: ThemeManifest, slot: Slot, value: string | undefined): ThemeManifest {
-  switch (slot.kind) {
-    case "seed": {
-      const colors: Record<string, string | undefined> = { ...manifest.colors, [slot.key]: value };
-      if (value === undefined) delete colors[slot.key];
-      return { ...manifest, colors: colors as ThemeSeedColors };
-    }
-    case "override": {
-      const overrides: Record<string, string> = { ...manifest.overrides };
-      if (value === undefined) delete overrides[slot.key];
-      else overrides[slot.key] = value;
-      const { overrides: _overrides, ...rest } = manifest;
-      return Object.keys(overrides).length === 0 ? rest : { ...rest, overrides };
-    }
-    case "code":
-      return { ...manifest, code: { ...manifest.code, [slot.key]: value } };
-    case "terminal": {
-      const terminal = [...(manifest.terminal ?? [])];
-      terminal[slot.index] = value!;
-      return { ...manifest, terminal };
-    }
-  }
-}
-
-/**
- * The theme with every color that fails the readability check moved until it
- * passes: a text color lighter or darker on what it sits on, hue kept; a
- * seed the app derives safely (a status color, the side bar, the selection)
- * dropped so the derived one is used. Fails when a round changes nothing.
- */
-export function fitVsCodeTheme(start: ThemeManifest): VsCodeThemeConversion {
-  let manifest = start;
-  const touched: Slot[] = [];
-  const touch = (slot: Slot, value: string | undefined) => {
-    if (!touched.some((item) => JSON.stringify(item) === JSON.stringify(slot))) touched.push(slot);
-    manifest = withSlot(manifest, slot, value);
-  };
-  const seedStep = (key: keyof ThemeSeedColors, surface: Rgba, min: number) => {
-    const current = manifest.colors[key];
-    if (current === undefined) return false;
-    const next = formatHex(ensureContrast(color(current), surface, min + MARGIN));
-    if (next === current) return false;
-    touch({ kind: "seed", key }, next);
-    return true;
-  };
-  const drop = (slot: Slot) => {
-    if (slotValue(manifest, slot) === undefined) return false;
-    touch(slot, undefined);
-    return true;
-  };
-  /**
-   * Text on the accent must read on it and on its hover shade. The theme's own
-   * ink first, then white or black; when neither reads on both, the accent
-   * moves a step toward the one that reads better.
-   */
-  const fitAccentInk = () => {
-    const passes = (ink: string) => {
-      const tokens = resolveThemeTokens({
-        ...manifest,
-        colors: { ...manifest.colors, accentForeground: ink },
-      });
-      return ["primary", "primary-hover"].every(
-        (name) => contrastRatio(color(ink), color(tokens[name as "primary"])) >= 4.5 + MARGIN / 2,
-      );
-    };
-    const ink = [manifest.colors.accentForeground, "#ffffff", "#000000"].find(passes);
-    if (ink !== undefined) {
-      if (ink === manifest.colors.accentForeground) return false;
-      touch({ kind: "seed", key: "accentForeground" }, ink);
-      return true;
-    }
-    const accent = color(manifest.colors.accent);
-    const towardLight =
-      contrastRatio(color("#000000"), accent) >= contrastRatio(color("#ffffff"), accent);
-    touch(
-      { kind: "seed", key: "accent" },
-      formatHex(shiftLightness(accent, towardLight ? 0.03 : -0.03)),
-    );
-    return true;
-  };
-
-  for (let round = 0; round < MAX_ROUNDS; round += 1) {
-    const failures = themeContrastFailures(manifest);
-    if (failures.length === 0) break;
-    const tokens = resolveThemeTokens(manifest);
-    const canvas = { ...color(tokens["surface-solid"]), a: 1 };
-    let changed = false;
-    for (const failure of failures) {
-      const code = /^code\/(.+)$/.exec(failure.id);
-      const terminal = /^terminal\/(\d+)$/.exec(failure.id);
-      if (code !== null) {
-        const key = code[1] as keyof ThemeCodePalette;
-        const surface = composite(color(tokens["code-background"]), canvas);
-        const next = formatHex(
-          ensureContrast(color(manifest.code![key]!), surface, failure.min + MARGIN),
-        );
-        touch({ kind: "code", key }, next);
-        changed = true;
-        continue;
-      }
-      if (terminal !== null) {
-        const index = Number(terminal[1]);
-        const next = formatHex(
-          ensureContrast(color(manifest.terminal![index]!), canvas, failure.min + MARGIN),
-        );
-        touch({ kind: "terminal", index }, next);
-        changed = true;
-        continue;
-      }
-      const pair = THEME_CONTRAST_PAIRS.find((item) => item.id === failure.id);
-      if (pair === undefined) continue;
-      const surface = contrastPairSurface(tokens, pair, manifest.base);
-      const status = STATUS_SEEDS.find(([pattern]) => pattern.test(pair.id));
-      if (status !== undefined) {
-        const [, key] = status;
-        // The app's own shade of a status color reads on most surfaces; the theme's may not.
-        if (drop({ kind: "seed", key })) {
-          changed = true;
-        } else if (key === "info" && manifest.colors.info === undefined) {
-          if (seedStep("accent", surface, failure.min)) changed = true;
-        } else {
-          // Not even the app's shade does here: a seed that reads on this surface, from it.
-          const shade = color(tokens[pair.fg === "white" ? "destructive" : pair.fg]);
-          const next = formatHex(ensureContrast(shade, surface, failure.min + MARGIN));
-          if (next !== manifest.colors[key]) {
-            touch({ kind: "seed", key }, next);
-            changed = true;
-          }
-        }
-        continue;
-      }
-      if (pair.id.startsWith("on-primary")) {
-        if (fitAccentInk()) changed = true;
-        continue;
-      }
-      if (pair.id === "selection" && drop({ kind: "seed", key: "selection" })) {
-        changed = true;
-        continue;
-      }
-      if (
-        (pair.id === "foreground/sidebar" || pair.id === "selected-row") &&
-        drop({ kind: "override", key: "sidebar" })
-      ) {
-        changed = true;
-        continue;
-      }
-      if (
-        /^(border|input|switch-off|focus-ring)$/.test(pair.id) &&
-        drop({ kind: "seed", key: "border" })
-      ) {
-        changed = true;
-        continue;
-      }
-      const key: keyof ThemeSeedColors | null = /^(muted|group-muted|placeholder)/.test(pair.id)
-        ? "mutedForeground"
-        : pair.id.startsWith("on-primary")
-          ? "accentForeground"
-          : /^(primary-readable|accent-mark)/.test(pair.id)
-            ? "accent"
-            : pair.fg === "foreground" ||
-                pair.fg === "card-foreground" ||
-                pair.fg === "popover-foreground" ||
-                pair.fg === "sidebar-foreground" ||
-                pair.fg === "sidebar-accent-foreground" ||
-                pair.fg === "secondary-foreground" ||
-                pair.fg === "accent-foreground"
-              ? "foreground"
-              : null;
-      if (key !== null && seedStep(key, surface, failure.min)) changed = true;
-    }
-    if (!changed) break;
-  }
-
-  const check = checkThemeManifest(manifest);
-  if (!check.ok) {
-    return {
-      ok: false,
-      problem: "Its colors can't be made readable in Threadlines without changing how it looks.",
-    };
-  }
-  const adjusted = touched.filter((slot) => slotValue(start, slot) !== slotValue(manifest, slot));
-  return { ok: true, manifest: check.manifest, adjusted: adjusted.length };
+  const fitted = fitThemeColors(manifest);
+  return fitted.ok
+    ? fitted
+    : {
+        ok: false,
+        problem: "Its colors can't be made readable in Threadlines without changing how it looks.",
+      };
 }
