@@ -5,8 +5,11 @@
  * unfreezes (the other computer confirmed the move was dropped) or stays
  * read-only for good (`thread.moved-away`). On the computer it arrives at,
  * `thread.import` creates it with its whole history in one decision, so the
- * thread existing is the move's commit. Each function returns the events to
- * plan, or a refusal to report.
+ * thread existing is the move's commit. A move can also wait for its thread
+ * to be free (Part 3b): `thread.move.queue` records a pending move, the
+ * guard keeps new work off the thread meanwhile, and the move queue's
+ * `thread.move.start` ends the pending move as it freezes the thread. Each
+ * function returns the events to plan, or a refusal to report.
  */
 import {
   EventId,
