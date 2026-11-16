@@ -2,8 +2,10 @@
  * Setting one side of System's pair, from the System themes row and from a
  * theme's options in the gallery ("Use when my computer is light"). A pick
  * switches the device to System with the new pair once both themes are
- * read; only the newest pick (or a reset) lands, and a second pick made
- * while the first loads builds on it.
+ * read; only the newest pick lands, and a second pick made while the first
+ * loads builds on it. Any theme change meanwhile (a reset, Restore
+ * defaults, another theme picked here or in another window, a pick from
+ * another device) wins: the loading pick is dropped.
  */
 import type { ThemeBase } from "@threadlines/contracts";
 
@@ -23,7 +25,13 @@ export const BUILTIN_SIDE = {
   dark: { kind: "builtin", id: "dark" },
 } as const satisfies Record<ThemeBase, ThemePairSide>;
 
-let pending: { readonly id: number; readonly next: ThemeChoice } | null = null;
+let pending: {
+  readonly id: number;
+  readonly next: ThemeChoice;
+  /** The device's theme and remembered pair when it was picked: a change to either drops it. */
+  readonly committed: ThemeChoice;
+  readonly systemPair: ThemeChoice | null;
+} | null = null;
 let picks = 0;
 
 /** The pair System uses on this device: remembered, or the one showing; null for plain System. */
@@ -54,11 +62,16 @@ export function pickSystemSide(mode: ThemeBase, side: ThemePairSide): void {
     chooseTheme(next);
     return;
   }
-  pending = { id, next };
+  const { committed, systemPair } = readThemeState();
+  pending = { id, next, committed, systemPair };
   void loadPairManifests(next)
     .then((sides) => {
       if (pending?.id !== id) return;
+      const picked = pending;
       pending = null;
+      // Every commit and every change of the remembered pair makes new objects.
+      const now = readThemeState();
+      if (now.committed !== picked.committed || now.systemPair !== picked.systemPair) return;
       chooseTheme(next, undefined, sides);
     })
     .catch((error: unknown) => {

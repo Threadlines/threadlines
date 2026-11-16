@@ -767,8 +767,9 @@ export function startThemePickSync(
     queueMicrotask(sync.run);
   });
   const stopLibrary = library.subscribe(() => {
-    // New content may have reached a computer: a theme that was nowhere may be there now.
-    if (readThemeState().committedState.status === "unavailable") retryUnavailableTheme();
+    // New content may have reached a computer: a theme (or a side of System's
+    // pair) that was nowhere may be there now. The store looks only when one is.
+    retryUnavailableTheme();
     sync.run();
   });
   // A trial ending or `?theme=default` ending may let a waiting pick be taken:
