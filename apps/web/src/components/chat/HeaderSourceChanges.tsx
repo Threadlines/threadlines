@@ -11,6 +11,7 @@ import {
 import { useTouchHoldMenu } from "../../hooks/useTouchHoldMenu";
 import { checkoutChangingGitMutationFilters } from "../../lib/gitReactQuery";
 import { useGitStatus } from "../../lib/gitStatusState";
+import { isMacPlatform } from "../../lib/utils";
 import { readLocalApi } from "../../localApi";
 import type { WorkingTreeChanges } from "../ChatView.logic";
 import { GitPullDialogs, isSameGitPullTarget, useGitPull } from "../source-control/GitPullFlow";
@@ -20,6 +21,7 @@ import {
   type SourceControlPullKind,
 } from "../source-control/SourceControlPanel.logic";
 import { Button } from "../ui/button";
+import { toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 /** Reads the change count out loud, naming what clicking it does. */
@@ -46,6 +48,23 @@ export function formatSourceChangesLabel(input: {
 function formatFileCount(count: number): string {
   if (count === 0) return "the working tree";
   return count === 1 ? "1 file" : `${count} files`;
+}
+
+/**
+ * Whether a click on the behind count asks to pull straight away: ⌘-click on a
+ * Mac, Ctrl+click elsewhere. (On a Mac, Ctrl+click is a right-click and opens
+ * the menu instead.)
+ */
+export function isQuickPullClick(
+  event: { readonly metaKey: boolean; readonly ctrlKey: boolean },
+  platform: string,
+): boolean {
+  return isMacPlatform(platform) ? event.metaKey : event.ctrlKey;
+}
+
+/** How the behind count's tooltip names the quick pull click on this platform. */
+export function formatQuickPullHint(platform: string): string {
+  return `${isMacPlatform(platform) ? "⌘-click" : "Ctrl+click"} or right-click to pull.`;
 }
 
 export type HeaderSourceMenuAction = "pull" | "open-source-tab";
@@ -77,8 +96,9 @@ export function buildHeaderSourceMenuItems(input: {
 
 /**
  * The chat header's change count: uncommitted lines and how far the branch is
- * behind its remote. Clicking opens the Source tab; right-clicking (or holding
- * on a touch screen) offers to pull without opening it. It stays mounted while
+ * behind its remote. Clicking opens the Source tab; ⌘-clicking (Ctrl+click off
+ * a Mac) pulls without opening it, and right-clicking (or holding on a touch
+ * screen) offers the same pull in a menu. It stays mounted while
  * the thread has source control so a pull's follow-up questions outlive the
  * count, which goes away once the branch catches up.
  */
@@ -160,6 +180,28 @@ export function HeaderSourceChanges({
         }
       });
   }, []);
+  // A quick pull skips the menu, not the checks: a stash or a diverged branch
+  // still asks first, and a pull that can't run says why, since nothing else
+  // on screen would.
+  const handleClick = useCallback(
+    (event: ReactMouseEvent<HTMLButtonElement>) => {
+      if (remoteBehindCount === null || !isQuickPullClick(event, navigator.platform)) {
+        onOpenSourceTab();
+        return;
+      }
+      if (pull.disabledReason !== null) {
+        toastManager.add({
+          type: "warning",
+          title: "Can't pull",
+          description: pull.disabledReason,
+          data: { ...threadToastData, hideCopyButton: true },
+        });
+        return;
+      }
+      pull.run();
+    },
+    [onOpenSourceTab, pull, remoteBehindCount, threadToastData],
+  );
   const handleContextMenu = useCallback(
     (event: ReactMouseEvent<HTMLButtonElement>) => {
       event.preventDefault();
@@ -199,7 +241,7 @@ export function HeaderSourceChanges({
               variant="ghost"
               size="xs"
               className="shrink-0 gap-1 px-1.5 font-mono text-[10.5px] @max-xl/header-actions:hidden"
-              onClick={onOpenSourceTab}
+              onClick={handleClick}
               aria-label={formatSourceChangesLabel({ workingTreeChanges, remoteBehindCount })}
               data-header-source-changes="true"
               // Only a branch with something to pull has a menu; elsewhere a
@@ -230,7 +272,8 @@ export function HeaderSourceChanges({
           {workingTreeChanges ? "Uncommitted changes. " : null}Open the Source tab.
           {remoteBehindCount !== null ? (
             <div className="text-muted-foreground">
-              {formatCommitCount(remoteBehindCount)} behind the remote. Right-click to pull.
+              {formatCommitCount(remoteBehindCount)} behind the remote.{" "}
+              {formatQuickPullHint(navigator.platform)}
             </div>
           ) : null}
         </TooltipPopup>
