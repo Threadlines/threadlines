@@ -26,10 +26,15 @@ export const ThreadMoveTargetPreview = Schema.Struct({
   refusal: Schema.optional(TrimmedNonEmptyString),
   /**
    * `no_project`: it has no copy of this project yet; the app can offer to
-   * set one up. `unreachable`: it can't be reached right now; a queued move
+   * set one up. Never extended: a client from before a new code would fail
+   * to read the whole preview, so new reasons get fields of their own.
+   */
+  refusalCode: Schema.optional(Schema.Literals(["no_project"])),
+  /**
+   * It can't be reached right now (`refusal` says so). A queued move
    * (`moves.queue`) may still pick it, and waits for it to connect.
    */
-  refusalCode: Schema.optional(Schema.Literals(["no_project", "unreachable"])),
+  unreachable: Schema.optional(Schema.Literal(true)),
   /** Its project the thread would land in. */
   projectName: Schema.optional(TrimmedNonEmptyString),
   /** Whether its user is asked first, or it takes the move at once. */

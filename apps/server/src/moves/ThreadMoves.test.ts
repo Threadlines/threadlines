@@ -59,7 +59,7 @@ describe("checkMoveTarget", () => {
       checkMoveTarget(
         shown({
           refusal: "Mac mini can't be reached right now.",
-          refusalCode: "unreachable",
+          unreachable: true,
           agents: [],
         }),
         MAC_MINI,

@@ -140,7 +140,7 @@ export function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThread
   const mode: ThreadPendingMoveMode = stopNowRefusal === null ? pickedMode : "when-done";
   // Out of reach: a queued move to it waits for it to connect, and runs
   // with the agent it suggests then (no agent sent).
-  const unreachable = queues && target?.refusalCode === "unreachable";
+  const unreachable = queues && target?.unreachable === true;
   const agentSelection: ModelSelection | null =
     target !== null && agent !== null ? threadMoveAgentSelection(target, agent) : null;
   const canMove =

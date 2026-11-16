@@ -161,7 +161,7 @@ export function isThreadMoveStalled(input: {
  * that can't be reached right now, which a queued move waits for.
  */
 export function isThreadMoveTargetPickable(target: ThreadMoveTargetPreview): boolean {
-  return target.refusal === undefined || target.refusalCode === "unreachable";
+  return target.refusal === undefined || target.unreachable === true;
 }
 
 /**

@@ -226,7 +226,7 @@ describe("picking where and with whom", () => {
       environmentId: EnvironmentId.make("environment-laptop"),
       label: "Laptop",
       refusal: "Laptop can't be reached right now.",
-      refusalCode: "unreachable",
+      unreachable: true,
       agents: [],
     });
     expect(pickDefaultMoveTarget([refused, offline])).toBe(offline);

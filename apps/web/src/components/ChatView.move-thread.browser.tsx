@@ -659,7 +659,7 @@ describe("ChatView (full app): moving a thread to another computer", () => {
                 environmentId: FLEET_OFFLINE_ENVIRONMENT_ID,
                 label: "Mac mini",
                 refusal: "Mac mini can't be reached right now.",
-                refusalCode: "unreachable",
+                unreachable: true,
                 agents: [],
               },
             ],

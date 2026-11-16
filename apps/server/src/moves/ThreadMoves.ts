@@ -165,7 +165,7 @@ export function checkMoveTarget(
   | { readonly refusal: string } {
   const target = shown.targets.find((entry) => entry.environmentId === environmentId);
   if (target === undefined) return { refusal: "This computer isn't linked to that one." };
-  if (target.refusalCode === "unreachable") return { unreachable: target };
+  if (target.unreachable === true) return { unreachable: target };
   if (target.refusal !== undefined) return { refusal: target.refusal };
   const agent = named ?? target.suggestedAgent;
   if (agent === undefined) return { refusal: `${target.label} has no agent ready.` };
@@ -228,7 +228,7 @@ const make = Effect.gen(function* () {
             environmentId,
             label,
             refusal: `${label} can't be reached right now.`,
-            refusalCode: "unreachable" as const,
+            unreachable: true as const,
             agents: [],
           };
         }
