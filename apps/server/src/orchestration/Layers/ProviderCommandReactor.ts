@@ -128,6 +128,7 @@ import {
 } from "../../provider/Errors.ts";
 import type { ProviderServiceError, SteerRejection } from "../../provider/Errors.ts";
 import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
+import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ThreadContextSeedBuilder } from "../../provider/contextSeed/ThreadContextSeedBuilder.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
@@ -148,6 +149,7 @@ import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { checkoutPresence } from "../../vcs/CheckoutPresence.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 import { checkpointHandover, HandoverCaptureWait } from "../checkpointHandover.ts";
+import { inviteAnswerRefusal } from "../agentInvites.ts";
 import { handOffReplyText } from "../agentRequestDecisions.ts";
 import { isCancelledReport } from "../childThreadDecisions.ts";
 import { NO_BACKGROUND_TASKS } from "../sessionBackgroundTasks.ts";
@@ -523,6 +525,8 @@ const make = Effect.gen(function* () {
   const vcsStatusBroadcaster = yield* VcsStatusBroadcaster;
   const textGeneration = yield* TextGeneration;
   const serverSettingsService = yield* ServerSettingsService;
+  // Absent on a CLI-only server, which has no agents to bring in.
+  const providerRegistry = yield* Effect.serviceOption(ProviderRegistry);
   const fileSystem = yield* FileSystem.FileSystem;
 
   /** Checkout existence check, bound to the layer's filesystem. Never fails. */
@@ -5799,6 +5803,31 @@ const make = Effect.gen(function* () {
       Effect.catchCause(() => Effect.succeed(undefined)),
     );
 
+  /** Why an invited review cannot start now (see inviteAnswerRefusal), or null. */
+  const inviteStartRefusal = Effect.fnUntraced(function* (
+    thread: OrchestrationThread,
+    requestId: OrchestrationSideTurn["requestId"],
+  ) {
+    const request =
+      requestId === undefined
+        ? undefined
+        : thread.agentRequests.open.find((entry) => entry.requestId === requestId);
+    if (request?.kind !== "invite" || Option.isNone(providerRegistry)) {
+      return null;
+    }
+    const settings = yield* serverSettingsService.getSettings.pipe(Effect.option);
+    if (Option.isNone(settings)) {
+      return "Could not check the invited agent's provider.";
+    }
+    return inviteAnswerRefusal({
+      thread,
+      requestId: request.requestId,
+      choice: "review",
+      mode: agentInvitesMode(settings.value),
+      providers: yield* providerRegistry.value.getProviders,
+    });
+  });
+
   const runSideTurn = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
     readonly sideTurnId: SideTurnId;
@@ -5815,6 +5844,13 @@ const make = Effect.gen(function* () {
       return yield* Effect.fail(
         new SideAnswerStartError({ detail: "The question for this side answer was not found." }),
       );
+    }
+    // An invited review can start long after the user accepted it (it waited
+    // for another side answer), so it is paid for the way the user was shown
+    // only if the provider still says so now.
+    const inviteRefusal = yield* inviteStartRefusal(thread, sideTurn.requestId);
+    if (inviteRefusal !== null) {
+      return yield* Effect.fail(new SideAnswerStartError({ detail: inviteRefusal }));
     }
     const key = sideSessionKey(threadId, sideTurnId, sideTurn.participantId);
     const project = yield* resolveProject(thread.projectId);

@@ -58,6 +58,7 @@ import {
   hasOpenAgentRequests,
   resetAgentRequestsForUser,
   settleAgentRequestForSideTurn,
+  startQueuedInvite,
 } from "./agentRequestDecisions.ts";
 import {
   findProjectById,
@@ -2108,6 +2109,13 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command.error,
         command.fromPreviousProcess === true,
       );
+      // An invite the user accepted while this answer ran starts its review now.
+      const nextInvite = startQueuedInvite(
+        thread,
+        eventBase,
+        command.createdAt,
+        command.fromPreviousProcess === true,
+      );
       return [
         ...closeAnswer,
         ...recordOutcome,
@@ -2126,6 +2134,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             settledAt: command.createdAt,
           },
         },
+        ...nextInvite,
       ];
     }
 

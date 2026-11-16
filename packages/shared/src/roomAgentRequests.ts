@@ -113,14 +113,13 @@ export interface AgentInviteInput {
   readonly from: RoomAgentRef;
   readonly callerTurnId: TurnId;
   readonly chainEpoch: number;
-  /** The agent is brought in and its review starts at once ("without asking"). */
-  readonly startsNow: boolean;
 }
 
 /**
  * Why an invite is refused, or null. The same holder, turn, Stop and limit
  * rules as other requests; besides those, a declined invite silences invites
  * until the user writes, and only one invite waits for the user at a time.
+ * A side answer running is no reason: an accepted invite waits its turn.
  */
 export function agentInviteRefusal(
   thread: AgentRequestThread & { readonly voiceActive?: boolean | undefined },
@@ -164,19 +163,14 @@ export function agentInviteRefusal(
   if (thread.voiceActive === true) {
     return { outcome: "refused", detail: "Voice is on. Agents cannot invite others while it is." };
   }
-  if (input.startsNow && (thread.sideTurn ?? null) !== null) {
-    return {
-      outcome: "busy",
-      detail: "Another agent is already answering on the side. Try again once it finishes.",
-    };
-  }
   return null;
 }
 
 /**
- * Why the user's answer to an invite cannot be applied now, or null. Checked
- * when the user answers, since the thread may have moved on while they
- * thought it over.
+ * Why an accepted invite's review cannot start, or null. Checked when the
+ * user answers, since the thread may have moved on while they thought it
+ * over, and again when an invite that waited for another side answer gets
+ * its turn.
  */
 export function agentInviteAcceptRefusal(
   thread: AgentRequestThread & { readonly voiceActive?: boolean | undefined },
@@ -187,9 +181,6 @@ export function agentInviteAcceptRefusal(
   }
   if (thread.voiceActive === true) {
     return "Stop voice before bringing in another agent.";
-  }
-  if ((thread.sideTurn ?? null) !== null) {
-    return "Another agent is answering on the side. Try again once it finishes.";
   }
   const caller = request.from.participantId ?? null;
   if (
