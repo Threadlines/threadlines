@@ -1099,6 +1099,22 @@ describe("a model's own usage limit", () => {
     expect(isProviderUsageNearLimit(claude(40, 100), { modelLimits: false })).toBe(false);
     expect(isProviderUsageNearLimit(claude(40, 100))).toBe(true);
     expect(isProviderUsageNearLimit(claude(84, 10), { modelLimits: false })).toBe(true);
+    // An account out of its plan, with no windows to say so.
+    const outOfPlan = deriveProviderAccountUsagePresentation(
+      {
+        source: "codex-rate-limits",
+        checkedAt: "2026-07-03T00:00:00.000Z",
+        limits: [
+          {
+            limitId: "codex",
+            rateLimitReachedType: "rate_limit_reached",
+            primary: { usedPercent: 40, remainingPercent: 60 },
+          },
+        ],
+      },
+      NOW,
+    );
+    expect(isProviderUsageNearLimit(outOfPlan, { modelLimits: false })).toBe(true);
   });
 });
 

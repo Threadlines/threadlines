@@ -84,8 +84,12 @@ export const ModelListRow = memo(function ModelListRow(props: {
         <div className="flex items-center justify-between gap-2 min-w-0">
           <div
             className={cn(
-              "text-xs font-medium leading-snug flex items-center gap-1.5 min-w-0 group-data-selected:text-primary-readable",
-              props.usageLimit?.tone === "reached" && "text-muted-foreground",
+              "text-xs font-medium leading-snug flex items-center gap-1.5 min-w-0",
+              // A model at its own limit reads grey, picked or not; the
+              // picked row keeps its fill.
+              props.usageLimit?.tone === "reached"
+                ? "text-muted-foreground"
+                : "group-data-selected:text-primary-readable",
             )}
             data-model-picker-model-name
           >

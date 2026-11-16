@@ -828,6 +828,12 @@ export function isProviderUsageNearLimit(
   if (options.modelLimits !== false) {
     return presentation.reachedLimit || presentation.windows.some((window) => window.warning);
   }
+  // Reached with no model's own limit reached: the account itself is out
+  // (Codex can say so with no windows at all).
+  const modelLimitReached = presentation.windows.some(
+    (window) => window.scope !== undefined && window.reachedLimit,
+  );
+  if (presentation.reachedLimit && !modelLimitReached) return true;
   return presentation.windows.some((window) => window.scope === undefined && window.warning);
 }
 
