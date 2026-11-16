@@ -5,6 +5,7 @@
  * `@threadlines/shared/roomAgentRequests`, shared with the room MCP server.
  */
 import {
+  MAX_LIVE_SIDE_TURNS,
   MessageId,
   type OrchestrationAgentRequest,
   type OrchestrationCommand,
@@ -16,6 +17,7 @@ import {
   type RoomAgentRef,
   type RoomAgentRequestId,
   type RoomAgentRequestOutcome,
+  type SideTurnId,
 } from "@threadlines/contracts";
 import {
   agentInviteAcceptRefusal,
@@ -29,8 +31,13 @@ import {
   hasAgentRecords,
   isRoomThread,
   isValidParticipantId,
+  roomAgentKey,
 } from "@threadlines/shared/threadParticipants";
-import { liveSideTurnForRequest, liveSideTurns } from "@threadlines/shared/sideTurns";
+import {
+  liveSideTurnForRequest,
+  liveSideTurns,
+  sideTurnStartRefusal,
+} from "@threadlines/shared/sideTurns";
 import { sameProviderOptionSelections } from "@threadlines/shared/model";
 import { currentAgentModel, messageAgentModels, sentAgentModel } from "./messageAgentModels.ts";
 
@@ -279,8 +286,6 @@ function decideAgentInviteSubmit(
     from: command.from,
     callerTurnId: command.callerTurnId,
     chainEpoch: command.chainEpoch,
-    startsNow: invite.autoChoice !== undefined,
-    to: command.to,
   });
   if (refusal !== null) {
     return refuse(refusal.detail);
@@ -353,7 +358,12 @@ function decideAgentInviteSubmit(
     to: command.to,
     callerTurnId: command.callerTurnId,
     chainEpoch: command.chainEpoch,
-    status: invite.autoChoice !== undefined ? "running" : "awaiting_user",
+    status:
+      invite.autoChoice === undefined
+        ? "awaiting_user"
+        : sideTurnStartRefusal(thread, command.to.participantId ?? null) !== null
+          ? "queued"
+          : "running",
     requestMessageId: command.message.messageId,
     sideTurnId,
     createdAt: command.createdAt,
@@ -494,9 +504,9 @@ export function decideAgentInviteRespond(
 
 /**
  * An invite accepted, by the user or by the setting: for a teammate, the
- * guest joins the thread (under a free name); the review is sent as its own
- * message, so the chat shows it like any independent review; its side answer
- * starts.
+ * guest joins the thread (under a free name), and its review starts. While
+ * another side answer runs, the invite is `queued` instead and its review
+ * starts when that answer settles (startQueuedInvite).
  */
 function inviteAcceptedEvents(input: {
   readonly thread: OrchestrationThread;
@@ -510,21 +520,11 @@ function inviteAcceptedEvents(input: {
   readonly createdAt: string;
 }): ReadonlyArray<PlannedEvent> {
   const { thread, request, guest, base, createdAt } = input;
-  const sideTurnId = request.sideTurnId;
-  if (sideTurnId === undefined) {
+  if (request.sideTurnId === undefined) {
     return [];
   }
-  const reviewMessageId = inviteReviewMessageId(request.requestId);
-  const sideTurn: OrchestrationSideTurn = {
-    sideTurnId,
-    participantId: guest.id,
-    messageId: reviewMessageId,
-    status: "starting",
-    startedAt: createdAt,
-    kind: "review",
-    askedBy: request.from,
-    requestId: request.requestId,
-  };
+  // It waits while its agent is answering, or the most answer at once.
+  const waits = sideTurnStartRefusal(thread, guest.id) !== null;
   return [
     ...(input.choice === "teammate"
       ? [
@@ -549,7 +549,7 @@ function inviteAcceptedEvents(input: {
             payload: {
               threadId: thread.id,
               requestId: request.requestId,
-              status: "running" as const,
+              status: waits ? ("queued" as const) : ("running" as const),
               inviteChoice: {
                 requestMessageId: request.requestMessageId,
                 choice: input.choice,
@@ -559,6 +559,50 @@ function inviteAcceptedEvents(input: {
             },
           },
         ]),
+    ...(waits
+      ? []
+      : inviteReviewEvents({
+          thread,
+          request,
+          guest,
+          text: input.text,
+          reviewInput: input.reviewInput,
+          base,
+          createdAt,
+        })),
+  ];
+}
+
+/**
+ * An accepted invite's review starts: it is sent as its own message, so the
+ * chat shows it like any independent review, and its side answer starts.
+ */
+function inviteReviewEvents(input: {
+  readonly thread: OrchestrationThread;
+  readonly request: OrchestrationAgentRequest;
+  readonly guest: OrchestrationThreadParticipant;
+  readonly text: string;
+  readonly reviewInput: NonNullable<OrchestrationThread["messages"][number]["reviewInput"]>;
+  readonly base: EventBase;
+  readonly createdAt: string;
+}): ReadonlyArray<PlannedEvent> {
+  const { thread, request, guest, base, createdAt } = input;
+  const sideTurnId = request.sideTurnId;
+  if (sideTurnId === undefined) {
+    return [];
+  }
+  const reviewMessageId = inviteReviewMessageId(request.requestId);
+  const sideTurn: OrchestrationSideTurn = {
+    sideTurnId,
+    participantId: guest.id,
+    messageId: reviewMessageId,
+    status: "starting",
+    startedAt: createdAt,
+    kind: "review",
+    askedBy: request.from,
+    requestId: request.requestId,
+  };
+  return [
     {
       ...base(),
       type: "thread.message-sent",
@@ -868,6 +912,92 @@ export function settleAgentRequestForSideTurn(
   const text =
     mapped === "answered" ? sideAnswerReplyText(answer?.text) : missingAnswerReplyText(error);
   return [settled, ...replyEvents(base, thread, request, replyId, text, settledAt)];
+}
+
+/**
+ * A side answer settled: the oldest invite accepted while it ran starts its
+ * review, in the same step. One that can no longer start (the agents were
+ * stopped, voice came on, its caller left) is cancelled with the reason, and
+ * the next one gets the turn. After a restart none starts, since the previous
+ * process's runtimes are gone and nothing is listening yet; they fail with
+ * the reason, like the review that was running.
+ */
+export function startQueuedInvite(
+  thread: OrchestrationThread,
+  settledSideTurnId: SideTurnId,
+  base: EventBase,
+  createdAt: string,
+  fromPreviousProcess: boolean,
+): ReadonlyArray<PlannedEvent> {
+  const queued = thread.agentRequests.open.filter(
+    (request) => request.kind === "invite" && request.status === "queued",
+  );
+  const events: PlannedEvent[] = [];
+  // Who answers once this one is over, as queued reviews start: each starts
+  // while its agent is free and fewer than the most answer, oldest first; the
+  // rest go on waiting for the next answer to settle.
+  const answering = liveSideTurns(thread)
+    .filter((sideTurn) => sideTurn.sideTurnId !== settledSideTurnId)
+    .map((sideTurn) => sideTurn.participantId);
+  for (const request of queued) {
+    if (fromPreviousProcess) {
+      events.push(
+        settledEvent(
+          base,
+          thread,
+          request,
+          "failed",
+          createdAt,
+          "The server restarted before this review started.",
+        ),
+      );
+      continue;
+    }
+    const guest = thread.participants.find(
+      (participant) => participant.id === request.to.participantId,
+    );
+    const message = thread.messages.find((entry) => entry.id === request.requestMessageId);
+    const refusal =
+      agentInviteAcceptRefusal(thread, request) ??
+      (guest === undefined || message?.reviewInput === undefined
+        ? "This invite's record is incomplete. Ask the agent to invite again."
+        : null);
+    if (refusal !== null || guest === undefined || message?.reviewInput === undefined) {
+      events.push(
+        settledEvent(base, thread, request, "cancelled", createdAt, refusal ?? undefined),
+      );
+      continue;
+    }
+    if (answering.includes(guest.id) || answering.length >= MAX_LIVE_SIDE_TURNS) {
+      continue;
+    }
+    answering.push(guest.id);
+    // At the model and reasoning its invite named, which a later invite of
+    // the same agent may have changed on the guest since.
+    const asked = message.agentModels?.[roomAgentKey(guest.id)]?.modelSelection;
+    events.push(
+      {
+        ...base(),
+        type: "thread.agent-request-updated",
+        payload: {
+          threadId: thread.id,
+          requestId: request.requestId,
+          status: "running",
+          updatedAt: createdAt,
+        },
+      },
+      ...inviteReviewEvents({
+        thread,
+        request,
+        guest: asked === undefined ? guest : { ...guest, modelSelection: asked },
+        text: message.text,
+        reviewInput: message.reviewInput,
+        base,
+        createdAt,
+      }),
+    );
+  }
+  return events;
 }
 
 /**

@@ -21,6 +21,9 @@ roots separate so unrelated commits do not trigger the marketing site build.
 - Build and Deployment setting: enable the Root Directory `Skip deployment`
   switch so Vercel skips this project when commits do not affect
   `apps/marketing` or its workspace dependencies.
+- Production builds hide changelog entries newer than the latest published
+  GitHub release; the release workflow redeploys this project once a stable
+  release publishes (see `docs/release.md`).
 
 The marketing project should not use the root `vercel.json`; that file is
 intentionally configured for the hosted app shell.

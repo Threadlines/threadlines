@@ -1,12 +1,13 @@
 ---
-import { getCollection, type CollectionEntry } from "astro:content";
+import type { CollectionEntry } from "astro:content";
+import { getPublishedChangelog } from "../../lib/publishedChangelog";
 
 import Layout from "../../layouts/Layout.astro";
 import { formatReleaseDate } from "../../lib/changelog";
 import { absoluteSiteUrl } from "../../lib/site";
 
 export async function getStaticPaths() {
-  const entries = await getCollection("changelog");
+  const entries = await getPublishedChangelog();
   return entries.map((entry) => ({ params: { version: entry.id }, props: { entry } }));
 }
 

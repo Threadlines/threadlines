@@ -1296,7 +1296,6 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
         from: { participantId: scope.participantId },
         callerTurnId,
         chainEpoch,
-        startsNow: mode === "auto",
       };
       const refusal = agentInviteRefusal(room.thread, rules);
       if (refusal !== null) {
@@ -1345,7 +1344,7 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
           const refusalNow =
             threadNow === undefined
               ? { outcome: "refused" as const, detail: "This thread is gone." }
-              : agentInviteRefusal(threadNow, { ...rules, startsNow: modeNow === "auto" });
+              : agentInviteRefusal(threadNow, rules);
           if (refusalNow !== null) {
             return {
               outcome: refusalNow.outcome,
@@ -1383,18 +1382,6 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
               participant.guest === true &&
               sameModel(participant.modelSelection, target.modelSelection),
           );
-          // That guest may still be answering an earlier invite's review.
-          if (
-            earlierGuest !== undefined &&
-            modeNow === "auto" &&
-            threadNow !== undefined &&
-            isAnsweringOnTheSide(threadNow, earlierGuest.id)
-          ) {
-            return {
-              outcome: "busy",
-              detail: `${earlierGuest.handle} is already answering on the side. Try again once it finishes.`,
-            } satisfies RoomInviteResult;
-          }
           const handle =
             earlierGuest?.handle ??
             nextRoomAgentName(
@@ -1439,11 +1426,17 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
               ...named,
             } satisfies RoomInviteResult;
           }
+          // As the decider decides: it waits while its agent is answering, or
+          // the most answer at once.
+          const waitsForRoom =
+            threadNow !== undefined &&
+            (liveSideTurns(threadNow).length >= MAX_LIVE_SIDE_TURNS ||
+              (earlierGuest !== undefined && isAnsweringOnTheSide(threadNow, earlierGuest.id)));
           return {
             outcome: modeNow === "auto" ? "started" : "asked_user",
             detail:
               modeNow === "auto"
-                ? `${handle} is reviewing${suggestion === "teammate" ? " and joined the thread" : ""}. Its review comes back to you as a message.`
+                ? `${handle} ${waitsForRoom ? "will review once a side answer running now finishes" : "is reviewing"}${suggestion === "teammate" ? ", and joined the thread" : ""}. Its review comes back to you as a message.`
                 : "The user will decide. If they agree, the review comes back to you as a message; if not, you will not hear back. Do not ask again unless the user asks you to.",
             agent,
             ...named,

@@ -38,6 +38,22 @@ export interface ThreadBackgroundRunItem {
   providerTaskId?: string | null | undefined;
 }
 
+/**
+ * Whether two lists of background runs say the same thing. The list is
+ * rebuilt whenever the thread changes, which is every streamed word; a caller
+ * keeps the old one while this holds so the header does not redraw. Runs are
+ * plain data, so comparing their JSON compares every field.
+ */
+export function sameBackgroundRuns(
+  left: ReadonlyArray<ThreadBackgroundRunItem>,
+  right: ReadonlyArray<ThreadBackgroundRunItem>,
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((run, index) => JSON.stringify(run) === JSON.stringify(right[index]))
+  );
+}
+
 export interface SubagentDisplayDetails {
   goal: string | null;
   /** Where the agent is working, lifted out of the objective prose. */

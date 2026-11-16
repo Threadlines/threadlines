@@ -840,7 +840,7 @@ export function pendingRoomInvite(
 export interface RoomInviteDescription {
   readonly from: string;
   readonly to: string;
-  /** "waiting for you", "review only", "added to the thread", "not now". */
+  /** "waiting for you", "review only", "review only, waiting its turn", "added to the thread", "not now". */
   readonly status: string;
   /** How it ended without its review, when it did. */
   readonly outcomeNote: string | null;
@@ -862,13 +862,15 @@ export function describeRoomInvite(input: {
   const to = nameOf(message.participantId);
   const choice = message.invite?.choice;
   const withoutAsking = message.invite?.automatic === true ? ", without asking" : "";
+  // Accepted while another side answer ran: its review starts after that one.
+  const waiting = input.openStatus === "queued" ? ", waiting its turn" : "";
   const status =
     input.openStatus === "awaiting_user"
       ? "wants a review, waiting for you"
       : choice === "review"
-        ? `review only${withoutAsking}`
+        ? `review only${withoutAsking}${waiting}`
         : choice === "teammate"
-          ? `added to the thread${withoutAsking}`
+          ? `added to the thread${withoutAsking}${waiting}`
           : message.requestOutcome === "declined"
             ? "not now"
             : "wants a review";

@@ -5,7 +5,6 @@
  * precise outcome instead of a bare command rejection.
  */
 import {
-  MAX_LIVE_SIDE_TURNS,
   type OrchestrationAgentRequestState,
   type OrchestrationThreadParticipant,
   type RoomAgentInvite,
@@ -19,7 +18,7 @@ import {
   type TurnId,
 } from "@threadlines/contracts";
 
-import { liveSideTurns, type SideTurnFields, sideTurnStartRefusal } from "./sideTurns.ts";
+import { type SideTurnFields, sideTurnStartRefusal } from "./sideTurns.ts";
 import { activeParticipants } from "./threadParticipants.ts";
 
 /** What the rules read from a thread. */
@@ -117,19 +116,13 @@ export interface AgentInviteInput {
   readonly from: RoomAgentRef;
   readonly callerTurnId: TurnId;
   readonly chainEpoch: number;
-  /** The agent is brought in and its review starts at once ("without asking"). */
-  readonly startsNow: boolean;
-  /**
-   * The agent invited, once known. An earlier guest is brought back under its
-   * old id, and may still be answering on the side.
-   */
-  readonly to?: RoomAgentRef | undefined;
 }
 
 /**
  * Why an invite is refused, or null. The same holder, turn, Stop and limit
  * rules as other requests; besides those, a declined invite silences invites
  * until the user writes, and only one invite waits for the user at a time.
+ * A side answer running is no reason: an accepted invite waits its turn.
  */
 export function agentInviteRefusal(
   thread: AgentRequestThread & { readonly voiceActive?: boolean | undefined },
@@ -173,22 +166,14 @@ export function agentInviteRefusal(
   if (thread.voiceActive === true) {
     return { outcome: "refused", detail: "Voice is on. Agents cannot invite others while it is." };
   }
-  if (input.startsNow) {
-    const busy =
-      input.to !== undefined
-        ? sideTurnStartRefusal(thread, input.to.participantId ?? null)
-        : liveSideTurns(thread).length >= MAX_LIVE_SIDE_TURNS
-          ? `${MAX_LIVE_SIDE_TURNS} agents are already answering on the side. Try again once one finishes.`
-          : null;
-    if (busy !== null) return { outcome: "busy", detail: busy };
-  }
   return null;
 }
 
 /**
- * Why the user's answer to an invite cannot be applied now, or null. Checked
- * when the user answers, since the thread may have moved on while they
- * thought it over.
+ * Why an accepted invite's review cannot start, or null. Checked when the
+ * user answers, since the thread may have moved on while they thought it
+ * over, and again when an invite that waited for another side answer gets
+ * its turn.
  */
 export function agentInviteAcceptRefusal(
   thread: AgentRequestThread & { readonly voiceActive?: boolean | undefined },
@@ -199,11 +184,6 @@ export function agentInviteAcceptRefusal(
   }
   if (thread.voiceActive === true) {
     return "Stop voice before bringing in another agent.";
-  }
-  // A guest brought back under its old id may still be answering.
-  const busy = sideTurnStartRefusal(thread, request.to.participantId ?? null);
-  if (busy !== null) {
-    return busy;
   }
   const caller = request.from.participantId ?? null;
   if (

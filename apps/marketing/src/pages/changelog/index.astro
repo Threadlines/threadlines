@@ -1,5 +1,5 @@
 ---
-import { getCollection } from "astro:content";
+import { getPublishedChangelog } from "../../lib/publishedChangelog";
 
 import Layout from "../../layouts/Layout.astro";
 import {
@@ -8,7 +8,7 @@ import {
   sortChangelogEntries,
 } from "../../lib/changelog";
 
-const entries = sortChangelogEntries(await getCollection("changelog"));
+const entries = sortChangelogEntries(await getPublishedChangelog());
 ---
 
 <Layout

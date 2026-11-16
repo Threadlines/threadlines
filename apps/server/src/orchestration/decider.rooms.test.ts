@@ -1417,10 +1417,16 @@ describe("decider rooms", () => {
         turnCount: 0,
         createdAt: now,
       };
-      /** The guest's review finished with this text. */
-      const answered = async (model: OrchestrationReadModel, text: string) => {
+      /** A guest's review (the oldest, or `participantId`'s) finished with this text. */
+      const answered = async (
+        model: OrchestrationReadModel,
+        text: string,
+        participantId?: ThreadParticipantId,
+      ) => {
         const thread = threadOf(model);
-        const sideTurn = thread.sideTurn!;
+        const sideTurn = liveSideTurns(thread).find(
+          (entry) => participantId === undefined || entry.participantId === participantId,
+        )!;
         const withAnswer: OrchestrationReadModel = {
           ...model,
           threads: [
@@ -1448,7 +1454,7 @@ describe("decider rooms", () => {
           await decideEvents(
             {
               type: "thread.side-turn.settle",
-              commandId: CommandId.make("cmd-review-done"),
+              commandId: CommandId.make(`cmd-review-done-${sideTurn.sideTurnId}`),
               threadId,
               sideTurnId: sideTurn.sideTurnId,
               outcome: "completed",
@@ -1539,6 +1545,67 @@ describe("decider rooms", () => {
         expect(thread.participants).toMatchObject([{ id: guestId, leftAt: null }]);
         expect(thread.participants[0]?.guest).toBeUndefined();
         expect(Exit.isFailure(await decide(revert, model))).toBe(true);
+      });
+
+      it("lets the user accept an invite while its agent still reviews, and starts it when that review settles", async () => {
+        let model = plainThread();
+        const secondGuestId = ThreadParticipantId.make("7e6f5a4b-3c2d-4e1f-8a9b-0c1d2e3f4a5b");
+        const opus = (level: string) => ({
+          handle: "Opus 5.5",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("claudeAgent"),
+            model: "claude-opus-5-5",
+            options: [{ id: "effort", value: level }],
+          },
+        });
+        const opusInvite = (level: string) => ({
+          ...invite({ guest: opus(level) }),
+          to: { participantId: secondGuestId },
+        });
+        const second = opusInvite("high");
+        model = await apply(model, await decideEvents(second, model));
+        model = await apply(model, await decideEvents(respond(second.requestId, "review"), model));
+        // The same agent asked again while it reviews: accepted, it waits.
+        const third = opusInvite("low");
+        model = await apply(model, await decideEvents(third, model));
+        model = await apply(model, await decideEvents(respond(third.requestId, "review"), model));
+        // And again at another level, not yet answered.
+        const fourth = opusInvite("max");
+        model = await apply(model, await decideEvents(fourth, model));
+        let thread = threadOf(model);
+        expect(liveSideTurns(thread).map((entry) => entry.participantId)).toEqual([secondGuestId]);
+        expect(thread.agentRequests.open).toMatchObject([
+          { requestId: second.requestId, status: "running" },
+          { requestId: third.requestId, status: "queued" },
+          { requestId: fourth.requestId, status: "awaiting_user" },
+        ]);
+        expect(
+          thread.messages.find((message) => message.id === third.message.messageId),
+        ).toMatchObject({ invite: { choice: "review", automatic: false } });
+
+        model = await answered(model, "The backoff never caps.", secondGuestId);
+        thread = threadOf(model);
+        // It starts at the level the user accepted, not the later one.
+        const started = liveSideTurns(thread).find(
+          (entry) => entry.participantId === secondGuestId,
+        );
+        expect(started).toMatchObject({
+          kind: "review",
+          requestId: third.requestId,
+          modelSelection: opus("low").modelSelection,
+        });
+        expect(thread.agentRequests.open).toMatchObject([
+          { requestId: third.requestId, status: "running" },
+          { requestId: fourth.requestId, status: "awaiting_user" },
+        ]);
+        expect(thread.messages.find((message) => message.id === started?.messageId)).toMatchObject({
+          requestKind: "review",
+          reviewInput: third.reviewInput,
+        });
+        // The finished review still goes back to the agent that asked.
+        expect(thread.queuedFollowUps).toMatchObject([
+          { text: "The backoff never caps.", requestId: second.requestId },
+        ]);
       });
 
       it("invites an earlier guest again at the reasoning the new invite names", async () => {

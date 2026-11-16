@@ -178,6 +178,7 @@ import {
 import { useTheme } from "../hooks/useTheme";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import { useIsMobile, useMediaQuery } from "../hooks/useMediaQuery";
+import { useKept, useStableHandlers } from "../hooks/useStableIdentity";
 import { useNewThreadHandler } from "../hooks/useHandleNewThread";
 import { useCommandPaletteStore } from "../commandPaletteStore";
 import { useChatFindStore } from "../chatFindStore";
@@ -328,7 +329,11 @@ import {
   pickedElementFromPreview,
   type PickedElementContextDraft,
 } from "../lib/pickedElementContext";
-import { processStartedAt, type ThreadBackgroundRunItem } from "./chat/threadActivity";
+import {
+  processStartedAt,
+  sameBackgroundRuns,
+  type ThreadBackgroundRunItem,
+} from "./chat/threadActivity";
 import { currentWorkLine } from "./chat/activitySteps";
 import { closeExpandedImagePreview, openExpandedImagePreview } from "./chat/ExpandedImagePreview";
 import { FilePreviewDialog, type FilePreviewRequest } from "./chat/FilePreviewDialog";
@@ -1492,9 +1497,16 @@ export default function ChatView(props: ChatViewProps) {
   // Agents tab only counts as open while the sidebar is showing.
   const agentsPanelOpen = rightPanelTabs.visible && rightPanelTabs.activeTab === "agents";
   const activeThreadId = activeThread?.id ?? null;
+  // Keyed on the ids, not the thread: the thread changes on every streamed
+  // word, and about forty callbacks and the code blocks' Run buttons hang off
+  // this ref.
+  const activeThreadEnvironmentId = activeThread?.environmentId ?? null;
   const activeThreadRef = useMemo(
-    () => (activeThread ? scopeThreadRef(activeThread.environmentId, activeThread.id) : null),
-    [activeThread],
+    () =>
+      activeThreadEnvironmentId !== null && activeThreadId !== null
+        ? scopeThreadRef(activeThreadEnvironmentId, activeThreadId)
+        : null,
+    [activeThreadEnvironmentId, activeThreadId],
   );
   const activeThreadKey = activeThreadRef ? scopedThreadKey(activeThreadRef) : null;
   // Lets async work started on one thread tell whether the user is still on it.
@@ -8639,6 +8651,39 @@ export default function ChatView(props: ChatViewProps) {
 
   const chatHeaderBottomVarRef = useChatHeaderBottomVarRef();
 
+  // The header is memoized, but this view redraws on every streamed word and
+  // rebuilds some of its handlers each time. Stand-ins that keep their
+  // identity and call the newest function let the header skip those redraws;
+  // it calls them only from clicks and keys.
+  const headerHandlers = useStableHandlers({
+    onToggleBrowser: handleToggleBrowser,
+    onOpenParentThread: onOpenParentThread,
+    onRunProjectScript: runProjectScript,
+    onAddProjectScript: saveProjectScript,
+    onUpdateProjectScript: updateProjectScript,
+    onDeleteProjectScript: deleteProjectScript,
+    onToggleBackgroundRunTerminal: toggleBackgroundRunTerminal,
+    onStopBackgroundRun: stopBackgroundRun,
+    onOpenWorkflowRun: openWorkflowRun,
+    onStopWorkflowRun: stopWorkflowRun,
+    onOpenForkSourceThread: onOpenForkSourceThread,
+    onToggleTerminal: toggleTerminalVisibility,
+    onToggleRail: onToggleRail,
+    onOpenSourceTab: onOpenHeaderSourceTab,
+    onOpenAgentsTab: onOpenHeaderAgentsTab,
+    onViewProposedPlan:
+      taskProgressProposedPlan !== null && !isGeneralChatThread ? onViewProposedPlan : undefined,
+    onImplementProposedPlan: canImplementProposedPlan ? onImplementProposedPlanInThread : undefined,
+    onDismissProposedPlan: canImplementProposedPlan
+      ? () => void onDismissProposedPlan()
+      : undefined,
+    onContinueInProject:
+      isGeneralChatThread && isServerThread && (activeThread?.messages.length ?? 0) > 0
+        ? onContinueInProject
+        : undefined,
+  });
+  const headerBackgroundRuns = useKept(backgroundRuns, sameBackgroundRuns);
+
   const chatHeader = activeThread ? (
     <ChatHeader
       activeThreadEnvironmentId={activeThread.environmentId}
@@ -8666,7 +8711,7 @@ export default function ChatView(props: ChatViewProps) {
       sourceControlAvailable={activeProject !== undefined && !isGeneralChatThread}
       browserAvailable={browserAvailable}
       browserOpen={browserOpen}
-      onToggleBrowser={handleToggleBrowser}
+      onToggleBrowser={headerHandlers.onToggleBrowser}
       workingTreeChanges={workingTreeChanges}
       remoteBehindCount={remoteBehindCount}
       liveAgents={headerLiveAgents}
@@ -8677,40 +8722,80 @@ export default function ChatView(props: ChatViewProps) {
       forkContext={forkHeaderContext}
       parentContext={parentHeaderContext}
       outsideOrigin={activeThread.outsideOrigin ?? null}
-      onOpenParentThread={onOpenParentThread}
-      backgroundRuns={backgroundRuns}
+      onOpenParentThread={headerHandlers.onOpenParentThread}
+      backgroundRuns={headerBackgroundRuns}
       activeThreadRef={activeThreadRef}
-      onRunProjectScript={runProjectScript}
-      onAddProjectScript={saveProjectScript}
-      onUpdateProjectScript={updateProjectScript}
-      onDeleteProjectScript={deleteProjectScript}
-      onToggleBackgroundRunTerminal={toggleBackgroundRunTerminal}
-      onStopBackgroundRun={stopBackgroundRun}
+      onRunProjectScript={headerHandlers.onRunProjectScript}
+      onAddProjectScript={headerHandlers.onAddProjectScript}
+      onUpdateProjectScript={headerHandlers.onUpdateProjectScript}
+      onDeleteProjectScript={headerHandlers.onDeleteProjectScript}
+      onToggleBackgroundRunTerminal={headerHandlers.onToggleBackgroundRunTerminal}
+      onStopBackgroundRun={headerHandlers.onStopBackgroundRun}
       workflowRuns={runningWorkflowRuns}
-      onOpenWorkflowRun={openWorkflowRun}
-      onStopWorkflowRun={stopWorkflowRun}
-      onViewProposedPlan={
-        taskProgressProposedPlan !== null && !isGeneralChatThread ? onViewProposedPlan : undefined
-      }
-      onImplementProposedPlan={
-        canImplementProposedPlan ? onImplementProposedPlanInThread : undefined
-      }
-      onDismissProposedPlan={
-        canImplementProposedPlan ? () => void onDismissProposedPlan() : undefined
-      }
-      onOpenForkSourceThread={onOpenForkSourceThread}
-      onToggleTerminal={toggleTerminalVisibility}
-      onToggleRail={onToggleRail}
-      onOpenSourceTab={onOpenHeaderSourceTab}
-      onOpenAgentsTab={onOpenHeaderAgentsTab}
-      onContinueInProject={
-        isGeneralChatThread && isServerThread && (activeThread?.messages.length ?? 0) > 0
-          ? onContinueInProject
-          : undefined
-      }
+      onOpenWorkflowRun={headerHandlers.onOpenWorkflowRun}
+      onStopWorkflowRun={headerHandlers.onStopWorkflowRun}
+      onViewProposedPlan={headerHandlers.onViewProposedPlan}
+      onImplementProposedPlan={headerHandlers.onImplementProposedPlan}
+      onDismissProposedPlan={headerHandlers.onDismissProposedPlan}
+      onOpenForkSourceThread={headerHandlers.onOpenForkSourceThread}
+      onToggleTerminal={headerHandlers.onToggleTerminal}
+      onToggleRail={headerHandlers.onToggleRail}
+      onOpenSourceTab={headerHandlers.onOpenSourceTab}
+      onOpenAgentsTab={headerHandlers.onOpenAgentsTab}
+      onContinueInProject={headerHandlers.onContinueInProject}
       continueInProjectDisabledReason={continueInProjectDisabledReason}
     />
   ) : null;
+
+  // The composer is memoized, but this view redraws on every streamed word and
+  // rebuilds some of these each time. Stand-ins that keep their identity and
+  // call the newest function let the composer skip those redraws; it calls
+  // them only from clicks and keys.
+  const composerHandlers = useStableHandlers({
+    onSend,
+    onInterrupt,
+    onStopBackgroundWork: stopBackgroundWork,
+    onSetThreadGoal,
+    onClearThreadGoal,
+    onImplementPlanInNewThread,
+    onRespondToApproval,
+    onSelectActivePendingUserInputOption,
+    onAdvanceActivePendingUserInput,
+    onRespondToUserInput,
+    onSkipActivePendingUserInput,
+    onCloseActivePendingUserInput,
+    onReplyInChatToActivePendingUserInput,
+    onPreviousActivePendingUserInputQuestion,
+    onChangeActivePendingUserInputCustomAnswer,
+    onProviderModelSelect,
+    onCompactContext: contextCompactControlVisible ? onCompactContext : undefined,
+    onEditQueuedFollowUp: (followUp: OrchestrationQueuedFollowUp) =>
+      void returnQueuedFollowUpsToComposer([followUp]),
+    onRemoveQueuedFollowUp: removeQueuedFollowUp,
+  });
+  const composerFollowUpQueue = useMemo(
+    () => (
+      <ComposerFollowUpQueue
+        steering={queuedSteeringMessages}
+        queued={queuedFollowUps}
+        paused={!isWorking && !waitingOnBackgroundTasks}
+        attachmentOnlyPrompt={ATTACHMENT_ONLY_BOOTSTRAP_PROMPT}
+        roomAgents={roomAgentLabels}
+        environmentId={environmentId}
+        onEdit={composerHandlers.onEditQueuedFollowUp}
+        onRemove={composerHandlers.onRemoveQueuedFollowUp}
+      />
+    ),
+    [
+      composerHandlers,
+      environmentId,
+      isWorking,
+      queuedFollowUps,
+      queuedSteeringMessages,
+      roomAgentLabels,
+      waitingOnBackgroundTasks,
+    ],
+  );
 
   // Empty state: no active thread
   if (!activeThread) {
@@ -8956,18 +9041,7 @@ export default function ChatView(props: ChatViewProps) {
                     activeThreadActivities={activeThread ? threadActivities : undefined}
                     notices={dockedComposerNotices}
                     pullRequests={composerPullRequests}
-                    stackedAbove={
-                      <ComposerFollowUpQueue
-                        steering={queuedSteeringMessages}
-                        queued={queuedFollowUps}
-                        paused={!isWorking && !waitingOnBackgroundTasks}
-                        attachmentOnlyPrompt={ATTACHMENT_ONLY_BOOTSTRAP_PROMPT}
-                        roomAgents={roomAgentLabels}
-                        environmentId={environmentId}
-                        onEdit={(followUp) => void returnQueuedFollowUpsToComposer([followUp])}
-                        onRemove={removeQueuedFollowUp}
-                      />
-                    }
+                    stackedAbove={composerFollowUpQueue}
                     resolvedTheme={resolvedTheme}
                     settings={settings}
                     roomsEnabled={roomsEnabled}
@@ -8984,12 +9058,12 @@ export default function ChatView(props: ChatViewProps) {
                     onRevealPickedElement={isElectron ? revealPickedElement : undefined}
                     shouldAutoScrollRef={isAtEndRef}
                     scheduleStickToBottom={scheduleTimelineStickToBottom}
-                    onSend={onSend}
+                    onSend={composerHandlers.onSend}
                     workflowKeywordSuppressed={workflowKeywordSuppressed}
                     onToggleWorkflowKeyword={toggleWorkflowKeyword}
-                    onInterrupt={onInterrupt}
-                    onStopBackgroundWork={stopBackgroundWork}
-                    onCompactContext={contextCompactControlVisible ? onCompactContext : undefined}
+                    onInterrupt={composerHandlers.onInterrupt}
+                    onStopBackgroundWork={composerHandlers.onStopBackgroundWork}
+                    onCompactContext={composerHandlers.onCompactContext}
                     goalControls={goalControls}
                     goalDispatching={
                       activeThread !== undefined && goalDispatchingThreadId === activeThread.id
@@ -8999,8 +9073,8 @@ export default function ChatView(props: ChatViewProps) {
                         ? (optimisticGoals.get(activeThread.id)?.goal ?? null)
                         : null
                     }
-                    onSetThreadGoal={onSetThreadGoal}
-                    onClearThreadGoal={onClearThreadGoal}
+                    onSetThreadGoal={composerHandlers.onSetThreadGoal}
+                    onClearThreadGoal={composerHandlers.onClearThreadGoal}
                     contextCompactDisabled={
                       contextCompactControlVisible ? contextCompactDisabled : undefined
                     }
@@ -9010,21 +9084,27 @@ export default function ChatView(props: ChatViewProps) {
                     contextCompactDisabledReason={
                       contextCompactControlVisible ? contextCompactDisabledReason : undefined
                     }
-                    onImplementPlanInNewThread={onImplementPlanInNewThread}
-                    onRespondToApproval={onRespondToApproval}
-                    onSelectActivePendingUserInputOption={onSelectActivePendingUserInputOption}
-                    onAdvanceActivePendingUserInput={onAdvanceActivePendingUserInput}
-                    onRespondToUserInput={onRespondToUserInput}
-                    onSkipActivePendingUserInput={onSkipActivePendingUserInput}
-                    onCloseActivePendingUserInput={onCloseActivePendingUserInput}
-                    onReplyInChatToActivePendingUserInput={onReplyInChatToActivePendingUserInput}
+                    onImplementPlanInNewThread={composerHandlers.onImplementPlanInNewThread}
+                    onRespondToApproval={composerHandlers.onRespondToApproval}
+                    onSelectActivePendingUserInputOption={
+                      composerHandlers.onSelectActivePendingUserInputOption
+                    }
+                    onAdvanceActivePendingUserInput={
+                      composerHandlers.onAdvanceActivePendingUserInput
+                    }
+                    onRespondToUserInput={composerHandlers.onRespondToUserInput}
+                    onSkipActivePendingUserInput={composerHandlers.onSkipActivePendingUserInput}
+                    onCloseActivePendingUserInput={composerHandlers.onCloseActivePendingUserInput}
+                    onReplyInChatToActivePendingUserInput={
+                      composerHandlers.onReplyInChatToActivePendingUserInput
+                    }
                     onPreviousActivePendingUserInputQuestion={
-                      onPreviousActivePendingUserInputQuestion
+                      composerHandlers.onPreviousActivePendingUserInputQuestion
                     }
                     onChangeActivePendingUserInputCustomAnswer={
-                      onChangeActivePendingUserInputCustomAnswer
+                      composerHandlers.onChangeActivePendingUserInputCustomAnswer
                     }
-                    onProviderModelSelect={onProviderModelSelect}
+                    onProviderModelSelect={composerHandlers.onProviderModelSelect}
                     toggleInteractionMode={toggleInteractionMode}
                     handleRuntimeModeChange={handleRuntimeModeChange}
                     handleInteractionModeChange={handleInteractionModeChange}
