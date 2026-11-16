@@ -609,8 +609,11 @@ Glass mode turns on only when the active theme has a backdrop
   punctuation) on every background code sits on: the code background, the
   diff panel, each diff line tint, and the file viewer's hovered and
   selected lines (`DIFF_TINT`, which `DiffPanel.styles.ts` and the file
-  viewer paint with; a selected line is a tint toward the accent). A fit is
-  judged as the hex it's written as. On a theme with art, chat code blocks
+  viewer paint with; a selected line is a tint toward the accent). The
+  editor takes two backgrounds from the code theme itself, so the theme
+  sets them: selected text is an opaque tint toward the accent (also fitted
+  against), and the cursor's line has no fill (the editor outlines it). A
+  fit is judged as the hex it's written as. On a theme with art, chat code blocks
   are partly see-through, so the art behind them isn't part of the fit. Pierre's own light colors read about
   3:1 for strings and 2.6:1 for numbers; changed words in removed lines are
   the darkest tint.

@@ -8,6 +8,8 @@
  * Either way each color is fitted to read on every background code is drawn
  * on (shared themes/codeColors.ts), the diff tints included. The fitting and
  * the built-in tokens load with the first theme resolved, not at startup.
+ * The editor's selected text and cursor line take their backgrounds from
+ * the theme too (withEditorColors), so those are set to match the fit.
  */
 import { type DiffsTheme, registerCustomTheme, resolveThemes } from "@pierre/diffs";
 import type { ThemeBase, ThemeCodePalette } from "@threadlines/contracts";
@@ -106,6 +108,17 @@ export function fitCodeTheme(
   };
 }
 
+/**
+ * The editor's backgrounds, which it takes from the code theme: selected
+ * text gets `selection` (a surface the colors are fitted against), and the
+ * line with the cursor gets no fill of its own (the editor outlines it
+ * instead), so its code sits on the plain background.
+ */
+export function withEditorColors(theme: TextMateTheme, selection: string): TextMateTheme {
+  const { "editor.lineHighlightBackground": _lineHighlight, ...colors } = theme.colors ?? {};
+  return { ...theme, colors: { ...colors, "editor.selectionBackground": selection } };
+}
+
 export function customCodeThemeName(hash: string): DiffThemeName {
   return `tl-custom-${hash}`;
 }
@@ -143,11 +156,12 @@ function ensureRegistered(
       const surfaceTokens = tokens ?? builtinTokens?.BUILTIN_THEME_TOKENS[themeBase];
       if (!surfaceTokens) throw new Error(`No tokens for ${name}`);
       const surfaces = codeColors.codeSurfaces(surfaceTokens);
-      return fitCodeTheme(withPalette, surfaces, {
+      const fitted = fitCodeTheme(withPalette, surfaces, {
         color: codeColors.fitCodeColor,
         ratioFor: codeColors.codeRatioForScopes,
         textRatio: codeColors.CODE_TEXT_RATIO,
       });
+      return withEditorColors(fitted, codeColors.editorSelectionHex(surfaceTokens));
     },
     "textmate",
   );

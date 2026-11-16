@@ -33,6 +33,8 @@ export const DIFF_TINT = {
   /** A selected line (a line number clicked, a chat reference), toward the accent over the panel. */
   selected: 14,
   selectedHover: 20,
+  /** Text selected in the editor, toward the accent over the panel (drawn opaque). */
+  editorSelection: 25,
 } as const;
 
 /** Code text: syntax colors and plain code. */
@@ -61,10 +63,29 @@ type CodeTokens = Pick<
   | "destructive"
 >;
 
+const canvasOf = (tokens: CodeTokens) => ({ ...color(tokens["surface-solid"]), a: 1 });
+/** The diff panel and file viewer: the card mixed into the surface. */
+const panelOf = (tokens: CodeTokens) => {
+  const canvas = canvasOf(tokens);
+  return mix(canvas, composite(color(tokens.card), canvas), 0.9);
+};
+const editorSelection = (tokens: CodeTokens) => {
+  const panel = panelOf(tokens);
+  return mix(panel, composite(color(tokens.primary), panel), DIFF_TINT.editorSelection / 100);
+};
+
+/**
+ * The background of text selected in the editor, as the code theme's
+ * `editor.selectionBackground`: opaque, so what it covers can't change it.
+ */
+export function editorSelectionHex(tokens: CodeTokens): string {
+  return formatHex(editorSelection(tokens));
+}
+
 /** Every background code text is drawn on under a theme, opaque. */
 export function codeSurfaces(tokens: CodeTokens): Rgba[] {
-  const canvas = { ...color(tokens["surface-solid"]), a: 1 };
-  const panel = mix(canvas, composite(color(tokens.card), canvas), 0.9);
+  const canvas = canvasOf(tokens);
+  const panel = panelOf(tokens);
   const toward = (token: keyof CodeTokens, percent: number) =>
     mix(canvas, composite(color(tokens[token]), canvas), percent / 100);
   return [
@@ -75,6 +96,7 @@ export function codeSurfaces(tokens: CodeTokens): Rgba[] {
     mix(panel, composite(color(tokens.foreground), panel), DIFF_TINT.rowHover / 100),
     mix(panel, composite(color(tokens.primary), panel), DIFF_TINT.selected / 100),
     mix(panel, composite(color(tokens.primary), panel), DIFF_TINT.selectedHover / 100),
+    editorSelection(tokens),
     toward("foreground", DIFF_TINT.context),
     toward("foreground", DIFF_TINT.contextHover),
     ...(["success", "destructive"] as const).flatMap((tint) => [
