@@ -16,7 +16,11 @@ import {
 import * as Schema from "effect/Schema";
 import { Tool } from "effect/ai";
 
-import { THEME_PREVIEW_TOOL_NAME, THEME_SHOW_TOOL_NAME } from "./themeTools.ts";
+import {
+  THEME_FIND_VSCODE_TOOL_NAME,
+  THEME_PREVIEW_TOOL_NAME,
+  THEME_SHOW_TOOL_NAME,
+} from "./themeTools.ts";
 
 /** How the tools are namespaced to a provider: `mcp__threadlines_pages__show_page`. */
 export const PAGES_MCP_SERVER_NAME = "threadlines_pages";
@@ -30,6 +34,7 @@ export const CLAUDE_PAGE_TOOL_IDS = [
   `mcp__${PAGES_MCP_SERVER_NAME}__${AGENT_PAGE_PREVIEW_TOOL_NAME}`,
   `mcp__${PAGES_MCP_SERVER_NAME}__${THEME_SHOW_TOOL_NAME}`,
   `mcp__${PAGES_MCP_SERVER_NAME}__${THEME_PREVIEW_TOOL_NAME}`,
+  `mcp__${PAGES_MCP_SERVER_NAME}__${THEME_FIND_VSCODE_TOOL_NAME}`,
 ] as const;
 
 // The page itself: show_page and preview_page each take exactly one.

@@ -29,6 +29,7 @@ import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSna
 import { ProjectionThreadPageRepository } from "../persistence/Services/ProjectionThreadPages.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { AnalyticsService } from "../telemetry/Services/AnalyticsService.ts";
+import { ThemeVsCode } from "../themes/ThemeVsCode.ts";
 import { ThemeWorkshop } from "../themes/ThemeWorkshop.ts";
 import { AgentPages, layer as AgentPagesLayer } from "./AgentPages.ts";
 import * as PagePreview from "./preview/PagePreview.ts";
@@ -71,6 +72,32 @@ const threadWith = (
     latestTurn: rest.latestTurnId !== undefined ? { turnId: rest.latestTurnId } : null,
     session: { ...session, status: "running" },
   }) as unknown as OrchestrationThread;
+
+const VSCODE_EXTENSION = {
+  namespace: "someone",
+  name: "night",
+  version: "1.0.0",
+  displayName: "Night",
+  publisher: "someone",
+  description: "",
+  downloads: 10,
+  license: "MIT",
+  themeCount: 1,
+};
+const VSCODE_THEME: ThemeManifest = {
+  format: THEME_FILE_FORMAT,
+  name: "Night Storm",
+  base: "dark",
+  colors: {
+    background: "#0a1029",
+    foreground: "#e7ecff",
+    mutedForeground: "#a3aed2",
+    accent: "#2fd6b0",
+    accentForeground: "#03231c",
+  },
+  credits: { author: "Someone", license: "MIT" },
+  createdBy: { kind: "imported", vscode: { theme: "Night Storm", extension: "someone.night" } },
+};
 
 let readCount = 0;
 /** What the pages counted, as PostHog would get it. */
@@ -133,6 +160,25 @@ const makeLayer = (options: {
         Layer.mock(ThemeWorkshop)({
           embedFonts: (manifest) => Effect.succeed(manifest),
           withStill: (manifest) => Effect.succeed({ manifest }),
+        }),
+        // One extension with one theme, as the store would give it.
+        Layer.mock(ThemeVsCode)({
+          search: () => Effect.succeed({ extensions: [VSCODE_EXTENSION], nextOffset: null }),
+          read: () =>
+            Effect.succeed({
+              extension: VSCODE_EXTENSION,
+              themes: [
+                {
+                  label: "Night Storm",
+                  file: "extension/themes/storm.json",
+                  base: "dark" as const,
+                  colors: { background: "#0a1029", foreground: "#e7ecff", accent: "#2fd6b0" },
+                  manifest: VSCODE_THEME,
+                  adjusted: 2,
+                },
+              ],
+              skipped: [],
+            }),
         }),
         Layer.succeed(AnalyticsService, {
           record: (event, properties) =>
@@ -469,6 +515,49 @@ it.layer(NodeServices.layer)("AgentPages.showTheme", (it) => {
             thread: threadWith({ participantId: null, activeTurnId: TURN }),
             dispatched,
             measured,
+          }),
+        ),
+      );
+    },
+  );
+
+  it.effect(
+    "finds a VS Code theme as a file show_theme offers, still saying where it came from",
+    () => {
+      const dispatched: Array<OrchestrationCommand> = [];
+      return Effect.gen(function* () {
+        const pages = yield* AgentPages;
+        const found = yield* pages.findVsCodeTheme(caller(), { query: "night" });
+        if (found.outcome !== "found") return assert.fail(`not found: ${JSON.stringify(found)}`);
+        const [theme] = found.extensions[0]!.themes;
+        assert.strictEqual(theme?.label, "Night Storm");
+        assert.match(
+          theme?.path ?? "",
+          /vscode-someone-night-night-storm-[0-9a-f]{8}\.threadlines-theme$/,
+        );
+        // Found again, it's a new file: nothing already in the folder is written over.
+        const again = yield* pages.findVsCodeTheme(caller(), { query: "night" });
+        if (again.outcome !== "found") return assert.fail("not found again");
+        assert.notStrictEqual(again.extensions[0]!.themes[0]!.path, theme?.path);
+        const shown = yield* pages.showTheme(caller(), { path: theme!.path });
+        assert.strictEqual(shown.outcome, "shown");
+        const command = dispatched[0];
+        if (command?.type !== "thread.page.publish") return assert.fail("no publish");
+        const read = yield* pages.read({
+          threadId: THREAD,
+          pageId: command.page.pageId,
+          versionId: command.page.versionId,
+        });
+        assert.deepStrictEqual(JSON.parse(read.content).createdBy, {
+          kind: "imported",
+          vscode: { theme: "Night Storm", extension: "someone.night" },
+          offer: { threadId: THREAD, pageId: command.page.pageId },
+        });
+      }).pipe(
+        Effect.provide(
+          makeLayer({
+            thread: threadWith({ participantId: null, activeTurnId: TURN }),
+            dispatched,
           }),
         ),
       );

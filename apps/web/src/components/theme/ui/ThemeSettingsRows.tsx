@@ -16,7 +16,7 @@ import {
 import { DEFAULT_UNIFIED_SETTINGS } from "@threadlines/contracts/settings";
 import { placeById, type SettingsPlaceId } from "@threadlines/shared/appPlaces";
 import { EllipsisIcon, PlusIcon, UploadIcon } from "lucide-react";
-import { type ReactNode, useId, useRef, useState } from "react";
+import { lazy, type ReactNode, Suspense, useId, useRef, useState } from "react";
 
 import { useGeneralChats } from "~/components/chats/useGeneralChats";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
@@ -78,6 +78,7 @@ import {
 import { Input } from "../../ui/input";
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../../ui/menu";
 import { SegmentedControl, SegmentedControlItem } from "../../ui/segmented-control";
+import { Spinner } from "../../ui/spinner";
 import { failureNotice, toastManager } from "../../ui/toast";
 import { SettingResetButton, SettingsGroup, SettingsRow } from "../../settings/settingsLayout";
 import { moveBetweenTabs, pageTabId } from "../../ui/page-tabs";
@@ -430,10 +431,15 @@ const THEME_FILTERS: ReadonlyArray<{ readonly value: ThemeFilter; readonly label
   { value: "builtin", label: "Built in" },
 ];
 
-type GalleryView = "mine" | "showcase";
+type GalleryView = "mine" | "showcase" | "vscode";
+
+/** VS Code themes, loaded only when their tab is picked. */
+const ThemeVsCodeView = lazy(() =>
+  import("./ThemeVsCodeView").then((module) => ({ default: module.ThemeVsCodeView })),
+);
 
 /**
- * The gallery: your themes and the Showcase, a switch apart. Your themes are
+ * The gallery: your themes, the Showcase and VS Code themes, a switch apart. Your themes are
  * every theme this device can wear, yours first, the one it wears marked;
  * plain words above them narrow them to one kind. Nothing is remembered, so
  * Settings always opens on your themes, All.
@@ -449,12 +455,24 @@ export function ThemeGallery() {
     >
       <SegmentedControlItem value="mine">Your themes</SegmentedControlItem>
       <SegmentedControlItem value="showcase">Showcase</SegmentedControlItem>
+      <SegmentedControlItem value="vscode">VS Code</SegmentedControlItem>
     </SegmentedControl>
   );
   return (
     <div data-place="appearance.theme" className="flex flex-col gap-1.5">
       {view === "showcase" ? (
         <ThemeShowcaseView switcher={switcher} />
+      ) : view === "vscode" ? (
+        <Suspense
+          fallback={
+            <>
+              <div className="flex items-center">{switcher}</div>
+              <Spinner className="size-3.5" />
+            </>
+          }
+        >
+          <ThemeVsCodeView switcher={switcher} />
+        </Suspense>
       ) : (
         <OwnThemes switcher={switcher} />
       )}

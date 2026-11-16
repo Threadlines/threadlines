@@ -165,6 +165,15 @@ function surfaceColor(
   return composite(withAlpha(top, top.a * extraAlpha), under);
 }
 
+/** What a pair's text sits on, as an opaque color: its background laid over what's under it. */
+export function contrastPairSurface(
+  tokens: ThemeTokens,
+  pair: ThemeContrastPair,
+  base: ThemeBase,
+): Rgba {
+  return surfaceColor(tokens, pair.bg, pair.over ?? "background", pair.bgAlpha?.[base] ?? 1);
+}
+
 /** Every pair in the table, measured on a token set. */
 export function measureThemeContrast(tokens: ThemeTokens, base: ThemeBase): ThemeContrastResult[] {
   return THEME_CONTRAST_PAIRS.map((pair) => {

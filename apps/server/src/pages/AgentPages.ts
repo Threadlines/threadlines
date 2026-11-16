@@ -19,6 +19,7 @@
  * `theme`, published the same way, whose version file is the theme's JSON.
  */
 import { randomUUID } from "node:crypto";
+import * as NodeFSP from "node:fs/promises";
 import NodePath from "node:path";
 
 import {
@@ -68,6 +69,7 @@ import { OrchestrationEngineService } from "../orchestration/Services/Orchestrat
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ProjectionThreadPageRepository } from "../persistence/Services/ProjectionThreadPages.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
+import { ThemeVsCode } from "../themes/ThemeVsCode.ts";
 import { themeProblems, ThemeWorkshop } from "../themes/ThemeWorkshop.ts";
 import { themeAnalyticsProperties } from "../telemetry/AnalyticsProperties.ts";
 import { AnalyticsService } from "../telemetry/Services/AnalyticsService.ts";
@@ -151,6 +153,24 @@ export type PreviewThemeOutcome =
     }
   | { readonly outcome: "off" | "not_allowed" | "refused" | "failed"; readonly detail: string };
 
+/** What `find_vscode_theme` found: each extension's themes as files ready for show_theme. */
+export type FindVsCodeThemeOutcome =
+  | {
+      readonly outcome: "found";
+      readonly extensions: ReadonlyArray<{
+        readonly extension: string;
+        readonly name: string;
+        readonly license: string;
+        readonly themes: ReadonlyArray<{
+          readonly label: string;
+          readonly base: "light" | "dark";
+          readonly path: string;
+          readonly adjusted: number;
+        }>;
+      }>;
+    }
+  | { readonly outcome: "off" | "not_allowed" | "none" | "failed"; readonly detail: string };
+
 export interface AgentPagesShape {
   readonly show: (
     scope: McpInvocationScope,
@@ -174,6 +194,15 @@ export interface AgentPagesShape {
     scope: McpInvocationScope,
     input: ThemeToolInput,
   ) => Effect.Effect<PreviewThemeOutcome>;
+  /**
+   * `find_vscode_theme`: VS Code themes on the Open VSX store matching the
+   * words, each written to the thread's assets folder as a theme file
+   * show_theme takes.
+   */
+  readonly findVsCodeTheme: (
+    scope: McpInvocationScope,
+    input: { readonly query: string },
+  ) => Effect.Effect<FindVsCodeThemeOutcome>;
   /**
    * Shows the local copy of a page a provider's own tool published (a Claude
    * artifact). Publishing it again updates the page already showing it.
@@ -288,6 +317,7 @@ const make = Effect.gen(function* () {
   const settings = yield* ServerSettingsService;
   const previews = yield* PagePreview;
   const workshop = yield* ThemeWorkshop;
+  const vscode = yield* ThemeVsCode;
   const analytics = yield* AnalyticsService;
 
   const pending = new Set<string>();
@@ -748,12 +778,83 @@ const make = Effect.gen(function* () {
       return { kind: row.kind, content };
     });
 
+  const findVsCodeTheme: AgentPagesShape["findVsCodeTheme"] = (scope, input) =>
+    Effect.gen(function* () {
+      if (!(yield* enabled)) return { outcome: "off" as const, detail: OFF_DETAIL };
+      if (scope.side !== undefined) {
+        return { outcome: "not_allowed" as const, detail: "A side answer cannot offer themes." };
+      }
+      const query = input.query.trim().slice(0, 100);
+      const found = yield* vscode.search({ query, sort: query === "" ? "downloads" : "relevance" });
+      const assetsRoot = yield* ensurePageAssetsDir(scope.threadId);
+      const slug = (value: string) =>
+        value
+          .toLowerCase()
+          .normalize("NFKD")
+          .replace(/[^a-z0-9]+/g, "-")
+          .replace(/^-+|-+$/g, "")
+          .slice(0, 40) || "theme";
+      const extensions = [];
+      let readFailure: string | null = null;
+      for (const extension of found.extensions.slice(0, 3)) {
+        const read = yield* vscode.read(extension).pipe(Effect.result);
+        if (read._tag === "Failure") {
+          readFailure ??= read.failure.detail;
+          continue;
+        }
+        if (read.success.themes.length === 0) {
+          readFailure ??= read.success.skipped[0]?.reason ?? null;
+          continue;
+        }
+        const themes = [];
+        for (const theme of read.success.themes) {
+          // A new name each time, created only if it isn't there: nothing already in the
+          // folder (another theme, a link) is ever written through or replaced.
+          const path = NodePath.join(
+            assetsRoot,
+            `vscode-${slug(extension.namespace)}-${slug(extension.name)}-${slug(theme.label)}-${randomUUID().slice(0, 8)}.threadlines-theme`,
+          );
+          yield* Effect.tryPromise(() =>
+            NodeFSP.writeFile(path, `${JSON.stringify(theme.manifest, null, 2)}\n`, { flag: "wx" }),
+          );
+          themes.push({ label: theme.label, base: theme.base, path, adjusted: theme.adjusted });
+        }
+        extensions.push({
+          extension: `${extension.namespace}.${extension.name}`,
+          name: extension.displayName,
+          license: extension.license,
+          themes,
+        });
+      }
+      if (extensions.length === 0 && readFailure !== null) {
+        return { outcome: "failed" as const, detail: readFailure };
+      }
+      if (extensions.length === 0) {
+        return {
+          outcome: "none" as const,
+          detail: `No openly licensed VS Code theme on Open VSX matches "${query}". Try other words, or make a theme yourself.`,
+        };
+      }
+      return { outcome: "found" as const, extensions };
+    }).pipe(
+      Effect.catch((error) =>
+        Effect.succeed({
+          outcome: "failed" as const,
+          detail:
+            "detail" in error && typeof error.detail === "string"
+              ? error.detail
+              : "The themes couldn't be saved in the page assets folder.",
+        }),
+      ),
+    );
+
   return AgentPages.of({
     show,
     adopt,
     preview,
     showTheme,
     previewTheme,
+    findVsCodeTheme,
     read,
     pendingVersionIds: Effect.sync(() => new Set(pending)),
     assetsDirOf: (threadId) => pageAssetsDir(threadId),

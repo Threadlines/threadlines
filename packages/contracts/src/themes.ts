@@ -202,6 +202,22 @@ export const ThemeOrigin = keepingUnknownKeys(
         Schema.Struct({ threadId: TrimmedNonEmptyString, pageId: TrimmedNonEmptyString }),
       ),
     ),
+    /**
+     * The VS Code theme it was brought in from (themeVsCode.ts): the
+     * extension (`publisher.name`) and version on Open VSX, the theme's label
+     * in it, and the extension's license (SPDX). Absent for a file imported
+     * without its extension. Older builds keep it as an unknown key.
+     */
+    vscode: Schema.optional(
+      keepingUnknownKeys(
+        Schema.Struct({
+          extension: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(200))),
+          version: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(64))),
+          theme: TrimmedNonEmptyString.check(Schema.isMaxLength(120)),
+          license: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(64))),
+        }),
+      ),
+    ),
   }),
 );
 export type ThemeOrigin = typeof ThemeOrigin.Type;
@@ -229,6 +245,13 @@ export const ThemeCredits = keepingUnknownKeys(
       Schema.String.check(Schema.isMaxLength(200), Schema.isPattern(/^https:\/\/[^\s/]+\S*$/)),
     ),
     license: Schema.optional(ThemeLicense),
+    /**
+     * Brought in from VS Code: the extension (`publisher.name` on Open VSX),
+     * or "file" for a theme file imported on its own. Part of the content, so
+     * it stays with every copy, older builds' exports included, and the
+     * Showcase turns such a theme away.
+     */
+    vscode: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(200))),
   }),
 );
 export type ThemeCredits = typeof ThemeCredits.Type;
