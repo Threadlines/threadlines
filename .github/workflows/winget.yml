@@ -57,6 +57,7 @@ jobs:
         id: listing
         env:
           GH_TOKEN: ${{ github.token }}
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
         run: |
           set -euo pipefail
           status="$(gh api --include repos/microsoft/winget-pkgs/contents/manifests/t/Threadlines/Threadlines 2> /dev/null | head -n 1 || true)"
@@ -69,8 +70,15 @@ jobs:
             echo "::error::Couldn't tell whether Threadlines is in winget-pkgs (got '${status}')."
             exit 1
           fi
+          # Only our own requests count: anyone can open a pull request with
+          # this title, and a stranger's must not hold back our releases.
+          if [[ -z "$WINGET_TOKEN" ]]; then
+            echo "::error::Add a WINGET_TOKEN secret (a classic GitHub token with public_repo and workflow) to send releases to winget."
+            exit 1
+          fi
+          owner="$(GH_TOKEN="$WINGET_TOKEN" gh api user --jq .login)"
           pending="$(gh api -X GET search/issues \
-            -f q='repo:microsoft/winget-pkgs is:pr is:open in:title "New package: Threadlines.Threadlines"' \
+            -f q="repo:microsoft/winget-pkgs is:pr is:open author:${owner} in:title \"New package: Threadlines.Threadlines\"" \
             --jq '[.items[].html_url] | join(" ")')"
           if [[ -n "$pending" ]]; then
             echo "::notice::Skipped: our first winget request still waits for a moderator (${pending}). Send the newest version by hand once it's approved."
