@@ -92,6 +92,9 @@ import { resetServerStateForTests, setServerConfigSnapshot } from "../rpc/server
 import { AppAtomRegistryProvider } from "../rpc/atomRegistry";
 import { editorLabel } from "./EditorOpenOptions";
 import { toastManager } from "./ui/toast";
+import { chooseTheme } from "../theme/themeStore";
+import { composite, contrastRatio, type Rgba } from "@threadlines/shared/themeColor";
+import { parseCssColor } from "./theme/ui/themeInspect";
 import { toMarkdownFileUrlHref } from "../markdown-links";
 import { readDrawnBlocks } from "./chat/chatFind/chatFindDom";
 import { findableMarkdownBlocks } from "./chat/chatFind/chatFindText";
@@ -1240,6 +1243,49 @@ describe("ChatMarkdown", () => {
       });
     } finally {
       await screen.unmount();
+    }
+  });
+
+  it("draws every code color readably on the built-in Light theme", async () => {
+    // Its shipped strings and numbers read at about 3:1 and 2.6:1; they are fitted to 4.5.
+    chooseTheme({ kind: "builtin", id: "light" });
+    const code = '```ts\nconst label = "ready";\nconst total = 42 + count;\n```';
+    const screen = await render(<ChatMarkdown text={code} cwd="/repo/project" />);
+    try {
+      const pre = await vi.waitUntil(
+        () => {
+          const found = document.querySelector<HTMLElement>(".chat-markdown-shiki > pre");
+          return found?.style.backgroundColor && found.querySelector('span[style*="color"]')
+            ? found
+            : null;
+        },
+        { timeout: 10_000 },
+      );
+      // The block's own tint over the page behind it, as drawn.
+      const rgba = (value: string): Rgba => {
+        const parsed = parseCssColor(value)!;
+        return { r: parsed.r / 255, g: parsed.g / 255, b: parsed.b / 255, a: parsed.a };
+      };
+      const page = rgba(getComputedStyle(document.body).backgroundColor);
+      const background = composite(rgba(getComputedStyle(pre).backgroundColor), {
+        ...page,
+        a: 1,
+      });
+      const ratios = [...pre.querySelectorAll<HTMLElement>('span[style*="color"]')]
+        .filter((span) => span.textContent?.trim())
+        .map((span) => {
+          const text = composite(rgba(getComputedStyle(span).color), background);
+          return [span.textContent, Math.round(contrastRatio(text, background) * 100) / 100];
+        });
+      expect(ratios.length).toBeGreaterThan(3);
+      // Punctuation (the quotes, ";") is quiet on purpose: 3:1. Everything else 4.5.
+      const quiet = (text: string) => /^[\s"';(){}]+$/.test(text);
+      expect(
+        ratios.filter(([text, ratio]) => (ratio as number) < (quiet(text as string) ? 3 : 4.5)),
+      ).toEqual([]);
+    } finally {
+      await screen.unmount();
+      chooseTheme({ kind: "builtin", id: "system" });
     }
   });
 

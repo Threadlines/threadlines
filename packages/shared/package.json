@@ -103,6 +103,10 @@
       "types": "./src/themes/contrast.ts",
       "import": "./src/themes/contrast.ts"
     },
+    "./themeCodeColors": {
+      "types": "./src/themes/codeColors.ts",
+      "import": "./src/themes/codeColors.ts"
+    },
     "./themeSharing": {
       "types": "./src/themes/sharing.ts",
       "import": "./src/themes/sharing.ts"

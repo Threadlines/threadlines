@@ -596,7 +596,15 @@ Glass mode turns on only when the active theme has a backdrop
 - **Code.** A theme's code palette becomes a generated Shiki theme
   (`tl-custom-<hash>`) registered with the highlight worker and the diff
   renderer; their caches key on theme name. Without one, the base's Pierre
-  theme is used. (Prototype: green UI with purple code looked wrong.)
+  theme fills in. (Prototype: green UI with purple code looked wrong.) The
+  built-ins get one too (`tl-code-light`, `tl-code-dark`). Every color in
+  them is fitted when the theme is built (shared `themes/codeColors.ts`):
+  moved in lightness, hue kept, until it reads 4.5:1 (3:1 for comments and
+  punctuation) on every background code sits on: the code background, the
+  diff panel, and each diff line tint (`DIFF_TINT`, which
+  `DiffPanel.styles.ts` paints with). Pierre's own light colors read about
+  3:1 for strings and 2.6:1 for numbers; changed words in removed lines are
+  the darkest tint.
 - **Desktop.** The bridge keeps the native preference apart from colors:
   `{ nativeSource: system | light | dark, colors?: { windowBackground,
   titleBarSymbol } }`. Built-in System stays `system` so the OS keeps
@@ -675,7 +683,8 @@ surface they sit on before measuring:
   against its surface.
 - Code palette on the code background and terminal ANSI colors on the
   terminal background at 4.5:1 (black and white excepted against their own
-  extreme).
+  extreme). Diff line tints aren't checked here: code colors are fitted to
+  them when drawn (see Code, under Applying a theme).
 - Borders, inputs and switch tracks at 1.3:1 against what they sit on.
 
 Each row names the component and line it mirrors, and changing a component's

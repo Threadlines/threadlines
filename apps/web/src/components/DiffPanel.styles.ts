@@ -1,3 +1,4 @@
+import { DIFF_TINT } from "@threadlines/shared/themeCodeColors";
 import type { CSSProperties } from "react";
 
 type DiffPanelHostStyle = CSSProperties & Record<`--${string}`, string>;
@@ -11,6 +12,11 @@ export const DIFF_PANEL_HOST_STYLE: DiffPanelHostStyle = {
   "--diffs-line-height": "20px",
 };
 
+/**
+ * The diff panel's colors. Line tints come from DIFF_TINT, the same numbers
+ * code colors are fitted against (shared themes/codeColors.ts), so syntax
+ * stays readable on every line.
+ */
 export const DIFF_PANEL_UNSAFE_CSS = `
 [data-diffs-header],
 [data-diff],
@@ -23,23 +29,23 @@ export const DIFF_PANEL_UNSAFE_CSS = `
   --diffs-token-light-bg: transparent;
   --diffs-token-dark-bg: transparent;
 
-  --diffs-bg-context-override: color-mix(in srgb, var(--surface-solid) 97%, var(--foreground));
-  --diffs-bg-hover-override: color-mix(in srgb, var(--surface-solid) 94%, var(--foreground));
+  --diffs-bg-context-override: color-mix(in srgb, var(--surface-solid) ${100 - DIFF_TINT.context}%, var(--foreground));
+  --diffs-bg-hover-override: color-mix(in srgb, var(--surface-solid) ${100 - DIFF_TINT.contextHover}%, var(--foreground));
   --diffs-bg-separator-override: color-mix(in srgb, var(--surface-solid) 95%, var(--foreground));
   --diffs-bg-buffer-override: color-mix(in srgb, var(--surface-solid) 90%, var(--foreground));
 
   /* Number column matches the row tint so each line reads as one flat band. */
-  --diffs-bg-addition-override: color-mix(in srgb, var(--surface-solid) 92%, var(--success));
-  --diffs-bg-addition-number-override: color-mix(in srgb, var(--surface-solid) 92%, var(--success));
-  --diffs-bg-addition-hover-override: color-mix(in srgb, var(--surface-solid) 85%, var(--success));
-  --diffs-bg-addition-emphasis-override: color-mix(in srgb, var(--surface-solid) 80%, var(--success));
+  --diffs-bg-addition-override: color-mix(in srgb, var(--surface-solid) ${100 - DIFF_TINT.line}%, var(--success));
+  --diffs-bg-addition-number-override: color-mix(in srgb, var(--surface-solid) ${100 - DIFF_TINT.line}%, var(--success));
+  --diffs-bg-addition-hover-override: color-mix(in srgb, var(--surface-solid) ${100 - DIFF_TINT.lineHover}%, var(--success));
+  --diffs-bg-addition-emphasis-override: color-mix(in srgb, var(--surface-solid) ${100 - DIFF_TINT.word}%, var(--success));
 
-  --diffs-bg-deletion-override: color-mix(in srgb, var(--surface-solid) 92%, var(--destructive));
-  --diffs-bg-deletion-number-override: color-mix(in srgb, var(--surface-solid) 92%, var(--destructive));
-  --diffs-bg-deletion-hover-override: color-mix(in srgb, var(--surface-solid) 85%, var(--destructive));
+  --diffs-bg-deletion-override: color-mix(in srgb, var(--surface-solid) ${100 - DIFF_TINT.line}%, var(--destructive));
+  --diffs-bg-deletion-number-override: color-mix(in srgb, var(--surface-solid) ${100 - DIFF_TINT.line}%, var(--destructive));
+  --diffs-bg-deletion-hover-override: color-mix(in srgb, var(--surface-solid) ${100 - DIFF_TINT.lineHover}%, var(--destructive));
   --diffs-bg-deletion-emphasis-override: color-mix(
     in srgb,
-    var(--surface-solid) 80%,
+    var(--surface-solid) ${100 - DIFF_TINT.word}%,
     var(--destructive)
   );
 
