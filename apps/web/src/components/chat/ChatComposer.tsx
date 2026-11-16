@@ -347,6 +347,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   isSendBusy: boolean;
   isConnecting: boolean;
   isEnvironmentUnavailable: boolean;
+  sendBlockedReason: string | null;
   hasSendableContent: boolean;
   preserveComposerFocusOnPointerDown?: boolean;
   runtimeMode: RuntimeMode;
@@ -395,6 +396,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
         isSendBusy={props.isSendBusy}
         isConnecting={props.isConnecting}
         isEnvironmentUnavailable={props.isEnvironmentUnavailable}
+        sendBlockedReason={props.sendBlockedReason}
         isPreparingWorktree={props.isPreparingWorktree}
         hasSendableContent={props.hasSendableContent}
         preserveComposerFocusOnPointerDown={props.preserveComposerFocusOnPointerDown ?? false}
@@ -503,6 +505,12 @@ export interface ChatComposerProps {
    * computer (docs/design/fleet.md, Part 3). `reason` is the placeholder.
    */
   threadLocked?: { readonly reason: string } | null;
+  /**
+   * Nothing that starts new work can be sent: a move waits for the thread to
+   * be free (Part 3b). Typing, approvals and stopping still work; `reason`
+   * is what the send button says.
+   */
+  sendBlocked?: { readonly reason: string } | null;
 
   // Pending approvals / inputs
   activePendingApproval: PendingApproval | null;
@@ -672,6 +680,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     isPreparingWorktree,
     environmentUnavailable,
     threadLocked = null,
+    sendBlocked = null,
     activePendingApproval,
     pendingApprovals,
     pendingUserInputs,
@@ -3505,6 +3514,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     isSendBusy ||
     isConnecting ||
     composerUnavailable ||
+    sendBlocked !== null ||
     (activePendingApproval !== null &&
       respondingRequestIds.includes(activePendingApproval.requestId));
   const approvalSendButton =
@@ -4456,6 +4466,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       isSendBusy={isSendBusy}
                       isConnecting={isConnecting}
                       isEnvironmentUnavailable={composerUnavailable}
+                      sendBlockedReason={sendBlocked?.reason ?? null}
                       isPreparingWorktree={isPreparingWorktree}
                       hasSendableContent={
                         !hasBlockingQuestion && composerSendState.hasSendableContent

@@ -12,6 +12,8 @@ import {
   ThreadMoveError,
   ThreadMoveId,
   type ThreadMovePreview,
+  ThreadMoveRequestId,
+  type ThreadPendingMove,
   WS_METHODS,
 } from "@threadlines/contracts";
 import { page, userEvent } from "vite-plus/test/browser";
@@ -21,10 +23,12 @@ import {
   __setComputerLinksClientForTests,
   useComputerLinksStore,
 } from "../environments/links/computerLinks";
+import { useComposerDraftStore } from "../composerDraftStore";
 import {
   __resetThreadMovesForTests,
   __setThreadMovesClientForTests,
   readThreadMoveOffered,
+  type ThreadMovesClient,
 } from "../environments/links/threadMoves";
 import { __setProjectSetupsClientForTests } from "../environments/projectSetups/projectSetups";
 import { useSavedEnvironmentRuntimeStore } from "../environments/runtime";
@@ -32,6 +36,7 @@ import { type NormalizedWsRpcRequestBody } from "../../test/wsRpcHarness";
 
 import {
   THREAD_ID,
+  THREAD_REF,
   THREAD_TITLE,
   LOCAL_ENVIRONMENT_ID,
   NOW_ISO,
@@ -157,6 +162,55 @@ const FLEET_MOVE_PREVIEW: ThreadMovePreview = {
     },
   ],
 };
+
+/** The calls of a waiting move (Part 3b), for a stand-in client whose test never queues. */
+const QUEUE_CALLS_UNUSED: Pick<ThreadMovesClient, "queue" | "unqueue" | "retry"> = {
+  queue: async () => {
+    throw new Error("This test doesn't queue a move.");
+  },
+  unqueue: async () => undefined,
+  retry: async () => undefined,
+};
+
+const QUEUED_REQUEST_ID = ThreadMoveRequestId.make("queued-browser");
+
+/** The test thread's move to Mac mini, waiting for its turn to end. */
+function fleetPendingMove(overrides: Partial<ThreadPendingMove> = {}): ThreadPendingMove {
+  return {
+    requestId: QUEUED_REQUEST_ID,
+    target: { environmentId: FLEET_OFFLINE_ENVIRONMENT_ID, label: "Mac mini" },
+    agent: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+    mode: "when-done",
+    stage: "waiting",
+    requestedAt: NOW_ISO,
+    requestedBy: { kind: "user" },
+    waitsFor: [{ code: "turn", words: "when this turn ends" }],
+    ...overrides,
+  };
+}
+
+/** One event on the open thread's detail stream, after `sequence - 1` others. */
+function emitThreadEvent(
+  sequence: number,
+  event: Pick<OrchestrationEvent, "type" | "payload"> & { readonly eventId: string },
+): void {
+  rpcHarness.emitStreamValue(ORCHESTRATION_WS_METHODS.subscribeThread, {
+    kind: "event",
+    event: {
+      sequence,
+      eventId: EventId.make(event.eventId),
+      aggregateKind: "thread",
+      aggregateId: THREAD_ID,
+      occurredAt: NOW_ISO,
+      commandId: null,
+      causationEventId: null,
+      correlationId: null,
+      metadata: {},
+      type: event.type,
+      payload: event.payload,
+    } as OrchestrationEvent,
+  });
+}
 
 /**
  * Saves Mac mini, where these moves go. Saving a computer is also what starts
@@ -355,6 +409,7 @@ describe("ChatView (full app): moving a thread to another computer", () => {
         preview: async () => FLEET_MOVE_PREVIEW,
         start: refusedStart,
         cancel: async () => undefined,
+        ...QUEUE_CALLS_UNUSED,
       });
       await dialog.getByTestId("thread-move-confirm").click();
       await expect
@@ -373,6 +428,210 @@ describe("ChatView (full app): moving a thread to another computer", () => {
           agent: { instanceId: "codex", model: "gpt-5" },
         }),
       ]);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("offers a busy thread two ways to move, and queues the one picked", async () => {
+    setPrimaryLinksSnapshot(
+      fleetLinksSnapshot({
+        outbound: [fleetOutboundLink(FLEET_OFFLINE_ENVIRONMENT_ID, "Mac mini")],
+      }),
+    );
+    const macMini = FLEET_MOVE_PREVIEW.targets[1]!;
+    const queues: Array<NormalizedWsRpcRequestBody> = [];
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-move-busy" as MessageId,
+        targetText: "move busy",
+      }),
+      configureFixture: withThreadMoveFixture,
+      resolveRpc: (body) => {
+        if (body._tag === WS_METHODS.movesPreview) {
+          return {
+            ...FLEET_MOVE_PREVIEW,
+            waitsFor: [
+              { code: "turn", words: "when this turn ends" },
+              { code: "background", words: "when its background work finishes" },
+            ],
+            targets: [macMini],
+          } satisfies ThreadMovePreview;
+        }
+        if (body._tag === WS_METHODS.movesQueue) {
+          queues.push(body);
+          return { requestId: QUEUED_REQUEST_ID };
+        }
+        return undefined;
+      },
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      await saveMacMini("connected");
+      await vi.waitFor(() => {
+        expect(readThreadMoveOffered(LOCAL_ENVIRONMENT_ID, undefined)).toBe(true);
+      });
+      await openCommandPaletteFromTrigger();
+      await page
+        .getByTestId("command-palette")
+        .getByText("Move to another computer", { exact: true })
+        .click();
+      const dialog = page.getByTestId("thread-move-dialog");
+      // What it's busy with, then the two ways: when it's done comes picked.
+      await expect
+        .element(dialog.getByTestId("thread-move-busy"))
+        .toHaveTextContent(
+          "This thread is busy: its agent is working on a turn and background work is still running.",
+        );
+      await expect
+        .element(dialog.getByTestId("thread-move-mode-when-done"))
+        .toMatchTextContent("Move when it's doneMoves to Mac mini when this turn ends.");
+      await expect
+        .element(dialog.getByRole("radio", { name: /Move when it's done/u }))
+        .toBeChecked();
+      await expect
+        .element(dialog.getByTestId("thread-move-confirm"))
+        .toHaveTextContent("Move when done");
+
+      await dialog.getByTestId("thread-move-mode-stop-now").click();
+      await expect
+        .element(dialog.getByTestId("thread-move-confirm"))
+        .toHaveTextContent("Stop and move");
+      await dialog.getByTestId("thread-move-confirm").click();
+      await expect.element(page.getByTestId("thread-move-dialog")).not.toBeInTheDocument();
+      expect(queues).toEqual([
+        expect.objectContaining({
+          threadId: THREAD_ID,
+          targetEnvironmentId: FLEET_OFFLINE_ENVIRONMENT_ID,
+          agent: { instanceId: "codex", model: "gpt-5" },
+          mode: "stop-now",
+        }),
+      ]);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("says when a waiting move goes, holds new messages, and cancels the move it shows", async () => {
+    setPrimaryLinksSnapshot(
+      fleetLinksSnapshot({
+        outbound: [
+          fleetOutboundLink(FLEET_OFFLINE_ENVIRONMENT_ID, "Mac mini", { connection: "connected" }),
+        ],
+      }),
+    );
+    const calls: Array<NormalizedWsRpcRequestBody> = [];
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: withTestThread(
+        createSnapshotForTargetUser({
+          targetMessageId: "msg-user-move-waits" as MessageId,
+          targetText: "move waits",
+        }),
+        { pendingMove: fleetPendingMove() },
+      ),
+      configureFixture: withThreadMoveFixture,
+      resolveRpc: (body) => {
+        if (body._tag === WS_METHODS.movesUnqueue || body._tag === WS_METHODS.movesRetry) {
+          calls.push(body);
+          return null;
+        }
+        return undefined;
+      },
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      await saveMacMini("connected");
+      await waitForComposerNotice("Moves to Mac mini when this turn ends.");
+      await expect
+        .element(page.getByTestId(`thread-meta-${THREAD_ID}`))
+        .toMatchTextContent("move queued");
+
+      // The box still takes typing, but the message can't go, and says why.
+      useComposerDraftStore.getState().setPrompt(THREAD_REF, "one more thing");
+      const reason =
+        "This thread is waiting to move to Mac mini. Cancel the move to keep working here.";
+      await expect.element(page.getByRole("button", { name: reason })).toBeDisabled();
+
+      // The agent can't be proven stopped: it says so, with Try again.
+      emitThreadEvent(2, {
+        eventId: "move-queue-held",
+        type: "thread.move-queue-status-set",
+        payload: {
+          threadId: THREAD_ID,
+          requestId: QUEUED_REQUEST_ID,
+          waitsFor: [],
+          hold: {
+            kind: "stop_unconfirmed",
+            words: "Couldn't confirm the agent stopped: Codex didn't exit.",
+          },
+          updatedAt: NOW_ISO,
+        },
+      });
+      await waitForComposerNotice("Couldn't confirm the agent stopped: Codex didn't exit.");
+      await page.getByRole("button", { name: "Try again" }).click();
+      await page.getByRole("button", { name: "Cancel the move", exact: true }).click();
+      await vi.waitFor(() => {
+        expect(calls).toEqual([
+          expect.objectContaining({
+            _tag: WS_METHODS.movesRetry,
+            threadId: THREAD_ID,
+            requestId: QUEUED_REQUEST_ID,
+          }),
+          expect.objectContaining({
+            _tag: WS_METHODS.movesUnqueue,
+            threadId: THREAD_ID,
+            requestId: QUEUED_REQUEST_ID,
+          }),
+        ]);
+      });
+
+      // It couldn't go after all: why, until dismissed, and the box sends again.
+      emitThreadEvent(3, {
+        eventId: "move-queue-ended",
+        type: "thread.move-queue-ended",
+        payload: {
+          threadId: THREAD_ID,
+          requestId: QUEUED_REQUEST_ID,
+          reason: "blocked",
+          words:
+            "this thread's agent set itself a time to come back. Cancel it first, then move again.",
+          endedAt: NOW_ISO,
+        },
+      });
+      emitThreadEvent(4, {
+        eventId: "move-not-started-activity",
+        type: "thread.activity-appended",
+        payload: {
+          threadId: THREAD_ID,
+          activity: {
+            id: EventId.make(`move-not-started:${QUEUED_REQUEST_ID}`),
+            tone: "error",
+            kind: "thread.move-not-started",
+            summary: "Didn't move to Mac mini",
+            payload: {
+              requestId: QUEUED_REQUEST_ID,
+              targetLabel: "Mac mini",
+              reason: "blocked",
+              words:
+                "this thread's agent set itself a time to come back. Cancel it first, then move again.",
+            },
+            turnId: null,
+            createdAt: NOW_ISO,
+          },
+        },
+      });
+      await waitForComposerNotice(
+        "Didn't move: this thread's agent set itself a time to come back. Cancel it first, then move again.",
+      );
+      await expect.element(page.getByRole("button", { name: "Send message" })).toBeEnabled();
+      await page.getByRole("button", { name: "Dismiss why it didn't move to Mac mini" }).click();
+      await expect
+        .element(page.getByRole("button", { name: "Dismiss why it didn't move to Mac mini" }))
+        .not.toBeInTheDocument();
     } finally {
       await mounted.cleanup();
     }
@@ -476,6 +735,7 @@ describe("ChatView (full app): moving a thread to another computer", () => {
         preview,
         start: async () => ({ transferId: ThreadMoveId.make("move-after-setup") }),
         cancel: async () => undefined,
+        ...QUEUE_CALLS_UNUSED,
       });
       mac.push([
         projectSetupJob({

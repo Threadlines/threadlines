@@ -592,7 +592,7 @@ export function OpenCommandPaletteDialog() {
   const projectSetupTargets = useProjectSetupTargets(openThreadProjectRef);
   const activeThreadMoveOffered = useThreadMoveOffered(
     activeThread?.environmentId ?? null,
-    threadMoveStatus(activeThread?.move),
+    activeThread ? threadMoveStatus(activeThread) : undefined,
   );
   // The open thread's own actions are its menu's (useThreadMenu); the inbox
   // says whether it offers Wrap up or Reopen. This mounts only while open.

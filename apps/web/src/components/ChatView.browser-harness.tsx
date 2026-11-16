@@ -888,6 +888,7 @@ function toShellThread(thread: OrchestrationReadModel["threads"][number]) {
     hasPendingUserInput: false,
     hasActionableProposedPlan: false,
     ...(thread.move ? { move: thread.move } : {}),
+    ...(thread.pendingMove ? { pendingMove: thread.pendingMove } : {}),
     ...(thread.movedFrom ? { movedFrom: thread.movedFrom } : {}),
     ...(thread.outsideWork ? { outsideWork: thread.outsideWork } : {}),
   };

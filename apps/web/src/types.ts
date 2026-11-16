@@ -37,6 +37,7 @@ import type {
   ThreadRemoteOrigin,
   OrchestrationThreadMove,
   ThreadMovedFrom,
+  ThreadPendingMove,
   ProjectKind,
   ProjectScript as ContractProjectScript,
   ThreadId,
@@ -283,6 +284,8 @@ export interface Thread {
   remoteOrigin?: ThreadRemoteOrigin | null;
   /** See ThreadShell.move. */
   move?: OrchestrationThreadMove | null;
+  /** See ThreadShell.pendingMove. */
+  pendingMove?: ThreadPendingMove | null;
   /** See ThreadShell.movedFrom. */
   movedFrom?: ThreadMovedFrom | null;
   /** See ThreadShell.doneOverride. */
@@ -417,6 +420,12 @@ export interface ThreadShell {
    * null: neither.
    */
   move?: OrchestrationThreadMove | null;
+  /**
+   * A move waiting for the thread to be free (ThreadPendingMove, Part 3b):
+   * the thread takes no new work until it starts or is cancelled. Absent or
+   * null: none. A thread has this or `move`, never both.
+   */
+  pendingMove?: ThreadPendingMove | null;
   /** Moved here from another computer (ThreadMovedFrom). Absent or null: started here. */
   movedFrom?: ThreadMovedFrom | null;
   /**
@@ -446,8 +455,11 @@ export interface ThreadTurnState {
   pendingSourceProposedPlan?: OrchestrationLatestTurn["sourceProposedPlan"];
 }
 
-/** A thread moving to a linked computer, or moved there (ThreadShell.move). */
-export type ThreadMoveStatus = "moving" | "moved";
+/**
+ * A thread whose move waits for it to be free (ThreadShell.pendingMove), or
+ * moving to a linked computer, or moved there (ThreadShell.move).
+ */
+export type ThreadMoveStatus = "queued" | "moving" | "moved";
 
 export interface SidebarThreadSummary {
   id: ThreadId;
@@ -534,7 +546,7 @@ export interface SidebarThreadSummary {
   localChildStarts?: ReadonlyArray<LocalChildStart>;
   /** Messages queued behind the running turn; a child with any is not finished. */
   queuedFollowUpCount?: number;
-  /** See ThreadShell.move: only how far it got, for the row's status word. Absent: neither. */
+  /** See ThreadShell.move and .pendingMove: only how far it got, for the row's status word. Absent: none. */
   moveStatus?: ThreadMoveStatus;
   /** See Thread.checkBacks. */
   checkBacks?: ReadonlyArray<OrchestrationCheckBack>;

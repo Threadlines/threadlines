@@ -76,7 +76,11 @@ import {
 } from "./mcpAuthStatus";
 import { filterSupersededManualContextCompactionActivities } from "./lib/contextCompactionActivities";
 import { keyedMemo } from "./lib/derivationMemo";
-import { THREAD_MOVE_FAILED_ACTIVITY_KIND, THREAD_MOVED_IN_ACTIVITY_KIND } from "./threadMove";
+import {
+  THREAD_MOVE_FAILED_ACTIVITY_KIND,
+  THREAD_MOVE_NOT_STARTED_ACTIVITY_KIND,
+  THREAD_MOVED_IN_ACTIVITY_KIND,
+} from "./threadMove";
 
 import type {
   ChatMessage,
@@ -3503,9 +3507,14 @@ function toDerivedWorkLogEntry(
       : null;
   const taskLabel = taskSummary || taskDetailAsLabel;
   const runtimeWarningDisplay = deriveRuntimeWarningDisplay(activity, payload);
-  // A dropped move says why under its "Couldn't move to …".
+  // A dropped move says why under its "Couldn't move to …", and a queued
+  // move that never started under its "Didn't move to …".
   const moveFailureReason =
-    activity.kind === THREAD_MOVE_FAILED_ACTIVITY_KIND ? asTrimmedString(payload?.reason) : null;
+    activity.kind === THREAD_MOVE_FAILED_ACTIVITY_KIND
+      ? asTrimmedString(payload?.reason)
+      : activity.kind === THREAD_MOVE_NOT_STARTED_ACTIVITY_KIND
+        ? asTrimmedString(payload?.words)
+        : null;
   const detail = moveFailureReason
     ? moveFailureReason
     : isTaskActivity

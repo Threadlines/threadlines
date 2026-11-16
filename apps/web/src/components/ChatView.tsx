@@ -347,12 +347,16 @@ import {
   type UsageLimitNoticeState,
 } from "./chat/threadErrorNotice";
 import { type ComposerNotice, selectComposerNotices } from "./chat/composerNotices";
-import { useThreadMoveNotice } from "./chat/threadMoveNotice";
+import {
+  useMoveNotStartedNotice,
+  usePendingMoveNotice,
+  useThreadMoveNotice,
+} from "./chat/threadMoveNotice";
 import { useOutsideWorkNotice } from "./chat/outsideWorkNotice";
 import { openProjectSetupDialog } from "./ProjectSetupDialog";
 import { useProjectSetupTargets } from "../environments/projectSetups/projectSetupTargets";
 import { useComputerLabel } from "./sidebar/linkedComputers";
-import { threadMoveLockReason } from "../threadMove";
+import { pendingMoveSendBlockReason, threadMoveLockReason } from "../threadMove";
 import {
   MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
   DEFAULT_SCROLL_END_TOLERANCE_PX,
@@ -2895,6 +2899,19 @@ export default function ChatView(props: ChatViewProps) {
   const threadMoveComposerLock = useMemo(
     () => (threadMoveLockText === null ? null : { reason: threadMoveLockText }),
     [threadMoveLockText],
+  );
+  // A move waiting for the thread to be free (Part 3b): the box still takes
+  // typing and answers, but nothing that starts new work goes.
+  const pendingMoveSendBlockText = activeThread?.pendingMove
+    ? pendingMoveSendBlockReason(activeThread.pendingMove)
+    : null;
+  const pendingMoveSendBlock = useMemo(
+    () =>
+      // A reply that answers the agent's questions still goes: the turn needs it.
+      pendingMoveSendBlockText === null || replyingInChatTo !== null
+        ? null
+        : { reason: pendingMoveSendBlockText },
+    [pendingMoveSendBlockText, replyingInChatTo],
   );
   const revertTurnCountByUserMessageId = useMemo(
     () =>
@@ -5536,6 +5553,18 @@ export default function ChatView(props: ChatViewProps) {
       }
       return;
     }
+    // A move waits for the thread to be free (Part 3b): nothing that starts
+    // work goes, and the draft stays. The send button says why; Enter too.
+    if (activeThread.pendingMove) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "info",
+          title: "This thread is waiting to move",
+          description: pendingMoveSendBlockReason(activeThread.pendingMove),
+        }),
+      );
+      return;
+    }
     // A message for the agent whose turn waits on approvals answers them
     // first. Only the draft that was sent goes out afterwards, to the agent it
     // was for: one edited, or readdressed, meanwhile stays in the box, and its
@@ -7329,6 +7358,8 @@ export default function ChatView(props: ChatViewProps) {
     thread: activeThread,
     agentName: outsideWorkAgentName,
   });
+  // A queued move that ended without starting says why until dismissed.
+  const moveNotStartedNotice = useMoveNotStartedNotice({ thread: activeThread });
   // While a reply in chat answers the questions, the box says so, with the
   // way back to the card.
   const replyInChatNotice = useMemo<ComposerNotice | null>(
@@ -7365,11 +7396,13 @@ export default function ChatView(props: ChatViewProps) {
         sessionStartupNotice,
         removedAccountNotice,
         outsideWorkNotice,
+        moveNotStartedNotice,
         ...infrastructureComposerNotices,
       ]),
     [
       checkoutMissingNotice,
       infrastructureComposerNotices,
+      moveNotStartedNotice,
       outsideWorkNotice,
       providerStatusNotice,
       removedAccountNotice,
@@ -8002,9 +8035,23 @@ export default function ChatView(props: ChatViewProps) {
     computerLabel: activeThreadComputerLabel,
     onContinueHere: continueHereAsNewThread,
   });
+  // A move that waits for the thread to be free (Part 3b) leads the dock: it
+  // is why nothing new can be sent. A reply to questions, which can still
+  // go, keeps its own notice in front.
+  const pendingMoveNotice = usePendingMoveNotice({
+    thread: activeThread,
+    computerLabel: activeThreadComputerLabel,
+  });
   const dockedComposerNotices = useMemo(
-    () => (threadMoveNotice ? [threadMoveNotice] : composerNotices),
-    [composerNotices, threadMoveNotice],
+    () =>
+      threadMoveNotice
+        ? [threadMoveNotice]
+        : pendingMoveNotice === null
+          ? composerNotices
+          : replyingInChatTo !== null
+            ? [...composerNotices, pendingMoveNotice]
+            : [pendingMoveNotice, ...composerNotices],
+    [composerNotices, pendingMoveNotice, replyingInChatTo, threadMoveNotice],
   );
 
   const updateForkDialogInstruction = useCallback((instruction: string) => {
@@ -8913,6 +8960,7 @@ export default function ChatView(props: ChatViewProps) {
                     isPreparingWorktree={isPreparingWorktree}
                     environmentUnavailable={activeEnvironmentUnavailableState}
                     threadLocked={threadMoveComposerLock}
+                    sendBlocked={pendingMoveSendBlock}
                     activePendingApproval={activePendingApproval}
                     pendingApprovals={pendingApprovals}
                     pendingUserInputs={composerPendingUserInputs}

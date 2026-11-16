@@ -40,6 +40,8 @@ import type {
   ScopedProjectRef,
   ScopedThreadRef,
   ThreadMovedFrom,
+  ThreadMoveRequestId,
+  ThreadPendingMove,
   ThreadRemoteOrigin,
 } from "@threadlines/contracts";
 import {
@@ -607,12 +609,40 @@ function remoteChildStartsEqual(
  */
 function threadMoves(thread: {
   readonly move?: OrchestrationThreadMove | null | undefined;
+  readonly pendingMove?: ThreadPendingMove | null | undefined;
   readonly movedFrom?: ThreadMovedFrom | null | undefined;
-}): Pick<ThreadShell, "move" | "movedFrom"> {
+}): Pick<ThreadShell, "move" | "pendingMove" | "movedFrom"> {
   return {
     ...(thread.move ? { move: thread.move } : {}),
+    ...(thread.pendingMove ? { pendingMove: thread.pendingMove } : {}),
     ...(thread.movedFrom ? { movedFrom: thread.movedFrom } : {}),
   };
+}
+
+/** Two copies of a thread's waiting move, as the notice and the row read them. */
+function pendingMovesEqual(
+  left: ThreadPendingMove | null | undefined,
+  right: ThreadPendingMove | null | undefined,
+): boolean {
+  const a = left ?? null;
+  const b = right ?? null;
+  if (a === null || b === null) return a === b;
+  const aWaits = a.waitsFor ?? [];
+  const bWaits = b.waitsFor ?? [];
+  return (
+    a.requestId === b.requestId &&
+    a.target.environmentId === b.target.environmentId &&
+    a.target.label === b.target.label &&
+    a.mode === b.mode &&
+    a.stage === b.stage &&
+    a.requestedBy.kind === b.requestedBy.kind &&
+    (a.hold?.kind ?? null) === (b.hold?.kind ?? null) &&
+    (a.hold?.words ?? null) === (b.hold?.words ?? null) &&
+    aWaits.length === bWaits.length &&
+    aWaits.every(
+      (wait, index) => wait.code === bWaits[index]?.code && wait.words === bWaits[index]?.words,
+    )
+  );
 }
 
 function threadMovesEqual(
@@ -633,6 +663,7 @@ function threadMovesEqual(
         a.totalBytes === b.totalBytes &&
         a.cancelRequested === b.cancelRequested &&
         a.startedAt === b.startedAt &&
+        a.queuedRequestId === b.queuedRequestId &&
         a.movedAway?.threadId === b.movedAway?.threadId &&
         a.movedAway?.movedAt === b.movedAway?.movedAt;
 }
@@ -671,6 +702,7 @@ function sidebarLineage(
     | "remoteChildStarts"
     | "localChildStarts"
     | "move"
+    | "pendingMove"
   >,
 ): Pick<
   SidebarThreadSummary,
@@ -691,7 +723,7 @@ function sidebarLineage(
   | "localChildStarts"
   | "moveStatus"
 > {
-  const moveStatus = threadMoveStatus(thread.move);
+  const moveStatus = threadMoveStatus(thread);
   return {
     scheduledRun: thread.scheduledRun ?? null,
     worktreeOrigin: thread.worktreeOrigin ?? null,
@@ -1440,6 +1472,7 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     remoteChildStartsEqual(left.remoteChildStarts, right.remoteChildStarts) &&
     localChildStartsEqual(left.localChildStarts, right.localChildStarts) &&
     threadMovesEqual(left.move, right.move) &&
+    pendingMovesEqual(left.pendingMove, right.pendingMove) &&
     movedFromEqual(left.movedFrom, right.movedFrom) &&
     doneOverridesEqual(left.doneOverride, right.doneOverride) &&
     left.lastSeenAt === right.lastSeenAt &&
@@ -2312,6 +2345,26 @@ function updateThreadMove(
     const next = change(thread.move);
     if (next !== null) return { ...thread, move: next };
     const { move: _dropped, ...rest } = thread;
+    return rest;
+  });
+}
+
+/**
+ * Apply a step of one queued move (Part 3b) to a thread's `pendingMove`: only
+ * while that request is the thread's own, so a late step of a move that was
+ * cancelled or replaced changes nothing. The change returns null to clear it.
+ */
+function updatePendingMove(
+  state: EnvironmentState,
+  threadId: ThreadId,
+  requestId: ThreadMoveRequestId,
+  change: (current: ThreadPendingMove) => ThreadPendingMove | null,
+): EnvironmentState {
+  return updateThreadState(state, threadId, (thread) => {
+    if (!thread.pendingMove || thread.pendingMove.requestId !== requestId) return thread;
+    const next = change(thread.pendingMove);
+    if (next !== null) return { ...thread, pendingMove: next };
+    const { pendingMove: _ended, ...rest } = thread;
     return rest;
   });
 }
@@ -3619,17 +3672,58 @@ function applyEnvironmentOrchestrationEvent(
     // names its move, so a late one from a move that already ended is
     // dropped. Like a done mark, none moves `updatedAt`.
     case "thread.move-started":
+      return updateThreadState(state, event.payload.threadId, (thread) => {
+        const queuedRequestId = event.payload.queuedRequestId;
+        // The queued move it started from ends in the same decision
+        // (`thread.move-queue-ended`); a thread never shows both.
+        const { pendingMove: _started, ...rest } = thread;
+        return {
+          ...(thread.pendingMove && thread.pendingMove.requestId !== queuedRequestId
+            ? thread
+            : rest),
+          move: {
+            transferId: event.payload.transferId,
+            target: event.payload.target,
+            agent: event.payload.agent,
+            phase: "exporting",
+            cancelRequested: false,
+            startedAt: event.payload.startedAt,
+            ...(queuedRequestId !== undefined ? { queuedRequestId } : {}),
+          },
+        };
+      });
+
+    // A move that waits for the thread to be free (Part 3b). Each step names
+    // its request, so a late one from a cancelled or replaced move is dropped.
+    case "thread.move-queued":
       return updateThreadState(state, event.payload.threadId, (thread) => ({
         ...thread,
-        move: {
-          transferId: event.payload.transferId,
-          target: event.payload.target,
-          agent: event.payload.agent,
-          phase: "exporting",
-          cancelRequested: false,
-          startedAt: event.payload.startedAt,
-        },
+        pendingMove: event.payload.pendingMove,
       }));
+
+    case "thread.move-quiescing":
+      return updatePendingMove(
+        state,
+        event.payload.threadId,
+        event.payload.requestId,
+        (pendingMove) => ({ ...pendingMove, stage: "quiescing" }),
+      );
+
+    case "thread.move-queue-status-set":
+      return updatePendingMove(
+        state,
+        event.payload.threadId,
+        event.payload.requestId,
+        (pendingMove) => ({
+          ...pendingMove,
+          waitsFor: event.payload.waitsFor,
+          hold: event.payload.hold,
+        }),
+      );
+
+    // Its "Didn't move" activity, when it didn't start, arrives on its own.
+    case "thread.move-queue-ended":
+      return updatePendingMove(state, event.payload.threadId, event.payload.requestId, () => null);
 
     case "thread.move-progressed":
       return updateThreadMove(state, event.payload.threadId, event.payload.transferId, (move) => {

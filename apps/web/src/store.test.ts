@@ -19,6 +19,7 @@ import {
   ThreadId,
   ThreadParticipantId,
   ThreadMoveId,
+  ThreadMoveRequestId,
   TurnId,
   OrchestrationThread,
   type OrchestrationEvent,
@@ -2360,6 +2361,120 @@ describe("incremental orchestration updates", () => {
       movedAt: "2026-02-27T00:00:07.000Z",
     });
     expect(summaryOf(state)?.moveStatus).toBe("moved");
+  });
+
+  it("follows a move that waits for the thread to be free, and drops steps of an older one", () => {
+    const threadId = ThreadId.make("thread-1");
+    const ref = scopeThreadRef(localEnvironmentId, threadId);
+    const requestId = ThreadMoveRequestId.make("queued-1");
+    const macMini = {
+      environmentId: EnvironmentId.make("environment-mac-mini"),
+      label: "Mac mini",
+    };
+    const agent = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" };
+    const apply = (state: AppState, event: OrchestrationEvent) =>
+      applyOrchestrationEvent(state, event, localEnvironmentId);
+    const pendingOf = (state: AppState) => selectThreadByRef(state, ref)?.pendingMove;
+    const summaryOf = (state: AppState) =>
+      localEnvironmentStateOf(state).sidebarThreadSummaryById[threadId];
+    const queue = (id: typeof requestId) =>
+      makeEvent("thread.move-queued", {
+        threadId,
+        pendingMove: {
+          requestId: id,
+          target: macMini,
+          agent,
+          mode: "when-done",
+          stage: "waiting",
+          requestedAt: "2026-02-27T00:00:01.000Z",
+          requestedBy: { kind: "user" },
+          waitsFor: [{ code: "turn", words: "when this turn ends" }],
+        },
+      });
+
+    let state = apply(makeState(makeThread({ id: threadId })), queue(requestId));
+    expect(pendingOf(state)).toMatchObject({ requestId, stage: "waiting", target: macMini });
+    expect(summaryOf(state)?.moveStatus).toBe("queued");
+
+    // The turn ended; Mac mini is offline: it waits, held, saying why.
+    state = apply(
+      state,
+      makeEvent("thread.move-queue-status-set", {
+        threadId,
+        requestId,
+        waitsFor: [],
+        hold: { kind: "target_unreachable", words: "Waiting for Mac mini to connect." },
+        updatedAt: "2026-02-27T00:00:02.000Z",
+      }),
+    );
+    // A step naming another request is not this one's.
+    state = apply(
+      state,
+      makeEvent("thread.move-quiescing", {
+        threadId,
+        requestId: ThreadMoveRequestId.make("queued-old"),
+        updatedAt: "2026-02-27T00:00:03.000Z",
+      }),
+    );
+    expect(pendingOf(state)).toMatchObject({
+      stage: "waiting",
+      waitsFor: [],
+      hold: { kind: "target_unreachable", words: "Waiting for Mac mini to connect." },
+    });
+
+    state = apply(
+      state,
+      makeEvent("thread.move-quiescing", {
+        threadId,
+        requestId,
+        updatedAt: "2026-02-27T00:00:04.000Z",
+      }),
+    );
+    expect(pendingOf(state)?.stage).toBe("quiescing");
+
+    // Cancelled: the thread is its own again. A late end of an old request changes nothing.
+    state = apply(
+      state,
+      makeEvent("thread.move-queue-ended", {
+        threadId,
+        requestId,
+        reason: "cancelled",
+        endedAt: "2026-02-27T00:00:05.000Z",
+      }),
+    );
+    expect(pendingOf(state)).toBeUndefined();
+    expect(summaryOf(state)?.moveStatus).toBeUndefined();
+
+    // Queued again, and started: the move takes its place in one step.
+    const secondRequestId = ThreadMoveRequestId.make("queued-2");
+    state = apply(state, queue(secondRequestId));
+    state = apply(
+      state,
+      makeEvent("thread.move-queue-ended", {
+        threadId,
+        requestId,
+        reason: "cancelled",
+        endedAt: "2026-02-27T00:00:06.000Z",
+      }),
+    );
+    expect(pendingOf(state)?.requestId).toBe(secondRequestId);
+    state = apply(
+      state,
+      makeEvent("thread.move-started", {
+        threadId,
+        transferId: ThreadMoveId.make("move-from-queue"),
+        target: macMini,
+        agent,
+        startedAt: "2026-02-27T00:00:07.000Z",
+        queuedRequestId: secondRequestId,
+      }),
+    );
+    expect(pendingOf(state)).toBeUndefined();
+    expect(selectThreadByRef(state, ref)?.move).toMatchObject({
+      phase: "exporting",
+      queuedRequestId: secondRequestId,
+    });
+    expect(summaryOf(state)?.moveStatus).toBe("moving");
   });
 
   it("keeps a moved thread's imported history marked, and out of its latest turn", () => {

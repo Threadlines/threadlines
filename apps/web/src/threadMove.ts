@@ -6,12 +6,16 @@
  *
  * @module threadMove
  */
-import type {
-  ModelSelection,
-  OrchestrationThreadMove,
-  OutboundComputerLink,
-  ThreadMoveChanges,
-  ThreadMoveTargetPreview,
+import {
+  type ModelSelection,
+  type OrchestrationThreadMove,
+  type OutboundComputerLink,
+  type ThreadMoveChanges,
+  ThreadMoveNotStartedActivityKind,
+  type ThreadMoveTargetPreview,
+  type ThreadMoveWait,
+  type ThreadMoveWaitCode,
+  type ThreadPendingMove,
 } from "@threadlines/contracts";
 
 import type { ThreadMoveStatus } from "./types";
@@ -26,13 +30,28 @@ export const THREAD_MOVED_IN_ACTIVITY_KIND = "thread.moved-in";
  * payload `{ targetLabel, reason }`.
  */
 export const THREAD_MOVE_FAILED_ACTIVITY_KIND = "thread.move-failed";
+/**
+ * A queued move that ended without starting (Part 3b): "Didn't move to …",
+ * payload a ThreadMoveNotStartedPayload (`{ requestId, targetLabel, reason, words }`).
+ */
+export const THREAD_MOVE_NOT_STARTED_ACTIVITY_KIND = ThreadMoveNotStartedActivityKind;
 
-/** "moving" until the other computer took it, "moved" after; undefined for neither. */
-export function threadMoveStatus(
-  move: OrchestrationThreadMove | null | undefined,
-): ThreadMoveStatus | undefined {
-  if (!move) return undefined;
-  return move.movedAway ? "moved" : "moving";
+/**
+ * "queued" while a move waits for the thread to be free (Part 3b), "moving"
+ * until the other computer took it, "moved" after; undefined for none.
+ */
+export function threadMoveStatus(thread: {
+  readonly move?: OrchestrationThreadMove | null | undefined;
+  readonly pendingMove?: ThreadPendingMove | null | undefined;
+}): ThreadMoveStatus | undefined {
+  const move = thread.move ?? null;
+  if (move !== null) return move.movedAway ? "moved" : "moving";
+  return thread.pendingMove ? "queued" : undefined;
+}
+
+/** A move status as a sidebar row says it: "move queued", "moving", "moved". */
+export function threadMoveStatusWord(status: ThreadMoveStatus): string {
+  return status === "queued" ? "move queued" : status;
 }
 
 /**
@@ -137,11 +156,27 @@ export function isThreadMoveStalled(input: {
   return link === undefined || link.state !== "active" || link.connection === "offline";
 }
 
-/** The computer to offer first: the first that can take the thread, else the first. */
+/**
+ * A computer a move can be asked of: one that can take the thread, or one
+ * that can't be reached right now, which a queued move waits for.
+ */
+export function isThreadMoveTargetPickable(target: ThreadMoveTargetPreview): boolean {
+  return target.refusal === undefined || target.refusalCode === "unreachable";
+}
+
+/**
+ * The computer to offer first: the first that can take the thread, else the
+ * first a queued move can wait for, else the first.
+ */
 export function pickDefaultMoveTarget(
   targets: ReadonlyArray<ThreadMoveTargetPreview>,
 ): ThreadMoveTargetPreview | null {
-  return targets.find((target) => target.refusal === undefined) ?? targets[0] ?? null;
+  return (
+    targets.find((target) => target.refusal === undefined) ??
+    targets.find(isThreadMoveTargetPickable) ??
+    targets[0] ??
+    null
+  );
 }
 
 /** One of a target's agents and models, as the agent picker holds it. */
@@ -190,4 +225,85 @@ export function threadMoveAgentSelection(
     return suggested;
   }
   return { instanceId: choice.instanceId as ModelSelection["instanceId"], model: choice.model };
+}
+
+// ---------------------------------------------------------------------------
+// A move that waits for the thread to be free (docs/design/fleet.md, Part 3b)
+// ---------------------------------------------------------------------------
+
+/** What a busy thread is doing, as it reads after "This thread is busy: ". */
+const WAIT_DOING: Record<ThreadMoveWaitCode, string> = {
+  turn: "its agent is working on a turn",
+  approval: "it's waiting for your approval",
+  question: "it's waiting for your answer",
+  side_turn: "a side answer is running",
+  background: "background work is still running",
+  command_run: "a command is running",
+  workflow_run: "a workflow is running",
+  voice: "a voice chat is on",
+  shared_checkout: "another thread is working in the same folder",
+};
+
+/** What a busy thread is doing, in one line: "This thread is busy: its agent is working on a turn." */
+export function describeThreadMoveWaits(waits: ReadonlyArray<ThreadMoveWait>): string {
+  const doing = [...new Set(waits.map((wait) => WAIT_DOING[wait.code]))];
+  const last = doing.at(-1);
+  if (last === undefined) return "This thread is free.";
+  const list = doing.length === 1 ? last : `${doing.slice(0, -1).join(", ")} and ${last}`;
+  return `This thread is busy: ${list}.`;
+}
+
+/** When a move that waits starts: "Moves to Mac mini when this turn ends." */
+export function describeThreadMoveWhenDone(
+  label: string,
+  waits: ReadonlyArray<ThreadMoveWait>,
+): string {
+  const first = waits[0];
+  return first ? `Moves to ${label} ${first.words}.` : `Moves to ${label} as soon as it's free.`;
+}
+
+/** Why a thread whose move waits takes no new message: the send button's words. */
+export function pendingMoveSendBlockReason(pendingMove: ThreadPendingMove): string {
+  return `This thread is waiting to move to ${pendingMove.target.label}. Cancel the move to keep working here.`;
+}
+
+/** The composer notice's words for a move that waits. */
+export interface PendingMoveNoticeWords {
+  readonly lead: string;
+  readonly severity: "info" | "warning";
+  /** Held (the target is offline, or a stop wasn't confirmed): Try again asks the server to look now. */
+  readonly retry: boolean;
+}
+
+/**
+ * What a waiting move's notice says: what holds it, when something does;
+ * else when it goes ("Moves to Mac mini when this turn ends."), in the
+ * agent's name when the agent asked for it.
+ */
+export function describePendingMove(pendingMove: ThreadPendingMove): PendingMoveNoticeWords {
+  const label = pendingMove.target.label;
+  const hold = pendingMove.hold ?? null;
+  if (hold !== null) {
+    return {
+      lead: hold.words,
+      severity: hold.kind === "stop_unconfirmed" ? "warning" : "info",
+      retry: true,
+    };
+  }
+  if (pendingMove.stage === "quiescing") {
+    return { lead: `Stopping the agent to move to ${label}…`, severity: "info", retry: false };
+  }
+  const words = pendingMove.waitsFor?.[0]?.words ?? null;
+  if (pendingMove.requestedBy.kind === "agent") {
+    return {
+      lead: `Your agent asked to move this thread to ${label} ${words ?? "when this turn ends"}.`,
+      severity: "info",
+      retry: false,
+    };
+  }
+  return {
+    lead: words === null ? `Getting ready to move to ${label}…` : `Moves to ${label} ${words}.`,
+    severity: "info",
+    retry: false,
+  };
 }

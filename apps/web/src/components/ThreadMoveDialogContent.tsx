@@ -5,10 +5,13 @@
  */
 import type {
   EnvironmentId,
+  ModelSelection,
   ScopedProjectRef,
   ScopedThreadRef,
   ThreadMovePreview,
   ThreadMoveTargetPreview,
+  ThreadMoveWait,
+  ThreadPendingMoveMode,
 } from "@threadlines/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -21,7 +24,10 @@ import {
 } from "../environments/projectSetups/projectSetupTargets";
 import { selectSidebarThreadSummaryByRef, useStore } from "../store";
 import {
+  describeThreadMoveWaits,
+  describeThreadMoveWhenDone,
   formatThreadMoveChanges,
+  isThreadMoveTargetPickable,
   pickDefaultMoveAgent,
   pickDefaultMoveTarget,
   threadMoveAgentKey,
@@ -31,6 +37,7 @@ import {
 import { openProjectSetupDialog } from "./ProjectSetupDialog";
 import { useComputerLabel } from "./sidebar/linkedComputers";
 import { Button } from "./ui/button";
+import { Radio, RadioGroup } from "./ui/radio-group";
 import {
   DialogDescription,
   DialogFooter,
@@ -64,10 +71,18 @@ export function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThread
   const projectId = useStore(
     (state) => selectSidebarThreadSummaryByRef(state, threadRef)?.projectId ?? null,
   );
+  // The agent a move to a computer that can't be reached asks for: the
+  // thread's own, since that computer can't say which it has.
+  const threadModelSelection = useStore(
+    (state) =>
+      state.environmentStateById[threadRef.environmentId]?.threadShellById[threadRef.threadId]
+        ?.modelSelection ?? null,
+  );
   const computerLabel = useComputerLabel()(threadRef.environmentId, threadRef.environmentId);
   const [previewState, setPreviewState] = useState<PreviewState>({ status: "loading" });
   const [targetId, setTargetId] = useState<EnvironmentId | null>(null);
   const [agent, setAgent] = useState<ThreadMoveAgentChoice | null>(null);
+  const [mode, setMode] = useState<ThreadPendingMoveMode>("when-done");
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
   // Asked again when a computer that lacked the project has been set up.
@@ -91,7 +106,7 @@ export function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThread
           preview.targets.find(
             (candidate) =>
               candidate.environmentId === pickedTargetRef.current &&
-              candidate.refusal === undefined,
+              isThreadMoveTargetPickable(candidate),
           ) ?? pickDefaultMoveTarget(preview.targets);
         setTargetId(target?.environmentId ?? null);
         setAgent(target ? pickDefaultMoveAgent(target) : null);
@@ -117,24 +132,46 @@ export function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThread
 
   const preview = previewState.status === "ready" ? previewState.preview : null;
   const target = preview?.targets.find((candidate) => candidate.environmentId === targetId) ?? null;
+  // Busy: the move can wait for the thread to be free, or stop it first.
+  const waits = preview?.waitsFor ?? [];
+  const busy = waits.length > 0;
+  // Out of reach: a move to it waits for it to connect.
+  const unreachable = target?.refusalCode === "unreachable";
+  // Only a server that queues moves says either, so asking it to queue is
+  // safe; anything else starts the move at once, as every server does.
+  const queues = busy || unreachable;
+  const agentSelection: ModelSelection | null =
+    target === null
+      ? null
+      : unreachable
+        ? threadModelSelection
+        : agent !== null
+          ? threadMoveAgentSelection(target, agent)
+          : null;
   const canMove =
     preview !== null &&
     preview.refusal === undefined &&
     target !== null &&
-    target.refusal === undefined &&
-    agent !== null &&
+    isThreadMoveTargetPickable(target) &&
+    agentSelection !== null &&
     !starting;
 
   const start = async () => {
-    if (!canMove || target === null || agent === null) return;
+    if (!canMove || target === null || agentSelection === null) return;
     setStarting(true);
     setStartError(null);
     try {
-      await requireThreadMovesClient(threadRef.environmentId, computerLabel).start({
+      const client = requireThreadMovesClient(threadRef.environmentId, computerLabel);
+      const input = {
         threadId: threadRef.threadId,
         targetEnvironmentId: target.environmentId,
-        agent: threadMoveAgentSelection(target, agent),
-      });
+        agent: agentSelection,
+      };
+      if (queues) {
+        await client.queue({ ...input, mode: busy ? mode : "when-done" });
+      } else {
+        await client.start(input);
+      }
       closeThreadMoveDialog();
     } catch (error) {
       setStartError(describeComputerLinkFailure(error, `${target.label} couldn't take it.`));
@@ -182,7 +219,7 @@ export function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThread
                 setStartError(null);
               }}
             />
-            {target?.refusal !== undefined ? (
+            {target?.refusal !== undefined && !unreachable ? (
               <div className="space-y-2">
                 <p className="text-sm text-foreground" data-testid="thread-move-target-refusal">
                   {target.refusal}
@@ -241,15 +278,34 @@ export function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThread
                     Your copy here stays, read-only.
                   </p>
                 </div>
-                <AgentField
-                  target={target}
-                  agent={agent}
-                  disabled={starting}
-                  onChange={(next) => {
-                    setAgent(next);
-                    setStartError(null);
-                  }}
-                />
+                {unreachable ? (
+                  <p
+                    className="text-[12.5px] leading-[18px] text-muted-foreground"
+                    data-testid="thread-move-waits-to-connect"
+                  >
+                    {target.refusal} The move waits for it to connect, and keeps the agent this
+                    thread uses here.
+                  </p>
+                ) : (
+                  <AgentField
+                    target={target}
+                    agent={agent}
+                    disabled={starting}
+                    onChange={(next) => {
+                      setAgent(next);
+                      setStartError(null);
+                    }}
+                  />
+                )}
+                {busy ? (
+                  <MoveWhenField
+                    label={target.label}
+                    waits={waits}
+                    mode={mode}
+                    disabled={starting}
+                    onChange={setMode}
+                  />
+                ) : null}
                 {target.access === "ask" ? (
                   <p className="text-xs text-muted-foreground" data-testid="thread-move-asks-first">
                     {target.label} asks its user first.
@@ -274,10 +330,81 @@ export function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThread
           Cancel
         </Button>
         <Button disabled={!canMove} onClick={() => void start()} data-testid="thread-move-confirm">
-          {starting ? "Moving…" : "Move"}
+          {starting
+            ? "Moving…"
+            : busy
+              ? mode === "stop-now"
+                ? "Stop and move"
+                : "Move when done"
+              : unreachable
+                ? "Move when it connects"
+                : "Move"}
         </Button>
       </DialogFooter>
     </DialogPopup>
+  );
+}
+
+/**
+ * A busy thread's two ways to move (Part 3b): once it is free, or now, after
+ * its agent session ends. Says first what it is busy with.
+ */
+function MoveWhenField({
+  label,
+  waits,
+  mode,
+  disabled,
+  onChange,
+}: {
+  readonly label: string;
+  readonly waits: ReadonlyArray<ThreadMoveWait>;
+  readonly mode: ThreadPendingMoveMode;
+  readonly disabled: boolean;
+  readonly onChange: (mode: ThreadPendingMoveMode) => void;
+}) {
+  const choices: ReadonlyArray<{
+    readonly value: ThreadPendingMoveMode;
+    readonly label: string;
+    readonly detail: string;
+  }> = [
+    {
+      value: "when-done",
+      label: "Move when it's done",
+      detail: describeThreadMoveWhenDone(label, waits),
+    },
+    {
+      value: "stop-now",
+      label: "Stop and move now",
+      detail: "Stops the agent and anything it left running, then moves.",
+    },
+  ];
+  return (
+    <div className="grid gap-1.5" data-testid="thread-move-when">
+      <p className="text-[13.5px] leading-[19px] text-foreground" data-testid="thread-move-busy">
+        {describeThreadMoveWaits(waits)}
+      </p>
+      <RadioGroup
+        value={mode}
+        disabled={disabled}
+        onValueChange={(value) => onChange(value as ThreadPendingMoveMode)}
+        aria-label="When it moves"
+        className="gap-0.5"
+      >
+        {choices.map((choice) => (
+          <label
+            key={choice.value}
+            className="flex cursor-pointer items-start gap-2.5 rounded-lg px-1 py-1.5"
+            data-testid={`thread-move-mode-${choice.value}`}
+          >
+            <Radio value={choice.value} className="mt-0.5" />
+            <span className="min-w-0">
+              <span className="block text-[13.5px] font-medium">{choice.label}</span>
+              <span className="block text-[12.5px] text-muted-foreground">{choice.detail}</span>
+            </span>
+          </label>
+        ))}
+      </RadioGroup>
+    </div>
   );
 }
 
@@ -312,8 +439,11 @@ function TargetField({
             <SelectItem
               key={candidate.environmentId}
               value={candidate.environmentId}
-              // One without the project can be picked: the dialog offers to set it up there.
-              disabled={candidate.refusal !== undefined && candidate.refusalCode !== "no_project"}
+              // One without the project can be picked: the dialog offers to set
+              // it up there. One out of reach too: the move waits for it.
+              disabled={
+                !isThreadMoveTargetPickable(candidate) && candidate.refusalCode !== "no_project"
+              }
               data-testid={`thread-move-target-${candidate.environmentId}`}
             >
               <span className="flex min-w-0 flex-col">
