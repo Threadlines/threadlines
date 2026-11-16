@@ -77,8 +77,12 @@ function makeRepos() {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "link-moves-")));
   const origin = path.join(root, "origin.git");
   run(root, "init", "--bare", "--initial-branch=main", origin);
+  // Git for Windows turns on core.autocrlf for the whole computer by default,
+  // and then every checkout, the moved one included, has CRLF line endings
+  // where these tests read LF. Each clone turns it off before it checks out.
+  const clone = (target: string) => run(root, "clone", "-c", "core.autocrlf=false", origin, target);
   const seed = path.join(root, "seed");
-  run(root, "clone", origin, seed);
+  clone(seed);
   for (const name of ["a.txt", "b.txt", "c.txt", "d.txt"]) {
     fs.writeFileSync(path.join(seed, name), `${name} as pushed\n`);
   }
@@ -86,7 +90,7 @@ function makeRepos() {
   run(seed, "commit", "-m", "pushed");
   run(seed, "push", "origin", "HEAD:main");
   const a = path.join(root, "a");
-  run(root, "clone", origin, a);
+  clone(a);
   run(a, "checkout", "-b", "feature/move-me");
   fs.writeFileSync(path.join(a, "a.txt"), "a.txt from an unpushed commit\n");
   run(a, "commit", "-am", "unpushed");
@@ -99,7 +103,7 @@ function makeRepos() {
   fs.writeFileSync(path.join(a, "tool.sh"), "#!/bin/sh\necho hi\n", { mode: 0o755 });
   fs.writeFileSync(path.join(a, "image.bin"), Buffer.from([0, 1, 2, 255, 254, 0, 9]));
   const b = path.join(root, "b");
-  run(root, "clone", origin, b);
+  clone(b);
   return { root, origin, a, b };
 }
 
