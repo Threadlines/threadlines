@@ -15,8 +15,17 @@ import {
   type OrchestrationReadModel,
   type OrchestrationThread,
   type ThreadId,
+  ThreadMoveNotStartedActivityKind,
+  type ThreadMoveNotStartedPayload,
+  type ThreadMoveWait,
+  type ThreadMoveWaitCode,
 } from "@threadlines/contracts";
 import { threadPullRequestAutomationArmed } from "@threadlines/shared/linkedPullRequests";
+import {
+  APPROVAL_ACTIVITY_KINDS,
+  collectOpenPendingRequests,
+  countPendingUserInputs,
+} from "@threadlines/shared/pendingRequests";
 import { isRoomThread } from "@threadlines/shared/threadParticipants";
 
 import { childHasLiveWork } from "./childThreadDecisions.ts";
@@ -37,32 +46,113 @@ export type ThreadMoveDecision = ReadonlyArray<PlannedEvent> | { readonly refusa
 
 const refuse = (refusal: string) => ({ refusal });
 
+/** Something only the user can clear stops this thread from moving. */
+export type ThreadMoveBlockCode =
+  | "deleted"
+  | "archived"
+  | "moving"
+  | "moved"
+  | "general_chat"
+  | "room"
+  | "remote_origin"
+  | "child"
+  | "has_children"
+  | "queued_messages"
+  | "plan"
+  | "goal"
+  | "check_back"
+  | "command_request"
+  | "pull_request_automation";
+
 /**
- * Why `thread` can't move right now, in words for the user, or null when it
- * can. The same check runs in `moves.preview` (so the dialog explains before
- * anyone clicks) and in the freeze decision.
+ * One reason a thread can't move right now. A `wait` goes away on its own
+ * (the turn ends, the user answers); a `blocked` needs the user.
  */
-export function threadMoveRefusal(
+export type ThreadMoveRefusalEntry =
+  | { readonly kind: "wait"; readonly code: ThreadMoveWaitCode; readonly words: string }
+  | { readonly kind: "blocked"; readonly code: ThreadMoveBlockCode; readonly words: string };
+
+/** The words a wait finishes "Moves to <computer> …" with. */
+const WAIT_WORDS: Record<ThreadMoveWaitCode, string> = {
+  turn: "when this turn ends",
+  approval: "once you answer",
+  question: "once you answer",
+  side_turn: "when its side answer finishes",
+  background: "when its background work finishes",
+  command_run: "when its command finishes running",
+  workflow_run: "when its workflow finishes",
+  voice: "when the voice chat ends",
+  shared_checkout: "when the other thread working in its folder finishes",
+};
+
+const BUSY_WORDS = "Wait for this thread to finish what it's doing, then move it.";
+const SHARED_CHECKOUT_WORDS =
+  "Another thread is working in the same folder. Wait for it to finish, then move this one.";
+
+const wait = (code: ThreadMoveWaitCode): ThreadMoveRefusalEntry => ({
+  kind: "wait",
+  code,
+  words: WAIT_WORDS[code],
+});
+const blocked = (code: ThreadMoveBlockCode, words: string): ThreadMoveRefusalEntry => ({
+  kind: "blocked",
+  code,
+  words,
+});
+
+/** A thread's checkout: its worktree, else its project's folder. */
+function checkoutOf(readModel: OrchestrationReadModel, thread: OrchestrationThread) {
+  return (
+    thread.worktreePath ??
+    readModel.projects.find((entry) => entry.id === thread.projectId)?.workspaceRoot ??
+    null
+  );
+}
+
+/**
+ * Every reason `thread` can't move right now (docs/design/fleet.md, Parts 3
+ * and 3b), each as a `wait` or a `blocked` with words for the user. Every
+ * check runs, so a busy thread doesn't hide a goal behind its running turn.
+ * The same check runs in `moves.preview` (so the dialog explains before
+ * anyone clicks), in `thread.move.queue`, and in the freeze decision. A
+ * pending move isn't one of them: each caller decides about that itself.
+ */
+export function threadMoveRefusals(
   readModel: OrchestrationReadModel,
   thread: OrchestrationThread,
-): string | null {
-  if (thread.deletedAt !== null) return "This thread was deleted.";
-  if (thread.archivedAt !== null) return "Archived threads can't move. Unarchive it first.";
-  if ((thread.move ?? null) !== null) {
-    return thread.move?.movedAway !== undefined
-      ? `This thread already moved to ${thread.move.target.label}.`
-      : `This thread is already moving to ${thread.move?.target.label}.`;
+): ReadonlyArray<ThreadMoveRefusalEntry> {
+  const found: ThreadMoveRefusalEntry[] = [];
+  if (thread.deletedAt !== null) found.push(blocked("deleted", "This thread was deleted."));
+  if (thread.archivedAt !== null) {
+    found.push(blocked("archived", "Archived threads can't move. Unarchive it first."));
+  }
+  const move = thread.move ?? null;
+  if (move !== null) {
+    found.push(
+      move.movedAway !== undefined
+        ? blocked("moved", `This thread already moved to ${move.target.label}.`)
+        : blocked("moving", `This thread is already moving to ${move.target.label}.`),
+    );
   }
   const project = readModel.projects.find((candidate) => candidate.id === thread.projectId);
-  if (project?.kind === "general-chat") return "General chats can't move yet.";
+  if (project?.kind === "general-chat") {
+    found.push(blocked("general_chat", "General chats can't move yet."));
+  }
   if (isRoomThread(thread) || thread.agentRequests.open.length > 0) {
-    return "Threads with more than one agent can't move yet.";
+    found.push(blocked("room", "Threads with more than one agent can't move yet."));
   }
   if ((thread.remoteOrigin ?? null) !== null) {
-    return "This thread was started from another computer, so it stays here.";
+    found.push(
+      blocked("remote_origin", "This thread was started from another computer, so it stays here."),
+    );
   }
   if (thread.parentThreadId !== null && thread.attachedToParent) {
-    return "This thread belongs to the thread that started it. Make it its own thread first.";
+    found.push(
+      blocked(
+        "child",
+        "This thread belongs to the thread that started it. Make it its own thread first.",
+      ),
+    );
   }
   const hasLocalChildren = readModel.threads.some(
     (candidate) =>
@@ -70,31 +160,37 @@ export function threadMoveRefusal(
       candidate.attachedToParent &&
       candidate.deletedAt === null,
   );
-  if (hasLocalChildren || (thread.childRequests.remoteChildren ?? []).length > 0) {
-    return "Threads that started other threads can't move yet.";
-  }
-  const session = thread.session;
   if (
-    childHasLiveWork(thread) ||
-    (session?.pendingBackgroundTaskCount ?? 0) > 0 ||
-    (session?.awaitedBackgroundTaskCount ?? 0) > 0
+    hasLocalChildren ||
+    (thread.childRequests.remoteChildren ?? []).length > 0 ||
+    thread.childRequests.open.length > 0
   ) {
-    return "Wait for this thread to finish what it's doing, then move it.";
+    found.push(blocked("has_children", "Threads that started other threads can't move yet."));
+  }
+  // Queued follow-ups would start the next turn the moment this one ends.
+  if ((thread.queuedFollowUps ?? []).length > 0) {
+    found.push(blocked("queued_messages", "Send or remove your queued messages first."));
+  }
+  // Only the user's answer clears a plan, and implementing it starts a turn.
+  const latestTurnId = thread.latestTurn?.turnId ?? null;
+  if (
+    thread.proposedPlans.some(
+      (plan) =>
+        latestTurnId !== null &&
+        plan.turnId === latestTurnId &&
+        plan.implementedAt === null &&
+        plan.dismissedAt === null,
+    )
+  ) {
+    found.push(blocked("plan", "Implement or dismiss the plan first."));
   }
   if (thread.goal !== null && thread.goal.status !== "complete") {
-    return "This thread has a goal set. Clear it first.";
+    found.push(blocked("goal", "This thread has a goal set. Clear it first."));
   }
   if ((thread.checkBacks ?? []).length > 0) {
-    return "This thread's agent set itself a time to come back. Cancel it first.";
-  }
-  if (
-    (thread.commandRuns ?? []).some((run) =>
-      ["starting", "running", "waiting"].includes(run.status),
-    ) ||
-    (thread.workflowRuns ?? []).some((run) => run.status === "running") ||
-    thread.voiceActive === true
-  ) {
-    return "Wait for this thread to finish what it's doing, then move it.";
+    found.push(
+      blocked("check_back", "This thread's agent set itself a time to come back. Cancel it first."),
+    );
   }
   const runRequestIds = new Set(
     (thread.commandRuns ?? []).flatMap((run) =>
@@ -106,27 +202,97 @@ export function threadMoveRefusal(
       (request) => request.dismissedAt === null && !runRequestIds.has(request.requestId),
     )
   ) {
-    return "A command in this thread is waiting for you to run or dismiss it. Do that first.";
+    found.push(
+      blocked(
+        "command_request",
+        "A command in this thread is waiting for you to run or dismiss it. Do that first.",
+      ),
+    );
   }
   if (threadPullRequestAutomationArmed(thread)) {
-    return "Turn off pull request auto-fix and auto-merge for this thread first.";
+    found.push(
+      blocked(
+        "pull_request_automation",
+        "Turn off pull request auto-fix and auto-merge for this thread first.",
+      ),
+    );
   }
+
+  // What goes away on its own.
+  const session = thread.session;
+  if (
+    thread.latestTurn?.state === "running" ||
+    session?.status === "running" ||
+    session?.status === "starting"
+  ) {
+    found.push(wait("turn"));
+  }
+  if (collectOpenPendingRequests(thread.activities, APPROVAL_ACTIVITY_KINDS).length > 0) {
+    found.push(wait("approval"));
+  }
+  if (countPendingUserInputs(thread.activities).pendingUserInputCount > 0) {
+    found.push(wait("question"));
+  }
+  if ((thread.sideTurn ?? null) !== null) found.push(wait("side_turn"));
+  if (
+    (session?.pendingBackgroundTaskCount ?? 0) > 0 ||
+    (session?.awaitedBackgroundTaskCount ?? 0) > 0
+  ) {
+    found.push(wait("background"));
+  }
+  if (
+    (thread.commandRuns ?? []).some((run) =>
+      ["starting", "running", "waiting"].includes(run.status),
+    )
+  ) {
+    found.push(wait("command_run"));
+  }
+  if ((thread.workflowRuns ?? []).some((run) => run.status === "running")) {
+    found.push(wait("workflow_run"));
+  }
+  if (thread.voiceActive === true) found.push(wait("voice"));
   // Another thread at work in the same checkout could change the files while
   // they are being packed.
-  const checkout = thread.worktreePath ?? project?.workspaceRoot ?? null;
+  const checkout = checkoutOf(readModel, thread);
   const sharedCheckoutBusy = readModel.threads.some(
     (candidate) =>
       candidate.id !== thread.id &&
       candidate.deletedAt === null &&
-      (candidate.worktreePath ??
-        readModel.projects.find((entry) => entry.id === candidate.projectId)?.workspaceRoot ??
-        null) === checkout &&
+      checkoutOf(readModel, candidate) === checkout &&
       childHasLiveWork(candidate),
   );
-  if (sharedCheckoutBusy) {
-    return "Another thread is working in the same folder. Wait for it to finish, then move this one.";
-  }
-  return null;
+  if (sharedCheckoutBusy) found.push(wait("shared_checkout"));
+  return found;
+}
+
+/** The waits among a thread's move refusals, as clients see them. */
+export function moveWaitsOf(
+  refusals: ReadonlyArray<ThreadMoveRefusalEntry>,
+): ReadonlyArray<ThreadMoveWait> {
+  return refusals.flatMap((entry) =>
+    entry.kind === "wait" ? [{ code: entry.code, words: entry.words }] : [],
+  );
+}
+
+/** The first thing only the user can clear, or null. */
+export function firstMoveBlock(refusals: ReadonlyArray<ThreadMoveRefusalEntry>) {
+  return refusals.find((entry) => entry.kind === "blocked") ?? null;
+}
+
+/**
+ * Why `thread` can't move straight away, in words for the user, or null when
+ * it can: a move that doesn't wait (`moves.start`) refuses waits too.
+ */
+export function threadMoveRefusal(
+  readModel: OrchestrationReadModel,
+  thread: OrchestrationThread,
+): string | null {
+  const refusals = threadMoveRefusals(readModel, thread);
+  const block = firstMoveBlock(refusals);
+  if (block !== null) return block.words;
+  const first = refusals[0];
+  if (first === undefined) return null;
+  return first.code === "shared_checkout" ? SHARED_CHECKOUT_WORDS : BUSY_WORDS;
 }
 
 /**
@@ -170,47 +336,138 @@ function frozenWords(thread: OrchestrationThread): string {
 }
 
 /**
- * Why `command` must not touch a moving or moved thread, or null. Covers the
- * thread the command is for and a parent it would attach a thread to; a fork
- * only reads its source, so it stays allowed (it is the honest way to keep
- * working here).
+ * Commands that start work on a thread (docs/design/fleet.md, Part 3b, "The
+ * guard"). A thread with a pending move refuses them, so the wait stays
+ * short; what a running turn needs (approvals, answers, activity, session
+ * updates, interrupt) still goes through. Some only start work in one form:
+ * see `startsWork`.
+ */
+const WORK_START_COMMANDS: ReadonlySet<OrchestrationCommand["type"]> = new Set([
+  "thread.turn.start",
+  "thread.turn.retry",
+  "thread.turn.resend",
+  // Both steer and queue: "Send when done", outside assistants' queued
+  // messages and scheduled runs into an existing thread all come this way.
+  "thread.follow-up.submit",
+  "thread.side-turn.start",
+  "thread.realtime.start",
+  "thread.command-run.start",
+  "thread.goal.set",
+  "thread.participant.add",
+  "thread.context-compact.request",
+  // A first send on a thread made without one.
+  "thread.start",
+  // A continue at the usage limit's reset is a turn the user didn't just ask for.
+  "thread.continue-at-reset.fire",
+  "thread.pull-request-automation.set",
+  "thread.continue-at-reset.set",
+]);
+
+/** Whether `command`, on its own thread, starts work there. */
+function startsWork(command: OrchestrationCommand): boolean {
+  if (!WORK_START_COMMANDS.has(command.type)) return false;
+  switch (command.type) {
+    // Turning a switch off is always allowed.
+    case "thread.pull-request-automation.set":
+      return (
+        command.autoFix === true || (command.autoMerge !== undefined && command.autoMerge !== null)
+      );
+    case "thread.continue-at-reset.set":
+      return command.enabled;
+    default:
+      return true;
+  }
+}
+
+/** The words for a thread whose move waits. */
+function pendingWords(thread: OrchestrationThread): string {
+  const label = thread.pendingMove?.target.label ?? "another computer";
+  return `This thread is waiting to move to ${label}. Cancel the move to keep working here.`;
+}
+
+/**
+ * Why `command` must not touch a moving or moved thread, or start work on a
+ * thread whose move waits, or null. Covers the thread the command is for and
+ * a parent it would attach a thread to; a fork only reads its source, so it
+ * stays allowed (it is the honest way to keep working here).
  */
 export function threadMoveGuardRefusal(
   readModel: OrchestrationReadModel,
   command: OrchestrationCommand,
 ): string | null {
-  const frozen = (threadId: ThreadId | null | undefined) => {
-    if (threadId === null || threadId === undefined) return null;
-    const thread = readModel.threads.find((candidate) => candidate.id === threadId);
-    return thread !== undefined && (thread.move ?? null) !== null ? thread : null;
-  };
+  const find = (threadId: ThreadId | null | undefined) =>
+    threadId === null || threadId === undefined
+      ? undefined
+      : readModel.threads.find((candidate) => candidate.id === threadId);
+  /** Why the thread can't take a new child or attach one, or null. */
+  const parentRefusal = (thread: OrchestrationThread | undefined) =>
+    thread === undefined
+      ? null
+      : (thread.move ?? null) !== null
+        ? frozenWords(thread)
+        : (thread.pendingMove ?? null) !== null
+          ? pendingWords(thread)
+          : null;
   if ("threadId" in command && command.type !== "thread.import") {
-    const thread = frozen(command.threadId);
-    if (thread !== null && !FROZEN_THREAD_COMMANDS.has(command.type)) {
-      return frozenWords(thread);
+    const thread = find(command.threadId);
+    if (thread !== undefined && (thread.move ?? null) !== null) {
+      if (!FROZEN_THREAD_COMMANDS.has(command.type)) return frozenWords(thread);
+    } else if (
+      thread !== undefined &&
+      (thread.pendingMove ?? null) !== null &&
+      startsWork(command)
+    ) {
+      return pendingWords(thread);
     }
   }
   if (command.type === "thread.create") {
-    const parent = frozen(command.parentThreadId);
-    if (parent !== null) return frozenWords(parent);
+    const refusal = parentRefusal(find(command.parentThreadId));
+    if (refusal !== null) return refusal;
   }
   if (command.type === "thread.parent-attachment.set" && command.attached) {
-    const child = readModel.threads.find((candidate) => candidate.id === command.threadId);
-    const parent = frozen(child?.parentThreadId);
-    if (parent !== null) return frozenWords(parent);
+    const refusal = parentRefusal(find(find(command.threadId)?.parentThreadId));
+    if (refusal !== null) return refusal;
   }
   return null;
 }
 
-/** The freeze: the thread now moves, and its session stops so nothing can start a turn. */
+/** Whether the thread's agent has no session left, as projected. */
+const sessionStopped = (thread: OrchestrationThread) =>
+  thread.session === null || thread.session.status === "stopped";
+
+/**
+ * The freeze: the thread now moves, and its session stops so nothing can
+ * start a turn. A move from the queue (`queuedRequestId`) must be the
+ * thread's current queued move, and starts only once the thread is free and
+ * its sessions are gone; its pending move ends in the same decision, so the
+ * thread is never between the two.
+ */
 export function decideMoveStart(
   readModel: OrchestrationReadModel,
   thread: OrchestrationThread,
   command: CommandOf<"thread.move.start">,
   baseFor: EventBase,
 ): ThreadMoveDecision {
-  const refusal = threadMoveRefusal(readModel, thread);
-  if (refusal !== null) return refuse(refusal);
+  const pending = thread.pendingMove ?? null;
+  const queuedRequestId = command.queuedRequestId;
+  if (queuedRequestId === undefined) {
+    if (pending !== null) {
+      return refuse(`A move to ${pending.target.label} is already waiting. Cancel it first.`);
+    }
+    const refusal = threadMoveRefusal(readModel, thread);
+    if (refusal !== null) return refuse(refusal);
+  } else {
+    if (pending === null || pending.requestId !== queuedRequestId) {
+      return refuse("That queued move was cancelled or replaced.");
+    }
+    const refusals = threadMoveRefusals(readModel, thread);
+    const block = firstMoveBlock(refusals);
+    if (block !== null) return refuse(block.words);
+    if (refusals.length > 0) return refuse(BUSY_WORDS);
+    if (pending.stage !== "quiescing" || !sessionStopped(thread)) {
+      return refuse("This thread's agent hasn't stopped yet.");
+    }
+  }
   const started: PlannedEvent = {
     ...baseFor(thread.id),
     type: "thread.move-started",
@@ -220,8 +477,24 @@ export function decideMoveStart(
       target: command.target,
       agent: command.agent,
       startedAt: command.createdAt,
+      ...(queuedRequestId !== undefined ? { queuedRequestId } : {}),
     },
   };
+  const queueEnded: PlannedEvent[] =
+    queuedRequestId === undefined
+      ? []
+      : [
+          {
+            ...baseFor(thread.id),
+            type: "thread.move-queue-ended",
+            payload: {
+              threadId: thread.id,
+              requestId: queuedRequestId,
+              reason: "started",
+              endedAt: command.createdAt,
+            },
+          },
+        ];
   // Settings cards waiting for an answer don't move: they end here, with why.
   const cancelled = cancelWaitingSettingsChanges(
     thread,
@@ -229,8 +502,8 @@ export function decideMoveStart(
     command.createdAt,
     baseFor,
   );
-  if (thread.session === null || thread.session.status === "stopped") {
-    return [...cancelled, started];
+  if (sessionStopped(thread)) {
+    return [...cancelled, ...queueEnded, started];
   }
   return [
     ...cancelled,
@@ -239,6 +512,221 @@ export function decideMoveStart(
       ...baseFor(thread.id),
       type: "thread.session-stop-requested",
       payload: { threadId: thread.id, createdAt: command.createdAt },
+    },
+  ];
+}
+
+/** The thread's pending move, when it is the one `requestId` names. */
+function currentPendingMove(thread: OrchestrationThread, requestId: string) {
+  const pending = thread.pendingMove ?? null;
+  return pending !== null && pending.requestId === requestId ? pending : null;
+}
+
+/** Ending every runtime of the thread: "Stop and move now", and the barrier before a freeze. */
+function sessionStopEvents(
+  thread: OrchestrationThread,
+  createdAt: string,
+  baseFor: EventBase,
+): PlannedEvent[] {
+  const sideTurn = thread.sideTurn ?? null;
+  return [
+    {
+      ...baseFor(thread.id),
+      type: "thread.session-stop-requested",
+      payload: { threadId: thread.id, createdAt },
+    },
+    // A side answer runs in a runtime of its own.
+    ...(sideTurn !== null
+      ? [
+          {
+            ...baseFor(thread.id),
+            type: "thread.side-turn-interrupt-requested" as const,
+            payload: { threadId: thread.id, sideTurnId: sideTurn.sideTurnId, createdAt },
+          },
+        ]
+      : []),
+  ];
+}
+
+/**
+ * Queues a move that starts once the thread is free (docs/design/fleet.md,
+ * Part 3b). Refused when something only the user can clear stands in the
+ * way, or another move waits or runs; allowed with any number of waits, and
+ * with none (the queue then starts it at once). "Stop and move now" ends the
+ * thread's sessions in the same decision; the caller adds what Stop holds
+ * (command output that would wake the agent).
+ */
+export function decideMoveQueue(
+  readModel: OrchestrationReadModel,
+  thread: OrchestrationThread,
+  command: CommandOf<"thread.move.queue">,
+  baseFor: EventBase,
+): ThreadMoveDecision {
+  const pending = thread.pendingMove ?? null;
+  if (pending !== null) {
+    // The same request again (a retried call) is no news.
+    return pending.requestId === command.requestId
+      ? []
+      : refuse(`A move to ${pending.target.label} is already waiting. Cancel it first.`);
+  }
+  const refusals = threadMoveRefusals(readModel, thread);
+  const block = firstMoveBlock(refusals);
+  if (block !== null) return refuse(block.words);
+  const queued: PlannedEvent = {
+    ...baseFor(thread.id),
+    type: "thread.move-queued",
+    payload: {
+      threadId: thread.id,
+      pendingMove: {
+        requestId: command.requestId,
+        target: command.target,
+        agent: command.agent,
+        mode: command.mode,
+        stage: command.mode === "stop-now" ? "quiescing" : "waiting",
+        requestedAt: command.createdAt,
+        requestedBy: command.requestedBy,
+        waitsFor: moveWaitsOf(refusals),
+        hold: null,
+      },
+    },
+  };
+  return command.mode === "stop-now"
+    ? [queued, ...sessionStopEvents(thread, command.createdAt, baseFor)]
+    : [queued];
+}
+
+/** Cancel: the queued move `requestId` ends; a cancel for an older one changes nothing. */
+export function decideMoveUnqueue(
+  thread: OrchestrationThread,
+  command: CommandOf<"thread.move.unqueue">,
+  baseFor: EventBase,
+): ThreadMoveDecision {
+  if (currentPendingMove(thread, command.requestId) === null) return [];
+  return [
+    {
+      ...baseFor(thread.id),
+      type: "thread.move-queue-ended",
+      payload: {
+        threadId: thread.id,
+        requestId: command.requestId,
+        reason: "cancelled",
+        endedAt: command.createdAt,
+      },
+    },
+  ];
+}
+
+/**
+ * The barrier's first step: the thread is free, so its sessions end, and the
+ * session fence holds from here (`stage: "quiescing"`). Asked again while
+ * quiescing, it only stops a session the projection still shows.
+ */
+export function decideMoveQuiesce(
+  readModel: OrchestrationReadModel,
+  thread: OrchestrationThread,
+  command: CommandOf<"thread.move.quiesce">,
+  baseFor: EventBase,
+): ThreadMoveDecision {
+  const pending = currentPendingMove(thread, command.requestId);
+  if (pending === null) return [];
+  const refusals = threadMoveRefusals(readModel, thread);
+  const block = firstMoveBlock(refusals);
+  if (block !== null) return refuse(block.words);
+  if (refusals.length > 0) return refuse(BUSY_WORDS);
+  if (pending.stage === "quiescing") {
+    return sessionStopped(thread) ? [] : sessionStopEvents(thread, command.createdAt, baseFor);
+  }
+  return [
+    {
+      ...baseFor(thread.id),
+      type: "thread.move-quiescing",
+      payload: { threadId: thread.id, requestId: command.requestId, updatedAt: command.createdAt },
+    },
+    ...sessionStopEvents(thread, command.createdAt, baseFor),
+  ];
+}
+
+const sameWaits = (left: ReadonlyArray<ThreadMoveWait>, right: ReadonlyArray<ThreadMoveWait>) =>
+  left.length === right.length &&
+  left.every(
+    (entry, index) => entry.code === right[index]?.code && entry.words === right[index].words,
+  );
+
+/** What the queued move waits for now, and what holds it; unchanged is no news. */
+export function decideMoveQueueStatus(
+  thread: OrchestrationThread,
+  command: CommandOf<"thread.move.queue-status">,
+  baseFor: EventBase,
+): ThreadMoveDecision {
+  const pending = currentPendingMove(thread, command.requestId);
+  if (pending === null) return [];
+  const hold = pending.hold ?? null;
+  if (
+    sameWaits(pending.waitsFor ?? [], command.waitsFor) &&
+    hold?.kind === command.hold?.kind &&
+    hold?.words === command.hold?.words
+  ) {
+    return [];
+  }
+  return [
+    {
+      ...baseFor(thread.id),
+      type: "thread.move-queue-status-set",
+      payload: {
+        threadId: thread.id,
+        requestId: command.requestId,
+        waitsFor: command.waitsFor,
+        hold: command.hold,
+        updatedAt: command.createdAt,
+      },
+    },
+  ];
+}
+
+/**
+ * The queued move can't go (or its thread is gone): it ends, and the thread
+ * says why ("Didn't move: …") until the user dismisses it.
+ */
+export function decideMoveQueueEnd(
+  thread: OrchestrationThread,
+  command: CommandOf<"thread.move.queue-end">,
+  baseFor: EventBase,
+): ThreadMoveDecision {
+  const pending = currentPendingMove(thread, command.requestId);
+  if (pending === null) return [];
+  const payload: ThreadMoveNotStartedPayload = {
+    requestId: command.requestId,
+    targetLabel: pending.target.label,
+    reason: command.reason,
+    words: command.words,
+  };
+  return [
+    {
+      ...baseFor(thread.id),
+      type: "thread.move-queue-ended",
+      payload: {
+        threadId: thread.id,
+        requestId: command.requestId,
+        reason: command.reason,
+        words: command.words,
+        endedAt: command.createdAt,
+      },
+    },
+    {
+      ...baseFor(thread.id),
+      type: "thread.activity-appended",
+      payload: {
+        threadId: thread.id,
+        activity: {
+          id: EventId.make(`move-not-started:${command.requestId}`),
+          tone: "error",
+          kind: ThreadMoveNotStartedActivityKind,
+          summary: `Didn't move to ${pending.target.label}`,
+          payload,
+          turnId: null,
+          createdAt: command.createdAt,
+        },
+      },
     },
   ];
 }

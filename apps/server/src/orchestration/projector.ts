@@ -35,6 +35,7 @@ import {
   withUnqueuedAgentMessage,
 } from "@threadlines/shared/roomAgentRequests";
 import { applyAgentPagePublication } from "@threadlines/shared/agentPages";
+import { nextPendingMove } from "./pendingMoveProjection.ts";
 import {
   applyCommandRequestDismissed,
   applyCommandRequested,
@@ -1038,10 +1039,28 @@ export function projectEvent(
               phase: "exporting",
               cancelRequested: false,
               startedAt: payload.startedAt,
+              ...(payload.queuedRequestId !== undefined
+                ? { queuedRequestId: payload.queuedRequestId }
+                : {}),
             },
           }),
         })),
       );
+
+    // A move waiting for the thread to be free (ThreadPendingMove).
+    case "thread.move-queued":
+    case "thread.move-quiescing":
+    case "thread.move-queue-status-set":
+    case "thread.move-queue-ended": {
+      const thread = nextBase.threads.find((entry) => entry.id === event.payload.threadId);
+      if (thread === undefined) return Effect.succeed(nextBase);
+      return Effect.succeed({
+        ...nextBase,
+        threads: updateThread(nextBase.threads, thread.id, {
+          pendingMove: nextPendingMove(thread.pendingMove ?? null, event),
+        }),
+      });
+    }
 
     case "thread.move-progressed":
       return decodeForEvent(ThreadMoveProgressedPayload, event.payload, event.type, "payload").pipe(

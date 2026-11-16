@@ -32,6 +32,7 @@ import {
   OrchestrationChildRequestState,
   OrchestrationSettingsChangeRequest,
   OrchestrationThreadMove,
+  ThreadPendingMove,
   ThreadMovedFrom,
   ThreadRemoteOrigin,
   OrchestrationOutsideWork,
@@ -167,6 +168,8 @@ export const ProjectionThread = Schema.Struct({
   outsideWork: Schema.optional(Schema.NullOr(Schema.Array(OrchestrationOutsideWork))),
   /** See `OrchestrationThread.move`. Absent or null reads as none. */
   move: Schema.optional(Schema.NullOr(OrchestrationThreadMove)),
+  /** See `OrchestrationThread.pendingMove`. Absent or null reads as none. */
+  pendingMove: Schema.optional(Schema.NullOr(ThreadPendingMove)),
   /** See `OrchestrationThread.movedFrom`. Absent or null reads as none. */
   movedFrom: Schema.optional(Schema.NullOr(ThreadMovedFrom)),
   /** See `OrchestrationThread.historySeedOwed`, as 0 or 1. Absent or null reads as 0. */
