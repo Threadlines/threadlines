@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type RefObject, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { useIsMobile } from "../../hooks/useMediaQuery";
 
@@ -8,9 +8,31 @@ import { useIsMobile } from "../../hooks/useMediaQuery";
  *
  * Whether the hero is showing is a fact about the page, not React state: the
  * timeline alone knows when it is empty, and it renders the element marked
- * `data-draft-hero` exactly then. The `draft-hero` variant in index.css styles
- * the column from that marker, and the slide below reads it.
+ * `data-draft-hero` exactly then. That element marks its chat column with
+ * `data-draft-hero-shown` (useDraftHeroColumnMark), the `draft-hero` variant in
+ * index.css styles the column from that mark, and the slide below reads the
+ * marker element.
  */
+
+/** Set on the chat column while the hero is in it; the `draft-hero` variant keys off it. */
+export const DRAFT_HERO_COLUMN_ATTRIBUTE = "data-draft-hero-shown";
+
+/**
+ * Marks the chat column that holds `marker` while `shown`, before the browser
+ * paints, so the column takes the hero layout in the same frame the hero
+ * appears and drops it in the frame it goes.
+ */
+export function useDraftHeroColumnMark(
+  marker: RefObject<HTMLElement | null>,
+  shown: boolean,
+): void {
+  useLayoutEffect(() => {
+    const column = shown ? marker.current?.closest("[data-chat-column]") : null;
+    if (!column) return;
+    column.setAttribute(DRAFT_HERO_COLUMN_ATTRIBUTE, "");
+    return () => column.removeAttribute(DRAFT_HERO_COLUMN_ATTRIBUTE);
+  }, [marker, shown]);
+}
 
 /** Smallest chat column the hero is laid out in. Below it the composer stays at the bottom. */
 const HERO_MIN_WIDTH_PX = 560;
