@@ -330,6 +330,14 @@ Setup, once:
 To retry a version, or to check the manifests without opening a pull request,
 run **WinGet** by hand with that version (tick "dry run" for the check).
 
+Until a moderator approves our first pull request, Threadlines isn't in
+winget-pkgs, and every version sent is another "New package" request in a
+queue that takes weeks (about eight in November 2026). So while one is open,
+the workflow skips with a notice instead of opening more, and the oldest
+request keeps our place in line. Updates to a listed package merge within
+hours. The day the first one is approved, run **WinGet** by hand with the
+newest stable version.
+
 ## Windows Publisher Name
 
 There are two different Windows publisher surfaces:
