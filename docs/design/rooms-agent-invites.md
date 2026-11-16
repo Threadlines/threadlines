@@ -116,14 +116,22 @@ Decisions (agentRequestDecisions.ts, pure):
 - submit: caller holds the thread with a turn in flight; refused when paused,
   held, over the limit, or another invite is awaiting the user.
 - respond (and the auto path) revalidates everything that can change while
-  the user thinks: the request is `awaiting_user`, the epoch is unchanged, no
-  side answer is running, voice is off, the caller is still in the thread.
-  Then, in one decision: for teammate, the guest becomes a member; the review
-  is sent as its own message (`invite-review:<requestId>`, kind review, the
-  same text and captured changes), so the chat shows it like any independent
-  review; its side turn starts (askedBy the caller); the request runs; the
-  invite message records the choice. decline settles `declined` and pauses
-  invites.
+  the user thinks: the request is `awaiting_user`, the epoch is unchanged,
+  voice is off, the caller is still in the thread. Then, in one decision: for
+  teammate, the guest becomes a member; the review is sent as its own message
+  (`invite-review:<requestId>`, kind review, the same text and captured
+  changes), so the chat shows it like any independent review; its side turn
+  starts (askedBy the caller); the request runs; the invite message records
+  the choice. decline settles `declined` and pauses invites.
+- A thread runs one side answer at a time. An invite accepted while one runs
+  (a council bringing in several reviewers, say) records the choice and the
+  teammate join at once, but goes `queued` instead of starting. When the
+  running side answer settles, the same decision starts the oldest queued
+  invite's review, after the same revalidation; one that fails it is
+  cancelled with the reason and the next gets the turn. Stop and the caller
+  leaving cancel queued invites like any open request. A restart fails them
+  ("The server restarted before this review started."), like the review that
+  was running.
 - Provider checks the decider cannot make (the instance is still enabled,
   signed in, a Codex or Claude agent, and its billing matches what was shown)
   run in the server before dispatching respond or an auto submit; a change

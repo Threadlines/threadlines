@@ -1178,7 +1178,6 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
         from: { participantId: scope.participantId },
         callerTurnId,
         chainEpoch,
-        startsNow: mode === "auto",
       };
       const refusal = agentInviteRefusal(room.thread, rules);
       if (refusal !== null) {
@@ -1227,7 +1226,7 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
           const refusalNow =
             threadNow === undefined
               ? { outcome: "refused" as const, detail: "This thread is gone." }
-              : agentInviteRefusal(threadNow, { ...rules, startsNow: modeNow === "auto" });
+              : agentInviteRefusal(threadNow, rules);
           if (refusalNow !== null) {
             return {
               outcome: refusalNow.outcome,
@@ -1313,7 +1312,7 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
             outcome: modeNow === "auto" ? "started" : "asked_user",
             detail:
               modeNow === "auto"
-                ? `${handle} is reviewing${suggestion === "teammate" ? " and joined the thread" : ""}. Its review comes back to you as a message.`
+                ? `${handle} ${(threadNow?.sideTurn ?? null) !== null ? "will review once the side answer running now finishes" : "is reviewing"}${suggestion === "teammate" ? ", and joined the thread" : ""}. Its review comes back to you as a message.`
                 : "The user will decide. If they agree, the review comes back to you as a message; if not, you will not hear back. Do not ask again unless the user asks you to.",
             agent,
             ...named,
