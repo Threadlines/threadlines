@@ -7,7 +7,8 @@ import type {
 } from "@threadlines/contracts";
 import type { DraftThreadEnvMode } from "../composerDraftStore";
 
-interface ThreadContextLike {
+/** The open thread, as far as starting a new thread from it goes. */
+export interface ThreadContextLike {
   environmentId: EnvironmentId;
   projectId: ProjectId;
   branch: string | null;

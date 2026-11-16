@@ -1,5 +1,5 @@
 import type { ProviderInteractionMode, RuntimeMode } from "@threadlines/contracts";
-import { type ReactNode, useLayoutEffect, useRef } from "react";
+import { memo, type ReactNode, useLayoutEffect, useRef } from "react";
 
 import { cn } from "~/lib/utils";
 import { interactionModeConfig } from "../../interactionModeOptions";
@@ -128,7 +128,7 @@ function fitWords(wrapper: HTMLElement): void {
  * effort uncut, and keep just their icons where it doesn't: a long model name
  * or access level turns them to icons sooner than a short one.
  */
-export function ComposerRunControls(props: {
+export const ComposerRunControls = memo(function ComposerRunControls(props: {
   mode: ComposerModeControl | null;
   access: ComposerAccessControl;
   /** Puts the cursor back in the prompt after an access pick. */
@@ -176,7 +176,7 @@ export function ComposerRunControls(props: {
       <AccessMenu access={props.access} focusComposer={props.focusComposer} />
     </span>
   );
-}
+});
 
 /** The access option a control shows: the one offered, else the level's own words. */
 export function currentAccessOption(access: ComposerAccessControl): RuntimeModeOption {

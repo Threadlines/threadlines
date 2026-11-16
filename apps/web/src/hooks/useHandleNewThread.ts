@@ -2,6 +2,7 @@ import { scopedProjectKey, scopeProjectRef } from "@threadlines/client-runtime";
 import {
   DEFAULT_NEW_THREAD_RUNTIME_MODE,
   type ScopedProjectRef,
+  type ScopedThreadRef,
   type ThreadEnvMode,
   type ThreadId,
 } from "@threadlines/contracts";
@@ -18,7 +19,7 @@ import {
   useComposerDraftStore,
 } from "../composerDraftStore";
 import { preserveRightPanelSearchParamsForDraftNavigation } from "../diffRouteSearch";
-import { resolveNewThreadPlacement } from "../lib/chatThreadActions";
+import { resolveNewThreadPlacement, type ThreadContextLike } from "../lib/chatThreadActions";
 import { newDraftId, newThreadId } from "../lib/utils";
 import { requestNewThreadComposerFocus } from "../newThreadComposerFocus";
 import {
@@ -36,13 +37,15 @@ import {
   selectProjectGroupingSettings,
 } from "../logicalProject";
 import {
+  type AppState,
+  selectEnvironmentState,
   selectProjectsAcrossEnvironments,
   selectSidebarThreadsAcrossEnvironments,
   selectThreadByRef,
   selectWorkspaceProjectsAcrossEnvironments,
   useStore,
 } from "../store";
-import { createThreadSelectorByRef } from "../storeSelectors";
+import type { Project } from "../types";
 import { resolveThreadRouteTarget } from "../threadRoutes";
 import { useUiStateStore } from "../uiStateStore";
 import { useSettings } from "./useSettings";
@@ -283,15 +286,72 @@ export function useNewThreadHandler() {
   };
 }
 
-export function useHandleNewThread() {
+/**
+ * Where the open thread's checkout is, for starting a thread from it: only the
+ * fields `chatThreadActions` reads, so a streaming reply, which changes the
+ * thread on every word, does not redraw everything that can start a thread.
+ */
+function createThreadContextSelector(
+  ref: ScopedThreadRef | null,
+): (state: AppState) => ThreadContextLike | undefined {
+  return (state) => {
+    const shell = ref
+      ? selectEnvironmentState(state, ref.environmentId).threadShellById[ref.threadId]
+      : undefined;
+    return shell
+      ? {
+          environmentId: shell.environmentId,
+          projectId: shell.projectId,
+          branch: shell.branch,
+          worktreePath: shell.worktreePath,
+          worktreeOrigin: shell.worktreeOrigin,
+        }
+      : undefined;
+  };
+}
+
+/**
+ * Projects in the order the sidebar lists them. Sorting by activity reads
+ * every thread, but the result changes only when the order does, so a
+ * streaming reply bumping its thread's activity does not redraw callers.
+ */
+function useOrderedProjects(): Project[] {
   const projectOrder = useUiStateStore((store) => store.projectOrder);
+  const sidebarProjectSortOrder = useSettings((settings) => settings.sidebarProjectSortOrder);
+  return useStore(
+    useShallow(
+      useCallback(
+        (store: AppState) => {
+          const manuallyOrdered = orderItemsByPreferredIds({
+            items: selectWorkspaceProjectsAcrossEnvironments(store),
+            preferredIds: projectOrder,
+            getId: getProjectOrderKey,
+          });
+          if (sidebarProjectSortOrder === "manual") {
+            return manuallyOrdered;
+          }
+          // Mirror the sidebar's activity/created ordering so project pickers built
+          // on this hook list projects in the same order the user sees there.
+          return sortScopedProjectsByActivity(
+            manuallyOrdered,
+            selectSidebarThreadsAcrossEnvironments(store),
+            sidebarProjectSortOrder,
+          );
+        },
+        [projectOrder, sidebarProjectSortOrder],
+      ),
+    ),
+  );
+}
+
+export function useHandleNewThread() {
   const routeTarget = useParams({
     strict: false,
     select: (params) => resolveThreadRouteTarget(params),
   });
   const routeThreadRef = routeTarget?.kind === "server" ? routeTarget.threadRef : null;
   const activeThread = useStore(
-    useMemo(() => createThreadSelectorByRef(routeThreadRef), [routeThreadRef]),
+    useShallow(useMemo(() => createThreadContextSelector(routeThreadRef), [routeThreadRef])),
   );
   const getDraftThread = useComposerDraftStore((store) => store.getDraftThread);
   const activeDraftThread = useComposerDraftStore(() =>
@@ -301,26 +361,7 @@ export function useHandleNewThread() {
         : useComposerDraftStore.getState().getDraftSession(routeTarget.draftId)
       : null,
   );
-  const projects = useStore(
-    useShallow((store) => selectWorkspaceProjectsAcrossEnvironments(store)),
-  );
-  const sidebarProjectSortOrder = useSettings((settings) => settings.sidebarProjectSortOrder);
-  const sidebarThreads = useStore(
-    useShallow((store) => selectSidebarThreadsAcrossEnvironments(store)),
-  );
-  const orderedProjects = useMemo(() => {
-    const manuallyOrdered = orderItemsByPreferredIds({
-      items: projects,
-      preferredIds: projectOrder,
-      getId: getProjectOrderKey,
-    });
-    if (sidebarProjectSortOrder === "manual") {
-      return manuallyOrdered;
-    }
-    // Mirror the sidebar's activity/created ordering so project pickers built
-    // on this hook list projects in the same order the user sees there.
-    return sortScopedProjectsByActivity(manuallyOrdered, sidebarThreads, sidebarProjectSortOrder);
-  }, [projectOrder, projects, sidebarProjectSortOrder, sidebarThreads]);
+  const orderedProjects = useOrderedProjects();
   const handleNewThread = useNewThreadState();
 
   return {
