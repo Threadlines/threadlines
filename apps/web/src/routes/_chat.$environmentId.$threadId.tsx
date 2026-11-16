@@ -670,19 +670,17 @@ function ChatThreadRouteView() {
   ]);
   // A tab queued for this thread from outside the route (the Threads tab, the
   // first time a thread becomes a lead on this device): opened once the thread
-  // can show it. Sheet layouts drop it rather than cover the conversation.
+  // can show it, as the sheet on a phone. It is asked for once per device, so
+  // it is never dropped.
   const queuedTab = useQueuedRightPanelTab(currentThreadKey);
   useEffect(() => {
     if (queuedTab === null || currentThreadKey === null || !availableTabs.includes(queuedTab)) {
       return;
     }
     clearQueuedRightPanelTab(currentThreadKey);
-    if (shouldUseDiffSheet) {
-      return;
-    }
     focusRightPanelTab(currentThreadKey, queuedTab);
     navigateToTab(queuedTab);
-  }, [availableTabs, currentThreadKey, navigateToTab, queuedTab, shouldUseDiffSheet]);
+  }, [availableTabs, currentThreadKey, navigateToTab, queuedTab]);
   // The thread's media, for the launcher's Media row: the same listing the
   // Media tab opens on, so the row and the tab agree. Read only while the
   // launcher is on screen; a turn landing changes the revision and so the key.

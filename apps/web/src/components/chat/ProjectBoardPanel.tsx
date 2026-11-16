@@ -337,6 +337,8 @@ const BoardRow = memo(function BoardRow({
         )}
         onClick={() => onOpenThread(threadRef)}
         onKeyDown={(event) => {
+          // The pull request badge inside answers its own keys.
+          if (event.target !== event.currentTarget) return;
           if (event.key !== "Enter" && event.key !== " ") return;
           event.preventDefault();
           onOpenThread(threadRef);
