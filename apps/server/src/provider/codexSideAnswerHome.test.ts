@@ -10,8 +10,8 @@ import {
   codexSignInHome,
   prepareCodexSideAnswerHome,
   readCodexSignIn,
-  removeCodexSideAnswerHome,
 } from "./codexSideAnswerHome.ts";
+import { removeSideRuntimeHome } from "./sideRuntimeHome.ts";
 
 const threadId = "01a0dc00-9850-7ca0-8836-c52b67ffe2a3";
 const scratch: string[] = [];
@@ -60,7 +60,7 @@ describe("codex side-answer home", () => {
       chatgptPlanType: "pro",
     });
 
-    expect(await Effect.runPromise(removeCodexSideAnswerHome(home.homePath))).toBe(true);
+    expect(await Effect.runPromise(removeSideRuntimeHome(home.homePath))).toBe(true);
     expect(fs.existsSync(home.homePath)).toBe(false);
   });
 
@@ -88,7 +88,7 @@ describe("codex side-answer home", () => {
 
   it("never deletes a folder that is not one of its own homes", async () => {
     const signInHome = fakeSignInHome();
-    expect(await Effect.runPromise(removeCodexSideAnswerHome(signInHome))).toBe(false);
+    expect(await Effect.runPromise(removeSideRuntimeHome(signInHome))).toBe(false);
     expect(fs.existsSync(path.join(signInHome, "auth.json"))).toBe(true);
   });
 

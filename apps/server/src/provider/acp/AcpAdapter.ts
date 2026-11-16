@@ -67,7 +67,12 @@ import {
 import { PAGES_MCP_SERVER_NAME } from "../../mcp/pageTools.ts";
 import { COMMANDS_MCP_SERVER_NAME } from "../../mcp/commandTools.ts";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
-import { ROOM_MCP_SERVER_NAME, roomEndpointGrant } from "../../mcp/roomToolAccess.ts";
+import {
+  ROOM_MCP_SERVER_NAME,
+  roomEndpointGrant,
+  roomSideKindOf,
+} from "../../mcp/roomToolAccess.ts";
+import { driverAnswersOnTheSide } from "../sideAnswerDrivers.ts";
 import {
   type ProviderAdapterError,
   ProviderAdapterProcessError,
@@ -176,6 +181,8 @@ interface PendingUserInput {
 interface AcpSessionContext {
   readonly threadId: ThreadId;
   session: ProviderSession;
+  /** A room's side runtime: read-only, every request declined, its mode never changed. */
+  readonly lockdown: "side-answer" | "side-review" | undefined;
   readonly scope: Scope.Closeable;
   readonly acp: AcpSessionRuntimeShape;
   notificationFiber: Fiber.Fiber<void, never> | undefined;
@@ -1042,6 +1049,8 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
       readonly threadId: ThreadId;
       readonly runtimeMode: RuntimeMode;
       readonly interactionMode: ProviderInteractionMode | undefined;
+      /** A side runtime keeps the mode it started in: its lockdown. */
+      readonly lockedDown: boolean;
       readonly modelSelection:
         | {
             readonly model: string;
@@ -1063,7 +1072,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
 
         // Native controls: the agent's mode is the user's to pick (an option),
         // never inferred from the runtime mode.
-        if (descriptor.sessionControls === "native") {
+        if (descriptor.sessionControls === "native" || input.lockedDown) {
           return;
         }
         const modeState = yield* input.runtime.getModeState;
@@ -1104,13 +1113,27 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
               issue: `Expected provider '${PROVIDER}' but received '${input.provider}'.`,
             });
           }
-          // A side answer must be read-only for certain; this driver cannot
-          // promise that, so it never runs one.
-          if (input.lockdown !== undefined) {
+          // A side answer must be read-only for certain. Only an agent whose
+          // descriptor can lock it down here runs one, and always fresh: its
+          // locked-down process can't reach the conversation it would fork.
+          const lockdown = input.lockdown;
+          const sideRuntime = lockdown === undefined ? undefined : descriptor.sideRuntime;
+          if (
+            lockdown !== undefined &&
+            (sideRuntime === undefined || !driverAnswersOnTheSide(descriptor.driverKind))
+          ) {
             return yield* new ProviderAdapterValidationError({
               provider: PROVIDER,
               operation: "startSession",
               issue: "This provider cannot answer on the side while another agent works.",
+            });
+          }
+          if (lockdown !== undefined && input.forkFrom !== undefined) {
+            return yield* new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "startSession",
+              issue:
+                "A side answer from this provider starts fresh; it can't fork the conversation.",
             });
           }
           if (!input.cwd?.trim()) {
@@ -1192,26 +1215,30 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           // with the session's scope.
           const reachesHost = descriptor.reachesHostLoopback?.(process.platform) !== false;
           const roomToolsRequested = input.roomTools === true;
-          // The room endpoint, with every room tool or the app guide alone
-          // (roomEndpointGrant). ACP runtimes here are never side runtimes.
-          const roomGrant = roomEndpointGrant(input, undefined);
+          // The room endpoint, with every room tool its kind allows or the app
+          // guide alone (roomEndpointGrant). A side runtime gets only the
+          // room's read tools: no browser, pages, commands or schedules.
+          const sideKind = roomSideKindOf(lockdown);
+          const roomGrant = roomEndpointGrant(input, sideKind);
           // The page tools ride the same credential. An ACP agent hears no
           // instructions of ours, so the tool descriptions carry the rules and
           // a misplaced image's error names the thread's image folder.
-          const agentPagesRequested = input.agentPages === true;
+          const agentPagesRequested = input.agentPages === true && lockdown === undefined;
           // `ask_user_to_run` likewise: its description carries the rules.
-          const commandRequestsRequested = input.commandRequests === true;
-          const credential = reachesHost
-            ? yield* mcpSessionRegistry.credentialFor({
-                sessionKey: input.threadId,
-                browser: true,
-                room: roomGrant.attach,
-                pages: agentPagesRequested,
-                commands: commandRequestsRequested,
-                scheduledRun: input.scheduledRunTools === true,
-                guideOnly: roomGrant.guideOnly,
-              })
-            : undefined;
+          const commandRequestsRequested = input.commandRequests === true && lockdown === undefined;
+          const credential =
+            reachesHost && (lockdown === undefined || roomGrant.attach)
+              ? yield* mcpSessionRegistry.credentialFor({
+                  sessionKey: input.threadId,
+                  browser: lockdown === undefined,
+                  room: roomGrant.attach,
+                  pages: agentPagesRequested,
+                  commands: commandRequestsRequested,
+                  ...(sideKind !== undefined ? { sideKind } : {}),
+                  scheduledRun: lockdown === undefined && input.scheduledRunTools === true,
+                  guideOnly: roomGrant.guideOnly,
+                })
+              : undefined;
           if (credential !== undefined) {
             yield* Scope.addFinalizer(
               sessionScope,
@@ -1225,12 +1252,16 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             credential === undefined
               ? []
               : [
-                  {
-                    type: "http",
-                    name: BROWSER_MCP_SERVER_NAME,
-                    url: mcpEndpointUrl(serverConfig.port),
-                    headers: authorization,
-                  },
+                  ...(lockdown === undefined
+                    ? [
+                        {
+                          type: "http" as const,
+                          name: BROWSER_MCP_SERVER_NAME,
+                          url: mcpEndpointUrl(serverConfig.port),
+                          headers: authorization,
+                        },
+                      ]
+                    : []),
                   ...(roomGrant.attach
                     ? [
                         {
@@ -1263,7 +1294,32 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                     : []),
                 ];
 
-          const acp = yield* makeAcpProviderRuntime(descriptor, {
+          // A side runtime's process is the descriptor's locked-down one; what
+          // it sets up (a throwaway home) goes with the session's scope.
+          const side =
+            sideRuntime === undefined || lockdown === undefined
+              ? undefined
+              : yield* sideRuntime({
+                  settings: effectiveSettings,
+                  cwd,
+                  environment: options?.environment ?? process.env,
+                  kind: lockdown === "side-review" ? "review" : "ask",
+                  childProcessSpawner,
+                }).pipe(
+                  Effect.provideService(Scope.Scope, sessionScope),
+                  Effect.mapError(
+                    (cause) =>
+                      new ProviderAdapterProcessError({
+                        provider: PROVIDER,
+                        threadId: input.threadId,
+                        detail: cause.message,
+                        cause,
+                      }),
+                  ),
+                );
+          const runtimeDescriptor =
+            side === undefined ? descriptor : { ...descriptor, spawn: () => side.spawn };
+          const acp = yield* makeAcpProviderRuntime(runtimeDescriptor, {
             settings: effectiveSettings,
             ...(options?.environment ? { environment: options.environment } : {}),
             childProcessSpawner,
@@ -1318,8 +1374,14 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
               return shown;
             });
 
+          // A side runtime never reaches the user: its questions go unanswered
+          // at once (no answers reads as declined), and nothing is shown.
           const requestUserInput: AcpExtensionContext["requestUserInput"] = (request) =>
             Effect.gen(function* () {
+              if (lockdown !== undefined) {
+                yield* logNative(input.threadId, `${request.method} (declined: side answer)`, {});
+                return {};
+              }
               const requestId = ApprovalRequestId.make(crypto.randomUUID());
               const runtimeRequestId = RuntimeRequestId.make(requestId);
               const answers = yield* Deferred.make<ProviderUserInputAnswers>();
@@ -1472,6 +1534,19 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             yield* acp.handleRequestPermission((params) =>
               Effect.gen(function* () {
                 yield* logNative(input.threadId, "session/request_permission", params);
+                // A side runtime never shows a request. It is answered once,
+                // as its descriptor says (AcpSideRuntime.approvals): declined,
+                // or allowed where the agent's own sandbox keeps it read-only.
+                // Never "always", and never `cancelled`, which ends the turn.
+                if (side !== undefined) {
+                  const kind = side.approvals === "approve-once" ? "allow_once" : "reject_once";
+                  const once = params.options.find(
+                    (option) => option.kind === kind && option.optionId.trim() !== "",
+                  );
+                  return once === undefined
+                    ? { outcome: { outcome: "cancelled" as const } }
+                    : { outcome: { outcome: "selected" as const, optionId: once.optionId } };
+                }
                 const selected = (optionId: string | undefined) =>
                   optionId === undefined
                     ? { outcome: { outcome: "cancelled" as const } }
@@ -1576,7 +1651,11 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                   : selected(acpPermissionOptionId(resolved, offered));
               }),
             );
-            return yield* acp.start();
+            const startedSession = yield* acp.start();
+            // Up, but not trusted yet: the descriptor checks the agent really
+            // came up locked down before anything is sent to it.
+            if (side !== undefined) yield* side.verifyStarted;
+            return startedSession;
           }).pipe(
             Effect.tapError(notifyAuthRequired),
             Effect.mapError((error) =>
@@ -1589,6 +1668,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             threadId: input.threadId,
             runtimeMode: input.runtimeMode,
             interactionMode: undefined,
+            lockedDown: lockdown !== undefined,
             modelSelection: boundModelSelection,
           });
 
@@ -1624,6 +1704,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           ctx = {
             threadId: input.threadId,
             session,
+            lockdown,
             scope: sessionScope,
             acp,
             notificationFiber: undefined,
@@ -1982,7 +2063,9 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         const resolvedModel = resolveModelId(model);
 
         // Prompt-command plan mode (Antigravity's `/plan`) is a text prefix.
-        const planMode = input.interactionMode === "plan" ? descriptor.planMode : undefined;
+        const lockedDown = ctx.lockdown !== undefined;
+        const planMode =
+          input.interactionMode === "plan" && !lockedDown ? descriptor.planMode : undefined;
         const contextPreamble = ctx.pendingContextPreamble;
         const userText = input.input?.trim() ?? "";
         const seededText =
@@ -2012,10 +2095,13 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           threadId: input.threadId,
           runtimeMode: ctx.session.runtimeMode,
           interactionMode: input.interactionMode,
+          lockedDown,
           modelSelection:
             model === undefined ? undefined : { model, options: turnModelSelection?.options },
         });
-        const turnModeId = descriptor.sessionModeForTurn?.(input.interactionMode);
+        const turnModeId = lockedDown
+          ? undefined
+          : descriptor.sessionModeForTurn?.(input.interactionMode);
         const sessionId = parseAcpResumeCursor(ctx.session.resumeCursor)?.sessionId;
         if (turnModeId !== undefined && sessionId !== undefined) {
           yield* ctx.acp
