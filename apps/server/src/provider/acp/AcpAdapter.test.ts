@@ -418,13 +418,14 @@ it.live.skipIf(isWindows)(
       const dir = yield* Effect.promise(() => mkdtemp(path.join(os.tmpdir(), "acp-confirm-")));
       const shellPidPath = path.join(dir, "shell.pid");
       // A helper the agent runs in the background starts a shell in a group
-      // of its own, the way Grok's background shells do.
-      const helper = `const { spawn } = require("node:child_process"); const shell = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" }); shell.unref(); require("node:fs").writeFileSync(${JSON.stringify(shellPidPath)}, String(shell.pid)); setInterval(() => {}, 1000);`;
+      // of its own, the way Grok's background shells do. It writes the
+      // shell's pid beside the wrapper script, which hands it that path.
+      const helper = `const { spawn } = require("node:child_process"); const shell = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" }); shell.unref(); require("node:fs").writeFileSync(process.argv[1], String(shell.pid)); setInterval(() => {}, 1000);`;
       const wrapperPath = path.join(dir, "agent-with-shell.sh");
       yield* Effect.promise(async () => {
         await writeFile(
           wrapperPath,
-          `#!/bin/sh\n${JSON.stringify(nodeExe)} -e '${helper}' &\nexec ${JSON.stringify(nodeExe)} ${JSON.stringify(mockAgentPath)} "$@"\n`,
+          `#!/bin/sh\n${JSON.stringify(nodeExe)} -e '${helper}' "$(dirname "$0")/shell.pid" &\nexec ${JSON.stringify(nodeExe)} ${JSON.stringify(mockAgentPath)} "$@"\n`,
           "utf8",
         );
         await chmod(wrapperPath, 0o755);
