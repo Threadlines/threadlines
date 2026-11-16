@@ -70,6 +70,7 @@ interface PlaceSignals {
   readonly runInBackground: boolean;
   readonly dictationSupported: boolean;
   readonly dictationModelsDownloaded: boolean;
+  /** Phone alerts work here and a paired computer can send them. */
   readonly alertsShown: boolean;
   readonly alertKindsShown: boolean;
   readonly owner: boolean;
@@ -84,7 +85,7 @@ interface PlaceSignals {
  * page draws a place on a condition, it asks `ShownPlace`, so the two agree.
  */
 const SHOWN_WHEN: Partial<Record<SettingsPlaceSearchId, (signals: PlaceSignals) => boolean>> = {
-  "general.alerts": (s) => s.alertsShown,
+  // The section always shows (Play a sound is on every device); phone alerts only where they work.
   "general.alertsOnThisDevice": (s) => s.alertsShown,
   "general.alertNeedsYou": (s) => s.alertKindsShown,
   "general.alertFinished": (s) => s.alertKindsShown,

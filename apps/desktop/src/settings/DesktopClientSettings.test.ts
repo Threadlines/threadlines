@@ -22,6 +22,7 @@ const clientSettings: ClientSettings = {
   browserSearchEngine: "google",
   browserSignIns: "shared",
   autoOpenAgentsPanel: false,
+  alertSound: false,
   chatChangedFilesDefaultExpanded: false,
   confirmThreadArchive: true,
   confirmThreadDelete: false,
