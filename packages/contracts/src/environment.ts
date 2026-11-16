@@ -165,6 +165,14 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
    * clients then don't offer to pick worktrees up.
    */
   worktreePickup: Schema.optionalKey(Schema.Boolean),
+  /**
+   * A Grok agent can answer and review on the side in a room on this server:
+   * it runs locked down in Grok's own read-only sandbox, which keeps a
+   * checkout read-only on macOS only. Codex and Claude always can. Older
+   * servers omit it, and so do servers on other platforms; clients then send
+   * a busy room's message to Grok when the agent at work finishes instead.
+   */
+  grokAnswersOnTheSide: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 

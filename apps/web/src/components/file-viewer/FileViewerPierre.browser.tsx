@@ -12,6 +12,12 @@ import { EditProvider, File as PierreFile, type EditorFactory } from "@pierre/di
 import { DIFF_PANEL_UNSAFE_CSS } from "../DiffPanel.styles";
 import { DiffWorkerPoolProvider } from "../DiffWorkerPoolProvider";
 import { applyEditSeedToEditor, findRenderedPierreLineElement } from "./FileViewerOverlay.logic";
+import { FILE_VIEWER_UNSAFE_CSS } from "./FileViewerOverlay";
+import { codeThemeNameFor } from "../../theme/codeTheme";
+import { BUILTIN_THEME_TOKENS } from "@threadlines/shared/themeBuiltinTokens";
+import { editorSelectionHex } from "@threadlines/shared/themeCodeColors";
+import { composite, contrastRatio, type Rgba } from "@threadlines/shared/themeColor";
+import { parseCssColor } from "../theme/ui/themeInspect";
 import { resetTestPage } from "../../lib/testPage.browser-harness";
 
 // Mirrors FileViewerPreview's pierre usage so lifecycle regressions in the
@@ -257,11 +263,15 @@ function EditableHarness({
   contents,
   editorOptions,
   onEditChange,
+  theme = "pierre-dark",
+  themeType = "dark",
 }: {
   path: string;
   contents: string;
   editorOptions: EditorOptions<"file", undefined, undefined>;
   onEditChange?: (contents: string) => void;
+  theme?: string;
+  themeType?: "light" | "dark";
 }) {
   return (
     <DiffWorkerPoolProvider>
@@ -277,8 +287,8 @@ function EditableHarness({
               : {})}
             options={{
               disableFileHeader: true,
-              theme: "pierre-dark",
-              themeType: "dark",
+              theme,
+              themeType,
               unsafeCSS: DIFF_PANEL_UNSAFE_CSS,
             }}
           />
@@ -326,6 +336,64 @@ describe("FileViewer pierre editing", () => {
     expect(changes.at(-1)).toContain("const value = 1;");
 
     screen.unmount();
+  });
+
+  it("gives selected text the fitted selection color, and the cursor line no fill of its own", async () => {
+    const theme = codeThemeNameFor({
+      choice: { kind: "builtin", id: "light" },
+      manifest: null,
+      tokens: null,
+      base: "light",
+      hash: null,
+      name: "Light",
+    });
+    const attach = attachedEditor();
+    const screen = await render(
+      <EditableHarness
+        path="sel.ts"
+        contents={'const label = "ready";\nlet count = 42;\n'}
+        editorOptions={attach.editorOptions}
+        theme={theme}
+        themeType="light"
+      />,
+    );
+    try {
+      const editor = await attach.ready();
+      editor.setSelections([
+        { start: { line: 0, character: 0 }, end: { line: 0, character: 5 }, direction: "none" },
+      ]);
+      editor.focus();
+      const root = [...document.querySelectorAll("diffs-container")].at(-1)!.shadowRoot!;
+      const expected = editorSelectionHex(BUILTIN_THEME_TOKENS.light);
+      await expect
+        .poll(
+          () => {
+            const code = root.querySelector<HTMLElement>("[data-line]");
+            return code
+              ? getComputedStyle(code).getPropertyValue("--diffs-editor-selection-bg").trim()
+              : "";
+          },
+          { timeout: 15_000 },
+        )
+        .toBe(expected);
+      // The cursor's line (a caret, not a range) is drawn like any other: an outline marks it.
+      editor.setSelections([
+        { start: { line: 1, character: 0 }, end: { line: 1, character: 0 }, direction: "none" },
+      ]);
+      editor.focus();
+      await expect
+        .poll(() => root.querySelector("[data-line][data-editor-active-line]") !== null, {
+          timeout: 15_000,
+        })
+        .toBe(true);
+      const active = root.querySelector<HTMLElement>("[data-line][data-editor-active-line]")!;
+      const other = root.querySelector<HTMLElement>("[data-line]:not([data-editor-active-line])")!;
+      expect(getComputedStyle(active).backgroundColor).toBe(
+        getComputedStyle(other).backgroundColor,
+      );
+    } finally {
+      screen.unmount();
+    }
   });
 
   it("accepts typed input through the editable surface", async () => {
@@ -502,5 +570,66 @@ describe("FileViewer pierre editing", () => {
     expect(editor.getText()).toContain("const s = 9;");
 
     screen.unmount();
+  });
+
+  it("draws code on a selected line readably, the built-in Light's colors fitted to it", async () => {
+    const theme = codeThemeNameFor({
+      choice: { kind: "builtin", id: "light" },
+      manifest: null,
+      tokens: null,
+      base: "light",
+      hash: null,
+      name: "Light",
+    });
+    const screen = await render(
+      <DiffWorkerPoolProvider>
+        <PierreFile
+          file={{ name: "sel.ts", contents: 'const label = "ready";\nlet count = 42 + offset;\n' }}
+          selectedLines={{ start: 1, end: 2 }}
+          options={{
+            disableFileHeader: true,
+            theme,
+            themeType: "light",
+            unsafeCSS: FILE_VIEWER_UNSAFE_CSS,
+            enableLineSelection: true,
+          }}
+        />
+      </DiffWorkerPoolProvider>,
+    );
+    try {
+      await waitForRenderedRows();
+      const root = [...document.querySelectorAll("diffs-container")].at(-1)!.shadowRoot!;
+      const rgba = (value: string): Rgba => {
+        const parsed = parseCssColor(value)!;
+        return { r: parsed.r / 255, g: parsed.g / 255, b: parsed.b / 255, a: parsed.a };
+      };
+      let ratios: Array<[string, number]> = [];
+      await expect
+        .poll(
+          () => {
+            const line = root.querySelector<HTMLElement>("[data-line][data-selected-line]");
+            if (!line) return null;
+            // The row's tint over the page behind it, as drawn.
+            const page = { ...rgba(getComputedStyle(document.body).backgroundColor), a: 1 };
+            const background = composite(rgba(getComputedStyle(line).backgroundColor), page);
+            ratios = [...line.querySelectorAll<HTMLElement>("span")]
+              .filter((span) => span.children.length === 0 && span.textContent?.trim())
+              .map((span) => [
+                span.textContent!,
+                contrastRatio(
+                  composite(rgba(getComputedStyle(span).color), background),
+                  background,
+                ),
+              ]);
+            return ratios.length > 2;
+          },
+          { timeout: 15_000 },
+        )
+        .toBe(true);
+      const quiet = (text: string) => /^[\s"';(){}]+$/.test(text);
+      expect(ratios.filter(([text, ratio]) => ratio < (quiet(text) ? 3 : 4.5) - 0.01)).toEqual([]);
+    } finally {
+      screen.unmount();
+    }
   });
 });

@@ -5,6 +5,7 @@ import {
   ThemeSameEverywhereRow,
   ThemeStatusLines,
 } from "../theme/ui/ThemeSettingsRows";
+import { ThemeSystemPairRow } from "../theme/ui/ThemeSystemPairRow";
 import {
   SettingsGroup,
   SettingsPageContainer,
@@ -15,8 +16,8 @@ import {
 /**
  * Settings › Appearance: the theme this device wears and how its art shows
  * (docs/design/custom-themes.md). One section: New theme and Import on its
- * title line, Glass and Motion side by side, Same theme on all my devices,
- * a line on the art, then the gallery under its filters. Every setting here
+ * title line, Glass and Motion side by side, System themes and Same theme on
+ * all my devices, a line on the art, then the gallery under its filters. Every setting here
  * is this device's own, so a phone draws the same page.
  */
 export function AppearanceSettingsPanel() {
@@ -31,6 +32,7 @@ export function AppearanceSettingsPanel() {
       >
         <ThemeArtStrip />
         <SettingsGroup>
+          <ThemeSystemPairRow />
           <ThemeSameEverywhereRow />
         </SettingsGroup>
         <ThemeStatusLines />

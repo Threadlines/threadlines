@@ -136,6 +136,7 @@ import {
   FOLLOW_UP_DELIVERY_LABELS,
   roomDeliveryLabels,
 } from "./ComposerPrimaryActions";
+import { useConnectedComputerCapability } from "../../environments/computerCapabilities";
 import { useEnvironmentServerSetting } from "../../hooks/useEnvironmentServerSetting";
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import { useAgentWarmUp } from "../../hooks/useAgentWarmUp";
@@ -1915,6 +1916,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       entry.instanceId ===
       (addressedRoomAgent?.modelSelection ?? activeThread?.modelSelection)?.instanceId,
   )?.driverKind;
+  const grokAnswersOnTheSide = useConnectedComputerCapability(
+    environmentId,
+    "grokAnswersOnTheSide",
+  );
   const roomDeliveryMode =
     roomAgentLabels !== null
       ? resolveRoomDelivery({
@@ -1927,6 +1932,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               activeThread?.session ?? null,
             ),
           recipientDriverKind: roomRecipientDriverKind,
+          grokAnswersOnTheSide,
           waitChosen: roomWaitChosen,
         })
       : "direct";
@@ -1936,12 +1942,19 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         ? null
         : {
             mode: roomDeliveryMode,
-            canAsk: canAnswerOnTheSide(roomRecipientDriverKind),
+            canAsk: canAnswerOnTheSide(roomRecipientDriverKind, grokAnswersOnTheSide),
             recipientName: roomAgentLabels.get(roomAgentKey(roomRecipientId))?.name ?? "this agent",
             holderName:
               roomAgentLabels.get(roomAgentKey(roomHolderId))?.name ?? "the agent at work",
           },
-    [roomAgentLabels, roomDeliveryMode, roomHolderId, roomRecipientDriverKind, roomRecipientId],
+    [
+      grokAnswersOnTheSide,
+      roomAgentLabels,
+      roomDeliveryMode,
+      roomHolderId,
+      roomRecipientDriverKind,
+      roomRecipientId,
+    ],
   );
   const collapsedComposerPrimaryActionLabel = roomDelivery
     ? roomDeliveryLabels(roomDelivery).action

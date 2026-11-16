@@ -82,6 +82,7 @@ export function ThreadsSettingsPanel({ surface = "full" }: { surface?: "full" | 
         <ClaudeSuggestionsRow />
         <CodexSuggestionsRow />
         <ContinueAfterUsageLimitsRow />
+        <ContinueAfterRestartRow />
         <CommandRequestsRow />
         <StartAgentsWhileTypingRow />
       </SettingsSection>
@@ -755,6 +756,35 @@ export function ContinueAfterUsageLimitsRow() {
             updateSettings({ continueAfterUsageLimits: Boolean(checked) })
           }
           aria-label="Continue after usage limits"
+        />
+      }
+    />
+  );
+}
+
+/**
+ * Whether a turn a server restart cut off continues by itself when the server
+ * starts again. Read by the thread's computer at startup.
+ */
+export function ContinueAfterRestartRow() {
+  const on = useSettings((settings) => settings.continueAfterRestart);
+  const { updateSettings } = useUpdateSettings();
+  return (
+    <SettingsRow
+      place="threads.continueAfterRestart"
+      resetAction={
+        on ? null : (
+          <SettingResetButton
+            label="Continue after a restart"
+            onClick={() => updateSettings({ continueAfterRestart: true })}
+          />
+        )
+      }
+      control={
+        <Switch
+          checked={on}
+          onCheckedChange={(checked) => updateSettings({ continueAfterRestart: Boolean(checked) })}
+          aria-label="Continue after a restart"
         />
       }
     />

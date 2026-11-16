@@ -24,15 +24,17 @@ import { useMemo, useSyncExternalStore } from "react";
 import type { ThemeBackdropStatus } from "../components/theme/backdrop/ThemeBackdropHost";
 import { applyThemeToDocument, desktopThemeAppearance, loadActiveThemeFonts } from "./themeApply";
 import {
-  committedThemeHash,
+  committedThemeHashes,
   createThemeStoreCore,
+  hasUnavailableContent,
+  shownCommittedState,
   type ThemeContentLookup,
   type ThemeStoreCore,
   type ThemeStoreState,
 } from "./themeStoreCore";
 import type { ActiveTheme, ThemeChoice, ThemeTrial } from "./themeTypes";
 
-export type { ActiveTheme, ThemeChoice, ThemeTrial } from "./themeTypes";
+export type { ActiveTheme, ThemeChoice, ThemePairSide, ThemeTrial } from "./themeTypes";
 export { THEME_TRIAL_MS } from "./themeStoreCore";
 
 const MEDIA_QUERY = "(prefers-color-scheme: dark)";
@@ -88,7 +90,7 @@ const contentSource = loadedOnDemand(() => import("./themeContentSource"));
 // Content to keep on this device that the cache's code hasn't taken yet: it
 // answers lookups meanwhile and is written once the code loads (the next
 // use tries again after a failed load).
-const pendingContent = new Map<string, { manifest: ThemeManifest; keep: string | undefined }>();
+const pendingContent = new Map<string, { manifest: ThemeManifest; keep: ReadonlyArray<string> }>();
 
 function loadContentSource() {
   return contentSource.load().then((source) => {
@@ -158,7 +160,7 @@ function getCore(): ThemeStoreCore {
       return loadContentSource().then((source) => source.lookupLibraryContent(choice));
     },
     rememberContent: (hash, manifest) => {
-      const keep = core ? (committedThemeHash(core.getState()) ?? undefined) : undefined;
+      const keep = core ? committedThemeHashes(core.getState()) : [];
       pendingContent.set(hash, { manifest, keep });
       void loadContentSource().catch(() => {});
     },
@@ -192,9 +194,12 @@ function syncDesktopAppearance(theme: ActiveTheme): void {
   });
 }
 
-/** While the committed theme is nowhere, look again whenever a computer connects. */
+/**
+ * While the committed theme (either side of a pair, the hidden one too) is
+ * nowhere, look again whenever a computer connects.
+ */
 function watchConnectionsWhileUnavailable(store: ThemeStoreCore): void {
-  const unavailable = store.getState().committedState.status === "unavailable";
+  const unavailable = hasUnavailableContent(store.getState());
   if (unavailable && connectionWatch === null) {
     let stopped = false;
     let stop: (() => void) | null = null;
@@ -430,7 +435,7 @@ let lastUnavailable: { readonly name: string } | null = null;
  */
 export function useThemeUnavailable(): { readonly name: string } | null {
   return useThemeSelector((state) => {
-    if (state.bypass || state.committedState.status !== "unavailable") return null;
+    if (state.bypass || shownCommittedState(state).status !== "unavailable") return null;
     const name = state.active.name;
     if (lastUnavailable?.name !== name) lastUnavailable = { name };
     return lastUnavailable;
@@ -452,6 +457,8 @@ export function hasKeptTheme(hash: string): boolean {
 export function startThemeTrial(input: {
   readonly choice: ThemeChoice;
   readonly manifest: ThemeManifest | null;
+  /** System's pair: its sides' content. */
+  readonly sides?: Partial<Record<ThemeBase, ThemeManifest | null>>;
 }): ThemeTrial {
   return getCore().startThemeTrial(input);
 }
@@ -483,9 +490,49 @@ const knownContent = (choice: ThemeChoice): ThemeManifest | undefined =>
       contentSource.current()?.peekCachedTheme(choice.hash))
     : null) ?? undefined;
 
-/** Commits a choice directly: built-ins, and themes this device kept before. */
-export function chooseTheme(choice: ThemeChoice, manifest?: ThemeManifest): void {
-  getCore().chooseTheme(choice, manifest ?? knownContent(choice));
+/** The content this window already holds for a choice: a library theme's, or a pair's sides'. */
+const contentInHand = (
+  choice: ThemeChoice,
+  manifest: ThemeManifest | undefined,
+  sides: Partial<Record<ThemeBase, ThemeManifest>> | undefined,
+) =>
+  choice.kind === "pair"
+    ? {
+        sides: {
+          light: sides?.light ?? knownContent(choice.light),
+          dark: sides?.dark ?? knownContent(choice.dark),
+        },
+      }
+    : { manifest: manifest ?? knownContent(choice) };
+
+/**
+ * Commits a choice directly: built-ins, themes this device kept before, and
+ * System with a pair (`sides` holds the sides' content the caller loaded).
+ */
+export function chooseTheme(
+  choice: ThemeChoice,
+  manifest?: ThemeManifest,
+  sides?: Partial<Record<ThemeBase, ThemeManifest>>,
+): void {
+  getCore().chooseTheme(choice, contentInHand(choice, manifest, sides));
+}
+
+/** The pair going back to System brings back; null for plain System. */
+export function useSystemPair(): Extract<ThemeChoice, { kind: "pair" }> | null {
+  return useThemeSelector((state) => state.systemPair);
+}
+
+/** What System means on this device now: its remembered pair, or plain System. */
+export function systemChoice(): ThemeChoice {
+  return getState().systemPair ?? { kind: "builtin", id: "system" };
+}
+
+/**
+ * Sets the pair going back to System brings back, without switching to it;
+ * null forgets it, so System is plain Light and Dark again.
+ */
+export function rememberSystemPair(pair: Extract<ThemeChoice, { kind: "pair" }> | null): void {
+  getCore().rememberSystemPair(pair);
 }
 
 /**
@@ -494,7 +541,7 @@ export function chooseTheme(choice: ThemeChoice, manifest?: ThemeManifest): void
  * this device's own pick (subscribeUserThemeCommits).
  */
 export function applyThemePick(choice: ThemeChoice, base: ThemeBase | null): void {
-  getCore().applyPickedChoice(choice, base, knownContent(choice));
+  getCore().applyPickedChoice(choice, base, contentInHand(choice, undefined, undefined));
 }
 
 /** Calls `listener` after each theme the user commits in this window: what it shares with their other devices. */

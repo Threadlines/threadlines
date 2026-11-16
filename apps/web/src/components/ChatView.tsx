@@ -2955,6 +2955,12 @@ export default function ChatView(props: ChatViewProps) {
     environmentId,
     "remoteStatusRefresh",
   );
+  // A busy room's message to Grok is asked on the side where the thread's
+  // computer can lock Grok down (resolveRoomDelivery).
+  const grokAnswersOnTheSide = useConnectedComputerCapability(
+    environmentId,
+    "grokAnswersOnTheSide",
+  );
   const environmentApiAvailable = useEnvironmentApiAvailable(environmentId);
   useEffect(() => {
     if (!freshensNewThreadCheckout || gitCwd === null || draftId === null) return;
@@ -5730,6 +5736,7 @@ export default function ChatView(props: ChatViewProps) {
               entry.instanceId ===
               (roomRecipient?.modelSelection ?? activeThread.modelSelection).instanceId,
           )?.driverKind,
+          grokAnswersOnTheSide,
           // The other way for this message: ask now if it would wait, wait if
           // it would ask. An agent that can't answer on the side still waits.
           waitChosen:

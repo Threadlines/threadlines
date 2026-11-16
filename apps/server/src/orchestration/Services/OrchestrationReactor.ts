@@ -21,6 +21,13 @@ export interface OrchestrationReactorShape {
    * finalized on shutdown.
    */
   readonly start: () => Effect.Effect<void, never, Scope.Scope>;
+
+  /**
+   * Continues, or notes as stopped, the turns a server restart cut off. Run
+   * once at startup, after every reactor and sweeper has started, so the
+   * continued turns start like any other. Never fails.
+   */
+  readonly continueTurnsCutByRestart: Effect.Effect<void>;
 }
 
 /**

@@ -1,7 +1,7 @@
 import { scopedProjectKey, scopeProjectRef } from "@threadlines/client-runtime";
 import type { ScopedProjectRef } from "@threadlines/contracts";
 import { CloudIcon, MessagesSquareIcon, MonitorIcon } from "lucide-react";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 
 import { usePrimaryEnvironmentId } from "../../environments/primary";
 import { useSavedEnvironmentRegistryStore } from "../../environments/runtime";
@@ -24,6 +24,7 @@ import {
 import { OpenSourceSupportLinks } from "../OpenSourceSupportLinks";
 import { riseDelay, ThreadlinesFigure } from "../ThreadlinesFigure";
 import { ProjectThreadMap } from "./ProjectThreadMap";
+import { useDraftHeroColumnMark } from "./useDraftHero";
 import { TooltipWrapper } from "../ui/tooltip";
 import {
   Menu,
@@ -199,11 +200,16 @@ export function DraftEmptyState({
     [currentProjectKey, isGeneralChat, projectSnapshots],
   );
 
+  const rootRef = useRef<HTMLDivElement>(null);
+  useDraftHeroColumnMark(rootRef, layout === "hero");
+
   return (
     <div
+      ref={rootRef}
       className="flex w-full min-w-0 max-w-xl flex-col items-center"
       // The chat view's hero layout keys off this marker: it is in the page
-      // exactly while the timeline is showing this state in the roomy layout.
+      // exactly while the timeline is showing this state in the roomy layout,
+      // and it marks its column for the `draft-hero` variant.
       // Stacked has its own, so a theme's art shows around this screen's text
       // on a phone too (backdropZones.ts).
       {...(layout === "hero" ? { "data-draft-hero": "" } : { "data-draft-stacked": "" })}

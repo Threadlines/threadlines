@@ -62,6 +62,7 @@ import { clipSideAnswer } from "../orchestration/agentRequestDecisions.ts";
 import { matchReasoningLevel } from "../orchestration/childThreadAgents.ts";
 import type { OrchestrationEngineShape } from "../orchestration/Services/OrchestrationEngine.ts";
 import { isQuestionAnswerMessageId } from "../orchestration/userInput.ts";
+import { driverAnswersOnTheSide, sideAnswerDriversInWords } from "../provider/sideAnswerDrivers.ts";
 import type { GitVcsDriverShape } from "../vcs/GitVcsDriver.ts";
 import type { McpInvocationScope } from "./McpSessionRegistry.ts";
 import {
@@ -90,9 +91,6 @@ import type {
   RoomHistoryResult,
   RoomInviteResult,
 } from "./roomTools.ts";
-
-/** Drivers that can answer on the side (they have side runtimes). */
-const SIDE_ANSWER_DRIVERS: ReadonlySet<string> = new Set(["codex", "claudeAgent"]);
 
 /**
  * How long each provider waits on one tool call before giving up on it.
@@ -304,7 +302,7 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
   const canAnswerOnTheSide = (entry: RoomAgentEntry) =>
     deps
       .driverKindOf(entry.modelSelection.instanceId)
-      .pipe(Effect.map((driver) => driver !== undefined && SIDE_ANSWER_DRIVERS.has(driver)));
+      .pipe(Effect.map((driver) => driverAnswersOnTheSide(driver)));
 
   // ---------------------------------------------------------------------------
   // Read tools
@@ -685,7 +683,7 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
           return {
             ...base,
             outcome: "refused",
-            detail: `${arrival.target.name} cannot answer on the side; only Codex and Claude agents can.`,
+            detail: `${arrival.target.name} cannot answer on the side here; ${sideAnswerDriversInWords()}.`,
           } satisfies RoomAnswerResult;
         }
         const caller = roomAgentEntryFor(arrival.room.entries, scope.participantId);

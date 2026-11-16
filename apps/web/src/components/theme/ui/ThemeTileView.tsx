@@ -1,16 +1,29 @@
 /**
  * One theme as the pickers draw it: a picture of the theme (its thumbnail,
  * or a small drawing of the app in its colors), its name, and a short line.
- * Clickable, so it's a tile; the selected one gets the accent ring and a check.
+ * System with a pair draws its two themes split corner to corner, light
+ * above. Clickable, so it's a tile; the selected one gets the accent ring and
+ * a check.
  */
 import { CheckIcon } from "lucide-react";
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 
 import { cn } from "~/lib/utils";
-import type { ThemeTile } from "~/themeLibrary/themeCatalog";
+import type { ThemeTile, ThemeTilePicture } from "~/themeLibrary/themeCatalog";
 
-/** A small drawing of the app in a theme's colors, for a theme with no picture. */
-export function ThemeSwatch({ swatch }: { readonly swatch: ThemeTile["swatch"] }) {
+/**
+ * A small drawing of the app in a theme's colors, for a theme with no
+ * picture: a sidebar, two lines of text and the accent's send button.
+ * `tiny` (a dropdown's 16px preview) keeps the button in proportion instead
+ * of at the size a tile needs to show it.
+ */
+export function ThemeSwatch({
+  swatch,
+  tiny = false,
+}: {
+  readonly swatch: ThemeTile["swatch"];
+  readonly tiny?: boolean;
+}) {
   if (swatch.base === "system") {
     return (
       <div className="relative size-full">
@@ -36,10 +49,51 @@ export function ThemeSwatch({ swatch }: { readonly swatch: ThemeTile["swatch"] }
         />
         <div className="flex items-center justify-end">
           <div
-            className="size-[14%] min-h-2 min-w-2 rounded-full"
+            className={cn(
+              "rounded-full",
+              tiny ? "aspect-square w-[14%]" : "size-[14%] min-h-2 min-w-2",
+            )}
             style={{ background: swatch.accent }}
           />
         </div>
+      </div>
+    </div>
+  );
+}
+
+/** A theme's thumbnail, or its swatch when it has none (or the picture won't load). */
+export function ThemePicture({
+  picture,
+  tiny = false,
+}: {
+  readonly picture: ThemeTilePicture;
+  /** A dropdown's 16px preview (see ThemeSwatch). */
+  readonly tiny?: boolean;
+}) {
+  const [failed, setFailed] = useState(false);
+  if (picture.thumbnail === null || failed) {
+    return <ThemeSwatch swatch={picture.swatch} tiny={tiny} />;
+  }
+  return (
+    <img
+      src={picture.thumbnail}
+      alt=""
+      className="size-full object-cover"
+      draggable={false}
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
+/** System's pair: the light theme above the diagonal, the dark one below, as System's own swatch. */
+function PairPicture({ sides }: { readonly sides: NonNullable<ThemeTile["sides"]> }) {
+  return (
+    <div className="relative size-full">
+      <div className="absolute inset-0">
+        <ThemePicture picture={sides.light} />
+      </div>
+      <div className="absolute inset-0" style={{ clipPath: "polygon(100% 0, 100% 100%, 0 100%)" }}>
+        <ThemePicture picture={sides.dark} />
       </div>
     </div>
   );
@@ -50,21 +104,22 @@ export function ThemeTileView({
   selected,
   highlighted = false,
   compact = false,
+  badge,
   onSelect,
   className,
 }: {
   /** What the tile draws; the Showcase passes its entries' the same way. */
-  readonly tile: Pick<ThemeTile, "key" | "name" | "detail" | "swatch" | "thumbnail">;
+  readonly tile: Pick<ThemeTile, "key" | "name" | "detail" | "swatch" | "thumbnail" | "sides">;
   readonly selected: boolean;
   /** Keyboard focus in a strip that moves it with the arrow keys. */
   readonly highlighted?: boolean;
   /** The /theme strip's size: a short picture and the name alone (its line shows as a tooltip). */
   readonly compact?: boolean;
+  /** A small label on the picture's corner (the gallery marks the themes System uses). */
+  readonly badge?: ReactNode;
   readonly onSelect: () => void;
   readonly className?: string;
 }) {
-  const [pictureFailed, setPictureFailed] = useState(false);
-  const picture = tile.thumbnail !== null && !pictureFailed ? tile.thumbnail : null;
   return (
     <button
       type="button"
@@ -82,24 +137,19 @@ export function ThemeTileView({
     >
       <div
         className={cn(
-          "w-full overflow-hidden ring-1 ring-border transition-shadow",
+          "relative w-full overflow-hidden ring-1 ring-border transition-shadow",
           compact
             ? "aspect-[16/9] rounded-[var(--app-radius-control)]"
             : "aspect-[5/3] rounded-[var(--app-radius-surface)]",
           selected && "ring-2 ring-primary",
         )}
       >
-        {picture !== null ? (
-          <img
-            src={picture}
-            alt=""
-            className="size-full object-cover"
-            draggable={false}
-            onError={() => setPictureFailed(true)}
-          />
-        ) : (
-          <ThemeSwatch swatch={tile.swatch} />
-        )}
+        {tile.sides ? <PairPicture sides={tile.sides} /> : <ThemePicture picture={tile} />}
+        {badge ? (
+          <span className="absolute bottom-1 left-1 inline-flex items-center gap-1 rounded-[5px] bg-popover/90 px-1.5 text-[10.5px] leading-4 text-foreground">
+            {badge}
+          </span>
+        ) : null}
       </div>
       <div className="min-w-0 px-0.5">
         <div

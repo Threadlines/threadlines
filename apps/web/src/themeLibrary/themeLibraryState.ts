@@ -25,6 +25,7 @@ import {
   compareThemeRevisions,
   reconcileThemeLibraries,
   themeOfferKey,
+  themePickContentHashes,
   themeWithoutOffer,
   winningThemePick,
 } from "@threadlines/shared/themeLibrary";
@@ -383,10 +384,12 @@ async function sendMerge(
 
 /**
  * Brings the winning shared pick to a computer holding an older one (or
- * none), or holding it without its theme's content (`contentOnly`). A library
- * pick's content goes with it when the computer lacks it, read from whichever
- * followed computer has it. When none can give it now, the pick still lands,
- * the computer says it is missing the content, and this is tried again later.
+ * none), or holding it without its theme's content (`contentOnly`). The
+ * library content it shows (its theme's, or each side's of System's pair)
+ * goes with it when the computer lacks it, read from whichever followed
+ * computer has it, one call per theme. When none can give it now, the pick
+ * still lands, the computer says it is missing the content, and this is
+ * tried again later.
  */
 async function sendPickMerge(
   target: EnvironmentId,
@@ -401,27 +404,28 @@ async function sendPickMerge(
   if (sentMerges.has(key)) return;
   sentMerges.set(key, "sending");
   try {
-    const hash = pick.theme.kind === "library" ? pick.theme.hash : undefined;
     // The computer's own word where it gives it; else whether an entry of its names the content.
-    const needsContent =
-      hash !== undefined &&
-      (contentOnly || !byEnvironment[target]?.entries.some((entry) => entry.hash === hash));
-    let manifest: ThemeManifest | undefined;
-    if (hash !== undefined && needsContent) {
+    const needed = themePickContentHashes(pick.theme).filter(
+      (hash) => contentOnly || !byEnvironment[target]?.entries.some((entry) => entry.hash === hash),
+    );
+    const manifests: ThemeManifest[] = [];
+    for (const hash of needed) {
       for (const source of readyIds) {
         if (source === target) continue;
         try {
-          manifest = (await clients(source).read({ hash })).manifest;
+          manifests.push((await clients(source).read({ hash })).manifest);
           break;
         } catch {
           // Not on that computer: try the next.
         }
       }
     }
-    if (!contentOnly || manifest !== undefined) {
-      await clients(target).mergePick(manifest === undefined ? { pick } : { pick, manifest });
+    if (manifests.length === 0) {
+      if (!contentOnly) await clients(target).mergePick({ pick });
+    } else {
+      for (const manifest of manifests) await clients(target).mergePick({ pick, manifest });
     }
-    if (needsContent && manifest === undefined) {
+    if (manifests.length < needed.length) {
       // No computer could give the content now: again later, when one may.
       sentMerges.delete(key);
       retry();

@@ -41,6 +41,7 @@ export const GUIDE_TOPICS: ReadonlyArray<GuideTopic> = [
       "setup script",
       "wrap",
       "archive",
+      "restart",
     ],
     body: `A thread is one conversation with an agent in a project. Threads are listed in the sidebar; one that needs you, finished or failed says so there. In a narrow window the sidebar floats over the thread instead of sitting beside it: the sidebar button at the top left, or Cmd+B (Ctrl+B on Windows and Linux), opens it, and picking a thread or clicking the thread puts it away.
 
@@ -58,7 +59,9 @@ After a reply to your message, Claude or Codex can suggest what you might send n
 
 When Claude or Codex asks multiple-choice questions, a card takes the place of the message box. Besides answering, you can Skip a question, close the card with its X (the agent goes on without answers), or choose Reply in chat: the message box comes back, and the next message you send, text only, is your answer. The agent is told exactly which you did. Questions from other agents, such as a yes/no confirmation, still need an answer or Stop.
 
-When a thread is done it wraps up and moves to the Wrapped shelf at the bottom of the sidebar; {place:threads.whenDone} says when that happens on its own. An agent coming back later (a check-back) doesn't keep a thread out of Wrapped: the thread returns to the list when the agent does. Old threads can be archived for you: {place:archived.cleanup}.`,
+When a thread is done it wraps up and moves to the Wrapped shelf at the bottom of the sidebar; {place:threads.whenDone} says when that happens on its own. An agent coming back later (a check-back) doesn't keep a thread out of Wrapped: the thread returns to the list when the agent does. Old threads can be archived for you: {place:archived.cleanup}.
+
+When Threadlines quits, updates or crashes while an agent works on something the user asked for, the agent picks it back up when Threadlines starts again: the chat gets a message marked "Sent after a restart" telling the agent to check before repeating anything. A turn waiting on an approval or a question, or one another thread, a scheduled task or an outside agent started, stops with a note instead, as does a turn restarts cut off three times in five minutes. {place:threads.continueAfterRestart} turns this off.`,
   },
   {
     id: "access-levels",
@@ -436,8 +439,13 @@ With {place:threads.commandRequests} on, an agent can ask you to run a command i
       "edit colors",
       "color editor",
       "change accent",
+      "dark mode",
+      "light mode",
+      "follow system",
     ],
     body: `A theme changes how all of Threadlines looks: its colors, its fonts, and optionally live art behind the app, with the chat and Settings on frosted glass in front. A device picks its theme in {place:settings.appearance}, and with {place:appearance.sameEverywhere} on (the default) its pick becomes every such device's theme; a theme kept once is in this computer's library on every device.
+
+System follows the computer's light or dark setting. In {place:appearance.systemThemes} the user picks the theme System shows in each mode (a light one and a dark one: built in, a starter or one of theirs), and the app switches between them when the computer does; picking one switches the device to System, and its reset goes back to plain Light and Dark. A light or dark theme's options in the gallery also have "Use when my computer is light" (or dark), and while System is in use the gallery marks the themes it shows. Setting the theme to "system" brings that pair back. There is no agent tool for the pair: point the user to the row.
 
 An agent makes one with preview_theme (screenshots of the app wearing it, its readability checks and what its art costs) and offers it with show_theme: a row in the chat with Try it. Trying shows a bar at the top of the window, Keep or Undo, and it switches back by itself after 15 seconds (for a new version of a theme already kept from the same offer in that chat, the bar asks to Update that copy, with Keep both to add another); Esc, a reload or closing the window undo it too (while the /theme picker is open, a preview waits for its ✕ or Esc instead). The Settings gallery, the composer's /theme and an imported ${THEME_FILE_EXTENSION} file start the same trial. New theme, in /theme or in Settings, puts the start of a request in the message box ("Make me a Threadlines theme that feels like") with a few ideas to finish it (Settings opens a general chat for it); sending it asks the agent for one. In Settings, the options on a theme's picture rename it, duplicate it to change a copy, export a file to share, copy the request it was made from, or delete it; starters can be duplicated and exported. An exported file never says which thread made the theme and leaves the request out unless the user includes it; its author can add a credit (name, link, CC BY or CC0), which importing shows, and a theme that already has one keeps it.
 

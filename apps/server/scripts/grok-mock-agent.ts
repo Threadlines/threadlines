@@ -5,8 +5,15 @@
  * 1.0.41-1.0.60, reduced to what the Grok descriptor and the generic ACP
  * core react to. `GROK_MOCK_SCENARIO` picks the prompt's behaviour; every
  * frame the client sends is appended to `GROK_MOCK_LOG` as JSON lines.
+ *
+ * Started with `--sandbox <profile>`, it records the profile in
+ * `$GROK_HOME/sessions/sandbox-events.jsonl` as Grok 1.0.77 does at startup:
+ * applied and enforced, or failed when `GROK_MOCK_SANDBOX=failed`. How it was
+ * launched (arguments, the lockdown variables, whether its sign-in carries a
+ * refresh token) goes to `$GROK_MOCK_LOG.launch.json`.
  */
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -17,6 +24,41 @@ import * as AcpError from "effect-acp/errors";
 
 const scenario = process.env.GROK_MOCK_SCENARIO ?? "simple";
 const logPath = process.env.GROK_MOCK_LOG;
+const grokHome = process.env.GROK_HOME;
+const sandboxFlag = process.argv.indexOf("--sandbox");
+const sandboxProfile = sandboxFlag === -1 ? undefined : process.argv[sandboxFlag + 1];
+if (sandboxProfile !== undefined && grokHome !== undefined) {
+  const failed = process.env.GROK_MOCK_SANDBOX === "failed";
+  mkdirSync(join(grokHome, "sessions"), { recursive: true });
+  appendFileSync(
+    join(grokHome, "sessions", "sandbox-events.jsonl"),
+    `${JSON.stringify({
+      event_type: failed ? "ApplyFailed" : "ProfileApplied",
+      profile: sandboxProfile,
+      workspace: process.cwd(),
+      enforced: !failed,
+      ...(failed
+        ? { error: "Operation not permitted" }
+        : { read_write_paths: [grokHome, process.env.TMPDIR ?? "/tmp"] }),
+    })}\n`,
+  );
+}
+if (logPath) {
+  const signInPath = grokHome === undefined ? undefined : join(grokHome, "auth.json");
+  const signIn =
+    signInPath !== undefined && existsSync(signInPath) ? readFileSync(signInPath, "utf8") : "";
+  writeFileSync(
+    `${logPath}.launch.json`,
+    JSON.stringify({
+      args: process.argv.slice(2),
+      grokHome,
+      folderTrust: process.env.GROK_FOLDER_TRUST,
+      managedConfig: process.env.GROK_MANAGED_CONFIG,
+      signedIn: signIn.length > 0,
+      signInHasRefreshToken: signIn.includes("refresh_token"),
+    }),
+  );
+}
 const sessionId = "grok-session-1";
 const childSessionId = "grok-child-1";
 

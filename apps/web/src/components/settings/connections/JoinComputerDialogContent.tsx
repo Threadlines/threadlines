@@ -102,7 +102,7 @@ function CodeInput(props: {
         >
           {digit.trim() ||
             (focused && index === caretIndex && selection.start === selection.end ? (
-              <span className="h-5 w-px bg-foreground" />
+              <span className="h-5 w-px animate-caret-blink bg-foreground" />
             ) : null)}
         </span>
       ))}

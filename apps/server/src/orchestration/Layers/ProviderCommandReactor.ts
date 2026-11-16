@@ -104,6 +104,7 @@ import { buildIndependentReviewPrompt } from "../roomReviewPrompt.ts";
 import { messageSentFromNote, previousMessageSentFrom } from "../messageSentFrom.ts";
 import { turnMessageOrigin } from "../turnOrigin.ts";
 import { agentMessageFrame, buildRoomCatchUp } from "../roomCatchUp.ts";
+import { isContinueTrigger } from "../continueTurns.ts";
 
 import { pauseActiveThreadGoalForStop } from "../threadGoalLifecycle.ts";
 import { canReplaceThreadTitle } from "../threadTitle.ts";
@@ -829,7 +830,6 @@ const make = Effect.gen(function* () {
       | "provider.approval.respond.failed"
       | "provider.user-input.respond.failed"
       | "provider.session.stop.failed"
-      | "provider.session.restart-interrupted"
       | "provider.runtime-mode.failed"
       | "provider.goal.failed";
     readonly summary: string;
@@ -2992,7 +2992,7 @@ const make = Effect.gen(function* () {
      * afresh, like Stop: the user may have written while this was prepared.
      */
     const continueOvertaken = Effect.gen(function* () {
-      if (message.trigger !== "usageLimitReset") {
+      if (!isContinueTrigger(message.trigger)) {
         return false;
       }
       const latest = yield* resolveThread(event.payload.threadId);
@@ -6433,11 +6433,20 @@ const make = Effect.gen(function* () {
     },
   );
 
+  // Turns the settle below cut off, for continueTurnsCutByRestart.
+  const turnsCutByRestart: Array<{
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId | null;
+    readonly participantId: ThreadParticipantId | null;
+    readonly waitingOnUser: boolean;
+  }> = [];
+
   // Provider processes do not outlive the server, so a session still recorded
   // as starting or running when the server comes up belongs to the previous
-  // process and no command can reach it. Settle each one as interrupted, with
-  // a note in the thread, instead of leaving the thread on "Preparing turn"
-  // until the user gives up and deletes it.
+  // process and no command can reach it. Settle each one as interrupted, then
+  // (once every reactor listens) continue its turn or note in the thread that
+  // it stopped, instead of leaving the thread on "Preparing turn" until the
+  // user gives up and deletes it.
   const restartInterruptedStatuses: ReadonlySet<OrchestrationSession["status"]> = new Set([
     "starting",
     "running",
@@ -6525,18 +6534,62 @@ const make = Effect.gen(function* () {
           createdAt,
         });
         yield* takeBackOutsideQueued(thread.id, createdAt);
-        yield* appendProviderFailureActivity({
+        // Read now: startup expires the questions the previous process left.
+        const activities = (yield* resolveThread(thread.id))?.activities ?? [];
+        turnsCutByRestart.push({
           threadId: thread.id,
-          kind: "provider.session.restart-interrupted",
-          summary: "Turn interrupted by a server restart",
-          detail:
-            "Threadlines restarted while this turn was in progress, so its agent session is gone. Send a message to continue.",
           turnId: session.activeTurnId,
-          createdAt,
+          participantId: sessionSlotParticipantId(session),
+          waitingOnUser:
+            collectOpenPendingRequests(activities, APPROVAL_ACTIVITY_KINDS).length > 0 ||
+            collectOpenPendingRequests(activities, USER_INPUT_ACTIVITY_KINDS).length > 0,
         });
       }
     },
   );
+
+  /**
+   * Each turn the settle above found cut off is continued or noted as
+   * stopped (`thread.restart.continue`). Run once every reactor listens, so a
+   * continued turn starts like any other: checkpoints, alerts and the sleep
+   * guard all see it.
+   */
+  const continueTurnsCutByRestart: ProviderCommandReactorShape["continueTurnsCutByRestart"] =
+    Effect.gen(function* () {
+      const cut = turnsCutByRestart.splice(0);
+      if (cut.length === 0) return;
+      const settingOn = yield* serverSettingsService.getSettings.pipe(
+        Effect.map((settings) => settings.continueAfterRestart),
+        Effect.orElseSucceed(() => false),
+      );
+      for (const { threadId, turnId, participantId, waitingOnUser } of cut) {
+        const createdAt = yield* nowIso;
+        yield* orchestrationEngine
+          .dispatch({
+            type: "thread.restart.continue",
+            commandId: serverCommandId("restart-continue"),
+            threadId,
+            turnId,
+            participantId,
+            waitingOnUser,
+            continueAfterRestart: settingOn,
+            messageId: MessageId.make(crypto.randomUUID()),
+            activityId: EventId.make(crypto.randomUUID()),
+            createdAt,
+          })
+          .pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning(
+                "provider command reactor could not continue a turn a restart cut off",
+                {
+                  threadId,
+                  cause: Cause.pretty(cause),
+                },
+              ),
+            ),
+          );
+      }
+    });
 
   // Workflow runs lived in the previous process's provider runtimes too: none
   // is still running, and none can report its end now.
@@ -6740,6 +6793,7 @@ const make = Effect.gen(function* () {
     start,
     drain: worker.drain,
     warmUp,
+    continueTurnsCutByRestart,
   } satisfies ProviderCommandReactorShape;
 });
 

@@ -1027,9 +1027,9 @@ describe("ChatView (full app): app shell", () => {
       // The rail and the work panel start under the row.
       const newThread = document.querySelector('[data-testid="new-thread-button"]')!;
       expect(newThread.getBoundingClientRect().top).toBeGreaterThanOrEqual(titleRow.bottom);
-      expect(document.querySelector('[data-testid="app-panel"]')!.getBoundingClientRect().top).toBe(
-        titleRow.bottom,
-      );
+      expect(
+        document.querySelector('[data-slot="app-panel-shape"]')!.getBoundingClientRect().top,
+      ).toBe(titleRow.bottom);
     } finally {
       await mounted.cleanup();
       root.classList.remove("electron", "mac");

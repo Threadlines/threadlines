@@ -530,10 +530,16 @@ Glass mode turns on only when the active theme has a backdrop
 (`html[data-glass]`). Users who never pick one see no change.
 
 - Glass surfaces: frame (`AppTitleBar`, `NavigationRail`, `SidebarProvider`),
-  work panel (`app-panel`), thread list (`sidebar-inner`), `SidebarInset` and
+  work panel (`app-panel-shape`), thread list (`sidebar-inner`), `SidebarInset` and
   the ChatView root, composer. The stacked `bg-background` layers (panel,
   inset, ChatView root) collapse to one transparent stack; the frame paints
   the tint, so alpha never compounds.
+- The panel's rounded top-left corner: outside glass a small corner piece
+  (`app-panel-corner`) paints the frame over the square clip of the panel's
+  pages. Over glass nothing can repaint the art, so the corner piece hides
+  and the pages (`app-panel`) are clipped round instead. That rounded clip
+  costs a panel-sized mask for each separately drawn part inside (about
+  15 MB each at 2x), which glass themes still pay.
 - A new token `--surface-solid` (the theme's opaque base) replaces
   `--background` wherever something needs to hide what's behind it: sticky
   turn headers (`surface-group-solid`), sticky table heads, the diff's sticky
@@ -596,17 +602,78 @@ Glass mode turns on only when the active theme has a backdrop
 - **Code.** A theme's code palette becomes a generated Shiki theme
   (`tl-custom-<hash>`) registered with the highlight worker and the diff
   renderer; their caches key on theme name. Without one, the base's Pierre
-  theme is used. (Prototype: green UI with purple code looked wrong.)
+  theme fills in. (Prototype: green UI with purple code looked wrong.) The
+  built-ins get one too (`tl-code-light`, `tl-code-dark`). Every color in
+  them is fitted when the theme is built (shared `themes/codeColors.ts`):
+  moved in lightness, hue kept, until it reads 4.5:1 (3:1 for comments and
+  punctuation) on every background code sits on: the code background, the
+  diff panel, each diff line tint, and the file viewer's hovered and
+  selected lines (`DIFF_TINT`, which `DiffPanel.styles.ts` and the file
+  viewer paint with; a selected line is a tint toward the accent). The
+  editor takes two backgrounds from the code theme itself, so the theme
+  sets them: selected text is an opaque tint toward the accent (also fitted
+  against), and the cursor's line has no fill (the editor outlines it). A
+  fit is judged as the hex it's written as. On a theme with art, chat code blocks
+  are partly see-through, so the art behind them isn't part of the fit. Pierre's own light colors read about
+  3:1 for strings and 2.6:1 for numbers; changed words in removed lines are
+  the darkest tint.
 - **Desktop.** The bridge keeps the native preference apart from colors:
   `{ nativeSource: system | light | dark, colors?: { windowBackground,
   titleBarSymbol } }`. Built-in System stays `system` so the OS keeps
-  driving it; a custom theme sets its base. `syncWindowAppearance`
+  driving it, and so does System with a pair; any other custom theme sets
+  its base. `syncWindowAppearance`
   (`DesktopWindow.ts`, which re-applies built-in colors on native updates
   today) uses the stored custom colors when present, and the desktop keeps
   them in `client-settings.json` so the window opens in the right color.
 - **Status colors.** Amber, emerald and red stay (color means status) unless
   the theme overrides `--success`, `--warning`, `--destructive`, `--info`;
   either way they go through the readability check.
+
+## Light and dark with your computer
+
+System can show a theme of the user's in each mode instead of plain Light
+and Dark: Settings › Appearance, System themes, one dropdown per mode
+listing that mode's themes (the built-in, the starters, the user's own).
+Picking one switches the device to System with that pair; the reset goes
+back to plain Light and Dark. A theme is still one mode: the pair is two
+themes, so agents never have to make both.
+
+- **First visit.** On the defaults the row says so ("Plain Light and Dark
+  for now…"), each dropdown marks the built-in as Default, and its menu shows
+  every theme of that mode with a picture, Your themes included even when
+  empty, so it reads as a choice of themes, not a light/dark switch.
+- **From the gallery.** A starter's or library theme's options have "Use
+  when my computer is light" (or dark, by its base). While System is in use,
+  the tiles it shows carry a small ☀ / ☾ System label.
+
+- **Stored as System.** The choice is `{ v: 1, kind: "builtin", id:
+  "system", light, dark }` in `threadlines:theme` (each side a built-in of
+  its own mode, a starter or a library theme). An older build reads it as
+  plain System; the shared pick carries `light` and `dark` on System the
+  same way, so an older device shows plain System. In the app it is its own
+  kind (`pair`), so every switch over choice kinds has to decide.
+- **Both sides resolve.** A pair commit resolves both sides (content, then
+  tokens), reusing what the window already resolved, so changing one side
+  leaves the other as it is and the computer switching modes is a
+  recompute, with no wait. A side that is nowhere shows its mode's
+  built-in and is looked for again when a computer connects, the hidden
+  side too.
+- **Pre-paint.** Each side keeps its own record
+  (`threadlines:theme-paint:light`, `:dark`); the script in `index.html`
+  paints the record for the mode the computer is in, else that mode's
+  built-in. The Settings row loads both sides before it commits, so both
+  records are written at once.
+- **Remembered.** The last pair is kept apart from the choice
+  (`threadlines:theme-system-pair`): picking another theme and then System
+  brings it back (the System tile, the /theme picker, the palette, an
+  agent's settings change to "system"). Only the row's reset and Restore
+  defaults forget it. Deleting a theme the pair uses puts that side back to
+  its built-in; saving it in the color editor keeps the saved version in
+  the pair.
+- **Desktop.** A pair tells the window `nativeSource: system` with the
+  side's colors, so the OS keeps reporting its mode.
+- **Trials.** The /theme picker previews System's pair as a trial of the
+  side the computer shows; Keep commits the pair.
 
 ## Readability check
 
@@ -628,7 +695,8 @@ surface they sit on before measuring:
   against its surface.
 - Code palette on the code background and terminal ANSI colors on the
   terminal background at 4.5:1 (black and white excepted against their own
-  extreme).
+  extreme). Diff line tints aren't checked here: code colors are fitted to
+  them when drawn (see Code, under Applying a theme).
 - Borders, inputs and switch tracks at 1.3:1 against what they sit on.
 
 Each row names the component and line it mirrors, and changing a component's

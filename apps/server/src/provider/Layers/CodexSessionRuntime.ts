@@ -20,11 +20,8 @@ import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 import { ROOM_MCP_SERVER_NAME, roomEndpointGrant, roomToolsFor } from "../../mcp/roomToolAccess.ts";
 import { buildGuideInstructions } from "../../mcp/guideTools.ts";
 import { buildScheduleInstructions } from "../../mcp/scheduleTools.ts";
-import {
-  type CodexBorrowedSignIn,
-  type CodexSideAnswerHomeError,
-  removeCodexSideAnswerHome,
-} from "../codexSideAnswerHome.ts";
+import { type CodexBorrowedSignIn, type CodexSideAnswerHomeError } from "../codexSideAnswerHome.ts";
+import { removeSideRuntimeHome } from "../sideRuntimeHome.ts";
 import {
   ApprovalRequestId,
   DEFAULT_MODEL,
@@ -2915,7 +2912,7 @@ const makeCodexSessionRuntimeIn = (
       yield* Queue.shutdown(events);
       // A side answer's home (and its copy of the conversation) goes with it.
       if (lockdown !== undefined && resolvedHomePath !== undefined) {
-        yield* removeCodexSideAnswerHome(resolvedHomePath);
+        yield* removeSideRuntimeHome(resolvedHomePath);
       }
     });
 

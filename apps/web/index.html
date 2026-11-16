@@ -38,26 +38,40 @@
     <!-- First paint in the device's theme. Built-ins as always; a custom theme
          (a JSON choice, see src/theme/themeChoice.ts) paints from the small
          record the theme store keeps for it: its base, opaque surface and
-         tokens. `?theme=default` skips the saved choice for this load. -->
+         tokens. System with a theme for each mode paints the side the
+         computer is on from that side's record, else that mode's built-in.
+         `?theme=default` skips the saved choice for this load. -->
     <script>
       (() => {
         const LIGHT_BACKGROUND = "#ffffff";
         const DARK_BACKGROUND = "#161616";
         const themeColorMeta = document.querySelector('meta[name="theme-color"]');
+        const prefersDark = () => window.matchMedia("(prefers-color-scheme: dark)").matches;
         const paintCustomTheme = (raw) => {
           if (!raw || raw.charAt(0) !== "{") return false;
-          const choice = JSON.parse(raw);
+          const stored = JSON.parse(raw);
+          if (!stored) return false;
+          const pair =
+            stored.kind === "builtin" &&
+            stored.id === "system" &&
+            typeof stored.light === "object" &&
+            typeof stored.dark === "object";
+          const mode = prefersDark() ? "dark" : "light";
+          // A pair's built-in side is its mode's built-in: System paints it below.
+          const choice = pair ? stored[mode] : stored;
+          if (!choice) return false;
           const record = JSON.parse(
-            window.localStorage.getItem("threadlines:theme-paint") || "null",
+            window.localStorage.getItem(
+              pair ? "threadlines:theme-paint:" + mode : "threadlines:theme-paint",
+            ) || "null",
           );
-          if (!choice || !record || record.v !== 1 || typeof record.tokens !== "object")
-            return false;
+          if (!record || record.v !== 1 || typeof record.tokens !== "object") return false;
           const key =
             choice.kind === "starter"
               ? "starter:" + choice.id
               : choice.kind === "library"
                 ? "library:" + choice.entryId + ":" + choice.hash
-                : choice.kind === "unsaved"
+                : choice.kind === "unsaved" && !pair
                   ? "unsaved:" + choice.hash
                   : null;
           if (key === null || record.key !== key) return false;
@@ -93,12 +107,10 @@
           const bypass = new URLSearchParams(window.location.search).get("theme") === "default";
           if (!bypass && paintCustomTheme(storedThreadlinesTheme)) return;
           const storedLegacyTheme = window.localStorage.getItem("t3code:theme");
+          // A saved choice this script couldn't paint (a JSON one) paints as
+          // System; only a device with no choice yet reads the legacy key.
           const storedTheme =
-            storedThreadlinesTheme === "light" ||
-            storedThreadlinesTheme === "dark" ||
-            storedThreadlinesTheme === "system"
-              ? storedThreadlinesTheme
-              : storedLegacyTheme;
+            storedThreadlinesTheme === null ? storedLegacyTheme : storedThreadlinesTheme;
           if (
             storedThreadlinesTheme === null &&
             (storedLegacyTheme === "light" ||
@@ -111,8 +123,7 @@
             storedTheme === "light" || storedTheme === "dark" || storedTheme === "system"
               ? storedTheme
               : "system";
-          const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-          const isDark = theme === "dark" || (theme === "system" && prefersDark);
+          const isDark = theme === "dark" || (theme === "system" && prefersDark());
           document.documentElement.classList.toggle("dark", isDark);
           const chromeColor = isDark ? DARK_BACKGROUND : LIGHT_BACKGROUND;
           document.documentElement.style.backgroundColor = chromeColor;

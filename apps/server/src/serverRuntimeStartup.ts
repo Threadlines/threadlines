@@ -451,6 +451,9 @@ export const makeServerRuntimeStartup = Effect.gen(function* () {
         yield* sleepInhibitor.start().pipe(Scope.provide(reactorScope));
         // Older chats' pictures for the Media tab, a little at a time.
         yield* projectMedia.startChatBackfill().pipe(Scope.provide(reactorScope));
+        // Last, once everything above listens: a turn it continues starts
+        // like any other.
+        yield* orchestrationReactor.continueTurnsCutByRestart;
       }),
     );
 

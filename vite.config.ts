@@ -102,6 +102,7 @@ export default defineConfig({
       "typescript/require-array-sort-compare": "off",
       "typescript/restrict-template-expressions": "off",
       "typescript/unbound-method": "off",
+      "threadlines/await-test-page-reset": "error",
       "threadlines/no-inline-schema-compile": "warn",
       "threadlines/prefer-tooltip-prop": "warn",
     },

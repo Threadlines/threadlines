@@ -39,10 +39,10 @@ const setHex = async (label: string, value: string) => {
 };
 
 describe("ThemeColorEditor", () => {
-  afterEach(() => {
+  afterEach(async () => {
     vi.clearAllMocks();
     useThemeEditorStore.getState().close();
-    resetTestPage();
+    await resetTestPage();
   });
 
   it("previews each change, won't save what's hard to read until fixed, and saves a built-in as a new theme", async () => {

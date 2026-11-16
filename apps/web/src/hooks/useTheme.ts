@@ -7,12 +7,13 @@
  */
 import { useCallback } from "react";
 
-import { THEME_STORAGE_KEY } from "../theme/themeChoice";
+import { serializeThemeChoice, THEME_STORAGE_KEY } from "../theme/themeChoice";
 import {
   adoptStoredThemeChoice,
   chooseTheme,
   readThemeState,
   syncBrowserChromeColor,
+  systemChoice,
   type ThemeChoice,
   useActiveTheme,
   useThemeChoice,
@@ -21,10 +22,12 @@ import {
 export type Theme = "light" | "dark" | "system";
 
 /**
- * The built-in a choice reads as: itself for the built-ins, and a custom
- * theme's base for the rest, since that is the light-or-dark it shows.
+ * The built-in a choice reads as: itself for the built-ins, System for
+ * System's pair (it follows the computer too), and a custom theme's base for
+ * the rest, since that is the light-or-dark it shows.
  */
 function themeOfChoice(choice: ThemeChoice, base: "light" | "dark"): Theme {
+  if (choice.kind === "pair") return "system";
   return choice.kind === "builtin" ? choice.id : base;
 }
 
@@ -40,18 +43,20 @@ export function readThemePreference(): Theme {
 }
 
 /**
- * Sets this device's theme to a built-in, as the Theme row does. Throws when
- * the browser won't keep it (no storage, or storage refused the write), so a
- * caller that reports whether a change landed can say so.
+ * Sets this device's theme to a built-in, as the Theme row does (System with
+ * the device's pair, when it has one). Throws when the browser won't keep it
+ * (no storage, or storage refused the write), so a caller that reports
+ * whether a change landed can say so.
  */
 export function setThemePreference(next: Theme): void {
   if (typeof localStorage === "undefined") {
     throw new Error("This browser can't keep a theme.");
   }
-  chooseTheme({ kind: "builtin", id: next });
+  const choice: ThemeChoice = next === "system" ? systemChoice() : { kind: "builtin", id: next };
+  chooseTheme(choice);
   let kept = false;
   try {
-    kept = localStorage.getItem(THEME_STORAGE_KEY) === next;
+    kept = localStorage.getItem(THEME_STORAGE_KEY) === serializeThemeChoice(choice, null);
   } catch {
     kept = false;
   }

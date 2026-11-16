@@ -50,6 +50,7 @@ import {
   nextThemeRevision,
   sameThemePickTheme,
   themeOfferKey,
+  themePickContentHashes,
 } from "@threadlines/shared/themeLibrary";
 import { checkThemeManifest, themeContentHash } from "@threadlines/shared/themeManifest";
 import * as Context from "effect/Context";
@@ -126,10 +127,15 @@ const make = Effect.gen(function* () {
   const snapshot: ThemeLibraryShape["snapshot"] = Effect.gen(function* () {
     const entries = yield* repo.listSummaries;
     const pick = Option.getOrNull(yield* repo.getPick);
-    // A library pick that arrived without its content says so, for a client to send it again.
-    const hash = pick?.theme.kind === "library" ? pick.theme.hash : undefined;
-    if (hash === undefined) return { entries, pick };
-    return { entries, pick, pickHasContent: yield* repo.hasContent(hash) };
+    // A pick that arrived without its library content (a theme's, or a side's
+    // of System's pair) says so, for a client to send it again.
+    const hashes = pick === null ? [] : themePickContentHashes(pick.theme);
+    if (hashes.length === 0) return { entries, pick };
+    let pickHasContent = true;
+    for (const hash of hashes) {
+      if (!(yield* repo.hasContent(hash))) pickHasContent = false;
+    }
+    return { entries, pick, pickHasContent };
   }).pipe(stored);
 
   const changes: ThemeLibraryShape["changes"] = Stream.concat(
@@ -396,20 +402,23 @@ const make = Effect.gen(function* () {
   const mergePick: ThemeLibraryShape["mergePick"] = (input) =>
     Effect.gen(function* () {
       const incoming = input.pick;
-      const hash = incoming.theme.kind === "library" ? incoming.theme.hash : undefined;
-      // A library pick's content, for a computer that lacks it: checked like a merged entry's.
+      // Content the pick shows (its library theme's, or one side's of System's
+      // pair), for a computer that lacks it: checked like a merged entry's.
+      // A pair's sides come one call each.
       let content: ThemeManifest | undefined;
-      if (input.manifest !== undefined && hash !== undefined) {
-        const held = yield* repo.getContent(hash).pipe(stored);
-        if (Option.isNone(held)) {
-          const check = checkThemeManifest(input.manifest);
-          if (!check.ok) return yield* themeProblems(check.errors);
-          if ((yield* hashOf(check.manifest)) !== hash) {
-            return yield* new ThemeError({
-              detail: "The theme sent with that pick isn't the content the pick names.",
-            });
-          }
+      let hash: string | undefined;
+      if (input.manifest !== undefined) {
+        const check = checkThemeManifest(input.manifest);
+        if (!check.ok) return yield* themeProblems(check.errors);
+        const sent = yield* hashOf(check.manifest);
+        if (!themePickContentHashes(incoming.theme).includes(sent)) {
+          return yield* new ThemeError({
+            detail: "The theme sent with that pick isn't the content the pick names.",
+          });
+        }
+        if (Option.isNone(yield* repo.getContent(sent).pipe(stored))) {
           content = check.manifest;
+          hash = sent;
         }
       }
       return yield* write(

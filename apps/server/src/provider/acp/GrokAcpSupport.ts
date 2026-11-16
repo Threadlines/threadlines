@@ -32,19 +32,21 @@ import { ChildProcessSpawner } from "effect/process";
 import * as EffectAcpErrors from "effect-acp/errors";
 
 import { expandHomePath } from "../../pathExpansion.ts";
-import { grokContinuationKey } from "../grok/GrokAccountFolder.ts";
+import { grokContinuationKey, grokMainHome } from "../grok/GrokAccountFolder.ts";
 import {
   detectGrokBinary,
   GROK_INSTALL,
   grokMaintenance,
   resolveGrokBinary,
 } from "../grok/GrokBinary.ts";
+import { prepareGrokSideRuntime } from "../grok/GrokSideRuntime.ts";
 import { makeProviderMaintenanceCapabilities } from "../providerMaintenance.ts";
 import {
   buildSelectOptionDescriptor,
   readCliStartFailure,
   withStartFailureReason,
 } from "../providerSnapshot.ts";
+import { makeSideRuntimeHome, removeSideRuntimeHome } from "../sideRuntimeHome.ts";
 import type {
   AcpLaunch,
   AcpModelOptionMapping,
@@ -484,6 +486,42 @@ export const probeGrok = Effect.fn("probeGrok")(function* (
   };
 });
 
+// ── Side runtime ──────────────────────────────────────────────────────
+
+/** How long a sign-in renewal may take: one `initialize` and one billing read. */
+const GROK_RENEW_TIMEOUT = Duration.seconds(30);
+
+/**
+ * Renew the user's sign-in through their own Grok, the way the status probe
+ * does (`_x.ai/billing` renews the token), told to treat a token with under an
+ * hour left as expired. A side runtime's copy has no refresh token, so it must
+ * start with one that lasts.
+ */
+const renewGrokSignIn = (
+  settings: GrokSettings,
+  environment: NodeJS.ProcessEnv,
+  childProcessSpawner: ChildProcessSpawner.ChildProcessSpawner["Service"],
+) =>
+  Effect.gen(function* () {
+    const cwd = yield* Effect.acquireRelease(makeSideRuntimeHome("grok-renew"), (made) =>
+      removeSideRuntimeHome(made),
+    );
+    const acp = yield* makeAcpProviderRuntime(GROK_ACP_DESCRIPTOR, {
+      settings,
+      environment: { ...environment, GROK_AUTH_EARLY_INVALIDATION_SECS: "3600" },
+      childProcessSpawner,
+      cwd,
+      clientInfo: { name: "threadlines", version: "0.0.0" },
+    });
+    yield* acp.request("initialize", {
+      protocolVersion: 1,
+      clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
+      clientInfo: { name: "threadlines", version: "0.0.0" },
+      _meta: GROK_INITIALIZE_META,
+    });
+    yield* acp.request("_x.ai/billing", {});
+  }).pipe(Effect.scoped, Effect.timeoutOption(GROK_RENEW_TIMEOUT), Effect.ignore);
+
 // ── Descriptor ────────────────────────────────────────────────────────
 
 export const GROK_ACP_DESCRIPTOR: AcpProviderDescriptor<GrokSettings> = {
@@ -512,6 +550,19 @@ export const GROK_ACP_DESCRIPTOR: AcpProviderDescriptor<GrokSettings> = {
       detectGrokBinary(settings.binaryPath, grokProcessEnvironment(settings, environment)),
     ),
   spawn: buildGrokSpawnInput,
+  // A room's side answer, in Grok's read-only sandbox (GrokSideRuntime.ts).
+  sideRuntime: ({ settings, cwd, environment, childProcessSpawner }) => {
+    const baseEnvironment = grokProcessEnvironment(settings, environment);
+    return prepareGrokSideRuntime({
+      cwd,
+      baseEnvironment,
+      command: resolveGrokBinary(settings.binaryPath, baseEnvironment),
+      billsByKey: settings.authMethod === "api-key",
+      signInPath:
+        baseEnvironment.GROK_AUTH_PATH?.trim() || `${grokMainHome(baseEnvironment)}/auth.json`,
+      renewSignIn: renewGrokSignIn(settings, environment, childProcessSpawner),
+    });
+  },
   initializeMeta: GROK_INITIALIZE_META,
   // A user's Ctrl+C: Grok then also stops waking for background work the
   // cancelled turn left behind, until the next real message.

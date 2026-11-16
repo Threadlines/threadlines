@@ -67,10 +67,17 @@ async function readFrames(file: string): Promise<ReadonlyArray<Record<string, un
     .map((line) => JSON.parse(line) as Record<string, unknown>);
 }
 
+/** A room's side runtime for `startGrok`, with what its environment adds. */
+interface GrokSideStart {
+  readonly lockdown: "side-answer" | "side-review";
+  readonly environment: NodeJS.ProcessEnv;
+}
+
 /** Starts a Grok session on the mock playing `scenario`, collecting every runtime event. */
 const startGrok = (
   scenario: string,
   runtimeMode: "approval-required" | "full-access" = "full-access",
+  side?: GrokSideStart,
 ) =>
   Effect.gen(function* () {
     const mock = yield* Effect.promise(makeGrokMock);
@@ -83,6 +90,7 @@ const startGrok = (
           GROK_MOCK_SCENARIO: scenario,
           GROK_MOCK_LOG: mock.log,
           GROK_MOCK_STORE: mock.store,
+          ...side?.environment,
         },
       },
     );
@@ -97,6 +105,7 @@ const startGrok = (
       provider: ProviderDriverKind.make("grok"),
       cwd: process.cwd(),
       runtimeMode,
+      ...(side !== undefined ? { lockdown: side.lockdown } : {}),
     });
     const waitFor = (predicate: (events: ReadonlyArray<ProviderRuntimeEvent>) => boolean) =>
       Effect.gen(function* () {
@@ -112,8 +121,40 @@ const startGrok = (
       threadId,
       waitFor,
       frames: () => Effect.promise(() => readFrames(mock.log)),
+      /** How the mock was launched (see grok-mock-agent.ts). */
+      launch: () =>
+        Effect.promise(
+          async () =>
+            JSON.parse(await readFile(`${mock.log}.launch.json`, "utf8")) as {
+              readonly args: ReadonlyArray<string>;
+              readonly grokHome: string;
+              readonly folderTrust: string | undefined;
+              readonly managedConfig: string | undefined;
+              readonly signedIn: boolean;
+              readonly signInHasRefreshToken: boolean;
+            },
+        ),
     };
   });
+
+/** A Grok home signed in until `expiresInMs` from now, refresh token included. */
+async function signedInGrokHome(expiresInMs: number) {
+  const home = await realpath(await mkdtemp(path.join(os.tmpdir(), "grok-signed-in-")));
+  await writeFile(
+    path.join(home, "auth.json"),
+    JSON.stringify({
+      "https://auth.x.ai::client": {
+        key: "access-token",
+        auth_mode: "oidc",
+        create_time: new Date().toISOString(),
+        user_id: "user",
+        refresh_token: "refresh-token",
+        expires_at: new Date(Date.now() + expiresInMs).toISOString(),
+      },
+    }),
+  );
+  return home;
+}
 
 const completedTurns = (events: ReadonlyArray<ProviderRuntimeEvent>) =>
   events.filter((event) => event.type === "turn.completed");
@@ -237,6 +278,80 @@ describe("Grok launch", () => {
     // xAI's installer would move the user to the stable channel, so it is not offered.
     expect(repairOf(await grokAt(".grok", "bin", "grok"))).toBeUndefined();
   });
+});
+
+describe("Grok side answers", () => {
+  const replyText = (events: ReadonlyArray<ProviderRuntimeEvent>) =>
+    events
+      .flatMap((event) => (event.type === "content.delta" ? [event.payload.delta] : []))
+      .join("");
+
+  it.live(
+    "answers on the side sandboxed, signed in without the refresh token, every request declined unseen",
+    () =>
+      Effect.gen(function* () {
+        if (process.platform !== "darwin") return;
+        const home = yield* Effect.promise(() => signedInGrokHome(6 * 60 * 60_000));
+        const grok = yield* startGrok("permission-bash", "full-access", {
+          lockdown: "side-review",
+          environment: { GROK_HOME: home },
+        });
+        yield* grok.adapter.sendTurn({ threadId: grok.threadId, input: "review", attachments: [] });
+        yield* grok.waitFor((events) => completedTurns(events).length === 1);
+
+        // Allowed once, inside the sandbox, never "always": Grok ends its
+        // turn on a declined step.
+        expect(replyText(grok.events)).toBe(
+          'permission {"outcome":"selected","optionId":"allow-once"}',
+        );
+        expect(grok.events.some((event) => event.type === "request.opened")).toBe(false);
+
+        const launch = yield* grok.launch();
+        expect(launch.args).toEqual(expect.arrayContaining(["--sandbox", "read-only"]));
+        expect(launch.args).not.toContain("--always-approve");
+        expect(launch.grokHome).not.toBe(home);
+        expect(launch.folderTrust).toBe("1");
+        expect(launch.managedConfig).toBe("0");
+        expect(launch.signedIn).toBe(true);
+        expect(launch.signInHasRefreshToken).toBe(false);
+        // The user's own sign-in is untouched.
+        expect(
+          yield* Effect.promise(() => readFile(path.join(home, "auth.json"), "utf8")),
+        ).toContain("refresh-token");
+
+        const frames = yield* grok.frames();
+        const created = frames.find((frame) => frame.method === "session/new");
+        expect((created?.params as { mcpServers?: unknown } | undefined)?.mcpServers).toEqual([]);
+        expect(frames.some((frame) => frame.method === "session/set_mode")).toBe(false);
+      }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+  it.live("declines a side runtime's questions without showing them", () =>
+    Effect.gen(function* () {
+      if (process.platform !== "darwin") return;
+      const home = yield* Effect.promise(() => signedInGrokHome(6 * 60 * 60_000));
+      const grok = yield* startGrok("question", "full-access", {
+        lockdown: "side-answer",
+        environment: { GROK_HOME: home },
+      });
+      yield* grok.adapter.sendTurn({ threadId: grok.threadId, input: "pick", attachments: [] });
+      yield* grok.waitFor((events) => completedTurns(events).length === 1);
+      expect(replyText(grok.events)).toBe('answered {"outcome":"cancelled"}');
+      expect(grok.events.some((event) => event.type === "user-input.requested")).toBe(false);
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+  it.live("refuses a side answer when Grok could not apply its sandbox", () =>
+    Effect.gen(function* () {
+      if (process.platform !== "darwin") return;
+      const home = yield* Effect.promise(() => signedInGrokHome(6 * 60 * 60_000));
+      const error = yield* startGrok("simple", "full-access", {
+        lockdown: "side-review",
+        environment: { GROK_HOME: home, GROK_MOCK_SANDBOX: "failed" },
+      }).pipe(Effect.flip);
+      expect(String(error.message)).toContain("sandbox could not be applied");
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
 });
 
 describe("Grok protocol mapping", () => {

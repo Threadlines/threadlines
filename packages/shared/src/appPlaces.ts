@@ -971,6 +971,24 @@ const ROWS = [
     edit: { lands: "device", control: { kind: "theme" }, store: "theme" },
   },
   {
+    id: "appearance.systemThemes",
+    kind: "row",
+    parent: "appearance.themes",
+    title: "System themes",
+    about: "What System shows while your computer is light, and while it's dark.",
+    keywords: [
+      "dark mode",
+      "light mode",
+      "follow system",
+      "automatic",
+      "auto dark",
+      "day and night",
+      "match computer",
+      "appearance",
+    ],
+    scope: "device",
+  },
+  {
     id: "appearance.sameEverywhere",
     kind: "row",
     parent: "appearance.themes",
@@ -1480,6 +1498,17 @@ const ROWS = [
       "When a Claude or Codex usage limit stops a thread, it continues on its own once the limit resets. Each limit's notice above the composer also has a Continue at reset switch.",
     keywords: ["usage limit", "rate limit", "resume", "reset"],
     value: onOff((settings) => settings.continueAfterUsageLimits),
+    widensAgents: true,
+  },
+  {
+    id: "threads.continueAfterRestart",
+    kind: "row",
+    parent: "threads.newThreads",
+    title: "Continue after a restart",
+    about:
+      "When Threadlines quits, updates or crashes while an agent works on something you asked for, the agent picks it back up when Threadlines starts again.",
+    keywords: ["restart", "quit", "update", "crash", "resume", "interrupted"],
+    value: onOff((settings) => settings.continueAfterRestart),
     widensAgents: true,
   },
   {

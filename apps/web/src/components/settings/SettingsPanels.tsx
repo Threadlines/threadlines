@@ -50,7 +50,12 @@ import {
 } from "../ProviderRateLimitResetCredit";
 import { isElectron } from "../../env";
 import { useDesktopUpdateAction } from "../../hooks/useDesktopUpdateAction";
-import { chooseTheme, useThemeChoice } from "../../theme/themeStore";
+import {
+  chooseTheme,
+  rememberSystemPair,
+  useSystemPair,
+  useThemeChoice,
+} from "../../theme/themeStore";
 import { PushAlertsSettingsSection } from "../../pushAlerts/PushAlertsSettings";
 import { updateSettingsAndPersist, useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import { useThreadActions } from "../../hooks/useThreadActions";
@@ -403,7 +408,10 @@ export function UpdateTrackRow() {
 
 export function useSettingsRestore(onRestored?: () => void) {
   const themeChoice = useThemeChoice();
-  const themeIsDefault = themeChoice.kind === "builtin" && themeChoice.id === "system";
+  const systemPair = useSystemPair();
+  // Plain System, with no light and dark themes of the user's for it.
+  const themeIsDefault =
+    themeChoice.kind === "builtin" && themeChoice.id === "system" && systemPair === null;
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
   const glassLevel = themeGlassLevel(settings);
@@ -533,6 +541,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.continueAfterUsageLimits !== DEFAULT_UNIFIED_SETTINGS.continueAfterUsageLimits
         ? ["Continue after usage limits"]
         : []),
+      ...(settings.continueAfterRestart !== DEFAULT_UNIFIED_SETTINGS.continueAfterRestart
+        ? [placeById("threads.continueAfterRestart").title]
+        : []),
       ...(settings.enableCommandRequests === false
         ? [placeById("threads.commandRequests").title]
         : []),
@@ -574,6 +585,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.claudeSuggestionsWhenUsageRunsFast,
       settings.codexSuggestions,
       settings.continueAfterUsageLimits,
+      settings.continueAfterRestart,
       settings.enableCommandRequests,
       settings.startAgentsWhileTyping,
       settings.agentInvites,
@@ -614,6 +626,7 @@ export function useSettingsRestore(onRestored?: () => void) {
     );
     if (!confirmed) return;
 
+    rememberSystemPair(null);
     chooseTheme({ kind: "builtin", id: "system" });
     updateSettings({
       themeGlass: THEME_GLASS_LEVEL_DEFAULT,
@@ -655,6 +668,7 @@ export function useSettingsRestore(onRestored?: () => void) {
         DEFAULT_UNIFIED_SETTINGS.claudeSuggestionsWhenUsageRunsFast,
       codexSuggestions: DEFAULT_UNIFIED_SETTINGS.codexSuggestions,
       continueAfterUsageLimits: DEFAULT_UNIFIED_SETTINGS.continueAfterUsageLimits,
+      continueAfterRestart: DEFAULT_UNIFIED_SETTINGS.continueAfterRestart,
       enableCommandRequests: true,
       startAgentsWhileTyping: true,
       agentInvites: "ask",

@@ -22,6 +22,7 @@ import {
 import {
   sameThemeChoice,
   switchToTheme,
+  tileIsChosen,
   type ThemeTile,
   useThemeTiles,
 } from "~/themeLibrary/themeCatalog";
@@ -55,7 +56,7 @@ export function ThemePickerStrip({
   const [highlighted, setHighlighted] = useState(() =>
     Math.max(
       0,
-      tiles.findIndex((tile) => sameThemeChoice(tile.choice, committed)),
+      tiles.findIndex((tile) => tileIsChosen(tile, committed)),
     ),
   );
   const previewTrialIds = useRef(new Set<string>());
@@ -210,7 +211,7 @@ export function ThemePickerStrip({
           <ThemeTileView
             key={tile.key}
             tile={tile}
-            selected={sameThemeChoice(tile.choice, committed)}
+            selected={tileIsChosen(tile, committed)}
             highlighted={index === highlighted}
             compact
             className="w-[92px] shrink-0 snap-start"

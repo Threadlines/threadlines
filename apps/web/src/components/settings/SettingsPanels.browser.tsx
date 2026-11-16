@@ -128,7 +128,13 @@ import {
 import { resetSourceControlDiscoveryStateForTests } from "../../lib/sourceControlDiscoveryState";
 import { resetTestPage } from "../../lib/testPage.browser-harness";
 import { readAfterEachPaint } from "../../lib/frameProbe.browser-harness";
-import { chooseTheme, setBackdropStatus, useActiveTheme } from "../../theme/themeStore";
+import {
+  chooseTheme,
+  rememberSystemPair,
+  setBackdropStatus,
+  useActiveTheme,
+  useThemeChoice,
+} from "../../theme/themeStore";
 
 /**
  * The app-wide providers these panels are always mounted under. Settings rows
@@ -7048,12 +7054,70 @@ describe("Settings search rows", () => {
 
 describe("AppearanceSettingsPanel", () => {
   afterEach(async () => {
+    rememberSystemPair(null);
     chooseTheme({ kind: "builtin", id: "light" });
     setBackdropStatus(null);
     localStorage.clear();
     await resetTestPage();
     resetServerStateForTests();
     await __resetLocalApiForTests();
+  });
+
+  it("switches to System with a light theme of the user's, names both on its tile, and resets to plain System", async () => {
+    setServerConfigSnapshot(createBaseServerConfig());
+    let activeName: string | null = null;
+    let committedKind: string | null = null;
+    function ReadTheme() {
+      activeName = useActiveTheme().manifest?.name ?? null;
+      committedKind = useThemeChoice().kind;
+      return null;
+    }
+    await renderWithTestRouter(
+      <TestAppProviders>
+        <ReadTheme />
+        <AppearanceSettingsPanel />
+      </TestAppProviders>,
+    );
+    const systemTile = () =>
+      document.querySelector<HTMLElement>('[data-theme-tile="builtin:system"]');
+    const dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+    const [shown, other] = dark ? (["Dark", "Light"] as const) : (["Light", "Dark"] as const);
+    const starter = dark ? "Tokyo Rain" : "Meadow";
+    // A first visit: plain Light and Dark, marked Default, and said to be changeable.
+    await expect
+      .element(page.getByText("Plain Light and Dark for now.", { exact: false }))
+      .toBeInTheDocument();
+
+    await page.getByRole("combobox", { name: `${shown} theme for System` }).click();
+    await page.getByRole("option", { name: starter }).click();
+    await vi.waitFor(() => expect(activeName).toBe(starter));
+    expect(committedKind).toBe("pair");
+    const named = dark ? `${other} and ${starter}` : `${starter} and ${other}`;
+    await vi.waitFor(() => expect(systemTile()?.textContent).toContain(named));
+    expect(systemTile()?.getAttribute("aria-pressed")).toBe("true");
+
+    // The gallery marks it, and a theme's options set the other side.
+    const starterTile = await vi.waitUntil(() =>
+      document.querySelector<HTMLElement>(
+        `[data-theme-tile="starter:${dark ? "tokyo-rain" : "meadow"}"]`,
+      ),
+    );
+    await vi.waitFor(() => expect(starterTile.textContent).toContain("System"));
+    const otherStarter = dark ? "Meadow" : "Tokyo Rain";
+    await page.getByRole("button", { name: `${otherStarter} options` }).click();
+    await page
+      .getByRole("menuitem", { name: `Use when my computer is ${other.toLowerCase()}` })
+      .click();
+    await vi.waitFor(() =>
+      expect(systemTile()?.textContent).toContain(
+        dark ? `${otherStarter} and ${starter}` : `${starter} and ${otherStarter}`,
+      ),
+    );
+
+    await page.getByRole("button", { name: "Reset System themes to default" }).click();
+    await vi.waitFor(() => expect(committedKind).toBe("builtin"));
+    expect(activeName).toBeNull();
+    expect(systemTile()?.textContent).toContain("Light or dark with your computer");
   });
 
   // The line on the art sits between Glass and Motion and the gallery: a

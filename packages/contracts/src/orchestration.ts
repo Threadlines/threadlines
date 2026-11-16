@@ -948,13 +948,19 @@ export const MessageComposer = Schema.Literals(["typed", "plain"]);
 export type MessageComposer = typeof MessageComposer.Type;
 
 /**
- * Why Threadlines wrote a user message the user didn't type, after a usage
- * limit stopped the thread's agent. `usageLimitReset`: the server sent it once
- * the limit reset ("Continue at reset"). `accountSwitch`: the user moved the
- * thread to another account of the same agent from the limit notice. Absent
- * on every other message.
+ * Why Threadlines wrote a user message the user didn't type. After a usage
+ * limit stopped the thread's agent: `usageLimitReset`, the server sent it once
+ * the limit reset ("Continue at reset"); `accountSwitch`, the user moved the
+ * thread to another account of the same agent from the limit notice.
+ * `serverRestart`: the server restarted while the agent worked, and sent it at
+ * startup so the agent picks its turn back up (RESTART_CONTINUE_MESSAGE).
+ * Absent on every other message.
  */
-export const MessageTrigger = Schema.Literals(["usageLimitReset", "accountSwitch"]);
+export const MessageTrigger = Schema.Literals([
+  "usageLimitReset",
+  "accountSwitch",
+  "serverRestart",
+]);
 export type MessageTrigger = typeof MessageTrigger.Type;
 
 export const MessageDeviceKind = Schema.Literals(["computer", "phone", "tablet"]);
@@ -4071,6 +4077,30 @@ const ThreadContinueAtResetFireCommand = Schema.Struct({
 });
 
 /**
+ * Server-internal, at startup: the previous server process stopped while
+ * `turnId` ran (null: its turn had not started yet). One decision continues it
+ * (a turn with trigger `serverRestart`) where that is safe and wanted, or else
+ * notes in the thread that the restart stopped it. `participantId` is the room
+ * agent that was working (null: the thread's own), read before startup stops
+ * the session. `waitingOnUser`: an approval or a question was open when the
+ * server stopped, read before startup expires it. `continueAfterRestart` is the
+ * server setting of the same name; `messageId` names the continue message and
+ * `activityId` the note.
+ */
+const ThreadRestartContinueCommand = Schema.Struct({
+  type: Schema.Literal("thread.restart.continue"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  turnId: Schema.NullOr(TurnId),
+  participantId: Schema.NullOr(ThreadParticipantId),
+  waitingOnUser: Schema.Boolean,
+  continueAfterRestart: Schema.Boolean,
+  messageId: MessageId,
+  activityId: EventId,
+  createdAt: IsoDateTime,
+});
+
+/**
  * Server-internal: the user wrote before this "Continue where you left off."
  * message reached the agent, so it is not sent (OrchestrationMessage.notSent).
  */
@@ -5029,6 +5059,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadContinueAtResetFireCommand,
   ThreadContinueAtResetPostponeCommand,
   ThreadContinueAtResetSkipCommand,
+  ThreadRestartContinueCommand,
   ThreadRealtimeStateSetCommand,
   ThreadEffectiveCwdSetCommand,
   ThreadCheckBacksSetCommand,

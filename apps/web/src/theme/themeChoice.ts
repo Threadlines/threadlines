@@ -7,17 +7,26 @@
  * `light`, `dark`), so older builds and the pre-paint script read them as
  * before. Any other theme is a JSON object `{ "v": 1, "kind": ..., "base":
  * ... }` with the choice's fields; an older build reads that as an unknown
- * value and falls back to System.
+ * value and falls back to System. System with a theme for each mode (a
+ * pair) is `{ "v": 1, "kind": "builtin", "id": "system", "light": ...,
+ * "dark": ... }`, which an older build reads as plain System.
  */
 import type { EnvironmentId, ThemeBase } from "@threadlines/contracts";
 import type { ThemeTokens } from "@threadlines/shared/themeTokens";
 
-import type { ThemeChoice } from "./themeTypes";
+import type { ThemeChoice, ThemePairSide } from "./themeTypes";
 
 export const THEME_STORAGE_KEY = "threadlines:theme";
 export const LEGACY_THEME_STORAGE_KEYS = ["t3code:theme"] as const;
 /** The small record the pre-paint script in index.html paints before React loads. */
 export const THEME_PAINT_STORAGE_KEY = "threadlines:theme-paint";
+/** A pair's records, one per mode: the pre-paint script reads the one the computer is in. */
+export const THEME_PAIR_PAINT_STORAGE_KEYS = {
+  light: "threadlines:theme-paint:light",
+  dark: "threadlines:theme-paint:dark",
+} as const satisfies Record<ThemeBase, string>;
+/** The last pair this device used, so going back to System brings it back. */
+export const THEME_SYSTEM_PAIR_STORAGE_KEY = "threadlines:theme-system-pair";
 /** Content hashes this device has kept (switching back to one skips the trial). */
 export const THEME_KEPT_STORAGE_KEY = "threadlines:theme-kept";
 /** The most kept hashes remembered; the oldest drop first. */
@@ -41,6 +50,40 @@ const isText = (value: unknown, max = 200): value is string =>
 
 const HASH = /^[0-9a-f]{64}$/;
 
+type PairChoice = Extract<ThemeChoice, { kind: "pair" }>;
+
+/**
+ * System with these two sides: a pair, or plain System when both are the
+ * built-ins (which is what plain System shows).
+ */
+export function systemThemeChoice(light: ThemePairSide, dark: ThemePairSide): ThemeChoice {
+  return light.kind === "builtin" && dark.kind === "builtin"
+    ? { kind: "builtin", id: "system" }
+    : { kind: "pair", light, dark };
+}
+
+/** The side of a pair the computer's mode shows. */
+export function pairSideFor(choice: PairChoice, dark: boolean): ThemePairSide {
+  return dark ? choice.dark : choice.light;
+}
+
+/** A side as stored: a choice of a kind a side may be, whose built-in is its own mode. */
+function parsePairSide(value: unknown, mode: ThemeBase): ThemePairSide | null {
+  if (typeof value !== "object" || value === null) return null;
+  const parsed = parseChoiceRecord(value as Record<string, unknown>);
+  if (parsed === null) return null;
+  const { choice } = parsed;
+  switch (choice.kind) {
+    case "builtin":
+      return choice.id === mode ? { kind: "builtin", id: mode } : null;
+    case "starter":
+    case "library":
+      return choice;
+    default:
+      return null;
+  }
+}
+
 /** Reads a stored choice; null for anything unrecognised (the caller falls back to System). */
 export function parseStoredThemeChoice(raw: string | null | undefined): StoredThemeChoice | null {
   if (raw === null || raw === undefined) return null;
@@ -53,11 +96,26 @@ export function parseStoredThemeChoice(raw: string | null | undefined): StoredTh
     return null;
   }
   if (typeof value !== "object" || value === null) return null;
-  const record = value as Record<string, unknown>;
+  return parseChoiceRecord(value as Record<string, unknown>);
+}
+
+function parseChoiceRecord(record: Record<string, unknown>): StoredThemeChoice | null {
   const base = isBase(record.base) ? record.base : null;
   switch (record.kind) {
-    case "builtin":
-      return isBuiltinId(record.id) ? { choice: { kind: "builtin", id: record.id }, base } : null;
+    case "builtin": {
+      if (!isBuiltinId(record.id)) return null;
+      if (record.id === "system" && (record.light !== undefined || record.dark !== undefined)) {
+        // A pair whose side this build can't read shows as plain System.
+        const light = parsePairSide(record.light, "light");
+        const dark = parsePairSide(record.dark, "dark");
+        return {
+          choice:
+            light && dark ? systemThemeChoice(light, dark) : { kind: "builtin", id: "system" },
+          base: null,
+        };
+      }
+      return { choice: { kind: "builtin", id: record.id }, base };
+    }
     case "starter":
       return isText(record.id, 80) ? { choice: { kind: "starter", id: record.id }, base } : null;
     case "library": {
@@ -97,7 +155,26 @@ export function parseStoredThemeChoice(raw: string | null | undefined): StoredTh
 /** The stored form of a choice: bare words for the built-ins, JSON otherwise. */
 export function serializeThemeChoice(choice: ThemeChoice, base: ThemeBase | null): string {
   if (choice.kind === "builtin") return choice.id;
+  if (choice.kind === "pair") {
+    return JSON.stringify({
+      v: 1,
+      kind: "builtin",
+      id: "system",
+      light: choice.light,
+      dark: choice.dark,
+    });
+  }
   return JSON.stringify({ v: 1, ...choice, ...(base ? { base } : {}) });
+}
+
+/** The pair this device used last; null when none (or plain System is back). */
+export function readSystemPair(storage: Pick<Storage, "getItem"> | null): PairChoice | null {
+  try {
+    const parsed = parseStoredThemeChoice(storage?.getItem(THEME_SYSTEM_PAIR_STORAGE_KEY));
+    return parsed?.choice.kind === "pair" ? parsed.choice : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Reads the device's choice from storage, migrating the legacy key as today's build does. */
@@ -132,6 +209,8 @@ export function themeChoiceKey(choice: ThemeChoice): string {
       return `library:${choice.entryId}:${choice.hash}`;
     case "unsaved":
       return `unsaved:${choice.hash}`;
+    case "pair":
+      return `pair:${themeChoiceKey(choice.light)}|${themeChoiceKey(choice.dark)}`;
   }
 }
 

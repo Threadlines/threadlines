@@ -94,9 +94,8 @@ import {
   borrowCodexSignIn,
   codexSignInHome,
   prepareCodexSideAnswerHome,
-  removeCodexSideAnswerHome,
-  sweepStaleCodexSideAnswerHomes,
 } from "../codexSideAnswerHome.ts";
+import { removeSideRuntimeHome, sweepStaleSideRuntimeHomes } from "../sideRuntimeHome.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { initializeCodexAppServerClient, makeCodexAppServerClient } from "./CodexProvider.ts";
 import { holdLaunchGate, type LaunchGate } from "../managedRuntime/LaunchGate.ts";
@@ -3331,7 +3330,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
             ? yield* Effect.gen(function* () {
                 if (!sweptSideAnswerHomes) {
                   sweptSideAnswerHomes = true;
-                  yield* sweepStaleCodexSideAnswerHomes.pipe(Effect.forkDetach);
+                  yield* sweepStaleSideRuntimeHomes.pipe(Effect.forkDetach);
                 }
                 const environment = options?.environment ?? process.env;
                 const signInHome = codexSignInHome(codexConfig.homePath, environment);
@@ -3433,7 +3432,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
                 // A side answer that never started leaves no home behind.
                 Effect.andThen(
                   sideAnswer !== undefined
-                    ? removeCodexSideAnswerHome(sideAnswer.home.homePath)
+                    ? removeSideRuntimeHome(sideAnswer.home.homePath)
                     : Effect.void,
                 ),
               ),

@@ -124,6 +124,13 @@ import {
 import { carriedBackgroundTasks } from "./sessionBackgroundTasks.ts";
 import { questionsClosedByUserMessage, unansweredResponseRefusal } from "./userInput.ts";
 import {
+  isContinueTrigger,
+  RESTART_CONTINUE_MESSAGE,
+  restartContinueVerdict,
+  turnStartingMessage,
+  userAskedForTurn,
+} from "./continueTurns.ts";
+import {
   SETTINGS_CHANGE_CANCELLED,
   type SettingsChangeDecision,
   cancelWaitingSettingsChanges,
@@ -533,9 +540,10 @@ function isUserTurnStart(
 }
 
 /**
- * The "Continue where you left off." message still on its way to `agentId`:
- * the session's latest start, while its turn starts or has just begun. Null
- * when there is none, or the message is addressed to another agent.
+ * The continue message (a usage limit reset's or a restart's) still on its
+ * way to `agentId`: the session's latest start, while its turn starts or has
+ * just begun. Null when there is none, or the message is addressed to another
+ * agent.
  */
 function continueStillStarting(
   thread: OrchestrationThread,
@@ -550,7 +558,9 @@ function continueStillStarting(
     return null;
   }
   const started = turnStartingMessage(thread, session);
-  return started?.trigger === "usageLimitReset" && started.notSent !== true ? started.id : null;
+  return started !== undefined && isContinueTrigger(started.trigger) && started.notSent !== true
+    ? started.id
+    : null;
 }
 
 /** The wait for the failure `lastErrorAt` names, while the thread's agent is idle. */
@@ -571,28 +581,11 @@ function continueAtResetWaiting(
 }
 
 /**
- * The user message the session's latest turn started with: the newest one
- * addressed to the agent holding the slot. A request that agent sent another
- * agent meanwhile is addressed to that one.
- */
-function turnStartingMessage(
-  thread: OrchestrationThread,
-  session: OrchestrationSession,
-): OrchestrationMessage | undefined {
-  const slotHolder = sessionSlotParticipantId(session);
-  return thread.messages.findLast(
-    (message) =>
-      message.role === "user" &&
-      !isTurnAside(message) &&
-      (message.participantId ?? null) === slotHolder,
-  );
-}
-
-/**
  * Arms "Continue at reset" when a usage limit with a known reset first lands
  * on a failure: always when the stopped turn was itself a continue (the user
  * asked this thread to keep going), and with the setting on when the user
- * started it (typed it, or moved it to another account). A turn a scheduled
+ * asked for it (typed it, moved it to another account, or it is a turn a
+ * restart cut off that Threadlines continued). A turn a scheduled
  * run, another thread or a room agent started waits for the user: continuing
  * it would not finish the run or answer the request.
  */
@@ -624,7 +617,7 @@ function withArmedContinueAtReset(
   const startedBy = turnStartingMessage(thread, session);
   if (startedBy === undefined) return session;
   const continuing = startedBy.trigger === "usageLimitReset";
-  const fromUser = startedBy.composer !== undefined || startedBy.trigger === "accountSwitch";
+  const fromUser = !continuing && userAskedForTurn(startedBy);
   if (!continuing && !(settingOn && fromUser)) return session;
   return { ...session, continueAtReset: continueAtResetFor(resetsAt) };
 }
@@ -4370,7 +4363,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         threadId: command.threadId,
       });
       const message = thread.messages.find((entry) => entry.id === command.messageId);
-      if (message?.trigger !== "usageLimitReset" || message.notSent === true) {
+      if (
+        message === undefined ||
+        !isContinueTrigger(message.trigger) ||
+        message.notSent === true
+      ) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: "Only a waiting continue message is left unsent.",
@@ -4468,6 +4465,73 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         readModel,
       });
       return [cleared, ...continued];
+    }
+
+    // One decision reads the thread as the restart left it and either
+    // continues the turn or says it stopped, so the two never both happen.
+    case "thread.restart.continue": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const verdict = restartContinueVerdict(thread, {
+        turnStarted: command.turnId !== null,
+        participantId: command.participantId,
+        waitingOnUser: command.waitingOnUser,
+        settingOn: command.continueAfterRestart,
+        now: command.createdAt,
+      });
+      if (verdict.kind === "movedOn") {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "The thread moved on since the restart.",
+        });
+      }
+      if (verdict.kind === "note") {
+        return {
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          }),
+          type: "thread.activity-appended",
+          payload: {
+            threadId: command.threadId,
+            activity: {
+              id: command.activityId,
+              tone: "error",
+              kind: "provider.session.restart-interrupted",
+              summary: "Turn interrupted by a server restart",
+              payload: { detail: verdict.detail },
+              turnId: command.turnId,
+              createdAt: command.createdAt,
+            },
+          },
+        };
+      }
+      return yield* decideCommandSequence({
+        commands: [
+          {
+            type: "thread.turn.start",
+            commandId: command.commandId,
+            threadId: command.threadId,
+            message: {
+              messageId: command.messageId,
+              role: "user",
+              text: RESTART_CONTINUE_MESSAGE,
+              attachments: [],
+            },
+            ...(verdict.participantId !== null ? { participantId: verdict.participantId } : {}),
+            runtimeMode: thread.runtimeMode,
+            interactionMode: thread.interactionMode,
+            trigger: "serverRestart",
+            createdAt: command.createdAt,
+          },
+        ],
+        readModel,
+      });
     }
 
     case "thread.realtime.state.set": {

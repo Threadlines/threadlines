@@ -2731,6 +2731,7 @@ function MessageSentFromGlyph({ sentFrom }: { sentFrom: MessageSentFrom | undefi
 const MESSAGE_TRIGGER_LABELS: Record<MessageTrigger, string> = {
   usageLimitReset: "Sent at reset",
   accountSwitch: "Sent on switching accounts",
+  serverRestart: "Sent after a restart",
 };
 
 function MessageTriggerLabel({

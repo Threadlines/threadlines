@@ -19,7 +19,6 @@
 import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
-import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -27,8 +26,7 @@ import * as path from "node:path";
 import { ROOM_MCP_SERVER_NAME } from "../mcp/roomToolAccess.ts";
 import { expandHomePath } from "../pathExpansion.ts";
 import { CODEX_BROWSER_TOKEN_ENV_VAR, CODEX_ROOM_TOOL_TIMEOUT_SEC } from "./codexAppServerArgs.ts";
-
-const SIDE_HOME_PREFIX = "threadlines-side-";
+import { makeSideRuntimeHome, removeSideRuntimeHome } from "./sideRuntimeHome.ts";
 
 export type CodexBorrowedSignIn =
   | {
@@ -310,11 +308,9 @@ export const prepareCodexSideAnswerHome = (input: {
   readonly room?: CodexSideAnswerRoomServer;
 }) =>
   Effect.gen(function* () {
-    const homePath = yield* Effect.tryPromise({
-      try: () => fs.mkdtemp(path.join(os.tmpdir(), `${SIDE_HOME_PREFIX}${randomUUID()}-`)),
-      catch: (cause) =>
-        new CodexSideAnswerHomeError(`Could not make a Codex side-answer home: ${String(cause)}`),
-    });
+    const homePath = yield* makeSideRuntimeHome().pipe(
+      Effect.mapError((error) => new CodexSideAnswerHomeError(error.message)),
+    );
     yield* Effect.tryPromise({
       try: () =>
         fs.writeFile(
@@ -323,13 +319,13 @@ export const prepareCodexSideAnswerHome = (input: {
         ),
       catch: (cause) =>
         new CodexSideAnswerHomeError(`Could not write the side-answer config: ${String(cause)}`),
-    }).pipe(Effect.tapError(() => removeCodexSideAnswerHome(homePath)));
+    }).pipe(Effect.tapError(() => removeSideRuntimeHome(homePath)));
     if (input.sourceProviderThreadId === undefined) {
       return { homePath } satisfies CodexSideAnswerHome;
     }
     const sourceRollout = yield* findCodexRollout(input.signInHome, input.sourceProviderThreadId);
     if (sourceRollout === undefined) {
-      yield* removeCodexSideAnswerHome(homePath);
+      yield* removeSideRuntimeHome(homePath);
       return yield* Effect.fail(
         new CodexSideAnswerHomeError(
           `Codex conversation ${input.sourceProviderThreadId} was not found to answer from.`,
@@ -344,48 +340,6 @@ export const prepareCodexSideAnswerHome = (input: {
       },
       catch: (cause) =>
         new CodexSideAnswerHomeError(`Could not copy the conversation: ${String(cause)}`),
-    }).pipe(Effect.tapError(() => removeCodexSideAnswerHome(homePath)));
+    }).pipe(Effect.tapError(() => removeSideRuntimeHome(homePath)));
     return { homePath, rolloutPath } satisfies CodexSideAnswerHome;
   });
-
-/**
- * Delete a side-answer home. Refuses anything that is not one of ours in the
- * temp directory, so a misrouted path can never reach a real Codex home.
- */
-export const removeCodexSideAnswerHome = (homePath: string) =>
-  Effect.promise(async () => {
-    const tmp = await fs.realpath(os.tmpdir()).catch(() => os.tmpdir());
-    const resolved = await fs.realpath(homePath).catch(() => null);
-    if (
-      resolved === null ||
-      path.dirname(resolved) !== tmp ||
-      !path.basename(resolved).startsWith(SIDE_HOME_PREFIX)
-    ) {
-      return false;
-    }
-    await fs.rm(resolved, { recursive: true, force: true });
-    return true;
-  });
-
-/** Older than any side answer runs: its server crashed or was killed. */
-const STALE_SIDE_HOME_AGE_MS = 24 * 60 * 60_000;
-
-/**
- * Remove side-answer homes a crashed server left in the temp directory. Only
- * old ones: servers share the temp directory, and another server's side
- * answer may be running in a newer one.
- */
-export const sweepStaleCodexSideAnswerHomes = Effect.gen(function* () {
-  const now = yield* Clock.currentTimeMillis;
-  const entries = yield* Effect.promise(() =>
-    fs.readdir(os.tmpdir(), { withFileTypes: true }).catch(() => []),
-  );
-  for (const entry of entries) {
-    if (!entry.isDirectory() || !entry.name.startsWith(SIDE_HOME_PREFIX)) continue;
-    const homePath = path.join(os.tmpdir(), entry.name);
-    const stats = yield* Effect.promise(() => fs.stat(homePath).catch(() => null));
-    if (stats !== null && now - stats.birthtimeMs > STALE_SIDE_HOME_AGE_MS) {
-      yield* removeCodexSideAnswerHome(homePath);
-    }
-  }
-});

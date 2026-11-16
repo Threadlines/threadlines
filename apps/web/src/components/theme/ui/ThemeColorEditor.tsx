@@ -33,10 +33,12 @@ import {
   endThemeTrial,
   holdThemeTrial,
   readThemeState,
+  rememberSystemPair,
   startThemeTrial,
   subscribeTheme,
+  type ThemePairSide,
 } from "~/theme/themeStore";
-import { loadTileManifest, type ThemeTile } from "~/themeLibrary/themeCatalog";
+import { loadTileManifest, pairWithReplaced, type ThemeTile } from "~/themeLibrary/themeCatalog";
 import {
   renameLibraryTheme,
   replaceLibraryTheme,
@@ -577,16 +579,29 @@ export function ThemeColorEditor({ tile }: { readonly tile: ThemeTile }) {
         // Cancelled while it saved: it's in the library, and the theme stays as it was.
         if (!alive.current) return;
         alive.current = false;
-        chooseTheme(
-          {
-            kind: "library",
-            entryId: entry.entryId,
-            hash: entry.hash,
-            name: trimmed,
-            environmentId,
-          },
-          check.manifest,
-        );
+        const savedChoice: ThemePairSide = {
+          kind: "library",
+          entryId: entry.entryId,
+          hash: entry.hash,
+          name: trimmed,
+          environmentId,
+        };
+        // A theme System's pair shows stays in the pair as saved, on the side(s) it was on.
+        const { committed, systemPair } = readThemeState();
+        if (systemPair !== null) {
+          rememberSystemPair(pairWithReplaced(systemPair, tile.choice, savedChoice).pair);
+        }
+        const inPair =
+          committed.kind === "pair" ? pairWithReplaced(committed, tile.choice, savedChoice) : null;
+        if (inPair !== null && inPair.modes.length > 0) {
+          chooseTheme(
+            inPair.pair,
+            undefined,
+            Object.fromEntries(inPair.modes.map((mode) => [mode, check.manifest])),
+          );
+        } else {
+          chooseTheme(savedChoice, check.manifest);
+        }
         // Saved and in use: nothing to put back.
         trialId.current = null;
         close();
