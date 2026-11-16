@@ -63,6 +63,8 @@ async function harness(options?: { readonly model?: OrchestrationReadModel }) {
     beforeStart: null as null | (() => Promise<void>),
     /** Runs right before the queue's quiesce lands, as if the user acted first. */
     beforeQuiesce: null as null | (() => Effect.Effect<void, ThreadMoveError>),
+    /** Runs right before a Cancel lands, as if the start won the race. */
+    beforeUnqueue: null as null | (() => Effect.Effect<void, ThreadMoveError>),
   };
 
   const dispatch = (command: OrchestrationCommand): Effect.Effect<void, ThreadMoveError> =>
@@ -70,6 +72,11 @@ async function harness(options?: { readonly model?: OrchestrationReadModel }) {
       if (command.type === "thread.move.quiesce" && state.beforeQuiesce !== null) {
         const first = state.beforeQuiesce;
         state.beforeQuiesce = null;
+        yield* first();
+      }
+      if (command.type === "thread.move.unqueue" && state.beforeUnqueue !== null) {
+        const first = state.beforeUnqueue;
+        state.beforeUnqueue = null;
         yield* first();
       }
       const decided = yield* decideOrchestrationCommand({ command, readModel: model }).pipe(
@@ -426,6 +433,30 @@ describe("MoveQueue", () => {
     expect(h.state.quiesceCalls).toBe(0);
     expect(h.thread().session?.status).toBe("running");
     expect(h.thread().move ?? null).toBeNull();
+    await h.close();
+  });
+
+  it("a Cancel the start beats between its read and its landing cancels the transfer", async () => {
+    const h = await harness();
+    // Offline: the move is quiesced and held, ready to start.
+    h.state.online = false;
+    await h.startReactor();
+    const { requestId } = await h.queueMove();
+    await waitFor(() => h.thread().pendingMove?.hold?.kind === "target_unreachable", "the hold");
+    h.state.beforeUnqueue = () =>
+      h.dispatchEffect({
+        type: "thread.move.start",
+        commandId: nextCommandId(),
+        threadId: THREAD,
+        transferId: ThreadMoveId.make("transfer-raced"),
+        target: { environmentId: MAC_MINI, label: "Mac mini" },
+        agent,
+        queuedRequestId: requestId,
+        createdAt: now,
+      });
+    await h.run(h.queue.unqueue({ threadId: THREAD, requestId }));
+    expect(h.state.cancels).toBe(1);
+    expect(h.thread().move).toMatchObject({ transferId: "transfer-raced", cancelRequested: true });
     await h.close();
   });
 

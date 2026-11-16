@@ -449,8 +449,9 @@ export const makeMoveQueue = (
         const read = deps.readThread(input.threadId);
         const thread = yield* read;
         if (thread === null) return;
+        let refused: string | null = null;
         if (thread.pendingMove?.requestId === input.requestId) {
-          yield* deps
+          refused = yield* deps
             .dispatch({
               type: "thread.move.unqueue",
               commandId: commandId(input.requestId, "unqueue"),
@@ -458,12 +459,22 @@ export const makeMoveQueue = (
               requestId: input.requestId,
               createdAt: yield* nowIso,
             })
-            .pipe(Effect.mapError((error) => moveError(error.message)));
+            .pipe(
+              Effect.as(null),
+              Effect.catch((error) => Effect.succeed(error.message)),
+            );
         }
-        // Read after the cancel: a start the decider took first is now the
-        // thread's move, and the Cancel cancels its transfer instead.
-        const move = (yield* read)?.move ?? null;
-        if (move === null || move.queuedRequestId !== input.requestId) return;
+        // Read after the cancel: a start the decider took first (the frozen
+        // thread refuses the unqueue then) is now the thread's move, and the
+        // Cancel cancels its transfer instead.
+        const after = yield* read;
+        const move = after?.move ?? null;
+        if (move === null || move.queuedRequestId !== input.requestId) {
+          if (refused !== null && after?.pendingMove?.requestId === input.requestId) {
+            return yield* moveError(refused);
+          }
+          return;
+        }
         if (move.movedAway !== undefined) {
           return yield* moveError(`This thread already moved to ${move.target.label}.`);
         }
