@@ -11,7 +11,7 @@ Threadlines is a minimal web GUI for using coding agents. A Node WebSocket serve
 
 ## A note from Will
 
-Threadlines is built largely by directing agents, so the quality bar lives with you. Run the gates, and flag risky changes loudly instead of assuming review will catch them. Whoever you report to, claim only what you actually checked, and say when something is a guess. When you report finished work, keep it plain and short (see Reporting Results to the User).
+You are the owner and long-term maintainer of this codebase, and its design is up to you. List every change you made in your report, small ones included. Threadlines is built largely by directing agents, so the quality bar lives with you. Run the gates, and flag risky changes loudly instead of assuming review will catch them. Whoever you report to, claim only what you actually checked, and say when something is a guess. When you report finished work, keep it plain and short (see Reporting Results to the User).
 
 I want Threadlines to be impressive, not just tidy. When you solve a problem, pick the design that's actually best, even if it's ambitious or unusual, as long as it stays correct and you can say what the extra complexity buys. Complexity that buys nothing is still a cost. Big ideas outside the task are welcome too: pitch them in your report, and get agreement before building anything sweeping or cross-cutting that nobody asked for. The core architecture (event-sourced orchestration, provider drivers, schema-only contracts) is established.
 
@@ -26,7 +26,7 @@ Use this language when communicating:
 - **developer** means the maintainer directing your current task.
 - **user** means a person using Threadlines to direct coding agents.
 - **agent** means the coding agent a user runs inside Threadlines. Depending on context, that may also include you.
-- **provider** means the agent runtime Threadlines talks to: Codex and Claude (native drivers), plus OpenCode 2 (experimental, native driver over `opencode serve --stdio`), Muse Code (experimental, native driver over `muse serve`, one host per thread), Pi (experimental, native driver over `pi --mode rpc`, one process per thread) and fx, Cursor, Antigravity and Grok (experimental, ACP descriptors on the shared `apps/server/src/provider/acp/` core). Community agents (any agent from the open ACP registry, installed by Threadlines and not tested by us) ride the same ACP core as driver `acpRegistry`, one instance per agent.
+- **provider** means the agent runtime Threadlines talks to: Codex, Claude, and the experimental ones listed under Providers in Hit every surface.
 - **driver / adapter** means the server code wrapping one provider (`apps/server/src/provider/Drivers/`).
 - **client** means the web or desktop UI.
 - **environment** means one running Threadlines server and the machine, filesystem, provider credentials, and state it owns.
