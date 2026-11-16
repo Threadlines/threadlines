@@ -93,7 +93,7 @@ import { isHostInjectedConsoleEntry } from "./previewConsoleNoise.ts";
 import {
   browserIdentity,
   CHILD_TARGET_AUTO_ATTACH,
-  identityOverride,
+  followSiteIdentity,
   presentIdentityToChild,
 } from "./previewIdentity.ts";
 import {
@@ -1792,6 +1792,10 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
           new PreviewCommandError({ webContentsId, method: "debugger.attach", cause }),
       });
     }
+    // First, ahead of everything that only the agent needs, and before this
+    // waits on anything: the page's first request must already carry the name
+    // its site gets (`previewIdentity.ts`).
+    const siteIdentity = followSiteIdentity(contents, identity);
 
     const pushConsole = (entry: DesktopPreviewConsoleEntry) => {
       if (isHostInjectedConsoleEntry(entry)) {
@@ -1866,7 +1870,7 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
         // worker, with a CDP session of its own. Each names the browser for
         // itself, and reports the frames and workers inside it in turn.
         // Nothing else is enabled in them.
-        presentIdentityToChild(contents.debugger, identity, childSession);
+        presentIdentityToChild(contents.debugger, siteIdentity.current(), childSession);
         if (info?.type === "iframe" && typeof info.targetId === "string") {
           // Agent input goes straight into a frame's session (`routePoint`).
           // An iframe target's id is its frame's id, as DOM.describeNode names it.
@@ -1964,6 +1968,7 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
     contents.once("destroyed", onDestroyed);
     contents.debugger.on("detach", onDetach);
     tab.dispose = () => {
+      siteIdentity.stop();
       contents.debugger.off("message", onMessage);
       contents.debugger.off("detach", onDetach);
       contents.off("destroyed", onDestroyed);
@@ -1973,15 +1978,9 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
     };
     attached.set(webContentsId, tab);
 
-    // First, ahead of everything that only the agent needs: a page that loads
-    // before this lands tells its site it is a different browser from the one
-    // its requests named (`previewIdentity.ts`). Both best effort. Without
-    // the second, frames in other processes and workers are not told
-    // separately, and input meant for such a frame lands as it did before,
-    // on the frame's element.
-    yield* sendCommand(contents, "Emulation.setUserAgentOverride", identityOverride(identity)).pipe(
-      Effect.ignore,
-    );
+    // Best effort. Without it, frames in other processes and workers are not
+    // told the browser's name separately, and input meant for such a frame
+    // lands as it did before, on the frame's element.
     yield* sendCommand(contents, "Target.setAutoAttach", CHILD_TARGET_AUTO_ATTACH).pipe(
       Effect.ignore,
     );
