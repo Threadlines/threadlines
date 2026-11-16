@@ -848,8 +848,9 @@ describe("providerMaintenance", () => {
         },
       }).pipe(Effect.provide(NodeServices.layer));
 
-      // The link resolves through the temp folder's real path.
-      const npmPrefix = realpathSync(tempDir);
+      // The link resolves through the temp folder's real path. The native
+      // resolver also expands Windows short (8.3) folder names, as the code does.
+      const npmPrefix = realpathSync.native(tempDir);
       const npmUpdate = {
         command: "npm install -g @example/package-tool@latest",
         executable: "npm",

@@ -16,6 +16,7 @@ import { ProjectionThreadMessageRepositoryLive } from "../persistence/Layers/Pro
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import { ProjectionThreadActivityRepository } from "../persistence/Services/ProjectionThreadActivities.ts";
 import { ProjectionThreadMessageRepository } from "../persistence/Services/ProjectionThreadMessages.ts";
+import { canMakeSymlinks } from "../testUtils/symlinks.ts";
 import { VcsDriverRegistry, type VcsDriverHandle } from "../vcs/VcsDriverRegistry.ts";
 import { WorkspaceEntries } from "../workspace/Services/WorkspaceEntries.ts";
 import { WorkspaceFileSystem } from "../workspace/Services/WorkspaceFileSystem.ts";
@@ -37,10 +38,15 @@ const outsideFolder = NodeFs.realpathSync(
   NodeFs.mkdtempSync(NodePath.join(NodeOs.tmpdir(), "project-media-outside-")),
 );
 NodeFs.writeFileSync(NodePath.join(outsideFolder, "private.png"), "secret");
-NodeFs.symlinkSync(
-  NodePath.join(outsideFolder, "private.png"),
-  NodePath.join(projectFolder, "link.png"),
-);
+// Windows makes symlinks only with Developer Mode. Without the link, the
+// `app/link.png` cases below check a missing file instead, and the rest of
+// the file still runs.
+if (canMakeSymlinks) {
+  NodeFs.symlinkSync(
+    NodePath.join(outsideFolder, "private.png"),
+    NodePath.join(projectFolder, "link.png"),
+  );
+}
 
 // Files the stub workspace index holds, project-relative.
 const workspaceIndex = ["docs/cited.png", "docs/other.txt"];
@@ -477,7 +483,7 @@ layer("ProjectMedia", (it) => {
             name: "cited.png",
             origin: "reply",
             kind: "picture",
-            source: "file:app/docs/cited.png",
+            source: `file:${NodePath.join("app", "docs", "cited.png")}`,
             message: "reply",
           },
           {

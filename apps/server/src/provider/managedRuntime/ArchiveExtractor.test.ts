@@ -7,6 +7,7 @@ import * as zlib from "node:zlib";
 import { create as createTar } from "tar";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
+import { canMakeSymlinks } from "../../testUtils/symlinks.ts";
 import { makeTar, makeZip, type TarEntry, type ZipEntry } from "../testUtils/archiveFixtures.ts";
 import {
   type ArchiveEntryHeader,
@@ -338,7 +339,9 @@ describe("extractArchive", () => {
     expect(await modeOf(path.join(privileged.outDir, "privileged"))).toBe(0o755);
   });
 
-  it("unpacks a zip with its Unix modes and links", async () => {
+  // The extractor makes the archive's link with symlink(), which Windows
+  // allows only with Developer Mode.
+  it.skipIf(!canMakeSymlinks)("unpacks a zip with its Unix modes and links", async () => {
     const { outDir, result } = await unpack(
       makeZip([
         { name: "app/", mode: 0o040755 },
