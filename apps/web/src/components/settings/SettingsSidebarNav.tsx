@@ -15,9 +15,9 @@ import {
   HOSTED_STATIC_SETTINGS_NAV_ITEMS,
   SETTINGS_NAV_ITEMS,
   type SettingsNavItem,
-  type SettingsSectionPath,
   startsSettingsNavGroup,
 } from "./settingsNavigation";
+import { type SettingsSectionPath } from "./settingsPaths";
 import {
   SettingsPlaceSignalsProvider,
   SettingsSurfaceContext,

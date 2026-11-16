@@ -6,7 +6,8 @@ import { type ComponentPropsWithoutRef, createContext, type ReactNode, useContex
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { type SettingsSectionPath, settingsNavItemForPath } from "./settingsNavigation";
+import { settingsNavItemForPath } from "./settingsNavigation";
+import { type SettingsSectionPath } from "./settingsPaths";
 import { glassPage } from "../../theme/glassPage";
 
 /**

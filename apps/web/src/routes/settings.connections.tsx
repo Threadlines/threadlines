@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 
 import { ConnectionsSettings } from "../components/settings/ConnectionsSettings";
-import { parseConnectionsSettingsSearch } from "../components/settings/settingsNavigation";
+import { parseConnectionsSettingsSearch } from "../components/settings/settingsPaths";
 
 function SettingsConnectionsRoute() {
   const { authGateState } = Route.useRouteContext();

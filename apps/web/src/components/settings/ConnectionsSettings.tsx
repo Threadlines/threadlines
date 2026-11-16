@@ -43,7 +43,7 @@ import { ConnectionStatusDot, formatAccessTimestamp } from "./connections/Connec
 import { openConnectComputerDialog } from "./connections/JoinComputerDialog";
 import { useRelayAccess } from "./connections/useRelayAccess";
 import { resolveDesktopPairingUrl, resolveHostedPairingUrl } from "./pairingUrls";
-import type { ConnectionsSettingsSearch } from "./settingsNavigation";
+import type { ConnectionsSettingsSearch } from "./settingsPaths";
 import {
   SETTINGS_GROUP_ROW_CLASS,
   SettingsPageContainer,

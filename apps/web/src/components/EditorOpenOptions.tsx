@@ -13,17 +13,8 @@ import { useMemo } from "react";
 
 import { isMacPlatform, isWindowsPlatform } from "~/lib/utils";
 import { readPrimaryEnvironmentDescriptor } from "~/environments/primary/context";
-import {
-  AntigravityIcon,
-  CursorIcon,
-  Icon,
-  KiroIcon,
-  TraeIcon,
-  VisualStudioCode,
-  VisualStudioCodeInsiders,
-  VSCodium,
-  Zed,
-} from "./Icons";
+import { AntigravityIcon, CursorIcon, Icon, KiroIcon, TraeIcon, Zed } from "./Icons";
+import { VisualStudioCode, VisualStudioCodeInsiders, VSCodium } from "./ToolIcons";
 import {
   AquaIcon,
   CLionIcon,
