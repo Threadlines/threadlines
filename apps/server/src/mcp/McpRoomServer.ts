@@ -45,6 +45,8 @@ import { ComputerLinkRepository } from "../links/ComputerLinkRepository.ts";
 import { makeThreadToolLinks } from "../links/threadToolLinks.ts";
 import { RepositoryIdentityResolver } from "../project/Services/RepositoryIdentityResolver.ts";
 import { ScheduledTasks } from "../scheduled/ScheduledTasks.ts";
+import { MoveQueue } from "../moves/MoveQueue.ts";
+import { ThreadMoves } from "../moves/ThreadMoves.ts";
 import {
   listOnlyGrantedTools,
   MCP_ROOM_ROUTE_PATH,
@@ -106,6 +108,8 @@ const ROOM_TOOL_REACH = {
   thread_read: "project",
   thread_send: "changes",
   thread_stop: "changes",
+  // Moves only the caller's own thread, but off this computer.
+  thread_move: "changes",
   schedule_list: "project",
   schedule_create: "changes",
   schedule_update: "changes",
@@ -241,6 +245,9 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
     });
     // Scheduled tasks, when this server has them (docs/design/fleet.md, Part 6).
     const scheduledTasks = yield* Effect.serviceOption(ScheduledTasks);
+    // Moving a thread to a linked computer, when this server has links (Part 3b).
+    const threadMoves = yield* Effect.serviceOption(ThreadMoves);
+    const moveQueue = yield* Effect.serviceOption(MoveQueue);
     // The user's default for new threads: the last reasoning an agent-made thread follows.
     const userDefaultModel = settings.getSettings.pipe(
       Effect.map((current) => current.newThreadModelSelection),
@@ -277,6 +284,9 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
       ...(links !== undefined ? { links } : {}),
       ...(Option.isSome(scheduledTasks)
         ? { scheduleAnswerWaiting: scheduledTasks.value.waitingThreadIds }
+        : {}),
+      ...(Option.isSome(threadMoves) && Option.isSome(moveQueue)
+        ? { moves: { preview: threadMoves.value.preview, queue: moveQueue.value.queue } }
         : {}),
     });
     const scheduleHandlers = makeScheduleToolHandlers({
@@ -483,6 +493,8 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
         changes("thread_send", (scope) => threadHandlers.thread_send(scope, input)),
       thread_stop: (input) =>
         changes("thread_stop", (scope) => threadHandlers.thread_stop(scope, input)),
+      thread_move: (input) =>
+        changes("thread_move", (scope) => threadHandlers.thread_move(scope, input)),
       schedule_list: (input) =>
         projectRead(
           "schedule_list",
