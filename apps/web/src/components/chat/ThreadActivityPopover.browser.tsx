@@ -149,6 +149,17 @@ describe("ThreadActivityPopover", () => {
         expect(Math.round(window.innerWidth - box.right)).toBe(12);
       });
 
+      // A strip down the screen's right side (an iPhone Duo's status dock):
+      // the panel stops the same distance short of it, Stop out from under it.
+      const strip = 85;
+      document.documentElement.style.setProperty("--safe-area-right", `${strip}px`);
+      await vi.waitFor(() => {
+        const box = popupBox();
+        expect(Math.round(box.left)).toBe(12);
+        expect(Math.round(window.innerWidth - strip - box.right)).toBe(12);
+      });
+      document.documentElement.style.removeProperty("--safe-area-right");
+
       await page.viewport(1200, 800);
       // Wider, it hangs from its button, and the open panel moves with it.
       await vi.waitFor(() => {
@@ -159,6 +170,7 @@ describe("ThreadActivityPopover", () => {
         expect(box.width).toBeLessThanOrEqual(480);
       });
     } finally {
+      document.documentElement.style.removeProperty("--safe-area-right");
       await mounted.unmount();
       await page.viewport(1_600, 1_300);
     }
