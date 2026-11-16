@@ -9,7 +9,8 @@ import { useState } from "react";
 import { cn } from "~/lib/utils";
 import type { ThemeTile } from "~/themeLibrary/themeCatalog";
 
-function Swatch({ swatch }: { readonly swatch: ThemeTile["swatch"] }) {
+/** A small drawing of the app in a theme's colors, for a theme with no picture. */
+export function ThemeSwatch({ swatch }: { readonly swatch: ThemeTile["swatch"] }) {
   if (swatch.base === "system") {
     return (
       <div className="relative size-full">
@@ -97,7 +98,7 @@ export function ThemeTileView({
             onError={() => setPictureFailed(true)}
           />
         ) : (
-          <Swatch swatch={tile.swatch} />
+          <ThemeSwatch swatch={tile.swatch} />
         )}
       </div>
       <div className="min-w-0 px-0.5">

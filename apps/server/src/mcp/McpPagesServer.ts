@@ -10,7 +10,8 @@
  *
  * The same bearer credentials as `/mcp` (McpSessionRegistry); a credential
  * reaches this endpoint only if it carries the `pages` grant. The theme
- * tools (`preview_theme`, `show_theme`, docs/design/custom-themes.md) live
+ * tools (`preview_theme`, `show_theme`, `find_vscode_theme`,
+ * docs/design/custom-themes.md) live
  * here too, under the same grant. Every tool is registered by hand: the
  * previews answer with MCP image blocks, which a toolkit cannot produce, and
  * the show tools keep the same shape beside them.
@@ -39,6 +40,8 @@ import {
   ShowPageTool,
 } from "./pageTools.ts";
 import {
+  FindVsCodeThemeParameters,
+  FindVsCodeThemeTool,
   PreviewThemeParameters,
   PreviewThemeTool,
   ShowThemeParameters,
@@ -79,7 +82,8 @@ const describe = (
     | typeof ShowPageTool
     | typeof PreviewPageTool
     | typeof ShowThemeTool
-    | typeof PreviewThemeTool,
+    | typeof PreviewThemeTool
+    | typeof FindVsCodeThemeTool,
 ) =>
   new McpSchema.Tool({
     name: tool.name,
@@ -225,6 +229,37 @@ const registerPageTools = Effect.fn("McpPagesServer.registerPageTools")(function
                   ],
                 })
               : textResult(outcome.detail, true, { ...outcome }),
+          ),
+          Effect.catch((error) => Effect.succeed(invalidInput(error))),
+        ),
+      ),
+  });
+
+  const decodeFindVsCode = Schema.decodeUnknownEffect(FindVsCodeThemeParameters);
+  yield* server.addTool({
+    tool: describe(FindVsCodeThemeTool),
+    annotations: FindVsCodeThemeTool.annotations,
+    handle: (payload) =>
+      Effect.withFiber((fiber) =>
+        decodeFindVsCode(payload).pipe(
+          Effect.flatMap((input) => pages.findVsCodeTheme(callerOf(fiber), input)),
+          Effect.map((outcome) =>
+            outcome.outcome === "found"
+              ? textResult(
+                  [
+                    "Ready to offer with show_theme({ path }); each passes the readability checks.",
+                    ...outcome.extensions.flatMap((extension) => [
+                      `${extension.name} (${extension.extension}, ${extension.license}):`,
+                      ...extension.themes.map(
+                        (theme) =>
+                          `- ${theme.label} (${theme.base}${theme.adjusted > 0 ? `, ${theme.adjusted} colors adjusted to stay readable` : ""}): ${theme.path}`,
+                      ),
+                    ]),
+                  ].join("\n"),
+                  false,
+                  { ...outcome },
+                )
+              : textResult(outcome.detail, outcome.outcome !== "none", { ...outcome }),
           ),
           Effect.catch((error) => Effect.succeed(invalidInput(error))),
         ),

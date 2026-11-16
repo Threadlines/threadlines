@@ -96,6 +96,13 @@ import {
   ThemeShowcaseTheme,
 } from "./themeShowcase.ts";
 import {
+  ThemeVsCodeError,
+  ThemeVsCodePackage,
+  ThemeVsCodeReadInput,
+  ThemeVsCodeSearchInput,
+  ThemeVsCodeSearchResult,
+} from "./themeVsCode.ts";
+import {
   SettingsChangeAnswer,
   SettingsChangeError,
   SettingsChangeReportDeviceInput,
@@ -775,6 +782,8 @@ export const WS_METHODS = {
   themeShowcaseSubmit: "themeShowcase.submit",
   themeShowcaseSubmissions: "themeShowcase.submissions",
   themeShowcaseTakeBack: "themeShowcase.takeBack",
+  themeVsCodeSearch: "themeVsCode.search",
+  themeVsCodeRead: "themeVsCode.read",
   // Moving a thread to a linked computer (docs/design/fleet.md, Part 3).
   movesPreview: "moves.preview",
   movesStart: "moves.start",
@@ -2697,7 +2706,22 @@ export const WsThemeShowcaseRpcGroup = RpcGroup.make(
   WsThemeShowcaseTakeBackRpc,
 );
 
-/** Everything else the WebSocket serves; with the outside agents', themes' and Showcase's groups, WsRpcGroup. */
+export const WsThemeVsCodeSearchRpc = Rpc.make(WS_METHODS.themeVsCodeSearch, {
+  payload: ThemeVsCodeSearchInput,
+  success: ThemeVsCodeSearchResult,
+  error: ThemeVsCodeError,
+});
+
+export const WsThemeVsCodeReadRpc = Rpc.make(WS_METHODS.themeVsCodeRead, {
+  payload: ThemeVsCodeReadInput,
+  success: ThemeVsCodePackage,
+  error: ThemeVsCodeError,
+});
+
+/** VS Code themes from the Open VSX store, a group of their own like the Showcase's. */
+export const WsThemeVsCodeRpcGroup = RpcGroup.make(WsThemeVsCodeSearchRpc, WsThemeVsCodeReadRpc);
+
+/** Everything else the WebSocket serves; with the outside agents', themes', Showcase's and VS Code themes' groups, WsRpcGroup. */
 export const WsCoreRpcGroup = RpcGroup.make(
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,
@@ -2933,4 +2957,5 @@ export const WsRpcGroup = WsCoreRpcGroup.merge(
   WsOutsideAgentsRpcGroup,
   WsThemesRpcGroup,
   WsThemeShowcaseRpcGroup,
+  WsThemeVsCodeRpcGroup,
 );

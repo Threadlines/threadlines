@@ -734,4 +734,26 @@ it.layer(TestLayer)("ThemeShowcase", (it) => {
       assert.match(refused.detail, /can't be shared yet/);
     }),
   );
+
+  it.effect("won't share a theme brought in from VS Code, whatever license is picked", () =>
+    Effect.gen(function* () {
+      const showcase = yield* ThemeShowcase;
+      const library = yield* ThemeLibrary;
+      const saved = yield* library.save({
+        manifest: {
+          ...harbor,
+          name: "Night",
+          // Its own content: the library stores content once, with the first copy's origin.
+          colors: { ...harbor.colors, accent: "#7aa2f7" },
+          credits: { author: "Someone", license: "MIT", vscode: "someone.night" },
+        },
+      });
+      const ready = yield* showcase.prepare({
+        entryId: saved.entryId,
+        credits: { author: "Me", license: "CC0-1.0" },
+        includePrompt: false,
+      });
+      assert.isTrue(ready.problems.some((problem) => problem.includes("VS Code")));
+    }),
+  );
 });

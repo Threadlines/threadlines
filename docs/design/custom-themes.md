@@ -930,6 +930,58 @@ share dialog adds a line saying the email shows.
 
 **Takedown.** An issue form in the repository; maintainers remove the folder.
 
+## VS Code themes
+
+Nov 15: thousands of color themes already exist for VS Code. The VS Code tab
+on Appearance (beside Your themes and Showcase) brings them in.
+
+- **Where they come from.** The Open VSX store, searched by the server
+  (`themes/ThemeVsCode.ts`, RPCs `themeVsCode.search` and `themeVsCode.read`,
+  capability `themeVsCode`). Only open-vsx.org and the host it sends
+  downloads to, over https on the public internet, every response capped. A
+  search lists only extensions whose package.json declares JSON color themes
+  and an open license (`VSCODE_THEME_LICENSES`: MIT, Apache-2.0, BSD, ISC,
+  MPL-2.0, CC0, CC BY, Unlicense, 0BSD). Reading one downloads its package
+  (12 MB at most), checks it against the SHA-256 the store gives, reads its
+  package.json again (the license inside decides), and reads only its theme
+  files out of the zip in memory, each at most 1 MB, following `include`
+  chains inside the extension. Nothing is written to disk. Searches and
+  packages are kept in memory a while.
+- **Converting** (`packages/shared` `themeVsCode`). The editor background,
+  its text, a quieter text (the first the theme sets that is quieter than its
+  text), the accent (the first of its brand colors with some color in it), the
+  text on the accent, status colors, the selection, the side bar (an
+  override), syntax colors from the token rules (the longest matching plain
+  selector, later rules winning) and the 16 terminal colors. No fonts or art.
+  The kind (light or dark) follows the background. Then every color that
+  fails the readability check moves, hue kept, until it passes; a seed the
+  app derives safely (a status color, the side bar, the selection) is dropped
+  instead. The background never moves. The count of moved colors is shown.
+- **Credits.** The author's name (never the address in package.json's
+  author field), the extension's homepage or repository, and the license when
+  ours can carry it (MIT, CC0, CC BY). `credits.vscode` marks it as brought
+  in (the extension, or "file"); it's part of the content, so every copy
+  keeps it, older builds' exports included, and the Showcase turns such a
+  theme away: it isn't the sharer's work. `createdBy.vscode` adds the
+  version, the theme's label and the SPDX license.
+- **The tab.** Search with a sort (Most downloaded, Best rated, Best match),
+  tiles drawn from each extension's first theme, Show more. A page the store
+  didn't fully answer says a few may be missing, with Try again; neither the
+  server nor the app keeps such a page, and a search is asked again after ten
+  minutes. A tile opens its
+  themes with checkboxes: one picked is Try (the usual trial and Keep),
+  several is Add N themes (straight to the library). The tab's code loads only
+  when it's picked.
+- **Files.** Import takes a VS Code theme `.json` too. One that builds on
+  another file (`include`) needs its extension, so the dialog points to the
+  tab. A dropped `.json` stays with whatever takes it (the composer), since a
+  drop can't be read before it's claimed.
+- **Agents.** `find_vscode_theme({ query })` searches, reads the best three
+  extensions, and writes each theme as a new `.threadlines-theme` file (a
+  fresh name, never over an existing file) in the thread's page assets folder
+  for `show_theme({ path })`. Claude runs it
+  without asking, like the other page tools.
+
 ## Rule changes (approved by Will, Nov 5)
 
 - AGENTS.md: "No continuously repainting animations". Live backdrops are a

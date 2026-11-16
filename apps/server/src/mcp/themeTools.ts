@@ -16,6 +16,7 @@ import {
 
 export const THEME_PREVIEW_TOOL_NAME = "preview_theme";
 export const THEME_SHOW_TOOL_NAME = "show_theme";
+export const THEME_FIND_VSCODE_TOOL_NAME = "find_vscode_theme";
 
 const Theme = Schema.Record(Schema.String, Schema.Unknown).annotate({
   description: "The theme: one JSON object in the format this tool's description gives.",
@@ -84,3 +85,27 @@ export const ShowThemeTool = Tool.make(THEME_SHOW_TOOL_NAME, {
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, false)
   .annotate(Tool.OpenWorld, false);
+
+export const FindVsCodeThemeParameters = Schema.Struct({
+  query: Schema.String.annotate({
+    description:
+      'The theme\'s name or words about it, as on the VS Code marketplace ("Dracula", "tokyo night").',
+  }),
+});
+
+// Read-only in the MCP sense: it writes theme files into this thread's own
+// page assets folder, and nothing changes until the user tries one.
+export const FindVsCodeThemeTool = Tool.make(THEME_FIND_VSCODE_TOOL_NAME, {
+  description: [
+    "Find a VS Code color theme on the Open VSX store, for when the user asks for a theme that exists for VS Code (Dracula, Catppuccin, Tokyo Night...). Only openly licensed extensions are searched.",
+    "Each theme in the best matches comes back as a .threadlines-theme file in this thread's page assets folder, already passing the readability checks, with its author credited. Offer one with show_theme and its path; no preview is needed unless you change it.",
+    "They carry colors only, no fonts or art.",
+  ].join(" "),
+  parameters: FindVsCodeThemeParameters,
+  success: Schema.Struct({}),
+})
+  .annotate(Tool.Title, "Find a VS Code theme")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, true);

@@ -623,6 +623,7 @@ describe("MCP endpoints", () => {
     const tools = "tools" in listed ? listed.tools : [];
     expect(tools).toContain("show_theme");
     expect(tools).toContain("preview_theme");
+    expect(tools).toContain("find_vscode_theme");
     // A tool Claude must ask about would stop every page and theme mid-turn.
     expect(tools.map((name) => `mcp__threadlines_pages__${name}`).toSorted()).toEqual(
       [...CLAUDE_PAGE_TOOL_IDS].toSorted(),
