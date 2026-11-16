@@ -29,7 +29,7 @@ function unreadable(
     if (!value) return [];
     const ratio = codeRatioForScopes(scopesOf(rule.scope));
     return surfaces.some(
-      (surface) => contrastRatio(composite(color(value), surface), surface) < ratio - 0.01,
+      (surface) => contrastRatio(composite(color(value), surface), surface) < ratio,
     )
       ? [`${String(rule.scope)} ${value}`]
       : [];
@@ -48,6 +48,22 @@ describe("code colors", () => {
     }
     const surfaces = codeSurfaces(BUILTIN_THEME_TOKENS.light);
     expect(fitCodeColor("#0a0a0a", surfaces, CODE_TEXT_RATIO)).toBe("#0a0a0a");
+  });
+
+  it("judges a fit by the hex it's written as, so rounding never lands it under", () => {
+    // Each of these rounded just under its ratio when the float fit was checked instead.
+    const surfaces = codeSurfaces(BUILTIN_THEME_TOKENS.light);
+    for (const [value, ratio] of [
+      ["#03c87b", 4.5],
+      ["#39e5c3", 3],
+      ["#df35fc", 4.5],
+      ["#d7d0b6", 4.5],
+    ] as const) {
+      const fitted = color(fitCodeColor(value, surfaces, ratio));
+      for (const surface of surfaces) {
+        expect(contrastRatio(composite(fitted, surface), surface)).toBeGreaterThanOrEqual(ratio);
+      }
+    }
   });
 
   it("never leaves a color reading worse than it did, where no color reads everywhere", () => {

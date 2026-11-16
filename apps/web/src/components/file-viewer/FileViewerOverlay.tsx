@@ -74,10 +74,10 @@ import { DIFF_PANEL_UNSAFE_CSS } from "../DiffPanel.styles";
  * ship with no hovered rule, so we supply one: DIFF_TINT.rowHover, which
  * code colors are fitted against (shared themes/codeColors.ts).
  */
-const FILE_VIEWER_UNSAFE_CSS = `${DIFF_PANEL_UNSAFE_CSS}
+export const FILE_VIEWER_UNSAFE_CSS = `${DIFF_PANEL_UNSAFE_CSS}
 @media (pointer: fine) {
-  /* Selected lines are excluded: pierre's own selected+hovered rule deepens
-     the selection tint instead, so hovering never erases the blue. */
+  /* Selected lines are excluded: their own hovered tint below deepens
+     the selection instead, so hovering never erases it. */
   [data-file]
     [data-hovered]:is([data-line], [data-column-number], [data-gutter-buffer]):not(
       [data-selected-line]
@@ -86,6 +86,25 @@ const FILE_VIEWER_UNSAFE_CSS = `${DIFF_PANEL_UNSAFE_CSS}
       in srgb,
       var(--diffs-bg) ${100 - DIFF_TINT.rowHover}%,
       var(--foreground)
+    ) !important;
+  }
+}
+/* Selected lines (a line number clicked, a chat reference): a tint toward the
+   accent, DIFF_TINT.selected, which code colors are fitted against. */
+[data-file] :is([data-line], [data-column-number], [data-gutter-buffer])[data-selected-line] {
+  --diffs-line-bg: color-mix(
+    in srgb,
+    var(--diffs-bg) ${100 - DIFF_TINT.selected}%,
+    var(--primary)
+  ) !important;
+}
+@media (pointer: fine) {
+  [data-file]
+    :is([data-line], [data-column-number], [data-gutter-buffer])[data-selected-line][data-hovered] {
+    --diffs-line-bg: color-mix(
+      in srgb,
+      var(--diffs-bg) ${100 - DIFF_TINT.selectedHover}%,
+      var(--primary)
     ) !important;
   }
 }
