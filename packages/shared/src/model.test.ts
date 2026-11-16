@@ -209,6 +209,32 @@ describe("misc helpers", () => {
 });
 
 describe("descriptor helpers", () => {
+  it("lists reasoning levels lowest first, whatever order the provider gave", () => {
+    const optionIds = (ids: ReadonlyArray<string>) => {
+      const descriptor = createModelCapabilities({
+        optionDescriptors: [
+          {
+            id: "reasoningEffort",
+            label: "Reasoning",
+            type: "select",
+            options: ids.map((id) => ({ id, label: id })),
+          },
+        ],
+      }).optionDescriptors?.[0];
+      return descriptor?.type === "select" ? descriptor.options.map((option) => option.id) : [];
+    };
+    // Grok and Antigravity list High first.
+    expect(optionIds(["high", "medium", "low", "minimal"])).toEqual([
+      "minimal",
+      "low",
+      "medium",
+      "high",
+    ]);
+    expect(optionIds(["max", "Extra_High", "none"])).toEqual(["none", "Extra_High", "max"]);
+    // A list with anything that isn't a level keeps the provider's order.
+    expect(optionIds(["high", "low", "default"])).toEqual(["high", "low", "default"]);
+  });
+
   it("applies selection values to capability descriptors", () => {
     expect(
       getProviderOptionDescriptors({
