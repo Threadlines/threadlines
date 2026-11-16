@@ -75,6 +75,18 @@ export function strongerAlertSound(left: AlertSound | undefined, right: AlertSou
 }
 
 /**
+ * A sound one thread's change calls for, with what it was about: the turn it
+ * saw and its computer's snapshot count. A cue whose thread moved on to
+ * another turn, or whose computer sent a new snapshot, by the time it is due
+ * says nothing.
+ */
+export interface AlertSoundCue {
+  readonly sound: AlertSound;
+  readonly turnId: string | null;
+  readonly snapshot: number;
+}
+
+/**
  * The sounds the change from `prev` to `next` calls for, by thread key. The
  * first reading (`prev` null), a thread not in `prev`, and a thread whose
  * computer applied a new snapshot in between are only remembered.
@@ -87,49 +99,123 @@ export function strongerAlertSound(left: AlertSound | undefined, right: AlertSou
 export function alertSoundChanges(
   prev: AlertSoundSnapshot | null,
   next: AlertSoundSnapshot,
-): Map<string, AlertSound> {
-  const sounds = new Map<string, AlertSound>();
-  if (prev === null) return sounds;
+): Map<string, AlertSoundCue> {
+  const cues = new Map<string, AlertSoundCue>();
+  if (prev === null) return cues;
+  const cue = (threadKey: string, thread: AlertSoundThread, sound: AlertSound) =>
+    cues.set(threadKey, { sound, turnId: thread.turnId, snapshot: thread.snapshot });
   for (const [threadKey, thread] of next) {
     const before = prev.get(threadKey);
     if (before === undefined || before.snapshot !== thread.snapshot) continue;
     if (thread.phase === "needs-you") {
-      if (before.phase !== "needs-you") sounds.set(threadKey, "attention");
+      if (before.phase !== "needs-you") cue(threadKey, thread, "attention");
       continue;
     }
     if (thread.filed) continue;
     if (thread.phase === "failed" && before.phase !== "failed") {
-      sounds.set(threadKey, "done");
+      cue(threadKey, thread, "done");
     } else if (
       thread.phase === "finished" &&
       (before.phase === "working" || before.turnId !== thread.turnId)
     ) {
-      sounds.set(threadKey, "done");
+      cue(threadKey, thread, "done");
     }
   }
-  return sounds;
+  return cues;
+}
+
+/** A thread that starts needing the user waits only for its neighbors in the same burst. */
+export const ATTENTION_HOLD_MS = 250;
+/**
+ * A finished turn waits this long first: work often hands straight on (a
+ * queued message, a child's answer going back), and a sound for the gap
+ * would be a false alarm. The Dock waits the same.
+ */
+export const DONE_HOLD_MS = 1_500;
+
+/** A cue waiting until `dueAt` (ms since the epoch). */
+export interface QueuedAlertSoundCue extends AlertSoundCue {
+  readonly dueAt: number;
 }
 
 /**
- * Of the sounds held since they were noticed, the one to play now, from the
- * threads as they are now: a thread that went back to work, got filed away,
- * no longer needs the user, or is being watched (open on an attended
- * screen) has nothing left to say. Needing the user wins.
+ * Adds new cues to the waiting ones. A thread cued again keeps the louder
+ * sound and the sooner time, and takes the newer cue's turn and snapshot.
+ */
+export function queueAlertSoundCues(
+  queued: ReadonlyMap<string, QueuedAlertSoundCue>,
+  cues: ReadonlyMap<string, AlertSoundCue>,
+  now: number,
+): Map<string, QueuedAlertSoundCue> {
+  const next = new Map(queued);
+  for (const [threadKey, cue] of cues) {
+    const held = queued.get(threadKey);
+    const dueAt = now + (cue.sound === "attention" ? ATTENTION_HOLD_MS : DONE_HOLD_MS);
+    next.set(threadKey, {
+      ...cue,
+      sound: strongerAlertSound(held?.sound, cue.sound),
+      dueAt: Math.min(held?.dueAt ?? dueAt, dueAt),
+    });
+  }
+  return next;
+}
+
+/**
+ * Splits the waiting cues into those due at `now` and the rest, and says when
+ * to look again (null: nothing waits). A "done" cue also waits for every
+ * attention cue still held, so a thread that needs the user a moment after
+ * another finished plays the attention sound instead of losing it to the gap
+ * after "done".
+ */
+export function takeDueAlertSoundCues(
+  queued: ReadonlyMap<string, QueuedAlertSoundCue>,
+  now: number,
+): {
+  readonly due: Map<string, AlertSoundCue>;
+  readonly waiting: Map<string, QueuedAlertSoundCue>;
+  readonly nextAt: number | null;
+} {
+  let lastAttentionAt = Number.NEGATIVE_INFINITY;
+  for (const cue of queued.values()) {
+    if (cue.sound === "attention") lastAttentionAt = Math.max(lastAttentionAt, cue.dueAt);
+  }
+  const due = new Map<string, AlertSoundCue>();
+  const waiting = new Map<string, QueuedAlertSoundCue>();
+  let nextAt: number | null = null;
+  for (const [threadKey, cue] of queued) {
+    const at = cue.sound === "done" ? Math.max(cue.dueAt, lastAttentionAt) : cue.dueAt;
+    if (at <= now) {
+      due.set(threadKey, { sound: cue.sound, turnId: cue.turnId, snapshot: cue.snapshot });
+    } else {
+      waiting.set(threadKey, cue);
+      nextAt = nextAt === null ? at : Math.min(nextAt, at);
+    }
+  }
+  return { due, waiting, nextAt };
+}
+
+/**
+ * Of the cues due, the sound to play now, from the threads as they are now:
+ * a thread that went back to work, moved on to another turn, got filed away,
+ * no longer needs the user, or is being watched (open on an attended screen),
+ * or whose computer sent a new snapshot since, has nothing left to say.
+ * Needing the user wins.
  */
 export function dueAlertSound(
-  pending: ReadonlyMap<string, AlertSound>,
+  due: ReadonlyMap<string, AlertSoundCue>,
   latest: AlertSoundSnapshot,
   isWatched: (threadKey: string) => boolean,
 ): AlertSound | null {
-  let due: AlertSound | null = null;
-  for (const [threadKey, sound] of pending) {
+  let sound: AlertSound | null = null;
+  for (const [threadKey, cue] of due) {
     const thread = latest.get(threadKey);
     if (thread === undefined || isWatched(threadKey)) continue;
-    if (sound === "attention") {
+    if (thread.snapshot !== cue.snapshot || thread.turnId !== cue.turnId) continue;
+    if (cue.sound === "attention") {
       if (thread.phase === "needs-you") return "attention";
     } else if (!thread.filed && (thread.phase === "finished" || thread.phase === "failed")) {
-      due = "done";
+      sound = "done";
     }
   }
-  return due;
+  return sound;
 }

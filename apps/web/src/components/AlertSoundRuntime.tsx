@@ -2,9 +2,9 @@
  * Mounted once at the root. While Play a sound is on (Settings › General ›
  * Alerts), plays a short sound when a thread on any connected computer
  * finishes, fails or starts needing the user. Which change calls for which
- * sound is lib/alertSound.ts; making it, and keeping other tabs quiet, is
- * lib/alertSoundPlayer.ts. The threads are the inbox's, filed the same way
- * the sidebar and the Dock file them.
+ * sound, and when it is due, is lib/alertSound.ts; making it, and keeping
+ * other tabs quiet, is lib/alertSoundPlayer.ts. The threads are the inbox's,
+ * filed the same way the sidebar and the Dock file them.
  */
 import { scopedThreadKey } from "@threadlines/client-runtime";
 import { useParams } from "@tanstack/react-router";
@@ -14,16 +14,19 @@ import { useShallow } from "zustand/react/shallow";
 import { useInboxThreads } from "../hooks/useInboxThreads";
 import { useSettings } from "../hooks/useSettings";
 import {
-  type AlertSound,
+  type AlertSoundCue,
   type AlertSoundSnapshot,
   type AlertSoundThread,
+  type QueuedAlertSoundCue,
   alertSoundChanges,
   alertSoundPhaseOf,
   dueAlertSound,
-  strongerAlertSound,
+  queueAlertSoundCues,
+  takeDueAlertSoundCues,
 } from "../lib/alertSound";
 import {
   holdWatchedThread,
+  joinAlertSoundTabs,
   playAlertSound,
   primeAlertSound,
   watchedThreadKeys,
@@ -33,65 +36,47 @@ import { selectShellSnapshotCounts, useStore } from "../store";
 import { resolveThreadRouteTarget } from "../threadRoutes";
 import type { SidebarThreadSummary } from "../types";
 
-/** A thread that starts needing the user waits only for its neighbors in the same burst. */
-const ATTENTION_HOLD_MS = 250;
 /**
- * A finished turn waits this long first: work often hands straight on (a
- * queued message, a child's answer going back), and a sound for the gap
- * would be a false alarm. The Dock waits the same.
+ * Holds cues until they are due (takeDueAlertSoundCues), then hands over
+ * everything due at once.
  */
-const DONE_HOLD_MS = 1_500;
-
-/**
- * Holds each noticed sound until it is due, then hands over everything due
- * at once. A thread noticed again keeps the louder sound and the sooner time.
- */
-function createAlertSoundQueue(onDue: (due: ReadonlyMap<string, AlertSound>) => void) {
-  const pending = new Map<string, { sound: AlertSound; dueAt: number }>();
+function createAlertSoundQueue(onDue: (due: ReadonlyMap<string, AlertSoundCue>) => void) {
+  let queued = new Map<string, QueuedAlertSoundCue>();
   let timer: { readonly at: number; readonly id: number } | null = null;
 
-  function schedule() {
-    let at = Number.POSITIVE_INFINITY;
-    for (const { dueAt } of pending.values()) at = Math.min(at, dueAt);
+  function schedule(at: number | null) {
     if (timer !== null) {
       if (timer.at === at) return;
       window.clearTimeout(timer.id);
       timer = null;
     }
-    if (at === Number.POSITIVE_INFINITY) return;
-    timer = { at, id: window.setTimeout(flush, Math.max(0, at - Date.now())) };
+    if (at === null) return;
+    const id = window.setTimeout(
+      () => {
+        timer = null;
+        flush();
+      },
+      Math.max(0, at - Date.now()),
+    );
+    timer = { at, id };
   }
 
+  /** Hands over what is due and waits for the next one. */
   function flush() {
-    timer = null;
-    const now = Date.now();
-    const due = new Map<string, AlertSound>();
-    for (const [threadKey, { sound, dueAt }] of pending) {
-      if (dueAt > now) continue;
-      due.set(threadKey, sound);
-      pending.delete(threadKey);
-    }
-    schedule();
+    const { due, waiting, nextAt } = takeDueAlertSoundCues(queued, Date.now());
+    queued = waiting;
+    schedule(nextAt);
     if (due.size > 0) onDue(due);
   }
 
   return {
-    add(sounds: ReadonlyMap<string, AlertSound>) {
-      const now = Date.now();
-      for (const [threadKey, sound] of sounds) {
-        const held = pending.get(threadKey);
-        const dueAt = now + (sound === "attention" ? ATTENTION_HOLD_MS : DONE_HOLD_MS);
-        pending.set(threadKey, {
-          sound: strongerAlertSound(held?.sound, sound),
-          dueAt: Math.min(held?.dueAt ?? dueAt, dueAt),
-        });
-      }
-      schedule();
+    add(cues: ReadonlyMap<string, AlertSoundCue>) {
+      queued = queueAlertSoundCues(queued, cues, Date.now());
+      flush();
     },
     dispose() {
-      if (timer !== null) window.clearTimeout(timer.id);
-      timer = null;
-      pending.clear();
+      schedule(null);
+      queued = new Map();
     },
   };
 }
@@ -117,12 +102,15 @@ function AlertSoundWatcher() {
   const latestRef = useRef<AlertSoundSnapshot | null>(null);
   const queueRef = useRef<ReturnType<typeof createAlertSoundQueue> | null>(null);
 
-  useEffect(() => primeAlertSound(), []);
+  useEffect(() => {
+    joinAlertSoundTabs();
+    return primeAlertSound();
+  }, []);
   // Every tab learns which thread this one shows on an attended screen.
   useEffect(() => holdWatchedThread(watching), [watching]);
 
   /** Plays what is due, from the threads as they are now, unless someone is watching them. */
-  const playDue = useEffectEvent(async (due: ReadonlyMap<string, AlertSound>) => {
+  const playDue = useEffectEvent(async (due: ReadonlyMap<string, AlertSoundCue>) => {
     const latest = latestRef.current;
     if (latest === null) return;
     const watchedElsewhere = await watchedThreadKeys();
@@ -132,7 +120,7 @@ function AlertSoundWatcher() {
       (threadKey) =>
         watchedElsewhere.has(threadKey) || (threadKey === openThreadKey && isPageAttended()),
     );
-    if (sound !== null) playAlertSound(sound);
+    if (sound !== null) await playAlertSound(sound);
   });
 
   useEffect(() => {
@@ -156,9 +144,9 @@ function AlertSoundWatcher() {
     };
     for (const entry of entries) read(entry.threadKey, entry.thread, entry.isDone);
     for (const entry of generalChatEntries) read(entry.threadKey, entry.thread, false);
-    const changes = alertSoundChanges(latestRef.current, next);
+    const cues = alertSoundChanges(latestRef.current, next);
     latestRef.current = next;
-    if (changes.size > 0) queueRef.current?.add(changes);
+    if (cues.size > 0) queueRef.current?.add(cues);
   }, [entries, generalChatEntries, snapshotCounts]);
 
   return null;

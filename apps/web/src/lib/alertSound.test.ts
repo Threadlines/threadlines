@@ -1,11 +1,17 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  type AlertSound,
+  type AlertSoundCue,
   type AlertSoundPhase,
   type AlertSoundSnapshot,
   type AlertSoundThread,
+  ATTENTION_HOLD_MS,
   alertSoundChanges,
+  DONE_HOLD_MS,
   dueAlertSound,
+  queueAlertSoundCues,
+  takeDueAlertSoundCues,
 } from "./alertSound";
 
 const thread = (
@@ -15,6 +21,13 @@ const thread = (
 
 const snapshot = (threads: Record<string, AlertSoundThread>): AlertSoundSnapshot =>
   new Map(Object.entries(threads));
+
+const cue = (sound: AlertSound, overrides: Partial<AlertSoundCue> = {}): AlertSoundCue => ({
+  sound,
+  turnId: "turn-1",
+  snapshot: 1,
+  ...overrides,
+});
 
 const nobodyWatching = () => false;
 
@@ -42,24 +55,32 @@ describe("alert sound", () => {
     const changes = alertSoundChanges(before, after);
     expect(changes).toEqual(
       new Map([
-        ["a", "done"],
-        ["b", "attention"],
+        ["a", cue("done")],
+        ["b", cue("attention")],
       ]),
     );
     expect(dueAlertSound(changes, after, nobodyWatching)).toBe("attention");
-    expect(dueAlertSound(new Map([["a", "done"]]), after, nobodyWatching)).toBe("done");
+    expect(dueAlertSound(new Map([["a", cue("done")]]), after, nobodyWatching)).toBe("done");
   });
 
-  it("stays quiet for a thread on screen, filed away, or back at work", () => {
+  it("stays quiet for a thread on screen, filed away, back at work, or reconnected", () => {
     const before = snapshot({ a: thread("working"), b: thread("working") });
     const after = snapshot({ a: thread("finished"), b: thread("finished", { filed: true }) });
     const changes = alertSoundChanges(before, after);
     // A child whose answer went back to its parent wraps up: no sound.
-    expect(changes).toEqual(new Map([["a", "done"]]));
+    expect(changes).toEqual(new Map([["a", cue("done")]]));
 
     expect(dueAlertSound(changes, after, (threadKey) => threadKey === "a")).toBeNull();
     // Work handed straight on before the sound was due.
     expect(dueAlertSound(changes, snapshot({ a: thread("working") }), nobodyWatching)).toBeNull();
+    // A reconnect's snapshot shows a later turn finished: the old cue is stale.
+    expect(
+      dueAlertSound(
+        changes,
+        snapshot({ a: thread("finished", { turnId: "turn-2", snapshot: 2 }) }),
+        nobodyWatching,
+      ),
+    ).toBeNull();
   });
 
   it("reads a newer finished turn as news, but not a plan that cleared on the same turn", () => {
@@ -68,6 +89,21 @@ describe("alert sound", () => {
         snapshot({ a: thread("needs-you"), b: thread("needs-you") }),
         snapshot({ a: thread("finished", { turnId: "turn-2" }), b: thread("finished") }),
       ),
-    ).toEqual(new Map([["a", "done"]]));
+    ).toEqual(new Map([["a", cue("done", { turnId: "turn-2" })]]));
+  });
+
+  it("holds a finished turn for an attention cue that comes in during its wait", () => {
+    let queued = queueAlertSoundCues(new Map(), new Map([["a", cue("done")]]), 0);
+    queued = queueAlertSoundCues(queued, new Map([["b", cue("attention")]]), 1_400);
+    const attentionAt = 1_400 + ATTENTION_HOLD_MS;
+    expect(attentionAt).toBeGreaterThan(DONE_HOLD_MS);
+
+    const early = takeDueAlertSoundCues(queued, DONE_HOLD_MS);
+    expect(early.due.size).toBe(0);
+    expect(early.nextAt).toBe(attentionAt);
+
+    const { due, waiting } = takeDueAlertSoundCues(early.waiting, attentionAt);
+    expect([...due.keys()]).toEqual(["a", "b"]);
+    expect(waiting.size).toBe(0);
   });
 });
