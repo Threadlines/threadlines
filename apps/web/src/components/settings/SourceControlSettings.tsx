@@ -65,9 +65,9 @@ import {
   GitHubIcon,
   GitIcon,
   GitLabIcon,
-  JujutsuIcon,
   type Icon,
 } from "../Icons";
+import { JujutsuIcon } from "../ToolIcons";
 import { RedactedSensitiveText } from "./RedactedSensitiveText";
 import {
   SETTINGS_GROUP_ROW_CLASS,

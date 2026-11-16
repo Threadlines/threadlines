@@ -19,12 +19,12 @@ import {
   SettingsSurfaceContext,
 } from "../components/settings/settingsPlaceAvailability";
 import { useSettingsSearchStore } from "../components/settings/settingsSearchStore";
+import { settingsSectionLabelForPath } from "../components/settings/settingsNavigation";
 import {
   isVisibleSettingsSectionPath,
   rememberVisibleSettingsSection,
   resolveSettingsEntryRedirect,
-  settingsSectionLabelForPath,
-} from "../components/settings/settingsNavigation";
+} from "../components/settings/settingsPaths";
 import { Button } from "../components/ui/button";
 import { PageTitlebar } from "../components/PageTitlebar";
 import { SidebarInset, useSidebar } from "../components/ui/sidebar";

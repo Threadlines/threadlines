@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 
-import { placeScopeSearch } from "../appPlaceLinks";
+import { placeScopeSearch } from "../appPlaceScope";
 import { ExtensionsSettingsPanel } from "../components/settings/ExtensionsSettings";
 import { parseExtensionsSettingsTab } from "../components/settings/extensionsSettingsTabs";
 
