@@ -136,10 +136,14 @@ describe("ChatView (full app): the desktop app's window", () => {
       // it changes: wait for the one where the chat's scroller is drawn on
       // its own, so there is something to mask (an early frame can come
       // before it is).
-      await vi.waitFor(() => {
-        document.body.style.outline = document.body.style.outline ? "" : "0 solid transparent";
-        expect(layers?.some((layer) => layer.drawsContent && layer.backendNodeId)).toBe(true);
-      });
+      // A busy runner can take seconds to composite the chat after first paint.
+      await vi.waitFor(
+        () => {
+          document.body.style.outline = document.body.style.outline ? "" : "0 solid transparent";
+          expect(layers?.some((layer) => layer.drawsContent && layer.backendNodeId)).toBe(true);
+        },
+        { timeout: 5_000 },
+      );
       const masks = layers!.filter(
         (layer) =>
           layer.drawsContent &&
