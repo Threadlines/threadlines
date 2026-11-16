@@ -27,7 +27,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import type * as Types from "effect/Types";
-import { McpProtocol, McpServer, Toolkit } from "effect/ai";
+import { McpProtocol, McpServer, Tool, Toolkit } from "effect/ai";
 import { HttpRouter, HttpServerRequest, type HttpServerResponse } from "effect/http";
 
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
@@ -73,7 +73,7 @@ import { ThreadToolkit } from "./threadTools.ts";
 import { requestService } from "./requestService.ts";
 
 /** Every tool the endpoint serves. */
-const RoomEndpointToolkit = Toolkit.merge(
+export const RoomEndpointToolkit = Toolkit.merge(
   RoomToolkit,
   ThreadToolkit,
   ScheduleToolkit,
@@ -520,16 +520,26 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
   }),
 );
 
-export const layer = Layer.fresh(
-  McpServer.toolkit(RoomEndpointToolkit).pipe(
-    Layer.provide(RoomToolHandlersLive),
-    Layer.provideMerge(
-      McpServer.layerHttp({
-        name: "threadlines-room",
-        version: "1",
-        path: MCP_ROOM_ROUTE_PATH,
-        protocols: [McpProtocol.v2025_06_18],
-      }).pipe(Layer.provide(AuthenticationLive)),
+/**
+ * The room endpoint with the given tool handlers: production's below; the
+ * tool-use evals (apps/server/evals) serve the same tools, listing and
+ * sign-in check with canned answers.
+ */
+export const makeLayer = <E, R>(
+  handlers: Layer.Layer<Tool.HandlersFor<typeof RoomEndpointToolkit.tools>, E, R>,
+) =>
+  Layer.fresh(
+    McpServer.toolkit(RoomEndpointToolkit).pipe(
+      Layer.provide(handlers),
+      Layer.provideMerge(
+        McpServer.layerHttp({
+          name: "threadlines-room",
+          version: "1",
+          path: MCP_ROOM_ROUTE_PATH,
+          protocols: [McpProtocol.v2025_06_18],
+        }).pipe(Layer.provide(AuthenticationLive)),
+      ),
     ),
-  ),
-);
+  );
+
+export const layer = makeLayer(RoomToolHandlersLive);

@@ -687,7 +687,7 @@ describe("an existing checkout", () => {
   it.effect("`self` is the caller's own checkout, and never more access than its own", () =>
     Effect.gen(function* () {
       const tools = yield* makeTools({ shareWorktrees: true, branches });
-      yield* tools.handlers.thread_start(mainCaller(), {
+      const result = yield* tools.handlers.thread_start(mainCaller(), {
         threads: [{ ...reviewer, checkout: "self", access: "full-access" }],
       });
       const [start] = ofType(tools.dispatched, "thread.child.start");
@@ -695,6 +695,11 @@ describe("an existing checkout", () => {
         checkout: { threadId: PARENT, worktreePath: "/checkout", branch: "main" },
         runtimeMode: "auto-accept-edits",
       });
+      // The agent hears what it got, so it doesn't tell the user "full access".
+      expect(result.threads?.[0]?.access).toBe("auto-accept-edits");
+      expect(result.detail).toContain(
+        "'Review the retry change' runs with auto-accept-edits, not full-access",
+      );
 
       // In the project folder itself, there is no worktree to name.
       const inProject = yield* makeTools({

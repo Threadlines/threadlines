@@ -105,6 +105,11 @@ export const ThreadStartResult = Schema.Struct({
         workspace: Schema.Literals(["worktree", "project_folder", "checkout", "remote"]),
         /** The linked computer it runs on; absent: this one. */
         computer: Schema.optional(Schema.String),
+        /**
+         * The access it runs with: never more than yours, so lower than you
+         * asked for when you asked for more.
+         */
+        access: Schema.optional(RuntimeMode),
       }),
     ),
   ),
