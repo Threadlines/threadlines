@@ -10,6 +10,7 @@
 import type {
   ClientOrchestrationCommand,
   ModelSelection,
+  OrchestrationSideTurn,
   OrchestrationThreadParticipant,
   ProviderInstanceId,
   ProviderOptionSelection,
@@ -109,8 +110,8 @@ export function useRoomAgents(input: {
   readonly instanceEntries: ReadonlyArray<ProviderInstanceEntry>;
   /** The agent with a turn in flight, if any. */
   readonly workingId: ThreadParticipantId | null | undefined;
-  /** The agent answering on the side, if any. */
-  readonly answeringId: ThreadParticipantId | null | undefined;
+  /** The side answers in progress (the thread's own list, so it keeps its identity). */
+  readonly sideTurns: ReadonlyArray<OrchestrationSideTurn> | undefined;
   /**
    * A new thread's first message is on its way with the agents it had: a
    * change now would miss the thread, so none is taken until it exists.
@@ -136,7 +137,7 @@ export function useRoomAgents(input: {
     const statusOf = (id: ThreadParticipantId | null): RoomAgentRow["status"] =>
       input.workingId !== undefined && input.workingId === id
         ? "working"
-        : input.answeringId !== undefined && input.answeringId === id
+        : input.sideTurns?.some((sideTurn) => sideTurn.participantId === id) === true
           ? "answering"
           : null;
     const rowFor = (id: ThreadParticipantId | null, selection: ModelSelection): RoomAgentRow => {
@@ -166,7 +167,7 @@ export function useRoomAgents(input: {
       : listed.map((row) => ({ key: roomAgentKey(row.id), modelName: row.modelName }));
     return { rows: listed, takenNames: taken };
   }, [
-    input.answeringId,
+    input.sideTurns,
     input.workingId,
     instanceEntries,
     primaryModelSelection,

@@ -22,6 +22,11 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import { areFilesystemPathsEqual } from "@threadlines/shared/path";
 import {
+  isAnsweringOnTheSide,
+  liveSideTurn,
+  sideTurnStartRefusal,
+} from "@threadlines/shared/sideTurns";
+import {
   activeParticipants,
   findActiveParticipantByHandle,
   isRoomThread,
@@ -190,10 +195,10 @@ function pullRequestUrlNumber(url: string): number | null {
  * written over the answer.
  */
 function requireSideTurnOpen(
-  thread: Pick<OrchestrationThread, "id" | "sideTurn">,
+  thread: Pick<OrchestrationThread, "id" | "sideTurn" | "sideTurns">,
   command: { readonly type: string; readonly sideTurnId?: SideTurnId | undefined },
 ) {
-  if (command.sideTurnId === undefined || thread.sideTurn?.sideTurnId === command.sideTurnId) {
+  if (command.sideTurnId === undefined || liveSideTurn(thread, command.sideTurnId) !== undefined) {
     return Effect.void;
   }
   return Effect.fail(
@@ -216,7 +221,7 @@ function isNewMessage(thread: Pick<OrchestrationThread, "messages">, messageId: 
 function assistantMessageStamp(
   thread: Pick<
     OrchestrationThread,
-    "messages" | "modelSelection" | "participants" | "sentModels" | "sideTurn"
+    "messages" | "modelSelection" | "participants" | "sentModels" | "sideTurn" | "sideTurns"
   >,
   messageId: MessageId,
   author: ThreadParticipantId | null,
@@ -1896,8 +1901,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       if (sessionSlotParticipantId(thread.session) === command.participantId) {
         return yield* refuse("That agent holds the thread. Send it a normal message instead.");
       }
-      if ((thread.sideTurn ?? null) !== null) {
-        return yield* refuse("Another agent is already answering. Wait for it to finish.");
+      const busy = sideTurnStartRefusal(thread, command.participantId);
+      if (busy !== null) {
+        return yield* refuse(busy);
       }
       if (thread.voiceActive === true) {
         return yield* refuse("Stop voice before asking another agent.");
@@ -1996,10 +2002,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
-      const sideTurn = thread.sideTurn ?? null;
+      const sideTurn = liveSideTurn(thread, command.sideTurnId) ?? null;
       // Every side-answer command names its answer; one that is over, or was
       // never this thread's, changes nothing.
-      if (sideTurn === null || sideTurn.sideTurnId !== command.sideTurnId) {
+      if (sideTurn === null) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: `Side answer '${command.sideTurnId}' is not running on thread '${command.threadId}'.`,
@@ -2112,6 +2118,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // An invite the user accepted while this answer ran starts its review now.
       const nextInvite = startQueuedInvite(
         thread,
+        command.sideTurnId,
         eventBase,
         command.createdAt,
         command.fromPreviousProcess === true,
@@ -2480,7 +2487,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             `${participant.handle} is working. Change its model once it is done.`,
           );
         }
-        if (thread.sideTurn?.participantId === participant.id) {
+        if (isAnsweringOnTheSide(thread, participant.id)) {
           return yield* refuse(
             `${participant.handle} is answering. Change its model once it is done.`,
           );
@@ -2556,7 +2563,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: `${participant.handle} is working. Stop its turn before removing it.`,
         });
       }
-      if (thread.sideTurn?.participantId === participant.id) {
+      if (isAnsweringOnTheSide(thread, participant.id)) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: `${participant.handle} is answering. Stop its answer before removing it.`,
@@ -2929,11 +2936,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // An agent answering on the side waits until that answer is over
       // before it can take the thread; a queued message whose turn came
       // meanwhile goes out when the answer settles (the reactor holds it).
-      if (
-        targetThread.sideTurn !== undefined &&
-        targetThread.sideTurn !== null &&
-        targetThread.sideTurn.participantId === participantId
-      ) {
+      if (isAnsweringOnTheSide(targetThread, participantId)) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: "That agent is answering on the side. Wait for it to finish, or stop its answer.",

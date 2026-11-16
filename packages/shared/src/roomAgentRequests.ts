@@ -6,10 +6,10 @@
  */
 import {
   type OrchestrationAgentRequestState,
-  type OrchestrationSideTurn,
   type OrchestrationThreadParticipant,
   type RoomAgentInvite,
   type RoomAgentInviteChoice,
+  type RoomAgentBatchId,
   type RoomAgentRef,
   type RoomAgentRequestKind,
   type RoomAgentRequestOutcome,
@@ -18,16 +18,16 @@ import {
   type TurnId,
 } from "@threadlines/contracts";
 
+import { type SideTurnFields, sideTurnStartRefusal } from "./sideTurns.ts";
 import { activeParticipants } from "./threadParticipants.ts";
 
 /** What the rules read from a thread. */
-export interface AgentRequestThread {
+export interface AgentRequestThread extends SideTurnFields {
   readonly participants?: ReadonlyArray<OrchestrationThreadParticipant> | undefined;
   readonly session: {
     readonly participantId?: ThreadParticipantId | null | undefined;
     readonly activeTurnId: TurnId | null;
   } | null;
-  readonly sideTurn?: OrchestrationSideTurn | null | undefined;
   readonly agentRequests: OrchestrationAgentRequestState;
 }
 
@@ -37,10 +37,13 @@ export interface AgentRequestInput {
   readonly to: RoomAgentRef;
   readonly callerTurnId: TurnId;
   readonly chainEpoch: number;
+  /** A review asked of several agents in one call (counts once toward the limit). */
+  readonly batchId?: RoomAgentBatchId | undefined;
 }
 
 /**
- * Why a request is refused: `busy` (a side answer is already running),
+ * Why a request is refused: `busy` (its agent is already answering on the
+ * side, or the most side answers run at once),
  * `limit` (agents have used their requests until the user writes), or
  * `refused` (anything else, with a reason the calling agent can act on).
  */
@@ -97,14 +100,14 @@ export function agentRequestRefusal(
   if (target !== null && !present.some((participant) => participant.id === target)) {
     return { outcome: "refused", detail: "That agent is not in this room." };
   }
-  if (state.requestsSinceUser >= ROOM_AGENT_REQUEST_LIMIT) {
+  // A batch already counted is not counted, or refused, again.
+  const counted = input.batchId !== undefined && state.batchesSinceUser.includes(input.batchId);
+  if (!counted && state.requestsSinceUser >= ROOM_AGENT_REQUEST_LIMIT) {
     return LIMIT_REFUSAL;
   }
-  if (input.kind !== "hand_off" && (thread.sideTurn ?? null) !== null) {
-    return {
-      outcome: "busy",
-      detail: "Another agent is already answering on the side. Try again once it finishes.",
-    };
+  if (input.kind !== "hand_off") {
+    const busy = sideTurnStartRefusal(thread, input.to.participantId ?? null);
+    if (busy !== null) return { outcome: "busy", detail: busy };
   }
   return null;
 }
@@ -213,11 +216,16 @@ export const agentRequestStateOn = {
   ): OrchestrationAgentRequestState =>
     state.open.some((entry) => entry.requestId === request.requestId)
       ? state
-      : {
-          ...state,
-          open: [...state.open, request],
-          requestsSinceUser: state.requestsSinceUser + 1,
-        },
+      : request.batchId !== undefined && state.batchesSinceUser.includes(request.batchId)
+        ? { ...state, open: [...state.open, request] }
+        : {
+            ...state,
+            open: [...state.open, request],
+            requestsSinceUser: state.requestsSinceUser + 1,
+            ...(request.batchId !== undefined
+              ? { batchesSinceUser: [...state.batchesSinceUser, request.batchId] }
+              : {}),
+          },
   updated: (
     state: OrchestrationAgentRequestState,
     update: {
@@ -263,9 +271,18 @@ export const agentRequestStateOn = {
   ): OrchestrationAgentRequestState =>
     state.hold && state.chainEpoch === chainEpoch ? state : { ...state, hold: true, chainEpoch },
   reset: (state: OrchestrationAgentRequestState): OrchestrationAgentRequestState =>
-    !state.hold && state.requestsSinceUser === 0 && !state.invitesPaused
+    !state.hold &&
+    state.requestsSinceUser === 0 &&
+    !state.invitesPaused &&
+    state.batchesSinceUser.length === 0
       ? state
-      : { ...state, hold: false, requestsSinceUser: 0, invitesPaused: false },
+      : {
+          ...state,
+          hold: false,
+          requestsSinceUser: 0,
+          invitesPaused: false,
+          batchesSinceUser: [],
+        },
 };
 
 /**

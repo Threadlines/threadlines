@@ -294,7 +294,7 @@ export function mergeLocalDraftThreadWithServerThread(
     // Once the thread exists, its room is the server's.
     participants: serverThread.participants ?? [],
     agentRole: serverThread.agentRole,
-    sideTurn: serverThread.sideTurn ?? null,
+    ...(serverThread.sideTurns !== undefined ? { sideTurns: serverThread.sideTurns } : {}),
     ...(serverThread.agentRequests !== undefined
       ? { agentRequests: serverThread.agentRequests }
       : {}),
@@ -2750,8 +2750,8 @@ export const deriveThreadSideAnswers = threadMemo(
   (
     messages: ReadonlyArray<ChatMessage>,
     activities: ReadonlyArray<OrchestrationThreadActivity>,
-    sideTurn: Thread["sideTurn"],
-  ) => deriveSideAnswers({ messages, activities, sideTurn }),
+    sideTurns: Thread["sideTurns"],
+  ) => deriveSideAnswers({ messages, activities, sideTurns }),
 );
 
 /**

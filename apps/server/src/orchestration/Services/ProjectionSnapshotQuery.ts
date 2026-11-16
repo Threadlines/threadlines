@@ -145,7 +145,7 @@ export interface ProjectionSnapshotQueryShape {
     ReadonlyArray<{
       readonly threadId: ThreadId;
       readonly session: OrchestrationSession | null;
-      readonly sideTurn: OrchestrationSideTurn | null;
+      readonly sideTurns: ReadonlyArray<OrchestrationSideTurn>;
     }>,
     ProjectionRepositoryError
   >;

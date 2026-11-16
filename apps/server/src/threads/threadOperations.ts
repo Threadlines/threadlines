@@ -13,6 +13,7 @@
  * - Starting and sending: `requestedAgent` (an agent named in a call) and
  *   `dispatchOutcome` (a refused or failed dispatch, as a tool outcome).
  */
+import { hasLiveSideTurn } from "@threadlines/shared/sideTurns";
 import type {
   AgentThreadAgent,
   OutsideAgentConnectionId,
@@ -155,7 +156,7 @@ export function threadStatus(
     return statusOf("working");
   }
   // Like the sidebar, an agent answering on the side is still work going on.
-  if (thread.hasPendingUserInput && (thread.sideTurn ?? null) === null) {
+  if (thread.hasPendingUserInput && !hasLiveSideTurn(thread)) {
     return needsTheUser("question");
   }
   const awaitedTasks = session?.awaitedBackgroundTaskCount ?? session?.pendingBackgroundTaskCount;

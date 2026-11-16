@@ -5,6 +5,7 @@
  * `@threadlines/shared/roomAgentRequests`, shared with the room MCP server.
  */
 import {
+  MAX_LIVE_SIDE_TURNS,
   MessageId,
   type OrchestrationAgentRequest,
   type OrchestrationCommand,
@@ -16,6 +17,7 @@ import {
   type RoomAgentRef,
   type RoomAgentRequestId,
   type RoomAgentRequestOutcome,
+  type SideTurnId,
 } from "@threadlines/contracts";
 import {
   agentInviteAcceptRefusal,
@@ -31,6 +33,11 @@ import {
   isValidParticipantId,
   roomAgentKey,
 } from "@threadlines/shared/threadParticipants";
+import {
+  liveSideTurnForRequest,
+  liveSideTurns,
+  sideTurnStartRefusal,
+} from "@threadlines/shared/sideTurns";
 import { sameProviderOptionSelections } from "@threadlines/shared/model";
 import { currentAgentModel, messageAgentModels, sentAgentModel } from "./messageAgentModels.ts";
 
@@ -155,6 +162,9 @@ export function decideAgentRequestSubmit(
   if ((command.kind === "review") !== (command.reviewInput !== undefined)) {
     return refuse("A review, and only a review, carries its captured input.");
   }
+  if (command.batchId !== undefined && command.kind !== "review") {
+    return refuse("Only reviews are asked of several agents at once.");
+  }
   const target =
     command.to.participantId === null
       ? null
@@ -206,6 +216,7 @@ export function decideAgentRequestSubmit(
         status: answersOnTheSide ? "running" : "pending",
         requestMessageId: command.message.messageId,
         ...(command.sideTurnId !== undefined ? { sideTurnId: command.sideTurnId } : {}),
+        ...(command.batchId !== undefined ? { batchId: command.batchId } : {}),
         createdAt: command.createdAt,
       },
     },
@@ -350,7 +361,7 @@ function decideAgentInviteSubmit(
     status:
       invite.autoChoice === undefined
         ? "awaiting_user"
-        : (thread.sideTurn ?? null) !== null
+        : sideTurnStartRefusal(thread, command.to.participantId ?? null) !== null
           ? "queued"
           : "running",
     requestMessageId: command.message.messageId,
@@ -512,7 +523,8 @@ function inviteAcceptedEvents(input: {
   if (request.sideTurnId === undefined) {
     return [];
   }
-  const waits = (thread.sideTurn ?? null) !== null;
+  // It waits while its agent is answering, or the most answer at once.
+  const waits = sideTurnStartRefusal(thread, guest.id) !== null;
   return [
     ...(input.choice === "teammate"
       ? [
@@ -712,12 +724,8 @@ export function decideAgentRequestDetach(
   ) {
     return refuse(`Request '${command.requestId}' is not an ask or review waiting on its call.`);
   }
-  const sideTurn = thread.sideTurn ?? null;
-  if (
-    sideTurn === null ||
-    sideTurn.requestId !== request.requestId ||
-    sideTurn.status === "cancelling"
-  ) {
+  const sideTurn = liveSideTurnForRequest(thread, request.requestId) ?? null;
+  if (sideTurn === null || sideTurn.status === "cancelling") {
     return refuse("Its side answer is no longer running.");
   }
   const state = thread.agentRequests;
@@ -766,7 +774,7 @@ export function decideAgentRequestSettle(
   // directly; its side answer is stopped next and finds it already closed.
   if (
     request.kind !== "hand_off" &&
-    thread.sideTurn?.requestId === request.requestId &&
+    liveSideTurnForRequest(thread, request.requestId) !== undefined &&
     command.outcome !== "timeout"
   ) {
     return refuse("Asks and reviews settle with their side answer.");
@@ -916,6 +924,7 @@ export function settleAgentRequestForSideTurn(
  */
 export function startQueuedInvite(
   thread: OrchestrationThread,
+  settledSideTurnId: SideTurnId,
   base: EventBase,
   createdAt: string,
   fromPreviousProcess: boolean,
@@ -924,6 +933,12 @@ export function startQueuedInvite(
     (request) => request.kind === "invite" && request.status === "queued",
   );
   const events: PlannedEvent[] = [];
+  // Who answers once this one is over, as queued reviews start: each starts
+  // while its agent is free and fewer than the most answer, oldest first; the
+  // rest go on waiting for the next answer to settle.
+  const answering = liveSideTurns(thread)
+    .filter((sideTurn) => sideTurn.sideTurnId !== settledSideTurnId)
+    .map((sideTurn) => sideTurn.participantId);
   for (const request of queued) {
     if (fromPreviousProcess) {
       events.push(
@@ -953,11 +968,14 @@ export function startQueuedInvite(
       );
       continue;
     }
+    if (answering.includes(guest.id) || answering.length >= MAX_LIVE_SIDE_TURNS) {
+      continue;
+    }
+    answering.push(guest.id);
     // At the model and reasoning its invite named, which a later invite of
     // the same agent may have changed on the guest since.
     const asked = message.agentModels?.[roomAgentKey(guest.id)]?.modelSelection;
-    return [
-      ...events,
+    events.push(
       {
         ...base(),
         type: "thread.agent-request-updated",
@@ -977,7 +995,7 @@ export function startQueuedInvite(
         base,
         createdAt,
       }),
-    ];
+    );
   }
   return events;
 }
@@ -1005,7 +1023,6 @@ export function decideAgentChainStop(
   ) {
     return [];
   }
-  const sideTurn = thread.sideTurn ?? null;
   return [
     {
       ...base(),
@@ -1013,15 +1030,14 @@ export function decideAgentChainStop(
       payload: { threadId: thread.id, chainEpoch: state.chainEpoch + 1, createdAt },
     },
     ...state.open.map((request) => settledEvent(base, thread, request, "stopped", createdAt)),
-    ...(sideTurn !== null && sideTurn.askedBy !== undefined && sideTurn.status !== "cancelling"
-      ? [
-          {
-            ...base(),
-            type: "thread.side-turn-interrupt-requested" as const,
-            payload: { threadId: thread.id, sideTurnId: sideTurn.sideTurnId, createdAt },
-          },
-        ]
-      : []),
+    // Every answer an agent asked for stops; the user's own go on.
+    ...liveSideTurns(thread)
+      .filter((sideTurn) => sideTurn.askedBy !== undefined && sideTurn.status !== "cancelling")
+      .map((sideTurn): PlannedEvent => ({
+        ...base(),
+        type: "thread.side-turn-interrupt-requested",
+        payload: { threadId: thread.id, sideTurnId: sideTurn.sideTurnId, createdAt },
+      })),
     ...(thread.queuedFollowUps ?? []).filter(isAgentOrigin).map((queued): PlannedEvent => ({
       ...base(),
       type: "thread.follow-up-unqueued",
@@ -1042,7 +1058,12 @@ export function resetAgentRequestsForUser(
   createdAt: string,
 ): ReadonlyArray<PlannedEvent> {
   const state = thread.agentRequests;
-  if (!state.hold && state.requestsSinceUser === 0 && !state.invitesPaused) {
+  if (
+    !state.hold &&
+    state.requestsSinceUser === 0 &&
+    !state.invitesPaused &&
+    state.batchesSinceUser.length === 0
+  ) {
     return [];
   }
   return [
@@ -1070,26 +1091,20 @@ export function cancelAgentRequestsForLeaving(
     (request) => involves(request.from) || involves(request.to),
   );
   // A side answer one of them started has nobody to go back to.
-  const sideTurn = thread.sideTurn ?? null;
-  const orphanedSideTurn =
-    sideTurn !== null &&
-    sideTurn.status !== "cancelling" &&
-    cancelled.some((request) => request.requestId === sideTurn.requestId)
-      ? sideTurn
-      : null;
+  const orphanedSideTurns = liveSideTurns(thread).filter(
+    (sideTurn) =>
+      sideTurn.status !== "cancelling" &&
+      cancelled.some((request) => request.requestId === sideTurn.requestId),
+  );
   return [
     ...cancelled.map((request) =>
       settledEvent(base, thread, request, "cancelled", createdAt, "The agent left the room."),
     ),
-    ...(orphanedSideTurn !== null
-      ? [
-          {
-            ...base(),
-            type: "thread.side-turn-interrupt-requested" as const,
-            payload: { threadId: thread.id, sideTurnId: orphanedSideTurn.sideTurnId, createdAt },
-          },
-        ]
-      : []),
+    ...orphanedSideTurns.map((sideTurn): PlannedEvent => ({
+      ...base(),
+      type: "thread.side-turn-interrupt-requested",
+      payload: { threadId: thread.id, sideTurnId: sideTurn.sideTurnId, createdAt },
+    })),
     ...(thread.queuedFollowUps ?? [])
       .filter(
         (queued) =>

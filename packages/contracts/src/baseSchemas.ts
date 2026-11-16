@@ -62,6 +62,9 @@ export type SideTurnId = typeof SideTurnId.Type;
 /** One request a room agent made of another through a room tool. */
 export const RoomAgentRequestId = makeEntityId("RoomAgentRequestId");
 export type RoomAgentRequestId = typeof RoomAgentRequestId.Type;
+/** One `room_review` call for several agents: its requests share it (and count once). */
+export const RoomAgentBatchId = makeEntityId("RoomAgentBatchId");
+export type RoomAgentBatchId = typeof RoomAgentBatchId.Type;
 /** A page an agent showed in a thread (docs/agent-pages.md). */
 export const AgentPageId = makeEntityId("AgentPageId");
 export type AgentPageId = typeof AgentPageId.Type;
