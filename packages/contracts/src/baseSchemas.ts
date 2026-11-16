@@ -83,6 +83,9 @@ export type ChildRequestId = typeof ChildRequestId.Type;
 /** One move of a thread to a linked computer (docs/design/fleet.md, Part 3). */
 export const ThreadMoveId = makeEntityId("ThreadMoveId");
 export type ThreadMoveId = typeof ThreadMoveId.Type;
+/** One queued move of a thread, waiting for it to be free (docs/design/fleet.md, Part 3b). */
+export const ThreadMoveRequestId = makeEntityId("ThreadMoveRequestId");
+export type ThreadMoveRequestId = typeof ThreadMoveRequestId.Type;
 /** The requests one `thread_start` call made, approved or declined together. */
 export const ChildRequestBatchId = makeEntityId("ChildRequestBatchId");
 export type ChildRequestBatchId = typeof ChildRequestBatchId.Type;
