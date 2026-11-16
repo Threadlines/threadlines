@@ -32,9 +32,14 @@
    are gated on this, so touch screens get them permanently visible instead. */
 @custom-variant can-hover (@media (hover: hover));
 /* The new-thread hero: a chat column whose timeline is showing the roomy
-   empty state, which is the element marked data-draft-hero (see useDraftHero).
-   Matches the column itself and everything inside it. */
-@custom-variant draft-hero (&:is([data-chat-column]:has([data-draft-hero]), [data-chat-column]:has([data-draft-hero]) *));
+   empty state. The empty state marks its column with data-draft-hero-shown
+   while it is in the page (useDraftHeroColumnMark). Matches the column itself
+   and everything inside it.
+   Not `[data-chat-column]:has([data-draft-hero]) *`: a rule that styles
+   descendants from what the column contains makes the browser restyle the
+   whole column after any change inside it, which while text streams was
+   about 2,000 elements ten times a second. */
+@custom-variant draft-hero (&:is([data-chat-column][data-draft-hero-shown], [data-chat-column][data-draft-hero-shown] *));
 
 :root {
   --workspace-topbar-height: 52px;
