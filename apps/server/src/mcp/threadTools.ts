@@ -18,6 +18,7 @@ import {
 } from "@threadlines/contracts";
 import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/ai";
+import { loadedOnDemand } from "./toolLoading.ts";
 
 /** How a thread is doing, in one word an agent can act on (shared with linked computers). */
 export const ThreadStatusWord = AgentThreadStatusWord;
@@ -209,64 +210,70 @@ export const drivesThreads = <T extends Tool.Any>(tool: T): T =>
     .annotate(Tool.Destructive, false)
     .annotate(Tool.OpenWorld, false) as T;
 
-export const ThreadAgentsTool = readsThreads(
-  Tool.make("thread_agents", {
-    description:
-      "The agents a thread you start can run on: each ready provider, how it is paid for, and its models with their reasoning levels. `yours` is your own model and reasoning, which threads use when you don't pick one; `room` lists the other agents in this room, each with the reasoning the user set for it. Pass one as thread_start's `agent`. A provider with a long model list shows its first ones and how many more it has; pass its `instanceId` to list them all. `computers` lists other computers linked to this one, each with its own agents: pass a computer's name as thread_start's `computer` and one of its agents as `agent`.",
-    parameters: Schema.Struct({
-      instanceId: Schema.optional(
-        Schema.String.annotate({ description: "List only this provider, with every model." }),
-      ),
-    }),
-    success: ThreadAgentsResult,
-  }).annotate(Tool.Title, "List agents threads can run on"),
+export const ThreadAgentsTool = loadedOnDemand(
+  readsThreads(
+    Tool.make("thread_agents", {
+      description:
+        "The agents a thread you start can run on: each ready provider, how it is paid for, and its models with their reasoning levels. `yours` is your own model and reasoning, which threads use when you don't pick one; `room` lists the other agents in this room, each with the reasoning the user set for it. Pass one as thread_start's `agent`. A provider with a long model list shows its first ones and how many more it has; pass its `instanceId` to list them all. `computers` lists other computers linked to this one, each with its own agents: pass a computer's name as thread_start's `computer` and one of its agents as `agent`.",
+      parameters: Schema.Struct({
+        instanceId: Schema.optional(
+          Schema.String.annotate({ description: "List only this provider, with every model." }),
+        ),
+      }),
+      success: ThreadAgentsResult,
+    }).annotate(Tool.Title, "List agents threads can run on"),
+  ),
 );
 
-export const ThreadStartTool = drivesThreads(
-  Tool.make("thread_start", {
-    description:
-      "Start new threads in this project to work in parallel. Each gets its own agent session and its own git worktree off your current commit (in a project without git they share the project folder). Give each a short `title` and a self-contained `prompt`: the new thread sees none of this conversation, only its prompt. `agent` picks a model from thread_agents; leave it out to use your own model and reasoning. Unless the user asked for a model or reasoning, prefer your own model or one already in this room (thread_agents' `room`), here or on another computer: a thread on a room agent's model runs at the reasoning the user set for that agent. `agent.reasoning` sets a level instead. Threads get your current access and interaction modes, never more; `access` asks for less. `runSetup: false` skips the project's setup script, for quick research. `checkout` puts a thread in a checkout that already exists instead of a new worktree, so it sees the files as they are there, uncommitted changes included (a reviewer for work another thread just finished): no worktree or branch is made and the setup script is not run. It shares that folder with the thread it belongs to, so have only one of them work at a time. `computer` starts them on another linked computer (a name or id from thread_agents' `computers`) in its copy of this project: from your branch when you pushed it, otherwise from that computer's default branch, without your unpushed changes. With `reportBack` (default true) each thread's final reply comes back to you as a message when it finishes; with false they run on their own and nothing comes back. Returns as soon as they are recorded and does not wait for them, so don't poll: carry on, or end your turn if you have nothing else to do. At most 5 threads per call and 5 per user message.",
-    parameters: Schema.Struct({
-      threads: Schema.Array(
-        Schema.Struct({
-          title: Schema.String.annotate({ description: "A few words naming the work." }),
-          prompt: Schema.String.annotate({
-            description: "Everything the thread needs to do the work, as its first message.",
-          }),
-          agent: Schema.optional(AgentParameter),
-          runSetup: Schema.optional(Schema.Boolean),
-          checkout: Schema.optional(
-            checkoutParameter("Work in an existing checkout instead of a new worktree:"),
-          ),
-          access: Schema.optional(
-            RuntimeMode.annotate({
-              description:
-                "Its access: `approval-required` (Supervised: the user approves its commands and edits), `auto-accept-edits`, `auto` or `full-access`. Left out, or more than your own: your own.",
+export const ThreadStartTool = loadedOnDemand(
+  drivesThreads(
+    Tool.make("thread_start", {
+      description:
+        "Start new threads in this project to work in parallel. Each gets its own agent session and its own git worktree off your current commit (in a project without git they share the project folder). Give each a short `title` and a self-contained `prompt`: the new thread sees none of this conversation, only its prompt. `agent` picks a model from thread_agents; leave it out to use your own model and reasoning. Unless the user asked for a model or reasoning, prefer your own model or one already in this room (thread_agents' `room`), here or on another computer: a thread on a room agent's model runs at the reasoning the user set for that agent. `agent.reasoning` sets a level instead. Threads get your current access and interaction modes, never more; `access` asks for less. `runSetup: false` skips the project's setup script, for quick research. `checkout` puts a thread in a checkout that already exists instead of a new worktree, so it sees the files as they are there, uncommitted changes included (a reviewer for work another thread just finished): no worktree or branch is made and the setup script is not run. It shares that folder with the thread it belongs to, so have only one of them work at a time. `computer` starts them on another linked computer (a name or id from thread_agents' `computers`) in its copy of this project: from your branch when you pushed it, otherwise from that computer's default branch, without your unpushed changes. With `reportBack` (default true) each thread's final reply comes back to you as a message when it finishes; with false they run on their own and nothing comes back. Returns as soon as they are recorded and does not wait for them, so don't poll: carry on, or end your turn if you have nothing else to do. At most 5 threads per call and 5 per user message.",
+      parameters: Schema.Struct({
+        threads: Schema.Array(
+          Schema.Struct({
+            title: Schema.String.annotate({ description: "A few words naming the work." }),
+            prompt: Schema.String.annotate({
+              description: "Everything the thread needs to do the work, as its first message.",
             }),
-          ),
-        }),
-      ),
-      reportBack: Schema.optional(Schema.Boolean),
-      computer: Schema.optional(
-        Schema.String.annotate({
-          description:
-            "A linked computer's name or id, from thread_agents. Leave out for this one.",
-        }),
-      ),
-    }),
-    success: ThreadStartResult,
-  }).annotate(Tool.Title, "Start threads"),
+            agent: Schema.optional(AgentParameter),
+            runSetup: Schema.optional(Schema.Boolean),
+            checkout: Schema.optional(
+              checkoutParameter("Work in an existing checkout instead of a new worktree:"),
+            ),
+            access: Schema.optional(
+              RuntimeMode.annotate({
+                description:
+                  "Its access: `approval-required` (Supervised: the user approves its commands and edits), `auto-accept-edits`, `auto` or `full-access`. Left out, or more than your own: your own.",
+              }),
+            ),
+          }),
+        ),
+        reportBack: Schema.optional(Schema.Boolean),
+        computer: Schema.optional(
+          Schema.String.annotate({
+            description:
+              "A linked computer's name or id, from thread_agents. Leave out for this one.",
+          }),
+        ),
+      }),
+      success: ThreadStartResult,
+    }).annotate(Tool.Title, "Start threads"),
+  ),
 );
 
-export const ThreadListTool = readsThreads(
-  Tool.make("thread_list", {
-    description:
-      'Threads you started (`scope: "mine"`, the default), including ones the user made their own and ones on linked computers (with `computer` set, status as last heard), or this project\'s open threads (`"project"`, most recently active first, at most 30). Each has its id, title, status (working, needs the user, waiting, failed, idle, wrapped), branch, model, whether its replies come back to the thread that started it, and who started it.',
-    parameters: Schema.Struct({
-      scope: Schema.optional(Schema.Literals(["mine", "project"])),
-    }),
-    success: ThreadListResult,
-  }).annotate(Tool.Title, "List threads"),
+export const ThreadListTool = loadedOnDemand(
+  readsThreads(
+    Tool.make("thread_list", {
+      description:
+        'Threads you started (`scope: "mine"`, the default), including ones the user made their own and ones on linked computers (with `computer` set, status as last heard), or this project\'s open threads (`"project"`, most recently active first, at most 30). Each has its id, title, status (working, needs the user, waiting, failed, idle, wrapped), branch, model, whether its replies come back to the thread that started it, and who started it.',
+      parameters: Schema.Struct({
+        scope: Schema.optional(Schema.Literals(["mine", "project"])),
+      }),
+      success: ThreadListResult,
+    }).annotate(Tool.Title, "List threads"),
+  ),
 );
 
 /** thread_read's way to read one message in full, the same for Threadlines' agents and outside ones. */
@@ -284,42 +291,48 @@ export const ThreadReadMessageFields = {
   ),
 };
 
-export const ThreadReadTool = readsThreads(
-  Tool.make("thread_read", {
-    description:
-      "Read another thread in this project, or one you started on a linked computer: its status and its recent messages, oldest first, each labelled with who wrote it (the user, an agent, or a request or report between threads). Messages are clipped at 4,000 characters (`clipped`, with the whole `length`); pass one's `messageId` to read all of it, 20,000 characters at a time, passing `nextOffset` as `offset` while it has one. Pass the result's `next` as `after` later to read only newer messages. `limit` defaults to 20.",
-    parameters: Schema.Struct({
-      threadId: ThreadIdParameter,
-      after: Schema.optional(Schema.Number),
-      limit: Schema.optional(Schema.Number),
-      ...ThreadReadMessageFields,
-    }),
-    success: ThreadReadResult,
-  }).annotate(Tool.Title, "Read a thread"),
+export const ThreadReadTool = loadedOnDemand(
+  readsThreads(
+    Tool.make("thread_read", {
+      description:
+        "Read another thread in this project, or one you started on a linked computer: its status and its recent messages, oldest first, each labelled with who wrote it (the user, an agent, or a request or report between threads). Messages are clipped at 4,000 characters (`clipped`, with the whole `length`); pass one's `messageId` to read all of it, 20,000 characters at a time, passing `nextOffset` as `offset` while it has one. Pass the result's `next` as `after` later to read only newer messages. `limit` defaults to 20.",
+      parameters: Schema.Struct({
+        threadId: ThreadIdParameter,
+        after: Schema.optional(Schema.Number),
+        limit: Schema.optional(Schema.Number),
+        ...ThreadReadMessageFields,
+      }),
+      success: ThreadReadResult,
+    }).annotate(Tool.Title, "Read a thread"),
+  ),
 );
 
-export const ThreadSendTool = drivesThreads(
-  Tool.make("thread_send", {
-    description:
-      "Send one of your threads a message: more work, a correction or a question. If it is idle it starts on it now; if it is busy it takes it after its current turn. Its reply comes back to you as a message, like a start. Only threads you started whose replies still come back to you. `checkout` first moves an idle thread into another thread's checkout, keeping its conversation, so it reads your message there (a thread that planned the work looks at what another thread built). Don't poll; end your turn if you have nothing else to do.",
-    parameters: Schema.Struct({
-      threadId: ThreadIdParameter,
-      message: Schema.String.annotate({ description: "What you want it to do or answer." }),
-      checkout: Schema.optional(
-        checkoutParameter("Move the thread into another checkout before it reads the message:"),
-      ),
-    }),
-    success: ThreadSendResult,
-  }).annotate(Tool.Title, "Message a thread"),
+export const ThreadSendTool = loadedOnDemand(
+  drivesThreads(
+    Tool.make("thread_send", {
+      description:
+        "Send one of your threads a message: more work, a correction or a question. If it is idle it starts on it now; if it is busy it takes it after its current turn. Its reply comes back to you as a message, like a start. Only threads you started whose replies still come back to you. `checkout` first moves an idle thread into another thread's checkout, keeping its conversation, so it reads your message there (a thread that planned the work looks at what another thread built). Don't poll; end your turn if you have nothing else to do.",
+      parameters: Schema.Struct({
+        threadId: ThreadIdParameter,
+        message: Schema.String.annotate({ description: "What you want it to do or answer." }),
+        checkout: Schema.optional(
+          checkoutParameter("Move the thread into another checkout before it reads the message:"),
+        ),
+      }),
+      success: ThreadSendResult,
+    }).annotate(Tool.Title, "Message a thread"),
+  ),
 );
 
-export const ThreadStopTool = drivesThreads(
-  Tool.make("thread_stop", {
-    description:
-      "Stop one of your threads: its turn, its background work and its session. What you asked of it ends without an answer, and messages you queued for it are taken back. A later message starts it again. Only threads you started whose replies still come back to you.",
-    parameters: Schema.Struct({ threadId: ThreadIdParameter }),
-    success: ThreadStopResult,
-  }).annotate(Tool.Title, "Stop a thread"),
+export const ThreadStopTool = loadedOnDemand(
+  drivesThreads(
+    Tool.make("thread_stop", {
+      description:
+        "Stop one of your threads: its turn, its background work and its session. What you asked of it ends without an answer, and messages you queued for it are taken back. A later message starts it again. Only threads you started whose replies still come back to you.",
+      parameters: Schema.Struct({ threadId: ThreadIdParameter }),
+      success: ThreadStopResult,
+    }).annotate(Tool.Title, "Stop a thread"),
+  ),
 );
 
 export const ThreadToolkit = Toolkit.make(

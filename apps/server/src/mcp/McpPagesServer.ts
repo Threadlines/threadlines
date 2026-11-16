@@ -33,6 +33,7 @@ import {
   unauthorizedMcpResponse,
 } from "./McpHttpServer.ts";
 import { type McpInvocationScope, mcpSessionRegistry } from "./McpSessionRegistry.ts";
+import { toolMeta } from "./toolLoading.ts";
 import {
   PreviewPageParameters,
   PreviewPageTool,
@@ -99,6 +100,8 @@ const describe = (
       idempotentHint: Context.get(tool.annotations, Tool.Idempotent),
       openWorldHint: Context.get(tool.annotations, Tool.OpenWorld),
     },
+    // A toolkit passes `_meta` on by itself; here it is by hand (toolLoading.ts).
+    _meta: toolMeta(tool),
   });
 
 const textResult = (text: string, isError: boolean, structured?: Record<string, unknown>) =>

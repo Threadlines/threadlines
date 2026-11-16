@@ -13,6 +13,7 @@ import {
   THEME_DESIGN_GUIDE,
   THEME_FORMAT_GUIDE,
 } from "../themes/themeGuide.ts";
+import { loadedOnDemand } from "./toolLoading.ts";
 
 export const THEME_PREVIEW_TOOL_NAME = "preview_theme";
 export const THEME_SHOW_TOOL_NAME = "show_theme";
@@ -50,41 +51,45 @@ export const ShowThemeResult = Schema.Struct({
   detail: Schema.optional(Schema.String),
 });
 
-export const PreviewThemeTool = Tool.make(THEME_PREVIEW_TOOL_NAME, {
-  description: [
-    "Render a Threadlines theme (how the whole app looks: colors, fonts, glass and optional live art behind it) in a mock of the app at 1440×900: in a thread, on the new-thread screen and on a Settings page (every page that isn't a chat looks like it), and in a thread on a phone held upright (390×844). You get the screenshots and a report: the readability checks, what the art costs (frames and milliseconds of work a second, and an energy label), and console errors. Use it until the theme looks right and passes, then offer it with show_theme.",
-    "Give the theme as theme (the object) or path (a file).",
-    THEME_FORMAT_GUIDE,
-    THEME_ART_CONTRACT_GUIDE,
-    THEME_ART_RULES_GUIDE,
-    THEME_DESIGN_GUIDE,
-    "The app guide's themes topic says more. The first preview on a machine can report that Threadlines is still installing its preview browser; try again a minute later.",
-  ].join(" "),
-  parameters: PreviewThemeParameters,
-  success: Schema.Struct({}),
-})
-  .annotate(Tool.Title, "Preview a theme")
-  .annotate(Tool.Readonly, true)
-  .annotate(Tool.Destructive, false)
-  .annotate(Tool.Idempotent, true)
-  .annotate(Tool.OpenWorld, false);
+export const PreviewThemeTool = loadedOnDemand(
+  Tool.make(THEME_PREVIEW_TOOL_NAME, {
+    description: [
+      "Render a Threadlines theme (how the whole app looks: colors, fonts, glass and optional live art behind it) in a mock of the app at 1440×900: in a thread, on the new-thread screen and on a Settings page (every page that isn't a chat looks like it), and in a thread on a phone held upright (390×844). You get the screenshots and a report: the readability checks, what the art costs (frames and milliseconds of work a second, and an energy label), and console errors. Use it until the theme looks right and passes, then offer it with show_theme.",
+      "Give the theme as theme (the object) or path (a file).",
+      THEME_FORMAT_GUIDE,
+      THEME_ART_CONTRACT_GUIDE,
+      THEME_ART_RULES_GUIDE,
+      THEME_DESIGN_GUIDE,
+      "The app guide's themes topic says more. The first preview on a machine can report that Threadlines is still installing its preview browser; try again a minute later.",
+    ].join(" "),
+    parameters: PreviewThemeParameters,
+    success: Schema.Struct({}),
+  })
+    .annotate(Tool.Title, "Preview a theme")
+    .annotate(Tool.Readonly, true)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+);
 
 // Read-only in the MCP sense, like show_page: the row shows in the caller's
 // own thread, and nothing changes until the user tries and keeps the theme.
-export const ShowThemeTool = Tool.make(THEME_SHOW_TOOL_NAME, {
-  description: [
-    "Offer the user a Threadlines theme: a row in this thread above your reply, with a still of it, its name and Try it, which lets the user try the theme and keep it. Check it with preview_theme first: a theme that fails the readability checks is refused.",
-    "Give the same theme object, or path, you previewed (the format is in preview_theme's description). Threadlines embeds its fonts and captures a still of its art.",
-    "The user sees the row, so don't describe the theme again in your reply.",
-  ].join(" "),
-  parameters: ShowThemeParameters,
-  success: ShowThemeResult,
-})
-  .annotate(Tool.Title, "Offer a theme")
-  .annotate(Tool.Readonly, true)
-  .annotate(Tool.Destructive, false)
-  .annotate(Tool.Idempotent, false)
-  .annotate(Tool.OpenWorld, false);
+export const ShowThemeTool = loadedOnDemand(
+  Tool.make(THEME_SHOW_TOOL_NAME, {
+    description: [
+      "Offer the user a Threadlines theme: a row in this thread above your reply, with a still of it, its name and Try it, which lets the user try the theme and keep it. Check it with preview_theme first: a theme that fails the readability checks is refused.",
+      "Give the same theme object, or path, you previewed (the format is in preview_theme's description). Threadlines embeds its fonts and captures a still of its art.",
+      "The user sees the row, so don't describe the theme again in your reply.",
+    ].join(" "),
+    parameters: ShowThemeParameters,
+    success: ShowThemeResult,
+  })
+    .annotate(Tool.Title, "Offer a theme")
+    .annotate(Tool.Readonly, true)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, false)
+    .annotate(Tool.OpenWorld, false),
+);
 
 export const FindVsCodeThemeParameters = Schema.Struct({
   query: Schema.String.annotate({
@@ -95,17 +100,19 @@ export const FindVsCodeThemeParameters = Schema.Struct({
 
 // Read-only in the MCP sense: it writes theme files into this thread's own
 // page assets folder, and nothing changes until the user tries one.
-export const FindVsCodeThemeTool = Tool.make(THEME_FIND_VSCODE_TOOL_NAME, {
-  description: [
-    "Find a VS Code color theme on the Open VSX store, for when the user asks for a theme that exists for VS Code (Dracula, Catppuccin, Tokyo Night...). Only openly licensed extensions are searched.",
-    "Each theme in the best matches comes back as a .threadlines-theme file in this thread's page assets folder, already passing the readability checks, with its author credited. Offer one with show_theme and its path; no preview is needed unless you change it.",
-    "They carry colors only, no fonts or art.",
-  ].join(" "),
-  parameters: FindVsCodeThemeParameters,
-  success: Schema.Struct({}),
-})
-  .annotate(Tool.Title, "Find a VS Code theme")
-  .annotate(Tool.Readonly, true)
-  .annotate(Tool.Destructive, false)
-  .annotate(Tool.Idempotent, true)
-  .annotate(Tool.OpenWorld, true);
+export const FindVsCodeThemeTool = loadedOnDemand(
+  Tool.make(THEME_FIND_VSCODE_TOOL_NAME, {
+    description: [
+      "Find a VS Code color theme on the Open VSX store, for when the user asks for a theme that exists for VS Code (Dracula, Catppuccin, Tokyo Night...). Only openly licensed extensions are searched.",
+      "Each theme in the best matches comes back as a .threadlines-theme file in this thread's page assets folder, already passing the readability checks, with its author credited. Offer one with show_theme and its path; no preview is needed unless you change it.",
+      "They carry colors only, no fonts or art.",
+    ].join(" "),
+    parameters: FindVsCodeThemeParameters,
+    success: Schema.Struct({}),
+  })
+    .annotate(Tool.Title, "Find a VS Code theme")
+    .annotate(Tool.Readonly, true)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, true),
+);

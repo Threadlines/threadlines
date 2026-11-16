@@ -12,7 +12,10 @@ import { expect } from "vite-plus/test";
 import { ServerConfig } from "../config.ts";
 import { type TextGenerationShape } from "./TextGeneration.ts";
 import { sanitizeThreadTitle } from "./TextGenerationUtils.ts";
-import { makeClaudeTextGeneration } from "./ClaudeTextGeneration.ts";
+import {
+  CLAUDE_TEXT_GENERATION_SYSTEM_PROMPT,
+  makeClaudeTextGeneration,
+} from "./ClaudeTextGeneration.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
 const ClaudeTextGenerationTestLayer = ServerConfig.layerTest(process.cwd(), {
@@ -538,6 +541,8 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGeneration", (it) => {
           },
         }),
         stdinMustContain: "You write concise thread titles for coding conversations.",
+        // Its own short system prompt, in place of Claude Code's agent prompt.
+        argsMustContain: `--system-prompt ${CLAUDE_TEXT_GENERATION_SYSTEM_PROMPT}`,
       },
       (textGeneration) =>
         Effect.gen(function* () {

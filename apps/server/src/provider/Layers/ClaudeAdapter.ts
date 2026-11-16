@@ -123,7 +123,7 @@ import {
   CLAUDE_PAGE_TOOL_IDS,
   PAGES_MCP_SERVER_NAME,
 } from "../../mcp/pageTools.ts";
-import { ensurePageAssetsDir } from "../../pages/PageStore.ts";
+import { PAGE_ASSETS_DIR_NAME, ensurePageAssetsDir } from "../../pages/PageStore.ts";
 import { FILE_LINK_INSTRUCTIONS } from "../fileLinkInstructions.ts";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
@@ -176,9 +176,12 @@ import {
   ROOM_MCP_SERVER_NAME,
   roomEndpointGrant,
   roomSideKindOf,
+  type RoomToolName,
   roomToolsFor,
 } from "../../mcp/roomToolAccess.ts";
 import { buildScheduleInstructions } from "../../mcp/scheduleTools.ts";
+import { THEME_FIND_VSCODE_TOOL_NAME } from "../../mcp/themeTools.ts";
+import { buildOnDemandToolInstructions } from "../../mcp/toolLoading.ts";
 import {
   applyClaudeGoalRecord,
   CLAUDE_GOAL_CLEAR_ARGS,
@@ -977,9 +980,70 @@ export const claudeRoomMcpServer = (input: {
   headers: { Authorization: `Bearer ${input.credential}` },
   timeout: CLAUDE_ROOM_TOOL_TIMEOUT_MS,
   // Listed in the prompt, not deferred behind tool search: an agent that
-  // cannot see `room_ask` does not know it can ask anyone.
+  // cannot see `room_ask` does not know it can ask anyone. The tools a thread
+  // rarely calls opt out one by one (toolLoading.ts).
   alwaysLoad: true,
 });
+
+/**
+ * What Threadlines adds to Claude Code's own system prompt for a thread's
+ * session. It is sent with every request, so agentContextBudget.test.ts pins
+ * its size. Nothing in it may differ from one thread to the next (a path with
+ * the thread's id, a time): Claude Code caches the prompt, and a prompt that
+ * differs is written again in full, with everything after it, for each thread.
+ */
+export function buildClaudeSystemPromptAppend(input: {
+  /** This thread's page assets folder, when agent pages are on. */
+  readonly pageAssetsDir: string | undefined;
+  readonly artifacts: boolean;
+  readonly commandRequests: boolean;
+  /** The room endpoint's tools this session may call, when it is attached. */
+  readonly room:
+    | { readonly tools: ReadonlyArray<RoomToolName>; readonly schedules: boolean }
+    | undefined;
+  /** A side answer: it gets none of the app's own guidance. */
+  readonly lockdown: boolean;
+  readonly managedWorktree: boolean;
+}): string {
+  const roomPrefix = `mcp__${ROOM_MCP_SERVER_NAME}__`;
+  return [
+    CLAUDE_PREVIEW_PANEL_INSTRUCTIONS,
+    ...(input.pageAssetsDir !== undefined
+      ? [
+          buildAgentPageInstructions({
+            assetsDir: input.pageAssetsDir,
+            // Claude Code lists the folder itself (additionalDirectories),
+            // after the prompt. Its path holds the thread's id.
+            assetsDirListedAs: `this thread's page assets folder, the one of your additional working directories whose path contains \`${PAGE_ASSETS_DIR_NAME}\``,
+          }),
+        ]
+      : []),
+    ...(input.artifacts ? [CLAUDE_ARTIFACT_INSTRUCTIONS] : []),
+    ...(input.commandRequests ? [buildCommandRequestInstructions({})] : []),
+    ...(input.room?.schedules === true
+      ? [buildScheduleInstructions({ toolPrefix: roomPrefix, claude: true })]
+      : []),
+    ...(input.room !== undefined && !input.lockdown
+      ? [buildGuideInstructions({ toolPrefix: roomPrefix })]
+      : []),
+    // What the tools left out of the prompt are for (toolLoading.ts).
+    ...(input.lockdown
+      ? []
+      : [
+          buildOnDemandToolInstructions({
+            browserPrefix: `mcp__${BROWSER_MCP_SERVER_NAME}__`,
+            ...(input.room !== undefined ? { roomPrefix, roomTools: input.room.tools } : {}),
+            ...(input.pageAssetsDir !== undefined
+              ? {
+                  vsCodeThemeTool: `mcp__${PAGES_MCP_SERVER_NAME}__${THEME_FIND_VSCODE_TOOL_NAME}`,
+                }
+              : {}),
+          }),
+        ]),
+    FILE_LINK_INSTRUCTIONS,
+    ...(input.managedWorktree ? [MANAGED_WORKTREE_INSTRUCTION] : []),
+  ].join("\n\n");
+}
 
 /** A locked-down side runtime's room endpoint and the room tools it may call. */
 export interface ClaudeSideRoomTools {
@@ -9521,9 +9585,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             // In the prompt rather than deferred behind tool search. Deferred,
             // the model sees eighteen tool names and none of the sentences in
             // browserTools.ts, and reaches for whichever browser has a blurb in
-            // context instead. About 3k tokens, all in the cached prefix. The
-            // SDK waits for the server before the first turn; it is this
-            // process, so the wait is nothing.
+            // context instead. So the tools a browser task starts with stay in
+            // the prompt, and the rest opt out one by one (toolLoading.ts): all
+            // eighteen were about 5.7k tokens on every request. The SDK waits
+            // for the server before the first turn; it is this process, so the
+            // wait is nothing.
             alwaysLoad: true,
           },
           [THREADLINES_CLAUDE_MCP_SERVER_NAME]: makeThreadlinesClaudeMcpServer((taskId) =>
@@ -9544,7 +9610,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
                   url: mcpPagesEndpointUrl(serverConfig.port),
                   headers: { Authorization: `Bearer ${credential.token}` },
                   // Listed in the prompt, like the browser tools: a model that
-                  // cannot see show_page writes an HTML file instead.
+                  // cannot see show_page writes an HTML file instead. The
+                  // theme tools opt out (toolLoading.ts).
                   alwaysLoad: true,
                 },
               }
@@ -9567,29 +9634,23 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         systemPrompt: {
           type: "preset",
           preset: "claude_code",
-          append: [
-            CLAUDE_PREVIEW_PANEL_INSTRUCTIONS,
-            ...(agentPages && pageAssets !== undefined
-              ? [buildAgentPageInstructions({ assetsDir: pageAssets })]
-              : []),
-            ...(artifacts ? [CLAUDE_ARTIFACT_INSTRUCTIONS] : []),
-            ...(credential !== undefined && commandRequests
-              ? [buildCommandRequestInstructions({})]
-              : []),
-            ...(roomServer !== undefined && input.scheduleTools === true
-              ? [
-                  buildScheduleInstructions({
-                    toolPrefix: `mcp__${ROOM_MCP_SERVER_NAME}__`,
-                    claude: true,
-                  }),
-                ]
-              : []),
-            ...(roomServer !== undefined && !lockdown
-              ? [buildGuideInstructions({ toolPrefix: `mcp__${ROOM_MCP_SERVER_NAME}__` })]
-              : []),
-            FILE_LINK_INSTRUCTIONS,
-            ...(runsInManagedWorktree ? [MANAGED_WORKTREE_INSTRUCTION] : []),
-          ].join("\n\n"),
+          append: buildClaudeSystemPromptAppend({
+            pageAssetsDir: agentPages ? pageAssets : undefined,
+            artifacts,
+            commandRequests: credential !== undefined && commandRequests,
+            room:
+              roomServer !== undefined
+                ? {
+                    tools: roomToolsFor(undefined, {
+                      scheduledRun: input.scheduledRunTools === true,
+                      guideOnly: roomGrant.guideOnly,
+                    }),
+                    schedules: input.scheduleTools === true,
+                  }
+                : undefined,
+            lockdown,
+            managedWorktree: runsInManagedWorktree,
+          }),
         },
         settingSources: [...CLAUDE_SETTING_SOURCES],
         // SDK 0.3.233 dropped the todo/task tools from the default tool
