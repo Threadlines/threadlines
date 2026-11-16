@@ -1,5 +1,8 @@
 import { MessageId } from "@threadlines/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
+import { cdp } from "vite-plus/test/browser";
+// Types `cdp()` as Playwright's session.
+import type {} from "vite-plus/test/browser-playwright";
 
 import {
   createSnapshotForTargetUser,
@@ -55,7 +58,10 @@ describe("ChatView (full app): the desktop app's window", () => {
       );
       expect(document.querySelector('[data-slot="navigation-rail"]')).not.toBeNull();
       const panel = document.querySelector<HTMLElement>('[data-testid="app-panel"]')!;
-      expect(getComputedStyle(panel).borderTopLeftRadius).not.toBe("0px");
+      const shape = document.querySelector<HTMLElement>('[data-slot="app-panel-shape"]')!;
+      expect(getComputedStyle(shape).borderTopLeftRadius).not.toBe("0px");
+      const corner = document.querySelector<HTMLElement>('[data-slot="app-panel-corner"]')!;
+      expect(getComputedStyle(corner).display).not.toBe("none");
 
       // The list floats over the page, closed, instead of sitting beside it.
       const list = panel.querySelector<HTMLElement>(':scope > [data-slot="sidebar"]')!;
@@ -92,6 +98,59 @@ describe("ChatView (full app): the desktop app's window", () => {
       await mounted.cleanup();
       root.style.removeProperty("--workspace-controls-right");
       root.classList.remove("electron", "wco");
+    }
+  });
+
+  it("rounds the panel's corner without a mask layer the size of the panel", async () => {
+    // A rounded clip around the panel's pages gives every separately drawn
+    // part inside it (the chat's scroller, the list's) a mask as big as the
+    // panel: a drawn layer that belongs to no element (index.css, "The work
+    // panel's rounded corner").
+    document.documentElement.classList.add("electron");
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-desktop-corner" as MessageId,
+        targetText: "desktop corner",
+      }),
+    });
+    const session = cdp();
+    try {
+      await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-slot="sidebar-inner"]'),
+        "The thread list should show beside the thread.",
+      );
+      const panel = document.querySelector<HTMLElement>('[data-testid="app-panel"]')!;
+      const panelArea = panel.clientWidth * panel.clientHeight * devicePixelRatio ** 2;
+      let layers: ReadonlyArray<{
+        readonly drawsContent: boolean;
+        readonly backendNodeId?: number;
+        readonly width: number;
+        readonly height: number;
+      }> | null = null;
+      session.on("LayerTree.layerTreeDidChange", (event) => {
+        if (event.layers) layers = event.layers;
+      });
+      await session.send("LayerTree.enable");
+      // The tree is reported on the next frame the page draws.
+      await vi.waitFor(() => {
+        document.body.style.outline = document.body.style.outline ? "" : "0 solid transparent";
+        expect(layers).not.toBeNull();
+      });
+      const masks = layers!.filter(
+        (layer) =>
+          layer.drawsContent &&
+          layer.backendNodeId === undefined &&
+          layer.width * layer.height >= panelArea * 0.5,
+      );
+      // The chat's scroller is drawn on its own: there is something to mask.
+      expect(layers!.some((layer) => layer.drawsContent && layer.backendNodeId)).toBe(true);
+      expect(masks).toEqual([]);
+    } finally {
+      await session.send("LayerTree.disable");
+      document.body.style.outline = "";
+      await mounted.cleanup();
+      document.documentElement.classList.remove("electron");
     }
   });
 

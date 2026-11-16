@@ -610,6 +610,55 @@ html.electron body {
   background: linear-gradient(var(--frame) var(--app-titlebar-height), var(--background) 0);
 }
 
+/* The work panel's rounded corner. The box that clips the panel's pages
+   (app-panel) is square on purpose: a rounded clip makes every separately
+   drawn part inside it (scrollers, animations) carry a mask the size of the
+   whole panel, about 15 MB of graphics memory each. This piece sits on the
+   clip's top-left corner, above whatever reaches it (a floating list is
+   z-40), below what covers the whole window (z-50), and draws what a rounded
+   clip would leave there: the frame outside the curve, then the panel's own
+   fill and hairline along it, on the same curve the panel's outline
+   (app-panel-shape, rounded-tl-3xl) draws. */
+[data-slot="app-panel-corner"] {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 45;
+  width: calc(var(--app-radius-large) - 1px);
+  height: calc(var(--app-radius-large) - 1px);
+  overflow: hidden;
+  pointer-events: none;
+}
+[data-slot="app-panel-corner"]::before,
+[data-slot="app-panel-corner"]::after {
+  content: "";
+  position: absolute;
+  top: -1px;
+  left: -1px;
+  width: calc(var(--app-radius-large) * 2);
+  height: calc(var(--app-radius-large) * 2);
+  border-style: solid;
+  border-width: 1px 0 0 1px;
+  border-top-left-radius: var(--app-radius-large);
+}
+[data-slot="app-panel-corner"]::before {
+  border-color: var(--background);
+  box-shadow: 0 0 0 var(--app-radius-large) var(--frame);
+}
+[data-slot="app-panel-corner"]::after {
+  border-color: var(--border);
+}
+/* Over glass the frame is the art itself, which nothing on top can repaint,
+   so the pages are clipped round instead (and pay for the masks). */
+html[data-glass] [data-slot="app-panel-corner"] {
+  display: none;
+}
+html[data-glass] [data-slot="app-panel"] {
+  @variant desktop {
+    border-top-left-radius: calc(var(--app-radius-large) - 1px);
+  }
+}
+
 /* Glass (docs/design/custom-themes.md, "Glass in the app"): only while the
    active theme has live art, set on <html> by theme/themeApply.ts. The art
    is drawn behind the page (ThemeBackdropLayer); while it runs, its frame
@@ -627,7 +676,7 @@ html[data-glass] body {
   background: transparent !important;
 }
 html[data-glass] [data-slot="sidebar-wrapper"],
-html[data-glass] [data-slot="app-panel"],
+html[data-glass] [data-slot="app-panel-shape"],
 html[data-glass] [data-slot="app-panel"] > [data-slot="sidebar"] [data-slot="sidebar-container"] {
   background-color: transparent;
 }

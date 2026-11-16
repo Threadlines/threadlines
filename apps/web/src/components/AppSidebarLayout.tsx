@@ -349,35 +349,47 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
       <AppTitleBar slotRef={setTitleBarSlot} />
       <div className="flex min-h-0 flex-1">
         <NavigationRail />
+        {/* The panel's look (fill, hairline, rounded corner) sits apart from
+            the box that clips its pages: a rounded clip would make every
+            separately drawn part inside (scrollers, animations) carry a
+            panel-sized mask, about 15 MB of graphics memory each. The clip
+            stays square and the corner piece draws the curve over it
+            (index.css, "The work panel's rounded corner"). */}
         <div
-          ref={panelRef}
-          data-slot="app-panel"
-          data-testid="app-panel"
-          className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background desktop:rounded-tl-3xl desktop:border-t desktop:border-l desktop:border-border"
+          data-slot="app-panel-shape"
+          className="relative flex min-h-0 min-w-0 flex-1 bg-background desktop:rounded-tl-3xl desktop:border-t desktop:border-l desktop:border-border"
         >
-          <Sidebar
-            side="left"
-            // Hiding slides the list away inside the panel; the rail and the
-            // title row stay where they are.
-            collapsible="offcanvas"
-            // The list shares the panel's canvas, split from the page by a hairline.
-            className="border-r border-border bg-background text-foreground [--sidebar:var(--background)]"
-            resizable={{
-              minWidth: THREAD_SIDEBAR_MIN_WIDTH,
-              // The page keeps its minimum beside the list.
-              shouldAcceptWidth: ({ nextWidth, sidebarRoot, wrapper }) =>
-                (sidebarRoot.parentElement?.clientWidth ??
-                  wrapper.clientWidth - NAVIGATION_RAIL_WIDTH_PX) -
-                  nextWidth >=
-                PAGE_MIN_WIDTH_BESIDE_LIST,
-              storageKey: THREAD_SIDEBAR_WIDTH_STORAGE_KEY,
-            }}
+          <div
+            ref={panelRef}
+            data-slot="app-panel"
+            data-testid="app-panel"
+            className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden"
           >
-            <ThreadSidebar />
-            {/* The drag handle on the pane's edge; it resizes while open. */}
-            <SidebarRail />
-          </Sidebar>
-          <TitleBarSlotContext value={titleBarSlot}>{children}</TitleBarSlotContext>
+            <Sidebar
+              side="left"
+              // Hiding slides the list away inside the panel; the rail and the
+              // title row stay where they are.
+              collapsible="offcanvas"
+              // The list shares the panel's canvas, split from the page by a hairline.
+              className="border-r border-border bg-background text-foreground [--sidebar:var(--background)]"
+              resizable={{
+                minWidth: THREAD_SIDEBAR_MIN_WIDTH,
+                // The page keeps its minimum beside the list.
+                shouldAcceptWidth: ({ nextWidth, sidebarRoot, wrapper }) =>
+                  (sidebarRoot.parentElement?.clientWidth ??
+                    wrapper.clientWidth - NAVIGATION_RAIL_WIDTH_PX) -
+                    nextWidth >=
+                  PAGE_MIN_WIDTH_BESIDE_LIST,
+                storageKey: THREAD_SIDEBAR_WIDTH_STORAGE_KEY,
+              }}
+            >
+              <ThreadSidebar />
+              {/* The drag handle on the pane's edge; it resizes while open. */}
+              <SidebarRail />
+            </Sidebar>
+            <TitleBarSlotContext value={titleBarSlot}>{children}</TitleBarSlotContext>
+          </div>
+          <span aria-hidden data-slot="app-panel-corner" className="hidden desktop:block" />
         </div>
       </div>
     </SidebarProvider>
