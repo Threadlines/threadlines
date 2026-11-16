@@ -118,6 +118,7 @@ import * as PagePreview from "./pages/preview/PagePreview.ts";
 import { ThemeLibraryLive } from "./themes/ThemeLibrary.ts";
 import { ThemeLibraryRepositoryLive } from "./themes/ThemeLibraryRepository.ts";
 import { ThemeShowcaseLive } from "./themes/ThemeShowcase.ts";
+import { ThemeVsCodeLive } from "./themes/ThemeVsCode.ts";
 import { ThemeShowcaseRepositoryLive } from "./themes/ThemeShowcaseRepository.ts";
 import { ThemeWorkshopLive } from "./themes/ThemeWorkshop.ts";
 import { DictationLive } from "./dictation/DictationService.ts";
@@ -599,6 +600,8 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
       // Getting themes ready, for the library and the theme tools: their
       // fonts, and specimens, stills and thumbnails in the preview browser.
       Layer.provideMerge(ThemeWorkshopLive),
+      // VS Code themes from the Open VSX store, for the app and the agents' find_vscode_theme.
+      Layer.provideMerge(ThemeVsCodeLive),
     ),
   ),
   Layer.provideMerge(ProviderRuntimeLayerLive),

@@ -69,6 +69,7 @@ import {
   WsRpcGroup,
   WsMovesRpcGroup,
   WsThemeShowcaseRpcGroup,
+  WsThemeVsCodeRpcGroup,
   WsThemesRpcGroup,
   WsOwnerRequiredError,
   OutsideAgentError,
@@ -178,6 +179,7 @@ import { ScheduledTasks, snapshotForClient } from "./scheduled/ScheduledTasks.ts
 import { ThemeLibrary } from "./themes/ThemeLibrary.ts";
 import { ThemeShowcase } from "./themes/ThemeShowcase.ts";
 import { MoveQueue } from "./moves/MoveQueue.ts";
+import { ThemeVsCode } from "./themes/ThemeVsCode.ts";
 import { ThreadMoves } from "./moves/ThreadMoves.ts";
 import { ProjectSetups } from "./projectSetup/ProjectSetups.ts";
 import { ProjectSetupSource } from "./projectSetup/ProjectSetupSource.ts";
@@ -765,6 +767,20 @@ const MovesRpcLayer = WsMovesRpcGroup.toLayer(
   }),
 );
 
+/** VS Code themes from the Open VSX store (docs/design/custom-themes.md). */
+const ThemeVsCodeRpcLayer = WsThemeVsCodeRpcGroup.toLayer(
+  Effect.gen(function* () {
+    const vscode = yield* ThemeVsCode;
+    const aggregate = { "rpc.aggregate": "themeVsCode" } as const;
+    return WsThemeVsCodeRpcGroup.of({
+      [WS_METHODS.themeVsCodeSearch]: (input) =>
+        observeRpcEffect(WS_METHODS.themeVsCodeSearch, vscode.search(input), aggregate),
+      [WS_METHODS.themeVsCodeRead]: (input) =>
+        observeRpcEffect(WS_METHODS.themeVsCodeRead, vscode.read(input), aggregate),
+    });
+  }),
+);
+
 /** Every RPC the WebSocket serves, for one connection. */
 const makeWsRpcLayer = (
   currentSession: {
@@ -783,6 +799,7 @@ const makeWsRpcLayer = (
     ThemesRpcLayer,
     ThemeShowcaseRpcLayer,
     MovesRpcLayer,
+    ThemeVsCodeRpcLayer,
   );
 
 const makeCoreRpcLayer = (

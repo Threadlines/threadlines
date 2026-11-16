@@ -64,10 +64,13 @@ export function pageVersionPath(input: {
   );
 }
 
+/** The folder every thread's page assets folder sits in, under the temp folder. */
+export const PAGE_ASSETS_DIR_NAME = "threadlines-page-assets";
+
 /** The folder an agent saves a page's local images in. */
 export function pageAssetsDir(threadId: string, tmpDir: string = NodeOs.tmpdir()): string | null {
   const segment = toSafeThreadAttachmentSegment(threadId);
-  return segment === null ? null : NodePath.join(tmpDir, "threadlines-page-assets", segment);
+  return segment === null ? null : NodePath.join(tmpDir, PAGE_ASSETS_DIR_NAME, segment);
 }
 
 export class PageStoreError extends Schema.TaggedError<PageStoreError>()("PageStoreError", {

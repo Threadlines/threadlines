@@ -4,6 +4,7 @@
  * the export dialog made ready to share; import reads
  * one (Settings, or a file dropped on the window), checks it the way the
  * server will, and holds it for the import dialog, which starts its trial.
+ * A VS Code color theme file picked with Import is converted first.
  */
 import {
   THEME_FILE_EXTENSION,
@@ -11,6 +12,12 @@ import {
   type ThemeManifest,
 } from "@threadlines/contracts";
 import { checkThemeManifest, themeContentHash } from "@threadlines/shared/themeManifest";
+import {
+  convertVsCodeTheme,
+  isVsCodeThemeFile,
+  parseJsonWithComments,
+  readVsCodeTheme,
+} from "@threadlines/shared/themeVsCode";
 import { themeFileText } from "@threadlines/shared/themeSharing";
 
 import { useThemeImportStore } from "./themeImportState";
@@ -26,13 +33,19 @@ export async function importThemeFile(file: File): Promise<void> {
     });
     return;
   }
+  const text = await file.text();
   let parsed: unknown;
   try {
-    parsed = JSON.parse(await file.text());
+    // VS Code theme files may hold comments and trailing commas.
+    parsed = parseJsonWithComments(text);
   } catch {
     useThemeImportStore
       .getState()
       .set({ ok: false, fileName, errors: ["The file isn't a theme file."] });
+    return;
+  }
+  if (isVsCodeThemeFile(parsed)) {
+    await importVsCodeThemeFile(fileName, text);
     return;
   }
   const check = checkThemeManifest(parsed);
@@ -40,13 +53,47 @@ export async function importThemeFile(file: File): Promise<void> {
     useThemeImportStore.getState().set({ ok: false, fileName, errors: check.errors });
     return;
   }
+  // Imported here; a VS Code theme's source comes along.
+  const vscode = check.manifest.createdBy?.vscode;
   const manifest: ThemeManifest = {
     ...check.manifest,
-    createdBy: { kind: "imported" },
+    createdBy: { kind: "imported", ...(vscode === undefined ? {} : { vscode }) },
   };
   useThemeImportStore
     .getState()
     .set({ ok: true, fileName, manifest, hash: await themeContentHash(manifest) });
+}
+
+/**
+ * A VS Code color theme file, converted (themeVsCode.ts). One that builds on
+ * another file (`include`) needs its extension: the VS Code tab brings those in.
+ */
+async function importVsCodeThemeFile(fileName: string, text: string): Promise<void> {
+  const fail = (error: string) =>
+    useThemeImportStore.getState().set({ ok: false, fileName, errors: [error] });
+  let theme;
+  try {
+    theme = await readVsCodeTheme("theme.json", async (path) =>
+      path === "theme.json" ? text : null,
+    );
+  } catch {
+    fail(
+      "This VS Code theme builds on another file, so it can't be imported on its own. Find it in the VS Code tab instead.",
+    );
+    return;
+  }
+  const label = theme.name ?? fileName.replace(/\.json$/i, "").replace(/-color-theme$/i, "");
+  const converted = convertVsCodeTheme({ theme, label });
+  if (!converted.ok) {
+    fail(converted.problem);
+    return;
+  }
+  useThemeImportStore.getState().set({
+    ok: true,
+    fileName,
+    manifest: converted.manifest,
+    hash: await themeContentHash(converted.manifest),
+  });
 }
 
 /** A file name for a theme: its name, made safe, with the theme extension. */

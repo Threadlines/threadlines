@@ -18,6 +18,7 @@ import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/ai";
 
 import { reasoningParameter, ROOM_REASONING } from "./threadTools.ts";
+import { loadedOnDemand } from "./toolLoading.ts";
 
 export const AgentScheduledTask = Schema.Struct({
   id: Schema.String,
@@ -116,68 +117,74 @@ const changesSchedules = <T extends Tool.Any>(tool: T): T =>
     .annotate(Tool.Destructive, false)
     .annotate(Tool.OpenWorld, false) as T;
 
-export const ScheduleListTool = Tool.make("schedule_list", {
-  description:
-    "This project's scheduled tasks on this computer: each one's id, name, schedule, status (active, paused, done for a one-time task that ran, or error with why), next run, last run and its instructions, and the date and time now on this computer. Scheduled tasks start threads at set times while Threadlines is running on this computer.",
-  // No `parameters`: Tool.make's default lists as an empty object. An empty
-  // `Schema.Struct({})` lists as "object or array", and Claude then rejects
-  // the whole room endpoint's tool list.
-  success: ScheduleListResult,
-})
-  .annotate(Tool.Readonly, true)
-  .annotate(Tool.Destructive, false)
-  .annotate(Tool.OpenWorld, false)
-  .annotate(Tool.Title, "List scheduled tasks");
-
-export const ScheduleCreateTool = changesSchedules(
-  Tool.make("schedule_create", {
+export const ScheduleListTool = loadedOnDemand(
+  Tool.make("schedule_list", {
     description:
-      "Create a scheduled task in this project. Use it whenever the user wants work done later or on a schedule: the task shows on Threadlines' Scheduled page, where the user manages it. At each scheduled time it starts a new thread with `prompt` as its first message (each run sees only the prompt, so make it self-contained), or with `each_run: \"this_thread\"` sends it to this thread as a follow-up. Runs use your model and reasoning unless `agent` names another (a model already in this room runs at the reasoning the user set for it there), and your current access, never more. It runs while Threadlines is running on this computer; a time missed while it was off or asleep gets one catch-up run. Depending on the user's settings the task is created at once or a card asks the user first (`asked_user`): tell the user it waits for their OK, and you'll hear their answer at your next turn.",
-    parameters: Schema.Struct({
-      name: Schema.String.annotate({ description: "A short name for the task." }),
-      prompt: Schema.String.annotate({ description: "What each run should do." }),
-      schedule: CadenceParameter,
-      time_zone: Schema.optional(TimeZoneParameter),
-      each_run: Schema.optional(
-        Schema.Literals(["new_thread", "this_thread"]).annotate({
-          description: 'Default "new_thread".',
-        }),
-      ),
-      runs_in: Schema.optional(
-        Schema.Literals(["local", "worktree"]).annotate({
-          description:
-            'Where a new thread works: "local", the project folder as it is (the default), or "worktree", a new git worktree for each run.',
-        }),
-      ),
-      agent: Schema.optional(
-        Schema.Struct({
-          instanceId: Schema.String.annotate({ description: "From thread_agents." }),
-          model: Schema.String.annotate({ description: "From thread_agents." }),
-          reasoning: Schema.optional(reasoningParameter("thread_agents", ROOM_REASONING)),
-        }),
-      ),
-    }),
-    success: ScheduleChangeResult,
-  }).annotate(Tool.Title, "Create a scheduled task"),
+      "This project's scheduled tasks on this computer: each one's id, name, schedule, status (active, paused, done for a one-time task that ran, or error with why), next run, last run and its instructions, and the date and time now on this computer. Scheduled tasks start threads at set times while Threadlines is running on this computer.",
+    // No `parameters`: Tool.make's default lists as an empty object. An empty
+    // `Schema.Struct({})` lists as "object or array", and Claude then rejects
+    // the whole room endpoint's tool list.
+    success: ScheduleListResult,
+  })
+    .annotate(Tool.Readonly, true)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.OpenWorld, false)
+    .annotate(Tool.Title, "List scheduled tasks"),
 );
 
-export const ScheduleUpdateTool = changesSchedules(
-  Tool.make("schedule_update", {
-    description:
-      "Change one of this project's scheduled tasks (an id from schedule_list): its name, instructions, schedule, time zone or where its threads work, or pause and resume it with `paused`. Fields left out stay as they are. Depending on the user's settings the change is made at once or a card asks the user first (`asked_user`): tell the user it waits for their OK, and you'll hear their answer at your next turn.",
-    parameters: Schema.Struct({
-      id: Schema.String.annotate({ description: "The task's id, from schedule_list." }),
-      name: Schema.optional(Schema.String),
-      prompt: Schema.optional(Schema.String),
-      schedule: Schema.optional(CadenceParameter),
-      time_zone: Schema.optional(TimeZoneParameter),
-      runs_in: Schema.optional(Schema.Literals(["local", "worktree"])),
-      paused: Schema.optional(
-        Schema.Boolean.annotate({ description: "true pauses it, false resumes it." }),
-      ),
-    }),
-    success: ScheduleChangeResult,
-  }).annotate(Tool.Title, "Change a scheduled task"),
+export const ScheduleCreateTool = loadedOnDemand(
+  changesSchedules(
+    Tool.make("schedule_create", {
+      description:
+        "Create a scheduled task in this project. Use it whenever the user wants work done later or on a schedule: the task shows on Threadlines' Scheduled page, where the user manages it. At each scheduled time it starts a new thread with `prompt` as its first message (each run sees only the prompt, so make it self-contained), or with `each_run: \"this_thread\"` sends it to this thread as a follow-up. Runs use your model and reasoning unless `agent` names another (a model already in this room runs at the reasoning the user set for it there), and your current access, never more. It runs while Threadlines is running on this computer; a time missed while it was off or asleep gets one catch-up run. Depending on the user's settings the task is created at once or a card asks the user first (`asked_user`): tell the user it waits for their OK, and you'll hear their answer at your next turn.",
+      parameters: Schema.Struct({
+        name: Schema.String.annotate({ description: "A short name for the task." }),
+        prompt: Schema.String.annotate({ description: "What each run should do." }),
+        schedule: CadenceParameter,
+        time_zone: Schema.optional(TimeZoneParameter),
+        each_run: Schema.optional(
+          Schema.Literals(["new_thread", "this_thread"]).annotate({
+            description: 'Default "new_thread".',
+          }),
+        ),
+        runs_in: Schema.optional(
+          Schema.Literals(["local", "worktree"]).annotate({
+            description:
+              'Where a new thread works: "local", the project folder as it is (the default), or "worktree", a new git worktree for each run.',
+          }),
+        ),
+        agent: Schema.optional(
+          Schema.Struct({
+            instanceId: Schema.String.annotate({ description: "From thread_agents." }),
+            model: Schema.String.annotate({ description: "From thread_agents." }),
+            reasoning: Schema.optional(reasoningParameter("thread_agents", ROOM_REASONING)),
+          }),
+        ),
+      }),
+      success: ScheduleChangeResult,
+    }).annotate(Tool.Title, "Create a scheduled task"),
+  ),
+);
+
+export const ScheduleUpdateTool = loadedOnDemand(
+  changesSchedules(
+    Tool.make("schedule_update", {
+      description:
+        "Change one of this project's scheduled tasks (an id from schedule_list): its name, instructions, schedule, time zone or where its threads work, or pause and resume it with `paused`. Fields left out stay as they are. Depending on the user's settings the change is made at once or a card asks the user first (`asked_user`): tell the user it waits for their OK, and you'll hear their answer at your next turn.",
+      parameters: Schema.Struct({
+        id: Schema.String.annotate({ description: "The task's id, from schedule_list." }),
+        name: Schema.optional(Schema.String),
+        prompt: Schema.optional(Schema.String),
+        schedule: Schema.optional(CadenceParameter),
+        time_zone: Schema.optional(TimeZoneParameter),
+        runs_in: Schema.optional(Schema.Literals(["local", "worktree"])),
+        paused: Schema.optional(
+          Schema.Boolean.annotate({ description: "true pauses it, false resumes it." }),
+        ),
+      }),
+      success: ScheduleChangeResult,
+    }).annotate(Tool.Title, "Change a scheduled task"),
+  ),
 );
 
 export const ScheduledRunFinishTool = changesSchedules(

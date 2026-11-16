@@ -104,7 +104,7 @@ const KNOWN: Readonly<Record<string, ReadonlySet<string>>> = {
     readability: true,
   }),
   backdrop: keys<Part<"backdrop">>({ mode: true, script: true, maxFps: true, still: true }),
-  credits: keys<Part<"credits">>({ author: true, link: true, license: true }),
+  credits: keys<Part<"credits">>({ author: true, link: true, license: true, vscode: true }),
 };
 
 /** Fields this build doesn't know, as paths ("glass.sheen"); a public share carries none. */
@@ -139,7 +139,12 @@ export function themeShowcaseProblems(manifest: ThemeManifest): string[] {
   const check = checkThemeManifest(manifest, { authoring: true });
   if (!check.ok) return [...check.errors];
   const problems: string[] = [];
-  if (manifest.createdBy !== undefined) {
+  if (manifest.credits?.vscode !== undefined || manifest.createdBy?.vscode !== undefined) {
+    // Its author shares it where they choose; a copy brought into Threadlines isn't the sharer's.
+    problems.push(
+      "It was brought in from a VS Code theme someone else made, so it can't be shared to the Showcase.",
+    );
+  } else if (manifest.createdBy !== undefined) {
     problems.push("It says which thread made it (createdBy); a shared theme never does.");
   }
   const license = manifest.credits?.license;

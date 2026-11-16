@@ -10,10 +10,7 @@
  * asks to Update that copy instead, with Keep both beside it. Undo, Esc and
  * the countdown put the old theme back.
  */
-import type { ThemeBase } from "@threadlines/contracts";
-import { BUILTIN_THEME_TOKENS } from "@threadlines/shared/themeBuiltinTokens";
-import { THEME_TOKEN_NAMES } from "@threadlines/shared/themeTokens";
-import { type CSSProperties, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
   endThemeTrial,
@@ -34,24 +31,9 @@ import {
   DialogPopup,
   DialogTitle,
 } from "../../ui/dialog";
+import { builtinThemeStyle } from "./builtinThemeStyle";
 import { ThemeCreditsText } from "./ThemeCreditsText";
 import { keepThemeTrial, useThemeUpdateTarget } from "./themeTrialState";
-
-/** The built-in UI font, as index.css declares it. */
-const BUILTIN_FONT_SANS =
-  '"Schibsted Grotesk Variable", "Schibsted Grotesk", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif';
-
-/** CSS variables that put the built-in theme back inside an element. */
-export function builtinThemeStyle(base: ThemeBase): CSSProperties {
-  const tokens = BUILTIN_THEME_TOKENS[base];
-  const style: Record<string, string> = {
-    colorScheme: base,
-    fontFamily: BUILTIN_FONT_SANS,
-    "--font-sans": BUILTIN_FONT_SANS,
-  };
-  for (const name of THEME_TOKEN_NAMES) style[`--${name}`] = tokens[name];
-  return style as CSSProperties;
-}
 
 /** Seconds until a trial ends by itself, updated four times a second while it runs. */
 function useSecondsLeft(trial: ThemeTrial | null): number {

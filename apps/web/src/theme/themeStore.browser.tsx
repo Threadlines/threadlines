@@ -13,6 +13,7 @@ import { resolveThemeTokens } from "@threadlines/shared/themeTokens";
 import { measureBackdropZones } from "./backdropZones";
 import { cssGlassTints, glassClarity, glassFloors, glassTextRatio, glassTintCss } from "./glass";
 import { applyGlassTints } from "./themeApply";
+import { embeddedFontFamily } from "./themeFonts";
 import {
   THEME_PAINT_STORAGE_KEY,
   THEME_STORAGE_KEY,
@@ -327,7 +328,7 @@ describe("theme store, applied", () => {
     );
 
     adoptStoredThemeChoice();
-    const family = `TL Theme Mono ${HASH_C.slice(0, 12)}`;
+    const family = embeddedFontFamily(HASH_C, "mono", manifest.fonts!.mono);
     await expect
       .poll(() =>
         Array.from(document.fonts).some(

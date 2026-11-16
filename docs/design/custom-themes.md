@@ -930,6 +930,97 @@ share dialog adds a line saying the email shows.
 
 **Takedown.** An issue form in the repository; maintainers remove the folder.
 
+## Editing colors
+
+Nov 15: changing one color used to mean asking an agent. Edit colors… (a
+theme's options on Appearance, Light and Dark included; "Edit theme colors…"
+in the command palette for the theme in use) opens a panel beside the app
+(`ThemeColorEditor.tsx`, loaded only when it opens; a bottom sheet on phones).
+
+- **What it edits.** The theme's own colors: background, text, quiet text,
+  accent, text on accent, and the optional borders, success, warning, error,
+  info, code background and selected text, which show the app's color until
+  set (× takes one back to the app's). Colors the theme sets directly
+  (`overrides`) are listed under them. Light and Dark become a theme file
+  from their colors first.
+- **Preview.** Every change is a held trial (a drag on the color picker
+  settles for 150 ms first, since each preview restarts a theme's art; an
+  embedded font is named by its own bytes, so previews share one face), so
+  the whole app is the preview and the Keep bar hides for that trial only;
+  Cancel, × or Esc ends it. The panel itself keeps the built-in colors, so
+  it stays readable whatever is being tried. When something else takes the
+  theme (another theme picked, a pick from another device, another window,
+  the /theme strip open or opening; also before the first preview), the
+  editor closes rather than show colors the app isn't wearing. Opening it
+  again on the same theme keeps the edits. A save that finishes after Cancel stays in the library
+  and changes nothing on screen.
+- **Readability.** Each color lists where it fails the readability check
+  (once per surface); Save waits until nothing does, and until the theme
+  passes every other check (an override that must be opaque, say). Fix for me
+  runs `fitThemeColors` (themes/fit.ts, shared with VS Code import): failing
+  colors move, hue kept, a text color the theme sets directly before the seed
+  it overrides, and the background never does.
+- **Pick from the app.** The next click anywhere (outside the panel) is
+  swallowed and answered: the element's background (its own or the nearest
+  behind it), text and border are matched against the theme's app colors
+  and traced back to the color that makes each (`themeTokenSeed`), and those
+  rows are marked. When two app colors are the same color, one the theme sets
+  directly wins, then the one made for that part.
+- **Saving.** A library theme saves back to itself (Save), or Save as new; any
+  other theme saves as a new one, named in the panel.
+
+## VS Code themes
+
+Nov 15: thousands of color themes already exist for VS Code. The VS Code tab
+on Appearance (beside Your themes and Showcase) brings them in.
+
+- **Where they come from.** The Open VSX store, searched by the server
+  (`themes/ThemeVsCode.ts`, RPCs `themeVsCode.search` and `themeVsCode.read`,
+  capability `themeVsCode`). Only open-vsx.org and the host it sends
+  downloads to, over https on the public internet, every response capped. A
+  search lists only extensions whose package.json declares JSON color themes
+  and an open license (`VSCODE_THEME_LICENSES`: MIT, Apache-2.0, BSD, ISC,
+  MPL-2.0, CC0, CC BY, Unlicense, 0BSD). Reading one downloads its package
+  (12 MB at most), checks it against the SHA-256 the store gives, reads its
+  package.json again (the license inside decides), and reads only its theme
+  files out of the zip in memory, each at most 1 MB, following `include`
+  chains inside the extension. Nothing is written to disk. Searches and
+  packages are kept in memory a while.
+- **Converting** (`packages/shared` `themeVsCode`). The editor background,
+  its text, a quieter text (the first the theme sets that is quieter than its
+  text), the accent (the first of its brand colors with some color in it), the
+  text on the accent, status colors, the selection, the side bar (an
+  override), syntax colors from the token rules (the longest matching plain
+  selector, later rules winning) and the 16 terminal colors. No fonts or art.
+  The kind (light or dark) follows the background. Then every color that
+  fails the readability check moves, hue kept, until it passes; a seed the
+  app derives safely (a status color, the side bar, the selection) is dropped
+  instead. The background never moves. The count of moved colors is shown.
+- **Credits.** The author's name (never the address in package.json's
+  author field), the extension's homepage or repository, and the license when
+  ours can carry it (MIT, CC0, CC BY). `credits.vscode` marks it as brought
+  in (the extension, or "file"); it's part of the content, so every copy
+  keeps it, older builds' exports included, and the Showcase turns such a
+  theme away: it isn't the sharer's work. `createdBy.vscode` adds the
+  version, the theme's label and the SPDX license.
+- **The tab.** Search with a sort (Most downloaded, Best rated, Best match),
+  tiles drawn from each extension's first theme, Show more. A page the store
+  didn't fully answer says a few may be missing, with Try again; neither the
+  server nor the app keeps such a page, and a search is asked again after ten
+  minutes. A tile opens its
+  themes with checkboxes: one picked is Try (the usual trial and Keep),
+  several is Add N themes (straight to the library). The tab's code loads only
+  when it's picked.
+- **Files.** Import takes a VS Code theme `.json` too. One that builds on
+  another file (`include`) needs its extension, so the dialog points to the
+  tab. A dropped `.json` stays with whatever takes it (the composer), since a
+  drop can't be read before it's claimed.
+- **Agents.** `find_vscode_theme({ query })` searches, reads the best three
+  extensions, and writes each theme as a new `.threadlines-theme` file (a
+  fresh name, never over an existing file) in the thread's page assets folder
+  for `show_theme({ path })`. Claude runs it
+  without asking, like the other page tools.
+
 ## Rule changes (approved by Will, Nov 5)
 
 - AGENTS.md: "No continuously repainting animations". Live backdrops are a

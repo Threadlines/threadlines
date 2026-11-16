@@ -36,6 +36,7 @@ import {
 } from "@threadlines/contracts";
 import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/ai";
+import { loadedOnDemand } from "./toolLoading.ts";
 
 /** Everything here reaches out of the machine and into a live page. */
 const pageTool = <T extends Tool.Any>(tool: T): T => tool.annotate(Tool.OpenWorld, true) as T;
@@ -66,53 +67,63 @@ export const BrowserScreenshotTool = readsOnly(
   }).annotate(Tool.Title, "Look at the page"),
 );
 
-export const BrowserStatusTool = readsOnly(
-  Tool.make("browser_status", {
-    description:
-      "Where the Threadlines browser panel is right now: its URL, title, size, and whether it is still loading. Cheap; use it to confirm a navigation landed rather than taking a whole snapshot.",
-    parameters: PreviewAutomationEmptyInputSchema,
-    success: PreviewAutomationStatusSchema,
-    failure: PreviewAutomationErrorSchema,
-  }).annotate(Tool.Title, "Check the browser"),
+export const BrowserStatusTool = loadedOnDemand(
+  readsOnly(
+    Tool.make("browser_status", {
+      description:
+        "Where the Threadlines browser panel is right now: its URL, title, size, and whether it is still loading. Cheap; use it to confirm a navigation landed rather than taking a whole snapshot.",
+      parameters: PreviewAutomationEmptyInputSchema,
+      success: PreviewAutomationStatusSchema,
+      failure: PreviewAutomationErrorSchema,
+    }).annotate(Tool.Title, "Check the browser"),
+  ),
 );
 
-export const BrowserTabsTool = readsOnly(
-  Tool.make("browser_tabs", {
-    description:
-      "Every page open in the Threadlines browser panel, including each stable tab id, with the user's visible tab and your pinned tab marked. Use a tab id on any browser tool to act there without changing what the user sees.",
-    success: PreviewAutomationTabsSchema,
-    failure: PreviewAutomationErrorSchema,
-  }).annotate(Tool.Title, "List tabs"),
+export const BrowserTabsTool = loadedOnDemand(
+  readsOnly(
+    Tool.make("browser_tabs", {
+      description:
+        "Every page open in the Threadlines browser panel, including each stable tab id, with the user's visible tab and your pinned tab marked. Use a tab id on any browser tool to act there without changing what the user sees.",
+      success: PreviewAutomationTabsSchema,
+      failure: PreviewAutomationErrorSchema,
+    }).annotate(Tool.Title, "List tabs"),
+  ),
 );
 
-export const BrowserOpenTabTool = changesThePage(
-  Tool.make("browser_open_tab", {
-    description:
-      "Create a browser tab owned by this agent and pin future browser actions to it. Give a URL to load it immediately; a site that needs the user's OK waits for their answer, as browser_navigate does. Set background true to leave the user's visible tab alone; the new tab is only brought to the front without it, or when it replaces the empty tab of a panel you opened.",
-    parameters: PreviewAutomationOpenTabInputSchema,
-    success: PreviewAutomationStatusSchema,
-    failure: PreviewAutomationErrorSchema,
-  }).annotate(Tool.Title, "Open a tab"),
+export const BrowserOpenTabTool = loadedOnDemand(
+  changesThePage(
+    Tool.make("browser_open_tab", {
+      description:
+        "Create a browser tab owned by this agent and pin future browser actions to it. Give a URL to load it immediately; a site that needs the user's OK waits for their answer, as browser_navigate does. Set background true to leave the user's visible tab alone; the new tab is only brought to the front without it, or when it replaces the empty tab of a panel you opened.",
+      parameters: PreviewAutomationOpenTabInputSchema,
+      success: PreviewAutomationStatusSchema,
+      failure: PreviewAutomationErrorSchema,
+    }).annotate(Tool.Title, "Open a tab"),
+  ),
 );
 
-export const BrowserCloseTabTool = changesThePage(
-  Tool.make("browser_close_tab", {
-    description:
-      "Close one of this agent's own browser tabs. Omit tabId to close the pinned tab, or use an owned stable id from browser_tabs. The result reports the closed page, remaining tabs, and whether the browser panel stayed open.",
-    parameters: PreviewAutomationCloseTabInputSchema,
-    success: PreviewAutomationTabsSchema,
-    failure: PreviewAutomationErrorSchema,
-  }).annotate(Tool.Title, "Close a tab"),
+export const BrowserCloseTabTool = loadedOnDemand(
+  changesThePage(
+    Tool.make("browser_close_tab", {
+      description:
+        "Close one of this agent's own browser tabs. Omit tabId to close the pinned tab, or use an owned stable id from browser_tabs. The result reports the closed page, remaining tabs, and whether the browser panel stayed open.",
+      parameters: PreviewAutomationCloseTabInputSchema,
+      success: PreviewAutomationTabsSchema,
+      failure: PreviewAutomationErrorSchema,
+    }).annotate(Tool.Title, "Close a tab"),
+  ),
 );
 
-export const BrowserSelectTabTool = changesThePage(
-  Tool.make("browser_select_tab", {
-    description:
-      "Pin your future browser actions to another open tab. Prefer its stable tabId from browser_tabs. Set background true to leave the user's visible tab alone; otherwise the tab is also brought to the front.",
-    parameters: PreviewAutomationSelectTabInputSchema,
-    success: PreviewAutomationStatusSchema,
-    failure: PreviewAutomationErrorSchema,
-  }).annotate(Tool.Title, "Switch tab"),
+export const BrowserSelectTabTool = loadedOnDemand(
+  changesThePage(
+    Tool.make("browser_select_tab", {
+      description:
+        "Pin your future browser actions to another open tab. Prefer its stable tabId from browser_tabs. Set background true to leave the user's visible tab alone; otherwise the tab is also brought to the front.",
+      parameters: PreviewAutomationSelectTabInputSchema,
+      success: PreviewAutomationStatusSchema,
+      failure: PreviewAutomationErrorSchema,
+    }).annotate(Tool.Title, "Switch tab"),
+  ),
 );
 
 export const BrowserNavigateTool = changesThePage(
@@ -135,24 +146,28 @@ export const BrowserClickTool = changesThePage(
   }).annotate(Tool.Title, "Click"),
 );
 
-export const BrowserMoveTool = changesThePage(
-  Tool.make("browser_move", {
-    description:
-      'Move the pointer onto something without clicking it. Use it for menus, tooltips and controls that only appear on hover, and to show where you are about to work. Name the target the same way as browser_click, or give `{"point": {"x": 0, "y": 0}}` to move to a place rather than an element.',
-    parameters: PreviewAutomationMoveInputSchema,
-    success: PreviewAutomationStatusSchema,
-    failure: PreviewAutomationErrorSchema,
-  }).annotate(Tool.Title, "Move"),
+export const BrowserMoveTool = loadedOnDemand(
+  changesThePage(
+    Tool.make("browser_move", {
+      description:
+        'Move the pointer onto something without clicking it. Use it for menus, tooltips and controls that only appear on hover, and to show where you are about to work. Name the target the same way as browser_click, or give `{"point": {"x": 0, "y": 0}}` to move to a place rather than an element.',
+      parameters: PreviewAutomationMoveInputSchema,
+      success: PreviewAutomationStatusSchema,
+      failure: PreviewAutomationErrorSchema,
+    }).annotate(Tool.Title, "Move"),
+  ),
 );
 
-export const BrowserDragTool = changesThePage(
-  Tool.make("browser_drag", {
-    description:
-      'Press on one thing, drag to another, release. This is how you select a range of text, reorder an item in a list, or work a slider. Name both ends the same way as browser_click, or give `{"point": {"x": 0, "y": 0}}` for a place rather than an element -- a selection that starts and ends mid-word needs coordinates, which browser_evaluate can measure for you with a Range and getBoundingClientRect.',
-    parameters: PreviewAutomationDragInputSchema,
-    success: PreviewAutomationStatusSchema,
-    failure: PreviewAutomationErrorSchema,
-  }).annotate(Tool.Title, "Drag"),
+export const BrowserDragTool = loadedOnDemand(
+  changesThePage(
+    Tool.make("browser_drag", {
+      description:
+        'Press on one thing, drag to another, release. This is how you select a range of text, reorder an item in a list, or work a slider. Name both ends the same way as browser_click, or give `{"point": {"x": 0, "y": 0}}` for a place rather than an element -- a selection that starts and ends mid-word needs coordinates, which browser_evaluate can measure for you with a Range and getBoundingClientRect.',
+      parameters: PreviewAutomationDragInputSchema,
+      success: PreviewAutomationStatusSchema,
+      failure: PreviewAutomationErrorSchema,
+    }).annotate(Tool.Title, "Drag"),
+  ),
 );
 
 export const BrowserTypeTool = changesThePage(
@@ -165,70 +180,82 @@ export const BrowserTypeTool = changesThePage(
   }).annotate(Tool.Title, "Type"),
 );
 
-export const BrowserPressTool = changesThePage(
-  Tool.make("browser_press", {
-    description:
-      "Press a key on whatever has focus: Enter, Escape, Tab, an arrow, or a shortcut with modifiers. For entering text into a field, use browser_type.",
-    parameters: PreviewAutomationPressInputSchema,
-    success: PreviewAutomationActionStatusSchema,
-    failure: PreviewAutomationErrorSchema,
-  }).annotate(Tool.Title, "Press a key"),
+export const BrowserPressTool = loadedOnDemand(
+  changesThePage(
+    Tool.make("browser_press", {
+      description:
+        "Press a key on whatever has focus: Enter, Escape, Tab, an arrow, or a shortcut with modifiers. For entering text into a field, use browser_type.",
+      parameters: PreviewAutomationPressInputSchema,
+      success: PreviewAutomationActionStatusSchema,
+      failure: PreviewAutomationErrorSchema,
+    }).annotate(Tool.Title, "Press a key"),
+  ),
 );
 
-export const BrowserScrollTool = changesThePage(
-  Tool.make("browser_scroll", {
-    description:
-      "Scroll the page, either by an amount or until a given element is in view, and get back the page state afterwards. Worth doing before a screenshot when the thing you care about is below the fold. A page that has nothing to scroll succeeds and stays where it is.",
-    parameters: PreviewAutomationScrollInputSchema,
-    success: PreviewAutomationStatusSchema,
-    failure: PreviewAutomationErrorSchema,
-  })
-    .annotate(Tool.Title, "Scroll")
-    .annotate(Tool.Destructive, false),
+export const BrowserScrollTool = loadedOnDemand(
+  changesThePage(
+    Tool.make("browser_scroll", {
+      description:
+        "Scroll the page, either by an amount or until a given element is in view, and get back the page state afterwards. Worth doing before a screenshot when the thing you care about is below the fold. A page that has nothing to scroll succeeds and stays where it is.",
+      parameters: PreviewAutomationScrollInputSchema,
+      success: PreviewAutomationStatusSchema,
+      failure: PreviewAutomationErrorSchema,
+    })
+      .annotate(Tool.Title, "Scroll")
+      .annotate(Tool.Destructive, false),
+  ),
 );
 
-export const BrowserWaitForTool = readsOnly(
-  Tool.make("browser_wait_for", {
-    description:
-      "Wait until the page catches up: an element appears, some text shows, or the URL changes. Use this after an action that kicks off a request, instead of taking snapshots until one happens to look right.",
-    parameters: PreviewAutomationWaitForInputSchema,
-    success: PreviewAutomationStatusSchema,
-    failure: PreviewAutomationErrorSchema,
-  }).annotate(Tool.Title, "Wait for the page"),
+export const BrowserWaitForTool = loadedOnDemand(
+  readsOnly(
+    Tool.make("browser_wait_for", {
+      description:
+        "Wait until the page catches up: an element appears, some text shows, or the URL changes. Use this after an action that kicks off a request, instead of taking snapshots until one happens to look right.",
+      parameters: PreviewAutomationWaitForInputSchema,
+      success: PreviewAutomationStatusSchema,
+      failure: PreviewAutomationErrorSchema,
+    }).annotate(Tool.Title, "Wait for the page"),
+  ),
 );
 
-export const BrowserEvaluateTool = changesThePage(
-  Tool.make("browser_evaluate", {
-    description:
-      "Run JavaScript in the page and get the result back, wrapped as {result}. The escape hatch for what the other tools cannot reach -- reading a computed style, inspecting app state, checking a global. Anything that survives JSON comes back, arrays and primitives included.",
-    parameters: PreviewAutomationEvaluateInputSchema,
-    success: Schema.Struct({ result: Schema.Unknown }),
-    failure: PreviewAutomationErrorSchema,
-  }).annotate(Tool.Title, "Run JavaScript"),
+export const BrowserEvaluateTool = loadedOnDemand(
+  changesThePage(
+    Tool.make("browser_evaluate", {
+      description:
+        "Run JavaScript in the page and get the result back, wrapped as {result}. The escape hatch for what the other tools cannot reach -- reading a computed style, inspecting app state, checking a global. Anything that survives JSON comes back, arrays and primitives included.",
+      parameters: PreviewAutomationEvaluateInputSchema,
+      success: Schema.Struct({ result: Schema.Unknown }),
+      failure: PreviewAutomationErrorSchema,
+    }).annotate(Tool.Title, "Run JavaScript"),
+  ),
 );
 
-export const BrowserResizeTool = changesThePage(
-  Tool.make("browser_resize", {
-    description:
-      "Set the page's CSS viewport, to check a layout at a given width. The panel scales the page down to fit beside the chat, so a desktop width stays whole on screen rather than cropped, and the user's window does not change. Pass null for both to let the page fill the panel and reflow with it. Returns the page state at the new size.",
-    parameters: PreviewAutomationResizeInputSchema,
-    success: PreviewAutomationStatusSchema,
-    failure: PreviewAutomationErrorSchema,
-  })
-    .annotate(Tool.Title, "Resize the page")
-    .annotate(Tool.Destructive, false),
+export const BrowserResizeTool = loadedOnDemand(
+  changesThePage(
+    Tool.make("browser_resize", {
+      description:
+        "Set the page's CSS viewport, to check a layout at a given width. The panel scales the page down to fit beside the chat, so a desktop width stays whole on screen rather than cropped, and the user's window does not change. Pass null for both to let the page fill the panel and reflow with it. Returns the page state at the new size.",
+      parameters: PreviewAutomationResizeInputSchema,
+      success: PreviewAutomationStatusSchema,
+      failure: PreviewAutomationErrorSchema,
+    })
+      .annotate(Tool.Title, "Resize the page")
+      .annotate(Tool.Destructive, false),
+  ),
 );
 
-export const BrowserSetAppearanceTool = changesThePage(
-  Tool.make("browser_set_appearance", {
-    description:
-      "Emulate the page's preferred light or dark color scheme without changing the Threadlines app theme.",
-    parameters: PreviewAutomationSetAppearanceInputSchema,
-    success: PreviewAutomationStatusSchema,
-    failure: PreviewAutomationErrorSchema,
-  })
-    .annotate(Tool.Title, "Set page appearance")
-    .annotate(Tool.Destructive, false),
+export const BrowserSetAppearanceTool = loadedOnDemand(
+  changesThePage(
+    Tool.make("browser_set_appearance", {
+      description:
+        "Emulate the page's preferred light or dark color scheme without changing the Threadlines app theme.",
+      parameters: PreviewAutomationSetAppearanceInputSchema,
+      success: PreviewAutomationStatusSchema,
+      failure: PreviewAutomationErrorSchema,
+    })
+      .annotate(Tool.Title, "Set page appearance")
+      .annotate(Tool.Destructive, false),
+  ),
 );
 
 /**

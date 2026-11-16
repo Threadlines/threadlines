@@ -51,6 +51,14 @@ import { planCliSpawn } from "../cliSpawn.ts";
 const CLAUDE_TIMEOUT_MS = 180_000;
 
 /**
+ * The whole system prompt of a text-generation run. The message that follows
+ * carries the task and its rules (TextGenerationPrompts.ts); this only says
+ * what kind of run it is. The user's own instruction files still load.
+ */
+export const CLAUDE_TEXT_GENERATION_SYSTEM_PROMPT =
+  "You write short pieces of text for a developer tool: thread titles, branch names, commit messages and pull request text. Follow the instructions in the message exactly. Answer in one step with only what they ask for: never ask a question, and never write anything before or after the answer.";
+
+/**
  * Schema for the wrapper JSON returned by `claude -p --output-format json`.
  * We only care about `structured_output`.
  */
@@ -191,6 +199,11 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
           ...(cliEffort ? ["--effort", cliEffort] : []),
           "--settings",
           settingsJson,
+          // In place of Claude Code's own system prompt, which is written for
+          // an agent at work in a repository: about 7,000 tokens on each of
+          // the two requests a structured answer takes, to write a title.
+          "--system-prompt",
+          CLAUDE_TEXT_GENERATION_SYSTEM_PROMPT,
           // No tools: the prompt quotes the user's message, and a writer that
           // could run Bash or Edit would carry out what it asks. The JSON
           // schema's own StructuredOutput tool survives this.

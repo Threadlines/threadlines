@@ -16,7 +16,7 @@ import {
 import { DEFAULT_UNIFIED_SETTINGS } from "@threadlines/contracts/settings";
 import { placeById, type SettingsPlaceId } from "@threadlines/shared/appPlaces";
 import { EllipsisIcon, PlusIcon, UploadIcon } from "lucide-react";
-import { type ReactNode, useId, useRef, useState } from "react";
+import { lazy, type ReactNode, Suspense, useId, useRef, useState } from "react";
 
 import { useGeneralChats } from "~/components/chats/useGeneralChats";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
@@ -78,6 +78,8 @@ import {
 import { Input } from "../../ui/input";
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../../ui/menu";
 import { SegmentedControl, SegmentedControlItem } from "../../ui/segmented-control";
+import { Spinner } from "../../ui/spinner";
+import { openThemeEditor } from "./themeEditorState";
 import { failureNotice, toastManager } from "../../ui/toast";
 import { SettingResetButton, SettingsGroup, SettingsRow } from "../../settings/settingsLayout";
 import { moveBetweenTabs, pageTabId } from "../../ui/page-tabs";
@@ -266,10 +268,11 @@ function RenameDialog({
 }
 
 /**
- * A starter's or your theme's options: Duplicate (a copy in your themes, to
- * change), Export file (its dialog makes the file ready to share) and Copy
- * prompt for both; Share to Showcase, Rename and Delete for your own, and
- * Take back while a share of it is in review. Built-ins have none.
+ * A theme's options: Edit colors (the color editor) for every theme but
+ * System; Duplicate (a copy in your themes, to change), Export file (its
+ * dialog makes the file ready to share) and Copy prompt for starters and
+ * yours; Share to Showcase, Rename and Delete for your own, and Take back
+ * while a share of it is in review.
  */
 function ThemeTileMenu({
   tile,
@@ -291,7 +294,9 @@ function ThemeTileMenu({
   readonly onDelete: () => void;
 }) {
   const { copyToClipboard } = useCopyToClipboard();
-  if (tile.group === "builtin") return null;
+  // System is Light or Dark by the computer's setting: those two are the ones to edit.
+  if (tile.choice.kind === "builtin" && tile.choice.id === "system") return null;
+  const builtin = tile.group === "builtin";
   const library = tile.library ?? null;
   const duplicate = () => {
     const name = `${tile.name} copy`.slice(0, 60);
@@ -318,37 +323,42 @@ function ThemeTileMenu({
         }
       />
       <MenuPopup align="end">
-        {library ? <MenuItem onClick={onRename}>Rename</MenuItem> : null}
-        <MenuItem onClick={duplicate}>Duplicate</MenuItem>
-        <MenuItem onClick={onExport}>Export file…</MenuItem>
-        {library && onShare ? <MenuItem onClick={onShare}>Share to Showcase…</MenuItem> : null}
-        {library && onTakeBack ? (
-          <MenuItem onClick={onTakeBack}>Take back from Showcase…</MenuItem>
-        ) : null}
-        <MenuItem
-          onClick={() =>
-            void loadTileManifest(tile)
-              .then((manifest) => {
-                if (manifest?.prompt) copyToClipboard(manifest.prompt);
-                else
-                  toastManager.add({
-                    type: "info",
-                    title: "This theme has no prompt saved with it",
-                  });
-              })
-              .catch(failed("Couldn't read the theme"))
-          }
-        >
-          Copy prompt
-        </MenuItem>
-        {library ? (
+        <MenuItem onClick={() => openThemeEditor(tile)}>Edit colors…</MenuItem>
+        {builtin ? null : (
           <>
-            <MenuSeparator />
-            <MenuItem variant="destructive" onClick={onDelete}>
-              {inUse ? "Delete…" : "Delete"}
+            {library ? <MenuItem onClick={onRename}>Rename</MenuItem> : null}
+            <MenuItem onClick={duplicate}>Duplicate</MenuItem>
+            <MenuItem onClick={onExport}>Export file…</MenuItem>
+            {library && onShare ? <MenuItem onClick={onShare}>Share to Showcase…</MenuItem> : null}
+            {library && onTakeBack ? (
+              <MenuItem onClick={onTakeBack}>Take back from Showcase…</MenuItem>
+            ) : null}
+            <MenuItem
+              onClick={() =>
+                void loadTileManifest(tile)
+                  .then((manifest) => {
+                    if (manifest?.prompt) copyToClipboard(manifest.prompt);
+                    else
+                      toastManager.add({
+                        type: "info",
+                        title: "This theme has no prompt saved with it",
+                      });
+                  })
+                  .catch(failed("Couldn't read the theme"))
+              }
+            >
+              Copy prompt
             </MenuItem>
+            {library ? (
+              <>
+                <MenuSeparator />
+                <MenuItem variant="destructive" onClick={onDelete}>
+                  {inUse ? "Delete…" : "Delete"}
+                </MenuItem>
+              </>
+            ) : null}
           </>
-        ) : null}
+        )}
       </MenuPopup>
     </Menu>
   );
@@ -430,10 +440,15 @@ const THEME_FILTERS: ReadonlyArray<{ readonly value: ThemeFilter; readonly label
   { value: "builtin", label: "Built in" },
 ];
 
-type GalleryView = "mine" | "showcase";
+type GalleryView = "mine" | "showcase" | "vscode";
+
+/** VS Code themes, loaded only when their tab is picked. */
+const ThemeVsCodeView = lazy(() =>
+  import("./ThemeVsCodeView").then((module) => ({ default: module.ThemeVsCodeView })),
+);
 
 /**
- * The gallery: your themes and the Showcase, a switch apart. Your themes are
+ * The gallery: your themes, the Showcase and VS Code themes, a switch apart. Your themes are
  * every theme this device can wear, yours first, the one it wears marked;
  * plain words above them narrow them to one kind. Nothing is remembered, so
  * Settings always opens on your themes, All.
@@ -449,12 +464,24 @@ export function ThemeGallery() {
     >
       <SegmentedControlItem value="mine">Your themes</SegmentedControlItem>
       <SegmentedControlItem value="showcase">Showcase</SegmentedControlItem>
+      <SegmentedControlItem value="vscode">VS Code</SegmentedControlItem>
     </SegmentedControl>
   );
   return (
     <div data-place="appearance.theme" className="flex flex-col gap-1.5">
       {view === "showcase" ? (
         <ThemeShowcaseView switcher={switcher} />
+      ) : view === "vscode" ? (
+        <Suspense
+          fallback={
+            <>
+              <div className="flex items-center">{switcher}</div>
+              <Spinner className="size-3.5" />
+            </>
+          }
+        >
+          <ThemeVsCodeView switcher={switcher} />
+        </Suspense>
       ) : (
         <OwnThemes switcher={switcher} />
       )}
@@ -586,25 +613,23 @@ function OwnThemes({ switcher }: { readonly switcher: ReactNode }) {
                     onSelect={() => pick(tile)}
                     className="w-full"
                   />
-                  {tile.group !== "builtin" ? (
-                    <ThemeTileMenu
-                      tile={tile}
-                      inUse={sameThemeChoice(tile.choice, committed)}
-                      onRename={() => setRenaming(tile)}
-                      onExport={() => exportTile(tile)}
-                      onShare={sharer === null ? null : () => shareTile(tile, sharer)}
-                      onTakeBack={
-                        share?.submission.state === "inReview" && takesBack(share.environmentId)
-                          ? () => setTakingBack({ ...share, name: tile.name })
-                          : null
-                      }
-                      onDelete={() =>
-                        sameThemeChoice(tile.choice, committed)
-                          ? setConfirmDelete(tile)
-                          : remove(tile)
-                      }
-                    />
-                  ) : null}
+                  <ThemeTileMenu
+                    tile={tile}
+                    inUse={sameThemeChoice(tile.choice, committed)}
+                    onRename={() => setRenaming(tile)}
+                    onExport={() => exportTile(tile)}
+                    onShare={sharer === null ? null : () => shareTile(tile, sharer)}
+                    onTakeBack={
+                      share?.submission.state === "inReview" && takesBack(share.environmentId)
+                        ? () => setTakingBack({ ...share, name: tile.name })
+                        : null
+                    }
+                    onDelete={() =>
+                      sameThemeChoice(tile.choice, committed)
+                        ? setConfirmDelete(tile)
+                        : remove(tile)
+                    }
+                  />
                 </div>
               );
             })}

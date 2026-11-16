@@ -601,6 +601,17 @@ function mcpDraft(
     }
   }
   // Agent pages and themes: showing one is part of the answer; a preview is checking work.
+  if (call.server === "threadlines_pages" && tool === "find_vscode_theme") {
+    const wording = phrase("Looked for a VS Code theme", "Looking for a VS Code theme");
+    return {
+      routine: true,
+      tallies: [{ tally: "tool" }],
+      icon: "tool",
+      label: wording.past,
+      liveLabel: wording.live,
+      detail: { call: `${call.server} · ${call.tool}${call.args ? `: ${call.args}` : ""}` },
+    };
+  }
   if (call.server === "threadlines_pages") {
     const theme = tool === "show_theme" || tool === "preview_theme";
     const showing = tool === "show_page" || tool === "show_theme";

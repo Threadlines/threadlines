@@ -430,12 +430,22 @@ With {place:threads.commandRequests} on, an agent can ask you to run a command i
       "look",
       "showcase",
       "share theme",
+      "vs code theme",
+      "vscode",
+      "open vsx",
+      "edit colors",
+      "color editor",
+      "change accent",
     ],
     body: `A theme changes how all of Threadlines looks: its colors, its fonts, and optionally live art behind the app, with the chat and Settings on frosted glass in front. A device picks its theme in {place:settings.appearance}, and with {place:appearance.sameEverywhere} on (the default) its pick becomes every such device's theme; a theme kept once is in this computer's library on every device.
 
 An agent makes one with preview_theme (screenshots of the app wearing it, its readability checks and what its art costs) and offers it with show_theme: a row in the chat with Try it. Trying shows a bar at the top of the window, Keep or Undo, and it switches back by itself after 15 seconds (for a new version of a theme already kept from the same offer in that chat, the bar asks to Update that copy, with Keep both to add another); Esc, a reload or closing the window undo it too (while the /theme picker is open, a preview waits for its ✕ or Esc instead). The Settings gallery, the composer's /theme and an imported ${THEME_FILE_EXTENSION} file start the same trial. New theme, in /theme or in Settings, puts the start of a request in the message box ("Make me a Threadlines theme that feels like") with a few ideas to finish it (Settings opens a general chat for it); sending it asks the agent for one. In Settings, the options on a theme's picture rename it, duplicate it to change a copy, export a file to share, copy the request it was made from, or delete it; starters can be duplicated and exported. An exported file never says which thread made the theme and leaves the request out unless the user includes it; its author can add a credit (name, link, CC BY or CC0), which importing shows, and a theme that already has one keeps it.
 
 The Showcase, beside Your themes in {place:settings.appearance}, lists themes people shared, reviewed before they're listed; clicking one starts the same trial. Share to Showcase…, in a theme's options, opens a public pull request to the Threadlines/themes repository from the GitHub account this computer is signed in to with gh, after showing what gets published. It's public the moment it's shared, under that account's name but without its email. It needs a CC BY or CC0 license, fonts that carry their own copyright and license, and no parts this version doesn't know; the theme's picture then says In review, In the Showcase, Taken back or Not added. Until it's added, Take back from Showcase…, in the same options, closes the pull request; GitHub keeps the closed one. Agents can't share or take back for the user.
+
+Edit colors…, in a theme's options in {place:settings.appearance} (Light and Dark too) or "Edit theme colors…" in the command palette, opens a panel beside the app with the theme's own colors (background, text, quiet text, accent, text on accent, and the optional borders, status, code background and selected text). Every change shows across the app at once; Cancel or Esc puts back what was there. Each color says where it's hard to read, and Fix for me moves those colors a little until they read. Pick from the app, then a click anywhere, says which of those colors paints that spot. Save updates a theme in the library; any other is saved as a new theme.
+
+VS Code, the third tab there, searches the Open VSX store for VS Code color themes under an open license. Clicking one lists the themes in it: pick one to try it the same way, or several to add them to the library. They bring the colors over (app, code and terminal), never fonts or art; a color that would be hard to read moves a little, and the dialog says how many did. The theme credits its author and keeps the extension's license. Import takes a VS Code theme file too. An agent finds one with find_vscode_theme, which saves each theme as a file in the chat's page assets folder for show_theme.
 
 ${THEME_FORMAT_GUIDE}
 

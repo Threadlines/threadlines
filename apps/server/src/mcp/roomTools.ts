@@ -18,6 +18,7 @@ import { Tool, Toolkit } from "effect/ai";
 import type { McpInvocationScope } from "./McpSessionRegistry.ts";
 import { ROOM_DIFF_VIEWS } from "./roomGit.ts";
 import { ROOM_HISTORY_MAX_LIMIT } from "./roomHistory.ts";
+import { loadedOnDemand } from "./toolLoading.ts";
 
 /**
  * Who called a room tool, from the credential the request arrived with (see
@@ -225,31 +226,35 @@ export const RoomAskTool = asksAgent(
   }).annotate(Tool.Title, "Ask another agent"),
 );
 
-export const RoomReviewTool = asksAgent(
-  Tool.make("room_review", {
-    description:
-      "Get an independent review from another agent. It starts fresh: it sees none of this room's conversation, only your request and the code. Put the goal, the user's requirements and what to check in the request. Leave out your own conclusions. `basis` is what it reviews: the uncommitted changes (default) or { base } for base..HEAD, captured now. Its review comes back to you here; one that takes longer than about 25 minutes (one minute on some agents), or that the user writes to you during, returns `continuing` and comes to you later as a message instead.",
-    parameters: Schema.Struct({
-      agent: AgentName,
-      request: Schema.String.annotate({
-        description: "The goal, the user's requirements, and what to check.",
+export const RoomReviewTool = loadedOnDemand(
+  asksAgent(
+    Tool.make("room_review", {
+      description:
+        "Get an independent review from another agent. It starts fresh: it sees none of this room's conversation, only your request and the code. Put the goal, the user's requirements and what to check in the request. Leave out your own conclusions. `basis` is what it reviews: the uncommitted changes (default) or { base } for base..HEAD, captured now. Its review comes back to you here; one that takes longer than about 25 minutes (one minute on some agents), or that the user writes to you during, returns `continuing` and comes to you later as a message instead.",
+      parameters: Schema.Struct({
+        agent: AgentName,
+        request: Schema.String.annotate({
+          description: "The goal, the user's requirements, and what to check.",
+        }),
+        basis: Schema.optional(RoomReviewBasisParameter),
       }),
-      basis: Schema.optional(RoomReviewBasisParameter),
-    }),
-    success: RoomAnswerResult,
-  }).annotate(Tool.Title, "Get an independent review"),
+      success: RoomAnswerResult,
+    }).annotate(Tool.Title, "Get an independent review"),
+  ),
 );
 
-export const RoomHandOffTool = asksAgent(
-  Tool.make("room_hand_off", {
-    description:
-      "Hand the next working turn to another agent. It sees the room conversation and can edit. End your turn after calling this; its reply will come back to you as a message.",
-    parameters: Schema.Struct({
-      agent: AgentName,
-      message: Schema.String.annotate({ description: "What you want it to do." }),
-    }),
-    success: RoomHandOffResult,
-  }).annotate(Tool.Title, "Hand off to another agent"),
+export const RoomHandOffTool = loadedOnDemand(
+  asksAgent(
+    Tool.make("room_hand_off", {
+      description:
+        "Hand the next working turn to another agent. It sees the room conversation and can edit. End your turn after calling this; its reply will come back to you as a message.",
+      parameters: Schema.Struct({
+        agent: AgentName,
+        message: Schema.String.annotate({ description: "What you want it to do." }),
+      }),
+      success: RoomHandOffResult,
+    }).annotate(Tool.Title, "Hand off to another agent"),
+  ),
 );
 
 export const RoomHistoryTool = readsRoom(
@@ -277,40 +282,44 @@ export const RoomDiffTool = readsRoom(
   }).annotate(Tool.Title, "Read the checkout's changes"),
 );
 
-export const RoomAvailableAgentsTool = readsRoom(
-  Tool.make("room_available_agents", {
-    description:
-      "Other agents the user could bring into this thread, for room_invite: each signed-in Codex and Claude provider, how it is paid for, and its models, each with the reasoning levels it offers, with the ones already in this thread marked.",
-    success: RoomAvailableAgentsResult,
-  }).annotate(Tool.Title, "List agents that could be brought in"),
+export const RoomAvailableAgentsTool = loadedOnDemand(
+  readsRoom(
+    Tool.make("room_available_agents", {
+      description:
+        "Other agents the user could bring into this thread, for room_invite: each signed-in Codex and Claude provider, how it is paid for, and its models, each with the reasoning levels it offers, with the ones already in this thread marked.",
+      success: RoomAvailableAgentsResult,
+    }).annotate(Tool.Title, "List agents that could be brought in"),
+  ),
 );
 
-export const RoomInviteTool = asksAgent(
-  Tool.make("room_invite", {
-    description:
-      "Ask the user to bring another agent into this thread for an independent review of your work, a second opinion from a different model. Use it when a review would really help (a risky change, a hard bug, a call the user should not take on one model's word), not for routine work. The reviewer starts fresh: it sees none of this conversation, only your request and the code. Put the goal, the user's requirements and what to check in `request`; leave out your own conclusions. `reason` is one short sentence the user sees when deciding. `suggestion`: `review` (default) for a one-off review, or `teammate` to suggest it joins the thread for good. `reasoning` sets how hard it thinks, when the user or the work calls for a level; the user sees it when deciding. `basis` is what it reviews: the uncommitted changes (default) or { base } for base..HEAD, captured now. Returns at once. Keep working or end your turn; do not wait. If the review runs, it comes back to you as a message. If the user says no, you will not hear back; do not ask again unless the user asks you to.",
-    parameters: Schema.Struct({
-      agent: Schema.String.annotate({
-        description:
-          'The model: its key from room_available_agents, or an unambiguous name ("GPT-6 Astra").',
-      }),
-      request: Schema.String.annotate({
-        description: "The goal, the user's requirements, and what to check.",
-      }),
-      reason: Schema.String.annotate({
-        description: "Why a second opinion helps here, in one short sentence, for the user.",
-      }),
-      suggestion: Schema.optional(Schema.Literals(["review", "teammate"])),
-      reasoning: Schema.optional(
-        Schema.String.annotate({
+export const RoomInviteTool = loadedOnDemand(
+  asksAgent(
+    Tool.make("room_invite", {
+      description:
+        "Ask the user to bring another agent into this thread for an independent review of your work, a second opinion from a different model. Use it when a review would really help (a risky change, a hard bug, a call the user should not take on one model's word), not for routine work. The reviewer starts fresh: it sees none of this conversation, only your request and the code. Put the goal, the user's requirements and what to check in `request`; leave out your own conclusions. `reason` is one short sentence the user sees when deciding. `suggestion`: `review` (default) for a one-off review, or `teammate` to suggest it joins the thread for good. `reasoning` sets how hard it thinks, when the user or the work calls for a level; the user sees it when deciding. `basis` is what it reviews: the uncommitted changes (default) or { base } for base..HEAD, captured now. Returns at once. Keep working or end your turn; do not wait. If the review runs, it comes back to you as a message. If the user says no, you will not hear back; do not ask again unless the user asks you to.",
+      parameters: Schema.Struct({
+        agent: Schema.String.annotate({
           description:
-            "How hard the reviewer thinks: one of the model's `reasoning` levels from room_available_agents (\"xhigh\"). Leave out for the model's default.",
+            'The model: its key from room_available_agents, or an unambiguous name ("GPT-6 Astra").',
         }),
-      ),
-      basis: Schema.optional(RoomReviewBasisParameter),
-    }),
-    success: RoomInviteResult,
-  }).annotate(Tool.Title, "Ask the user to bring in another agent"),
+        request: Schema.String.annotate({
+          description: "The goal, the user's requirements, and what to check.",
+        }),
+        reason: Schema.String.annotate({
+          description: "Why a second opinion helps here, in one short sentence, for the user.",
+        }),
+        suggestion: Schema.optional(Schema.Literals(["review", "teammate"])),
+        reasoning: Schema.optional(
+          Schema.String.annotate({
+            description:
+              "How hard the reviewer thinks: one of the model's `reasoning` levels from room_available_agents (\"xhigh\"). Leave out for the model's default.",
+          }),
+        ),
+        basis: Schema.optional(RoomReviewBasisParameter),
+      }),
+      success: RoomInviteResult,
+    }).annotate(Tool.Title, "Ask the user to bring in another agent"),
+  ),
 );
 
 export const RoomToolkit = Toolkit.make(

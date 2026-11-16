@@ -442,6 +442,11 @@ export interface WsRpcClient {
     readonly submissions: RpcUnaryMethod<typeof WS_METHODS.themeShowcaseSubmissions>;
     readonly takeBack: RpcUnaryMethod<typeof WS_METHODS.themeShowcaseTakeBack>;
   };
+  /** VS Code themes from the Open VSX store, on servers reporting `themeVsCode`. */
+  readonly themeVsCode: {
+    readonly search: RpcUnaryMethod<typeof WS_METHODS.themeVsCodeSearch>;
+    readonly read: RpcUnaryMethod<typeof WS_METHODS.themeVsCodeRead>;
+  };
   /** This computer's scheduled tasks (docs/design/fleet.md, Part 6). */
   readonly scheduledTasks: {
     readonly subscribe: RpcStreamMethod<typeof WS_METHODS.scheduledTasksSubscribe>;
@@ -1291,6 +1296,10 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.request((client) => client[WS_METHODS.themeShowcaseSubmissions](input)),
       takeBack: (input) =>
         transport.request((client) => client[WS_METHODS.themeShowcaseTakeBack](input)),
+    },
+    themeVsCode: {
+      search: (input) => transport.request((client) => client[WS_METHODS.themeVsCodeSearch](input)),
+      read: (input) => transport.request((client) => client[WS_METHODS.themeVsCodeRead](input)),
     },
     scheduledTasks: {
       subscribe: (listener, options) =>

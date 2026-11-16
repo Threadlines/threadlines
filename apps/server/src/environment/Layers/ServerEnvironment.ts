@@ -100,6 +100,7 @@ export const makeServerEnvironment = Effect.fn("makeServerEnvironment")(function
       themes: true,
       themeShowcase: true,
       themeShowcaseTakeBack: true,
+      themeVsCode: true,
       eventTasks: true,
       threadMove: true,
       threadMoveQueue: true,
