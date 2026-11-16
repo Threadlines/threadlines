@@ -319,13 +319,24 @@ version shows up in winget once a moderator merges it. The listing text
 Setup, once:
 
 - Add a `WINGET_TOKEN` repository secret: a classic GitHub token with the
-  `public_repo` scope. Pull requests open from that account's fork of
-  winget-pkgs, which the first run creates.
+  `public_repo` and `workflow` scopes. Pull requests open from that account's
+  fork of winget-pkgs, which the first run creates. Without `workflow`, a run
+  fails with "does not have the correct permissions to execute CreateRef"
+  whenever winget-pkgs has changed its own workflow files since the fork's
+  last push.
 - On that account's first winget-pkgs pull request, agree to Microsoft's CLA
   with the comment the CLA bot asks for.
 
 To retry a version, or to check the manifests without opening a pull request,
 run **WinGet** by hand with that version (tick "dry run" for the check).
+
+Until a moderator approves our first pull request, Threadlines isn't in
+winget-pkgs, and every version sent is another "New package" request in a
+queue that takes weeks (about eight in November 2026). So while one is open,
+the workflow skips with a notice instead of opening more, and the oldest
+request keeps our place in line. Updates to a listed package merge within
+hours. The day the first one is approved, run **WinGet** by hand with the
+newest stable version.
 
 ## Windows Publisher Name
 
