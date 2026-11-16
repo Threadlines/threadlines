@@ -545,6 +545,30 @@ describe("a move that waits for the thread to be free", () => {
     expect(threadOf(model).pendingMove?.stage).toBe("quiescing");
   });
 
+  it("stop and move now is refused while a command runs in the user's terminal", async () => {
+    const running = await seeded();
+    const withRun = {
+      ...running,
+      threads: running.threads.map((thread) =>
+        thread.id === THREAD
+          ? ({
+              ...thread,
+              commandRuns: [{ runId: "run-1", status: "running", source: { kind: "user" } }],
+            } as unknown as typeof thread)
+          : thread,
+      ),
+    };
+    expect((await apply(withRun, queue("stop-now"))).refusal).toContain(
+      "A command from this thread is running in your terminal. Stop it there, or move the thread when it's done.",
+    );
+    // Move when it's done waits for it.
+    const { model, refusal } = await apply(withRun, queue("when-done"));
+    expect(refusal).toBeNull();
+    expect(threadOf(model).pendingMove?.waitsFor?.map((wait) => wait.code)).toEqual([
+      "command_run",
+    ]);
+  });
+
   it("a cancel or an end naming an older request changes nothing", async () => {
     let { model } = await apply(await seeded(), queue());
     const old = ThreadMoveRequestId.make("request-old");

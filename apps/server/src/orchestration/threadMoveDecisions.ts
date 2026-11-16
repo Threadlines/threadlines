@@ -91,6 +91,8 @@ const WAIT_WORDS: Record<ThreadMoveWaitCode, string> = {
 };
 
 const BUSY_WORDS = "Wait for this thread to finish what it's doing, then move it.";
+const STOP_NOW_COMMAND_RUN_WORDS =
+  "A command from this thread is running in your terminal. Stop it there, or move the thread when it's done.";
 const SHARED_CHECKOUT_WORDS =
   "Another thread is working in the same folder. Wait for it to finish, then move this one.";
 
@@ -585,6 +587,11 @@ export function decideMoveQueue(
   const refusals = threadMoveRefusals(readModel, thread);
   const block = firstMoveBlock(refusals);
   if (block !== null) return refuse(block.words);
+  // A command runs in the user's own terminal tab, which the server doesn't
+  // stop: "Stop and move now" would wait on it with nothing to show why.
+  if (command.mode === "stop-now" && refusals.some((entry) => entry.code === "command_run")) {
+    return refuse(STOP_NOW_COMMAND_RUN_WORDS);
+  }
   const queued: PlannedEvent = {
     ...baseFor(thread.id),
     type: "thread.move-queued",
