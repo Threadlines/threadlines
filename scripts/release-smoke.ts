@@ -37,6 +37,7 @@ const workspaceFiles = [
   "apps/desktop/package.json",
   "apps/web/package.json",
   "apps/marketing/package.json",
+  "docs/package.json",
   "oxlint-plugin-threadlines/package.json",
   "packages/client-runtime/package.json",
   "packages/contracts/package.json",
