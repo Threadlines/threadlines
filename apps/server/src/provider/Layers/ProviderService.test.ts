@@ -22,10 +22,11 @@ import {
   ProviderSessionStartInput,
   SideTurnId,
   ThreadId,
+  ThreadParticipantId,
   TurnId,
 } from "@threadlines/contracts";
 import { createModelSelection } from "@threadlines/shared/model";
-import { sideSessionKey } from "@threadlines/shared/threadParticipants";
+import { participantSessionKey, sideSessionKey } from "@threadlines/shared/threadParticipants";
 import { it, assert, vi } from "@effect/vitest";
 
 import * as Clock from "effect/Clock";
@@ -54,6 +55,7 @@ import {
 import type {
   ProviderAdapterShape,
   ProviderSetThreadGoalInput,
+  ProviderStopConfirmation,
 } from "../Services/ProviderAdapter.ts";
 import {
   ProviderAdapterRegistry,
@@ -74,7 +76,10 @@ import {
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { AnalyticsService } from "../../telemetry/Services/AnalyticsService.ts";
 import { makeAdapterRegistryMock } from "../testUtils/providerAdapterRegistryMock.ts";
-import { ThreadSessionAdmissionPermissive } from "../Services/ThreadSessionAdmission.ts";
+import {
+  ThreadSessionAdmission,
+  ThreadSessionAdmissionPermissive,
+} from "../Services/ThreadSessionAdmission.ts";
 
 const defaultServerSettingsLayer = ServerSettingsService.layerTest();
 
@@ -3048,6 +3053,131 @@ validation.layer("ProviderServiceLive validation", (it) => {
       if (Option.isSome(runtime)) {
         assert.equal(runtime.value.threadId, session.threadId);
       }
+    }),
+  );
+});
+
+/**
+ * The session fence and the proven stop (docs/design/fleet.md, Part 3b),
+ * against an admission whose fenced threads the test sets.
+ */
+function makeFencedProviderServiceLayer() {
+  const codex = makeFakeCodexAdapter();
+  const claude = makeFakeCodexAdapter(CLAUDE_AGENT_DRIVER);
+  const fenced = new Set<string>();
+  const confirmThreadStopped = vi.fn(
+    (_threadId: ThreadId): Effect.Effect<ProviderStopConfirmation> =>
+      Effect.succeed({ confirmed: true }),
+  );
+  const registry = makeAdapterRegistryMock({
+    [ProviderDriverKind.make("codex")]: { ...codex.adapter, confirmThreadStopped },
+    // A driver that can't prove its stop.
+    [ProviderDriverKind.make("claudeAgent")]: claude.adapter,
+  });
+  const runtimeRepositoryLayer = ProviderSessionRuntimeRepositoryLive.pipe(
+    Layer.provide(SqlitePersistenceMemory),
+  );
+  const directoryLayer = ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer));
+  const admission = Layer.succeed(
+    ThreadSessionAdmission,
+    ThreadSessionAdmission.of({
+      refusal: (threadId) =>
+        Effect.succeed(fenced.has(threadId) ? "This thread is moving to Mac mini." : null),
+    }),
+  );
+  const layer = it.layer(
+    Layer.mergeAll(
+      makeProviderServiceLive().pipe(
+        Layer.provide(admission),
+        Layer.provide(Layer.succeed(ProviderAdapterRegistry, registry)),
+        Layer.provide(directoryLayer),
+        Layer.provide(defaultServerSettingsLayer),
+        Layer.provideMerge(AnalyticsService.layerTest),
+        Layer.provide(Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers)),
+      ),
+      directoryLayer,
+      runtimeRepositoryLayer,
+      NodeServices.layer,
+    ),
+  );
+  return { codex, claude, fenced, confirmThreadStopped, layer };
+}
+
+const fence = makeFencedProviderServiceLayer();
+
+fence.layer("ProviderServiceLive moving threads", (it) => {
+  const MOVING = asThreadId("6f1d1e0a-7a51-4c3b-9d47-1a2b3c4d5e6f");
+  const ROOM_AGENT = ThreadParticipantId.make("0b5c2a6e-9f1d-4e8a-8b7c-6d5e4f3a2b1c");
+  const startOn = (instance: ProviderInstanceId, key: ThreadId) =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      return yield* provider.startSession(key, {
+        provider: ProviderDriverKind.make(instance === codexInstanceId ? "codex" : "claudeAgent"),
+        providerInstanceId: instance,
+        threadId: key,
+        cwd: "/tmp/project",
+        runtimeMode: "full-access",
+      });
+    });
+
+  it.effect("starts and recovers no session of a fenced thread, whatever its key", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const started = yield* startOn(codexInstanceId, MOVING);
+      // The runtime is gone; the binding would bring it back.
+      yield* fence.codex.stopSession(started.threadId);
+      fence.codex.startSession.mockClear();
+      fence.fenced.add(MOVING);
+
+      const recovered = yield* provider
+        .rollbackConversation({ threadId: MOVING, numTurns: 1 })
+        .pipe(Effect.result);
+      assert.equal(recovered._tag, "Failure");
+      const roomAgent = yield* startOn(
+        codexInstanceId,
+        participantSessionKey(MOVING, ROOM_AGENT),
+      ).pipe(Effect.result);
+      assert.equal(roomAgent._tag, "Failure");
+      assert.include(
+        String(roomAgent._tag === "Failure" ? roomAgent.failure.message : ""),
+        "moving to Mac mini",
+      );
+      assert.equal(fence.codex.startSession.mock.calls.length, 0);
+
+      fence.fenced.delete(MOVING);
+      yield* provider.rollbackConversation({ threadId: MOVING, numTurns: 1 });
+      assert.equal(fence.codex.startSession.mock.calls.length, 1);
+    }),
+  );
+
+  it.effect("quiesceThread stops every runtime of the thread and needs each driver's proof", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const other = asThreadId("thread-stays");
+      yield* startOn(codexInstanceId, MOVING);
+      yield* startOn(codexInstanceId, participantSessionKey(MOVING, ROOM_AGENT));
+      yield* startOn(codexInstanceId, other);
+
+      assert.deepEqual(yield* provider.quiesceThread(MOVING), { confirmed: true });
+      const left = (yield* provider.listSessions()).map((session) => session.threadId);
+      assert.deepEqual(left, [other]);
+      assert.deepEqual(fence.confirmThreadStopped.mock.calls.at(-1), [MOVING]);
+
+      // A driver that can't prove its stop never passes for a thread it ran.
+      yield* startOn(ProviderInstanceId.make("claudeAgent"), MOVING);
+      const unproven = yield* provider.quiesceThread(MOVING);
+      assert.deepEqual(unproven, {
+        confirmed: false,
+        reason: "claudeAgent can't confirm it stopped",
+      });
+      // Nor does one whose own proof failed.
+      fence.confirmThreadStopped.mockImplementationOnce(() =>
+        Effect.succeed({ confirmed: false, reason: "its process 4242 didn't exit" }),
+      );
+      assert.deepEqual(yield* provider.quiesceThread(MOVING), {
+        confirmed: false,
+        reason: "its process 4242 didn't exit",
+      });
     }),
   );
 });

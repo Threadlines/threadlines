@@ -106,6 +106,14 @@ const defaultRetryDelay = (attempt: number) =>
 /** How long after a quiesce it is asked again for a session the projection still shows. */
 const REQUIESCE_AFTER_MS = 10_000;
 
+/** A session as projected, to tell whether it changed since the last quiesce. */
+const sessionMark = (thread: OrchestrationThread) => {
+  const session = thread.session;
+  return session === null
+    ? "none"
+    : `${session.status}:${session.activeTurnId ?? ""}:${session.updatedAt}`;
+};
+
 /** A thread's move checks, from the thread alone: no other thread or project. */
 const localRefusals = (thread: OrchestrationThread) =>
   threadMoveRefusals({ projects: [], threads: [thread] }, thread);
@@ -119,6 +127,8 @@ interface TrackedMove {
   /** How many times in a row it was held (unreachable, unconfirmed). */
   holds: number;
   quiescedAtMs: number;
+  /** The session the last quiesce saw (sessionMark). */
+  quiescedSession: string;
 }
 
 export const makeMoveQueue = (
@@ -242,13 +252,14 @@ export const makeMoveQueue = (
 
     /** Watches a thread's queued move `requestId`, replacing an older one. */
     const track = (threadId: ThreadId, requestId: ThreadMoveRequestId) =>
-      Effect.gen(function* () {
+      Effect.sync(() => {
         const existing = tracked.get(threadId);
         if (existing !== undefined) {
           if (existing.requestId === requestId) return;
           existing.requestId = requestId;
           existing.holds = 0;
           existing.quiescedAtMs = 0;
+          existing.quiescedSession = "";
           return;
         }
         tracked.set(threadId, {
@@ -259,6 +270,7 @@ export const makeMoveQueue = (
           timerDueMs: 0,
           holds: 0,
           quiescedAtMs: 0,
+          quiescedSession: "",
         });
       });
 
@@ -320,8 +332,15 @@ export const makeMoveQueue = (
 
         // The barrier: the fence goes up and its sessions stop.
         if (pending.stage === "waiting" || !sessionStopped(thread)) {
-          if (pending.stage === "waiting" || Date.now() - entry.quiescedAtMs > REQUIESCE_AFTER_MS) {
+          // Asked again once the session changed since (a turn that slipped
+          // in and ended), or the stop never showed.
+          if (
+            pending.stage === "waiting" ||
+            sessionMark(thread) !== entry.quiescedSession ||
+            Date.now() - entry.quiescedAtMs > REQUIESCE_AFTER_MS
+          ) {
             entry.quiescedAtMs = Date.now();
+            entry.quiescedSession = sessionMark(thread);
             yield* dispatchIgnoringRefusal({
               type: "thread.move.quiesce",
               commandId: commandId(requestId, "quiesce"),

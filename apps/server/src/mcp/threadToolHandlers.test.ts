@@ -7,6 +7,7 @@ import {
   type PeerDescriptor,
   EMPTY_CHILD_REQUEST_STATE,
   MessageId,
+  OutsideAgentConnectionId,
   type OrchestrationChildRequest,
   type OrchestrationCommand,
   type OrchestrationMessage,
@@ -27,7 +28,11 @@ import type { McpInvocationScope } from "./McpSessionRegistry.ts";
 import { makeRoomRequestRegistry } from "./roomRequests.ts";
 import { roomToolsFor, THREAD_TOOL_NAMES } from "./roomToolAccess.ts";
 import { linkThreadId } from "../links/linkIds.ts";
-import { makeThreadToolHandlers, type ThreadToolLinks } from "./threadToolHandlers.ts";
+import {
+  makeThreadToolHandlers,
+  type ThreadToolLinks,
+  type ThreadToolMoves,
+} from "./threadToolHandlers.ts";
 
 const PROJECT = ProjectId.make("project-1");
 const PARENT = ThreadId.make("0f8f5a52-4d0e-4c1b-9d56-1e7c1f9b7a01");
@@ -204,6 +209,7 @@ const makeTools = (options: {
   readonly shareWorktrees?: boolean;
   /** The branch checked out in a folder; any other folder has none. */
   readonly branches?: Readonly<Record<string, string>>;
+  readonly moves?: ThreadToolMoves;
 }) =>
   Effect.gen(function* () {
     let caller = options.caller ?? makeThread();
@@ -282,6 +288,7 @@ const makeTools = (options: {
       },
       requests: makeRoomRequestRegistry(yield* Effect.scope),
       ...(options.links !== undefined ? { links: options.links } : {}),
+      ...(options.moves !== undefined ? { moves: options.moves } : {}),
     });
     return {
       handlers,
@@ -1375,5 +1382,115 @@ describe("thread tools across linked computers", () => {
       expect(started.outcome).toBe("not_allowed");
       expect(tools.dispatched).toEqual([]);
     }),
+  );
+});
+
+describe("thread_move", () => {
+  /** Moves that record what was queued, to a Mac mini that suggests its Claude. */
+  const fakeMoves = () => {
+    const queued: Array<Parameters<ThreadToolMoves["queue"]>[0]> = [];
+    const moves: ThreadToolMoves = {
+      preview: () =>
+        Effect.succeed({
+          targets: [
+            {
+              environmentId: MAC_MINI,
+              label: "Mac mini",
+              agents: MAC_DESCRIPTOR.agents,
+              suggestedAgent: {
+                instanceId: ProviderInstanceId.make("mac-claude"),
+                model: "opus-5-5",
+              },
+            },
+          ],
+        }),
+      queue: (input) =>
+        Effect.sync(() => {
+          queued.push(input);
+          return { requestId: "request-1" };
+        }),
+    };
+    return { moves, queued };
+  };
+
+  it.effect("queues the caller's own thread to move when its turn ends", () =>
+    Effect.gen(function* () {
+      const { moves, queued } = fakeMoves();
+      const tools = yield* makeTools({
+        links: fakeLinks(),
+        moves,
+        caller: makeThread({ deletedAt: null }),
+      });
+      const result = yield* tools.handlers.thread_move(mainCaller(), { computer: "mac mini" });
+      expect(result).toEqual({
+        outcome: "queued",
+        detail:
+          "Queued: this thread moves to Mac mini when your turn ends. Finish your reply; don't start more work.",
+      });
+      expect(queued).toEqual([
+        {
+          threadId: PARENT,
+          targetEnvironmentId: MAC_MINI,
+          agent: { instanceId: "mac-claude", model: "opus-5-5" },
+          mode: "when-done",
+          requestedBy: { kind: "agent", turnId: TURN },
+        },
+      ]);
+    }),
+  );
+
+  it.effect(
+    "is refused for side runtimes, room agents, and threads another computer or an outside agent started",
+    () =>
+      Effect.gen(function* () {
+        const tryAs = (scope: McpInvocationScope, caller?: OrchestrationThread) =>
+          Effect.gen(function* () {
+            const { moves, queued } = fakeMoves();
+            const tools = yield* makeTools({
+              links: fakeLinks(),
+              moves,
+              ...(caller ? { caller } : {}),
+            });
+            const result = yield* tools.handlers.thread_move(scope, { computer: "Mac mini" });
+            expect(queued).toHaveLength(0);
+            return result.outcome;
+          });
+        const side: McpInvocationScope = {
+          ...mainCaller(),
+          side: {
+            sideTurnId: SideTurnId.make("11111111-2222-4333-8444-555555555555"),
+            kind: "ask",
+          },
+        };
+        const roomAgent: McpInvocationScope = {
+          ...mainCaller(),
+          participantId: ThreadParticipantId.make("0b5c2a6e-9f1d-4e8a-8b7c-6d5e4f3a2b1c"),
+        };
+        expect([
+          yield* tryAs(side),
+          yield* tryAs(roomAgent),
+          yield* tryAs(
+            mainCaller(),
+            makeThread({
+              remoteOrigin: {
+                linkDeviceId: "device-1",
+                environmentId: MAC_MINI,
+                environmentLabel: "Mac mini",
+                threadId: ThreadId.make("thread-there"),
+                threadTitle: "Fix it there",
+              },
+            }),
+          ),
+          yield* tryAs(
+            mainCaller(),
+            makeThread({
+              outsideOrigin: {
+                connectionId: OutsideAgentConnectionId.make("connection-1"),
+                name: "Grok Bot",
+              },
+            }),
+          ),
+        ]).toEqual(["not_allowed", "not_allowed", "not_allowed", "not_allowed"]);
+      }),
   );
 });
