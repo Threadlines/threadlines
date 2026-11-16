@@ -346,14 +346,25 @@ export function estimateMoveOtherBytes(input: {
       ]);
       bytes += Number.parseInt(used ?? "", 10) || 0;
     }
-    const diffPath = NodePath.join(os.tmpdir(), `threadlines-move-estimate-${randomUUID()}.diff`);
-    const diffed = yield* gitMaybe(git, checkout.root, [
-      ...TRANSPORT_DIFF_FLAGS,
-      `--output=${diffPath}`,
-      "HEAD",
-    ]);
-    if (diffed !== null) bytes += yield* sizeOf(diffPath);
-    yield* Effect.promise(() => NodeFs.rm(diffPath, { force: true }));
+    // The diff holds the checkout's private changes: it is written inside a
+    // folder only this user can open (mkdtemp makes it 0700), and the folder
+    // goes however the estimate ends.
+    bytes += yield* Effect.acquireUseRelease(
+      Effect.promise(() =>
+        NodeFs.mkdtemp(NodePath.join(os.tmpdir(), "threadlines-move-estimate-")),
+      ),
+      (dir) =>
+        Effect.gen(function* () {
+          const diffPath = NodePath.join(dir, "changes.diff");
+          const diffed = yield* gitMaybe(git, checkout.root, [
+            ...TRANSPORT_DIFF_FLAGS,
+            `--output=${diffPath}`,
+            "HEAD",
+          ]);
+          return diffed === null ? 0 : yield* sizeOf(diffPath);
+        }),
+      (dir) => Effect.promise(() => NodeFs.rm(dir, { recursive: true, force: true })),
+    );
     const { untracked } = yield* summarizeMoveChanges(git, checkout.root).pipe(
       Effect.orElseSucceed(() => ({ untracked: [] as ReadonlyArray<string> })),
     );
