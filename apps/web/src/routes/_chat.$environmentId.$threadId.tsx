@@ -88,12 +88,10 @@ import {
   autoOpenAgentsTab,
   availableRightPanelTabs,
   type AgentsAutoOpenEdge,
-  clearQueuedRightPanelTab,
   closeRightPanelTab,
   focusRightPanelTab,
   hideRightPanel,
   isRightPanelClosedInSearch,
-  useQueuedRightPanelTab,
   useReconciledRightPanelTabs,
   moveRightPanelTab,
   pullRequestTabSearchParams,
@@ -668,19 +666,6 @@ function ChatThreadRouteView() {
     navigateToTab,
     shouldUseDiffSheet,
   ]);
-  // A tab queued for this thread from outside the route (the Threads tab, the
-  // first time a thread becomes a lead on this device): opened once the thread
-  // can show it, as the sheet on a phone. It is asked for once per device, so
-  // it is never dropped.
-  const queuedTab = useQueuedRightPanelTab(currentThreadKey);
-  useEffect(() => {
-    if (queuedTab === null || currentThreadKey === null || !availableTabs.includes(queuedTab)) {
-      return;
-    }
-    clearQueuedRightPanelTab(currentThreadKey);
-    focusRightPanelTab(currentThreadKey, queuedTab);
-    navigateToTab(queuedTab);
-  }, [availableTabs, currentThreadKey, navigateToTab, queuedTab]);
   // The thread's media, for the launcher's Media row: the same listing the
   // Media tab opens on, so the row and the tab agree. Read only while the
   // launcher is on screen; a turn landing changes the revision and so the key.

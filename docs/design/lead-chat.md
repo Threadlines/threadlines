@@ -1,6 +1,7 @@
 # Lead chat: one place to run a project
 
-Status: plan rev 3 (Nov 16 2026), being built in four pieces (see Build order). GPT-6.1 Sol reviewed rev 1 (13 findings)
+Status: plan rev 4 (Nov 16 2026), being built in five pieces (see Build order). Rev 4 adds
+family tabs (piece 5), asked for by Will after seeing pieces 1 to 3; that section has not been reviewed. GPT-6.1 Sol reviewed rev 1 (13 findings)
 and the two redesigned parts of rev 2 (6 findings). Each was checked against the code
 and all hold; the answers are in "Changes from review" at the end. Rev 3's answers to
 the second pass were not reviewed again. Awaiting Will's go.
@@ -89,8 +90,11 @@ Words below are the on-screen words. Copy follows the repo's copy rules (no em d
   project folder (no worktree), makes it the lead and opens it.
 - **Command palette:** "Go to lead chat" (one entry per project that has one), "New
   lead chat", "Make this thread the lead chat" / "Stop using as lead chat".
-- **Keybinding command** `navigate.leadChat` (lead of the open thread's project, else of
-  the scoped project). No default key.
+- **No keybinding command (built):** a new `navigate.leadChat` would extend
+  `KeybindingCommand`, a closed set an older client decodes strictly: one rule naming
+  it makes that client reject the whole keybinding list, and with it the computer's
+  config. "Go to lead chat" stays in the palette. Commands can come once clients drop
+  rules they don't know (a follow-up).
 - **Not allowed, with the reason shown on the disabled item:** General Chats; a thread
   another thread started and still owns; a thread from another computer or an outside
   agent; an archived thread; a thread with a move pending; an agent that cannot use the
@@ -115,9 +119,53 @@ Words below are the on-screen words. Copy follows the repo's copy rules (no em d
 
 - Header chip "Lead chat", built like the "Started by" chip.
 - Empty composer placeholder: "Drop work for <project> here".
-- The first time a thread becomes the lead on this device, the Threads panel opens.
+- The Threads panel does not open by itself (rev 4: the family tabs below are how the
+  lead's threads are reached; the panel is the whole-project view, opened on purpose).
 - A message the lead passed into another thread is authored "<lead title>" there, as a
   parent's messages are in a child today.
+
+### Family tabs (every family, not only a lead's)
+
+A thread that started other threads, and each thread it started, show one row of tabs
+under the chat header: the parent first, then its threads. Clicking a tab opens that
+thread, the same full chat as today with its own message box, scroll position and
+draft. The point is that the user never loses their place: the lead (or any parent) is
+always one click away, and so is every thread it started.
+
+- **Which threads.** Exactly the members the sidebar shows for that parent's open
+  family (attached children that have not left the live family, `hasLeftLiveFamily`
+  and the rules around it), in the same order (creation order, never re-sorted). One
+  function decides membership for both, so the tabs and the sidebar cannot disagree.
+  A child on a linked computer gets a tab when the sidebar gives it a row, and a click
+  does what that row's click does.
+- **When the row shows.** On the parent while it has at least one member, and on each
+  member while its parent is live. A thread with no family has no row. A child the
+  user made its own, or whose parent is wrapped or archived, has no row and keeps
+  today's "Started by" chip.
+- **A tab.** The parent's tab is its title; a lead's is the flag and "Lead". A child's
+  is its status dot (the family child rows' colours and words; a check once wrapped
+  and still in the family) and its title. The open one has a quiet fill. Hover is a
+  colour shift. Right-click or a long press opens the sidebar's thread menu. There is
+  no close button: a tab is not an open file, and wrapping up stays in the menu.
+- **Too many to fit.** Tabs shrink to a floor (about 96px), then the rest move behind
+  a "+N" menu at the end of the row, which lists them with their status. The open
+  thread's tab is always on the row. "+N" carries an amber dot when a hidden thread
+  needs the user. On a phone the row scrolls sideways instead and the open tab is
+  scrolled into view.
+- **What it replaces.** While the row shows, the header drops the "Started by" chip
+  and the "Lead chat" chip: the row says both.
+- **The sidebar is unchanged.** The open child still shows under its parent's row as
+  it does today. (Hiding it, so only the parent's row is marked, would mean reworking
+  the sidebar's keyboard order for no gain the tabs do not already give.)
+- **No flash.** The row belongs to the family, not to the open thread: switching
+  between members must not unmount or redraw it, and the chat below must not shift.
+  The row appearing when a parent starts its first thread shifts the chat once.
+- **Speed.** A tab switch is a thread open. The threads on the row use the sidebar's
+  existing prewarm, so a switch paints as fast as a prewarmed sidebar row. The row
+  reads a narrow selection (id, title, status per member) with stable equality, so a
+  streaming reply in one thread does not re-render it.
+- **Keys.** None for now, for the reason under "No keybinding command": the plan's
+  `thread.family.next` and `thread.family.previous` wait for that follow-up.
 
 ### Starting several threads (approval card, every parent, not only the lead)
 
@@ -419,9 +467,9 @@ turns too, since an event-fed lead is the main unattended case.
 
 ## Build order
 
-Four pieces, each its own branch and pull request. 1, 2 and 4 touch the same decider
+Five pieces, each its own branch and pull request. 1, 2 and 4 touch the same decider
 files and go in that order from one builder. 3 is web only and can run beside 2 once
-piece 1's contracts are committed.
+piece 1's contracts are committed. 5 is web only and can run beside 4.
 
 1. **Lead role.** Project field, command, cascades, migration, capability; role text
    on every turn start; limits; menus, palette, keybinding command, sidebar row and
@@ -452,6 +500,16 @@ piece 1's contracts are committed.
    user writes during the wait → failed at once; the user overtakes the continue →
    failed; restart with a held request; a linked child and a `usageLimited` goal still
    fail as today.
+
+5. **Family tabs.** Web only, no contract change. Membership comes from the sidebar's
+   own family rules (extract the function if it is buried in `buildInboxSections`);
+   the row's layout choices (order, which tabs fit, the open one always shown, "+N"
+   attention) are pure data in a `familyTabs.logic.ts`. The header chips give way
+   while the row shows; the Threads panel stops opening by itself. Guide: the threads
+   topic says a family shows as tabs. Tests: the logic as data; one browser test that
+   the row shows on a parent and on its child and not on a thread with no family,
+   that a click switches threads, and, read after every paint
+   (`readAfterEachPaint`), that the row does not vanish or move across the switch.
 
 Live check before calling it done, on a throwaway stack (never `~/.threadlines/userdata`):
 a Claude lead starts a Codex thread and a Claude thread and hears back from both,

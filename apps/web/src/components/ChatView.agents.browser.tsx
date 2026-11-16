@@ -68,10 +68,12 @@ import {
   findVisibleComposerFooter,
   mountChatView,
   registerChatViewSuiteHooks,
+  waitForURL,
   fixture,
   rpcHarness,
 } from "./ChatView.browser-harness";
 import { readThemePreference } from "../hooks/useTheme";
+import { nextFrames, readAfterEachPaint } from "../lib/frameProbe.browser-harness";
 
 vi.mock("../lib/gitStatusState", () => ({
   // Read synchronously by the draft seeder to skip a checkout already known
@@ -1242,6 +1244,99 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
     }
   });
 
+  it("shows a family as tabs on the parent and its threads, and keeps the row still across a switch", async () => {
+    const firstChild = "thread-family-first" as ThreadId;
+    const secondChild = "thread-family-second" as ThreadId;
+    const loner = "thread-family-loner" as ThreadId;
+    const withThreads = addThreadToSnapshot(
+      addThreadToSnapshot(
+        addThreadToSnapshot(
+          createSnapshotForTargetUser({
+            targetMessageId: "msg-user-family-tabs" as MessageId,
+            targetText: "family tabs target",
+          }),
+          firstChild,
+        ),
+        secondChild,
+      ),
+      loner,
+    );
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...withThreads,
+        threads: withThreads.threads.map((thread) =>
+          thread.id === firstChild || thread.id === secondChild
+            ? {
+                ...thread,
+                title: thread.id === firstChild ? "Write the changelog" : "Fix the flaky test",
+                parentThreadId: THREAD_ID,
+                attachedToParent: true,
+                createdAt: thread.id === firstChild ? isoAt(10) : isoAt(20),
+              }
+            : thread,
+        ),
+      },
+    });
+    const keyOf = (threadId: ThreadId) =>
+      scopedThreadKey(scopeThreadRef(LOCAL_ENVIRONMENT_ID, threadId));
+    const row = () => document.querySelector<HTMLElement>('[data-testid="family-tabs"]');
+    try {
+      await waitForElement(row, "The family row should show on the parent.");
+      const keys = () =>
+        [...row()!.querySelectorAll<HTMLElement>('[role="tab"]')].map((tab) => tab.dataset.testid);
+      await vi.waitFor(() =>
+        expect(keys()).toEqual([
+          `family-tab-${THREAD_KEY}`,
+          `family-tab-${keyOf(firstChild)}`,
+          `family-tab-${keyOf(secondChild)}`,
+        ]),
+      );
+
+      // Switching to a child: the row stays mounted where it is, every frame.
+      const rowAtStart = row()!;
+      const top = rowAtStart.getBoundingClientRect().top;
+      const samples: { present: boolean; same: boolean; top: number | null }[] = [];
+      const stop = readAfterEachPaint(() => {
+        const current = row();
+        samples.push({
+          present: current !== null,
+          same: current === rowAtStart,
+          top: current?.getBoundingClientRect().top ?? null,
+        });
+      });
+      await page.getByTestId(`family-tab-${keyOf(secondChild)}`).click();
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname.endsWith(`/${secondChild}`),
+        "A tab click should open its thread.",
+      );
+      await vi.waitFor(() =>
+        expect(
+          row()
+            ?.querySelector(`[data-testid="family-tab-${keyOf(secondChild)}"]`)
+            ?.getAttribute("aria-selected"),
+        ).toBe("true"),
+      );
+      await nextFrames(3);
+      stop();
+      expect(samples.length).toBeGreaterThan(0);
+      expect(samples.every((sample) => sample.present && sample.same)).toBe(true);
+      expect(samples.every((sample) => sample.top === top)).toBe(true);
+      // The row says who started this thread: the header's chip gives way.
+      expect(document.body.textContent).not.toContain("Started by");
+
+      // A thread with no family has no row.
+      await mounted.router.navigate({
+        to: "/$environmentId/$threadId",
+        params: { environmentId: LOCAL_ENVIRONMENT_ID, threadId: loner },
+      });
+      await vi.waitFor(() => expect(row()).toBeNull());
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("names the thread that started this one, in the header and on its request", async () => {
     const base = createSnapshotForTargetUser({
       targetMessageId: "msg-user-started-by" as MessageId,
@@ -1282,7 +1377,15 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
                 }
               : thread,
           ),
-          { ...thisThread, id: parentThreadId, title: "Ship the 0.6 release", messages: [] },
+          // Its parent is wrapped: no family row stands in for the chip, so the
+          // header names it (docs/design/lead-chat.md, "Family tabs").
+          {
+            ...thisThread,
+            id: parentThreadId,
+            title: "Ship the 0.6 release",
+            messages: [],
+            doneOverride: { state: "done" as const, at: isoAt(400) },
+          },
         ],
       },
     });

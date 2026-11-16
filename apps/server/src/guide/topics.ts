@@ -92,7 +92,7 @@ Whether the thread's agent may bring in another model on its own is {place:threa
     id: "agent-threads",
     title: "Threads agents start",
     keywords: ["child thread", "subthread", "thread_start", "spawn", "parallel", "delegate"],
-    body: `An agent can start threads of its own to work in parallel, and message, read or stop them. Each started thread shows under its parent in the sidebar; its final reply comes back to the parent as a message, which wakes the parent's agent.
+    body: `An agent can start threads of its own to work in parallel, and message, read or stop them. Each started thread shows under its parent in the sidebar; its final reply comes back to the parent as a message, which wakes the parent's agent. The parent and the threads it started also show as a row of tabs under the chat header, on the parent and on each of its threads: a click opens that thread, with its own message box and draft. The row lists the threads the sidebar shows under the parent; one the user made its own, or whose parent is wrapped, has no row.
 
 {place:threads.agentThreads} decides this: Off, Ask me first (a card in the chat lists the threads and you decide), or Automatic. The same setting covers agents creating or changing scheduled tasks. An agent may start at most 5 threads and send 10 messages to them per message you send.
 
@@ -128,9 +128,9 @@ When an agent asks to start several threads, the card has a checkbox per thread,
 
 Only one thread leads a project; making another the lead replaces it. "Stop using as lead chat" turns it back into an ordinary thread, and the threads it started stay with it. Archiving or deleting the lead ends it. A lead can't move to another computer, and each computer keeps its own lead for a project.
 
-The lead's row sits at the top of the sidebar with a flag, says Lead where the project name goes, and never wraps up on its own. The chat shows a Lead chat label beside the title.
+The lead's row sits at the top of the sidebar with a flag, says Lead where the project name goes, and never wraps up on its own. The chat shows a Lead chat label beside the title, or, once it has started threads, the family tabs with the lead first.
 
-The Threads tab in the right sidebar shows the project's threads on every computer you can see, grouped as Needs you, Ready for review, Working, Landing, Idle and Done. Open it from the sidebar's list of panels or its + menu, on any thread of the project; it opens by itself the first time a thread becomes the lead on this device. A thread you wrapped up goes under Done (for 7 days, closed until you open it) unless its pull request is still open, which keeps it under Ready for review or Landing. Ready for review says what the pull request waits on, as the Pull requests page does. Click a row to open the thread, or right-click it for the thread's menu. The top line counts what needs you and what's working, with a Lead chat link when you're on another thread.
+The Threads tab in the right sidebar shows the project's threads on every computer you can see, grouped as Needs you, Ready for review, Working, Landing, Idle and Done. Open it from the sidebar's list of panels or its + menu, on any thread of the project. A thread you wrapped up goes under Done (for 7 days, closed until you open it) unless its pull request is still open, which keeps it under Ready for review or Landing. Ready for review says what the pull request waits on, as the Pull requests page does. Click a row to open the thread, or right-click it for the thread's menu. The top line counts what needs you and what's working, with a Lead chat link when you're on another thread.
 
 The lead's agent is told its role at the start of every turn. It may start 10 threads and send 20 messages to them per message you send, instead of 5 and 10. It needs {place:threads.agentThreads} to be on, and an agent that can't use the thread tools says so. General chats, a thread another thread still owns, and threads from another computer or an outside agent can't be the lead.`,
   },

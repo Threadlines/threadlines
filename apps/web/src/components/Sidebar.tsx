@@ -1,6 +1,5 @@
 import { ChevronDownIcon, ChevronsUpIcon, CloudIcon, MonitorIcon, SearchIcon } from "lucide-react";
 import React, { Suspense, useCallback, useEffect, memo, useMemo, useRef, useState } from "react";
-import { useShallow } from "zustand/react/shallow";
 import { shallow } from "zustand/vanilla/shallow";
 import { useKept, useStableHandlers } from "../hooks/useStableIdentity";
 import type { ScopedThreadRef } from "@threadlines/contracts";
@@ -23,11 +22,7 @@ import {
   reopenThreadByKey,
   setRemoteChildDoneOverride,
 } from "../lib/threadInboxSync";
-import {
-  useComputerLinksStore,
-  type ComputerLinksEntry,
-} from "../environments/links/computerLinks";
-import { selectBootstrapCompleteForActiveEnvironment, useStore, type AppState } from "../store";
+import { selectBootstrapCompleteForActiveEnvironment, useStore } from "../store";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
 import { useUiStateStore } from "../uiStateStore";
 import {
@@ -93,7 +88,6 @@ import {
   inboxLiveRowHoldsOpenChild,
   inboxLiveRowThreadKeys,
   isNeedsUserStatus,
-  INBOX_AUTO_DONE_AFTER_DAYS,
   labelWrappedRowsByDay,
   mergeThreadDoneOverride,
   mergeWrappedShelfRows,
@@ -114,7 +108,6 @@ import {
   trimInboxCustomOrder,
   seedInboxCustomOrder,
   summarizeChildThreads,
-  resolveRemoteFamilyChildren,
   toggleProjectScopeKey,
   windowInboxDoneRows,
   windowInboxThreads,
@@ -181,6 +174,7 @@ import { SidebarUpdatePill } from "./sidebar/SidebarUpdatePill";
 import { SidebarVersionTag } from "./sidebar/SidebarVersionTag";
 import { readEnvironmentApi } from "../environmentApi";
 import { useRoomsEnabled } from "~/hooks/useRoomsEnabled";
+import { NO_REMOTE_CHILDREN, useRemoteFamilyChildren } from "../hooks/useRemoteFamilyChildren";
 import { useSettings, useUpdateSettings } from "~/hooks/useSettings";
 import { useServerKeybindings } from "../rpc/serverState";
 
@@ -282,23 +276,6 @@ interface InboxLiveSection {
   readonly rows: readonly InboxLiveRow<InboxEntry>[];
 }
 
-/** Every parent without children on other computers shares this. */
-const NO_REMOTE_CHILDREN: readonly InboxRemoteChild[] = [];
-
-/**
- * Whether a computer still links to another, as its last links snapshot says.
- * Unknown (no snapshot yet, or one no longer live) reads as linked: only a
- * computer that says so has dropped the link.
- */
-function stillLinked(entry: ComputerLinksEntry | undefined, environmentId: EnvironmentId) {
-  if (entry === undefined || !entry.live) return true;
-  return entry.snapshot.outbound.some(
-    (link) =>
-      link.remoteEnvironmentId === environmentId &&
-      (link.state === "active" || link.state === "failed"),
-  );
-}
-
 /** Wraps up or reopens a child on a computer this app can't see, through its parent's computer. */
 const setRemoteChildDone: RemoteChildSetDone = (child, state) => {
   if (child.parentRef === undefined || child.threadId === null) return;
@@ -315,16 +292,6 @@ const setRemoteChildDone: RemoteChildSetDone = (child, state) => {
     );
   });
 };
-
-/**
- * The computers whose thread lists this app has: their threads speak for
- * themselves, so a parent's record of a child there stays out of its family.
- */
-function selectEnvironmentIdsWithThreads(state: AppState): string[] {
-  return Object.entries(state.environmentStateById).flatMap(([environmentId, environment]) =>
-    environment.bootstrapComplete ? [environmentId] : [],
-  );
-}
 
 function buildThreadJumpLabelMap(input: {
   keybindings: ReturnType<typeof useServerKeybindings>;
@@ -623,7 +590,6 @@ export default function Sidebar() {
     sidebarProjectByKey,
     resolveProjectKeyForRef,
     generalChatProjectKeys,
-    openPullRequests,
     pullRequestByThreadKey,
     linkedPullRequestsByThreadKey,
     entries,
@@ -647,11 +613,8 @@ export default function Sidebar() {
   const inboxSort = useSettings((s) => s.inboxSort);
   const inboxCustomOrder = useSettings((s) => s.inboxCustomOrder);
   const inboxGroupOrder = useSettings((s) => s.inboxGroupOrder);
-  const wrapUpChildThreadsOnFinish = useSettings((s) => s.wrapUpChildThreadsOnFinish);
-  const wrapUpIdleThreads = useSettings((s) => s.wrapUpIdleThreads);
-  // Which computers each computer still links to: a child on one it no
-  // longer does has nothing more to say.
-  const computerLinksByEnvironmentId = useComputerLinksStore((state) => state.byEnvironmentId);
+  // A family's children on computers this app can't see, as the family tabs read them too.
+  const remoteFamilyChildren = useRemoteFamilyChildren(nowIso);
   const { updateSettings } = useUpdateSettings();
   const roomsEnabled = useRoomsEnabled();
   // The Rooms filter (in the scope menu) narrows what the inbox shows, never
@@ -691,11 +654,6 @@ export default function Sidebar() {
   const savedEnvironmentRegistry = useSavedEnvironmentRegistryStore((s) => s.byId);
   const savedEnvironmentRuntimeById = useSavedEnvironmentRuntimeStore((s) => s.byId);
   const computerLabel = useComputerLabel();
-  const environmentIdsWithThreadsList = useStore(useShallow(selectEnvironmentIdsWithThreads));
-  const environmentIdsWithThreads = useMemo(
-    () => new Set<string>(environmentIdsWithThreadsList),
-    [environmentIdsWithThreadsList],
-  );
   const pendingLinkRequests = usePendingLinkRequests();
   const [renamingThreadKey, setRenamingThreadKey] = useState<string | null>(null);
   const [renamingTitle, setRenamingTitle] = useState("");
@@ -910,8 +868,6 @@ export default function Sidebar() {
         entry.thread.environmentId === scopedEnvironmentIdValue) &&
       (!roomsFilterActive || isRoom(entry.thread)) &&
       (scopedProjectKeySet.size === 0 || scopedProjectKeySet.has(entry.projectKey));
-    const canSeeComputer = (environmentId: EnvironmentId) =>
-      environmentIdsWithThreads.has(environmentId);
     const { live, done, doneRemote } = buildInboxSections({
       entries,
       parentKeyOf: (entry) => familyParentKeyOf(entry.thread),
@@ -921,30 +877,11 @@ export default function Sidebar() {
         parent.thread.environmentId !== scopedEnvironmentIdValue &&
         inScope(child),
       remoteChildrenOf: (parent) =>
-        (parent.thread.remoteChildren?.length ?? 0) +
-          (parent.thread.remoteChildStarts?.length ?? 0) +
-          (parent.thread.localChildStarts?.length ?? 0) ===
-        0
-          ? NO_REMOTE_CHILDREN
-          : resolveRemoteFamilyChildren({
-              parent: parent.thread,
-              canSeeComputer,
-              computerLabel,
-              hasThread: (threadId) =>
-                entryByThreadKey.has(
-                  scopedThreadKey(scopeThreadRef(parent.thread.environmentId, threadId)),
-                ),
-              filing: {
-                now: nowIso,
-                wrapUpOnFinish: wrapUpChildThreadsOnFinish,
-                autoDoneAfterDays: wrapUpIdleThreads ? INBOX_AUTO_DONE_AFTER_DAYS : null,
-                linked: (environmentId) =>
-                  stillLinked(
-                    computerLinksByEnvironmentId[parent.thread.environmentId],
-                    environmentId,
-                  ),
-              },
-            }),
+        remoteFamilyChildren(parent.thread, (threadId) =>
+          entryByThreadKey.has(
+            scopedThreadKey(scopeThreadRef(parent.thread.environmentId, threadId)),
+          ),
+        ),
       isFamilyOpen: (parentKey) => childThreadFamilyOpenById[parentKey] === true,
       activeThreadKey: routeThreadKey,
       now: nowIso,
@@ -968,11 +905,8 @@ export default function Sidebar() {
     return { liveEntries: live, doneEntries: done, doneRemoteEntries: doneRemote };
   }, [
     childThreadFamilyOpenById,
-    computerLabel,
-    computerLinksByEnvironmentId,
     doneThreadOverlays,
     entries,
-    environmentIdsWithThreads,
     inboxCustomOrder,
     inboxSort,
     nowIso,
@@ -980,8 +914,7 @@ export default function Sidebar() {
     routeThreadKey,
     scopedEnvironmentIdValue,
     scopedProjectKeys,
-    wrapUpChildThreadsOnFinish,
-    wrapUpIdleThreads,
+    remoteFamilyChildren,
   ]);
   // The Wrapped shelf: wrapped threads, and children on computers this app
   // can't see that left a live family, by when each wrapped.

@@ -312,55 +312,6 @@ describe("ChatView (full app): sidebar", () => {
     }
   });
 
-  it("opens the Threads tab the first time a thread becomes the lead on this device, as the sheet on a narrow window", async () => {
-    const capabilities = { repositoryIdentity: true, projectLead: true };
-    const mounted = await mountChatView({
-      // Below the inline panel's breakpoint, so the panel is the sheet.
-      viewport: DEFAULT_VIEWPORT,
-      snapshot: createSnapshotForTargetUser({
-        targetMessageId: "msg-user-first-lead" as MessageId,
-        targetText: "first lead",
-      }),
-      configureFixture: (nextFixture) => {
-        nextFixture.serverConfig = {
-          ...nextFixture.serverConfig,
-          environment: { ...nextFixture.serverConfig.environment, capabilities },
-        };
-        nextFixture.welcome = {
-          ...nextFixture.welcome,
-          environment: { ...nextFixture.welcome.environment, capabilities },
-        };
-      },
-    });
-
-    try {
-      const row = await waitForElement(
-        () => document.querySelector<HTMLElement>(`[data-testid="thread-row-${THREAD_ID}"]`),
-        "The thread's sidebar row should be on screen.",
-      );
-      const rect = row.getBoundingClientRect();
-      row.dispatchEvent(
-        new MouseEvent("contextmenu", {
-          bubbles: true,
-          cancelable: true,
-          clientX: rect.left + 20,
-          clientY: rect.top + 8,
-        }),
-      );
-      await page.getByRole("button", { name: "Make this the lead chat", exact: true }).click();
-
-      await vi.waitFor(
-        () => {
-          expect(mounted.router.state.location.search).toMatchObject({ threads: "1" });
-          expect(document.querySelector("[data-project-board='true']")).not.toBeNull();
-        },
-        { timeout: 8_000, interval: 16 },
-      );
-    } finally {
-      await mounted.cleanup();
-    }
-  });
-
   it("narrows the live list to rooms from the View button and marks it while it does", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,

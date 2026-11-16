@@ -17,15 +17,12 @@ import {
 } from "@threadlines/contracts";
 import { leadSetRefusal, projectLeadThreadId } from "@threadlines/shared/projectLead";
 import { agentThreadsMode } from "@threadlines/shared/serverSettings";
-import * as Schema from "effect/Schema";
 
 import { addComputerNotConnectedNotice } from "./components/computerConnectionNotices";
 import { failureNotice, toastManager } from "./components/ui/toast";
 import { readEnvironmentApi } from "./environmentApi";
 import { readEnvironmentDescriptor } from "./environments/runtime";
-import { getLocalStorageItem, setLocalStorageItem } from "./hooks/useLocalStorage";
 import { newCommandId, newThreadId } from "./lib/utils";
-import { queueRightPanelTab } from "./rightPanelTabs";
 import {
   lastUsedSelection,
   readComputerConfig,
@@ -159,20 +156,6 @@ export function leadMenuLabel(state: LeadMenuState): string {
     : `${base}: ${state.refusal.charAt(0).toLowerCase()}${state.refusal.slice(1).replace(/\.$/, "")}`;
 }
 
-/** Set once a thread on this device has become a lead: see `showThreadsPanelOnFirstLead`. */
-const FIRST_LEAD_SHOWN_KEY = "threadlines:lead-chat:threads-panel-shown";
-
-/**
- * The first time a thread becomes the lead on this device, its Threads tab
- * opens beside it, so the board that goes with a lead is found. Once per
- * device: after that, opening it is the user's move.
- */
-function showThreadsPanelOnFirstLead(threadRef: ScopedThreadRef): void {
-  if (getLocalStorageItem(FIRST_LEAD_SHOWN_KEY, Schema.Boolean) === true) return;
-  setLocalStorageItem(FIRST_LEAD_SHOWN_KEY, true, Schema.Boolean);
-  queueRightPanelTab(scopedThreadKey(threadRef), "threads");
-}
-
 /**
  * Makes `threadId` the project's lead chat, or (null) stops having one, on
  * the project's own computer. Says so when that computer can't be reached
@@ -209,9 +192,6 @@ export async function setProjectLead(input: {
       projectId: input.projectId,
       threadId: input.threadId,
     });
-    if (input.threadId !== null) {
-      showThreadsPanelOnFirstLead(scopeThreadRef(input.environmentId, input.threadId));
-    }
     return true;
   } catch (error) {
     toastManager.add(failureNotice({ title: failure, error }));

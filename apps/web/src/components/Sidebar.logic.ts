@@ -1799,6 +1799,67 @@ export function countThreadAttention(
  * and wrapped orders come from the caller's sorts, applied to the rows that
  * stand on their own; children keep creation order and are never re-sorted.
  */
+/** A parent's children in family order: oldest first, never re-sorted. */
+export function sortFamilyChildren<
+  E extends { readonly thread: { readonly createdAt: string; readonly id: string } },
+>(children: readonly E[]): E[] {
+  return children.toSorted(
+    (left, right) =>
+      (toSortableTimestamp(left.thread.createdAt) ?? 0) -
+        (toSortableTimestamp(right.thread.createdAt) ?? 0) ||
+      left.thread.id.localeCompare(right.thread.id),
+  );
+}
+
+/**
+ * Whether a parent heads a live family: it is not wrapped, or a child on a
+ * computer this app can't see still works or needs the user (that child has
+ * no row of its own to stand on).
+ */
+export function headsLiveFamily(
+  parent: Pick<InboxFamilyEntry, "isDone">,
+  remoteChildren: readonly InboxRemoteChild[],
+): boolean {
+  return (
+    !parent.isDone ||
+    remoteChildren.some((child) => isChildThreadNeedingYou(child) || isChildThreadWorking(child))
+  );
+}
+
+/** Whether a child of a live parent is still in its family (the open thread always is). */
+export function isLiveFamilyMember(
+  child: InboxFamilyExit & { readonly threadKey: string },
+  parent: { readonly seenAt: string | undefined },
+  input: { readonly activeThreadKey: string | null; readonly now: string },
+): boolean {
+  return child.threadKey === input.activeThreadKey || !hasLeftLiveFamily(child, parent, input.now);
+}
+
+/**
+ * A parent's open family: the members the sidebar draws under its row and
+ * the family tabs show (docs/design/lead-chat.md, "Family tabs"). One rule
+ * for both, so they never disagree. Null when the parent heads no live
+ * family (wrapped, or no members left).
+ */
+export function liveFamilyOf<E extends InboxFamilyEntry>(input: {
+  readonly parent: E;
+  /** Its attached children, in any order. */
+  readonly children: readonly E[];
+  /** Its children on computers this app can't see. */
+  readonly remoteChildren: readonly InboxRemoteChild[];
+  readonly activeThreadKey: string | null;
+  readonly now: string;
+}): { readonly children: E[]; readonly remoteChildren: InboxRemoteChild[] } | null {
+  if (!headsLiveFamily(input.parent, input.remoteChildren)) return null;
+  const children = sortFamilyChildren(input.children).filter((child) =>
+    isLiveFamilyMember(child, input.parent, input),
+  );
+  const remoteChildren = input.remoteChildren.filter(
+    (child) => !hasLeftLiveFamily(child, input.parent, input.now),
+  );
+  return children.length === 0 && remoteChildren.length === 0 ? null : { children, remoteChildren };
+}
+
 export function buildInboxSections<E extends InboxFamilyEntry>(input: {
   readonly entries: readonly E[];
   readonly parentKeyOf: (entry: E) => string | null;
@@ -1832,11 +1893,7 @@ export function buildInboxSections<E extends InboxFamilyEntry>(input: {
   // A wrapped parent whose children on a computer this app can't see still
   // work or need the user stays live: those children have no row of their
   // own to stand on, unlike its children here.
-  const wrapped = (entry: E): boolean =>
-    entry.isDone &&
-    !remoteChildrenOf(entry).some(
-      (child) => isChildThreadNeedingYou(child) || isChildThreadWorking(child),
-    );
+  const wrapped = (entry: E): boolean => !headsLiveFamily(entry, remoteChildrenOf(entry));
   const childrenByParentKey = new Map<string, E[]>();
   for (const entry of input.entries) {
     const parent = parentOf(entry);
@@ -1845,13 +1902,8 @@ export function buildInboxSections<E extends InboxFamilyEntry>(input: {
     siblings.push(entry);
     childrenByParentKey.set(parent.threadKey, siblings);
   }
-  for (const siblings of childrenByParentKey.values()) {
-    siblings.sort(
-      (left, right) =>
-        (toSortableTimestamp(left.thread.createdAt) ?? 0) -
-          (toSortableTimestamp(right.thread.createdAt) ?? 0) ||
-        left.thread.id.localeCompare(right.thread.id),
-    );
+  for (const [parentKey, siblings] of childrenByParentKey) {
+    childrenByParentKey.set(parentKey, sortFamilyChildren(siblings));
   }
 
   const liveHeads: E[] = [];
@@ -1876,10 +1928,7 @@ export function buildInboxSections<E extends InboxFamilyEntry>(input: {
     }
     if (!wrapped(parent)) {
       // Finished with, it moves to Wrapped; otherwise it is in the family.
-      if (
-        entry.threadKey !== input.activeThreadKey &&
-        hasLeftLiveFamily(entry, parent, input.now)
-      ) {
+      if (!isLiveFamilyMember(entry, parent, input)) {
         doneHeads.push(entry);
         liveParentByKey.set(entry.threadKey, parent);
       }
