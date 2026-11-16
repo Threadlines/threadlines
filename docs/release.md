@@ -319,8 +319,11 @@ version shows up in winget once a moderator merges it. The listing text
 Setup, once:
 
 - Add a `WINGET_TOKEN` repository secret: a classic GitHub token with the
-  `public_repo` scope. Pull requests open from that account's fork of
-  winget-pkgs, which the first run creates.
+  `public_repo` and `workflow` scopes. Pull requests open from that account's
+  fork of winget-pkgs, which the first run creates. Without `workflow`, a run
+  fails with "does not have the correct permissions to execute CreateRef"
+  whenever winget-pkgs has changed its own workflow files since the fork's
+  last push.
 - On that account's first winget-pkgs pull request, agree to Microsoft's CLA
   with the comment the CLA bot asks for.
 

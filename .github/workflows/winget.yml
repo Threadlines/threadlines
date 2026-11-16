@@ -9,8 +9,10 @@ run-name: WinGet ${{ inputs.version }}${{ inputs.dry_run && ' (dry run)' || '' }
 # exempt. Run it by hand to retry a version.
 #
 # Needs the WINGET_TOKEN secret: a classic GitHub token with the public_repo
-# scope. The pull request opens from that account's fork of winget-pkgs, which
-# the first run creates. That account's first pull request there also needs
+# and workflow scopes (komac brings the fork up to date with winget-pkgs, whose
+# own workflow files change, and GitHub refuses that push without workflow).
+# The pull request opens from that account's fork of winget-pkgs, which the
+# first run creates. That account's first pull request there also needs
 # Microsoft's CLA, agreed to once in a comment on it.
 on:
   workflow_dispatch:
@@ -48,7 +50,7 @@ jobs:
           WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
         run: |
           if [[ -z "$WINGET_TOKEN" ]]; then
-            echo "::error::Add a WINGET_TOKEN secret (a classic GitHub token with public_repo) to send releases to winget."
+            echo "::error::Add a WINGET_TOKEN secret (a classic GitHub token with public_repo and workflow) to send releases to winget."
             exit 1
           fi
 
