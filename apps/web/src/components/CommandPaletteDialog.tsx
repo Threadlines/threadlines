@@ -2234,7 +2234,6 @@ export function OpenCommandPaletteDialog() {
       title: "Go to lead chat",
       description: project.name,
       icon: <FlagIcon className={ITEM_ICON_CLASS} />,
-      shortcutCommand: "navigate.leadChat",
       run: async () => {
         await navigate({
           to: "/$environmentId/$threadId",

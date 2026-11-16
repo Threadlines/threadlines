@@ -270,22 +270,6 @@ export async function createLeadChat(
 }
 
 /**
- * Where "Go to lead chat" goes: the lead of the open thread's project, else
- * the lead of `fallbackProject` (the project in scope). Null when neither has one.
- */
-export function readLeadChatTarget(
-  openThread: ScopedThreadRef | null,
-  fallbackProject: ScopedProjectRef | null,
-): ScopedThreadRef | null {
-  const fromThread = openThread === null ? null : readProjectLeadRefForThread(openThread);
-  if (fromThread !== null) return fromThread;
-  if (fallbackProject === null) return null;
-  const state = useStore.getState();
-  const project = selectProjectByRef(state, fallbackProject);
-  return project === undefined ? null : projectLeadRef(state, project);
-}
-
-/**
  * The project's name when `threadRef` is its lead chat, else null. A
  * primitive, so a store selector built on it redraws only when it changes.
  */

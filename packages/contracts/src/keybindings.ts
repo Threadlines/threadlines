@@ -63,7 +63,6 @@ const STATIC_KEYBINDING_COMMANDS = [
   "sidebar.toggle",
   "navigate.fleet",
   "navigate.scheduled",
-  "navigate.leadChat",
   "navigate.back",
   "navigate.forward",
   ...MODEL_PICKER_KEYBINDING_COMMANDS,
