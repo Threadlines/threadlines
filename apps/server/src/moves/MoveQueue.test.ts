@@ -16,6 +16,7 @@ import {
 } from "@threadlines/contracts";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
@@ -25,6 +26,7 @@ import { decideOrchestrationCommand } from "../orchestration/decider.ts";
 import { createEmptyReadModel, projectEvent } from "../orchestration/projector.ts";
 import type { ProviderStopConfirmation } from "../provider/Services/ProviderAdapter.ts";
 import { makeMoveQueue, type MoveQueueShape } from "./MoveQueue.ts";
+import type { ThreadMoveBatchRow } from "./ThreadMoveBatchRepository.ts";
 import type { QueuedMoveStart } from "./ThreadMoves.ts";
 
 const now = "2026-11-15T10:00:00.000Z";
@@ -120,6 +122,7 @@ async function harness(options?: { readonly model?: OrchestrationReadModel }) {
     } as OrchestrationCommand);
 
   const thread = () => model.threads.find((entry) => entry.id === THREAD)!;
+  const batchRows = new Map<string, ThreadMoveBatchRow>();
 
   const startQueued = (input: {
     readonly threadId: ThreadId;
@@ -171,7 +174,17 @@ async function harness(options?: { readonly model?: OrchestrationReadModel }) {
           return state.confirmation;
         }),
       checkQueue: () => Effect.succeed({ label: "Mac mini" }),
+      describeTargets: Effect.succeed([]),
       startQueued,
+      batches: {
+        upsert: (row) =>
+          Effect.sync(() => {
+            batchRows.set(row.batchId, row);
+          }),
+        get: (batchId) => Effect.sync(() => Option.fromUndefinedOr(batchRows.get(batchId))),
+      },
+      readMoveState: (threadId) =>
+        Effect.sync(() => model.threads.find((entry) => entry.id === threadId) ?? null),
       cancelMove: (threadId) => {
         state.cancels += 1;
         const move = model.threads.find((entry) => entry.id === threadId)?.move ?? null;
@@ -469,6 +482,113 @@ describe("MoveQueue", () => {
     await h.run(h.queue.unqueue({ threadId: THREAD, requestId }));
     expect(h.state.cancels).toBe(1);
     expect(h.thread().move?.cancelRequested).toBe(true);
+    await h.close();
+  });
+});
+
+describe("MoveQueue, several threads at once", () => {
+  const OTHER = ThreadId.make("thread-2");
+  /** A second thread, in its own checkout, with pull request auto-fix on: it can't move. */
+  const addBlockedThread = async (h: Awaited<ReturnType<typeof harness>>) => {
+    await h.dispatch({
+      type: "thread.create",
+      commandId: nextCommandId(),
+      threadId: OTHER,
+      projectId: PROJECT,
+      title: "Ship the release",
+      modelSelection: agent,
+      runtimeMode: "auto",
+      interactionMode: "default",
+      branch: "release",
+      worktreePath: "/worktrees/release",
+      createdAt: now,
+    } as OrchestrationCommand);
+    await h.dispatch({
+      type: "thread.pull-request-automation.set",
+      commandId: nextCommandId(),
+      threadId: OTHER,
+      pullRequestNumber: 294,
+      pullRequestUrl: "https://github.com/acme/widgets/pull/294",
+      autoFix: true,
+    } as OrchestrationCommand);
+  };
+
+  it("decides each thread on its own and answers for every one of them", async () => {
+    const h = await harness();
+    await h.startReactor();
+    await addBlockedThread(h);
+    await h.setSession("running", { activeTurnId: TURN });
+    const result = await h.run(
+      h.queue.queueMany({
+        threadIds: [OTHER, THREAD],
+        targetEnvironmentId: MAC_MINI,
+        mode: "when-done",
+      }),
+    );
+    // The refused one didn't stop the other.
+    expect(result.refused).toEqual([
+      { threadId: OTHER, words: expect.stringContaining("auto-fix") },
+    ]);
+    expect(result.queued.map((entry) => entry.threadId)).toEqual([THREAD]);
+    expect(h.thread().pendingMove?.batchId).toBe(result.batchId);
+
+    const status = () => h.run(h.queue.batchStatus(result.batchId));
+    const first = await status();
+    expect(first).toMatchObject({
+      target: { environmentId: MAC_MINI },
+      final: false,
+      members: [
+        { threadId: OTHER, state: "not_moved", final: true },
+        { threadId: THREAD, state: "waiting", final: false, waitsFor: [{ code: "turn" }] },
+      ],
+    });
+    // Only a queued move is named; the refused one never had one.
+    expect(first.members[0]?.requestId).toBeUndefined();
+    expect(first.members[1]?.requestId).toBe(result.queued[0]?.requestId);
+
+    await h.endTurn(TURN);
+    await waitFor(() => (h.thread().move ?? null) !== null, "the move to start");
+    expect((await status()).members[1]).toMatchObject({ state: "moving", phase: "exporting" });
+    // The other computer has every byte and waits for its user: final, for quitting.
+    await h.dispatch({
+      type: "thread.move.progress",
+      commandId: nextCommandId(),
+      threadId: THREAD,
+      transferId: h.thread().move!.transferId,
+      phase: "awaiting_approval",
+      sentBytes: 64,
+      totalBytes: 64,
+      staged: true,
+      createdAt: now,
+    });
+    expect(await status()).toMatchObject({
+      final: true,
+      members: [{ state: "not_moved" }, { state: "awaiting_approval", final: true }],
+    });
+    await h.close();
+  });
+
+  it("stop the agents and move now switches only the waiting move it names", async () => {
+    const h = await harness();
+    await h.startReactor();
+    await h.setSession("running", { activeTurnId: TURN });
+    const { requestId } = await h.queueMove();
+    await settle();
+    // An older request is left alone.
+    await h.run(
+      h.queue.setMode({
+        threadId: THREAD,
+        requestId: "request-old" as ThreadMoveRequestId,
+        mode: "stop-now",
+      }),
+    );
+    expect(h.thread().pendingMove).toMatchObject({ mode: "when-done", stage: "waiting" });
+    await h.run(h.queue.setMode({ threadId: THREAD, requestId, mode: "stop-now" }));
+    // Its agent is stopped, and the move goes without waiting for the turn.
+    await waitFor(() => (h.thread().move ?? null) !== null, "the move to start");
+    expect(h.thread().move?.queuedRequestId).toBe(requestId);
+    // Once started, it's no longer a waiting move to switch.
+    await h.run(h.queue.setMode({ threadId: THREAD, requestId, mode: "stop-now" }));
     await h.close();
   });
 });

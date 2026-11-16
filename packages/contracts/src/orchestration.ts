@@ -14,6 +14,7 @@ import {
   ChildRequestBatchId,
   ChildRequestId,
   ThreadMoveId,
+  ThreadMoveBatchId,
   ThreadMoveRequestId,
   CommandId,
   CommandRequestId,
@@ -766,7 +767,15 @@ export const OrchestrationOutsideWork = Schema.Struct({
   version: NonNegativeInt.pipe(Schema.withDecodingDefault(Effect.succeed(1))),
 });
 export type OrchestrationOutsideWork = typeof OrchestrationOutsideWork.Type;
-/** Moving a thread to a linked computer (docs/design/fleet.md, Part 3): how far it got. */
+/**
+ * Moving a thread to a linked computer (docs/design/fleet.md, Part 3): how far
+ * it got. `awaiting_approval`: its user is asked first; when it took every
+ * byte already (`sentBytes` equals `totalBytes`), only their Allow is left.
+ *
+ * Closed, and decoded by every client inside thread shells: a new phase here
+ * would break an older client's whole shell stream. New states go in new
+ * optional fields instead (OrchestrationThreadMove.waitingForTarget).
+ */
 export const ThreadMovePhase = Schema.Literals([
   "exporting",
   "awaiting_approval",
@@ -795,6 +804,12 @@ export const OrchestrationThreadMove = Schema.Struct({
   /** The agent the other computer will run it with (its own instance id). */
   agent: ModelSelection,
   phase: ThreadMovePhase,
+  /**
+   * The other computer is busy with other moves and takes this one once
+   * they're done (Part 3c); the thread stays frozen, at the phase it had.
+   * Absent: not waiting for it.
+   */
+  waitingForTarget: Schema.optional(Schema.Boolean),
   sentBytes: Schema.optional(NonNegativeInt),
   totalBytes: Schema.optional(NonNegativeInt),
   /** The user asked to stop it; it stops once the other computer confirms. */
@@ -806,6 +821,8 @@ export const OrchestrationThreadMove = Schema.Struct({
    * Absent: started straight away.
    */
   queuedRequestId: Schema.optional(ThreadMoveRequestId),
+  /** The batch its queued move was part of (`moves.queueMany`). Absent: moved on its own. */
+  batchId: Schema.optional(ThreadMoveBatchId),
   /** The other computer took it: the thread there. */
   movedAway: Schema.optional(
     Schema.Struct({
@@ -897,6 +914,8 @@ export const ThreadPendingMove = Schema.Struct({
   waitsFor: Schema.optional(Schema.Array(ThreadMoveWait)),
   /** Why a move that is ready doesn't start yet. Absent or null: nothing holds it. */
   hold: Schema.optional(Schema.NullOr(ThreadMoveHold)),
+  /** Queued with other threads (`moves.queueMany`): their batch. Absent: on its own. */
+  batchId: Schema.optional(ThreadMoveBatchId),
 });
 export type ThreadPendingMove = typeof ThreadPendingMove.Type;
 
@@ -931,6 +950,68 @@ export const ThreadMovedFrom = Schema.Struct({
   movedAt: IsoDateTime,
 });
 export type ThreadMovedFrom = typeof ThreadMovedFrom.Type;
+
+/**
+ * How the thread's last move went, as far as this computer can tell
+ * (docs/design/fleet.md, Part 3c). `moved`: it lives on the other computer
+ * now. `not_moved`: it stays here (cancelled, blocked, refused, dropped
+ * there), with why in `words`. `awaiting_approval`: the other computer has
+ * every byte and waits for its user's Allow; this copy stays frozen until it
+ * hears the answer, so for quitting it counts as done.
+ */
+export const ThreadMoveOutcomeResult = Schema.Literals(["moved", "not_moved", "awaiting_approval"]);
+export type ThreadMoveOutcomeResult = typeof ThreadMoveOutcomeResult.Type;
+
+/**
+ * Why a move didn't happen, as a code (`words` says it for the user).
+ * `cancelled`: the user here cancelled it. `blocked`: something on the
+ * thread came to block it while it waited. `gone`: the thread, the link or
+ * the target's agent went away while it waited. `aborted`: the transfer was
+ * dropped for another reason. `staging_full`: the other computer holds as
+ * many moves waiting for Allow as it holds. `denied`: its user said Don't
+ * allow. `expired`: nobody there allowed it in time.
+ */
+export const ThreadMoveOutcomeReason = Schema.Literals([
+  "cancelled",
+  "blocked",
+  "gone",
+  "aborted",
+  "staging_full",
+  "denied",
+  "expired",
+]);
+export type ThreadMoveOutcomeReason = typeof ThreadMoveOutcomeReason.Type;
+
+/** Why a move under way was dropped, as a code (ThreadMoveOutcomeReason's). */
+export const ThreadMoveAbortCode = Schema.Literals([
+  "cancelled",
+  "aborted",
+  "staging_full",
+  "denied",
+  "expired",
+]);
+export type ThreadMoveAbortCode = typeof ThreadMoveAbortCode.Type;
+
+/**
+ * Set by every decision that ends a queued move or settles a move, and kept
+ * after the queued move and the move are cleared, so a batch (and the quit
+ * that waits on it) can read each thread's answer.
+ */
+export const ThreadMoveOutcome = Schema.Struct({
+  result: ThreadMoveOutcomeResult,
+  target: ThreadMoveTarget,
+  /** The queued move it answers. Absent: a move started straight away. */
+  requestId: Schema.optional(ThreadMoveRequestId),
+  /** The transfer it answers. Absent: the queued move ended before one started. */
+  transferId: Schema.optional(ThreadMoveId),
+  batchId: Schema.optional(ThreadMoveBatchId),
+  /** Why, for `not_moved`. */
+  words: Schema.optional(TrimmedNonEmptyString),
+  /** Why, as a code, for `not_moved`. Absent: an older server, or an older move. */
+  reason: Schema.optional(ThreadMoveOutcomeReason),
+  at: IsoDateTime,
+});
+export type ThreadMoveOutcome = typeof ThreadMoveOutcome.Type;
 
 export const OrchestrationMessageRole = Schema.Literals(["user", "assistant", "system"]);
 export type OrchestrationMessageRole = typeof OrchestrationMessageRole.Type;
@@ -2680,6 +2761,8 @@ export const OrchestrationThread = Schema.Struct({
   pendingMove: Schema.optional(Schema.NullOr(ThreadPendingMove)),
   /** See OrchestrationThreadShell.movedFrom. */
   movedFrom: Schema.optional(Schema.NullOr(ThreadMovedFrom)),
+  /** See OrchestrationThreadShell.lastMoveOutcome. */
+  lastMoveOutcome: Schema.optional(Schema.NullOr(ThreadMoveOutcome)),
   /**
    * Moved here: the next turn's agent hasn't been given the conversation yet.
    * Its first send carries a seed built from the imported transcript; the
@@ -2913,6 +2996,8 @@ export const OrchestrationThreadShell = Schema.Struct({
   pendingMove: Schema.optional(Schema.NullOr(ThreadPendingMove)),
   /** Moved here from another computer: see ThreadMovedFrom. Absent or null: started here. */
   movedFrom: Schema.optional(Schema.NullOr(ThreadMovedFrom)),
+  /** How its last move went: see ThreadMoveOutcome. Absent or null: it never tried to move. */
+  lastMoveOutcome: Schema.optional(Schema.NullOr(ThreadMoveOutcome)),
   /**
    * Started by a scheduled task's run (ThreadScheduledRun): "Scheduled ·
    * <task>". Absent or null: not a run thread.
@@ -4873,6 +4958,22 @@ const ThreadMoveQueueCommand = Schema.Struct({
   agent: Schema.optional(ModelSelection),
   mode: ThreadPendingMoveMode,
   requestedBy: ThreadMoveRequester,
+  /** Queued with other threads (`moves.queueMany`). */
+  batchId: Schema.optional(ThreadMoveBatchId),
+  createdAt: IsoDateTime,
+});
+
+/**
+ * "Stop the agents and move now" for a move already waiting: the queued move
+ * `requestId` switches to `stop-now` and its thread's sessions end. One that
+ * already started, or was replaced, is left alone.
+ */
+const ThreadMoveSetModeCommand = Schema.Struct({
+  type: Schema.Literal("thread.move.set-mode"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: ThreadMoveRequestId,
+  mode: Schema.Literal("stop-now"),
   createdAt: IsoDateTime,
 });
 
@@ -4924,6 +5025,13 @@ const ThreadMoveProgressCommand = Schema.Struct({
   phase: ThreadMovePhase,
   sentBytes: Schema.optional(NonNegativeInt),
   totalBytes: Schema.optional(NonNegativeInt),
+  /**
+   * With `awaiting_approval`: the other computer has every byte, and only its
+   * user's Allow is left. The thread's last outcome reads `awaiting_approval`.
+   */
+  staged: Schema.optional(Schema.Boolean),
+  /** The other computer is busy with other moves: see OrchestrationThreadMove.waitingForTarget. */
+  waitingForTarget: Schema.optional(Schema.Boolean),
   createdAt: IsoDateTime,
 });
 
@@ -4942,6 +5050,7 @@ const ThreadMoveAbortCommand = Schema.Struct({
   threadId: ThreadId,
   transferId: ThreadMoveId,
   reason: TrimmedNonEmptyString,
+  code: Schema.optional(ThreadMoveAbortCode),
   createdAt: IsoDateTime,
 });
 
@@ -5063,6 +5172,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ProjectGeneralChatsRelocateCommand,
   ThreadMoveStartCommand,
   ThreadMoveQueueCommand,
+  ThreadMoveSetModeCommand,
   ThreadMoveUnqueueCommand,
   ThreadMoveQuiesceCommand,
   ThreadMoveQueueStatusCommand,
@@ -5176,6 +5286,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.remote-cancels-delivered",
   "thread.move-started",
   "thread.move-queued",
+  "thread.move-mode-set",
   "thread.move-quiescing",
   "thread.move-queue-status-set",
   "thread.move-queue-ended",
@@ -5521,11 +5632,20 @@ export const ThreadMoveStartedPayload = Schema.Struct({
   startedAt: IsoDateTime,
   /** See OrchestrationThreadMove.queuedRequestId. */
   queuedRequestId: Schema.optional(ThreadMoveRequestId),
+  /** See OrchestrationThreadMove.batchId. */
+  batchId: Schema.optional(ThreadMoveBatchId),
 });
 
 export const ThreadMoveQueuedPayload = Schema.Struct({
   threadId: ThreadId,
   pendingMove: ThreadPendingMove,
+});
+
+export const ThreadMoveModeSetPayload = Schema.Struct({
+  threadId: ThreadId,
+  requestId: ThreadMoveRequestId,
+  mode: ThreadPendingMoveMode,
+  updatedAt: IsoDateTime,
 });
 
 export const ThreadMoveQuiescingPayload = Schema.Struct({
@@ -5557,6 +5677,10 @@ export const ThreadMoveProgressedPayload = Schema.Struct({
   phase: ThreadMovePhase,
   sentBytes: Schema.optional(NonNegativeInt),
   totalBytes: Schema.optional(NonNegativeInt),
+  /** See the `thread.move.progress` command's `staged`. */
+  staged: Schema.optional(Schema.Boolean),
+  /** See OrchestrationThreadMove.waitingForTarget. */
+  waitingForTarget: Schema.optional(Schema.Boolean),
   updatedAt: IsoDateTime,
 });
 
@@ -5570,6 +5694,8 @@ export const ThreadMoveAbortedPayload = Schema.Struct({
   threadId: ThreadId,
   transferId: ThreadMoveId,
   reason: TrimmedNonEmptyString,
+  /** See ThreadMoveAbortCode. Absent: recorded before the codes. */
+  code: Schema.optional(ThreadMoveAbortCode),
   updatedAt: IsoDateTime,
 });
 
@@ -6291,6 +6417,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.move-queued"),
     payload: ThreadMoveQueuedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.move-mode-set"),
+    payload: ThreadMoveModeSetPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

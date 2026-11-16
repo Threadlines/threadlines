@@ -38,6 +38,7 @@ import type {
   OrchestrationThreadMove,
   ThreadMovedFrom,
   ThreadPendingMove,
+  ThreadMoveOutcome,
   ProjectKind,
   ProjectScript as ContractProjectScript,
   ThreadId,
@@ -286,6 +287,8 @@ export interface Thread {
   move?: OrchestrationThreadMove | null;
   /** See ThreadShell.pendingMove. */
   pendingMove?: ThreadPendingMove | null;
+  /** See ThreadShell.lastMoveOutcome. */
+  lastMoveOutcome?: ThreadMoveOutcome | null;
   /** See ThreadShell.movedFrom. */
   movedFrom?: ThreadMovedFrom | null;
   /** See ThreadShell.doneOverride. */
@@ -426,6 +429,13 @@ export interface ThreadShell {
    * null: none. A thread has this or `move`, never both.
    */
   pendingMove?: ThreadPendingMove | null;
+  /**
+   * How its last move went (ThreadMoveOutcome, Part 3c): moved, didn't move
+   * (with why), or sent and waiting for the other computer's Allow. Outlives
+   * `pendingMove` and `move`, so a batch can read every thread's answer.
+   * Absent or null: it never tried to move.
+   */
+  lastMoveOutcome?: ThreadMoveOutcome | null;
   /** Moved here from another computer (ThreadMovedFrom). Absent or null: started here. */
   movedFrom?: ThreadMovedFrom | null;
   /**
@@ -457,9 +467,11 @@ export interface ThreadTurnState {
 
 /**
  * A thread whose move waits for it to be free (ThreadShell.pendingMove), or
- * moving to a linked computer, or moved there (ThreadShell.move).
+ * moving to a linked computer (`waiting` while that computer finishes other
+ * moves, `sent` once it has every byte and waits for its user's Allow), or
+ * moved there (ThreadShell.move).
  */
-export type ThreadMoveStatus = "queued" | "moving" | "moved";
+export type ThreadMoveStatus = "queued" | "waiting" | "moving" | "sent" | "moved";
 
 export interface SidebarThreadSummary {
   id: ThreadId;

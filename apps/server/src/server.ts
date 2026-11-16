@@ -26,6 +26,7 @@ import { ComputerLinksLive } from "./links/ComputerLinks.ts";
 import { LinkMoveRepositoryLive } from "./links/LinkMoveRepository.ts";
 import { LinkMovesLive } from "./links/LinkMoves.ts";
 import { MoveQueueLive } from "./moves/MoveQueue.ts";
+import { ThreadMoveBatchRepositoryLive } from "./moves/ThreadMoveBatchRepository.ts";
 import { ThreadMovesLive } from "./moves/ThreadMoves.ts";
 import { layer as ProcessRunnerLive } from "./processRunner.ts";
 import { ProjectSetupRepositoryLive } from "./projectSetup/ProjectSetupRepository.ts";
@@ -310,7 +311,12 @@ const ComputerLinksLayerLive = ComputerLinkReactorsLive.pipe(
   Layer.provideMerge(LinkRequestsLive),
   Layer.provideMerge(ComputerLinkClientLive),
   Layer.provideMerge(
-    Layer.mergeAll(ComputerLinkRepositoryLive, LinkRequestRepositoryLive, LinkMoveRepositoryLive),
+    Layer.mergeAll(
+      ComputerLinkRepositoryLive,
+      LinkRequestRepositoryLive,
+      LinkMoveRepositoryLive,
+      ThreadMoveBatchRepositoryLive,
+    ),
   ),
   Layer.provide(Layer.mergeAll(ProjectionTurnRepositoryLive, ProjectionThreadRepositoryLive)),
   Layer.provide(ServerSecretStoreLive),

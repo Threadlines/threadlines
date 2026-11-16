@@ -90,6 +90,20 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
    * `moves.start`.
    */
   threadMoveQueue: Schema.optionalKey(Schema.Boolean),
+  /**
+   * The server moves several threads at once (`moves.previewMany`,
+   * `moves.queueMany`, `moves.setMode`, `moves.batchStatus`) and keeps each
+   * thread's `lastMoveOutcome` (docs/design/fleet.md, Part 3c). Absent: the
+   * Move threads dialog and the quit offer don't show.
+   */
+  threadMoveBatch: Schema.optionalKey(Schema.Boolean),
+  /**
+   * Under Ask first, the server takes a moved thread's bytes before its user
+   * allows it, so the computer it leaves can count the move as sent; it
+   * groups waiting moves by link (`moves.respondMany`). Absent: an Ask-first
+   * move here holds its bytes back until Allow.
+   */
+  threadMoveStagedApproval: Schema.optionalKey(Schema.Boolean),
   /** The server sets up projects copied from another computer (`projectSetups.*`). */
   projectSetup: Schema.optionalKey(Schema.Boolean),
   /** The server reports when it froze (`subscribeServerStalls`). */

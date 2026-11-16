@@ -36,7 +36,7 @@ import {
   withUnqueuedAgentMessage,
 } from "@threadlines/shared/roomAgentRequests";
 import { applyAgentPagePublication } from "@threadlines/shared/agentPages";
-import { nextPendingMove } from "./pendingMoveProjection.ts";
+import { nextThreadMoveState } from "@threadlines/shared/threadMoveProjection";
 import {
   applyCommandRequestDismissed,
   applyCommandRequested,
@@ -111,11 +111,6 @@ import {
   ThreadRemoteCancelQueuedPayload,
   ThreadRemoteCancelsDeliveredPayload,
   ThreadRemoteChildUpdatedPayload,
-  ThreadMoveStartedPayload,
-  ThreadMoveProgressedPayload,
-  ThreadMoveCancelRequestedPayload,
-  ThreadMoveAbortedPayload,
-  ThreadMovedAwayPayload,
   ThreadHistorySeedDeliveredPayload,
   ThreadParentAttachmentSetPayload,
   ThreadSideTurnInterruptRequestedPayload,
@@ -247,21 +242,6 @@ function updateAgentRequests(
       agentRequests: change(thread.agentRequests),
     }),
   };
-}
-
-/** Changes the thread's move when it is the one `transferId` names; a late event for another is ignored. */
-function updateMove(
-  base: OrchestrationReadModel,
-  threadId: ThreadId,
-  transferId: string,
-  change: (
-    move: NonNullable<OrchestrationThread["move"]>,
-  ) => NonNullable<OrchestrationThread["move"]> | null,
-): OrchestrationReadModel {
-  const thread = base.threads.find((entry) => entry.id === threadId);
-  const move = thread?.move ?? null;
-  if (move === null || move.transferId !== transferId) return base;
-  return { ...base, threads: updateThread(base.threads, threadId, { move: change(move) }) };
 }
 
 function updateThread(
@@ -1050,85 +1030,33 @@ export function projectEvent(
         ),
       );
 
-    // Moving a thread to a linked computer (OrchestrationThreadMove).
-    case "thread.move-started":
-      return decodeForEvent(ThreadMoveStartedPayload, event.payload, event.type, "payload").pipe(
-        Effect.map((payload) => ({
-          ...nextBase,
-          threads: updateThread(nextBase.threads, payload.threadId, {
-            move: {
-              transferId: payload.transferId,
-              target: payload.target,
-              agent: payload.agent,
-              phase: "exporting",
-              cancelRequested: false,
-              startedAt: payload.startedAt,
-              ...(payload.queuedRequestId !== undefined
-                ? { queuedRequestId: payload.queuedRequestId }
-                : {}),
-            },
-          }),
-        })),
-      );
-
-    // A move waiting for the thread to be free (ThreadPendingMove).
+    // Moving a thread to a linked computer: its queued move, its move and
+    // its last outcome (@threadlines/shared/threadMoveProjection, shared with the SQLite
+    // projection).
     case "thread.move-queued":
+    case "thread.move-mode-set":
     case "thread.move-quiescing":
     case "thread.move-queue-status-set":
-    case "thread.move-queue-ended": {
+    case "thread.move-queue-ended":
+    case "thread.move-started":
+    case "thread.move-progressed":
+    case "thread.move-cancel-requested":
+    case "thread.move-aborted":
+    case "thread.moved-away": {
       const thread = nextBase.threads.find((entry) => entry.id === event.payload.threadId);
       if (thread === undefined) return Effect.succeed(nextBase);
+      const state = {
+        move: thread.move ?? null,
+        pendingMove: thread.pendingMove ?? null,
+        lastMoveOutcome: thread.lastMoveOutcome ?? null,
+      };
+      const next = nextThreadMoveState(state, event);
+      if (next === state) return Effect.succeed(nextBase);
       return Effect.succeed({
         ...nextBase,
-        threads: updateThread(nextBase.threads, thread.id, {
-          pendingMove: nextPendingMove(thread.pendingMove ?? null, event),
-        }),
+        threads: updateThread(nextBase.threads, thread.id, next),
       });
     }
-
-    case "thread.move-progressed":
-      return decodeForEvent(ThreadMoveProgressedPayload, event.payload, event.type, "payload").pipe(
-        Effect.map((payload) =>
-          updateMove(nextBase, payload.threadId, payload.transferId, (move) => ({
-            ...move,
-            phase: payload.phase,
-            ...(payload.sentBytes !== undefined ? { sentBytes: payload.sentBytes } : {}),
-            ...(payload.totalBytes !== undefined ? { totalBytes: payload.totalBytes } : {}),
-          })),
-        ),
-      );
-
-    case "thread.move-cancel-requested":
-      return decodeForEvent(
-        ThreadMoveCancelRequestedPayload,
-        event.payload,
-        event.type,
-        "payload",
-      ).pipe(
-        Effect.map((payload) =>
-          updateMove(nextBase, payload.threadId, payload.transferId, (move) => ({
-            ...move,
-            cancelRequested: true,
-          })),
-        ),
-      );
-
-    case "thread.move-aborted":
-      return decodeForEvent(ThreadMoveAbortedPayload, event.payload, event.type, "payload").pipe(
-        Effect.map((payload) =>
-          updateMove(nextBase, payload.threadId, payload.transferId, () => null),
-        ),
-      );
-
-    case "thread.moved-away":
-      return decodeForEvent(ThreadMovedAwayPayload, event.payload, event.type, "payload").pipe(
-        Effect.map((payload) =>
-          updateMove(nextBase, payload.threadId, payload.transferId, (move) => ({
-            ...move,
-            movedAway: { threadId: payload.movedThreadId, movedAt: payload.movedAt },
-          })),
-        ),
-      );
 
     case "thread.history-seed-delivered":
       return decodeForEvent(

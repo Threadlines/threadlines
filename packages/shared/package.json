@@ -79,6 +79,10 @@
       "types": "./src/themes/fit.ts",
       "import": "./src/themes/fit.ts"
     },
+    "./threadMoveProjection": {
+      "types": "./src/threadMoveProjection.ts",
+      "import": "./src/threadMoveProjection.ts"
+    },
     "./themeVsCode": {
       "types": "./src/themes/vscode.ts",
       "import": "./src/themes/vscode.ts"

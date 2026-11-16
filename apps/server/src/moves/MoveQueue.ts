@@ -25,13 +25,19 @@ import {
   type OrchestrationEvent,
   type OrchestrationThread,
   type ThreadId,
+  ThreadMoveBatchId,
+  type ThreadMoveBatchMember,
+  type ThreadMoveBatchStatus,
   ThreadMoveError,
   type ThreadMoveHold,
   ThreadMoveRequestId,
   type ThreadMoveQueueInput,
+  type ThreadMoveQueueManyInput,
+  type ThreadMoveQueueManyResult,
   type ThreadMoveQueueResult,
   type ThreadMoveRequester,
   type ThreadMoveRetryInput,
+  type ThreadMoveSetModeInput,
   type ThreadMoveUnqueueInput,
   type ThreadMoveWait,
   type ThreadPendingMove,
@@ -58,8 +64,20 @@ import {
   threadMoveRefusals,
 } from "../orchestration/threadMoveDecisions.ts";
 import type { ProviderStopConfirmation } from "../provider/Services/ProviderAdapter.ts";
+import { ProjectionThreadRepository } from "../persistence/Services/ProjectionThreads.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
-import { type QueuedMoveStart, ThreadMoves, type ThreadMovesShape } from "./ThreadMoves.ts";
+import {
+  ThreadMoveBatchRepository,
+  type ThreadMoveBatchMemberRow,
+  type ThreadMoveBatchRepositoryShape,
+  type ThreadMoveBatchRow,
+} from "./ThreadMoveBatchRepository.ts";
+import {
+  type DescribedTarget,
+  type QueuedMoveStart,
+  ThreadMoves,
+  type ThreadMovesShape,
+} from "./ThreadMoves.ts";
 import { makeThreadMoveContextReader, type ThreadMoveContext } from "./threadMoveView.ts";
 
 export interface MoveQueueShape {
@@ -68,6 +86,21 @@ export interface MoveQueueShape {
   ) => Effect.Effect<ThreadMoveQueueResult, ThreadMoveError>;
   readonly unqueue: (input: ThreadMoveUnqueueInput) => Effect.Effect<void, ThreadMoveError>;
   readonly retry: (input: ThreadMoveRetryInput) => Effect.Effect<void, ThreadMoveError>;
+  /**
+   * Queues a move for each thread to one computer, as one batch
+   * (docs/design/fleet.md, Part 3c): each through the same path as `queue`,
+   * decided on its own, so one refused doesn't stop the others. The batch is
+   * recorded before the first thread is queued.
+   */
+  readonly queueMany: (
+    input: ThreadMoveQueueManyInput,
+  ) => Effect.Effect<ThreadMoveQueueManyResult, ThreadMoveError>;
+  /** "Stop the agents and move now" for the waiting move `requestId`; one that started is left alone. */
+  readonly setMode: (input: ThreadMoveSetModeInput) => Effect.Effect<void, ThreadMoveError>;
+  /** Where every thread of a batch stands. */
+  readonly batchStatus: (
+    batchId: ThreadMoveBatchId,
+  ) => Effect.Effect<ThreadMoveBatchStatus, ThreadMoveError>;
   /** Watch queued moves: the ones the last process left, and every one from now on. */
   readonly startReactor: () => Effect.Effect<void, never, Scope.Scope>;
 }
@@ -93,7 +126,12 @@ export interface MoveQueueDeps {
   readonly pendingThreadIds: Effect.Effect<ReadonlyArray<ThreadId>>;
   readonly quiesce: (threadId: ThreadId) => Effect.Effect<ProviderStopConfirmation>;
   readonly checkQueue: ThreadMovesShape["checkQueue"];
+  /** Every linked computer, described once, for a batch. */
+  readonly describeTargets: ThreadMovesShape["describeTargets"];
   readonly startQueued: ThreadMovesShape["startQueued"];
+  readonly batches: Pick<ThreadMoveBatchRepositoryShape, "upsert" | "get">;
+  /** What a batch's status reads of one thread, archived and deleted ones too; null when it's gone. */
+  readonly readMoveState: (threadId: ThreadId) => Effect.Effect<BatchThreadState | null>;
   /** v1's cancel of the thread's move under way. */
   readonly cancelMove: ThreadMovesShape["cancel"];
   /** The wait before trying a held move again, by how many times it was held. */
@@ -104,6 +142,77 @@ export interface MoveQueueDeps {
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 const moveError = (detail: string) => new ThreadMoveError({ detail });
+
+/** What `moves.batchStatus` reads of one thread: its title and its move state. */
+export type BatchThreadState = Pick<
+  OrchestrationThread,
+  "title" | "deletedAt" | "pendingMove" | "move" | "lastMoveOutcome"
+>;
+
+/**
+ * Where one thread of a batch stands, from the queued move it got
+ * (`member.requestId`), the refusal it got instead, and its move state now.
+ * Its outcome for that request is final; its queued move or its move for
+ * that request is still going. Anything else (deleted mid-move, or a move it
+ * no longer has) is final as not moved.
+ */
+export function batchMemberStatus(
+  member: ThreadMoveBatchMemberRow,
+  refusal: string | undefined,
+  thread: BatchThreadState | null,
+): ThreadMoveBatchMember {
+  // A refused member's id was named before it was refused and never queued
+  // anything: it stays out, so no client sends it on (setMode, unqueue).
+  const base = {
+    threadId: member.threadId,
+    ...(thread !== null && thread.title.trim().length > 0 ? { title: thread.title } : {}),
+    ...(member.requestId !== undefined && refusal === undefined
+      ? { requestId: member.requestId }
+      : {}),
+  };
+  const notMoved = (words: string): ThreadMoveBatchMember => ({
+    ...base,
+    state: "not_moved",
+    final: true,
+    words,
+  });
+  if (refusal !== undefined) return notMoved(refusal);
+  if (thread === null) return notMoved("This thread is gone.");
+  const requestId = member.requestId;
+  if (requestId === undefined) return notMoved("This thread wasn't queued.");
+  const outcome = thread.lastMoveOutcome ?? null;
+  if (outcome !== null && outcome.requestId === requestId) {
+    return {
+      ...base,
+      state: outcome.result,
+      final: true,
+      ...(outcome.words !== undefined ? { words: outcome.words } : {}),
+    };
+  }
+  const pending = thread.pendingMove ?? null;
+  const move = thread.move ?? null;
+  const going =
+    (pending !== null && pending.requestId === requestId) ||
+    (move !== null && move.queuedRequestId === requestId && move.movedAway === undefined);
+  if (thread.deletedAt !== null && going) return notMoved("This thread was deleted.");
+  if (pending !== null && pending.requestId === requestId) {
+    return {
+      ...base,
+      state: pending.stage === "quiescing" ? "stopping" : "waiting",
+      final: false,
+      ...(pending.waitsFor !== undefined && pending.waitsFor.length > 0
+        ? { waitsFor: pending.waitsFor }
+        : {}),
+      ...(pending.hold !== undefined && pending.hold !== null ? { hold: pending.hold } : {}),
+    };
+  }
+  if (move !== null && move.queuedRequestId === requestId) {
+    return move.movedAway !== undefined
+      ? { ...base, state: "moved", final: true }
+      : { ...base, state: "moving", final: false, phase: move.phase };
+  }
+  return notMoved("This thread's move ended without an answer.");
+}
 
 /** 15 s, 30 s, 1 min, then every 2 min. */
 const defaultRetryDelay = (attempt: number) =>
@@ -420,14 +529,24 @@ export const makeMoveQueue = (
     // The service.
     // -------------------------------------------------------------------------
 
-    const queue: MoveQueueShape["queue"] = (input) =>
+    /** Checks one move and records it as the thread's queued move: `queue`, and each of a batch. */
+    const queueOne = (
+      input: ThreadMoveQueueInput & { readonly requestedBy?: ThreadMoveRequester },
+      batch?: {
+        readonly batchId: ThreadMoveBatchId;
+        readonly targets: ReadonlyArray<DescribedTarget>;
+        /** Recorded in the batch before it is queued. */
+        readonly requestId: ThreadMoveRequestId;
+      },
+    ) =>
       Effect.gen(function* () {
         const { label } = yield* deps.checkQueue({
           threadId: input.threadId,
           targetEnvironmentId: input.targetEnvironmentId,
           agent: input.agent,
+          targets: batch?.targets,
         });
-        const requestId = ThreadMoveRequestId.make(randomUUID());
+        const requestId = batch?.requestId ?? ThreadMoveRequestId.make(randomUUID());
         yield* deps
           .dispatch({
             type: "thread.move.queue",
@@ -438,10 +557,128 @@ export const makeMoveQueue = (
             ...(input.agent !== undefined ? { agent: input.agent } : {}),
             mode: input.mode,
             requestedBy: input.requestedBy ?? { kind: "user" },
+            ...(batch !== undefined ? { batchId: batch.batchId } : {}),
             createdAt: yield* nowIso,
           })
           .pipe(Effect.mapError((error) => moveError(error.message)));
-        return { requestId };
+        return { requestId, label };
+      });
+
+    const queue: MoveQueueShape["queue"] = (input) =>
+      queueOne(input).pipe(Effect.map(({ requestId }) => ({ requestId })));
+
+    const unrecorded = () => moveError("The moves couldn't be recorded. Try again.");
+
+    const queueMany: MoveQueueShape["queueMany"] = (input) =>
+      Effect.gen(function* () {
+        const batchId = ThreadMoveBatchId.make(randomUUID());
+        const threadIds = [...new Set(input.threadIds)];
+        const targets = yield* deps.describeTargets;
+        const described = targets.find(
+          (entry) => entry.environmentId === input.targetEnvironmentId,
+        );
+        const targetLabel = Option.match(described?.described ?? Option.none(), {
+          onNone: () => described?.label ?? "the other computer",
+          onSome: (peer) => peer.label,
+        });
+        const planned = threadIds.map((threadId) => ({
+          threadId,
+          requestId: ThreadMoveRequestId.make(randomUUID()),
+        }));
+        const row: ThreadMoveBatchRow = {
+          batchId,
+          targetEnvironmentId: input.targetEnvironmentId,
+          targetLabel,
+          createdAt: yield* nowIso,
+          // Each member's queued move is named before any is queued, so a
+          // batch cut short (a crash, a failed write) still knows every move
+          // it made; one never queued reads as not moved.
+          members: planned,
+          refused: [],
+        };
+        yield* deps.batches.upsert(row).pipe(Effect.mapError(unrecorded));
+        const queued: Array<{ threadId: ThreadId; requestId: ThreadMoveRequestId }> = [];
+        const refused: Array<{ threadId: ThreadId; words: string }> = [];
+        for (const member of planned) {
+          const requestId = member.requestId;
+          const one = yield* queueOne(
+            {
+              threadId: member.threadId,
+              targetEnvironmentId: input.targetEnvironmentId,
+              mode: input.mode,
+            },
+            { batchId, targets, requestId },
+          ).pipe(Effect.result);
+          if (one._tag === "Success") {
+            queued.push({ threadId: member.threadId, requestId });
+          } else {
+            refused.push({ threadId: member.threadId, words: one.failure.detail });
+          }
+        }
+        // The refusals' words; without them a refused member still reads as
+        // not moved, so a failed write here doesn't undo the queued moves.
+        yield* deps.batches.upsert({ ...row, refused }).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("move queue: a batch's refusals couldn't be recorded", {
+              batchId,
+              cause: error,
+            }),
+          ),
+        );
+        return { batchId, queued, refused } satisfies ThreadMoveQueueManyResult;
+      });
+
+    const setMode: MoveQueueShape["setMode"] = (input) =>
+      Effect.gen(function* () {
+        const read = deps.readThread(input.threadId);
+        const thread = yield* read;
+        if (thread === null) return yield* moveError("That thread doesn't exist.");
+        // Already started, ended or replaced: left alone.
+        if (thread.pendingMove?.requestId !== input.requestId) return;
+        const refused = yield* deps
+          .dispatch({
+            type: "thread.move.set-mode",
+            commandId: commandId(input.requestId, "set-mode"),
+            threadId: input.threadId,
+            requestId: input.requestId,
+            mode: input.mode,
+            createdAt: yield* nowIso,
+          })
+          .pipe(
+            Effect.as(null),
+            Effect.catch((error) => Effect.succeed(error.message)),
+          );
+        if (refused === null) return;
+        // A start that won the race (the frozen thread refuses it): nothing to switch.
+        if ((yield* read)?.pendingMove?.requestId === input.requestId) {
+          return yield* moveError(refused);
+        }
+      });
+
+    const batchStatus: MoveQueueShape["batchStatus"] = (batchId) =>
+      Effect.gen(function* () {
+        const found = yield* deps.batches
+          .get(batchId)
+          .pipe(Effect.mapError(() => moveError("The moves couldn't be read.")));
+        if (Option.isNone(found)) return yield* moveError("Those moves aren't known here.");
+        const batch = found.value;
+        const refusals = new Map(batch.refused.map((entry) => [entry.threadId, entry.words]));
+        const members = yield* Effect.forEach(batch.members, (member) =>
+          deps
+            .readMoveState(member.threadId)
+            .pipe(
+              Effect.map((thread) =>
+                batchMemberStatus(member, refusals.get(member.threadId), thread),
+              ),
+            ),
+        );
+        return {
+          batchId,
+          target: { environmentId: batch.targetEnvironmentId, label: batch.targetLabel },
+          createdAt: batch.createdAt,
+          members,
+          final: members.every((member) => member.final),
+        } satisfies ThreadMoveBatchStatus;
       });
 
     const unqueue: MoveQueueShape["unqueue"] = (input) =>
@@ -556,7 +793,15 @@ export const makeMoveQueue = (
         );
       });
 
-    return MoveQueue.of({ queue, unqueue, retry, startReactor });
+    return MoveQueue.of({
+      queue,
+      unqueue,
+      retry,
+      queueMany,
+      setMode,
+      batchStatus,
+      startReactor,
+    });
   });
 
 /** Whether the thread's agent has no session left, as projected. */
@@ -571,6 +816,8 @@ export const MoveQueueLive = Layer.effect(
     const providers = yield* ProviderService;
     const threadMoves = yield* ThreadMoves;
     const links = yield* ComputerLinks;
+    const batches = yield* ThreadMoveBatchRepository;
+    const threadRows = yield* ProjectionThreadRepository;
     const sql = yield* SqlClient.SqlClient;
     const readContext = yield* makeThreadMoveContextReader;
     return yield* makeMoveQueue({
@@ -592,8 +839,27 @@ export const MoveQueueLive = Layer.effect(
       ),
       quiesce: providers.quiesceThread,
       checkQueue: threadMoves.checkQueue,
+      describeTargets: threadMoves.describeTargets,
       startQueued: threadMoves.startQueued,
       cancelMove: threadMoves.cancel,
+      batches,
+      // The row alone: a batch's status reads each member's move state, not
+      // its messages.
+      readMoveState: (threadId) =>
+        threadRows.getById({ threadId }).pipe(
+          Effect.map((row) =>
+            Option.isNone(row)
+              ? null
+              : {
+                  title: row.value.title,
+                  deletedAt: row.value.deletedAt,
+                  pendingMove: row.value.pendingMove ?? null,
+                  move: row.value.move ?? null,
+                  lastMoveOutcome: row.value.lastMoveOutcome ?? null,
+                },
+          ),
+          Effect.orDie,
+        ),
     });
   }),
 );

@@ -29,7 +29,7 @@ import {
   type FleetDirection,
   type FleetPair,
 } from "./fleetLinks.logic";
-import { LinkRequestRow } from "./LinkRequestRow";
+import { LinkRequestRows } from "./LinkRequestRow";
 import { UnlinkDialog } from "./UnlinkDialog";
 
 const ACCESS_ORDER: readonly ComputerLinkAccess[] = ["allowed", "ask", "off"];
@@ -348,9 +348,9 @@ function PairRow({
           </p>
         ) : null}
       </div>
-      {pending.map((request) => (
-        <LinkRequestRow key={request.requestId} request={request} worker={targetOf(pair.self)} />
-      ))}
+      <LinkRequestRows
+        requests={pending.map((request) => ({ request, worker: targetOf(pair.self) }))}
+      />
       {/* Neither way linked: the one Link above covers both, and the lines
           show only to say what failed. */}
       {(pair.linked || Object.keys(linkErrors).length > 0 ? directions : []).map(

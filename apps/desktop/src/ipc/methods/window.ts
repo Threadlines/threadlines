@@ -5,6 +5,7 @@ import {
   DesktopCaptureScreenshotResultSchema,
   DesktopEnvironmentBootstrapSchema,
   DesktopPowerStateSchema,
+  DesktopQuitAfterMovesInputSchema,
   DesktopTaskbarStatusInputSchema,
   PickFolderOptionsSchema,
 } from "@threadlines/contracts";
@@ -170,6 +171,37 @@ export const resolveQuitConfirmation = makeIpcMethod({
   handler: Effect.fn("desktop.ipc.window.resolveQuitConfirmation")(function* (confirmed) {
     const desktopWindow = yield* DesktopWindow.DesktopWindow;
     yield* desktopWindow.resolveQuitConfirmation(confirmed);
+  }),
+});
+
+export const quitAfterMoves = makeIpcMethod({
+  channel: IpcChannels.QUIT_AFTER_MOVES_CHANNEL,
+  payload: DesktopQuitAfterMovesInputSchema,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.window.quitAfterMoves")(function* (input) {
+    const desktopWindow = yield* DesktopWindow.DesktopWindow;
+    yield* desktopWindow.startQuitAfterMoves(input.batchId);
+  }),
+});
+
+export const cancelQuitAfterMoves = makeIpcMethod({
+  channel: IpcChannels.QUIT_AFTER_MOVES_CANCEL_CHANNEL,
+  payload: Schema.Void,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.window.cancelQuitAfterMoves")(function* () {
+    const desktopWindow = yield* DesktopWindow.DesktopWindow;
+    yield* desktopWindow.cancelQuitAfterMoves;
+  }),
+});
+
+/** The moves a quit waits for need the user: the window comes back. */
+export const showQuitAfterMoves = makeIpcMethod({
+  channel: IpcChannels.QUIT_AFTER_MOVES_SHOW_CHANNEL,
+  payload: Schema.Void,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.window.showQuitAfterMoves")(function* () {
+    const desktopWindow = yield* DesktopWindow.DesktopWindow;
+    yield* desktopWindow.showQuitAfterMoves;
   }),
 });
 

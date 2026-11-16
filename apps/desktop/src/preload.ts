@@ -382,6 +382,9 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   },
   resolveQuitConfirmation: (confirmed) =>
     ipcRenderer.invoke(IpcChannels.QUIT_CONFIRMATION_RESOLVE_CHANNEL, confirmed),
+  quitAfterMoves: (input) => ipcRenderer.invoke(IpcChannels.QUIT_AFTER_MOVES_CHANNEL, input),
+  cancelQuitAfterMoves: () => ipcRenderer.invoke(IpcChannels.QUIT_AFTER_MOVES_CANCEL_CHANNEL),
+  showQuitAfterMoves: () => ipcRenderer.invoke(IpcChannels.QUIT_AFTER_MOVES_SHOW_CHANNEL),
   showContextMenu: (items, position) =>
     ipcRenderer.invoke(IpcChannels.CONTEXT_MENU_CHANNEL, {
       items,

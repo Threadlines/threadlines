@@ -9,6 +9,7 @@ import {
   ProjectId,
   ProviderInstanceId,
   type ThreadId,
+  ThreadMoveBatchId,
   ThreadMoveError,
   ThreadMoveId,
   type ThreadMovePreview,
@@ -95,7 +96,12 @@ function withThreadMoveQueueFixture(nextFixture: TestFixture): void {
 
 function withMoveCapabilities(
   nextFixture: TestFixture,
-  moves: { readonly threadMove: true; readonly threadMoveQueue?: true },
+  moves: {
+    readonly threadMove: true;
+    readonly threadMoveQueue?: true;
+    readonly threadMoveBatch?: true;
+    readonly threadMoveStagedApproval?: true;
+  },
 ): void {
   withComputerLinksFixture(nextFixture);
   const capabilities = { ...nextFixture.serverConfig.environment.capabilities, ...moves };
@@ -178,12 +184,25 @@ const FLEET_MOVE_PREVIEW: ThreadMovePreview = {
 };
 
 /** The calls of a waiting move (Part 3b), for a stand-in client whose test never queues. */
-const QUEUE_CALLS_UNUSED: Pick<ThreadMovesClient, "queue" | "unqueue" | "retry"> = {
+const QUEUE_CALLS_UNUSED: Omit<ThreadMovesClient, "preview" | "start" | "cancel"> = {
   queue: async () => {
     throw new Error("This test doesn't queue a move.");
   },
   unqueue: async () => undefined,
   retry: async () => undefined,
+  previewMany: async () => {
+    throw new Error("This test doesn't move several threads.");
+  },
+  queueMany: async () => {
+    throw new Error("This test doesn't move several threads.");
+  },
+  setMode: async () => undefined,
+  batchStatus: async () => {
+    throw new Error("This test doesn't move several threads.");
+  },
+  respondMany: async () => {
+    throw new Error("This test doesn't answer moves.");
+  },
 };
 
 const QUEUED_REQUEST_ID = ThreadMoveRequestId.make("queued-browser");
@@ -828,6 +847,34 @@ describe("ChatView (full app): moving a thread to another computer", () => {
       await expect
         .element(page.getByRole("button", { name: "Dismiss why it didn't move to Mac mini" }))
         .not.toBeInTheDocument();
+
+      // A move the user cancelled says nothing back, read from its code.
+      const cancelledRequestId = ThreadMoveRequestId.make("queued-cancelled");
+      emitThreadEvent(5, {
+        eventId: "move-queued-again",
+        type: "thread.move-queued",
+        payload: {
+          threadId: THREAD_ID,
+          pendingMove: fleetPendingMove({ requestId: cancelledRequestId }),
+        },
+      });
+      await waitForComposerNotice("Moves to Mac mini");
+      emitThreadEvent(6, {
+        eventId: "move-queue-cancelled",
+        type: "thread.move-queue-ended",
+        payload: {
+          threadId: THREAD_ID,
+          requestId: cancelledRequestId,
+          reason: "cancelled",
+          endedAt: NOW_ISO,
+        },
+      });
+      await expect
+        .element(page.getByRole("button", { name: "Cancel the move", exact: true }))
+        .not.toBeInTheDocument();
+      expect(
+        page.getByRole("button", { name: "Dismiss why it didn't move to Mac mini" }).elements(),
+      ).toHaveLength(0);
     } finally {
       await mounted.cleanup();
     }
@@ -1233,6 +1280,314 @@ describe("ChatView (full app): moving a thread to another computer", () => {
           allow: true,
         });
       });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("moves several threads at once: working ones first and ticked, refusals greyed out with why", async () => {
+    setPrimaryLinksSnapshot(
+      fleetLinksSnapshot({
+        outbound: [fleetOutboundLink(FLEET_OFFLINE_ENVIRONMENT_ID, "Mac mini")],
+      }),
+    );
+    const idleId = "thread-batch-idle" as ThreadId;
+    const goalId = "thread-batch-goal" as ThreadId;
+    const queueManys: Array<NormalizedWsRpcRequestBody> = [];
+    const base = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-move-batch" as MessageId,
+      targetText: "move batch",
+    });
+    const snapshot = addThreadToSnapshot(addThreadToSnapshot(base, idleId), goalId);
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads: snapshot.threads.map((thread) =>
+          thread.id === idleId
+            ? { ...thread, title: "Idle docs pass" }
+            : thread.id === goalId
+              ? { ...thread, title: "Goal thread" }
+              : thread,
+        ),
+      },
+      configureFixture: (fixture) =>
+        withMoveCapabilities(fixture, {
+          threadMove: true,
+          threadMoveQueue: true,
+          threadMoveBatch: true,
+        }),
+      resolveRpc: (body) => {
+        if (body._tag === WS_METHODS.movesPreviewMany) {
+          const threadIds = (body as unknown as { threadIds: ThreadId[] }).threadIds;
+          return {
+            threads: threadIds.map((threadId) =>
+              threadId === THREAD_ID
+                ? { threadId, waitsFor: [{ code: "turn", words: "when this turn ends" }] }
+                : threadId === goalId
+                  ? { threadId, refusal: "Has a goal set. Clear it first." }
+                  : { threadId },
+            ),
+            targets: [{ ...FLEET_MOVE_PREVIEW.targets[1]!, projectName: undefined }],
+          };
+        }
+        if (body._tag === WS_METHODS.movesQueueMany) {
+          queueManys.push(body);
+          return { batchId: "batch-browser", queued: [], refused: [] };
+        }
+        return undefined;
+      },
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      await saveMacMini("connected");
+      await openCommandPaletteFromTrigger();
+      await page
+        .getByTestId("command-palette")
+        .getByText("Move threads to another computer…", { exact: true })
+        .click();
+      const dialog = page.getByTestId("move-threads-dialog");
+      const list = dialog.getByTestId("move-threads-list");
+      await expect.element(list).toBeVisible();
+      // The working thread leads, ticked; the idle one waits for the user.
+      const rows = Array.from(
+        document.querySelectorAll<HTMLElement>('[data-testid^="move-threads-row-"]'),
+      ).map((row) => row.dataset.testid);
+      expect(rows[0]).toBe(`move-threads-row-${THREAD_ID}`);
+      expect(rows).toHaveLength(3);
+      await expect
+        .element(dialog.getByTestId(`move-threads-words-${THREAD_ID}`))
+        .toHaveTextContent("Moves when the agent finishes");
+      await expect.element(dialog.getByTestId(`move-threads-tick-${THREAD_ID}`)).toBeChecked();
+      await expect
+        .element(dialog.getByTestId(`move-threads-words-${idleId}`))
+        .toHaveTextContent("Moves now");
+      await expect.element(dialog.getByTestId(`move-threads-tick-${idleId}`)).not.toBeChecked();
+      // One that can't move is listed, greyed out, with why.
+      await expect
+        .element(dialog.getByTestId(`move-threads-words-${goalId}`))
+        .toHaveTextContent("Has a goal set. Clear it first.");
+      await expect.element(dialog.getByTestId(`move-threads-tick-${goalId}`)).toBeDisabled();
+      await expect
+        .element(dialog.getByTestId("move-threads-confirm"))
+        .toHaveTextContent("Move 1 thread");
+
+      await dialog.getByTestId(`move-threads-tick-${idleId}`).click();
+      await expect
+        .element(dialog.getByTestId("move-threads-confirm"))
+        .toHaveTextContent("Move 2 threads");
+      await dialog.getByTestId("move-threads-confirm").click();
+      await expect.element(page.getByTestId("move-threads-dialog")).not.toBeInTheDocument();
+      expect(queueManys).toEqual([
+        expect.objectContaining({
+          threadIds: [THREAD_ID, idleId],
+          targetEnvironmentId: FLEET_OFFLINE_ENVIRONMENT_ID,
+          mode: "when-done",
+        }),
+      ]);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("offers Move threads here on another computer's Fleet page, and says how its batch goes", async () => {
+    const batchStatusCalls: Array<NormalizedWsRpcRequestBody> = [];
+    setPrimaryLinksSnapshot(
+      fleetLinksSnapshot({
+        outbound: [fleetOutboundLink(FLEET_OFFLINE_ENVIRONMENT_ID, "Mac mini")],
+      }),
+    );
+    const movedId = "thread-batch-moved" as ThreadId;
+    const waitingId = "thread-batch-waiting" as ThreadId;
+    const batchId = ThreadMoveBatchId.make("batch-fleet");
+    const base = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-move-shot" as MessageId,
+      targetText: "move shot",
+    });
+    const snapshot = addThreadToSnapshot(addThreadToSnapshot(base, movedId), waitingId);
+    const pending = (requestId: string): ThreadPendingMove => ({
+      requestId: ThreadMoveRequestId.make(requestId),
+      target: { environmentId: FLEET_OFFLINE_ENVIRONMENT_ID, label: "Mac mini" },
+      mode: "when-done",
+      stage: "waiting",
+      requestedAt: NOW_ISO,
+      requestedBy: { kind: "user" },
+      waitsFor: [{ code: "turn", words: "when this turn ends" }],
+      batchId,
+    });
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads: snapshot.threads.map((thread) =>
+          thread.id === movedId
+            ? {
+                ...thread,
+                title: "Docs pass",
+                lastMoveOutcome: {
+                  result: "moved",
+                  target: { environmentId: FLEET_OFFLINE_ENVIRONMENT_ID, label: "Mac mini" },
+                  batchId,
+                  at: NOW_ISO,
+                },
+              }
+            : thread.id === waitingId
+              ? { ...thread, title: "Login fix", pendingMove: pending("shot-2") }
+              : { ...thread, pendingMove: pending("shot-1") },
+        ),
+      },
+      configureFixture: (fixture) =>
+        withMoveCapabilities(fixture, {
+          threadMove: true,
+          threadMoveQueue: true,
+          threadMoveBatch: true,
+        }),
+      // The batch's own record keeps a thread refused when it was queued,
+      // which no thread here carries.
+      resolveRpc: (body) => {
+        if (body._tag !== WS_METHODS.movesBatchStatus) return undefined;
+        batchStatusCalls.push(body);
+        const final = batchStatusCalls.length > 1;
+        const member = (threadId: string, title: string, state: string, extra = {}) => ({
+          threadId,
+          title,
+          state,
+          final: state === "moved" || state === "not_moved",
+          ...extra,
+        });
+        const members = [
+          member(THREAD_ID, THREAD_TITLE, final ? "moved" : "waiting"),
+          member(movedId, "Docs pass", "moved"),
+          final
+            ? member(waitingId, "Login fix", "not_moved", {
+                words: "Mac mini didn't allow the move.",
+              })
+            : member(waitingId, "Login fix", "waiting"),
+          member("thread-batch-refused", "Goal thread", "not_moved", {
+            words: "Has a goal set. Clear it first.",
+          }),
+        ];
+        return {
+          batchId,
+          target: { environmentId: FLEET_OFFLINE_ENVIRONMENT_ID, label: "Mac mini" },
+          createdAt: new Date().toISOString(),
+          members,
+          final: members.every((entry) => entry.final),
+        };
+      },
+      initialPath: `/fleet/${FLEET_OFFLINE_ENVIRONMENT_ID}`,
+    });
+    try {
+      await waitForServerConfigToApply();
+      await saveMacMini("connected");
+      await expect
+        .element(page.getByTestId("fleet-move-threads"))
+        .toHaveTextContent("Move threads here…");
+      // The batch's progress, from its own record, on the page and its row:
+      // the thread refused at queue time counts too.
+      await expect
+        .element(page.getByTestId("fleet-computer-move-batch"))
+        .toHaveTextContent(
+          "Moving 4 threads here: 1 moved, 2 waiting for their agents, 1 didn't move",
+        );
+      await expect
+        .element(page.getByTestId(`fleet-list-computer-${FLEET_OFFLINE_ENVIRONMENT_ID}`))
+        .toMatchTextContent(/Moving 4 threads here/u);
+      // Final: every thread that didn't move is named, with why, and the
+      // record is asked no more.
+      await expect
+        .element(page.getByTestId("fleet-computer-move-batch"), { timeout: 8_000 })
+        .toHaveTextContent(
+          "Moved 2 of 4 threads to Mac mini. Didn't move: Login fix (Mac mini didn't allow the move), Goal thread (Has a goal set. Clear it first).",
+        );
+      const asked = batchStatusCalls.length;
+      await new Promise((resolve) => setTimeout(resolve, 2_500));
+      expect(batchStatusCalls).toHaveLength(asked);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("groups one computer's moves under Allow all, which answers them together", async () => {
+    const windowsLinks = fakeComputerLinksClient();
+    const respondMany = vi.fn(async (input: { requestIds: readonly string[] }) => ({
+      answered: [...input.requestIds],
+      failed: [],
+    }));
+    const moveRequest = (requestId: string, title: string): ComputerLinkPendingRequest => ({
+      ...fleetPendingRequest(LOCAL_ENVIRONMENT_ID, requestId, title),
+      kind: "move",
+      fromLabel: "Local environment",
+      prompt: "",
+      projectName: "threadlines",
+      move: {
+        messageCount: 12,
+        branch: "main",
+        trackedFiles: 0,
+        untrackedFiles: 0,
+        unpushedCommits: 0,
+        bytesReceived: 1_048_576,
+        totalBytes: 4_194_304,
+      },
+    });
+    const first = moveRequest("transfer-group-1", "Login fix");
+    const second = moveRequest("transfer-group-2", "Docs pass");
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-move-group" as MessageId,
+        targetText: "move group",
+      }),
+      configureFixture: (fixture) =>
+        withMoveCapabilities(fixture, {
+          threadMove: true,
+          threadMoveQueue: true,
+          threadMoveStagedApproval: true,
+        }),
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      await saveFleetComputers([
+        {
+          environmentId: FLEET_REMOTE_ENVIRONMENT_ID,
+          label: "Windows PC",
+          os: "windows",
+          state: "connected",
+        },
+      ]);
+      __setComputerLinksClientForTests(FLEET_REMOTE_ENVIRONMENT_ID, windowsLinks.client);
+      __setThreadMovesClientForTests(FLEET_REMOTE_ENVIRONMENT_ID, {
+        preview: async () => FLEET_MOVE_PREVIEW,
+        start: async () => ({ transferId: ThreadMoveId.make("unused") }),
+        cancel: async () => undefined,
+        ...QUEUE_CALLS_UNUSED,
+        respondMany: respondMany as unknown as ThreadMovesClient["respondMany"],
+      });
+      useComputerLinksStore
+        .getState()
+        .put(FLEET_REMOTE_ENVIRONMENT_ID, fleetLinksSnapshot({ pending: [first, second] }));
+
+      // One inbox row for both, naming each and how much of it is here.
+      const group = page.getByTestId(`link-request-group-${first.deviceId}`);
+      await expect
+        .element(group)
+        .toMatchTextContent(/Local environment wants to move 2 threads to Windows PC/u);
+      await expect
+        .element(group.getByTestId(`link-request-group-${first.deviceId}-threads`))
+        .toMatchTextContent(/Login fix · 1\.0 of 4\.0 MB here.*Docs pass/u);
+      expect(document.querySelector(`[data-testid="link-request-${first.requestId}"]`)).toBeNull();
+
+      await group.getByTestId(`link-request-group-${first.deviceId}-allow`).click();
+      await vi.waitFor(() => {
+        expect(respondMany).toHaveBeenCalledWith({
+          deviceId: first.deviceId,
+          requestIds: [first.requestId, second.requestId],
+          allow: true,
+        });
+      });
+      expect(windowsLinks.respondRequest).not.toHaveBeenCalled();
     } finally {
       await mounted.cleanup();
     }

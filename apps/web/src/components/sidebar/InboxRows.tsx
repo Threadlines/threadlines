@@ -75,10 +75,11 @@ import {
   type ThreadStatusPill,
 } from "../Sidebar.logic";
 import { Button } from "../ui/button";
-import { useLinkRequestAnswer } from "./linkedComputers";
+import { type PendingMoveGroup, useLinkRequestAnswer, useMoveGroupAnswer } from "./linkedComputers";
 import { runtimeModeConfig } from "../../runtimeModeOptions";
 import {
   formatThreadMoveAccess,
+  formatThreadMoveArrival,
   formatThreadMoveChanges,
   threadMoveStatusWord,
 } from "../../threadMove";
@@ -1923,6 +1924,7 @@ export const InboxLinkRequestRow = memo(function InboxLinkRequestRow({
     void respond(allow);
   };
   const isMove = request.kind === "move";
+  const moveArrival = request.move ? formatThreadMoveArrival(request.move) : null;
   return (
     <li
       role="button"
@@ -1990,7 +1992,10 @@ export const InboxLinkRequestRow = memo(function InboxLinkRequestRow({
           data-testid={`link-request-move-${request.requestId}`}
         >
           {request.move ? (
-            <p className="truncate">{formatThreadMoveChanges(request.move)}</p>
+            <p className="truncate">
+              {formatThreadMoveChanges(request.move)}
+              {moveArrival !== null ? ` · ${moveArrival}` : null}
+            </p>
           ) : null}
           <p className="truncate">
             Lands in {request.projectName} with up to{" "}
@@ -2025,6 +2030,120 @@ export const InboxLinkRequestRow = memo(function InboxLinkRequestRow({
           onClick={answer(true)}
         >
           Allow
+        </Button>
+      </div>
+    </li>
+  );
+});
+
+/** Titles a grouped row names before "and N more". */
+const MOVE_GROUP_TITLES_SHOWN = 3;
+
+export interface InboxMoveGroupRowProps {
+  /** The computer the threads would land on, whose Allow they wait for. */
+  readonly computerLabel: string;
+  /** The asking computer's name. */
+  readonly askerLabel: string;
+  readonly group: PendingMoveGroup;
+  /** Opens the Fleet page of the computer they'd land on, where each can be answered alone. */
+  readonly onOpen: () => void;
+}
+
+/**
+ * Several moves from one computer waiting for the user (docs/design/fleet.md,
+ * Part 3c): one row, "Mac wants to move 3 threads to Windows PC", the
+ * threads' titles with how much of each is here already, and Don't allow and
+ * Allow all. Clicking it opens Fleet, where each move has its own Allow.
+ */
+export const InboxMoveGroupRow = memo(function InboxMoveGroupRow({
+  computerLabel,
+  askerLabel,
+  group,
+  onOpen,
+}: InboxMoveGroupRowProps) {
+  const { answering, respond } = useMoveGroupAnswer(group, computerLabel);
+  const answer = (allow: boolean) => (event: React.MouseEvent) => {
+    event.stopPropagation();
+    void respond(allow);
+  };
+  const count = group.requests.length;
+  const shown = group.requests.slice(0, MOVE_GROUP_TITLES_SHOWN);
+  const heading = `${askerLabel} wants to move ${count} threads to ${computerLabel}`;
+  const testId = `link-request-group-${group.deviceId}`;
+  return (
+    <li
+      role="button"
+      tabIndex={0}
+      className={cn(
+        ROW_ITEM_CLASS_NAME,
+        "cursor-pointer px-3 pt-1.5 pb-1 hover:bg-sidebar-accent/60 focus-ring",
+      )}
+      data-testid={testId}
+      aria-label={`${heading}. Open it.`}
+      onClick={onOpen}
+      onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) return;
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onOpen();
+        }
+      }}
+    >
+      <div className="flex min-w-0 items-start gap-1.5">
+        <span
+          aria-label="Needs you"
+          className={cn(
+            "mt-[5px] size-[7px] shrink-0 rounded-full",
+            THREAD_STATUS_DOT_CLASSES.amber,
+          )}
+        />
+        <span className="line-clamp-2 min-w-0 flex-1 text-xs leading-4 font-medium text-foreground">
+          {heading}
+        </span>
+        <span className="mt-0.5 shrink-0 font-mono text-[11px] leading-none text-amber-600 dark:text-amber-300/90">
+          request
+        </span>
+      </div>
+      <ul
+        className="mt-0.5 ps-[13px] text-[11px] text-muted-foreground"
+        data-testid={`${testId}-threads`}
+      >
+        {shown.map((request) => {
+          const arrival = request.move ? formatThreadMoveArrival(request.move) : null;
+          return (
+            <li key={request.requestId} className="flex min-w-0 items-center gap-1">
+              <MonitorUpIcon aria-hidden className="size-2.5 shrink-0" />
+              <span className="min-w-0 truncate">
+                {request.title}
+                {arrival !== null ? ` · ${arrival}` : null}
+              </span>
+            </li>
+          );
+        })}
+        {count > shown.length ? <li>and {count - shown.length} more</li> : null}
+      </ul>
+      <div className="flex min-w-0 items-center justify-end gap-1 ps-[13px]">
+        <Button
+          variant="ghost"
+          size="xs"
+          data-thread-selection-safe
+          data-testid={`${testId}-deny`}
+          className="text-muted-foreground"
+          disabled={answering !== null}
+          onClick={answer(false)}
+        >
+          Don't allow
+        </Button>
+        <Button
+          variant="ghost"
+          size="xs"
+          data-thread-selection-safe
+          data-testid={`${testId}-allow`}
+          className="text-primary-readable"
+          disabled={answering !== null}
+          onClick={answer(true)}
+        >
+          Allow all
         </Button>
       </div>
     </li>

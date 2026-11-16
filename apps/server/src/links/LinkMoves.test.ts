@@ -37,8 +37,10 @@ import * as VcsProcess from "../vcs/VcsProcess.ts";
 import { LinkMoveRepositoryLive } from "./LinkMoveRepository.ts";
 import {
   binaryPatchBytes,
+  linkMoveKey,
   LinkMoves,
   LinkMovesLive,
+  MAX_STAGED_MOVES_PER_LINK,
   moveManifestRefusal,
   movePathRefusal,
 } from "./LinkMoves.ts";
@@ -397,6 +399,259 @@ describe("LinkMoves", () => {
       assert.equal((yield* moves.pending).length, 0);
       assert.equal(dispatched.length, 0);
       assert.equal(run(repos.b, "worktree", "list").split("\n").length, 1);
+    }).pipe(Effect.provide(testLayer(repos, dispatched, "ask")));
+  });
+});
+
+describe("LinkMoves, receive before allow", () => {
+  /** Sends every byte the way the computer the thread leaves does. */
+  const sendAll = (transferId: ThreadMoveId, payload: Buffer, linkAccess: "ask" | "allowed") =>
+    Effect.gen(function* () {
+      const moves = yield* LinkMoves;
+      let state = yield* moves.status(link(linkAccess), { transferId });
+      for (let offset = 0; offset < payload.length && state.status === "receiving";) {
+        state = yield* moves.chunk(link(linkAccess), {
+          transferId,
+          offset,
+          data: payload.subarray(offset, offset + 64).toString("base64"),
+        });
+        offset = state.bytesReceived;
+      }
+      return state;
+    });
+  const awaitSettled = (transferId: ThreadMoveId) =>
+    Effect.gen(function* () {
+      const moves = yield* LinkMoves;
+      let state = yield* moves.status(link("ask"), { transferId });
+      for (let tries = 0; tries < 200 && state.status === "importing"; tries += 1) {
+        yield* Effect.sleep("50 millis");
+        state = yield* moves.status(link("ask"), { transferId });
+      }
+      return state;
+    });
+  const stagingOf = (transferId: ThreadMoveId) =>
+    Effect.map(ServerConfig, (config) =>
+      path.join(config.stateDir, "link-moves", linkMoveKey("device-windows", transferId)),
+    );
+
+  it.live("under Ask first takes every byte, and Allow sets it up with nobody sending", () => {
+    const repos = makeRepos();
+    const dispatched: OrchestrationCommand[] = [];
+    return Effect.gen(function* () {
+      const { manifest, payload } = yield* pack(repos);
+      const moves = yield* LinkMoves;
+      const offered = yield* moves.prepare(link("ask"), {
+        transferId: TRANSFER,
+        manifest,
+        stagedApproval: true,
+      });
+      // The bytes flow while its user hasn't answered.
+      assert.equal(offered.status, "receiving");
+      assert.equal((yield* moves.pending)[0]?.move?.bytesReceived, 0);
+      const sent = yield* sendAll(TRANSFER, payload, "ask");
+      assert.equal(sent.status, "staged_awaiting_approval");
+      assert.equal(sent.bytesReceived, payload.length);
+      assert.equal((yield* moves.pending)[0]?.move?.bytesReceived, payload.length);
+      // Every byte is here; only Allow sets it up, not a finish.
+      assert.equal(
+        (yield* moves.finish(link("ask"), { transferId: TRANSFER })).status,
+        "staged_awaiting_approval",
+      );
+      assert.equal(dispatched.length, 0);
+
+      assert.isTrue(
+        yield* moves.respond({
+          deviceId: "device-windows",
+          requestId: TRANSFER as never,
+          allow: true,
+        }),
+      );
+      const settled = yield* awaitSettled(TRANSFER);
+      assert.equal(settled.status, "committed", settled.reason);
+      assert.equal(dispatched.filter((entry) => entry.type === "thread.import").length, 1);
+      assert.equal((yield* moves.pending).length, 0);
+    }).pipe(Effect.provide(testLayer(repos, dispatched, "ask")));
+  });
+
+  it.live("an Allow given while the bytes still come imports once the last one arrives", () => {
+    const repos = makeRepos();
+    const dispatched: OrchestrationCommand[] = [];
+    return Effect.gen(function* () {
+      const { manifest, payload } = yield* pack(repos);
+      const moves = yield* LinkMoves;
+      yield* moves.prepare(link("ask"), { transferId: TRANSFER, manifest, stagedApproval: true });
+      // Part of it is here when its user allows it.
+      yield* moves.chunk(link("ask"), {
+        transferId: TRANSFER,
+        offset: 0,
+        data: payload.subarray(0, 64).toString("base64"),
+      });
+      assert.isTrue(
+        yield* moves.respond({
+          deviceId: "device-windows",
+          requestId: TRANSFER as never,
+          allow: true,
+        }),
+      );
+      // The rest arrives; the asking computer hears `importing` and sends no
+      // finish. No sweep runs here (no reactor): the last chunk starts it.
+      const sent = yield* sendAll(TRANSFER, payload, "ask");
+      assert.equal(sent.status, "importing");
+      const settled = yield* awaitSettled(TRANSFER);
+      assert.equal(settled.status, "committed", settled.reason);
+      assert.equal(dispatched.filter((entry) => entry.type === "thread.import").length, 1);
+    }).pipe(Effect.provide(testLayer(repos, dispatched, "ask")));
+  });
+
+  it.live("Don't allow and the day's expiry each delete what was staged", () => {
+    const repos = makeRepos();
+    const dispatched: OrchestrationCommand[] = [];
+    const EXPIRES = ThreadMoveId.make("transfer-expires");
+    return Effect.gen(function* () {
+      const { manifest, payload } = yield* pack(repos);
+      const moves = yield* LinkMoves;
+      for (const transferId of [TRANSFER, EXPIRES]) {
+        yield* moves.prepare(link("ask"), { transferId, manifest, stagedApproval: true });
+        assert.equal(
+          (yield* sendAll(transferId, payload, "ask")).status,
+          "staged_awaiting_approval",
+        );
+        assert.isTrue(fs.existsSync(yield* stagingOf(transferId)));
+      }
+      const answered = yield* moves.respondMany({
+        deviceId: "device-windows",
+        requestIds: [TRANSFER as never, "transfer-unknown" as never],
+        allow: false,
+      });
+      assert.deepEqual(answered.answered as ReadonlyArray<string>, [TRANSFER]);
+      assert.equal(answered.failed.length, 1);
+      const denied = yield* moves.status(link("ask"), { transferId: TRANSFER });
+      assert.equal(denied.status, "aborted");
+      assert.include(denied.reason ?? "", "didn't allow");
+      // The computer it came from reads why as a code too.
+      assert.equal(denied.abortCode, "denied");
+      assert.isFalse(fs.existsSync(yield* stagingOf(TRANSFER)));
+
+      // Nobody answered within the day: the sweep drops it and its bytes.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE link_moves SET updated_at = '2000-01-01T00:00:00.000Z' WHERE transfer_id = ${EXPIRES}`;
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          yield* moves.startReactor();
+          for (
+            let tries = 0;
+            tries < 200 &&
+            (yield* moves.status(link("ask"), { transferId: EXPIRES })).status !== "aborted";
+            tries += 1
+          ) {
+            yield* Effect.sleep("20 millis");
+          }
+        }),
+      );
+      const expired = yield* moves.status(link("ask"), { transferId: EXPIRES });
+      assert.equal(expired.status, "aborted");
+      assert.include(expired.reason ?? "", "in time");
+      assert.equal(expired.abortCode, "expired");
+      assert.isFalse(fs.existsSync(yield* stagingOf(EXPIRES)));
+      assert.equal(dispatched.length, 0);
+    }).pipe(Effect.provide(testLayer(repos, dispatched, "ask")));
+  });
+
+  it.live("Allow all sets moves up no more at once than the caps, and every one in turn", () => {
+    const repos = makeRepos();
+    const dispatched: OrchestrationCommand[] = [];
+    const ids = [TRANSFER, ThreadMoveId.make("second"), ThreadMoveId.make("third")];
+    return Effect.gen(function* () {
+      const { manifest, payload } = yield* pack(repos);
+      const moves = yield* LinkMoves;
+      for (const transferId of ids) {
+        yield* moves.prepare(link("ask"), { transferId, manifest, stagedApproval: true });
+        assert.equal(
+          (yield* sendAll(transferId, payload, "ask")).status,
+          "staged_awaiting_approval",
+        );
+      }
+      const answered = yield* moves.respondMany({
+        deviceId: "device-windows",
+        requestIds: ids as never,
+        allow: true,
+      });
+      assert.equal(answered.answered.length, 3);
+      const sql = yield* SqlClient.SqlClient;
+      let most = 0;
+      for (let tries = 0; tries < 400; tries += 1) {
+        const rows = yield* sql<{ readonly status: string }>`SELECT status FROM link_moves`;
+        most = Math.max(most, rows.filter((row) => row.status === "importing").length);
+        if (rows.every((row) => row.status === "committed" || row.status === "aborted")) break;
+        yield* Effect.sleep("10 millis");
+      }
+      // Two from one link at a time; the third waited for a slot, then went.
+      assert.isAtMost(most, 2);
+      for (const transferId of ids) {
+        const state = yield* moves.status(link("ask"), { transferId });
+        assert.include(["committed", "aborted"], state.status);
+      }
+      assert.equal(
+        (yield* moves.status(link("ask"), { transferId: TRANSFER })).status,
+        "committed",
+      );
+    }).pipe(Effect.provide(testLayer(repos, dispatched, "ask")));
+  });
+
+  it.live("a busy computer says wait, and staged moves have limits of their own", () => {
+    const repos = makeRepos();
+    const dispatched: OrchestrationCommand[] = [];
+    const id = (name: string) => ThreadMoveId.make(name);
+    return Effect.gen(function* () {
+      const { manifest, payload } = yield* pack(repos);
+      const moves = yield* LinkMoves;
+      const offer = (transferId: ThreadMoveId, stagedApproval = true) =>
+        moves.prepare(link("ask"), { transferId, manifest, stagedApproval });
+      // Two in flight (still arriving) fill this link's slots: a third waits.
+      assert.equal((yield* offer(id("first"))).status, "receiving");
+      assert.equal((yield* offer(id("second"))).status, "receiving");
+      const busy = yield* offer(id("third"));
+      assert.equal(busy.status, "aborted");
+      assert.equal(busy.refusalCode, "busy");
+      // An older asking computer hears it as it always did.
+      assert.isUndefined((yield* offer(id("third-old"), false)).refusalCode);
+      // Once one has every byte here it waits for Allow outside the slots,
+      // and the waiting one is taken.
+      yield* sendAll(id("first"), payload, "ask");
+      assert.equal((yield* offer(id("third"))).status, "receiving");
+
+      // Held moves have their own limit per link: a move past it is refused for good.
+      yield* sendAll(id("second"), payload, "ask");
+      yield* sendAll(id("third"), payload, "ask");
+      for (let index = 3; index < MAX_STAGED_MOVES_PER_LINK; index += 1) {
+        assert.equal((yield* offer(id(`held-${index}`))).status, "receiving");
+        assert.equal(
+          (yield* sendAll(id(`held-${index}`), payload, "ask")).status,
+          "staged_awaiting_approval",
+        );
+      }
+      const full = yield* offer(id("one-too-many"));
+      assert.equal(full.status, "aborted");
+      assert.equal(full.refusalCode, "staging_full");
+      assert.include(full.reason ?? "", "until its user allows them");
+
+      // Allowed while every slot is taken, a held move waits for one with its
+      // bytes still in staging: it keeps its place in the budget.
+      assert.equal((yield* offer(id("slot-a"), false)).status, "awaiting_approval");
+      assert.equal((yield* offer(id("slot-b"), false)).status, "awaiting_approval");
+      assert.isTrue(
+        yield* moves.respond({
+          deviceId: "device-windows",
+          requestId: "first" as never,
+          allow: true,
+        }),
+      );
+      assert.equal(
+        (yield* moves.status(link("ask"), { transferId: id("first") })).status,
+        "importing",
+      );
+      const stillFull = yield* offer(id("after-allow"));
+      assert.equal(stillFull.refusalCode, "staging_full");
     }).pipe(Effect.provide(testLayer(repos, dispatched, "ask")));
   });
 });

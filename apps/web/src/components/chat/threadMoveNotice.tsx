@@ -41,6 +41,7 @@ import { useStore } from "../../store";
 import {
   describePendingMove,
   describeThreadMoveProgress,
+  isThreadMoveSent,
   isThreadMoveStalled,
   THREAD_MOVE_NOT_STARTED_ACTIVITY_KIND,
 } from "../../threadMove";
@@ -62,11 +63,13 @@ export interface ThreadMoveNoticeActions {
 
 export function buildThreadMoveNotice(input: {
   readonly move: OrchestrationThreadMove;
+  /** The other computer has every byte and waits for its user (isThreadMoveSent). */
+  readonly sent?: boolean;
   /** The link to the other computer is gone or can't reach it (isThreadMoveStalled). */
   readonly stalled: boolean;
   readonly actions: ThreadMoveNoticeActions;
 }): ComposerNotice {
-  const { move, stalled, actions } = input;
+  const { move, stalled, actions, sent = false } = input;
   const label = move.target.label;
   if (move.movedAway) {
     return {
@@ -101,7 +104,7 @@ export function buildThreadMoveNotice(input: {
   return {
     id: `thread-moving:${move.transferId}`,
     severity: "info",
-    lead: describeThreadMoveProgress(move),
+    lead: describeThreadMoveProgress(move, { sent }),
     ...(move.cancelRequested
       ? {}
       : {
@@ -134,7 +137,7 @@ function useConnectedNow(environmentId: EnvironmentId | null): boolean {
  * the thread's own computer, Open to the thread on the other one.
  */
 export function useThreadMoveNotice(input: {
-  readonly thread: Pick<Thread, "id" | "environmentId" | "move"> | undefined;
+  readonly thread: Pick<Thread, "id" | "environmentId" | "move" | "lastMoveOutcome"> | undefined;
   readonly computerLabel: string;
   readonly onContinueHere: () => void;
 }): ComposerNotice | null {
@@ -192,6 +195,7 @@ export function useThreadMoveNotice(input: {
   }, [movedThreadRef, navigate]);
 
   const stalled = isThreadMoveStalled({ move, outbound });
+  const sent = thread !== undefined && isThreadMoveSent(thread);
   const cancelling = thread !== undefined && cancellingThreadId === thread.id;
   return useMemo(
     () =>
@@ -200,6 +204,7 @@ export function useThreadMoveNotice(input: {
         : buildThreadMoveNotice({
             move,
             stalled,
+            sent,
             actions: {
               onCancel,
               cancelling,
@@ -207,7 +212,7 @@ export function useThreadMoveNotice(input: {
               onContinueHere,
             },
           }),
-    [canOpen, cancelling, move, onCancel, onContinueHere, onOpen, stalled],
+    [canOpen, cancelling, move, onCancel, onContinueHere, onOpen, sent, stalled],
   );
 }
 
@@ -338,14 +343,29 @@ const MoveNotStartedDismissalsSchema = Schema.Struct({ keys: Schema.Array(Schema
 /** Enough to outlast any notice still on screen; older keys fall off the front. */
 const MAX_MOVE_NOT_STARTED_DISMISSALS = 200;
 
+/** A move that ended without the thread moving, as the "Didn't move" notice says it. */
+interface MoveMiss {
+  /** The queued move it answers, else the transfer: what a dismissal remembers. */
+  readonly key: string;
+  readonly targetLabel: string;
+  readonly words: string;
+}
+
 /**
- * The thread's last queued move that ended without starting ("Didn't move:
- * <why>"), until dismissed on this device. Gone while another move waits or
- * runs, which says more.
+ * The thread's last move that ended without it moving ("Didn't move:
+ * <why>"), until dismissed on this device: read from its last outcome
+ * (Part 3c), which also covers a move dropped after it started (a batch's
+ * thread the other computer turned away). One the user cancelled says
+ * nothing, by its code (`reason`); an outcome without one, from a server
+ * before the codes, shows. A server too old for outcomes is read from its
+ * "Didn't move" activity instead. Gone while another move waits or runs, which says more.
  */
 export function useMoveNotStartedNotice(input: {
   readonly thread:
-    | Pick<Thread, "id" | "environmentId" | "activities" | "move" | "pendingMove">
+    | Pick<
+        Thread,
+        "id" | "environmentId" | "activities" | "move" | "pendingMove" | "lastMoveOutcome"
+      >
     | undefined;
 }): ComposerNotice | null {
   const { thread } = input;
@@ -356,17 +376,37 @@ export function useMoveNotStartedNotice(input: {
   );
   const anotherMove = Boolean(thread?.move || thread?.pendingMove);
   const activities = thread?.activities;
-  const latest = useMemo(() => {
+  const outcome = thread?.lastMoveOutcome;
+  const latest = useMemo((): MoveMiss | null => {
+    if (outcome !== undefined) {
+      if (outcome === null || outcome.result !== "not_moved" || outcome.reason === "cancelled") {
+        return null;
+      }
+      const key = outcome.requestId ?? outcome.transferId;
+      return key === undefined
+        ? null
+        : {
+            key,
+            targetLabel: outcome.target.label,
+            words: outcome.words ?? "It couldn't move.",
+          };
+    }
     if (!activities) return null;
     for (let index = activities.length - 1; index >= 0; index -= 1) {
       const activity = activities[index];
       if (activity?.kind !== THREAD_MOVE_NOT_STARTED_ACTIVITY_KIND) continue;
-      return isMoveNotStartedPayload(activity.payload) ? activity.payload : null;
+      return isMoveNotStartedPayload(activity.payload)
+        ? {
+            key: activity.payload.requestId,
+            targetLabel: activity.payload.targetLabel,
+            words: activity.payload.words,
+          }
+        : null;
     }
     return null;
-  }, [activities]);
+  }, [activities, outcome]);
   const dismissalKey =
-    thread && latest ? `${thread.environmentId}:${thread.id}:${latest.requestId}` : null;
+    thread && latest ? `${thread.environmentId}:${thread.id}:${latest.key}` : null;
   const dismissed = dismissalKey !== null && dismissals.keys.includes(dismissalKey);
   const dismiss = useCallback(() => {
     if (dismissalKey === null) return;
@@ -381,7 +421,7 @@ export function useMoveNotStartedNotice(input: {
       latest === null || anotherMove || dismissed
         ? null
         : {
-            id: `thread-move-not-started:${latest.requestId}`,
+            id: `thread-move-not-started:${latest.key}`,
             severity: "warning",
             lead: "Didn't move:",
             detail: latest.words,

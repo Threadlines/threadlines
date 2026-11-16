@@ -20,7 +20,7 @@ import { FleetGraph, FleetGraphLegend } from "./FleetGraph";
 import { useFleetData } from "./FleetLayout";
 import { fleetEntryRoute } from "./fleetLinks.logic";
 import { FleetThreadList } from "./FleetThreadList";
-import { LinkRequestRow } from "./LinkRequestRow";
+import { LinkRequestRows } from "./LinkRequestRow";
 import { useFleetComputerMenu } from "./useFleetComputerMenu";
 import { useFleetLabels } from "./useFleetLabels";
 import { glassPage } from "../../theme/glassPage";
@@ -166,14 +166,7 @@ export function FleetView() {
                 Waiting for your Allow
               </h2>
               <SettingsGroup>
-                {pending.map(({ request, worker }) => (
-                  <LinkRequestRow
-                    key={`${worker.environmentId}:${request.requestId}`}
-                    request={request}
-                    worker={worker}
-                    showWorker
-                  />
-                ))}
+                <LinkRequestRows requests={pending} showWorker />
               </SettingsGroup>
             </section>
           ) : null}

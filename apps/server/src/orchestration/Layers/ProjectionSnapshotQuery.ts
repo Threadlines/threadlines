@@ -65,6 +65,7 @@ import {
   OrchestrationThreadMove,
   ThreadPendingMove,
   ThreadMovedFrom,
+  ThreadMoveOutcome,
   ThreadRemoteOrigin,
   ThreadScheduledRun,
   ThreadWorktreeOrigin,
@@ -180,6 +181,7 @@ type ThreadLineageRow = Pick<
   | "move"
   | "pendingMove"
   | "movedFrom"
+  | "lastMoveOutcome"
   | "historySeedOwed"
   | "historySeedMessageId"
 >;
@@ -205,10 +207,13 @@ const threadLineageFields = (row: ThreadLineageRow) => ({
 });
 
 /** Moving a thread to a linked computer, or moved here from one (OrchestrationThreadMove). */
-const threadMoveFields = (row: Pick<ProjectionThread, "move" | "pendingMove" | "movedFrom">) => ({
+const threadMoveFields = (
+  row: Pick<ProjectionThread, "move" | "pendingMove" | "movedFrom" | "lastMoveOutcome">,
+) => ({
   ...(row.move ? { move: row.move } : {}),
   ...(row.pendingMove ? { pendingMove: row.pendingMove } : {}),
   ...(row.movedFrom ? { movedFrom: row.movedFrom } : {}),
+  ...(row.lastMoveOutcome ? { lastMoveOutcome: row.lastMoveOutcome } : {}),
 });
 
 /**
@@ -311,6 +316,7 @@ const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
     move: Schema.optional(Schema.NullOr(Schema.fromJsonString(OrchestrationThreadMove))),
     pendingMove: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadPendingMove))),
     movedFrom: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadMovedFrom))),
+    lastMoveOutcome: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadMoveOutcome))),
   }),
 );
 const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
@@ -955,6 +961,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           move_json AS "move",
           pending_move_json AS "pendingMove",
           moved_from_json AS "movedFrom",
+          last_move_outcome_json AS "lastMoveOutcome",
           history_seed_owed AS "historySeedOwed",
           history_seed_message_id AS "historySeedMessageId",
           done_override AS "doneOverride",
@@ -1024,6 +1031,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           move_json AS "move",
           pending_move_json AS "pendingMove",
           moved_from_json AS "movedFrom",
+          last_move_outcome_json AS "lastMoveOutcome",
           history_seed_owed AS "historySeedOwed",
           history_seed_message_id AS "historySeedMessageId",
           done_override AS "doneOverride",
@@ -1095,6 +1103,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           move_json AS "move",
           pending_move_json AS "pendingMove",
           moved_from_json AS "movedFrom",
+          last_move_outcome_json AS "lastMoveOutcome",
           history_seed_owed AS "historySeedOwed",
           history_seed_message_id AS "historySeedMessageId",
           done_override AS "doneOverride",
@@ -1929,6 +1938,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           move_json AS "move",
           pending_move_json AS "pendingMove",
           moved_from_json AS "movedFrom",
+          last_move_outcome_json AS "lastMoveOutcome",
           history_seed_owed AS "historySeedOwed",
           history_seed_message_id AS "historySeedMessageId",
           done_override AS "doneOverride",
@@ -3726,6 +3736,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     move_json AS "move",
     pending_move_json AS "pendingMove",
     moved_from_json AS "movedFrom",
+    last_move_outcome_json AS "lastMoveOutcome",
     history_seed_owed AS "historySeedOwed",
     history_seed_message_id AS "historySeedMessageId",
     done_override AS "doneOverride",

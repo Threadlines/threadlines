@@ -1,8 +1,9 @@
 /**
  * What the thread list needs to know about computers working together
  * (docs/design/fleet.md, Part 2 "Ask first" and Part 5): what to call each
- * computer, and the threads other computers asked to start that wait for the
- * user's Allow.
+ * computer, and the threads other computers asked to start (or move here)
+ * that wait for the user's Allow, with moves from one computer grouped
+ * (Part 3c).
  */
 import type { ComputerLinkPendingRequest, EnvironmentId } from "@threadlines/contracts";
 import { useCallback, useMemo } from "react";
@@ -14,6 +15,7 @@ import {
   useComputerLinksStore,
   type ComputerLinksEntry,
 } from "../../environments/links/computerLinks";
+import { requireThreadMovesClient } from "../../environments/links/threadMoves";
 import { usePrimaryEnvironmentDescriptor } from "../../environments/primary";
 import {
   useSavedEnvironmentRegistryStore,
@@ -232,6 +234,155 @@ export function useLinkRequestAnswer(
       }
     },
     [computerLabel, environmentId, key, request.deviceId, request.requestId, request.title],
+  );
+  return { answering, respond };
+}
+
+// ---------------------------------------------------------------------------
+// Moves from one computer, answered together (docs/design/fleet.md, Part 3c)
+// ---------------------------------------------------------------------------
+
+/** Several moves one computer asked of another, waiting for the user's Allow. */
+export interface PendingMoveGroup {
+  /** The computer they would land on. */
+  readonly environmentId: EnvironmentId;
+  /** The asking computer's link. */
+  readonly deviceId: string;
+  /** Newest first, like the list they came from. */
+  readonly requests: readonly ComputerLinkPendingRequest[];
+}
+
+export type PendingLinkRequestItem =
+  | ({ readonly kind: "single" } & PendingLinkRequest)
+  | ({ readonly kind: "moves" } & PendingMoveGroup);
+
+/**
+ * Groups the moves one computer asked of another, two or more, into one
+ * item where it stands first (its newest move), when the computer they'd
+ * land on answers several at once (`groupable`, `threadMoveStagedApproval`).
+ * Everything else stays a single item, in order.
+ */
+export function groupPendingLinkRequests(
+  pending: readonly PendingLinkRequest[],
+  groupable: (environmentId: EnvironmentId) => boolean,
+): PendingLinkRequestItem[] {
+  const keyOf = (item: PendingLinkRequest) =>
+    item.request.kind === "move" && groupable(item.environmentId)
+      ? `${item.environmentId}\u0000${item.request.deviceId}`
+      : null;
+  const byKey = new Map<string, ComputerLinkPendingRequest[]>();
+  for (const item of pending) {
+    const key = keyOf(item);
+    if (key === null) continue;
+    const group = byKey.get(key);
+    if (group === undefined) byKey.set(key, [item.request]);
+    else group.push(item.request);
+  }
+  const placed = new Set<string>();
+  return pending.flatMap((item): PendingLinkRequestItem[] => {
+    const key = keyOf(item);
+    const group = key === null ? undefined : byKey.get(key);
+    if (key === null || group === undefined || group.length < 2) {
+      return [{ kind: "single", ...item }];
+    }
+    if (placed.has(key)) return [];
+    placed.add(key);
+    return [
+      {
+        kind: "moves",
+        environmentId: item.environmentId,
+        deviceId: item.request.deviceId,
+        requests: group,
+      },
+    ];
+  });
+}
+
+/**
+ * Allow all and Don't allow for a group of moves (`moves.respondMany` on the
+ * computer they'd land on). Shares the answers store with each move's own
+ * Allow and Deny, so a move answered either way holds everywhere it shows.
+ * Moves that couldn't be answered say so, and can be answered again.
+ */
+export function useMoveGroupAnswer(
+  group: PendingMoveGroup,
+  computerLabel: string,
+): {
+  readonly answering: "allow" | "deny" | null;
+  readonly respond: (allow: boolean) => Promise<void>;
+} {
+  const { environmentId, deviceId, requests } = group;
+  const keys = requests.map((request) => answerKey(environmentId, request.requestId));
+  const answering = useLinkRequestAnswersStore((state) => {
+    for (const key of keys) {
+      const answer = state.byKey[key]?.answer;
+      if (answer !== undefined) return answer;
+    }
+    return null;
+  });
+  const respond = useCallback(
+    async (allow: boolean) => {
+      const { byKey } = useLinkRequestAnswersStore.getState();
+      // Only the moves nobody has answered yet; one answered on its own stays so.
+      const open = requests.filter(
+        (request) => byKey[answerKey(environmentId, request.requestId)] === undefined,
+      );
+      if (open.length === 0) return;
+      const attempt = ++nextAnswerAttempt;
+      const answer = allow ? "allow" : "deny";
+      useLinkRequestAnswersStore.setState((state) => ({
+        byKey: {
+          ...state.byKey,
+          ...Object.fromEntries(
+            open.map((request) => [
+              answerKey(environmentId, request.requestId),
+              { answer, attempt, landed: false },
+            ]),
+          ),
+        },
+      }));
+      const forget = (requestId: string) =>
+        updateLinkRequestAnswer(answerKey(environmentId, requestId), attempt, () => null);
+      try {
+        const result = await requireThreadMovesClient(environmentId, computerLabel).respondMany({
+          deviceId,
+          requestIds: open.map((request) => request.requestId),
+          allow,
+        });
+        for (const requestId of result.answered) {
+          updateLinkRequestAnswer(answerKey(environmentId, requestId), attempt, (entry) => ({
+            ...entry,
+            landed: true,
+          }));
+        }
+        for (const failed of result.failed) forget(failed.requestId);
+        const firstFailure = result.failed[0];
+        if (firstFailure !== undefined) {
+          toastManager.add(
+            failureNotice({
+              title:
+                result.failed.length === 1
+                  ? allow
+                    ? "Couldn't allow one move"
+                    : "Couldn't turn down one move"
+                  : allow
+                    ? `Couldn't allow ${result.failed.length} moves`
+                    : `Couldn't turn down ${result.failed.length} moves`,
+              reason: firstFailure.detail,
+            }),
+          );
+        }
+      } catch (error) {
+        for (const request of open) forget(request.requestId);
+        toastManager.add(
+          failureNotice({
+            title: allow ? "Couldn't allow the moves" : "Couldn't turn down the moves",
+            reason: describeComputerLinkFailure(error, `${computerLabel} didn't answer.`),
+          }),
+        );
+      }
+    },
+    [computerLabel, deviceId, environmentId, requests],
   );
   return { answering, respond };
 }

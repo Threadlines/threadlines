@@ -1,6 +1,6 @@
 import type { EnvironmentId, InboundComputerLink } from "@threadlines/contracts";
 import { useNavigate } from "@tanstack/react-router";
-import { PencilIcon } from "lucide-react";
+import { MonitorUpIcon, PencilIcon } from "lucide-react";
 import { placeById } from "@threadlines/shared/appPlaces";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 
@@ -12,9 +12,13 @@ import {
   removeSavedEnvironment,
   useSavedEnvironmentRegistryStore,
 } from "../../environments/runtime";
+import { useMoveThreadsOffered } from "../../environments/links/threadMoves";
+import { usePrimaryEnvironmentId } from "../../environments/primary";
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
+import { useLatestMoveBatches } from "../../moveBatchProgress";
 import { cn } from "../../lib/utils";
 import { openComputerRenameDialog, useComputerNaming } from "../DeviceRenameDialog";
+import { openMoveThreadsDialog } from "../MoveThreadsDialog";
 import { PageTitlebar } from "../PageTitlebar";
 import { openConnectComputerDialog } from "../settings/connections/JoinComputerDialog";
 import {
@@ -48,7 +52,7 @@ import {
 } from "./fleetLinks.logic";
 import { useFleetData } from "./FleetLayout";
 import { FleetThreadList } from "./FleetThreadList";
-import { LinkRequestRow } from "./LinkRequestRow";
+import { LinkRequestRows } from "./LinkRequestRow";
 import { ProjectSetupsGroup } from "./ProjectSetupsGroup";
 import { useFleetLabels } from "./useFleetLabels";
 import { LinkSettingsControls, WorksWithGroup } from "./WorksWithGroup";
@@ -218,13 +222,12 @@ function WaitingLinkGroup({
           </Button>
         </div>
       </div>
-      {pending.map((request) => (
-        <LinkRequestRow
-          key={request.requestId}
-          request={request}
-          worker={{ environmentId: holder.environmentId, label: holder.label }}
-        />
-      ))}
+      <LinkRequestRows
+        requests={pending.map((request) => ({
+          request,
+          worker: { environmentId: holder.environmentId, label: holder.label },
+        }))}
+      />
       <div className={cn(SETTINGS_GROUP_ROW_CLASS, "px-3.5 py-2.5")}>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
           <div className="min-w-0 flex-1 space-y-0.5">
@@ -303,6 +306,16 @@ export function FleetComputerView({ entryKey }: { readonly entryKey: string }) {
   const naming = useComputerNaming(
     entry?.kind === "this" || entry?.kind === "saved" ? entry.environmentId : null,
   );
+  // Clearing a computer (Part 3c): on this computer's page, its threads go
+  // to another; on another's, this computer's threads come here.
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const isThisComputer = entry?.kind === "this";
+  const moveTargetId = isThisComputer ? null : (entry?.environmentId ?? null);
+  const moveThreadsOffered = useMoveThreadsOffered(primaryEnvironmentId, moveTargetId);
+  const moveThreadsShown = moveThreadsOffered && (isThisComputer || moveTargetId !== null);
+  const moveBatches = useLatestMoveBatches();
+  const moveBatchWords =
+    entry?.environmentId == null ? null : (moveBatches[entry.environmentId] ?? null);
   // A computer waiting to say which it is just did: its page moves to the
   // computer's own address, in place.
   const introducedAs = useMemo(() => {
@@ -450,10 +463,29 @@ export function FleetComputerView({ entryKey }: { readonly entryKey: string }) {
       {...glassPage.shell}
     >
       <PageTitlebar label={entry.label}>
-        {naming ? (
+        {moveThreadsShown && primaryEnvironmentId !== null ? (
           <button
             type="button"
             className="ml-auto flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-ring"
+            data-testid="fleet-move-threads"
+            onClick={() =>
+              openMoveThreadsDialog({
+                sourceEnvironmentId: primaryEnvironmentId,
+                targetEnvironmentId: moveTargetId,
+              })
+            }
+          >
+            <MonitorUpIcon aria-hidden className="size-3.5" />
+            {isThisComputer ? "Move threads to another computer…" : "Move threads here…"}
+          </button>
+        ) : null}
+        {naming ? (
+          <button
+            type="button"
+            className={cn(
+              "flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-ring",
+              !moveThreadsShown && "ml-auto",
+            )}
             data-testid="fleet-rename-computer"
             onClick={() => openComputerRenameDialog(naming)}
           >
@@ -477,6 +509,14 @@ export function FleetComputerView({ entryKey }: { readonly entryKey: string }) {
                 data-testid="fleet-computer-meta"
               >
                 {metaLine}
+              </p>
+            ) : null}
+            {moveBatchWords !== null ? (
+              <p
+                className="text-[12.5px] leading-[18px] text-muted-foreground"
+                data-testid="fleet-computer-move-batch"
+              >
+                {moveBatchWords}
               </p>
             ) : null}
           </header>

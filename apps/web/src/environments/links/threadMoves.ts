@@ -5,9 +5,10 @@
  * where that computer can make one.
  */
 import type { EnvironmentId, ExecutionEnvironmentDescriptor } from "@threadlines/contracts";
+import { useCallback } from "react";
 
 import type { WsRpcClient } from "../../rpc/wsRpcClient";
-import { isThreadMoveOffered } from "../../threadMove";
+import { isMoveThreadsOffered, isThreadMoveOffered } from "../../threadMove";
 import type { ThreadMoveStatus } from "../../types";
 import { usePrimaryEnvironmentDescriptor } from "../primary";
 import {
@@ -112,6 +113,59 @@ export function useThreadMoveOffered(
     outbound,
     moveStatus,
   });
+}
+
+/**
+ * Whether the computer `environmentId` moves several threads at once
+ * (`moves.previewMany`, `queueMany`, `setMode`, `batchStatus`, Part 3c),
+ * kept current.
+ */
+export function useThreadMoveBatchSupported(environmentId: EnvironmentId | null): boolean {
+  return useEnvironmentDescriptor(environmentId)?.capabilities.threadMoveBatch === true;
+}
+
+/**
+ * Whether the computer `environmentId` takes moves before its user allows
+ * them and answers several at once (`moves.respondMany`, Part 3c), kept current.
+ */
+export function useThreadMoveStagedApprovalSupported(environmentId: EnvironmentId | null): boolean {
+  return useEnvironmentDescriptor(environmentId)?.capabilities.threadMoveStagedApproval === true;
+}
+
+/**
+ * useThreadMoveStagedApprovalSupported for any computer, as a check: for
+ * lists of moves waiting on several computers, which group per computer.
+ */
+export function useThreadMoveStagedApprovalCheck(): (environmentId: EnvironmentId) => boolean {
+  const primary = usePrimaryEnvironmentDescriptor();
+  const runtimeById = useSavedEnvironmentRuntimeStore((state) => state.byId);
+  return useCallback(
+    (environmentId) => {
+      const descriptor =
+        primary?.environmentId === environmentId
+          ? primary
+          : (runtimeById[environmentId]?.descriptor ?? null);
+      return descriptor?.capabilities.threadMoveStagedApproval === true;
+    },
+    [primary, runtimeById],
+  );
+}
+
+/**
+ * isMoveThreadsOffered from `sourceEnvironmentId`, to `targetEnvironmentId`
+ * when one is named, kept current.
+ */
+export function useMoveThreadsOffered(
+  sourceEnvironmentId: EnvironmentId | null,
+  targetEnvironmentId: EnvironmentId | null,
+): boolean {
+  const supportsBatch = useThreadMoveBatchSupported(sourceEnvironmentId);
+  const outbound = useLiveOutboundLinks(sourceEnvironmentId);
+  return (
+    sourceEnvironmentId !== null &&
+    sourceEnvironmentId !== targetEnvironmentId &&
+    isMoveThreadsOffered({ supportsBatch, outbound, targetEnvironmentId })
+  );
 }
 
 /**

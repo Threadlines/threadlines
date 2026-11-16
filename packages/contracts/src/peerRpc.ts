@@ -186,6 +186,13 @@ export const PeerDescriptor = Schema.Struct({
   /** Takes threads moved here (`peer.move.*`). Absent: an older server that can't. */
   moves: Schema.optional(Schema.Boolean),
   /**
+   * Under Ask first, takes a moved thread's bytes before its user allows it
+   * (docs/design/fleet.md, Part 3c), for a caller that asks so at
+   * `peer.move.prepare` (`stagedApproval`). Absent: an older server that
+   * holds the bytes back until Allow.
+   */
+  moveStagedApproval: Schema.optional(Schema.Boolean),
+  /**
    * Says how the caller's threads here are filed (`filing` on `thread` watch
    * events) and takes `peer.thread.wrap`. Absent: an older server that can't.
    */
@@ -476,14 +483,35 @@ export const PeerMoveManifest = Schema.Struct({
 });
 export type PeerMoveManifest = typeof PeerMoveManifest.Type;
 
+/**
+ * `staged_awaiting_approval` (docs/design/fleet.md, Part 3c): every byte is
+ * here and the import waits for this computer's user. Only a caller that
+ * asked for `stagedApproval` at prepare is ever answered with it; its bytes
+ * flow (as `receiving`) while the user hasn't answered yet.
+ */
 export const PeerMoveStatus = Schema.Literals([
   "awaiting_approval",
   "receiving",
+  "staged_awaiting_approval",
   "importing",
   "committed",
   "aborted",
 ]);
 export type PeerMoveStatus = typeof PeerMoveStatus.Type;
+
+/**
+ * Why a move was refused at prepare, beside its `reason`. `busy`: this
+ * computer is taking as many moves as it takes at once; nothing was
+ * recorded, so offering it again later is welcome. `staging_full`: this
+ * computer holds as many moves waiting for its user's Allow as it holds; a
+ * final answer. Callers that don't know a code read the refusal as v1 did.
+ */
+export const PeerMoveRefusalCode = Schema.Literals(["busy", "staging_full"]);
+export type PeerMoveRefusalCode = typeof PeerMoveRefusalCode.Type;
+
+/** Why a move held for this computer's user was dropped (PeerMoveState.abortCode). */
+export const PeerMoveAbortCode = Schema.Literals(["denied", "expired"]);
+export type PeerMoveAbortCode = typeof PeerMoveAbortCode.Type;
 
 /** Where a move stands here: every `peer.move.*` call answers with it. */
 export const PeerMoveState = Schema.Struct({
@@ -493,12 +521,26 @@ export const PeerMoveState = Schema.Struct({
   threadId: Schema.optional(ThreadId),
   /** `aborted`: why, for the user on the sending computer. */
   reason: Schema.optional(TrimmedNonEmptyString),
+  /** `aborted` at prepare: what kind of refusal it is (PeerMoveRefusalCode). */
+  refusalCode: Schema.optional(PeerMoveRefusalCode),
+  /**
+   * `aborted` while it waited for this computer's user: `denied` (Don't
+   * allow) or `expired` (nobody allowed it in time). Absent: dropped for
+   * another reason, or an older server.
+   */
+  abortCode: Schema.optional(PeerMoveAbortCode),
 });
 export type PeerMoveState = typeof PeerMoveState.Type;
 
 export const PeerMovePrepareInput = Schema.Struct({
   transferId: ThreadMoveId,
   manifest: PeerMoveManifest,
+  /**
+   * The caller reads `staged_awaiting_approval` and `refusalCode`: under Ask
+   * first, send the bytes now and let the import wait for Allow. Absent: an
+   * older caller, answered exactly as before.
+   */
+  stagedApproval: Schema.optional(Schema.Boolean),
 });
 export type PeerMovePrepareInput = typeof PeerMovePrepareInput.Type;
 

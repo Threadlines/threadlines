@@ -19,6 +19,9 @@ import {
   ThreadParticipantId,
   TurnId,
   ProviderInstanceId,
+  EnvironmentId,
+  ThreadMoveBatchId,
+  ThreadMoveRequestId,
   type OrchestrationThread,
   type OrchestrationWorkflowRunPatch,
 } from "@threadlines/contracts";
@@ -2571,6 +2574,75 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
         WHERE projector = 'projection.projects'
       `;
       assert.deepEqual(projectorRows, [{ lastAppliedSequence: 1 }]);
+    }),
+  );
+
+  it.effect("keeps a move's outcome in the shell and the detail after its queued move ends", () =>
+    Effect.gen(function* () {
+      const engine = yield* OrchestrationEngineService;
+      const snapshots = yield* ProjectionSnapshotQuery;
+      const createdAt = "2026-01-01T00:00:00.000Z";
+      const threadId = ThreadId.make("thread-move-outcome");
+      const requestId = ThreadMoveRequestId.make("request-move-outcome");
+      const batchId = ThreadMoveBatchId.make("batch-move-outcome");
+      const target = { environmentId: EnvironmentId.make("environment-pc"), label: "Windows PC" };
+      yield* engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-move-outcome-project"),
+        projectId: ProjectId.make("project-move-outcome"),
+        title: "Move Outcome",
+        workspaceRoot: "/tmp/project-move-outcome",
+        createdAt,
+      });
+      yield* engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-move-outcome-thread"),
+        threadId,
+        projectId: ProjectId.make("project-move-outcome"),
+        title: "Move me",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+        interactionMode: "default",
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+      });
+      yield* engine.dispatch({
+        type: "thread.move.queue",
+        commandId: CommandId.make("cmd-move-outcome-queue"),
+        threadId,
+        requestId,
+        target,
+        mode: "when-done",
+        requestedBy: { kind: "user" },
+        batchId,
+        createdAt,
+      });
+      const queued = yield* snapshots.getThreadShellById(threadId);
+      assert.equal(Option.getOrThrow(queued).pendingMove?.batchId, batchId);
+      yield* engine.dispatch({
+        type: "thread.move.queue-end",
+        commandId: CommandId.make("cmd-move-outcome-end"),
+        threadId,
+        requestId,
+        reason: "blocked",
+        words: "Has a goal set. Clear it first.",
+        createdAt: "2026-01-01T00:00:01.000Z",
+      });
+      const expected = {
+        result: "not_moved" as const,
+        target,
+        requestId,
+        batchId,
+        words: "Has a goal set. Clear it first.",
+        reason: "blocked" as const,
+        at: "2026-01-01T00:00:01.000Z",
+      };
+      const shell = Option.getOrThrow(yield* snapshots.getThreadShellById(threadId));
+      assert.equal(shell.pendingMove ?? null, null);
+      assert.deepEqual(shell.lastMoveOutcome, expected);
+      const detail = Option.getOrThrow(yield* snapshots.getThreadDetailById(threadId));
+      assert.deepEqual(detail.lastMoveOutcome, expected);
     }),
   );
 

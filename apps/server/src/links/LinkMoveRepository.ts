@@ -1,7 +1,7 @@
 import {
   IsoDateTime,
+  PeerMoveAbortCode,
   PeerMoveManifest,
-  PeerMoveStatus,
   ThreadId,
   ThreadMoveId,
 } from "@threadlines/contracts";
@@ -24,6 +24,20 @@ import * as SqlSchema from "effect/sql/SqlSchema";
  * commit.
  */
 
+/**
+ * Where a move stands here, as recorded. `awaiting_approval` with
+ * `stagedApproval` takes its bytes while it waits; the asking computer reads
+ * it as `receiving`, then `staged_awaiting_approval` once every byte is here.
+ */
+export const LinkMoveStatus = Schema.Literals([
+  "awaiting_approval",
+  "receiving",
+  "importing",
+  "committed",
+  "aborted",
+]);
+export type LinkMoveStatus = typeof LinkMoveStatus.Type;
+
 /** How far an import got; each stage is recorded before the next starts. */
 export const LinkMoveStage = Schema.Literals(["fetched", "worktree", "applied"]);
 export type LinkMoveStage = typeof LinkMoveStage.Type;
@@ -33,7 +47,13 @@ export const LinkMoveRow = Schema.Struct({
   transferId: ThreadMoveId,
   /** hash(link, transfer): every resource the move makes here is named from it. */
   transferKey: Schema.String,
-  status: PeerMoveStatus,
+  status: LinkMoveStatus,
+  /**
+   * The asking computer sends the bytes before this computer's user allows
+   * the move (docs/design/fleet.md, Part 3c): under Ask first it is received
+   * into staging while it waits, and Allow imports it at once.
+   */
+  stagedApproval: Schema.Boolean,
   stage: Schema.NullOr(LinkMoveStage),
   manifest: PeerMoveManifest,
   bytesReceived: Schema.Number,
@@ -43,6 +63,8 @@ export const LinkMoveRow = Schema.Struct({
   /** The repository the move's git work happens in (its temp ref, branch, worktree), once known. */
   repoRoot: Schema.NullOr(Schema.String),
   reason: Schema.NullOr(Schema.String),
+  /** An aborted move held for this computer's user: Don't allow, or nobody allowed it in time. */
+  abortCode: Schema.NullOr(PeerMoveAbortCode),
   /** An aborted move's clean-up is done. Null on an aborted row: still owed. */
   cleanedAt: Schema.NullOr(IsoDateTime),
   createdAt: IsoDateTime,
@@ -52,6 +74,7 @@ export type LinkMoveRow = typeof LinkMoveRow.Type;
 
 const LinkMoveDbRow = Schema.Struct({
   ...LinkMoveRow.fields,
+  stagedApproval: Schema.BooleanFromBit,
   manifest: Schema.fromJsonString(PeerMoveManifest),
 });
 const encodeManifest = Schema.encodeEffect(Schema.fromJsonString(PeerMoveManifest));
@@ -67,7 +90,8 @@ export interface LinkMoveRepositoryShape {
     readonly linkDeviceId: string;
     readonly transferId: ThreadMoveId;
     readonly transferKey: string;
-    readonly status: PeerMoveStatus;
+    readonly status: LinkMoveStatus;
+    readonly stagedApproval: boolean;
     readonly manifest: PeerMoveManifest;
     readonly threadId: ThreadId;
     readonly reason?: string;
@@ -103,6 +127,8 @@ export interface LinkMoveRepositoryShape {
     readonly transferId: string;
     readonly status: "committed" | "aborted";
     readonly reason?: string;
+    /** With `aborted`: see LinkMoveRow.abortCode. */
+    readonly abortCode?: PeerMoveAbortCode;
     readonly now: string;
   }) => Effect.Effect<boolean, LinkMoveRepositoryError>;
   readonly markCleaned: (input: {
@@ -130,6 +156,7 @@ const make = Effect.gen(function* () {
       transfer_id AS "transferId",
       transfer_key AS "transferKey",
       status AS "status",
+      staged_approval AS "stagedApproval",
       stage AS "stage",
       manifest_json AS "manifest",
       bytes_received AS "bytesReceived",
@@ -138,6 +165,7 @@ const make = Effect.gen(function* () {
       worktree_path AS "worktreePath",
       repo_root AS "repoRoot",
       reason AS "reason",
+      abort_code AS "abortCode",
       cleaned_at AS "cleanedAt",
       created_at AS "createdAt",
       updated_at AS "updatedAt"
@@ -169,11 +197,12 @@ const make = Effect.gen(function* () {
       const manifest = yield* encodeManifest(input.manifest);
       yield* sql`
         INSERT INTO link_moves (
-          link_device_id, transfer_id, transfer_key, status, manifest_json, bytes_received,
-          thread_id, reason, created_at, updated_at
+          link_device_id, transfer_id, transfer_key, status, staged_approval, manifest_json,
+          bytes_received, thread_id, reason, created_at, updated_at
         ) VALUES (
           ${input.linkDeviceId}, ${input.transferId}, ${input.transferKey}, ${input.status},
-          ${manifest}, 0, ${input.threadId}, ${input.reason ?? null}, ${input.now}, ${input.now}
+          ${input.stagedApproval ? 1 : 0}, ${manifest}, 0, ${input.threadId},
+          ${input.reason ?? null}, ${input.now}, ${input.now}
         )
         ON CONFLICT(link_device_id, transfer_id) DO NOTHING
       `;
@@ -227,6 +256,7 @@ const make = Effect.gen(function* () {
         UPDATE link_moves SET
           status = ${input.status},
           reason = COALESCE(${input.reason ?? null}, reason),
+          abort_code = ${input.abortCode ?? null},
           updated_at = ${input.now}
         WHERE link_device_id = ${input.linkDeviceId}
           AND transfer_id = ${input.transferId}

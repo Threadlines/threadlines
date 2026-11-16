@@ -163,6 +163,13 @@ export class DesktopWindowQuitConfirmationError extends Data.TaggedError(
 export const QUIT_CONFIRMATION_SHOWN_TIMEOUT = Duration.millis(1500);
 
 /**
+ * How long a quit that waits on moves waits for a page to come back after
+ * the one showing them went away (a reload, a crash): a page needs seconds
+ * to load and sign in. None by then, the native quit question asks.
+ */
+export const QUIT_AFTER_MOVES_PAGE_RETURN_TIMEOUT = Duration.seconds(30);
+
+/**
  * How many menu actions wait for a page that isn't listening yet, newest kept.
  * Enough for a burst of clicks during a slow start, never a backlog.
  */
@@ -236,6 +243,25 @@ export interface DesktopWindowShape {
    * the page lost it (a reload, a crash). False when nothing is pending.
    */
   readonly repeatQuitConfirmation: Effect.Effect<boolean>;
+  /**
+   * "Move them to <computer> and quit" (docs/design/fleet.md, Part 3c): the
+   * page queued batch `batchId` and will answer the pending quit question
+   * itself once every move is final. Until then hiding or closing the window
+   * doesn't answer it with no: the window hides and the page keeps running.
+   * The wait ends with that question's answer (either way), with
+   * {@link cancelQuitAfterMoves}, or when the page goes away. With no quit
+   * question pending it does nothing.
+   */
+  readonly startQuitAfterMoves: (batchId: string) => Effect.Effect<void>;
+  /** The page stopped waiting to quit after moves; the quit question stays open. */
+  readonly cancelQuitAfterMoves: Effect.Effect<void>;
+  /**
+   * The moves the quit waits for need the user (one didn't move, or one is
+   * held): the window comes back, shown and focused, from hidden or
+   * minimized. Nothing unless the app waits to quit after moves, so no page
+   * can raise the window this way otherwise.
+   */
+  readonly showQuitAfterMoves: Effect.Effect<void>;
   /**
    * Sends the page's app shell an action from a menu, the tray or a link, and
    * brings the window forward. With no shell listening yet (the window still
@@ -560,6 +586,63 @@ const make = Effect.gen(function* () {
   const pendingQuitConfirmation = yield* Ref.make<Option.Option<QuitConfirmationDelivery>>(
     Option.none(),
   );
+  // The batch the page is moving before it answers the pending quit question
+  // (startQuitAfterMoves), or null. Read synchronously by the window's close
+  // and hide listeners. Set only while a quit question is pending, and
+  // cleared when that question ends, so it never outlives it.
+  let quitAfterMovesBatchId: string | null = null;
+  // The page showing the wait went away, and the next to listen gets the
+  // question again (quitAfterMovesPageGone); each going away is one attempt.
+  let awaitingReturningPage = false;
+  let pageReturnAttempt = 0;
+  const endQuitAfterMoves = (reason: string) =>
+    Effect.suspend(() => {
+      const batchId = quitAfterMovesBatchId;
+      if (batchId === null) return Effect.void;
+      quitAfterMovesBatchId = null;
+      awaitingReturningPage = false;
+      return logWindowInfo("stopped waiting to quit after moves", { batchId, reason });
+    });
+  const repeatQuitConfirmation = Ref.get(pendingQuitConfirmation).pipe(
+    Effect.flatMap(
+      Option.match({
+        onNone: () => Effect.succeed(false),
+        onSome: (pending) => Deferred.succeed(pending.askedAgain, undefined).pipe(Effect.as(true)),
+      }),
+    ),
+  );
+  // The page that was going to answer the quit question is gone (its process
+  // died, or a new document replaced it). The wait and its batch stay: the
+  // next page to listen is asked again, with the batch, and picks the moves'
+  // progress up where it was (askOnce sends `quitAfterMoves`). Only when no
+  // page listens within QUIT_AFTER_MOVES_PAGE_RETURN_TIMEOUT does the wait
+  // end and the question come back, which a page that can't take it gives
+  // to the native dialog, so the app can always quit. (The main process has
+  // no client for the backend's WebSocket RPC, so it can't read the batch's
+  // progress itself.)
+  const quitAfterMovesPageGone = (reason: string) =>
+    Effect.gen(function* () {
+      if (quitAfterMovesBatchId === null) return;
+      awaitingReturningPage = true;
+      const attempt = ++pageReturnAttempt;
+      yield* logWindowInfo("waiting for a page to show the moves a quit waits on", {
+        batchId: quitAfterMovesBatchId,
+        reason,
+      });
+      yield* Effect.sleep(QUIT_AFTER_MOVES_PAGE_RETURN_TIMEOUT);
+      if (!awaitingReturningPage || attempt !== pageReturnAttempt) return;
+      awaitingReturningPage = false;
+      yield* endQuitAfterMoves("no page came back to show the moves");
+      yield* repeatQuitConfirmation;
+    });
+  /** A page listens again after one went away during the wait: it gets the question, with the batch. */
+  const quitAfterMovesPageBack = Effect.gen(function* () {
+    if (!awaitingReturningPage) return;
+    awaitingReturningPage = false;
+    pageReturnAttempt += 1;
+    if (quitAfterMovesBatchId === null) return;
+    yield* repeatQuitConfirmation;
+  });
   // Whether the window's page has its app shell listening for menu actions.
   // The app keeps one window, so this is that window's page. A navigation to
   // a new document stops it as soon as it starts (what is sent meanwhile
@@ -774,9 +857,19 @@ const make = Effect.gen(function* () {
       }
       const closingForQuit = mainWindowCloseAllowed || Effect.runSync(Ref.get(state.quitting));
       // Windows and Linux keep running in the tray when the user asked for it
-      // ("Keep running in the background"); macOS always does.
-      const hideToBackground =
+      // ("Keep running in the background"); macOS always does, the Dock
+      // bringing the window back.
+      const backgroundWithWayBack =
         environment.platform === "darwin" || Effect.runSync(Ref.get(state.runInBackground));
+      // While the page waits to quit after moves it must keep running, since
+      // it answers the quit question once they're done. With no tray icon to
+      // bring a hidden window back, closing minimizes it instead.
+      if (quitAfterMovesBatchId !== null && !closingForQuit && !backgroundWithWayBack) {
+        event.preventDefault();
+        window.minimize();
+        return;
+      }
+      const hideToBackground = quitAfterMovesBatchId !== null || backgroundWithWayBack;
       if (hideToBackground && !closingForQuit) {
         // Closing the window hides it and the page keeps running, so the
         // status item's count, the badge when work finishes, the quit
@@ -1288,7 +1381,10 @@ const make = Effect.gen(function* () {
       menuActionsListening = false;
     });
     // A new document committed.
-    window.webContents.on("did-navigate", stopMenuActionsListening);
+    window.webContents.on("did-navigate", () => {
+      stopMenuActionsListening();
+      void runPromise(quitAfterMovesPageGone("a new page replaced the one waiting"));
+    });
     window.webContents.on("did-stop-loading", () => {
       // A navigation that never committed: the page and its shell stayed.
       if (listeningBeforeNavigation !== null) {
@@ -1303,7 +1399,7 @@ const make = Effect.gen(function* () {
         logWindowWarning("main window render process gone", {
           reason: details.reason,
           exitCode: details.exitCode,
-        }),
+        }).pipe(Effect.andThen(quitAfterMovesPageGone("the page's process is gone"))),
       );
     });
 
@@ -1437,6 +1533,7 @@ const make = Effect.gen(function* () {
     }
     menuActionsListening = listening;
     yield* flushHeldMenuActions;
+    if (listening) yield* quitAfterMovesPageBack;
   });
 
   const resolveQuitConfirmation = (confirmed: boolean) =>
@@ -1458,14 +1555,18 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  const repeatQuitConfirmation = Ref.get(pendingQuitConfirmation).pipe(
-    Effect.flatMap(
-      Option.match({
-        onNone: () => Effect.succeed(false),
-        onSome: (pending) => Deferred.succeed(pending.askedAgain, undefined).pipe(Effect.as(true)),
-      }),
-    ),
-  );
+  // Harmless with no quit question pending (a late call after it was
+  // answered, or a page that never got one): there is nothing to hold open.
+  const startQuitAfterMoves = Effect.fn("desktop.window.startQuitAfterMoves")(function* (
+    batchId: string,
+  ) {
+    if (Option.isNone(yield* Ref.get(pendingQuitConfirmation))) {
+      yield* logWindowInfo("no quit question to hold for moves", { batchId });
+      return;
+    }
+    quitAfterMovesBatchId = batchId;
+    yield* logWindowInfo("waiting to quit after moves", { batchId });
+  });
 
   // Never opens a window to ask: a fresh page needs seconds to load and sign
   // in, and a question sent before it listens is lost. With no window the
@@ -1484,19 +1585,25 @@ const make = Effect.gen(function* () {
     const answer = yield* Deferred.make<boolean>();
 
     // Closing the window while it asks keeps the app running; on macOS
-    // closing hides it.
+    // closing hides it. While the page waits to quit after moves, hiding
+    // leaves the question open for the page to answer.
     const cancelOnWindowClosed = () => {
       void runPromise(Deferred.succeed(answer, false));
     };
+    const cancelOnWindowHidden = () => {
+      if (quitAfterMovesBatchId !== null) return;
+      cancelOnWindowClosed();
+    };
     window.on("closed", cancelOnWindowClosed);
-    window.on("hide", cancelOnWindowClosed);
-    const cleanup = Ref.set(pendingQuitConfirmation, Option.none()).pipe(
+    window.on("hide", cancelOnWindowHidden);
+    const cleanup = endQuitAfterMoves("the quit question ended").pipe(
+      Effect.andThen(Ref.set(pendingQuitConfirmation, Option.none())),
       Effect.andThen(
         Effect.try({
           try: () => {
             if (window.isDestroyed()) return;
             window.removeListener("closed", cancelOnWindowClosed);
-            window.removeListener("hide", cancelOnWindowClosed);
+            window.removeListener("hide", cancelOnWindowHidden);
             // Take the question back, so a page that took it late does not
             // keep showing a dialog whose answer nobody waits for.
             window.webContents.send(IpcChannels.QUIT_CONFIRMATION_REQUEST_CHANNEL, null);
@@ -1526,6 +1633,10 @@ const make = Effect.gen(function* () {
             busyTerminalCount: work.busyTerminalCount,
             ...(work.activeScheduledTaskCount > 0
               ? { activeScheduledTaskCount: work.activeScheduledTaskCount }
+              : {}),
+            // A page loaded since the moves started picks their progress up.
+            ...(quitAfterMovesBatchId !== null
+              ? { quitAfterMoves: { batchId: quitAfterMovesBatchId } }
               : {}),
           });
         },
@@ -1633,6 +1744,17 @@ const make = Effect.gen(function* () {
     quitConfirmationShown,
     resolveQuitConfirmation,
     repeatQuitConfirmation,
+    startQuitAfterMoves,
+    cancelQuitAfterMoves: endQuitAfterMoves("the page cancelled it"),
+    showQuitAfterMoves: Effect.gen(function* () {
+      if (quitAfterMovesBatchId === null) return;
+      const existingWindow = yield* electronWindow.currentMainOrFirst;
+      if (Option.isNone(existingWindow)) return;
+      yield* logWindowInfo("the moves a quit waits for need the user", {
+        batchId: quitAfterMovesBatchId,
+      });
+      yield* electronWindow.reveal(existingWindow.value);
+    }).pipe(Effect.withSpan("desktop.window.showQuitAfterMoves")),
     syncAppearance: Effect.gen(function* () {
       const colors = windowAppearanceColors(
         yield* electronTheme.shouldUseDarkColors,

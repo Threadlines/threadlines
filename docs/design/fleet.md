@@ -795,6 +795,91 @@ One live check on the two-computer test stack with a fake fx agent: queue during
 - families, goals, check-backs, PR automation, rooms and General Chats (step 4);
 - moving another thread with the agent tool.
 
+## Part 3c: Clear a computer before you shut it down (Nov 16, v2 step 2)
+
+Step 1 (Part 3b) moves one thread at a time, from its menu. Step 2 is for the moment Will asked about: this computer is about to shut down, and its threads should keep going on another one. It adds a way to move several threads at once, an offer in the quit dialog, and a way for a move to finish without anyone at the other computer. Each thread still moves through Part 3b's queue and Part 3's transfer, unchanged in kind.
+
+### What the user sees
+
+- **Move threads dialog.** Opened from Fleet (a computer's page: "Move threads here…"; this computer's page: "Move threads to another computer…") and from ⌘K. It shows:
+  - the target computer (picker; preset when opened from that computer's page);
+  - this computer's open threads, one row each with its title and what moving it means: "Moves now", "Moves when the agent finishes", or, greyed out, why it can't move ("Has a goal set. Clear it first.");
+  - threads whose agent is working come first and are ticked by default; idle ones are listed, unticked;
+  - for working threads, the same two choices as Part 3b, once for all of them: "Move when each agent finishes" (default) or "Stop the agents and move now";
+  - a button "Move 3 threads".
+
+  "Open threads" are this computer's project threads in the inbox: not archived, not wrapped up, not General Chats. Threads that can't move are still listed (greyed out, with the reason), so nothing is silently left behind.
+
+- **Progress.** While a batch runs, the target's Fleet row and page show "Moving 3 threads here: 1 moved, 2 waiting for their agents". Each thread's own notice is Part 3b's. When it's done, it reads "Moved 3 threads to Windows PC" for a while, or names the ones that didn't move and why.
+- **Quit dialog.** When threads are working on this computer and a linked computer is connected that takes moves, the dialog adds "Move them to Windows PC and quit" (a picker when there are several computers), beside today's Cancel and Quit.
+  - Clicking it queues the working threads ("when each agent finishes") and turns the dialog into progress: "Moving 3 threads to Windows PC. 1 moved, 2 waiting for their agents to finish."
+  - Buttons while it runs: "Stop the agents and move now" (switches the waiting ones to stop-now), "Quit anyway" (the rest stay waiting here and carry on when this computer starts again), "Cancel" (cancels the moves that haven't started; started ones finish).
+  - When every thread has a final answer, the app quits by itself after a short "All moved. Quitting…". If any didn't move, it doesn't quit: it lists them with why, and offers Quit anyway.
+  - Only a quit the user starts gets this. A system shutdown or log-out can't be held for minutes; it keeps today's behavior.
+- **The other computer doesn't need anyone there.** When the other computer's permission is Ask first, the move still sends everything right away and waits there for its user to allow it. This computer counts it as done once the other computer has every byte ("Sent, waiting for Windows PC to allow it"), so it can quit. Allow imports it; Don't allow drops it, and this computer's copy unfreezes the next time it starts and hears back.
+  - The other computer's allow card groups moves from one computer: "Mac wants to move 3 threads here" with Allow all and Don't allow, plus each thread's title.
+
+### Server
+
+1. **Batch RPCs** (WsMovesRpcGroup):
+   - `moves.previewMany { threadIds } → { threads: [{ threadId, refusal?, waitsFor? }], targets }`: the same checks as `moves.preview`, one read of the targets.
+   - `moves.queueMany { threadIds, targetEnvironmentId, mode } → { batchId, queued: [{ threadId, requestId }], refused: [{ threadId, words }] }`: one `thread.move.queue` per thread, each decided on its own. One refusal doesn't stop the others. No `agent`: each picks the target's suggestion when it starts (Part 3b).
+   - `moves.setMode { threadId, requestId, mode: "stop-now" }` for "Stop the agents and move now" on moves already waiting. It re-plans the stop for that request; a request that already started is untouched.
+2. **`batchId` on `pendingMove` and on the move** (optional), so any client can group a batch and show its progress from the projection alone. No new table.
+3. **The other computer's caps become waits.** Today the target refuses a third open move from one link ("already taking other moves", LinkMoves.ts:75, per link 2, total 4), and Part 3b ends a queued move on that refusal. That refusal becomes a code (`busy`) that MoveQueue treats as "wait and retry" with its backoff, showing "Waiting for Windows PC to finish other moves." The caps stay: they bound disk and memory on the target.
+4. **Receive before allow.** On the target, `peer.move.prepare` under Ask first records the move as `awaiting_approval` and **accepts chunks** into staging, as `receiving` does. Only the import waits for Allow.
+   - The staged bytes count against the same per-transfer and unpack limits as today. The 24-hour expiry of unanswered moves stays, and deletes the staging.
+   - `peer.move.status` gains a state the source can read: `staged_awaiting_approval`, meaning every byte arrived and the import waits for its user.
+   - The source records this as a move phase (`awaiting_approval`, already shown in v1's notice as "waiting for X to allow it") and treats it as a final answer **for quitting only**. The thread stays frozen here. Its outcome (imported, or dropped) is read the next time the link connects, as v1 recovery already does.
+5. **Grouped allow card.** The target's pending-move notifications group by link: one inbox row and one card listing the threads, with Allow all and Don't allow. Allowing one at a time stays possible on each thread's row.
+
+### Desktop
+
+The quit confirmation already waits for the page's answer (`resolveQuitConfirmation`). The page keeps the dialog open while moves run and answers `true` when it's time to quit. Check the window code for any timeout on that wait, and make sure a quit asked again while moves run (a second ⌘Q) shows the same dialog rather than quitting.
+
+### Clients
+
+- The batch dialog, Fleet entries, ⌘K entry and quit-dialog flow above, on desktop, web and phone. The quit flow is desktop only.
+- Progress is computed from the threads' `pendingMove` and `move` with a `batchId`. The quit flow remembers its `batchId`.
+- Offered only for targets with `threadMoveQueue` (and, for receive-before-allow, a new capability `threadMoveStagedApproval`; without it, an Ask-first target means "Waiting for X to allow it" blocks quitting, and the dialog says so).
+
+### Tests (focused)
+
+- Decider and RPC: queueMany decides each thread on its own; a refused thread doesn't stop the others; setMode affects only its own waiting request.
+- MoveQueue: a busy target keeps the move waiting and retries; three moves to a 2-per-link target all land in turn.
+- LinkMoves: Ask first stages every chunk before Allow; Allow imports; Don't allow and expiry delete the staging; the source reads `staged_awaiting_approval`.
+- Web: the batch dialog's list (working first and ticked, refusals greyed out with words); the quit dialog's progress and auto-quit; Quit anyway; a thread that didn't move stops the auto-quit.
+- Live, on the two-server stack: move three working threads to a 2-per-link target from the batch RPC; quit-style flow against an Ask-first target where A's part ends at "sent" and B's Allow imports later.
+
+### Review changes (Nov 16, outside review of this plan)
+
+The plan above is corrected as follows. Where they differ, this wins.
+
+1. **Staged moves get their own budget.** Moves held for Ask first (every byte staged, waiting for Allow) no longer count against the 2-per-link and 4-total caps. Those caps now bound only transfers in flight, so they always drain.
+   - Staged moves have their own limits on the target: at most 20 per link and 2 GiB of staged bytes per link, counted at prepare from the manifest's declared sizes.
+   - A move past them is refused at prepare with the code `staging_full`: "Windows PC is holding other moves until its user allows them." That is a final answer: the source unfreezes the thread, and it's reported as not moved.
+2. **A busy target makes the transfer wait, not fail.** The cap refusal at `peer.move.prepare` (ThreadMoves.ts, after MoveQueue has handed the move off) becomes the code `busy`. The transfer worker keeps the thread frozen in a phase `waiting_for_target` ("Waiting for Windows PC to finish other moves") and asks again with backoff (15 s, rising to 2 min). Today it settles the move as aborted.
+3. **Batches and outcomes are durable.**
+   - A table `thread_move_batches (batch_id, target_environment_id, created_at, members_json, refused_json)` records every thread asked for and the refusals given at queue time.
+   - Each thread gains `lastMoveOutcome { batchId?, requestId, result: "moved" | "not_moved" | "awaiting_approval", words?, at }`, set by the same decisions that end a pending move or settle a move. It survives the abort and blocked paths that clear `pendingMove` and `move` today.
+   - `moves.batchStatus { batchId }` returns every member with its state. Final means moved, not moved, or staged and waiting for approval.
+   - The quit flow and the Fleet progress read that instead of guessing from the projection.
+4. **The quit wait belongs to the desktop app's main process, not the page.**
+   - New IPC: `desktop:quit-after-moves { batchId }` starts it, and `desktop:quit-after-moves-cancel` ends it.
+   - While it runs, hiding or closing the window doesn't answer the quit question with "no" (DesktopWindow.ts:1488). The window hides, the page keeps running, and it answers "quit" when `batchStatus` is final for every member with nothing not moved.
+   - A second ⌘Q shows the same progress dialog.
+   - If the page goes away (a renderer crash), the main process asks `batchStatus` itself, through the backend.
+   - The update-restart path stays as it is (no update-flow changes): moves under way stop with the backend and resume when the app starts again, which the queue and the transfer worker already do.
+5. **Capabilities.**
+   - `threadMoveBatch` on the source server gates the batch RPCs and the batch dialog. Without it, the Move threads dialog and the quit offer don't appear, and the single-thread move works as in step 1.
+   - `threadMoveStagedApproval` on the target gates receive-before-allow. Without it, an Ask-first target holds the bytes back as today, and the quit dialog says the move will wait for Allow there before this computer can quit.
+
+### Out of scope
+
+- A system shutdown waiting for moves.
+- Moving General Chats, rooms, families (step 4).
+- Native session carry (step 3).
+
 ## Part 4: The rail and the Fleet page
 
 ### Rail
