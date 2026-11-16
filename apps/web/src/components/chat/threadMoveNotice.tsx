@@ -307,13 +307,13 @@ export function usePendingMoveNotice(input: {
   );
 
   const requestId = pendingMove?.requestId ?? null;
-  const busyWith = (kind: PendingMoveCall["kind"]) =>
+  const callInFlight = (kind: PendingMoveCall["kind"]) =>
     call !== null &&
     call.kind === kind &&
     call.threadId === threadId &&
     call.requestId === requestId;
-  const cancelling = busyWith("cancel");
-  const retrying = busyWith("retry");
+  const cancelling = callInFlight("cancel");
+  const retrying = callInFlight("retry");
   return useMemo(
     () =>
       pendingMove === null
@@ -354,7 +354,7 @@ export function useMoveNotStartedNotice(input: {
     { keys: [] },
     MoveNotStartedDismissalsSchema,
   );
-  const busy = Boolean(thread?.move || thread?.pendingMove);
+  const anotherMove = Boolean(thread?.move || thread?.pendingMove);
   const activities = thread?.activities;
   const latest = useMemo(() => {
     if (!activities) return null;
@@ -378,7 +378,7 @@ export function useMoveNotStartedNotice(input: {
   }, [dismissalKey, setDismissals]);
   return useMemo<ComposerNotice | null>(
     () =>
-      latest === null || busy || dismissed
+      latest === null || anotherMove || dismissed
         ? null
         : {
             id: `thread-move-not-started:${latest.requestId}`,
@@ -388,6 +388,6 @@ export function useMoveNotStartedNotice(input: {
             dismissLabel: `Dismiss why it didn't move to ${latest.targetLabel}`,
             onDismiss: dismiss,
           },
-    [busy, dismiss, dismissed, latest],
+    [anotherMove, dismiss, dismissed, latest],
   );
 }

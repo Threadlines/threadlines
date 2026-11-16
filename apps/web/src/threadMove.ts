@@ -231,35 +231,60 @@ export function threadMoveAgentSelection(
 // A move that waits for the thread to be free (docs/design/fleet.md, Part 3b)
 // ---------------------------------------------------------------------------
 
-/** What a busy thread is doing, as it reads after "This thread is busy: ". */
-const WAIT_DOING: Record<ThreadMoveWaitCode, string> = {
-  turn: "its agent is working on a turn",
-  approval: "it's waiting for your approval",
-  question: "it's waiting for your answer",
-  side_turn: "a side answer is running",
-  background: "background work is still running",
-  command_run: "a command is running",
-  workflow_run: "a workflow is running",
-  voice: "a voice chat is on",
-  shared_checkout: "another thread is working in the same folder",
+/**
+ * What the thread is doing, in the user's words, by kind: each says it on
+ * its own (`first`), and after a sentence about the agent (`after`), where
+ * "it" is the agent. Listed in the order they're told.
+ */
+const WAIT_SENTENCES = {
+  reply: { first: "The agent is still working on its reply.", after: null },
+  answer: {
+    first: "The agent is waiting for your answer.",
+    after: "It's also waiting for your answer.",
+  },
+  started: {
+    first: "Something the agent started is still running.",
+    after: "Something it started is still running too.",
+  },
+  voice: { first: "A voice chat is still on.", after: "A voice chat is still on too." },
+  folder: {
+    first: "Another thread is working in the same folder.",
+    after: "Another thread is working in the same folder too.",
+  },
+} as const;
+
+type WaitKind = keyof typeof WAIT_SENTENCES;
+
+const WAIT_KIND: Record<ThreadMoveWaitCode, WaitKind> = {
+  turn: "reply",
+  side_turn: "reply",
+  approval: "answer",
+  question: "answer",
+  background: "started",
+  command_run: "started",
+  workflow_run: "started",
+  voice: "voice",
+  shared_checkout: "folder",
 };
 
-/** What a busy thread is doing, in one line: "This thread is busy: its agent is working on a turn." */
-export function describeThreadMoveWaits(waits: ReadonlyArray<ThreadMoveWait>): string {
-  const doing = [...new Set(waits.map((wait) => WAIT_DOING[wait.code]))];
-  const last = doing.at(-1);
-  if (last === undefined) return "This thread is free.";
-  const list = doing.length === 1 ? last : `${doing.slice(0, -1).join(", ")} and ${last}`;
-  return `This thread is busy: ${list}.`;
-}
+const AGENT_KINDS: ReadonlySet<WaitKind> = new Set(["reply", "answer", "started"]);
 
-/** When a move that waits starts: "Moves to Mac mini when this turn ends." */
-export function describeThreadMoveWhenDone(
-  label: string,
-  waits: ReadonlyArray<ThreadMoveWait>,
-): string {
-  const first = waits[0];
-  return first ? `Moves to ${label} ${first.words}.` : `Moves to ${label} as soon as it's free.`;
+/**
+ * What the thread is doing that a move waits for, in at most two short
+ * sentences: "The agent is still working on its reply. Something it
+ * started is still running too."
+ */
+export function describeThreadMoveWaits(waits: ReadonlyArray<ThreadMoveWait>): string {
+  const present = new Set(waits.map((wait) => WAIT_KIND[wait.code]));
+  const kinds = (Object.keys(WAIT_SENTENCES) as WaitKind[]).filter((kind) => present.has(kind));
+  const [first, second] = kinds;
+  if (first === undefined) return "";
+  const lead = WAIT_SENTENCES[first].first;
+  if (second === undefined) return lead;
+  const follow = AGENT_KINDS.has(first)
+    ? (WAIT_SENTENCES[second].after ?? WAIT_SENTENCES[second].first)
+    : WAIT_SENTENCES[second].first;
+  return `${lead} ${follow}`;
 }
 
 /** Why a thread whose move waits takes no new message: the send button's words. */

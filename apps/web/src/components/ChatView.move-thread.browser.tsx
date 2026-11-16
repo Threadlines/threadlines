@@ -445,7 +445,7 @@ describe("ChatView (full app): moving a thread to another computer", () => {
     }
   });
 
-  it("offers a busy thread two ways to move, and queues the one picked", async () => {
+  it("offers a thread whose agent is still working two ways to move, and queues the one picked", async () => {
     setPrimaryLinksSnapshot(
       fleetLinksSnapshot({
         outbound: [fleetOutboundLink(FLEET_OFFLINE_ENVIRONMENT_ID, "Mac mini")],
@@ -456,8 +456,8 @@ describe("ChatView (full app): moving a thread to another computer", () => {
     const mounted = await mountChatView({
       viewport: WIDE_FOOTER_VIEWPORT,
       snapshot: createSnapshotForTargetUser({
-        targetMessageId: "msg-user-move-busy" as MessageId,
-        targetText: "move busy",
+        targetMessageId: "msg-user-move-working" as MessageId,
+        targetText: "move working",
       }),
       configureFixture: withThreadMoveQueueFixture,
       resolveRpc: (body) => {
@@ -491,21 +491,28 @@ describe("ChatView (full app): moving a thread to another computer", () => {
         .getByText("Move to another computer", { exact: true })
         .click();
       const dialog = page.getByTestId("thread-move-dialog");
-      // What it's busy with, then the two ways: when it's done comes picked.
+      // What the agent is doing, then the two ways: when it finishes comes picked.
       await expect
-        .element(dialog.getByTestId("thread-move-busy"))
+        .element(dialog.getByTestId("thread-move-doing"))
         .toHaveTextContent(
-          "This thread is busy: its agent is working on a turn and background work is still running.",
+          "The agent is still working on its reply. Something it started is still running too.",
         );
       await expect
         .element(dialog.getByTestId("thread-move-mode-when-done"))
-        .toMatchTextContent("Move when it's doneMoves to Mac mini when this turn ends.");
+        .toMatchTextContent(
+          "Move when the agent finishesWaits for the agent to finish, then moves to Mac mini.",
+        );
       await expect
-        .element(dialog.getByRole("radio", { name: /Move when it's done/u }))
+        .element(dialog.getByTestId("thread-move-mode-stop-now"))
+        .toMatchTextContent(
+          "Stop the agent and move nowStops the agent and anything it started, then moves.",
+        );
+      await expect
+        .element(dialog.getByRole("radio", { name: /Move when the agent finishes/u }))
         .toBeChecked();
       await expect
         .element(dialog.getByTestId("thread-move-confirm"))
-        .toHaveTextContent("Move when done");
+        .toHaveTextContent("Move when it finishes");
 
       await dialog.getByTestId("thread-move-mode-stop-now").click();
       await expect

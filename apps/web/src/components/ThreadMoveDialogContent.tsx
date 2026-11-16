@@ -28,7 +28,6 @@ import {
 import { selectSidebarThreadSummaryByRef, useStore } from "../store";
 import {
   describeThreadMoveWaits,
-  describeThreadMoveWhenDone,
   formatThreadMoveChanges,
   isThreadMoveTargetPickable,
   pickDefaultMoveAgent,
@@ -131,9 +130,9 @@ export function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThread
 
   const preview = previewState.status === "ready" ? previewState.preview : null;
   const target = preview?.targets.find((candidate) => candidate.environmentId === targetId) ?? null;
-  // Busy: the move can wait for the thread to be free, or stop it first.
+  // Still working: the move can wait for the agent to finish, or stop it first.
   const waits = queues ? (preview?.waitsFor ?? []) : [];
-  const busy = waits.length > 0;
+  const working = waits.length > 0;
   // Out of reach: a queued move to it waits for it to connect, and runs
   // with the agent it suggests then (no agent sent).
   const unreachable = queues && target?.refusalCode === "unreachable";
@@ -158,7 +157,7 @@ export function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThread
         await client.queue({
           ...input,
           ...(unreachable || agentSelection === null ? {} : { agent: agentSelection }),
-          mode: busy ? mode : "when-done",
+          mode: working ? mode : "when-done",
         });
       } else if (agentSelection !== null) {
         await client.start({ ...input, agent: agentSelection });
@@ -288,7 +287,7 @@ export function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThread
                     }}
                   />
                 )}
-                {busy ? (
+                {working ? (
                   <MoveWhenField
                     label={target.label}
                     waits={waits}
@@ -323,10 +322,10 @@ export function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThread
         <Button disabled={!canMove} onClick={() => void start()} data-testid="thread-move-confirm">
           {starting
             ? "Moving…"
-            : busy
+            : working
               ? mode === "stop-now"
                 ? "Stop and move"
-                : "Move when done"
+                : "Move when it finishes"
               : unreachable
                 ? "Move when it connects"
                 : "Move"}
@@ -337,8 +336,9 @@ export function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThread
 }
 
 /**
- * A busy thread's two ways to move (Part 3b): once it is free, or now, after
- * its agent session ends. Says first what it is busy with.
+ * The two ways to move a thread whose agent is still at it (Part 3b): once
+ * the agent finishes, or now, after it is stopped. Says first what the agent
+ * is doing.
  */
 function MoveWhenField({
   label,
@@ -360,18 +360,18 @@ function MoveWhenField({
   }> = [
     {
       value: "when-done",
-      label: "Move when it's done",
-      detail: describeThreadMoveWhenDone(label, waits),
+      label: "Move when the agent finishes",
+      detail: `Waits for the agent to finish, then moves to ${label}.`,
     },
     {
       value: "stop-now",
-      label: "Stop and move now",
-      detail: "Stops the agent and anything it left running, then moves.",
+      label: "Stop the agent and move now",
+      detail: "Stops the agent and anything it started, then moves.",
     },
   ];
   return (
     <div className="grid gap-1.5" data-testid="thread-move-when">
-      <p className="text-[13.5px] leading-[19px] text-foreground" data-testid="thread-move-busy">
+      <p className="text-[13.5px] leading-[19px] text-foreground" data-testid="thread-move-doing">
         {describeThreadMoveWaits(waits)}
       </p>
       <RadioGroup

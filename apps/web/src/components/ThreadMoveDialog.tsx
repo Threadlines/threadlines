@@ -3,8 +3,9 @@
  * every entry point (the sidebar's thread menu, the command palette, the chat
  * header). Each asks through openThreadMoveDialog; the host mounted once at
  * the root shows it. The dialog asks the thread's computer where the thread
- * could go and what would go with it, then starts the move there, or, for a
- * busy thread or a computer out of reach, queues one that waits (Part 3b).
+ * could go and what would go with it, then queues the move there (Part 3b:
+ * it starts at once, or once the agent finishes, or once the other computer
+ * connects), or starts it, on a computer too old to queue moves.
  */
 import type { ScopedThreadRef } from "@threadlines/contracts";
 import { Suspense } from "react";
