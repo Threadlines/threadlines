@@ -530,10 +530,16 @@ Glass mode turns on only when the active theme has a backdrop
 (`html[data-glass]`). Users who never pick one see no change.
 
 - Glass surfaces: frame (`AppTitleBar`, `NavigationRail`, `SidebarProvider`),
-  work panel (`app-panel`), thread list (`sidebar-inner`), `SidebarInset` and
+  work panel (`app-panel-shape`), thread list (`sidebar-inner`), `SidebarInset` and
   the ChatView root, composer. The stacked `bg-background` layers (panel,
   inset, ChatView root) collapse to one transparent stack; the frame paints
   the tint, so alpha never compounds.
+- The panel's rounded top-left corner: outside glass a small corner piece
+  (`app-panel-corner`) paints the frame over the square clip of the panel's
+  pages. Over glass nothing can repaint the art, so the corner piece hides
+  and the pages (`app-panel`) are clipped round instead. That rounded clip
+  costs a panel-sized mask for each separately drawn part inside (about
+  15 MB each at 2x), which glass themes still pay.
 - A new token `--surface-solid` (the theme's opaque base) replaces
   `--background` wherever something needs to hide what's behind it: sticky
   turn headers (`surface-group-solid`), sticky table heads, the diff's sticky
