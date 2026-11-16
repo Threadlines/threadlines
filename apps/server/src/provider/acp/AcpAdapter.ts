@@ -26,6 +26,7 @@ import {
   TurnId,
 } from "@threadlines/contracts";
 import { withFailureCategory } from "../providerFailureCategory.ts";
+import { makeAgentProcessLedger } from "../agentProcessLedger.ts";
 import {
   isProviderPlanGateMessage,
   isProviderPlanGateReply,
@@ -559,6 +560,8 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
       options?.nativeEventLogger === undefined ? nativeEventLogger : undefined;
 
     const sessions = new Map<ThreadId, AcpSessionContext>();
+    /** Each agent process it started, until proven gone (confirmThreadStopped). */
+    const processes = yield* makeAgentProcessLedger();
     /**
      * Each agent session's turn history by its id, kept after the session
      * stops: a fork of it finds its boundary here.
@@ -1008,6 +1011,9 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         if (ctx.notificationFiber) {
           yield* Fiber.interrupt(ctx.notificationFiber);
         }
+        // What the agent started (Grok's shells live in process groups of
+        // their own), noted while it still runs (agentProcessLedger).
+        yield* processes.beforeStop(ctx.threadId);
         yield* Effect.ignore(Scope.close(ctx.scope, Exit.void));
         sessions.delete(ctx.threadId);
         yield* offerRuntimeEvent({
@@ -1290,6 +1296,9 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                 }),
             ),
           );
+          if (acp.process !== undefined) {
+            yield* processes.track(input.threadId, acp.process);
+          }
 
           /**
            * Shows a request from the agent in order with the output before it,
@@ -2453,6 +2462,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
       listSessions,
       hasSession,
       stopAll,
+      confirmThreadStopped: processes.confirm,
       streamEvents: Stream.fromPubSub(runtimeEventPubSub),
     } satisfies AcpAdapterShape;
   });

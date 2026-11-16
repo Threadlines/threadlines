@@ -570,7 +570,9 @@ function makeScopedRuntimeFactory(options?: {
       const agent = options?.agent;
       if (agent !== undefined) {
         runtime.process = { pid: agent.pid, exited: agent.exited };
-        runtime.closeImpl.mockImplementation(() => Effect.runPromise(agent.stop));
+        runtime.closeImpl.mockImplementation(() =>
+          Effect.runPromise(agent.stop).then(() => undefined),
+        );
       }
       runtimes.push(runtime);
       return runtime;

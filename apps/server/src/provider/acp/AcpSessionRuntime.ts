@@ -17,6 +17,7 @@ import type * as EffectAcpProtocol from "effect-acp/protocol";
 import { hideWindowsConsole, makeCommandWithShell } from "@threadlines/shared/childProcess";
 
 import { planCliSpawn } from "../../cliSpawn.ts";
+import { processExit, type TrackedAgentProcess } from "../agentProcessLedger.ts";
 import {
   collectSessionConfigOptionValues,
   extractModelConfigId,
@@ -177,6 +178,11 @@ export interface AcpSessionRuntimeStartResult {
 }
 
 export interface AcpSessionRuntimeShape {
+  /**
+   * The agent's process, for proof it is gone after a stop
+   * (agentProcessLedger). Absent only for test doubles that run none.
+   */
+  readonly process?: TrackedAgentProcess;
   readonly handleRequestPermission: EffectAcpClient.AcpClientShape["handleRequestPermission"];
   readonly handleElicitation: EffectAcpClient.AcpClientShape["handleElicitation"];
   readonly handleReadTextFile: EffectAcpClient.AcpClientShape["handleReadTextFile"];
@@ -1007,6 +1013,10 @@ const makeAcpSessionRuntime = (
       request: (method, payload) =>
         runLoggedRequest(method, payload, acp.raw.request(method, payload)),
       notify: acp.raw.notify,
+      process: {
+        pid: Number(child.pid),
+        exited: processExit(Number(child.pid), child.exitCode),
+      },
     } satisfies AcpSessionRuntimeShape;
   });
 
