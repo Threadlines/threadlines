@@ -31,11 +31,34 @@ const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
  */
 const dashed = (path: string) => path.replace(/[^A-Za-z0-9]/g, "-");
 
+/**
+ * Transcripts store paths with forward slashes, so a recording plays on any
+ * system. On Windows a frame's path after a placeholder uses backslashes:
+ * the scrubber turns them into slashes, and the materializer turns them back.
+ */
+const WINDOWS = process.platform === "win32";
+const PLACEHOLDER = "<(?:workspace|root|tmp|home)>";
+const PLACEHOLDER_THEN_BACKSLASHES = new RegExp(`${PLACEHOLDER}(?:\\\\[^\\\\/\\s"'\`<>|]+)+`, "g");
+const PLACEHOLDER_THEN_SLASHES = new RegExp(`${PLACEHOLDER}(?:/[^\\\\/\\s"'\`<>|]+)+`, "g");
+
+/**
+ * Every form of `path` a frame may hold: as given, with symlinks resolved
+ * (macOS's /var is /private/var), and with Windows short names expanded
+ * (`PROGRA~1` is `Program Files`; only the native realpath does that).
+ */
+function pathForms(path: string): ReadonlySet<string> {
+  return new Set([
+    path,
+    safeRealpath(path, fs.realpathSync),
+    safeRealpath(path, fs.realpathSync.native),
+  ]);
+}
+
 /** Each machine path a transcript may hold, with its placeholder, longest first. */
 function pathPairs(paths: ReplayPaths): ReadonlyArray<readonly [string, string]> {
   const pairs: Array<readonly [string, string]> = [];
   const add = (real: string, placeholder: string) => {
-    for (const variant of new Set([real, safeRealpath(real)])) {
+    for (const variant of pathForms(real)) {
       if (variant.length <= 1) continue;
       pairs.push([variant, placeholder]);
       pairs.push([dashed(variant), dashed(placeholder)]);
@@ -52,7 +75,7 @@ function pathPairs(paths: ReplayPaths): ReadonlyArray<readonly [string, string]>
 /** Per-user temp folders Claude makes for task output (`/private/tmp/claude-<uid>`). */
 const CLAUDE_TEMP = /(?:\/private)?\/tmp\/claude-\d+/g;
 
-function replacePattern(value: unknown, pattern: RegExp, to: string): unknown {
+function replacePattern(value: unknown, pattern: RegExp, to: (match: string) => string): unknown {
   if (typeof value === "string") return value.replace(pattern, to);
   if (Array.isArray(value)) return value.map((entry) => replacePattern(entry, pattern, to));
   if (value !== null && typeof value === "object") {
@@ -65,15 +88,19 @@ function replacePattern(value: unknown, pattern: RegExp, to: string): unknown {
 
 export function makePathScrubber(paths: ReplayPaths): (value: unknown) => unknown {
   const pairs = pathPairs(paths);
-  return (value) =>
-    replacePattern(
+  return (value) => {
+    const scrubbed = replacePattern(
       pairs.reduce(
         (current, [real, placeholder]) => replaceInStrings(current, real, placeholder),
         value,
       ),
       CLAUDE_TEMP,
-      "<claude-tmp>",
+      () => "<claude-tmp>",
     );
+    return WINDOWS
+      ? replacePattern(scrubbed, PLACEHOLDER_THEN_BACKSLASHES, (path) => path.replaceAll("\\", "/"))
+      : scrubbed;
+  };
 }
 
 /**
@@ -94,13 +121,15 @@ export function makePathMaterializer(paths: ReplayPaths): (value: unknown) => un
   return (value) =>
     pairs.reduce(
       (current, [placeholder, real]) => replaceInStrings(current, placeholder, real),
-      value,
+      WINDOWS
+        ? replacePattern(value, PLACEHOLDER_THEN_SLASHES, (path) => path.replaceAll("/", "\\"))
+        : value,
     );
 }
 
-function safeRealpath(path: string): string {
+function safeRealpath(path: string, realpath: (path: string) => string): string {
   try {
-    return fs.realpathSync(path);
+    return realpath(path);
   } catch {
     return path;
   }
@@ -133,7 +162,7 @@ export function privateDataIn(
   const { environment, homeDir, userName } = machine;
   if (text.includes(homeDir)) return "the home folder path";
   if (text.includes(dashed(homeDir))) return "the home folder path, as a project folder name";
-  const temp = safeRealpath(os.tmpdir());
+  const temp = safeRealpath(os.tmpdir(), fs.realpathSync);
   if (temp.length > 8 && (text.includes(temp) || text.includes(dashed(temp)))) {
     return "this machine's temp folder path";
   }
