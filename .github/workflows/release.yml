@@ -961,7 +961,6 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: write
-      actions: write
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1065,9 +1064,29 @@ jobs:
 
           gh "${args[@]}"
 
+  # Work that follows a published stable release. It is its own job so a failure
+  # here can never mark `publish` failed: that would skip the web deploy and send
+  # cleanup_failed_release after a release users can already download. Each step
+  # runs even when an earlier one fails.
+  stable_followups:
+    name: Stable release follow-ups
+    needs:
+      - preflight
+      - windows
+      - publish
+    if: ${{ !cancelled() && needs.publish.result == 'success' && needs.preflight.outputs.channel == 'stable' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: write
+    env:
+      GH_REPO: ${{ github.repository }}
+      VERCEL_CLI_VERSION: 54.14.5
+    steps:
       # npm-package.yml starts the Docker image build once npm has the version.
       - name: Publish npm package for stable release
-        if: ${{ needs.preflight.outputs.channel == 'stable' }}
+        if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.preflight.outputs.tag }}
@@ -1083,7 +1102,7 @@ jobs:
 
       # winget.yml sends the Windows installer to microsoft/winget-pkgs.
       - name: Send stable release to winget
-        if: ${{ needs.preflight.outputs.channel == 'stable' && needs.windows.result == 'success' }}
+        if: ${{ !cancelled() && needs.windows.result == 'success' }}
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.preflight.outputs.tag }}
@@ -1094,6 +1113,36 @@ jobs:
             --ref "$TAG" \
             -f version="$VERSION"
           echo "Dispatched the winget update for $VERSION from $TAG."
+
+      # The marketing site hides changelog entries newer than the latest published
+      # release (apps/marketing/src/lib/publishedChangelog.ts), and Vercel only
+      # rebuilds it on pushes to main. Rebuild what is live now that this release
+      # is out, so its notes appear. Waits for github.com's "latest release" page,
+      # which the build reads, to name this release first.
+      - name: Rebuild threadlines.dev with this release's notes
+        if: ${{ !cancelled() }}
+        env:
+          TAG: ${{ needs.preflight.outputs.tag }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+        run: |
+          set -euo pipefail
+          latest_url="https://github.com/${GH_REPO}/releases/latest"
+          for attempt in $(seq 1 30); do
+            location="$(curl -fsSI "$latest_url" | tr -d '\r' | awk 'tolower($1) == "location:" { print $2 }' || true)"
+            if [[ "$location" == */releases/tag/"$TAG" ]]; then
+              break
+            fi
+            if [[ "$attempt" == 30 ]]; then
+              echo "::error::$latest_url still points at '${location:-nothing}', not $TAG."
+              exit 1
+            fi
+            sleep 10
+          done
+
+          npm install --global "vercel@${VERCEL_CLI_VERSION}"
+          vercel redeploy threadlines.dev --target production --scope "$VERCEL_ORG_ID" --token "$VERCEL_TOKEN"
+          echo "Rebuilt threadlines.dev for $TAG." >> "$GITHUB_STEP_SUMMARY"
 
   deploy_web_app:
     name: Deploy app.threadlines.dev
@@ -1135,17 +1184,17 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
-            echo "Deleting failed workflow-dispatch release $TAG and its generated tag."
-            gh release delete "$TAG" --repo "$REPOSITORY" --yes
-            gh api --method DELETE "repos/$REPOSITORY/git/refs/tags/$TAG" || true
-            exit 0
-          fi
-
-          is_draft="$(gh release view "$TAG" --repo "$REPOSITORY" --json isDraft -q .isDraft 2>/dev/null || echo false)"
+          # Only a draft is ours to remove. Once publish has made the release
+          # public, users may already have it (and its tag), so a later failure
+          # never takes it back. A failed lookup also leaves everything alone.
+          is_draft="$(gh release view "$TAG" --repo "$REPOSITORY" --json isDraft -q .isDraft 2>/dev/null || echo unknown)"
           if [[ "$is_draft" != "true" ]]; then
-            echo "Release $TAG is not a draft; leaving it in place."
+            echo "Release $TAG is not a draft (isDraft: $is_draft); leaving it and its tag in place."
             exit 0
           fi
 
           gh release delete "$TAG" --repo "$REPOSITORY" --yes
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            echo "Deleting the tag this workflow-dispatch run generated for $TAG."
+            gh api --method DELETE "repos/$REPOSITORY/git/refs/tags/$TAG" || true
+          fi

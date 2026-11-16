@@ -1,5 +1,5 @@
 ---
-import { getCollection } from "astro:content";
+import { getPublishedChangelog } from "../../lib/publishedChangelog";
 
 import AgentMark from "../../components/AgentMark.astro";
 import Layout from "../../layouts/Layout.astro";
@@ -9,7 +9,7 @@ import { comparisonPath, COMPARISONS } from "../../lib/comparisons";
 import { absoluteSiteUrl, ORGANIZATION_ID } from "../../lib/site";
 
 const title = "Coding agents that run in Threadlines";
-const stableVersion = latestStableVersion(await getCollection("changelog"));
+const stableVersion = latestStableVersion(await getPublishedChangelog());
 const agentNames = new Intl.ListFormat("en", { type: "conjunction" }).format(
   AGENTS.map((agent) => agent.name),
 );

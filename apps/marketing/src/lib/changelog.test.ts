@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { sortChangelogEntries, type ChangelogEntry } from "./changelog";
+import { releasedEntries, sortChangelogEntries, type ChangelogEntry } from "./changelog";
 
 const release = (version: string, date: string) =>
   ({ id: `v${version}`, data: { version, date: new Date(date) } }) as ChangelogEntry;
@@ -18,5 +18,14 @@ describe("sortChangelogEntries", () => {
       sortChangelogEntries([release("0.10.0", "2026-11-12"), release("0.10.1", "2026-11-12")])[0]
         ?.data.version,
     ).toBe("0.10.1");
+  });
+});
+
+describe("releasedEntries", () => {
+  const entries = [release("0.9.0", "2026-11-05"), release("0.10.0", "2026-11-12")];
+
+  it("hides notes for a version newer than the published release", () => {
+    expect(releasedEntries(entries, "0.9.0").map((entry) => entry.data.version)).toEqual(["0.9.0"]);
+    expect(releasedEntries(entries, "0.10.0")).toHaveLength(2);
   });
 });
