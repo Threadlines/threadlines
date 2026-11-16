@@ -1097,6 +1097,12 @@ export const ServerSettings = Schema.Struct({
    */
   continueAfterUsageLimits: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /**
+   * A turn the user started that a server restart (quit, update, crash) cut
+   * off continues by itself when the server starts again, unless it waited on
+   * the user or restarts keep cutting it off. Read at startup. Never chosen: on.
+   */
+  continueAfterRestart: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  /**
    * Command requests: agents may ask the user to run a shell command with
    * `ask_user_to_run`, shown as a card with Run, Put in terminal and Skip
    * (docs/terminal-command-runs.md). Read when a provider session starts and
@@ -1298,6 +1304,7 @@ export const ServerSettingsPatch = Schema.Struct({
   claudeSuggestionsWhenUsageRunsFast: Schema.optionalKey(Schema.Boolean),
   codexSuggestions: Schema.optionalKey(Schema.Boolean),
   continueAfterUsageLimits: Schema.optionalKey(Schema.Boolean),
+  continueAfterRestart: Schema.optionalKey(Schema.Boolean),
   enableCommandRequests: Schema.optionalKey(Schema.Boolean),
   startAgentsWhileTyping: Schema.optionalKey(Schema.Boolean),
   // Whole values, replaced as sent: a new default never keeps an old one's

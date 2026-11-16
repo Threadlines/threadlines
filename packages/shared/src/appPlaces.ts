@@ -1501,6 +1501,17 @@ const ROWS = [
     widensAgents: true,
   },
   {
+    id: "threads.continueAfterRestart",
+    kind: "row",
+    parent: "threads.newThreads",
+    title: "Continue after a restart",
+    about:
+      "When Threadlines quits, updates or crashes while an agent works on something you asked for, the agent picks it back up when Threadlines starts again.",
+    keywords: ["restart", "quit", "update", "crash", "resume", "interrupted"],
+    value: onOff((settings) => settings.continueAfterRestart),
+    widensAgents: true,
+  },
+  {
     id: "threads.commandRequests",
     kind: "row",
     parent: "threads.newThreads",

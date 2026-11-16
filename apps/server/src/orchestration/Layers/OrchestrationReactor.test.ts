@@ -46,6 +46,7 @@ describe("OrchestrationReactor", () => {
             },
             drain: Effect.void,
             warmUp: () => Effect.void,
+            continueTurnsCutByRestart: Effect.void,
           }),
         ),
         Layer.provideMerge(

@@ -38,6 +38,13 @@ export interface ProviderCommandReactorShape {
    * queues the work; never fails.
    */
   readonly warmUp: (input: OrchestrationWarmUpTurnInput) => Effect.Effect<void>;
+
+  /**
+   * Continues, or notes as stopped, each turn the previous server process was
+   * running when it stopped (`thread.restart.continue`). Run once at startup,
+   * after every reactor has started listening. Never fails.
+   */
+  readonly continueTurnsCutByRestart: Effect.Effect<void>;
 }
 
 /**
