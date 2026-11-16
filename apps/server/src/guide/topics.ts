@@ -84,7 +84,7 @@ Some agents lack a level; they run at the next safer one they have, and the comp
 
 You add and remove agents at the top of the model button's panel in the composer: one pill per agent, the picked one being who your next message goes to (typing @ and picking an agent does the same). The model and effort under the pills are that agent's.
 
-Only one agent works at a time, in the same checkout. Agents in a room can ask each other a question on the side, ask for an independent review of the changes, or hand the next turn to another agent.
+Only one agent works at a time, in the same checkout. Agents in a room can ask each other a question on the side, ask for an independent review of the changes, or hand the next turn to another agent. Up to three agents can answer on the side at once, one answer each, so you can ask a second agent while the first is still answering, and an agent can ask two or three for a review of the same changes in one go.
 
 Whether the thread's agent may bring in another model on its own is {place:threads.agentInvites}: Off, Ask me first (a card asks you each time), or Without asking. Bringing in another provider's model spends that provider's quota.`,
   },

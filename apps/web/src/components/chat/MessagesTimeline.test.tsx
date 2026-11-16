@@ -2066,7 +2066,7 @@ describe("MessagesTimeline", () => {
         ],
         activities: [],
         // Over: nothing live says it was a review any more.
-        sideTurn: null,
+        sideTurns: [],
       });
       const markup = renderTimeline(
         <MessagesTimeline
@@ -2110,16 +2110,18 @@ describe("MessagesTimeline", () => {
           sideAnswers={deriveSideAnswers({
             messages: [question],
             activities: [],
-            sideTurn: {
-              sideTurnId,
-              participantId: astraId,
-              messageId: question.id,
-              status: "running",
-              startedAt: MESSAGE_CREATED_AT,
-              kind: "ask",
-              askedBy: { participantId: null },
-              requestId,
-            },
+            sideTurns: [
+              {
+                sideTurnId,
+                participantId: astraId,
+                messageId: question.id,
+                status: "running",
+                startedAt: MESSAGE_CREATED_AT,
+                kind: "ask",
+                askedBy: { participantId: null },
+                requestId,
+              },
+            ],
           })}
           openAgentRequests={[
             {
@@ -2173,7 +2175,7 @@ describe("MessagesTimeline", () => {
           sideAnswers={deriveSideAnswers({
             messages: [{ ...question, requestOutcome: "answered" }, answer],
             activities: [],
-            sideTurn: null,
+            sideTurns: [],
           })}
           roomAgents={roomAgents}
         />,

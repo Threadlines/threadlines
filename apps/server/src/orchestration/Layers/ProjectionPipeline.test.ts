@@ -1,4 +1,6 @@
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
+import * as Schema from "effect/Schema";
+import { ProjectionSideTurnsJson } from "../../persistence/Services/ProjectionThreads.ts";
 import {
   AgentPageId,
   AgentPageVersionId,
@@ -2914,14 +2916,24 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
         `;
       const answering = yield* sideTurnRow();
       const ownModel = { instanceId: "claudeAgent", model: "fable-5-1" };
-      assert.deepEqual(JSON.parse(answering[0]?.sideTurn ?? "null"), {
-        sideTurnId,
-        participantId: null,
-        messageId: "message-room-side",
-        status: "starting",
-        startedAt: "2026-01-01T00:00:04.000Z",
-        modelSelection: ownModel,
-      });
+      // A row written while a thread ran one side answer at a time holds a
+      // single object; it still reads, as a list of one.
+      const stored = JSON.parse(answering[0]?.sideTurn ?? "null")[0];
+      assert.deepEqual(
+        yield* Schema.decodeUnknownEffect(ProjectionSideTurnsJson)(JSON.stringify(stored)),
+        [stored],
+      );
+      // The column holds the live side answers as a list.
+      assert.deepEqual(JSON.parse(answering[0]?.sideTurn ?? "null"), [
+        {
+          sideTurnId,
+          participantId: null,
+          messageId: "message-room-side",
+          status: "starting",
+          startedAt: "2026-01-01T00:00:04.000Z",
+          modelSelection: ownModel,
+        },
+      ]);
       assert.deepEqual((yield* stampsOf())["message-room-side-answer"], {
         primary: { modelSelection: ownModel, nameIndex: 1 },
       });

@@ -1,3 +1,4 @@
+import { liveSideTurn } from "@threadlines/shared/sideTurns";
 import {
   type OrchestrationSessionUsageLimit,
   CHECKPOINT_FILES_ACTIVITY_ID_PREFIX,
@@ -2610,12 +2611,12 @@ const make = Effect.gen(function* () {
 
   const processSideTurnEvent = Effect.fnUntraced(function* (
     event: ProviderRuntimeEvent & { readonly sideTurnId: SideTurnId },
-    thread: Pick<OrchestrationThread, "id" | "sideTurn" | "session" | "subagents">,
+    thread: Pick<OrchestrationThread, "id" | "sideTurn" | "sideTurns" | "session" | "subagents">,
   ) {
     const { sideTurnId } = event;
-    // Only the side answer in progress. One already settled is final: its
+    // Only a side answer in progress. One already settled is final: its
     // late output is dropped, never written over the answer.
-    if ((thread.sideTurn ?? null)?.sideTurnId !== sideTurnId) {
+    if (liveSideTurn(thread, sideTurnId) === undefined) {
       sideAnswersWithText.delete(sideTurnId);
       yield* clearAssistantMessageState(sideAnswerMessageId(sideTurnId));
       return;

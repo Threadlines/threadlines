@@ -5,6 +5,7 @@ import {
   MessageId,
   ProjectId,
   ProviderInstanceId,
+  RoomAgentBatchId,
   RoomAgentRequestId,
   SIDE_ANSWER_OUTCOME_ACTIVITY_KIND,
   SideTurnId,
@@ -23,6 +24,9 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import { describe, expect, it } from "vite-plus/test";
 
+import { liveSideTurns } from "@threadlines/shared/sideTurns";
+
+import { resetAgentRequestsForUser } from "./agentRequestDecisions.ts";
 import { decideOrchestrationCommand } from "./decider.ts";
 import { createEmptyReadModel, projectEvent } from "./projector.ts";
 
@@ -833,6 +837,112 @@ describe("decider rooms", () => {
       ).toBe(true);
     });
 
+    it("runs a council: several agents review at once, counted once, each settling on its own", async () => {
+      const solId = ThreadParticipantId.make("9c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f");
+      const grokId = ThreadParticipantId.make("0d3e4f5a-6b7c-4d8e-9f0a-1b2c3d4e5f6a");
+      let model = readModel({
+        session: working(),
+        participants: [
+          astra,
+          { ...astra, id: solId, handle: "sol" },
+          { ...astra, id: grokId, handle: "grok" },
+        ],
+        // Two requests made already: the batch is the third and last.
+        agentRequests: { ...EMPTY_AGENT_REQUEST_STATE, requestsSinceUser: 2 },
+      });
+      const batchId = RoomAgentBatchId.make("batch-council");
+      const reviewOf = (participantId: ThreadParticipantId) =>
+        request("review", { to: { participantId }, batchId });
+      const live = () => liveSideTurns(threadOf(model)).map((entry) => entry.participantId);
+
+      const first = reviewOf(astraId);
+      model = await apply(model, await decideEvents(first, model));
+      expect(threadOf(model).agentRequests.requestsSinceUser).toBe(3);
+      // The first review finishes before the others are even asked.
+      model = await apply(
+        model,
+        await decideEvents(
+          {
+            type: "thread.side-turn.settle",
+            commandId: CommandId.make("cmd-settle-first"),
+            threadId,
+            sideTurnId: first.sideTurnId!,
+            outcome: "failed",
+            error: "It stopped.",
+            createdAt: now,
+          },
+          model,
+        ),
+      );
+      expect(live()).toEqual([]);
+      // The rest of the batch is neither refused by the limit nor counted again.
+      for (const participantId of [solId, grokId]) {
+        model = await apply(model, await decideEvents(reviewOf(participantId), model));
+      }
+      expect(live()).toEqual([solId, grokId]);
+      expect(threadOf(model).agentRequests.requestsSinceUser).toBe(3);
+      // A request outside the batch waits for the user.
+      expect(Exit.isFailure(await decide(request("ask"), model))).toBe(true);
+
+      // One answer settling leaves the other running.
+      const [solTurn] = liveSideTurns(threadOf(model));
+      model = await apply(
+        model,
+        await decideEvents(
+          {
+            type: "thread.side-turn.settle",
+            commandId: CommandId.make("cmd-settle-sol"),
+            threadId,
+            sideTurnId: solTurn!.sideTurnId,
+            outcome: "completed",
+            createdAt: now,
+          },
+          model,
+        ),
+      );
+      expect(live()).toEqual([grokId]);
+      // The user writing clears the count and the batch.
+      expect(
+        resetAgentRequestsForUser(threadOf(model), () => ({}) as never, now).map(
+          (event) => event.type,
+        ),
+      ).toEqual(["thread.agent-requests-reset"]);
+    });
+
+    it("lets agents answer on the side side by side, one answer each and three at most", async () => {
+      const sideTurnOf = (n: number, participantId: ThreadParticipantId | null) => ({
+        sideTurnId: SideTurnId.make(`0d9e8f7a-6b5c-4d3e-8f1a-2b3c4d5e6f${80 + n}`),
+        participantId,
+        messageId: MessageId.make(`other-question-${n}`),
+        status: "running" as const,
+        startedAt: now,
+      });
+      const solId = ThreadParticipantId.make("9c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f");
+      const refused = async (sideTurns: ReadonlyArray<ReturnType<typeof sideTurnOf>>) =>
+        Exit.isFailure(
+          await decide(
+            request("ask"),
+            readModel({
+              session: working(),
+              participants: [astra, { ...astra, id: solId, handle: "sol" }],
+              sideTurns,
+            }),
+          ),
+        );
+      // Another agent answering does not hold astra back.
+      expect(await refused([sideTurnOf(1, solId)])).toBe(false);
+      // Astra answering already does.
+      expect(await refused([sideTurnOf(1, astraId)])).toBe(true);
+      // Three answering already is the most.
+      expect(
+        await refused([
+          sideTurnOf(1, solId),
+          sideTurnOf(2, null),
+          sideTurnOf(3, ThreadParticipantId.make("1e4f5a6b-7c8d-4e9f-8a1b-2c3d4e5f6a7b")),
+        ]),
+      ).toBe(true);
+    });
+
     it("hands off once the calling turn completes, and routes the reply back exactly once", async () => {
       let model = readModel({ session: working() });
       const handOff = request("hand_off");
@@ -1557,7 +1667,7 @@ describe("decider rooms", () => {
         const first = invite({ autoChoice: "review" });
         model = await apply(model, await decideEvents(first, model));
         // Its review is over; the side answer slot is free again.
-        model = { ...model, threads: [{ ...threadOf(model), sideTurn: null }] };
+        model = { ...model, threads: [{ ...threadOf(model), sideTurn: null, sideTurns: [] }] };
         const again = invite({ autoChoice: "review" });
         const events = await decideEvents(again, model);
         expect(events.some((event) => event.type === "thread.participant-added")).toBe(false);
@@ -1576,7 +1686,7 @@ describe("decider rooms", () => {
                   },
                 },
               }),
-              { ...model, threads: [{ ...threadOf(model), sideTurn: null }] },
+              { ...model, threads: [{ ...threadOf(model), sideTurn: null, sideTurns: [] }] },
             ),
           ),
         ).toBe(true);

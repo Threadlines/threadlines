@@ -459,6 +459,10 @@
       "types": "./src/threadParticipants.ts",
       "import": "./src/threadParticipants.ts"
     },
+    "./sideTurns": {
+      "types": "./src/sideTurns.ts",
+      "import": "./src/sideTurns.ts"
+    },
     "./telemetryConsent": {
       "types": "./src/telemetryConsent.ts",
       "import": "./src/telemetryConsent.ts"

@@ -36,7 +36,7 @@ const readModelWith = (thread: Partial<OrchestrationThread>): OrchestrationReadM
         messages: [],
         participants: [],
         queuedFollowUps: [],
-        agentRequests: { open: [], requestsSinceUser: 0 },
+        agentRequests: { open: [], requestsSinceUser: 0, batchesSinceUser: [] },
         childRequests: { open: [], startsSinceUser: 0, sendsSinceUser: 0 },
         commandRequests: [],
         commandRuns: [],

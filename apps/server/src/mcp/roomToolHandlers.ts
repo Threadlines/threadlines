@@ -25,6 +25,8 @@ import {
   type ProjectId,
   type ProviderDriverKind,
   type ProviderInstanceId,
+  MAX_LIVE_SIDE_TURNS,
+  RoomAgentBatchId,
   RoomAgentRequestId,
   type RoomAgentRequestKind,
   type RoomAgentRequestOutcome,
@@ -62,6 +64,7 @@ import { clipSideAnswer } from "../orchestration/agentRequestDecisions.ts";
 import { matchReasoningLevel } from "../orchestration/childThreadAgents.ts";
 import type { OrchestrationEngineShape } from "../orchestration/Services/OrchestrationEngine.ts";
 import { isQuestionAnswerMessageId } from "../orchestration/userInput.ts";
+import { isAnsweringOnTheSide, liveSideTurns } from "@threadlines/shared/sideTurns";
 import { driverAnswersOnTheSide, sideAnswerDriversInWords } from "../provider/sideAnswerDrivers.ts";
 import type { GitVcsDriverShape } from "../vcs/GitVcsDriver.ts";
 import type { McpInvocationScope } from "./McpSessionRegistry.ts";
@@ -85,6 +88,7 @@ import { ROOM_REQUEST_DEADLINE, ROOM_TOOL_CALL_TIMEOUT } from "./roomToolTimeout
 import type {
   RoomAgentsResult,
   RoomAnswerResult,
+  RoomReviewEntry,
   RoomAvailableAgentsResult,
   RoomDiffResult,
   RoomHandOffResult,
@@ -324,7 +328,6 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
         (thread.session.activeTurnId !== null ||
           thread.session.status === "running" ||
           thread.session.status === "starting");
-      const answering = thread.sideTurn?.participantId;
       const agents = yield* Effect.forEach(
         room.entries.filter((entry) => entry.present),
         (entry) =>
@@ -340,7 +343,7 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
               status:
                 working && holder === entry.participantId
                   ? ("working" as const)
-                  : answering !== undefined && answering === entry.participantId
+                  : isAnsweringOnTheSide(thread, entry.participantId)
                     ? ("answering" as const)
                     : ("idle" as const),
               canAnswer,
@@ -503,6 +506,7 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
     scope: McpInvocationScope,
     kind: RoomAgentRequestKind,
     arrival: RequestArrival,
+    batchId?: RoomAgentBatchId,
   ) =>
     agentRequestRefusal(arrival.room.thread, {
       kind,
@@ -510,6 +514,7 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
       to: { participantId: arrival.target.participantId },
       callerTurnId: arrival.callerTurnId,
       chainEpoch: arrival.room.thread.agentRequests.chainEpoch,
+      ...(batchId !== undefined ? { batchId } : {}),
     });
 
   const submitCommand = (input: {
@@ -520,6 +525,7 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
     readonly text: string;
     readonly sideTurnId?: SideTurnId;
     readonly reviewInput?: RoomReviewInput;
+    readonly batchId?: RoomAgentBatchId;
   }) =>
     Effect.gen(function* () {
       const createdAt = yield* nowIso;
@@ -537,6 +543,7 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
           message: { messageId: MessageId.make(randomUUID()), text: input.text },
           ...(input.sideTurnId !== undefined ? { sideTurnId: input.sideTurnId } : {}),
           ...(input.reviewInput !== undefined ? { reviewInput: input.reviewInput } : {}),
+          ...(input.batchId !== undefined ? { batchId: input.batchId } : {}),
           createdAt,
         })
         .pipe(
@@ -666,12 +673,14 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
     readonly text: string;
     readonly basis: RoomReviewBasisRequest | undefined;
     readonly abandoned: Effect.Effect<void>;
+    /** A review asked of several agents: its batch, and the basis captured once for all. */
+    readonly batch?: { readonly batchId: RoomAgentBatchId; readonly reviewInput: RoomReviewInput };
   }) =>
     Effect.scoped(
       Effect.gen(function* () {
         const { scope, kind, arrival } = input;
         const base = { agent: agentLabel(arrival.target) };
-        const refusal = precheck(scope, kind, arrival);
+        const refusal = precheck(scope, kind, arrival, input.batch?.batchId);
         if (refusal !== null) {
           return {
             ...base,
@@ -744,8 +753,8 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
         // A review's capture, then the request. A submit in flight finishes
         // even when the call ends, so `submitted` is right once this returns.
         const send = Effect.gen(function* () {
-          let reviewInput: RoomReviewInput | undefined;
-          if (kind === "review") {
+          let reviewInput: RoomReviewInput | undefined = input.batch?.reviewInput;
+          if (kind === "review" && reviewInput === undefined) {
             const cwd = yield* checkoutOf(arrival.room.thread);
             if (cwd === undefined) {
               return {
@@ -774,6 +783,7 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
             text: input.text,
             sideTurnId,
             ...(reviewInput !== undefined ? { reviewInput } : {}),
+            ...(input.batch !== undefined ? { batchId: input.batch.batchId } : {}),
           }).pipe(
             Effect.tap((rejection) =>
               Effect.sync(() => {
@@ -906,6 +916,114 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
           text: input.text.trim(),
           basis: input.basis,
           abandoned,
+        }),
+      );
+    });
+
+  /**
+   * A review asked of several agents at once. The changes are captured once,
+   * so every agent reviews the same thing; each gets its own request and side
+   * answer, and they run side by side. The requests share a batch, which
+   * counts once toward the agents' request limit. The call waits for them all
+   * (each on its own clock), and lists each result in `reviews`.
+   */
+  const reviewBatch = (input: {
+    readonly scope: McpInvocationScope;
+    readonly agents: ReadonlyArray<string>;
+    readonly text: string;
+    readonly basis: RoomReviewBasisRequest | undefined;
+  }): Effect.Effect<RoomAnswerResult> =>
+    Effect.gen(function* () {
+      const names = input.agents.map((name) => name.trim()).filter((name) => name.length > 0);
+      if (names.length < 2) {
+        return refused("Name two or three agents in `agents`, or one in `agent`.");
+      }
+      if (names.length > MAX_LIVE_SIDE_TURNS) {
+        return refused(`At most ${MAX_LIVE_SIDE_TURNS} agents review at once.`);
+      }
+      const arrivals: Array<RequestArrival> = [];
+      for (const name of names) {
+        const arrival = yield* arrive(input.scope, "room_review", name, input.text);
+        if ("refused" in arrival) {
+          return refused(`${name}: ${arrival.refused}`);
+        }
+        arrivals.push(arrival);
+      }
+      if (new Set(arrivals.map((arrival) => arrival.target.key)).size !== arrivals.length) {
+        return refused("Name each agent once.");
+      }
+      const first = arrivals[0]!;
+      const text = input.text.trim();
+      const basisKey =
+        input.basis === undefined || input.basis === "uncommitted"
+          ? "uncommitted"
+          : `base:${input.basis.base}`;
+      const key = [
+        input.scope.threadId,
+        first.callerTurnId,
+        "review-batch",
+        ...arrivals.map((arrival) => arrival.target.key),
+        text,
+        basisKey,
+      ].join("\u0000");
+      // An identical call made again joins this one (it is already running
+      // its answers), so the room's room for more is checked only here.
+      return yield* deps.requests.join(key, (abandoned) =>
+        Effect.gen(function* () {
+          const free = MAX_LIVE_SIDE_TURNS - liveSideTurns(first.room.thread).length;
+          if (arrivals.length > free) {
+            return {
+              outcome: "busy",
+              detail:
+                free <= 0
+                  ? `${MAX_LIVE_SIDE_TURNS} agents are already answering on the side. Try again once one finishes.`
+                  : `Only ${free} more agent${free === 1 ? "" : "s"} can answer on the side right now. Ask fewer, or try again once one finishes.`,
+            } satisfies RoomAnswerResult;
+          }
+          const cwd = yield* checkoutOf(first.room.thread);
+          if (cwd === undefined) {
+            return {
+              outcome: "failed",
+              detail: "This room has no checkout to review.",
+            } satisfies RoomAnswerResult;
+          }
+          // Nobody waiting by the time the changes are captured: nothing is sent.
+          const capturedOrDropped = yield* Effect.raceFirst(
+            roomGit.captureReviewBasis(cwd, input.basis ?? "uncommitted").pipe(Effect.result),
+            abandoned.pipe(Effect.as("dropped" as const)),
+          );
+          if (capturedOrDropped === "dropped") {
+            return {
+              outcome: "stopped",
+              detail: "The call was dropped.",
+            } satisfies RoomAnswerResult;
+          }
+          const captured = capturedOrDropped;
+          if (captured._tag === "Failure") {
+            return {
+              outcome: captured.failure.outcome,
+              detail: `The review's basis could not be captured: ${captured.failure.message}`,
+            } satisfies RoomAnswerResult;
+          }
+          const batch = {
+            batchId: RoomAgentBatchId.make(randomUUID()),
+            reviewInput: captured.success,
+          };
+          const reviews = yield* Effect.forEach(
+            arrivals,
+            (arrival) =>
+              runAnswerRequest({
+                scope: input.scope,
+                kind: "review",
+                arrival,
+                text,
+                basis: input.basis,
+                abandoned,
+                batch,
+              }),
+            { concurrency: "unbounded" },
+          );
+          return summarizeReviews(reviews);
         }),
       );
     });
@@ -1265,6 +1383,18 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
               participant.guest === true &&
               sameModel(participant.modelSelection, target.modelSelection),
           );
+          // That guest may still be answering an earlier invite's review.
+          if (
+            earlierGuest !== undefined &&
+            modeNow === "auto" &&
+            threadNow !== undefined &&
+            isAnsweringOnTheSide(threadNow, earlierGuest.id)
+          ) {
+            return {
+              outcome: "busy",
+              detail: `${earlierGuest.handle} is already answering on the side. Try again once it finishes.`,
+            } satisfies RoomInviteResult;
+          }
           const handle =
             earlierGuest?.handle ??
             nextRoomAgentName(
@@ -1334,21 +1464,53 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
     room_review: (
       scope: McpInvocationScope,
       input: {
-        readonly agent: string;
+        readonly agent?: string | undefined;
+        readonly agents?: ReadonlyArray<string> | undefined;
         readonly request: string;
         readonly basis?: RoomReviewBasisRequest | undefined;
       },
-    ) =>
-      answerRequest({
-        scope,
-        kind: "review",
-        agent: input.agent,
-        text: input.request,
-        basis: input.basis,
-      }),
+    ): Effect.Effect<RoomAnswerResult> =>
+      input.agent !== undefined && input.agents !== undefined
+        ? Effect.succeed(refused("Name one agent in `agent`, or several in `agents`, not both."))
+        : input.agents !== undefined
+          ? reviewBatch({ scope, agents: input.agents, text: input.request, basis: input.basis })
+          : input.agent !== undefined
+            ? answerRequest({
+                scope,
+                kind: "review",
+                agent: input.agent,
+                text: input.request,
+                basis: input.basis,
+              })
+            : Effect.succeed(refused("Name the agent to review in `agent`.")),
     room_hand_off: roomHandOff,
     room_available_agents: roomAvailableAgents,
     room_invite: roomInvite,
+  };
+}
+
+/**
+ * A batch's result: every review in `reviews`, summed up in `outcome`.
+ * `answered` once none is still coming (the failed ones say why), or
+ * `continuing` while one will come as a message.
+ */
+function summarizeReviews(results: ReadonlyArray<RoomAnswerResult>): RoomAnswerResult {
+  const reviews = results.map(({ reviews: _nested, ...review }): RoomReviewEntry => review);
+  const answered = reviews.filter((review) => review.outcome === "answered").length;
+  const continuing = reviews.filter((review) => review.outcome === "continuing").length;
+  if (answered === reviews.length) {
+    return { outcome: "answered", reviews };
+  }
+  const parts = [
+    `${answered} of ${reviews.length} reviews answered here`,
+    ...(continuing > 0
+      ? [`${continuing} will come to you as a message when done; do not ask again`]
+      : []),
+  ];
+  return {
+    outcome: continuing > 0 ? "continuing" : answered > 0 ? "answered" : reviews[0]!.outcome,
+    detail: `${parts.join("; ")}. Each review's outcome is in \`reviews\`.`,
+    reviews,
   };
 }
 

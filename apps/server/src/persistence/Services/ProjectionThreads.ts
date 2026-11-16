@@ -41,10 +41,39 @@ import {
 } from "@threadlines/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as SchemaTransformation from "effect/SchemaTransformation";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 
 import type { ProjectionRepositoryError } from "../Errors.ts";
+
+const SideTurnList = Schema.Array(OrchestrationSideTurn);
+
+/**
+ * `projection_threads.side_turn`: the live side answers as a JSON array, or
+ * SQL null when none. A row written while a thread ran one side answer at a
+ * time holds a single object; it reads as a list of one, so no row is
+ * rewritten.
+ */
+export const ProjectionSideTurnsJson = Schema.fromJsonString(
+  Schema.Union([SideTurnList, OrchestrationSideTurn]),
+).pipe(
+  Schema.decodeTo(
+    Schema.toType(SideTurnList),
+    SchemaTransformation.transform({
+      decode: (stored) => ("sideTurnId" in stored ? [stored] : stored),
+      encode: (sideTurns) => sideTurns,
+    }),
+  ),
+);
+
+/** The column's value for a list: null when it is empty. */
+export const sideTurnsColumnValue = (
+  sideTurns: ReadonlyArray<typeof OrchestrationSideTurn.Encoded> | null | undefined,
+): string | null =>
+  sideTurns === null || sideTurns === undefined || sideTurns.length === 0
+    ? null
+    : JSON.stringify(sideTurns);
 
 export const ProjectionThread = Schema.Struct({
   threadId: ThreadId,
@@ -115,10 +144,11 @@ export const ProjectionThread = Schema.Struct({
    */
   participants: Schema.optional(Schema.Array(OrchestrationThreadParticipant)),
   /**
-   * The side answer in progress; see `OrchestrationThreadShell.sideTurn`.
-   * Optional so rows written before migration 059 decode.
+   * The side answers in progress; see `OrchestrationThreadShell.sideTurns`.
+   * Optional so rows written before migration 059 decode; null or absent:
+   * none. Stored in `side_turn` (ProjectionSideTurnsJson).
    */
-  sideTurn: Schema.optional(Schema.NullOr(OrchestrationSideTurn)),
+  sideTurns: Schema.optional(Schema.NullOr(Schema.Array(OrchestrationSideTurn))),
   /**
    * Per agent, what its conversation has been told; see
    * `OrchestrationThread.roomContext`. Optional so rows written before

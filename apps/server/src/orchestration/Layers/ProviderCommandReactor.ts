@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import { isAnsweringOnTheSide, liveSideTurn, liveSideTurns } from "@threadlines/shared/sideTurns";
 import * as path from "node:path";
 import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
 
@@ -572,7 +573,10 @@ const make = Effect.gen(function* () {
    * reason to send by itself: a failed or stopped working turn keeps holding
    * the queue, and a new turn clears the entry (processTurnStartRequested).
    */
-  const waitingOnSideAnswer = new Map<ThreadId, MessageId>();
+  const waitingOnSideAnswer = new Map<
+    ThreadId,
+    { readonly messageId: MessageId; readonly participantId: ThreadParticipantId | null }
+  >();
   /** Agents' replies and threads' reports being steered into a running turn. */
   const steeringAgentMessages = new Set<MessageId>();
   /**
@@ -4618,7 +4622,11 @@ const make = Effect.gen(function* () {
         }),
       { discard: true },
     );
-    yield* endSideTurn(thread.id, thread.sideTurn, event.payload.createdAt);
+    yield* Effect.forEach(
+      liveSideTurns(thread),
+      (sideTurn) => endSideTurn(thread.id, sideTurn, event.payload.createdAt),
+      { discard: true },
+    );
     // Every runtime of the thread is gone, and with it whatever outside work
     // left running: the agents it marked start fresh next time, unless their
     // provider keeps queued work past the runtime (they clear at that start).
@@ -4897,12 +4905,14 @@ const make = Effect.gen(function* () {
       // outran its call, comes back as a message instead, so it outlives the
       // turn that asked. (Detaching is refused once the turn is over, so this
       // read cannot miss one.)
-      const sideTurn = thread.sideTurn ?? null;
+      const sideTurn =
+        request.sideTurnId === undefined
+          ? null
+          : (liveSideTurn(thread, request.sideTurnId) ?? null);
       if (
         (request.kind === "ask" || request.kind === "review") &&
         request.replyAsMessage !== true &&
         sideTurn !== null &&
-        sideTurn.sideTurnId === request.sideTurnId &&
         sideTurn.status !== "cancelling"
       ) {
         yield* orchestrationEngine
@@ -5497,13 +5507,9 @@ const make = Effect.gen(function* () {
   ) {
     const thread = yield* resolveThread(threadId);
     const queued = thread?.queuedFollowUps?.find((entry) => entry.messageId === messageId);
-    const sideTurn = thread?.sideTurn ?? null;
-    if (
-      queued !== undefined &&
-      sideTurn !== null &&
-      sideTurn.participantId === (queued.participantId ?? null)
-    ) {
-      waitingOnSideAnswer.set(threadId, messageId);
+    const agent = queued?.participantId ?? null;
+    if (queued !== undefined && thread !== undefined && isAnsweringOnTheSide(thread, agent)) {
+      waitingOnSideAnswer.set(threadId, { messageId, participantId: agent });
       return;
     }
     yield* sendQueuedFollowUp(threadId, messageId, createdAt);
@@ -5806,8 +5812,8 @@ const make = Effect.gen(function* () {
   }) {
     const { threadId, sideTurnId, modelSelection } = input;
     const thread = yield* resolveThread(threadId);
-    const sideTurn = thread?.sideTurn ?? null;
-    if (!thread || sideTurn === null || sideTurn.sideTurnId !== sideTurnId) {
+    const sideTurn = thread === undefined ? undefined : liveSideTurn(thread, sideTurnId);
+    if (!thread || sideTurn === undefined) {
       return;
     }
     const question = thread.messages.find((message) => message.id === sideTurn.messageId);
@@ -5903,7 +5909,8 @@ const make = Effect.gen(function* () {
 
     // Stopped while it was starting: the question is never sent.
     const latest = yield* resolveThread(threadId);
-    if (latest?.sideTurn?.sideTurnId !== sideTurnId || latest.sideTurn.status === "cancelling") {
+    const latestTurn = latest === undefined ? undefined : liveSideTurn(latest, sideTurnId);
+    if (latestTurn === undefined || latestTurn.status === "cancelling") {
       yield* stopSideRuntime(threadId, sideTurn);
       yield* settleSideTurn({
         threadId,
@@ -5955,7 +5962,7 @@ const make = Effect.gen(function* () {
     const stopIfStillRunning = Effect.gen(function* () {
       yield* Effect.sleep(SIDE_TURN_MAX_DURATION);
       const latest = yield* resolveThread(threadId);
-      if (latest?.sideTurn?.sideTurnId !== sideTurn.sideTurnId) {
+      if (latest === undefined || liveSideTurn(latest, sideTurn.sideTurnId) === undefined) {
         return;
       }
       yield* stopSideRuntime(threadId, sideTurn);
@@ -6012,8 +6019,8 @@ const make = Effect.gen(function* () {
     ) {
       const { threadId, sideTurnId } = event.payload;
       const thread = yield* resolveThread(threadId);
-      const sideTurn = thread?.sideTurn ?? null;
-      if (sideTurn === null || sideTurn.sideTurnId !== sideTurnId) {
+      const sideTurn = thread === undefined ? undefined : liveSideTurn(thread, sideTurnId);
+      if (sideTurn === undefined) {
         return;
       }
       yield* providerService
@@ -6023,7 +6030,7 @@ const make = Effect.gen(function* () {
         Effect.andThen(
           Effect.gen(function* () {
             const latest = yield* resolveThread(threadId);
-            if (latest?.sideTurn?.sideTurnId !== sideTurnId) {
+            if (latest === undefined || liveSideTurn(latest, sideTurnId) === undefined) {
               return;
             }
             yield* stopSideRuntime(threadId, sideTurn);
@@ -6049,9 +6056,14 @@ const make = Effect.gen(function* () {
   ) {
     const { threadId, sideTurnId, participantId } = event.payload;
     yield* stopSideRuntime(threadId, { sideTurnId, participantId }).pipe(Effect.forkScoped);
+    // Only the agent the message waits for: another agent's answer ending
+    // releases nothing.
     const waiting = waitingOnSideAnswer.get(threadId);
+    if (waiting === undefined || waiting.participantId !== participantId) {
+      return;
+    }
     waitingOnSideAnswer.delete(threadId);
-    if (waiting === undefined || queueHeldByStop.has(threadId)) {
+    if (queueHeldByStop.has(threadId)) {
       return;
     }
     const thread = yield* resolveThread(threadId);
@@ -6063,15 +6075,12 @@ const make = Effect.gen(function* () {
     yield* sendQueuedFollowUpWhenFree(threadId, head.messageId, event.occurredAt);
   });
 
-  /** Stop and settle the side answer in progress, if any (session stop, restart). */
+  /** Stop and settle a side answer in progress (session stop). */
   const endSideTurn = Effect.fnUntraced(function* (
     threadId: ThreadId,
-    sideTurn: OrchestrationSideTurn | null | undefined,
+    sideTurn: OrchestrationSideTurn,
     createdAt: string,
   ) {
-    if (sideTurn === null || sideTurn === undefined) {
-      return;
-    }
     yield* stopSideRuntime(threadId, sideTurn);
     yield* settleSideTurn({
       threadId,
@@ -6461,23 +6470,23 @@ const make = Effect.gen(function* () {
         ...snapshot.threads.map((thread) => ({
           id: thread.id,
           session: thread.session,
-          sideTurn: thread.sideTurn ?? null,
+          sideTurns: liveSideTurns(thread),
         })),
         ...archived.map((entry) => ({
           id: entry.threadId,
           session: entry.session,
-          sideTurn: entry.sideTurn,
+          sideTurns: entry.sideTurns,
         })),
       ];
       for (const thread of threads) {
         // Side runtimes lived in the previous process too. One answering an
         // agent's request fails it with the reason, like other requests the
         // restart cut off; the user's own side answer just stopped.
-        if (thread.sideTurn) {
-          const forAgent = thread.sideTurn.requestId !== undefined;
+        for (const sideTurn of thread.sideTurns) {
+          const forAgent = sideTurn.requestId !== undefined;
           yield* settleSideTurn({
             threadId: thread.id,
-            sideTurnId: thread.sideTurn.sideTurnId,
+            sideTurnId: sideTurn.sideTurnId,
             outcome: forAgent ? "failed" : "interrupted",
             ...(forAgent ? { error: "The server restarted before this finished." } : {}),
             fromPreviousProcess: true,

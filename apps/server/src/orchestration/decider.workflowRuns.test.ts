@@ -118,6 +118,7 @@ describe("decider workflow runs", () => {
           chainEpoch: 0,
           requestsSinceUser: 0,
           invitesPaused: false,
+          batchesSinceUser: [],
         },
         childRequests: { open: [] },
         parentThreadId: null,

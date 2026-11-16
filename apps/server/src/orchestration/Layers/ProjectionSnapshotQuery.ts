@@ -81,6 +81,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlSchema from "effect/sql/SqlSchema";
 import type * as Statement from "effect/sql/Statement";
 import { awaitingInvite } from "@threadlines/shared/roomAgentRequests";
+import { liveSideTurnFields } from "@threadlines/shared/sideTurns";
 import { hasPendingSettingsChange } from "@threadlines/shared/settingsChangeState";
 import {
   awaitedChildRequestCount,
@@ -122,7 +123,10 @@ import {
   toProjectionThreadSubagent,
 } from "../../persistence/Layers/ProjectionThreadSubagents.ts";
 import { decodeWorkflowRunRows } from "../../persistence/Layers/ProjectionThreadWorkflowRuns.ts";
-import { ProjectionThread } from "../../persistence/Services/ProjectionThreads.ts";
+import {
+  ProjectionSideTurnsJson,
+  ProjectionThread,
+} from "../../persistence/Services/ProjectionThreads.ts";
 import { RepositoryIdentityResolver } from "../../project/Services/RepositoryIdentityResolver.ts";
 import { ORCHESTRATION_PROJECTOR_NAMES } from "./ProjectionPipeline.ts";
 import {
@@ -278,7 +282,7 @@ const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
     ),
     queuedFollowUps: Schema.fromJsonString(Schema.Array(OrchestrationQueuedFollowUp)),
     participants: Schema.fromJsonString(Schema.Array(OrchestrationThreadParticipant)),
-    sideTurn: Schema.optional(Schema.NullOr(Schema.fromJsonString(OrchestrationSideTurn))),
+    sideTurns: Schema.optional(Schema.NullOr(ProjectionSideTurnsJson)),
     roomContext: Schema.optional(
       Schema.fromJsonString(Schema.Record(Schema.String, OrchestrationRoomContextCursor)),
     ),
@@ -592,7 +596,7 @@ function mapThreadShellRow(
       : {}),
     queuedFollowUps: row.queuedFollowUps ?? [],
     participants: row.participants ?? [],
-    ...(row.sideTurn ? { sideTurn: row.sideTurn } : {}),
+    ...liveSideTurnFields(row.sideTurns),
     ...(row.agentRole ? { agentRole: row.agentRole } : {}),
     doneOverride: mapThreadDoneOverride(row),
     lastSeenAt: row.lastSeenAt ?? null,
@@ -925,7 +929,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           dismissed_pull_requests AS "dismissedPullRequests",
           queued_follow_ups AS "queuedFollowUps",
           participants AS "participants",
-          side_turn AS "sideTurn",
+          side_turn AS "sideTurns",
           agent_role AS "agentRole",
           room_context AS "roomContext",
           sent_models AS "sentModels",
@@ -993,7 +997,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           dismissed_pull_requests AS "dismissedPullRequests",
           queued_follow_ups AS "queuedFollowUps",
           participants AS "participants",
-          side_turn AS "sideTurn",
+          side_turn AS "sideTurns",
           agent_role AS "agentRole",
           room_context AS "roomContext",
           sent_models AS "sentModels",
@@ -1063,7 +1067,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           dismissed_pull_requests AS "dismissedPullRequests",
           queued_follow_ups AS "queuedFollowUps",
           participants AS "participants",
-          side_turn AS "sideTurn",
+          side_turn AS "sideTurns",
           agent_role AS "agentRole",
           room_context AS "roomContext",
           sent_models AS "sentModels",
@@ -1456,13 +1460,13 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     Request: Schema.Void,
     Result: Schema.Struct({
       threadId: ThreadId,
-      sideTurn: Schema.fromJsonString(OrchestrationSideTurn),
+      sideTurns: ProjectionSideTurnsJson,
     }),
     execute: () =>
       sql`
         SELECT
           thread_id AS "threadId",
-          side_turn AS "sideTurn"
+          side_turn AS "sideTurns"
         FROM projection_threads
         WHERE deleted_at IS NULL
           AND archived_at IS NOT NULL
@@ -1896,7 +1900,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           dismissed_pull_requests AS "dismissedPullRequests",
           queued_follow_ups AS "queuedFollowUps",
           participants AS "participants",
-          side_turn AS "sideTurn",
+          side_turn AS "sideTurns",
           agent_role AS "agentRole",
           room_context AS "roomContext",
           sent_models AS "sentModels",
@@ -2038,18 +2042,18 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               {
                 readonly threadId: ThreadId;
                 session: OrchestrationSession | null;
-                sideTurn: OrchestrationSideTurn | null;
+                sideTurns: ReadonlyArray<OrchestrationSideTurn>;
               }
             >();
             const entryFor = (threadId: ThreadId) => {
               const existing = byThread.get(threadId);
               if (existing !== undefined) return existing;
-              const created = { threadId, session: null, sideTurn: null };
+              const created = { threadId, session: null, sideTurns: [] };
               byThread.set(threadId, created);
               return created;
             };
             for (const row of sessionRows) entryFor(row.threadId).session = mapSessionRow(row);
-            for (const row of sideTurnRows) entryFor(row.threadId).sideTurn = row.sideTurn;
+            for (const row of sideTurnRows) entryFor(row.threadId).sideTurns = row.sideTurns;
             return [...byThread.values()];
           }),
           Effect.mapError(
@@ -2819,7 +2823,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 participants: row.participants ?? [],
                 agentRequests: row.agentRequests ?? EMPTY_AGENT_REQUEST_STATE,
                 ...threadLineageFields(row),
-                ...(row.sideTurn ? { sideTurn: row.sideTurn } : {}),
+                ...liveSideTurnFields(row.sideTurns),
                 ...(row.agentRole ? { agentRole: row.agentRole } : {}),
                 ...(row.roomContext && Object.keys(row.roomContext).length > 0
                   ? { roomContext: row.roomContext }
@@ -3140,7 +3144,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   participants: row.participants ?? [],
                   agentRequests: row.agentRequests ?? EMPTY_AGENT_REQUEST_STATE,
                   ...threadLineageFields(row),
-                  ...(row.sideTurn ? { sideTurn: row.sideTurn } : {}),
+                  ...liveSideTurnFields(row.sideTurns),
                   ...(row.agentRole ? { agentRole: row.agentRole } : {}),
                   ...(row.roomContext && Object.keys(row.roomContext).length > 0
                     ? { roomContext: row.roomContext }
@@ -3692,7 +3696,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     dismissed_pull_requests AS "dismissedPullRequests",
     queued_follow_ups AS "queuedFollowUps",
     participants AS "participants",
-    side_turn AS "sideTurn",
+    side_turn AS "sideTurns",
     agent_role AS "agentRole",
     room_context AS "roomContext",
     sent_models AS "sentModels",
@@ -4048,7 +4052,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         participants: threadRow.value.participants ?? [],
         agentRequests: threadRow.value.agentRequests ?? EMPTY_AGENT_REQUEST_STATE,
         ...threadLineageFields(threadRow.value),
-        ...(threadRow.value.sideTurn ? { sideTurn: threadRow.value.sideTurn } : {}),
+        ...liveSideTurnFields(threadRow.value.sideTurns),
         ...(threadRow.value.agentRole ? { agentRole: threadRow.value.agentRole } : {}),
         ...(threadRow.value.roomContext && Object.keys(threadRow.value.roomContext).length > 0
           ? { roomContext: threadRow.value.roomContext }
