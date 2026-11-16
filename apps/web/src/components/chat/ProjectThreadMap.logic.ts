@@ -1,4 +1,10 @@
 import type { ThreadStatusPill } from "../Sidebar.logic";
+import {
+  THREAD_STATUS_PRESENTATION,
+  type ThreadStatusGroup,
+  type ThreadStatusPresentation,
+  type ThreadStatusTone,
+} from "./threadStatusGroups";
 
 /**
  * The new-thread screen's drawing of a project: the main line, a loop above it
@@ -7,40 +13,10 @@ import type { ThreadStatusPill } from "../Sidebar.logic";
  * tested as data and the component only paints it.
  */
 
-export type ThreadMapTone = "amber" | "red" | "violet" | "blue" | "cyan" | "emerald";
+export type ThreadMapTone = ThreadStatusTone;
 
 /** How the caption counts a thread, which is coarser than its colour. */
-export type ThreadMapGroup = "needsYou" | "working" | "finished";
-
-interface ThreadMapStatusPresentation {
-  readonly tone: ThreadMapTone;
-  readonly group: ThreadMapGroup;
-  /** Lower claims a lane first when there are more threads than lanes. */
-  readonly rank: number;
-}
-
-/**
- * One row per sidebar status, so the map's dots are the sidebar's dots. Keyed
- * by the label union: a status added there fails to compile here until it is
- * given a colour and a place in the count.
- */
-const STATUS_PRESENTATION: Readonly<
-  Record<ThreadStatusPill["label"], ThreadMapStatusPresentation>
-> = {
-  "Pending Approval": { tone: "amber", group: "needsYou", rank: 0 },
-  "Awaiting Input": { tone: "amber", group: "needsYou", rank: 0 },
-  Failed: { tone: "red", group: "needsYou", rank: 0 },
-  "Plan Ready": { tone: "violet", group: "needsYou", rank: 1 },
-  Working: { tone: "blue", group: "working", rank: 2 },
-  Starting: { tone: "blue", group: "working", rank: 2 },
-  Answering: { tone: "blue", group: "working", rank: 2 },
-  Waiting: { tone: "cyan", group: "working", rank: 2 },
-  Completed: { tone: "emerald", group: "finished", rank: 3 },
-  // Settled, and an agent will come back by itself: a wait, after a result.
-  "Checking back": { tone: "cyan", group: "working", rank: 3 },
-  // Stopped by a usage limit, and continues by itself once it resets.
-  "Continues at reset": { tone: "cyan", group: "working", rank: 3 },
-};
+export type ThreadMapGroup = ThreadStatusGroup;
 
 /** More lanes than this and the drawing stops reading as a glance. */
 export const THREAD_MAP_MAX_LANES = 4;
@@ -93,11 +69,11 @@ export function deriveThreadMapLanes(threads: readonly ThreadMapThreadInput[]): 
   const candidates: {
     readonly thread: ThreadMapThreadInput;
     readonly statusLabel: ThreadStatusPill["label"];
-    readonly presentation: ThreadMapStatusPresentation;
+    readonly presentation: ThreadStatusPresentation;
   }[] = [];
   for (const thread of threads) {
     if (thread.statusLabel === null) continue;
-    const presentation = STATUS_PRESENTATION[thread.statusLabel];
+    const presentation = THREAD_STATUS_PRESENTATION[thread.statusLabel];
     counts[presentation.group] += 1;
     candidates.push({ thread, statusLabel: thread.statusLabel, presentation });
   }

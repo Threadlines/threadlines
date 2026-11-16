@@ -40,6 +40,9 @@ import {
   waitForLayout,
   waitForElement,
   waitForServerConfigToApply,
+  addThreadToSnapshot,
+  markThreadDoneInTest,
+  setSidebarThreadWork,
   mountChatView,
   openProjectMenu,
   registerChatViewSuiteHooks,
@@ -206,6 +209,101 @@ describe("ChatView (full app): right panel and header actions", () => {
     );
     tile.click();
   }
+
+  it("groups the project's threads in the Threads tab and opens one from its row", async () => {
+    const approvalId = "thread-board-approval" as ThreadId;
+    const workingId = "thread-board-working" as ThreadId;
+    const wrappedId = "thread-board-wrapped" as ThreadId;
+    const titles: Record<string, string> = {
+      [approvalId]: "Needs an approval",
+      [workingId]: "Busy fixing",
+      [wrappedId]: "Finished last night",
+    };
+    const base = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-board" as MessageId,
+      targetText: "board",
+    });
+    const snapshot = [approvalId, workingId, wrappedId].reduce(
+      (current, threadId) => addThreadToSnapshot(current, threadId),
+      base,
+    );
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads: snapshot.threads.map((thread) =>
+          titles[thread.id] ? { ...thread, title: titles[thread.id]! } : thread,
+        ),
+      },
+    });
+
+    try {
+      setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, approvalId, "needs-you");
+      setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, workingId, "working");
+      markThreadDoneInTest(`${LOCAL_ENVIRONMENT_ID}:${wrappedId}`, NOW_ISO);
+
+      const railToggle = await waitForElement(
+        () =>
+          document.querySelector('button[aria-label="Toggle panel"]') as HTMLButtonElement | null,
+        "Unable to find the rail toggle.",
+      );
+      railToggle.click();
+      await openRightPanelSurfaceFromLauncher("threads");
+
+      const rowsIn = (group: string) =>
+        [
+          ...document.querySelectorAll(
+            `[data-project-board-group='${group}'] [data-testid^='project-board-row-']`,
+          ),
+        ].map((row) => row.getAttribute("data-testid")!.replace("project-board-row-", ""));
+      await vi.waitFor(
+        () => {
+          expect(mounted.router.state.location.search).toMatchObject({ threads: "1" });
+          expect(
+            [...document.querySelectorAll("[data-project-board-group]")].map((group) =>
+              group.getAttribute("data-project-board-group"),
+            ),
+          ).toEqual(["needsYou", "working", "idle", "done"]);
+          expect(rowsIn("needsYou")).toEqual([approvalId]);
+          expect(rowsIn("working")).toEqual([workingId]);
+          expect(rowsIn("idle")).toEqual([THREAD_ID]);
+          // Done starts closed, like the sidebar's Wrapped shelf.
+          expect(rowsIn("done")).toEqual([]);
+          expect(document.querySelector("[data-testid='project-board-counts']")?.textContent).toBe(
+            "1 needs you · 1 working",
+          );
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      (document.querySelector("[data-testid='project-board-toggle-done']") as HTMLElement).click();
+      await vi.waitFor(() => expect(rowsIn("done")).toEqual([wrappedId]), {
+        timeout: 8_000,
+        interval: 16,
+      });
+
+      (
+        document.querySelector(`[data-testid='project-board-row-${approvalId}']`) as HTMLElement
+      ).click();
+      await vi.waitFor(
+        () => {
+          expect(mounted.router.state.location.pathname).toBe(
+            `/${LOCAL_ENVIRONMENT_ID}/${approvalId}`,
+          );
+          // The board comes along, so the next row is one click away.
+          expect(mounted.router.state.location.search).toMatchObject({ threads: "1" });
+          expect(
+            document
+              .querySelector(`[data-testid='project-board-row-${approvalId}']`)
+              ?.getAttribute("data-active"),
+          ).toBe("true");
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
 
   it("builds a tab strip from the launcher and switches between its tabs", async () => {
     const mounted = await mountChatView({

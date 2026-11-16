@@ -1,5 +1,5 @@
 import { usePullRequestRecords } from "../environments/pullRequests/pullRequestRecordsStore";
-import { scopeProjectRef, scopeThreadRef } from "@threadlines/client-runtime";
+import { scopedThreadKey, scopeProjectRef, scopeThreadRef } from "@threadlines/client-runtime";
 import type { PullRequestRef, ScopedThreadRef } from "@threadlines/contracts";
 import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -28,6 +28,7 @@ import {
 import { deriveHostedStaticThreadRouteState } from "./-chatIndexState";
 import { type DiffRouteSearch, parseDiffRouteSearch } from "../diffRouteSearch";
 import { AgentsPanel } from "../components/chat/AgentsPanel";
+import { ProjectBoardPanel } from "../components/chat/ProjectBoardPanel";
 import {
   ThreadPullRequestLinkContext,
   type ThreadPullRequestLinks,
@@ -87,10 +88,12 @@ import {
   autoOpenAgentsTab,
   availableRightPanelTabs,
   type AgentsAutoOpenEdge,
+  clearQueuedRightPanelTab,
   closeRightPanelTab,
   focusRightPanelTab,
   hideRightPanel,
   isRightPanelClosedInSearch,
+  useQueuedRightPanelTab,
   useReconciledRightPanelTabs,
   moveRightPanelTab,
   pullRequestTabSearchParams,
@@ -621,6 +624,7 @@ function ChatThreadRouteView() {
   const pullRequestOpen = activeTab === "pullRequest";
   const agentsOpen = activeTab === "agents";
   const mediaOpen = activeTab === "media";
+  const threadsOpen = activeTab === "threads";
   // A published source outlives the navigation for a frame or two, so the rail
   // only trusts one that names the thread it is rendering.
   const agentsSource =
@@ -664,6 +668,21 @@ function ChatThreadRouteView() {
     navigateToTab,
     shouldUseDiffSheet,
   ]);
+  // A tab queued for this thread from outside the route (the Threads tab, the
+  // first time a thread becomes a lead on this device): opened once the thread
+  // can show it. Sheet layouts drop it rather than cover the conversation.
+  const queuedTab = useQueuedRightPanelTab(currentThreadKey);
+  useEffect(() => {
+    if (queuedTab === null || currentThreadKey === null || !availableTabs.includes(queuedTab)) {
+      return;
+    }
+    clearQueuedRightPanelTab(currentThreadKey);
+    if (shouldUseDiffSheet) {
+      return;
+    }
+    focusRightPanelTab(currentThreadKey, queuedTab);
+    navigateToTab(queuedTab);
+  }, [availableTabs, currentThreadKey, navigateToTab, queuedTab, shouldUseDiffSheet]);
   // The thread's media, for the launcher's Media row: the same listing the
   // Media tab opens on, so the row and the tab agree. Read only while the
   // launcher is on screen; a turn landing changes the revision and so the key.
@@ -948,6 +967,34 @@ function ChatThreadRouteView() {
     },
     [navigate, shouldUseDiffSheet, threadRef],
   );
+  // A row of the Threads tab: that thread, with its own Threads tab beside it
+  // so the board stays in view while the user works down it. On a phone the
+  // sheet steps aside so the thread is what shows.
+  const openThreadFromBoard = useCallback(
+    (target: ScopedThreadRef) => {
+      if (!threadRef) {
+        return;
+      }
+      const sameThread =
+        target.environmentId === threadRef.environmentId && target.threadId === threadRef.threadId;
+      if (sameThread) {
+        if (shouldUseDiffSheet) {
+          hideSidebar();
+        }
+        return;
+      }
+      if (!shouldUseDiffSheet) {
+        focusRightPanelTab(scopedThreadKey(target), "threads");
+      }
+      void navigate({
+        to: "/$environmentId/$threadId",
+        params: buildThreadRouteParams(target),
+        search: (previous) =>
+          rightPanelTabSearchParams(previous, shouldUseDiffSheet ? null : "threads"),
+      });
+    },
+    [hideSidebar, navigate, shouldUseDiffSheet, threadRef],
+  );
   // Reorder touches only the strip's remembered order; the URL owns the
   // active tab, and that does not change here.
   const reorderTab = useCallback(
@@ -1056,6 +1103,16 @@ function ChatThreadRouteView() {
               onGoToChat={goToMediaChat}
             />
           </Suspense>
+        </div>
+      ) : null}
+      {openTabs.includes("threads") && serverThread ? (
+        <div className={cn("h-full w-full min-w-0 flex-col", threadsOpen ? "flex" : "hidden")}>
+          <ProjectBoardPanel
+            environmentId={threadRef.environmentId}
+            threadId={threadRef.threadId}
+            projectId={serverThread.projectId}
+            onOpenThread={openThreadFromBoard}
+          />
         </div>
       ) : null}
       {openTabs.includes("sourceControl") ? (

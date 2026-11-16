@@ -107,7 +107,17 @@ A project's lead chat is a thread set up to coordinate the project; see the lead
   {
     id: "lead-chat",
     title: "Lead chat",
-    keywords: ["lead chat", "lead", "coordinator", "project lead", "orchestrator", "drop work"],
+    keywords: [
+      "lead chat",
+      "lead",
+      "coordinator",
+      "project lead",
+      "orchestrator",
+      "drop work",
+      "threads panel",
+      "project threads",
+      "board",
+    ],
     body: `Each project can have one lead chat: a thread you drop work into (a bug, a stack trace, a list of tasks). Its agent answers small questions itself and starts threads for new work. Those threads show under the lead in the sidebar and report back to it, and it tells you what finished and what needs you.
 
 Any thread can be the lead. Use "Make this the lead chat" in a thread's menu (right-click its row, or click the title above the chat), or the command palette. The project's menu in the project picker has Open lead chat, or New lead chat, which starts a thread in the project folder and makes it the lead. "Go to lead chat" in the command palette opens it.
@@ -119,6 +129,8 @@ When an agent asks to start several threads, the card has a checkbox per thread,
 Only one thread leads a project; making another the lead replaces it. "Stop using as lead chat" turns it back into an ordinary thread, and the threads it started stay with it. Archiving or deleting the lead ends it. A lead can't move to another computer, and each computer keeps its own lead for a project.
 
 The lead's row sits at the top of the sidebar with a flag, says Lead where the project name goes, and never wraps up on its own. The chat shows a Lead chat label beside the title.
+
+The Threads tab in the right sidebar shows the project's threads on every computer you can see, grouped as Needs you, Ready for review, Working, Landing, Idle and Done. Open it from the sidebar's list of panels or its + menu, on any thread of the project; it opens by itself the first time a thread becomes the lead on this device. A thread you wrapped up goes under Done (for 7 days, closed until you open it) unless its pull request is still open, which keeps it under Ready for review or Landing. Ready for review says what the pull request waits on, as the Pull requests page does. Click a row to open the thread, or right-click it for the thread's menu. The top line counts what needs you and what's working, with a Lead chat link when you're on another thread.
 
 The lead's agent is told its role at the start of every turn. It may start 10 threads and send 20 messages to them per message you send, instead of 5 and 10. It needs {place:threads.agentThreads} to be on, and an agent that can't use the thread tools says so. General chats, a thread another thread still owns, and threads from another computer or an outside agent can't be the lead.`,
   },

@@ -45,6 +45,7 @@ import { useComposerDraftStore, type DraftId } from "../composerDraftStore";
 import { preserveRightPanelSearchParamsForDraftNavigation } from "../diffRouteSearch";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { type InboxEntry, useInboxThreads } from "../hooks/useInboxThreads";
+import { useOpenThreadPullRequest } from "../hooks/useOpenThreadPullRequest";
 import { useThreadMenu } from "../hooks/useThreadMenu";
 import { useTouchHoldMenu } from "../hooks/useTouchHoldMenu";
 import { useIsMobile } from "../hooks/useMediaQuery";
@@ -1619,48 +1620,7 @@ export default function Sidebar() {
     ],
   );
 
-  /**
-   * The pull request badge. A plain click opens the thread's Pull request tab,
-   * which is where the app can actually show it; a modifier or the middle
-   * button is the browser's "open it somewhere else" gesture, and the host is
-   * that somewhere else.
-   */
-  const openPrLink = useCallback(
-    (
-      event: React.MouseEvent<HTMLElement>,
-      pullRequest: Pick<ThreadPullRequest, "number" | "url">,
-      threadRef: ScopedThreadRef,
-    ) => {
-      event.preventDefault();
-      event.stopPropagation();
-
-      if (!(event.metaKey || event.ctrlKey || event.button === 1)) {
-        closeSheet();
-        void navigate({
-          to: "/$environmentId/$threadId",
-          params: buildThreadRouteParams(threadRef),
-          search: { pullRequest: "1", pullRequestNumber: pullRequest.number },
-        });
-        return;
-      }
-
-      const api = readLocalApi();
-      if (!api) {
-        toastManager.add({ type: "error", title: "Can't open links here" });
-        return;
-      }
-
-      void api.shell.openExternal(pullRequest.url).catch((error) => {
-        toastManager.add(
-          failureNotice({
-            title: "Couldn't open the pull request",
-            error,
-          }),
-        );
-      });
-    },
-    [closeSheet, navigate],
-  );
+  const openPrLink = useOpenThreadPullRequest(closeSheet);
 
   const attemptArchiveThread = useCallback(
     async (threadRef: ScopedThreadRef) => {
