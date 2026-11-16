@@ -422,7 +422,10 @@ describe("ThreadBootstrap.startChild", () => {
       // Never the usual folder: a cut-off git still running cleans up only that one.
       const [made] = world.createWorktreeCalls as Array<{ readonly path: string }>;
       expect(made).toMatchObject({ cwd: PROJECT_CWD, refName: branch });
-      expect(made?.path).toMatch(new RegExp(`^${halfMade}-[0-9a-f]{4}$`));
+      // The usual folder, joined with this system's separators, then a suffix of its own.
+      const usualFolder = NodePath.join(halfMade);
+      expect(made?.path.slice(0, usualFolder.length)).toBe(usualFolder);
+      expect(made?.path.slice(usualFolder.length)).toMatch(/^-[0-9a-f]{4}$/);
       expect(world.starts()[0]?.create?.worktreePath).toBe(made?.path);
     }).pipe(Effect.provide(world.layer));
   });
@@ -502,7 +505,8 @@ describe("ThreadBootstrap.startChild", () => {
     const realPath = NodePath.join(base, "coder");
     const linkedPath = NodePath.join(base, "linked");
     NodeFs.mkdirSync(realPath);
-    NodeFs.symlinkSync(realPath, linkedPath);
+    // A junction on Windows, which any user can make; a symlink elsewhere.
+    NodeFs.symlinkSync(realPath, linkedPath, "junction");
     const world = makeWorld();
     world.worktrees.push({ path: realPath, branch: "feature/retry" });
     return Effect.gen(function* () {

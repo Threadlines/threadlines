@@ -62,6 +62,7 @@ import { attachmentRelativePath, createAttachmentId } from "../../attachmentStor
 import { ServerConfig } from "../../config.ts";
 import { isProcessRunning, startTestAgentProcess } from "../testAgentProcess.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { canMakeSymlinks } from "../../testUtils/symlinks.ts";
 import { ProviderAdapterValidationError } from "../Errors.ts";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 import { outsideWorkLookup } from "../outsideWorkLookup.ts";
@@ -5174,9 +5175,10 @@ describe("ClaudeAdapterLive", () => {
       );
       // Out to `other` once (the second edit there is no new move), the
       // helper's edit and the file outside every checkout say nothing, then
-      // back home.
+      // back home. The native resolver also expands Windows short (8.3)
+      // folder names, as the checkout lookup does.
       assert.deepStrictEqual(moves, [
-        { cwd: realpathSync(other), reason: "file-edited" },
+        { cwd: realpathSync.native(other), reason: "file-edited" },
         { cwd: home, reason: "file-edited" },
       ]);
     }).pipe(
@@ -10249,9 +10251,12 @@ describe("ClaudeAdapterLive", () => {
       yield* expectAsked(ask("Read", { file_path: unsentLog }, "read-unsent"));
 
       // Swapped for a link since, it no longer reads as the staged file.
-      rmSync(stagedLog);
-      symlinkSync(unsentLog, stagedLog);
-      yield* expectAsked(ask("Read", { file_path: stagedLog }, "read-link"));
+      // Windows makes such a link only with Developer Mode.
+      if (canMakeSymlinks) {
+        rmSync(stagedLog);
+        symlinkSync(unsentLog, stagedLog);
+        yield* expectAsked(ask("Read", { file_path: stagedLog }, "read-link"));
+      }
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
