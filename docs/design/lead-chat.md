@@ -304,6 +304,16 @@ the user. Your reply stays in this thread, where the user reads it."
   cleared by `thread.child-requests-reset` (the user wrote). `childStartRefusal` reads
   it; `childSendRefusal` does not (both call `callerRefusal`, so the rule cannot live
   there).
+- Built (piece 2): the lead's send count, the refusal note and the "started" mark ride
+  one event, `thread.lead-pass-recorded` (`kind`: `sent` on the lead, `refused` with
+  the note on the lead, `started` on the target), so nothing settles a request that
+  does not exist. The note goes to the lead's agent that passed it
+  (`fromThread.passedBy` in a room). The block lifts only when a person writes
+  (`composer` or `sentFrom` on the turn or the queued message); a continue, a restart,
+  a scheduled run or an automatic fix reset the counts with `keepsPassBlock`. A target
+  whose last turn failed is refused like a stopped one, since its queue is held the
+  same way. Retry never picks a message still waiting in the queue, and the queue
+  moves on when the decider takes a message back instead of starting its turn.
 - A pass does not stamp `handed-back` and emits no `child-request-settled`, so the
   target's wrap rules and "done" alert are untouched (the alert rule cancels on every
   `child-request-settled`, pushAlertRules.ts).

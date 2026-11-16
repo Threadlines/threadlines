@@ -16,6 +16,7 @@
  * (scheduleTools.ts) are served here too: they need the same caller identity
  * and the same per-runtime grant.
  */
+import { PullRequestObservations } from "../pullRequest/PullRequestObservations.ts";
 import {
   agentInvitesMode,
   agentThreadsMode,
@@ -187,6 +188,7 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
     const linkClient = yield* Effect.serviceOption(ComputerLinkClient);
     const linkRepo = yield* Effect.serviceOption(ComputerLinkRepository);
     const identities = yield* Effect.serviceOption(RepositoryIdentityResolver);
+    const pullRequestObservations = yield* Effect.serviceOption(PullRequestObservations);
     const links =
       Option.isSome(linkClient) && Option.isSome(linkRepo) && Option.isSome(identities)
         ? makeThreadToolLinks({
@@ -268,6 +270,9 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
         snapshots
           .getProjectShellById(projectId)
           .pipe(Effect.map(Option.getOrUndefined), Effect.orDie),
+      ...(Option.isSome(pullRequestObservations)
+        ? { knownPullRequests: pullRequestObservations.value.known }
+        : {}),
       providers: providers.getProviders,
       userDefaultModel,
       threadsMode: settings.getSettings.pipe(

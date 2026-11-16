@@ -860,6 +860,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         case "thread.child-notes-delivered":
         case "thread.child-deliveries-cancelled":
         case "thread.child-requests-reset":
+        case "thread.lead-pass-recorded":
         case "thread.remote-child-updated":
         case "thread.remote-cancel-queued":
         case "thread.remote-cancels-delivered": {
@@ -890,7 +891,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                                 state,
                                 event.payload.requestIds,
                               )
-                            : childRequestStateOn.reset(state);
+                            : event.type === "thread.lead-pass-recorded"
+                              ? childRequestStateOn.leadPass(state, event.payload)
+                              : childRequestStateOn.reset(state, event.payload);
           if (childRequests !== state) {
             yield* projectionThreadRepository.upsert({ ...existingRow.value, childRequests });
           }

@@ -465,6 +465,8 @@ export const OrchestrationProjectCatalogEntry = Schema.Struct({
   kind: ProjectKind.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROJECT_KIND))),
   title: TrimmedNonEmptyString,
   workspaceRoot: TrimmedNonEmptyString,
+  /** The project's lead chat, when it has an open one (docs/design/lead-chat.md). */
+  leadThreadId: Schema.optional(ThreadId),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   deletedAt: Schema.NullOr(IsoDateTime),
@@ -635,6 +637,22 @@ export const ThreadMessageOrigin = Schema.Struct({
    * With no child to check, only Stop or a wrap (the delivery epoch) cancels it.
    */
   neverMade: Schema.optional(Schema.Boolean),
+  /**
+   * A pass (docs/design/lead-chat.md): the project's lead chat passed this
+   * message into a thread it did not start. The lead's access and interaction
+   * mode when it passed it, kept on the message for good: every decision that
+   * starts a turn from it refuses when the thread has more access by then.
+   * Nothing is owed back for a pass: no request is recorded on the lead.
+   * Only a pass carries it.
+   */
+  ceiling: Schema.optional(
+    Schema.Struct({
+      runtimeMode: RuntimeMode,
+      interactionMode: ProviderInteractionMode,
+    }),
+  ),
+  /** A pass: the lead's agent that passed it (a room's agent), for its notes. Absent: its own. */
+  passedBy: Schema.optional(ThreadParticipantId),
 });
 export type ThreadMessageOrigin = typeof ThreadMessageOrigin.Type;
 
@@ -1248,6 +1266,13 @@ export type ThreadCheckoutSwitchDeferredPayload = typeof ThreadCheckoutSwitchDef
  * turn is refused (CheckpointRevert).
  */
 export const ThreadCheckoutMovedActivityKind = "thread.checkout.moved";
+
+/**
+ * A lead chat's pass that never ran here: its turn would have started with
+ * more access than the lead had when it passed it (docs/design/lead-chat.md,
+ * "Access"). Payload `{ messageId }`; the summary is the line the chat shows.
+ */
+export const LEAD_PASS_NOT_RUN_ACTIVITY_KIND = "lead-chat.pass-not-run";
 export const ThreadCheckoutMovedPayload = Schema.Struct({
   /** The thread whose checkout it moved into, with its title then. */
   ownerThreadId: ThreadId,
@@ -2636,6 +2661,12 @@ export const OrchestrationChildRequestState = Schema.Struct({
   remoteChildren: Schema.optional(Schema.Array(RemoteChildThread)),
   /** Cancels still owed to linked computers, oldest first. Absent: none. */
   remoteCancels: Schema.optional(Schema.Array(RemoteChildCancel)),
+  /**
+   * A message the lead chat passed on started a turn here since the user
+   * last wrote (docs/design/lead-chat.md, "No fan-out"): this thread's agents
+   * can't start threads until the user writes here. Absent: they can.
+   */
+  startsBlockedByPass: Schema.optional(Schema.Literal(true)),
 });
 export type OrchestrationChildRequestState = typeof OrchestrationChildRequestState.Type;
 
@@ -3971,6 +4002,12 @@ const ThreadChildRequestRespondCommand = Schema.Struct({
   threadId: ThreadId,
   batchId: ChildRequestBatchId,
   choice: Schema.Literals(["start", "decline"]),
+  /**
+   * With `start`: only these of the batch start, and the rest are declined in
+   * the same answer (capability `childStartSelection`). Absent: the whole
+   * batch.
+   */
+  requestIds: Schema.optional(Schema.Array(ChildRequestId)),
   createdAt: IsoDateTime,
 });
 
@@ -4864,6 +4901,26 @@ const ThreadChildSendCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/**
+ * The project's lead chat passes a message into a thread it did not start
+ * (docs/design/lead-chat.md, "A pass"). Server only, from `thread_send`.
+ * One-way: the message lands in `targetThreadId` as the lead's, and nothing
+ * is recorded on the lead but its send count. `requestId` names the pass
+ * (`fromThread.requestId` on the message); `ceiling` is the lead's access.
+ */
+const ThreadLeadPassCommand = Schema.Struct({
+  type: Schema.Literal("thread.lead.pass"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  from: RoomAgentRef,
+  callerTurnId: TurnId,
+  targetThreadId: ThreadId,
+  requestId: ChildRequestId,
+  messageId: MessageId,
+  text: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+});
+
 /** Child threads: a request moved on (set up, its turn started, background wait). */
 const ThreadChildRequestUpdateCommand = Schema.Struct({
   type: Schema.Literal("thread.child-request.update"),
@@ -5270,6 +5327,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadNativeSessionFallBackCommand,
   ThreadChildStartCommand,
   ThreadChildSendCommand,
+  ThreadLeadPassCommand,
   ThreadChildRequestUpdateCommand,
   ThreadChildRequestSettleCommand,
   ThreadChildNotesDeliveredCommand,
@@ -5365,6 +5423,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.child-notes-delivered",
   "thread.child-deliveries-cancelled",
   "thread.child-requests-reset",
+  "thread.lead-pass-recorded",
   "thread.remote-child-updated",
   "thread.remote-cancel-queued",
   "thread.remote-cancels-delivered",
@@ -5828,6 +5887,29 @@ export const ThreadChildDeliveriesCancelledPayload = Schema.Struct({
 /** The user wrote: the per-message child thread counts start over. */
 export const ThreadChildRequestsResetPayload = Schema.Struct({
   threadId: ThreadId,
+  /**
+   * A turn Threadlines started for the user (a continue at the reset, after a
+   * restart or an account switch), not the user writing: the counts start
+   * over, but a pass's block on starting threads stays.
+   */
+  keepsPassBlock: Schema.optional(Schema.Literal(true)),
+  createdAt: IsoDateTime,
+});
+
+/**
+ * The lead chat's passes (docs/design/lead-chat.md, "A pass"). On the lead:
+ * `sent` counts one toward its sends since the user wrote; `refused` (the
+ * passed message could not run, its ceiling was over) leaves `note` for the
+ * lead's next turn. On the thread passed to: `started` (the pass started its
+ * turn there) blocks its agents from starting threads until the user writes.
+ */
+export const ThreadLeadPassRecordedPayload = Schema.Struct({
+  threadId: ThreadId,
+  kind: Schema.Literals(["sent", "refused", "started"]),
+  /** The pass's message, in the thread it was passed to. */
+  messageId: MessageId,
+  targetThreadId: ThreadId,
+  note: Schema.optional(ChildRequestNote),
   createdAt: IsoDateTime,
 });
 
@@ -6492,6 +6574,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.child-requests-reset"),
     payload: ThreadChildRequestsResetPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.lead-pass-recorded"),
+    payload: ThreadLeadPassRecordedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

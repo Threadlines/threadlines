@@ -167,6 +167,16 @@ export interface PullRequestObservationsShape {
   ) => Effect.Effect<ObservedRead<A>, E, R>;
   /** Every record kept, oldest change first, then each change as it lands. */
   readonly stream: Stream.Stream<PullRequestObservation>;
+  /**
+   * What is already known about a thread's pull requests, with no call to the
+   * host: the one from its branch in `repository` (`owner/name`), and the ones
+   * at `urls`. Pull requests nobody has read yet are left out.
+   */
+  readonly known: (input: {
+    readonly repository: string | null;
+    readonly branch: string | null;
+    readonly urls: ReadonlyArray<string>;
+  }) => Effect.Effect<ReadonlyArray<PullRequestObservation>>;
 }
 
 export class PullRequestObservations extends Context.Service<
@@ -239,7 +249,23 @@ export const make = Effect.gen(function* () {
     }),
   );
 
-  return { observe, stream } satisfies PullRequestObservationsShape;
+  const known: PullRequestObservationsShape["known"] = (input) =>
+    Ref.get(state).pipe(
+      Effect.map((current) => {
+        const repository = input.repository?.toLowerCase() ?? null;
+        const urls = new Set(input.urls);
+        return Array.from(current.records.values(), (entry) => entry.observation).filter(
+          (observation) =>
+            urls.has(observation.url) ||
+            (repository !== null &&
+              input.branch !== null &&
+              observation.repository.toLowerCase() === repository &&
+              observation.headBranch === input.branch),
+        );
+      }),
+    );
+
+  return { observe, stream, known } satisfies PullRequestObservationsShape;
 });
 
 export const layer = Layer.effect(PullRequestObservations, make);

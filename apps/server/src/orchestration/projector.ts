@@ -107,6 +107,7 @@ import {
   ThreadChildRequestSubmittedPayload,
   ThreadChildRequestUpdatedPayload,
   ThreadChildRequestsResetPayload,
+  ThreadLeadPassRecordedPayload,
   ThreadHandedBackPayload,
   ThreadRemoteCancelQueuedPayload,
   ThreadRemoteCancelsDeliveredPayload,
@@ -990,7 +991,23 @@ export function projectEvent(
         "payload",
       ).pipe(
         Effect.map((payload) =>
-          updateChildRequests(nextBase, payload.threadId, childRequestStateOn.reset),
+          updateChildRequests(nextBase, payload.threadId, (state) =>
+            childRequestStateOn.reset(state, payload),
+          ),
+        ),
+      );
+
+    case "thread.lead-pass-recorded":
+      return decodeForEvent(
+        ThreadLeadPassRecordedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) =>
+          updateChildRequests(nextBase, payload.threadId, (state) =>
+            childRequestStateOn.leadPass(state, payload),
+          ),
         ),
       );
 

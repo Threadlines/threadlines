@@ -3671,7 +3671,14 @@ function applyEnvironmentOrchestrationEvent(
       );
 
     case "thread.child-requests-reset":
-      return updateChildRequestState(state, event.payload.threadId, childRequestStateOn.reset);
+      return updateChildRequestState(state, event.payload.threadId, (current) =>
+        childRequestStateOn.reset(current, event.payload),
+      );
+
+    case "thread.lead-pass-recorded":
+      return updateChildRequestState(state, event.payload.threadId, (current) =>
+        childRequestStateOn.leadPass(current, event.payload),
+      );
 
     // Agents' settings changes (docs/design/agent-settings-changes.md),
     // folded through the reducer the server's projector uses.

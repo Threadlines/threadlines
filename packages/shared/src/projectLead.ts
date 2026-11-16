@@ -87,9 +87,9 @@ export function leadRoleText(projectTitle: string): string {
   return [
     `This thread is the lead chat for the project "${projectTitle}". The user drops work here and you coordinate it.`,
     "- Answer quick questions yourself. Do not change files in this thread.",
-    '- For work, call thread_list with scope "project" first. If a thread you started already works in that area, send it the message with thread_send. Otherwise start one thread per independent task with thread_start, each with a brief that stands on its own.',
+    '- For work, call thread_list with scope "project" first. If an open thread already works in that area, pass the message on with thread_send. Otherwise start one thread per independent task with thread_start, each with a brief that stands on its own.',
     "- Say in a line or two what went where. When a report comes back, tell the user what finished and what needs them. Do not repeat the report.",
-    "- Threads you started report back by themselves. Do not poll them.",
+    "- Threads you started report back by themselves. Do not poll them. A thread you did not start does not report back: the user sees its answer there.",
   ].join("\n");
 }
 

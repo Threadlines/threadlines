@@ -1120,6 +1120,9 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
       );
       expect(neverMadeReport?.querySelector("button[data-thread-message-author]")).toBeNull();
 
+      // This server can't take a partial answer: no checkboxes, and Start
+      // answers for the whole batch.
+      expect(panel.querySelector('[data-slot="checkbox"]')).toBeNull();
       [...panel.querySelectorAll<HTMLButtonElement>("button")]
         .find((button) => button.textContent === "Start")
         ?.click();
@@ -1132,6 +1135,106 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
                 (request as { type?: string }).type === "thread.child-request.respond",
             ),
           ).toMatchObject({ batchId, choice: "start" }),
+        { timeout: 8_000, interval: 16 },
+      );
+      const respond = wsRequests.find(
+        (request) =>
+          request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+          (request as { type?: string }).type === "thread.child-request.respond",
+      ) as { requestIds?: unknown } | undefined;
+      expect(respond?.requestIds).toBeUndefined();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("starts only the threads left checked, where the server takes a partial answer", async () => {
+    const base = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-child-select" as MessageId,
+      targetText: "child select target",
+    });
+    const batchId = ChildRequestBatchId.make("batch-select");
+    const capabilities = { repositoryIdentity: true, childStartSelection: true };
+    const ask = (index: number, title: string) => ({
+      requestId: ChildRequestId.make(`request-select-${index}`),
+      batchId,
+      kind: "start" as const,
+      from: { participantId: null },
+      callerTurnId: "turn-select" as TurnId,
+      deliveryEpoch: 0,
+      status: "awaiting_user" as const,
+      childThreadId: `thread-child-select-${index}` as ThreadId,
+      childMessageId: `msg-child-select-${index}` as MessageId,
+      launch: {
+        title,
+        prompt: `${title}.`,
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+        runtimeMode: "full-access" as const,
+        interactionMode: "default" as const,
+        reportBack: true,
+        runSetup: true,
+        workspace: { kind: "project_folder" as const },
+      },
+      createdAt: isoAt(301),
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          environment: { ...nextFixture.serverConfig.environment, capabilities },
+        };
+        nextFixture.welcome = {
+          ...nextFixture.welcome,
+          environment: { ...nextFixture.welcome.environment, capabilities },
+        };
+      },
+      snapshot: {
+        ...base,
+        threads: base.threads.map((thread) =>
+          thread.id === THREAD_ID
+            ? {
+                ...thread,
+                childRequests: {
+                  ...EMPTY_CHILD_REQUEST_STATE,
+                  startsSinceUser: 3,
+                  open: [
+                    ask(1, "Fix the flaky test"),
+                    ask(2, "Update the docs"),
+                    ask(3, "Bump the version"),
+                  ],
+                },
+              }
+            : thread,
+        ),
+      },
+    });
+    try {
+      const panel = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-testid="child-threads-panel"]'),
+        "Unable to find the approval card.",
+      );
+      const startButton = () =>
+        [...panel.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
+          button.textContent?.startsWith("Start"),
+        );
+      expect(startButton()?.textContent).toBe("Start all");
+      await page.getByRole("checkbox", { name: "Start Update the docs" }).click();
+      await vi.waitFor(() => expect(startButton()?.textContent).toBe("Start 2"));
+      startButton()?.click();
+      await vi.waitFor(
+        () =>
+          expect(
+            wsRequests.find(
+              (request) =>
+                request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+                (request as { type?: string }).type === "thread.child-request.respond",
+            ),
+          ).toMatchObject({
+            batchId,
+            choice: "start",
+            requestIds: ["request-select-1", "request-select-3"],
+          }),
         { timeout: 8_000, interval: 16 },
       );
     } finally {

@@ -129,7 +129,13 @@ export const ProjectsResult = Schema.Struct({
   detail: Detail,
   retryAfterSeconds: RetryAfter,
   projects: Schema.Array(
-    Schema.Struct({ projectId: Schema.String, name: Schema.String, folder: Schema.String }),
+    Schema.Struct({
+      projectId: Schema.String,
+      name: Schema.String,
+      folder: Schema.String,
+      /** The project's lead chat: send work for the project there. Absent: none. */
+      leadThreadId: Schema.optional(Schema.String),
+    }),
   ),
 });
 export type ProjectsResult = typeof ProjectsResult.Type;

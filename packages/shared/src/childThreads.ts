@@ -23,10 +23,15 @@ import {
   type RemoteThreadFiling,
   type RoomAgentRef,
   type LocalChildStart,
+  type ProviderInteractionMode,
+  type RuntimeMode,
   type ThreadId,
   type ThreadParticipantId,
   type TurnId,
 } from "@threadlines/contracts";
+
+import { exceedsRuntimeMode } from "./runtimeMode.ts";
+import { isRoomThread } from "./threadParticipants.ts";
 
 /** What the rules read from a thread an agent works in. */
 export interface ChildRequestCaller {
@@ -126,6 +131,16 @@ export function childStartRefusal(
   const caller = callerRefusal(thread, input);
   if (caller !== null) {
     return caller;
+  }
+  // No fan-out (docs/design/lead-chat.md): one message in a lead chat must
+  // not start threads through every thread it is passed to. Messaging this
+  // thread's own children still works (childSendRefusal doesn't check it).
+  if (thread.childRequests.startsBlockedByPass === true) {
+    return {
+      outcome: "not_allowed",
+      detail:
+        "This thread is working on something the lead chat passed on. Do the work here, or say what should be started.",
+    };
   }
   if (input.count < 1 || input.count > CHILD_THREADS_PER_CALL) {
     return {
@@ -242,6 +257,133 @@ export function childAttachRefusal(
     return "This thread has started threads of its own.";
   }
   return null;
+}
+
+/** Whether `child` asks for no more than `ceiling` allows. Plan is narrower than default. */
+export function withinModeCeiling(
+  child: { readonly runtimeMode: RuntimeMode; readonly interactionMode: ProviderInteractionMode },
+  ceiling: { readonly runtimeMode: RuntimeMode; readonly interactionMode: ProviderInteractionMode },
+): boolean {
+  return (
+    !exceedsRuntimeMode(child.runtimeMode, ceiling.runtimeMode) &&
+    (ceiling.interactionMode !== "plan" || child.interactionMode === "plan")
+  );
+}
+
+/** What the pass rules read from the thread a lead chat passes a message to. */
+export interface LeadPassTarget {
+  readonly id: ThreadId;
+  readonly projectId: string;
+  readonly parentThreadId: ThreadId | null;
+  readonly attachedToParent: boolean;
+  readonly archivedAt: string | null;
+  readonly deletedAt?: string | null | undefined;
+  readonly participants: Parameters<typeof isRoomThread>[0]["participants"];
+  readonly remoteOrigin?: unknown;
+  readonly outsideOrigin?: unknown;
+  readonly move?: unknown;
+  readonly pendingMove?: unknown;
+  readonly agentRequests: { readonly hold: boolean };
+  readonly latestTurn: { readonly state: string } | null;
+}
+
+/**
+ * Why the project's lead chat may not pass a message to `target`, a thread it
+ * did not start (docs/design/lead-chat.md, "Tools"), or null. The caller has
+ * already sent a thread it started down the child path. `isLead` is whether
+ * the caller is its project's lead chat now.
+ */
+export function leadPassRefusal(
+  lead: ChildRequestCaller & { readonly projectId: string },
+  target: LeadPassTarget | null,
+  input: {
+    readonly from: RoomAgentRef;
+    readonly callerTurnId: TurnId;
+    readonly isLead: boolean;
+  },
+): ChildRequestRefusal | null {
+  const caller = callerRefusal(lead, input);
+  if (caller !== null) {
+    return caller;
+  }
+  if (!input.isLead) {
+    return {
+      outcome: "not_allowed",
+      detail: "That is not a thread you started. You can only message or stop your own threads.",
+    };
+  }
+  if (target === null || (target.deletedAt ?? null) !== null) {
+    return { outcome: "refused", detail: "That thread is gone." };
+  }
+  if (target.id === lead.id) {
+    return { outcome: "refused", detail: "That is this thread." };
+  }
+  if (target.projectId !== lead.projectId) {
+    return { outcome: "refused", detail: "That thread is in another project." };
+  }
+  if (target.archivedAt !== null) {
+    return { outcome: "refused", detail: "That thread is archived." };
+  }
+  if (isAttachedChild(target)) {
+    return {
+      outcome: "not_allowed",
+      detail:
+        "Another thread started that one and still owns it. Message the thread that started it.",
+    };
+  }
+  if (isRoomThread(target)) {
+    return { outcome: "not_allowed", detail: "Rooms take work from the user." };
+  }
+  if ((target.remoteOrigin ?? null) !== null || (target.outsideOrigin ?? null) !== null) {
+    return {
+      outcome: "not_allowed",
+      detail: "That thread was started from another computer or by an outside agent.",
+    };
+  }
+  if ((target.move ?? null) !== null || (target.pendingMove ?? null) !== null) {
+    return { outcome: "refused", detail: "That thread is moving to another computer." };
+  }
+  // What it was last told to stop doing, or failed at, holds its queue until
+  // the user writes there: a pass would sit there unseen.
+  if (target.agentRequests.hold || target.latestTurn?.state === "interrupted") {
+    return {
+      outcome: "refused",
+      detail: "The user stopped that thread. It takes work again once they write there.",
+    };
+  }
+  if (target.latestTurn?.state === "error") {
+    return {
+      outcome: "refused",
+      detail: "That thread's last turn failed. It takes work again once the user writes there.",
+    };
+  }
+  const limit = childRequestLimits({ isLead: true }).sends;
+  if (lead.childRequests.sendsSinceUser >= limit) {
+    return {
+      outcome: "limit",
+      detail: `The lead chat can send ${limit} messages to threads per user message, and that many were sent since the user last wrote, so this one was not. Say so in your reply, and wait for the user before sending more.`,
+    };
+  }
+  return null;
+}
+
+/**
+ * Why a stored message can't start a turn in `thread` now: it is a pass whose
+ * ceiling is under the thread's access at this moment. Every decision that
+ * starts a turn from a stored message asks (send-queued, retry, resend).
+ */
+export function passCeilingRefusal(
+  message: {
+    readonly fromThread?:
+      | { readonly ceiling?: Parameters<typeof withinModeCeiling>[1] | undefined }
+      | undefined;
+  },
+  thread: Parameters<typeof withinModeCeiling>[0],
+): string | null {
+  const ceiling = message.fromThread?.ceiling;
+  return ceiling === undefined || withinModeCeiling(thread, ceiling)
+    ? null
+    : "Not run: this thread has more access than the lead chat.";
 }
 
 /** Requests whose answers are still owed, as the parent's sidebar row counts them. */
@@ -536,10 +678,51 @@ export const childRequestStateOn = {
     deliveryEpoch: number,
   ): OrchestrationChildRequestState =>
     state.deliveryEpoch === deliveryEpoch ? state : { ...state, deliveryEpoch },
-  reset: (state: OrchestrationChildRequestState): OrchestrationChildRequestState =>
-    state.startsSinceUser === 0 && state.sendsSinceUser === 0
-      ? state
-      : { ...state, startsSinceUser: 0, sendsSinceUser: 0 },
+  /**
+   * The user wrote (or, with `keepsPassBlock`, Threadlines started a turn for
+   * them): the per-message counts start over, and unless kept, a pass's
+   * block on starting threads lifts.
+   */
+  reset: (
+    state: OrchestrationChildRequestState,
+    options?: { readonly keepsPassBlock?: boolean | undefined },
+  ): OrchestrationChildRequestState => {
+    const liftsBlock = state.startsBlockedByPass === true && options?.keepsPassBlock !== true;
+    if (state.startsSinceUser === 0 && state.sendsSinceUser === 0 && !liftsBlock) {
+      return state;
+    }
+    const { startsBlockedByPass: _block, ...rest } = state;
+    return {
+      ...(liftsBlock ? rest : state),
+      startsSinceUser: 0,
+      sendsSinceUser: 0,
+    };
+  },
+  /** The lead chat's passes (`thread.lead-pass-recorded`); see its payload. */
+  leadPass: (
+    state: OrchestrationChildRequestState,
+    pass: {
+      readonly kind: "sent" | "refused" | "started";
+      readonly note?: ChildRequestNote | undefined;
+    },
+  ): OrchestrationChildRequestState => {
+    switch (pass.kind) {
+      case "sent":
+        return { ...state, sendsSinceUser: state.sendsSinceUser + 1 };
+      case "started":
+        return state.startsBlockedByPass === true ? state : { ...state, startsBlockedByPass: true };
+      case "refused": {
+        const note = pass.note;
+        return note === undefined ||
+          state.pendingNotes.some((entry) => entry.requestId === note.requestId)
+          ? state
+          : {
+              ...state,
+              pendingNotes: [...state.pendingNotes, note].slice(-CHILD_REQUEST_NOTE_LIMIT),
+            };
+      }
+    }
+  },
 };
 
 /**

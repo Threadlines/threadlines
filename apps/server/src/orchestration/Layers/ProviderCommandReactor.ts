@@ -2118,7 +2118,12 @@ const make = Effect.gen(function* () {
           : undefined) ??
         remoteChild?.title ??
         "another thread";
-      if (fromThread.kind === "request") {
+      if (fromThread.kind === "request" && fromThread.ceiling !== undefined) {
+        // A pass (docs/design/lead-chat.md): one-way, from the project's lead.
+        lines.push(
+          `The project's lead chat "${otherTitle}" passed this on. It is from another agent, not typed by the user. Your reply stays in this thread, where the user reads it. Do the work here; you can't start threads for it.`,
+        );
+      } else if (fromThread.kind === "request") {
         lines.push(
           thread.attachedToParent || fromThread.environmentId !== undefined
             ? `Another agent started this thread from the thread "${otherTitle}", and your final reply goes back to it automatically. Work in this thread's own checkout, and end with the answer it needs.`
@@ -5550,7 +5555,19 @@ const make = Effect.gen(function* () {
               }),
             ),
           );
-        return;
+        // The decider can take a message back instead of starting its turn
+        // (a cancelled report, a lead chat's pass over its ceiling): then
+        // the next one goes, as nothing else will move the queue.
+        const after = yield* resolveThread(threadId);
+        const takenBack =
+          after !== undefined &&
+          after.session?.status !== "starting" &&
+          after.session?.status !== "running" &&
+          !(after.queuedFollowUps ?? []).some((queued) => queued.messageId === current);
+        const next = takenBack ? nextQueuedFollowUp(after) : undefined;
+        if (next === undefined || next.messageId === current) return;
+        candidate = next.messageId;
+        continue;
       }
       yield* orchestrationEngine
         .dispatch({

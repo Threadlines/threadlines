@@ -155,6 +155,7 @@ const ProjectionProjectCatalogDbRowSchema = Schema.Struct({
   kind: ProjectionProject.fields.kind,
   title: ProjectionProject.fields.title,
   workspaceRoot: ProjectionProject.fields.workspaceRoot,
+  leadThreadId: Schema.NullOr(ThreadId),
   createdAt: ProjectionProject.fields.createdAt,
   updatedAt: ProjectionProject.fields.updatedAt,
   deletedAt: ProjectionProject.fields.deletedAt,
@@ -900,15 +901,22 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     execute: () =>
       sql`
         SELECT
-          project_id AS "projectId",
-          kind,
-          title,
-          workspace_root AS "workspaceRoot",
-          created_at AS "createdAt",
-          updated_at AS "updatedAt",
-          deleted_at AS "deletedAt"
-        FROM projection_projects
-        ORDER BY created_at ASC, project_id ASC
+          p.project_id AS "projectId",
+          p.kind,
+          p.title,
+          p.workspace_root AS "workspaceRoot",
+          lead.thread_id AS "leadThreadId",
+          p.created_at AS "createdAt",
+          p.updated_at AS "updatedAt",
+          p.deleted_at AS "deletedAt"
+        FROM projection_projects p
+        -- A pointer at an archived, deleted or missing thread is no lead.
+        LEFT JOIN projection_threads lead
+          ON lead.thread_id = p.lead_thread_id
+          AND lead.project_id = p.project_id
+          AND lead.archived_at IS NULL
+          AND lead.deleted_at IS NULL
+        ORDER BY p.created_at ASC, p.project_id ASC
       `,
   });
 
@@ -2556,6 +2564,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               kind: row.kind,
               title: row.title,
               workspaceRoot: row.workspaceRoot,
+              ...(row.leadThreadId !== null ? { leadThreadId: row.leadThreadId } : {}),
               createdAt: row.createdAt,
               updatedAt: row.updatedAt,
               deletedAt: row.deletedAt,
