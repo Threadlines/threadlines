@@ -607,8 +607,11 @@ Glass mode turns on only when the active theme has a backdrop
   them is fitted when the theme is built (shared `themes/codeColors.ts`):
   moved in lightness, hue kept, until it reads 4.5:1 (3:1 for comments and
   punctuation) on every background code sits on: the code background, the
-  diff panel, and each diff line tint (`DIFF_TINT`, which
-  `DiffPanel.styles.ts` paints with). Pierre's own light colors read about
+  diff panel, each diff line tint, and the file viewer's hovered and
+  selected lines (`DIFF_TINT`, which `DiffPanel.styles.ts` and the file
+  viewer paint with; a selected line is a tint toward the accent). A fit is
+  judged as the hex it's written as. On a theme with art, chat code blocks
+  are partly see-through, so the art behind them isn't part of the fit. Pierre's own light colors read about
   3:1 for strings and 2.6:1 for numbers; changed words in removed lines are
   the darkest tint.
 - **Desktop.** The bridge keeps the native preference apart from colors:

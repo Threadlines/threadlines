@@ -30,6 +30,9 @@ export const DIFF_TINT = {
   word: 20,
   /** The file viewer's hovered line, toward the text color over the panel. */
   rowHover: 10,
+  /** A selected line (a line number clicked, a chat reference), toward the accent over the panel. */
+  selected: 14,
+  selectedHover: 20,
 } as const;
 
 /** Code text: syntax colors and plain code. */
@@ -49,7 +52,13 @@ export function codeRatioForScopes(scopes: ReadonlyArray<string>): number {
 
 type CodeTokens = Pick<
   ThemeTokens,
-  "surface-solid" | "code-background" | "card" | "foreground" | "success" | "destructive"
+  | "surface-solid"
+  | "code-background"
+  | "card"
+  | "foreground"
+  | "primary"
+  | "success"
+  | "destructive"
 >;
 
 /** Every background code text is drawn on under a theme, opaque. */
@@ -64,6 +73,8 @@ export function codeSurfaces(tokens: CodeTokens): Rgba[] {
     // the file viewer's hovered line over it.
     panel,
     mix(panel, composite(color(tokens.foreground), panel), DIFF_TINT.rowHover / 100),
+    mix(panel, composite(color(tokens.primary), panel), DIFF_TINT.selected / 100),
+    mix(panel, composite(color(tokens.primary), panel), DIFF_TINT.selectedHover / 100),
     toward("foreground", DIFF_TINT.context),
     toward("foreground", DIFF_TINT.contextHover),
     ...(["success", "destructive"] as const).flatMap((tint) => [
@@ -85,6 +96,10 @@ export function fitCodeColor(value: string, surfaces: ReadonlyArray<Rgba>, ratio
   const parsed = parseColor(value);
   if (parsed === null || surfaces.length === 0) return value;
   const on = (text: Rgba, surface: Rgba) => contrastRatio(composite(text, surface), surface);
+  // A fit is judged as the hex it will be written as, aimed a hair above the
+  // ratio so rounding can't land it under.
+  const asWritten = (text: Rgba) => color(formatHex(text));
+  const aim = ratio + 0.02;
   const worstOf = (text: Rgba) =>
     surfaces.reduce((first, second) => (on(text, first) <= on(text, second) ? first : second));
   let best = parsed;
@@ -95,7 +110,7 @@ export function fitCodeColor(value: string, surfaces: ReadonlyArray<Rgba>, ratio
   // when they lean the same way (all light, or all dark): a few rounds settle it.
   for (let round = 0; round < 6; round += 1) {
     const worst = worstOf(fitted);
-    fitted = ensureContrast(composite(fitted, worst), worst, ratio);
+    fitted = asWritten(ensureContrast(composite(fitted, worst), worst, aim));
     const reached = on(fitted, worstOf(fitted));
     if (reached > bestRatio) {
       best = fitted;
