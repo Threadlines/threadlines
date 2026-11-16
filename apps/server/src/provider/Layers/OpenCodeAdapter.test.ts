@@ -332,6 +332,32 @@ describe("OpenCodeAdapter", () => {
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
+  it.live("confirms a stopped thread only once OpenCode says its shells ended", () =>
+    Effect.gen(function* () {
+      // The shared server ends the shell a moment after the stop removes it.
+      let shellReads = 0;
+      const { adapter, calls, send, next, threadId, cwd } = yield* harnessWith({
+        "shell.get": () => ({
+          location: {},
+          data: { status: ++shellReads === 1 ? "running" : "killed" },
+        }),
+      });
+      yield* adapter.startSession({ threadId, cwd, runtimeMode: "full-access" });
+      yield* adapter.sendTurn({ threadId, messageId: MessageId.make("m1"), input: "serve" });
+      yield* send("session.execution.started", { sessionID: ROOT });
+      yield* backgroundShell(send, "sh_1");
+      yield* next((event) => event.type === "task.started");
+
+      yield* adapter.stopSession(threadId);
+      expect(yield* adapter.confirmThreadStopped!(threadId)).toEqual({ confirmed: true });
+      expect(shellReads).toBe(2);
+      expect(calls.some((call) => call.method === "session.active")).toBe(true);
+      // Proven once, nothing is left to ask about.
+      expect(yield* adapter.confirmThreadStopped!(threadId)).toEqual({ confirmed: true });
+      expect(shellReads).toBe(2);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
   it.live("stops one background shell, and its end is reported once", () =>
     Effect.gen(function* () {
       const { adapter, calls, send, next, threadId, cwd } = yield* harness;
