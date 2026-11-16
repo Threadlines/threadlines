@@ -326,13 +326,26 @@ export const ThemeEntrySummary = Schema.Struct({
 });
 export type ThemeEntrySummary = typeof ThemeEntrySummary.Type;
 
+/** One side of System's pair in a shared pick: a built-in, a starter or a library entry. */
+export const ThemePickSide = keepingUnknownKeys(
+  Schema.Struct({
+    kind: TrimmedNonEmptyString,
+    id: Schema.optional(Schema.String),
+    entryId: Schema.optional(Schema.String),
+    hash: Schema.optional(Schema.String),
+    name: Schema.optional(Schema.String),
+  }),
+);
+export type ThemePickSide = typeof ThemePickSide.Type;
+
 /**
  * The theme a shared pick names ("Same theme on all my devices"): a built-in
  * (`id`), a starter (`id`), or a library entry (`entryId`, `hash`, `name`),
  * with its `base` so a device without the content can still fall back to light
- * or dark. Loose on purpose: a client takes the kinds and values it knows and
- * ignores the rest, so a kind added later can't break an older client's
- * library snapshot.
+ * or dark. System with a theme for each mode is the built-in System with
+ * `light` and `dark`, which an older client takes as plain System. Loose on
+ * purpose: a client takes the kinds and values it knows and ignores the rest,
+ * so a kind added later can't break an older client's library snapshot.
  */
 export const ThemePickTheme = keepingUnknownKeys(
   Schema.Struct({
@@ -348,6 +361,10 @@ export const ThemePickTheme = keepingUnknownKeys(
      * (two picks of one theme are still two choices). Absent from older builds.
      */
     pickId: Schema.optional(Schema.String),
+    /** System's pair: the theme while the computer is light. */
+    light: Schema.optional(ThemePickSide),
+    /** System's pair: the theme while the computer is dark. */
+    dark: Schema.optional(ThemePickSide),
   }),
 );
 export type ThemePickTheme = typeof ThemePickTheme.Type;

@@ -10,12 +10,13 @@
 import {
   type EnvironmentId,
   THEME_GLASS_LEVEL_DEFAULT,
+  type ThemeBase,
   type ThemeManifest,
   type ThemeMotion,
 } from "@threadlines/contracts";
 import { DEFAULT_UNIFIED_SETTINGS } from "@threadlines/contracts/settings";
 import { placeById, type SettingsPlaceId } from "@threadlines/shared/appPlaces";
-import { EllipsisIcon, PlusIcon, UploadIcon } from "lucide-react";
+import { EllipsisIcon, MoonIcon, PlusIcon, SunIcon, UploadIcon } from "lucide-react";
 import { lazy, type ReactNode, Suspense, useId, useRef, useState } from "react";
 
 import { useGeneralChats } from "~/components/chats/useGeneralChats";
@@ -25,7 +26,10 @@ import { useSettings, useUpdateSettings } from "~/hooks/useSettings";
 import { useSavedGlassLevel } from "~/theme/glassLevel";
 import {
   chooseTheme,
+  readThemeState,
+  rememberSystemPair,
   retryBackdrop,
+  type ThemeChoice,
   useActiveTheme,
   useBackdropStatus,
   useThemeChoice,
@@ -33,8 +37,12 @@ import {
 } from "~/theme/themeStore";
 import {
   loadTileManifest,
+  choiceUsesTile,
+  pairWithout,
   sameThemeChoice,
+  shownThemeChoice,
   switchToTheme,
+  tileIsChosen,
   type ThemeTile,
   useThemeTiles,
 } from "~/themeLibrary/themeCatalog";
@@ -80,6 +88,7 @@ import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../../ui/
 import { SegmentedControl, SegmentedControlItem } from "../../ui/segmented-control";
 import { Spinner } from "../../ui/spinner";
 import { openThemeEditor } from "./themeEditorState";
+import { pickSystemSide } from "./systemPairPick";
 import { failureNotice, toastManager } from "../../ui/toast";
 import { SettingResetButton, SettingsGroup, SettingsRow } from "../../settings/settingsLayout";
 import { moveBetweenTabs, pageTabId } from "../../ui/page-tabs";
@@ -97,6 +106,22 @@ const failed = (title: `Couldn't ${string}`) => (error: unknown) =>
       reason: error instanceof Error ? error.message : "Something went wrong. Try again.",
     }),
   );
+
+/**
+ * Switches the device off `theme`: a side of System's pair goes back to its
+ * built-in (and with no side of the user's left, the pair is forgotten, so
+ * System can't bring the theme back); anything else switches to the
+ * built-in of `base`.
+ */
+function switchOffTheme(chosen: ThemeChoice, theme: ThemeChoice, base: ThemeBase): void {
+  if (chosen.kind !== "pair") {
+    chooseTheme({ kind: "builtin", id: base });
+    return;
+  }
+  const next = pairWithout(chosen, theme);
+  if (next.kind !== "pair") rememberSystemPair(null);
+  chooseTheme(next);
+}
 
 const ENERGY_WORDS = { light: "a light", medium: "a medium", heavy: "a heavy" } as const;
 
@@ -138,12 +163,18 @@ function ArtStatusLine() {
   );
 }
 
-/** "Not in your library anymore": the device still wears a theme deleted elsewhere. */
+/**
+ * "Not in your library anymore": the device still wears a theme deleted
+ * elsewhere (itself, or the side of System's pair showing now).
+ */
 function DeletedElsewhereNotice() {
-  const choice = useThemeChoice();
-  const entry = useLibraryEntry(choice.kind === "library" ? choice.entryId : null);
+  const committed = useThemeChoice();
+  // Also read again when the computer switches modes: the active theme changes with it.
   const active = useActiveTheme();
+  const choice = shownThemeChoice(committed);
+  const entry = useLibraryEntry(choice.kind === "library" ? choice.entryId : null);
   if (choice.kind !== "library" || entry === null || !entry.deleted) return null;
+  const builtin = active.base === "dark" ? "Dark" : "Light";
   return (
     <span className="inline-flex flex-wrap items-center gap-x-2">
       {choice.name} isn't in your library anymore.
@@ -159,9 +190,9 @@ function DeletedElsewhereNotice() {
       <button
         type="button"
         className="font-medium text-primary-readable underline-offset-2 hover:underline"
-        onClick={() => chooseTheme({ kind: "builtin", id: active.base })}
+        onClick={() => switchOffTheme(committed, choice, active.base)}
       >
-        Switch to {active.base === "dark" ? "Dark" : "Light"}
+        {committed.kind === "pair" ? `Use ${builtin} here` : `Switch to ${builtin}`}
       </button>
     </span>
   );
@@ -267,9 +298,33 @@ function RenameDialog({
   );
 }
 
+/** The modes System's pair shows `tile` in, while the device is on System. */
+function systemModesOf(chosen: ThemeChoice, tile: ThemeTile): ThemeBase[] {
+  if (chosen.kind !== "pair") return [];
+  return (["light", "dark"] as const).filter((mode) => sameThemeChoice(chosen[mode], tile.choice));
+}
+
+/** "☀ System": a gallery tile System shows while the computer is light (or ☾, dark). */
+function SystemBadge({ modes }: { readonly modes: readonly ThemeBase[] }) {
+  return (
+    <>
+      {modes.map((mode) =>
+        mode === "dark" ? (
+          <MoonIcon key={mode} aria-hidden className="size-2.5" />
+        ) : (
+          <SunIcon key={mode} aria-hidden className="size-2.5" />
+        ),
+      )}
+      <span>System</span>
+      <span className="sr-only">{`uses this while your computer is ${modes.join(" and ")}`}</span>
+    </>
+  );
+}
+
 /**
  * A theme's options: Edit colors (the color editor) for every theme but
- * System; Duplicate (a copy in your themes, to change), Export file (its
+ * System; Use when my computer is light (or dark) for a starter or a theme
+ * of yours, making it that side of System's pair; Duplicate (a copy in your themes, to change), Export file (its
  * dialog makes the file ready to share) and Copy prompt for starters and
  * yours; Share to Showcase, Rename and Delete for your own, and Take back
  * while a share of it is in review.
@@ -277,6 +332,7 @@ function RenameDialog({
 function ThemeTileMenu({
   tile,
   inUse,
+  systemModes,
   onRename,
   onExport,
   onShare,
@@ -285,6 +341,8 @@ function ThemeTileMenu({
 }: {
   readonly tile: ThemeTile;
   readonly inUse: boolean;
+  /** The modes System shows it in now (it isn't offered for those). */
+  readonly systemModes: readonly ThemeBase[];
   readonly onRename: () => void;
   readonly onExport: () => void;
   /** Null when no computer holding it can share (an older Threadlines). */
@@ -294,8 +352,8 @@ function ThemeTileMenu({
   readonly onDelete: () => void;
 }) {
   const { copyToClipboard } = useCopyToClipboard();
-  // System is Light or Dark by the computer's setting: those two are the ones to edit.
-  if (tile.choice.kind === "builtin" && tile.choice.id === "system") return null;
+  // System is Light or Dark by the computer's setting, or its pair's two themes: those are the ones to edit.
+  if (tile.key === "builtin:system") return null;
   const builtin = tile.group === "builtin";
   const library = tile.library ?? null;
   const duplicate = () => {
@@ -326,6 +384,23 @@ function ThemeTileMenu({
         <MenuItem onClick={() => openThemeEditor(tile)}>Edit colors…</MenuItem>
         {builtin ? null : (
           <>
+            {(tile.choice.kind === "starter" || tile.choice.kind === "library") &&
+            tile.swatch.base !== "system" &&
+            !systemModes.includes(tile.swatch.base) ? (
+              <MenuItem
+                onClick={() => {
+                  const { choice, swatch } = tile;
+                  if (
+                    (choice.kind === "starter" || choice.kind === "library") &&
+                    swatch.base !== "system"
+                  ) {
+                    pickSystemSide(swatch.base, choice);
+                  }
+                }}
+              >
+                Use when my computer is {tile.swatch.base}
+              </MenuItem>
+            ) : null}
             {library ? <MenuItem onClick={onRename}>Rename</MenuItem> : null}
             <MenuItem onClick={duplicate}>Duplicate</MenuItem>
             <MenuItem onClick={onExport}>Export file…</MenuItem>
@@ -548,6 +623,12 @@ function OwnThemes({ switcher }: { readonly switcher: ReactNode }) {
   };
   const remove = (tile: ThemeTile) => {
     if (!tile.library) return;
+    // System's remembered pair lets go of it too, so going back to System can't bring it back.
+    const pair = readThemeState().systemPair;
+    if (pair !== null && choiceUsesTile(pair, tile)) {
+      const rest = pairWithout(pair, tile.choice);
+      rememberSystemPair(rest.kind === "pair" ? rest : null);
+    }
     void deleteLibraryTheme(tile.library.entry.entryId).catch(failed("Couldn't delete the theme"));
   };
   const tiles =
@@ -604,18 +685,21 @@ function OwnThemes({ switcher }: { readonly switcher: ReactNode }) {
           <div className="grid grid-cols-[repeat(auto-fill,minmax(112px,1fr))] gap-1">
             {tiles.map((tile) => {
               const share = tile.library ? shares.get(tile.library.entry.entryId) : undefined;
+              const systemModes = systemModesOf(committed, tile);
               const sharer = sharerOf(tile);
               return (
                 <div key={tile.key} className="group/tile relative">
                   <ThemeTileView
                     tile={share ? { ...tile, detail: showcaseShareWords(share.submission) } : tile}
-                    selected={sameThemeChoice(tile.choice, committed)}
+                    badge={systemModes.length > 0 ? <SystemBadge modes={systemModes} /> : undefined}
+                    selected={tileIsChosen(tile, committed)}
                     onSelect={() => pick(tile)}
                     className="w-full"
                   />
                   <ThemeTileMenu
                     tile={tile}
-                    inUse={sameThemeChoice(tile.choice, committed)}
+                    inUse={choiceUsesTile(committed, tile)}
+                    systemModes={systemModes}
                     onRename={() => setRenaming(tile)}
                     onExport={() => exportTile(tile)}
                     onShare={sharer === null ? null : () => shareTile(tile, sharer)}
@@ -625,9 +709,7 @@ function OwnThemes({ switcher }: { readonly switcher: ReactNode }) {
                         : null
                     }
                     onDelete={() =>
-                      sameThemeChoice(tile.choice, committed)
-                        ? setConfirmDelete(tile)
-                        : remove(tile)
+                      choiceUsesTile(committed, tile) ? setConfirmDelete(tile) : remove(tile)
                     }
                   />
                 </div>
@@ -673,7 +755,9 @@ function OwnThemes({ switcher }: { readonly switcher: ReactNode }) {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete {confirmDelete?.name}?</AlertDialogTitle>
             <AlertDialogDescription>
-              This device is using it. It switches to {active.base === "dark" ? "Dark" : "Light"},
+              {committed.kind === "pair"
+                ? "System uses it on this device. Plain Light or Dark takes its place there,"
+                : `This device is using it. It switches to ${active.base === "dark" ? "Dark" : "Light"},`}{" "}
               and the theme leaves your library on every computer.
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -683,7 +767,7 @@ function OwnThemes({ switcher }: { readonly switcher: ReactNode }) {
               variant="destructive"
               onClick={() => {
                 if (confirmDelete) {
-                  chooseTheme({ kind: "builtin", id: active.base });
+                  switchOffTheme(committed, confirmDelete.choice, active.base);
                   remove(confirmDelete);
                 }
                 setConfirmDelete(null);

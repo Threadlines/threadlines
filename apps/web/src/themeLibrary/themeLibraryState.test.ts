@@ -146,6 +146,31 @@ describe("theme library across computers", () => {
     );
     await vi.waitFor(() => expect(merges).toHaveLength(2));
     expect(merges[1]).toEqual({ target: pc, revision: 12, withContent: true });
+
+    // System's pair: each library side's content goes along, one call each.
+    const pair = {
+      ...picked,
+      theme: {
+        kind: "builtin",
+        id: "system",
+        light: { kind: "library", entryId: "e9", hash, name: "Night" },
+        dark: { kind: "library", entryId: "e8", hash: "e".repeat(64), name: "Dusk" },
+      },
+      revision: 15,
+    };
+    reconcileFollowedLibraries(
+      {
+        [mac]: { entries: [entry({ entryId: "e9", hash })], pick: pair },
+        [pc]: { entries: [], pick: later },
+      },
+      [mac, pc],
+      clients as never,
+    );
+    await vi.waitFor(() => expect(merges).toHaveLength(4));
+    expect(merges.slice(2)).toEqual([
+      { target: pc, revision: 15, withContent: true },
+      { target: pc, revision: 15, withContent: true },
+    ]);
   });
 
   it("tries a failed merge again later, with no new snapshot to prompt it", async () => {

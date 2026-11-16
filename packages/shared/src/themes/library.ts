@@ -77,13 +77,36 @@ export function themeWithoutOffer(manifest: ThemeManifest): ThemeManifest {
   return { ...manifest, createdBy };
 }
 
-/** Whether two shared picks name the same theme (the same content, for a library one). */
+const sameTheme = (
+  first: Pick<ThemePickTheme, "kind" | "id" | "entryId" | "hash"> | undefined,
+  second: Pick<ThemePickTheme, "kind" | "id" | "entryId" | "hash"> | undefined,
+) =>
+  first === undefined || second === undefined
+    ? first === second
+    : first.kind === second.kind &&
+      first.id === second.id &&
+      first.entryId === second.entryId &&
+      first.hash === second.hash;
+
+/**
+ * Whether two shared picks name the same theme (the same content, for a
+ * library one; the same two sides, for System's pair).
+ */
 export function sameThemePickTheme(first: ThemePickTheme, second: ThemePickTheme): boolean {
   return (
-    first.kind === second.kind &&
-    first.id === second.id &&
-    first.entryId === second.entryId &&
-    first.hash === second.hash
+    sameTheme(first, second) &&
+    sameTheme(first.light, second.light) &&
+    sameTheme(first.dark, second.dark)
+  );
+}
+
+/**
+ * The library content a shared pick shows: its library theme's hash, or each
+ * library side's of System's pair. A computer holding the pick keeps these.
+ */
+export function themePickContentHashes(theme: ThemePickTheme): string[] {
+  return [theme, theme.light, theme.dark].flatMap((named) =>
+    named?.kind === "library" && typeof named.hash === "string" ? [named.hash] : [],
   );
 }
 

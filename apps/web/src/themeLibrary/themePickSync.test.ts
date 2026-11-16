@@ -184,6 +184,28 @@ describe("same theme on all my devices: the next step", () => {
     expect(choiceOfPickTheme({ kind: "showcase", id: "x" })).toBeNull();
     expect(choiceOfPickTheme({ kind: "library", entryId: "e1", hash: "not-a-hash" })).toBeNull();
   });
+
+  it("shares System's pair as System with its sides, which an older build takes as plain System", () => {
+    const pair = {
+      kind: "pair",
+      light: { kind: "starter", id: "meadow" },
+      dark: {
+        kind: "library",
+        entryId: "e1",
+        hash: "a".repeat(64),
+        name: "Night",
+        environmentId: null,
+      },
+    } as const;
+    const theme = pickThemeOf(pair, null);
+    expect(theme).toMatchObject({ kind: "builtin", id: "system" });
+    expect(choiceOfPickTheme(theme!)).toEqual({ choice: pair, base: null });
+    // The same pair is the same pick; another dark side, or plain System, is not.
+    expect(sameThemePickTheme(theme!, pickThemeOf(pair, null)!)).toBe(true);
+    const otherDark = pickThemeOf({ ...pair, dark: { kind: "builtin", id: "dark" } }, null)!;
+    expect(sameThemePickTheme(theme!, otherDark)).toBe(false);
+    expect(sameThemePickTheme(theme!, { kind: "builtin", id: "system" })).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------

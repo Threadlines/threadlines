@@ -75,9 +75,14 @@ export function peekCachedTheme(hash: string): ThemeManifest | null {
 
 /**
  * Keeps `manifest` under `hash` as the most recently used, then drops all but
- * the newest few; `keep` (the committed theme) is never dropped.
+ * the newest few; `keep` (the committed theme, both sides of a pair) is never
+ * dropped.
  */
-export function rememberThemeContent(hash: string, manifest: ThemeManifest, keep?: string): void {
+export function rememberThemeContent(
+  hash: string,
+  manifest: ThemeManifest,
+  keep: ReadonlyArray<string> = [],
+): void {
   memory.set(hash, manifest);
   void (async () => {
     const database = await openDatabase();
@@ -89,7 +94,7 @@ export function rememberThemeContent(hash: string, manifest: ThemeManifest, keep
       store.put(record);
       const all = ((await requestResult(store.getAll())) ?? []) as CachedThemeRecord[];
       const stale = all
-        .filter((entry) => entry.hash !== hash && entry.hash !== keep)
+        .filter((entry) => entry.hash !== hash && !keep.includes(entry.hash))
         .toSorted((first, second) => second.usedAt - first.usedAt)
         .slice(THEME_CACHE_RECENT_LIMIT);
       for (const entry of stale) {

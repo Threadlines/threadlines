@@ -4,10 +4,14 @@ import { resolveThemeTokens } from "@threadlines/shared/themeTokens";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  parseStoredThemeChoice,
+  parseThemePaintRecord,
   readKeptThemeHashes,
   serializeThemeChoice,
   THEME_PAINT_STORAGE_KEY,
+  THEME_PAIR_PAINT_STORAGE_KEYS,
   THEME_STORAGE_KEY,
+  THEME_SYSTEM_PAIR_STORAGE_KEY,
 } from "./themeChoice";
 import {
   choiceName,
@@ -59,6 +63,7 @@ function makeEnv(input: {
   readonly lookup?: (hash: string) => Promise<ThemeContentLookup>;
   /** False: the token code loads when the test calls `loadTokens`. */
   readonly tokenCodeLoaded?: boolean;
+  readonly systemDark?: boolean;
 }) {
   const timers: Array<{ readonly callback: () => void; cancelled: boolean }> = [];
   let ids = 0;
@@ -80,7 +85,7 @@ function makeEnv(input: {
       };
     },
     randomId: () => `trial-${(ids += 1)}`,
-    systemDark: () => false,
+    systemDark: () => input.systemDark ?? false,
     bypassSavedChoice: false,
     hashManifest: async () => HASH_B,
     lookupContent: (choice) =>
@@ -234,7 +239,7 @@ describe("theme store", () => {
     // A choice is saved at once and shown when the code lands.
     const chosen = makeEnv({ tokenCodeLoaded: false });
     const other = createThemeStoreCore(chosen.env);
-    other.chooseTheme(library(HASH_B, "Dusk"), manifest("Dusk", "light"));
+    other.chooseTheme(library(HASH_B, "Dusk"), { manifest: manifest("Dusk", "light") });
     expect(JSON.parse(chosen.storage.values.get(THEME_STORAGE_KEY)!)).toMatchObject({
       hash: HASH_B,
       base: "light",
@@ -252,7 +257,7 @@ describe("theme store", () => {
 
   it("slows the art at each CPU watchdog verdict and stills it only past the last step, until Try again", () => {
     const store = createThemeStoreCore(makeEnv({}).env);
-    store.chooseTheme(library(HASH_A, "Aurora"), manifest("Aurora"));
+    store.chooseTheme(library(HASH_A, "Aurora"), { manifest: manifest("Aurora") });
     store.reportBackdropTooHeavy();
     store.reportBackdropTooHeavy();
     expect(store.getState()).toMatchObject({ backdropSlowdown: 2, backdropTooHeavy: false });
@@ -263,7 +268,7 @@ describe("theme store", () => {
     expect(store.getState()).toMatchObject({ backdropSlowdown: 0, backdropTooHeavy: false });
     // The verdict belonged to that art: another theme starts at full rate.
     store.reportBackdropTooHeavy();
-    store.chooseTheme(library(HASH_B, "Dusk"), manifest("Dusk", "light"));
+    store.chooseTheme(library(HASH_B, "Dusk"), { manifest: manifest("Dusk", "light") });
     expect(store.getState().backdropSlowdown).toBe(0);
   });
 
@@ -358,5 +363,186 @@ describe("theme store", () => {
     await flush();
     expect(store.getState().active).toMatchObject({ hash: HASH_A, base: "dark" });
     expect(store.getState().active.tokens?.background).toBe("#0a1029");
+  });
+
+  describe("System with a light and a dark theme", () => {
+    const meadow = library(HASH_A, "Meadow");
+    const pair: ThemeChoice = {
+      kind: "pair",
+      light: {
+        kind: "library",
+        entryId: "entry-aaaa",
+        hash: HASH_A,
+        name: "Meadow",
+        environmentId: null,
+      },
+      dark: {
+        kind: "library",
+        entryId: "entry-bbbb",
+        hash: HASH_B,
+        name: "Night",
+        environmentId: null,
+      },
+    };
+
+    it("is stored as System with its sides, which an older build reads as plain System", () => {
+      const stored = serializeThemeChoice(pair, null);
+      expect(JSON.parse(stored)).toMatchObject({ kind: "builtin", id: "system" });
+      expect(parseStoredThemeChoice(stored)?.choice).toEqual(pair);
+      // A side this build can't read (a built-in of the wrong mode) leaves plain System.
+      const wrongSide = JSON.stringify({
+        v: 1,
+        kind: "builtin",
+        id: "system",
+        light: { kind: "builtin", id: "dark" },
+        dark: { kind: "starter", id: "aurora" },
+      });
+      expect(parseStoredThemeChoice(wrongSide)?.choice).toEqual({ kind: "builtin", id: "system" });
+    });
+
+    it("resolves both sides on commit, writes a record for each, and follows the computer at once", () => {
+      const { env, storage } = makeEnv({});
+      const store = createThemeStoreCore(env);
+      store.chooseTheme(pair, {
+        sides: { light: manifest("Meadow", "light"), dark: manifest("Night", "dark") },
+      });
+      expect(store.getState().active).toMatchObject({ choice: pair, hash: HASH_A, base: "light" });
+      for (const [mode, hash] of [
+        ["light", HASH_A],
+        ["dark", HASH_B],
+      ] as const) {
+        expect(
+          parseThemePaintRecord(storage.getItem(THEME_PAIR_PAINT_STORAGE_KEYS[mode]))?.hash,
+        ).toBe(hash);
+      }
+      expect(storage.getItem(THEME_PAINT_STORAGE_KEY)).toBeNull();
+      expect(storage.getItem(THEME_SYSTEM_PAIR_STORAGE_KEY)).toBe(
+        storage.getItem(THEME_STORAGE_KEY),
+      );
+
+      store.setSystemDark(true);
+      expect(store.getState().active).toMatchObject({ choice: pair, hash: HASH_B, base: "dark" });
+      store.setSystemDark(false);
+      expect(store.getState().active).toMatchObject({ hash: HASH_A, base: "light" });
+
+      // Changing one side keeps the other as it was resolved.
+      const lightTheme = store.getState().active.tokens;
+      const withDarkBuiltin: ThemeChoice = { ...pair, dark: { kind: "builtin", id: "dark" } };
+      store.chooseTheme(withDarkBuiltin);
+      expect(store.getState().active.tokens).toBe(lightTheme);
+      expect(storage.getItem(THEME_PAIR_PAINT_STORAGE_KEYS.dark)).toBeNull();
+      store.setSystemDark(true);
+      expect(store.getState().active).toMatchObject({ tokens: null, base: "dark" });
+    });
+
+    it("shows a missing side as its mode's built-in and finds it, hidden or shown, once a computer has it", async () => {
+      const content: Record<string, ThemeManifest> = { [HASH_A]: manifest("Meadow", "light") };
+      const { env } = makeEnv({
+        storage: memoryStorage({ [THEME_STORAGE_KEY]: serializeThemeChoice(pair, null) }),
+        content,
+      });
+      const store = createThemeStoreCore(env);
+      await flush();
+      expect(store.getState().committedState).toMatchObject({
+        status: "pair",
+        light: { status: "ready" },
+        dark: { status: "unavailable" },
+      });
+      expect(store.getState().active).toMatchObject({ hash: HASH_A, base: "light" });
+
+      // The dark side is looked for again while the light one shows.
+      content[HASH_B] = manifest("Night", "dark");
+      store.retryUnavailable();
+      await flush();
+      store.setSystemDark(true);
+      expect(store.getState().active).toMatchObject({ hash: HASH_B, base: "dark", name: "Night" });
+    });
+
+    it("shows the mode's built-in, not the other side, while the side for the mode loads", async () => {
+      let answer: (lookup: ThemeContentLookup) => void = () => {};
+      const { env } = makeEnv({
+        storage: memoryStorage({ [THEME_STORAGE_KEY]: serializeThemeChoice(pair, null) }),
+        lookup: (hash) =>
+          hash === HASH_A
+            ? Promise.resolve({ kind: "found", manifest: manifest("Meadow", "light") })
+            : new Promise((resolve) => (answer = resolve)),
+      });
+      const store = createThemeStoreCore(env);
+      await flush();
+      expect(store.getState().active).toMatchObject({ hash: HASH_A, base: "light" });
+      store.setSystemDark(true);
+      expect(store.getState().active).toMatchObject({ tokens: null, base: "dark" });
+      answer({ kind: "found", manifest: manifest("Night", "dark") });
+      await flush();
+      expect(store.getState().active).toMatchObject({ hash: HASH_B, base: "dark" });
+    });
+
+    it("adopts a pair another window committed, keeping what this window resolved", () => {
+      const { env, storage } = makeEnv({});
+      const store = createThemeStoreCore(env);
+      store.chooseTheme(meadow, { manifest: manifest("Meadow", "light") });
+      const tokens = store.getState().active.tokens;
+
+      const other: ThemeChoice = { ...pair, dark: { kind: "builtin", id: "dark" } };
+      storage.setItem(THEME_STORAGE_KEY, serializeThemeChoice(other, null));
+      store.handleStorageChange(THEME_STORAGE_KEY);
+      expect(store.getState().committed).toEqual(other);
+      expect(store.getState().systemPair).toEqual(other);
+      expect(store.getState().active.tokens).toBe(tokens);
+    });
+
+    it("tries the side the computer shows, a built-in one too, and Keep commits the pair", () => {
+      const { env, storage } = makeEnv({});
+      const store = createThemeStoreCore(env);
+      store.chooseTheme({ kind: "builtin", id: "dark" });
+      const lightBuiltin: ThemeChoice = { ...pair, light: { kind: "builtin", id: "light" } };
+      const trial = store.startThemeTrial({ choice: lightBuiltin, manifest: null });
+      expect(store.getState().active).toMatchObject({ choice: lightBuiltin, base: "light" });
+
+      store.commitThemeTrial(trial.id);
+      expect(store.getState().committed).toEqual(lightBuiltin);
+      expect(parseStoredThemeChoice(storage.getItem(THEME_STORAGE_KEY))?.choice).toEqual(
+        lightBuiltin,
+      );
+    });
+
+    it("tries both sides, so the computer switching modes mid-trial shows the other one", () => {
+      const { env, storage } = makeEnv({});
+      const store = createThemeStoreCore(env);
+      const trial = store.startThemeTrial({
+        choice: pair,
+        manifest: null,
+        sides: { light: manifest("Meadow", "light"), dark: manifest("Night", "dark") },
+      });
+      expect(store.getState().active).toMatchObject({ hash: HASH_A, base: "light" });
+      store.setSystemDark(true);
+      expect(store.getState().active).toMatchObject({ choice: pair, hash: HASH_B, base: "dark" });
+
+      store.commitThemeTrial(trial.id);
+      expect(store.getState().committed).toEqual(pair);
+      // Both sides were in hand: both records are written for the next load.
+      for (const mode of ["light", "dark"] as const) {
+        expect(
+          parseThemePaintRecord(storage.getItem(THEME_PAIR_PAINT_STORAGE_KEYS[mode])),
+        ).not.toBeNull();
+      }
+    });
+
+    it("remembers the pair when another theme is picked, until it is forgotten", () => {
+      const { env, storage } = makeEnv({});
+      const store = createThemeStoreCore(env);
+      store.chooseTheme(pair, {
+        sides: { light: manifest("Meadow", "light"), dark: manifest("Night", "dark") },
+      });
+      store.chooseTheme({ kind: "starter", id: "aurora" });
+      store.chooseTheme({ kind: "builtin", id: "system" });
+      expect(store.getState().systemPair).toEqual(pair);
+
+      store.rememberSystemPair(null);
+      expect(store.getState().systemPair).toBeNull();
+      expect(storage.getItem(THEME_SYSTEM_PAIR_STORAGE_KEY)).toBeNull();
+      // A new window starts without it too.
+      expect(createThemeStoreCore(makeEnv({ storage }).env).getState().systemPair).toBeNull();
+    });
   });
 });

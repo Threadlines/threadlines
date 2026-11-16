@@ -219,6 +219,24 @@ it.layer(TestLayer)("ThemeLibrary", (it) => {
       // The next change here counts on from the pick's revision too.
       const saved = yield* library.save({ manifest: night });
       assert.isAbove(saved.revision, 60);
+
+      // System's pair brings each library side's content, one call each.
+      const dawnHash = yield* Effect.promise(() => themeContentHash(dunes));
+      const pair = {
+        theme: {
+          kind: "builtin",
+          id: "system",
+          light: { kind: "library", entryId: "e-10", hash: dawnHash, name: "Dunes" },
+          dark: { kind: "starter", id: "aurora" },
+        },
+        revision: 70,
+        revisedBy: "env-b",
+        updatedAt: "2026-11-09T13:00:00.000Z",
+      };
+      assert.deepStrictEqual(yield* library.mergePick({ pick: pair }), pair);
+      assert.strictEqual((yield* library.snapshot).pickHasContent, false);
+      yield* library.mergePick({ pick: pair, manifest: dunes });
+      assert.deepInclude(yield* library.snapshot, { pick: pair, pickHasContent: true });
     }),
   );
 

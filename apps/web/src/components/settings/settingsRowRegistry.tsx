@@ -10,6 +10,7 @@ import {
   ThemeMotionRow,
   ThemeSameEverywhereRow,
 } from "../theme/ui/ThemeSettingsRows";
+import { ThemeSystemPairRow } from "../theme/ui/ThemeSystemPairRow";
 import { KeepAwakeForScheduledTasksRow, RunInBackgroundRow } from "./DesktopBackgroundRows";
 import { DownloadedModelsRow, HoldToRecordRow, SpeechModelRow } from "./DictationSettings";
 import type { SettingsRowPlaceId } from "./settingsPlaceAvailability";
@@ -126,6 +127,7 @@ export const SETTINGS_ROWS = {
   // Appearance: the gallery's filter and dialogs are the page's, so a result opens it.
   "appearance.theme": LINK,
   "appearance.sameEverywhere": live(ThemeSameEverywhereRow),
+  "appearance.systemThemes": live(ThemeSystemPairRow),
   "appearance.glass": live(ThemeGlassRow),
   "appearance.motion": live(ThemeMotionRow),
   // Threads
