@@ -52,6 +52,7 @@ import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
 import { activeParticipants } from "@threadlines/shared/threadParticipants";
 
 import { handOffReplyText } from "./agentRequestDecisions.ts";
+import { isProjectLeadThread } from "./commandInvariants.ts";
 import { checkoutSelectedEvents } from "./threadCheckout.ts";
 import { currentAgentModel, messageAgentModels } from "./messageAgentModels.ts";
 
@@ -416,6 +417,7 @@ export function decideChildStart(
     from: command.from,
     callerTurnId: command.callerTurnId,
     count: command.children.length,
+    isLead: isProjectLeadThread(readModel, parent),
   });
   if (refusal !== null) {
     return refuse(refusal.detail);
@@ -530,7 +532,13 @@ export function decideChildSend(
 ): ChildThreadDecision {
   const remoteChild = remoteChildOf(parent.childRequests, command.childThreadId);
   if (remoteChild !== undefined) {
-    return decideRemoteChildSend(parent, command, baseFor, remoteChild);
+    return decideRemoteChildSend(
+      parent,
+      command,
+      baseFor,
+      remoteChild,
+      isProjectLeadThread(readModel, parent),
+    );
   }
   if (pendingChildRequest(parent, command.childThreadId) !== undefined) {
     return refuse("That thread is still being set up. Send it a message once it has started.");
@@ -539,6 +547,7 @@ export function decideChildSend(
   const refusal = childSendRefusal(parent, child, {
     from: command.from,
     callerTurnId: command.callerTurnId,
+    isLead: isProjectLeadThread(readModel, parent),
   });
   if (refusal !== null || child === null) {
     return refuse(refusal?.detail ?? "That thread is gone.");
@@ -679,6 +688,7 @@ function decideRemoteChildSend(
   command: CommandOf<"thread.child.send">,
   baseFor: ChildEventBase,
   remoteChild: NonNullable<ReturnType<typeof remoteChildOf>>,
+  isLead: boolean,
 ): ChildThreadDecision {
   const refusal = childSendRefusal(
     parent,
@@ -688,7 +698,7 @@ function decideRemoteChildSend(
       attachedToParent: true,
       archivedAt: null,
     },
-    { from: command.from, callerTurnId: command.callerTurnId },
+    { from: command.from, callerTurnId: command.callerTurnId, isLead },
   );
   if (refusal !== null) {
     return refuse(refusal.detail);

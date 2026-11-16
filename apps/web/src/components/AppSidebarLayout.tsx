@@ -24,6 +24,7 @@ import { usePublishMainAreaStart } from "../mainAreaLayout";
 import { useServerKeybindings } from "../rpc/serverState";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
 import { buildThreadRouteParams } from "../threadRoutes";
+import { readLeadChatTarget } from "../leadChat";
 import { selectSidebarListShown, useUiStateStore } from "../uiStateStore";
 import ThreadSidebar from "./Sidebar";
 import { AppTitleBar } from "./sidebar/AppTitleBar";
@@ -111,12 +112,20 @@ function AppShellCommands({ hasList }: { readonly hasList: boolean }) {
         event.stopPropagation();
         void navigate({ to: "/scheduled" });
       }
+      if (command === "navigate.leadChat") {
+        // The lead of the open thread's project, else of the scoped project.
+        const leadRef = readLeadChatTarget(routeThreadRef ?? null, defaultProjectRef ?? null);
+        if (leadRef === null) return;
+        event.preventDefault();
+        event.stopPropagation();
+        void navigate({ to: "/$environmentId/$threadId", params: buildThreadRouteParams(leadRef) });
+      }
     };
     window.addEventListener("keydown", onWindowKeyDown);
     return () => {
       window.removeEventListener("keydown", onWindowKeyDown);
     };
-  }, [appHistory, keybindings, navigate, routeThreadRef, toggleList]);
+  }, [appHistory, defaultProjectRef, keybindings, navigate, routeThreadRef, toggleList]);
 
   useEffect(() => {
     const onMenuAction = window.desktopBridge?.onMenuAction;

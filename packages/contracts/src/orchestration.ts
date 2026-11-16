@@ -441,6 +441,12 @@ export const OrchestrationProject = Schema.Struct({
   scripts: Schema.Array(ProjectScript),
   /** This project's threads send no phone alerts. Absent means they do. */
   phoneAlertsMuted: Schema.optional(Schema.Boolean),
+  /**
+   * The project's lead chat (docs/design/lead-chat.md). Absent or null: none.
+   * Read it through `projectLeadThreadId` (@threadlines/shared/projectLead),
+   * which treats a pointer at an archived or missing thread as none.
+   */
+  leadThreadId: Schema.optional(Schema.NullOr(ThreadId)),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   deletedAt: Schema.NullOr(IsoDateTime),
@@ -2895,6 +2901,12 @@ export const OrchestrationProjectShell = Schema.Struct({
   scripts: Schema.Array(ProjectScript),
   /** This project's threads send no phone alerts. Absent means they do. */
   phoneAlertsMuted: Schema.optional(Schema.Boolean),
+  /**
+   * The project's lead chat (docs/design/lead-chat.md). Absent or null: none.
+   * Read it through `projectLeadThreadId` (@threadlines/shared/projectLead),
+   * which treats a pointer at an archived or missing thread as none.
+   */
+  leadThreadId: Schema.optional(Schema.NullOr(ThreadId)),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -3206,6 +3218,18 @@ const ProjectMetaUpdateCommand = Schema.Struct({
   defaultModelSelection: Schema.optional(Schema.NullOr(ModelSelection)),
   scripts: Schema.optional(Schema.Array(ProjectScript)),
   phoneAlertsMuted: Schema.optional(Schema.Boolean),
+});
+
+/**
+ * Make a thread the project's lead chat, or (null) stop having one. A command
+ * of its own rather than part of `project.meta.update`: it checks the thread
+ * and replaces any other lead in the same decision.
+ */
+const ProjectLeadSetCommand = Schema.Struct({
+  type: Schema.Literal("project.lead.set"),
+  commandId: CommandId,
+  projectId: ProjectId,
+  threadId: Schema.NullOr(ThreadId),
 });
 
 const ProjectDeleteCommand = Schema.Struct({
@@ -4087,6 +4111,7 @@ const ThreadCommandRequestDismissCommand = Schema.Struct({
 const DispatchableClientOrchestrationCommand = Schema.Union([
   ProjectCreateCommand,
   ProjectMetaUpdateCommand,
+  ProjectLeadSetCommand,
   ProjectDeleteCommand,
   ThreadCreateCommand,
   ThreadDeleteCommand,
@@ -4140,6 +4165,7 @@ export type DispatchableClientOrchestrationCommand =
 export const ClientOrchestrationCommand = Schema.Union([
   ProjectCreateCommand,
   ProjectMetaUpdateCommand,
+  ProjectLeadSetCommand,
   ProjectDeleteCommand,
   ThreadCreateCommand,
   ThreadDeleteCommand,
@@ -5431,6 +5457,8 @@ export const ProjectMetaUpdatedPayload = Schema.Struct({
   defaultModelSelection: Schema.optional(Schema.NullOr(ModelSelection)),
   scripts: Schema.optional(Schema.Array(ProjectScript)),
   phoneAlertsMuted: Schema.optional(Schema.Boolean),
+  /** Set by `project.lead.set` and by the cascades that end a lead. */
+  leadThreadId: Schema.optional(Schema.NullOr(ThreadId)),
   updatedAt: IsoDateTime,
 });
 

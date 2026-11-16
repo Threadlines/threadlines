@@ -45,7 +45,7 @@ export const GUIDE_TOPICS: ReadonlyArray<GuideTopic> = [
     ],
     body: `A thread is one conversation with an agent in a project. Threads are listed in the sidebar; one that needs you, finished or failed says so there. In a narrow window the sidebar floats over the thread instead of sitting beside it: the sidebar button at the top left, or Cmd+B (Ctrl+B on Windows and Linux), opens it, and picking a thread or clicking the thread puts it away.
 
-The sliders button beside the project picker at the top of the sidebar groups the list by project or computer and sorts it: recent activity, newest, oldest, title, or a custom order. In the custom order you drag rows to arrange them, or use Move up and Move down in a thread's menu, and only you move a row; new threads go to the bottom, and the same button can reset the order. Pinned threads stay above a thin line in every sort. When the list is grouped, drag a group's header to move the whole group, in any sort; its menu has Move up, Move down and Use automatic order. These orders are kept per device, so a phone has its own.
+The sliders button beside the project picker at the top of the sidebar groups the list by project or computer and sorts it: recent activity, newest, oldest, title, or a custom order. In the custom order you drag rows to arrange them, or use Move up and Move down in a thread's menu, and only you move a row; new threads go to the bottom, and the same button can reset the order. Pinned threads stay above a thin line in every sort, under a project's lead chat, which comes first. When the list is grouped, drag a group's header to move the whole group, in any sort; its menu has Move up, Move down and Use automatic order. These orders are kept per device, so a phone has its own.
 
 A new thread starts either in the project folder as it is, or in a worktree of its own: a separate git checkout on a new branch, so its changes stay apart until you merge them. You pick per thread in the composer; the default is {place:threads.startIn}, and new worktrees branch from {place:threads.worktreesFrom}. A project's setup script runs once in each new worktree.
 
@@ -100,7 +100,23 @@ A started thread works in a worktree of its own; in a project without git it sha
 
 A started thread gets at most its parent's access level, or a lower one the agent asks for, and the parent's model unless the agent picks another. On a model already in the room it runs at the reasoning you set for that agent there, unless the agent or you name another level; the approval card shows the level. With computers linked in Fleet, an agent can also start a thread on another computer, if that computer allows it ({place:fleet.worksWith}).
 
-A thread on another computer stays under its parent on both computers and shows how it is doing there, even after its answer came back. Once its answer reached the parent it wraps up and moves to Wrapped like any other, unless someone picked it up again there. Its row has Wrap up (and Reopen in Wrapped), which applies on both computers. To open it, connect this app to that computer.`,
+A thread on another computer stays under its parent on both computers and shows how it is doing there, even after its answer came back. Once its answer reached the parent it wraps up and moves to Wrapped like any other, unless someone picked it up again there. Its row has Wrap up (and Reopen in Wrapped), which applies on both computers. To open it, connect this app to that computer.
+
+A project's lead chat is a thread set up to coordinate the project; see the lead chat topic.`,
+  },
+  {
+    id: "lead-chat",
+    title: "Lead chat",
+    keywords: ["lead chat", "lead", "coordinator", "project lead", "orchestrator", "drop work"],
+    body: `Each project can have one lead chat: a thread you drop work into (a bug, a stack trace, a list of tasks). Its agent answers small questions itself and starts threads for new work. Those threads show under the lead in the sidebar and report back to it, and it tells you what finished and what needs you.
+
+Any thread can be the lead. Use "Make this the lead chat" in a thread's menu (right-click its row, or click the title above the chat), or the command palette. The project's menu in the project picker has Open lead chat, or New lead chat, which starts a thread in the project folder and makes it the lead. "Go to lead chat" in the command palette opens it.
+
+Only one thread leads a project; making another the lead replaces it. "Stop using as lead chat" turns it back into an ordinary thread, and the threads it started stay with it. Archiving or deleting the lead ends it. A lead can't move to another computer, and each computer keeps its own lead for a project.
+
+The lead's row sits at the top of the sidebar with a flag, says Lead where the project name goes, and never wraps up on its own. The chat shows a Lead chat label beside the title.
+
+The lead's agent is told its role at the start of every turn. It may start 10 threads and send 20 messages to them per message you send, instead of 5 and 10. It needs {place:threads.agentThreads} to be on, and an agent that can't use the thread tools says so. General chats, a thread another thread still owns, and threads from another computer or an outside agent can't be the lead.`,
   },
   {
     id: "linking-computers",

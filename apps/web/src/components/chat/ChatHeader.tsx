@@ -15,6 +15,7 @@ import {
   CornerDownRightIcon,
   FolderInputIcon,
   FolderOpenIcon,
+  FlagIcon,
   GitForkIcon,
   GlobeIcon,
   MessagesSquareIcon,
@@ -117,6 +118,8 @@ interface ChatHeaderProps {
   forkContext: ForkHeaderContext | null;
   /** Set on a thread another thread's agent started; it stays after separating. */
   parentContext?: ParentThreadHeaderContext | null | undefined;
+  /** The thread is its project's lead chat (docs/design/lead-chat.md). */
+  isLeadChat?: boolean | undefined;
   /** Set on a thread an agent outside Threadlines started (docs/design/outside-agents.md). */
   outsideOrigin?: OutsideAgentRef | null | undefined;
   backgroundRuns: ReadonlyArray<ThreadBackgroundRunItem>;
@@ -308,6 +311,7 @@ export const ChatHeader = memo(function ChatHeader({
   taskProgress,
   forkContext,
   parentContext = null,
+  isLeadChat = false,
   outsideOrigin = null,
   backgroundRuns,
   activeThreadRef,
@@ -423,6 +427,14 @@ export const ChatHeader = memo(function ChatHeader({
         ) : null}
         {parentContext ? (
           <StartedByChip parent={parentContext} onOpen={onOpenParentThread} />
+        ) : null}
+        {isLeadChat ? (
+          <span data-testid="lead-chat-chip" className={STARTED_BY_CHIP_CLASS}>
+            <span className="inline-flex min-w-0 items-center gap-1">
+              <FlagIcon aria-hidden="true" className="size-3 shrink-0" />
+              Lead chat
+            </span>
+          </span>
         ) : null}
         {outsideOrigin ? <OutsideOriginLabel origin={outsideOrigin} /> : null}
         {activeProjectName && !isGitRepo && sourceControlAvailable && (

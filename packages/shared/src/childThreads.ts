@@ -95,10 +95,33 @@ function callerRefusal(
   return null;
 }
 
+/** Threads a project's lead chat may start, and messages it may send, per user message. */
+export const LEAD_THREAD_START_LIMIT = 10;
+export const LEAD_THREAD_SEND_LIMIT = 20;
+
+/**
+ * A thread's budget for starting and messaging threads per user message. The
+ * project's lead chat (docs/design/lead-chat.md) gets twice the usual.
+ */
+export function childRequestLimits(input: { readonly isLead: boolean }): {
+  readonly starts: number;
+  readonly sends: number;
+} {
+  return input.isLead
+    ? { starts: LEAD_THREAD_START_LIMIT, sends: LEAD_THREAD_SEND_LIMIT }
+    : { starts: CHILD_THREAD_START_LIMIT, sends: CHILD_THREAD_SEND_LIMIT };
+}
+
 /** Why starting `count` threads is refused, or null when every rule allows it. */
 export function childStartRefusal(
   thread: ChildRequestCaller,
-  input: { readonly from: RoomAgentRef; readonly callerTurnId: TurnId; readonly count: number },
+  input: {
+    readonly from: RoomAgentRef;
+    readonly callerTurnId: TurnId;
+    readonly count: number;
+    /** The caller is its project's lead chat. */
+    readonly isLead?: boolean;
+  },
 ): ChildRequestRefusal | null {
   const caller = callerRefusal(thread, input);
   if (caller !== null) {
@@ -111,10 +134,11 @@ export function childStartRefusal(
     };
   }
   const used = thread.childRequests.startsSinceUser;
-  if (used + input.count > CHILD_THREAD_START_LIMIT) {
+  const limit = childRequestLimits({ isLead: input.isLead === true }).starts;
+  if (used + input.count > limit) {
     return {
       outcome: "limit",
-      detail: `Agents can start ${CHILD_THREAD_START_LIMIT} threads per user message, and ${used} were already asked for since the user last wrote, so these were not started. Say so in your reply, and wait for the user before starting more.`,
+      detail: `${input.isLead === true ? "The lead chat" : "Agents"} can start ${limit} threads per user message, and ${used} were already asked for since the user last wrote, so these were not started. Say so in your reply, and wait for the user before starting more.`,
     };
   }
   return null;
@@ -129,7 +153,12 @@ export function childSendRefusal(
     readonly attachedToParent: boolean;
     readonly archivedAt: string | null;
   } | null,
-  input: { readonly from: RoomAgentRef; readonly callerTurnId: TurnId },
+  input: {
+    readonly from: RoomAgentRef;
+    readonly callerTurnId: TurnId;
+    /** The caller is its project's lead chat. */
+    readonly isLead?: boolean;
+  },
 ): ChildRequestRefusal | null {
   const caller = callerRefusal(thread, input);
   if (caller !== null) {
@@ -139,10 +168,11 @@ export function childSendRefusal(
   if (ownRefusal !== null) {
     return ownRefusal;
   }
-  if (thread.childRequests.sendsSinceUser >= CHILD_THREAD_SEND_LIMIT) {
+  const limit = childRequestLimits({ isLead: input.isLead === true }).sends;
+  if (thread.childRequests.sendsSinceUser >= limit) {
     return {
       outcome: "limit",
-      detail: `Agents can send ${CHILD_THREAD_SEND_LIMIT} messages to their threads per user message, and that many were sent since the user last wrote, so this one was not. Say so in your reply, and wait for the user before sending more.`,
+      detail: `${input.isLead === true ? "The lead chat" : "Agents"} can send ${limit} messages to their threads per user message, and that many were sent since the user last wrote, so this one was not. Say so in your reply, and wait for the user before sending more.`,
     };
   }
   return null;

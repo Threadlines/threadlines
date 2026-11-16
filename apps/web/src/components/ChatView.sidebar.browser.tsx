@@ -236,6 +236,82 @@ describe("ChatView (full app): sidebar", () => {
     }
   });
 
+  it("shows the project's lead chat, and its menu stops it or names another thread instead", async () => {
+    const otherThreadId = "thread-lead-other" as ThreadId;
+    const withThreads = addThreadToSnapshot(
+      createSnapshotForTargetUser({
+        targetMessageId: "msg-user-lead-target" as MessageId,
+        targetText: "lead target",
+      }),
+      otherThreadId,
+    );
+    const capabilities = { repositoryIdentity: true, projectLead: true };
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...withThreads,
+        projects: withThreads.projects.map((project) => ({ ...project, leadThreadId: THREAD_ID })),
+      },
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          environment: { ...nextFixture.serverConfig.environment, capabilities },
+        };
+        nextFixture.welcome = {
+          ...nextFixture.welcome,
+          environment: { ...nextFixture.welcome.environment, capabilities },
+        };
+      },
+    });
+    const openRowMenu = async (threadId: ThreadId) => {
+      const row = await waitForElement(
+        () => document.querySelector<HTMLElement>(`[data-testid="thread-row-${threadId}"]`),
+        "The thread's sidebar row should be on screen.",
+      );
+      const rect = row.getBoundingClientRect();
+      row.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: rect.left + 20,
+          clientY: rect.top + 8,
+        }),
+      );
+    };
+    const leadSets = () =>
+      wsRequests.flatMap((request) =>
+        request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+        request.type === "project.lead.set"
+          ? [request.threadId]
+          : [],
+      );
+
+    try {
+      // The lead's row carries its mark and comes first; the chat says what it is.
+      await expect.element(page.getByTestId(`thread-lead-mark-${THREAD_ID}`)).toBeVisible();
+      await expect.element(page.getByTestId("lead-chat-chip")).toBeVisible();
+      const rowIds = [
+        ...document.querySelectorAll<HTMLElement>('[data-testid^="thread-row-"]'),
+      ].map((row) => row.dataset.testid);
+      expect(rowIds[0]).toBe(`thread-row-${THREAD_ID}`);
+
+      await openRowMenu(otherThreadId);
+      await page
+        .getByRole("button", {
+          name: `Make this the lead chat instead of ${THREAD_TITLE}`,
+          exact: true,
+        })
+        .click();
+      await vi.waitFor(() => expect(leadSets()).toEqual([otherThreadId]));
+
+      await openRowMenu(THREAD_ID);
+      await page.getByRole("button", { name: "Stop using as lead chat", exact: true }).click();
+      await vi.waitFor(() => expect(leadSets()).toEqual([otherThreadId, null]));
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("narrows the live list to rooms from the View button and marks it while it does", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,

@@ -49,6 +49,7 @@ import {
   type TurnId,
 } from "@threadlines/contracts";
 import { renderThreadContextSeed, withContextSeedPreamble } from "@threadlines/shared/contextSeed";
+import { LEAD_WITHOUT_TOOLS_TEXT, leadRoleText } from "@threadlines/shared/projectLead";
 import { agentInvitesMode, agentThreadsMode } from "@threadlines/shared/serverSettings";
 import { notesFor, remoteChildOf } from "@threadlines/shared/childThreads";
 import { settingsChangeNotesFor } from "@threadlines/shared/settingsChangeState";
@@ -2160,6 +2161,27 @@ const make = Effect.gen(function* () {
   });
 
   /**
+   * The lead chat's role (docs/design/lead-chat.md, "Role text"): added to
+   * every turn that starts in a project's lead, whatever started it, and to
+   * each room agent's turns there. A message steered into a running turn and
+   * a side answer don't carry it, by decision: the turn heard it when it
+   * started, and a side answer is read-only. An agent whose runtime came up
+   * without the thread tools (an ACP agent that takes no HTTP tool server)
+   * is told it can't coordinate, so it says so instead of pretending.
+   */
+  const leadChatContext = Effect.fnUntraced(function* (
+    thread: OrchestrationThread,
+    roomTools: boolean | undefined,
+  ) {
+    if (thread.archivedAt !== null) return undefined;
+    const project = yield* resolveProject(thread.projectId);
+    if (project === undefined || (project.leadThreadId ?? null) !== thread.id) return undefined;
+    return roomTools === false
+      ? `${leadRoleText(project.title)}\n\n${LEAD_WITHOUT_TOOLS_TEXT}`
+      : leadRoleText(project.title);
+  });
+
+  /**
    * Outside agents (docs/design/outside-agents.md): a message one wrote is
    * named as its, so the agent here never takes it for the user's own words.
    */
@@ -2470,6 +2492,7 @@ const make = Effect.gen(function* () {
     // Child threads: who this message is from, and what this agent's threads
     // did since its last turn without waking it (notes are its alone).
     const childContext = yield* childThreadContext(thread, input.participantId, input.fromThread);
+    const leadContext = yield* leadChatContext(thread, activeSession?.roomTools);
     const scheduleContext = yield* scheduledTaskContext(thread, input.participantId);
     const settingsContext = settingsChangeContext(thread, input.participantId);
     const sentMessage = thread.messages.find((message) => message.id === input.messageId);
@@ -2510,6 +2533,7 @@ const make = Effect.gen(function* () {
       resumeContextText,
       forkContextText,
       roomCatchUp?.note,
+      leadContext,
       childContext.text,
       outsideAgentContext(thread, input.messageId),
       scheduleContext.text,

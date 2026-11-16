@@ -909,6 +909,7 @@ export function toShellSnapshot(snapshot: OrchestrationReadModel) {
       ...(project.phoneAlertsMuted !== undefined
         ? { phoneAlertsMuted: project.phoneAlertsMuted }
         : {}),
+      ...(project.leadThreadId !== undefined ? { leadThreadId: project.leadThreadId } : {}),
       createdAt: project.createdAt,
       updatedAt: project.updatedAt,
     })),

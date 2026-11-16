@@ -59,6 +59,7 @@ import {
   Trash2Icon,
   UsersRoundIcon,
   MonitorUpIcon,
+  FlagIcon,
   FolderSyncIcon,
   WaypointsIcon,
   CalendarClockIcon,
@@ -101,6 +102,12 @@ import { holdThreadDetailForOpen, prewarmHighlightedThread } from "../environmen
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { useInboxThreads } from "../hooks/useInboxThreads";
 import { useThreadMenu } from "../hooks/useThreadMenu";
+import {
+  createLeadChat,
+  environmentSupportsProjectLead,
+  leadSettingRefusal,
+  projectLeadRef,
+} from "../leadChat";
 import { useWorktreePickup } from "../hooks/useWorktreePickup";
 import type { ThreadMenuAction } from "./threadMenu.logic";
 import { useIsMobile } from "../hooks/useMediaQuery";
@@ -470,9 +477,18 @@ function getAddProjectCloneDirectoryName(
 const PALETTE_THREAD_ACTIONS: Partial<
   Record<
     ThreadMenuAction,
-    { readonly title: string; readonly searchTerms: string[]; readonly icon: ReactNode }
+    {
+      /** Absent: the menu item's own words, for an action whose words change. */
+      readonly title?: string;
+      readonly searchTerms: string[];
+      readonly icon: ReactNode;
+    }
   >
 > = {
+  lead: {
+    searchTerms: ["lead chat", "lead", "coordinate", "project lead"],
+    icon: <FlagIcon className={ITEM_ICON_CLASS} />,
+  },
   rename: {
     title: "Rename thread",
     searchTerms: ["rename", "title", "name"],
@@ -2197,13 +2213,75 @@ export function OpenCommandPaletteDialog() {
         kind: "action",
         value: `action:thread-${item.id}`,
         searchTerms: offered.searchTerms,
-        title: offered.title,
+        title: offered.title ?? item.label,
         icon: offered.icon,
         run: async () => {
           await threadMenu.run(item.id, target);
         },
       });
     }
+  }
+
+  // Lead chats (docs/design/lead-chat.md): one "Go to" per project that has
+  // one, and "New lead chat" for the project in scope when it has none.
+  for (const project of projects) {
+    const leadRef = projectLeadRef(useStore.getState(), project);
+    if (leadRef === null) continue;
+    actionItems.push({
+      kind: "action",
+      value: `action:lead-chat:${scopedThreadKey(leadRef)}`,
+      searchTerms: ["lead chat", "lead", project.name],
+      title: "Go to lead chat",
+      description: project.name,
+      icon: <FlagIcon className={ITEM_ICON_CLASS} />,
+      shortcutCommand: "navigate.leadChat",
+      run: async () => {
+        await navigate({
+          to: "/$environmentId/$threadId",
+          params: buildThreadRouteParams(leadRef),
+        });
+      },
+    });
+  }
+  const leadScopeProject =
+    (activeThread
+      ? projects.find(
+          (project) =>
+            project.environmentId === activeThread.environmentId &&
+            project.id === activeThread.projectId,
+        )
+      : undefined) ??
+    (defaultProjectRef
+      ? projects.find(
+          (project) =>
+            project.environmentId === defaultProjectRef.environmentId &&
+            project.id === defaultProjectRef.projectId,
+        )
+      : undefined);
+  if (
+    leadScopeProject !== undefined &&
+    leadScopeProject.kind === "workspace" &&
+    environmentSupportsProjectLead(leadScopeProject.environmentId) &&
+    leadSettingRefusal(leadScopeProject.environmentId) === null &&
+    projectLeadRef(useStore.getState(), leadScopeProject) === null
+  ) {
+    actionItems.push({
+      kind: "action",
+      value: "action:new-lead-chat",
+      searchTerms: ["new lead chat", "lead chat", "lead", "coordinate"],
+      title: "New lead chat",
+      description: leadScopeProject.name,
+      icon: <FlagIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        const leadRef = await createLeadChat(leadScopeProject);
+        if (leadRef !== null) {
+          await navigate({
+            to: "/$environmentId/$threadId",
+            params: buildThreadRouteParams(leadRef),
+          });
+        }
+      },
+    });
   }
 
   actionItems.push({

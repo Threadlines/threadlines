@@ -24,6 +24,14 @@ import { readEnvironmentDescriptor } from "../../environments/runtime";
 import { readProjectSetupSourceAmong } from "../../environments/projectSetups/projectSetupTargets";
 import { useComposerDraftStore } from "../../composerDraftStore";
 import { selectSidebarThreadsForProjectRefs, useStore } from "../../store";
+import {
+  createLeadChat,
+  environmentSupportsProjectLead,
+  leadSettingRefusal,
+  projectLeadRef,
+} from "../../leadChat";
+import { buildThreadRouteParams } from "../../threadRoutes";
+import { useNavigate } from "@tanstack/react-router";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import {
@@ -222,6 +230,7 @@ export interface ProjectScopeMenuProps {
  * it rather than lengthening a menu used all day.
  */
 export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectScopeMenuProps) {
+  const navigate = useNavigate();
   const {
     options,
     projectByKey,
@@ -492,9 +501,68 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
         actionHandlers.set(MUTE_ALERTS_ITEM_ID, () => setProjectPhoneAlertsMuted(members, true));
         actionHandlers.set(UNMUTE_ALERTS_ITEM_ID, () => setProjectPhoneAlertsMuted(members, false));
 
+        // The lead chat lives per computer: each copy can have its own.
+        const leadMembers = members.filter((member) =>
+          environmentSupportsProjectLead(member.environmentId),
+        );
+        const leadLeaf = (member: SidebarProjectGroupMember) => {
+          const leadRef = projectLeadRef(useStore.getState(), member);
+          const id = `lead:${member.physicalProjectKey}`;
+          actionHandlers.set(id, async () => {
+            const target = leadRef ?? (await createLeadChat(member));
+            if (target !== null) {
+              await navigate({
+                to: "/$environmentId/$threadId",
+                params: buildThreadRouteParams(target),
+              });
+            }
+          });
+          return { id, opens: leadRef !== null };
+        };
+        const leadItems: ContextMenuItem<string>[] = [];
+        // Starting one where agents can't start threads would give a lead
+        // that can start nothing: offered, greyed out, with the reason.
+        const newLeadItem = (member: SidebarProjectGroupMember, label: string) => {
+          const refusal = leadSettingRefusal(member.environmentId);
+          return refusal === null
+            ? { label }
+            : {
+                label: `${label}: ${refusal.charAt(0).toLowerCase()}${refusal.slice(1).replace(/\.$/, "")}`,
+                disabled: true,
+              };
+        };
+        if (leadMembers.length === 1) {
+          const leaf = leadLeaf(leadMembers[0]!);
+          leadItems.push({
+            id: leaf.id,
+            ...(leaf.opens
+              ? { label: "Open lead chat" }
+              : newLeadItem(leadMembers[0]!, "New lead chat")),
+          });
+        } else if (leadMembers.length > 1) {
+          leadItems.push({
+            id: "lead:submenu",
+            label: "Lead chat",
+            children: leadMembers.map((member) => {
+              const leaf = leadLeaf(member);
+              const where = formatProjectMemberActionLabel(member, project.groupedProjectCount);
+              return {
+                id: leaf.id,
+                ...(leaf.opens
+                  ? { label: `Open: ${where}` }
+                  : newLeadItem(member, `New: ${where}`)),
+              };
+            }),
+          });
+        }
+
         const clicked = await api.contextMenu.show(
           [
-            buildTargetedItem("rename", "Rename project"),
+            ...leadItems,
+            {
+              ...buildTargetedItem("rename", "Rename project"),
+              ...(leadItems.length > 0 ? { separatorBefore: true } : {}),
+            },
             buildTargetedItem("grouping", "Project grouping…"),
             buildTargetedItem("copy-path", "Copy Project Path"),
             ...(setupSource !== null
@@ -514,7 +582,7 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
         await actionHandlers.get(clicked)?.();
       })();
     },
-    [handleRemoveProject, openProjectGroupingDialog, openProjectRenameDialog],
+    [handleRemoveProject, navigate, openProjectGroupingDialog, openProjectRenameDialog],
   );
 
   const closeProjectRenameDialog = useCallback(() => {

@@ -36,6 +36,7 @@ import {
 } from "../store";
 import type { SidebarThreadSummary } from "../types";
 import { useSettings } from "./useSettings";
+import { readLeadMenuState, setProjectLead } from "../leadChat";
 import { useThreadActions } from "./useThreadActions";
 
 /** The thread a menu is for, and what only its surface knows. */
@@ -141,6 +142,7 @@ export function useThreadMenu() {
       moveOffered: readThreadMoveOffered(thread.environmentId, thread.moveStatus),
       running: isThreadTurnRunning(full?.session),
       customOrder: target.customOrder ?? null,
+      lead: readLeadMenuState(useStore.getState(), thread),
     });
   }, []);
 
@@ -221,6 +223,25 @@ export function useThreadMenu() {
         case "move":
           openThreadMoveDialog(threadRef);
           return;
+        case "lead": {
+          const lead = readLeadMenuState(useStore.getState(), thread);
+          if (lead === null || (lead.kind === "make" && lead.refusal !== null)) return;
+          const made = await setProjectLead({
+            environmentId: thread.environmentId,
+            projectId: thread.projectId,
+            threadId: lead.kind === "stop" ? null : thread.id,
+          });
+          // A lead stays at the top of the list: one the user had wrapped up
+          // comes back, since the user's own wrap-up outranks the lead's keep.
+          if (
+            made &&
+            lead.kind === "make" &&
+            (target.inbox?.isDone === true || thread.doneOverride?.state === "done")
+          ) {
+            reopenThreadByKey(threadKey);
+          }
+          return;
+        }
         case "copy-path": {
           const project = selectProjectByRef(
             useStore.getState(),

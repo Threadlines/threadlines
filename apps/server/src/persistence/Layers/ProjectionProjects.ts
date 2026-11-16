@@ -39,6 +39,7 @@ const makeProjectionProjectRepository = Effect.gen(function* () {
           default_model_selection_json,
           scripts_json,
           phone_alerts_muted,
+          lead_thread_id,
           created_at,
           updated_at,
           deleted_at
@@ -51,6 +52,7 @@ const makeProjectionProjectRepository = Effect.gen(function* () {
           ${row.defaultModelSelection !== null ? JSON.stringify(row.defaultModelSelection) : null},
           ${JSON.stringify(row.scripts)},
           ${row.phoneAlertsMuted === true ? 1 : 0},
+          ${row.leadThreadId ?? null},
           ${row.createdAt},
           ${row.updatedAt},
           ${row.deletedAt}
@@ -63,6 +65,7 @@ const makeProjectionProjectRepository = Effect.gen(function* () {
           default_model_selection_json = excluded.default_model_selection_json,
           scripts_json = excluded.scripts_json,
           phone_alerts_muted = excluded.phone_alerts_muted,
+          lead_thread_id = excluded.lead_thread_id,
           created_at = excluded.created_at,
           updated_at = excluded.updated_at,
           deleted_at = excluded.deleted_at
@@ -82,6 +85,7 @@ const makeProjectionProjectRepository = Effect.gen(function* () {
           default_model_selection_json AS "defaultModelSelection",
           scripts_json AS "scripts",
           phone_alerts_muted AS "phoneAlertsMuted",
+          lead_thread_id AS "leadThreadId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
           deleted_at AS "deletedAt"
@@ -103,6 +107,7 @@ const makeProjectionProjectRepository = Effect.gen(function* () {
           default_model_selection_json AS "defaultModelSelection",
           scripts_json AS "scripts",
           phone_alerts_muted AS "phoneAlertsMuted",
+          lead_thread_id AS "leadThreadId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
           deleted_at AS "deletedAt"

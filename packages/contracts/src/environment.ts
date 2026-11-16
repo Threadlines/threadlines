@@ -187,6 +187,12 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
    * a busy room's message to Grok when the agent at work finishes instead.
    */
   grokAnswersOnTheSide: Schema.optionalKey(Schema.Boolean),
+  /**
+   * A project can have a lead chat (`OrchestrationProject.leadThreadId`,
+   * `project.lead.set`, docs/design/lead-chat.md). Older servers omit it and
+   * would refuse the command, so clients hide the lead actions for them.
+   */
+  projectLead: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 

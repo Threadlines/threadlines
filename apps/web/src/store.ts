@@ -831,6 +831,7 @@ function mapProject(
     updatedAt: project.updatedAt,
     scripts: mapProjectScripts(project.scripts),
     phoneAlertsMuted: project.phoneAlertsMuted === true,
+    leadThreadId: project.leadThreadId ?? null,
   };
 }
 
@@ -2645,6 +2646,9 @@ function applyEnvironmentOrchestrationEvent(
           : {}),
         ...(event.payload.phoneAlertsMuted !== undefined
           ? { phoneAlertsMuted: event.payload.phoneAlertsMuted }
+          : {}),
+        ...(event.payload.leadThreadId !== undefined
+          ? { leadThreadId: event.payload.leadThreadId }
           : {}),
         updatedAt: event.payload.updatedAt,
       };

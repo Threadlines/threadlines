@@ -199,7 +199,7 @@ function draftActiveSelection(draftId: DraftId): ModelSelection | null {
 }
 
 /** The model last picked on this device, if any. */
-function lastUsedSelection(): ModelSelection | null {
+export function lastUsedSelection(): ModelSelection | null {
   const state = useComposerDraftStore.getState();
   const active = state.stickyActiveProvider;
   return active === null ? null : (state.stickyModelSelectionByProvider[active] ?? null);

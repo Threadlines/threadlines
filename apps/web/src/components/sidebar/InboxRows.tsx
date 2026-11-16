@@ -6,6 +6,7 @@ import {
   Clock3Icon,
   CloudIcon,
   CornerDownRightIcon,
+  FlagIcon,
   LinkIcon,
   MonitorUpIcon,
   GitForkIcon,
@@ -725,6 +726,8 @@ export interface InboxThreadRowProps {
    * header, which already names the project. Default on.
    */
   showProjectMark?: boolean | undefined;
+  /** Its project's lead chat (docs/design/lead-chat.md): a mark before the title. */
+  isLead?: boolean | undefined;
   isActive: boolean;
   jumpLabel: string | null;
   /** False while the thread is moving, blocked, or pinned: live work can't be
@@ -814,6 +817,7 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
     status,
     projectLabel,
     showProjectMark = true,
+    isLead = false,
     isActive,
     jumpLabel,
     canMarkDone,
@@ -1131,6 +1135,15 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                     className="inline-flex shrink-0 items-center justify-center text-muted-foreground/50"
                   >
                     <PinIcon className="size-2.5" />
+                  </span>
+                ) : null}
+                {isLead ? (
+                  <span
+                    aria-label="Lead chat"
+                    data-testid={`thread-lead-mark-${thread.id}`}
+                    className="inline-flex shrink-0 items-center justify-center text-muted-foreground/50"
+                  >
+                    <FlagIcon className="size-2.5" />
                   </span>
                 ) : null}
                 {threadProject && showProjectMark ? (

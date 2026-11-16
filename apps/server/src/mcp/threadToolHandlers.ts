@@ -129,7 +129,9 @@ export interface ThreadToolDeps {
   ) => Effect.Effect<ReadonlyArray<OrchestrationThreadShell>>;
   readonly readProject: (
     projectId: ProjectId,
-  ) => Effect.Effect<Pick<OrchestrationProjectShell, "kind" | "workspaceRoot"> | undefined>;
+  ) => Effect.Effect<
+    Pick<OrchestrationProjectShell, "kind" | "workspaceRoot" | "leadThreadId"> | undefined
+  >;
   /** The provider snapshots: who a child could run on. */
   readonly providers: Effect.Effect<ReadonlyArray<ServerProvider>>;
   /** The user's default for new threads (Settings): the last reasoning a child follows. */
@@ -468,6 +470,16 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
   const from = (scope: McpInvocationScope): RoomAgentRef => ({
     participantId: scope.participantId,
   });
+
+  /**
+   * Whether the calling thread is its project's lead chat, which gets a larger
+   * budget (docs/design/lead-chat.md). The caller is open and working, so the
+   * pointer alone answers it; the decider checks again.
+   */
+  const isLeadThread = (thread: OrchestrationThread) =>
+    deps
+      .readProject(thread.projectId)
+      .pipe(Effect.map((project) => (project?.leadThreadId ?? null) === thread.id));
 
   /** An attached child may not start, message or stop threads: families are one level deep. */
   const depthRefusal = (thread: OrchestrationThread, scope: McpInvocationScope) => ({
@@ -980,6 +992,7 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
             from: from(scope),
             callerTurnId,
             count: specs.length,
+            isLead: yield* isLeadThread(current),
           });
           if (refusal !== null) {
             return ruleOutcome(refusal) satisfies ThreadStartResult;
@@ -1290,6 +1303,7 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
             from: from(scope),
             callerTurnId,
             count: specs.length,
+            isLead: yield* isLeadThread(current),
           });
           if (refusal !== null) {
             return ruleOutcome(refusal) satisfies ThreadStartResult;
@@ -1761,6 +1775,7 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
           const refusal = childSendRefusal(caller, child ?? null, {
             from: from(scope),
             callerTurnId,
+            isLead: yield* isLeadThread(caller),
           });
           if (refusal !== null) {
             return {
