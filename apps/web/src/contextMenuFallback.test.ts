@@ -262,4 +262,45 @@ describe("showContextMenuFallback", () => {
     await expect(selectionPromise).resolves.toBeNull();
     expect(fakeDocument.activeElement).toBe(opener);
   });
+
+  it("opens and leaves a submenu from the keyboard", async () => {
+    const fakeDocument = document as unknown as FakeDocument;
+    const selectionPromise = showContextMenuFallback([
+      { id: "copy", label: "Copy path" },
+      {
+        id: "open:submenu",
+        label: "Open in",
+        children: [
+          { id: "open:cursor", label: "Cursor" },
+          { id: "open:zed", label: "Zed" },
+        ],
+      },
+    ]);
+    const press = (key: string) => fakeDocument.dispatchEvent(new FakeDomEvent("keydown", { key }));
+    const parent = findButton("Open in")!;
+
+    // The right arrow on its item opens it, with its first item focused.
+    parent.focus();
+    press("ArrowRight");
+    expect(fakeDocument.activeElement).toBe(findButton("Cursor"));
+    // The left arrow closes it and goes back to the item that opened it.
+    press("ArrowLeft");
+    expect(findButton("Cursor")).toBeUndefined();
+    expect(fakeDocument.activeElement).toBe(parent);
+
+    // Enter or Space on the item (a click with no press) opens it too; Escape
+    // there closes only the submenu.
+    parent.dispatchEvent(new FakeDomEvent("click", { detail: 0 }));
+    expect(fakeDocument.activeElement).toBe(findButton("Cursor"));
+    press("Escape");
+    expect(findButton("Cursor")).toBeUndefined();
+    expect(fakeDocument.activeElement).toBe(parent);
+
+    // Down in the submenu, and Enter picks.
+    press("ArrowRight");
+    press("ArrowDown");
+    expect(fakeDocument.activeElement).toBe(findButton("Zed"));
+    findButton("Zed")!.dispatchEvent(new FakeDomEvent("click", { detail: 0 }));
+    await expect(selectionPromise).resolves.toBe("open:zed");
+  });
 });

@@ -41,6 +41,8 @@ export function showContextMenuFallback<T extends string>(
     const opener = document.activeElement as HTMLElement | null;
     // Each open menu's items that take a press, in order, for the arrow keys.
     const itemsByMenu = new Map<HTMLDivElement, HTMLButtonElement[]>();
+    // An item that opens a submenu, and what that submenu lists.
+    const childrenOf = new Map<HTMLButtonElement, readonly ContextMenuItem<T>[]>();
 
     const cleanup = (result: T | null) => {
       document.removeEventListener("keydown", onKeyDown);
@@ -53,19 +55,43 @@ export function showContextMenuFallback<T extends string>(
     };
 
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        cleanup(null);
+      const focused = document.activeElement as HTMLButtonElement | null;
+      // The open menu that has focus (an item of it, or itself); the top one if none.
+      const focusedLevel = Math.max(
+        0,
+        menuStack.findIndex(
+          (menu) =>
+            (menu as unknown) === focused ||
+            (focused !== null && (itemsByMenu.get(menu) ?? []).includes(focused)),
+        ),
+      );
+      if (event.key === "Escape" || event.key === "ArrowLeft") {
+        // In a submenu: back to the item that opened it. In the menu: Escape closes.
+        if (focusedLevel > 0) {
+          event.preventDefault();
+          const parent = openedBy.get(focusedLevel) ?? null;
+          closeMenusFromLevel(focusedLevel);
+          parent?.focus({ preventScroll: true });
+          return;
+        }
+        if (event.key === "Escape") {
+          event.preventDefault();
+          cleanup(null);
+        }
+        return;
+      }
+      if (event.key === "ArrowRight") {
+        const children = focused === null ? undefined : childrenOf.get(focused);
+        if (focused !== null && children) {
+          event.preventDefault();
+          openSubmenu(focused, children, focusedLevel + 1, { focusFirst: true });
+        }
         return;
       }
       if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
       // Up and down walk the items of the menu that has focus (the top one).
-      const focused = document.activeElement as HTMLButtonElement | null;
-      const items =
-        menuStack
-          .map((menu) => itemsByMenu.get(menu) ?? [])
-          .find((candidate) => focused !== null && candidate.includes(focused)) ??
-        (menuStack[0] ? (itemsByMenu.get(menuStack[0]) ?? []) : []);
+      const menu = menuStack[focusedLevel];
+      const items = menu ? (itemsByMenu.get(menu) ?? []) : [];
       if (items.length === 0) return;
       event.preventDefault();
       const at = focused === null ? -1 : items.indexOf(focused);
@@ -82,6 +108,28 @@ export function showContextMenuFallback<T extends string>(
       while (menuStack.length > level) {
         menuStack.pop()?.remove();
       }
+    };
+
+    // The item, one level up, whose submenu is open at a level.
+    const openedBy = new Map<number, HTMLButtonElement>();
+
+    /** Opens `button`'s submenu beside it; opened from the keyboard, its first item takes focus. */
+    const openSubmenu = (
+      button: HTMLButtonElement,
+      children: readonly ContextMenuItem<T>[],
+      level: number,
+      options: { readonly focusFirst: boolean },
+    ) => {
+      const rect = button.getBoundingClientRect();
+      openMenu(children, rect.right + 4, rect.top, level);
+      openedBy.set(level, button);
+      const childMenu = menuStack[level];
+      if (!childMenu) return;
+      const childRect = childMenu.getBoundingClientRect();
+      if (childRect.right > window.innerWidth) {
+        clampMenuPosition(childMenu, rect.left - childRect.width - 4, rect.top);
+      }
+      if (options.focusFirst) itemsByMenu.get(childMenu)?.[0]?.focus({ preventScroll: true });
     };
 
     const openMenu = (
@@ -133,23 +181,17 @@ export function showContextMenuFallback<T extends string>(
         if (!isDisabled) {
           focusable.push(button);
           if (hasChildren) {
+            const children = item.children!;
+            childrenOf.set(button, children);
             button.addEventListener("mouseenter", () => {
-              const rect = button.getBoundingClientRect();
-              const nextLeft = rect.right + 4;
-              const nextTop = rect.top;
-              openMenu(item.children!, nextLeft, nextTop, level + 1);
-
-              const childMenu = menuStack[level + 1];
-              if (!childMenu) {
-                return;
-              }
-              const childRect = childMenu.getBoundingClientRect();
-              if (childRect.right > window.innerWidth) {
-                clampMenuPosition(childMenu, rect.left - childRect.width - 4, rect.top);
-              }
+              openSubmenu(button, children, level + 1, { focusFirst: false });
             });
             button.addEventListener("click", (event) => {
               event.preventDefault();
+              // Enter or Space (a click with no press) opens it from the keyboard.
+              if (event.detail === 0) {
+                openSubmenu(button, children, level + 1, { focusFirst: true });
+              }
             });
           } else {
             button.addEventListener("mouseenter", () => {
