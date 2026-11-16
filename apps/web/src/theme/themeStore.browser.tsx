@@ -182,14 +182,16 @@ describe("theme store, applied", () => {
     const screen = await render(
       <div data-slot="sidebar-wrapper" className="bg-frame">
         <div data-slot="app-titlebar" data-testid="title" className="bg-frame" />
-        <div data-slot="app-panel" data-testid="panel" className="bg-background">
-          <div data-chat-view="" data-testid="view" className="bg-background">
-            <div data-chat-column="" data-testid="column">
-              <div data-testid="sticky" className="surface-group-solid" />
-              <div data-testid="fade" className="glass-fade" />
+        <div data-slot="app-panel-shape" data-testid="panel" className="bg-background">
+          <div data-slot="app-panel">
+            <div data-chat-view="" data-testid="view" className="bg-background">
+              <div data-chat-column="" data-testid="column">
+                <div data-testid="sticky" className="surface-group-solid" />
+                <div data-testid="fade" className="glass-fade" />
+              </div>
             </div>
+            <div data-empty-home="" data-testid="home" className="bg-background" />
           </div>
-          <div data-empty-home="" data-testid="home" className="bg-background" />
         </div>
       </div>,
     );
