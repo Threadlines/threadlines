@@ -51,6 +51,7 @@ import {
   setTheme,
   getPowerState,
   setBackdropActive,
+  setWindowDragging,
   showContextMenu,
 } from "./methods/window.ts";
 import {
@@ -158,6 +159,7 @@ export const installDesktopIpcHandlers = Effect.gen(function* () {
   yield* ipc.handle(setTheme);
   yield* ipc.handle(getPowerState);
   yield* ipc.handle(setBackdropActive);
+  yield* ipc.handle(setWindowDragging);
   yield* ipc.handle(setTaskbarStatus);
   yield* ipc.handle(getBackgroundOptions);
   yield* ipc.handle(setBackgroundOptions);

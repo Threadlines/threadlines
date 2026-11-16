@@ -1602,6 +1602,12 @@ export interface DesktopBridge {
    * watchdog samples the backdrop frame's process.
    */
   setBackdropActive?: (active: boolean) => Promise<void>;
+  /**
+   * A press on a header control that is also a button (the project name,
+   * the thread title) became a drag (true), or ended (false): the window
+   * follows the cursor meanwhile. Absent on older desktop builds.
+   */
+  setWindowDragging?: (dragging: boolean) => Promise<void>;
   /** The watchdog found the backdrop frame over its CPU budget; the app makes the art still. */
   onBackdropTooHeavy?: (listener: () => void) => () => void;
   /** View › Reset Theme: the app goes back to the built-in System theme. */

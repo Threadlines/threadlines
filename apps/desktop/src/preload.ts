@@ -335,6 +335,8 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   },
   setBackdropActive: (active) =>
     ipcRenderer.invoke(IpcChannels.SET_BACKDROP_ACTIVE_CHANNEL, active),
+  setWindowDragging: (dragging) =>
+    ipcRenderer.invoke(IpcChannels.SET_WINDOW_DRAGGING_CHANNEL, dragging),
   onBackdropTooHeavy: (listener) => {
     const wrappedListener = () => listener();
     ipcRenderer.on(IpcChannels.BACKDROP_TOO_HEAVY_CHANNEL, wrappedListener);

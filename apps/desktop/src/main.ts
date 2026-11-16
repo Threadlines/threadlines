@@ -65,6 +65,7 @@ import { runAppImageCommandIfAsked } from "./cliCommand/appImageCommand.ts";
 import * as DesktopCliCommand from "./cliCommand/DesktopCliCommand.ts";
 import * as DesktopUpdates from "./updates/DesktopUpdates.ts";
 import * as DesktopBackdropMonitor from "./window/DesktopBackdropMonitor.ts";
+import * as DesktopWindowDrag from "./window/DesktopWindowDrag.ts";
 import * as DesktopThemeAppearance from "./window/DesktopThemeAppearance.ts";
 import * as DesktopWindow from "./window/DesktopWindow.ts";
 import * as DesktopStartupFailurePrompt from "./window/DesktopStartupFailurePrompt.ts";
@@ -307,6 +308,8 @@ const desktopWindowLayer = DesktopWindow.layer.pipe(
   // appearance changes; the art's power and CPU watch sits beside it.
   Layer.provideMerge(DesktopThemeAppearance.layer),
   Layer.provideMerge(DesktopBackdropMonitor.layer),
+  // Moving the window from header controls that are also buttons.
+  Layer.provideMerge(DesktopWindowDrag.layer),
   Layer.provideMerge(PreviewSession.layer),
   Layer.provideMerge(PreviewAutomation.layer),
   // Beneath the window and the automation, which both ask whose a page is.
