@@ -1463,6 +1463,9 @@ const make = Effect.gen(function* () {
         files,
         worktreePath,
         transferKey: row.transferKey,
+        // On record before any file is written, so an abort after a crash
+        // partway still finds them (discardCarried only touches its own).
+        journal: (destinations) => Effect.runPromise(writeCarriedRecord(row, destinations)),
       });
       if ("refused" in imported) {
         yield* Effect.logWarning("link move carried no agent session", {
@@ -1471,8 +1474,8 @@ const make = Effect.gen(function* () {
         });
         return false;
       }
-      // What it wrote is on record before the binding, so an abort from here
-      // on (cleanUp) takes back the files and the binding.
+      // Narrowed to what it really wrote, still before the binding, so an
+      // abort from here on (cleanUp) takes back the files and the binding.
       yield* writeCarriedRecord(row, imported.written);
       const adopted = yield* providers
         .adoptNativeSession({

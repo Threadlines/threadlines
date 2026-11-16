@@ -496,6 +496,34 @@ describe("LinkMoves", () => {
     }).pipe(Effect.provide(testLayer(repos, dispatched, "allowed", () => false, [], carry)));
   });
 
+  it.live("a session file that can't be read leaves the session behind, not the move", () => {
+    const repos = makeRepos();
+    const dispatched: Array<OrchestrationCommand> = [];
+    const carry: CarryRecord = { home: path.join(repos.root, "claude-b"), adopted: [] };
+    return Effect.gen(function* () {
+      const home = claudeHomeWithSession(repos.root);
+      const exported = yield* exportClaudeNativeSession({
+        configDir: home,
+        resumeCursor: { resume: SESSION },
+      });
+      // Found when the move was sized, gone by the time it is packed.
+      const session: NativeSessionExport = {
+        ...exported!,
+        files: exported!.files.map((file) => ({
+          ...file,
+          absolutePath: path.join(home, "gone", path.basename(file.absolutePath)),
+        })),
+      };
+      const { manifest, payload } = yield* pack(repos, session);
+      assert.equal(manifest.session, undefined);
+      assert.equal((yield* deliver(manifest, payload)).status, "committed");
+      const command = dispatched.find((entry) => entry.type === "thread.import");
+      assert(command?.type === "thread.import");
+      assert.equal(command.nativeSession, undefined);
+      assert.deepEqual(filesUnder(carry.home), []);
+    }).pipe(Effect.provide(testLayer(repos, dispatched, "allowed", () => false, [], carry)));
+  });
+
   it.live("a move that carried a session but didn't land takes back its files and binding", () => {
     const repos = makeRepos();
     const dispatched: OrchestrationCommand[] = [];

@@ -189,6 +189,6 @@ export const importClaudeNativeSession = Effect.fn("importClaudeNativeSession")(
     placements.push({ destination: placed.destination, bytes: file.bytes });
   }
   if (transcripts !== 1) return { refused: "it doesn't hold the session's transcript once" };
-  const placed = yield* placeSessionFiles(placements, input.transferKey);
+  const placed = yield* placeSessionFiles(placements, input.transferKey, input.journal);
   return "refused" in placed ? placed : { cursor, written: placed.written };
 });

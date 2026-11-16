@@ -1877,6 +1877,25 @@ describe("Codex room tools", () => {
     );
   });
 
+  it("a rollout carried from another computer that Codex can't read starts fresh and says so", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const { runtime } = yield* spawnRuntime({
+          threadId: ThreadId.make("resume-carried-thread"),
+          serverPort: 0,
+          runtimeMode: "full-access",
+          resumeCursor: {
+            threadId: "019f6910-960c-7d83-87f7-074ab55a95fb",
+            rolloutPath: "/home/sessions/2026/07/15/rollout-x.jsonl",
+          },
+        });
+        const session = yield* runtime.start();
+        assert.equal(session.resumeFailed, true);
+        yield* runtime.close;
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer), Effect.timeout("10 seconds")),
+    );
+  });
+
   it("attaches the room endpoint on the runtime's own credential, which ends with it", async () => {
     await Effect.runPromise(
       Effect.gen(function* () {

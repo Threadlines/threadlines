@@ -156,7 +156,11 @@ export const importCodexNativeSession = Effect.fn("importCodexNativeSession")(fu
     relPath: file.relPath,
   });
   if (destination === null) return { refused: `"${file.relPath}" isn't the session's rollout` };
-  const placed = yield* placeSessionFiles([{ destination, bytes: file.bytes }], input.transferKey);
+  const placed = yield* placeSessionFiles(
+    [{ destination, bytes: file.bytes }],
+    input.transferKey,
+    input.journal,
+  );
   return "refused" in placed
     ? placed
     : { cursor: { threadId, rolloutPath: destination }, written: placed.written };

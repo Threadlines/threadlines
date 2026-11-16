@@ -586,15 +586,32 @@ export function writeMoveExport(
     const session = input.nativeSession ?? null;
     const sessionBytes = session?.files.reduce((sum, file) => sum + file.size, 0) ?? 0;
     const carriesSession = session !== null && nativeSessionFits(sessionBytes, otherBytes);
-    if (session !== null && carriesSession) {
-      for (const file of session.files) {
+    // Read up front (both caps bound it): a session file that can't be read,
+    // or vanished since it was found, leaves the session behind and the move
+    // goes on with a summary, never failing the move itself.
+    const sessionBytesRead =
+      session !== null && carriesSession
+        ? yield* Effect.tryPromise(() =>
+            Promise.all(session.files.map((file) => NodeFs.readFile(file.absolutePath))),
+          ).pipe(Effect.orElseSucceed(() => null))
+        : null;
+    const sessionPacked =
+      session !== null &&
+      sessionBytesRead !== null &&
+      nativeSessionFits(
+        sessionBytesRead.reduce((sum, bytes) => sum + bytes.length, 0),
+        otherBytes,
+      );
+    if (session !== null && sessionBytesRead !== null && sessionPacked) {
+      session.files.forEach((file, index) => {
+        const bytes = sessionBytesRead[index]!;
         parts.push({
           kind: "session",
           path: file.relPath,
-          size: file.size,
-          read: () => NodeFs.readFile(file.absolutePath),
+          size: bytes.length,
+          read: () => Promise.resolve(bytes),
         });
-      }
+      });
     }
     const totalBytes = parts.reduce((sum, part) => sum + part.size, 0);
 
@@ -665,7 +682,7 @@ export function writeMoveExport(
         untrackedFiles: untracked.length,
         unpushedCommits: checkout.unpushedCommits,
       },
-      ...(session !== null && carriesSession
+      ...(session !== null && sessionPacked
         ? {
             session: {
               driver: session.driver,
@@ -674,7 +691,11 @@ export function writeMoveExport(
             },
           }
         : {}),
-      ...(session !== null && !carriesSession ? { sessionOmitted: "too_large" as const } : {}),
+      // Too large when it was sized, or when it was read: an unreadable
+      // session is simply left behind.
+      ...(session !== null && (!carriesSession || (sessionBytesRead !== null && !sessionPacked))
+        ? { sessionOmitted: "too_large" as const }
+        : {}),
     };
     const manifestTemp = `${moveManifestPath(dir)}.tmp`;
     yield* fsCall("Couldn't write the packed thread.", async () => {

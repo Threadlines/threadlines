@@ -225,6 +225,9 @@ describe("carrying a Codex session", () => {
     expect(exported?.files.map((file) => file.relPath)).toEqual([`sessions/2026/07/15/${name}`]);
 
     const target = tempDir("codex-b");
+    // The move keeps a record of every file before the first one is written,
+    // so an abort after a crash partway can still take them back.
+    const journaled: Array<{ paths: ReadonlyArray<string>; existing: string[] }> = [];
     const imported = await Effect.runPromise(
       importCodexNativeSession({
         home: target,
@@ -232,9 +235,13 @@ describe("carrying a Codex session", () => {
         files: received(exported!),
         worktreePath: "/w",
         transferKey: TRANSFER,
+        journal: async (paths) => {
+          journaled.push({ paths, existing: listFiles(target, true) });
+        },
       }),
     );
     const destination = path.join(target, "sessions/2026/07/15", name);
+    expect(journaled).toEqual([{ paths: [destination], existing: [] }]);
     expect(imported).toEqual({
       cursor: { threadId: CODEX_THREAD, rolloutPath: destination },
       written: [destination],

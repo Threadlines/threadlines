@@ -1120,23 +1120,29 @@ export const openCodexThread = (input: {
     return resume;
   }
 
+  // A rollout carried from another computer (resumed by path) may be one this
+  // Codex can't read at all, a newer format say: any failure to open it falls
+  // back to a fresh thread, and the reactor gives it the summary instead.
+  const carried = input.resumePath !== undefined;
   return resume.pipe(
-    Effect.catchIf(isRecoverableThreadResumeError, (error) =>
-      Effect.logWarning("codex app-server thread resume fell back to fresh start", {
-        threadId: input.threadId,
-        requestedRuntimeMode: input.runtimeMode,
-        resumeThreadId,
-        recoverable: true,
-        cause: error.message,
-      }).pipe(
-        Effect.andThen(input.onResumeFallback?.(error.message) ?? Effect.void),
-        Effect.andThen(
-          withCodexRequestTimeout(
-            "start a Codex thread",
-            input.client.request("thread/start", startParams),
+    Effect.catchIf(
+      (error) => carried || isRecoverableThreadResumeError(error),
+      (error) =>
+        Effect.logWarning("codex app-server thread resume fell back to fresh start", {
+          threadId: input.threadId,
+          requestedRuntimeMode: input.runtimeMode,
+          resumeThreadId,
+          recoverable: true,
+          cause: error.message,
+        }).pipe(
+          Effect.andThen(input.onResumeFallback?.(error.message) ?? Effect.void),
+          Effect.andThen(
+            withCodexRequestTimeout(
+              "start a Codex thread",
+              input.client.request("thread/start", startParams),
+            ),
           ),
         ),
-      ),
     ),
   );
 };

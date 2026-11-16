@@ -61,6 +61,12 @@ export interface NativeSessionImportInput {
   readonly worktreePath: string;
   /** The move writing it: every file it writes is marked as this transfer's (placeSessionFiles). */
   readonly transferKey: string;
+  /**
+   * Called with every file it is about to write, before the first one: the
+   * move keeps that on record, so a crash partway still lets an abort take
+   * them back. A failure here writes nothing.
+   */
+  readonly journal?: (destinations: ReadonlyArray<string>) => Promise<void>;
 }
 
 /**
@@ -289,8 +295,14 @@ async function discardOne(destination: string, transferKey: string): Promise<boo
 export const placeSessionFiles = (
   placements: ReadonlyArray<NativeSessionPlacement>,
   transferKey: string,
+  journal?: NativeSessionImportInput["journal"],
 ): Effect.Effect<{ readonly written: ReadonlyArray<string> } | { readonly refused: string }> =>
   Effect.promise(async () => {
+    try {
+      await journal?.(placements.map((placement) => placement.destination));
+    } catch (error) {
+      return { refused: `the move couldn't keep a record of its files (${String(error)})` };
+    }
     const written: Array<string> = [];
     const takeBack = async () => {
       for (const path of written) await discardOne(path, transferKey).catch(() => false);

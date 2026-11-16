@@ -75,7 +75,11 @@ export const importPiNativeSession = Effect.fn("importPiNativeSession")(function
     piSessionSlug(input.worktreePath),
     name,
   );
-  const placed = yield* placeSessionFiles([{ destination, bytes: file.bytes }], input.transferKey);
+  const placed = yield* placeSessionFiles(
+    [{ destination, bytes: file.bytes }],
+    input.transferKey,
+    input.journal,
+  );
   if ("refused" in placed) return placed;
   return {
     cursor: makePiResumeCursor({
