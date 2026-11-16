@@ -47,6 +47,7 @@ export const GET_POWER_STATE_CHANNEL = "desktop:get-power-state";
 export const POWER_STATE_CHANNEL = "desktop:power-state";
 export const SET_BACKDROP_ACTIVE_CHANNEL = "desktop:set-backdrop-active";
 export const SET_WINDOW_DRAGGING_CHANNEL = "desktop:set-window-dragging";
+export const CAN_MOVE_WINDOW_CHANNEL = "desktop:can-move-window";
 export const BACKDROP_TOO_HEAVY_CHANNEL = "desktop:backdrop-too-heavy";
 export const RESET_THEME_CHANNEL = "desktop:reset-theme";
 export const SET_TASKBAR_STATUS_CHANNEL = "desktop:set-taskbar-status";

@@ -13,6 +13,10 @@
  * during a drag: it ends on the page's stop, when the window loses focus, or
  * after 10 s without a stop, in case one never comes. A maximized or
  * full-screen window doesn't move.
+ *
+ * Under Wayland the app can't read the cursor's place on screen or move its
+ * window, so there the drag isn't offered at all (`canMoveWindow`): the
+ * page's buttons stay plain buttons.
  */
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -23,6 +27,30 @@ import * as Electron from "electron";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 
 export const DRAG_FRAME_MS = 16;
+
+/**
+ * Whether this app can move its own window: everywhere but Linux under
+ * Wayland, where Electron supports neither `screen.getCursorScreenPoint()`
+ * nor `setPosition()`. Chromium picks Wayland when asked to
+ * (`--ozone-platform=wayland`), or, left to choose, when the session has a
+ * Wayland display; `--ozone-platform=x11` (or the hint) keeps it on X11.
+ */
+export function canMoveOwnWindow(input: {
+  readonly platform: NodeJS.Platform;
+  readonly env: Readonly<Record<string, string | undefined>>;
+  /** `--ozone-platform`, or "" when not given. */
+  readonly ozonePlatform: string;
+  /** `--ozone-platform-hint`, or "" when not given. */
+  readonly ozonePlatformHint: string;
+}): boolean {
+  if (input.platform !== "linux") return true;
+  const chosen = input.ozonePlatform || input.ozonePlatformHint;
+  if (chosen === "x11") return true;
+  if (chosen === "wayland") return false;
+  const waylandSession =
+    (input.env.WAYLAND_DISPLAY ?? "") !== "" || input.env.XDG_SESSION_TYPE === "wayland";
+  return !waylandSession;
+}
 /** A drag with no stop after this long ends on its own. */
 export const DRAG_SAFETY_MS = 10_000;
 
@@ -99,6 +127,8 @@ export function makeWindowDragLoop(input: {
 }
 
 export interface DesktopWindowDragShape {
+  /** Whether a drag can move this window here (canMoveOwnWindow); the page offers it only then. */
+  readonly canMoveWindow: boolean;
   /** A press on a header control became a drag (true), or ended (false). */
   readonly setDragging: (dragging: boolean) => Effect.Effect<void>;
 }
@@ -111,6 +141,12 @@ export const layer = Layer.effect(
   DesktopWindowDrag,
   Effect.gen(function* () {
     const electronWindow = yield* ElectronWindow.ElectronWindow;
+    const canMoveWindow = canMoveOwnWindow({
+      platform: process.platform,
+      env: process.env,
+      ozonePlatform: Electron.app.commandLine.getSwitchValue("ozone-platform"),
+      ozonePlatformHint: Electron.app.commandLine.getSwitchValue("ozone-platform-hint"),
+    });
     const loop = makeWindowDragLoop({
       cursor: () => Electron.screen.getCursorScreenPoint(),
       clock: {
@@ -122,8 +158,10 @@ export const layer = Layer.effect(
     });
     yield* Effect.addFinalizer(() => Effect.sync(loop.stop));
     return DesktopWindowDrag.of({
+      canMoveWindow,
       setDragging: (dragging) =>
         Effect.gen(function* () {
+          if (!canMoveWindow) return;
           if (!dragging) {
             loop.stop();
             return;

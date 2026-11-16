@@ -1,6 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 
 import {
+  canMoveOwnWindow,
   DRAG_FRAME_MS,
   DRAG_SAFETY_MS,
   makeWindowDragLoop,
@@ -128,5 +129,33 @@ describe("makeWindowDragLoop", () => {
       assert.deepStrictEqual(target.moves, []);
     }
     assert.strictEqual(time.pending(), 0);
+  });
+});
+
+describe("canMoveOwnWindow", () => {
+  const linux = (
+    env: Record<string, string | undefined>,
+    ozonePlatform = "",
+    ozonePlatformHint = "",
+  ) => canMoveOwnWindow({ platform: "linux", env, ozonePlatform, ozonePlatformHint });
+
+  it("moves the window on macOS, Windows, and Linux under X11", () => {
+    const wayland = { WAYLAND_DISPLAY: "wayland-0", XDG_SESSION_TYPE: "wayland" };
+    for (const platform of ["darwin", "win32"] as const) {
+      assert.isTrue(
+        canMoveOwnWindow({ platform, env: wayland, ozonePlatform: "", ozonePlatformHint: "" }),
+      );
+    }
+    assert.isTrue(linux({ DISPLAY: ":0", XDG_SESSION_TYPE: "x11" }));
+    // A Wayland session where the app was told to run on X11 (XWayland).
+    assert.isTrue(linux(wayland, "x11"));
+    assert.isTrue(linux(wayland, "", "x11"));
+  });
+
+  it("doesn't offer it under Wayland, where the app can't move its window", () => {
+    assert.isFalse(linux({ WAYLAND_DISPLAY: "wayland-0" }));
+    assert.isFalse(linux({ XDG_SESSION_TYPE: "wayland" }));
+    assert.isFalse(linux({ WAYLAND_DISPLAY: "wayland-0" }, "", "auto"));
+    assert.isFalse(linux({ DISPLAY: ":0" }, "wayland"));
   });
 });

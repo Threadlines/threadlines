@@ -1608,6 +1608,11 @@ export interface DesktopBridge {
    * follows the cursor meanwhile. Absent on older desktop builds.
    */
   setWindowDragging?: (dragging: boolean) => Promise<void>;
+  /**
+   * Whether `setWindowDragging` can move the window here: false under
+   * Wayland, where the app can't move its own window. Absent on older builds.
+   */
+  canMoveWindow?: () => boolean;
   /** The watchdog found the backdrop frame over its CPU budget; the app makes the art still. */
   onBackdropTooHeavy?: (listener: () => void) => () => void;
   /** View › Reset Theme: the app goes back to the built-in System theme. */

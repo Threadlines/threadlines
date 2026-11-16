@@ -63,6 +63,8 @@ ipcRenderer.on(IpcChannels.WINDOW_FOCUS_CHANNEL, (_event, focused: unknown) => {
 // moment; telling the main process only once that moment has passed keeps
 // those re-runs from costing two messages each.
 let menuActionListenerCount = 0;
+// Whether a drag from the page can move the window; asked once.
+let canMoveWindowAnswer: boolean | null = null;
 let menuActionsStopPending = false;
 
 function reportMenuActionsListening(listening: boolean) {
@@ -335,6 +337,10 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   },
   setBackdropActive: (active) =>
     ipcRenderer.invoke(IpcChannels.SET_BACKDROP_ACTIVE_CHANNEL, active),
+  canMoveWindow: () => {
+    canMoveWindowAnswer ??= ipcRenderer.sendSync(IpcChannels.CAN_MOVE_WINDOW_CHANNEL) === true;
+    return canMoveWindowAnswer;
+  },
   setWindowDragging: (dragging) =>
     ipcRenderer.invoke(IpcChannels.SET_WINDOW_DRAGGING_CHANNEL, dragging),
   onBackdropTooHeavy: (listener) => {

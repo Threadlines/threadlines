@@ -235,6 +235,16 @@ export const setBackdropActive = makeIpcMethod({
   }),
 });
 
+/** Whether a drag from the page can move the window here (not under Wayland). */
+export const canMoveWindow = makeSyncIpcMethod({
+  channel: IpcChannels.CAN_MOVE_WINDOW_CHANNEL,
+  result: Schema.Boolean,
+  handler: Effect.fn("desktop.ipc.window.canMoveWindow")(function* () {
+    const windowDrag = yield* DesktopWindowDrag.DesktopWindowDrag;
+    return windowDrag.canMoveWindow;
+  }),
+});
+
 /** A press on a header control became a drag (true), or ended (false): the window follows the cursor. */
 export const setWindowDragging = makeIpcMethod({
   channel: IpcChannels.SET_WINDOW_DRAGGING_CHANNEL,
