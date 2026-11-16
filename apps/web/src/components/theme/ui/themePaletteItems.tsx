@@ -4,7 +4,7 @@
  * switches the way Settings does; "Use default theme" is the escape hatch,
  * always there, whatever the theme looks like.
  */
-import { PaletteIcon, RotateCcwIcon } from "lucide-react";
+import { PaintbrushIcon, PaletteIcon, RotateCcwIcon } from "lucide-react";
 import { useMemo } from "react";
 
 import { chooseTheme, useThemeChoice } from "~/theme/themeStore";
@@ -19,6 +19,7 @@ import type {
   CommandPaletteSubmenuItem,
 } from "../../CommandPalette.logic";
 import { failureNotice, toastManager } from "../../ui/toast";
+import { openThemeEditor } from "./themeEditorState";
 
 export function useThemePaletteItems(classes: {
   readonly item: string;
@@ -69,6 +70,40 @@ export function useThemePaletteItems(classes: {
         icon: <PaletteIcon className={classes.item} />,
         addonIcon: <PaletteIcon className={classes.addon} />,
         groups,
+      },
+      {
+        kind: "action",
+        value: "action:edit-theme-colors",
+        searchTerms: [
+          "edit theme",
+          "theme colors",
+          "customize colors",
+          "accent color",
+          "tweak theme",
+        ],
+        title: "Edit theme colors…",
+        icon: <PaintbrushIcon className={classes.item} />,
+        run: async () => {
+          const tiles = [...builtins, ...starters, ...library];
+          // System is whichever of Light and Dark the computer shows now.
+          const shown =
+            committed.kind === "builtin" && committed.id === "system"
+              ? {
+                  kind: "builtin" as const,
+                  id: document.documentElement.classList.contains("dark")
+                    ? ("dark" as const)
+                    : ("light" as const),
+                }
+              : committed;
+          const tile = tiles.find((candidate) => sameThemeChoice(candidate.choice, shown));
+          if (tile !== undefined) openThemeEditor(tile);
+          else
+            toastManager.add({
+              type: "info",
+              title: "This theme can't be edited here",
+              description: "Keep it first, then edit it from Appearance.",
+            });
+        },
       },
       {
         kind: "action",

@@ -951,7 +951,7 @@ const ROWS = [
     parent: "appearance.themes",
     title: "Theme",
     about:
-      "How Threadlines looks: built in, a starter, a theme you or an agent made, or one from VS Code. Devices with Same theme on all my devices on show the same one.",
+      "How Threadlines looks: built in, a starter, a theme you or an agent made, or one from VS Code. A theme's options have Edit colors. Devices with Same theme on all my devices on show the same one.",
     keywords: [
       "dark mode",
       "light mode",
@@ -964,6 +964,8 @@ const ROWS = [
       "import theme",
       "vs code theme",
       "vscode",
+      "edit colors",
+      "accent color",
     ],
     scope: "device",
     edit: { lands: "device", control: { kind: "theme" }, store: "theme" },

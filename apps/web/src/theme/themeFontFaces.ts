@@ -45,7 +45,7 @@ export function loadThemeFonts(
   for (const slot of ["ui", "mono"] as const) {
     const font = fonts?.[slot];
     if (!font || font.source === "system" || !font.data) continue;
-    const family = embeddedFontFamily(hash, slot);
+    const family = embeddedFontFamily(hash, slot, font);
     let load = loadedFaces.get(family);
     if (!load) {
       const bytes = decodeBase64(font.data);
@@ -87,7 +87,7 @@ export function themeFontFaceCss(fonts: ThemeFonts | undefined, hash: string | n
     }
     const weight = faceWeight(font);
     rules.push(
-      `@font-face{font-family:"${embeddedFontFamily(hash, slot)}";src:url(data:font/woff2;base64,${font.data}) format("woff2");${weight ? `font-weight:${weight};` : ""}font-display:swap;}`,
+      `@font-face{font-family:"${embeddedFontFamily(hash, slot, font)}";src:url(data:font/woff2;base64,${font.data}) format("woff2");${weight ? `font-weight:${weight};` : ""}font-display:swap;}`,
     );
   }
   return rules.join("");
