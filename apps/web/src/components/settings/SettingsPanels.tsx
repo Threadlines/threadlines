@@ -541,6 +541,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.continueAfterUsageLimits !== DEFAULT_UNIFIED_SETTINGS.continueAfterUsageLimits
         ? ["Continue after usage limits"]
         : []),
+      ...(settings.continueAfterRestart !== DEFAULT_UNIFIED_SETTINGS.continueAfterRestart
+        ? [placeById("threads.continueAfterRestart").title]
+        : []),
       ...(settings.enableCommandRequests === false
         ? [placeById("threads.commandRequests").title]
         : []),
@@ -582,6 +585,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.claudeSuggestionsWhenUsageRunsFast,
       settings.codexSuggestions,
       settings.continueAfterUsageLimits,
+      settings.continueAfterRestart,
       settings.enableCommandRequests,
       settings.startAgentsWhileTyping,
       settings.agentInvites,
@@ -664,6 +668,7 @@ export function useSettingsRestore(onRestored?: () => void) {
         DEFAULT_UNIFIED_SETTINGS.claudeSuggestionsWhenUsageRunsFast,
       codexSuggestions: DEFAULT_UNIFIED_SETTINGS.codexSuggestions,
       continueAfterUsageLimits: DEFAULT_UNIFIED_SETTINGS.continueAfterUsageLimits,
+      continueAfterRestart: DEFAULT_UNIFIED_SETTINGS.continueAfterRestart,
       enableCommandRequests: true,
       startAgentsWhileTyping: true,
       agentInvites: "ask",

@@ -104,6 +104,8 @@ import {
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Clock from "effect/Clock";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { RESTART_CONTINUE_MESSAGE } from "../continueTurns.ts";
+import { APPROVAL_ACTIVITY_KINDS } from "@threadlines/shared/pendingRequests";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService, type GitWorkflowServiceShape } from "../../git/GitWorkflowService.ts";
 import { CheckpointStore } from "../../checkpointing/Services/CheckpointStore.ts";
@@ -729,6 +731,8 @@ describe("ProviderCommandReactor", () => {
       await Effect.runPromise(input.beforeStart(engine).pipe(Effect.orDie));
     }
     await Effect.runPromise(reactor.start().pipe(Scope.provide(scope)));
+    // As startup does, once everything listens.
+    await Effect.runPromise(reactor.continueTurnsCutByRestart);
     const drain = () => Effect.runPromise(reactor.drain);
 
     await Effect.runPromise(
@@ -4697,6 +4701,129 @@ describe("ProviderCommandReactor", () => {
     const freshThread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
     expect(freshThread?.session ?? null).toBeNull();
   });
+
+  // An update or quit while the agent works on what the user asked for: the
+  // agent picks it back up on start, unless the setting is off or the turn
+  // waited on the user (startup expires that question before the continue).
+  it.each([
+    { settingOn: true, waitingOnApproval: false, continued: true },
+    { settingOn: false, waitingOnApproval: false, continued: false },
+    { settingOn: true, waitingOnApproval: true, continued: false },
+  ])(
+    "continues a turn the user asked for that a restart cut off (setting on: $settingOn, waiting: $waitingOnApproval)",
+    async ({ settingOn, waitingOnApproval, continued }) => {
+      const now = new Date().toISOString();
+      const threadId = ThreadId.make("thread-cut-by-restart");
+      const turnId = asTurnId("turn-cut-by-restart");
+      const harness = await createHarness({
+        serverSettings: { continueAfterRestart: settingOn },
+        beforeStart: (engine) =>
+          Effect.gen(function* () {
+            yield* engine.dispatch({
+              type: "project.create",
+              commandId: CommandId.make("cmd-project-create-cut"),
+              projectId: asProjectId("project-cut"),
+              title: "Cut Project",
+              workspaceRoot: PROJECT_ROOT,
+              defaultModelSelection: null,
+              createdAt: now,
+            });
+            yield* engine.dispatch({
+              type: "thread.create",
+              commandId: CommandId.make("cmd-thread-create-cut"),
+              threadId,
+              projectId: asProjectId("project-cut"),
+              title: "Cut Thread",
+              modelSelection: {
+                instanceId: ProviderInstanceId.make("codex"),
+                model: "gpt-5-codex",
+              },
+              interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+              runtimeMode: "approval-required",
+              branch: null,
+              worktreePath: null,
+              createdAt: now,
+            });
+            yield* engine.dispatch({
+              type: "thread.turn.start",
+              commandId: CommandId.make("cmd-turn-start-cut"),
+              threadId,
+              message: {
+                messageId: asMessageId("user-message-cut"),
+                role: "user",
+                text: "Refactor the parser.",
+                attachments: [],
+              },
+              composer: "typed",
+              interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+              runtimeMode: "approval-required",
+              createdAt: now,
+            });
+            yield* engine.dispatch({
+              type: "thread.session.set",
+              commandId: CommandId.make("cmd-session-set-cut"),
+              threadId,
+              session: {
+                threadId,
+                status: "running",
+                providerName: "codex",
+                providerInstanceId: ProviderInstanceId.make("codex"),
+                runtimeMode: "approval-required",
+                activeTurnId: turnId,
+                lastError: null,
+                updatedAt: now,
+              },
+              createdAt: now,
+            });
+            if (waitingOnApproval) {
+              yield* engine.dispatch({
+                type: "thread.activity.append",
+                commandId: CommandId.make("cmd-approval-cut"),
+                threadId,
+                activity: {
+                  id: EventId.make("activity-approval-cut"),
+                  tone: "approval",
+                  kind: APPROVAL_ACTIVITY_KINDS.requested,
+                  summary: "Run command?",
+                  payload: { requestId: "approval-cut" },
+                  turnId,
+                  createdAt: now,
+                },
+                createdAt: now,
+              });
+            }
+          }),
+      });
+
+      const readThread = async () =>
+        (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+      if (continued) {
+        await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+        expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
+          input: RESTART_CONTINUE_MESSAGE,
+        });
+        const thread = await readThread();
+        expect(thread?.messages.at(-1)).toMatchObject({
+          role: "user",
+          text: RESTART_CONTINUE_MESSAGE,
+          trigger: "serverRestart",
+        });
+        expect(
+          thread?.activities.some((entry) => entry.kind === "provider.session.restart-interrupted"),
+        ).toBe(false);
+      } else {
+        await waitFor(
+          async () =>
+            (await readThread())?.activities.some(
+              (entry) => entry.kind === "provider.session.restart-interrupted",
+            ) ?? false,
+        );
+        await harness.drain();
+        expect(harness.sendTurn).not.toHaveBeenCalled();
+        expect((await readThread())?.session?.status).toBe("interrupted");
+      }
+    },
+  );
 
   it("sends a steer that missed its turn as the next turn", async () => {
     const harness = await createHarness();

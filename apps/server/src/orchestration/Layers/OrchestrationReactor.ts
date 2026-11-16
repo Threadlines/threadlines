@@ -32,6 +32,7 @@ export const makeOrchestrationReactor = Effect.gen(function* () {
 
   return {
     start,
+    continueTurnsCutByRestart: providerCommandReactor.continueTurnsCutByRestart,
   } satisfies OrchestrationReactorShape;
 });
 
