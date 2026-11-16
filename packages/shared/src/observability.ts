@@ -93,7 +93,24 @@ export interface TraceSink {
   close: () => Effect.Effect<void>;
 }
 
-export type TraceRecordFilter = (record: TraceRecord) => boolean;
+/**
+ * What a trace filter decides from: the parts of a record that are cheap to
+ * read off a finished span, so a span the filter drops is never turned into a
+ * record. A whole `TraceRecord` is one too.
+ */
+export interface TraceRecordHead {
+  readonly type: TraceRecord["type"];
+  readonly name: string;
+  readonly traceId: string;
+  readonly spanId: string;
+  readonly durationMs: number;
+  /** Absent on OTLP records. */
+  readonly exit?: { readonly _tag: EffectTraceRecord["exit"]["_tag"] };
+  readonly attributes: Readonly<Record<string, unknown>>;
+  readonly events: ReadonlyArray<{ readonly attributes: Readonly<Record<string, unknown>> }>;
+}
+
+export type TraceRecordFilter = (record: TraceRecordHead) => boolean;
 
 export interface LocalFileTracerOptions extends TraceSinkOptions {
   readonly delegate?: Tracer.Tracer;
@@ -198,6 +215,13 @@ export function compactTraceAttributes(
       .filter(([, value]) => value !== undefined)
       .map(([key, value]) => [key, normalizeJsonValue(value)]),
   );
+}
+
+function traceExitTag(exit: Exit.Exit<unknown, unknown>): EffectTraceRecord["exit"]["_tag"] {
+  if (ExitRuntime.isSuccess(exit)) {
+    return "Success";
+  }
+  return Cause.hasInterruptsOnly(exit.cause) ? "Interrupted" : "Failure";
 }
 
 function formatTraceExit(exit: Exit.Exit<unknown, unknown>): EffectTraceRecord["exit"] {
@@ -471,10 +495,22 @@ class LocalFileSpan implements Tracer.Span {
     };
     this.delegate.end(endTime, exit);
 
+    // The filter drops most spans while agents stream (it samples database
+    // and per-message spans), so it reads a cheap summary first and only a
+    // kept span is turned into a record.
     if (this.sampled) {
-      const record = spanToTraceRecord(this);
-      if (this.shouldRecord(record)) {
-        this.push(record);
+      const head: TraceRecordHead = {
+        type: "effect-span",
+        name: this.name,
+        traceId: this.traceId,
+        spanId: this.spanId,
+        durationMs: Number(endTime - this.status.startTime) / 1_000_000,
+        exit: { _tag: traceExitTag(exit) },
+        attributes: Object.fromEntries(this.attributes),
+        events: this.events.map(([, , attributes]) => ({ attributes })),
+      };
+      if (this.shouldRecord(head)) {
+        this.push(spanToTraceRecord(this));
       }
     }
   }

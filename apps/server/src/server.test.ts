@@ -1061,6 +1061,8 @@ const buildAppUnderTest = (options?: {
           getProjectShellById: () => Effect.succeed(Option.none()),
           getThreadShellById: () => Effect.succeed(Option.none()),
           getTurnActivities: () => Effect.succeed([]),
+          getThreadMessage: () => Effect.succeed(Option.none()),
+          hasAssistantMessageForTurn: () => Effect.succeed(false),
           getThreadDetailById: () => Effect.succeed(Option.none()),
           getCounts: () => Effect.succeed({ projectCount: 0, threadCount: 0 }),
           getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
@@ -4615,6 +4617,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           projectionSnapshotQuery: {
             getSnapshotSequence: () => Effect.succeed({ snapshotSequence: 600 }),
             getTurnActivities: () => Effect.succeed([]),
+            getThreadMessage: () => Effect.succeed(Option.none()),
+            hasAssistantMessageForTurn: () => Effect.succeed(false),
             getThreadDetailById: () =>
               Effect.sync(() => {
                 threadDetailReads += 1;

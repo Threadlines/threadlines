@@ -135,6 +135,8 @@ function makeSnapshotQuery(
     listThreadShells: () => Effect.succeed([]),
     getThreadShellById: () => Effect.succeed(Option.none()),
     getTurnActivities: () => Effect.succeed([]),
+    getThreadMessage: () => Effect.succeed(Option.none()),
+    hasAssistantMessageForTurn: () => Effect.succeed(false),
     getThreadDetailById: () => Effect.succeed(Option.none()),
   };
 }

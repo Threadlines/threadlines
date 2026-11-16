@@ -56,6 +56,49 @@ layer("ProjectionThreadMessageRepository", (it) => {
     }),
   );
 
+  it.effect("adds streamed words to the stored text, keeping what the first write set", () =>
+    Effect.gen(function* () {
+      const repository = yield* ProjectionThreadMessageRepository;
+      const threadId = ThreadId.make("thread-append-streamed");
+      const messageId = MessageId.make("message-append-streamed");
+      const attachments = [
+        {
+          type: "image" as const,
+          id: "thread-append-streamed-att-1",
+          name: "example.png",
+          mimeType: "image/png",
+          sizeBytes: 5,
+        },
+      ];
+      const streamed = (text: string, at: string) => ({
+        messageId,
+        threadId,
+        turnId: null,
+        role: "assistant" as const,
+        text,
+        isStreaming: true,
+        createdAt: at,
+        updatedAt: at,
+      });
+
+      yield* repository.appendStreamedText({
+        ...streamed("Hello", "2026-11-16T10:00:00.000Z"),
+        attachments,
+      });
+      yield* repository.appendStreamedText(streamed(", wor", "2026-11-16T10:00:01.000Z"));
+      yield* repository.appendStreamedText(streamed("ld", "2026-11-16T10:00:02.000Z"));
+
+      const row = yield* repository.getByMessageId({ messageId });
+      assert.equal(row._tag, "Some");
+      if (row._tag === "Some") {
+        assert.equal(row.value.text, "Hello, world");
+        assert.equal(row.value.createdAt, "2026-11-16T10:00:00.000Z");
+        assert.equal(row.value.updatedAt, "2026-11-16T10:00:02.000Z");
+        assert.deepEqual(row.value.attachments, attachments);
+      }
+    }),
+  );
+
   it.effect("preserves existing attachments when upsert omits attachments", () =>
     Effect.gen(function* () {
       const repository = yield* ProjectionThreadMessageRepository;

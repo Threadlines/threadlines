@@ -61,6 +61,8 @@ function fakeSnapshotQuery(thread: OrchestrationThread | null): ProjectionSnapsh
     listThreadShells: () => Effect.succeed([]),
     getThreadShellById: unusedProjectionQueryMethod,
     getTurnActivities: () => Effect.succeed([]),
+    getThreadMessage: () => Effect.succeed(Option.none()),
+    hasAssistantMessageForTurn: () => Effect.succeed(false),
     getThreadDetailById: () =>
       Effect.succeed(thread === null ? Option.none() : Option.some(thread)),
   };
@@ -90,6 +92,8 @@ function failingSnapshotQuery(): ProjectionSnapshotQueryShape {
     listThreadShells: () => Effect.succeed([]),
     getThreadShellById: unusedProjectionQueryMethod,
     getTurnActivities: () => Effect.succeed([]),
+    getThreadMessage: () => Effect.succeed(Option.none()),
+    hasAssistantMessageForTurn: () => Effect.succeed(false),
     getThreadDetailById: () =>
       Effect.fail(
         new PersistenceSqlError({
