@@ -3,7 +3,8 @@
  * Enter, Space, a tap) opens under the title the same menu its sidebar row
  * opens on a right-click (useThreadMenu), with Rename, Pin, Move to another
  * computer, Archive and the rest. Wherever the header sits: its own row, the
- * window's title row (titleBarSlot), or a phone.
+ * window's title row (titleBarSlot), or a phone. In the desktop app a press
+ * that drags moves the window instead (useWindowDragPress).
  *
  * @module ThreadTitleMenu
  */
@@ -14,6 +15,7 @@ import { memo, useCallback, useEffect, useRef, useState } from "react";
 
 import { useInboxThreads } from "../../hooks/useInboxThreads";
 import { useThreadMenu } from "../../hooks/useThreadMenu";
+import { useWindowDragPress } from "../../hooks/useWindowDragPress";
 
 type MenuPosition = { readonly x: number; readonly y: number };
 
@@ -26,9 +28,12 @@ export const ThreadTitleMenu = memo(function ThreadTitleMenu({
 }) {
   const [openAt, setOpenAt] = useState<MenuPosition | null>(null);
   const closed = useCallback(() => setOpenAt(null), []);
+  // In the desktop app, press and drag moves the window instead.
+  const dragPress = useWindowDragPress();
   return (
     <>
       <button
+        {...(dragPress ?? {})}
         type="button"
         aria-label={`${title}, thread menu`}
         aria-haspopup="menu"
