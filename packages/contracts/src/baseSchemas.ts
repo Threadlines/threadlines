@@ -89,6 +89,9 @@ export type ThreadMoveId = typeof ThreadMoveId.Type;
 /** One queued move of a thread, waiting for it to be free (docs/design/fleet.md, Part 3b). */
 export const ThreadMoveRequestId = makeEntityId("ThreadMoveRequestId");
 export type ThreadMoveRequestId = typeof ThreadMoveRequestId.Type;
+/** Threads queued to move together (`moves.queueMany`, docs/design/fleet.md, Part 3c). */
+export const ThreadMoveBatchId = makeEntityId("ThreadMoveBatchId");
+export type ThreadMoveBatchId = typeof ThreadMoveBatchId.Type;
 /** The requests one `thread_start` call made, approved or declined together. */
 export const ChildRequestBatchId = makeEntityId("ChildRequestBatchId");
 export type ChildRequestBatchId = typeof ChildRequestBatchId.Type;

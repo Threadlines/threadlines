@@ -193,6 +193,7 @@ export const makePeerRpcLayer = (input: {
                 : { instanceId: defaultAgent.instanceId, model: defaultAgent.model },
             projects,
             moves: true,
+            moveStagedApproval: true,
             threadFiling: true,
             outsideAgents: true,
           } satisfies PeerDescriptor;

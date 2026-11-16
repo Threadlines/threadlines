@@ -10,7 +10,6 @@ import type {
   ScopedThreadRef,
   ThreadMovePreview,
   ThreadMoveTargetPreview,
-  ThreadMoveWait,
   ThreadPendingMoveMode,
 } from "@threadlines/contracts";
 import { useNavigate } from "@tanstack/react-router";
@@ -295,7 +294,7 @@ export function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThread
                 {working ? (
                   <MoveWhenField
                     label={target.label}
-                    waits={waits}
+                    doing={describeThreadMoveWaits(waits)}
                     mode={mode}
                     stopNowRefusal={stopNowRefusal}
                     disabled={starting}
@@ -344,18 +343,22 @@ export function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThread
 /**
  * The two ways to move a thread whose agent is still at it (Part 3b): once
  * the agent finishes, or now, after it is stopped. Says first what the agent
- * is doing.
+ * is doing. `many`: once for several threads (the Move threads dialog,
+ * Part 3c), each agent alike.
  */
-function MoveWhenField({
+export function MoveWhenField({
   label,
-  waits,
+  doing,
+  many = false,
   mode,
   stopNowRefusal,
   disabled,
   onChange,
 }: {
   readonly label: string;
-  readonly waits: ReadonlyArray<ThreadMoveWait>;
+  /** What the agent is doing (describeThreadMoveWaits), or how many are working. */
+  readonly doing: string;
+  readonly many?: boolean;
   readonly mode: ThreadPendingMoveMode;
   /** Why stopping isn't offered now (threadMoveStopNowRefusal); null when it is. */
   readonly stopNowRefusal: string | null;
@@ -371,21 +374,25 @@ function MoveWhenField({
   }> = [
     {
       value: "when-done",
-      label: "Move when the agent finishes",
-      detail: `Waits for the agent to finish, then moves to ${label}.`,
+      label: many ? "Move when each agent finishes" : "Move when the agent finishes",
+      detail: many
+        ? `Each thread moves to ${label} once its agent finishes.`
+        : `Waits for the agent to finish, then moves to ${label}.`,
       refusal: null,
     },
     {
       value: "stop-now",
-      label: "Stop the agent and move now",
-      detail: "Stops the agent and anything it started, then moves.",
+      label: many ? "Stop the agents and move now" : "Stop the agent and move now",
+      detail: many
+        ? "Stops the agents and anything they started, then moves."
+        : "Stops the agent and anything it started, then moves.",
       refusal: stopNowRefusal,
     },
   ];
   return (
     <div className="grid gap-1.5" data-testid="thread-move-when">
       <p className="text-[13.5px] leading-[19px] text-foreground" data-testid="thread-move-doing">
-        {describeThreadMoveWaits(waits)}
+        {doing}
       </p>
       <RadioGroup
         value={mode}
@@ -429,7 +436,7 @@ function MoveWhenField({
 }
 
 /** The computers the thread can go to; one that can't take it is listed, disabled, with why. */
-function TargetField({
+export function TargetField({
   targets,
   target,
   disabled,

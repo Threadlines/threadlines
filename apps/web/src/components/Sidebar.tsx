@@ -129,6 +129,7 @@ import {
   InboxChildRow,
   InboxDoneRow,
   InboxLinkRequestRow,
+  InboxMoveGroupRow,
   InboxRemoteChildRow,
   InboxRemoteDoneRow,
   InboxThreadRow,
@@ -136,7 +137,12 @@ import {
   type RemoteChildSetDone,
   type RemoteParentLine,
 } from "./sidebar/InboxRows";
-import { useComputerLabel, usePendingLinkRequests } from "./sidebar/linkedComputers";
+import {
+  groupPendingLinkRequests,
+  useComputerLabel,
+  usePendingLinkRequests,
+} from "./sidebar/linkedComputers";
+import { useThreadMoveStagedApprovalCheck } from "../environments/links/threadMoves";
 import type { ThreadHoverCardLineage } from "./sidebar/ThreadHoverCard";
 
 import {
@@ -1208,14 +1214,19 @@ export default function Sidebar() {
   }, [doneEntries, liveEntries, remoteParentOf, sidebarThreadByKey]);
   // The requests waiting for the user's Allow, on the computers the machine
   // filter shows: a request belongs to the computer it would run on.
+  // Moves one computer asked of another show as one row (Part 3c).
+  const moveGroupable = useThreadMoveStagedApprovalCheck();
   const shownLinkRequests = useMemo(
     () =>
-      scopedEnvironmentIdValue === null
-        ? pendingLinkRequests
-        : pendingLinkRequests.filter(
-            (pending) => pending.environmentId === scopedEnvironmentIdValue,
-          ),
-    [pendingLinkRequests, scopedEnvironmentIdValue],
+      groupPendingLinkRequests(
+        scopedEnvironmentIdValue === null
+          ? pendingLinkRequests
+          : pendingLinkRequests.filter(
+              (pending) => pending.environmentId === scopedEnvironmentIdValue,
+            ),
+        moveGroupable,
+      ),
+    [moveGroupable, pendingLinkRequests, scopedEnvironmentIdValue],
   );
   const toggleChildThreadFamily = useCallback(
     (parentThreadKey: string) => {
@@ -1528,6 +1539,14 @@ export default function Sidebar() {
       void navigate({ to: "/fleet/$environmentId", params: { environmentId } });
     },
     [closeSheet, navigate, navigateToThread],
+  );
+
+  const openFleetComputer = useCallback(
+    (environmentId: EnvironmentId) => {
+      closeSheet();
+      void navigate({ to: "/fleet/$environmentId", params: { environmentId } });
+    },
+    [closeSheet, navigate],
   );
 
   const navigateToDraft = useCallback(
@@ -2136,19 +2155,32 @@ export default function Sidebar() {
                       each waits for the user's Allow, and expires unanswered. */}
                     {shownLinkRequests.length > 0 ? (
                       <ul data-testid="inbox-link-requests">
-                        {shownLinkRequests.map(({ environmentId, request }) => (
-                          <InboxLinkRequestRow
-                            key={`${environmentId}:${request.deviceId}:${request.requestId}`}
-                            environmentId={environmentId}
-                            computerLabel={computerLabel(environmentId, environmentId)}
-                            askerLabel={computerLabel(
-                              request.parentEnvironmentId,
-                              request.fromLabel,
-                            )}
-                            request={request}
-                            onOpen={() => openLinkRequest(environmentId, request)}
-                          />
-                        ))}
+                        {shownLinkRequests.map((item) =>
+                          item.kind === "single" ? (
+                            <InboxLinkRequestRow
+                              key={`${item.environmentId}:${item.request.deviceId}:${item.request.requestId}`}
+                              environmentId={item.environmentId}
+                              computerLabel={computerLabel(item.environmentId, item.environmentId)}
+                              askerLabel={computerLabel(
+                                item.request.parentEnvironmentId,
+                                item.request.fromLabel,
+                              )}
+                              request={item.request}
+                              onOpen={() => openLinkRequest(item.environmentId, item.request)}
+                            />
+                          ) : (
+                            <InboxMoveGroupRow
+                              key={`${item.environmentId}:${item.deviceId}:moves`}
+                              computerLabel={computerLabel(item.environmentId, item.environmentId)}
+                              askerLabel={computerLabel(
+                                item.requests[0]!.parentEnvironmentId,
+                                item.requests[0]!.fromLabel,
+                              )}
+                              group={item}
+                              onOpen={() => openFleetComputer(item.environmentId)}
+                            />
+                          ),
+                        )}
                       </ul>
                     ) : null}
 

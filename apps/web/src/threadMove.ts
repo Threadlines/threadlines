@@ -8,16 +8,23 @@
  */
 import {
   type ModelSelection,
+  type ThreadMoveBatchId,
+  type ThreadMoveBatchMember,
+  type ThreadMoveBatchMemberState,
+  type ThreadMovePreviewManyThread,
   type OrchestrationThreadMove,
   type OutboundComputerLink,
   type ThreadMoveChanges,
+  THREAD_MOVE_BATCH_MAX,
   ThreadMoveNotStartedActivityKind,
+  type ThreadMoveOutcome,
   type ThreadMoveTargetPreview,
   type ThreadMoveWait,
   type ThreadMoveWaitCode,
   type ThreadPendingMove,
 } from "@threadlines/contracts";
 
+import { formatDownloadProgress } from "./lib/formatBytes";
 import type { ThreadMoveStatus } from "./types";
 
 /**
@@ -37,21 +44,57 @@ export const THREAD_MOVE_FAILED_ACTIVITY_KIND = "thread.move-failed";
 export const THREAD_MOVE_NOT_STARTED_ACTIVITY_KIND = ThreadMoveNotStartedActivityKind;
 
 /**
+ * Whether the other computer has every byte of this move and only its user's
+ * Allow is left (Part 3c): the thread's last outcome says so for this very
+ * transfer. For quitting, such a move counts as done.
+ */
+export function isThreadMoveSent(thread: {
+  readonly move?: OrchestrationThreadMove | null | undefined;
+  readonly lastMoveOutcome?: ThreadMoveOutcome | null | undefined;
+}): boolean {
+  const move = thread.move ?? null;
+  const outcome = thread.lastMoveOutcome ?? null;
+  return (
+    move !== null &&
+    move.movedAway === undefined &&
+    move.phase === "awaiting_approval" &&
+    outcome !== null &&
+    outcome.result === "awaiting_approval" &&
+    outcome.transferId === move.transferId
+  );
+}
+
+/**
  * "queued" while a move waits for the thread to be free (Part 3b), "moving"
- * until the other computer took it, "moved" after; undefined for none.
+ * until the other computer took it ("waiting" while that computer finishes
+ * other moves, "sent" once it has every byte and waits for its user, Part
+ * 3c), "moved" after; undefined for none.
  */
 export function threadMoveStatus(thread: {
   readonly move?: OrchestrationThreadMove | null | undefined;
   readonly pendingMove?: ThreadPendingMove | null | undefined;
+  readonly lastMoveOutcome?: ThreadMoveOutcome | null | undefined;
 }): ThreadMoveStatus | undefined {
   const move = thread.move ?? null;
-  if (move !== null) return move.movedAway ? "moved" : "moving";
+  if (move !== null) {
+    if (move.movedAway) return "moved";
+    if (move.waitingForTarget === true) return "waiting";
+    return isThreadMoveSent(thread) ? "sent" : "moving";
+  }
   return thread.pendingMove ? "queued" : undefined;
 }
 
-/** A move status as a sidebar row says it: "move queued", "moving", "moved". */
+const MOVE_STATUS_WORDS: Record<ThreadMoveStatus, string> = {
+  queued: "move queued",
+  waiting: "move waiting",
+  moving: "moving",
+  sent: "move sent",
+  moved: "moved",
+};
+
+/** A move status as a sidebar row says it: "move queued", "moving", "move sent", "moved". */
 export function threadMoveStatusWord(status: ThreadMoveStatus): string {
-  return status === "queued" ? "move queued" : status;
+  return MOVE_STATUS_WORDS[status];
 }
 
 /**
@@ -70,6 +113,27 @@ export function isThreadMoveOffered(input: {
     input.supportsThreadMove &&
     input.moveStatus === undefined &&
     (input.outbound ?? []).some((link) => link.state === "active")
+  );
+}
+
+/**
+ * Whether to offer "Move threads…" from a computer (Part 3c): it moves
+ * several threads at once (`threadMoveBatch`) and links to a computer right
+ * now, to `targetEnvironmentId` when one is named (that computer's page).
+ */
+export function isMoveThreadsOffered(input: {
+  readonly supportsBatch: boolean;
+  readonly outbound: ReadonlyArray<OutboundComputerLink> | null;
+  readonly targetEnvironmentId: string | null;
+}): boolean {
+  return (
+    input.supportsBatch &&
+    (input.outbound ?? []).some(
+      (link) =>
+        link.state === "active" &&
+        (input.targetEnvironmentId === null ||
+          link.remoteEnvironmentId === input.targetEnvironmentId),
+    )
   );
 }
 
@@ -100,6 +164,21 @@ export function formatThreadMoveChanges(
     .join(" · ");
 }
 
+/**
+ * How much of a move asking for Allow is here already (Part 3c): "Everything
+ * is here", or "12.0 of 40.0 MB here". Null when the asking computer sends
+ * only after Allow (an older one) and so says nothing.
+ */
+export function formatThreadMoveArrival(move: {
+  readonly bytesReceived?: number | undefined;
+  readonly totalBytes?: number | undefined;
+}): string | null {
+  const { bytesReceived, totalBytes } = move;
+  if (bytesReceived === undefined || totalBytes === undefined) return null;
+  if (bytesReceived >= totalBytes) return "Everything is here";
+  return `${formatDownloadProgress(bytesReceived, totalBytes)} here`;
+}
+
 /** "Full access" as it reads after "with up to": "Full access", "Auto access". */
 export function formatThreadMoveAccess(accessLabel: string): string {
   return /\baccess$/iu.test(accessLabel) ? accessLabel : `${accessLabel} access`;
@@ -113,15 +192,24 @@ export function threadMoveSentPercent(move: OrchestrationThreadMove): number | n
   return Math.min(100, Math.max(0, Math.floor(((move.sentBytes ?? 0) / total) * 100)));
 }
 
-/** Where an unfinished move is, in a few words: the composer notice's lead. */
-export function describeThreadMoveProgress(move: OrchestrationThreadMove): string {
+/**
+ * Where an unfinished move is, in a few words: the composer notice's lead.
+ * `sent`: the other computer has every byte (isThreadMoveSent).
+ */
+export function describeThreadMoveProgress(
+  move: OrchestrationThreadMove,
+  options?: { readonly sent?: boolean },
+): string {
   const label = move.target.label;
   if (move.cancelRequested) return "Stopping the move…";
+  if (move.waitingForTarget === true) return `Waiting for ${label} to finish other moves`;
   switch (move.phase) {
     case "exporting":
       return `Getting ready to move to ${label}…`;
     case "awaiting_approval":
-      return `Waiting for ${label} to allow the move`;
+      return options?.sent === true
+        ? `Sent. Waiting for ${label} to allow it`
+        : `Waiting for ${label} to allow the move`;
     case "sending": {
       const percent = threadMoveSentPercent(move);
       return percent === null ? `Sending to ${label}…` : `Sending to ${label} · ${percent}%`;
@@ -293,10 +381,14 @@ export function describeThreadMoveWaits(waits: ReadonlyArray<ThreadMoveWait>): s
  * here stops. The server refuses that move with these same words
  * (threadMoveDecisions.ts, decideMoveQueue).
  */
-export function threadMoveStopNowRefusal(waits: ReadonlyArray<ThreadMoveWait>): string | null {
-  return waits.some((wait) => wait.code === "command_run")
-    ? "A command from this thread is running in your terminal. Stop it there, or move the thread when it's done."
-    : null;
+export function threadMoveStopNowRefusal(
+  waits: ReadonlyArray<ThreadMoveWait>,
+  options?: { readonly many?: boolean },
+): string | null {
+  if (!waits.some((wait) => wait.code === "command_run")) return null;
+  return options?.many === true
+    ? "A command from one of these threads is running in your terminal. Stop it there, or move them when each agent finishes."
+    : "A command from this thread is running in your terminal. Stop it there, or move the thread when it's done.";
 }
 
 /** Why a thread whose move waits takes no new message: the send button's words. */
@@ -343,4 +435,256 @@ export function describePendingMove(pendingMove: ThreadPendingMove): PendingMove
     severity: "info",
     retry: false,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Several threads at once (docs/design/fleet.md, Part 3c)
+// ---------------------------------------------------------------------------
+
+/**
+ * Where one thread of batch `batchId` stands, read from its own projection
+ * (its waiting move, its move, its last outcome), in `moves.batchStatus`'s
+ * words; null when the thread isn't (or is no longer) part of that batch.
+ */
+export function threadMoveBatchState(
+  thread: {
+    readonly move?: OrchestrationThreadMove | null | undefined;
+    readonly pendingMove?: ThreadPendingMove | null | undefined;
+    readonly lastMoveOutcome?: ThreadMoveOutcome | null | undefined;
+  },
+  batchId: ThreadMoveBatchId,
+): ThreadMoveBatchMemberState | null {
+  const pending = thread.pendingMove ?? null;
+  if (pending !== null) {
+    if (pending.batchId !== batchId) return null;
+    return pending.stage === "quiescing" ? "stopping" : "waiting";
+  }
+  const move = thread.move ?? null;
+  if (move !== null && move.batchId === batchId) {
+    if (move.movedAway) return "moved";
+    return isThreadMoveSent(thread) ? "awaiting_approval" : "moving";
+  }
+  const outcome = thread.lastMoveOutcome ?? null;
+  return outcome !== null && outcome.batchId === batchId ? outcome.result : null;
+}
+
+/** Whether a batch member has its final answer (`moves.batchStatus`'s `final`). */
+export function isMoveBatchStateFinal(state: ThreadMoveBatchMemberState): boolean {
+  return state === "moved" || state === "not_moved" || state === "awaiting_approval";
+}
+
+/** How many of a batch's threads stand where. */
+export interface MoveBatchCounts {
+  readonly total: number;
+  readonly moved: number;
+  /** Sent, and waiting for the other computer's user to allow it. */
+  readonly sent: number;
+  readonly moving: number;
+  readonly stopping: number;
+  readonly waiting: number;
+  readonly notMoved: number;
+}
+
+export function countMoveBatch(states: ReadonlyArray<ThreadMoveBatchMemberState>): MoveBatchCounts {
+  const count = (state: ThreadMoveBatchMemberState) =>
+    states.filter((candidate) => candidate === state).length;
+  return {
+    total: states.length,
+    moved: count("moved"),
+    sent: count("awaiting_approval"),
+    moving: count("moving"),
+    stopping: count("stopping"),
+    waiting: count("waiting"),
+    notMoved: count("not_moved"),
+  };
+}
+
+/** Every thread of the batch has its final answer. */
+export function isMoveBatchDone(counts: MoveBatchCounts): boolean {
+  return counts.total > 0 && counts.moved + counts.sent + counts.notMoved === counts.total;
+}
+
+/**
+ * Where a batch's threads stand, in one run of short parts: "1 moved, 2
+ * waiting for their agents". Parts of zero are left out.
+ */
+export function describeMoveBatchCounts(counts: MoveBatchCounts): string {
+  return [
+    counts.moved > 0 ? `${counts.moved} moved` : null,
+    counts.sent > 0 ? `${counts.sent} sent, waiting for Allow` : null,
+    counts.moving > 0 ? `${counts.moving} on the way` : null,
+    counts.stopping > 0
+      ? `${counts.stopping} stopping ${counts.stopping === 1 ? "its agent" : "their agents"}`
+      : null,
+    counts.waiting > 0
+      ? `${counts.waiting} waiting for ${counts.waiting === 1 ? "its agent" : "their agents"}`
+      : null,
+    counts.notMoved > 0 ? `${counts.notMoved} didn't move` : null,
+  ]
+    .filter((part): part is string => part !== null)
+    .join(", ");
+}
+
+/** One thread of a batch that didn't move, and why. */
+export interface MoveBatchMiss {
+  /** Where it's known: tells two threads with one title apart. */
+  readonly threadId?: string;
+  readonly title: string;
+  readonly words: string;
+}
+
+const withoutFinalStop = (words: string) => words.replace(/[.\s]+$/u, "");
+
+/**
+ * A batch as its target's Fleet row and page say it: "Moving 3 threads
+ * here: 1 moved, 2 waiting for their agents" while it runs; once every
+ * thread has its answer, "Moved 3 threads to Windows PC.", or how many of
+ * them, then the ones that didn't and why.
+ */
+export function describeMoveBatchProgress(input: {
+  readonly counts: MoveBatchCounts;
+  readonly targetLabel: string;
+  readonly misses: ReadonlyArray<MoveBatchMiss>;
+}): string {
+  const { counts, targetLabel, misses } = input;
+  const threads = plural(counts.total, "thread", "threads");
+  if (!isMoveBatchDone(counts)) {
+    return `Moving ${threads} here: ${describeMoveBatchCounts(counts)}`;
+  }
+  const arrived = counts.moved + counts.sent;
+  const lead =
+    arrived === counts.total
+      ? `Moved ${threads} to ${targetLabel}.`
+      : arrived === 0
+        ? `Didn't move ${counts.total === 1 ? "the thread" : `the ${threads}`} to ${targetLabel}.`
+        : `Moved ${arrived} of ${threads} to ${targetLabel}.`;
+  const sent =
+    counts.sent === 0
+      ? ""
+      : counts.sent === 1
+        ? ` 1 waits for ${targetLabel} to allow it.`
+        : ` ${counts.sent} wait for ${targetLabel} to allow them.`;
+  const missed =
+    misses.length === 0
+      ? ""
+      : ` Didn't move: ${misses
+          .map((miss) => `${miss.title} (${withoutFinalStop(miss.words)})`)
+          .join(", ")}.`;
+  return `${lead}${sent}${missed}`;
+}
+
+/** The members of a `moves.batchStatus` answer that didn't move, with why. */
+export function moveBatchMisses(members: ReadonlyArray<ThreadMoveBatchMember>): MoveBatchMiss[] {
+  return members.flatMap((member) =>
+    member.state === "not_moved"
+      ? [
+          {
+            threadId: member.threadId,
+            title: member.title ?? "A thread",
+            words: member.words ?? "It couldn't move.",
+          },
+        ]
+      : [],
+  );
+}
+
+/** One of a computer's open threads, as the Move threads dialog and the quit offer list it. */
+export interface MoveCandidate<TThreadId extends string = string> {
+  readonly threadId: TThreadId;
+  readonly title: string;
+  /** Its agent is at work now (as this app last heard). */
+  readonly working: boolean;
+}
+
+/**
+ * A computer's open threads, the ones a batch can ask to move: its inbox
+ * rows (project threads, not archived, not wrapped up; General Chats never
+ * join the inbox), less those already moving or moved. Working ones first,
+ * each half in inbox order, at most THREAD_MOVE_BATCH_MAX.
+ */
+export function listMoveCandidates<
+  TThread extends {
+    readonly id: string;
+    readonly environmentId: string;
+    readonly title: string;
+    readonly archivedAt: string | null;
+    readonly moveStatus?: ThreadMoveStatus | undefined;
+  },
+>(
+  entries: ReadonlyArray<{ readonly thread: TThread; readonly isDone: boolean }>,
+  sourceEnvironmentId: string,
+  isWorking: (thread: TThread) => boolean,
+): MoveCandidate<TThread["id"]>[] {
+  const open = entries.flatMap(({ thread, isDone }) =>
+    thread.environmentId === sourceEnvironmentId &&
+    !isDone &&
+    thread.archivedAt === null &&
+    thread.moveStatus === undefined
+      ? [{ threadId: thread.id, title: thread.title, working: isWorking(thread) }]
+      : [],
+  );
+  return [
+    ...open.filter((candidate) => candidate.working),
+    ...open.filter((candidate) => !candidate.working),
+  ].slice(0, THREAD_MOVE_BATCH_MAX);
+}
+
+/**
+ * The members of a running batch that wait on the user, with why: a stop
+ * that couldn't be confirmed (its hold's words), or an agent waiting for an
+ * answer. A quit waiting on the batch brings its window back for these.
+ */
+export function moveBatchNeedsYou(members: ReadonlyArray<ThreadMoveBatchMember>): MoveBatchMiss[] {
+  return members.flatMap((member) => {
+    if (member.final) return [];
+    const title = member.title ?? "A thread";
+    if (member.hold?.kind === "stop_unconfirmed") {
+      return [{ threadId: member.threadId, title, words: member.hold.words }];
+    }
+    const answer = (member.waitsFor ?? []).some(
+      (wait) => wait.code === "approval" || wait.code === "question",
+    );
+    return answer
+      ? [{ threadId: member.threadId, title, words: "Its agent is waiting for your answer." }]
+      : [];
+  });
+}
+
+/** What moving one thread of the Move threads dialog means, in its row. */
+export interface MoveCandidateWords {
+  /** `refused`: it can't go there, greyed out with why. */
+  readonly kind: "now" | "wait" | "refused";
+  readonly words: string;
+}
+
+/**
+ * One row of the Move threads dialog: "Moves now", "Moves when the agent
+ * finishes", or why it can't go to `targetEnvironmentId`.
+ */
+export function describeMoveCandidate(
+  preview: ThreadMovePreviewManyThread,
+  targetEnvironmentId: string | null,
+): MoveCandidateWords {
+  if (preview.refusal !== undefined) return { kind: "refused", words: preview.refusal };
+  const targetRefusal =
+    targetEnvironmentId === null
+      ? undefined
+      : preview.targetRefusals?.find((refusal) => refusal.environmentId === targetEnvironmentId);
+  if (targetRefusal !== undefined) return { kind: "refused", words: targetRefusal.refusal };
+  return (preview.waitsFor ?? []).length > 0
+    ? { kind: "wait", words: "Moves when the agent finishes" }
+    : { kind: "now", words: "Moves now" };
+}
+
+/**
+ * The Move threads dialog's order: threads whose agent is working first,
+ * then the rest, each in the order given (the inbox's).
+ */
+export function orderMoveCandidates<T extends { readonly threadId: string }>(
+  candidates: ReadonlyArray<T>,
+  previewById: ReadonlyMap<string, ThreadMovePreviewManyThread>,
+): T[] {
+  const working = (candidate: T) =>
+    (previewById.get(candidate.threadId)?.waitsFor ?? []).length > 0;
+  return [...candidates.filter(working), ...candidates.filter((candidate) => !working(candidate))];
 }

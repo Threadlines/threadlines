@@ -546,6 +546,15 @@ export interface WsRpcClient {
     readonly queue: RpcUnaryMethod<typeof WS_METHODS.movesQueue>;
     readonly unqueue: RpcUnaryMethod<typeof WS_METHODS.movesUnqueue>;
     readonly retry: RpcUnaryMethod<typeof WS_METHODS.movesRetry>;
+    /**
+     * Several threads at once (Part 3c), on servers whose descriptor reports
+     * `threadMoveBatch`; `respondMany` where it reports `threadMoveStagedApproval`.
+     */
+    readonly previewMany: RpcUnaryMethod<typeof WS_METHODS.movesPreviewMany>;
+    readonly queueMany: RpcUnaryMethod<typeof WS_METHODS.movesQueueMany>;
+    readonly setMode: RpcUnaryMethod<typeof WS_METHODS.movesSetMode>;
+    readonly batchStatus: RpcUnaryMethod<typeof WS_METHODS.movesBatchStatus>;
+    readonly respondMany: RpcUnaryMethod<typeof WS_METHODS.movesRespondMany>;
   };
   /**
    * Setting up a project on another computer (docs/design/fleet.md, Part 8),
@@ -1428,6 +1437,14 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       queue: (input) => transport.request((client) => client[WS_METHODS.movesQueue](input)),
       unqueue: (input) => transport.request((client) => client[WS_METHODS.movesUnqueue](input)),
       retry: (input) => transport.request((client) => client[WS_METHODS.movesRetry](input)),
+      previewMany: (input) =>
+        transport.request((client) => client[WS_METHODS.movesPreviewMany](input)),
+      queueMany: (input) => transport.request((client) => client[WS_METHODS.movesQueueMany](input)),
+      setMode: (input) => transport.request((client) => client[WS_METHODS.movesSetMode](input)),
+      batchStatus: (input) =>
+        transport.request((client) => client[WS_METHODS.movesBatchStatus](input)),
+      respondMany: (input) =>
+        transport.request((client) => client[WS_METHODS.movesRespondMany](input)),
     },
     // Every call here is safe to send again: the reads are pure, a start is
     // the same job for the same setupId, and cancel and dismiss repeat as

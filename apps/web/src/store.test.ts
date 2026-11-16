@@ -18,6 +18,7 @@ import {
   SideTurnId,
   ThreadId,
   ThreadParticipantId,
+  ThreadMoveBatchId,
   ThreadMoveId,
   ThreadMoveRequestId,
   TurnId,
@@ -2472,12 +2473,141 @@ describe("incremental orchestration updates", () => {
         queuedRequestId: secondRequestId,
       }),
     );
+    // The same decision ends the queued move it started from.
+    state = apply(
+      state,
+      makeEvent("thread.move-queue-ended", {
+        threadId,
+        requestId: secondRequestId,
+        reason: "started",
+        endedAt: "2026-02-27T00:00:07.000Z",
+      }),
+    );
     expect(pendingOf(state)).toBeUndefined();
     expect(selectThreadByRef(state, ref)?.move).toMatchObject({
       phase: "exporting",
       queuedRequestId: secondRequestId,
     });
     expect(summaryOf(state)?.moveStatus).toBe("moving");
+  });
+
+  it("keeps how a batch's move went live: stopping, waiting for the target, sent, then not moved", () => {
+    const threadId = ThreadId.make("thread-1");
+    const ref = scopeThreadRef(localEnvironmentId, threadId);
+    const requestId = ThreadMoveRequestId.make("queued-batch");
+    const batchId = ThreadMoveBatchId.make("batch-1");
+    const transferId = ThreadMoveId.make("move-batch");
+    const macMini = {
+      environmentId: EnvironmentId.make("environment-mac-mini"),
+      label: "Mac mini",
+    };
+    const agent = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" };
+    const apply = (state: AppState, event: OrchestrationEvent) =>
+      applyOrchestrationEvent(state, event, localEnvironmentId);
+    const threadOf = (state: AppState) => selectThreadByRef(state, ref);
+    const summaryOf = (state: AppState) =>
+      localEnvironmentStateOf(state).sidebarThreadSummaryById[threadId];
+
+    let state = apply(
+      makeState(makeThread({ id: threadId })),
+      makeEvent("thread.move-queued", {
+        threadId,
+        pendingMove: {
+          requestId,
+          target: macMini,
+          mode: "when-done",
+          stage: "waiting",
+          requestedAt: "2026-02-27T00:00:01.000Z",
+          requestedBy: { kind: "user" },
+          batchId,
+        },
+      }),
+    );
+    // "Stop the agents and move now": stopping from here.
+    state = apply(
+      state,
+      makeEvent("thread.move-mode-set", {
+        threadId,
+        requestId,
+        mode: "stop-now",
+        updatedAt: "2026-02-27T00:00:02.000Z",
+      }),
+    );
+    expect(threadOf(state)?.pendingMove).toMatchObject({ mode: "stop-now", stage: "quiescing" });
+
+    state = apply(
+      state,
+      makeEvent("thread.move-started", {
+        threadId,
+        transferId,
+        target: macMini,
+        agent,
+        startedAt: "2026-02-27T00:00:03.000Z",
+        queuedRequestId: requestId,
+        batchId,
+      }),
+    );
+    state = apply(
+      state,
+      makeEvent("thread.move-queue-ended", {
+        threadId,
+        requestId,
+        reason: "started",
+        endedAt: "2026-02-27T00:00:03.000Z",
+      }),
+    );
+    state = apply(
+      state,
+      makeEvent("thread.move-progressed", {
+        threadId,
+        transferId,
+        phase: "exporting",
+        waitingForTarget: true,
+        updatedAt: "2026-02-27T00:00:04.000Z",
+      }),
+    );
+    expect(summaryOf(state)?.moveStatus).toBe("waiting");
+
+    // Every byte is there; only Mac mini's Allow is left.
+    state = apply(
+      state,
+      makeEvent("thread.move-progressed", {
+        threadId,
+        transferId,
+        phase: "awaiting_approval",
+        sentBytes: 10,
+        totalBytes: 10,
+        staged: true,
+        updatedAt: "2026-02-27T00:00:05.000Z",
+      }),
+    );
+    expect(threadOf(state)?.lastMoveOutcome).toMatchObject({
+      result: "awaiting_approval",
+      batchId,
+      transferId,
+      requestId,
+    });
+    expect(summaryOf(state)?.moveStatus).toBe("sent");
+
+    // Turned down there: the thread is its own again, and says why.
+    state = apply(
+      state,
+      makeEvent("thread.move-aborted", {
+        threadId,
+        transferId,
+        reason: "Mac mini's user didn't allow it.",
+        code: "denied",
+        updatedAt: "2026-02-27T00:00:06.000Z",
+      }),
+    );
+    expect(threadOf(state)?.move).toBeUndefined();
+    expect(threadOf(state)?.lastMoveOutcome).toMatchObject({
+      result: "not_moved",
+      batchId,
+      words: "Mac mini's user didn't allow it.",
+      reason: "denied",
+    });
+    expect(summaryOf(state)?.moveStatus).toBeUndefined();
   });
 
   it("keeps a moved thread's imported history marked, and out of its latest turn", () => {

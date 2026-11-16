@@ -68,6 +68,7 @@ import {
   type ComputerLinksClient,
 } from "../environments/links/computerLinks";
 import { __resetThreadMovesForTests } from "../environments/links/threadMoves";
+import { __resetMoveBatchProgressForTests } from "../moveBatchProgress";
 import {
   __resetProjectSetupsForTests,
   type ProjectSetupsClient,
@@ -3424,6 +3425,7 @@ export function registerChatViewSuiteHooks(): void {
     closeConnectComputerDialog();
     closeThreadMoveDialog();
     __resetThreadMovesForTests();
+    __resetMoveBatchProgressForTests();
     closeProjectSetupDialog();
     __resetProjectSetupsForTests();
     __resetEnvironmentApiOverridesForTests();

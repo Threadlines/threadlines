@@ -122,6 +122,7 @@ import {
   decideMoveQueueEnd,
   decideMoveQueueStatus,
   decideMoveQuiesce,
+  decideMoveSetMode,
   decideMoveStart,
   decideMoveUnqueue,
   decideThreadImport,
@@ -2330,6 +2331,26 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // command finishing later can't wake the agent the move stopped.
       const held =
         command.mode === "stop-now" && !("refusal" in decided) && decided.length > 0
+          ? holdCommandOutputOnStop(thread, () => baseFor(thread.id), command.createdAt)
+          : [];
+      return yield* planChildThreadDecision(
+        command.type,
+        "refusal" in decided ? decided : [...decided, ...held],
+      );
+    }
+
+    // "Stop the agents and move now" for a move already waiting (Part 3c).
+    case "thread.move.set-mode": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const baseFor = childEventBase(command, command.createdAt);
+      const decided = decideMoveSetMode(readModel, thread, command, baseFor);
+      // Holds command output the way Stop does, as a move queued this way does.
+      const held =
+        !("refusal" in decided) && decided.length > 0
           ? holdCommandOutputOnStop(thread, () => baseFor(thread.id), command.createdAt)
           : [];
       return yield* planChildThreadDecision(

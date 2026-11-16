@@ -35,6 +35,7 @@ import {
   ProjectSetupDialogHost,
 } from "../components/ProjectSetupDialog";
 import { preloadThreadMoveDialog, ThreadMoveDialogHost } from "../components/ThreadMoveDialog";
+import { MoveThreadsDialogHost, preloadMoveThreadsDialog } from "../components/MoveThreadsDialog";
 import { DeviceRenameDialogHost } from "../components/DeviceRenameDialog";
 import { ThreadRenameDialogHost } from "../components/ThreadRenameDialog";
 import {
@@ -299,6 +300,7 @@ function RootRouteView() {
         <DesktopUpdateInstallDialog />
         <ThreadDeleteDialogHost />
         <ThreadMoveDialogHost />
+        <MoveThreadsDialogHost />
         <ProjectSetupDialogHost />
         <ThreadRenameDialogHost />
         <DeviceRenameDialogHost />
@@ -892,6 +894,7 @@ function AppShellIdlePreloads() {
       preloadCommandPaletteDialog();
       preloadDestinationLists();
       void preloadThreadMoveDialog();
+      void preloadMoveThreadsDialog();
       void preloadProjectSetupDialog();
       void preloadConnectComputerDialog();
       void preloadProviderSignInDialog();

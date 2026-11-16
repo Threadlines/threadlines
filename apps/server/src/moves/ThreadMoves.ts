@@ -8,6 +8,10 @@
  * when it asks first, send it, wait for the import, and record the outcome.
  * It never unfreezes a thread on its own: only the other computer's word
  * that the move was dropped does, so a thread is never live in two places.
+ * A computer busy with other moves is offered the move again later while the
+ * thread waits frozen (`waitingForTarget`); one that asks first takes the
+ * bytes before its user answers (`staged_awaiting_approval`), which counts as
+ * done for quitting (docs/design/fleet.md, Part 3c).
  * A restart picks every unfinished move up again from the other computer's
  * answer to `peer.move.status`.
  */
@@ -26,11 +30,14 @@ import {
   type PeerMoveState,
   type PeerRpcError,
   type ThreadId,
+  type ThreadMoveAbortCode,
   ThreadMoveError,
   ThreadMoveId,
   type ThreadMoveRequestId,
   type ThreadMovePhase,
   type ThreadMovePreview,
+  type ThreadMovePreviewMany,
+  type ThreadMovePreviewManyThread,
   type ThreadMoveStartInput,
   type ThreadMoveTargetPreview,
 } from "@threadlines/contracts";
@@ -89,8 +96,26 @@ export type QueuedMoveStart =
   | { readonly kind: "blocked"; readonly words: string }
   | { readonly kind: "busy"; readonly words: string };
 
+/** A linked computer as it answered `peer.describe` just now; none when it didn't answer in time. */
+export interface DescribedTarget {
+  readonly environmentId: EnvironmentId;
+  /** The name this computer has for it, until it answers with its own. */
+  readonly label: string;
+  readonly described: Option.Option<PeerDescriptor>;
+}
+
 export interface ThreadMovesShape {
   readonly preview: (threadId: ThreadId) => Effect.Effect<ThreadMovePreview, ThreadMoveError>;
+  /**
+   * Several threads at once (docs/design/fleet.md, Part 3c): the same checks
+   * as `preview`, with each linked computer described once and no change
+   * summary. A thread that can't be read is refused, not an error.
+   */
+  readonly previewMany: (
+    threadIds: ReadonlyArray<ThreadId>,
+  ) => Effect.Effect<ThreadMovePreviewMany, ThreadMoveError>;
+  /** Every linked computer, each described once now: what a batch checks every thread against. */
+  readonly describeTargets: Effect.Effect<ReadonlyArray<DescribedTarget>>;
   readonly start: (
     input: ThreadMoveStartInput,
   ) => Effect.Effect<{ readonly transferId: ThreadMoveId }, ThreadMoveError>;
@@ -105,6 +130,8 @@ export interface ThreadMovesShape {
     readonly targetEnvironmentId: EnvironmentId;
     /** Absent: the target's suggested agent, checked when the move starts. */
     readonly agent?: ModelSelection | undefined;
+    /** The computers as already described (a batch); absent: described now. */
+    readonly targets?: ReadonlyArray<DescribedTarget> | undefined;
   }) => Effect.Effect<{ readonly label: string }, ThreadMoveError>;
   /** Starts the thread's queued move `requestId`, now that the thread is free and quiesced. */
   readonly startQueued: (input: {
@@ -149,6 +176,164 @@ function suggestAgent(
     ? ({ instanceId: first.instanceId, model } as ModelSelection)
     : undefined;
 }
+
+/**
+ * What a linked computer means for a move: whether it can be reached, takes
+ * moves from here, and has agents. For a thread (`forThread`), also whether
+ * it has the thread's project, and the agent to suggest; without one, only
+ * what holds for every thread (its default agent is the suggestion).
+ */
+export function targetPreviewOf(
+  target: DescribedTarget,
+  forThread: {
+    readonly thread: OrchestrationThread;
+    readonly place: ProjectPlace | null;
+  } | null,
+): ThreadMoveTargetPreview {
+  const { environmentId, label } = target;
+  if (Option.isNone(target.described)) {
+    return {
+      environmentId,
+      label,
+      refusal: `${label} can't be reached right now.`,
+      unreachable: true,
+      agents: [],
+    };
+  }
+  const peer = target.described.value;
+  const place = forThread?.place ?? null;
+  const project =
+    place === null
+      ? undefined
+      : peer.projects.find(
+          (entry) =>
+            entry.canonicalKey === place.canonicalKey &&
+            (entry.subdirectory === undefined || entry.subdirectory === place.subdirectory),
+        );
+  const noProject = forThread !== null && project === undefined;
+  const refusal =
+    peer.moves !== true
+      ? `${peer.label} needs a newer Threadlines to take moved threads.`
+      : peer.access === "off"
+        ? `${peer.label} doesn't take work from this computer.`
+        : noProject
+          ? `${peer.label} doesn't have this project.`
+          : peer.agents.length === 0
+            ? `${peer.label} has no agent ready.`
+            : undefined;
+  const suggested =
+    forThread !== null
+      ? suggestAgent(peer, forThread.thread)
+      : ((peer.defaultAgent ?? undefined) as ModelSelection | undefined);
+  return {
+    environmentId,
+    label: peer.label,
+    ...(refusal !== undefined ? { refusal } : {}),
+    ...(refusal !== undefined && peer.moves === true && peer.access !== "off" && noProject
+      ? { refusalCode: "no_project" as const }
+      : {}),
+    ...(project !== undefined ? { projectName: project.name } : {}),
+    access: peer.access,
+    agents: peer.agents,
+    ...(suggested !== undefined ? { suggestedAgent: suggested } : {}),
+    ...(peer.moveStagedApproval === true ? { stagedApproval: true } : {}),
+  };
+}
+
+/**
+ * One thread of `moves.previewMany`: its own refusal and waits, and the
+ * computers that would take other threads but not this one (`targets` are
+ * the computers as they are for every thread).
+ */
+export function previewManyThread(
+  threadId: ThreadId,
+  shown: ThreadMovePreview,
+  targets: ReadonlyArray<ThreadMoveTargetPreview>,
+): ThreadMovePreviewManyThread {
+  const targetRefusals = shown.targets.flatMap((own) => {
+    const shared = targets.find((entry) => entry.environmentId === own.environmentId);
+    if (own.refusal === undefined || shared === undefined || shared.refusal !== undefined) {
+      return [];
+    }
+    return [
+      {
+        environmentId: own.environmentId,
+        refusal: own.refusal,
+        ...(own.refusalCode === "no_project" ? { refusalCode: "no_project" as const } : {}),
+      },
+    ];
+  });
+  return {
+    threadId,
+    ...(shown.refusal !== undefined ? { refusal: shown.refusal } : {}),
+    ...(shown.waitsFor !== undefined && shown.waitsFor.length > 0
+      ? { waitsFor: shown.waitsFor }
+      : {}),
+    ...(targetRefusals.length > 0 ? { targetRefusals } : {}),
+  };
+}
+
+/** How long a move waits for a busy computer before offering again: 15 s, 30 s, 1 min, then every 2 min. */
+export const busyRetryDelay = (attempt: number) =>
+  Duration.seconds(Math.min(15 * 2 ** Math.max(0, attempt), 120));
+
+/** How often a move waiting for a busy computer looks for a Cancel. */
+const BUSY_CANCEL_CHECK = Duration.seconds(2);
+
+/**
+ * Offers a move until the other computer takes it or answers for good
+ * (docs/design/fleet.md, Part 3c). A `busy` answer (it takes as many moves as
+ * it takes at once) recorded nothing there: the thread stays frozen, the
+ * move says it waits for that computer (`waiting`, once), and it is offered
+ * again with backoff. A Cancel meanwhile ends it here; a move that's no
+ * longer the thread's ends the wait.
+ */
+/**
+ * Why the other computer dropped a move, as a code (ThreadMoveAbortCode):
+ * its own word (Don't allow, or nobody allowed it in time), a refusal to hold
+ * more moves, the user's Cancel here (`cancelRequested`), or any other drop.
+ */
+export function moveAbortCode(state: PeerMoveState, cancelRequested: boolean): ThreadMoveAbortCode {
+  if (state.abortCode !== undefined) return state.abortCode;
+  if (state.refusalCode === "staging_full") return "staging_full";
+  return cancelRequested ? "cancelled" : "aborted";
+}
+
+export const offerUntilTaken = <EPrepare, EStanding, EWaiting, R>(deps: {
+  readonly prepare: Effect.Effect<PeerMoveState, EPrepare, R>;
+  /** Whether the move is still the thread's and wanted. */
+  readonly standing: Effect.Effect<"waiting" | "cancelled" | "gone", EStanding, R>;
+  readonly waiting: Effect.Effect<void, EWaiting, R>;
+  readonly delay?: (attempt: number) => Duration.Duration;
+  readonly cancelCheck?: Duration.Duration;
+}): Effect.Effect<
+  | { readonly kind: "answered"; readonly state: PeerMoveState }
+  | { readonly kind: "cancelled" }
+  | { readonly kind: "gone" },
+  EPrepare | EStanding | EWaiting,
+  R
+> =>
+  Effect.gen(function* () {
+    const delay = deps.delay ?? busyRetryDelay;
+    const cancelCheck = Duration.toMillis(deps.cancelCheck ?? BUSY_CANCEL_CHECK);
+    for (let attempt = 0; ; attempt += 1) {
+      const state = yield* deps.prepare;
+      if (state.status !== "aborted" || state.refusalCode !== "busy") {
+        return { kind: "answered", state } as const;
+      }
+      if (attempt === 0) yield* deps.waiting;
+      let left = Duration.toMillis(delay(attempt));
+      while (left > 0) {
+        const standing = yield* deps.standing;
+        if (standing !== "waiting") return { kind: standing } as const;
+        const step = Math.min(left, cancelCheck);
+        yield* Effect.sleep(Duration.millis(step));
+        left -= step;
+      }
+      const standing = yield* deps.standing;
+      if (standing !== "waiting") return { kind: standing } as const;
+    }
+  });
 
 /**
  * The target and agent a move names, checked against what the target said
@@ -211,72 +396,45 @@ const make = Effect.gen(function* () {
       return { identity, place, checkout };
     });
 
-  const describeTarget = (
-    environmentId: EnvironmentId,
-    label: string,
-    thread: OrchestrationThread,
-    place: ProjectPlace | null,
-  ) =>
-    // Fresh: a project just set up there must show at once, not after the
-    // five minutes a cached description lives.
-    client.describe(environmentId, { fresh: true }).pipe(
-      Effect.timeout(DESCRIBE_WAIT),
-      Effect.option,
-      Effect.map((described): ThreadMoveTargetPreview => {
-        if (Option.isNone(described)) {
-          return {
-            environmentId,
-            label,
-            refusal: `${label} can't be reached right now.`,
-            unreachable: true as const,
-            agents: [],
-          };
-        }
-        const peer = described.value;
-        const project =
-          place === null
-            ? undefined
-            : peer.projects.find(
-                (entry) =>
-                  entry.canonicalKey === place.canonicalKey &&
-                  (entry.subdirectory === undefined || entry.subdirectory === place.subdirectory),
-              );
-        const refusal =
-          peer.moves !== true
-            ? `${peer.label} needs a newer Threadlines to take moved threads.`
-            : peer.access === "off"
-              ? `${peer.label} doesn't take work from this computer.`
-              : project === undefined
-                ? `${peer.label} doesn't have this project.`
-                : peer.agents.length === 0
-                  ? `${peer.label} has no agent ready.`
-                  : undefined;
-        const suggested = suggestAgent(peer, thread);
-        return {
-          environmentId,
-          label: peer.label,
-          ...(refusal !== undefined ? { refusal } : {}),
-          ...(refusal !== undefined &&
-          peer.moves === true &&
-          peer.access !== "off" &&
-          project === undefined
-            ? { refusalCode: "no_project" as const }
-            : {}),
-          ...(project !== undefined ? { projectName: project.name } : {}),
-          access: peer.access,
-          agents: peer.agents,
-          ...(suggested !== undefined ? { suggestedAgent: suggested } : {}),
-        };
-      }),
+  /**
+   * Every computer this one links to, each asked once what it is now; none
+   * for one that doesn't answer in time. Fresh: a project just set up there
+   * must show at once, not after the five minutes a cached description lives.
+   */
+  const describeTargets: ThreadMovesShape["describeTargets"] = Effect.gen(function* () {
+    const rows = (yield* links.list.pipe(Effect.orElseSucceed(() => []))).filter(isUsableLink);
+    return yield* Effect.forEach(
+      rows,
+      (row) =>
+        client.describe(row.remoteEnvironmentId, { fresh: true }).pipe(
+          Effect.timeout(DESCRIBE_WAIT),
+          Effect.option,
+          Effect.map((described): DescribedTarget => ({
+            environmentId: row.remoteEnvironmentId,
+            label: row.remoteLabel,
+            described,
+          })),
+        ),
+      { concurrency: "unbounded" },
     );
+  });
 
   /**
    * Where the thread could go and what would go with it. `refusal` is what
    * only the user can clear (or a project the other computer can't find);
    * `waitsFor` is what the thread is busy with. `forQueued` names the queued
-   * move being started, which doesn't count against itself.
+   * move being started, which doesn't count against itself. `targets` are
+   * the computers as already described (several threads at once read them
+   * once); `withChanges: false` skips the change summary.
    */
-  const inspect = (threadId: ThreadId, forQueued?: ThreadMoveRequestId) =>
+  const inspect = (
+    threadId: ThreadId,
+    options: {
+      readonly forQueued?: ThreadMoveRequestId | undefined;
+      readonly targets?: ReadonlyArray<DescribedTarget> | undefined;
+      readonly withChanges?: boolean;
+    } = {},
+  ) =>
     Effect.gen(function* () {
       // Only what the checks read: the whole read model costs about half a
       // second on a big install (threadMoveView.ts).
@@ -290,7 +448,7 @@ const make = Effect.gen(function* () {
       const pending = thread.pendingMove ?? null;
       let refusal: string | null =
         firstMoveBlock(refusals)?.words ??
-        (pending !== null && pending.requestId !== forQueued
+        (pending !== null && pending.requestId !== options.forQueued
           ? `A move to ${pending.target.label} is already waiting. Cancel it first.`
           : null);
       let changes: ThreadMovePreview["changes"];
@@ -299,27 +457,25 @@ const make = Effect.gen(function* () {
         const source = yield* whereFrom(thread, project.workspaceRoot).pipe(Effect.result);
         if (source._tag === "Success") {
           place = source.success.place;
-          const { tracked, untracked } = yield* summarizeMoveChanges(
-            git,
-            source.success.checkout.root,
-          ).pipe(Effect.orElseSucceed(() => ({ tracked: [], untracked: [] })));
-          changes = {
-            branch: source.success.checkout.branch,
-            trackedFiles: tracked.length,
-            untrackedFiles: untracked.length,
-            unpushedCommits: source.success.checkout.unpushedCommits,
-            messageCount: thread.messages.length,
-          };
+          if (options.withChanges !== false) {
+            const { tracked, untracked } = yield* summarizeMoveChanges(
+              git,
+              source.success.checkout.root,
+            ).pipe(Effect.orElseSucceed(() => ({ tracked: [], untracked: [] })));
+            changes = {
+              branch: source.success.checkout.branch,
+              trackedFiles: tracked.length,
+              untrackedFiles: untracked.length,
+              unpushedCommits: source.success.checkout.unpushedCommits,
+              messageCount: thread.messages.length,
+            };
+          }
         } else {
           refusal ??= source.failure.reason;
         }
       }
-      const rows = (yield* links.list.pipe(Effect.orElseSucceed(() => []))).filter(isUsableLink);
-      const targets = yield* Effect.forEach(
-        rows,
-        (row) => describeTarget(row.remoteEnvironmentId, row.remoteLabel, thread, place),
-        { concurrency: "unbounded" },
-      );
+      const described = options.targets ?? (yield* describeTargets);
+      const targets = described.map((target) => targetPreviewOf(target, { thread, place }));
       const waitsFor = moveWaitsOf(refusals);
       return {
         thread,
@@ -336,6 +492,23 @@ const make = Effect.gen(function* () {
 
   const preview: ThreadMovesShape["preview"] = (threadId) =>
     inspect(threadId).pipe(Effect.map((inspected) => inspected.preview));
+
+  const previewMany: ThreadMovesShape["previewMany"] = (threadIds) =>
+    Effect.gen(function* () {
+      const described = yield* describeTargets;
+      const targets = described.map((target) => targetPreviewOf(target, null));
+      const threads = yield* Effect.forEach(
+        threadIds,
+        (threadId) =>
+          inspect(threadId, { targets: described, withChanges: false }).pipe(
+            Effect.map(({ preview: shown }) => previewManyThread(threadId, shown, targets)),
+            Effect.catch((error) => Effect.succeed({ threadId, refusal: error.detail })),
+          ),
+        // Each look runs a few git commands in the thread's checkout.
+        { concurrency: 4 },
+      );
+      return { threads, targets } satisfies ThreadMovePreviewMany;
+    });
 
   /** Freezes the thread for its move (`thread.move.start`); the decider checks it again. */
   const dispatchStart = (
@@ -378,7 +551,10 @@ const make = Effect.gen(function* () {
 
   const checkQueue: ThreadMovesShape["checkQueue"] = (input) =>
     Effect.gen(function* () {
-      const shown = (yield* inspect(input.threadId)).preview;
+      const shown = (yield* inspect(input.threadId, {
+        targets: input.targets,
+        withChanges: false,
+      })).preview;
       if (shown.refusal !== undefined) return yield* moveError(shown.refusal);
       const checked = checkMoveTarget(shown, input.targetEnvironmentId, input.agent);
       if ("refusal" in checked) return yield* moveError(checked.refusal);
@@ -387,7 +563,10 @@ const make = Effect.gen(function* () {
 
   const startQueued: ThreadMovesShape["startQueued"] = (input) =>
     Effect.gen(function* () {
-      const inspected = yield* inspect(input.threadId, input.requestId).pipe(Effect.result);
+      const inspected = yield* inspect(input.threadId, {
+        forQueued: input.requestId,
+        withChanges: false,
+      }).pipe(Effect.result);
       if (inspected._tag === "Failure") {
         return { kind: "busy", words: inspected.failure.detail } as const;
       }
@@ -471,15 +650,23 @@ const make = Effect.gen(function* () {
           readonly phase: ThreadMovePhase;
           readonly sentBytes?: number;
           readonly totalBytes?: number;
+          /** The other computer has every byte; only its user's Allow is left. */
+          readonly staged?: boolean;
+          /** The other computer is busy with other moves. */
+          readonly waitingForTarget?: boolean;
         }
-      | { readonly kind: "abort"; readonly reason: string }
+      | { readonly kind: "abort"; readonly reason: string; readonly code: ThreadMoveAbortCode }
       | { readonly kind: "complete"; readonly movedThreadId: ThreadId },
   ) =>
     Effect.gen(function* () {
       const createdAt = yield* nowIso;
       const commandId = CommandId.make(
         `server:thread-move:${transferId}:${step.kind}:${
-          step.kind === "progress" ? `${step.phase}:${step.sentBytes ?? 0}` : "final"
+          step.kind === "progress"
+            ? `${step.phase}:${step.sentBytes ?? 0}${step.staged === true ? ":staged" : ""}${
+                step.waitingForTarget === true ? ":waiting" : ""
+              }`
+            : "final"
         }`,
       );
       const dispatched = engine.dispatch(
@@ -492,6 +679,8 @@ const make = Effect.gen(function* () {
               phase: step.phase,
               ...(step.sentBytes !== undefined ? { sentBytes: step.sentBytes } : {}),
               ...(step.totalBytes !== undefined ? { totalBytes: step.totalBytes } : {}),
+              ...(step.staged === true ? { staged: true } : {}),
+              ...(step.waitingForTarget === true ? { waitingForTarget: true } : {}),
               createdAt,
             }
           : step.kind === "abort"
@@ -501,6 +690,7 @@ const make = Effect.gen(function* () {
                 threadId,
                 transferId,
                 reason: step.reason,
+                code: step.code,
                 createdAt,
               }
             : {
@@ -513,8 +703,11 @@ const make = Effect.gen(function* () {
               },
       );
       // Progress is best effort. The outcome must be recorded: failing here
-      // keeps the packed copy, and the worker tries again.
-      if (step.kind === "progress") return yield* Effect.ignore(dispatched);
+      // keeps the packed copy, and the worker tries again. A staged move's
+      // progress is an outcome too (a quit waits on it).
+      if (step.kind === "progress" && step.staged !== true) {
+        return yield* Effect.ignore(dispatched);
+      }
       yield* dispatched.pipe(
         Effect.mapError(
           () => new ThreadMoveFailure({ reason: "The move's outcome couldn't be recorded." }),
@@ -576,6 +769,13 @@ const make = Effect.gen(function* () {
       }
     });
 
+  /** moveAbortCode for a move as it stands now. */
+  const abortCodeOf = (threadId: ThreadId, transferId: ThreadMoveId, state: PeerMoveState) =>
+    currentMove(threadId, transferId).pipe(
+      Effect.orElseSucceed(() => null),
+      Effect.map((move) => moveAbortCode(state, move?.cancelRequested === true)),
+    );
+
   /** Records the other computer's final word, and tidies the export away. */
   const settle = (
     threadId: ThreadId,
@@ -593,6 +793,7 @@ const make = Effect.gen(function* () {
         yield* dispatchStep(threadId, transferId, {
           kind: "abort",
           reason: state.reason ?? fallbackReason,
+          code: yield* abortCodeOf(threadId, transferId, state),
         });
       } else {
         return false;
@@ -776,6 +977,7 @@ const make = Effect.gen(function* () {
           yield* dispatchStep(threadId, transferId, {
             kind: "abort",
             reason: "You cancelled the move.",
+            code: "cancelled",
           });
           return;
         }
@@ -798,12 +1000,44 @@ const make = Effect.gen(function* () {
           yield* dispatchStep(threadId, transferId, {
             kind: "abort",
             reason: manifest.failure.reason,
+            code: "aborted",
           });
           return;
         }
-        state = yield* peerCall(threadId, environmentId, (peer) =>
-          peer["peer.move.prepare"]({ transferId, manifest: manifest.success }),
-        );
+        // Offered so the other computer takes the bytes before its user
+        // allows it (an older one ignores that), and waited for while it is
+        // busy with other moves.
+        const offered = yield* offerUntilTaken({
+          prepare: peerCall(threadId, environmentId, (peer) =>
+            peer["peer.move.prepare"]({
+              transferId,
+              manifest: manifest.success,
+              stagedApproval: true,
+            }),
+          ),
+          standing: currentMove(threadId, transferId).pipe(
+            Effect.map((current) =>
+              current === null ? "gone" : current.cancelRequested ? "cancelled" : "waiting",
+            ),
+          ),
+          // Still exporting, as far as this move goes: the phase stays.
+          waiting: dispatchStep(threadId, transferId, {
+            kind: "progress",
+            phase: "exporting",
+            waitingForTarget: true,
+          }),
+        });
+        if (offered.kind === "gone") return;
+        if (offered.kind === "cancelled") {
+          // It recorded nothing there (a busy offer isn't kept): this ends here.
+          yield* dispatchStep(threadId, transferId, {
+            kind: "abort",
+            reason: "You cancelled the move.",
+            code: "cancelled",
+          });
+          return;
+        }
+        state = offered.state;
       }
       for (;;) {
         if (state === null) return;
@@ -816,6 +1050,27 @@ const make = Effect.gen(function* () {
             });
             state = yield* awaitStatus(threadId, transferId, environmentId, "awaiting_approval");
             break;
+          case "staged_awaiting_approval": {
+            // Every byte is there (what it has is the whole); its user's
+            // Allow imports it without this computer. Final for quitting; the
+            // thread stays frozen here until the answer comes (a later
+            // status, or one after a restart).
+            const total = state.bytesReceived;
+            yield* dispatchStep(threadId, transferId, {
+              kind: "progress",
+              phase: "awaiting_approval",
+              sentBytes: total,
+              totalBytes: total,
+              staged: true,
+            });
+            state = yield* awaitStatus(
+              threadId,
+              transferId,
+              environmentId,
+              "staged_awaiting_approval",
+            );
+            break;
+          }
           case "receiving": {
             const thread = (yield* readModel).threads.find((entry) => entry.id === threadId);
             if (thread === undefined) return;
@@ -902,7 +1157,16 @@ const make = Effect.gen(function* () {
       );
     });
 
-  return ThreadMoves.of({ preview, start, checkQueue, startQueued, cancel, startReactor });
+  return ThreadMoves.of({
+    preview,
+    previewMany,
+    describeTargets,
+    start,
+    checkQueue,
+    startQueued,
+    cancel,
+    startReactor,
+  });
 });
 
 export const ThreadMovesLive = Layer.effect(ThreadMoves, make);

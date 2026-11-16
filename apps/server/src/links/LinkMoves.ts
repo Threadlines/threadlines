@@ -9,6 +9,14 @@
  * and the commit waits for the engine's answer without letting go, so an
  * abort that was confirmed can never be followed by a thread appearing.
  *
+ * Receive before allow (Part 3c): an asking computer that offers so
+ * (`stagedApproval`) sends the bytes while a move waits for Allow, and hears
+ * `staged_awaiting_approval` once all are here; Allow then imports it with
+ * nobody sending. Held moves don't count against the moves in flight, which
+ * refuse as `busy` (offer again later); they have their own limits per link,
+ * which refuse as `staging_full` (final). Don't allow, and the day's expiry,
+ * delete what was staged.
+ *
  * Every resource a move makes here is named from its transfer key (a hash of
  * the link and the transfer id): the staging folder, the git ref, the
  * worktree, the thread and its message ids. Nothing a peer sends is used as a
@@ -21,6 +29,7 @@ import * as NodeZlib from "node:zlib";
 
 import {
   type ChatAttachment,
+  type ChildRequestId,
   CommandId,
   type ComputerLinkPendingRequest,
   ComputerLinkError,
@@ -32,11 +41,15 @@ import {
   type PeerMoveManifest,
   type PeerMovePart,
   type PeerMovePrepareInput,
+  type PeerMoveAbortCode,
+  type PeerMoveRefusalCode,
   type PeerMoveState,
   PEER_MOVE_CHUNK_MAX_BYTES,
   PeerRpcError,
   ThreadId,
   type ThreadImportMessage,
+  type ThreadMoveRespondManyInput,
+  type ThreadMoveRespondManyResult,
   TurnId,
 } from "@threadlines/contracts";
 import * as Context from "effect/Context";
@@ -71,9 +84,23 @@ import { LinkRequests, linkIdentityRefusal, type PeerLink } from "./LinkRequests
 
 /** A move nobody allowed, or that stopped arriving, ends after a day. */
 export const LINK_MOVE_TTL_MS = 24 * 60 * 60 * 1000;
-/** Unfinished moves one link may have here at once, and all links together. */
+/**
+ * Moves in flight one link may have here at once, and all links together:
+ * every unfinished move except one held for this computer's user with every
+ * byte here already (those have their own limits, below), so the caps always
+ * drain. A move past them is refused as `busy`: the asking computer offers it
+ * again later.
+ */
 const MAX_OPEN_MOVES_PER_LINK = 2;
 const MAX_OPEN_MOVES = 4;
+/**
+ * Moves one link may have held here for this computer's user's Allow, taking
+ * their bytes before it (docs/design/fleet.md, Part 3c), and the bytes they
+ * declare together. A move past them is refused as `staging_full`, a final
+ * answer.
+ */
+export const MAX_STAGED_MOVES_PER_LINK = 20;
+export const MAX_STAGED_BYTES_PER_LINK = 2 * 1024 * 1024 * 1024;
 const MAX_MOVE_PARTS = 20_000;
 /**
  * The most a move may write here beyond the project as its remote has it: the
@@ -110,6 +137,14 @@ export interface LinkMovesShape {
   ) => Effect.Effect<PeerMoveState, PeerRpcError>;
   /** This computer's user answers a waiting move; false when no move has that id. */
   readonly respond: (input: LinksRespondRequestInput) => Effect.Effect<boolean, ComputerLinkError>;
+  /**
+   * Allow all, or Don't allow, for moves from one linked computer (the
+   * grouped card, docs/design/fleet.md, Part 3c): each answered on its own,
+   * as `respond` would, so one that can't be answered doesn't stop the rest.
+   */
+  readonly respondMany: (
+    input: ThreadMoveRespondManyInput,
+  ) => Effect.Effect<ThreadMoveRespondManyResult>;
   readonly pending: Effect.Effect<ReadonlyArray<ComputerLinkPendingRequest>>;
   readonly pendingChanges: Stream.Stream<void>;
   /** An inbound link was removed: its unfinished moves are dropped. */
@@ -291,17 +326,57 @@ const make = Effect.gen(function* () {
   const tempRef = (row: Pick<LinkMoveRow, "transferKey">) =>
     `refs/threadlines/move/${row.transferKey}`;
 
+  /**
+   * A move held for Allow that takes its bytes first reads as `receiving`
+   * until every byte is here, then `staged_awaiting_approval`; once allowed
+   * with every byte here it reads as `importing`, whether its import runs
+   * yet or waits for a slot (`waitingToImport`).
+   */
+  const peerStatus = (row: LinkMoveRow): PeerMoveState["status"] =>
+    row.status === "awaiting_approval" && row.stagedApproval
+      ? row.bytesReceived >= row.manifest.totalBytes
+        ? "staged_awaiting_approval"
+        : "receiving"
+      : waitingToImport(row)
+        ? "importing"
+        : row.status;
   const stateOf = (row: LinkMoveRow): PeerMoveState => ({
-    status: row.status,
+    status: peerStatus(row),
     bytesReceived: row.bytesReceived,
     ...(row.status === "committed" ? { threadId: row.threadId } : {}),
     ...(row.reason !== null ? { reason: row.reason } : {}),
+    ...(row.status === "aborted" && row.abortCode !== null ? { abortCode: row.abortCode } : {}),
   });
-  const gone = (reason?: string): PeerMoveState => ({
+  const gone = (reason?: string, refusalCode?: PeerMoveRefusalCode): PeerMoveState => ({
     status: "aborted",
     bytesReceived: 0,
     ...(reason !== undefined ? { reason } : {}),
+    ...(refusalCode !== undefined ? { refusalCode } : {}),
   });
+  /** A move held for Allow whose bytes are all here: it no longer holds a slot in flight. */
+  const staged = (row: LinkMoveRow) =>
+    row.status === "awaiting_approval" &&
+    row.stagedApproval &&
+    row.bytesReceived >= row.manifest.totalBytes;
+  /**
+   * A move sent before Allow, allowed, with every byte here: its import
+   * starts once a slot in flight is free (`startImports`), so allowing many
+   * at once never runs more imports than the caps.
+   */
+  const waitingToImport = (row: LinkMoveRow) =>
+    row.status === "receiving" &&
+    row.stagedApproval &&
+    row.bytesReceived >= row.manifest.totalBytes;
+  /** Holds no slot in flight: waiting for Allow, or for a slot, with every byte here. */
+  const holdsNoSlot = (row: LinkMoveRow) => staged(row) || waitingToImport(row);
+  /**
+   * Counts against the link's staging budget: sent before Allow, and its bytes
+   * still in staging, waiting for Allow (all here or still arriving) or,
+   * allowed, waiting for an import slot. Its import holds a slot in flight
+   * instead.
+   */
+  const holdsStaging = (row: LinkMoveRow) =>
+    row.stagedApproval && (row.status === "awaiting_approval" || waitingToImport(row));
 
   /** A move's row. Fails when it couldn't be read: an outage must never read as "never heard of it". */
   const readRow = (linkDeviceId: string, transferId: string) =>
@@ -543,9 +618,10 @@ const make = Effect.gen(function* () {
   /**
    * Ends a move here (unless it committed or ended already) and cleans up
    * after it. True when this call ended it; fails when that couldn't be
-   * recorded, so nobody is told it ended.
+   * recorded, so nobody is told it ended. `abortCode`: this computer's user
+   * said Don't allow, or nobody allowed it in time.
    */
-  const abortRow = (row: LinkMoveRow, reason: string) =>
+  const abortRow = (row: LinkMoveRow, reason: string, abortCode?: PeerMoveAbortCode) =>
     Effect.gen(function* () {
       // An import that landed (its final write lost) is committed, whatever
       // asked to stop it.
@@ -566,12 +642,13 @@ const make = Effect.gen(function* () {
           transferId: row.transferId,
           status: "aborted",
           reason,
+          ...(abortCode !== undefined ? { abortCode } : {}),
           now: yield* nowIso,
         })
         .pipe(Effect.mapError(() => peerFailure(`${ownLabel()} couldn't record that.`)));
       if (settled) {
         if (row.status === "awaiting_approval") yield* announcePending;
-        yield* cleanUp({ ...row, status: "aborted", reason });
+        yield* cleanUp({ ...row, status: "aborted", reason, abortCode: abortCode ?? null });
       }
       return settled;
     });
@@ -614,28 +691,52 @@ const make = Effect.gen(function* () {
             interactionMode: manifest.thread.interactionMode,
           });
           if ("refused" in agent) return gone(agent.refused);
+          // An asking computer that reads the codes is told why a refusal
+          // came; an older one is answered exactly as before.
+          const asksStaged = input.stagedApproval === true;
+          const refused = (reason: string, code: PeerMoveRefusalCode) =>
+            gone(reason, asksStaged ? code : undefined);
           // Counting and recording under one lock, so offers made at once
           // can't all fit under the caps. The link's access is read again
           // right before recording: one turned to Ask first meanwhile asks.
           const admitted = yield* lock("admission")(
             Effect.gen(function* () {
-              const open = yield* moves.listOpen;
-              if (
-                open.filter((entry) => entry.linkDeviceId === link.deviceId).length >=
-                  MAX_OPEN_MOVES_PER_LINK ||
-                open.length >= MAX_OPEN_MOVES
-              ) {
-                return gone(
-                  `${ownLabel()} is already taking other moves. Try again once they're done.`,
-                );
-              }
               const current = yield* requests.authority(link.deviceId);
               if (!current.ok) return gone(current.text);
+              const held = current.access === "ask" && asksStaged;
+              const open = yield* moves.listOpen;
+              if (held) {
+                const waiting = open.filter(
+                  (entry) => entry.linkDeviceId === link.deviceId && holdsStaging(entry),
+                );
+                const bytes = waiting.reduce((sum, entry) => sum + entry.manifest.totalBytes, 0);
+                if (
+                  waiting.length >= MAX_STAGED_MOVES_PER_LINK ||
+                  bytes + manifest.totalBytes > MAX_STAGED_BYTES_PER_LINK
+                ) {
+                  return refused(
+                    `${ownLabel()} is holding other moves until its user allows them.`,
+                    "staging_full",
+                  );
+                }
+              }
+              const inFlight = open.filter((entry) => !holdsNoSlot(entry));
+              if (
+                inFlight.filter((entry) => entry.linkDeviceId === link.deviceId).length >=
+                  MAX_OPEN_MOVES_PER_LINK ||
+                inFlight.length >= MAX_OPEN_MOVES
+              ) {
+                return refused(
+                  `${ownLabel()} is already taking other moves. Try again once they're done.`,
+                  "busy",
+                );
+              }
               return yield* moves.insert({
                 linkDeviceId: link.deviceId,
                 transferId,
                 transferKey,
                 status: current.access === "ask" ? "awaiting_approval" : "receiving",
+                stagedApproval: held,
                 manifest,
                 threadId: linkMoveThreadId(transferKey),
                 now: yield* nowIso,
@@ -656,12 +757,19 @@ const make = Effect.gen(function* () {
         return yield* new PeerRpcError({ detail: "A chunk must hold 1 byte to 1 MB." });
       }
       const transferKey = linkMoveKey(link.deviceId, input.transferId);
-      return yield* lock(transferKey)(
+      // Set when the last byte of a move allowed early arrives: its import
+      // starts (or waits for a slot) now, as `finish` would have started it.
+      let allowedAndWhole = false;
+      const answer = yield* lock(transferKey)(
         Effect.gen(function* () {
           const found = yield* readRow(link.deviceId, input.transferId);
           if (Option.isNone(found)) return gone();
           const row = found.value;
-          if (row.status !== "receiving" || input.offset !== row.bytesReceived) return stateOf(row);
+          // A move held for Allow takes its bytes now when it was offered so.
+          const takes =
+            row.status === "receiving" ||
+            (row.status === "awaiting_approval" && row.stagedApproval);
+          if (!takes || input.offset !== row.bytesReceived) return stateOf(row);
           if (input.offset + data.length > row.manifest.totalBytes) {
             return yield* new PeerRpcError({ detail: "That chunk goes past the end." });
           }
@@ -687,17 +795,38 @@ const make = Effect.gen(function* () {
             return yield* new PeerRpcError({ detail: `${ownLabel()} couldn't save that chunk.` });
           }
           const bytesReceived = row.bytesReceived + data.length;
-          yield* moves
+          const recorded = yield* moves
             .update({
               linkDeviceId: row.linkDeviceId,
               transferId: row.transferId,
               patch: { bytesReceived },
               now: yield* nowIso,
             })
-            .pipe(Effect.ignore);
-          return stateOf({ ...row, bytesReceived });
+            .pipe(Effect.orElseSucceed(() => false));
+          // Not recorded: answered with what is, so the asking computer sends
+          // the chunk again (the write past the count is dropped then), and
+          // never hears "every byte is here" before that is so.
+          if (!recorded) return stateOf(row);
+          const next = { ...row, bytesReceived };
+          // Every byte of a move sent before Allow is here: checked now, so
+          // the asking computer hears of a bad copy while it can still say
+          // so. Still held, the card can say it arrived; allowed already (an
+          // Allow given while the bytes still came), it imports. The asking
+          // computer hears `importing` and calls no finish.
+          if (staged(next) || waitingToImport(next)) {
+            if (!(yield* verifyPayload(next))) {
+              const reason = `What arrived on ${ownLabel()} doesn't match what was sent. Try again.`;
+              yield* abortRow(next, reason);
+              return gone(reason);
+            }
+            if (staged(next)) yield* announcePending;
+            else allowedAndWhole = true;
+          }
+          return stateOf(next);
         }),
       );
+      if (allowedAndWhole) yield* startImports;
+      return answer;
     });
 
   /** Whether the staged payload is whole: every part's hash and the payload's. */
@@ -731,6 +860,8 @@ const make = Effect.gen(function* () {
             yield* abortRow(row, reason);
             return gone(reason);
           }
+          // Sent before Allow and allowed: it imports when a slot is free.
+          if (row.stagedApproval) return { queued: true as const, state: stateOf(row) };
           yield* moves
             .update({
               linkDeviceId: row.linkDeviceId,
@@ -742,6 +873,10 @@ const make = Effect.gen(function* () {
           return stateOf({ ...row, status: "importing" });
         }),
       );
+      if ("queued" in answer) {
+        yield* startImports;
+        return answer.state;
+      }
       if (answer.status === "importing") {
         yield* runImport(link.deviceId, input.transferId).pipe(Effect.forkIn(scope));
       }
@@ -754,7 +889,7 @@ const make = Effect.gen(function* () {
     );
 
   const abort: LinkMovesShape["abort"] = (link, input) =>
-    abortMove(link.deviceId, input.transferId);
+    abortMove(link.deviceId, input.transferId).pipe(Effect.tap(() => startImports));
 
   /**
    * Records a move whose thread landed here as committed. First its worktree
@@ -799,7 +934,12 @@ const make = Effect.gen(function* () {
    * needs to know couldn't be read, so the asking computer asks again rather
    * than unfreezing a thread that may still arrive here.
    */
-  const abortMove = (linkDeviceId: string, transferId: string, reason?: string) =>
+  const abortMove = (
+    linkDeviceId: string,
+    transferId: string,
+    reason?: string,
+    abortCode?: PeerMoveAbortCode,
+  ) =>
     lock(linkMoveKey(linkDeviceId, transferId))(
       Effect.gen(function* () {
         const found = yield* readRow(linkDeviceId, transferId);
@@ -816,11 +956,11 @@ const make = Effect.gen(function* () {
           return stateOf({ ...row, status: "committed" });
         }
         const why = reason ?? "The move was cancelled.";
-        if (!(yield* abortRow(row, why))) {
+        if (!(yield* abortRow(row, why, abortCode))) {
           const now = yield* readRow(linkDeviceId, transferId);
           return Option.isSome(now) ? stateOf(now.value) : gone(why);
         }
-        return stateOf({ ...row, status: "aborted", reason: why });
+        return stateOf({ ...row, status: "aborted", reason: why, abortCode: abortCode ?? null });
       }),
     );
 
@@ -1369,8 +1509,53 @@ const make = Effect.gen(function* () {
         Effect.logWarning("link move import failed", { transferId, cause }),
       ),
       Effect.ensuring(Effect.sync(() => importing.delete(key))),
+      // Its slot is free: an allowed move waiting for one goes next.
+      Effect.ensuring(Effect.suspend(() => startImports)),
     );
   };
+
+  /**
+   * Starts the imports of allowed moves waiting for a slot (`waitingToImport`),
+   * oldest first, as far as the caps in flight allow; the rest wait for the
+   * next import to end, or the sweep. Counted and recorded under the
+   * admission lock, as offers are, so the two never overrun the caps together.
+   */
+  const startImports: Effect.Effect<void> = Effect.gen(function* () {
+    const started = yield* lock("admission")(
+      Effect.gen(function* () {
+        const open = yield* moves.listOpen;
+        const inFlight = open.filter((entry) => !holdsNoSlot(entry));
+        const begun: Array<LinkMoveRow> = [];
+        for (const row of open.filter(waitingToImport)) {
+          const fromLink = inFlight.filter((entry) => entry.linkDeviceId === row.linkDeviceId);
+          if (fromLink.length >= MAX_OPEN_MOVES_PER_LINK || inFlight.length >= MAX_OPEN_MOVES) {
+            continue;
+          }
+          // Not if it ended meanwhile: a settled row isn't changed.
+          const moved = yield* moves.update({
+            linkDeviceId: row.linkDeviceId,
+            transferId: row.transferId,
+            patch: { status: "importing" },
+            now: yield* nowIso,
+          });
+          if (!moved) continue;
+          const next = { ...row, status: "importing" as const };
+          inFlight.push(next);
+          begun.push(next);
+        }
+        return begun;
+      }),
+    ).pipe(
+      Effect.catch((error) =>
+        Effect.logWarning("link moves waiting to import couldn't be started", {
+          cause: error,
+        }).pipe(Effect.as([] as Array<LinkMoveRow>)),
+      ),
+    );
+    for (const row of started) {
+      yield* runImport(row.linkDeviceId, row.transferId).pipe(Effect.forkIn(scope));
+    }
+  });
 
   // ---------------------------------------------------------------------------
   // Asking this computer's user
@@ -1386,22 +1571,41 @@ const make = Effect.gen(function* () {
       const answered = yield* lock(linkMoveKey(input.deviceId, input.requestId))(
         Effect.gen(function* () {
           const found = yield* readRow(input.deviceId, input.requestId);
-          if (Option.isNone(found)) return false;
+          if (Option.isNone(found)) return null;
           const row = found.value;
           if (row.status !== "awaiting_approval") {
             return yield* new ComputerLinkError({ detail: "That move is no longer waiting." });
           }
-          if (input.allow) {
+          if (!input.allow) {
+            yield* abortRow(row, `${ownLabel()} didn't allow the move.`, "denied");
+            return "answered" as const;
+          }
+          // Every byte is here already (it was sent before Allow): it is set
+          // up as soon as a slot is free, whether or not the computer it left
+          // is still on.
+          if (staged(row)) {
+            if (!(yield* verifyPayload(row))) {
+              yield* abortRow(
+                row,
+                `What arrived on ${ownLabel()} doesn't match what was sent. Try again.`,
+              );
+              return "answered" as const;
+            }
             yield* moves.update({
               linkDeviceId: row.linkDeviceId,
               transferId: row.transferId,
               patch: { status: "receiving" },
               now: yield* nowIso,
             });
-          } else {
-            yield* abortRow(row, `${ownLabel()} didn't allow the move.`);
+            return "import" as const;
           }
-          return true;
+          yield* moves.update({
+            linkDeviceId: row.linkDeviceId,
+            transferId: row.transferId,
+            patch: { status: "receiving" },
+            now: yield* nowIso,
+          });
+          return "answered" as const;
         }),
       ).pipe(
         Effect.catchTags({
@@ -1409,8 +1613,31 @@ const make = Effect.gen(function* () {
           LinkMoveRepositoryError: () => Effect.fail(unrecorded()),
         }),
       );
-      if (answered) yield* announcePending;
-      return answered;
+      if (answered === null) return false;
+      if (answered === "import") yield* startImports;
+      yield* announcePending;
+      return true;
+    });
+
+  const respondMany: LinkMovesShape["respondMany"] = (input) =>
+    Effect.gen(function* () {
+      const answered: Array<ChildRequestId> = [];
+      const failed: Array<{ requestId: ChildRequestId; detail: string }> = [];
+      for (const requestId of new Set(input.requestIds)) {
+        const one = yield* respond({
+          deviceId: input.deviceId,
+          requestId,
+          allow: input.allow,
+        }).pipe(Effect.result);
+        if (one._tag === "Failure") {
+          failed.push({ requestId, detail: one.failure.detail });
+        } else if (one.success) {
+          answered.push(requestId);
+        } else {
+          failed.push({ requestId, detail: "That move is no longer waiting." });
+        }
+      }
+      return { answered, failed } satisfies ThreadMoveRespondManyResult;
     });
 
   const pending: LinkMovesShape["pending"] = Effect.gen(function* () {
@@ -1444,6 +1671,9 @@ const make = Effect.gen(function* () {
           trackedFiles: row.manifest.summary.trackedFiles,
           untrackedFiles: row.manifest.summary.untrackedFiles,
           unpushedCommits: row.manifest.summary.unpushedCommits,
+          ...(row.stagedApproval
+            ? { bytesReceived: row.bytesReceived, totalBytes: row.manifest.totalBytes }
+            : {}),
         },
         fromLabel,
         parentEnvironmentId: row.manifest.source.environmentId,
@@ -1492,13 +1722,14 @@ const make = Effect.gen(function* () {
         } else {
           yield* runImport(row.linkDeviceId, row.transferId).pipe(Effect.forkIn(scope));
         }
-      } else if (Date.parse(row.updatedAt) + LINK_MOVE_TTL_MS < now) {
+      } else if (!waitingToImport(row) && Date.parse(row.updatedAt) + LINK_MOVE_TTL_MS < now) {
         yield* abortMove(
           row.linkDeviceId,
           row.transferId,
           row.status === "awaiting_approval"
             ? `Nobody on ${ownLabel()} allowed the move in time.`
             : "The move stopped arriving.",
+          row.status === "awaiting_approval" ? "expired" : undefined,
         );
       }
     }
@@ -1512,6 +1743,7 @@ const make = Effect.gen(function* () {
         NodeFs.rm(stagingDir(row), { recursive: true, force: true }),
       ).pipe(Effect.ignore);
     }
+    yield* startImports;
   });
 
   const startReactor: LinkMovesShape["startReactor"] = () =>
@@ -1529,6 +1761,7 @@ const make = Effect.gen(function* () {
     status,
     abort,
     respond,
+    respondMany,
     pending,
     pendingChanges: Stream.fromPubSub(pendingHub),
     dropLink,

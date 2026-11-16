@@ -14,6 +14,8 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  countMoveBatch,
+  describeMoveBatchProgress,
   describePendingMove,
   describeThreadMoveProgress,
   formatThreadMoveChanges,
@@ -256,5 +258,28 @@ describe("picking where and with whom", () => {
     expect(
       threadMoveAgentSelection(withSuggestion, { instanceId: "codex", model: "gpt-5-mini" }),
     ).toEqual({ instanceId: "codex", model: "gpt-5-mini" });
+  });
+});
+
+describe("describeMoveBatchProgress", () => {
+  it("says how a batch goes while it runs, then how it went, naming the ones that didn't move", () => {
+    const running = countMoveBatch(["moved", "waiting", "waiting"]);
+    expect(
+      describeMoveBatchProgress({ counts: running, targetLabel: "Mac mini", misses: [] }),
+    ).toBe("Moving 3 threads here: 1 moved, 2 waiting for their agents");
+    const allMoved = countMoveBatch(["moved", "moved", "awaiting_approval"]);
+    expect(
+      describeMoveBatchProgress({ counts: allMoved, targetLabel: "Mac mini", misses: [] }),
+    ).toBe("Moved 3 threads to Mac mini. 1 waits for Mac mini to allow it.");
+    const someMissed = countMoveBatch(["moved", "moved", "not_moved"]);
+    expect(
+      describeMoveBatchProgress({
+        counts: someMissed,
+        targetLabel: "Mac mini",
+        misses: [{ title: "Goal thread", words: "Has a goal set. Clear it first." }],
+      }),
+    ).toBe(
+      "Moved 2 of 3 threads to Mac mini. Didn't move: Goal thread (Has a goal set. Clear it first).",
+    );
   });
 });

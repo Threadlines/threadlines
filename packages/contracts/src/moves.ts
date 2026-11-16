@@ -1,15 +1,25 @@
 import * as Schema from "effect/Schema";
 
 import {
+  ChildRequestId,
   EnvironmentId,
+  IsoDateTime,
   NonNegativeInt,
   ThreadId,
+  ThreadMoveBatchId,
   ThreadMoveId,
   ThreadMoveRequestId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
 import { ComputerLinkAccess } from "./links.ts";
-import { ModelSelection, ThreadMoveWait, ThreadPendingMoveMode } from "./orchestration.ts";
+import {
+  ModelSelection,
+  ThreadMoveHold,
+  ThreadMovePhase,
+  ThreadMoveTarget,
+  ThreadMoveWait,
+  ThreadPendingMoveMode,
+} from "./orchestration.ts";
 import { PeerAgent } from "./peerRpc.ts";
 
 /**
@@ -43,6 +53,12 @@ export const ThreadMoveTargetPreview = Schema.Struct({
   agents: Schema.Array(PeerAgent),
   /** The agent to suggest: the thread's own driver and model when it has them. */
   suggestedAgent: Schema.optional(ModelSelection),
+  /**
+   * Under Ask first it takes every byte before its user allows the move, so
+   * this computer can count the move as sent and quit (docs/design/fleet.md,
+   * Part 3c). Absent: it holds the bytes back until Allow.
+   */
+  stagedApproval: Schema.optional(Schema.Boolean),
 });
 export type ThreadMoveTargetPreview = typeof ThreadMoveTargetPreview.Type;
 
@@ -129,6 +145,154 @@ export const ThreadMoveRetryInput = Schema.Struct({
   requestId: ThreadMoveRequestId,
 });
 export type ThreadMoveRetryInput = typeof ThreadMoveRetryInput.Type;
+
+// ----- several threads at once (docs/design/fleet.md, Part 3c) ---------------------------
+
+/** At most this many threads in one `moves.previewMany` or `moves.queueMany`. */
+export const THREAD_MOVE_BATCH_MAX = 100;
+
+const BatchThreadIds = Schema.Array(ThreadId).check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(THREAD_MOVE_BATCH_MAX),
+);
+
+export const ThreadMovePreviewManyInput = Schema.Struct({ threadIds: BatchThreadIds });
+export type ThreadMovePreviewManyInput = typeof ThreadMovePreviewManyInput.Type;
+
+/** Why one thread can't go to one computer that could take others (it has no copy of its project). */
+export const ThreadMoveTargetRefusal = Schema.Struct({
+  environmentId: EnvironmentId,
+  refusal: TrimmedNonEmptyString,
+  refusalCode: Schema.optional(Schema.Literal("no_project")),
+});
+export type ThreadMoveTargetRefusal = typeof ThreadMoveTargetRefusal.Type;
+
+/** One thread of `moves.previewMany`: the same checks as `moves.preview`, without its change summary. */
+export const ThreadMovePreviewManyThread = Schema.Struct({
+  threadId: ThreadId,
+  /** Why it can't move anywhere, even once it is free. Absent: it can. */
+  refusal: Schema.optional(TrimmedNonEmptyString),
+  /** What it is busy with now; absent or empty: it moves at once. */
+  waitsFor: Schema.optional(Schema.Array(ThreadMoveWait)),
+  /** The computers it alone can't go to, and why. A computer not listed takes it. */
+  targetRefusals: Schema.optional(Schema.Array(ThreadMoveTargetRefusal)),
+});
+export type ThreadMovePreviewManyThread = typeof ThreadMovePreviewManyThread.Type;
+
+export const ThreadMovePreviewMany = Schema.Struct({
+  /** In the order asked; a thread that doesn't exist is refused. */
+  threads: Schema.Array(ThreadMovePreviewManyThread),
+  /**
+   * Each linked computer, read once, as it is for every thread: whether it
+   * can be reached, its access and agents. Per-thread fields (project name,
+   * suggested agent) are left out; `targetRefusals` holds a thread's own.
+   */
+  targets: Schema.Array(ThreadMoveTargetPreview),
+});
+export type ThreadMovePreviewMany = typeof ThreadMovePreviewMany.Type;
+
+/**
+ * Queue a move for each thread to one computer, each decided on its own: one
+ * refused doesn't stop the others. Each picks the agent the target suggests
+ * for it when its move starts.
+ */
+export const ThreadMoveQueueManyInput = Schema.Struct({
+  threadIds: BatchThreadIds,
+  targetEnvironmentId: EnvironmentId,
+  mode: ThreadPendingMoveMode,
+});
+export type ThreadMoveQueueManyInput = typeof ThreadMoveQueueManyInput.Type;
+
+export const ThreadMoveQueueManyResult = Schema.Struct({
+  batchId: ThreadMoveBatchId,
+  queued: Schema.Array(Schema.Struct({ threadId: ThreadId, requestId: ThreadMoveRequestId })),
+  refused: Schema.Array(Schema.Struct({ threadId: ThreadId, words: TrimmedNonEmptyString })),
+});
+export type ThreadMoveQueueManyResult = typeof ThreadMoveQueueManyResult.Type;
+
+/**
+ * "Stop the agents and move now" for one move already waiting: the request
+ * the client shows. One that already started, or ended, is left alone.
+ */
+export const ThreadMoveSetModeInput = Schema.Struct({
+  threadId: ThreadId,
+  requestId: ThreadMoveRequestId,
+  mode: Schema.Literal("stop-now"),
+});
+export type ThreadMoveSetModeInput = typeof ThreadMoveSetModeInput.Type;
+
+export const ThreadMoveBatchStatusInput = Schema.Struct({ batchId: ThreadMoveBatchId });
+export type ThreadMoveBatchStatusInput = typeof ThreadMoveBatchStatusInput.Type;
+
+/**
+ * Where one thread of a batch stands. Still going: `waiting` (for its agent
+ * to finish), `stopping` (its agent is being stopped), `moving` (the transfer
+ * runs; `phase` says how far). Final: `moved`, `not_moved` (with `words`),
+ * and `awaiting_approval` (the other computer has every byte and waits for
+ * its user; this computer may quit).
+ */
+export const ThreadMoveBatchMemberState = Schema.Literals([
+  "waiting",
+  "stopping",
+  "moving",
+  "moved",
+  "not_moved",
+  "awaiting_approval",
+]);
+export type ThreadMoveBatchMemberState = typeof ThreadMoveBatchMemberState.Type;
+
+export const ThreadMoveBatchMember = Schema.Struct({
+  threadId: ThreadId,
+  /** Absent: the thread is gone (or has no title). */
+  title: Schema.optional(TrimmedNonEmptyString),
+  /** Absent: refused when it was queued, so it has no queued move to name. */
+  requestId: Schema.optional(ThreadMoveRequestId),
+  state: ThreadMoveBatchMemberState,
+  /** `moved`, `not_moved` or `awaiting_approval`. */
+  final: Schema.Boolean,
+  /** `moving`: how far the transfer got. */
+  phase: Schema.optional(ThreadMovePhase),
+  /** `waiting`: what it waits for. */
+  waitsFor: Schema.optional(Schema.Array(ThreadMoveWait)),
+  /** `waiting` or `stopping`: what holds it once it is ready. */
+  hold: Schema.optional(ThreadMoveHold),
+  /** `not_moved`: why. */
+  words: Schema.optional(TrimmedNonEmptyString),
+});
+export type ThreadMoveBatchMember = typeof ThreadMoveBatchMember.Type;
+
+export const ThreadMoveBatchStatus = Schema.Struct({
+  batchId: ThreadMoveBatchId,
+  target: ThreadMoveTarget,
+  createdAt: IsoDateTime,
+  /** Every thread asked for, refused ones included, in the order asked. */
+  members: Schema.Array(ThreadMoveBatchMember),
+  /** Every member is final. */
+  final: Schema.Boolean,
+});
+export type ThreadMoveBatchStatus = typeof ThreadMoveBatchStatus.Type;
+
+/**
+ * On the computer moves arrive at: answer several moves from one linked
+ * computer at once (the grouped card's Allow all and Don't allow). Only the
+ * moves the card shows: one that arrives meanwhile waits for its own answer.
+ */
+export const ThreadMoveRespondManyInput = Schema.Struct({
+  deviceId: TrimmedNonEmptyString,
+  requestIds: Schema.Array(ChildRequestId).check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(THREAD_MOVE_BATCH_MAX),
+  ),
+  allow: Schema.Boolean,
+});
+export type ThreadMoveRespondManyInput = typeof ThreadMoveRespondManyInput.Type;
+
+export const ThreadMoveRespondManyResult = Schema.Struct({
+  answered: Schema.Array(ChildRequestId),
+  /** The ones that couldn't be answered (no longer waiting, or not recorded), and why. */
+  failed: Schema.Array(Schema.Struct({ requestId: ChildRequestId, detail: TrimmedNonEmptyString })),
+});
+export type ThreadMoveRespondManyResult = typeof ThreadMoveRespondManyResult.Type;
 
 export class ThreadMoveError extends Schema.TaggedError<ThreadMoveError>()("ThreadMoveError", {
   detail: TrimmedNonEmptyString,

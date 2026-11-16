@@ -18,12 +18,15 @@ import {
   OrchestrationProposedPlan,
   OrchestrationSession,
   OrchestrationThread,
+  OrchestrationThreadMove,
   ProjectCreateCommand,
+  ThreadMovePhase,
   ThreadTurnStartCommand,
   ThreadCreatedPayload,
   ThreadTurnDiff,
   ThreadTurnStartRequestedPayload,
 } from "./orchestration.ts";
+import { EnvironmentId, ThreadMoveBatchId, ThreadMoveId } from "./baseSchemas.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 
 const decodeTurnDiffInput = Schema.decodeUnknownEffect(OrchestrationGetTurnDiffInput);
@@ -583,3 +586,43 @@ it.effect("ChatAttachment rejects unknown file kinds", () =>
     assert.strictEqual(result._tag, "Failure");
   }),
 );
+
+// An app from before Move v2 step 2 (docs/design/fleet.md, Part 3c) decodes
+// thread shells with the move schema below, copied from that revision. Every
+// new move state must reach it as an optional field it ignores, never as a
+// new member of a closed union it reads: one value it can't decode fails its
+// whole shell stream.
+const BaseThreadMovePhase = Schema.Literals([
+  "exporting",
+  "awaiting_approval",
+  "sending",
+  "importing",
+]);
+const BaseOrchestrationThreadMove = Schema.Struct({
+  transferId: Schema.String,
+  target: Schema.Struct({ environmentId: Schema.String, label: Schema.String }),
+  agent: ModelSelection,
+  phase: BaseThreadMovePhase,
+  sentBytes: Schema.optional(Schema.Number),
+  totalBytes: Schema.optional(Schema.Number),
+  cancelRequested: Schema.Boolean,
+  startedAt: Schema.String,
+  queuedRequestId: Schema.optional(Schema.String),
+  movedAway: Schema.optional(Schema.Struct({ threadId: Schema.String, movedAt: Schema.String })),
+});
+
+it("an app from before step 2 still reads a move waiting for its target", () => {
+  assert.deepStrictEqual(ThreadMovePhase.literals, BaseThreadMovePhase.literals);
+  const move = Schema.encodeSync(OrchestrationThreadMove)({
+    transferId: ThreadMoveId.make("move-1"),
+    target: { environmentId: EnvironmentId.make("environment-mac"), label: "Mac mini" },
+    agent: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+    phase: "exporting",
+    waitingForTarget: true,
+    cancelRequested: false,
+    startedAt: "2026-11-16T09:00:00.000Z",
+    batchId: ThreadMoveBatchId.make("batch-1"),
+  });
+  const read = Schema.decodeUnknownSync(BaseOrchestrationThreadMove)(move);
+  assert.strictEqual(read.phase, "exporting");
+});

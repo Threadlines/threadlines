@@ -493,6 +493,9 @@ export function decideMoveStart(
       agent: command.agent,
       startedAt: command.createdAt,
       ...(queuedRequestId !== undefined ? { queuedRequestId } : {}),
+      ...(pending?.batchId !== undefined && queuedRequestId !== undefined
+        ? { batchId: pending.batchId }
+        : {}),
     },
   };
   const queueEnded: PlannedEvent[] =
@@ -607,12 +610,47 @@ export function decideMoveQueue(
         requestedBy: command.requestedBy,
         waitsFor: moveWaitsOf(refusals),
         hold: null,
+        ...(command.batchId !== undefined ? { batchId: command.batchId } : {}),
       },
     },
   };
   return command.mode === "stop-now"
     ? [queued, ...sessionStopEvents(thread, command.createdAt, baseFor)]
     : [queued];
+}
+
+/**
+ * "Stop the agents and move now" for a move already waiting (docs/design/
+ * fleet.md, Part 3c): the queued move `requestId` switches to `stop-now`, and
+ * its thread's sessions end in the same decision, as a move queued that way
+ * does. One that already started, ended or was replaced changes nothing; the
+ * caller adds what Stop holds (command output that would wake the agent).
+ */
+export function decideMoveSetMode(
+  readModel: OrchestrationReadModel,
+  thread: OrchestrationThread,
+  command: CommandOf<"thread.move.set-mode">,
+  baseFor: EventBase,
+): ThreadMoveDecision {
+  const pending = currentPendingMove(thread, command.requestId);
+  if (pending === null || pending.mode === command.mode) return [];
+  const refusals = threadMoveRefusals(readModel, thread);
+  if (refusals.some((entry) => entry.code === "command_run")) {
+    return refuse(STOP_NOW_COMMAND_RUN_WORDS);
+  }
+  const modeSet: PlannedEvent = {
+    ...baseFor(thread.id),
+    type: "thread.move-mode-set",
+    payload: {
+      threadId: thread.id,
+      requestId: command.requestId,
+      mode: command.mode,
+      updatedAt: command.createdAt,
+    },
+  };
+  return sessionStopped(thread) && (thread.sideTurn ?? null) === null
+    ? [modeSet]
+    : [modeSet, ...sessionStopEvents(thread, command.createdAt, baseFor)];
 }
 
 /** Cancel: the queued move `requestId` ends; a cancel for an older one changes nothing. */
@@ -781,8 +819,10 @@ export function decideMoveProgress(
         threadId: thread.id,
         transferId: command.transferId,
         phase: command.phase,
+        ...(command.waitingForTarget === true ? { waitingForTarget: true } : {}),
         ...(command.sentBytes !== undefined ? { sentBytes: command.sentBytes } : {}),
         ...(command.totalBytes !== undefined ? { totalBytes: command.totalBytes } : {}),
+        ...(command.staged === true ? { staged: true } : {}),
         updatedAt: command.createdAt,
       },
     },
@@ -832,6 +872,7 @@ export function decideMoveAbort(
         threadId: thread.id,
         transferId: command.transferId,
         reason: command.reason,
+        ...(command.code !== undefined ? { code: command.code } : {}),
         updatedAt: command.createdAt,
       },
     },

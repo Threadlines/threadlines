@@ -178,6 +178,7 @@ import { ComputerLinks } from "./links/ComputerLinks.ts";
 import { ScheduledTasks, snapshotForClient } from "./scheduled/ScheduledTasks.ts";
 import { ThemeLibrary } from "./themes/ThemeLibrary.ts";
 import { ThemeShowcase } from "./themes/ThemeShowcase.ts";
+import { LinkMoves } from "./links/LinkMoves.ts";
 import { MoveQueue } from "./moves/MoveQueue.ts";
 import { ThemeVsCode } from "./themes/ThemeVsCode.ts";
 import { ThreadMoves } from "./moves/ThreadMoves.ts";
@@ -749,6 +750,7 @@ const MovesRpcLayer = WsMovesRpcGroup.toLayer(
   Effect.gen(function* () {
     const threadMoves = yield* ThreadMoves;
     const moveQueue = yield* MoveQueue;
+    const linkMoves = yield* LinkMoves;
     const aggregate = { "rpc.aggregate": "moves" } as const;
     return WsMovesRpcGroup.of({
       [WS_METHODS.movesPreview]: (input) =>
@@ -763,6 +765,24 @@ const MovesRpcLayer = WsMovesRpcGroup.toLayer(
         observeRpcEffect(WS_METHODS.movesUnqueue, moveQueue.unqueue(input), aggregate),
       [WS_METHODS.movesRetry]: (input) =>
         observeRpcEffect(WS_METHODS.movesRetry, moveQueue.retry(input), aggregate),
+      [WS_METHODS.movesPreviewMany]: (input) =>
+        observeRpcEffect(
+          WS_METHODS.movesPreviewMany,
+          threadMoves.previewMany(input.threadIds),
+          aggregate,
+        ),
+      [WS_METHODS.movesQueueMany]: (input) =>
+        observeRpcEffect(WS_METHODS.movesQueueMany, moveQueue.queueMany(input), aggregate),
+      [WS_METHODS.movesSetMode]: (input) =>
+        observeRpcEffect(WS_METHODS.movesSetMode, moveQueue.setMode(input), aggregate),
+      [WS_METHODS.movesBatchStatus]: (input) =>
+        observeRpcEffect(
+          WS_METHODS.movesBatchStatus,
+          moveQueue.batchStatus(input.batchId),
+          aggregate,
+        ),
+      [WS_METHODS.movesRespondMany]: (input) =>
+        observeRpcEffect(WS_METHODS.movesRespondMany, linkMoves.respondMany(input), aggregate),
     });
   }),
 );

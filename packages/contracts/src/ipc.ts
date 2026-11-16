@@ -562,6 +562,12 @@ export interface DesktopQuitConfirmationRequest {
   activeScheduledTaskCount?: number;
   /** Terminals on this computer running a command, which quitting stops too. */
   busyTerminalCount?: number;
+  /**
+   * The quit already waits for these moves (`desktop:quit-after-moves`): a
+   * page that loaded since (a reload, a crash) shows their progress, and
+   * answers once they're done, instead of asking again.
+   */
+  quitAfterMoves?: DesktopQuitAfterMovesInput;
 }
 
 export const DesktopQuitConfirmationRequestSchema = Schema.Struct({
@@ -569,6 +575,24 @@ export const DesktopQuitConfirmationRequestSchema = Schema.Struct({
   runningThreadCount: Schema.Number,
   activeScheduledTaskCount: Schema.optionalKey(Schema.Number),
   busyTerminalCount: Schema.optionalKey(Schema.Number),
+  quitAfterMoves: Schema.optionalKey(Schema.Struct({ batchId: Schema.String })),
+});
+
+/**
+ * "Move them to <computer> and quit" (docs/design/fleet.md, Part 3c): the
+ * page queued the working threads as batch `batchId` (`moves.queueMany`) and
+ * hands the quit's wait to the main process (`desktop:quit-after-moves`).
+ * From then on hiding or closing the window doesn't answer the quit with no,
+ * a second quit shows the same progress, and the app quits once
+ * `moves.batchStatus` is final for every member with none not moved. If the
+ * page goes away, the main process asks `moves.batchStatus` itself.
+ */
+export interface DesktopQuitAfterMovesInput {
+  batchId: string;
+}
+
+export const DesktopQuitAfterMovesInputSchema = Schema.Struct({
+  batchId: Schema.String,
 });
 
 /**
@@ -1639,6 +1663,23 @@ export interface DesktopBridge {
     listener: (request: DesktopQuitConfirmationRequest | null) => void,
   ) => () => void;
   resolveQuitConfirmation?: (confirmed: boolean) => Promise<void>;
+  /**
+   * `desktop:quit-after-moves`: quit once batch `batchId` has moved (see
+   * DesktopQuitAfterMovesInput). Absent: an older desktop app.
+   */
+  quitAfterMoves?: (input: DesktopQuitAfterMovesInput) => Promise<void>;
+  /**
+   * `desktop:quit-after-moves-cancel`: stop waiting to quit after moves. The
+   * moves themselves go on (or are cancelled by the page with `moves.unqueue`).
+   */
+  cancelQuitAfterMoves?: () => Promise<void>;
+  /**
+   * `desktop:quit-after-moves-show`: the moves a quit waits for need the
+   * user (one didn't move, or one is held), so the window comes back, shown
+   * and focused, even if it was hidden or minimized while it waited. Does
+   * nothing unless the app waits to quit after moves.
+   */
+  showQuitAfterMoves?: () => Promise<void>;
   onMenuAction: (
     listener: (action: string, payload?: DesktopMenuActionPayload) => void,
   ) => () => void;

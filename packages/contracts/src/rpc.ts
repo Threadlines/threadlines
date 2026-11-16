@@ -109,13 +109,22 @@ import {
   SettingsChangeRespondInput,
 } from "./settingsChanges.ts";
 import {
+  ThreadMoveBatchStatus,
+  ThreadMoveBatchStatusInput,
   ThreadMoveCancelInput,
   ThreadMoveError,
   ThreadMovePreview,
   ThreadMovePreviewInput,
+  ThreadMovePreviewMany,
+  ThreadMovePreviewManyInput,
   ThreadMoveQueueInput,
+  ThreadMoveQueueManyInput,
+  ThreadMoveQueueManyResult,
   ThreadMoveQueueResult,
+  ThreadMoveRespondManyInput,
+  ThreadMoveRespondManyResult,
   ThreadMoveRetryInput,
+  ThreadMoveSetModeInput,
   ThreadMoveStartInput,
   ThreadMoveStartResult,
   ThreadMoveUnqueueInput,
@@ -795,6 +804,12 @@ export const WS_METHODS = {
   movesQueue: "moves.queue",
   movesUnqueue: "moves.unqueue",
   movesRetry: "moves.retry",
+  // Several threads at once (docs/design/fleet.md, Part 3c).
+  movesPreviewMany: "moves.previewMany",
+  movesQueueMany: "moves.queueMany",
+  movesSetMode: "moves.setMode",
+  movesBatchStatus: "moves.batchStatus",
+  movesRespondMany: "moves.respondMany",
 
   // Setting up a project on another computer (docs/design/fleet.md, Part 8)
   projectSetupsSource: "projectSetups.source",
@@ -2346,6 +2361,40 @@ export const WsMovesRetryRpc = Rpc.make(WS_METHODS.movesRetry, {
   error: ThreadMoveError,
 });
 
+/** Where each of these threads could move, reading each linked computer once. */
+export const WsMovesPreviewManyRpc = Rpc.make(WS_METHODS.movesPreviewMany, {
+  payload: ThreadMovePreviewManyInput,
+  success: ThreadMovePreviewMany,
+  error: ThreadMoveError,
+});
+
+/** Queue a move for each thread to one computer, each decided on its own, as one batch. */
+export const WsMovesQueueManyRpc = Rpc.make(WS_METHODS.movesQueueMany, {
+  payload: ThreadMoveQueueManyInput,
+  success: ThreadMoveQueueManyResult,
+  error: ThreadMoveError,
+});
+
+/** Stop a waiting move's agent and move it now. */
+export const WsMovesSetModeRpc = Rpc.make(WS_METHODS.movesSetMode, {
+  payload: ThreadMoveSetModeInput,
+  error: ThreadMoveError,
+});
+
+/** Where every thread of a batch stands, and whether each has its final answer. */
+export const WsMovesBatchStatusRpc = Rpc.make(WS_METHODS.movesBatchStatus, {
+  payload: ThreadMoveBatchStatusInput,
+  success: ThreadMoveBatchStatus,
+  error: ThreadMoveError,
+});
+
+/** On the computer moves arrive at: Allow all, or Don't allow, for one linked computer's moves. */
+export const WsMovesRespondManyRpc = Rpc.make(WS_METHODS.movesRespondMany, {
+  payload: ThreadMoveRespondManyInput,
+  success: ThreadMoveRespondManyResult,
+  error: ThreadMoveError,
+});
+
 /**
  * Moving threads to linked computers. A group of its own, merged into
  * WsRpcGroup, for the same reason as the outside agents' group: the main
@@ -2358,6 +2407,11 @@ export const WsMovesRpcGroup = RpcGroup.make(
   WsMovesQueueRpc,
   WsMovesUnqueueRpc,
   WsMovesRetryRpc,
+  WsMovesPreviewManyRpc,
+  WsMovesQueueManyRpc,
+  WsMovesSetModeRpc,
+  WsMovesBatchStatusRpc,
+  WsMovesRespondManyRpc,
 );
 
 /** On the source computer: what another computer needs to copy this project. */

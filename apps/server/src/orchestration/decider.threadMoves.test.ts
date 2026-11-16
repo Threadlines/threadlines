@@ -7,6 +7,7 @@ import {
   ProviderInstanceId,
   SideTurnId,
   ThreadId,
+  ThreadMoveBatchId,
   ThreadMoveId,
   ThreadMoveRequestId,
   TurnId,
@@ -365,9 +366,11 @@ describe("moving a thread to a linked computer", () => {
 
 describe("a move that waits for the thread to be free", () => {
   const REQUEST = ThreadMoveRequestId.make("request-1");
+  const BATCH = ThreadMoveBatchId.make("batch-1");
   const queue = (
     mode: ThreadPendingMoveMode = "when-done",
     requestId = REQUEST,
+    batchId?: ThreadMoveBatchId,
   ): OrchestrationCommand => ({
     type: "thread.move.queue",
     commandId: nextCommandId(),
@@ -377,6 +380,7 @@ describe("a move that waits for the thread to be free", () => {
     agent: modelSelection,
     mode,
     requestedBy: { kind: "user" },
+    ...(batchId !== undefined ? { batchId } : {}),
     createdAt: now,
   });
   const startQueued = (queuedRequestId = REQUEST): OrchestrationCommand => ({
@@ -567,6 +571,123 @@ describe("a move that waits for the thread to be free", () => {
     expect(threadOf(model).pendingMove?.waitsFor?.map((wait) => wait.code)).toEqual([
       "command_run",
     ]);
+  });
+
+  it("stop the agents and move now switches only its own waiting request", async () => {
+    const running = await withSession(await seeded(), "running", TurnId.make("turn-1"));
+    let { model } = await apply(running, queue("when-done", REQUEST, BATCH));
+    const setMode = (requestId = REQUEST): OrchestrationCommand => ({
+      type: "thread.move.set-mode",
+      commandId: nextCommandId(),
+      threadId: THREAD,
+      requestId,
+      mode: "stop-now",
+      createdAt: now,
+    });
+    expect(await decided(model, setMode(ThreadMoveRequestId.make("request-old")))).toEqual([]);
+    expect(threadOf(model).pendingMove).toMatchObject({ mode: "when-done", stage: "waiting" });
+    expect(await decided(model, setMode())).toEqual([
+      "thread.move-mode-set",
+      "thread.session-stop-requested",
+    ]);
+    ({ model } = await apply(model, setMode()));
+    expect(threadOf(model).pendingMove).toMatchObject({
+      requestId: REQUEST,
+      mode: "stop-now",
+      stage: "quiescing",
+      batchId: BATCH,
+    });
+    // Asked again, it's no news.
+    expect(await decided(model, setMode())).toEqual([]);
+  });
+
+  it("every way a queued move ends leaves its outcome, which outlives the move", async () => {
+    // Blocked before it started: not moved, with why, in its batch.
+    let { model } = await apply(await seeded(), queue("when-done", REQUEST, BATCH));
+    ({ model } = await apply(model, {
+      type: "thread.move.queue-end",
+      commandId: nextCommandId(),
+      threadId: THREAD,
+      requestId: REQUEST,
+      reason: "blocked",
+      words: "This thread's agent set itself a time to come back. Cancel it first.",
+      createdAt: now,
+    }));
+    expect(threadOf(model).lastMoveOutcome).toEqual({
+      result: "not_moved",
+      target: MAC_MINI,
+      requestId: REQUEST,
+      batchId: BATCH,
+      words: "This thread's agent set itself a time to come back. Cancel it first.",
+      reason: "blocked",
+      at: now,
+    });
+
+    // Started, staged there, then refused there: the batch rides on the move.
+    const second = ThreadMoveRequestId.make("request-2");
+    ({ model } = await apply(model, queue("when-done", second, BATCH)));
+    ({ model } = await apply(model, quiesce(second)));
+    model = await withSession(model, "stopped");
+    ({ model } = await apply(model, startQueued(second)));
+    expect(threadOf(model).move).toMatchObject({ queuedRequestId: second, batchId: BATCH });
+    // The queued move ending as it starts isn't an outcome.
+    expect(threadOf(model).lastMoveOutcome?.requestId).toBe(REQUEST);
+    const progress = (staged: boolean): OrchestrationCommand => ({
+      type: "thread.move.progress",
+      commandId: nextCommandId(),
+      threadId: THREAD,
+      transferId: TRANSFER,
+      phase: "awaiting_approval",
+      sentBytes: 10,
+      totalBytes: 10,
+      ...(staged ? { staged: true } : {}),
+      createdAt: now,
+    });
+    // Waiting for Allow before any byte went is no answer yet.
+    ({ model } = await apply(model, progress(false)));
+    expect(threadOf(model).lastMoveOutcome?.requestId).toBe(REQUEST);
+    ({ model } = await apply(model, progress(true)));
+    expect(threadOf(model).lastMoveOutcome).toMatchObject({
+      result: "awaiting_approval",
+      requestId: second,
+      transferId: TRANSFER,
+      batchId: BATCH,
+    });
+    expect(threadOf(model).move?.phase).toBe("awaiting_approval");
+    ({ model } = await apply(model, {
+      type: "thread.move.abort",
+      commandId: nextCommandId(),
+      threadId: THREAD,
+      transferId: TRANSFER,
+      reason: "Mac mini didn't allow the move.",
+      code: "denied",
+      createdAt: now,
+    }));
+    expect(threadOf(model).move ?? null).toBeNull();
+    expect(threadOf(model).lastMoveOutcome).toMatchObject({
+      result: "not_moved",
+      requestId: second,
+      batchId: BATCH,
+      words: "Mac mini didn't allow the move.",
+      reason: "denied",
+    });
+
+    // A direct move that lands: moved, with no queued move to name.
+    ({ model } = await apply(model, startMove()));
+    ({ model } = await apply(model, {
+      type: "thread.move.complete",
+      commandId: nextCommandId(),
+      threadId: THREAD,
+      transferId: TRANSFER,
+      movedThreadId: ThreadId.make("thread-there"),
+      createdAt: now,
+    }));
+    expect(threadOf(model).lastMoveOutcome).toEqual({
+      result: "moved",
+      target: MAC_MINI,
+      transferId: TRANSFER,
+      at: now,
+    });
   });
 
   it("a cancel or an end naming an older request changes nothing", async () => {

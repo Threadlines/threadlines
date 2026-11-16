@@ -34,6 +34,7 @@ import {
   OrchestrationThreadMove,
   ThreadPendingMove,
   ThreadMovedFrom,
+  ThreadMoveOutcome,
   ThreadRemoteOrigin,
   OrchestrationOutsideWork,
   OutsideAgentRef,
@@ -202,6 +203,8 @@ export const ProjectionThread = Schema.Struct({
   pendingMove: Schema.optional(Schema.NullOr(ThreadPendingMove)),
   /** See `OrchestrationThread.movedFrom`. Absent or null reads as none. */
   movedFrom: Schema.optional(Schema.NullOr(ThreadMovedFrom)),
+  /** See `OrchestrationThread.lastMoveOutcome`. Absent or null reads as none. */
+  lastMoveOutcome: Schema.optional(Schema.NullOr(ThreadMoveOutcome)),
   /** See `OrchestrationThread.historySeedOwed`, as 0 or 1. Absent or null reads as 0. */
   historySeedOwed: Schema.optional(Schema.NullOr(NonNegativeInt)),
   /** See `OrchestrationThread.historySeedMessageId`. Absent or null reads as none. */

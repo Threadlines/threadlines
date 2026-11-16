@@ -7,6 +7,7 @@ import {
   useSavedEnvironmentRegistryStore,
 } from "../../environments/runtime";
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
+import { useLatestMoveBatches } from "../../moveBatchProgress";
 import { useTouchHoldMenu } from "../../hooks/useTouchHoldMenu";
 import { cn } from "../../lib/utils";
 import { openConnectComputerDialog } from "../settings/connections/JoinComputerDialog";
@@ -164,6 +165,8 @@ export function FleetComputersList() {
   const nowMs = useRelativeTimeTick(30_000);
   const data = useFleetPageStore((state) => state.data);
   const savedRecords = useSavedEnvironmentRegistryStore((state) => state.byId);
+  // Threads moving to a computer (Part 3c) say so on its row while they go.
+  const moveBatches = useLatestMoveBatches();
   const computers = data ? [data.model.center, ...data.model.others] : [];
   const computerById = new Map(computers.map((computer) => [computer.id, computer] as const));
   const selectedKey = (() => {
@@ -208,13 +211,17 @@ export function FleetComputersList() {
               entry.environmentId === null ? undefined : savedRecords[entry.environmentId];
             const relay = record?.relay && "version" in record.relay ? record.relay : null;
             const pairing = relay?.pendingRequest ?? null;
+            const moveBatch =
+              entry.environmentId === null ? undefined : moveBatches[entry.environmentId];
             const meta = pairing
               ? `Waiting for approval${pairing.matchNumber ? ` · ${pairing.matchNumber}` : ""}`
-              : isFleetDeviceEntry(entry)
-                ? FLEET_DEVICE_ENTRY_STATUS[entry.kind]
-                : computer
-                  ? describeComputerLocation(computer, nowMs) || null
-                  : null;
+              : moveBatch !== undefined
+                ? moveBatch
+                : isFleetDeviceEntry(entry)
+                  ? FLEET_DEVICE_ENTRY_STATUS[entry.kind]
+                  : computer
+                    ? describeComputerLocation(computer, nowMs) || null
+                    : null;
             return (
               <ComputerRow
                 key={entry.key}

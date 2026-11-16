@@ -186,7 +186,8 @@ import { openReportProblemDialog } from "./ReportProblemDialog";
 import { openWhatsNewDialog } from "./WhatsNewDialog";
 import { APP_VERSION } from "../branding";
 import { useProjectSetupTargets } from "../environments/projectSetups/projectSetupTargets";
-import { useThreadMoveOffered } from "../environments/links/threadMoves";
+import { useMoveThreadsOffered, useThreadMoveOffered } from "../environments/links/threadMoves";
+import { openMoveThreadsDialog } from "./MoveThreadsDialog";
 import {
   startAssistantCode,
   useOutsideAgentsSnapshot,
@@ -596,6 +597,8 @@ export function OpenCommandPaletteDialog() {
       ? scopeProjectRef(activeDraftThread.environmentId, activeDraftThread.projectId)
       : null;
   const projectSetupTargets = useProjectSetupTargets(openThreadProjectRef);
+  // Clearing this computer (Part 3c): several of its threads to a linked one.
+  const moveThreadsOffered = useMoveThreadsOffered(primaryEnvironmentId, null);
   const activeThreadMoveOffered = useThreadMoveOffered(
     activeThread?.environmentId ?? null,
     activeThread ? threadMoveStatus(activeThread) : undefined,
@@ -2138,6 +2141,29 @@ export function OpenCommandPaletteDialog() {
       icon: <MonitorUpIcon className={ITEM_ICON_CLASS} />,
       run: async () => {
         openThreadMoveDialog(threadRef);
+      },
+    });
+  }
+
+  if (moveThreadsOffered && primaryEnvironmentId !== null) {
+    const sourceEnvironmentId = primaryEnvironmentId;
+    actionItems.push({
+      kind: "action",
+      value: "action:move-threads",
+      searchTerms: [
+        "move",
+        "threads",
+        "computer",
+        "linked",
+        "shut down",
+        "clear",
+        "another machine",
+      ],
+      title: "Move threads to another computer…",
+      description: "Move several of this computer's threads to a linked computer",
+      icon: <MonitorUpIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        openMoveThreadsDialog({ sourceEnvironmentId });
       },
     });
   }

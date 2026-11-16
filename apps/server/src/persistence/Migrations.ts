@@ -131,6 +131,9 @@ import Migration0108 from "./Migrations/108_ThemePick.ts";
 import Migration0109 from "./Migrations/109_ThemeShowcaseTakenBack.ts";
 import Migration0110 from "./Migrations/110_ThreadWorktreeOrigin.ts";
 import Migration0111 from "./Migrations/111_ThreadPendingMove.ts";
+import Migration0112 from "./Migrations/112_ThreadMoveBatches.ts";
+import Migration0113 from "./Migrations/113_LinkMoveStagedApproval.ts";
+import Migration0114 from "./Migrations/114_LinkMoveAbortCode.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -254,6 +257,9 @@ export const migrationEntries = [
   [109, "ThemeShowcaseTakenBack", Migration0109],
   [110, "ThreadWorktreeOrigin", Migration0110],
   [111, "ThreadPendingMove", Migration0111],
+  [112, "ThreadMoveBatches", Migration0112],
+  [113, "LinkMoveStagedApproval", Migration0113],
+  [114, "LinkMoveAbortCode", Migration0114],
 ] as const;
 
 /** Highest id in the full registry, so the "n of total" count is the real total. */
