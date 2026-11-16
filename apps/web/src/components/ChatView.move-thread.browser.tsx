@@ -24,6 +24,7 @@ import {
   useComputerLinksStore,
 } from "../environments/links/computerLinks";
 import { useComposerDraftStore } from "../composerDraftStore";
+import { updateSettings } from "../hooks/useSettings";
 import {
   __resetThreadMovesForTests,
   __setThreadMovesClientForTests,
@@ -44,6 +45,7 @@ import {
   WIDE_FOOTER_VIEWPORT,
   isoAt,
   createSnapshotForTargetUser,
+  addThreadToSnapshot,
   injectRemoteEnvironmentThreads,
   FLEET_REMOTE_ENVIRONMENT_ID,
   FLEET_OFFLINE_ENVIRONMENT_ID,
@@ -454,10 +456,13 @@ describe("ChatView (full app): moving a thread to another computer", () => {
     const previews: Array<NormalizedWsRpcRequestBody> = [];
     const mounted = await mountChatView({
       viewport: WIDE_FOOTER_VIEWPORT,
-      snapshot: createSnapshotForTargetUser({
-        targetMessageId: "msg-user-move-title" as MessageId,
-        targetText: "move from title",
-      }),
+      snapshot: addThreadToSnapshot(
+        createSnapshotForTargetUser({
+          targetMessageId: "msg-user-move-title" as MessageId,
+          targetText: "move from title",
+        }),
+        "thread-move-title-neighbour" as ThreadId,
+      ),
       configureFixture: withThreadMoveFixture,
       resolveRpc: (body) => {
         if (body._tag === WS_METHODS.movesPreview) {
@@ -495,6 +500,25 @@ describe("ChatView (full app): moving a thread to another computer", () => {
         .element(page.getByTestId("thread-move-dialog").getByTestId("thread-move-target"))
         .toMatchTextContent("Mac mini");
       expect(previews).toEqual([expect.objectContaining({ threadId: THREAD_ID })]);
+      await userEvent.keyboard("{Escape}");
+      await expect.element(page.getByTestId("thread-move-dialog")).not.toBeInTheDocument();
+
+      // In the custom sort it offers the row's Move up and Move down too, and
+      // they move the thread in the sidebar.
+      updateSettings({ inboxSort: "custom" });
+      const rowOrder = () =>
+        Array.from(document.querySelectorAll<HTMLElement>('[data-testid^="thread-row-"]')).map(
+          (row) => row.dataset.testid,
+        );
+      await vi.waitFor(() => expect(rowOrder()).toHaveLength(2));
+      const before = rowOrder();
+      const isFirst = before[0] === `thread-row-${THREAD_ID}`;
+      await title.click();
+      const moveUp = page.getByRole("button", { name: "Move up" });
+      const moveDown = page.getByRole("button", { name: "Move down" });
+      await expect.element(isFirst ? moveUp : moveDown).toBeDisabled();
+      await (isFirst ? moveDown : moveUp).click();
+      await vi.waitFor(() => expect(rowOrder()).toEqual([...before].toReversed()));
     } finally {
       await mounted.cleanup();
     }

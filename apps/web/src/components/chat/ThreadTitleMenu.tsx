@@ -16,6 +16,7 @@ import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { useInboxThreads } from "../../hooks/useInboxThreads";
 import { useThreadMenu } from "../../hooks/useThreadMenu";
 import { useWindowDragPress } from "../../hooks/useWindowDragPress";
+import { readInboxCustomOrderMenu } from "../sidebar/inboxCustomOrderMenu";
 
 type MenuPosition = { readonly x: number; readonly y: number };
 
@@ -60,7 +61,8 @@ export const ThreadTitleMenu = memo(function ThreadTitleMenu({
 /**
  * Opens the menu once, then reports it closed. Mounted only while the menu is
  * asked for, so the header doesn't follow the inbox the rest of the time: the
- * inbox says whether the menu offers Wrap up or Reopen, as it does on the row.
+ * inbox says whether the menu offers Wrap up or Reopen, and the sidebar whether
+ * it offers Move up and Move down (the custom sort), as on the row.
  */
 function ThreadTitleMenuOpener({
   threadRef,
@@ -82,7 +84,9 @@ function ThreadTitleMenuOpener({
     if (opened.current) return;
     opened.current = true;
     const inbox = isDone === null || canMarkDone === null ? null : { isDone, canMarkDone };
-    void threadMenu.open({ threadRef, inbox }, position).finally(onClosed);
-  }, [canMarkDone, isDone, onClosed, position, threadMenu, threadRef]);
+    // In the custom sort, Move up and Move down move it in the sidebar, as on its row.
+    const customOrder = readInboxCustomOrderMenu(threadKey);
+    void threadMenu.open({ threadRef, inbox, customOrder }, position).finally(onClosed);
+  }, [canMarkDone, isDone, onClosed, position, threadKey, threadMenu, threadRef]);
   return null;
 }

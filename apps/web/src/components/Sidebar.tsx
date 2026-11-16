@@ -152,6 +152,7 @@ import {
   type InboxReorder,
 } from "./sidebar/InboxLiveList";
 import { ProjectScopeMenu } from "./sidebar/ProjectScopeMenu";
+import { provideInboxCustomOrderMenu } from "./sidebar/inboxCustomOrderMenu";
 import { SwipeUndoBar } from "./sidebar/SwipeUndoBar";
 import { resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
 import { SidebarHoverCardGroup } from "./sidebar/hoverCard";
@@ -1733,6 +1734,8 @@ export default function Sidebar() {
     },
     [inboxPeersOf, moveInboxRow],
   );
+  // The thread's title in the chat header offers the same items.
+  useEffect(() => provideInboxCustomOrderMenu(inboxCustomOrderMenu), [inboxCustomOrderMenu]);
   const handleThreadContextMenu = useCallback(
     async (threadRef: ScopedThreadRef, position: { x: number; y: number }) => {
       const threadKey = scopedThreadKey(threadRef);
