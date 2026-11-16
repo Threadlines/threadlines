@@ -3024,10 +3024,18 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       ).pipe(Effect.map((perAdapter) => perAdapter.flat()));
       const live = yield* liveOfThread;
       const ran = new Set<ProviderInstanceId>(live.map((entry) => entry.instanceId));
-      // Early starts still starting have no session to list yet.
+      // Early starts still starting have no session to list yet. One whose
+      // agent already runs has what it started noted before it is ended; a
+      // listed session's stop notes its own (stopSessionCore).
       const keys = new Set<ThreadId>(live.map((entry) => entry.key));
-      for (const key of earlyStartRuns.keys()) {
-        if (ofThread(key)) keys.add(ThreadId.make(key));
+      for (const rawKey of earlyStartRuns.keys()) {
+        if (!ofThread(rawKey)) continue;
+        const key = ThreadId.make(rawKey);
+        keys.add(key);
+        if (live.some((entry) => entry.key === key)) continue;
+        for (const [, adapter] of yield* getAdapterEntries) {
+          if (adapter.noteBeforeStop !== undefined) yield* adapter.noteBeforeStop(key);
+        }
       }
       const problems: string[] = [];
       for (const key of keys) {
