@@ -36,6 +36,11 @@ export function showContextMenuFallback<T extends string>(
     // a press has started on the menu itself, or to a keyboard's Enter or
     // Space (a click with no press: `detail` 0).
     let pressedOnMenu = !coarse;
+    // Focus goes into the menu, so a keyboard can reach its items, and back
+    // to whatever opened it once it closes.
+    const opener = document.activeElement as HTMLElement | null;
+    // Each open menu's items that take a press, in order, for the arrow keys.
+    const itemsByMenu = new Map<HTMLDivElement, HTMLButtonElement[]>();
 
     const cleanup = (result: T | null) => {
       document.removeEventListener("keydown", onKeyDown);
@@ -43,6 +48,7 @@ export function showContextMenuFallback<T extends string>(
       for (const menu of menuStack) {
         menu.remove();
       }
+      if (opener?.isConnected) opener.focus({ preventScroll: true });
       resolve(result);
     };
 
@@ -50,7 +56,26 @@ export function showContextMenuFallback<T extends string>(
       if (event.key === "Escape") {
         event.preventDefault();
         cleanup(null);
+        return;
       }
+      if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+      // Up and down walk the items of the menu that has focus (the top one).
+      const focused = document.activeElement as HTMLButtonElement | null;
+      const items =
+        menuStack
+          .map((menu) => itemsByMenu.get(menu) ?? [])
+          .find((candidate) => focused !== null && candidate.includes(focused)) ??
+        (menuStack[0] ? (itemsByMenu.get(menuStack[0]) ?? []) : []);
+      if (items.length === 0) return;
+      event.preventDefault();
+      const at = focused === null ? -1 : items.indexOf(focused);
+      const next =
+        at === -1
+          ? event.key === "ArrowDown"
+            ? 0
+            : items.length - 1
+          : (at + (event.key === "ArrowDown" ? 1 : items.length - 1)) % items.length;
+      items[next]?.focus({ preventScroll: true });
     };
 
     const closeMenusFromLevel = (level: number) => {
@@ -68,10 +93,13 @@ export function showContextMenuFallback<T extends string>(
       closeMenusFromLevel(level);
 
       const menu = document.createElement("div");
-      menu.className = `fixed z-[10000] ${coarse ? "min-w-[200px]" : "min-w-[160px]"} rounded-md border border-border bg-popover py-1 shadow-xl animate-in fade-in zoom-in-95`;
+      menu.className = `fixed z-[10000] ${coarse ? "min-w-[200px]" : "min-w-[160px]"} rounded-md border border-border bg-popover py-1 shadow-xl outline-none animate-in fade-in zoom-in-95`;
       menu.style.left = `${preferredLeft}px`;
       menu.style.top = `${preferredTop}px`;
       menu.dataset.level = String(level);
+      menu.tabIndex = -1;
+      const focusable: HTMLButtonElement[] = [];
+      itemsByMenu.set(menu, focusable);
 
       for (const item of entries) {
         // A new group gets a divider above it, never at the top of the menu.
@@ -88,7 +116,7 @@ export function showContextMenuFallback<T extends string>(
         button.disabled = isDisabled;
         button.className = isDisabled
           ? `flex w-full items-center gap-2 ${itemSize} text-left text-muted-foreground/60 cursor-not-allowed`
-          : `flex w-full items-center gap-2 ${itemSize} text-left text-popover-foreground hover:bg-accent cursor-default`;
+          : `flex w-full items-center gap-2 ${itemSize} text-left text-popover-foreground hover:bg-accent focus-visible:bg-accent outline-none cursor-default`;
 
         const label = document.createElement("span");
         label.className = "min-w-0 flex-1 truncate";
@@ -103,6 +131,7 @@ export function showContextMenuFallback<T extends string>(
         }
 
         if (!isDisabled) {
+          focusable.push(button);
           if (hasChildren) {
             button.addEventListener("mouseenter", () => {
               const rect = button.getBoundingClientRect();
@@ -148,6 +177,9 @@ export function showContextMenuFallback<T extends string>(
       requestAnimationFrame(() => {
         clampMenuPosition(menu, preferredLeft, preferredTop);
       });
+      // The menu itself takes focus, not an item: nothing looks picked under a
+      // mouse, and the arrows or Tab go on to the items.
+      if (level === 0) menu.focus({ preventScroll: true });
     };
 
     // A new press outside closes the menu. On a touch screen that is a

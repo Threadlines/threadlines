@@ -27,6 +27,7 @@ import ProjectScriptsControl, { type NewProjectScriptInput } from "../ProjectScr
 import { Toggle } from "../ui/toggle";
 import { SidebarOpenTrigger } from "../ui/sidebar";
 import { ProjectCrumbMenu } from "./ProjectCrumbMenu";
+import { ThreadTitleMenu } from "./ThreadTitleMenu";
 import { openActiveFileViewer } from "../../fileViewerStore";
 import { usePrimaryEnvironmentId } from "../../environments/primary";
 import { ThreadActivityPopover, type ThreadTaskProgressState } from "./ThreadActivityPopover";
@@ -121,6 +122,12 @@ interface ChatHeaderProps {
   backgroundRuns: ReadonlyArray<ThreadBackgroundRunItem>;
   /** The thread the background runs belong to; where their output is read from. */
   activeThreadRef: ScopedThreadRef | null;
+  /**
+   * The thread whose menu the title opens (the one its sidebar row opens on a
+   * right-click). Null where no row would offer one: a draft, a General Chat,
+   * an archived thread. The title is then plain text.
+   */
+  threadMenuRef?: ScopedThreadRef | null | undefined;
   onRunProjectScript: (script: ProjectScript) => void;
   onAddProjectScript: (input: NewProjectScriptInput) => Promise<void>;
   onUpdateProjectScript: (scriptId: string, input: NewProjectScriptInput) => Promise<void>;
@@ -304,6 +311,7 @@ export const ChatHeader = memo(function ChatHeader({
   outsideOrigin = null,
   backgroundRuns,
   activeThreadRef,
+  threadMenuRef = null,
   onRunProjectScript,
   onAddProjectScript,
   onUpdateProjectScript,
@@ -384,12 +392,18 @@ export const ChatHeader = memo(function ChatHeader({
             </span>
           </div>
         )}
-        <h2
-          className="min-w-0 shrink truncate text-sm font-medium text-foreground"
-          title={activeThreadTitle}
-        >
-          {activeThreadTitle}
-        </h2>
+        {threadMenuRef ? (
+          <h2 className="flex min-w-0 shrink">
+            <ThreadTitleMenu threadRef={threadMenuRef} title={activeThreadTitle} />
+          </h2>
+        ) : (
+          <h2
+            className="min-w-0 shrink truncate text-sm font-medium text-foreground"
+            title={activeThreadTitle}
+          >
+            {activeThreadTitle}
+          </h2>
+        )}
         {forkContext ? (
           <button
             type="button"

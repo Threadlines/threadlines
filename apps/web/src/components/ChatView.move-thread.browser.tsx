@@ -445,6 +445,61 @@ describe("ChatView (full app): moving a thread to another computer", () => {
     }
   });
 
+  it("opens the thread's menu from its title in the header, by click or keyboard", async () => {
+    setPrimaryLinksSnapshot(
+      fleetLinksSnapshot({
+        outbound: [fleetOutboundLink(FLEET_OFFLINE_ENVIRONMENT_ID, "Mac mini")],
+      }),
+    );
+    const previews: Array<NormalizedWsRpcRequestBody> = [];
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-move-title" as MessageId,
+        targetText: "move from title",
+      }),
+      configureFixture: withThreadMoveFixture,
+      resolveRpc: (body) => {
+        if (body._tag === WS_METHODS.movesPreview) {
+          previews.push(body);
+          return FLEET_MOVE_PREVIEW;
+        }
+        return undefined;
+      },
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      await saveMacMini("connected");
+      await vi.waitFor(() => {
+        expect(readThreadMoveOffered(LOCAL_ENVIRONMENT_ID, undefined)).toBe(true);
+      });
+      const title = page.getByRole("button", { name: `${THREAD_TITLE}, thread menu` });
+
+      // From the keyboard: Enter opens it, the down arrow reaches its first
+      // item, and Escape closes it and hands focus back to the title.
+      title.element().focus();
+      await userEvent.keyboard("{Enter}");
+      await expect.element(title).toHaveAttribute("aria-expanded", "true");
+      await userEvent.keyboard("{ArrowDown}");
+      await expect.element(page.getByRole("button", { name: "Rename" })).toHaveFocus();
+      await userEvent.keyboard("{Escape}");
+      await expect.element(title).toHaveFocus();
+      await expect.element(title).toHaveAttribute("aria-expanded", "false");
+
+      // A click opens the same menu the sidebar row does, and its move opens the dialog.
+      await title.click();
+      await expect.element(title).toHaveAttribute("aria-expanded", "true");
+      await page.getByRole("button", { name: "Move to another computer" }).click();
+      await expect
+        .element(page.getByTestId("thread-move-dialog").getByTestId("thread-move-target"))
+        .toMatchTextContent("Mac mini");
+      expect(previews).toEqual([expect.objectContaining({ threadId: THREAD_ID })]);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("offers a thread whose agent is still working two ways to move, and queues the one picked", async () => {
     setPrimaryLinksSnapshot(
       fleetLinksSnapshot({

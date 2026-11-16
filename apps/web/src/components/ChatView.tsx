@@ -8712,6 +8712,13 @@ export default function ChatView(props: ChatViewProps) {
       onOpenParentThread={onOpenParentThread}
       backgroundRuns={backgroundRuns}
       activeThreadRef={activeThreadRef}
+      // The title opens the menu the thread's sidebar row opens: only where
+      // a row offers one (a saved, unarchived project thread).
+      threadMenuRef={
+        isServerThread && !isGeneralChatThread && activeThread.archivedAt === null
+          ? activeThreadRef
+          : null
+      }
       onRunProjectScript={runProjectScript}
       onAddProjectScript={saveProjectScript}
       onUpdateProjectScript={updateProjectScript}

@@ -81,6 +81,14 @@ class FakeElement {
     return matches;
   }
 
+  focus() {
+    (document as unknown as FakeDocument).activeElement = this;
+  }
+
+  get isConnected() {
+    return this.parent !== null;
+  }
+
   getBoundingClientRect() {
     const left = Number.parseInt(this.style.left ?? "0", 10) || 0;
     const top = Number.parseInt(this.style.top ?? "0", 10) || 0;
@@ -116,10 +124,18 @@ class FakeBody extends FakeElement {
 
 class FakeDocument {
   body = new FakeBody();
+  activeElement: FakeElement | null = null;
   private readonly listeners = new Map<string, FakeListener[]>();
 
   createElement(tagName: string) {
     return new FakeElement(tagName);
+  }
+
+  dispatchEvent(event: FakeDomEvent) {
+    for (const listener of this.listeners.get(event.type) ?? []) {
+      listener(event);
+    }
+    return true;
   }
 
   addEventListener(type: string, listener: FakeListener) {
@@ -217,5 +233,33 @@ describe("showContextMenuFallback", () => {
     childButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
 
     await expect(selectionPromise).resolves.toBe("rename:project-b");
+  });
+
+  it("takes focus for the keyboard, walks it with the arrows, and gives it back", async () => {
+    const fakeDocument = document as unknown as FakeDocument;
+    const opener = new FakeElement("button");
+    fakeDocument.body.appendChild(opener);
+    opener.focus();
+    const selectionPromise = showContextMenuFallback([
+      { id: "rename", label: "Rename" },
+      { id: "pin", label: "Pin", disabled: true },
+      { id: "move", label: "Move to another computer" },
+    ]);
+
+    // The menu holds focus, with no item picked, until an arrow picks one.
+    const menu = findButton("Rename")?.parent;
+    expect(fakeDocument.activeElement).toBe(menu);
+    const press = (key: string) => fakeDocument.dispatchEvent(new FakeDomEvent("keydown", { key }));
+    press("ArrowDown");
+    expect(fakeDocument.activeElement).toBe(findButton("Rename"));
+    // Past the item that takes no press, and round from the last to the first.
+    press("ArrowDown");
+    expect(fakeDocument.activeElement).toBe(findButton("Move to another computer"));
+    press("ArrowDown");
+    expect(fakeDocument.activeElement).toBe(findButton("Rename"));
+
+    press("Escape");
+    await expect(selectionPromise).resolves.toBeNull();
+    expect(fakeDocument.activeElement).toBe(opener);
   });
 });
