@@ -81,6 +81,13 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   themeShowcaseTakeBack: Schema.optionalKey(Schema.Boolean),
   /** The server moves threads to linked computers. Absent until a server ships it. */
   threadMove: Schema.optionalKey(Schema.Boolean),
+  /**
+   * The server queues moves (`moves.queue`, `moves.unqueue`, `moves.retry`):
+   * a move waits for a working thread to be free, and a free thread's starts
+   * at once, so a client may send every move through the queue. Absent: only
+   * `moves.start`.
+   */
+  threadMoveQueue: Schema.optionalKey(Schema.Boolean),
   /** The server sets up projects copied from another computer (`projectSetups.*`). */
   projectSetup: Schema.optionalKey(Schema.Boolean),
   /** The server reports when it froze (`subscribeServerStalls`). */
