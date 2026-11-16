@@ -342,25 +342,27 @@ export const ThreadStopTool = loadedOnDemand(
   ),
 );
 
-export const ThreadMoveTool = drivesThreads(
-  Tool.make("thread_move", {
-    description:
-      "Move this thread to another linked computer, to carry on there (the user may be shutting this one down). It moves when your turn ends, with its messages and code changes; you continue there in a fresh session with the conversation so far. Only your own thread. `computer` is a name or id from thread_agents' `computers`; `agent` is one of that computer's agents, left out for the one it suggests when the move starts. The user can cancel it, and that computer may ask its user first. After calling it, finish your reply and don't start more work.",
-    parameters: Schema.Struct({
-      computer: Schema.String.annotate({
-        description: "The linked computer: a name or id from thread_agents' `computers`.",
-      }),
-      agent: Schema.optional(
-        Schema.Struct({
-          instanceId: Schema.String.annotate({
-            description: "From thread_agents' `computers`.",
-          }),
-          model: Schema.String.annotate({ description: "From thread_agents' `computers`." }),
+export const ThreadMoveTool = loadedOnDemand(
+  drivesThreads(
+    Tool.make("thread_move", {
+      description:
+        "Move this thread to another linked computer, to carry on there (the user may be shutting this one down). It moves when your turn ends, with its messages and code changes; you continue there in a fresh session with the conversation so far. Only your own thread. `computer` is a name or id from thread_agents' `computers`; `agent` is one of that computer's agents, left out for the one it suggests when the move starts. The user can cancel it, and that computer may ask its user first. After calling it, finish your reply and don't start more work.",
+      parameters: Schema.Struct({
+        computer: Schema.String.annotate({
+          description: "The linked computer: a name or id from thread_agents' `computers`.",
         }),
-      ),
-    }),
-    success: ThreadMoveResult,
-  }).annotate(Tool.Title, "Move this thread to another computer"),
+        agent: Schema.optional(
+          Schema.Struct({
+            instanceId: Schema.String.annotate({
+              description: "From thread_agents' `computers`.",
+            }),
+            model: Schema.String.annotate({ description: "From thread_agents' `computers`." }),
+          }),
+        ),
+      }),
+      success: ThreadMoveResult,
+    }).annotate(Tool.Title, "Move this thread to another computer"),
+  ),
 );
 
 export const ThreadToolkit = Toolkit.make(
