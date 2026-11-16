@@ -47,6 +47,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import {
   ProviderAdapterProcessError,
   ProviderAdapterRequestError,
+  ProviderAdapterSessionClosedError,
   ProviderAdapterSessionNotFoundError,
   ProviderUnsupportedError,
   ProviderValidationError,
@@ -3243,6 +3244,32 @@ fence.layer("ProviderServiceLive moving threads", (it) => {
         .pipe(Effect.result);
       assert.equal(later._tag, "Failure");
       fence.fenced.delete(RECOVERING);
+    }),
+  );
+
+  it.effect("a stop that finds its session already stopped by another counts as stopped", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      for (const gone of [
+        (threadId: ThreadId) =>
+          new ProviderAdapterSessionNotFoundError({ provider: "codex", threadId }),
+        (threadId: ThreadId) =>
+          new ProviderAdapterSessionClosedError({ provider: "codex", threadId }),
+      ]) {
+        const RACED = asThreadId("3d5f7b9c-2e4a-4c6e-8f0a-1b3c5d7e9f2a");
+        yield* startOn(codexInstanceId, RACED);
+        // A move's quiesce and the reactor's stop race: the other one got there first.
+        const stopNormally = fence.codex.stopSession.getMockImplementation()!;
+        fence.codex.stopSession.mockImplementationOnce((threadId) =>
+          stopNormally(threadId).pipe(Effect.andThen(Effect.fail(gone(threadId)))),
+        );
+        const stopped = yield* provider.stopSession({ threadId: RACED }).pipe(Effect.result);
+        assert.equal(stopped._tag, "Success");
+        const left = (yield* provider.listSessions()).filter(
+          (session) => session.threadId === RACED,
+        );
+        assert.deepEqual(left, []);
+      }
     }),
   );
 });

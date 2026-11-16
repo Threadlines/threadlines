@@ -2600,7 +2600,15 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         ) {
           yield* routed.adapter.noteBeforeStop(routed.threadId);
         }
-        yield* routed.adapter.stopSession(routed.threadId);
+        // Two stops of one session can race (a move's quiesce and the
+        // reactor's session stop): the one that finds it already gone, or
+        // closed, has nothing left to stop.
+        yield* routed.adapter.stopSession(routed.threadId).pipe(
+          Effect.catchTags({
+            ProviderAdapterSessionNotFoundError: () => Effect.void,
+            ProviderAdapterSessionClosedError: () => Effect.void,
+          }),
+        );
       }
       // A side answer's runtime is disposable: nothing ever resumes it, so
       // its binding goes with it rather than piling up as "stopped".
