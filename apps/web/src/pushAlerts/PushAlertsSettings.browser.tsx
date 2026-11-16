@@ -5,10 +5,12 @@ import { page } from "vite-plus/test/browser";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
+import { CLIENT_SETTINGS_STORAGE_KEY } from "../clientPersistenceStorage";
 import {
   resetSavedEnvironmentRegistryStoreForTests,
   useSavedEnvironmentRegistryStore,
 } from "../environments/runtime";
+import { __resetClientSettingsPersistenceForTests } from "../hooks/useSettings";
 import { DEFAULT_ALERT_KINDS, usePushAlertsStore } from "./pushAlerts";
 import { PushAlertsSettingsSection } from "./PushAlertsSettings";
 import { resetTestPage } from "../lib/testPage.browser-harness";
@@ -50,7 +52,28 @@ describe("PushAlertsSettingsSection", () => {
       error: null,
     });
     localStorage.removeItem("threadlines:push-alerts:quiet-at-computer");
+    localStorage.removeItem(CLIENT_SETTINGS_STORAGE_KEY);
+    __resetClientSettingsPersistenceForTests();
     await resetTestPage();
+  });
+
+  it("offers Play a sound on any device, off until turned on, and remembers it", async () => {
+    // No computer sends this device phone alerts: the sound is still offered.
+    const screen = await render(<PushAlertsSettingsSection />);
+    const sound = page.getByRole("switch", { name: "Play a sound" });
+    try {
+      await expect.element(page.getByText("Alerts on this device")).not.toBeInTheDocument();
+      await expect.element(sound).not.toBeChecked();
+      await sound.click();
+      await expect.element(sound).toBeChecked();
+      await expect
+        .poll(
+          () => JSON.parse(localStorage.getItem(CLIENT_SETTINGS_STORAGE_KEY) ?? "{}").alertSound,
+        )
+        .toBe(true);
+    } finally {
+      await screen.unmount();
+    }
   });
 
   it("shows only once a computer is paired through the relay", async () => {

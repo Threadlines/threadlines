@@ -537,9 +537,9 @@ const SECTIONS = [
     kind: "section",
     parent: "settings.general",
     title: "Alerts",
-    about: "Which alerts this device shows: when a thread needs you, finishes or fails.",
+    about: "How this device tells you a thread needs you, finished or failed.",
     scope: "device",
-    keywords: ["notifications", "push"],
+    keywords: ["notifications", "push", "sound"],
   },
   {
     id: "general.chatAndDiffs",
@@ -891,6 +891,17 @@ const SECTIONS = [
 
 const ROWS = [
   // General › Alerts
+  {
+    id: "general.alertSound",
+    kind: "row",
+    parent: "general.alerts",
+    title: "Play a sound",
+    about: "A short sound in this app when an agent finishes or needs you.",
+    keywords: ["sound", "chime", "audio", "notifications", "done"],
+    scope: "device",
+    edit: editableDeviceSwitch("alertSound"),
+    editName: "Alerts: Play a sound",
+  },
   {
     id: "general.alertsOnThisDevice",
     kind: "row",

@@ -24,6 +24,7 @@ import { AppSidebarLayout } from "../components/AppSidebarLayout";
 import { CommandPalette, preloadCommandPaletteDialog } from "../components/CommandPalette";
 import { preloadDestinationLists } from "../components/sidebar/destinationLists";
 import { PushAlertsRuntime } from "../pushAlerts/PushAlertsRuntime";
+import { AlertSoundRuntime } from "../components/AlertSoundRuntime";
 import { BrowserProfileReconciler } from "../components/desktop/BrowserProfileReconciler";
 import { DesktopUpdateInstallDialog } from "../components/desktop/DesktopUpdateInstallDialog";
 import { SshPasswordPromptDialog } from "../components/desktop/SshPasswordPromptDialog";
@@ -276,6 +277,7 @@ function RootRouteView() {
         <EnvironmentConnectionManagerBootstrap />
         <AppShellIdlePreloads />
         <PushAlertsRuntime />
+        <AlertSoundRuntime />
         {isElectron ? <DesktopTaskbarStatusSync /> : null}
         {primaryEnvironmentAuthenticated ? <ScheduledTasksSync /> : null}
         {primaryEnvironmentAuthenticated ? (

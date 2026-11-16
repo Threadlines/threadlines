@@ -1,8 +1,10 @@
 /**
- * Settings › General › Alerts: this device's phone alerts (pushAlerts.ts).
- * One switch turns them on, three choose which ones, one keeps them quiet
- * while a computer is in use, and each paired computer says whether it sends
- * them, with a test alert to prove it.
+ * Settings › General › Alerts: how this device tells the user about threads.
+ * Play a sound works on every device (components/AlertSoundRuntime.tsx). The
+ * rest are this device's phone alerts (pushAlerts.ts), shown where it can get
+ * them: one switch turns them on, three choose which ones, one keeps them
+ * quiet while a computer is in use, and each paired computer says whether it
+ * sends them, with a test alert to prove it.
  */
 import type { EnvironmentId, PushAlertKinds } from "@threadlines/contracts";
 import { placeById, type SettingsPlaceId } from "@threadlines/shared/appPlaces";
@@ -11,6 +13,8 @@ import { useMemo, useState } from "react";
 import { SettingsRow, SettingsSection } from "../components/settings/settingsLayout";
 import { Button } from "../components/ui/button";
 import { Switch } from "../components/ui/switch";
+import { useSettings, useUpdateSettings } from "../hooks/useSettings";
+import { previewAlertSound } from "../lib/alertSoundPlayer";
 import {
   readEnvironmentDescriptor,
   useSavedEnvironmentRegistryStore,
@@ -112,11 +116,13 @@ export function PushAlertsSettingsSection() {
   const permission = usePushAlertsStore((state) => state.permission);
   const computers = useAlertComputers();
 
-  if (support === "unsupported" || computers.length === 0) return null;
-  const on = support === "supported" && enabled && permission === "granted";
+  // Phone alerts need support here and a computer to hear from; the sound doesn't.
+  const pushShown = support !== "unsupported" && computers.length > 0;
+  const on = pushShown && support === "supported" && enabled && permission === "granted";
   return (
     <SettingsSection place="general.alerts">
-      <AlertsOnThisDeviceRow />
+      <AlertSoundRow />
+      {pushShown ? <AlertsOnThisDeviceRow /> : null}
       {on ? KIND_ROWS.map((row) => <AlertKindRow key={row.kind} kind={row.kind} />) : null}
       {on ? <AlertsQuietAtComputerRow /> : null}
       {on
@@ -129,6 +135,28 @@ export function PushAlertsSettingsSection() {
           ))
         : null}
     </SettingsSection>
+  );
+}
+
+/** A sound in the open app when an agent finishes or needs the user, on any device. */
+export function AlertSoundRow() {
+  const on = useSettings((settings) => settings.alertSound);
+  const { updateSettings } = useUpdateSettings();
+  return (
+    <SettingsRow
+      place="general.alertSound"
+      control={
+        <Switch
+          checked={on}
+          onCheckedChange={(checked) => {
+            updateSettings({ alertSound: Boolean(checked) });
+            // Turning it on is a click, so the browser lets it play: hear what it sounds like.
+            if (checked) previewAlertSound("done");
+          }}
+          aria-label={placeById("general.alertSound").title}
+        />
+      }
+    />
   );
 }
 

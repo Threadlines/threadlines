@@ -191,6 +191,9 @@ export const ClientSettingsSchema = Schema.Struct({
   // Off, only the user opens the panel. Per device: it is a choice about how
   // much room this screen has.
   autoOpenAgentsPanel: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  // A short sound in the open app when an agent finishes or needs the user.
+  // Per device: one computer may want it and the laptop on the couch not.
+  alertSound: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   chatChangedFilesDefaultExpanded: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(false)),
   ),
@@ -1323,6 +1326,7 @@ export const ClientSettingsPatch = Schema.Struct({
   browserSearchEngine: Schema.optionalKey(BrowserSearchEngine),
   browserSignIns: Schema.optionalKey(BrowserSignIns),
   autoOpenAgentsPanel: Schema.optionalKey(Schema.Boolean),
+  alertSound: Schema.optionalKey(Schema.Boolean),
   chatChangedFilesDefaultExpanded: Schema.optionalKey(Schema.Boolean),
   confirmThreadArchive: Schema.optionalKey(Schema.Boolean),
   confirmThreadDelete: Schema.optionalKey(Schema.Boolean),

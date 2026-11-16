@@ -2,6 +2,7 @@ import type { ComponentType } from "react";
 
 import {
   AlertKindRow,
+  AlertSoundRow,
   AlertsOnThisDeviceRow,
   AlertsQuietAtComputerRow,
 } from "../../pushAlerts/PushAlertsSettings";
@@ -91,6 +92,7 @@ const LINK: SettingsRowEntry = { kind: "link" };
 
 export const SETTINGS_ROWS = {
   // General
+  "general.alertSound": live(AlertSoundRow),
   "general.alertsOnThisDevice": live(AlertsOnThisDeviceRow),
   "general.alertNeedsYou": live(() => <AlertKindRow kind="needs_you" />),
   "general.alertFinished": live(() => <AlertKindRow kind="finished" />),
