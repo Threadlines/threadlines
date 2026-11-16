@@ -27,6 +27,16 @@ export interface ProviderAccountUsageWindowPresentation {
   readonly remainingPercent: number;
   readonly reachedLimit: boolean;
   readonly warning: boolean;
+  /**
+   * Set on a window that caps one model, not the whole account (Claude's
+   * per-model weekly limits): the name the provider gives it ("Fable"), its
+   * period ("Weekly"), and when it resets ("resets in 3d 16h").
+   */
+  readonly scope?: {
+    readonly name: string;
+    readonly period: string | null;
+    readonly resetDetail: string | null;
+  };
 }
 
 export interface ProviderAccountUsageSpendControlPresentation {
@@ -437,6 +447,7 @@ function formatScopedUsageWindowPresentation(
     remainingPercent,
     reachedLimit,
     warning: reachedLimit || severityWarning || usedPercent >= USAGE_WARNING_THRESHOLD_PERCENT,
+    scope: { name: window.scopeLabel, period: durationLabel || null, resetDetail },
   };
 }
 
@@ -801,11 +812,29 @@ export function deriveProviderAccountUsagePresentationForProvider(
  */
 export function isProviderUsageNearLimit(
   presentation: ProviderAccountUsagePresentation | null,
+  options: {
+    /**
+     * False: only limits on the whole account count, never one model's own
+     * cap. The model picker's dot on a provider uses this; the model's own
+     * limit shows on its row (modelOwnUsageLimit).
+     */
+    readonly modelLimits?: boolean;
+  } = {},
 ): boolean {
   if (!presentation) return false;
-  if (presentation.reachedLimit) return true;
   if (presentation.spendControl?.warning) return true;
-  return presentation.windows.some((window) => window.warning);
+  // `reachedLimit` also counts a model's own limit, so it decides only when
+  // those count too; a window reached is a window in warning either way.
+  if (options.modelLimits !== false) {
+    return presentation.reachedLimit || presentation.windows.some((window) => window.warning);
+  }
+  // Reached with no model's own limit reached: the account itself is out
+  // (Codex can say so with no windows at all).
+  const modelLimitReached = presentation.windows.some(
+    (window) => window.scope !== undefined && window.reachedLimit,
+  );
+  if (presentation.reachedLimit && !modelLimitReached) return true;
+  return presentation.windows.some((window) => window.scope === undefined && window.warning);
 }
 
 /**
@@ -825,4 +854,61 @@ export function providerUsageNearLimitColor(
     .filter((meter) => meter.warning)
     .reduce((max, meter) => Math.max(max, meter.usedPercent), 0);
   return usageMeterColor(hottestPercent, true);
+}
+
+const nameTokens = (name: string) => name.toLowerCase().split(/\s+/).filter(Boolean);
+
+/**
+ * The limit a model has of its own, if the account reports one. Providers name
+ * such a limit, not the model's id ("Fable" for every Fable model), so it
+ * matches a model whose name holds the limit's name as whole words: "Fable"
+ * matches "Claude Fable 5.2", while "Opus 5" does not match "Opus 5.5". The
+ * fullest applies when several do.
+ */
+export function modelOwnUsageLimit(
+  usage: Pick<ProviderAccountUsagePresentation, "windows"> | null | undefined,
+  modelName: string,
+): ProviderAccountUsageWindowPresentation | null {
+  if (!usage) return null;
+  const model = nameTokens(modelName);
+  const holds = (scope: ReadonlyArray<string>) =>
+    scope.length > 0 &&
+    model.some((_, start) => scope.every((token, offset) => model[start + offset] === token));
+  return usage.windows.reduce<ProviderAccountUsageWindowPresentation | null>((fullest, window) => {
+    if (window.scope === undefined || !holds(nameTokens(window.scope.name))) return fullest;
+    return fullest === null || window.usedPercent > fullest.usedPercent ? window : fullest;
+  }, null);
+}
+
+/** "Weekly" → "week", for "64% of week". Periods with no such word stay as they are. */
+const PERIOD_NOUNS: Readonly<Record<string, string>> = {
+  Weekly: "week",
+  Daily: "day",
+  Monthly: "month",
+};
+
+/**
+ * What a model's row says about its own limit: "40% of week", in the row's
+ * grey until the warning threshold, then amber; "Limit · resets in 3d 16h",
+ * in red, once it is reached. The hover has the whole reading.
+ */
+export function modelUsageLimitLabel(window: ProviderAccountUsageWindowPresentation): {
+  readonly text: string;
+  readonly tone: "normal" | "warning" | "reached";
+  readonly title: string;
+} {
+  const percent = Math.round(window.usedPercent);
+  const period = window.scope?.period ?? null;
+  const reset = window.scope?.resetDetail ?? null;
+  return {
+    text: window.reachedLimit
+      ? reset
+        ? `Limit · ${reset}`
+        : "Limit reached"
+      : period
+        ? `${percent}% of ${PERIOD_NOUNS[period] ?? period}`
+        : `${percent}% used`,
+    tone: window.reachedLimit ? "reached" : window.warning ? "warning" : "normal",
+    title: `${window.label} · ${window.detail}`,
+  };
 }

@@ -133,17 +133,30 @@ describe("ChatView (full app): the desktop app's window", () => {
       });
       await session.send("LayerTree.enable");
       // The tree is reported on the next frame the page draws, and again as
-      // it changes: wait for the one where the chat's scroller is drawn on
-      // its own, so there is something to mask (an early frame can come
-      // before it is).
-      // A busy runner can take seconds to composite the chat after first paint.
-      await vi.waitFor(
-        () => {
-          document.body.style.outline = document.body.style.outline ? "" : "0 solid transparent";
-          expect(layers?.some((layer) => layer.drawsContent && layer.backendNodeId)).toBe(true);
-        },
-        { timeout: 5_000 },
+      // it changes: wait for one where the chat's scroller is drawn on its
+      // own, so there is something to mask (an early frame can come before
+      // it is). A busy runner can take seconds to composite the chat.
+      const awaitScrollerLayer = () =>
+        vi.waitFor(
+          () => {
+            document.body.style.outline = document.body.style.outline ? "" : "0 solid transparent";
+            expect(layers?.some((layer) => layer.drawsContent && layer.backendNodeId)).toBe(true);
+          },
+          { timeout: 5_000 },
+        );
+      await awaitScrollerLayer();
+      // While something fades (a pill or button appearing in the chat), the
+      // browser lifts what it overlaps onto layers of their own until the
+      // fade ends. The rounded clip's masks stay for good: read the tree
+      // once the fades that end have ended (a spinner never does).
+      await Promise.all(
+        document
+          .getAnimations()
+          .filter((animation) => animation.effect?.getComputedTiming().endTime !== Infinity)
+          .map((animation) => animation.finished.catch(() => undefined)),
       );
+      layers = null;
+      await awaitScrollerLayer();
       const masks = layers!.filter(
         (layer) =>
           layer.drawsContent &&

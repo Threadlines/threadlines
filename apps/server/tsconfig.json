@@ -9,6 +9,7 @@
     "vite.config.ts",
     "scripts",
     "integration",
+    "evals",
     "../../scripts/lib",
     "../../vite.config.ts"
   ]

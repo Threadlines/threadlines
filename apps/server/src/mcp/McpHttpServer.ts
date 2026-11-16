@@ -333,17 +333,31 @@ const screenshotFailure = <E>(cause: Cause.Cause<E>) => {
   );
 };
 
-export const layer = McpServer.toolkit(BrowserStandardToolkit).pipe(
-  Layer.provide(BrowserToolkitHandlersLive),
-  Layer.provideMerge(
-    Layer.effectDiscard(registerScreenshot()).pipe(Layer.provide(BrowserScreenshotHandlersLive)),
-  ),
-  Layer.provideMerge(
-    McpServer.layerHttp({
-      name: "threadlines-browser",
-      version: "1",
-      path: MCP_ROUTE_PATH,
-      protocols: [McpProtocol.v2025_06_18],
-    }).pipe(Layer.provide(AuthenticationLive)),
-  ),
-);
+/**
+ * The browser endpoint with the given tool handlers: production's below; the
+ * tool-use evals (apps/server/evals) serve the same tools and listing with
+ * handlers that refuse.
+ */
+export const makeLayer = <E1, R1, E2, R2>(handlers: {
+  readonly standard: Layer.Layer<Tool.HandlersFor<typeof BrowserStandardToolkit.tools>, E1, R1>;
+  readonly screenshot: Layer.Layer<Tool.HandlersFor<typeof BrowserScreenshotToolkit.tools>, E2, R2>;
+}) =>
+  McpServer.toolkit(BrowserStandardToolkit).pipe(
+    Layer.provide(handlers.standard),
+    Layer.provideMerge(
+      Layer.effectDiscard(registerScreenshot()).pipe(Layer.provide(handlers.screenshot)),
+    ),
+    Layer.provideMerge(
+      McpServer.layerHttp({
+        name: "threadlines-browser",
+        version: "1",
+        path: MCP_ROUTE_PATH,
+        protocols: [McpProtocol.v2025_06_18],
+      }).pipe(Layer.provide(AuthenticationLive)),
+    ),
+  );
+
+export const layer = makeLayer({
+  standard: BrowserToolkitHandlersLive,
+  screenshot: BrowserScreenshotHandlersLive,
+});

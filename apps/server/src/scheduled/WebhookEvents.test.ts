@@ -782,10 +782,14 @@ it.layer(NodeServices.layer)("event tasks", (it) => {
         assert.equal(waiting[1]?.status, "waiting");
         assert.equal(waiting[1]?.reason, "Waiting for this issue's first run to start its thread.");
 
-        // The first run's thread exists: the second event continues it.
+        // The first run's thread exists: the second event continues it. An
+        // event reads "joined" once its run is claimed, and names the thread
+        // once the run has reached it, a step later: wait for both.
         yield* Deferred.succeed(gate, undefined);
         yield* eventually(
-          eventsOf(computer, task.id).pipe(Effect.map((events) => events[1]?.status === "joined")),
+          eventsOf(computer, task.id).pipe(
+            Effect.map((events) => events[1]?.status === "joined" && events[1]?.threadId != null),
+          ),
           "the second event joined the issue's thread",
         );
         const runs = yield* computer.runs(task.id);

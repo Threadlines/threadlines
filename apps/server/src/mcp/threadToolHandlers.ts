@@ -327,13 +327,63 @@ const childIsBusy = (child: OrchestrationThread, parent: OrchestrationThread) =>
   );
 
 /** A started thread's access: the caller's, or a lower level the call asked for, never more. */
-const launchAccess = (
+export const launchAccess = (
   spec: { readonly access: RuntimeMode | undefined },
   caller: Pick<OrchestrationThread, "runtimeMode">,
 ): RuntimeMode =>
   spec.access === undefined
     ? caller.runtimeMode
     : saferRuntimeMode(spec.access, caller.runtimeMode);
+
+/**
+ * What thread_start tells the agent happened, and what to do next (end its
+ * turn rather than wait). Shared with the tool-use evals' canned answer.
+ */
+export const startedDetail = (input: {
+  readonly outcome: "started" | "asked_user";
+  readonly count: number;
+  readonly reportBack: boolean;
+  readonly sharedFolder: boolean;
+  /** How many of them work in another thread's checkout (`checkout`). */
+  readonly inCheckouts?: number;
+}) => {
+  const threads = plural(input.count, "thread");
+  const these = input.count === 1 ? "it" : "them";
+  const base =
+    input.outcome === "started"
+      ? input.reportBack
+        ? `Started ${threads}. Each one's final reply comes back to you as a message when it finishes, and you pick up again then. Don't wait or poll: carry on with other work, or end your turn if you have nothing else to do.`
+        : `Started ${threads} on ${input.count === 1 ? "its" : "their"} own. Nothing comes back from ${these}; read ${these} with thread_read if you need to.`
+      : input.reportBack
+        ? `The user decides whether to start ${threads}. If they agree, each one's final reply comes back to you as a message; if they say no, you'll hear at your next turn. Don't ask again, and end your turn if you have nothing else to do.`
+        : `The user decides whether to start ${threads}. If started, ${input.count === 1 ? "it runs" : "they run"} on ${input.count === 1 ? "its" : "their"} own and nothing comes back. Don't ask again.`;
+  const inCheckouts = input.inCheckouts ?? 0;
+  const shared =
+    inCheckouts === 0
+      ? ""
+      : ` ${input.count === 1 ? "It works" : inCheckouts === input.count ? "They work" : `${inCheckouts} of them work`} in a checkout another thread has, with the same files: have only one thread work there at a time.`;
+  return input.sharedFolder
+    ? `${base}${shared} This project has no git repository, so ${input.count === 1 ? "it shares" : "they share"} its folder and can change the same files you do.`
+    : `${base}${shared}`;
+};
+
+/**
+ * Says which threads got less access than the call asked for, so the agent
+ * doesn't tell the user they have it. Empty when every thread got what it asked.
+ */
+export const lowerAccessNote = (
+  specs: ReadonlyArray<{ readonly title: string; readonly access: RuntimeMode | undefined }>,
+  launches: ReadonlyArray<{ readonly runtimeMode: RuntimeMode }>,
+): string => {
+  const lowered = specs.flatMap((spec, index) =>
+    spec.access !== undefined && launches[index]!.runtimeMode !== spec.access
+      ? [`'${spec.title}' runs with ${launches[index]!.runtimeMode}, not ${spec.access}`]
+      : [],
+  );
+  return lowered.length === 0
+    ? ""
+    : ` ${lowered.join("; ")}: a thread never gets more access than yours. If you tell the user about ${lowered.length === 1 ? "it" : "them"}, say the access ${lowered.length === 1 ? "it" : "they"} actually got.`;
+};
 
 /** Whether a thread already works in `checkout`, with its session there too. */
 const isInCheckout = (thread: OrchestrationThread, checkout: ChildThreadCheckout) =>
@@ -737,34 +787,6 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
     })),
   });
 
-  const startedDetail = (input: {
-    readonly outcome: "started" | "asked_user";
-    readonly count: number;
-    readonly reportBack: boolean;
-    readonly sharedFolder: boolean;
-    /** How many of them work in another thread's checkout (`checkout`). */
-    readonly inCheckouts?: number;
-  }) => {
-    const threads = plural(input.count, "thread");
-    const these = input.count === 1 ? "it" : "them";
-    const base =
-      input.outcome === "started"
-        ? input.reportBack
-          ? `Started ${threads}. Each one's final reply comes back to you as a message when it finishes, and you pick up again then. Don't wait or poll: carry on with other work, or end your turn if you have nothing else to do.`
-          : `Started ${threads} on ${input.count === 1 ? "its" : "their"} own. Nothing comes back from ${these}; read ${these} with thread_read if you need to.`
-        : input.reportBack
-          ? `The user decides whether to start ${threads}. If they agree, each one's final reply comes back to you as a message; if they say no, you'll hear at your next turn. Don't ask again, and end your turn if you have nothing else to do.`
-          : `The user decides whether to start ${threads}. If started, ${input.count === 1 ? "it runs" : "they run"} on ${input.count === 1 ? "its" : "their"} own and nothing comes back. Don't ask again.`;
-    const inCheckouts = input.inCheckouts ?? 0;
-    const shared =
-      inCheckouts === 0
-        ? ""
-        : ` ${input.count === 1 ? "It works" : inCheckouts === input.count ? "They work" : `${inCheckouts} of them work`} in a checkout another thread has, with the same files: have only one thread work there at a time.`;
-    return input.sharedFolder
-      ? `${base}${shared} This project has no git repository, so ${input.count === 1 ? "it shares" : "they share"} its folder and can change the same files you do.`
-      : `${base}${shared}`;
-  };
-
   /**
    * What an earlier identical call already did, if anything: its requests
    * still open, or its threads already made.
@@ -810,6 +832,7 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
               request.launch?.checkout !== undefined
                 ? ("checkout" as const)
                 : (request.launch?.workspace.kind ?? "worktree"),
+            ...(request.launch !== undefined ? { access: request.launch.runtimeMode } : {}),
           })),
         } satisfies ThreadStartResult;
       }
@@ -838,6 +861,7 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
               : shell.worktreePath !== null
                 ? "worktree"
                 : "project_folder",
+          access: shell.runtimeMode,
         })),
       } satisfies ThreadStartResult;
     });
@@ -1069,13 +1093,13 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
           const outcome = mode === "auto" ? ("started" as const) : ("asked_user" as const);
           return {
             outcome,
-            detail: startedDetail({
+            detail: `${startedDetail({
               outcome,
               count: launches.length,
               reportBack,
               sharedFolder,
               inCheckouts: launches.filter((launch) => launch.checkout !== undefined).length,
-            }),
+            })}${lowerAccessNote(specs, launches)}`,
             threads: ids.children.map((child, index) => ({
               threadId: child.childThreadId,
               title: launches[index]!.title,
@@ -1085,6 +1109,7 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
                 launches[index]!.checkout !== undefined
                   ? ("checkout" as const)
                   : launches[index]!.workspace.kind,
+              access: launches[index]!.runtimeMode,
             })),
           } satisfies ThreadStartResult;
         }),
