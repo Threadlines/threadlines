@@ -100,6 +100,9 @@ html.electron.mac:not([data-marketing-capture]) {
      instead of presenting a frame every vsync. */
   --animate-status-pulse: status-pulse 2s infinite;
   --animate-status-ping: status-ping 2s infinite;
+  /* A drawn text caret, on and off like a native one: two steps a cycle, so it
+     produces two frames a second, and only while its field has focus. */
+  --animate-caret-blink: caret-blink 1.06s infinite step-end;
   --color-warning-foreground: var(--warning-foreground);
   --color-warning: var(--warning);
   --color-success-foreground: var(--success-foreground);
@@ -186,6 +189,11 @@ html.electron.mac:not([data-marketing-capture]) {
     }
     100% {
       opacity: 1;
+    }
+  }
+  @keyframes caret-blink {
+    50% {
+      opacity: 0;
     }
   }
   @keyframes status-ping {

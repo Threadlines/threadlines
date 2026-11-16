@@ -260,6 +260,24 @@ function ChipDot({ className }: { readonly className: string }) {
 }
 
 /**
+ * The popover's checkboxes, 14px like its icons at every width. The shared
+ * checkbox grows to 16px from `sm` up, so a plain `size-3.5` is not enough.
+ */
+const POPOVER_CHECKBOX_CLASS = "size-3.5 sm:size-3.5";
+
+/**
+ * A status dot at the start of a popover row, in the same 14px slot as the
+ * icons and checkboxes in the rows around it, so it sits centred over them.
+ */
+function PopoverRowDot({ className }: { readonly className: string }) {
+  return (
+    <span aria-hidden className="flex size-3.5 shrink-0 items-center justify-center">
+      <ChipDot className={className} />
+    </span>
+  );
+}
+
+/**
  * An address on the host, opened in the browser from the end of a popover
  * row. Outside Electron there is no shell to hand the address to, so the same
  * affordance is an ordinary link the browser opens itself.
@@ -317,7 +335,7 @@ function ComposerPullRequestQueueFailure({
   return (
     <>
       <p className="flex items-center gap-2 px-3 py-1 text-muted-foreground">
-        <ChipDot className={CHIP_TONE_CLASS.failure.dot} />
+        <PopoverRowDot className={CHIP_TONE_CLASS.failure.dot} />
         Failed in the merge queue
       </p>
       {removal.failedChecks.map((check) => (
@@ -477,7 +495,7 @@ function ComposerPullRequestChecksPopover({
       <div className="flex items-center gap-2 px-3 py-1 transition-colors hover:bg-accent">
         <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2">
           <Checkbox
-            className="size-3.5"
+            className={POPOVER_CHECKBOX_CLASS}
             checked={pullRequest.wrapUpOnSettled}
             onCheckedChange={(checked) => {
               pullRequest.onWrapUpOnSettledChange(Boolean(checked));
@@ -576,7 +594,7 @@ function ComposerPullRequestAutoMergeSection({
       {autoMergeControl.kind === "toggle" ? (
         <label className="flex cursor-pointer items-center gap-2 px-3 py-1 transition-colors hover:bg-accent">
           <Checkbox
-            className="size-3.5"
+            className={POPOVER_CHECKBOX_CLASS}
             checked={autoMergeControl.checked}
             disabled={action.isPending}
             onCheckedChange={(checked) => {
@@ -614,7 +632,7 @@ function ComposerPullRequestAutoMergeSection({
         // The host has taken it: there is no instruction left to switch off,
         // and the queue lands it on its own.
         <p className="flex items-center gap-2 px-3 py-1 text-muted-foreground">
-          <ChipDot className={CHIP_TONE_CLASS.queued.dot + " " + CHIP_TONE_CLASS.queued.chip} />
+          <PopoverRowDot className={cn(CHIP_TONE_CLASS.queued.dot, CHIP_TONE_CLASS.queued.chip)} />
           In the merge queue
           {detail.viewer.canWrite && detail.capabilities.actions.includes("disable-auto-merge") ? (
             <button
@@ -667,7 +685,7 @@ function ComposerPullRequestThreadSwitch({
   return (
     <label className="flex cursor-pointer items-start gap-2 px-3 py-1 transition-colors hover:bg-accent">
       <Checkbox
-        className="mt-px size-3.5"
+        className={cn("mt-px", POPOVER_CHECKBOX_CLASS)}
         checked={pending?.next ?? checked}
         onCheckedChange={(value) => {
           const next = Boolean(value);
