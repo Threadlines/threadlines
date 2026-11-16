@@ -28,6 +28,7 @@ import {
   type ThreadId,
   ThreadMoveError,
   ThreadMoveId,
+  type ThreadMoveRequestId,
   type ThreadMovePhase,
   type ThreadMovePreview,
   type ThreadMoveStartInput,
@@ -51,7 +52,13 @@ import { ServerConfig } from "../config.ts";
 import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";
 import { ComputerLinkClient, type PeerClient } from "../links/ComputerLinkClient.ts";
 import { ComputerLinkRepository, isUsableLink } from "../links/ComputerLinkRepository.ts";
-import { threadMoveRefusal } from "../orchestration/threadMoveDecisions.ts";
+import {
+  firstMoveBlock,
+  moveWaitsOf,
+  threadMoveRefusal,
+  threadMoveRefusals,
+} from "../orchestration/threadMoveDecisions.ts";
+import { ProviderService } from "../provider/Services/ProviderService.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ProjectionThreadRepository } from "../persistence/Services/ProjectionThreads.ts";
@@ -68,11 +75,42 @@ import {
   writeMoveExport,
 } from "./moveExport.ts";
 
+/**
+ * How starting a queued move went (`startQueued`), for the move queue to act
+ * on: `started`; `unreachable`, the target can't be reached now (try again);
+ * `blocked`, it won't pass without the user (link removed or off, agent or
+ * project gone there, or something only the user clears here); `busy`, the
+ * thread or its session isn't ready yet (look again).
+ */
+export type QueuedMoveStart =
+  | { readonly kind: "started"; readonly transferId: ThreadMoveId }
+  | { readonly kind: "unreachable"; readonly words: string }
+  | { readonly kind: "blocked"; readonly words: string }
+  | { readonly kind: "busy"; readonly words: string };
+
 export interface ThreadMovesShape {
   readonly preview: (threadId: ThreadId) => Effect.Effect<ThreadMovePreview, ThreadMoveError>;
   readonly start: (
     input: ThreadMoveStartInput,
   ) => Effect.Effect<{ readonly transferId: ThreadMoveId }, ThreadMoveError>;
+  /**
+   * Checks a move to queue (docs/design/fleet.md, Part 3b): the link, and,
+   * when the target can be reached, its project and agent. An unreachable
+   * target is allowed: the queued move waits for it. Returns the target's
+   * name, or why it can't be queued.
+   */
+  readonly checkQueue: (input: {
+    readonly threadId: ThreadId;
+    readonly targetEnvironmentId: EnvironmentId;
+    readonly agent: ModelSelection;
+  }) => Effect.Effect<{ readonly label: string }, ThreadMoveError>;
+  /** Starts the thread's queued move `requestId`, now that the thread is free and quiesced. */
+  readonly startQueued: (input: {
+    readonly threadId: ThreadId;
+    readonly requestId: ThreadMoveRequestId;
+    readonly targetEnvironmentId: EnvironmentId;
+    readonly agent: ModelSelection;
+  }) => Effect.Effect<QueuedMoveStart>;
   readonly cancel: (threadId: ThreadId) => Effect.Effect<void, ThreadMoveError>;
   /** Run unfinished moves to their end, and every move started from now on. */
   readonly startReactor: () => Effect.Effect<void, never, Scope.Scope>;
@@ -119,6 +157,7 @@ const make = Effect.gen(function* () {
   const git = yield* GitVcsDriver;
   const config = yield* ServerConfig;
   const environment = yield* ServerEnvironment;
+  const providers = yield* ProviderService;
   const descriptor = yield* environment.getDescriptor;
 
   const moveDir = (transferId: string) => NodePath.join(config.stateDir, "moves", transferId);
@@ -159,6 +198,7 @@ const make = Effect.gen(function* () {
             environmentId,
             label,
             refusal: `${label} can't be reached right now.`,
+            refusalCode: "unreachable" as const,
             agents: [],
           };
         }
@@ -200,13 +240,25 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  const preview: ThreadMovesShape["preview"] = (threadId) =>
+  /**
+   * Where the thread could go and what would go with it. `refusal` is what
+   * only the user can clear (or a project the other computer can't find);
+   * `waitsFor` is what the thread is busy with. `forQueued` names the queued
+   * move being started, which doesn't count against itself.
+   */
+  const inspect = (threadId: ThreadId, forQueued?: ThreadMoveRequestId) =>
     Effect.gen(function* () {
       const model = yield* readModel;
       const thread = model.threads.find((entry) => entry.id === threadId);
       if (thread === undefined) return yield* moveError("That thread doesn't exist.");
       const project = model.projects.find((entry) => entry.id === thread.projectId);
-      let refusal = threadMoveRefusal(model, thread);
+      const refusals = threadMoveRefusals(model, thread);
+      const pending = thread.pendingMove ?? null;
+      let refusal: string | null =
+        firstMoveBlock(refusals)?.words ??
+        (pending !== null && pending.requestId !== forQueued
+          ? `A move to ${pending.target.label} is already waiting. Cancel it first.`
+          : null);
       let changes: ThreadMovePreview["changes"];
       let place: ProjectPlace | null = null;
       if (project !== undefined && project.kind !== "general-chat") {
@@ -234,39 +286,117 @@ const make = Effect.gen(function* () {
         (row) => describeTarget(row.remoteEnvironmentId, row.remoteLabel, thread, place),
         { concurrency: "unbounded" },
       );
+      const waitsFor = moveWaitsOf(refusals);
       return {
-        ...(refusal !== null ? { refusal } : {}),
-        ...(changes !== undefined ? { changes } : {}),
-        targets,
+        model,
+        thread,
+        // A move that doesn't wait refuses a busy thread too.
+        busy: threadMoveRefusal(model, thread),
+        preview: {
+          ...(refusal !== null ? { refusal } : {}),
+          ...(waitsFor.length > 0 ? { waitsFor } : {}),
+          ...(changes !== undefined ? { changes } : {}),
+          targets,
+        } satisfies ThreadMovePreview,
       };
+    });
+
+  const preview: ThreadMovesShape["preview"] = (threadId) =>
+    inspect(threadId).pipe(Effect.map((inspected) => inspected.preview));
+
+  /** The target and agent a move names, checked against what the target said. */
+  const checkTarget = (
+    shown: ThreadMovePreview,
+    environmentId: EnvironmentId,
+    agent: ModelSelection,
+  ):
+    | { readonly ok: ThreadMoveTargetPreview }
+    | { readonly unreachable: ThreadMoveTargetPreview }
+    | { readonly refusal: string } => {
+    const target = shown.targets.find((entry) => entry.environmentId === environmentId);
+    if (target === undefined) return { refusal: "This computer isn't linked to that one." };
+    if (target.refusalCode === "unreachable") return { unreachable: target };
+    if (target.refusal !== undefined) return { refusal: target.refusal };
+    const offered = target.agents.find((entry) => entry.instanceId === agent.instanceId);
+    if (offered === undefined || !offered.models.some((model) => model.model === agent.model)) {
+      return { refusal: `${target.label} has no such agent or model.` };
+    }
+    return { ok: target };
+  };
+
+  /** Freezes the thread for its move (`thread.move.start`); the decider checks it again. */
+  const dispatchStart = (
+    threadId: ThreadId,
+    target: ThreadMoveTargetPreview,
+    agent: ModelSelection,
+    queuedRequestId?: ThreadMoveRequestId,
+  ) =>
+    Effect.gen(function* () {
+      const transferId = ThreadMoveId.make(randomUUID());
+      yield* engine.dispatch({
+        type: "thread.move.start",
+        commandId: CommandId.make(`server:thread-move:${transferId}:start`),
+        threadId,
+        transferId,
+        target: { environmentId: target.environmentId, label: target.label },
+        agent,
+        ...(queuedRequestId !== undefined ? { queuedRequestId } : {}),
+        createdAt: yield* nowIso,
+      });
+      return transferId;
     });
 
   const start: ThreadMovesShape["start"] = (input) =>
     Effect.gen(function* () {
-      const shown = yield* preview(input.threadId);
+      const inspected = yield* inspect(input.threadId);
+      const shown = inspected.preview;
       if (shown.refusal !== undefined) return yield* moveError(shown.refusal);
-      const target = shown.targets.find(
-        (entry) => entry.environmentId === input.targetEnvironmentId,
-      );
-      if (target === undefined) return yield* moveError("This computer isn't linked to that one.");
-      if (target.refusal !== undefined) return yield* moveError(target.refusal);
-      const agent = target.agents.find((entry) => entry.instanceId === input.agent.instanceId);
-      if (agent === undefined || !agent.models.some((model) => model.model === input.agent.model)) {
-        return yield* moveError(`${target.label} has no such agent or model.`);
+      if (inspected.busy !== null) return yield* moveError(inspected.busy);
+      const checked = checkTarget(shown, input.targetEnvironmentId, input.agent);
+      if ("refusal" in checked) return yield* moveError(checked.refusal);
+      if ("unreachable" in checked) {
+        return yield* moveError(checked.unreachable.refusal ?? "That computer can't be reached.");
       }
-      const transferId = ThreadMoveId.make(randomUUID());
-      yield* engine
-        .dispatch({
-          type: "thread.move.start",
-          commandId: CommandId.make(`server:thread-move:${transferId}:start`),
-          threadId: input.threadId,
-          transferId,
-          target: { environmentId: target.environmentId, label: target.label },
-          agent: input.agent,
-          createdAt: yield* nowIso,
-        })
-        .pipe(Effect.mapError((error) => moveError(error.message)));
+      const transferId = yield* dispatchStart(input.threadId, checked.ok, input.agent).pipe(
+        Effect.mapError((error) => moveError(error.message)),
+      );
       return { transferId };
+    });
+
+  const checkQueue: ThreadMovesShape["checkQueue"] = (input) =>
+    Effect.gen(function* () {
+      const shown = (yield* inspect(input.threadId)).preview;
+      if (shown.refusal !== undefined) return yield* moveError(shown.refusal);
+      const checked = checkTarget(shown, input.targetEnvironmentId, input.agent);
+      if ("refusal" in checked) return yield* moveError(checked.refusal);
+      return { label: "ok" in checked ? checked.ok.label : checked.unreachable.label };
+    });
+
+  const startQueued: ThreadMovesShape["startQueued"] = (input) =>
+    Effect.gen(function* () {
+      const inspected = yield* inspect(input.threadId, input.requestId).pipe(Effect.result);
+      if (inspected._tag === "Failure") {
+        return { kind: "busy", words: inspected.failure.detail } as const;
+      }
+      const shown = inspected.success.preview;
+      if (shown.refusal !== undefined) return { kind: "blocked", words: shown.refusal } as const;
+      const checked = checkTarget(shown, input.targetEnvironmentId, input.agent);
+      if ("refusal" in checked) return { kind: "blocked", words: checked.refusal } as const;
+      if ("unreachable" in checked) {
+        return {
+          kind: "unreachable",
+          words: `Waiting for ${checked.unreachable.label} to connect.`,
+        } as const;
+      }
+      const started = yield* dispatchStart(
+        input.threadId,
+        checked.ok,
+        input.agent,
+        input.requestId,
+      ).pipe(Effect.result);
+      return started._tag === "Success"
+        ? ({ kind: "started", transferId: started.success } as const)
+        : ({ kind: "busy", words: started.failure.message } as const);
     });
 
   /**
@@ -638,6 +768,16 @@ const make = Effect.gen(function* () {
         }
         const thread = (yield* readModel).threads.find((entry) => entry.id === threadId);
         if (thread === undefined) return;
+        // Nothing of the thread may still run while it's packed: its agent's
+        // processes must be proven gone (docs/design/fleet.md, Part 3b). Not
+        // proven, this attempt stops and the worker tries again; the thread
+        // stays frozen, and Cancel still works.
+        const quiesced = yield* providers.quiesceThread(threadId);
+        if (!quiesced.confirmed) {
+          return yield* new ThreadMoveFailure({
+            reason: `Couldn't confirm the agent stopped: ${quiesced.reason}.`,
+          });
+        }
         const manifest = yield* exportFor(thread, move.agent, transferId, false).pipe(
           Effect.result,
         );
@@ -749,7 +889,7 @@ const make = Effect.gen(function* () {
       );
     });
 
-  return ThreadMoves.of({ preview, start, cancel, startReactor });
+  return ThreadMoves.of({ preview, start, checkQueue, startQueued, cancel, startReactor });
 });
 
 export const ThreadMovesLive = Layer.effect(ThreadMoves, make);

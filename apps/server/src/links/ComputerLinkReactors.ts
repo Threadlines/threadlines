@@ -11,6 +11,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import type * as Scope from "effect/Scope";
 
+import { MoveQueue } from "../moves/MoveQueue.ts";
 import { ThreadMoves } from "../moves/ThreadMoves.ts";
 import { LinkMoves } from "./LinkMoves.ts";
 import { LinkRequests } from "./LinkRequests.ts";
@@ -32,12 +33,15 @@ export const ComputerLinkReactorsLive = Layer.effect(
     const linkRequests = yield* LinkRequests;
     const linkMoves = yield* LinkMoves;
     const threadMoves = yield* ThreadMoves;
+    const moveQueue = yield* MoveQueue;
     return ComputerLinkReactors.of({
       start: () =>
         Effect.gen(function* () {
           yield* linkRequests.startReactor();
           yield* linkMoves.startReactor();
           yield* threadMoves.startReactor();
+          // Moves that wait for their thread (docs/design/fleet.md, Part 3b).
+          yield* moveQueue.startReactor();
           yield* remoteChildren.start();
         }),
     });

@@ -6688,7 +6688,13 @@ const make = Effect.gen(function* () {
       }
       const thread = yield* resolveThread(input.threadId);
       // Moving or moved to another computer: frozen here, nothing to start.
-      if (!thread || thread.archivedAt !== null || (thread.move ?? null) !== null) {
+      // A move waiting for the thread takes no new work either.
+      if (
+        !thread ||
+        thread.archivedAt !== null ||
+        (thread.move ?? null) !== null ||
+        (thread.pendingMove ?? null) !== null
+      ) {
         return;
       }
       // A turn running or on its way: the message will wait or steer anyway.

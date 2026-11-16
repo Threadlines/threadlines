@@ -100,8 +100,11 @@ const blocked = (code: ThreadMoveBlockCode, words: string): ThreadMoveRefusalEnt
   words,
 });
 
+/** What the move checks read: the projects, and the threads they can see. */
+export type ThreadMoveView = Pick<OrchestrationReadModel, "projects" | "threads">;
+
 /** A thread's checkout: its worktree, else its project's folder. */
-function checkoutOf(readModel: OrchestrationReadModel, thread: OrchestrationThread) {
+function checkoutOf(readModel: ThreadMoveView, thread: OrchestrationThread) {
   return (
     thread.worktreePath ??
     readModel.projects.find((entry) => entry.id === thread.projectId)?.workspaceRoot ??
@@ -118,7 +121,7 @@ function checkoutOf(readModel: OrchestrationReadModel, thread: OrchestrationThre
  * pending move isn't one of them: each caller decides about that itself.
  */
 export function threadMoveRefusals(
-  readModel: OrchestrationReadModel,
+  readModel: ThreadMoveView,
   thread: OrchestrationThread,
 ): ReadonlyArray<ThreadMoveRefusalEntry> {
   const found: ThreadMoveRefusalEntry[] = [];

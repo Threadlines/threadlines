@@ -67,6 +67,7 @@ import {
   WsCoreRpcGroup,
   WsOutsideAgentsRpcGroup,
   WsRpcGroup,
+  WsMovesRpcGroup,
   WsThemeShowcaseRpcGroup,
   WsThemesRpcGroup,
   WsOwnerRequiredError,
@@ -176,6 +177,7 @@ import { ComputerLinks } from "./links/ComputerLinks.ts";
 import { ScheduledTasks, snapshotForClient } from "./scheduled/ScheduledTasks.ts";
 import { ThemeLibrary } from "./themes/ThemeLibrary.ts";
 import { ThemeShowcase } from "./themes/ThemeShowcase.ts";
+import { MoveQueue } from "./moves/MoveQueue.ts";
 import { ThreadMoves } from "./moves/ThreadMoves.ts";
 import { ProjectSetups } from "./projectSetup/ProjectSetups.ts";
 import { ProjectSetupSource } from "./projectSetup/ProjectSetupSource.ts";
@@ -735,6 +737,34 @@ const ThemeShowcaseRpcLayer = WsThemeShowcaseRpcGroup.toLayer(
   }),
 );
 
+/**
+ * Moving a thread to a linked computer (docs/design/fleet.md, Parts 3 and
+ * 3b): its own RPC group and layer (WsMovesRpcGroup), merged in
+ * makeWsRpcLayer. Open to every paired device, as the thread's other
+ * commands are.
+ */
+const MovesRpcLayer = WsMovesRpcGroup.toLayer(
+  Effect.gen(function* () {
+    const threadMoves = yield* ThreadMoves;
+    const moveQueue = yield* MoveQueue;
+    const aggregate = { "rpc.aggregate": "moves" } as const;
+    return WsMovesRpcGroup.of({
+      [WS_METHODS.movesPreview]: (input) =>
+        observeRpcEffect(WS_METHODS.movesPreview, threadMoves.preview(input.threadId), aggregate),
+      [WS_METHODS.movesStart]: (input) =>
+        observeRpcEffect(WS_METHODS.movesStart, threadMoves.start(input), aggregate),
+      [WS_METHODS.movesCancel]: (input) =>
+        observeRpcEffect(WS_METHODS.movesCancel, threadMoves.cancel(input.threadId), aggregate),
+      [WS_METHODS.movesQueue]: (input) =>
+        observeRpcEffect(WS_METHODS.movesQueue, moveQueue.queue(input), aggregate),
+      [WS_METHODS.movesUnqueue]: (input) =>
+        observeRpcEffect(WS_METHODS.movesUnqueue, moveQueue.unqueue(input), aggregate),
+      [WS_METHODS.movesRetry]: (input) =>
+        observeRpcEffect(WS_METHODS.movesRetry, moveQueue.retry(input), aggregate),
+    });
+  }),
+);
+
 /** Every RPC the WebSocket serves, for one connection. */
 const makeWsRpcLayer = (
   currentSession: {
@@ -752,6 +782,7 @@ const makeWsRpcLayer = (
     makeOutsideAgentsRpcLayer(currentSession.role),
     ThemesRpcLayer,
     ThemeShowcaseRpcLayer,
+    MovesRpcLayer,
   );
 
 const makeCoreRpcLayer = (
@@ -779,7 +810,6 @@ const makeCoreRpcLayer = (
       const pushAlerts = yield* PushAlerts;
       const computerLinks = yield* ComputerLinks;
       const scheduledTasks = yield* ScheduledTasks;
-      const threadMoves = yield* ThreadMoves;
       const projectSetups = yield* ProjectSetups;
       const projectSetupSource = yield* ProjectSetupSource;
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
@@ -3484,19 +3514,7 @@ const makeCoreRpcLayer = (
             scheduledTasks.runWithWebhookEvent(input),
             { "rpc.aggregate": "scheduledTasks" },
           ),
-        // Moving a thread to a linked computer (docs/design/fleet.md, Part 3).
-        [WS_METHODS.movesPreview]: (input) =>
-          observeRpcEffect(WS_METHODS.movesPreview, threadMoves.preview(input.threadId), {
-            "rpc.aggregate": "moves",
-          }),
-        [WS_METHODS.movesStart]: (input) =>
-          observeRpcEffect(WS_METHODS.movesStart, threadMoves.start(input), {
-            "rpc.aggregate": "moves",
-          }),
-        [WS_METHODS.movesCancel]: (input) =>
-          observeRpcEffect(WS_METHODS.movesCancel, threadMoves.cancel(input.threadId), {
-            "rpc.aggregate": "moves",
-          }),
+
         // Setting up a project on another computer (docs/design/fleet.md,
         // Part 8): the app reads from the computer that has it and starts
         // the job on the one that gets the copy.
