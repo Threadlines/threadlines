@@ -3193,4 +3193,46 @@ fence.layer("ProviderServiceLive moving threads", (it) => {
       });
     }),
   );
+
+  it.effect("waits for a recovery already under way, and stops what it opened", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const RECOVERING = asThreadId("8c2e4f6a-1b3d-4e5f-9a7b-2c4d6e8f0a1b");
+      yield* startOn(codexInstanceId, RECOVERING);
+      // The runtime is gone; a transcript read will bring it back.
+      yield* fence.codex.stopSession(RECOVERING);
+      const reached = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const startNormally = fence.codex.startSession.getMockImplementation()!;
+      fence.codex.startSession.mockImplementationOnce((input) =>
+        Deferred.succeed(reached, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+          Effect.andThen(startNormally(input)),
+        ),
+      );
+      const recovery = yield* provider
+        .rollbackConversation({ threadId: RECOVERING, numTurns: 1 })
+        .pipe(Effect.exit, Effect.forkChild);
+      // It passed the fence and is opening the runtime when the move begins.
+      yield* Deferred.await(reached);
+      fence.fenced.add(RECOVERING);
+      const quiesce = yield* provider.quiesceThread(RECOVERING).pipe(Effect.forkChild);
+      for (let turn = 0; turn < 20; turn += 1) yield* Effect.yieldNow;
+      assert.isUndefined(quiesce.pollUnsafe());
+
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(recovery);
+      assert.deepEqual(yield* Fiber.join(quiesce), { confirmed: true });
+      const left = (yield* provider.listSessions()).filter(
+        (session) => session.threadId === RECOVERING,
+      );
+      assert.deepEqual(left, []);
+      // Any recovery from here is refused.
+      const later = yield* provider
+        .rollbackConversation({ threadId: RECOVERING, numTurns: 1 })
+        .pipe(Effect.result);
+      assert.equal(later._tag, "Failure");
+      fence.fenced.delete(RECOVERING);
+    }),
+  );
 });

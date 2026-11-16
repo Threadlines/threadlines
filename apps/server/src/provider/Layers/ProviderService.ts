@@ -84,6 +84,8 @@ import { type EarlySessionEndReason, makeEarlySessionLedger } from "../earlySess
 const EARLY_SESSION_START_TIMEOUT = Duration.seconds(60);
 /** How often unused early sessions are checked for expiry. */
 const EARLY_SESSION_SWEEP_INTERVAL = Duration.seconds(30);
+/** How long quiesceThread waits for a start or recovery of the thread already under way. */
+const QUIESCE_START_WAIT = Duration.seconds(90);
 import { AnalyticsService } from "../../telemetry/Services/AnalyticsService.ts";
 import {
   analyticsAgentProperties,
@@ -745,7 +747,6 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     readonly binding: ProviderRuntimeBinding;
     readonly operation: string;
   }) {
-    yield* requireAdmission(input.operation, input.binding.threadId);
     const bindingInstanceId = yield* requireBindingInstanceId(input.operation, input.binding);
     yield* Effect.annotateCurrentSpan({
       "provider.operation": "recover-session",
@@ -758,6 +759,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     return yield* withEarlyGate(
       input.binding.threadId,
       Effect.gen(function* () {
+        // The fence is read holding the gate, so a recovery that waited on
+        // it while a move began is refused (quiesceThread waits for gates).
+        yield* requireAdmission(input.operation, input.binding.threadId);
         if (earlySessions.waiting(input.binding.threadId) === undefined) {
           earlySessions.forget(input.binding.threadId);
         }
@@ -3022,33 +3026,53 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             ),
           ),
       ).pipe(Effect.map((perAdapter) => perAdapter.flat()));
-      const live = yield* liveOfThread;
-      const ran = new Set<ProviderInstanceId>(live.map((entry) => entry.instanceId));
-      // Early starts still starting have no session to list yet. One whose
-      // agent already runs has what it started noted before it is ended; a
-      // listed session's stop notes its own (stopSessionCore).
-      const keys = new Set<ThreadId>(live.map((entry) => entry.key));
-      for (const rawKey of earlyStartRuns.keys()) {
-        if (!ofThread(rawKey)) continue;
-        const key = ThreadId.make(rawKey);
-        keys.add(key);
-        if (live.some((entry) => entry.key === key)) continue;
-        for (const [, adapter] of yield* getAdapterEntries) {
-          if (adapter.noteBeforeStop !== undefined) yield* adapter.noteBeforeStop(key);
-        }
-      }
+      const ran = new Set<ProviderInstanceId>();
       const problems: string[] = [];
-      for (const key of keys) {
-        yield* stopSession({ threadId: key }).pipe(
-          Effect.catchCause((cause) =>
-            Effect.sync(() => {
-              const error = Cause.squash(cause);
-              problems.push(
-                `stopping it failed (${error instanceof Error ? error.message : String(error)})`,
-              );
-            }),
-          ),
-        );
+      /** Stops every listed session of the thread, and its early starts. */
+      const stopWhatRuns = Effect.gen(function* () {
+        const live = yield* liveOfThread;
+        for (const entry of live) ran.add(entry.instanceId);
+        // Early starts still starting have no session to list yet. One whose
+        // agent already runs has what it started noted before it is ended; a
+        // listed session's stop notes its own (stopSessionCore).
+        const keys = new Set<ThreadId>(live.map((entry) => entry.key));
+        for (const rawKey of earlyStartRuns.keys()) {
+          if (!ofThread(rawKey)) continue;
+          const key = ThreadId.make(rawKey);
+          keys.add(key);
+          if (live.some((entry) => entry.key === key)) continue;
+          for (const [, adapter] of yield* getAdapterEntries) {
+            if (adapter.noteBeforeStop !== undefined) yield* adapter.noteBeforeStop(key);
+          }
+        }
+        for (const key of keys) {
+          yield* stopSession({ threadId: key }).pipe(
+            Effect.catchCause((cause) =>
+              Effect.sync(() => {
+                const error = Cause.squash(cause);
+                problems.push(
+                  `stopping it failed (${error instanceof Error ? error.message : String(error)})`,
+                );
+              }),
+            ),
+          );
+        }
+      });
+      yield* stopWhatRuns;
+      // A start or recovery that passed the fence before it went up holds
+      // its key's gate until its session is listed: wait for each, then stop
+      // what they opened. Any start from here is refused (it reads the fence
+      // holding the gate).
+      const inFlight = [...earlyGates.entries()]
+        .filter(([key]) => ofThread(key))
+        .map(([, gate]) => gate);
+      if (inFlight.length > 0) {
+        const settled = yield* Effect.forEach(inFlight, (gate) => Deferred.await(gate), {
+          concurrency: "unbounded",
+          discard: true,
+        }).pipe(Effect.timeoutOption(QUIESCE_START_WAIT));
+        if (Option.isNone(settled)) problems.push("a session of it is still starting");
+        yield* stopWhatRuns;
       }
       for (const entry of yield* liveOfThread) {
         problems.push(`${entry.adapter.provider} still lists its session`);
