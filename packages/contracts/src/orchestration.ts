@@ -883,8 +883,11 @@ export type ThreadMoveHold = typeof ThreadMoveHold.Type;
 export const ThreadPendingMove = Schema.Struct({
   requestId: ThreadMoveRequestId,
   target: ThreadMoveTarget,
-  /** The agent the other computer will run it with (its own instance id). */
-  agent: ModelSelection,
+  /**
+   * The agent the other computer will run it with (its own instance id).
+   * Absent: the one that computer suggests when the move starts.
+   */
+  agent: Schema.optional(ModelSelection),
   mode: ThreadPendingMoveMode,
   stage: ThreadPendingMoveStage,
   requestedAt: IsoDateTime,
@@ -4808,7 +4811,8 @@ const ThreadMoveQueueCommand = Schema.Struct({
   threadId: ThreadId,
   requestId: ThreadMoveRequestId,
   target: ThreadMoveTarget,
-  agent: ModelSelection,
+  /** Absent: the target's suggested agent, picked when the move starts. */
+  agent: Schema.optional(ModelSelection),
   mode: ThreadPendingMoveMode,
   requestedBy: ThreadMoveRequester,
   createdAt: IsoDateTime,

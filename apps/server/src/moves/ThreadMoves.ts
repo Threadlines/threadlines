@@ -103,14 +103,16 @@ export interface ThreadMovesShape {
   readonly checkQueue: (input: {
     readonly threadId: ThreadId;
     readonly targetEnvironmentId: EnvironmentId;
-    readonly agent: ModelSelection;
+    /** Absent: the target's suggested agent, checked when the move starts. */
+    readonly agent?: ModelSelection | undefined;
   }) => Effect.Effect<{ readonly label: string }, ThreadMoveError>;
   /** Starts the thread's queued move `requestId`, now that the thread is free and quiesced. */
   readonly startQueued: (input: {
     readonly threadId: ThreadId;
     readonly requestId: ThreadMoveRequestId;
     readonly targetEnvironmentId: EnvironmentId;
-    readonly agent: ModelSelection;
+    /** Absent: the agent the target suggests now. */
+    readonly agent?: ModelSelection | undefined;
   }) => Effect.Effect<QueuedMoveStart>;
   readonly cancel: (threadId: ThreadId) => Effect.Effect<void, ThreadMoveError>;
   /** Run unfinished moves to their end, and every move started from now on. */
@@ -146,6 +148,32 @@ function suggestAgent(
   return first !== undefined && model !== undefined
     ? ({ instanceId: first.instanceId, model } as ModelSelection)
     : undefined;
+}
+
+/**
+ * The target and agent a move names, checked against what the target said
+ * (`moves.preview`). No agent named: the one the target suggests for this
+ * thread, as the dialog picks it; none there means the move can't go.
+ */
+export function checkMoveTarget(
+  shown: ThreadMovePreview,
+  environmentId: EnvironmentId,
+  named: ModelSelection | undefined,
+):
+  | { readonly ok: ThreadMoveTargetPreview; readonly agent: ModelSelection }
+  | { readonly unreachable: ThreadMoveTargetPreview }
+  | { readonly refusal: string } {
+  const target = shown.targets.find((entry) => entry.environmentId === environmentId);
+  if (target === undefined) return { refusal: "This computer isn't linked to that one." };
+  if (target.refusalCode === "unreachable") return { unreachable: target };
+  if (target.refusal !== undefined) return { refusal: target.refusal };
+  const agent = named ?? target.suggestedAgent;
+  if (agent === undefined) return { refusal: `${target.label} has no agent ready.` };
+  const offered = target.agents.find((entry) => entry.instanceId === agent.instanceId);
+  if (offered === undefined || !offered.models.some((model) => model.model === agent.model)) {
+    return { refusal: `${target.label} has no such agent or model.` };
+  }
+  return { ok: target, agent };
 }
 
 const make = Effect.gen(function* () {
@@ -309,26 +337,6 @@ const make = Effect.gen(function* () {
   const preview: ThreadMovesShape["preview"] = (threadId) =>
     inspect(threadId).pipe(Effect.map((inspected) => inspected.preview));
 
-  /** The target and agent a move names, checked against what the target said. */
-  const checkTarget = (
-    shown: ThreadMovePreview,
-    environmentId: EnvironmentId,
-    agent: ModelSelection,
-  ):
-    | { readonly ok: ThreadMoveTargetPreview }
-    | { readonly unreachable: ThreadMoveTargetPreview }
-    | { readonly refusal: string } => {
-    const target = shown.targets.find((entry) => entry.environmentId === environmentId);
-    if (target === undefined) return { refusal: "This computer isn't linked to that one." };
-    if (target.refusalCode === "unreachable") return { unreachable: target };
-    if (target.refusal !== undefined) return { refusal: target.refusal };
-    const offered = target.agents.find((entry) => entry.instanceId === agent.instanceId);
-    if (offered === undefined || !offered.models.some((model) => model.model === agent.model)) {
-      return { refusal: `${target.label} has no such agent or model.` };
-    }
-    return { ok: target };
-  };
-
   /** Freezes the thread for its move (`thread.move.start`); the decider checks it again. */
   const dispatchStart = (
     threadId: ThreadId,
@@ -357,7 +365,7 @@ const make = Effect.gen(function* () {
       const shown = inspected.preview;
       if (shown.refusal !== undefined) return yield* moveError(shown.refusal);
       if (inspected.busy !== null) return yield* moveError(inspected.busy);
-      const checked = checkTarget(shown, input.targetEnvironmentId, input.agent);
+      const checked = checkMoveTarget(shown, input.targetEnvironmentId, input.agent);
       if ("refusal" in checked) return yield* moveError(checked.refusal);
       if ("unreachable" in checked) {
         return yield* moveError(checked.unreachable.refusal ?? "That computer can't be reached.");
@@ -372,7 +380,7 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const shown = (yield* inspect(input.threadId)).preview;
       if (shown.refusal !== undefined) return yield* moveError(shown.refusal);
-      const checked = checkTarget(shown, input.targetEnvironmentId, input.agent);
+      const checked = checkMoveTarget(shown, input.targetEnvironmentId, input.agent);
       if ("refusal" in checked) return yield* moveError(checked.refusal);
       return { label: "ok" in checked ? checked.ok.label : checked.unreachable.label };
     });
@@ -385,7 +393,7 @@ const make = Effect.gen(function* () {
       }
       const shown = inspected.success.preview;
       if (shown.refusal !== undefined) return { kind: "blocked", words: shown.refusal } as const;
-      const checked = checkTarget(shown, input.targetEnvironmentId, input.agent);
+      const checked = checkMoveTarget(shown, input.targetEnvironmentId, input.agent);
       if ("refusal" in checked) return { kind: "blocked", words: checked.refusal } as const;
       if ("unreachable" in checked) {
         return {
@@ -396,7 +404,7 @@ const make = Effect.gen(function* () {
       const started = yield* dispatchStart(
         input.threadId,
         checked.ok,
-        input.agent,
+        checked.agent,
         input.requestId,
       ).pipe(Effect.result);
       return started._tag === "Success"

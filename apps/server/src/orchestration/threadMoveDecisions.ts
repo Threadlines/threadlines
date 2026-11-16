@@ -593,7 +593,7 @@ export function decideMoveQueue(
       pendingMove: {
         requestId: command.requestId,
         target: command.target,
-        agent: command.agent,
+        ...(command.agent !== undefined ? { agent: command.agent } : {}),
         mode: command.mode,
         stage: command.mode === "stop-now" ? "quiescing" : "waiting",
         requestedAt: command.createdAt,

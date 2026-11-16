@@ -94,8 +94,12 @@ export type ThreadMoveCancelInput = typeof ThreadMoveCancelInput.Type;
 export const ThreadMoveQueueInput = Schema.Struct({
   threadId: ThreadId,
   targetEnvironmentId: EnvironmentId,
-  /** One of the target's agents, by its own instance id. */
-  agent: ModelSelection,
+  /**
+   * One of the target's agents, by its own instance id. Absent: the agent
+   * the target suggests when the move starts (as the dialog picks it), so a
+   * move to a computer that is offline now still gets one.
+   */
+  agent: Schema.optional(ModelSelection),
   mode: ThreadPendingMoveMode,
 });
 export type ThreadMoveQueueInput = typeof ThreadMoveQueueInput.Type;

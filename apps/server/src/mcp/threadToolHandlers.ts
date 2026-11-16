@@ -45,7 +45,6 @@ import {
   type ServerProvider,
   ThreadId,
   type ThreadMoveError,
-  type ThreadMovePreview,
   type ThreadMoveQueueInput,
   type ThreadMoveRequester,
   TurnId,
@@ -152,9 +151,8 @@ export interface ThreadToolDeps {
   readonly moves?: ThreadToolMoves;
 }
 
-/** What `thread_move` needs of the moves (ThreadMoves.preview, MoveQueue.queue). */
+/** What `thread_move` needs of the moves (MoveQueue.queue, which checks the target). */
 export interface ThreadToolMoves {
-  readonly preview: (threadId: ThreadId) => Effect.Effect<ThreadMovePreview, ThreadMoveError>;
   readonly queue: (
     input: ThreadMoveQueueInput & { readonly requestedBy: ThreadMoveRequester },
   ) => Effect.Effect<unknown, ThreadMoveError>;
@@ -2092,34 +2090,19 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
       ) {
         return { outcome: "queued", detail: queuedDetail } satisfies ThreadMoveResult;
       }
-      const preview = yield* deps.moves.preview(thread.id).pipe(Effect.result);
-      if (preview._tag === "Failure") {
-        return { outcome: "refused", detail: preview.failure.detail } satisfies ThreadMoveResult;
-      }
-      if (preview.success.refusal !== undefined) {
-        return { outcome: "refused", detail: preview.success.refusal } satisfies ThreadMoveResult;
-      }
-      const target = preview.success.targets.find(
-        (entry) => entry.environmentId === computer.environmentId,
-      );
+      // No agent named: the one that computer suggests when the move starts.
       const agent: ModelSelection | undefined =
         input.agent !== undefined
           ? ({
               instanceId: ProviderInstanceId.make(input.agent.instanceId.trim()),
               model: input.agent.model.trim(),
             } as ModelSelection)
-          : target?.suggestedAgent;
-      if (agent === undefined) {
-        return {
-          outcome: "refused",
-          detail: `${computer.label} can't be reached right now, so there's no agent to suggest there. Name one of its agents from thread_agents' \`computers\`, or try again once it connects.`,
-        } satisfies ThreadMoveResult;
-      }
+          : undefined;
       const queued = yield* deps.moves
         .queue({
           threadId: thread.id,
           targetEnvironmentId: computer.environmentId,
-          agent,
+          ...(agent !== undefined ? { agent } : {}),
           mode: "when-done",
           requestedBy: { kind: "agent", turnId: latched.turnId },
         })

@@ -383,6 +383,7 @@ export const makeMoveQueue = (
           // The stop is still landing in the projection; its event looks again.
           return yield* schedule(threadId, retryDelay(0));
         }
+        // No agent named: the target's suggestion now, or it can't go.
         const outcome: QueuedMoveStart = yield* deps.startQueued({
           threadId,
           requestId,
@@ -426,7 +427,7 @@ export const makeMoveQueue = (
             threadId: input.threadId,
             requestId,
             target: { environmentId: input.targetEnvironmentId, label },
-            agent: input.agent,
+            ...(input.agent !== undefined ? { agent: input.agent } : {}),
             mode: input.mode,
             requestedBy: input.requestedBy ?? { kind: "user" },
             createdAt: yield* nowIso,

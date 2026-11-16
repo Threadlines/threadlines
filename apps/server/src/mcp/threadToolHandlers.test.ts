@@ -1386,24 +1386,10 @@ describe("thread tools across linked computers", () => {
 });
 
 describe("thread_move", () => {
-  /** Moves that record what was queued, to a Mac mini that suggests its Claude. */
+  /** Moves that record what was queued. */
   const fakeMoves = () => {
     const queued: Array<Parameters<ThreadToolMoves["queue"]>[0]> = [];
     const moves: ThreadToolMoves = {
-      preview: () =>
-        Effect.succeed({
-          targets: [
-            {
-              environmentId: MAC_MINI,
-              label: "Mac mini",
-              agents: MAC_DESCRIPTOR.agents,
-              suggestedAgent: {
-                instanceId: ProviderInstanceId.make("mac-claude"),
-                model: "opus-5-5",
-              },
-            },
-          ],
-        }),
       queue: (input) =>
         Effect.sync(() => {
           queued.push(input);
@@ -1427,15 +1413,28 @@ describe("thread_move", () => {
         detail:
           "Queued: this thread moves to Mac mini when your turn ends. Finish your reply; don't start more work.",
       });
+      // No agent named: the one Mac mini suggests when the move starts.
       expect(queued).toEqual([
         {
           threadId: PARENT,
           targetEnvironmentId: MAC_MINI,
-          agent: { instanceId: "mac-claude", model: "opus-5-5" },
           mode: "when-done",
           requestedBy: { kind: "agent", turnId: TURN },
         },
       ]);
+
+      // A named agent goes with it.
+      const named = fakeMoves();
+      const again = yield* makeTools({
+        links: fakeLinks(),
+        moves: named.moves,
+        caller: makeThread({ deletedAt: null }),
+      });
+      yield* again.handlers.thread_move(mainCaller(), {
+        computer: "Mac mini",
+        agent: { instanceId: "mac-codex", model: "gpt-6-astra" },
+      });
+      expect(named.queued[0]?.agent).toEqual({ instanceId: "mac-codex", model: "gpt-6-astra" });
     }),
   );
 
