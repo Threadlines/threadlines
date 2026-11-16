@@ -658,6 +658,20 @@ html[data-glass] [data-slot="app-panel"] {
     border-top-left-radius: calc(var(--app-radius-large) - 1px);
   }
 }
+/* Forced colors (Windows high contrast) drops box shadows, and the corner
+   piece's shadow is what paints the frame outside the curve. Without it the
+   list's edge would show past the curve as it slides, so there too the pages
+   are clipped round. */
+@media (forced-colors: active) {
+  [data-slot="app-panel-corner"] {
+    display: none;
+  }
+  [data-slot="app-panel"] {
+    @variant desktop {
+      border-top-left-radius: calc(var(--app-radius-large) - 1px);
+    }
+  }
+}
 
 /* Glass (docs/design/custom-themes.md, "Glass in the app"): only while the
    active theme has live art, set on <html> by theme/themeApply.ts. The art
