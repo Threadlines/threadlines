@@ -6133,13 +6133,11 @@ describe("ClaudeAdapterLive", () => {
           reported.closeCalls += 1;
           Effect.runSync(agent.stop);
         };
-        const layerFor = (createQuery: ClaudeAdapterLiveOptions["createQuery"]) =>
+        const layerFor = (createQuery: NonNullable<ClaudeAdapterLiveOptions["createQuery"]>) =>
           Layer.effect(
             ClaudeAdapter,
             Effect.gen(function* () {
-              return yield* makeClaudeAdapter(decodeClaudeSettings({}), {
-                ...(createQuery !== undefined ? { createQuery } : {}),
-              });
+              return yield* makeClaudeAdapter(decodeClaudeSettings({}), { createQuery });
             }),
           ).pipe(
             Layer.provideMerge(ServerConfig.layerTest("/tmp/claude-adapter-test", "/tmp")),
