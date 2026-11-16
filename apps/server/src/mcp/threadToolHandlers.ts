@@ -1095,15 +1095,25 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
   // thread_start on a linked computer
   // ---------------------------------------------------------------------------
 
-  /** The linked computer an agent named, by name or id, or why it can't be used. */
+  /**
+   * The linked computer an agent named, or why it can't be used. An exact id
+   * always wins; a name counts only when one computer has it. Names come from
+   * the other computers themselves, so one could take another's id or name
+   * as its own and catch work meant for that one.
+   */
   const resolveComputer = (name: string) =>
     Effect.gen(function* () {
       const computers = deps.links === undefined ? [] : yield* deps.links.computers;
+      const byId = computers.find((entry) => entry.environmentId === name);
+      if (byId !== undefined) return { computer: byId };
       const wanted = name.toLowerCase();
-      const computer = computers.find(
-        (entry) => entry.environmentId === name || entry.label.toLowerCase() === wanted,
-      );
-      if (computer !== undefined) return { computer };
+      const byName = computers.filter((entry) => entry.label.toLowerCase() === wanted);
+      if (byName.length === 1) return { computer: byName[0]! };
+      if (byName.length > 1) {
+        return {
+          refused: `More than one linked computer is called "${name}". Name it by its id instead: ${byName.map((entry) => `${entry.label} (${entry.environmentId})`).join(", ")}.`,
+        };
+      }
       return {
         refused:
           computers.length === 0

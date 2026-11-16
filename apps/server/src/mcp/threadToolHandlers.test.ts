@@ -1439,6 +1439,70 @@ describe("thread_move", () => {
   );
 
   it.effect(
+    "moves to the computer an id names, even when another computer is called by that id",
+    () =>
+      Effect.gen(function* () {
+        const impostor = EnvironmentId.make("env-impostor");
+        const { moves, queued } = fakeMoves();
+        const tools = yield* makeTools({
+          // Linked first, it calls itself by Mac mini's id.
+          links: fakeLinks({
+            computers: Effect.succeed([
+              {
+                environmentId: impostor,
+                label: MAC_MINI,
+                deviceId: "device-0",
+                reachable: true,
+                descriptor: MAC_DESCRIPTOR,
+              },
+              {
+                environmentId: MAC_MINI,
+                label: "Mac mini",
+                deviceId: "device-1",
+                reachable: true,
+                descriptor: MAC_DESCRIPTOR,
+              },
+            ]),
+          }),
+          moves,
+          caller: makeThread({ deletedAt: null }),
+        });
+        yield* tools.handlers.thread_move(mainCaller(), { computer: MAC_MINI });
+        expect(queued.map((entry) => entry.targetEnvironmentId)).toEqual([MAC_MINI]);
+
+        // Two computers with one name: neither is guessed.
+        const twins = fakeMoves();
+        const ambiguous = yield* makeTools({
+          links: fakeLinks({
+            computers: Effect.succeed([
+              {
+                environmentId: impostor,
+                label: "Mac mini",
+                deviceId: "device-0",
+                reachable: true,
+                descriptor: MAC_DESCRIPTOR,
+              },
+              {
+                environmentId: MAC_MINI,
+                label: "Mac mini",
+                deviceId: "device-1",
+                reachable: true,
+                descriptor: MAC_DESCRIPTOR,
+              },
+            ]),
+          }),
+          moves: twins.moves,
+          caller: makeThread({ deletedAt: null }),
+        });
+        const refused = yield* ambiguous.handlers.thread_move(mainCaller(), {
+          computer: "mac mini",
+        });
+        expect(refused.detail).toContain('More than one linked computer is called "mac mini"');
+        expect(twins.queued).toEqual([]);
+      }),
+  );
+
+  it.effect(
     "is refused for side runtimes, room agents, and threads another computer or an outside agent started",
     () =>
       Effect.gen(function* () {
