@@ -287,6 +287,18 @@ export function describeThreadMoveWaits(waits: ReadonlyArray<ThreadMoveWait>): s
   return `${lead} ${follow}`;
 }
 
+/**
+ * Why "Stop the agent and move now" isn't offered, or null when it is: a
+ * command from the thread runs in the user's own terminal, which nothing
+ * here stops. The server refuses that move with these same words
+ * (threadMoveDecisions.ts, decideMoveQueue).
+ */
+export function threadMoveStopNowRefusal(waits: ReadonlyArray<ThreadMoveWait>): string | null {
+  return waits.some((wait) => wait.code === "command_run")
+    ? "A command from this thread is running in your terminal. Stop it there, or move the thread when it's done."
+    : null;
+}
+
 /** Why a thread whose move waits takes no new message: the send button's words. */
 export function pendingMoveSendBlockReason(pendingMove: ThreadPendingMove): string {
   return `This thread is waiting to move to ${pendingMove.target.label}. Cancel the move to keep working here.`;

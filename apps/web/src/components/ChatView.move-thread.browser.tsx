@@ -508,6 +508,10 @@ describe("ChatView (full app): moving a thread to another computer", () => {
     );
     const macMini = FLEET_MOVE_PREVIEW.targets[1]!;
     const queues: Array<NormalizedWsRpcRequestBody> = [];
+    let waitsFor: NonNullable<ThreadMovePreview["waitsFor"]> = [
+      { code: "turn", words: "when this turn ends" },
+      { code: "background", words: "when its background work finishes" },
+    ];
     const mounted = await mountChatView({
       viewport: WIDE_FOOTER_VIEWPORT,
       snapshot: createSnapshotForTargetUser({
@@ -519,10 +523,7 @@ describe("ChatView (full app): moving a thread to another computer", () => {
         if (body._tag === WS_METHODS.movesPreview) {
           return {
             ...FLEET_MOVE_PREVIEW,
-            waitsFor: [
-              { code: "turn", words: "when this turn ends" },
-              { code: "background", words: "when its background work finishes" },
-            ],
+            waitsFor,
             targets: [macMini],
           } satisfies ThreadMovePreview;
         }
@@ -583,6 +584,29 @@ describe("ChatView (full app): moving a thread to another computer", () => {
           mode: "stop-now",
         }),
       ]);
+
+      // A command runs in the user's terminal, which nothing here stops:
+      // stopping isn't offered, says why, and waiting stays picked.
+      waitsFor = [{ code: "command_run", words: "when its command finishes running" }];
+      await openCommandPaletteFromTrigger();
+      await page
+        .getByTestId("command-palette")
+        .getByText("Move to another computer", { exact: true })
+        .click();
+      await expect
+        .element(dialog.getByRole("radio", { name: /Stop the agent and move now/u }))
+        .toBeDisabled();
+      await expect
+        .element(dialog.getByTestId("thread-move-mode-stop-now-detail"))
+        .toHaveTextContent(
+          "A command from this thread is running in your terminal. Stop it there, or move the thread when it's done.",
+        );
+      await expect
+        .element(dialog.getByRole("radio", { name: /Move when the agent finishes/u }))
+        .toBeChecked();
+      await expect
+        .element(dialog.getByTestId("thread-move-confirm"))
+        .toHaveTextContent("Move when it finishes");
     } finally {
       await mounted.cleanup();
     }

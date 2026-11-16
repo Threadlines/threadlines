@@ -25,6 +25,7 @@ import {
   useProjectSetupComputerReady,
   useProjectSetupTargets,
 } from "../environments/projectSetups/projectSetupTargets";
+import { cn } from "../lib/utils";
 import { selectSidebarThreadSummaryByRef, useStore } from "../store";
 import {
   describeThreadMoveWaits,
@@ -34,6 +35,7 @@ import {
   pickDefaultMoveTarget,
   threadMoveAgentKey,
   threadMoveAgentSelection,
+  threadMoveStopNowRefusal,
   type ThreadMoveAgentChoice,
 } from "../threadMove";
 import { openProjectSetupDialog } from "./ProjectSetupDialog";
@@ -80,7 +82,7 @@ export function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThread
   const [previewState, setPreviewState] = useState<PreviewState>({ status: "loading" });
   const [targetId, setTargetId] = useState<EnvironmentId | null>(null);
   const [agent, setAgent] = useState<ThreadMoveAgentChoice | null>(null);
-  const [mode, setMode] = useState<ThreadPendingMoveMode>("when-done");
+  const [pickedMode, setMode] = useState<ThreadPendingMoveMode>("when-done");
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
   // Asked again when a computer that lacked the project has been set up.
@@ -133,6 +135,9 @@ export function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThread
   // Still working: the move can wait for the agent to finish, or stop it first.
   const waits = queues ? (preview?.waitsFor ?? []) : [];
   const working = waits.length > 0;
+  // Stopping isn't offered while a command runs in the user's terminal.
+  const stopNowRefusal = threadMoveStopNowRefusal(waits);
+  const mode: ThreadPendingMoveMode = stopNowRefusal === null ? pickedMode : "when-done";
   // Out of reach: a queued move to it waits for it to connect, and runs
   // with the agent it suggests then (no agent sent).
   const unreachable = queues && target?.refusalCode === "unreachable";
@@ -292,6 +297,7 @@ export function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThread
                     label={target.label}
                     waits={waits}
                     mode={mode}
+                    stopNowRefusal={stopNowRefusal}
                     disabled={starting}
                     onChange={setMode}
                   />
@@ -344,12 +350,15 @@ function MoveWhenField({
   label,
   waits,
   mode,
+  stopNowRefusal,
   disabled,
   onChange,
 }: {
   readonly label: string;
   readonly waits: ReadonlyArray<ThreadMoveWait>;
   readonly mode: ThreadPendingMoveMode;
+  /** Why stopping isn't offered now (threadMoveStopNowRefusal); null when it is. */
+  readonly stopNowRefusal: string | null;
   readonly disabled: boolean;
   readonly onChange: (mode: ThreadPendingMoveMode) => void;
 }) {
@@ -357,16 +366,20 @@ function MoveWhenField({
     readonly value: ThreadPendingMoveMode;
     readonly label: string;
     readonly detail: string;
+    /** Why it can't be picked, under its own words; null when it can. */
+    readonly refusal: string | null;
   }> = [
     {
       value: "when-done",
       label: "Move when the agent finishes",
       detail: `Waits for the agent to finish, then moves to ${label}.`,
+      refusal: null,
     },
     {
       value: "stop-now",
       label: "Stop the agent and move now",
       detail: "Stops the agent and anything it started, then moves.",
+      refusal: stopNowRefusal,
     },
   ];
   return (
@@ -384,13 +397,29 @@ function MoveWhenField({
         {choices.map((choice) => (
           <label
             key={choice.value}
-            className="flex cursor-pointer items-start gap-2.5 rounded-lg px-1 py-1.5"
+            className={cn(
+              "flex items-start gap-2.5 rounded-lg px-1 py-1.5",
+              choice.refusal === null ? "cursor-pointer" : "cursor-default",
+            )}
             data-testid={`thread-move-mode-${choice.value}`}
           >
-            <Radio value={choice.value} className="mt-0.5" />
+            <Radio value={choice.value} disabled={choice.refusal !== null} className="mt-0.5" />
             <span className="min-w-0">
-              <span className="block text-[13.5px] font-medium">{choice.label}</span>
-              <span className="block text-[12.5px] text-muted-foreground">{choice.detail}</span>
+              <span
+                className={cn(
+                  "block text-[13.5px] font-medium",
+                  choice.refusal !== null && "text-muted-foreground",
+                )}
+              >
+                {choice.label}
+              </span>
+              {/* Why it can't be picked, in place of what it would do. */}
+              <span
+                className="block text-[12.5px] text-muted-foreground"
+                data-testid={`thread-move-mode-${choice.value}-detail`}
+              >
+                {choice.refusal ?? choice.detail}
+              </span>
             </span>
           </label>
         ))}
