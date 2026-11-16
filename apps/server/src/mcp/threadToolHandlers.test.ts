@@ -1438,68 +1438,96 @@ describe("thread_move", () => {
     }),
   );
 
-  it.effect(
-    "moves to the computer an id names, even when another computer is called by that id",
-    () =>
-      Effect.gen(function* () {
-        const impostor = EnvironmentId.make("env-impostor");
-        const { moves, queued } = fakeMoves();
-        const tools = yield* makeTools({
-          // Linked first, it calls itself by Mac mini's id.
-          links: fakeLinks({
-            computers: Effect.succeed([
-              {
-                environmentId: impostor,
-                label: MAC_MINI,
-                deviceId: "device-0",
-                reachable: true,
-                descriptor: MAC_DESCRIPTOR,
-              },
-              {
-                environmentId: MAC_MINI,
-                label: "Mac mini",
-                deviceId: "device-1",
-                reachable: true,
-                descriptor: MAC_DESCRIPTOR,
-              },
-            ]),
-          }),
-          moves,
-          caller: makeThread({ deletedAt: null }),
-        });
-        yield* tools.handlers.thread_move(mainCaller(), { computer: MAC_MINI });
-        expect(queued.map((entry) => entry.targetEnvironmentId)).toEqual([MAC_MINI]);
+  it.effect("never guesses between computers whose ids and names collide", () =>
+    Effect.gen(function* () {
+      const impostor = EnvironmentId.make("env-impostor");
+      const { moves, queued } = fakeMoves();
+      const tools = yield* makeTools({
+        // Linked first, it calls itself by Mac mini's id.
+        links: fakeLinks({
+          computers: Effect.succeed([
+            {
+              environmentId: impostor,
+              label: MAC_MINI,
+              deviceId: "device-0",
+              reachable: true,
+              descriptor: MAC_DESCRIPTOR,
+            },
+            {
+              environmentId: MAC_MINI,
+              label: "Mac mini",
+              deviceId: "device-1",
+              reachable: true,
+              descriptor: MAC_DESCRIPTOR,
+            },
+          ]),
+        }),
+        moves,
+        caller: makeThread({ deletedAt: null }),
+      });
+      // One computer calls itself by another's id: neither is picked.
+      const byId = yield* tools.handlers.thread_move(mainCaller(), { computer: MAC_MINI });
+      expect(byId.detail).toContain("matches more than one linked computer");
+      expect(queued).toEqual([]);
 
-        // Two computers with one name: neither is guessed.
-        const twins = fakeMoves();
-        const ambiguous = yield* makeTools({
-          links: fakeLinks({
-            computers: Effect.succeed([
-              {
-                environmentId: impostor,
-                label: "Mac mini",
-                deviceId: "device-0",
-                reachable: true,
-                descriptor: MAC_DESCRIPTOR,
-              },
-              {
-                environmentId: MAC_MINI,
-                label: "Mac mini",
-                deviceId: "device-1",
-                reachable: true,
-                descriptor: MAC_DESCRIPTOR,
-              },
-            ]),
-          }),
-          moves: twins.moves,
-          caller: makeThread({ deletedAt: null }),
-        });
-        const refused = yield* ambiguous.handlers.thread_move(mainCaller(), {
-          computer: "mac mini",
-        });
-        expect(refused.detail).toContain('More than one linked computer is called "mac mini"');
-        expect(twins.queued).toEqual([]);
-      }),
+      // One computer's id is another's name: neither is picked.
+      const mirrored = fakeMoves();
+      const mirror = yield* makeTools({
+        links: fakeLinks({
+          computers: Effect.succeed([
+            {
+              environmentId: MAC_MINI,
+              label: "Mac mini",
+              deviceId: "device-1",
+              reachable: true,
+              descriptor: MAC_DESCRIPTOR,
+            },
+            {
+              environmentId: EnvironmentId.make("Mac mini"),
+              label: "Studio",
+              deviceId: "device-2",
+              reachable: true,
+              descriptor: MAC_DESCRIPTOR,
+            },
+          ]),
+        }),
+        moves: mirrored.moves,
+        caller: makeThread({ deletedAt: null }),
+      });
+      const byName = yield* mirror.handlers.thread_move(mainCaller(), { computer: "Mac mini" });
+      expect(byName.detail).toContain("matches more than one linked computer");
+      expect(mirrored.queued).toEqual([]);
+
+      // Two computers with one name: neither is guessed.
+      const twins = fakeMoves();
+      const ambiguous = yield* makeTools({
+        links: fakeLinks({
+          computers: Effect.succeed([
+            {
+              environmentId: impostor,
+              label: "Mac mini",
+              deviceId: "device-0",
+              reachable: true,
+              descriptor: MAC_DESCRIPTOR,
+            },
+            {
+              environmentId: MAC_MINI,
+              label: "Mac mini",
+              deviceId: "device-1",
+              reachable: true,
+              descriptor: MAC_DESCRIPTOR,
+            },
+          ]),
+        }),
+        moves: twins.moves,
+        caller: makeThread({ deletedAt: null }),
+      });
+      const refused = yield* ambiguous.handlers.thread_move(mainCaller(), {
+        computer: "mac mini",
+      });
+      expect(refused.detail).toContain("matches more than one linked computer");
+      expect(twins.queued).toEqual([]);
+    }),
   );
 
   it.effect(

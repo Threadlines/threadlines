@@ -1096,22 +1096,23 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
   // ---------------------------------------------------------------------------
 
   /**
-   * The linked computer an agent named, or why it can't be used. An exact id
-   * always wins; a name counts only when one computer has it. Names come from
-   * the other computers themselves, so one could take another's id or name
-   * as its own and catch work meant for that one.
+   * The linked computer an agent named, by id or name, or why it can't be
+   * used. Computers choose their own ids and names, so one could take
+   * another's id or name as its own: a computer is picked only when it is the
+   * one computer whose id or name matches. Anything else is refused, never
+   * guessed, so work can't be sent to a computer the agent didn't mean.
    */
   const resolveComputer = (name: string) =>
     Effect.gen(function* () {
       const computers = deps.links === undefined ? [] : yield* deps.links.computers;
-      const byId = computers.find((entry) => entry.environmentId === name);
-      if (byId !== undefined) return { computer: byId };
       const wanted = name.toLowerCase();
-      const byName = computers.filter((entry) => entry.label.toLowerCase() === wanted);
-      if (byName.length === 1) return { computer: byName[0]! };
-      if (byName.length > 1) {
+      const matches = computers.filter(
+        (entry) => entry.environmentId === name || entry.label.toLowerCase() === wanted,
+      );
+      if (matches.length === 1) return { computer: matches[0]! };
+      if (matches.length > 1) {
         return {
-          refused: `More than one linked computer is called "${name}". Name it by its id instead: ${byName.map((entry) => `${entry.label} (${entry.environmentId})`).join(", ")}.`,
+          refused: `"${name}" matches more than one linked computer (${matches.map((entry) => `${entry.label}, id ${entry.environmentId}`).join("; ")}), so nothing was started or moved. Ask the user which one they mean.`,
         };
       }
       return {
