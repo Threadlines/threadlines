@@ -111,6 +111,7 @@ import {
 } from "../claudeLongRunningTool.ts";
 import { CLAUDE_PREVIEW_PANEL_INSTRUCTIONS } from "../previewPanelInstructions.ts";
 import { nonEmptyTrimmed } from "../providerSnapshot.ts";
+import { makeAgentProcessLedger, realProcessProbe } from "../agentProcessLedger.ts";
 import { httpStatusFailureCategory, withFailureCategory } from "../providerFailureCategory.ts";
 import {
   buildAgentPageInstructions,
@@ -585,6 +586,12 @@ interface ClaudeSessionContext {
   session: ProviderSession;
   readonly promptQueue: Queue.Queue<PromptQueueItem>;
   readonly query: ClaudeQueryRuntime;
+  /**
+   * The Claude Code process the SDK started, as it reported it, with its
+   * exit: completed once the process is seen gone after a stop. Undefined
+   * when the SDK didn't say (a test double, or an SDK that dropped the hook).
+   */
+  readonly cli: { readonly pid: number; readonly exited: Deferred.Deferred<void> } | undefined;
   streamFiber: Fiber.Fiber<void, Error> | undefined;
   readonly startedAt: string;
   // The access level's permission mode on the current model; plan turns
@@ -2847,6 +2854,9 @@ const CLAUDE_GOAL_REPLY_TIMEOUT = Duration.seconds(30);
 const CLAUDE_GOAL_WATCH_INTERVAL = Duration.millis(1_500);
 /** How long after the model proposes a goal its record may still land. */
 const CLAUDE_GOAL_PROPOSAL_WATCH_MS = 60_000;
+/** How long a stopped session's Claude Code process is watched for its exit, and how often. */
+const CLI_EXIT_WATCH_MS = 15_000;
+const CLI_EXIT_POLL_MS = 100;
 /** How long "steer now" waits for the SDK to take the steer before it moves
  *  running work to the background anyway. */
 const CLAUDE_STEER_TAKEN_TIMEOUT = Duration.seconds(2);
@@ -4291,6 +4301,26 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       >(undefined));
 
   const sessions = new Map<ThreadId, ClaudeSessionContext>();
+  /** Each Claude Code process it started, until proven gone (confirmThreadStopped). */
+  const processes = yield* makeAgentProcessLedger();
+  /** Session keys whose process the SDK never reported: their stop can't be proven. */
+  const unreportedProcesses = new Set<ThreadId>();
+  const adapterScope = yield* Effect.scope;
+  /**
+   * Waits (bounded) for a stopped session's Claude Code process to go: the
+   * SDK ends it on timers of its own (SIGTERM after 2 s, SIGKILL 5 s later)
+   * and gives no exit to await, so its pid is watched, only after the stop.
+   */
+  const watchCliExit = (cli: NonNullable<ClaudeSessionContext["cli"]>) =>
+    Effect.gen(function* () {
+      for (let waited = 0; waited < CLI_EXIT_WATCH_MS; waited += CLI_EXIT_POLL_MS) {
+        if (!realProcessProbe.exists(cli.pid)) {
+          yield* Deferred.succeed(cli.exited, undefined);
+          return;
+        }
+        yield* Effect.sleep(Duration.millis(CLI_EXIT_POLL_MS));
+      }
+    }).pipe(Effect.forkIn(adapterScope), Effect.asVoid);
   /**
    * Sessions Claude Code refused to start, by id. A thread keeps the id of
    * its session for the next start to resume, and one that never began left
@@ -8517,6 +8547,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         emitRuntimeError(context, "Failed to close Claude runtime query.", cause),
       ),
     );
+    if (context.cli !== undefined) yield* watchCliExit(context.cli);
 
     const updatedAt = yield* nowIso;
     context.session = {
@@ -9793,11 +9824,22 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         "claude.query.path_to_executable": claudeBinaryPath,
       });
 
+      // The SDK says which process it started (an option its types leave
+      // out), so a stop can be proven: docs/design/fleet.md, Part 3b.
+      let reportedPid: number | undefined;
+      const reportingOptions: ClaudeQueryOptions & {
+        readonly onProcessSpawned: (pid: number) => void;
+      } = {
+        ...queryOptions,
+        onProcessSpawned: (pid) => {
+          reportedPid = pid;
+        },
+      };
       const queryRuntime = yield* Effect.try({
         try: () =>
           createQuery({
             prompt,
-            options: queryOptions,
+            options: reportingOptions,
           }),
         catch: (cause) =>
           new ProviderAdapterProcessError({
@@ -9835,10 +9877,26 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         updatedAt: startedAt,
       };
 
+      const cli =
+        reportedPid === undefined
+          ? undefined
+          : { pid: reportedPid, exited: yield* Deferred.make<void>() };
+      if (cli === undefined) {
+        unreportedProcesses.add(threadId);
+      } else {
+        unreportedProcesses.delete(threadId);
+        yield* processes.track(threadId, {
+          pid: cli.pid,
+          exited: Deferred.await(cli.exited),
+          // The SDK spawns it in this server's own process group.
+          ownGroup: false,
+        });
+      }
       const context: ClaudeSessionContext = {
         session,
         promptQueue,
         query: queryRuntime,
+        cli,
         streamFiber: undefined,
         startedAt,
         basePermissionMode: permissionMode,
@@ -10976,6 +11034,14 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     listSessions,
     hasSession,
     stopAll,
+    noteBeforeStop: processes.beforeStop,
+    confirmThreadStopped: (threadId) =>
+      [...unreportedProcesses].some((key) => parseSessionKey(key).threadId === threadId)
+        ? Effect.succeed({
+            confirmed: false,
+            reason: "Claude Code didn't report which process it started",
+          } as const)
+        : processes.confirm(threadId),
     get streamEvents() {
       return Stream.fromQueue(runtimeEventQueue);
     },

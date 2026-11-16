@@ -7,6 +7,7 @@ import {
   type PeerDescriptor,
   EMPTY_CHILD_REQUEST_STATE,
   MessageId,
+  OutsideAgentConnectionId,
   type OrchestrationChildRequest,
   type OrchestrationCommand,
   type OrchestrationMessage,
@@ -27,7 +28,11 @@ import type { McpInvocationScope } from "./McpSessionRegistry.ts";
 import { makeRoomRequestRegistry } from "./roomRequests.ts";
 import { roomToolsFor, THREAD_TOOL_NAMES } from "./roomToolAccess.ts";
 import { linkThreadId } from "../links/linkIds.ts";
-import { makeThreadToolHandlers, type ThreadToolLinks } from "./threadToolHandlers.ts";
+import {
+  makeThreadToolHandlers,
+  type ThreadToolLinks,
+  type ThreadToolMoves,
+} from "./threadToolHandlers.ts";
 
 const PROJECT = ProjectId.make("project-1");
 const PARENT = ThreadId.make("0f8f5a52-4d0e-4c1b-9d56-1e7c1f9b7a01");
@@ -204,6 +209,7 @@ const makeTools = (options: {
   readonly shareWorktrees?: boolean;
   /** The branch checked out in a folder; any other folder has none. */
   readonly branches?: Readonly<Record<string, string>>;
+  readonly moves?: ThreadToolMoves;
 }) =>
   Effect.gen(function* () {
     let caller = options.caller ?? makeThread();
@@ -282,6 +288,7 @@ const makeTools = (options: {
       },
       requests: makeRoomRequestRegistry(yield* Effect.scope),
       ...(options.links !== undefined ? { links: options.links } : {}),
+      ...(options.moves !== undefined ? { moves: options.moves } : {}),
     });
     return {
       handlers,
@@ -1380,5 +1387,206 @@ describe("thread tools across linked computers", () => {
       expect(started.outcome).toBe("not_allowed");
       expect(tools.dispatched).toEqual([]);
     }),
+  );
+});
+
+describe("thread_move", () => {
+  /** Moves that record what was queued. */
+  const fakeMoves = () => {
+    const queued: Array<Parameters<ThreadToolMoves["queue"]>[0]> = [];
+    const moves: ThreadToolMoves = {
+      queue: (input) =>
+        Effect.sync(() => {
+          queued.push(input);
+          return { requestId: "request-1" };
+        }),
+    };
+    return { moves, queued };
+  };
+
+  it.effect("queues the caller's own thread to move when its turn ends", () =>
+    Effect.gen(function* () {
+      const { moves, queued } = fakeMoves();
+      const tools = yield* makeTools({
+        links: fakeLinks(),
+        moves,
+        caller: makeThread({ deletedAt: null }),
+      });
+      const result = yield* tools.handlers.thread_move(mainCaller(), { computer: "mac mini" });
+      expect(result).toEqual({
+        outcome: "queued",
+        detail:
+          "Queued: this thread moves to Mac mini when your turn ends. Finish your reply; don't start more work.",
+      });
+      // No agent named: the one Mac mini suggests when the move starts.
+      expect(queued).toEqual([
+        {
+          threadId: PARENT,
+          targetEnvironmentId: MAC_MINI,
+          mode: "when-done",
+          requestedBy: { kind: "agent", turnId: TURN },
+        },
+      ]);
+
+      // A named agent goes with it.
+      const named = fakeMoves();
+      const again = yield* makeTools({
+        links: fakeLinks(),
+        moves: named.moves,
+        caller: makeThread({ deletedAt: null }),
+      });
+      yield* again.handlers.thread_move(mainCaller(), {
+        computer: "Mac mini",
+        agent: { instanceId: "mac-codex", model: "gpt-6-astra" },
+      });
+      expect(named.queued[0]?.agent).toEqual({ instanceId: "mac-codex", model: "gpt-6-astra" });
+    }),
+  );
+
+  it.effect("never guesses between computers whose ids and names collide", () =>
+    Effect.gen(function* () {
+      const impostor = EnvironmentId.make("env-impostor");
+      const { moves, queued } = fakeMoves();
+      const tools = yield* makeTools({
+        // Linked first, it calls itself by Mac mini's id.
+        links: fakeLinks({
+          computers: Effect.succeed([
+            {
+              environmentId: impostor,
+              label: MAC_MINI,
+              deviceId: "device-0",
+              reachable: true,
+              descriptor: MAC_DESCRIPTOR,
+            },
+            {
+              environmentId: MAC_MINI,
+              label: "Mac mini",
+              deviceId: "device-1",
+              reachable: true,
+              descriptor: MAC_DESCRIPTOR,
+            },
+          ]),
+        }),
+        moves,
+        caller: makeThread({ deletedAt: null }),
+      });
+      // One computer calls itself by another's id: neither is picked.
+      const byId = yield* tools.handlers.thread_move(mainCaller(), { computer: MAC_MINI });
+      expect(byId.detail).toContain("matches more than one linked computer");
+      expect(queued).toEqual([]);
+
+      // One computer's id is another's name: neither is picked.
+      const mirrored = fakeMoves();
+      const mirror = yield* makeTools({
+        links: fakeLinks({
+          computers: Effect.succeed([
+            {
+              environmentId: MAC_MINI,
+              label: "Mac mini",
+              deviceId: "device-1",
+              reachable: true,
+              descriptor: MAC_DESCRIPTOR,
+            },
+            {
+              environmentId: EnvironmentId.make("Mac mini"),
+              label: "Studio",
+              deviceId: "device-2",
+              reachable: true,
+              descriptor: MAC_DESCRIPTOR,
+            },
+          ]),
+        }),
+        moves: mirrored.moves,
+        caller: makeThread({ deletedAt: null }),
+      });
+      const byName = yield* mirror.handlers.thread_move(mainCaller(), { computer: "Mac mini" });
+      expect(byName.detail).toContain("matches more than one linked computer");
+      expect(mirrored.queued).toEqual([]);
+
+      // Two computers with one name: neither is guessed.
+      const twins = fakeMoves();
+      const ambiguous = yield* makeTools({
+        links: fakeLinks({
+          computers: Effect.succeed([
+            {
+              environmentId: impostor,
+              label: "Mac mini",
+              deviceId: "device-0",
+              reachable: true,
+              descriptor: MAC_DESCRIPTOR,
+            },
+            {
+              environmentId: MAC_MINI,
+              label: "Mac mini",
+              deviceId: "device-1",
+              reachable: true,
+              descriptor: MAC_DESCRIPTOR,
+            },
+          ]),
+        }),
+        moves: twins.moves,
+        caller: makeThread({ deletedAt: null }),
+      });
+      const refused = yield* ambiguous.handlers.thread_move(mainCaller(), {
+        computer: "mac mini",
+      });
+      expect(refused.detail).toContain("matches more than one linked computer");
+      expect(twins.queued).toEqual([]);
+    }),
+  );
+
+  it.effect(
+    "is refused for side runtimes, room agents, and threads another computer or an outside agent started",
+    () =>
+      Effect.gen(function* () {
+        const tryAs = (scope: McpInvocationScope, caller?: OrchestrationThread) =>
+          Effect.gen(function* () {
+            const { moves, queued } = fakeMoves();
+            const tools = yield* makeTools({
+              links: fakeLinks(),
+              moves,
+              ...(caller ? { caller } : {}),
+            });
+            const result = yield* tools.handlers.thread_move(scope, { computer: "Mac mini" });
+            expect(queued).toHaveLength(0);
+            return result.outcome;
+          });
+        const side: McpInvocationScope = {
+          ...mainCaller(),
+          side: {
+            sideTurnId: SideTurnId.make("11111111-2222-4333-8444-555555555555"),
+            kind: "ask",
+          },
+        };
+        const roomAgent: McpInvocationScope = {
+          ...mainCaller(),
+          participantId: ThreadParticipantId.make("0b5c2a6e-9f1d-4e8a-8b7c-6d5e4f3a2b1c"),
+        };
+        expect([
+          yield* tryAs(side),
+          yield* tryAs(roomAgent),
+          yield* tryAs(
+            mainCaller(),
+            makeThread({
+              remoteOrigin: {
+                linkDeviceId: "device-1",
+                environmentId: MAC_MINI,
+                environmentLabel: "Mac mini",
+                threadId: ThreadId.make("thread-there"),
+                threadTitle: "Fix it there",
+              },
+            }),
+          ),
+          yield* tryAs(
+            mainCaller(),
+            makeThread({
+              outsideOrigin: {
+                connectionId: OutsideAgentConnectionId.make("connection-1"),
+                name: "Grok Bot",
+              },
+            }),
+          ),
+        ]).toEqual(["not_allowed", "not_allowed", "not_allowed", "not_allowed"]);
+      }),
   );
 });

@@ -42,6 +42,7 @@ import {
 } from "@threadlines/shared/pendingRequests";
 
 import { toPersistenceSqlError, type ProjectionRepositoryError } from "../../persistence/Errors.ts";
+import { nextPendingMove } from "../pendingMoveProjection.ts";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
 import { ProjectionPendingApprovalRepository } from "../../persistence/Services/ProjectionPendingApprovals.ts";
 import { ProjectionProjectRepository } from "../../persistence/Services/ProjectionProjects.ts";
@@ -561,6 +562,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             worktreeOrigin: event.payload.worktreeOrigin ?? null,
             outsideOrigin: event.payload.outsideOrigin ?? null,
             move: null,
+            pendingMove: null,
             movedFrom: event.payload.movedFrom ?? null,
             historySeedOwed: event.payload.historySeedOwed === true ? 1 : 0,
             effectiveCwd: null,
@@ -646,6 +648,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                   phase: "exporting" as const,
                   cancelRequested: false,
                   startedAt: event.payload.startedAt,
+                  ...(event.payload.queuedRequestId !== undefined
+                    ? { queuedRequestId: event.payload.queuedRequestId }
+                    : {}),
                 }
               : move === null || move.transferId !== event.payload.transferId
                 ? move
@@ -675,6 +680,26 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             return;
           }
           yield* projectionThreadRepository.upsert({ ...existingRow.value, move: nextMove });
+          return;
+        }
+
+        // A move waiting for the thread to be free: the row keeps it as
+        // ThreadPendingMove, by the same rule as the in-memory projector.
+        case "thread.move-queued":
+        case "thread.move-quiescing":
+        case "thread.move-queue-status-set":
+        case "thread.move-queue-ended": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) return;
+          const pendingMove = existingRow.value.pendingMove ?? null;
+          const nextPending = nextPendingMove(pendingMove, event);
+          if (nextPending === pendingMove) return;
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            pendingMove: nextPending,
+          });
           return;
         }
 

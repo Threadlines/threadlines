@@ -44,6 +44,9 @@ import {
   type RuntimeMode,
   type ServerProvider,
   ThreadId,
+  type ThreadMoveError,
+  type ThreadMoveQueueInput,
+  type ThreadMoveRequester,
   TurnId,
 } from "@threadlines/contracts";
 import { placeMarkdownLink } from "@threadlines/shared/appPlaces";
@@ -91,6 +94,7 @@ import {
   THREAD_TITLE_CHAR_LIMIT,
 } from "../threads/threadOperations.ts";
 import type { GitVcsDriverShape } from "../vcs/GitVcsDriver.ts";
+import { latchCallerTurn } from "./callerTurn.ts";
 import type { McpInvocationScope } from "./McpSessionRegistry.ts";
 import type { RoomRequestRegistry } from "./roomRequests.ts";
 import type { RoomToolName } from "./roomToolAccess.ts";
@@ -99,6 +103,7 @@ import { roomCheckoutCwd } from "./roomToolHandlers.ts";
 import type {
   ThreadAgentsResult,
   ThreadListResult,
+  ThreadMoveResult,
   ThreadReadResult,
   ThreadSendResult,
   ThreadStartResult,
@@ -142,6 +147,15 @@ export interface ThreadToolDeps {
    * (docs/design/fleet.md, Part 6); absent on a server without scheduled tasks.
    */
   readonly scheduleAnswerWaiting?: Effect.Effect<ReadonlySet<ThreadId>>;
+  /** Moving a thread to a linked computer (docs/design/fleet.md, Part 3b); absent without links. */
+  readonly moves?: ThreadToolMoves;
+}
+
+/** What `thread_move` needs of the moves (MoveQueue.queue, which checks the target). */
+export interface ThreadToolMoves {
+  readonly queue: (
+    input: ThreadMoveQueueInput & { readonly requestedBy: ThreadMoveRequester },
+  ) => Effect.Effect<unknown, ThreadMoveError>;
 }
 
 /** A computer this one links to, as the thread tools see it. */
@@ -1106,15 +1120,26 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
   // thread_start on a linked computer
   // ---------------------------------------------------------------------------
 
-  /** The linked computer an agent named, by name or id, or why it can't be used. */
+  /**
+   * The linked computer an agent named, by id or name, or why it can't be
+   * used. Computers choose their own ids and names, so one could take
+   * another's id or name as its own: a computer is picked only when it is the
+   * one computer whose id or name matches. Anything else is refused, never
+   * guessed, so work can't be sent to a computer the agent didn't mean.
+   */
   const resolveComputer = (name: string) =>
     Effect.gen(function* () {
       const computers = deps.links === undefined ? [] : yield* deps.links.computers;
       const wanted = name.toLowerCase();
-      const computer = computers.find(
+      const matches = computers.filter(
         (entry) => entry.environmentId === name || entry.label.toLowerCase() === wanted,
       );
-      if (computer !== undefined) return { computer };
+      if (matches.length === 1) return { computer: matches[0]! };
+      if (matches.length > 1) {
+        return {
+          refused: `"${name}" matches more than one linked computer (${matches.map((entry) => `${entry.label}, id ${entry.environmentId}`).join("; ")}), so nothing was started or moved. Ask the user which one they mean.`,
+        };
+      }
       return {
         refused:
           computers.length === 0
@@ -2038,6 +2063,92 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
       );
     });
 
+  // ---------------------------------------------------------------------------
+  // thread_move (docs/design/fleet.md, Part 3b)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Queues the caller's own thread to move once its turn ends: the turn is
+   * the live work, so the move waits for the agent's last words. Only the
+   * thread's own agent, never a thread an outside agent or a linked computer
+   * started; the target's own Ask first, Allowed or Off still applies.
+   */
+  const threadMove = (
+    scope: McpInvocationScope,
+    input: {
+      readonly computer: string;
+      readonly agent?: { readonly instanceId: string; readonly model: string } | undefined;
+    },
+  ): Effect.Effect<ThreadMoveResult> =>
+    Effect.gen(function* () {
+      const gated = yield* gate(scope, "thread_move");
+      if ("refusal" in gated) return gated.refusal satisfies ThreadMoveResult;
+      const { thread } = gated;
+      if (scope.participantId !== null) {
+        return {
+          outcome: "not_allowed",
+          detail: "Only the thread's own agent can move it.",
+        } satisfies ThreadMoveResult;
+      }
+      if ((thread.outsideOrigin ?? null) !== null) {
+        return {
+          outcome: "not_allowed",
+          detail:
+            "An outside agent started this thread, so it can't move itself. The user can move it from the thread's menu.",
+        } satisfies ThreadMoveResult;
+      }
+      if (deps.moves === undefined) {
+        return {
+          outcome: "refused",
+          detail: "This computer can't move threads to other computers.",
+        } satisfies ThreadMoveResult;
+      }
+      const resolved = yield* resolveComputer(input.computer.trim());
+      if ("refused" in resolved) {
+        return { outcome: "refused", detail: resolved.refused } satisfies ThreadMoveResult;
+      }
+      const { computer } = resolved;
+      const latched = yield* latchCallerTurn(deps.readThread, scope);
+      if (!("turnId" in latched)) {
+        return {
+          outcome: "refused",
+          detail: "Call thread_move during your turn.",
+        } satisfies ThreadMoveResult;
+      }
+      const queuedDetail = `Queued: this thread moves to ${computer.label} when your turn ends. Finish your reply; don't start more work.`;
+      // A retried call finds the move it queued.
+      const pending = latched.thread.pendingMove ?? null;
+      if (
+        pending !== null &&
+        pending.target.environmentId === computer.environmentId &&
+        pending.requestedBy.kind === "agent" &&
+        pending.requestedBy.turnId === latched.turnId
+      ) {
+        return { outcome: "queued", detail: queuedDetail } satisfies ThreadMoveResult;
+      }
+      // No agent named: the one that computer suggests when the move starts.
+      const agent: ModelSelection | undefined =
+        input.agent !== undefined
+          ? ({
+              instanceId: ProviderInstanceId.make(input.agent.instanceId.trim()),
+              model: input.agent.model.trim(),
+            } as ModelSelection)
+          : undefined;
+      const queued = yield* deps.moves
+        .queue({
+          threadId: thread.id,
+          targetEnvironmentId: computer.environmentId,
+          ...(agent !== undefined ? { agent } : {}),
+          mode: "when-done",
+          requestedBy: { kind: "agent", turnId: latched.turnId },
+        })
+        .pipe(Effect.result);
+      if (queued._tag === "Failure") {
+        return { outcome: "refused", detail: queued.failure.detail } satisfies ThreadMoveResult;
+      }
+      return { outcome: "queued", detail: queuedDetail } satisfies ThreadMoveResult;
+    });
+
   return {
     thread_agents: threadAgents,
     thread_start: threadStart,
@@ -2045,6 +2156,7 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
     thread_read: threadRead,
     thread_send: threadSend,
     thread_stop: threadStop,
+    thread_move: threadMove,
   };
 }
 

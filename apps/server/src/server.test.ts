@@ -108,6 +108,7 @@ import { ThemeShowcase } from "./themes/ThemeShowcase.ts";
 import { ThemeVsCode } from "./themes/ThemeVsCode.ts";
 import { LinkMoves } from "./links/LinkMoves.ts";
 import { LinkRequests, type LinkRequestsShape } from "./links/LinkRequests.ts";
+import { MoveQueue } from "./moves/MoveQueue.ts";
 import { ThreadMoves } from "./moves/ThreadMoves.ts";
 import { ProjectSetups } from "./projectSetup/ProjectSetups.ts";
 import { ProjectSetupSource } from "./projectSetup/ProjectSetupSource.ts";
@@ -887,6 +888,7 @@ const buildAppUnderTest = (options?: {
             pendingChanges: Stream.empty,
           }),
           Layer.mock(ThreadMoves)({}),
+          Layer.mock(MoveQueue)({}),
           Layer.mock(ProjectSetups)({}),
           Layer.mock(ProjectSetupSource)({}),
           Layer.mock(OutsideAgentSignIn)({ bootId: "test-boot" }),

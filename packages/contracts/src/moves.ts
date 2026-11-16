@@ -5,10 +5,11 @@ import {
   NonNegativeInt,
   ThreadId,
   ThreadMoveId,
+  ThreadMoveRequestId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
 import { ComputerLinkAccess } from "./links.ts";
-import { ModelSelection } from "./orchestration.ts";
+import { ModelSelection, ThreadMoveWait, ThreadPendingMoveMode } from "./orchestration.ts";
 import { PeerAgent } from "./peerRpc.ts";
 
 /**
@@ -23,8 +24,17 @@ export const ThreadMoveTargetPreview = Schema.Struct({
   label: TrimmedNonEmptyString,
   /** Why it can't take this thread, in words for the user. Absent: it can. */
   refusal: Schema.optional(TrimmedNonEmptyString),
-  /** `no_project`: it has no copy of this project yet; the app can offer to set one up. */
+  /**
+   * `no_project`: it has no copy of this project yet; the app can offer to
+   * set one up. Never extended: a client from before a new code would fail
+   * to read the whole preview, so new reasons get fields of their own.
+   */
   refusalCode: Schema.optional(Schema.Literals(["no_project"])),
+  /**
+   * It can't be reached right now (`refusal` says so). A queued move
+   * (`moves.queue`) may still pick it, and waits for it to connect.
+   */
+  unreachable: Schema.optional(Schema.Literal(true)),
   /** Its project the thread would land in. */
   projectName: Schema.optional(TrimmedNonEmptyString),
   /** Whether its user is asked first, or it takes the move at once. */
@@ -48,8 +58,17 @@ export const ThreadMoveChanges = Schema.Struct({
 export type ThreadMoveChanges = typeof ThreadMoveChanges.Type;
 
 export const ThreadMovePreview = Schema.Struct({
-  /** Why this thread can't move at all right now. Absent: it can. */
+  /**
+   * Why this thread can't move, even once it is free: something only the
+   * user can clear (a goal, queued messages, a room...). Absent: it can.
+   */
   refusal: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * What it is busy with now (docs/design/fleet.md, Part 3b). With no
+   * `refusal`, the dialog offers "Move when it's done" and "Stop and move
+   * now" (`moves.queue`). Absent or empty: it is free.
+   */
+  waitsFor: Schema.optional(Schema.Array(ThreadMoveWait)),
   changes: Schema.optional(ThreadMoveChanges),
   targets: Schema.Array(ThreadMoveTargetPreview),
 });
@@ -71,6 +90,45 @@ export type ThreadMoveStartResult = typeof ThreadMoveStartResult.Type;
 
 export const ThreadMoveCancelInput = Schema.Struct({ threadId: ThreadId });
 export type ThreadMoveCancelInput = typeof ThreadMoveCancelInput.Type;
+
+/**
+ * Queue a move that starts once the thread is free (`when-done`), or once
+ * its agent session is ended (`stop-now`): docs/design/fleet.md, Part 3b.
+ * The thread's pending move (OrchestrationThread.pendingMove) shows it.
+ */
+export const ThreadMoveQueueInput = Schema.Struct({
+  threadId: ThreadId,
+  targetEnvironmentId: EnvironmentId,
+  /**
+   * One of the target's agents, by its own instance id. Absent: the agent
+   * the target suggests when the move starts (as the dialog picks it), so a
+   * move to a computer that is offline now still gets one.
+   */
+  agent: Schema.optional(ModelSelection),
+  mode: ThreadPendingMoveMode,
+});
+export type ThreadMoveQueueInput = typeof ThreadMoveQueueInput.Type;
+
+export const ThreadMoveQueueResult = Schema.Struct({ requestId: ThreadMoveRequestId });
+export type ThreadMoveQueueResult = typeof ThreadMoveQueueResult.Type;
+
+/**
+ * Cancel a queued move: the `requestId` the client shows, never "whatever is
+ * queued now". If that move already started, its transfer is cancelled
+ * instead (as `moves.cancel` would).
+ */
+export const ThreadMoveUnqueueInput = Schema.Struct({
+  threadId: ThreadId,
+  requestId: ThreadMoveRequestId,
+});
+export type ThreadMoveUnqueueInput = typeof ThreadMoveUnqueueInput.Type;
+
+/** Try a held queued move again now (ThreadPendingMove.hold): its Try again. */
+export const ThreadMoveRetryInput = Schema.Struct({
+  threadId: ThreadId,
+  requestId: ThreadMoveRequestId,
+});
+export type ThreadMoveRetryInput = typeof ThreadMoveRetryInput.Type;
 
 export class ThreadMoveError extends Schema.TaggedError<ThreadMoveError>()("ThreadMoveError", {
   detail: TrimmedNonEmptyString,

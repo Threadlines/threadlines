@@ -113,8 +113,12 @@ import {
   ThreadMoveError,
   ThreadMovePreview,
   ThreadMovePreviewInput,
+  ThreadMoveQueueInput,
+  ThreadMoveQueueResult,
+  ThreadMoveRetryInput,
   ThreadMoveStartInput,
   ThreadMoveStartResult,
+  ThreadMoveUnqueueInput,
 } from "./moves.ts";
 import {
   ProjectSetupDestination,
@@ -788,6 +792,9 @@ export const WS_METHODS = {
   movesPreview: "moves.preview",
   movesStart: "moves.start",
   movesCancel: "moves.cancel",
+  movesQueue: "moves.queue",
+  movesUnqueue: "moves.unqueue",
+  movesRetry: "moves.retry",
 
   // Setting up a project on another computer (docs/design/fleet.md, Part 8)
   projectSetupsSource: "projectSetups.source",
@@ -2320,6 +2327,39 @@ export const WsMovesCancelRpc = Rpc.make(WS_METHODS.movesCancel, {
   error: ThreadMoveError,
 });
 
+/** Queue a move that starts once the thread is free, or once its agent is stopped. */
+export const WsMovesQueueRpc = Rpc.make(WS_METHODS.movesQueue, {
+  payload: ThreadMoveQueueInput,
+  success: ThreadMoveQueueResult,
+  error: ThreadMoveError,
+});
+
+/** Cancel a queued move, or the transfer it already started. */
+export const WsMovesUnqueueRpc = Rpc.make(WS_METHODS.movesUnqueue, {
+  payload: ThreadMoveUnqueueInput,
+  error: ThreadMoveError,
+});
+
+/** Try a held queued move again now. */
+export const WsMovesRetryRpc = Rpc.make(WS_METHODS.movesRetry, {
+  payload: ThreadMoveRetryInput,
+  error: ThreadMoveError,
+});
+
+/**
+ * Moving threads to linked computers. A group of its own, merged into
+ * WsRpcGroup, for the same reason as the outside agents' group: the main
+ * group sits near TypeScript's cap on type work per statement.
+ */
+export const WsMovesRpcGroup = RpcGroup.make(
+  WsMovesPreviewRpc,
+  WsMovesStartRpc,
+  WsMovesCancelRpc,
+  WsMovesQueueRpc,
+  WsMovesUnqueueRpc,
+  WsMovesRetryRpc,
+);
+
 /** On the source computer: what another computer needs to copy this project. */
 export const WsProjectSetupsSourceRpc = Rpc.make(WS_METHODS.projectSetupsSource, {
   payload: ProjectSetupSourceInput,
@@ -2721,7 +2761,7 @@ export const WsThemeVsCodeReadRpc = Rpc.make(WS_METHODS.themeVsCodeRead, {
 /** VS Code themes from the Open VSX store, a group of their own like the Showcase's. */
 export const WsThemeVsCodeRpcGroup = RpcGroup.make(WsThemeVsCodeSearchRpc, WsThemeVsCodeReadRpc);
 
-/** Everything else the WebSocket serves; with the outside agents', themes', Showcase's and VS Code themes' groups, WsRpcGroup. */
+/** Everything else the WebSocket serves; with the outside agents', themes', Showcase's, VS Code themes' and moves' groups, WsRpcGroup. */
 export const WsCoreRpcGroup = RpcGroup.make(
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,
@@ -2927,9 +2967,6 @@ export const WsCoreRpcGroup = RpcGroup.make(
   WsScheduledTasksTestWebhookRpc,
   WsScheduledTasksRunWithWebhookEventRpc,
   WsScheduledTasksDismissWebhookAddressChangeRpc,
-  WsMovesPreviewRpc,
-  WsMovesStartRpc,
-  WsMovesCancelRpc,
   WsProjectSetupsSourceRpc,
   WsProjectSetupsReadFilesRpc,
   WsProjectSetupsInspectDestinationRpc,
@@ -2957,5 +2994,6 @@ export const WsRpcGroup = WsCoreRpcGroup.merge(
   WsOutsideAgentsRpcGroup,
   WsThemesRpcGroup,
   WsThemeShowcaseRpcGroup,
+  WsMovesRpcGroup,
   WsThemeVsCodeRpcGroup,
 );

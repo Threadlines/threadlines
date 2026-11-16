@@ -5,19 +5,24 @@ import {
   MessageId,
   ProjectId,
   ProviderInstanceId,
+  SideTurnId,
   ThreadId,
   ThreadMoveId,
+  ThreadMoveRequestId,
   TurnId,
   type ModelSelection,
   type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationReadModel,
+  type OrchestrationSession,
+  type ThreadPendingMoveMode,
 } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vite-plus/test";
 
 import { decideOrchestrationCommand } from "./decider.ts";
 import { createEmptyReadModel, projectEvent } from "./projector.ts";
+import { threadMoveGuardRefusal } from "./threadMoveDecisions.ts";
 
 const now = "2026-10-22T10:00:00.000Z";
 const modelSelection: ModelSelection = {
@@ -355,5 +360,257 @@ describe("moving a thread to a linked computer", () => {
     // An undo that keeps it owes nothing.
     const kept = await project(here, "thread.reverted", { threadId: ARRIVED, turnCount: 2 });
     expect(threadOf(kept, ARRIVED).historySeedOwed).toBe(false);
+  });
+});
+
+describe("a move that waits for the thread to be free", () => {
+  const REQUEST = ThreadMoveRequestId.make("request-1");
+  const queue = (
+    mode: ThreadPendingMoveMode = "when-done",
+    requestId = REQUEST,
+  ): OrchestrationCommand => ({
+    type: "thread.move.queue",
+    commandId: nextCommandId(),
+    threadId: THREAD,
+    requestId,
+    target: MAC_MINI,
+    agent: modelSelection,
+    mode,
+    requestedBy: { kind: "user" },
+    createdAt: now,
+  });
+  const startQueued = (queuedRequestId = REQUEST): OrchestrationCommand => ({
+    type: "thread.move.start",
+    commandId: nextCommandId(),
+    threadId: THREAD,
+    transferId: TRANSFER,
+    target: MAC_MINI,
+    agent: modelSelection,
+    queuedRequestId,
+    createdAt: now,
+  });
+  const quiesce = (requestId = REQUEST): OrchestrationCommand => ({
+    type: "thread.move.quiesce",
+    commandId: nextCommandId(),
+    threadId: THREAD,
+    requestId,
+    createdAt: now,
+  });
+  const withSession = (
+    model: OrchestrationReadModel,
+    status: OrchestrationSession["status"],
+    activeTurnId: TurnId | null = null,
+  ) =>
+    project(model, "thread.session-set", {
+      threadId: THREAD,
+      session: {
+        threadId: THREAD,
+        status,
+        providerName: "codex",
+        runtimeMode: "auto",
+        activeTurnId,
+        lastError: null,
+        updatedAt: now,
+      },
+    });
+  const decided = (model: OrchestrationReadModel, command: OrchestrationCommand) =>
+    Effect.runPromise(decideOrchestrationCommand({ command, readModel: model })).then((events) =>
+      (Array.isArray(events) ? events : [events]).map((event) => event.type),
+    );
+  const turnStart = (): OrchestrationCommand =>
+    ({
+      type: "thread.turn.start",
+      commandId: nextCommandId(),
+      threadId: THREAD,
+      message: { messageId: MessageId.make("m-new"), role: "user", text: "more", attachments: [] },
+      runtimeMode: "auto",
+      interactionMode: "default",
+      createdAt: now,
+    }) as OrchestrationCommand;
+
+  it("queues while a turn runs, refuses new work meanwhile, and lets the running turn finish", async () => {
+    const working = await withSession(await seeded(), "running", TurnId.make("turn-1"));
+    const { model, refusal } = await apply(working, queue());
+    expect(refusal).toBeNull();
+    expect(threadOf(model).pendingMove).toMatchObject({
+      requestId: REQUEST,
+      stage: "waiting",
+      mode: "when-done",
+      waitsFor: [{ code: "turn", words: "when this turn ends" }],
+    });
+
+    expect((await apply(model, turnStart())).refusal).toContain(
+      "waiting to move to Mac mini. Cancel the move to keep working here.",
+    );
+    const sendWhenDone = {
+      type: "thread.follow-up.submit",
+      commandId: nextCommandId(),
+      threadId: THREAD,
+      turnId: TurnId.make("turn-1"),
+      message: {
+        messageId: MessageId.make("m-queued"),
+        role: "user",
+        text: "then this",
+        attachments: [],
+      },
+      delivery: "queue",
+      createdAt: now,
+    } as OrchestrationCommand;
+    expect(threadMoveGuardRefusal(model, sendWhenDone)).toContain("waiting to move");
+    // What the running turn needs still goes through.
+    for (const command of [
+      {
+        type: "thread.turn.interrupt",
+        commandId: nextCommandId(),
+        threadId: THREAD,
+        createdAt: now,
+      },
+      {
+        type: "thread.approval.respond",
+        commandId: nextCommandId(),
+        threadId: THREAD,
+        requestId: "approval-1",
+        decision: "accept",
+        createdAt: now,
+      },
+    ] as OrchestrationCommand[]) {
+      expect(threadMoveGuardRefusal(model, command)).toBeNull();
+    }
+    // A second move can't queue behind it, and a direct one can't jump it.
+    expect(
+      (await apply(model, queue("when-done", ThreadMoveRequestId.make("request-2")))).refusal,
+    ).toContain("already waiting");
+    expect((await apply(model, startMove())).refusal).toContain("already waiting");
+  });
+
+  it("refuses to queue what only the user can clear, even behind a running turn", async () => {
+    let model = await withSession(await seeded(), "running", TurnId.make("turn-1"));
+    ({ model } = await apply(model, {
+      type: "thread.pull-request-automation.set",
+      commandId: nextCommandId(),
+      threadId: THREAD,
+      pullRequestNumber: 294,
+      pullRequestUrl: "https://github.com/acme/widgets/pull/294",
+      autoFix: true,
+    }));
+    expect((await apply(model, queue())).refusal).toContain(
+      "Turn off pull request auto-fix and auto-merge",
+    );
+  });
+
+  it("freezes only once its sessions are stopped, ending the queued move in the same decision", async () => {
+    let model = await withSession(await seeded(), "ready");
+    ({ model } = await apply(model, queue()));
+    // Not quiesced yet: the fence isn't up.
+    expect((await apply(model, startQueued())).refusal).toContain("hasn't stopped yet");
+    expect(await decided(model, quiesce())).toEqual([
+      "thread.move-quiescing",
+      "thread.session-stop-requested",
+    ]);
+    ({ model } = await apply(model, quiesce()));
+    expect(threadOf(model).pendingMove?.stage).toBe("quiescing");
+    // The session still shows as ready.
+    expect((await apply(model, startQueued())).refusal).toContain("hasn't stopped yet");
+    // A start from an older queued move never goes ahead.
+    expect(
+      (await apply(model, startQueued(ThreadMoveRequestId.make("request-old")))).refusal,
+    ).toContain("cancelled or replaced");
+
+    model = await withSession(model, "stopped");
+    expect(await decided(model, startQueued())).toEqual([
+      "thread.move-queue-ended",
+      "thread.move-started",
+    ]);
+    ({ model } = await apply(model, startQueued()));
+    expect(threadOf(model).pendingMove ?? null).toBeNull();
+    expect(threadOf(model).move).toMatchObject({ transferId: TRANSFER, queuedRequestId: REQUEST });
+  });
+
+  it("stop and move now ends every runtime of the thread at once", async () => {
+    const running = await withSession(await seeded(), "running", TurnId.make("turn-1"));
+    const answering = {
+      ...running,
+      threads: running.threads.map((thread) =>
+        thread.id === THREAD
+          ? ({ ...thread, sideTurn: { sideTurnId: SideTurnId.make("side-1") } } as typeof thread)
+          : thread,
+      ),
+    };
+    expect(await decided(answering, queue("stop-now"))).toEqual([
+      "thread.move-queued",
+      "thread.session-stop-requested",
+      "thread.side-turn-interrupt-requested",
+    ]);
+    const { model } = await apply(answering, queue("stop-now"));
+    expect(threadOf(model).pendingMove?.stage).toBe("quiescing");
+  });
+
+  it("stop and move now is refused while a command runs in the user's terminal", async () => {
+    const running = await seeded();
+    const withRun = {
+      ...running,
+      threads: running.threads.map((thread) =>
+        thread.id === THREAD
+          ? ({
+              ...thread,
+              commandRuns: [{ runId: "run-1", status: "running", source: { kind: "user" } }],
+            } as unknown as typeof thread)
+          : thread,
+      ),
+    };
+    expect((await apply(withRun, queue("stop-now"))).refusal).toContain(
+      "A command from this thread is running in your terminal. Stop it there, or move the thread when it's done.",
+    );
+    // Move when it's done waits for it.
+    const { model, refusal } = await apply(withRun, queue("when-done"));
+    expect(refusal).toBeNull();
+    expect(threadOf(model).pendingMove?.waitsFor?.map((wait) => wait.code)).toEqual([
+      "command_run",
+    ]);
+  });
+
+  it("a cancel or an end naming an older request changes nothing", async () => {
+    let { model } = await apply(await seeded(), queue());
+    const old = ThreadMoveRequestId.make("request-old");
+    for (const command of [
+      {
+        type: "thread.move.unqueue",
+        commandId: nextCommandId(),
+        threadId: THREAD,
+        requestId: old,
+        createdAt: now,
+      },
+      {
+        type: "thread.move.queue-end",
+        commandId: nextCommandId(),
+        threadId: THREAD,
+        requestId: old,
+        reason: "blocked",
+        words: "This thread's agent set itself a time to come back. Cancel it first.",
+        createdAt: now,
+      },
+    ] as OrchestrationCommand[]) {
+      expect(await decided(model, command)).toEqual([]);
+    }
+    expect(threadOf(model).pendingMove?.requestId).toBe(REQUEST);
+
+    ({ model } = await apply(model, {
+      type: "thread.move.queue-end",
+      commandId: nextCommandId(),
+      threadId: THREAD,
+      requestId: REQUEST,
+      reason: "blocked",
+      words: "This thread's agent set itself a time to come back. Cancel it first.",
+      createdAt: now,
+    }));
+    expect(threadOf(model).pendingMove ?? null).toBeNull();
+    expect(threadOf(model).activities.at(-1)).toMatchObject({
+      kind: "thread.move-not-started",
+      summary: "Didn't move to Mac mini",
+      payload: { reason: "blocked", targetLabel: "Mac mini" },
+    });
+    // The thread works again.
+    expect((await apply(model, rename("Back to work"))).refusal).toBeNull();
+    expect(threadMoveGuardRefusal(model, turnStart())).toBeNull();
   });
 });

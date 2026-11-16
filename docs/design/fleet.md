@@ -616,6 +616,185 @@ The two test servers:
 - Kill B mid-import.
 - A real Codex turn on the moved thread, to see the seed.
 
+## Part 3b: Move a working thread (Nov 15, v2 step 1)
+
+Will's ask: keep a thread going on another computer when this one has to shut down. Move v1 refuses any thread with live work, so a working thread can't move. Step 1 adds a move that waits for the thread to be free, an option to stop the work first, and an agent tool. Clearing a whole computer from Fleet and the quit dialog is step 2, carrying the provider's own session is step 3, and families, goals, check-backs and PR automation are step 4. Step 1 changes none of v1's transfer protocol. A queued move ends in today's `thread.move.start`, and nothing about freezing, export, import or abort changes.
+
+### What the user sees
+
+- **Dialog.** When the only things stopping a move are live work, the dialog no longer refuses. It shows what the thread is doing and two choices:
+  - **Move when it's done** (default): the move starts as soon as the thread is free.
+  - **Stop and move now**: ends the thread's agent session, which stops the turn and all its background work, then moves.
+
+  A thread that can't move for any other reason (room, children, goal, check-back, PR automation, General Chats) is still refused with today's words.
+
+- **While it waits.** A notice above the message box: "Moves to Windows PC when this turn ends." with Cancel. The text changes when it waits on something else: "...when its background work finishes", or "...once you answer" for an approval or question. While a move waits, the thread takes no new turns. The send button reads why. "Send when done" messages, steering and outside assistants' queued messages are refused with the same words. Approvals and questions still work, since the turn needs them to finish.
+- **When it can no longer move.** If the turn leaves something that blocks a move (the agent set a check-back or a goal, started a child thread, turned on PR automation, or proposed a plan), the wait ends. The notice says why: "Didn't move: this thread's agent set itself a time to come back. Cancel it first, then move again." It stays until dismissed. The same happens when the thread is archived or deleted, the link is removed, or the target no longer has the chosen agent.
+- **Target offline.** A move that is ready but can't reach the target keeps waiting and says "Waiting for Windows PC to connect." It starts when the link comes back. Cancel always works.
+- **Sidebar.** The row shows the same "moving" state v1 shows once frozen, and a quieter "move queued" mark before that.
+
+### State
+
+`OrchestrationThread.pendingMove: { requestId, target: { environmentId, label }, agent: ModelSelection, mode: "when-done" | "stop-now", stage: "waiting" | "quiescing", requestedAt, requestedBy: { kind: "user" } | { kind: "agent", turnId } } | null`, projected into a new `pending_move_json` column (migration 111). A thread has at most one: a pending move or a move (`thread.move`), never both.
+
+Events:
+
+- `thread.move-queued`
+- `thread.move-quiescing { requestId }`
+- `thread.move-queue-ended { requestId, reason: "started" | "cancelled" | "blocked" | "gone", words? }`
+
+Commands:
+
+- `thread.move.queue`, from the user or from the agent tool;
+- `thread.move.unqueue { requestId }`, Cancel;
+- `thread.move.quiesce { requestId }`, internal, from the reactor;
+- `thread.move.queue-end { requestId }`, internal, from the reactor.
+
+Every unqueue and queue-end names the request it ends, and the decider ignores one that names an older request. A late Cancel or an old blocked evaluation can't clear a newer queued move.
+
+### Who may queue (decider, one shared check)
+
+`threadMoveRefusal` becomes `threadMoveRefusals(model, thread) → Array<{ code, kind: "wait" | "blocked", words }>`. Every check runs, instead of the first one winning, so a busy thread doesn't hide a goal behind its running turn.
+
+- `wait`, gone on its own:
+  - a running turn, a waiting approval or question, a side turn;
+  - background tasks (both counts), a running command run or workflow run, voice active;
+  - another thread working in the same checkout.
+- `blocked`, needs the user:
+  - everything else v1 refuses;
+  - **queued follow-up messages**: they would start the next turn as soon as this one ends ("Send or remove your queued messages first");
+  - **a proposed plan waiting to be implemented**: `childHasLiveWork` counts it as live work, but only the user's answer clears it, and implementing it starts a turn ("Implement or dismiss the plan first").
+
+`thread.move.queue` is refused when there is a `blocked` code, a pending move, or a move. It is allowed with zero or more `wait` codes. With no `wait` code it still queues, and the reactor starts it at once. That gives one path whether the thread is busy or not.
+
+For `mode: "stop-now"` the decision also plans:
+
+- `thread.session-stop-requested`: ends every runtime of the thread (ProviderCommandReactor `processSessionStopRequested`), and with them the running turn and the background work inside them;
+- `thread.side-turn.interrupt` when a side turn runs (its runtime is separate);
+- the existing stops for running command runs and workflow runs.
+
+Per-task stops and interrupts aren't used. Claude's interrupt deliberately leaves background tasks running (`perTaskStopAffordance`). Codex, ACP and Pi have no per-task stop, and Muse only has stop-all. An interrupt also projects `interrupted` before ACP and OpenCode finish cancelling. Ending the session is the one stop every driver completes.
+
+### The guard
+
+`threadMoveGuardRefusal` gains a pending-move rule. On a thread with `pendingMove`, it refuses one shared set of work-starting commands, `WORK_START_COMMANDS`:
+
+- `thread.turn.start`, `thread.turn.retry`, `thread.turn.resend`;
+- `thread.follow-up.submit`, both steer and queue (scheduled runs into an existing thread use it too);
+- `thread.side-turn.start`, `thread.realtime.start`, `thread.command-run.start`;
+- `thread.goal.set`, `thread.participant.add`, `thread.pull-request-automation.set` turning a switch on, `thread.continue-at-reset.set` arming;
+- `thread.create` with this thread as attached parent;
+- implementing a plan.
+
+The automatic continue-at-reset arming inside `thread.session.set` (decider.ts:4143) is skipped while a move waits. The user asked to move, and that wins over an automatic retry here. Early agent start while typing is refused for the thread too.
+
+The words: "This thread is waiting to move to Windows PC. Cancel the move to keep working here." Everything a running turn needs keeps working: approvals, answers, activity, session updates, interrupt. The guard keeps the wait short and tells the user why. It is not what keeps the move safe. Providers start turns of their own, through runtime events rather than commands: Claude after queued steering or a finished background agent (ClaudeAdapter.ts:5150), ACP autonomous turns (AcpAdapter.ts:834), Codex `turn/started`. No command guard can refuse those. The barrier below handles them.
+
+### The barrier: the session ends before the freeze
+
+A thread is ready to move only when no runtime of it exists. The projected state can say "free" while a provider is still cancelling, or just before it starts a turn of its own. So the queue never goes straight from "free" to the freeze:
+
+1. When the projection has no `wait` code, the reactor dispatches `thread.move.quiesce { requestId }`. The decider records `thread.move-quiescing`, which sets `pendingMove.stage: "quiescing"`, and plans `thread.session-stop-requested`. In "stop-now" mode the queue decision records it straight away. From here the **session fence** holds (below).
+2. It calls the new `ProviderService.quiesceThread(threadId)` and waits for it. This stops every session whose parsed thread id is this thread: main, participants, side runtimes (their own keys, ProviderCommandReactor.ts:5774) and early starts. Each driver confirms its teardown (below). The result is `confirmed`, or `unconfirmed { reason }`.
+   - `unconfirmed` keeps the move waiting, with "Couldn't confirm the agent stopped: <reason>." plus Try again and Cancel. It never moves anyway.
+3. It re-reads the projection. If a turn slipped in (a provider turn that ended before the stop, for example), it goes back to waiting.
+4. Otherwise it calls `ThreadMoves.start`. `decideMoveStart` checks again, in the same decision as the freeze, that the session is stopped and there are no `wait` codes. If either fails, the move isn't started, and the reactor goes back to step 1.
+
+**The session fence.** A command guard can't stop sessions that reopen without a command. `serverReadSubagentTranscript` (ws.ts:1727) and context compaction both let ProviderService recover a stopped session (ProviderService.ts:792, 2205, 2793). So ProviderService itself asks one admission check before it starts or recovers any session for a thread: `ThreadSessionAdmission.check(threadId)`. The check reads the projection and refuses while `pendingMove.stage === "quiescing"` or `thread.move` is set, frozen or moved away. That covers starts, recovery, compaction, transcript reads that would recover, room agents, side runtimes and early starts. The fence lives in the projection, so it holds across restarts, and startup recovery skips fenced threads. v1 gains this fence too: today a frozen thread can be recovered by a transcript read. `thread.context-compact.request` joins `WORK_START_COMMANDS`.
+
+If the user cancels while the move is quiescing, the fence lifts with the pending move, and the next message starts a fresh session as usual.
+
+**Confirmed teardown, per driver.** `quiesceThread` passes only when each runtime confirms its work is gone. A session missing from `listSessions()` isn't enough: today Claude marks itself closed after a `query.close()` that may have failed (ClaudeAdapter.ts:8442-8482). ACP also ignores `session/close` failures, though Grok's background shells live in separate process groups that survive a plain kill (AcpSessionRuntime.ts:859-873). Each driver's stop gains a confirmed result:
+
+- **Claude:** wait for the CLI child process to exit after close, then kill its process group and wait for it.
+- **Codex:** the app-server process exits.
+- **ACP:** after `session/close`, or its timeout, kill the agent's process group and any process groups it reported for shells, then wait for exit.
+- **OpenCode, Pi, Muse:** their host or process exits, after Muse's `task/stopAll`.
+
+A driver that can't prove it returns `unconfirmed`. These are the same checks v1's freeze should have made. v1's export also starts only after `quiesceThread` confirms.
+
+Once quiesced and fenced, nothing can start work. Provider turns need a session, and no session can open. A command the guard misses only makes the move wait.
+
+### The reactor (`moves/MoveQueue.ts`, beside ThreadMoves)
+
+It watches projected thread changes and link changes (added, removed, access changed, reconnected) for threads with `pendingMove`. It subscribes before its startup scan, so a change during the scan isn't missed, and the scan waits until provider session recovery has run. A move that is waiting on its target also retries on its own, every 15 s at first and backing off to 2 minutes, so a failed `peer.describe` on a connected link doesn't leave the thread stuck. For each one:
+
+1. A `blocked` code → `thread.move.queue-end { reason: "blocked", words }`.
+2. A `wait` code → nothing. It looks again on the next change.
+3. Free → the barrier above, then `ThreadMoves.start({ threadId, targetEnvironmentId, agent, queuedRequestId })`. `start` already re-runs preview and checks the target and the agent.
+   - A target refusal that can pass (unreachable, `peer.describe` failed) → keep waiting with "Waiting for <target> to connect."
+   - A refusal that won't pass (link removed or off, agent gone, no project there) → `queue-end { reason: "blocked", words }`.
+   - Success → the decider's `decideMoveStart` records `thread.move-started` and, in the same decision, `thread.move-queue-ended { reason: "started" }` when the command carries the thread's current `queuedRequestId`. The pending move and the freeze swap in one commit.
+
+`decideMoveStart` refuses a `queuedRequestId` that isn't the thread's current one, so an old reactor pass can't start a cancelled move. A direct user `thread.move.start` on a thread with a pending move is refused ("A move is already waiting").
+
+**Cancel against start.** `moves.unqueue { threadId, requestId }` dispatches `thread.move.unqueue`. If the move already started from that request (the thread's `move.queuedRequestId` matches), it becomes v1's `thread.move.cancel` for that transfer, which asks the target to drop it. The user sees one Cancel button either way.
+
+### Agent tool: `thread_move`
+
+- **Who gets it:** a room tool, main runtime only, in `THREAD_TOOL_NAMES`, access tier "changes".
+- **What it moves:** the caller's own thread only, in step 1.
+- **Input:** `{ computer, agent? }`. Computer names come from `thread_agents`' `computers`. `agent` defaults to the target's suggested agent, the way the dialog does.
+- **What it does:** queues `mode: "when-done"` with `requestedBy: { kind: "agent", turnId }`. The caller's own turn is the live work, so the move starts once this turn ends, after the agent's last words. A turn that ends in an error or is interrupted still ends, and the move goes ahead. The user's Cancel is the way to keep the thread here.
+- **What it returns:** "Queued: this thread moves to <computer> when your turn ends. Finish your reply; don't start more work." Or the refusal words.
+
+Fences:
+
+- refused on threads started by a link (`remoteOrigin`, already a `blocked` code) and on threads an outside agent works in (`outsideOrigin`); the endpoint's existing `changes` fence stays;
+- refused for side runtimes;
+- the target's own Ask first/Allowed/Off gate applies unchanged, as in v1.
+
+The user sees the same notice, with "Your agent asked to move this thread", and can Cancel.
+
+### Contracts
+
+- `ThreadMovePreview` gains `waitsFor?: ThreadMoveWait[]`: the wait codes with words. Only `blocked` codes fill `refusal`.
+- New RPCs: `moves.queue { threadId, targetEnvironmentId, agent, mode }` and `moves.unqueue { threadId, requestId }`. The client sends the `requestId` it shows, never the server's current one.
+- `moves.start` stays for older clients and for the reactor's path.
+
+### App guide
+
+The Fleet topic paragraph (added Nov 15) gains a sentence on Move when it's done, Stop and move now, and the agent tool.
+
+### Tests (focused)
+
+Decider:
+
+- queue refused on a `blocked` code;
+- queue accepted while a turn runs;
+- the guard refuses `thread.turn.start` and a "Send when done" follow-up while a move waits;
+- a stale `queuedRequestId` is refused;
+- start and queue-end happen in one decision;
+- stop-now plans the session stop and the side-turn interrupt;
+- the freeze is refused while the projected session isn't stopped;
+- an unqueue or queue-end naming an old request changes nothing.
+
+Reactor, against a fake engine and links:
+
+- starts after the turn completes;
+- not before background tasks settle;
+- ends as blocked when the agent set a check-back during the turn;
+- keeps waiting while the target is offline, then starts on reconnect;
+- survives a restart with a pending move;
+- a provider-started turn after "free" sends the move back to waiting;
+- a Cancel that races the start cancels the transfer instead;
+- a failed describe on a connected link retries.
+
+Browser:
+
+- the dialog's two choices on a working thread;
+- the notice with Cancel;
+- the send button's reason.
+
+One live check on the two-computer test stack with a fake fx agent: queue during a turn, the turn ends, the move commits, the thread continues on B.
+
+### Out of scope here (later steps)
+
+- clearing a computer from Fleet and the quit dialog (step 2);
+- carrying native sessions (step 3);
+- families, goals, check-backs, PR automation, rooms and General Chats (step 4);
+- moving another thread with the agent tool.
+
 ## Part 4: The rail and the Fleet page
 
 ### Rail

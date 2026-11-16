@@ -14,6 +14,7 @@ import {
   ChildRequestBatchId,
   ChildRequestId,
   ThreadMoveId,
+  ThreadMoveRequestId,
   CommandId,
   CommandRequestId,
   SettingsChangeRequestId,
@@ -799,6 +800,12 @@ export const OrchestrationThreadMove = Schema.Struct({
   /** The user asked to stop it; it stops once the other computer confirms. */
   cancelRequested: Schema.Boolean,
   startedAt: IsoDateTime,
+  /**
+   * The queued move this one started from (ThreadPendingMove.requestId), so a
+   * Cancel the user pressed on the queued move cancels the transfer instead.
+   * Absent: started straight away.
+   */
+  queuedRequestId: Schema.optional(ThreadMoveRequestId),
   /** The other computer took it: the thread there. */
   movedAway: Schema.optional(
     Schema.Struct({
@@ -808,6 +815,113 @@ export const OrchestrationThreadMove = Schema.Struct({
   ),
 });
 export type OrchestrationThreadMove = typeof OrchestrationThreadMove.Type;
+
+/**
+ * What a queued move waits for (docs/design/fleet.md, Part 3b). Each goes
+ * away on its own: the turn ends, the user answers, the background work
+ * finishes. `words` finish "Moves to <computer> …", e.g. "when this turn ends".
+ */
+export const ThreadMoveWaitCode = Schema.Literals([
+  "turn",
+  "approval",
+  "question",
+  "side_turn",
+  "background",
+  "command_run",
+  "workflow_run",
+  "voice",
+  "shared_checkout",
+]);
+export type ThreadMoveWaitCode = typeof ThreadMoveWaitCode.Type;
+
+export const ThreadMoveWait = Schema.Struct({
+  code: ThreadMoveWaitCode,
+  words: TrimmedNonEmptyString,
+});
+export type ThreadMoveWait = typeof ThreadMoveWait.Type;
+
+/**
+ * `when-done`: the move starts once the thread is free. `stop-now`: the
+ * thread's agent session ends first (its turn and background work with it).
+ */
+export const ThreadPendingMoveMode = Schema.Literals(["when-done", "stop-now"]);
+export type ThreadPendingMoveMode = typeof ThreadPendingMoveMode.Type;
+
+/**
+ * `waiting`: for the thread to be free. `quiescing`: free, and its agent
+ * sessions are being ended and proven gone; no session of the thread may
+ * start or recover from here (ThreadSessionAdmission on the server).
+ */
+export const ThreadPendingMoveStage = Schema.Literals(["waiting", "quiescing"]);
+export type ThreadPendingMoveStage = typeof ThreadPendingMoveStage.Type;
+
+/** Who queued the move: the user, or the thread's own agent (`thread_move`) in that turn. */
+export const ThreadMoveRequester = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("user") }),
+  Schema.Struct({ kind: Schema.Literal("agent"), turnId: TurnId }),
+]);
+export type ThreadMoveRequester = typeof ThreadMoveRequester.Type;
+
+/**
+ * Why a move that is ready doesn't start yet. `target_unreachable`: the
+ * other computer can't be reached ("Waiting for Mac mini to connect.").
+ * `stop_unconfirmed`: an agent's processes couldn't be proven gone ("Couldn't
+ * confirm the agent stopped: …"); the move never goes ahead without that.
+ */
+export const ThreadMoveHold = Schema.Struct({
+  kind: Schema.Literals(["target_unreachable", "stop_unconfirmed"]),
+  words: TrimmedNonEmptyString,
+});
+export type ThreadMoveHold = typeof ThreadMoveHold.Type;
+
+/**
+ * A move waiting for the thread to be free (docs/design/fleet.md, Part 3b).
+ * While one waits the thread takes no new work (approvals and answers the
+ * running turn needs still go through); once the thread is free the move
+ * becomes an ordinary move (OrchestrationThreadMove) in the same decision.
+ * A thread has a pending move or a move, never both.
+ */
+export const ThreadPendingMove = Schema.Struct({
+  requestId: ThreadMoveRequestId,
+  target: ThreadMoveTarget,
+  /**
+   * The agent the other computer will run it with (its own instance id).
+   * Absent: the one that computer suggests when the move starts.
+   */
+  agent: Schema.optional(ModelSelection),
+  mode: ThreadPendingMoveMode,
+  stage: ThreadPendingMoveStage,
+  requestedAt: IsoDateTime,
+  requestedBy: ThreadMoveRequester,
+  /** What it waits for now, as the server last saw it. Absent or empty: nothing. */
+  waitsFor: Schema.optional(Schema.Array(ThreadMoveWait)),
+  /** Why a move that is ready doesn't start yet. Absent or null: nothing holds it. */
+  hold: Schema.optional(Schema.NullOr(ThreadMoveHold)),
+});
+export type ThreadPendingMove = typeof ThreadPendingMove.Type;
+
+/** How a queued move ended: it started, the user cancelled it, it can't go, or the thread is gone. */
+export const ThreadPendingMoveEndReason = Schema.Literals([
+  "started",
+  "cancelled",
+  "blocked",
+  "gone",
+]);
+export type ThreadPendingMoveEndReason = typeof ThreadPendingMoveEndReason.Type;
+
+/**
+ * Activity appended when a queued move ends without starting (blocked, or
+ * the thread archived or deleted): "Didn't move: <words>". Its payload is a
+ * ThreadMoveNotStartedPayload.
+ */
+export const ThreadMoveNotStartedActivityKind = "thread.move-not-started";
+export const ThreadMoveNotStartedPayload = Schema.Struct({
+  requestId: ThreadMoveRequestId,
+  targetLabel: TrimmedNonEmptyString,
+  reason: Schema.Literals(["blocked", "gone"]),
+  words: TrimmedNonEmptyString,
+});
+export type ThreadMoveNotStartedPayload = typeof ThreadMoveNotStartedPayload.Type;
 
 /** A thread that moved here from another computer, and where it came from. */
 export const ThreadMovedFrom = Schema.Struct({
@@ -2562,6 +2676,8 @@ export const OrchestrationThread = Schema.Struct({
   outsideWork: Schema.optional(Schema.Array(OrchestrationOutsideWork)),
   /** See OrchestrationThreadShell.move. */
   move: Schema.optional(Schema.NullOr(OrchestrationThreadMove)),
+  /** See OrchestrationThreadShell.pendingMove. */
+  pendingMove: Schema.optional(Schema.NullOr(ThreadPendingMove)),
   /** See OrchestrationThreadShell.movedFrom. */
   movedFrom: Schema.optional(Schema.NullOr(ThreadMovedFrom)),
   /**
@@ -2793,6 +2909,8 @@ export const OrchestrationThreadShell = Schema.Struct({
   remoteOrigin: Schema.optional(Schema.NullOr(ThreadRemoteOrigin)),
   /** Moving, or moved, to a linked computer: see OrchestrationThreadMove. Absent or null: neither. */
   move: Schema.optional(Schema.NullOr(OrchestrationThreadMove)),
+  /** A move waiting for the thread to be free: see ThreadPendingMove. Absent or null: none. */
+  pendingMove: Schema.optional(Schema.NullOr(ThreadPendingMove)),
   /** Moved here from another computer: see ThreadMovedFrom. Absent or null: started here. */
   movedFrom: Schema.optional(Schema.NullOr(ThreadMovedFrom)),
   /**
@@ -4732,6 +4850,69 @@ const ThreadMoveStartCommand = Schema.Struct({
   transferId: ThreadMoveId,
   target: ThreadMoveTarget,
   agent: ModelSelection,
+  /**
+   * The thread's queued move this starts (the move queue's). It must be the
+   * thread's current one; the queued move ends in the same decision.
+   */
+  queuedRequestId: Schema.optional(ThreadMoveRequestId),
+  createdAt: IsoDateTime,
+});
+
+/**
+ * A move that waits for the thread to be free (docs/design/fleet.md, Part
+ * 3b), on the computer it leaves. Only the move queue dispatches these, after
+ * it checked the link (`moves.queue`, or the agent's `thread_move`).
+ */
+const ThreadMoveQueueCommand = Schema.Struct({
+  type: Schema.Literal("thread.move.queue"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: ThreadMoveRequestId,
+  target: ThreadMoveTarget,
+  /** Absent: the target's suggested agent, picked when the move starts. */
+  agent: Schema.optional(ModelSelection),
+  mode: ThreadPendingMoveMode,
+  requestedBy: ThreadMoveRequester,
+  createdAt: IsoDateTime,
+});
+
+/** Cancel: ends the queued move `requestId`, and never a newer one. */
+const ThreadMoveUnqueueCommand = Schema.Struct({
+  type: Schema.Literal("thread.move.unqueue"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: ThreadMoveRequestId,
+  createdAt: IsoDateTime,
+});
+
+/** The thread is free: its sessions end, and none may start until the move starts or ends. */
+const ThreadMoveQuiesceCommand = Schema.Struct({
+  type: Schema.Literal("thread.move.quiesce"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: ThreadMoveRequestId,
+  createdAt: IsoDateTime,
+});
+
+/** What the queued move waits for now, and what holds it once it is ready. */
+const ThreadMoveQueueStatusCommand = Schema.Struct({
+  type: Schema.Literal("thread.move.queue-status"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: ThreadMoveRequestId,
+  waitsFor: Schema.Array(ThreadMoveWait),
+  hold: Schema.NullOr(ThreadMoveHold),
+  createdAt: IsoDateTime,
+});
+
+/** The queued move can't go (`blocked`, with why), or its thread is archived or deleted (`gone`). */
+const ThreadMoveQueueEndCommand = Schema.Struct({
+  type: Schema.Literal("thread.move.queue-end"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: ThreadMoveRequestId,
+  reason: Schema.Literals(["blocked", "gone"]),
+  words: TrimmedNonEmptyString,
   createdAt: IsoDateTime,
 });
 
@@ -4881,6 +5062,11 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadTurnResendCommand,
   ProjectGeneralChatsRelocateCommand,
   ThreadMoveStartCommand,
+  ThreadMoveQueueCommand,
+  ThreadMoveUnqueueCommand,
+  ThreadMoveQuiesceCommand,
+  ThreadMoveQueueStatusCommand,
+  ThreadMoveQueueEndCommand,
   ThreadMoveProgressCommand,
   ThreadMoveCancelCommand,
   ThreadMoveAbortCommand,
@@ -4989,6 +5175,10 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.remote-cancel-queued",
   "thread.remote-cancels-delivered",
   "thread.move-started",
+  "thread.move-queued",
+  "thread.move-quiescing",
+  "thread.move-queue-status-set",
+  "thread.move-queue-ended",
   "thread.move-progressed",
   "thread.move-cancel-requested",
   "thread.move-aborted",
@@ -5329,6 +5519,36 @@ export const ThreadMoveStartedPayload = Schema.Struct({
   target: ThreadMoveTarget,
   agent: ModelSelection,
   startedAt: IsoDateTime,
+  /** See OrchestrationThreadMove.queuedRequestId. */
+  queuedRequestId: Schema.optional(ThreadMoveRequestId),
+});
+
+export const ThreadMoveQueuedPayload = Schema.Struct({
+  threadId: ThreadId,
+  pendingMove: ThreadPendingMove,
+});
+
+export const ThreadMoveQuiescingPayload = Schema.Struct({
+  threadId: ThreadId,
+  requestId: ThreadMoveRequestId,
+  updatedAt: IsoDateTime,
+});
+
+export const ThreadMoveQueueStatusSetPayload = Schema.Struct({
+  threadId: ThreadId,
+  requestId: ThreadMoveRequestId,
+  waitsFor: Schema.Array(ThreadMoveWait),
+  hold: Schema.NullOr(ThreadMoveHold),
+  updatedAt: IsoDateTime,
+});
+
+export const ThreadMoveQueueEndedPayload = Schema.Struct({
+  threadId: ThreadId,
+  requestId: ThreadMoveRequestId,
+  reason: ThreadPendingMoveEndReason,
+  /** Why, for `blocked` and `gone`. */
+  words: Schema.optional(TrimmedNonEmptyString),
+  endedAt: IsoDateTime,
 });
 
 export const ThreadMoveProgressedPayload = Schema.Struct({
@@ -6066,6 +6286,26 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.move-started"),
     payload: ThreadMoveStartedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.move-queued"),
+    payload: ThreadMoveQueuedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.move-quiescing"),
+    payload: ThreadMoveQuiescingPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.move-queue-status-set"),
+    payload: ThreadMoveQueueStatusSetPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.move-queue-ended"),
+    payload: ThreadMoveQueueEndedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

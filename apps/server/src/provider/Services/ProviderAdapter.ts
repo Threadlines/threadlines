@@ -457,7 +457,49 @@ export interface ProviderAdapterShape<TError> {
   readonly stopAll: () => Effect.Effect<void, TError>;
 
   /**
+   * Proves that nothing this adapter ran for a thread is still running
+   * (docs/design/fleet.md, Part 3b, "Confirmed teardown"): every runtime of
+   * every session key whose thread is `threadId` (its own agent, room
+   * agents, side answers, early starts), and what those runtimes started.
+   * Called after their sessions were stopped; never starts anything. Waits
+   * (bounded) for the agent's processes to exit and ends what outlived the
+   * stop. `unconfirmed` when it can't prove it, with why; never a guess.
+   * Absent: the driver can't confirm, which counts as unconfirmed for a
+   * thread it ran.
+   */
+  readonly confirmThreadStopped?: (
+    threadId: ThreadId,
+    /**
+     * What the session directory keeps of each of the thread's sessions this
+     * driver ran, in this process or an earlier one: a driver whose own
+     * evidence a restart lost reads what may still run from these.
+     */
+    known: ReadonlyArray<ProviderStoppedSessionHint>,
+  ) => Effect.Effect<ProviderStopConfirmation>;
+
+  /**
+   * One session key's runtime is about to stop for a move: note what its
+   * processes started, so `confirmThreadStopped` can find what outlives the
+   * stop (an agent's shell in a process group of its own). ProviderService
+   * calls it only for a thread the session fence holds, so other stops pay
+   * nothing. Reads the process table off the event loop, bounded.
+   */
+  readonly noteBeforeStop?: (sessionKey: ThreadId) => Effect.Effect<void>;
+
+  /**
    * Canonical runtime event stream emitted by this adapter.
    */
   readonly streamEvents: Stream.Stream<ProviderRuntimeEvent>;
 }
+
+/** One session a driver ran, as the session directory keeps it (confirmThreadStopped). */
+export interface ProviderStoppedSessionHint {
+  readonly sessionKey: ThreadId;
+  readonly resumeCursor: unknown;
+  readonly cwd: string | undefined;
+}
+
+/** Whether a thread's agents are proven stopped (ProviderAdapterShape.confirmThreadStopped). */
+export type ProviderStopConfirmation =
+  | { readonly confirmed: true }
+  | { readonly confirmed: false; readonly reason: string };

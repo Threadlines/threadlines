@@ -30,6 +30,11 @@ import * as TestClock from "effect/testing/TestClock";
 import { describe, expect } from "vite-plus/test";
 
 import { ServerConfig } from "../../config.ts";
+import {
+  isProcessRunning,
+  startTestAgentProcess,
+  type TestAgentProcess,
+} from "../testAgentProcess.ts";
 import { steerRejectionOf } from "../Errors.ts";
 import {
   type MuseHost,
@@ -64,7 +69,7 @@ interface FakeHost {
 type Responder = (call: Call) => Record<string, unknown> | MuseHostError | undefined;
 
 /** A scripted host factory: each host the adapter starts is recorded in `hosts`. */
-function scriptedHosts(responder: Responder = () => undefined) {
+function scriptedHosts(responder: Responder = () => undefined, agent?: TestAgentProcess) {
   const hosts: Array<FakeHost> = [];
   let commandIds = 0;
   const startHost = (options: MuseHostOptions) =>
@@ -103,7 +108,12 @@ function scriptedHosts(responder: Responder = () => undefined) {
             return {};
         }
       };
-      yield* Effect.addFinalizer(() => Deferred.succeed(exited, { kind: "clean" }));
+      // With a real process behind it, closing the host ends that process first.
+      yield* Effect.addFinalizer(() =>
+        (agent === undefined ? Effect.void : Effect.andThen(agent.stop, agent.exited)).pipe(
+          Effect.andThen(Deferred.succeed(exited, { kind: "clean" })),
+        ),
+      );
       const host: MuseHost = {
         initialize: {
           serverVersion: "1.4.9",
@@ -130,6 +140,7 @@ function scriptedHosts(responder: Responder = () => undefined) {
         exited: Deferred.await(exited),
         hasExited: Deferred.isDone(exited),
         stderrTail: () => "",
+        ...(agent !== undefined ? { pid: agent.pid } : {}),
       };
       hosts.push({
         options,
@@ -156,10 +167,12 @@ const setup = (
   input: {
     readonly responder?: Responder;
     readonly allowApiKeyBilling?: boolean;
+    /** A real process behind each host, for proof it is gone after a stop. */
+    readonly agent?: TestAgentProcess;
   } = {},
 ) =>
   Effect.gen(function* () {
-    const scripted = scriptedHosts(input.responder);
+    const scripted = scriptedHosts(input.responder, input.agent);
     const adapter = yield* makeMuseAdapter({
       instanceId: INSTANCE_ID,
       settings: {
@@ -232,6 +245,24 @@ const shellApproval = (input: {
 });
 
 describe("MuseAdapter", () => {
+  it.live.skipIf(process.platform === "win32")(
+    "proves a stopped host, and what it left in a process group of its own, are gone",
+    () =>
+      Effect.gen(function* () {
+        const agent = yield* startTestAgentProcess;
+        const { adapter, threadId, start } = yield* setup({ agent });
+        yield* start();
+        // A stop for a move notes what the host started first (ProviderService does).
+        yield* adapter.noteBeforeStop!(threadId);
+        yield* adapter.stopSession(threadId);
+        // The host is gone; a shell it put in a group of its own lives on.
+        expect(isProcessRunning(agent.shellPid)).toBe(true);
+
+        expect(yield* adapter.confirmThreadStopped!(threadId)).toEqual({ confirmed: true });
+        expect(isProcessRunning(agent.shellPid)).toBe(false);
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
   it.effect("sends the device note as a part of its own, outside the words Muse shows", () =>
     Effect.gen(function* () {
       const { hosts, adapter, threadId, start } = yield* setup();

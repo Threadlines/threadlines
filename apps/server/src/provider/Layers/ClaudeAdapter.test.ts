@@ -60,6 +60,7 @@ import * as TestClock from "effect/testing/TestClock";
 
 import { attachmentRelativePath, createAttachmentId } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
+import { isProcessRunning, startTestAgentProcess } from "../testAgentProcess.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderAdapterValidationError } from "../Errors.ts";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
@@ -6121,6 +6122,65 @@ describe("ClaudeAdapterLive", () => {
       Effect.provide(layer),
     );
   });
+
+  it.live.skipIf(process.platform === "win32")(
+    "proves a stopped session's Claude Code process, and what it started, are gone",
+    () =>
+      Effect.gen(function* () {
+        const agent = yield* startTestAgentProcess;
+        const reported = new FakeClaudeQuery();
+        (reported as { close: () => void }).close = () => {
+          reported.closeCalls += 1;
+          Effect.runSync(agent.stop);
+        };
+        const layerFor = (createQuery: NonNullable<ClaudeAdapterLiveOptions["createQuery"]>) =>
+          Layer.effect(
+            ClaudeAdapter,
+            Effect.gen(function* () {
+              return yield* makeClaudeAdapter(decodeClaudeSettings({}), { createQuery });
+            }),
+          ).pipe(
+            Layer.provideMerge(ServerConfig.layerTest("/tmp/claude-adapter-test", "/tmp")),
+            Layer.provideMerge(ServerSettingsService.layerTest()),
+            Layer.provideMerge(NodeServices.layer),
+          );
+        const stopAndConfirm = Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter;
+          yield* adapter.startSession({
+            threadId: THREAD_ID,
+            provider: ProviderDriverKind.make("claudeAgent"),
+            runtimeMode: "full-access",
+          });
+          yield* adapter.noteBeforeStop!(THREAD_ID);
+          yield* adapter.stopSession(THREAD_ID);
+          return yield* adapter.confirmThreadStopped!(THREAD_ID, []);
+        }).pipe(Effect.provideService(Random.Random, makeDeterministicRandomService()));
+
+        // The SDK says which process it started: the stop is proven, and a
+        // shell Claude Code left in a process group of its own is ended.
+        const confirmed = yield* stopAndConfirm.pipe(
+          Effect.provide(
+            layerFor((input) => {
+              (input.options as { onProcessSpawned?: (pid: number) => void }).onProcessSpawned?.(
+                agent.pid,
+              );
+              return reported;
+            }),
+          ),
+        );
+        assert.deepEqual(confirmed, { confirmed: true });
+        assert.equal(isProcessRunning(agent.shellPid), false);
+
+        // An SDK that never says can't prove anything.
+        const unproven = yield* stopAndConfirm.pipe(
+          Effect.provide(layerFor(() => new FakeClaudeQuery())),
+        );
+        assert.deepEqual(unproven, {
+          confirmed: false,
+          reason: "Claude Code didn't report which process it started",
+        });
+      }).pipe(Effect.scoped),
+  );
 
   it.effect("stopSession does not throw into the SDK prompt consumer", () => {
     // The SDK consumes user messages via `for await (... of prompt)`.

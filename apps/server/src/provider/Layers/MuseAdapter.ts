@@ -47,6 +47,7 @@ import {
   type ProviderFailureCategory,
 } from "@threadlines/contracts";
 import { withFailureCategory } from "../providerFailureCategory.ts";
+import { makeAgentProcessLedger } from "../agentProcessLedger.ts";
 import {
   MANAGED_WORKTREE_INSTRUCTION,
   renderThreadContextSeed,
@@ -433,6 +434,8 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
     const boundInstanceId = options.instanceId;
     const runtimeEvents = yield* PubSub.unbounded<ProviderRuntimeEvent>();
     const sessions = new Map<ThreadId, SessionContext>();
+    /** Each host it started, until proven gone (confirmThreadStopped). */
+    const processes = yield* makeAgentProcessLedger();
 
     const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
     const stamp = Effect.all({
@@ -1869,6 +1872,12 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
                 }),
             ),
           );
+          if (host.pid !== undefined) {
+            yield* processes.track(ctx.threadId, {
+              pid: host.pid,
+              exited: Effect.asVoid(host.exited),
+            });
+          }
           yield* checkBilling(host);
           const config = mcpConfig(ctx, host.initialize.grantedCapabilities);
           const permission = profile.permissionProfile
@@ -2884,6 +2893,8 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
       rollbackThread,
       readSubagentTranscript,
       stopAll,
+      noteBeforeStop: processes.beforeStop,
+      confirmThreadStopped: processes.confirm,
       streamEvents: Stream.fromPubSub(runtimeEvents),
     } satisfies MuseAdapterShape;
   });

@@ -86,6 +86,7 @@ import * as VcsDriverRegistry from "../src/vcs/VcsDriverRegistry.ts";
 import { VcsStatusBroadcaster } from "../src/vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../src/git/GitWorkflowService.ts";
 import * as VcsProcess from "../src/vcs/VcsProcess.ts";
+import { ThreadSessionAdmissionPermissive } from "../src/provider/Services/ThreadSessionAdmission.ts";
 
 const decodeCodexSettings = Schema.decodeEffect(CodexSettings);
 
@@ -314,12 +315,14 @@ export const makeOrchestrationIntegrationHarness = (
     const providerEventLoggersLayer = Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers);
     const providerLayer = useRealAdapter
       ? makeProviderServiceLive().pipe(
+          Layer.provide(ThreadSessionAdmissionPermissive),
           Layer.provide(providerSessionDirectoryLayer),
           Layer.provide(realAdapterRegistry),
           Layer.provide(AnalyticsService.layerTest),
           Layer.provide(providerEventLoggersLayer),
         )
       : makeProviderServiceLive().pipe(
+          Layer.provide(ThreadSessionAdmissionPermissive),
           Layer.provide(providerSessionDirectoryLayer),
           Layer.provide(fakeRegistry!),
           Layer.provide(AnalyticsService.layerTest),

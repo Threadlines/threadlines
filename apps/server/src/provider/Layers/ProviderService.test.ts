@@ -22,10 +22,11 @@ import {
   ProviderSessionStartInput,
   SideTurnId,
   ThreadId,
+  ThreadParticipantId,
   TurnId,
 } from "@threadlines/contracts";
 import { createModelSelection } from "@threadlines/shared/model";
-import { sideSessionKey } from "@threadlines/shared/threadParticipants";
+import { participantSessionKey, sideSessionKey } from "@threadlines/shared/threadParticipants";
 import { it, assert, vi } from "@effect/vitest";
 
 import * as Clock from "effect/Clock";
@@ -46,6 +47,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import {
   ProviderAdapterProcessError,
   ProviderAdapterRequestError,
+  ProviderAdapterSessionClosedError,
   ProviderAdapterSessionNotFoundError,
   ProviderUnsupportedError,
   ProviderValidationError,
@@ -54,6 +56,8 @@ import {
 import type {
   ProviderAdapterShape,
   ProviderSetThreadGoalInput,
+  ProviderStopConfirmation,
+  ProviderStoppedSessionHint,
 } from "../Services/ProviderAdapter.ts";
 import {
   ProviderAdapterRegistry,
@@ -74,6 +78,10 @@ import {
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { AnalyticsService } from "../../telemetry/Services/AnalyticsService.ts";
 import { makeAdapterRegistryMock } from "../testUtils/providerAdapterRegistryMock.ts";
+import {
+  ThreadSessionAdmission,
+  ThreadSessionAdmissionPermissive,
+} from "../Services/ThreadSessionAdmission.ts";
 
 const defaultServerSettingsLayer = ServerSettingsService.layerTest();
 
@@ -437,6 +445,7 @@ function makeProviderServiceLayer() {
   const layer = it.layer(
     Layer.mergeAll(
       makeProviderServiceLive().pipe(
+        Layer.provide(ThreadSessionAdmissionPermissive),
         Layer.provide(providerAdapterLayer),
         Layer.provide(directoryLayer),
         Layer.provide(defaultServerSettingsLayer),
@@ -480,6 +489,7 @@ it.effect("ProviderServiceLive catches stopAll failures during shutdown", () =>
     const directoryLayer = ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer));
     const providerLayer = Layer.mergeAll(
       makeProviderServiceLive().pipe(
+        Layer.provide(ThreadSessionAdmissionPermissive),
         Layer.provide(providerAdapterLayer),
         Layer.provide(directoryLayer),
         Layer.provide(defaultServerSettingsLayer),
@@ -554,6 +564,7 @@ it.effect(
         Layer.provide(runtimeRepositoryLayer),
       );
       const providerLayer = makeProviderServiceLive().pipe(
+        Layer.provide(ThreadSessionAdmissionPermissive),
         Layer.provide(providerAdapterLayer),
         Layer.provide(directoryLayer),
         Layer.provide(serverSettingsLayer),
@@ -616,6 +627,7 @@ it.effect("ProviderServiceLive rejects new sessions for disabled custom instance
     );
     const directoryLayer = ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer));
     const providerLayer = makeProviderServiceLive().pipe(
+      Layer.provide(ThreadSessionAdmissionPermissive),
       Layer.provide(providerAdapterLayer),
       Layer.provide(directoryLayer),
       Layer.provide(defaultServerSettingsLayer),
@@ -666,6 +678,7 @@ it.effect("ProviderServiceLive writes canonical events to the emitting thread se
         close: () => Effect.void,
       },
     }).pipe(
+      Layer.provide(ThreadSessionAdmissionPermissive),
       Layer.provide(Layer.succeed(ProviderAdapterRegistry, registry)),
       Layer.provide(directoryLayer),
       Layer.provide(defaultServerSettingsLayer),
@@ -714,6 +727,7 @@ it.effect(
         Layer.provide(runtimeRepositoryLayer),
       );
       const providerLayer = makeProviderServiceLive().pipe(
+        Layer.provide(ThreadSessionAdmissionPermissive),
         Layer.provide(Layer.succeed(ProviderAdapterRegistry, registry)),
         Layer.provide(directoryLayer),
         Layer.provide(defaultServerSettingsLayer),
@@ -813,6 +827,7 @@ it.effect("ProviderServiceLive reports a failure under the category the agent na
       ),
     );
     const providerLayer = makeProviderServiceLive().pipe(
+      Layer.provide(ThreadSessionAdmissionPermissive),
       Layer.provide(Layer.succeed(ProviderAdapterRegistry, registry)),
       Layer.provide(directoryLayer),
       Layer.provide(defaultServerSettingsLayer),
@@ -886,6 +901,7 @@ const makeEarlyStartHarness = () => {
   );
   const directoryLayer = ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer));
   const layer = makeProviderServiceLive().pipe(
+    Layer.provide(ThreadSessionAdmissionPermissive),
     Layer.provide(Layer.succeed(ProviderAdapterRegistry, registry)),
     Layer.provide(directoryLayer),
     Layer.provide(defaultServerSettingsLayer),
@@ -1274,6 +1290,7 @@ it.effect("ProviderServiceLive keeps persisted resumable sessions on startup", (
     }).pipe(Effect.provide(directoryLayer));
 
     const providerLayer = makeProviderServiceLive().pipe(
+      Layer.provide(ThreadSessionAdmissionPermissive),
       Layer.provide(Layer.succeed(ProviderAdapterRegistry, registry)),
       Layer.provide(directoryLayer),
       Layer.provide(defaultServerSettingsLayer),
@@ -1333,6 +1350,7 @@ it.effect(
         Layer.provide(runtimeRepositoryLayer),
       );
       const firstProviderLayer = makeProviderServiceLive().pipe(
+        Layer.provide(ThreadSessionAdmissionPermissive),
         Layer.provide(Layer.succeed(ProviderAdapterRegistry, firstRegistry)),
         Layer.provide(firstDirectoryLayer),
         Layer.provide(defaultServerSettingsLayer),
@@ -1385,6 +1403,7 @@ it.effect(
         Layer.provide(runtimeRepositoryLayer),
       );
       const secondProviderLayer = makeProviderServiceLive().pipe(
+        Layer.provide(ThreadSessionAdmissionPermissive),
         Layer.provide(Layer.succeed(ProviderAdapterRegistry, secondRegistry)),
         Layer.provide(secondDirectoryLayer),
         Layer.provide(defaultServerSettingsLayer),
@@ -2384,6 +2403,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
         Layer.provide(runtimeRepositoryLayer),
       );
       const firstProviderLayer = makeProviderServiceLive().pipe(
+        Layer.provide(ThreadSessionAdmissionPermissive),
         Layer.provide(Layer.succeed(ProviderAdapterRegistry, firstRegistry)),
         Layer.provide(firstDirectoryLayer),
         Layer.provide(defaultServerSettingsLayer),
@@ -2415,6 +2435,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
         Layer.provide(runtimeRepositoryLayer),
       );
       const secondProviderLayer = makeProviderServiceLive().pipe(
+        Layer.provide(ThreadSessionAdmissionPermissive),
         Layer.provide(Layer.succeed(ProviderAdapterRegistry, secondRegistry)),
         Layer.provide(secondDirectoryLayer),
         Layer.provide(defaultServerSettingsLayer),
@@ -2498,6 +2519,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
       };
       const providerLayerFor = (adapter: ReturnType<typeof makeFakeCodexAdapter>["adapter"]) =>
         makeProviderServiceLive().pipe(
+          Layer.provide(ThreadSessionAdmissionPermissive),
           Layer.provide(Layer.succeed(ProviderAdapterRegistry, accountsRegistry(adapter))),
           Layer.provide(ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer))),
           Layer.provide(defaultServerSettingsLayer),
@@ -2560,6 +2582,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
           Layer.provide(runtimeRepositoryLayer),
         );
         const firstProviderLayer = makeProviderServiceLive().pipe(
+          Layer.provide(ThreadSessionAdmissionPermissive),
           Layer.provide(Layer.succeed(ProviderAdapterRegistry, firstRegistry)),
           Layer.provide(firstDirectoryLayer),
           Layer.provide(defaultServerSettingsLayer),
@@ -2586,6 +2609,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
           Layer.provide(runtimeRepositoryLayer),
         );
         const secondProviderLayer = makeProviderServiceLive().pipe(
+          Layer.provide(ThreadSessionAdmissionPermissive),
           Layer.provide(Layer.succeed(ProviderAdapterRegistry, secondRegistry)),
           Layer.provide(secondDirectoryLayer),
           Layer.provide(defaultServerSettingsLayer),
@@ -3030,6 +3054,221 @@ validation.layer("ProviderServiceLive validation", (it) => {
       assert.equal(Option.isSome(runtime), true);
       if (Option.isSome(runtime)) {
         assert.equal(runtime.value.threadId, session.threadId);
+      }
+    }),
+  );
+});
+
+/**
+ * The session fence and the proven stop (docs/design/fleet.md, Part 3b),
+ * against an admission whose fenced threads the test sets.
+ */
+function makeFencedProviderServiceLayer() {
+  const codex = makeFakeCodexAdapter();
+  const claude = makeFakeCodexAdapter(CLAUDE_AGENT_DRIVER);
+  const fenced = new Set<string>();
+  const noteBeforeStop = vi.fn((_sessionKey: ThreadId): Effect.Effect<void> => Effect.void);
+  const confirmThreadStopped = vi.fn(
+    (
+      _threadId: ThreadId,
+      _known: ReadonlyArray<ProviderStoppedSessionHint>,
+    ): Effect.Effect<ProviderStopConfirmation> => Effect.succeed({ confirmed: true }),
+  );
+  const registry = makeAdapterRegistryMock({
+    [ProviderDriverKind.make("codex")]: { ...codex.adapter, confirmThreadStopped, noteBeforeStop },
+    // A driver that can't prove its stop.
+    [ProviderDriverKind.make("claudeAgent")]: claude.adapter,
+  });
+  const runtimeRepositoryLayer = ProviderSessionRuntimeRepositoryLive.pipe(
+    Layer.provide(SqlitePersistenceMemory),
+  );
+  const directoryLayer = ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer));
+  const admission = Layer.succeed(
+    ThreadSessionAdmission,
+    ThreadSessionAdmission.of({
+      refusal: (threadId) =>
+        Effect.succeed(fenced.has(threadId) ? "This thread is moving to Mac mini." : null),
+    }),
+  );
+  const layer = it.layer(
+    Layer.mergeAll(
+      makeProviderServiceLive().pipe(
+        Layer.provide(admission),
+        Layer.provide(Layer.succeed(ProviderAdapterRegistry, registry)),
+        Layer.provide(directoryLayer),
+        Layer.provide(defaultServerSettingsLayer),
+        Layer.provideMerge(AnalyticsService.layerTest),
+        Layer.provide(Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers)),
+      ),
+      directoryLayer,
+      runtimeRepositoryLayer,
+      NodeServices.layer,
+    ),
+  );
+  return { codex, claude, fenced, confirmThreadStopped, noteBeforeStop, layer };
+}
+
+const fence = makeFencedProviderServiceLayer();
+
+fence.layer("ProviderServiceLive moving threads", (it) => {
+  const MOVING = asThreadId("6f1d1e0a-7a51-4c3b-9d47-1a2b3c4d5e6f");
+  const ROOM_AGENT = ThreadParticipantId.make("0b5c2a6e-9f1d-4e8a-8b7c-6d5e4f3a2b1c");
+  const startOn = (instance: ProviderInstanceId, key: ThreadId) =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      return yield* provider.startSession(key, {
+        provider: ProviderDriverKind.make(instance === codexInstanceId ? "codex" : "claudeAgent"),
+        providerInstanceId: instance,
+        threadId: key,
+        cwd: "/tmp/project",
+        runtimeMode: "full-access",
+      });
+    });
+
+  it.effect("starts and recovers no session of a fenced thread, whatever its key", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const started = yield* startOn(codexInstanceId, MOVING);
+      // The runtime is gone; the binding would bring it back.
+      yield* fence.codex.stopSession(started.threadId);
+      fence.codex.startSession.mockClear();
+      fence.fenced.add(MOVING);
+
+      const recovered = yield* provider
+        .rollbackConversation({ threadId: MOVING, numTurns: 1 })
+        .pipe(Effect.result);
+      assert.equal(recovered._tag, "Failure");
+      const roomAgent = yield* startOn(
+        codexInstanceId,
+        participantSessionKey(MOVING, ROOM_AGENT),
+      ).pipe(Effect.result);
+      assert.equal(roomAgent._tag, "Failure");
+      assert.include(
+        String(roomAgent._tag === "Failure" ? roomAgent.failure.message : ""),
+        "moving to Mac mini",
+      );
+      assert.equal(fence.codex.startSession.mock.calls.length, 0);
+
+      fence.fenced.delete(MOVING);
+      yield* provider.rollbackConversation({ threadId: MOVING, numTurns: 1 });
+      assert.equal(fence.codex.startSession.mock.calls.length, 1);
+    }),
+  );
+
+  it.effect("quiesceThread stops every runtime of the thread and needs each driver's proof", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const other = asThreadId("thread-stays");
+      yield* startOn(codexInstanceId, MOVING);
+      yield* startOn(codexInstanceId, participantSessionKey(MOVING, ROOM_AGENT));
+      yield* startOn(codexInstanceId, other);
+      // The move's fence is up before its sessions stop.
+      fence.fenced.add(MOVING);
+      fence.noteBeforeStop.mockClear();
+
+      assert.deepEqual(yield* provider.quiesceThread(MOVING), { confirmed: true });
+      const left = (yield* provider.listSessions()).map((session) => session.threadId);
+      assert.deepEqual(left, [other]);
+      const [confirmedFor, known] = fence.confirmThreadStopped.mock.calls.at(-1)!;
+      assert.equal(confirmedFor, MOVING);
+      // With what the directory keeps of each session the driver ran for it,
+      // for a driver whose own evidence a restart lost.
+      assert.deepEqual(
+        known.map((hint) => hint.sessionKey).toSorted(),
+        [MOVING, participantSessionKey(MOVING, ROOM_AGENT)].toSorted(),
+      );
+      // What each stopping runtime started was noted first; a stop that isn't
+      // for a move never reads the process table.
+      assert.deepEqual(
+        fence.noteBeforeStop.mock.calls.map(([key]) => key).toSorted(),
+        [MOVING, participantSessionKey(MOVING, ROOM_AGENT)].toSorted(),
+      );
+      yield* provider.stopSession({ threadId: other });
+      assert.equal(fence.noteBeforeStop.mock.calls.length, 2);
+      fence.fenced.delete(MOVING);
+
+      // A driver that can't prove its stop never passes for a thread it ran.
+      yield* startOn(ProviderInstanceId.make("claudeAgent"), MOVING);
+      const unproven = yield* provider.quiesceThread(MOVING);
+      assert.deepEqual(unproven, {
+        confirmed: false,
+        reason: "claudeAgent can't confirm it stopped",
+      });
+      // Nor does one whose own proof failed.
+      fence.confirmThreadStopped.mockImplementationOnce(() =>
+        Effect.succeed({ confirmed: false, reason: "its process 4242 didn't exit" }),
+      );
+      assert.deepEqual(yield* provider.quiesceThread(MOVING), {
+        confirmed: false,
+        reason: "its process 4242 didn't exit",
+      });
+    }),
+  );
+
+  it.effect("waits for a recovery already under way, and stops what it opened", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const RECOVERING = asThreadId("8c2e4f6a-1b3d-4e5f-9a7b-2c4d6e8f0a1b");
+      yield* startOn(codexInstanceId, RECOVERING);
+      // The runtime is gone; a transcript read will bring it back.
+      yield* fence.codex.stopSession(RECOVERING);
+      const reached = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const startNormally = fence.codex.startSession.getMockImplementation()!;
+      fence.codex.startSession.mockImplementationOnce((input) =>
+        Deferred.succeed(reached, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+          Effect.andThen(startNormally(input)),
+        ),
+      );
+      const recovery = yield* provider
+        .rollbackConversation({ threadId: RECOVERING, numTurns: 1 })
+        .pipe(Effect.exit, Effect.forkChild);
+      // It passed the fence and is opening the runtime when the move begins.
+      yield* Deferred.await(reached);
+      fence.fenced.add(RECOVERING);
+      const quiesce = yield* provider.quiesceThread(RECOVERING).pipe(Effect.forkChild);
+      for (let turn = 0; turn < 20; turn += 1) yield* Effect.yieldNow;
+      assert.isUndefined(quiesce.pollUnsafe());
+
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(recovery);
+      assert.deepEqual(yield* Fiber.join(quiesce), { confirmed: true });
+      const left = (yield* provider.listSessions()).filter(
+        (session) => session.threadId === RECOVERING,
+      );
+      assert.deepEqual(left, []);
+      // Any recovery from here is refused.
+      const later = yield* provider
+        .rollbackConversation({ threadId: RECOVERING, numTurns: 1 })
+        .pipe(Effect.result);
+      assert.equal(later._tag, "Failure");
+      fence.fenced.delete(RECOVERING);
+    }),
+  );
+
+  it.effect("a stop that finds its session already stopped by another counts as stopped", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      for (const gone of [
+        (threadId: ThreadId) =>
+          new ProviderAdapterSessionNotFoundError({ provider: "codex", threadId }),
+        (threadId: ThreadId) =>
+          new ProviderAdapterSessionClosedError({ provider: "codex", threadId }),
+      ]) {
+        const RACED = asThreadId("3d5f7b9c-2e4a-4c6e-8f0a-1b3c5d7e9f2a");
+        yield* startOn(codexInstanceId, RACED);
+        // A move's quiesce and the reactor's stop race: the other one got there first.
+        const stopNormally = fence.codex.stopSession.getMockImplementation()!;
+        fence.codex.stopSession.mockImplementationOnce((threadId) =>
+          stopNormally(threadId).pipe(Effect.andThen(Effect.fail(gone(threadId)))),
+        );
+        const stopped = yield* provider.stopSession({ threadId: RACED }).pipe(Effect.result);
+        assert.equal(stopped._tag, "Success");
+        const left = (yield* provider.listSessions()).filter(
+          (session) => session.threadId === RACED,
+        );
+        assert.deepEqual(left, []);
       }
     }),
   );

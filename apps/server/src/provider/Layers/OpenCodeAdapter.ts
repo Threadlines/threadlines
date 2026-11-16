@@ -97,6 +97,8 @@ import {
   type OpenCodeClient,
   type OpenCodeError,
   type OpenCodeModelRef,
+  openCodeErrorDetail,
+  openCodeErrorStatus,
   openCodeErrorTag,
   openCodeModelSlug,
   parseOpenCodeModelSlug,
@@ -151,6 +153,10 @@ const BUILD_AGENT = "build";
 const PLAN_AGENT = "plan";
 /** How long a stop may take before the adapter checks whether OpenCode is still running. */
 const STOP_SETTLE_TIMEOUT = Duration.seconds(10);
+/** Asking OpenCode whether stopped work ended: each call's limit, and how often to ask again. */
+const OPENCODE_CONFIRM_CALL_TIMEOUT = Duration.seconds(5);
+const OPENCODE_CONFIRM_RETRY = Duration.millis(500);
+const OPENCODE_CONFIRM_ATTEMPTS = 10;
 /** How long a turn waits for the execution OpenCode starts to deliver steered input. */
 const HELD_END_GRACE = Duration.seconds(5);
 /** Lists (models, agents) are empty for a moment in a directory the server has not loaded yet. */
@@ -413,6 +419,26 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
 
     const runtimeEvents = yield* PubSub.unbounded<ProviderRuntimeEvent>();
     const sessions = new Map<ThreadId, SessionContext>();
+    /**
+     * Work a stop interrupted, by session key, until OpenCode confirms it
+     * ended (confirmThreadStopped). One OpenCode server runs every thread's
+     * agent, so the server's own word is the proof: its process stays up.
+     */
+    const stoppedWork = new Map<
+      ThreadId,
+      {
+        readonly client: OpenCodeClient;
+        readonly directory: string;
+        readonly sessionIds: ReadonlyArray<string>;
+        readonly shellIds: ReadonlyArray<string>;
+      }
+    >();
+    /**
+     * Session keys this process ran. One it never ran may still have work on
+     * the server from before a restart, whose stop evidence died with the
+     * process: confirmThreadStopped asks the server about it instead.
+     */
+    const ranHere = new Set<ThreadId>();
     /** Every OpenCode session we own, root or child, to the thread it belongs to. */
     const owners = new Map<string, SessionContext>();
     /** Which session registered each Threadlines tool server, so a stale stop never removes a newer one. */
@@ -2395,6 +2421,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
           }
 
           sessions.set(input.threadId, ctx);
+          ranHere.add(input.threadId);
           owners.set(rootSessionId, ctx);
 
           yield* emit({
@@ -3048,6 +3075,14 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
             .filter((child) => child.status === "running")
             .map((child) => child.sessionId),
         ];
+        if (running.length > 0 || ctx.backgroundShells.size > 0) {
+          stoppedWork.set(threadId, {
+            client: ctx.client,
+            directory: ctx.directory,
+            sessionIds: running,
+            shellIds: [...ctx.backgroundShells.keys()],
+          });
+        }
         yield* Effect.forEach(
           running,
           (sessionId) =>
@@ -3147,6 +3182,129 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
     const stopAll: OpenCodeAdapterShape["stopAll"] = () =>
       Effect.forEach([...sessions.keys()], stopSession, { discard: true });
 
+    /** What OpenCode still runs of the work a stop interrupted: problems, in words. */
+    const workLeft = (work: NonNullable<ReturnType<typeof stoppedWork.get>>) =>
+      Effect.gen(function* () {
+        const active = yield* runOpenCode("session.active", (signal) =>
+          work.client.session.active({ signal }),
+        ).pipe(Effect.timeout(OPENCODE_CONFIRM_CALL_TIMEOUT));
+        const runningShells = yield* Effect.forEach(
+          work.shellIds,
+          (id) =>
+            runOpenCode("shell.get", (signal) =>
+              work.client.shell.get({ id, location: { directory: work.directory } }, { signal }),
+            ).pipe(
+              Effect.map((shell) => (shell.data.status === "running" ? [id] : [])),
+              // Removed: gone.
+              Effect.catchIf(
+                (error) => openCodeErrorStatus(error) === 404,
+                () => Effect.succeed([]),
+              ),
+              Effect.timeout(OPENCODE_CONFIRM_CALL_TIMEOUT),
+            ),
+          { concurrency: "unbounded" },
+        ).pipe(Effect.map((ids) => ids.flat()));
+        const busy = work.sessionIds.filter((id) => Object.hasOwn(active, id));
+        return [
+          ...(busy.length > 0 ? ["OpenCode still runs its work"] : []),
+          ...(runningShells.length > 0
+            ? [
+                `OpenCode still runs ${runningShells.length} shell${runningShells.length === 1 ? "" : "s"} it started`,
+              ]
+            : []),
+        ];
+      }).pipe(
+        Effect.catch((error) =>
+          Effect.succeed([`OpenCode's server didn't answer (${openCodeErrorDetail(error)})`]),
+        ),
+      );
+
+    /**
+     * Asks OpenCode whether the work a thread's stops interrupted has ended,
+     * waiting a little for interrupts still settling. A thread that was idle
+     * when it stopped left nothing to ask about.
+     */
+    /**
+     * What OpenCode may still run for a session this process never ran (a
+     * restart lost what its stop knew): its root session and their children,
+     * and any shell running in its folder. Problems, in words.
+     */
+    const workLeftOnServer = (rootSessionId: string, directory: string | undefined) =>
+      manager
+        .withServer(({ server }) =>
+          Effect.gen(function* () {
+            const client = server.client;
+            const call = <A>(method: string, run: (signal: AbortSignal) => Promise<A>) =>
+              runOpenCode(method, run).pipe(Effect.timeout(OPENCODE_CONFIRM_CALL_TIMEOUT));
+            const sessionIds = [rootSessionId];
+            for (let index = 0; index < sessionIds.length && sessionIds.length < 200; index++) {
+              const parentID = sessionIds[index]!;
+              const children = yield* call("session.list", (signal) =>
+                client.session.list({ parentID, limit: 100 }, { signal }),
+              );
+              sessionIds.push(...(children.data ?? []).map((child) => child.id));
+            }
+            const active = yield* call("session.active", (signal) =>
+              client.session.active({ signal }),
+            );
+            const problems: string[] = [];
+            if (sessionIds.some((id) => Object.hasOwn(active, id))) {
+              problems.push("OpenCode still runs its work");
+            }
+            if (directory === undefined) {
+              problems.push("its folder isn't known, so OpenCode's shells there can't be checked");
+            } else {
+              const shells = yield* call("shell.list", (signal) =>
+                client.shell.list({ location: { directory } }, { signal }),
+              );
+              const running = shells.data.filter((shell) => shell.status === "running").length;
+              if (running > 0) {
+                problems.push(
+                  `OpenCode still runs ${running} shell${running === 1 ? "" : "s"} in its folder`,
+                );
+              }
+            }
+            return problems;
+          }),
+        )
+        .pipe(
+          Effect.catch((error) =>
+            Effect.succeed([`OpenCode's server didn't answer (${openCodeErrorDetail(error)})`]),
+          ),
+        );
+
+    const confirmThreadStopped: NonNullable<OpenCodeAdapterShape["confirmThreadStopped"]> = (
+      threadId,
+      known,
+    ) =>
+      Effect.gen(function* () {
+        const keys = [...stoppedWork.keys()].filter(
+          (key) => parseSessionKey(key).threadId === threadId,
+        );
+        const problems: string[] = [];
+        // Never confirmed on evidence a restart emptied: ask the server.
+        for (const hint of known) {
+          if (ranHere.has(hint.sessionKey) || stoppedWork.has(hint.sessionKey)) continue;
+          const rootSessionId = parseOpenCodeResumeCursor(hint.resumeCursor)?.sessionId;
+          if (rootSessionId === undefined) continue;
+          problems.push(...(yield* workLeftOnServer(rootSessionId, hint.cwd)));
+        }
+        for (const key of keys) {
+          const work = stoppedWork.get(key);
+          if (work === undefined) continue;
+          let left = yield* workLeft(work);
+          for (let attempt = 1; left.length > 0 && attempt < OPENCODE_CONFIRM_ATTEMPTS; attempt++) {
+            yield* Effect.sleep(OPENCODE_CONFIRM_RETRY);
+            left = yield* workLeft(work);
+          }
+          if (left.length === 0) stoppedWork.delete(key);
+          problems.push(...left);
+        }
+        return problems.length === 0
+          ? ({ confirmed: true } as const)
+          : ({ confirmed: false, reason: problems.join("; ") } as const);
+      });
+
     yield* Effect.addFinalizer(() =>
       stopAll().pipe(Effect.ignore, Effect.andThen(PubSub.shutdown(runtimeEvents))),
     );
@@ -3190,6 +3348,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
       deleteThread,
       readSubagentTranscript,
       stopAll,
+      confirmThreadStopped,
       streamEvents: Stream.fromPubSub(runtimeEvents),
     } satisfies OpenCodeAdapterShape;
   });

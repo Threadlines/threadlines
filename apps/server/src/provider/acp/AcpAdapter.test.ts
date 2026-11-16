@@ -28,6 +28,7 @@ import {
 
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { isProcessRunning } from "../testAgentProcess.ts";
 import type { UsageLedgerEntry } from "../../usage/usageLedger.ts";
 import { type AcpAdapterShape, acpDiffFileChanges, makeAcpAdapter } from "./AcpAdapter.ts";
 import { discoverAcpModels } from "./AcpProvider.ts";
@@ -409,6 +410,66 @@ nativeControlsAdapterTestLayer("an agent driven through its own controls", (it) 
     }),
   );
 });
+
+it.live.skipIf(isWindows)(
+  "proves an agent, and a shell it left in a process group of its own, are gone after a stop",
+  () =>
+    Effect.gen(function* () {
+      const dir = yield* Effect.promise(() => mkdtemp(path.join(os.tmpdir(), "acp-confirm-")));
+      const shellPidPath = path.join(dir, "shell.pid");
+      // A helper the agent runs in the background starts a shell in a group
+      // of its own, the way Grok's background shells do. It writes the
+      // shell's pid beside the wrapper script, which hands it that path.
+      const helper = `const { spawn } = require("node:child_process"); const shell = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" }); shell.unref(); require("node:fs").writeFileSync(process.argv[1], String(shell.pid)); setInterval(() => {}, 1000);`;
+      const wrapperPath = path.join(dir, "agent-with-shell.sh");
+      yield* Effect.promise(async () => {
+        await writeFile(
+          wrapperPath,
+          `#!/bin/sh\n${JSON.stringify(nodeExe)} -e '${helper}' "$(dirname "$0")/shell.pid" &\nexec ${JSON.stringify(nodeExe)} ${JSON.stringify(mockAgentPath)} "$@"\n`,
+          "utf8",
+        );
+        await chmod(wrapperPath, 0o755);
+      });
+      const settings = yield* ServerSettingsService;
+      yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+      const adapter = yield* makeAcpAdapter(CURSOR_ACP_DESCRIPTOR, decodeCursorSettings({}), {
+        resolveSettings: yield* makeResolveCursorSettings,
+      });
+      const threadId = ThreadId.make("cursor-confirm-stopped");
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("cursor"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+      });
+      const shellPid = Number(yield* Effect.promise(() => waitForFileContent(shellPidPath, 2_000)));
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          try {
+            process.kill(shellPid, "SIGKILL");
+          } catch {}
+        }),
+      );
+
+      // A stop for a move notes what it started first (ProviderService does).
+      yield* adapter.noteBeforeStop!(threadId);
+      yield* adapter.stopSession(threadId);
+      // The stop ended the agent's own process group; the shell lives on.
+      assert.isTrue(isProcessRunning(shellPid));
+
+      assert.deepStrictEqual(yield* adapter.confirmThreadStopped!(threadId), { confirmed: true });
+      assert.isFalse(isProcessRunning(shellPid));
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(
+          ServerSettingsService.layerTest(),
+          ServerConfig.layerTest(process.cwd(), { prefix: "threadlines-acp-confirm-test-" }),
+        ).pipe(Layer.provideMerge(NodeServices.layer)),
+      ),
+    ),
+);
 
 cursorAdapterTestLayer("CursorAdapterLive", (it) => {
   it.effect("starts a session and maps mock ACP prompt flow to runtime events", () =>

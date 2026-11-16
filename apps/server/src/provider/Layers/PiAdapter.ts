@@ -73,6 +73,7 @@ import { createHash } from "node:crypto";
 import * as NodePath from "node:path";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
+import { makeAgentProcessLedger } from "../agentProcessLedger.ts";
 import { ServerConfig } from "../../config.ts";
 import {
   BROWSER_MCP_SERVER_NAME,
@@ -376,6 +377,8 @@ export function makePiAdapter(options: PiAdapterOptions) {
     const boundInstanceId = options.instanceId;
     const runtimeEvents = yield* PubSub.unbounded<ProviderRuntimeEvent>();
     const sessions = new Map<ThreadId, SessionContext>();
+    /** Each Pi process it started, until proven gone (confirmThreadStopped). */
+    const processes = yield* makeAgentProcessLedger();
     const startRpc = options.startRpc ?? startPiRpc;
 
     const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
@@ -1403,6 +1406,12 @@ export function makePiAdapter(options: PiAdapterOptions) {
                 }),
             ),
           );
+          if (rpc.pid !== undefined) {
+            yield* processes.track(ctx.threadId, {
+              pid: rpc.pid,
+              exited: Effect.asVoid(rpc.exited),
+            });
+          }
           // Without its commands a marker would reach the model as text.
           const commands = decodePi(PiCommands)(
             yield* rpc
@@ -2394,6 +2403,8 @@ export function makePiAdapter(options: PiAdapterOptions) {
         })),
       rollbackThread,
       stopAll,
+      noteBeforeStop: processes.beforeStop,
+      confirmThreadStopped: processes.confirm,
       streamEvents: Stream.fromPubSub(runtimeEvents),
     } satisfies PiAdapterShape;
   });

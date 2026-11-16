@@ -6,11 +6,15 @@ import {
   ProviderInstanceId,
   ThreadId,
   ThreadMoveId,
+  ThreadMoveRequestId,
   type ThreadMoveTargetPreview,
+  type ThreadPendingMove,
+  TurnId,
 } from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  describePendingMove,
   describeThreadMoveProgress,
   formatThreadMoveChanges,
   isThreadMoveOffered,
@@ -121,6 +125,42 @@ describe("describeThreadMoveProgress", () => {
   });
 });
 
+describe("describePendingMove", () => {
+  const pending = (overrides: Partial<ThreadPendingMove> = {}): ThreadPendingMove => ({
+    requestId: ThreadMoveRequestId.make("queued-1"),
+    target: { environmentId: MAC_MINI, label: "Mac mini" },
+    agent: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+    mode: "when-done",
+    stage: "waiting",
+    requestedAt: "2026-10-22T09:00:00.000Z",
+    requestedBy: { kind: "user" },
+    waitsFor: [{ code: "approval", words: "once you answer" }],
+    ...overrides,
+  });
+
+  it("says when it goes, in the agent's name when the agent asked, and what holds it", () => {
+    expect(describePendingMove(pending()).lead).toBe("Moves to Mac mini once you answer.");
+    expect(
+      describePendingMove(
+        pending({
+          requestedBy: { kind: "agent", turnId: TurnId.make("turn-1") },
+          waitsFor: [{ code: "turn", words: "when this turn ends" }],
+        }),
+      ).lead,
+    ).toBe("Your agent asked to move this thread to Mac mini when this turn ends.");
+    expect(describePendingMove(pending({ stage: "quiescing", waitsFor: [] })).lead).toBe(
+      "Stopping the agent to move to Mac mini…",
+    );
+    expect(
+      describePendingMove(
+        pending({
+          hold: { kind: "target_unreachable", words: "Waiting for Mac mini to connect." },
+        }),
+      ),
+    ).toEqual({ lead: "Waiting for Mac mini to connect.", severity: "info", retry: true });
+  });
+});
+
 describe("isThreadMoveStalled", () => {
   it("holds an unfinished move whose link is gone, revoked or can't reach the other computer", () => {
     expect(isThreadMoveStalled({ move: move(), outbound: [link()] })).toBe(false);
@@ -181,6 +221,16 @@ describe("picking where and with whom", () => {
       },
     });
     expect(pickDefaultMoveTarget([refused, suggested])).toBe(suggested);
+    // One out of reach comes before one that can't take it, after one that can.
+    const offline = target({
+      environmentId: EnvironmentId.make("environment-laptop"),
+      label: "Laptop",
+      refusal: "Laptop can't be reached right now.",
+      unreachable: true,
+      agents: [],
+    });
+    expect(pickDefaultMoveTarget([refused, offline])).toBe(offline);
+    expect(pickDefaultMoveTarget([offline, suggested])).toBe(suggested);
     expect(pickDefaultMoveAgent(suggested)).toEqual({
       instanceId: "claudeAgent",
       model: "claude-opus-5-5",

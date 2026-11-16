@@ -99,6 +99,7 @@ import { removeSideRuntimeHome, sweepStaleSideRuntimeHomes } from "../sideRuntim
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { initializeCodexAppServerClient, makeCodexAppServerClient } from "./CodexProvider.ts";
 import { holdLaunchGate, type LaunchGate } from "../managedRuntime/LaunchGate.ts";
+import { makeAgentProcessLedger } from "../agentProcessLedger.ts";
 import { mcpRoomEndpointUrl } from "../../mcp/McpHttpServer.ts";
 import { roomSideKindOf, roomToolsFor } from "../../mcp/roomToolAccess.ts";
 
@@ -3248,6 +3249,8 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     options?.nativeEventLogger === undefined ? nativeEventLogger : undefined;
   const runtimeEventQueue = yield* Queue.unbounded<ProviderRuntimeEvent>();
   const sessions = new Map<ThreadId, CodexAdapterSessionContext>();
+  /** Each app-server it started, until proven gone (confirmThreadStopped). */
+  const processes = yield* makeAgentProcessLedger();
   /**
    * Threads whose message went again after a sign-in failure, until their
    * agent answers: a fresh app server that fails too means the sign-in itself
@@ -3462,6 +3465,10 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
               }),
           ),
         );
+
+        if (runtime.process !== undefined) {
+          yield* processes.track(input.threadId, runtime.process);
+        }
 
         const turnProgress: CodexTurnProgress = { workedTurnIds: new Set() };
         const suggestions: CodexSuggestionState = {
@@ -4623,6 +4630,8 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     listSessions,
     hasSession,
     stopAll,
+    noteBeforeStop: processes.beforeStop,
+    confirmThreadStopped: processes.confirm,
     get streamEvents() {
       return Stream.fromQueue(runtimeEventQueue);
     },

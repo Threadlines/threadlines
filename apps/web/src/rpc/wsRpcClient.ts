@@ -539,6 +539,13 @@ export interface WsRpcClient {
     readonly preview: RpcUnaryMethod<typeof WS_METHODS.movesPreview>;
     readonly start: RpcUnaryMethod<typeof WS_METHODS.movesStart>;
     readonly cancel: RpcUnaryMethod<typeof WS_METHODS.movesCancel>;
+    /**
+     * A move that waits for the thread to be free (Part 3b). Only servers
+     * whose preview can say `waitsFor` or an `unreachable` target serve these.
+     */
+    readonly queue: RpcUnaryMethod<typeof WS_METHODS.movesQueue>;
+    readonly unqueue: RpcUnaryMethod<typeof WS_METHODS.movesUnqueue>;
+    readonly retry: RpcUnaryMethod<typeof WS_METHODS.movesRetry>;
   };
   /**
    * Setting up a project on another computer (docs/design/fleet.md, Part 8),
@@ -1418,6 +1425,9 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       preview: (input) => transport.request((client) => client[WS_METHODS.movesPreview](input)),
       start: (input) => transport.request((client) => client[WS_METHODS.movesStart](input)),
       cancel: (input) => transport.request((client) => client[WS_METHODS.movesCancel](input)),
+      queue: (input) => transport.request((client) => client[WS_METHODS.movesQueue](input)),
+      unqueue: (input) => transport.request((client) => client[WS_METHODS.movesUnqueue](input)),
+      retry: (input) => transport.request((client) => client[WS_METHODS.movesRetry](input)),
     },
     // Every call here is safe to send again: the reads are pure, a start is
     // the same job for the same setupId, and cancel and dismiss repeat as

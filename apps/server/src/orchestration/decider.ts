@@ -118,7 +118,12 @@ import {
   decideMoveCancel,
   decideMoveComplete,
   decideMoveProgress,
+  decideMoveQueue,
+  decideMoveQueueEnd,
+  decideMoveQueueStatus,
+  decideMoveQuiesce,
   decideMoveStart,
+  decideMoveUnqueue,
   decideThreadImport,
   threadMoveGuardRefusal,
 } from "./threadMoveDecisions.ts";
@@ -597,6 +602,8 @@ function withArmedContinueAtReset(
   settingOn: boolean,
 ): OrchestrationSession {
   const resetsAt = session.lastErrorUsageLimit?.resetsAt ?? null;
+  // The user asked to move this thread: that wins over an automatic retry here.
+  if ((thread.pendingMove ?? null) !== null) return session;
   if (
     resetsAt === null ||
     session.continueAtReset != null ||
@@ -2308,6 +2315,49 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             : []),
         ],
       });
+    }
+
+    // A move that waits for the thread to be free (docs/design/fleet.md, Part 3b).
+    case "thread.move.queue": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const baseFor = childEventBase(command, command.createdAt);
+      const decided = decideMoveQueue(readModel, thread, command, baseFor);
+      // "Stop and move now" holds command output the way Stop does, so a
+      // command finishing later can't wake the agent the move stopped.
+      const held =
+        command.mode === "stop-now" && !("refusal" in decided) && decided.length > 0
+          ? holdCommandOutputOnStop(thread, () => baseFor(thread.id), command.createdAt)
+          : [];
+      return yield* planChildThreadDecision(
+        command.type,
+        "refusal" in decided ? decided : [...decided, ...held],
+      );
+    }
+
+    case "thread.move.unqueue":
+    case "thread.move.quiesce":
+    case "thread.move.queue-status":
+    case "thread.move.queue-end": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const baseFor = childEventBase(command, command.createdAt);
+      return yield* planChildThreadDecision(
+        command.type,
+        command.type === "thread.move.unqueue"
+          ? decideMoveUnqueue(thread, command, baseFor)
+          : command.type === "thread.move.quiesce"
+            ? decideMoveQuiesce(readModel, thread, command, baseFor)
+            : command.type === "thread.move.queue-status"
+              ? decideMoveQueueStatus(thread, command, baseFor)
+              : decideMoveQueueEnd(thread, command, baseFor),
+      );
     }
 
     case "thread.move.start":

@@ -67,6 +67,7 @@ import {
 } from "../../observability/Metrics.ts";
 import { type ProviderAdapterError, ProviderValidationError } from "../Errors.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
+import { ThreadSessionAdmission } from "../Services/ThreadSessionAdmission.ts";
 import { ProviderAdapterRegistry } from "../Services/ProviderAdapterRegistry.ts";
 import { ProviderService, type ProviderServiceShape } from "../Services/ProviderService.ts";
 import {
@@ -83,6 +84,8 @@ import { type EarlySessionEndReason, makeEarlySessionLedger } from "../earlySess
 const EARLY_SESSION_START_TIMEOUT = Duration.seconds(60);
 /** How often unused early sessions are checked for expiry. */
 const EARLY_SESSION_SWEEP_INTERVAL = Duration.seconds(30);
+/** How long quiesceThread waits for a start or recovery of the thread already under way. */
+const QUIESCE_START_WAIT = Duration.seconds(90);
 import { AnalyticsService } from "../../telemetry/Services/AnalyticsService.ts";
 import {
   analyticsAgentProperties,
@@ -381,6 +384,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
 
   const registry = yield* ProviderAdapterRegistry;
   const directory = yield* ProviderSessionDirectory;
+  const admission = yield* ThreadSessionAdmission;
   const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
   const turnLatency = makeTurnLatencyTracker();
@@ -728,6 +732,17 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     () => reconcileInstanceSubscriptions,
   ).pipe(Effect.forkScoped);
 
+  /**
+   * The session fence (ThreadSessionAdmission): no session of a thread that
+   * is moving, moved, or having its sessions ended for a move starts or
+   * recovers, whatever its key and whoever asks.
+   */
+  const requireAdmission = (operation: string, sessionKey: ThreadId) =>
+    Effect.gen(function* () {
+      const refusal = yield* admission.refusal(parseSessionKey(sessionKey).threadId);
+      if (refusal !== null) return yield* toValidationError(operation, refusal);
+    });
+
   const recoverSessionForThread = Effect.fn("recoverSessionForThread")(function* (input: {
     readonly binding: ProviderRuntimeBinding;
     readonly operation: string;
@@ -744,6 +759,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     return yield* withEarlyGate(
       input.binding.threadId,
       Effect.gen(function* () {
+        // The fence is read holding the gate, so a recovery that waited on
+        // it while a move began is refused (quiesceThread waits for gates).
+        yield* requireAdmission(input.operation, input.binding.threadId);
         if (earlySessions.waiting(input.binding.threadId) === undefined) {
           earlySessions.forget(input.binding.threadId);
         }
@@ -950,6 +968,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       schema: ProviderSessionStartInput,
       payload: rawInput,
     });
+    yield* requireAdmission("ProviderService.startSession", threadId);
 
     const resolvedInstanceId = yield* requireBindingInstanceId(
       "ProviderService.startSession",
@@ -2572,7 +2591,24 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         lastResumeCursor = (yield* routed.adapter.listSessions()).find(
           (session) => session.threadId === routed.threadId,
         )?.resumeCursor;
-        yield* routed.adapter.stopSession(routed.threadId);
+        // A thread the session fence holds is stopping for a move: what its
+        // agent started is noted first, so the move can prove it gone
+        // (quiesceThread). Every other stop skips the process table.
+        if (
+          routed.adapter.noteBeforeStop !== undefined &&
+          (yield* admission.refusal(parseSessionKey(routed.threadId).threadId)) !== null
+        ) {
+          yield* routed.adapter.noteBeforeStop(routed.threadId);
+        }
+        // Two stops of one session can race (a move's quiesce and the
+        // reactor's session stop): the one that finds it already gone, or
+        // closed, has nothing left to stop.
+        yield* routed.adapter.stopSession(routed.threadId).pipe(
+          Effect.catchTags({
+            ProviderAdapterSessionNotFoundError: () => Effect.void,
+            ProviderAdapterSessionClosedError: () => Effect.void,
+          }),
+        );
       }
       // A side answer's runtime is disposable: nothing ever resumes it, so
       // its binding goes with it rather than piling up as "stopped".
@@ -2945,10 +2981,14 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     const input = { threadId };
     let metricProvider = "unknown";
     return yield* Effect.gen(function* () {
+      // A fenced thread's runtime isn't brought back just to delete its
+      // transcript: only its binding goes (and a live runtime, if any).
+      const admitted =
+        (yield* admission.refusal(parseSessionKey(input.threadId).threadId)) === null;
       const routed = yield* resolveRoutableSession({
         threadId: input.threadId,
         operation: "ProviderService.deleteThread",
-        allowRecovery: true,
+        allowRecovery: admitted,
       });
       turnLatency.sessionStopped(input.threadId);
       earlySessions.forget(input.threadId);
@@ -2959,7 +2999,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         "provider.thread_id": input.threadId,
         "provider.native_delete_supported": routed.adapter.deleteThread !== undefined,
       });
-      if (routed.adapter.deleteThread) {
+      if (routed.adapter.deleteThread && (admitted || routed.isActive)) {
         yield* routed.adapter.deleteThread(routed.threadId);
       } else if (routed.isActive) {
         yield* routed.adapter.stopSession(routed.threadId);
@@ -2979,6 +3019,104 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       }),
     );
   });
+
+  const quiesceThread: ProviderServiceShape["quiesceThread"] = Effect.fn("quiesceThread")(
+    function* (threadId) {
+      const ofThread = (key: string) => parseSessionKey(ThreadId.make(key)).threadId === threadId;
+      const liveOfThread = Effect.forEach(yield* getAdapterEntries, ([instanceId, adapter]) =>
+        adapter
+          .listSessions()
+          .pipe(
+            Effect.map((sessions) =>
+              sessions
+                .filter((session) => session.status !== "closed" && ofThread(session.threadId))
+                .map((session) => ({ instanceId, adapter, key: session.threadId })),
+            ),
+          ),
+      ).pipe(Effect.map((perAdapter) => perAdapter.flat()));
+      const ran = new Set<ProviderInstanceId>();
+      const problems: string[] = [];
+      /** Stops every listed session of the thread, and its early starts. */
+      const stopWhatRuns = Effect.gen(function* () {
+        const live = yield* liveOfThread;
+        for (const entry of live) ran.add(entry.instanceId);
+        // Early starts still starting have no session to list yet. One whose
+        // agent already runs has what it started noted before it is ended; a
+        // listed session's stop notes its own (stopSessionCore).
+        const keys = new Set<ThreadId>(live.map((entry) => entry.key));
+        for (const rawKey of earlyStartRuns.keys()) {
+          if (!ofThread(rawKey)) continue;
+          const key = ThreadId.make(rawKey);
+          keys.add(key);
+          if (live.some((entry) => entry.key === key)) continue;
+          for (const [, adapter] of yield* getAdapterEntries) {
+            if (adapter.noteBeforeStop !== undefined) yield* adapter.noteBeforeStop(key);
+          }
+        }
+        for (const key of keys) {
+          yield* stopSession({ threadId: key }).pipe(
+            Effect.catchCause((cause) =>
+              Effect.sync(() => {
+                const error = Cause.squash(cause);
+                problems.push(
+                  `stopping it failed (${error instanceof Error ? error.message : String(error)})`,
+                );
+              }),
+            ),
+          );
+        }
+      });
+      yield* stopWhatRuns;
+      // A start or recovery that passed the fence before it went up holds
+      // its key's gate until its session is listed: wait for each, then stop
+      // what they opened. Any start from here is refused (it reads the fence
+      // holding the gate).
+      const inFlight = [...earlyGates.entries()]
+        .filter(([key]) => ofThread(key))
+        .map(([, gate]) => gate);
+      if (inFlight.length > 0) {
+        const settled = yield* Effect.forEach(inFlight, (gate) => Deferred.await(gate), {
+          concurrency: "unbounded",
+          discard: true,
+        }).pipe(Effect.timeoutOption(QUIESCE_START_WAIT));
+        if (Option.isNone(settled)) problems.push("a session of it is still starting");
+        yield* stopWhatRuns;
+      }
+      for (const entry of yield* liveOfThread) {
+        problems.push(`${entry.adapter.provider} still lists its session`);
+      }
+      // Each driver proves its processes, and what they started, are gone,
+      // with what the directory keeps of the sessions it ran for the thread.
+      const bindings = (yield* directory.listBindings().pipe(
+        Effect.catch(() =>
+          Effect.sync(() => {
+            problems.push("its sessions' records couldn't be read");
+            return [];
+          }),
+        ),
+      )).filter((binding) => ofThread(binding.threadId));
+      for (const [instanceId, adapter] of yield* getAdapterEntries) {
+        if (adapter.confirmThreadStopped === undefined) {
+          if (ran.has(instanceId)) problems.push(`${adapter.provider} can't confirm it stopped`);
+          continue;
+        }
+        const confirmation = yield* adapter.confirmThreadStopped(
+          threadId,
+          bindings
+            .filter((binding) => binding.providerInstanceId === instanceId)
+            .map((binding) => ({
+              sessionKey: binding.threadId,
+              resumeCursor: binding.resumeCursor,
+              cwd: readPersistedCwd(binding.runtimePayload),
+            })),
+        );
+        if (!confirmation.confirmed) problems.push(confirmation.reason);
+      }
+      return problems.length === 0
+        ? ({ confirmed: true } as const)
+        : ({ confirmed: false, reason: problems.join("; ") } as const);
+    },
+  );
 
   const runStopAll = Effect.fn("runStopAll")(function* () {
     const threadIds = yield* directory.listThreadIds();
@@ -3078,6 +3216,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     respondToUserInput,
     stopSession,
     listSessions,
+    quiesceThread,
     getCapabilities,
     getInstanceInfo,
     rollbackConversation,

@@ -51,6 +51,8 @@ import {
   setTheme,
   getPowerState,
   setBackdropActive,
+  setWindowDragging,
+  canMoveWindow,
   showContextMenu,
 } from "./methods/window.ts";
 import {
@@ -92,6 +94,7 @@ export const installDesktopIpcHandlers = Effect.gen(function* () {
 
   yield* ipc.handleSync(getAppBranding);
   yield* ipc.handleSync(isMarketingCaptureMode);
+  yield* ipc.handleSync(canMoveWindow);
   yield* ipc.handleSync(getLocalEnvironmentBootstrap);
   yield* ipc.handleSync(getPreviousAppVersion);
 
@@ -158,6 +161,7 @@ export const installDesktopIpcHandlers = Effect.gen(function* () {
   yield* ipc.handle(setTheme);
   yield* ipc.handle(getPowerState);
   yield* ipc.handle(setBackdropActive);
+  yield* ipc.handle(setWindowDragging);
   yield* ipc.handle(setTaskbarStatus);
   yield* ipc.handle(getBackgroundOptions);
   yield* ipc.handle(setBackgroundOptions);

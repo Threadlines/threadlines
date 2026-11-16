@@ -77,7 +77,11 @@ import {
 import { Button } from "../ui/button";
 import { useLinkRequestAnswer } from "./linkedComputers";
 import { runtimeModeConfig } from "../../runtimeModeOptions";
-import { formatThreadMoveAccess, formatThreadMoveChanges } from "../../threadMove";
+import {
+  formatThreadMoveAccess,
+  formatThreadMoveChanges,
+  threadMoveStatusWord,
+} from "../../threadMove";
 import { ProjectFavicon } from "../ProjectFavicon";
 import {
   ThreadHoverCard,
@@ -450,14 +454,22 @@ export function ThreadProviderGlyph({ thread }: { thread: SidebarThreadSummary }
  * rows read it the same way, so a thread says the same thing wherever it sits.
  */
 function resolveRowStatusParts(thread: SidebarThreadSummary, status: ThreadStatusPill | null) {
-  // Moving to a linked computer, or moved there: frozen here either way, so
-  // the one quiet word wins the slot over whatever it last did.
-  const moveWord = thread.moveStatus ?? null;
-  const statusWord = moveWord ?? inboxStatusWord(status);
   const isInFlight = status?.label === "Working" || status?.label === "Starting";
   // In a room, an agent answering on the side while the others are idle: its
   // own name, and a clock from when it was asked.
   const isAnswering = status?.label === "Answering";
+  const pillWord = inboxStatusWord(status);
+  // Moving to a linked computer, or moved there: frozen here either way, so
+  // the one quiet word wins the slot over whatever it last did. A move that
+  // still waits is quieter: what the thread is doing, or needs, comes first,
+  // and "move queued" shows once it is only waiting to go.
+  const moveWord =
+    thread.moveStatus === undefined ||
+    (thread.moveStatus === "queued" &&
+      (pillWord !== null || isInFlight || isAnswering || status?.label === "Waiting"))
+      ? null
+      : threadMoveStatusWord(thread.moveStatus);
+  const statusWord = moveWord ?? pillWord;
   // A follow-up starts its session before the new turn's row lands in the
   // projection, so for a beat `latestTurn` is still the previous, finished
   // turn -- its clock must not run under the new label, which is "Working"
@@ -2345,7 +2357,7 @@ export const InboxDoneRow = memo(function InboxDoneRow(props: InboxDoneRowProps)
                       : "text-muted-foreground/45",
                 )}
               >
-                {thread.moveStatus ??
+                {(thread.moveStatus && threadMoveStatusWord(thread.moveStatus)) ??
                   (checkBackAt !== null ? (
                     <RowCheckBackStatus at={checkBackAt} />
                   ) : doneAt ? (

@@ -9,11 +9,24 @@
  * finish nor stop, and offers a way to keep working here instead: a new
  * thread forked from this one.
  *
+ * Before that, a move can wait for the thread to be free (Part 3b): its
+ * notice says when it goes, or what holds it, with Cancel (and Try again
+ * when held). One that ended without starting says why ("Didn't move: …")
+ * until the user dismisses it.
+ *
  * @module threadMoveNotice
  */
-import type { EnvironmentId, OrchestrationThreadMove, ThreadId } from "@threadlines/contracts";
+import {
+  type EnvironmentId,
+  type OrchestrationThreadMove,
+  type ThreadId,
+  ThreadMoveNotStartedPayload,
+  type ThreadMoveRequestId,
+  type ThreadPendingMove,
+} from "@threadlines/contracts";
 import { scopeThreadRef } from "@threadlines/client-runtime";
 import { useNavigate } from "@tanstack/react-router";
+import * as Schema from "effect/Schema";
 import { useCallback, useMemo, useState } from "react";
 
 import { describeComputerLinkFailure } from "../../environments/links/computerLinks";
@@ -23,8 +36,14 @@ import {
 } from "../../environments/links/threadMoves";
 import { usePrimaryEnvironmentId } from "../../environments/primary";
 import { useSavedEnvironmentRuntimeStore } from "../../environments/runtime";
+import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { useStore } from "../../store";
-import { describeThreadMoveProgress, isThreadMoveStalled } from "../../threadMove";
+import {
+  describePendingMove,
+  describeThreadMoveProgress,
+  isThreadMoveStalled,
+  THREAD_MOVE_NOT_STARTED_ACTIVITY_KIND,
+} from "../../threadMove";
 import { buildThreadRouteParams } from "../../threadRoutes";
 import type { Thread } from "../../types";
 import { Button } from "../ui/button";
@@ -189,5 +208,186 @@ export function useThreadMoveNotice(input: {
             },
           }),
     [canOpen, cancelling, move, onCancel, onContinueHere, onOpen, stalled],
+  );
+}
+
+export interface PendingMoveNoticeActions {
+  /** Cancels the move the notice shows (its own request id, never a newer one). */
+  readonly onCancel: () => void;
+  readonly cancelling: boolean;
+  /** Asks the server to try a held move again now. */
+  readonly onRetry: () => void;
+  readonly retrying: boolean;
+}
+
+/** The notice for a move that waits for the thread to be free (Part 3b). */
+export function buildPendingMoveNotice(input: {
+  readonly pendingMove: ThreadPendingMove;
+  readonly actions: PendingMoveNoticeActions;
+}): ComposerNotice {
+  const { pendingMove, actions } = input;
+  const words = describePendingMove(pendingMove);
+  return {
+    id: `thread-move-queued:${pendingMove.requestId}`,
+    severity: words.severity,
+    lead: words.lead,
+    // On a phone the words get the row's whole width; they run long.
+    wrapActions: true,
+    actions: (
+      <>
+        {words.retry ? (
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={actions.retrying || actions.cancelling}
+            onClick={actions.onRetry}
+          >
+            Try again
+          </Button>
+        ) : null}
+        <Button
+          size="xs"
+          variant="outline"
+          disabled={actions.cancelling}
+          onClick={actions.onCancel}
+          aria-label="Cancel the move"
+        >
+          Cancel
+        </Button>
+      </>
+    ),
+  };
+}
+
+/** A request this app is sending for a thread's waiting move, and which. */
+interface PendingMoveCall {
+  readonly kind: "cancel" | "retry";
+  readonly threadId: ThreadId;
+  readonly requestId: ThreadMoveRequestId;
+}
+
+/**
+ * buildPendingMoveNotice for the open thread, with its actions: Cancel and
+ * Try again go to the thread's own computer, naming the request shown.
+ */
+export function usePendingMoveNotice(input: {
+  readonly thread: Pick<Thread, "id" | "environmentId" | "pendingMove"> | undefined;
+  readonly computerLabel: string;
+}): ComposerNotice | null {
+  const { thread, computerLabel } = input;
+  const pendingMove = thread?.pendingMove ?? null;
+  const environmentId = thread?.environmentId ?? null;
+  const threadId = thread?.id ?? null;
+  const [call, setCall] = useState<PendingMoveCall | null>(null);
+
+  const send = useCallback(
+    (kind: PendingMoveCall["kind"], requestId: ThreadMoveRequestId) => {
+      if (environmentId === null || threadId === null) return;
+      const current = { kind, threadId, requestId };
+      setCall(current);
+      void (async () => {
+        try {
+          const client = requireThreadMovesClient(environmentId, computerLabel);
+          await (kind === "cancel"
+            ? client.unqueue({ threadId, requestId })
+            : client.retry({ threadId, requestId }));
+        } catch (error) {
+          toastManager.add(
+            failureNotice({
+              title: kind === "cancel" ? "Couldn't cancel the move" : "Couldn't try the move again",
+              reason: describeComputerLinkFailure(error, `${computerLabel} didn't answer.`),
+            }),
+          );
+        } finally {
+          setCall((latest) => (latest === current ? null : latest));
+        }
+      })();
+    },
+    [computerLabel, environmentId, threadId],
+  );
+
+  const requestId = pendingMove?.requestId ?? null;
+  const callInFlight = (kind: PendingMoveCall["kind"]) =>
+    call !== null &&
+    call.kind === kind &&
+    call.threadId === threadId &&
+    call.requestId === requestId;
+  const cancelling = callInFlight("cancel");
+  const retrying = callInFlight("retry");
+  return useMemo(
+    () =>
+      pendingMove === null
+        ? null
+        : buildPendingMoveNotice({
+            pendingMove,
+            actions: {
+              onCancel: () => send("cancel", pendingMove.requestId),
+              cancelling,
+              onRetry: () => send("retry", pendingMove.requestId),
+              retrying,
+            },
+          }),
+    [cancelling, pendingMove, retrying, send],
+  );
+}
+
+const isMoveNotStartedPayload = Schema.is(ThreadMoveNotStartedPayload);
+
+const MOVE_NOT_STARTED_DISMISSALS_STORAGE_KEY = "threadlines:move-not-started-dismissals:v1";
+const MoveNotStartedDismissalsSchema = Schema.Struct({ keys: Schema.Array(Schema.String) });
+/** Enough to outlast any notice still on screen; older keys fall off the front. */
+const MAX_MOVE_NOT_STARTED_DISMISSALS = 200;
+
+/**
+ * The thread's last queued move that ended without starting ("Didn't move:
+ * <why>"), until dismissed on this device. Gone while another move waits or
+ * runs, which says more.
+ */
+export function useMoveNotStartedNotice(input: {
+  readonly thread:
+    | Pick<Thread, "id" | "environmentId" | "activities" | "move" | "pendingMove">
+    | undefined;
+}): ComposerNotice | null {
+  const { thread } = input;
+  const [dismissals, setDismissals] = useLocalStorage(
+    MOVE_NOT_STARTED_DISMISSALS_STORAGE_KEY,
+    { keys: [] },
+    MoveNotStartedDismissalsSchema,
+  );
+  const anotherMove = Boolean(thread?.move || thread?.pendingMove);
+  const activities = thread?.activities;
+  const latest = useMemo(() => {
+    if (!activities) return null;
+    for (let index = activities.length - 1; index >= 0; index -= 1) {
+      const activity = activities[index];
+      if (activity?.kind !== THREAD_MOVE_NOT_STARTED_ACTIVITY_KIND) continue;
+      return isMoveNotStartedPayload(activity.payload) ? activity.payload : null;
+    }
+    return null;
+  }, [activities]);
+  const dismissalKey =
+    thread && latest ? `${thread.environmentId}:${thread.id}:${latest.requestId}` : null;
+  const dismissed = dismissalKey !== null && dismissals.keys.includes(dismissalKey);
+  const dismiss = useCallback(() => {
+    if (dismissalKey === null) return;
+    setDismissals((current) =>
+      current.keys.includes(dismissalKey)
+        ? current
+        : { keys: [...current.keys, dismissalKey].slice(-MAX_MOVE_NOT_STARTED_DISMISSALS) },
+    );
+  }, [dismissalKey, setDismissals]);
+  return useMemo<ComposerNotice | null>(
+    () =>
+      latest === null || anotherMove || dismissed
+        ? null
+        : {
+            id: `thread-move-not-started:${latest.requestId}`,
+            severity: "warning",
+            lead: "Didn't move:",
+            detail: latest.words,
+            dismissLabel: `Dismiss why it didn't move to ${latest.targetLabel}`,
+            onDismiss: dismiss,
+          },
+    [anotherMove, dismiss, dismissed, latest],
   );
 }

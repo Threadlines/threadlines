@@ -18,7 +18,10 @@
 /** The room endpoint's name, as each provider namespaces its tools. */
 export const ROOM_MCP_SERVER_NAME = "threadlines_room";
 
-/** Tools for starting, reading, messaging and stopping other threads. */
+/**
+ * Tools for starting, reading, messaging and stopping other threads, and
+ * moving the caller's own thread to a linked computer (`thread_move`).
+ */
 export const THREAD_TOOL_NAMES = [
   "thread_agents",
   "thread_start",
@@ -26,6 +29,7 @@ export const THREAD_TOOL_NAMES = [
   "thread_read",
   "thread_send",
   "thread_stop",
+  "thread_move",
 ] as const;
 
 /** Tools for listing, creating and editing this computer's scheduled tasks. */

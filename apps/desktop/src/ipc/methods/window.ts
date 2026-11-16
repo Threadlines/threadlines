@@ -26,6 +26,7 @@ import * as DesktopStatusIndicator from "../../window/DesktopStatusIndicator.ts"
 import * as DesktopBackdropMonitor from "../../window/DesktopBackdropMonitor.ts";
 import * as DesktopThemeAppearance from "../../window/DesktopThemeAppearance.ts";
 import * as DesktopWindow from "../../window/DesktopWindow.ts";
+import * as DesktopWindowDrag from "../../window/DesktopWindowDrag.ts";
 
 const ContextMenuPosition = Schema.Struct({
   x: Schema.Number,
@@ -231,5 +232,26 @@ export const setBackdropActive = makeIpcMethod({
   handler: Effect.fn("desktop.ipc.window.setBackdropActive")(function* (active) {
     const monitor = yield* DesktopBackdropMonitor.DesktopBackdropMonitor;
     yield* monitor.setBackdropActive(active);
+  }),
+});
+
+/** Whether a drag from the page can move the window here (not under Wayland). */
+export const canMoveWindow = makeSyncIpcMethod({
+  channel: IpcChannels.CAN_MOVE_WINDOW_CHANNEL,
+  result: Schema.Boolean,
+  handler: Effect.fn("desktop.ipc.window.canMoveWindow")(function* () {
+    const windowDrag = yield* DesktopWindowDrag.DesktopWindowDrag;
+    return windowDrag.canMoveWindow;
+  }),
+});
+
+/** A press on a header control became a drag (true), or ended (false): the window follows the cursor. */
+export const setWindowDragging = makeIpcMethod({
+  channel: IpcChannels.SET_WINDOW_DRAGGING_CHANNEL,
+  payload: Schema.Boolean,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.window.setWindowDragging")(function* (dragging) {
+    const windowDrag = yield* DesktopWindowDrag.DesktopWindowDrag;
+    yield* windowDrag.setDragging(dragging);
   }),
 });

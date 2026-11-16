@@ -177,6 +177,11 @@ export function makeCannedRoomHandlers(
       outcome: "stopped",
       threadId: input.threadId,
     })),
+    thread_move: answer("thread_move", () => ({
+      outcome: "queued",
+      detail:
+        "Queued: this thread moves to that computer when your turn ends. Finish your reply; don't start more work.",
+    })),
     schedule_list: answer("schedule_list", () => ({ outcome: "ok", tasks: [] })),
     schedule_create: answer("schedule_create", () => ({
       outcome: "asked_user",

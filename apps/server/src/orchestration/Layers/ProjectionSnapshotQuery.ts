@@ -63,6 +63,7 @@ import {
   RoomAgentInvite,
   ThreadMessageOrigin,
   OrchestrationThreadMove,
+  ThreadPendingMove,
   ThreadMovedFrom,
   ThreadRemoteOrigin,
   ThreadScheduledRun,
@@ -177,6 +178,7 @@ type ThreadLineageRow = Pick<
   | "outsideOrigin"
   | "outsideWork"
   | "move"
+  | "pendingMove"
   | "movedFrom"
   | "historySeedOwed"
   | "historySeedMessageId"
@@ -203,8 +205,9 @@ const threadLineageFields = (row: ThreadLineageRow) => ({
 });
 
 /** Moving a thread to a linked computer, or moved here from one (OrchestrationThreadMove). */
-const threadMoveFields = (row: Pick<ProjectionThread, "move" | "movedFrom">) => ({
+const threadMoveFields = (row: Pick<ProjectionThread, "move" | "pendingMove" | "movedFrom">) => ({
   ...(row.move ? { move: row.move } : {}),
+  ...(row.pendingMove ? { pendingMove: row.pendingMove } : {}),
   ...(row.movedFrom ? { movedFrom: row.movedFrom } : {}),
 });
 
@@ -306,6 +309,7 @@ const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
       Schema.NullOr(Schema.fromJsonString(Schema.Array(OrchestrationOutsideWork))),
     ),
     move: Schema.optional(Schema.NullOr(Schema.fromJsonString(OrchestrationThreadMove))),
+    pendingMove: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadPendingMove))),
     movedFrom: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadMovedFrom))),
   }),
 );
@@ -949,6 +953,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           outside_origin_json AS "outsideOrigin",
           outside_work_json AS "outsideWork",
           move_json AS "move",
+          pending_move_json AS "pendingMove",
           moved_from_json AS "movedFrom",
           history_seed_owed AS "historySeedOwed",
           history_seed_message_id AS "historySeedMessageId",
@@ -1017,6 +1022,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           outside_origin_json AS "outsideOrigin",
           outside_work_json AS "outsideWork",
           move_json AS "move",
+          pending_move_json AS "pendingMove",
           moved_from_json AS "movedFrom",
           history_seed_owed AS "historySeedOwed",
           history_seed_message_id AS "historySeedMessageId",
@@ -1087,6 +1093,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           outside_origin_json AS "outsideOrigin",
           outside_work_json AS "outsideWork",
           move_json AS "move",
+          pending_move_json AS "pendingMove",
           moved_from_json AS "movedFrom",
           history_seed_owed AS "historySeedOwed",
           history_seed_message_id AS "historySeedMessageId",
@@ -1920,6 +1927,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           outside_origin_json AS "outsideOrigin",
           outside_work_json AS "outsideWork",
           move_json AS "move",
+          pending_move_json AS "pendingMove",
           moved_from_json AS "movedFrom",
           history_seed_owed AS "historySeedOwed",
           history_seed_message_id AS "historySeedMessageId",
@@ -3716,6 +3724,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     outside_origin_json AS "outsideOrigin",
     outside_work_json AS "outsideWork",
     move_json AS "move",
+    pending_move_json AS "pendingMove",
     moved_from_json AS "movedFrom",
     history_seed_owed AS "historySeedOwed",
     history_seed_message_id AS "historySeedMessageId",

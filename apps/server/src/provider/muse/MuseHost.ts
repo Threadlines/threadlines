@@ -159,6 +159,8 @@ export interface MuseHost {
   /** Whether the process has exited. */
   readonly hasExited: Effect.Effect<boolean>;
   readonly stderrTail: () => string;
+  /** The host's process id, for proof it is gone after a stop (agentProcessLedger). Absent for doubles. */
+  readonly pid?: number;
 }
 
 export interface MuseHostOptions {
@@ -461,5 +463,6 @@ export const startMuseHost = (
       exited: Deferred.await(exited),
       hasExited: Deferred.isDone(exited),
       stderrTail: () => stderrTail,
+      pid: Number(child.pid),
     } satisfies MuseHost;
   });

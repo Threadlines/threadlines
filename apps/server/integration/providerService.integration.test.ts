@@ -37,6 +37,7 @@ import {
   codexTurnToolFixture,
   codexTurnTextFixture,
 } from "./fixtures/providerRuntime.ts";
+import { ThreadSessionAdmissionPermissive } from "../src/provider/Services/ThreadSessionAdmission.ts";
 
 const codexInstanceId = ProviderInstanceId.make("codex");
 
@@ -74,7 +75,10 @@ const makeIntegrationFixture = Effect.gen(function* () {
     Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers),
   ).pipe(Layer.provide(SqlitePersistenceMemory));
 
-  const layer = makeProviderServiceLive().pipe(Layer.provide(shared));
+  const layer = makeProviderServiceLive().pipe(
+    Layer.provide(ThreadSessionAdmissionPermissive),
+    Layer.provide(shared),
+  );
 
   return {
     cwd,

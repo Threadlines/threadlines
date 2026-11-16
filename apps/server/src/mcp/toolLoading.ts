@@ -74,6 +74,7 @@ export function buildOnDemandToolInstructions(input: {
     "thread_read",
     "thread_list",
     "thread_stop",
+    "thread_move",
     "thread_agents",
   ]);
   const agents = named(["room_invite", "room_review", "room_hand_off", "room_available_agents"]);
