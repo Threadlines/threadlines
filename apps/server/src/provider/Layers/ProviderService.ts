@@ -3077,13 +3077,31 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       for (const entry of yield* liveOfThread) {
         problems.push(`${entry.adapter.provider} still lists its session`);
       }
-      // Each driver proves its processes, and what they started, are gone.
+      // Each driver proves its processes, and what they started, are gone,
+      // with what the directory keeps of the sessions it ran for the thread.
+      const bindings = (yield* directory.listBindings().pipe(
+        Effect.catch(() =>
+          Effect.sync(() => {
+            problems.push("its sessions' records couldn't be read");
+            return [];
+          }),
+        ),
+      )).filter((binding) => ofThread(binding.threadId));
       for (const [instanceId, adapter] of yield* getAdapterEntries) {
         if (adapter.confirmThreadStopped === undefined) {
           if (ran.has(instanceId)) problems.push(`${adapter.provider} can't confirm it stopped`);
           continue;
         }
-        const confirmation = yield* adapter.confirmThreadStopped(threadId);
+        const confirmation = yield* adapter.confirmThreadStopped(
+          threadId,
+          bindings
+            .filter((binding) => binding.providerInstanceId === instanceId)
+            .map((binding) => ({
+              sessionKey: binding.threadId,
+              resumeCursor: binding.resumeCursor,
+              cwd: readPersistedCwd(binding.runtimePayload),
+            })),
+        );
         if (!confirmation.confirmed) problems.push(confirmation.reason);
       }
       return problems.length === 0

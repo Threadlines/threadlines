@@ -70,7 +70,11 @@ function fakeClient(calls: Array<Call>, overrides: Record<string, (input: any) =
     },
     command: { list: call("command.list", () => ({ data: [] })) },
     permission: { reply: call("permission.reply"), list: call("permission.list", () => []) },
-    shell: { remove: call("shell.remove"), get: call("shell.get") },
+    shell: {
+      remove: call("shell.remove"),
+      get: call("shell.get"),
+      list: call("shell.list", () => ({ location: {}, data: [] })),
+    },
     message: { list: call("message.list", () => ({ data: [], cursor: {} })) },
     session: {
       create: call("session.create", () => ({ id: ROOT, location: { directory: "/" } })),
@@ -349,12 +353,50 @@ describe("OpenCodeAdapter", () => {
       yield* next((event) => event.type === "task.started");
 
       yield* adapter.stopSession(threadId);
-      expect(yield* adapter.confirmThreadStopped!(threadId)).toEqual({ confirmed: true });
+      expect(yield* adapter.confirmThreadStopped!(threadId, [])).toEqual({ confirmed: true });
       expect(shellReads).toBe(2);
       expect(calls.some((call) => call.method === "session.active")).toBe(true);
       // Proven once, nothing is left to ask about.
-      expect(yield* adapter.confirmThreadStopped!(threadId)).toEqual({ confirmed: true });
+      expect(yield* adapter.confirmThreadStopped!(threadId, [])).toEqual({ confirmed: true });
       expect(shellReads).toBe(2);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.live("after a restart, asks the server what still runs before it confirms", () =>
+    Effect.gen(function* () {
+      // This process never ran the thread: what its last stop knew is gone.
+      let active: Record<string, unknown> = { [ROOT]: { type: "running" } };
+      let shells: Array<{ status: string }> = [{ status: "running" }];
+      const { adapter, calls, threadId, cwd } = yield* harnessWith({
+        "session.active": () => active,
+        "session.list": (input: { parentID: string }) => ({
+          data: input.parentID === ROOT ? [{ id: "ses_child" }] : [],
+        }),
+        "shell.list": () => ({ location: {}, data: shells }),
+      });
+      const known = [
+        { sessionKey: threadId, resumeCursor: { schemaVersion: 1, sessionId: ROOT }, cwd },
+      ];
+      expect(yield* adapter.confirmThreadStopped!(threadId, known)).toEqual({
+        confirmed: false,
+        reason: "OpenCode still runs its work; OpenCode still runs 1 shell in its folder",
+      });
+      // Its child counts too.
+      active = { ses_child: { type: "running" } };
+      shells = [];
+      expect(yield* adapter.confirmThreadStopped!(threadId, known)).toEqual({
+        confirmed: false,
+        reason: "OpenCode still runs its work",
+      });
+      active = {};
+      expect(yield* adapter.confirmThreadStopped!(threadId, known)).toEqual({ confirmed: true });
+      expect(
+        calls.some(
+          (call) =>
+            call.method === "shell.list" &&
+            (call.input as { location: { directory: string } }).location.directory === cwd,
+        ),
+      ).toBe(true);
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 

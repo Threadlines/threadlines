@@ -433,6 +433,12 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
         readonly shellIds: ReadonlyArray<string>;
       }
     >();
+    /**
+     * Session keys this process ran. One it never ran may still have work on
+     * the server from before a restart, whose stop evidence died with the
+     * process: confirmThreadStopped asks the server about it instead.
+     */
+    const ranHere = new Set<ThreadId>();
     /** Every OpenCode session we own, root or child, to the thread it belongs to. */
     const owners = new Map<string, SessionContext>();
     /** Which session registered each Threadlines tool server, so a stale stop never removes a newer one. */
@@ -2415,6 +2421,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
           }
 
           sessions.set(input.threadId, ctx);
+          ranHere.add(input.threadId);
           owners.set(rootSessionId, ctx);
 
           yield* emit({
@@ -3217,14 +3224,71 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
      * waiting a little for interrupts still settling. A thread that was idle
      * when it stopped left nothing to ask about.
      */
+    /**
+     * What OpenCode may still run for a session this process never ran (a
+     * restart lost what its stop knew): its root session and their children,
+     * and any shell running in its folder. Problems, in words.
+     */
+    const workLeftOnServer = (rootSessionId: string, directory: string | undefined) =>
+      manager
+        .withServer(({ server }) =>
+          Effect.gen(function* () {
+            const client = server.client;
+            const call = <A>(method: string, run: (signal: AbortSignal) => Promise<A>) =>
+              runOpenCode(method, run).pipe(Effect.timeout(OPENCODE_CONFIRM_CALL_TIMEOUT));
+            const sessionIds = [rootSessionId];
+            for (let index = 0; index < sessionIds.length && sessionIds.length < 200; index++) {
+              const parentID = sessionIds[index]!;
+              const children = yield* call("session.list", (signal) =>
+                client.session.list({ parentID, limit: 100 }, { signal }),
+              );
+              sessionIds.push(...(children.data ?? []).map((child) => child.id));
+            }
+            const active = yield* call("session.active", (signal) =>
+              client.session.active({ signal }),
+            );
+            const problems: string[] = [];
+            if (sessionIds.some((id) => Object.hasOwn(active, id))) {
+              problems.push("OpenCode still runs its work");
+            }
+            if (directory === undefined) {
+              problems.push("its folder isn't known, so OpenCode's shells there can't be checked");
+            } else {
+              const shells = yield* call("shell.list", (signal) =>
+                client.shell.list({ location: { directory } }, { signal }),
+              );
+              const running = shells.data.filter((shell) => shell.status === "running").length;
+              if (running > 0) {
+                problems.push(
+                  `OpenCode still runs ${running} shell${running === 1 ? "" : "s"} in its folder`,
+                );
+              }
+            }
+            return problems;
+          }),
+        )
+        .pipe(
+          Effect.catch((error) =>
+            Effect.succeed([`OpenCode's server didn't answer (${openCodeErrorDetail(error)})`]),
+          ),
+        );
+
     const confirmThreadStopped: NonNullable<OpenCodeAdapterShape["confirmThreadStopped"]> = (
       threadId,
+      known,
     ) =>
       Effect.gen(function* () {
         const keys = [...stoppedWork.keys()].filter(
           (key) => parseSessionKey(key).threadId === threadId,
         );
         const problems: string[] = [];
+        // Never confirmed on evidence a restart emptied: ask the server.
+        for (const hint of known) {
+          if (ranHere.has(hint.sessionKey) || stoppedWork.has(hint.sessionKey)) continue;
+          const rootSessionId = parseOpenCodeResumeCursor(hint.resumeCursor)?.sessionId;
+          if (rootSessionId === undefined) continue;
+          problems.push(...(yield* workLeftOnServer(rootSessionId, hint.cwd)));
+        }
         for (const key of keys) {
           const work = stoppedWork.get(key);
           if (work === undefined) continue;

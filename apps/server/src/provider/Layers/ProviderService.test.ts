@@ -56,6 +56,7 @@ import type {
   ProviderAdapterShape,
   ProviderSetThreadGoalInput,
   ProviderStopConfirmation,
+  ProviderStoppedSessionHint,
 } from "../Services/ProviderAdapter.ts";
 import {
   ProviderAdapterRegistry,
@@ -3067,8 +3068,10 @@ function makeFencedProviderServiceLayer() {
   const fenced = new Set<string>();
   const noteBeforeStop = vi.fn((_sessionKey: ThreadId): Effect.Effect<void> => Effect.void);
   const confirmThreadStopped = vi.fn(
-    (_threadId: ThreadId): Effect.Effect<ProviderStopConfirmation> =>
-      Effect.succeed({ confirmed: true }),
+    (
+      _threadId: ThreadId,
+      _known: ReadonlyArray<ProviderStoppedSessionHint>,
+    ): Effect.Effect<ProviderStopConfirmation> => Effect.succeed({ confirmed: true }),
   );
   const registry = makeAdapterRegistryMock({
     [ProviderDriverKind.make("codex")]: { ...codex.adapter, confirmThreadStopped, noteBeforeStop },
@@ -3165,7 +3168,14 @@ fence.layer("ProviderServiceLive moving threads", (it) => {
       assert.deepEqual(yield* provider.quiesceThread(MOVING), { confirmed: true });
       const left = (yield* provider.listSessions()).map((session) => session.threadId);
       assert.deepEqual(left, [other]);
-      assert.deepEqual(fence.confirmThreadStopped.mock.calls.at(-1), [MOVING]);
+      const [confirmedFor, known] = fence.confirmThreadStopped.mock.calls.at(-1)!;
+      assert.equal(confirmedFor, MOVING);
+      // With what the directory keeps of each session the driver ran for it,
+      // for a driver whose own evidence a restart lost.
+      assert.deepEqual(
+        known.map((hint) => hint.sessionKey).toSorted(),
+        [MOVING, participantSessionKey(MOVING, ROOM_AGENT)].toSorted(),
+      );
       // What each stopping runtime started was noted first; a stop that isn't
       // for a move never reads the process table.
       assert.deepEqual(
