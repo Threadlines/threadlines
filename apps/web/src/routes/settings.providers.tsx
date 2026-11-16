@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 
 import { ProviderSettingsPanel } from "../components/settings/SettingsPanels";
-import { parseProviderSettingsSearch } from "../components/settings/settingsNavigation";
+import { parseProviderSettingsSearch } from "../components/settings/settingsPaths";
 
 function SettingsProvidersRoute() {
   const { instance, section } = Route.useSearch();
