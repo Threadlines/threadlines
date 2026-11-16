@@ -40,11 +40,13 @@ describe("Antigravity models", () => {
       ["gemini-3.1-pro", "Gemini 3.1 Pro"],
     ]);
     const efforts = models[0]?.capabilities?.optionDescriptors?.[0];
+    // Lowest first, as the effort meter fills; High stays the default.
     expect(efforts?.type === "select" ? efforts.options.map((option) => option.id) : []).toEqual([
-      "high",
-      "medium",
       "low",
+      "medium",
+      "high",
     ]);
+    expect(efforts?.type === "select" ? efforts.currentValue : undefined).toBe("high");
   });
 
   it("sends the agent's own id for a family and effort, irregular ids included", () => {
