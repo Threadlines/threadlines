@@ -361,6 +361,14 @@ export const makeMoveQueue = (
             });
           }
         }
+        // Only a move the projection shows quiescing, as this request, ends
+        // the thread's sessions: a look begun before a Cancel must not stop
+        // the work the user started after it (its quiesce was refused).
+        const fenced = (yield* deps.readThread(threadId))?.pendingMove ?? null;
+        if (fenced === null || fenced.requestId !== requestId || fenced.stage !== "quiescing") {
+          entry.again = true;
+          return;
+        }
         // Every driver proves its agent's processes are gone.
         const confirmation = yield* deps.quiesce(threadId);
         if (!confirmation.confirmed) {

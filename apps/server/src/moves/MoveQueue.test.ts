@@ -61,10 +61,17 @@ async function harness(options?: { readonly model?: OrchestrationReadModel }) {
     emptyCommands: 0,
     /** Runs right before a start, as if a provider turn slipped in. */
     beforeStart: null as null | (() => Promise<void>),
+    /** Runs right before the queue's quiesce lands, as if the user acted first. */
+    beforeQuiesce: null as null | (() => Effect.Effect<void, ThreadMoveError>),
   };
 
   const dispatch = (command: OrchestrationCommand): Effect.Effect<void, ThreadMoveError> =>
     Effect.gen(function* () {
+      if (command.type === "thread.move.quiesce" && state.beforeQuiesce !== null) {
+        const first = state.beforeQuiesce;
+        state.beforeQuiesce = null;
+        yield* first();
+      }
       const decided = yield* decideOrchestrationCommand({ command, readModel: model }).pipe(
         Effect.mapError((error) => new ThreadMoveError({ detail: error.message })),
       );
@@ -185,6 +192,8 @@ async function harness(options?: { readonly model?: OrchestrationReadModel }) {
     setSession: (status: OrchestrationSession["status"], extra?: Partial<OrchestrationSession>) =>
       run(setSession(status, extra)),
     dispatch: (command: OrchestrationCommand) => run(dispatch(command)),
+    dispatchEffect: dispatch,
+    setSessionEffect: setSession,
     /** The turn ends as a provider ends it: completed, then the session idles. */
     endTurn: (turnId: TurnId) =>
       run(
@@ -393,6 +402,30 @@ describe("MoveQueue", () => {
 
     await h.endTurn(TurnId.make("turn-own"));
     await waitFor(() => (h.thread().move ?? null) !== null, "the move after that turn");
+    await h.close();
+  });
+
+  it("a look begun before a Cancel never stops the work the user started after it", async () => {
+    const h = await harness();
+    await h.startReactor();
+    // The user cancels, and sends a new message, while the look is on its way to the quiesce.
+    h.state.beforeQuiesce = () =>
+      Effect.gen(function* () {
+        yield* h.dispatchEffect({
+          type: "thread.move.unqueue",
+          commandId: nextCommandId(),
+          threadId: THREAD,
+          requestId: h.thread().pendingMove!.requestId,
+          createdAt: now,
+        });
+        yield* h.setSessionEffect("running", { activeTurnId: TurnId.make("turn-new") });
+      });
+    await h.queueMove();
+    await waitFor(() => (h.thread().pendingMove ?? null) === null, "the cancel");
+    await settle();
+    expect(h.state.quiesceCalls).toBe(0);
+    expect(h.thread().session?.status).toBe("running");
+    expect(h.thread().move ?? null).toBeNull();
     await h.close();
   });
 
