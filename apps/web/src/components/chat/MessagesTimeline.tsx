@@ -2475,23 +2475,36 @@ function ForkContextTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "fo
 
 /**
  * Where a thread that moved here from another computer starts being this
- * computer's: a quiet rule across the conversation with one line in it. The
- * history above came with the move, and revert stops at this line.
+ * computer's: a quiet rule across the conversation with one line in it,
+ * saying whether its agent kept its memory or got a summary. The history
+ * above came with the move, and revert stops at this line. A carried
+ * session that couldn't be resumed here gets a line of its own, later.
  */
 function MovedInTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "moved-in" }> }) {
   const ctx = use(TimelineRowCtx);
+  const { movedIn } = row;
+  const fellBack = movedIn.agentGot === "fell_back";
   return (
     <div className="mx-auto max-w-4xl px-1">
       <div
         className="flex min-w-0 items-center gap-3 text-xs leading-[18px] text-muted-foreground"
-        data-testid="moved-in-boundary"
+        data-testid={fellBack ? "native-session-fell-back" : "moved-in-boundary"}
       >
         <span aria-hidden="true" className="h-px min-w-6 flex-1 bg-border" />
         <span className="flex min-w-0 items-center gap-1.5">
           <MonitorDownIcon aria-hidden="true" className="size-3.5 shrink-0" />
           <span className="min-w-0 truncate">
-            Moved here from {row.movedIn.fromLabel} ·{" "}
-            {formatDateAndTime(row.movedIn.movedAt, ctx.timestampFormat)}
+            {fellBack ? (
+              "Couldn't resume the agent's session here, so it got a summary instead."
+            ) : (
+              <>
+                Moved here from {movedIn.fromLabel}{" "}
+                {movedIn.agentGot === "memory"
+                  ? "with its agent's memory"
+                  : "with a summary of the conversation"}{" "}
+                · {formatDateAndTime(movedIn.movedAt, ctx.timestampFormat)}
+              </>
+            )}
           </span>
         </span>
         <span aria-hidden="true" className="h-px min-w-6 flex-1 bg-border" />

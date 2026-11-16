@@ -50,12 +50,18 @@ import type {
   WorkflowRunFileKind,
   WorkflowSaveCommandResult,
   RuntimeTaskId,
+  RuntimeMode,
 } from "@threadlines/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
 
 import type { ProviderAdapterError, ProviderServiceError } from "../Errors.ts";
+import type {
+  NativeSessionExport,
+  NativeSessionImportInput,
+  NativeSessionImportResult,
+} from "../nativeSession.ts";
 import type {
   ProviderAdapterCapabilities,
   ProviderAdapterShape,
@@ -321,6 +327,48 @@ export interface ProviderServiceShape {
    * caller must already have stopped new sessions (ThreadSessionAdmission).
    */
   readonly quiesceThread: (threadId: ThreadId) => Effect.Effect<ProviderStopConfirmation>;
+
+  /**
+   * The thread's own agent session, to carry with the thread to another
+   * computer (docs/design/fleet.md, Part 3d): read from its saved binding
+   * through the driver that wrote it. Null when the thread has none, or its
+   * driver can't carry one. Read while the thread is quiesced and fenced,
+   * so its files no longer change.
+   */
+  readonly exportNativeSession: (threadId: ThreadId) => Effect.Effect<NativeSessionExport | null>;
+
+  /**
+   * Writes a session another computer carried into `instanceId`'s own home
+   * (its driver's `importNativeSession`). Refused when the instance's driver
+   * can't take one.
+   */
+  readonly importNativeSession: (
+    input: NativeSessionImportInput & { readonly instanceId: ProviderInstanceId },
+  ) => Effect.Effect<NativeSessionImportResult>;
+
+  /**
+   * Binds a thread to an imported session: its next start on `instanceId`
+   * resumes `cursor`. No runtime starts now.
+   */
+  readonly adoptNativeSession: (input: {
+    readonly threadId: ThreadId;
+    readonly instanceId: ProviderInstanceId;
+    readonly cursor: unknown;
+    readonly runtimeMode: RuntimeMode;
+  }) => Effect.Effect<void, ProviderServiceError>;
+
+  /**
+   * Takes back the binding `adoptNativeSession` wrote for a thread whose move
+   * didn't land here: the thread never came to exist, so its binding goes.
+   */
+  readonly forgetNativeSession: (threadId: ThreadId) => Effect.Effect<void, ProviderServiceError>;
+
+  /**
+   * Ends the thread's own agent session and forgets its resume cursor, so the
+   * next start opens a new conversation: a carried session that can't be
+   * used here (docs/design/fleet.md, Part 3d).
+   */
+  readonly dropResumeCursor: (threadId: ThreadId) => Effect.Effect<void, ProviderServiceError>;
 
   /**
    * Read capabilities for the adapter bound to a configured provider instance.

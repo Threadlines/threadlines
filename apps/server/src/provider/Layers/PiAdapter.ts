@@ -133,6 +133,8 @@ import {
   type PiToolServer,
 } from "../pi/PiLaunch.ts";
 import { PI_PROMPT_REFUSED_PREFIX, piTurnFailure } from "../pi/PiFailure.ts";
+import { piAgentDir } from "../pi/PiBinary.ts";
+import { exportPiNativeSession, importPiNativeSession } from "../pi/PiNativeSession.ts";
 import { removePiSecretsFile, writePiSecretsFile } from "../pi/PiSecrets.ts";
 import {
   decodePi,
@@ -380,6 +382,14 @@ export function makePiAdapter(options: PiAdapterOptions) {
     /** Each Pi process it started, until proven gone (confirmThreadStopped). */
     const processes = yield* makeAgentProcessLedger();
     const startRpc = options.startRpc ?? startPiRpc;
+    /** Pi's own folder, from the environment its processes run with. */
+    const instanceAgentDir = () =>
+      piAgentDir(
+        piProcessEnvironment({
+          instanceEnvironment: options.instanceEnvironment,
+          ...(options.baseEnvironment ? { baseEnv: options.baseEnvironment } : {}),
+        }),
+      );
 
     const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
     const stamp = Effect.all({
@@ -2403,6 +2413,11 @@ export function makePiAdapter(options: PiAdapterOptions) {
         })),
       rollbackThread,
       stopAll,
+      // Pi's own folder for this instance, as its processes find it.
+      exportNativeSession: ({ resumeCursor }) =>
+        exportPiNativeSession({ agentDir: instanceAgentDir(), resumeCursor }),
+      importNativeSession: (input) =>
+        importPiNativeSession({ ...input, agentDir: instanceAgentDir() }),
       noteBeforeStop: processes.beforeStop,
       confirmThreadStopped: processes.confirm,
       streamEvents: Stream.fromPubSub(runtimeEvents),

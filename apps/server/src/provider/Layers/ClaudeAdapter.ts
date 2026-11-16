@@ -226,6 +226,10 @@ import {
   resolveClaudeConfigDir,
 } from "../Drivers/ClaudeSessionTranscripts.ts";
 import {
+  exportClaudeNativeSession,
+  importClaudeNativeSession,
+} from "../Drivers/ClaudeNativeSession.ts";
+import {
   ClaudeWorkflowFileError,
   claudeWorkflowAgentTranscriptPath,
   readClaudeWorkflowRunFile,
@@ -8672,6 +8676,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       // another project directory; start fresh when it is gone entirely.
       let resumeState = requestedResumeState;
       let resumeTranscriptPath: string | undefined;
+      // The conversation asked for couldn't be reopened, so this session
+      // starts without it (ProviderSession.resumeFailed).
+      let resumeFailed = false;
       if (requestedResumeState?.resume !== undefined) {
         const transcriptResolution = yield* ensureClaudeSessionTranscript({
           environment: claudeEnvironment,
@@ -8738,6 +8745,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             reason: "starting a fresh session because no project directory holds the transcript",
           });
           resumeState = undefined;
+          resumeFailed = true;
           // Degraded resume must be visible to the user, not just the server
           // log: the fresh session has none of the thread's earlier context.
           const fallbackStamp = yield* makeEventStamp();
@@ -9873,6 +9881,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           ...(resumeState?.resumeSessionAt ? { resumeSessionAt: resumeState.resumeSessionAt } : {}),
           turnCount: resumeState?.turnCount ?? 0,
         },
+        ...(resumeFailed ? { resumeFailed: true } : {}),
         createdAt: startedAt,
         updatedAt: startedAt,
       };
@@ -11034,6 +11043,16 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     listSessions,
     hasSession,
     stopAll,
+    exportNativeSession: ({ resumeCursor }) =>
+      exportClaudeNativeSession({
+        configDir: resolveClaudeConfigDir(claudeEnvironment, path),
+        resumeCursor,
+      }),
+    importNativeSession: (input) =>
+      importClaudeNativeSession({
+        ...input,
+        configDir: resolveClaudeConfigDir(claudeEnvironment, path),
+      }),
     noteBeforeStop: processes.beforeStop,
     confirmThreadStopped: (threadId) =>
       [...unreportedProcesses].some((key) => parseSessionKey(key).threadId === threadId)

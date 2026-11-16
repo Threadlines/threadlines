@@ -447,6 +447,9 @@ export function projectEvent(
               : {}),
             ...(payload.movedFrom !== undefined ? { movedFrom: payload.movedFrom } : {}),
             ...(payload.historySeedOwed === true ? { historySeedOwed: true } : {}),
+            ...(payload.nativeSession !== undefined
+              ? { nativeSession: payload.nativeSession }
+              : {}),
             voiceActive: false,
             latestTurn: null,
             createdAt: payload.createdAt,
@@ -1070,6 +1073,9 @@ export function projectEvent(
           threads: updateThread(nextBase.threads, payload.threadId, {
             historySeedOwed: false,
             historySeedMessageId: payload.messageId,
+            ...(payload.nativeSession !== undefined
+              ? { nativeSession: payload.nativeSession }
+              : {}),
           }),
         })),
       );
@@ -1266,6 +1272,9 @@ export function projectEvent(
             ...(payload.worktreePath !== undefined ? { worktreePath: payload.worktreePath } : {}),
             ...(payload.worktreeOrigin !== undefined
               ? { worktreeOrigin: payload.worktreeOrigin }
+              : {}),
+            ...(payload.nativeSession !== undefined
+              ? { nativeSession: payload.nativeSession }
               : {}),
             updatedAt: payload.updatedAt,
           }),

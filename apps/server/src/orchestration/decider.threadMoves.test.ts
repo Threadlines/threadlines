@@ -362,6 +362,95 @@ describe("moving a thread to a linked computer", () => {
     const kept = await project(here, "thread.reverted", { threadId: ARRIVED, turnCount: 2 });
     expect(threadOf(kept, ARRIVED).historySeedOwed).toBe(false);
   });
+
+  it("a carried session owes the conversation until a turn succeeds on it, and falls back once", async () => {
+    const model = await seeded();
+    const ARRIVED = ThreadId.make("thread-carried");
+    const imported = (
+      await apply(model, {
+        type: "thread.import",
+        commandId: nextCommandId(),
+        threadId: ARRIVED,
+        projectId: PROJECT,
+        title: "Fix the flaky test",
+        modelSelection,
+        runtimeMode: "auto-accept-edits",
+        interactionMode: "default",
+        branch: "fix/flaky",
+        worktreePath: "/worktrees/moved-2",
+        movedFrom: {
+          environmentId: EnvironmentId.make("environment-windows"),
+          label: "Windows PC",
+          threadId: THREAD,
+          movedAt: now,
+        },
+        messages: [],
+        activities: [],
+        nativeSession: "carried",
+        createdAt: now,
+      })
+    ).model;
+    const carried = threadOf(imported, ARRIVED);
+    expect(carried.nativeSession).toBe("carried");
+    expect(carried.historySeedOwed).toBe(true);
+    // The moved-in line says the agent kept its memory.
+    expect(carried.activities.at(-1)?.payload).toMatchObject({ nativeSession: "carried" });
+
+    const resumed = (
+      await apply(imported, {
+        type: "thread.history-seed.delivered",
+        commandId: nextCommandId(),
+        threadId: ARRIVED,
+        messageId: MessageId.make("first-here"),
+        nativeSession: "resumed",
+        createdAt: now,
+      })
+    ).model;
+    expect(threadOf(resumed, ARRIVED)).toMatchObject({
+      nativeSession: "resumed",
+      historySeedOwed: false,
+    });
+
+    const fallBack = (): OrchestrationCommand => ({
+      type: "thread.native-session.fall-back",
+      commandId: nextCommandId(),
+      threadId: ARRIVED,
+      reason: "turn_failed",
+      resendMessageId: MessageId.make("first-here"),
+      createdAt: now,
+    });
+    // Once it resumed, nothing falls back.
+    const afterResumed = (await apply(resumed, fallBack())).model;
+    expect(threadOf(afterResumed, ARRIVED).nativeSession).toBe("resumed");
+
+    // A carried session that fails falls back once, still owing the summary.
+    const fellBack = (await apply(imported, fallBack())).model;
+    const thread = threadOf(fellBack, ARRIVED);
+    expect(thread.nativeSession).toBe("fell_back");
+    expect(thread.historySeedOwed).toBe(true);
+    expect(thread.activities.at(-1)).toMatchObject({
+      kind: "thread.native-session-fell-back",
+      summary: "Couldn't resume the agent's session here, so it got a summary instead.",
+      payload: { reason: "turn_failed", resendMessageId: "first-here" },
+    });
+    const again = (await apply(fellBack, fallBack())).model;
+    expect(threadOf(again, ARRIVED).activities).toHaveLength(thread.activities.length);
+    // A success reported late for the dropped session pays nothing.
+    const late = (
+      await apply(fellBack, {
+        type: "thread.history-seed.delivered",
+        commandId: nextCommandId(),
+        threadId: ARRIVED,
+        messageId: MessageId.make("first-here"),
+        nativeSession: "resumed",
+        createdAt: now,
+      })
+    ).model;
+    expect(threadOf(late, ARRIVED)).toMatchObject({
+      nativeSession: "fell_back",
+      historySeedOwed: true,
+    });
+  });
 });
 
 describe("a move that waits for the thread to be free", () => {

@@ -186,6 +186,12 @@ const RECOVERABLE_THREAD_RESUME_ERROR_SNIPPETS = [
 
 export const CodexResumeCursorSchema = Schema.Struct({
   threadId: Schema.String,
+  /**
+   * The rollout's absolute path, when this home's Codex may not know it yet:
+   * a session a move carried here (docs/design/fleet.md, Part 3d). Resumed by
+   * path, as a side answer's copy is.
+   */
+  rolloutPath: Schema.optional(Schema.String),
 });
 const CodexUserInputAnswerObject = Schema.Struct({
   answers: Schema.Array(Schema.String),
@@ -567,6 +573,12 @@ function readResumeCursorThreadId(
   resumeCursor: ProviderSession["resumeCursor"],
 ): string | undefined {
   return isCodexResumeCursorSchema(resumeCursor) ? resumeCursor.threadId : undefined;
+}
+
+function readResumeCursorRolloutPath(
+  resumeCursor: ProviderSession["resumeCursor"],
+): string | undefined {
+  return isCodexResumeCursorSchema(resumeCursor) ? resumeCursor.rolloutPath : undefined;
 }
 
 function runtimeModeToThreadConfig(input: RuntimeMode): {
@@ -993,6 +1005,8 @@ export const openCodexThread = (input: {
   readonly requestedModel: string | undefined;
   readonly serviceTier: CodexServiceTier | undefined;
   readonly resumeThreadId: string | undefined;
+  /** Where the rollout to resume is, when this home's Codex may not know it (a carried session). */
+  readonly resumePath?: string | undefined;
   readonly resumeRequired?: boolean | undefined;
   /** Same-driver native fork. `beforeTurnId` is preferred for exact
    *  user-prompt replacement; `lastTurnId` remains the stable compatibility
@@ -1096,6 +1110,7 @@ export const openCodexThread = (input: {
     "resume a Codex thread",
     input.client.request("thread/resume", {
       threadId: resumeThreadId,
+      ...(input.resumePath !== undefined ? { path: input.resumePath } : {}),
       excludeTurns: true,
       ...resumeParams,
     }),
@@ -2849,6 +2864,13 @@ const makeCodexSessionRuntimeIn = (
 
       const requestedModel = normalizeCodexModelSlug(options.model);
 
+      const resumeThreadId =
+        lockdown === undefined ? readResumeCursorThreadId(options.resumeCursor) : undefined;
+      const resumePath =
+        lockdown === undefined ? readResumeCursorRolloutPath(options.resumeCursor) : undefined;
+      // The reactor owes a session that came up without its conversation the
+      // thread's history (ProviderSession.resumeFailed).
+      let resumeFailed = false;
       const opened = yield* openCodexThread({
         client,
         threadId: options.threadId,
@@ -2856,18 +2878,24 @@ const makeCodexSessionRuntimeIn = (
         cwd: options.cwd,
         requestedModel,
         serviceTier: options.serviceTier,
-        resumeThreadId:
-          lockdown === undefined ? readResumeCursorThreadId(options.resumeCursor) : undefined,
+        resumeThreadId,
+        resumePath,
         resumeRequired: options.resumeRequired,
         forkFrom: lockdown === undefined ? options.forkFrom : undefined,
         lockdown,
         onResumeFallback: (cause) =>
-          emitEvent({
-            kind: "notification",
-            threadId: options.threadId,
-            method: "warning",
-            message: `Could not restore this thread's previous Codex session (${cause}). Starting fresh — the provider no longer has this thread's earlier context.`,
-          }),
+          Effect.sync(() => {
+            resumeFailed = true;
+          }).pipe(
+            Effect.andThen(
+              emitEvent({
+                kind: "notification",
+                threadId: options.threadId,
+                method: "warning",
+                message: `Could not restore this thread's previous Codex session (${cause}). Starting fresh — the provider no longer has this thread's earlier context.`,
+              }),
+            ),
+          ),
       });
 
       const providerThreadId = opened.thread.id;
@@ -2876,8 +2904,14 @@ const makeCodexSessionRuntimeIn = (
         status: "ready",
         cwd: opened.cwd,
         model: opened.model,
-        resumeCursor: { threadId: providerThreadId },
+        // A rollout resumed by path keeps its path until this home's Codex
+        // has surely indexed it: it is the same conversation.
+        resumeCursor:
+          resumePath !== undefined && providerThreadId === resumeThreadId
+            ? { threadId: providerThreadId, rolloutPath: resumePath }
+            : { threadId: providerThreadId },
         providerThreadId,
+        ...(resumeFailed ? { resumeFailed: true } : {}),
         updatedAt: yield* nowIso,
       } satisfies ProviderSession;
       yield* Ref.set(sessionRef, session);

@@ -43,6 +43,8 @@ import {
   type ThreadCheckoutSwitchDeferredPayload,
   ThreadForkContextPayload,
   ThreadForkSeedOutcomeActivityKind,
+  ThreadNativeSessionFellBackActivityKind,
+  ThreadNativeSessionFellBackPayload,
   ThreadForkSeedOutcomePayload,
   type TurnId,
 } from "@threadlines/contracts";
@@ -435,6 +437,16 @@ const PROVIDER_INTERRUPT_ACK_TIMEOUT = Duration.seconds(10);
 const TURN_PREPARATION_TIMEOUT = Duration.seconds(90);
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
+const decodeFellBackPayload = Schema.decodeUnknownOption(ThreadNativeSessionFellBackPayload);
+
+/** A carried session fell back, and its refused message couldn't go again on its own. */
+export const NATIVE_SESSION_RESEND_REFUSED_WORDS =
+  "Your message didn't go again on the new session. Send it again.";
+
+/** A moved thread's send that couldn't carry the conversation it owes, so it wasn't sent. */
+export const MOVED_CONTEXT_UNSENT_WORDS =
+  "Couldn't give the agent this conversation, so the message wasn't sent.";
+
 export function providerErrorLabel(value: string | undefined): string {
   const normalized = value?.trim();
   return normalized && normalized.length > 0 ? normalized : "unknown";
@@ -644,6 +656,15 @@ const make = Effect.gen(function* () {
       readonly carriedBy?: string;
     }
   >();
+
+  /**
+   * Runtimes that reopened a moved thread's carried session
+   * (OrchestrationThread.nativeSession, docs/design/fleet.md, Part 3d), by
+   * session key and start time (ProviderSession.createdAt). A send on one
+   * carries no summary: the session holds the conversation. In memory only:
+   * after a restart the next start reopens it again and is recorded anew.
+   */
+  const carriedRuntimes = new Map<string, string>();
 
   /** A moved thread's agent was given its conversation with `messageId`'s send: the recorded debt is paid. */
   const markHistorySeedDelivered = (threadId: ThreadId, messageId: MessageId) =>
@@ -1249,6 +1270,13 @@ const make = Effect.gen(function* () {
     );
   };
 
+  /** A moved thread's carried session fell back (processNativeSessionFellBack). */
+  const isNativeSessionFellBack = (
+    event: OrchestrationEvent,
+  ): event is Extract<ProviderIntentEvent, { type: "thread.activity-appended" }> =>
+    event.type === "thread.activity-appended" &&
+    event.payload.activity.kind === ThreadNativeSessionFellBackActivityKind;
+
   /**
    * Makes sure the thread's agent has a live session for what comes next,
    * starting, restarting or handing it over as needed. While a turn waits on
@@ -1384,6 +1412,24 @@ const make = Effect.gen(function* () {
         .listSessions()
         .pipe(Effect.map((sessions) => sessions.find((session) => session.threadId === threadId)));
 
+    // A moved thread whose carried session fell back and still owes its
+    // summary never resumes that session again (docs/design/fleet.md, Part
+    // 3d): one still alive here is dropped, and with no runtime alive the
+    // saved cursor goes too, which loses nothing (whatever it names never
+    // got the conversation). A drop that fails fails this start; the next
+    // one tries again.
+    if (
+      participantId === null &&
+      early === undefined &&
+      thread.nativeSession === "fell_back" &&
+      thread.historySeedOwed === true
+    ) {
+      const live = yield* resolveActiveSession(sessionKey);
+      if (live === undefined || carriedRuntimes.get(sessionKey) === live.createdAt) {
+        yield* providerService.dropResumeCursor(sessionKey);
+        carriedRuntimes.delete(sessionKey);
+      }
+    }
     const activeSession = yield* resolveActiveSession(sessionKey);
     const activeThreadSession =
       projectedSession !== null && projectedSession.status !== "stopped" && activeSession
@@ -1599,6 +1645,38 @@ const make = Effect.gen(function* () {
             claimed: false,
           });
         }
+      }).pipe(Effect.andThen(noteCarriedStart(session)));
+
+    // A moved thread's carried session (docs/design/fleet.md, Part 3d): a
+    // runtime that reopened it is noted, so its sends carry no summary. One
+    // that didn't (the session wouldn't open, another agent, a seeded
+    // handoff) falls back: recorded once, with the summary owed to its next
+    // send.
+    const noteCarriedStart = (session: ProviderSession | "handoff") =>
+      Effect.gen(function* () {
+        if (participantId !== null || thread.nativeSession !== "carried") return;
+        if (session !== "handoff" && session.resumed === true) {
+          carriedRuntimes.set(sessionKey, session.createdAt);
+          return;
+        }
+        carriedRuntimes.delete(sessionKey);
+        if (!owedHistorySeeds.has(sessionKey)) {
+          owedHistorySeeds.set(sessionKey, {
+            driverKind: desiredDriverKind,
+            cwd: effectiveCwd,
+            claimed: false,
+            moved: true,
+          });
+        }
+        yield* orchestrationEngine
+          .dispatch({
+            type: "thread.native-session.fall-back",
+            commandId: serverCommandId("native-session-fall-back"),
+            threadId,
+            reason: "resume_failed",
+            createdAt: yield* nowIso,
+          })
+          .pipe(Effect.ignoreCause({ log: true }));
       });
 
     // `adopting`: the session was started early, so the slot still describes
@@ -1749,6 +1827,8 @@ const make = Effect.gen(function* () {
           });
         }
       }
+      // Another agent than the one a move carried a session for.
+      yield* noteCarriedStart("handoff");
       return { sessionThreadId: handoffSession.threadId, nativeForkApplied: false };
     }
 
@@ -2311,11 +2391,19 @@ const make = Effect.gen(function* () {
     ) {
       owedHistorySeeds.set(sessionKey, { ...unmarked, moved: true });
     }
+    // A runtime that reopened a session the move carried holds the
+    // conversation itself: it owes no summary while that session proves
+    // itself (docs/design/fleet.md, Part 3d).
+    const onCarriedSession =
+      thread.nativeSession === "carried" &&
+      activeSession !== undefined &&
+      carriedRuntimes.get(sessionKey) === activeSession.createdAt;
     if (
       !owedHistorySeeds.has(sessionKey) &&
       thread.historySeedOwed === true &&
       input.participantId === null &&
-      activeSession !== undefined
+      activeSession !== undefined &&
+      !onCarriedSession
     ) {
       owedHistorySeeds.set(sessionKey, {
         driverKind: activeSession.provider,
@@ -2363,6 +2451,18 @@ const make = Effect.gen(function* () {
       owedCandidate.carriedBy === undefined &&
       (builtSeed === undefined || builtSeed.entries.length === 0) &&
       thread.messages.some((message) => message.imported === true);
+    // Nor does the message go without it (docs/design/fleet.md, Part 3d): an
+    // agent that never got the conversation would answer as if it began
+    // here. The turn fails where the user sees it, the debt stays owed, and
+    // sending again tries again. A room's catch-up note carries the history
+    // on its own.
+    if (movedSeedEmpty && !roomPaysHistory) {
+      return yield* new ProviderAdapterRequestError({
+        provider: providerErrorLabel(activeSession?.provider),
+        method: "thread.turn.start",
+        detail: MOVED_CONTEXT_UNSENT_WORDS,
+      });
+    }
     const owedSeed = movedSeedEmpty ? undefined : owedCandidate;
     const resumeSeed = movedSeedEmpty ? undefined : builtSeed;
     const resumeContextText =
@@ -5691,6 +5791,51 @@ const make = Effect.gen(function* () {
     });
   });
 
+  /**
+   * A moved thread's carried session was refused on a turn and fell back
+   * (docs/design/fleet.md, Part 3d, `thread.native-session.fall-back`): the
+   * session was already dropped and its cursor forgotten before that was
+   * recorded, so the next start opens a new conversation. The message that
+   * started the refused turn goes again, once, on it; the thread owes that
+   * conversation its summary, which the send pays (or, without one, doesn't
+   * send). A resend that is refused says so, and the user sends again.
+   */
+  const processNativeSessionFellBack = Effect.fn("processNativeSessionFellBack")(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.activity-appended" }>,
+  ) {
+    const { activity, threadId } = event.payload;
+    if (activity.kind !== ThreadNativeSessionFellBackActivityKind) return;
+    // A carried runtime still alive (its drop raced, or failed) is dropped by
+    // the next start (ensureSessionForThread), which is the resend's.
+    const payload = decodeFellBackPayload(activity.payload);
+    if (Option.isNone(payload) || payload.value.resendMessageId === undefined) return;
+    owedHistorySeeds.delete(threadId);
+    yield* orchestrationEngine
+      .dispatch({
+        type: "thread.turn.resend",
+        commandId: serverCommandId("native-session-resend"),
+        threadId,
+        messageId: payload.value.resendMessageId,
+        createdAt: yield* nowIso,
+      })
+      .pipe(
+        Effect.catchCause((cause) =>
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.interrupt
+            : Effect.gen(function* () {
+                yield* appendProviderFailureActivity({
+                  threadId,
+                  kind: "provider.turn.start.failed",
+                  summary: "Message not sent again",
+                  detail: NATIVE_SESSION_RESEND_REFUSED_WORDS,
+                  turnId: null,
+                  createdAt: yield* nowIso,
+                });
+              }),
+        ),
+      );
+  });
+
   const processPendingRequestActivityAppended = Effect.fn("processPendingRequestActivityAppended")(
     function* (event: Extract<ProviderIntentEvent, { type: "thread.activity-appended" }>) {
       if (!isPendingRequestActivityAppended(event)) {
@@ -6237,6 +6382,7 @@ const make = Effect.gen(function* () {
         return;
       case "thread.activity-appended":
         yield* processPendingRequestActivityAppended(event);
+        yield* processNativeSessionFellBack(event);
         return;
       case "thread.session-stop-requested":
         yield* processSessionStopRequested(event);
@@ -6692,6 +6838,7 @@ const make = Effect.gen(function* () {
         event.type === "thread.follow-up-queued" ||
         event.type === "thread.turn-interrupt-requested" ||
         isPendingRequestActivityAppended(event) ||
+        isNativeSessionFellBack(event) ||
         event.type === "thread.realtime-start-requested" ||
         event.type === "thread.realtime-stop-requested" ||
         event.type === "thread.background-task-stop-requested" ||

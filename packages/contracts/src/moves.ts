@@ -28,6 +28,22 @@ import { PeerAgent } from "./peerRpc.ts";
  * computer before it freezes the thread; the move then runs on its own.
  */
 
+/**
+ * What a move does with the thread's agent session, for one agent on the
+ * other computer (docs/design/fleet.md, Part 3d): `carries`, the agent keeps
+ * its full memory; `summary`, it gets a summary of the conversation;
+ * `too_large`, the summary, because the session is too large to send.
+ */
+export const ThreadMoveSessionOutcome = Schema.Literals(["carries", "summary", "too_large"]);
+export type ThreadMoveSessionOutcome = typeof ThreadMoveSessionOutcome.Type;
+
+export const ThreadMoveAgentSessionOutcome = Schema.Struct({
+  /** One of the target's agents, by its own instance id. */
+  instanceId: TrimmedNonEmptyString,
+  outcome: ThreadMoveSessionOutcome,
+});
+export type ThreadMoveAgentSessionOutcome = typeof ThreadMoveAgentSessionOutcome.Type;
+
 /** One computer this thread could move to, as this computer sees it now. */
 export const ThreadMoveTargetPreview = Schema.Struct({
   environmentId: EnvironmentId,
@@ -59,6 +75,11 @@ export const ThreadMoveTargetPreview = Schema.Struct({
    * Part 3c). Absent: it holds the bytes back until Allow.
    */
   stagedApproval: Schema.optional(Schema.Boolean),
+  /**
+   * For a thread (`moves.preview`), what each of its agents would get of the
+   * thread's agent session. An agent not listed, or absent: `summary`.
+   */
+  sessionOutcomes: Schema.optional(Schema.Array(ThreadMoveAgentSessionOutcome)),
 });
 export type ThreadMoveTargetPreview = typeof ThreadMoveTargetPreview.Type;
 
@@ -176,6 +197,16 @@ export const ThreadMovePreviewManyThread = Schema.Struct({
   waitsFor: Schema.optional(Schema.Array(ThreadMoveWait)),
   /** The computers it alone can't go to, and why. A computer not listed takes it. */
   targetRefusals: Schema.optional(Schema.Array(ThreadMoveTargetRefusal)),
+  /**
+   * Per computer, what the agent it would suggest for this thread gets of its
+   * agent session (docs/design/fleet.md, Part 3d). A computer not listed,
+   * or absent: `summary`.
+   */
+  sessionOutcomes: Schema.optional(
+    Schema.Array(
+      Schema.Struct({ environmentId: EnvironmentId, outcome: ThreadMoveSessionOutcome }),
+    ),
+  ),
 });
 export type ThreadMovePreviewManyThread = typeof ThreadMovePreviewManyThread.Type;
 

@@ -566,6 +566,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             lastMoveOutcome: null,
             movedFrom: event.payload.movedFrom ?? null,
             historySeedOwed: event.payload.historySeedOwed === true ? 1 : 0,
+            nativeSession: event.payload.nativeSession ?? null,
             effectiveCwd: null,
             effectiveCwdSource: null,
             goal: null,
@@ -663,6 +664,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...existingRow.value,
             historySeedOwed: 0,
             historySeedMessageId: event.payload.messageId ?? null,
+            ...(event.payload.nativeSession !== undefined
+              ? { nativeSession: event.payload.nativeSession }
+              : {}),
           });
           return;
         }
@@ -1139,6 +1143,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               : {}),
             ...(event.payload.worktreeOrigin !== undefined
               ? { worktreeOrigin: event.payload.worktreeOrigin }
+              : {}),
+            ...(event.payload.nativeSession !== undefined
+              ? { nativeSession: event.payload.nativeSession }
               : {}),
             updatedAt: event.payload.updatedAt,
           });

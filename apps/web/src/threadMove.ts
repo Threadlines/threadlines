@@ -18,6 +18,7 @@ import {
   THREAD_MOVE_BATCH_MAX,
   ThreadMoveNotStartedActivityKind,
   type ThreadMoveOutcome,
+  type ThreadMoveSessionOutcome,
   type ThreadMoveTargetPreview,
   type ThreadMoveWait,
   type ThreadMoveWaitCode,
@@ -650,11 +651,42 @@ export function moveBatchNeedsYou(members: ReadonlyArray<ThreadMoveBatchMember>)
   });
 }
 
+const SESSION_OUTCOME_WORDS: Record<ThreadMoveSessionOutcome, string> = {
+  carries: "The agent keeps its full memory.",
+  summary: "The agent gets a summary of the conversation.",
+  too_large: "The agent gets a summary (its session is too large to send).",
+};
+
+/**
+ * What a move does with the thread's agent session (docs/design/fleet.md,
+ * Part 3d), as the dialogs say it under the agent: it keeps its full memory,
+ * or gets a summary of the conversation.
+ */
+export function describeThreadMoveSession(outcome: ThreadMoveSessionOutcome): string {
+  return SESSION_OUTCOME_WORDS[outcome];
+}
+
+/**
+ * The session outcome for one of a target's agents, as the preview says it.
+ * An agent it doesn't name (or a computer from before sessions travelled):
+ * `summary`.
+ */
+export function threadMoveSessionOutcome(
+  target: ThreadMoveTargetPreview,
+  instanceId: string | null,
+): ThreadMoveSessionOutcome {
+  return (
+    target.sessionOutcomes?.find((entry) => entry.instanceId === instanceId)?.outcome ?? "summary"
+  );
+}
+
 /** What moving one thread of the Move threads dialog means, in its row. */
 export interface MoveCandidateWords {
   /** `refused`: it can't go there, greyed out with why. */
   readonly kind: "now" | "wait" | "refused";
   readonly words: string;
+  /** What its agent gets of its session there (describeThreadMoveSession); absent when refused. */
+  readonly session?: string;
 }
 
 /**
@@ -671,9 +703,13 @@ export function describeMoveCandidate(
       ? undefined
       : preview.targetRefusals?.find((refusal) => refusal.environmentId === targetEnvironmentId);
   if (targetRefusal !== undefined) return { kind: "refused", words: targetRefusal.refusal };
+  const outcome =
+    preview.sessionOutcomes?.find((entry) => entry.environmentId === targetEnvironmentId)
+      ?.outcome ?? "summary";
+  const session = describeThreadMoveSession(outcome);
   return (preview.waitsFor ?? []).length > 0
-    ? { kind: "wait", words: "Moves when the agent finishes" }
-    : { kind: "now", words: "Moves now" };
+    ? { kind: "wait", words: "Moves when the agent finishes", session }
+    : { kind: "now", words: "Moves now", session };
 }
 
 /**

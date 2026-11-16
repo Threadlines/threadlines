@@ -114,6 +114,7 @@ import { checkoutSelectedEvents, leavesLentWorktree, movesCheckout } from "./thr
 import { canReplaceThreadTitle } from "./threadTitle.ts";
 import {
   decideHistorySeedDelivered,
+  decideNativeSessionFallBack,
   decideMoveAbort,
   decideMoveCancel,
   decideMoveComplete,
@@ -2386,7 +2387,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     case "thread.move.cancel":
     case "thread.move.abort":
     case "thread.move.complete":
-    case "thread.history-seed.delivered": {
+    case "thread.history-seed.delivered":
+    case "thread.native-session.fall-back": {
       const thread = yield* requireThread({
         readModel,
         command,
@@ -2405,7 +2407,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
                 ? decideMoveAbort(thread, command, baseFor)
                 : command.type === "thread.move.complete"
                   ? decideMoveComplete(thread, command, baseFor)
-                  : decideHistorySeedDelivered(thread, command, baseFor),
+                  : command.type === "thread.native-session.fall-back"
+                    ? decideNativeSessionFallBack(thread, command, baseFor)
+                    : decideHistorySeedDelivered(thread, command, baseFor),
       );
     }
 

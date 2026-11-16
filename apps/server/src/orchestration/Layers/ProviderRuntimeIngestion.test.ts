@@ -16,6 +16,7 @@ import {
   ApprovalRequestId,
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
+  EnvironmentId,
   EventId,
   MessageId,
   ProjectId,
@@ -108,6 +109,9 @@ function createProviderServiceHarness() {
   const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
   const runtimeSessions: ProviderSession[] = [];
   const interruptedThreadIds: ThreadId[] = [];
+  /** Carried sessions dropped; while `dropFails.on`, a drop fails. */
+  const droppedCursors: ThreadId[] = [];
+  const dropFails = { on: false };
 
   const unsupported = () => Effect.die(new Error("Unsupported provider call in test")) as never;
   const service: ProviderServiceShape = {
@@ -146,6 +150,14 @@ function createProviderServiceHarness() {
     stopSession: () => unsupported(),
     listSessions: () => Effect.succeed([...runtimeSessions]),
     quiesceThread: () => Effect.succeed({ confirmed: true } as const),
+    exportNativeSession: () => Effect.succeed(null),
+    importNativeSession: () => Effect.succeed({ refused: "not in this test" }),
+    adoptNativeSession: () => Effect.void,
+    forgetNativeSession: () => Effect.void,
+    dropResumeCursor: (threadId) =>
+      dropFails.on
+        ? Effect.die(new Error("the session would not stop"))
+        : Effect.sync(() => void droppedCursors.push(threadId)),
     getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
     getInstanceInfo: (instanceId) => {
       const driverKind = ProviderDriverKind.make(String(instanceId));
@@ -204,6 +216,8 @@ function createProviderServiceHarness() {
     emit,
     setSession,
     interruptedThreadIds,
+    droppedCursors,
+    dropFails,
   };
 }
 
@@ -388,6 +402,8 @@ describe("ProviderRuntimeIngestion", () => {
       emit: provider.emit,
       setProviderSession: provider.setSession,
       interruptedThreadIds: provider.interruptedThreadIds,
+      droppedCursors: provider.droppedCursors,
+      dropFails: provider.dropFails,
       adoptedPages,
       mcpAppCalls,
       voiceDevices,
@@ -1015,6 +1031,181 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(thread.session?.status).toBe("error");
     expect(thread.session?.lastError).toBe("turn failed");
+  });
+
+  it("a carried session proves itself by a turn that succeeds, and falls back only on a refusal of its contents", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const provider = ProviderDriverKind.make("codex");
+    const importCarried = (threadId: ThreadId) =>
+      Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.import",
+          commandId: CommandId.make(`cmd-import-${threadId}`),
+          threadId,
+          projectId: asProjectId("project-1"),
+          title: "Moved here",
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+          runtimeMode: "approval-required",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          branch: null,
+          worktreePath: null,
+          movedFrom: {
+            environmentId: EnvironmentId.make("environment-windows"),
+            label: "Windows PC",
+            threadId: ThreadId.make("thread-there"),
+            movedAt: now,
+          },
+          messages: [],
+          activities: [],
+          nativeSession: "carried",
+          createdAt: now,
+        }),
+      );
+    /** Sends a message here, and its turn ends as the provider says. */
+    const runTurn = async (
+      threadId: ThreadId,
+      id: string,
+      end: { readonly state: "completed" | "failed"; readonly errorMessage?: string },
+    ) => {
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make(`cmd-carried-turn-${threadId}-${id}`),
+          threadId,
+          message: {
+            messageId: asMessageId(`carried-${threadId}-${id}`),
+            role: "user",
+            text: "go on",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: now,
+        }),
+      );
+      harness.emit({
+        type: "turn.started",
+        eventId: asEventId(`evt-${threadId}-${id}-started`),
+        provider,
+        threadId,
+        createdAt: now,
+        turnId: asTurnId(`turn-${threadId}-${id}`),
+      });
+      await waitForThread(
+        harness.readModel,
+        (thread) => thread.session?.activeTurnId === `turn-${threadId}-${id}`,
+        10_000,
+        threadId,
+      );
+      harness.emit({
+        type: "turn.completed",
+        eventId: asEventId(`evt-${threadId}-${id}-completed`),
+        provider,
+        threadId,
+        createdAt: now,
+        turnId: asTurnId(`turn-${threadId}-${id}`),
+        payload: end,
+      });
+      await harness.drain();
+    };
+    const resumed = ThreadId.make("thread-carried-resumed");
+    const refused = ThreadId.make("thread-carried-refused");
+    await importCarried(resumed);
+    await importCarried(refused);
+    for (const threadId of [resumed, refused]) {
+      harness.setProviderSession({
+        provider,
+        status: "ready",
+        runtimeMode: "approval-required",
+        threadId,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+
+    // An ordinary failure is a failed turn: the session stays carried, still owed.
+    await runTurn(resumed, "1", { state: "failed", errorMessage: "Rate limit reached" });
+    expect(await waitForThread(harness.readModel, () => true, 10_000, resumed)).toMatchObject({
+      nativeSession: "carried",
+      historySeedOwed: true,
+    });
+    // A success proves it: nothing more is owed.
+    await runTurn(resumed, "2", { state: "completed" });
+    await waitForThread(
+      harness.readModel,
+      (thread) => thread.nativeSession === "resumed" && thread.historySeedOwed !== true,
+      10_000,
+      resumed,
+    );
+
+    // A refusal of its contents whose session won't stop records nothing yet:
+    // it stays carried, and the next refusal tries again.
+    const encrypted =
+      '{"error":{"message":"The encrypted content could not be verified.","code":"invalid_encrypted_content"}}';
+    harness.dropFails.on = true;
+    await runTurn(refused, "1", { state: "failed", errorMessage: encrypted });
+    await Effect.runPromise(Effect.sleep("100 millis"));
+    expect(
+      (await waitForThread(harness.readModel, () => true, 10_000, refused)).nativeSession,
+    ).toBe("carried");
+    // Once the session is dropped, it falls back, naming the message that started the turn.
+    harness.dropFails.on = false;
+    await runTurn(refused, "2", { state: "failed", errorMessage: encrypted });
+    const fellBack = await waitForThread(
+      harness.readModel,
+      (thread) => thread.nativeSession === "fell_back",
+      10_000,
+      refused,
+    );
+    expect(harness.droppedCursors).toEqual([refused]);
+    expect(fellBack.historySeedOwed).toBe(true);
+    expect(fellBack.activities.at(-1)).toMatchObject({
+      kind: "thread.native-session-fell-back",
+      payload: { reason: "turn_failed", resendMessageId: `carried-${refused}-2` },
+    });
+
+    // A refused turn the provider started on its own names nothing to send again.
+    const unprompted = ThreadId.make("thread-carried-unprompted");
+    await importCarried(unprompted);
+    harness.setProviderSession({
+      provider,
+      status: "ready",
+      runtimeMode: "approval-required",
+      threadId: unprompted,
+      createdAt: now,
+      updatedAt: now,
+    });
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-unprompted-started"),
+      provider,
+      threadId: unprompted,
+      createdAt: now,
+      turnId: asTurnId("turn-unprompted"),
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) => thread.session?.activeTurnId === "turn-unprompted",
+      10_000,
+      unprompted,
+    );
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-unprompted-completed"),
+      provider,
+      threadId: unprompted,
+      createdAt: now,
+      turnId: asTurnId("turn-unprompted"),
+      payload: { state: "failed", errorMessage: encrypted },
+    });
+    const unpromptedFell = await waitForThread(
+      harness.readModel,
+      (thread) => thread.nativeSession === "fell_back",
+      10_000,
+      unprompted,
+    );
+    expect(unpromptedFell.activities.at(-1)?.payload).toEqual({ reason: "turn_failed" });
   });
 
   it("ends the turns of a checkout without git, each the way it ended", async () => {

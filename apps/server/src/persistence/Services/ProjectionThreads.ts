@@ -34,6 +34,7 @@ import {
   OrchestrationThreadMove,
   ThreadPendingMove,
   ThreadMovedFrom,
+  ThreadNativeSession,
   ThreadMoveOutcome,
   ThreadRemoteOrigin,
   OrchestrationOutsideWork,
@@ -209,6 +210,8 @@ export const ProjectionThread = Schema.Struct({
   historySeedOwed: Schema.optional(Schema.NullOr(NonNegativeInt)),
   /** See `OrchestrationThread.historySeedMessageId`. Absent or null reads as none. */
   historySeedMessageId: Schema.optional(Schema.NullOr(MessageId)),
+  /** See `OrchestrationThread.nativeSession`. Absent or null reads as none. */
+  nativeSession: Schema.optional(Schema.NullOr(ThreadNativeSession)),
   /** On a parent: see `OrchestrationThread.childRequests`. Absent or null reads as none. */
   childRequests: Schema.optional(Schema.NullOr(OrchestrationChildRequestState)),
   /**

@@ -5294,9 +5294,34 @@ describe("a thread that moved here from another computer", () => {
     });
     const entries = deriveMovedInEntries([movedIn]);
     expect(entries).toEqual([
-      expect.objectContaining({ fromLabel: "Mac mini", movedAt: "2026-02-23T00:04:00.000Z" }),
+      expect.objectContaining({
+        fromLabel: "Mac mini",
+        movedAt: "2026-02-23T00:04:00.000Z",
+        agentGot: "summary",
+      }),
     ]);
     expect(deriveWorkLogEntries([movedIn])).toEqual([]);
+
+    // Moved with its agent's own session, which then couldn't be resumed here.
+    const carried = {
+      ...movedIn,
+      payload: { ...(movedIn.payload as Record<string, unknown>), nativeSession: "carried" },
+    };
+    const fellBack = makeActivity({
+      id: "fell-back",
+      createdAt: "2026-02-23T00:06:00.000Z",
+      kind: "thread.native-session-fell-back",
+      summary: "Couldn't resume the agent's session here, so it got a summary instead.",
+      tone: "info",
+      payload: { reason: "resume_failed" },
+    });
+    expect(
+      deriveMovedInEntries([carried, fellBack]).map((entry) => [entry.id, entry.agentGot]),
+    ).toEqual([
+      ["moved-in", "memory"],
+      ["fell-back", "fell_back"],
+    ]);
+    expect(deriveWorkLogEntries([carried, fellBack])).toEqual([]);
 
     const message = (id: string, eventSequence: number, createdAt: string) => ({
       id: MessageId.make(id),

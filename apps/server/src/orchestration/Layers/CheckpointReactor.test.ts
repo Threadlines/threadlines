@@ -155,6 +155,11 @@ function createProviderServiceHarness(
     stopSession: () => unsupported(),
     listSessions,
     quiesceThread: () => Effect.succeed({ confirmed: true } as const),
+    exportNativeSession: () => Effect.succeed(null),
+    importNativeSession: () => Effect.succeed({ refused: "not in this test" }),
+    adoptNativeSession: () => Effect.void,
+    forgetNativeSession: () => Effect.void,
+    dropResumeCursor: () => Effect.void,
     getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
     getInstanceInfo: (instanceId) =>
       Effect.succeed({

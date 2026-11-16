@@ -9,6 +9,7 @@ import {
   EnvironmentId,
   MessageId,
   ProjectId,
+  ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
   ThreadMoveId,
@@ -25,12 +26,26 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { ServerConfig } from "../config.ts";
 import { ProjectSetupScriptRunner } from "../project/Services/ProjectSetupScriptRunner.ts";
 import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";
-import { inspectMoveCheckout, movePayloadPath, writeMoveExport } from "../moves/moveExport.ts";
+import {
+  estimateMoveOtherBytes,
+  inspectMoveCheckout,
+  movePayloadPath,
+  writeMoveExport,
+} from "../moves/moveExport.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ProjectionThreadRepository } from "../persistence/Services/ProjectionThreads.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import { RepositoryIdentityResolver } from "../project/Services/RepositoryIdentityResolver.ts";
+import {
+  exportClaudeNativeSession,
+  importClaudeNativeSession,
+} from "../provider/Drivers/ClaudeNativeSession.ts";
+import type { NativeSessionExport } from "../provider/nativeSession.ts";
+import {
+  ProviderService,
+  type ProviderServiceShape,
+} from "../provider/Services/ProviderService.ts";
 import { RelayDeviceRepository } from "../relay/RelayDeviceRepository.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
@@ -127,6 +142,16 @@ const movingThread = (): OrchestrationThread =>
     activities: [],
   }) as unknown as OrchestrationThread;
 
+/** Where carried sessions land here, and the bindings written for them. */
+interface CarryRecord {
+  readonly home: string;
+  readonly adopted: Array<Parameters<ProviderServiceShape["adoptNativeSession"]>[0]>;
+  /** Bindings taken back for threads that never landed. */
+  readonly forgotten?: Array<ThreadId>;
+  /** The engine fails to create the moved thread. */
+  readonly failImport?: boolean;
+}
+
 /** The services LinkMoves leans on, with this computer's git real and the rest faked. */
 function testLayer(
   repos: ReturnType<typeof makeRepos>,
@@ -134,6 +159,7 @@ function testLayer(
   access: "allowed" | "ask" = "allowed",
   revoked: () => boolean = () => false,
   setupRuns: string[] = [],
+  carry: CarryRecord = { home: os.tmpdir(), adopted: [] },
 ) {
   return LinkMovesLive.pipe(
     Layer.provideMerge(LinkMoveRepositoryLive),
@@ -168,10 +194,12 @@ function testLayer(
         }),
         Layer.mock(OrchestrationEngineService)({
           dispatch: (command) =>
-            Effect.sync(() => {
-              dispatched.push(command);
-              return { sequence: dispatched.length };
-            }),
+            carry.failImport === true && command.type === "thread.import"
+              ? Effect.die(new Error("the engine is down"))
+              : Effect.sync(() => {
+                  dispatched.push(command);
+                  return { sequence: dispatched.length };
+                }),
           getCommandReceipt: (commandId) =>
             Effect.succeed(
               dispatched.some((command) => command.commandId === commandId)
@@ -184,6 +212,16 @@ function testLayer(
         }),
         Layer.mock(ProjectionThreadRepository)({ getById: () => Effect.succeed(Option.none()) }),
         Layer.mock(RelayDeviceRepository)({ getDevice: () => Effect.succeed(Option.none()) }),
+        // Every agent here is a Claude whose home is `carry.home`.
+        Layer.mock(ProviderService)({
+          getInstanceInfo: () =>
+            Effect.succeed({ driverKind: ProviderDriverKind.make("claudeAgent") } as never),
+          importNativeSession: ({ instanceId: _instanceId, ...input }) =>
+            importClaudeNativeSession({ ...input, configDir: carry.home }),
+          adoptNativeSession: (input) => Effect.sync(() => void carry.adopted.push(input)),
+          forgetNativeSession: (threadId) =>
+            Effect.sync(() => void carry.forgotten?.push(threadId)),
+        }),
         Layer.mock(RepositoryIdentityResolver)({
           resolve: () =>
             Effect.succeed({
@@ -219,7 +257,7 @@ const link = (access: PeerLink["access"]): PeerLink => ({
 });
 
 /** Packs `repos.a`'s thread the way the computer it leaves does. */
-const pack = (repos: ReturnType<typeof makeRepos>) =>
+const pack = (repos: ReturnType<typeof makeRepos>, nativeSession?: NativeSessionExport | null) =>
   Effect.gen(function* () {
     const git = yield* GitVcsDriver.GitVcsDriver;
     const checkout = yield* inspectMoveCheckout(git, repos.a, "origin");
@@ -240,9 +278,57 @@ const pack = (repos: ReturnType<typeof makeRepos>) =>
         threadId: ThreadId.make("thread-a"),
       },
       agent,
+      nativeSession,
     });
     return { manifest, payload: fs.readFileSync(movePayloadPath(dir)), checkout };
   });
+
+/** Offers, sends and finishes a packed move, then waits for its import to settle. */
+const deliver = (manifest: PeerMoveManifest, payload: Buffer) =>
+  Effect.gen(function* () {
+    const moves = yield* LinkMoves;
+    yield* moves.prepare(link("allowed"), { transferId: TRANSFER, manifest });
+    for (let offset = 0; offset < payload.length; offset += 64 * 1024) {
+      yield* moves.chunk(link("allowed"), {
+        transferId: TRANSFER,
+        offset,
+        data: payload.subarray(offset, offset + 64 * 1024).toString("base64"),
+      });
+    }
+    let state = yield* moves.finish(link("allowed"), { transferId: TRANSFER });
+    for (let tries = 0; tries < 200 && state.status === "importing"; tries += 1) {
+      yield* Effect.sleep("50 millis");
+      state = yield* moves.status(link("allowed"), { transferId: TRANSFER });
+    }
+    return state;
+  });
+
+const SESSION = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
+
+/** A Claude home on the computer a thread leaves, with the thread's session in it. */
+function claudeHomeWithSession(root: string) {
+  const home = path.join(root, "claude-a");
+  const write = (relPath: string, text: string) => {
+    fs.mkdirSync(path.dirname(path.join(home, relPath)), { recursive: true });
+    fs.writeFileSync(path.join(home, relPath), text);
+  };
+  write(`projects/-a-repo/${SESSION}.jsonl`, '{"type":"user","message":"Make it faster"}\n');
+  write(`projects/-a-repo/${SESSION}/subagents/agent-s1.jsonl`, '{"type":"assistant"}\n');
+  write(".credentials.json", '{"claudeAiOauth":"secret"}');
+  return home;
+}
+
+/** Every file under `root`, `/`-separated, sorted; none when it doesn't exist. */
+const filesUnder = (root: string): string[] =>
+  fs.existsSync(root)
+    ? fs
+        .readdirSync(root, { recursive: true, withFileTypes: true })
+        .filter((entry) => entry.isFile())
+        .map((entry) =>
+          path.relative(root, path.join(entry.parentPath, entry.name)).split(path.sep).join("/"),
+        )
+        .toSorted()
+    : [];
 
 describe("LinkMoves", () => {
   it.live("rebuilds the moved checkout in a worktree of its own and imports the thread", () => {
@@ -253,6 +339,15 @@ describe("LinkMoves", () => {
     return Effect.gen(function* () {
       const { manifest, payload, checkout } = yield* pack(repos);
       assert.equal(manifest.summary.unpushedCommits, 1);
+      // The dialog's guess at the same move comes near what was packed.
+      const estimate = yield* estimateMoveOtherBytes({
+        git: yield* GitVcsDriver.GitVcsDriver,
+        checkout,
+        thread: movingThread(),
+        attachmentsDir: path.join(repos.root, "attachments"),
+      });
+      assert.isAbove(estimate, manifest.totalBytes / 2);
+      assert.isBelow(estimate, manifest.totalBytes * 1.5);
       const moves = yield* LinkMoves;
       let state = yield* moves.prepare(link("allowed"), { transferId: TRANSFER, manifest });
       assert.equal(state.status, "receiving");
@@ -326,6 +421,104 @@ describe("LinkMoves", () => {
       assert.equal(state.status, "committed");
       assert.equal(run(worktree, "rev-parse", "HEAD"), checkout.headSha);
     }).pipe(Effect.provide(testLayer(repos, dispatched, "allowed", () => linkOff, setupRuns)));
+  });
+
+  it.live(
+    "carries the agent's session into the chosen agent's own home and binds the thread",
+    () => {
+      const repos = makeRepos();
+      const dispatched: OrchestrationCommand[] = [];
+      const carry: CarryRecord = { home: path.join(repos.root, "claude-b"), adopted: [] };
+      return Effect.gen(function* () {
+        const session = yield* exportClaudeNativeSession({
+          configDir: claudeHomeWithSession(repos.root),
+          resumeCursor: { resume: SESSION, turnCount: 1 },
+        });
+        const { manifest, payload } = yield* pack(repos, session);
+        assert.deepEqual(manifest.session, {
+          driver: "claudeAgent",
+          cursor: { resume: SESSION, turnCount: 1 },
+        });
+        assert.equal(manifest.parts.filter((part) => part.kind === "session").length, 2);
+        assert.equal((yield* deliver(manifest, payload)).status, "committed");
+
+        const command = dispatched.find((entry) => entry.type === "thread.import");
+        assert(command?.type === "thread.import");
+        assert.equal(command.nativeSession, "carried");
+        // Under the new checkout's project in this computer's own home, and nothing else.
+        const slug = command.worktreePath!.replace(/[^a-zA-Z0-9]/g, "-");
+        assert.deepEqual(filesUnder(carry.home), [
+          `projects/${slug}/${SESSION}.jsonl`,
+          `projects/${slug}/${SESSION}/subagents/agent-s1.jsonl`,
+        ]);
+        // The binding is written in the same step, for the thread the move becomes.
+        assert.deepEqual(carry.adopted, [
+          {
+            threadId: command.threadId,
+            instanceId: agent.instanceId,
+            cursor: { resume: SESSION, turnCount: 1 },
+            runtimeMode: "auto-accept-edits",
+          },
+        ]);
+      }).pipe(Effect.provide(testLayer(repos, dispatched, "allowed", () => false, [], carry)));
+    },
+  );
+
+  it.live("a session naming a credential writes nothing, and the thread gets a summary", () => {
+    const repos = makeRepos();
+    const dispatched: OrchestrationCommand[] = [];
+    const carry: CarryRecord = { home: path.join(repos.root, "claude-b"), adopted: [] };
+    return Effect.gen(function* () {
+      const home = claudeHomeWithSession(repos.root);
+      const exported = yield* exportClaudeNativeSession({
+        configDir: home,
+        resumeCursor: { resume: SESSION },
+      });
+      // A sender that also names the sign-in, as a path in its home.
+      const session: NativeSessionExport = {
+        ...exported!,
+        files: [
+          ...exported!.files,
+          {
+            relPath: ".credentials.json",
+            absolutePath: path.join(home, ".credentials.json"),
+            size: fs.statSync(path.join(home, ".credentials.json")).size,
+          },
+        ],
+      };
+      const { manifest, payload } = yield* pack(repos, session);
+      assert.equal((yield* deliver(manifest, payload)).status, "committed");
+      const command = dispatched.find((entry) => entry.type === "thread.import");
+      assert(command?.type === "thread.import");
+      assert.equal(command.nativeSession, undefined);
+      assert.deepEqual(filesUnder(carry.home), []);
+      assert.deepEqual(carry.adopted, []);
+    }).pipe(Effect.provide(testLayer(repos, dispatched, "allowed", () => false, [], carry)));
+  });
+
+  it.live("a move that carried a session but didn't land takes back its files and binding", () => {
+    const repos = makeRepos();
+    const dispatched: OrchestrationCommand[] = [];
+    const carry: CarryRecord = {
+      home: path.join(repos.root, "claude-b"),
+      adopted: [],
+      forgotten: [],
+      failImport: true,
+    };
+    // Someone else's file in the same home stays.
+    fs.mkdirSync(path.join(carry.home, "projects"), { recursive: true });
+    fs.writeFileSync(path.join(carry.home, "projects", "keep.jsonl"), "not the move's\n");
+    return Effect.gen(function* () {
+      const session = yield* exportClaudeNativeSession({
+        configDir: claudeHomeWithSession(repos.root),
+        resumeCursor: { resume: SESSION },
+      });
+      const { manifest, payload } = yield* pack(repos, session);
+      assert.equal((yield* deliver(manifest, payload)).status, "aborted");
+      assert.equal(carry.adopted.length, 1);
+      assert.deepEqual(carry.forgotten, [carry.adopted[0]!.threadId]);
+      assert.deepEqual(filesUnder(carry.home), ["projects/keep.jsonl"]);
+    }).pipe(Effect.provide(testLayer(repos, dispatched, "allowed", () => false, [], carry)));
   });
 
   it.live(

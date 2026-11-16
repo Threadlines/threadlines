@@ -52,6 +52,12 @@ import type {
 import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
 
+import type {
+  NativeSessionExport,
+  NativeSessionImportInput,
+  NativeSessionImportResult,
+} from "../nativeSession.ts";
+
 export type ProviderSessionModelSwitchMode = "in-session" | "unsupported";
 export type ProviderManualContextCompactionMode = "supported" | "unsupported";
 export type ProviderActiveTurnSteeringMode = "supported" | "unsupported";
@@ -360,6 +366,28 @@ export interface ProviderAdapterShape<TError> {
    * session while still clearing Threadlines' persisted runtime binding.
    */
   readonly deleteThread?: (threadId: ThreadId) => Effect.Effect<void, TError>;
+
+  /**
+   * A moved thread's session, to carry it to another computer
+   * (docs/design/fleet.md, Part 3d): the files its resume cursor needs in
+   * this instance's home, and the cursor to send. Null when it has none
+   * here. Only drivers whose sessions are files (Claude, Codex, Pi) have it;
+   * the others' moved threads get a summary.
+   */
+  readonly exportNativeSession?: (input: {
+    readonly resumeCursor: unknown;
+  }) => Effect.Effect<NativeSessionExport | null>;
+
+  /**
+   * Writes a session another computer carried into this instance's own
+   * home, every path named from the cursor's session id with this driver's
+   * layout, and returns the cursor that resumes it here. Refused, nothing
+   * of it stays: a file it can't place, or a destination someone else's
+   * file already holds.
+   */
+  readonly importNativeSession?: (
+    input: NativeSessionImportInput,
+  ) => Effect.Effect<NativeSessionImportResult>;
 
   /**
    * A workflow run's files, from the folders the run itself named: its

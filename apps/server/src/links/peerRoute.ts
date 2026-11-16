@@ -194,6 +194,7 @@ export const makePeerRpcLayer = (input: {
             projects,
             moves: true,
             moveStagedApproval: true,
+            moveNativeSession: true,
             threadFiling: true,
             outsideAgents: true,
           } satisfies PeerDescriptor;

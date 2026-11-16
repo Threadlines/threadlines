@@ -184,6 +184,7 @@ type ThreadLineageRow = Pick<
   | "lastMoveOutcome"
   | "historySeedOwed"
   | "historySeedMessageId"
+  | "nativeSession"
 >;
 
 /** Child threads: lineage and family as the decider and the thread detail read them. */
@@ -204,6 +205,7 @@ const threadLineageFields = (row: ThreadLineageRow) => ({
   ...threadMoveFields(row),
   ...((row.historySeedOwed ?? 0) > 0 ? { historySeedOwed: true } : {}),
   ...(row.historySeedMessageId ? { historySeedMessageId: row.historySeedMessageId } : {}),
+  ...(row.nativeSession ? { nativeSession: row.nativeSession } : {}),
 });
 
 /** Moving a thread to a linked computer, or moved here from one (OrchestrationThreadMove). */
@@ -964,6 +966,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           last_move_outcome_json AS "lastMoveOutcome",
           history_seed_owed AS "historySeedOwed",
           history_seed_message_id AS "historySeedMessageId",
+          native_session AS "nativeSession",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",
@@ -1034,6 +1037,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           last_move_outcome_json AS "lastMoveOutcome",
           history_seed_owed AS "historySeedOwed",
           history_seed_message_id AS "historySeedMessageId",
+          native_session AS "nativeSession",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",
@@ -1106,6 +1110,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           last_move_outcome_json AS "lastMoveOutcome",
           history_seed_owed AS "historySeedOwed",
           history_seed_message_id AS "historySeedMessageId",
+          native_session AS "nativeSession",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",
@@ -1941,6 +1946,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           last_move_outcome_json AS "lastMoveOutcome",
           history_seed_owed AS "historySeedOwed",
           history_seed_message_id AS "historySeedMessageId",
+          native_session AS "nativeSession",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",
@@ -3766,6 +3772,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     last_move_outcome_json AS "lastMoveOutcome",
     history_seed_owed AS "historySeedOwed",
     history_seed_message_id AS "historySeedMessageId",
+    native_session AS "nativeSession",
     done_override AS "doneOverride",
     done_override_at AS "doneOverrideAt",
     last_seen_at AS "lastSeenAt",
