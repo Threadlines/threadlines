@@ -153,6 +153,7 @@ import {
   selectSidebarThreadsAcrossEnvironments,
   useStore,
 } from "../store";
+import { createThreadSelectorByRef } from "../storeSelectors";
 import { buildThreadRouteParams } from "../threadRoutes";
 import {
   ADDON_ICON_CLASS,
@@ -540,8 +541,13 @@ export function OpenCommandPaletteDialog() {
   const queryClient = useQueryClient();
   const [highlightedItemValue, setHighlightedItemValue] = useState<string | null>(null);
   const settings = useSettings();
-  const { activeDraftThread, activeThread, defaultProjectRef, handleNewThread } =
+  const { activeDraftThread, defaultProjectRef, handleNewThread, routeThreadRef } =
     useHandleNewThread();
+  // The whole open thread: the palette reads its activities, move and mode,
+  // which the shared helper leaves out. It is mounted only while open.
+  const activeThread = useStore(
+    useMemo(() => createThreadSelectorByRef(routeThreadRef), [routeThreadRef]),
+  );
   const projects = useStore(useShallow(selectProjectsAcrossEnvironments));
   const threads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
   const keybindings = useServerKeybindings();

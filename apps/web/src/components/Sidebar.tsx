@@ -1,6 +1,8 @@
 import { ChevronDownIcon, ChevronsUpIcon, CloudIcon, MonitorIcon, SearchIcon } from "lucide-react";
 import React, { Suspense, useCallback, useEffect, memo, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
+import { shallow } from "zustand/vanilla/shallow";
+import { useKept, useStableHandlers } from "../hooks/useStableIdentity";
 import type { ScopedThreadRef } from "@threadlines/contracts";
 import {
   parseScopedThreadKey,
@@ -827,7 +829,7 @@ export default function Sidebar() {
     }),
   );
 
-  const scopeOptions = useMemo(() => {
+  const scopeOptionsNow = useMemo(() => {
     const lastActivityMsByKey = new Map<string, number>();
     const needsYouCountByKey = new Map<string, number>();
     for (const entry of machineScopedEntries) {
@@ -864,6 +866,13 @@ export default function Sidebar() {
       needsYouCountByKey,
     });
   }, [machineScopedEntries, scopedEnvironmentIdValue, sidebarProjects]);
+  // Kept while the menu would list the same thing: activity times move with
+  // every streamed word, the order and counts rarely do.
+  const scopeOptions = useKept(
+    scopeOptionsNow,
+    (kept, next) =>
+      kept.length === next.length && kept.every((option, index) => shallow(option, next[index])),
+  );
 
   // Families first: a parent's attached children travel with it through
   // every scope, and a family takes one row in the live list. A family can
@@ -1335,6 +1344,13 @@ export default function Sidebar() {
       updateSettings({ inboxCustomOrder: seedInboxCustomOrder(inboxThreads, "recent") });
     }
   }, [inboxThreads, updateSettings]);
+  // The scope menu is memoized; these change with the inbox's threads, which
+  // a streaming reply changes many times a second.
+  const scopeMenuHandlers = useStableHandlers({
+    onSortChange: handleSortChange,
+    onResetCustomOrder: handleResetCustomOrder,
+    onAddProject: () => openAddProjectCommandPalette(),
+  });
   // What a move reads when it happens; the menu and the drag outlive a render.
   const inboxSortRef = useRef(inboxSort);
   inboxSortRef.current = inboxSort;
@@ -1448,7 +1464,7 @@ export default function Sidebar() {
 
   // Exactly the inbox rows drawn, in order: jump labels, shift-range
   // selection, previous/next and prewarming walk this list.
-  const orderedThreadKeys = useMemo(
+  const orderedThreadKeysNow = useMemo(
     () => [
       ...liveSections.flatMap((section) => section.rows.flatMap(inboxLiveRowThreadKeys)),
       ...renderedDoneEntries.flatMap(({ kind, row }) =>
@@ -1461,6 +1477,9 @@ export default function Sidebar() {
     ],
     [liveSections, renderedDoneEntries],
   );
+  // Kept while the rows are the same: every row is handed this list, and a
+  // streaming thread rebuilds the sections many times a second.
+  const orderedThreadKeys = useKept(orderedThreadKeysNow, shallow);
   // The general chats in the General Chats list's order. They never join the
   // inbox, so while one is open previous/next walk these instead: chat to
   // chat, the way the list shows them.
@@ -2103,9 +2122,9 @@ export default function Sidebar() {
                       grouping={sidebarGrouping}
                       onGroupingChange={handleGroupingChange}
                       sort={inboxSort}
-                      onSortChange={handleSortChange}
-                      onResetCustomOrder={handleResetCustomOrder}
-                      onAddProject={() => openAddProjectCommandPalette()}
+                      onSortChange={scopeMenuHandlers.onSortChange}
+                      onResetCustomOrder={scopeMenuHandlers.onResetCustomOrder}
+                      onAddProject={scopeMenuHandlers.onAddProject}
                       onNewThread={isMobile ? handleComposeClick : null}
                       newThreadShortcutLabel={newThreadShortcutLabel}
                     />
