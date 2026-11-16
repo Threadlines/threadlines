@@ -231,7 +231,8 @@ export function buildPendingMoveNotice(input: {
     id: `thread-move-queued:${pendingMove.requestId}`,
     severity: words.severity,
     lead: words.lead,
-    wrapActions: words.retry,
+    // On a phone the words get the row's whole width; they run long.
+    wrapActions: true,
     actions: (
       <>
         {words.retry ? (
