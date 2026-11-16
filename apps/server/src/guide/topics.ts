@@ -105,12 +105,26 @@ A thread on another computer stays under its parent on both computers and shows 
   {
     id: "linking-computers",
     title: "Linking computers (Fleet)",
-    keywords: ["fleet", "link", "computer", "pc", "mac", "windows", "remote", "another machine"],
+    keywords: [
+      "fleet",
+      "link",
+      "computer",
+      "pc",
+      "mac",
+      "windows",
+      "remote",
+      "another machine",
+      "move",
+      "transfer",
+      "shut down",
+    ],
     body: `Fleet, in the left bar, lists the computers this app knows. Use + at the top of its Computers list to link another computer running Threadlines. Each computer's page shows its connection, {place:fleet.worksWith}, and its devices.
 
 Linking is two-way, with a permission for each direction: "<A>'s agents can start work on <B>" is Allowed, Ask first or Off, with the most access those threads get ("Up to Auto"). Each direction is stored on the computer the work would run on, so the Mac's setting decides what the PC's agents may do on the Mac, and the other way round. Unlink from the same group.
 
-With a link allowed, an agent can start a thread on the other computer in that computer's copy of the project, read it and message it, and its reply comes back. A computer you only open from this app (Settings › Connections › Computers you use from here) is not a link: you see its threads here, but agents can't work across. This app's sign-in to it renews whenever they connect and ends after 90 days without one, or when that computer removes it. Fleet's All computers page and its own page then say the sign-in ended and offer to connect again with a new code; its threads stay on it.`,
+With a link allowed, an agent can start a thread on the other computer in that computer's copy of the project, read it and message it, and its reply comes back. A computer you only open from this app (Settings › Connections › Computers you use from here) is not a link: you see its threads here, but agents can't work across. This app's sign-in to it renews whenever they connect and ends after 90 days without one, or when that computer removes it. Fleet's All computers page and its own page then say the sign-in ended and offer to connect again with a new code; its threads stay on it.
+
+To carry on a thread on a linked computer, for example before shutting this one down, right-click it in the sidebar (or use the command palette) and pick Move to another computer. The thread goes with its messages and its code changes, including files not yet committed; staged changes arrive unstaged. It lands in a new worktree of that computer's copy of the project; the dialog offers to set the project up there when it's missing. When that computer's permission for this one is Ask first, its user allows the move there. The copy left here stays, read-only, with a link to the new one. On the other computer the agent starts a fresh session with the conversation so far, and turns from before the move can't be undone there. A thread that is working, waiting on you, in a room, that started other threads, or that has a goal, a check-back or pull request auto-fix on can't move yet; the dialog says what to finish first. General Chats don't move.`,
   },
   {
     id: "devices",
