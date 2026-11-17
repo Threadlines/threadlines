@@ -39,7 +39,9 @@ import {
   type ThreadMovePreviewMany,
   type ThreadMovePreviewManyThread,
   type ThreadMoveSessionOutcome,
+  type ThreadMoveNote,
   type ThreadMoveStartInput,
+  type ThreadMoveTakes,
   type ThreadMoveTargetPreview,
 } from "@threadlines/contracts";
 import * as Context from "effect/Context";
@@ -60,12 +62,21 @@ import { ServerConfig } from "../config.ts";
 import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";
 import { ComputerLinkClient, type PeerClient } from "../links/ComputerLinkClient.ts";
 import { ComputerLinkRepository, isUsableLink } from "../links/ComputerLinkRepository.ts";
+import { generalChatThreadScratchCwd } from "../orchestration/generalChats.ts";
+import {
+  ALL_MOVE_TAKES,
+  carryBringsWords,
+  carryNotTaken,
+  type ThreadMoveCarry,
+  threadMoveCarry,
+} from "../orchestration/threadMoveCarry.ts";
 import {
   firstMoveBlock,
   moveWaitsOf,
   threadMoveRefusal,
   threadMoveRefusals,
 } from "../orchestration/threadMoveDecisions.ts";
+import { ThreadActionGate } from "./ThreadActionGate.ts";
 import type { NativeSessionExport } from "../provider/nativeSession.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
 import { makeThreadMoveContextReader } from "./threadMoveView.ts";
@@ -79,13 +90,16 @@ import {
   estimateMoveOtherBytes,
   inspectMoveCheckout,
   type MoveCheckout,
+  moveThreadStateOf,
   nativeSessionFits,
   movePayloadPath,
   readMoveExport,
   sha256OfFile,
   summarizeMoveChanges,
+  summarizeScratchFolder,
   ThreadMoveFailure,
   writeMoveExport,
+  writeScratchExport,
 } from "./moveExport.ts";
 
 /**
@@ -137,7 +151,30 @@ export interface ThreadMovesShape {
     readonly agent?: ModelSelection | undefined;
     /** The computers as already described (a batch); absent: described now. */
     readonly targets?: ReadonlyArray<DescribedTarget> | undefined;
-  }) => Effect.Effect<{ readonly label: string }, ThreadMoveError>;
+  }) => Effect.Effect<
+    {
+      readonly label: string;
+      /** What it takes (ThreadMoveTakes); everything, when it couldn't be reached now. */
+      readonly takes: ThreadMoveTakes;
+    },
+    ThreadMoveError
+  >;
+  /**
+   * Before the move's stop (docs/design/fleet.md, Part 3e, "Put back"):
+   * whether the target takes what the thread carries. `ok` when it carries
+   * nothing to ask about; `unreachable` when the target doesn't answer;
+   * `blocked` (with words) when it answered that it doesn't, so the move
+   * ends before anything here is stopped.
+   */
+  readonly checkCarry: (input: {
+    readonly threadId: ThreadId;
+    readonly targetEnvironmentId: EnvironmentId;
+    readonly label: string;
+  }) => Effect.Effect<
+    | { readonly kind: "ok" }
+    | { readonly kind: "unreachable"; readonly words: string }
+    | { readonly kind: "blocked"; readonly words: string }
+  >;
   /** Starts the thread's queued move `requestId`, now that the thread is free and quiesced. */
   readonly startQueued: (input: {
     readonly threadId: ThreadId;
@@ -210,6 +247,72 @@ export function sessionOutcomeFor(
  * would get of its session; without one, only what holds for every thread
  * (its default agent is the suggestion).
  */
+/** What a linked computer takes beyond a plain thread, as it says (ThreadMoveTakes). */
+export function takesOf(peer: PeerDescriptor): ThreadMoveTakes {
+  return {
+    ...(peer.moveThreadState === true ? { threadState: true as const } : {}),
+    ...(peer.moveGeneralChats === true ? { generalChats: true as const } : {}),
+  };
+}
+
+/** The name General Chats has on every computer, as the dialog's project line says it. */
+const GENERAL_CHATS_NAME = "General chats";
+
+/**
+ * What won't work on `peer` as it did here, for a thread carrying `carry`
+ * (docs/design/fleet.md, Part 3e, "What the user sees"), in the server's
+ * words; a note about some of its agents names them (`instanceIds`).
+ */
+export function targetNotesOf(
+  peer: PeerDescriptor,
+  carry: ThreadMoveCarry,
+  extra: {
+    /** Whether GitHub is signed in there for the project; absent: not asked, or it couldn't tell. */
+    readonly gitHubReady?: boolean | undefined;
+    /** The thread's agent here keeps its turn running until its goal is met (Claude). */
+    readonly goalHoldsTurn?: boolean | undefined;
+  },
+): ReadonlyArray<ThreadMoveNote> {
+  const notes: ThreadMoveNote[] = [];
+  const goal = carry.goal;
+  if (carry.pullRequests !== null && extra.gitHubReady === false) {
+    notes.push({
+      words: `GitHub isn't signed in on ${peer.label}. Auto-fix waits there until you sign in.`,
+    });
+  }
+  for (const agent of peer.agents) {
+    if (carry.checkBacks.length > 0 && agent.checkBacks === false) {
+      notes.push({
+        words: `${agent.name} on ${peer.label} can't set check-backs. It's told once what was planned.`,
+        instanceIds: [agent.instanceId],
+      });
+    }
+    if (goal !== null && goal.status !== "complete" && agent.threadGoals === false) {
+      notes.push({
+        words: `${agent.name} on ${peer.label} can't keep goals, so its goal stays behind.`,
+        instanceIds: [agent.instanceId],
+      });
+    } else if (
+      goal !== null &&
+      goal.tokenBudget !== null &&
+      ["active", "paused", "usageLimited"].includes(goal.status) &&
+      agent.threadGoals === true &&
+      agent.goalBudget === false
+    ) {
+      notes.push({
+        words: `Its goal arrives paused: ${agent.name} on ${peer.label} can't keep its token budget. Resume runs it without one.`,
+        instanceIds: [agent.instanceId],
+      });
+    }
+  }
+  if (extra.goalHoldsTurn === true && goal?.status === "active") {
+    notes.push({
+      words: "It's working toward its goal. Move when it's done waits until it gets there.",
+    });
+  }
+  return notes;
+}
+
 export function targetPreviewOf(
   target: DescribedTarget,
   forThread: {
@@ -219,6 +322,11 @@ export function targetPreviewOf(
     readonly session?: NativeSessionExport | null | undefined;
     /** What the move carries besides the session (estimateMoveOtherBytes). */
     readonly otherBytes?: number | undefined;
+    /** What else it carries (threadMoveCarry); absent: not looked at. */
+    readonly carry?: ThreadMoveCarry | undefined;
+    /** Whether GitHub is signed in there, per computer (`peer.move.readiness`). */
+    readonly gitHubReady?: ReadonlyMap<string, boolean> | undefined;
+    readonly goalHoldsTurn?: boolean | undefined;
   } | null,
 ): ThreadMoveTargetPreview {
   const { environmentId, label } = target;
@@ -233,25 +341,40 @@ export function targetPreviewOf(
   }
   const peer = target.described.value;
   const place = forThread?.place ?? null;
+  const carry = forThread?.carry;
+  // A general chat lands in General chats there: no project to match.
+  const generalChat = carry?.generalChat === true;
   const project =
-    place === null
+    place === null || generalChat
       ? undefined
       : peer.projects.find(
           (entry) =>
             entry.canonicalKey === place.canonicalKey &&
             (entry.subdirectory === undefined || entry.subdirectory === place.subdirectory),
         );
-  const noProject = forThread !== null && project === undefined;
+  const noProject = forThread !== null && !generalChat && project === undefined;
+  // What the thread has going that this computer doesn't take (Part 3e): it
+  // needs a newer Threadlines, whatever else it has.
+  const notTaken = carry === undefined ? null : carryNotTaken(carry, takesOf(peer));
   const refusal =
     peer.moves !== true
       ? `${peer.label} needs a newer Threadlines to take moved threads.`
       : peer.access === "off"
         ? `${peer.label} doesn't take work from this computer.`
-        : noProject
-          ? `${peer.label} doesn't have this project.`
-          : peer.agents.length === 0
-            ? `${peer.label} has no agent ready.`
-            : undefined;
+        : notTaken !== null
+          ? `Update Threadlines on ${peer.label} to move this thread: ${notTaken}.`
+          : noProject
+            ? `${peer.label} doesn't have this project.`
+            : peer.agents.length === 0
+              ? `${peer.label} has no agent ready.`
+              : undefined;
+  const notes =
+    carry === undefined || refusal !== undefined
+      ? []
+      : targetNotesOf(peer, carry, {
+          gitHubReady: forThread?.gitHubReady?.get(environmentId),
+          goalHoldsTurn: forThread?.goalHoldsTurn,
+        });
   const suggested =
     forThread !== null
       ? suggestAgent(peer, forThread.thread)
@@ -268,10 +391,19 @@ export function targetPreviewOf(
     environmentId,
     label: peer.label,
     ...(refusal !== undefined ? { refusal } : {}),
-    ...(refusal !== undefined && peer.moves === true && peer.access !== "off" && noProject
+    ...(refusal !== undefined &&
+    peer.moves === true &&
+    peer.access !== "off" &&
+    notTaken === null &&
+    noProject
       ? { refusalCode: "no_project" as const }
       : {}),
-    ...(project !== undefined ? { projectName: project.name } : {}),
+    ...(project !== undefined
+      ? { projectName: project.name }
+      : generalChat
+        ? { projectName: GENERAL_CHATS_NAME }
+        : {}),
+    ...(notes.length > 0 ? { notes } : {}),
     access: peer.access,
     agents: peer.agents,
     ...(suggested !== undefined ? { suggestedAgent: suggested } : {}),
@@ -303,6 +435,10 @@ export function previewManyThread(
       },
     ];
   });
+  // A general chat's row says where it lands; any thread's, what won't work there.
+  const targetLines = shown.targets.flatMap((own) =>
+    batchTargetLines(own, shown.folder !== undefined),
+  );
   // A batch moves each thread with the agent its target suggests for it.
   const sessionOutcomes = shown.targets.flatMap((own) => {
     const agent = own.suggestedAgent;
@@ -321,8 +457,37 @@ export function previewManyThread(
       ? { waitsFor: shown.waitsFor }
       : {}),
     ...(targetRefusals.length > 0 ? { targetRefusals } : {}),
+    ...(shown.brings !== undefined && shown.brings.length > 0 ? { brings: shown.brings } : {}),
+    ...(shown.folder !== undefined ? { folder: shown.folder } : {}),
+    ...(targetLines.length > 0 ? { targetLines } : {}),
     ...(sessionOutcomes.length > 0 ? { sessionOutcomes } : {}),
   };
+}
+
+/**
+ * Per computer that takes the thread, its own lines in a batch: the project
+ * it lands in, and the notes that hold for the agent that computer suggests
+ * (a batch moves each thread with that one), without naming agents.
+ */
+function batchTargetLines(own: ThreadMoveTargetPreview, withLanding: boolean) {
+  if (own.refusal !== undefined) return [];
+  const projectName = withLanding ? own.projectName : undefined;
+  const agent = own.suggestedAgent?.instanceId;
+  const notes = (own.notes ?? []).flatMap((note) =>
+    note.instanceIds === undefined
+      ? [note]
+      : agent !== undefined && note.instanceIds.includes(agent)
+        ? [{ words: note.words }]
+        : [],
+  );
+  if (projectName === undefined && notes.length === 0) return [];
+  return [
+    {
+      environmentId: own.environmentId,
+      ...(projectName !== undefined ? { projectName } : {}),
+      ...(notes.length > 0 ? { notes } : {}),
+    },
+  ];
 }
 
 /** How long a move waits for a busy computer before offering again: 15 s, 30 s, 1 min, then every 2 min. */
@@ -424,6 +589,7 @@ const make = Effect.gen(function* () {
   const config = yield* ServerConfig;
   const environment = yield* ServerEnvironment;
   const providers = yield* ProviderService;
+  const actionGate = yield* ThreadActionGate;
   const descriptor = yield* environment.getDescriptor;
 
   const moveDir = (transferId: string) => NodePath.join(config.stateDir, "moves", transferId);
@@ -498,7 +664,10 @@ const make = Effect.gen(function* () {
       if (context === null) return yield* moveError("That thread doesn't exist.");
       const { thread, view } = context;
       const project = view.projects.find((entry) => entry.id === thread.projectId);
-      const refusals = threadMoveRefusals(view, thread);
+      // As if the other computer took everything (docs/design/fleet.md, Part
+      // 3e): one that doesn't says so as its own refusal.
+      const refusals = threadMoveRefusals(view, thread, ALL_MOVE_TAKES);
+      const carry = threadMoveCarry(view, thread);
       const pending = thread.pendingMove ?? null;
       let refusal: string | null =
         firstMoveBlock(refusals)?.words ??
@@ -506,9 +675,17 @@ const make = Effect.gen(function* () {
           ? `A move to ${pending.target.label} is already waiting. Cancel it first.`
           : null);
       let changes: ThreadMovePreview["changes"];
+      let folder: ThreadMovePreview["folder"];
       let place: ProjectPlace | null = null;
       let checkout: MoveCheckout | null = null;
-      if (project !== undefined && project.kind !== "general-chat") {
+      if (project !== undefined && project.kind === "general-chat") {
+        // Its folder goes, every file in it, within the move's limits.
+        const summary = yield* summarizeScratchFolder(
+          generalChatThreadScratchCwd(project.workspaceRoot, thread.id, NodePath),
+        );
+        folder = { files: summary.files, bytes: summary.bytes };
+        refusal ??= summary.refusal;
+      } else if (project !== undefined) {
         const source = yield* whereFrom(thread, project.workspaceRoot).pipe(Effect.result);
         if (source._tag === "Success") {
           place = source.success.place;
@@ -544,23 +721,87 @@ const make = Effect.gen(function* () {
               thread,
               attachmentsDir: config.attachmentsDir,
             })
-          : 0;
+          : (folder?.bytes ?? 0);
+      // The dialogs' warnings: GitHub's sign-in there, asked only for a
+      // thread whose switches are on, and whether its goal holds the turn here.
+      const gitHubReady =
+        options.withSession === true && carry.pullRequests !== null && place !== null
+          ? yield* readinessOf(described, place.canonicalKey)
+          : undefined;
+      const goalHoldsTurn =
+        options.withSession === true && carry.goal?.status === "active"
+          ? yield* providers.getCapabilities(thread.modelSelection.instanceId).pipe(
+              Effect.map((capabilities) => capabilities.threadGoalPause === "unsupported"),
+              Effect.orElseSucceed(() => false),
+            )
+          : false;
       const targets = described.map((target) =>
-        targetPreviewOf(target, { thread, place, session, otherBytes }),
+        targetPreviewOf(target, {
+          thread,
+          place,
+          session,
+          otherBytes,
+          carry,
+          gitHubReady,
+          goalHoldsTurn,
+        }),
       );
       const waitsFor = moveWaitsOf(refusals);
+      const brings = carryBringsWords(carry).map((words) => ({ words }));
       return {
         thread,
+        carry,
+        described,
         // A move that doesn't wait refuses a busy thread too.
-        busy: threadMoveRefusal(view, thread),
+        busy: threadMoveRefusal(view, thread, ALL_MOVE_TAKES),
         preview: {
           ...(refusal !== null ? { refusal } : {}),
           ...(waitsFor.length > 0 ? { waitsFor } : {}),
           ...(changes !== undefined ? { changes } : {}),
+          ...(folder !== undefined ? { folder } : {}),
+          ...(brings.length > 0 ? { brings } : {}),
           targets,
         } satisfies ThreadMovePreview,
       };
     });
+
+  /**
+   * Whether GitHub is signed in for the project on each computer that takes
+   * thread state (`peer.move.readiness`); one that doesn't answer in time is
+   * left out (the dialog says nothing then).
+   */
+  const readinessOf = (described: ReadonlyArray<DescribedTarget>, canonicalKey: string) =>
+    Effect.gen(function* () {
+      const answers = yield* Effect.forEach(
+        described,
+        (target) =>
+          Option.isNone(target.described) || target.described.value.moveThreadState !== true
+            ? Effect.succeed(null)
+            : client
+                .withPeer(target.environmentId, (peer) =>
+                  peer["peer.move.readiness"]({ canonicalKey }),
+                )
+                .pipe(
+                  Effect.timeout(DESCRIBE_WAIT),
+                  Effect.map((answer) =>
+                    answer.gitHubReady === undefined
+                      ? null
+                      : ([target.environmentId, answer.gitHubReady] as const),
+                  ),
+                  Effect.orElseSucceed(() => null),
+                ),
+        { concurrency: "unbounded" },
+      );
+      return new Map(answers.filter((entry) => entry !== null));
+    });
+
+  /** What a computer just described takes; one that couldn't be reached is taken to take everything. */
+  const takesFrom = (described: ReadonlyArray<DescribedTarget>, environmentId: EnvironmentId) => {
+    const target = described.find((entry) => entry.environmentId === environmentId);
+    return target === undefined || Option.isNone(target.described)
+      ? ALL_MOVE_TAKES
+      : takesOf(target.described.value);
+  };
 
   const preview: ThreadMovesShape["preview"] = (threadId) =>
     inspect(threadId, { withSession: true }).pipe(Effect.map((inspected) => inspected.preview));
@@ -582,27 +823,38 @@ const make = Effect.gen(function* () {
       return { threads, targets } satisfies ThreadMovePreviewMany;
     });
 
-  /** Freezes the thread for its move (`thread.move.start`); the decider checks it again. */
+  /**
+   * Freezes the thread for its move (`thread.move.start`); the decider checks
+   * it again, against what the other computer just said it takes. Held in the
+   * thread's action gate, so an act for it already under way here (a merge,
+   * a turn the pull request watcher starts) finishes first, and every act
+   * after reads the thread as moving.
+   */
   const dispatchStart = (
     threadId: ThreadId,
     target: ThreadMoveTargetPreview,
     agent: ModelSelection,
+    takes: ThreadMoveTakes,
     queuedRequestId?: ThreadMoveRequestId,
   ) =>
-    Effect.gen(function* () {
-      const transferId = ThreadMoveId.make(randomUUID());
-      yield* engine.dispatch({
-        type: "thread.move.start",
-        commandId: CommandId.make(`server:thread-move:${transferId}:start`),
-        threadId,
-        transferId,
-        target: { environmentId: target.environmentId, label: target.label },
-        agent,
-        ...(queuedRequestId !== undefined ? { queuedRequestId } : {}),
-        createdAt: yield* nowIso,
-      });
-      return transferId;
-    });
+    actionGate.withThread(
+      threadId,
+      Effect.gen(function* () {
+        const transferId = ThreadMoveId.make(randomUUID());
+        yield* engine.dispatch({
+          type: "thread.move.start",
+          commandId: CommandId.make(`server:thread-move:${transferId}:start`),
+          threadId,
+          transferId,
+          target: { environmentId: target.environmentId, label: target.label },
+          agent,
+          ...(queuedRequestId !== undefined ? { queuedRequestId } : {}),
+          targetTakes: takes,
+          createdAt: yield* nowIso,
+        });
+        return transferId;
+      }),
+    );
 
   const start: ThreadMovesShape["start"] = (input) =>
     Effect.gen(function* () {
@@ -615,22 +867,50 @@ const make = Effect.gen(function* () {
       if ("unreachable" in checked) {
         return yield* moveError(checked.unreachable.refusal ?? "That computer can't be reached.");
       }
-      const transferId = yield* dispatchStart(input.threadId, checked.ok, input.agent).pipe(
-        Effect.mapError((error) => moveError(error.message)),
-      );
+      const transferId = yield* dispatchStart(
+        input.threadId,
+        checked.ok,
+        input.agent,
+        takesFrom(inspected.described, input.targetEnvironmentId),
+      ).pipe(Effect.mapError((error) => moveError(error.message)));
       return { transferId };
     });
 
   const checkQueue: ThreadMovesShape["checkQueue"] = (input) =>
     Effect.gen(function* () {
-      const shown = (yield* inspect(input.threadId, {
+      const inspected = yield* inspect(input.threadId, {
         targets: input.targets,
         withChanges: false,
-      })).preview;
+      });
+      const shown = inspected.preview;
       if (shown.refusal !== undefined) return yield* moveError(shown.refusal);
       const checked = checkMoveTarget(shown, input.targetEnvironmentId, input.agent);
       if ("refusal" in checked) return yield* moveError(checked.refusal);
-      return { label: "ok" in checked ? checked.ok.label : checked.unreachable.label };
+      return {
+        label: "ok" in checked ? checked.ok.label : checked.unreachable.label,
+        takes: takesFrom(inspected.described, input.targetEnvironmentId),
+      };
+    });
+
+  const checkCarry: ThreadMovesShape["checkCarry"] = (input) =>
+    Effect.gen(function* () {
+      const context = yield* readMoveContext(input.threadId).pipe(Effect.option);
+      if (Option.isNone(context) || context.value === null) return { kind: "ok" } as const;
+      const carry = threadMoveCarry(context.value.view, context.value.thread);
+      if (!carry.needs.threadState && !carry.needs.generalChats) return { kind: "ok" } as const;
+      const peer = yield* client
+        .describe(input.targetEnvironmentId, { fresh: true })
+        .pipe(Effect.timeout(DESCRIBE_WAIT), Effect.option);
+      if (Option.isNone(peer)) {
+        return { kind: "unreachable", words: `Waiting for ${input.label} to connect.` } as const;
+      }
+      const notTaken = carryNotTaken(carry, takesOf(peer.value));
+      return notTaken === null
+        ? ({ kind: "ok" } as const)
+        : ({
+            kind: "blocked",
+            words: `Update Threadlines on ${peer.value.label} to move this thread: ${notTaken}.`,
+          } as const);
     });
 
   const startQueued: ThreadMovesShape["startQueued"] = (input) =>
@@ -656,6 +936,7 @@ const make = Effect.gen(function* () {
         input.threadId,
         checked.ok,
         checked.agent,
+        takesFrom(inspected.success.described, input.targetEnvironmentId),
         input.requestId,
       ).pipe(Effect.result);
       return started._tag === "Success"
@@ -919,9 +1200,35 @@ const make = Effect.gen(function* () {
       if (Option.isNone(detail)) {
         return yield* new ThreadMoveFailure({ reason: "This thread couldn't be read." });
       }
-      const { place, checkout } = yield* whereFrom(detail.value, project.workspaceRoot);
       const nativeSession = yield* sessionToCarry(thread.id, targetEnvironmentId, agent);
+      // What it had going, for a computer that takes it (docs/design/fleet.md,
+      // Part 3e); one that doesn't never gets it, and couldn't have been
+      // offered a thread that needs it.
+      const takes = detail.value.move?.targetTakes;
+      const state =
+        takes?.threadState === true
+          ? moveThreadStateOf(threadMoveCarry({ projects: model.projects }, detail.value))
+          : undefined;
+      const source = {
+        environmentId: descriptor.environmentId,
+        environmentLabel: environment.currentLabel(),
+        threadId: thread.id,
+      };
+      if (project.kind === "general-chat") {
+        return yield* writeScratchExport({
+          dir,
+          folder: generalChatThreadScratchCwd(project.workspaceRoot, thread.id, NodePath),
+          attachmentsDir: config.attachmentsDir,
+          thread: detail.value,
+          source,
+          agent,
+          nativeSession,
+          state,
+        });
+      }
+      const { place, checkout } = yield* whereFrom(detail.value, project.workspaceRoot);
       return yield* writeMoveExport({
+        state,
         git,
         checkout,
         transferId,
@@ -931,11 +1238,7 @@ const make = Effect.gen(function* () {
         projectTitle: project.title,
         canonicalKey: place.canonicalKey,
         subdirectory: place.subdirectory,
-        source: {
-          environmentId: descriptor.environmentId,
-          environmentLabel: environment.currentLabel(),
-          threadId: thread.id,
-        },
+        source,
         agent,
         nativeSession,
       });
@@ -1270,6 +1573,7 @@ const make = Effect.gen(function* () {
     describeTargets,
     start,
     checkQueue,
+    checkCarry,
     startQueued,
     cancel,
     startReactor,

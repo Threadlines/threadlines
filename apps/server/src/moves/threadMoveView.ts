@@ -39,7 +39,11 @@ export const makeThreadMoveContextReader = Effect.gen(function* () {
       if (Option.isNone(found)) return null;
       const thread = found.value;
       const project = yield* projectOf(thread.projectId);
-      const checkout = thread.worktreePath ?? project?.workspaceRoot ?? null;
+      // A general chat works in a folder of its own: it shares no checkout.
+      const checkout =
+        project?.kind === "general-chat"
+          ? null
+          : (thread.worktreePath ?? project?.workspaceRoot ?? null);
       // Its attached children, and every other thread in the same checkout.
       const neighbors = yield* sql<{ readonly threadId: ThreadId }>`
         SELECT t.thread_id AS "threadId"

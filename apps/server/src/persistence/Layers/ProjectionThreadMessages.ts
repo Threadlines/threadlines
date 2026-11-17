@@ -63,6 +63,7 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
     sentFrom: Schema.NullOr(Schema.fromJsonString(MessageSentFrom)),
     trigger: Schema.NullOr(MessageTrigger),
     notSent: Schema.NullOr(Schema.Number),
+    afterMove: Schema.NullOr(Schema.Number),
   }),
 );
 
@@ -98,6 +99,7 @@ function toProjectionThreadMessage(
     ...(row.sentFrom !== null ? { sentFrom: row.sentFrom } : {}),
     ...(row.trigger !== null ? { trigger: row.trigger } : {}),
     ...(row.notSent === 1 ? { notSent: true as const } : {}),
+    ...(row.afterMove === 1 ? { afterMove: true as const } : {}),
   };
 }
 
@@ -143,6 +145,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           sent_from,
           message_trigger,
           not_sent,
+          after_move,
           is_streaming,
           created_at,
           updated_at
@@ -187,6 +190,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           ${row.sentFrom !== undefined ? JSON.stringify(row.sentFrom) : null},
           ${row.trigger ?? null},
           ${row.notSent === true ? 1 : null},
+          ${row.afterMove === true ? 1 : null},
           ${row.isStreaming ? 1 : 0},
           ${row.createdAt},
           ${row.updatedAt}
@@ -229,6 +233,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           sent_from = COALESCE(projection_thread_messages.sent_from, excluded.sent_from),
           message_trigger = COALESCE(projection_thread_messages.message_trigger, excluded.message_trigger),
           not_sent = COALESCE(excluded.not_sent, projection_thread_messages.not_sent),
+          after_move = COALESCE(excluded.after_move, projection_thread_messages.after_move),
           is_streaming = excluded.is_streaming,
           created_at = CASE WHEN ${appendText ? 1 : 0} = 1
             THEN projection_thread_messages.created_at
@@ -278,6 +283,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           sent_from AS "sentFrom",
           message_trigger AS "trigger",
           not_sent AS "notSent",
+          after_move AS "afterMove",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -318,6 +324,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           sent_from AS "sentFrom",
           message_trigger AS "trigger",
           not_sent AS "notSent",
+          after_move AS "afterMove",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"

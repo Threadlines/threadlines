@@ -131,6 +131,8 @@ import {
   decideMoveSetMode,
   decideMoveStart,
   decideMoveUnqueue,
+  decideMovedGoalResume,
+  decideMoveRestore,
   decideThreadImport,
   threadMoveGuardRefusal,
 } from "./threadMoveDecisions.ts";
@@ -2615,6 +2617,34 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       );
     }
 
+    // Put back what a move that didn't happen took (Part 3e).
+    case "thread.move.restore": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const restored = yield* planChildThreadDecision(
+        command.type,
+        decideMoveRestore(thread, command, childEventBase(command, command.createdAt)),
+      );
+      if (restored.length === 0 || command.sendQueued === undefined) return restored;
+      // The queue that waited for the move, sent in the same decision.
+      const sent = yield* decideCommandSequence({
+        readModel,
+        commands: [
+          {
+            type: "thread.follow-up.send-queued",
+            commandId: command.commandId,
+            threadId: command.threadId,
+            messageId: command.sendQueued,
+            createdAt: command.createdAt,
+          },
+        ],
+      });
+      return [...restored, ...sent];
+    }
+
     case "thread.move.start":
     case "thread.move.progress":
     case "thread.move.cancel":
@@ -4102,14 +4132,32 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         ],
       });
       if (!agentQueued) {
-        // It counted as the user writing when it was queued.
+        // It counted as the user writing when it was queued. One Threadlines
+        // wrote for a move is written as such (OrchestrationMessage.afterMove).
         return [
           unqueuedEvent,
-          ...turnEvents.filter(
-            (event) =>
-              event.type !== "thread.agent-requests-reset" &&
-              event.type !== "thread.child-requests-reset",
-          ),
+          ...turnEvents
+            .filter(
+              (event) =>
+                event.type !== "thread.agent-requests-reset" &&
+                event.type !== "thread.child-requests-reset",
+            )
+            .map((event): PlannedOrchestrationEvent =>
+              queued.afterMove === true &&
+              event.type === "thread.message-sent" &&
+              (event.payload as { readonly messageId?: unknown }).messageId === queued.messageId
+                ? ({
+                    ...event,
+                    payload: {
+                      ...(event.payload as Extract<
+                        OrchestrationEvent,
+                        { type: "thread.message-sent" }
+                      >["payload"]),
+                      afterMove: true,
+                    },
+                  } as PlannedOrchestrationEvent)
+                : event,
+            ),
         ];
       }
       // The agent's message was written when it was queued; sending it keeps
@@ -4955,11 +5003,22 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
 
     case "thread.goal.set": {
       yield* refuseSkippedSetup(command);
-      yield* requireThread({
+      const goalThread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
+      // Resume on a moved thread whose agent hasn't been given the
+      // conversation yet: no provider call, the goal waits for the message
+      // that gives it (docs/design/fleet.md, Part 3e, (a)).
+      const movedResume = decideMovedGoalResume(
+        goalThread,
+        command,
+        childEventBase(command, command.createdAt),
+      );
+      if (movedResume !== null) {
+        return yield* planChildThreadDecision(command.type, movedResume);
+      }
       return {
         ...withEventBase({
           aggregateKind: "thread",

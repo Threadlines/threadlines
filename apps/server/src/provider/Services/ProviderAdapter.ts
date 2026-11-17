@@ -123,6 +123,19 @@ export interface ProviderAdapterCapabilities {
   readonly threadGoalPause?: ProviderThreadGoalsMode;
 
   /**
+   * Declares whether a supported goal takes a token budget. Absent means it
+   * does. Claude's don't: a goal with one arrives paused when a thread moves
+   * to it (docs/design/fleet.md, Part 3e).
+   */
+  readonly threadGoalBudget?: ProviderThreadGoalsMode;
+
+  /**
+   * Declares whether the agent sets itself times to come back (check-backs:
+   * Claude's ScheduleWakeup and CronCreate). Absent means it doesn't.
+   */
+  readonly checkBacks?: ProviderThreadGoalsMode;
+
+  /**
    * Declares whether this adapter can open a session as a provider-side fork
    * of another thread's history (`ProviderSessionStartInput.forkFrom`).
    */

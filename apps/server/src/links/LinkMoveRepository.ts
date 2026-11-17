@@ -38,8 +38,19 @@ export const LinkMoveStatus = Schema.Literals([
 ]);
 export type LinkMoveStatus = typeof LinkMoveStatus.Type;
 
-/** How far an import got; each stage is recorded before the next starts. */
-export const LinkMoveStage = Schema.Literals(["fetched", "worktree", "applied"]);
+/**
+ * How far an import got; each stage is recorded before the next starts. A
+ * thread with a checkout goes fetched, worktree, applied; a General Chats
+ * thread goes folder, applied. `arrived`, on a committed move: its arrival
+ * was sent (the queue's head), so a restart doesn't send it again.
+ */
+export const LinkMoveStage = Schema.Literals([
+  "fetched",
+  "worktree",
+  "folder",
+  "applied",
+  "arrived",
+]);
 export type LinkMoveStage = typeof LinkMoveStage.Type;
 
 export const LinkMoveRow = Schema.Struct({
@@ -136,6 +147,14 @@ export interface LinkMoveRepositoryShape {
     readonly transferId: string;
     readonly now: string;
   }) => Effect.Effect<void, LinkMoveRepositoryError>;
+  /** A committed move's arrival was sent (stage `arrived`). */
+  readonly markArrived: (input: {
+    readonly linkDeviceId: string;
+    readonly transferId: string;
+    readonly now: string;
+  }) => Effect.Effect<void, LinkMoveRepositoryError>;
+  /** Committed moves whose arrival may not have been sent yet, oldest first. */
+  readonly listUnarrived: Effect.Effect<ReadonlyArray<LinkMoveRow>, LinkMoveRepositoryError>;
 }
 
 export class LinkMoveRepository extends Context.Service<
@@ -272,8 +291,23 @@ const make = Effect.gen(function* () {
       WHERE link_device_id = ${input.linkDeviceId} AND transfer_id = ${input.transferId}
     `.pipe(Effect.asVoid, wrap("markCleaned"));
 
+  const markArrived: LinkMoveRepositoryShape["markArrived"] = (input) =>
+    sql`
+      UPDATE link_moves SET stage = 'arrived', updated_at = ${input.now}
+      WHERE link_device_id = ${input.linkDeviceId} AND transfer_id = ${input.transferId}
+        AND status = 'committed'
+    `.pipe(Effect.asVoid, wrap("markArrived"));
+
+  const listUnarrived: LinkMoveRepositoryShape["listUnarrived"] = findMany(
+    `status = 'committed' AND (stage IS NULL OR stage <> 'arrived')`,
+    [],
+  ).pipe(wrap("listUnarrived"));
+
   return LinkMoveRepository.of({
+    markArrived,
+    listUnarrived,
     insert,
+
     get,
     listOpen,
     listCleanupOwed,
