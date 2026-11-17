@@ -21,6 +21,7 @@ import type {
   ThreadContextSeed,
   ThreadContextSeedEntry,
   ThreadId,
+  ThreadParticipantId,
 } from "@threadlines/contracts";
 import {
   DEFAULT_SEED_BUDGET,
@@ -46,6 +47,11 @@ export interface ThreadContextSeedBuildInput {
   readonly excludeMessageId?: string | undefined;
   readonly cwd?: string | undefined;
   readonly budget?: SeedBudget;
+  /**
+   * In a room, the agent the seed is for (null: the thread's own agent): each
+   * agent's replies are written under its name, and this one's as its own.
+   */
+  readonly forParticipantId?: ThreadParticipantId | null | undefined;
 }
 
 /**
@@ -109,9 +115,12 @@ function buildEntries(input: {
     readonly fromOutside?: OrchestrationMessage["fromOutside"];
     readonly fromThread?: OrchestrationMessage["fromThread"];
     readonly fromAgent?: OrchestrationMessage["fromAgent"];
+    readonly participantId?: ThreadParticipantId | null | undefined;
     readonly notSent?: true | undefined;
     readonly createdAt: string;
   }>;
+  /** A room's: who wrote a reply, by its agent (null: the thread's own); absent outside rooms. */
+  readonly replyAuthor?: ((participantId: ThreadParticipantId | null) => string) | undefined;
   readonly activities: ReadonlyArray<{
     readonly tone: string;
     readonly summary: string;
@@ -143,7 +152,10 @@ function buildEntries(input: {
     if (text.length === 0) {
       continue;
     }
-    const author = transcriptAuthor(message);
+    const author =
+      message.role === "assistant" && input.replyAuthor !== undefined
+        ? input.replyAuthor(message.participantId ?? null)
+        : transcriptAuthor(message);
     items.push({
       createdAt: message.createdAt,
       entry: {
@@ -198,11 +210,25 @@ export const makeThreadContextSeedBuilder = (deps: {
       }
       const thread = threadOption.value;
 
+      // A room's replies are each one agent's: named, so no agent takes
+      // another's words for its own (docs/design/fleet.md, Part 3f, (i)).
+      const forAgent = input.forParticipantId ?? null;
+      const participants = thread.participants ?? [];
+      const replyAuthor =
+        participants.length === 0
+          ? undefined
+          : (participantId: ThreadParticipantId | null) => {
+              if (participantId === forAgent) return "You";
+              if (participantId === null) return "The thread's own agent";
+              const participant = participants.find((entry) => entry.id === participantId);
+              return participant === undefined ? "An agent that left" : participant.handle;
+            };
       const entries = buildEntries({
         messages: thread.messages,
         activities: thread.activities,
         excludeMessageId: input.excludeMessageId,
         reachedAgent: (message) => reachedAgent(message, thread),
+        replyAuthor,
       });
 
       if (entries.length === 0 && pointer === undefined) {

@@ -15,6 +15,7 @@ import { LEAD_MOVE_REFUSAL } from "@threadlines/shared/projectLead";
 import {
   EventId,
   MessageId,
+  PEER_MOVE_ROOM_MAX_PARTICIPANTS,
   type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationReadModel,
@@ -41,13 +42,17 @@ import {
   collectOpenPendingRequests,
   countPendingUserInputs,
 } from "@threadlines/shared/pendingRequests";
-import { isRoomThread } from "@threadlines/shared/threadParticipants";
+import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
+import { liveSideTurns } from "@threadlines/shared/sideTurns";
+import { isValidParticipantId } from "@threadlines/shared/threadParticipants";
 
 import { arrivalMessageText, resumedGoalMessageText } from "../moves/arrivalMessage.ts";
+import { decideAgentChainStop } from "./agentRequestDecisions.ts";
 import { derivedUuid } from "./childRequestIds.ts";
 import { childHasLiveWork } from "./childThreadDecisions.ts";
 import {
   interruptedOf,
+  isRoomAgentQueued,
   mergeInterrupted,
   sameInterrupted,
   threadMoveCarry,
@@ -86,6 +91,7 @@ export type ThreadMoveBlockCode =
   | "check_back"
   | "command_request"
   | "pull_request_automation"
+  | "outside_work"
   | "lead";
 
 /**
@@ -115,11 +121,14 @@ const STOP_NOW_COMMAND_RUN_WORDS =
 const SHARED_CHECKOUT_WORDS =
   "Another thread is working in the same folder. Wait for it to finish, then move this one.";
 
-const wait = (code: ThreadMoveWaitCode): ThreadMoveRefusalEntry => ({
+const wait = (code: ThreadMoveWaitCode, words = WAIT_WORDS[code]): ThreadMoveRefusalEntry => ({
   kind: "wait",
   code,
-  words: WAIT_WORDS[code],
+  words,
 });
+
+/** A room's agents still asking each other: no wait code of its own (a closed set), its own words. */
+const ROOM_CHAIN_WORDS = "when its agents finish";
 const blocked = (code: ThreadMoveBlockCode, words: string): ThreadMoveRefusalEntry => ({
   kind: "blocked",
   code,
@@ -202,8 +211,28 @@ export function threadMoveRefusals(
   if ((project?.leadThreadId ?? null) === thread.id && thread.archivedAt === null) {
     found.push(blocked("lead", LEAD_MOVE_REFUSAL));
   }
-  if (isRoomThread(thread) || thread.agentRequests.open.length > 0) {
+  // A room moves with its agents to a computer that takes rooms (Part 3f,
+  // (i)); its agents' requests of each other are then something to wait for.
+  const takesRooms = takes?.rooms === true;
+  if (carry.room && !takesRooms) {
     found.push(blocked("room", "Threads with more than one agent can't move yet."));
+  }
+  if (takesRooms && thread.participants.length > PEER_MOVE_ROOM_MAX_PARTICIPANTS) {
+    found.push(
+      blocked(
+        "room",
+        `This room has had more than ${PEER_MOVE_ROOM_MAX_PARTICIPANTS} agents, so it can't move.`,
+      ),
+    );
+  }
+  // An agent outside work limits stays limited where it goes (OrchestrationOutsideWork).
+  if (carry.needs.outsideWork && takes?.outsideWork !== true) {
+    found.push(
+      blocked(
+        "outside_work",
+        "An outside assistant's work limits this thread's agent. Start the agent fresh, then move.",
+      ),
+    );
   }
   if ((thread.remoteOrigin ?? null) !== null) {
     found.push(
@@ -234,7 +263,9 @@ export function threadMoveRefusals(
   // A message queued by something on this computer answers to it (a
   // scheduled run, an outside assistant, another thread), so it is sent
   // here. The user's own travel when the other computer takes them.
-  const foreign = carry.foreignQueued[0];
+  // A room agent's hand-off or reply drains while the move waits (Part 3f,
+  // review change 4): something to wait for, not something to clear.
+  const foreign = carry.foreignQueued.find((entry) => !(takesRooms && isRoomAgentQueued(entry)));
   if (foreign !== undefined) {
     found.push(blocked("queued_messages", foreignQueuedWords(foreign)));
   } else if (carry.queuedFollowUps.length > 0 && !takesState) {
@@ -300,7 +331,20 @@ export function threadMoveRefusals(
   if (countPendingUserInputs(thread.activities).pendingUserInputCount > 0) {
     found.push(wait("question"));
   }
-  if ((thread.sideTurn ?? null) !== null) found.push(wait("side_turn"));
+  if (liveSideTurns(thread).length > 0) found.push(wait("side_turn"));
+  if (takesRooms) {
+    const open = thread.agentRequests.open;
+    // An invite waiting for the user's answer; the rest are agents at work.
+    if (open.some((request) => request.status === "awaiting_user")) {
+      found.push(wait("approval"));
+    }
+    if (
+      open.some((request) => request.status !== "awaiting_user") ||
+      carry.foreignQueued.some(isRoomAgentQueued)
+    ) {
+      found.push(wait("side_turn", ROOM_CHAIN_WORDS));
+    }
+  }
   if (
     (session?.pendingBackgroundTaskCount ?? 0) > 0 ||
     (session?.awaitedBackgroundTaskCount ?? 0) > 0
@@ -435,10 +479,18 @@ const WORK_START_COMMANDS: ReadonlySet<OrchestrationCommand["type"]> = new Set([
   // The queue doesn't drain while a move waits, or the thread is never free
   // (docs/design/fleet.md, Part 3e, (e)); what goes into a running turn still does.
   "thread.follow-up.send-queued",
+  // An agent's new request of another (a hand-off, an ask, a review, an
+  // invite) starts work; its open ones still settle (Part 3f, review change 4).
+  "thread.agent-request.submit",
 ]);
 
-/** Whether `command`, on its own thread, starts work there. */
-function startsWork(command: OrchestrationCommand): boolean {
+/**
+ * Whether `command`, on its own thread, starts work there. While a move
+ * waits for its thread (`waiting`), a room agent's hand-off or reply already
+ * queued is still sent: the room's chain drains, so the thread gets free
+ * (docs/design/fleet.md, Part 3f, review change 4). Not from `quiescing` on.
+ */
+function startsWork(command: OrchestrationCommand, thread: OrchestrationThread): boolean {
   if (!WORK_START_COMMANDS.has(command.type)) return false;
   switch (command.type) {
     // Turning a switch off is always allowed.
@@ -448,11 +500,42 @@ function startsWork(command: OrchestrationCommand): boolean {
       );
     case "thread.continue-at-reset.set":
       return command.enabled;
-    case "thread.follow-up.send-queued":
-      return command.steeredTurnId === undefined && command.steerIntoTurnId === undefined;
+    case "thread.follow-up.send-queued": {
+      if (command.steeredTurnId !== undefined || command.steerIntoTurnId !== undefined) {
+        return false;
+      }
+      const queued = (thread.queuedFollowUps ?? []).find(
+        (entry) => entry.messageId === command.messageId,
+      );
+      return !(
+        thread.pendingMove?.stage === "waiting" &&
+        queued !== undefined &&
+        isRoomAgentQueued(queued)
+      );
+    }
     default:
       return true;
   }
+}
+
+/**
+ * Whether `command` is the turn a room's queued hand-off or reply starts as
+ * it is sent while the move waits (docs/design/fleet.md, Part 3f, review
+ * change 4): the turn for exactly that message, only at `waiting`.
+ */
+function drainsRoomChain(
+  thread: OrchestrationThread,
+  command: OrchestrationCommand,
+  drained: OrchestrationQueuedFollowUp | undefined,
+): boolean {
+  return (
+    drained !== undefined &&
+    command.type === "thread.turn.start" &&
+    command.message.messageId === drained.messageId &&
+    thread.pendingMove?.stage === "waiting" &&
+    (thread.move ?? null) === null &&
+    isRoomAgentQueued(drained)
+  );
 }
 
 /** The words for a thread whose move waits. */
@@ -470,6 +553,11 @@ function pendingWords(thread: OrchestrationThread): string {
 export function threadMoveGuardRefusal(
   readModel: OrchestrationReadModel,
   command: OrchestrationCommand,
+  /**
+   * A room's queued hand-off or reply being sent now (`thread.follow-up.send-queued`
+   * deciding its turn): that turn is the chain draining, not new work.
+   */
+  drained?: OrchestrationQueuedFollowUp,
 ): string | null {
   const find = (threadId: ThreadId | null | undefined) =>
     threadId === null || threadId === undefined
@@ -491,7 +579,8 @@ export function threadMoveGuardRefusal(
     } else if (
       thread !== undefined &&
       (thread.pendingMove ?? null) !== null &&
-      startsWork(command)
+      startsWork(command, thread) &&
+      !drainsRoomChain(thread, command, drained)
     ) {
       return pendingWords(thread);
     }
@@ -571,6 +660,7 @@ export function decideMoveStart(
         : {}),
       ...(interrupted !== undefined ? { interrupted } : {}),
       ...(takes !== undefined ? { targetTakes: takes } : {}),
+      ...(command.roomAgents !== undefined ? { roomAgents: command.roomAgents } : {}),
     },
   };
   const queueEnded: PlannedEvent[] =
@@ -663,29 +753,41 @@ function restoreOwedEvents(
   ];
 }
 
-/** Ending every runtime of the thread: "Stop and move now", and the barrier before a freeze. */
+/**
+ * Ending every runtime of the thread: "Stop and move now", and the barrier
+ * before a freeze. Every side answer runs in a runtime of its own (a room
+ * can have several). A room's agents still asking each other end as Stop
+ * ends them (decideAgentChainStop: their requests settle as stopped, their
+ * queued messages are taken back); a room with nothing open keeps its chain
+ * as it is, so a cancelled move doesn't leave it held.
+ */
 function sessionStopEvents(
   thread: OrchestrationThread,
   createdAt: string,
   baseFor: EventBase,
 ): PlannedEvent[] {
-  const sideTurn = thread.sideTurn ?? null;
+  const chainOpen =
+    thread.agentRequests.open.length > 0 ||
+    liveSideTurns(thread).some((sideTurn) => sideTurn.askedBy !== undefined) ||
+    (thread.queuedFollowUps ?? []).some(isAgentOrigin);
+  const chainStop = chainOpen
+    ? decideAgentChainStop(thread, () => baseFor(thread.id), createdAt)
+    : [];
   return [
     {
       ...baseFor(thread.id),
       type: "thread.session-stop-requested",
       payload: { threadId: thread.id, createdAt },
     },
-    // A side answer runs in a runtime of its own.
-    ...(sideTurn !== null
-      ? [
-          {
-            ...baseFor(thread.id),
-            type: "thread.side-turn-interrupt-requested" as const,
-            payload: { threadId: thread.id, sideTurnId: sideTurn.sideTurnId, createdAt },
-          },
-        ]
-      : []),
+    // The chain's stop already interrupts the answers agents asked for.
+    ...liveSideTurns(thread)
+      .filter((sideTurn) => chainStop.length === 0 || sideTurn.askedBy === undefined)
+      .map((sideTurn): PlannedEvent => ({
+        ...baseFor(thread.id),
+        type: "thread.side-turn-interrupt-requested",
+        payload: { threadId: thread.id, sideTurnId: sideTurn.sideTurnId, createdAt },
+      })),
+    ...chainStop,
   ];
 }
 
@@ -741,6 +843,7 @@ export function decideMoveQueue(
         ...(command.batchId !== undefined ? { batchId: command.batchId } : {}),
         ...(interrupted !== undefined ? { interrupted } : {}),
         ...(command.targetTakes !== undefined ? { targetTakes: command.targetTakes } : {}),
+        ...(command.roomAgents !== undefined ? { roomAgents: command.roomAgents } : {}),
       },
     },
   };
@@ -781,7 +884,7 @@ export function decideMoveSetMode(
       updatedAt: command.createdAt,
     },
   };
-  return sessionStopped(thread) && (thread.sideTurn ?? null) === null
+  return sessionStopped(thread) && liveSideTurns(thread).length === 0
     ? [modeSet]
     : [modeSet, ...sessionStopEvents(thread, command.createdAt, baseFor)];
 }
@@ -1133,6 +1236,8 @@ export function decideThreadImport(
   if (project === undefined || project.deletedAt !== null) {
     return refuse(`Project '${command.projectId}' does not exist.`);
   }
+  const roomRefusal = importedRoomRefusal(command);
+  if (roomRefusal !== null) return refuse(roomRefusal);
   const base = () => baseFor(command.threadId);
   const created: PlannedEvent = {
     ...base(),
@@ -1150,10 +1255,36 @@ export function decideThreadImport(
       movedFrom: { ...command.movedFrom, fenced: true },
       historySeedOwed: true,
       ...(command.nativeSession !== undefined ? { nativeSession: command.nativeSession } : {}),
+      // An agent outside work limited there stays limited here.
+      ...(command.outsideWork !== undefined && command.outsideWork.length > 0
+        ? { outsideWork: command.outsideWork }
+        : {}),
       createdAt: command.createdAt,
       updatedAt: command.createdAt,
     },
   };
+  // A room's agents (Part 3f, (i)), written as a room set up with the thread is.
+  const room: PlannedEvent[] = [
+    ...(command.agentRole !== undefined
+      ? [
+          {
+            ...base(),
+            type: "thread.participant-updated" as const,
+            payload: {
+              threadId: command.threadId,
+              participantId: null,
+              role: command.agentRole,
+              updatedAt: command.createdAt,
+            },
+          },
+        ]
+      : []),
+    ...(command.participants ?? []).map((participant): PlannedEvent => ({
+      ...base(),
+      type: "thread.participant-added",
+      payload: { threadId: command.threadId, participant, updatedAt: command.createdAt },
+    })),
+  ];
   const messages: PlannedEvent[] = command.messages.map((message) => ({
     ...base(),
     type: "thread.message-sent",
@@ -1174,6 +1305,13 @@ export function decideThreadImport(
       ...(message.sentFrom !== undefined ? { sentFrom: message.sentFrom } : {}),
       ...(message.trigger !== undefined ? { trigger: message.trigger } : {}),
       ...(message.notSent === true ? { notSent: true as const } : {}),
+      // A room's: who it was to or from, and the request it made or answered.
+      ...(message.participantId !== undefined ? { participantId: message.participantId } : {}),
+      ...(message.fromAgent !== undefined ? { fromAgent: message.fromAgent } : {}),
+      ...(message.requestId !== undefined ? { requestId: message.requestId } : {}),
+      ...(message.requestKind !== undefined ? { requestKind: message.requestKind } : {}),
+      ...(message.requestOutcome !== undefined ? { requestOutcome: message.requestOutcome } : {}),
+      ...(message.requestError !== undefined ? { requestError: message.requestError } : {}),
       createdAt: message.createdAt,
       updatedAt: message.createdAt,
     },
@@ -1213,7 +1351,40 @@ export function decideThreadImport(
       },
     },
   };
-  return [created, ...messages, ...activities, ...importedState(command, base), boundary];
+  return [created, ...room, ...messages, ...activities, ...importedState(command, base), boundary];
+}
+
+/**
+ * Why a moved room's agents can't be written as they are, or null: at most
+ * PEER_MOVE_ROOM_MAX_PARTICIPANTS, each with a UUID id of its own, no two
+ * agents still in the room with one name, and every message and outside
+ * mark naming an agent that came.
+ */
+function importedRoomRefusal(command: CommandOf<"thread.import">): string | null {
+  const participants = command.participants ?? [];
+  if (participants.length > PEER_MOVE_ROOM_MAX_PARTICIPANTS) return "The room has too many agents.";
+  const ids = new Set<string>();
+  const handles = new Set<string>();
+  for (const participant of participants) {
+    if (!isValidParticipantId(participant.id) || ids.has(participant.id)) {
+      return `Agent '${participant.id}' can't be added.`;
+    }
+    ids.add(participant.id);
+    if (participant.leftAt !== null) continue;
+    const handle = participant.handle.trim().toLowerCase();
+    if (handles.has(handle)) return `Two agents are called ${participant.handle}.`;
+    handles.add(handle);
+  }
+  const known = (id: string | null | undefined) => id === null || id === undefined || ids.has(id);
+  for (const message of command.messages) {
+    if (!known(message.participantId) || !known(message.fromAgent?.participantId)) {
+      return "A message names an agent that didn't come.";
+    }
+  }
+  for (const entry of command.outsideWork ?? []) {
+    if (!known(entry.participantId)) return "An outside mark names an agent that didn't come.";
+  }
+  return null;
 }
 
 /**
@@ -1483,6 +1654,26 @@ export function decideHistorySeedDelivered(
   // Recorded for any thread that moved here, owed or not as this read model
   // has it: the projections agree on where the conversation went.
   if ((thread.movedFrom ?? null) === null) return [];
+  // A room agent's carried session (Part 3f, (i)): only its own proves itself.
+  if (command.participantId !== undefined) {
+    const participant = thread.participants.find((entry) => entry.id === command.participantId);
+    if (command.nativeSession !== "resumed" || participant?.nativeSession !== "carried") {
+      return refuse("That agent's session is no longer the one it carried.");
+    }
+    return [
+      {
+        ...baseFor(thread.id),
+        type: "thread.history-seed-delivered",
+        payload: {
+          threadId: thread.id,
+          messageId: command.messageId,
+          nativeSession: "resumed",
+          participantId: command.participantId,
+          updatedAt: command.createdAt,
+        },
+      },
+    ];
+  }
   // A carried session's success counts only while it is still the one in
   // use: one that fell back meanwhile still owes its summary.
   if (command.nativeSession === "resumed" && thread.nativeSession !== "carried") {
@@ -1513,26 +1704,58 @@ export function decideNativeSessionFallBack(
   command: CommandOf<"thread.native-session.fall-back">,
   baseFor: EventBase,
 ): ThreadMoveDecision {
-  if (thread.nativeSession !== "carried") {
+  const participantId = command.participantId;
+  const participant =
+    participantId === undefined
+      ? undefined
+      : thread.participants.find((entry) => entry.id === participantId);
+  const carried =
+    participantId === undefined
+      ? thread.nativeSession === "carried"
+      : participant?.nativeSession === "carried";
+  if (!carried) {
     return refuse("This thread has no carried agent session to fall back from.");
   }
   const payload: ThreadNativeSessionFellBackPayload = {
     reason: command.reason,
     ...(command.resendMessageId !== undefined ? { resendMessageId: command.resendMessageId } : {}),
+    ...(participantId !== undefined ? { participantId } : {}),
   };
+  // The thread's own agent's, or (a room) one agent's own record.
+  const fellBack: PlannedEvent =
+    participantId === undefined
+      ? {
+          ...baseFor(thread.id),
+          type: "thread.meta-updated",
+          payload: {
+            threadId: thread.id,
+            nativeSession: "fell_back",
+            updatedAt: command.createdAt,
+          },
+        }
+      : {
+          ...baseFor(thread.id),
+          type: "thread.participant-updated",
+          payload: {
+            threadId: thread.id,
+            participantId,
+            nativeSession: "fell_back",
+            updatedAt: command.createdAt,
+          },
+        };
   return [
-    {
-      ...baseFor(thread.id),
-      type: "thread.meta-updated",
-      payload: { threadId: thread.id, nativeSession: "fell_back", updatedAt: command.createdAt },
-    },
+    fellBack,
     {
       ...baseFor(thread.id),
       type: "thread.activity-appended",
       payload: {
         threadId: thread.id,
         activity: {
-          id: EventId.make(`native-session-fell-back:${thread.id}`),
+          id: EventId.make(
+            participantId === undefined
+              ? `native-session-fell-back:${thread.id}`
+              : `native-session-fell-back:${thread.id}:${participantId}`,
+          ),
           tone: "info",
           kind: ThreadNativeSessionFellBackActivityKind,
           summary: NATIVE_SESSION_FELL_BACK_WORDS,

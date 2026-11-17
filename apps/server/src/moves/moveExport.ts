@@ -15,17 +15,22 @@ import * as NodePath from "node:path";
 
 import type {
   EnvironmentId,
+  MessageId,
   ModelSelection,
+  OrchestrationOutsideWork,
   OrchestrationThread,
   OrchestrationThreadActivity,
   PeerMoveGitManifest,
   PeerMoveManifest,
   PeerMovePart,
+  PeerMoveRoom,
+  PeerMoveRoomParticipant,
   PeerMoveScratchManifest,
   PeerMoveThreadState,
   ThreadId,
   ThreadImportMessage,
   ThreadMoveId,
+  ThreadParticipantId,
 } from "@threadlines/contracts";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
@@ -276,10 +281,19 @@ interface PendingPart {
   readonly path?: string;
   readonly mode?: NonNullable<PeerMovePart["mode"]>;
   readonly attachmentId?: string;
+  readonly participantId?: ThreadParticipantId;
 }
 
-/** The thread's history, as the move carries it: finished messages and its newest tool steps. */
-export function exportThreadHistory(thread: OrchestrationThread): {
+/**
+ * The thread's history, as the move carries it: finished messages and its
+ * newest tool steps. `room`: for a computer that takes rooms (Part 3f, (i)),
+ * each message keeps the agent it was to or from and the request it made or
+ * answered; an older one gets them as plain messages.
+ */
+export function exportThreadHistory(
+  thread: OrchestrationThread,
+  options: { readonly room?: boolean } = {},
+): {
   readonly messages: ReadonlyArray<ThreadImportMessage>;
   readonly activities: ReadonlyArray<OrchestrationThreadActivity>;
 } {
@@ -309,6 +323,7 @@ export function exportThreadHistory(thread: OrchestrationThread): {
       ...(message.sentFrom !== undefined ? { sentFrom: message.sentFrom } : {}),
       ...(message.trigger !== undefined ? { trigger: message.trigger } : {}),
       ...(message.notSent === true || queuedIds.has(message.id) ? { notSent: true as const } : {}),
+      ...(options.room === true ? roomFieldsOf(message) : {}),
       createdAt: message.createdAt,
     }));
   const activities = thread.activities
@@ -327,6 +342,20 @@ export function exportThreadHistory(thread: OrchestrationThread): {
       } satisfies OrchestrationThreadActivity;
     });
   return { messages, activities };
+}
+
+/** A room message's own fields, as the move carries them. */
+function roomFieldsOf(message: OrchestrationThread["messages"][number]) {
+  return {
+    ...(message.participantId !== undefined && message.participantId !== null
+      ? { participantId: message.participantId }
+      : {}),
+    ...(message.fromAgent !== undefined ? { fromAgent: message.fromAgent } : {}),
+    ...(message.requestId !== undefined ? { requestId: message.requestId } : {}),
+    ...(message.requestKind !== undefined ? { requestKind: message.requestKind } : {}),
+    ...(message.requestOutcome !== undefined ? { requestOutcome: message.requestOutcome } : {}),
+    ...(message.requestError !== undefined ? { requestError: message.requestError } : {}),
+  };
 }
 
 /**
@@ -425,6 +454,27 @@ export interface MoveExportInput {
    * it; its queued messages' attachments travel as parts.
    */
   readonly state?: PeerMoveThreadState | undefined;
+  /** What a room carries besides its history (Part 3f, (i)): see MoveRoomExport. */
+  readonly room?: MoveRoomExport | undefined;
+  /** The outside-work marks, for a computer that takes them. */
+  readonly outsideWork?: ReadonlyArray<OrchestrationOutsideWork> | undefined;
+}
+
+/**
+ * A room as the move carries it (docs/design/fleet.md, Part 3f, (i)), for a
+ * computer that takes rooms: its agents' records (with the agent each moves
+ * as) and the sessions to carry, one per agent of the same driver there.
+ * Its messages keep their room fields.
+ */
+export interface MoveRoomExport {
+  readonly agentRole?: string | undefined;
+  /** The last moved message the thread's own agent's session saw (seenThroughOf). */
+  readonly ownAgentSeenThroughMessageId?: MessageId | undefined;
+  readonly participants: ReadonlyArray<Omit<PeerMoveRoomParticipant, "session" | "sessionOmitted">>;
+  readonly sessions: ReadonlyArray<{
+    readonly participantId: ThreadParticipantId;
+    readonly session: NativeSessionExport;
+  }>;
 }
 
 /**
@@ -584,7 +634,7 @@ export function writeMoveExport(
         return yield* fail(`${path} isn't a regular file, so it can't move.`);
       }
     }
-    const history = exportThreadHistory(input.thread);
+    const history = exportThreadHistory(input.thread, { room: input.room !== undefined });
     parts.push(...(yield* attachmentParts(history, input.attachmentsDir, input.state)));
     const otherBytes = parts.reduce((sum, part) => sum + part.size, 0);
     if (otherBytes > MOVE_MAX_BYTES) {
@@ -592,7 +642,11 @@ export function writeMoveExport(
         `This thread's changes come to ${Math.ceil(otherBytes / (1024 * 1024))} MB. Moves carry at most 100 MB.`,
       );
     }
-    const session = yield* sessionParts(input.nativeSession ?? null, otherBytes);
+    const session = yield* sessionParts(
+      input.nativeSession ?? null,
+      input.room?.sessions ?? [],
+      otherBytes,
+    );
     parts.push(...session.parts);
 
     const payload = yield* writePayload(dir, parts);
@@ -628,6 +682,7 @@ export function writeMoveExport(
         messages: history.messages,
         activities: history.activities,
         ...(input.state !== undefined ? { state: input.state } : {}),
+        ...roomManifestOf(input, session.room),
       },
       agent: input.agent,
       summary: {
@@ -689,42 +744,83 @@ function attachmentParts(
 }
 
 /**
- * The agent's session as parts, last and only within both caps: past them,
- * the move goes without it and the agent gets a summary, and the manifest
- * says why. A session file that can't be read, or vanished since it was
- * found, leaves the session behind; it never fails the move.
+ * Which agents' sessions fit a move that carries `otherBytes` besides them
+ * (Part 3f, (i): they share the move's 100 MB, at most 50 MB each): any
+ * over 50 MB stays behind, then the largest go as a summary first until the
+ * rest fit. Keys are whatever the caller names the sessions by.
  */
-function sessionParts(session: NativeSessionExport | null, otherBytes: number) {
+export function sessionsThatFit<Key>(
+  sessions: ReadonlyArray<{ readonly key: Key; readonly bytes: number }>,
+  otherBytes: number,
+): ReadonlySet<Key> {
+  const kept = sessions
+    .filter((session) => session.bytes <= NATIVE_SESSION_MAX_BYTES)
+    .toSorted((left, right) => left.bytes - right.bytes);
+  let total = kept.reduce((sum, session) => sum + session.bytes, 0);
+  while (kept.length > 0 && otherBytes + total > MOVE_MAX_BYTES) {
+    total -= kept.pop()!.bytes;
+  }
+  return new Set(kept.map((session) => session.key));
+}
+
+/**
+ * The agents' sessions as parts, last and only within the caps
+ * (sessionsThatFit): the thread's own agent's, and a room's agents' (each
+ * part naming its agent). One past them goes without, its agent gets a
+ * summary, and the manifest says why. A session file that can't be read,
+ * or vanished since it was found, leaves that session behind; it never
+ * fails the move.
+ */
+function sessionParts(
+  primary: NativeSessionExport | null,
+  room: MoveRoomExport["sessions"],
+  otherBytes: number,
+) {
   return Effect.gen(function* () {
-    const sessionBytes = session?.files.reduce((sum, file) => sum + file.size, 0) ?? 0;
-    const carriesSession = session !== null && nativeSessionFits(sessionBytes, otherBytes);
-    const read =
-      session !== null && carriesSession
-        ? yield* Effect.tryPromise(() =>
-            Promise.all(session.files.map((file) => NodeFs.readFile(file.absolutePath))),
-          ).pipe(Effect.orElseSucceed(() => null))
-        : null;
-    const packed =
-      session !== null &&
-      read !== null &&
-      nativeSessionFits(
-        read.reduce((sum, bytes) => sum + bytes.length, 0),
-        otherBytes,
-      );
-    const parts: PendingPart[] =
-      session !== null && read !== null && packed
-        ? session.files.map((file, index) => {
-            const bytes = read[index]!;
-            return {
-              kind: "session" as const,
-              path: file.relPath,
-              size: bytes.length,
-              read: () => Promise.resolve(bytes),
-            };
-          })
-        : [];
-    const manifest = {
-      ...(session !== null && packed
+    const all = [
+      ...(primary !== null ? [{ key: null, session: primary }] : []),
+      ...room.map((entry) => ({ key: entry.participantId, session: entry.session })),
+    ];
+    const sizeOf = (session: NativeSessionExport) =>
+      session.files.reduce((sum, file) => sum + file.size, 0);
+    const sized = sessionsThatFit(
+      all.map((entry) => ({ key: entry.key, bytes: sizeOf(entry.session) })),
+      otherBytes,
+    );
+    const read = new Map<ThreadParticipantId | null, ReadonlyArray<Buffer>>();
+    for (const entry of all) {
+      if (!sized.has(entry.key)) continue;
+      const bytes = yield* Effect.tryPromise(() =>
+        Promise.all(entry.session.files.map((file) => NodeFs.readFile(file.absolutePath))),
+      ).pipe(Effect.orElseSucceed(() => null));
+      if (bytes !== null) read.set(entry.key, bytes);
+    }
+    // Weighed again as read: a file that grew since it was sized may tip it over.
+    const packed = sessionsThatFit(
+      [...read].map(([key, bytes]) => ({
+        key,
+        bytes: bytes.reduce((sum, chunk) => sum + chunk.length, 0),
+      })),
+      otherBytes,
+    );
+    const parts: PendingPart[] = all.flatMap((entry) => {
+      const bytes = read.get(entry.key);
+      if (bytes === undefined || !packed.has(entry.key)) return [];
+      return entry.session.files.map((file, index) => {
+        const chunk = bytes[index]!;
+        return {
+          kind: "session" as const,
+          path: file.relPath,
+          size: chunk.length,
+          read: () => Promise.resolve(chunk),
+          ...(entry.key !== null ? { participantId: entry.key } : {}),
+        };
+      });
+    });
+    // Too large when it was sized, or when it was read: an unreadable
+    // session is simply left behind.
+    const outcome = (key: ThreadParticipantId | null, session: NativeSessionExport) =>
+      packed.has(key)
         ? {
             session: {
               driver: session.driver,
@@ -732,14 +828,19 @@ function sessionParts(session: NativeSessionExport | null, otherBytes: number) {
               cursor: session.cursor,
             },
           }
-        : {}),
-      // Too large when it was sized, or when it was read: an unreadable
-      // session is simply left behind.
-      ...(session !== null && (!carriesSession || (read !== null && !packed))
-        ? { sessionOmitted: "too_large" as const }
-        : {}),
+        : !sized.has(key) || read.has(key)
+          ? { sessionOmitted: "too_large" as const }
+          : {};
+    const roomOutcomes = new Map(
+      room.map(
+        (entry) => [entry.participantId, outcome(entry.participantId, entry.session)] as const,
+      ),
+    );
+    return {
+      parts,
+      manifest: primary !== null ? outcome(null, primary) : {},
+      room: roomOutcomes,
     };
-    return { parts, manifest };
   });
 }
 
@@ -774,6 +875,7 @@ function writePayload(dir: string, parts: ReadonlyArray<PendingPart>) {
             ...(part.path !== undefined ? { path: part.path } : {}),
             ...(part.mode !== undefined ? { mode: part.mode } : {}),
             ...(part.attachmentId !== undefined ? { attachmentId: part.attachmentId } : {}),
+            ...(part.participantId !== undefined ? { participantId: part.participantId } : {}),
           });
           offset += bytes.length;
         }
@@ -911,6 +1013,46 @@ export interface ScratchExportInput {
   readonly agent: ModelSelection;
   readonly nativeSession?: NativeSessionExport | null | undefined;
   readonly state?: PeerMoveThreadState | undefined;
+  readonly room?: MoveRoomExport | undefined;
+  readonly outsideWork?: ReadonlyArray<OrchestrationOutsideWork> | undefined;
+}
+
+/**
+ * The manifest's room and outside marks: each agent's record with the
+ * session that went for it (or why none did), for a computer that takes them.
+ */
+function roomManifestOf(
+  input: {
+    readonly room?: MoveRoomExport | undefined;
+    readonly outsideWork?: ReadonlyArray<OrchestrationOutsideWork> | undefined;
+  },
+  sessions: ReadonlyMap<
+    ThreadParticipantId,
+    Pick<PeerMoveRoomParticipant, "session" | "sessionOmitted">
+  >,
+): {
+  readonly room?: PeerMoveRoom;
+  readonly outsideWork?: ReadonlyArray<OrchestrationOutsideWork>;
+} {
+  const room = input.room;
+  const outsideWork = input.outsideWork ?? [];
+  return {
+    ...(room !== undefined
+      ? {
+          room: {
+            ...(room.agentRole !== undefined ? { agentRole: room.agentRole } : {}),
+            ...(room.ownAgentSeenThroughMessageId !== undefined
+              ? { ownAgentSeenThroughMessageId: room.ownAgentSeenThroughMessageId }
+              : {}),
+            participants: room.participants.map((participant) => ({
+              ...participant,
+              ...sessions.get(participant.id),
+            })),
+          },
+        }
+      : {}),
+    ...(outsideWork.length > 0 ? { outsideWork } : {}),
+  };
 }
 
 /**
@@ -946,7 +1088,7 @@ export function writeScratchExport(
             read: () => NodeFs.readFile(entry.absolute),
           },
     );
-    const history = exportThreadHistory(input.thread);
+    const history = exportThreadHistory(input.thread, { room: input.room !== undefined });
     parts.push(...(yield* attachmentParts(history, input.attachmentsDir, input.state)));
     const otherBytes = parts.reduce((sum, part) => sum + part.size, 0);
     if (otherBytes > MOVE_MAX_BYTES) {
@@ -954,7 +1096,11 @@ export function writeScratchExport(
         `This chat comes to ${Math.ceil(otherBytes / (1024 * 1024))} MB with its attachments. Moves carry at most 100 MB.`,
       );
     }
-    const session = yield* sessionParts(input.nativeSession ?? null, otherBytes);
+    const session = yield* sessionParts(
+      input.nativeSession ?? null,
+      input.room?.sessions ?? [],
+      otherBytes,
+    );
     parts.push(...session.parts);
     const payload = yield* writePayload(input.dir, parts);
     if (payload === null) return yield* new CheckoutChanged();
@@ -974,6 +1120,7 @@ export function writeScratchExport(
         messages: history.messages,
         activities: history.activities,
         ...(input.state !== undefined ? { state: input.state } : {}),
+        ...roomManifestOf(input, session.room),
       },
       agent: input.agent,
       summary: { messageCount: history.messages.length, files: before.length },
@@ -993,9 +1140,14 @@ export function writeScratchExport(
  * What a moved thread had going, as the manifest carries it (docs/design/
  * fleet.md, Part 3e), from what it carries (threadMoveCarry). Only for a
  * computer that takes it. A goal that finished, or anything but working or
- * paused, is never picked up, whatever the move's stop recorded.
+ * paused, is never picked up, whatever the move's stop recorded. In a room
+ * (Part 3f, (i)), the goal names the agent that held it (`goalHolder`, the
+ * thread's session slot), and check-backs and queued messages their agent.
  */
-export function moveThreadStateOf(carry: ThreadMoveCarry): PeerMoveThreadState | undefined {
+export function moveThreadStateOf(
+  carry: ThreadMoveCarry,
+  goalHolder: ThreadParticipantId | null = null,
+): PeerMoveThreadState | undefined {
   const goal = carry.goal;
   const state: PeerMoveThreadState = {
     ...(goal !== null
@@ -1011,6 +1163,7 @@ export function moveThreadStateOf(carry: ThreadMoveCarry): PeerMoveThreadState |
             ...(goal.checks !== undefined ? { checks: goal.checks } : {}),
             ...(goal.lastCheck !== undefined ? { lastCheck: goal.lastCheck } : {}),
             pickUp: carry.goalWorking && (goal.status === "active" || goal.status === "paused"),
+            ...(goalHolder !== null ? { participantId: goalHolder } : {}),
           },
         }
       : {}),
@@ -1025,6 +1178,7 @@ export function moveThreadStateOf(carry: ThreadMoveCarry): PeerMoveThreadState |
             ...(checkBack.description !== undefined ? { description: checkBack.description } : {}),
             ...(checkBack.prompt !== undefined ? { prompt: checkBack.prompt } : {}),
             durable: checkBack.durable,
+            ...(checkBack.participantId !== null ? { participantId: checkBack.participantId } : {}),
           })),
         }
       : {}),
@@ -1053,6 +1207,9 @@ export function moveThreadStateOf(carry: ThreadMoveCarry): PeerMoveThreadState |
             ...(entry.sentFrom !== undefined ? { sentFrom: entry.sentFrom } : {}),
             interactionMode: entry.interactionMode,
             createdAt: entry.createdAt,
+            ...(entry.participantId !== undefined && entry.participantId !== null
+              ? { participantId: entry.participantId }
+              : {}),
           })),
         }
       : {}),

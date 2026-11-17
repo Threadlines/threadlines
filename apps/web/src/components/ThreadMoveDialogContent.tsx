@@ -36,10 +36,13 @@ import {
   pickDefaultMoveTarget,
   threadMoveAgentKey,
   threadMoveAgentSelection,
+  threadMoveRoomAgentRows,
   threadMoveSessionOutcome,
   threadMoveNotesFor,
   threadMoveStopNowRefusal,
   type ThreadMoveAgentChoice,
+  type ThreadMoveRoomAgentRow,
+  type ThreadMoveRoomPicks,
 } from "../threadMove";
 import { openProjectSetupDialog } from "./ProjectSetupDialog";
 import { useComputerLabel } from "./sidebar/linkedComputers";
@@ -59,6 +62,7 @@ import {
   SelectGroupLabel,
   SelectItem,
   SelectPopup,
+  SelectSeparator,
   SelectTrigger,
   SelectValue,
 } from "./ui/select";
@@ -70,6 +74,8 @@ type PreviewState =
   | { readonly status: "failed"; readonly message: string };
 
 const FIELD_LABEL_CLASS = "text-xs font-medium text-foreground";
+const LINE_CLASS = "text-[12.5px] leading-[18px] text-muted-foreground";
+const NO_ROOM_PICKS: ThreadMoveRoomPicks = new Map();
 
 export function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThreadRef }) {
   const title = useStore(
@@ -85,6 +91,8 @@ export function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThread
   const [previewState, setPreviewState] = useState<PreviewState>({ status: "loading" });
   const [targetId, setTargetId] = useState<EnvironmentId | null>(null);
   const [agent, setAgent] = useState<ThreadMoveAgentChoice | null>(null);
+  // A room's other agents the user picked for on the computer picked; the rest keep their presets.
+  const [roomPicks, setRoomPicks] = useState<ThreadMoveRoomPicks>(NO_ROOM_PICKS);
   const [pickedMode, setMode] = useState<ThreadPendingMoveMode>("when-done");
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
@@ -113,6 +121,7 @@ export function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThread
           ) ?? pickDefaultMoveTarget(preview.targets);
         setTargetId(target?.environmentId ?? null);
         setAgent(target ? pickDefaultMoveAgent(target) : null);
+        setRoomPicks(NO_ROOM_PICKS);
         setPreviewState({ status: "ready", preview });
         setRefreshFailed(null);
       } catch (error) {
@@ -152,6 +161,13 @@ export function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThread
   const pickedInstanceId = unreachable ? null : (agentSelection?.instanceId ?? null);
   const brings = threadMoveNotesFor(preview?.brings, pickedInstanceId);
   const notes = threadMoveNotesFor(target?.notes, pickedInstanceId);
+  // A room's other agents, each with the agent it moves as there or left out.
+  // Out of reach: none sent, and each takes the suggestion when the move starts.
+  const roomRows =
+    preview?.room !== undefined && target !== null && !unreachable
+      ? threadMoveRoomAgentRows(preview.room, target, roomPicks)
+      : null;
+  const roomAgents = roomRows?.map((row) => row.choice);
   const canMove =
     preview !== null &&
     preview.refusal === undefined &&
@@ -172,9 +188,14 @@ export function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThread
           ...input,
           ...(unreachable || agentSelection === null ? {} : { agent: agentSelection }),
           mode: working ? mode : "when-done",
+          ...(roomAgents === undefined ? {} : { roomAgents }),
         });
       } else if (agentSelection !== null) {
-        await client.start({ ...input, agent: agentSelection });
+        await client.start({
+          ...input,
+          agent: agentSelection,
+          ...(roomAgents === undefined ? {} : { roomAgents }),
+        });
       }
       closeThreadMoveDialog();
     } catch (error) {
@@ -220,6 +241,7 @@ export function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThread
                 pickedTargetRef.current = next.environmentId;
                 setTargetId(next.environmentId);
                 setAgent(pickDefaultMoveAgent(next));
+                setRoomPicks(NO_ROOM_PICKS);
                 setStartError(null);
               }}
             />
@@ -305,15 +327,26 @@ export function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThread
                       }}
                     />
                     {target.agents.length > 0 ? (
-                      <p
-                        className="text-[12.5px] leading-[18px] text-muted-foreground"
-                        data-testid="thread-move-session"
-                      >
+                      <p className={LINE_CLASS} data-testid="thread-move-session">
                         {describeThreadMoveSession(
                           threadMoveSessionOutcome(target, agentSelection?.instanceId ?? null),
                         )}
                       </p>
                     ) : null}
+                    {target.agents.length > 0
+                      ? roomRows?.map((row) => (
+                          <RoomAgentField
+                            key={row.participantId}
+                            target={target}
+                            row={row}
+                            disabled={starting}
+                            onChange={(next) => {
+                              setRoomPicks((picks) => new Map(picks).set(row.participantId, next));
+                              setStartError(null);
+                            }}
+                          />
+                        ))
+                      : null}
                   </>
                 )}
                 {brings.length > 0 || notes.length > 0 ? (
@@ -548,10 +581,96 @@ function AgentField({
   readonly disabled: boolean;
   readonly onChange: (agent: ThreadMoveAgentChoice) => void;
 }) {
+  if (!target.agents.some((candidate) => candidate.models.length > 0)) {
+    return (
+      <p className="text-sm text-foreground" data-testid="thread-move-no-agents">
+        {target.label} has no agent ready.
+      </p>
+    );
+  }
+  return (
+    <div className="grid gap-1.5">
+      <span className={FIELD_LABEL_CLASS}>Agent</span>
+      <AgentSelect
+        agents={target.agents}
+        value={agent}
+        ariaLabel="Agent"
+        testId="thread-move-agent"
+        disabled={disabled}
+        onChange={(next) => {
+          if (next !== null) onChange(next);
+        }}
+      />
+    </div>
+  );
+}
+
+/**
+ * One of a room's other agents (Part 3f, (i)): its name here, the agent it
+ * moves as there or "Leave out", and under it what the agent picked gets of
+ * its session, or, left out, why none matches (the server's words).
+ */
+function RoomAgentField({
+  target,
+  row,
+  disabled,
+  onChange,
+}: {
+  readonly target: ThreadMoveTargetPreview;
+  readonly row: ThreadMoveRoomAgentRow;
+  readonly disabled: boolean;
+  readonly onChange: (agent: ThreadMoveAgentChoice | null) => void;
+}) {
+  const line = row.session !== null ? describeThreadMoveSession(row.session) : row.cantCome;
+  return (
+    <div className="grid gap-1.5" data-testid={`thread-move-room-agent-${row.participantId}`}>
+      <span className={FIELD_LABEL_CLASS}>{row.name}</span>
+      <AgentSelect
+        agents={target.agents}
+        value={row.pick}
+        ariaLabel={row.name}
+        testId={`thread-move-room-agent-picker-${row.participantId}`}
+        disabled={disabled}
+        leaveOut
+        onChange={onChange}
+      />
+      {line !== null ? (
+        <p className={LINE_CLASS} data-testid={`thread-move-room-agent-line-${row.participantId}`}>
+          {line}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+/** The value "Leave out" is picked by; agent keys hold a NUL, so none is this. */
+const LEAVE_OUT_KEY = "leave-out";
+
+/**
+ * A computer's agents, each with its models, to pick one from. `leaveOut`:
+ * "Leave out" comes last, picked as null.
+ */
+function AgentSelect({
+  agents,
+  value,
+  ariaLabel,
+  testId,
+  disabled,
+  leaveOut = false,
+  onChange,
+}: {
+  readonly agents: ThreadMoveTargetPreview["agents"];
+  readonly value: ThreadMoveAgentChoice | null;
+  readonly ariaLabel: string;
+  readonly testId: string;
+  readonly disabled: boolean;
+  readonly leaveOut?: boolean;
+  readonly onChange: (agent: ThreadMoveAgentChoice | null) => void;
+}) {
   const choices = useMemo(
     () =>
       new Map(
-        target.agents.flatMap((candidate) =>
+        agents.flatMap((candidate) =>
           candidate.models.map((model) => {
             const choice = { instanceId: candidate.instanceId, model: model.model };
             return [
@@ -561,55 +680,57 @@ function AgentField({
           }),
         ),
       ),
-    [target.agents],
+    [agents],
   );
-  if (choices.size === 0) {
-    return (
-      <p className="text-sm text-foreground" data-testid="thread-move-no-agents">
-        {target.label} has no agent ready.
-      </p>
-    );
-  }
-  const selectedKey = agent ? threadMoveAgentKey(agent) : null;
+  const selectedKey = value !== null ? threadMoveAgentKey(value) : leaveOut ? LEAVE_OUT_KEY : null;
   return (
-    <div className="grid gap-1.5">
-      <span className={FIELD_LABEL_CLASS}>Agent</span>
-      <Select
-        value={selectedKey}
-        disabled={disabled}
-        onValueChange={(value) => {
-          const next = value === null ? undefined : choices.get(value);
-          if (next) onChange(next.choice);
-        }}
-      >
-        <SelectTrigger className="w-full" aria-label="Agent" data-testid="thread-move-agent">
-          <SelectValue>
-            {(selectedKey !== null ? choices.get(selectedKey)?.label : undefined) ??
-              "Pick an agent"}
-          </SelectValue>
-        </SelectTrigger>
-        <SelectPopup alignItemWithTrigger={false}>
-          {target.agents.map((candidate) => (
-            <SelectGroup key={candidate.instanceId}>
-              <SelectGroupLabel>
-                {candidate.billing ? `${candidate.name} · ${candidate.billing}` : candidate.name}
-              </SelectGroupLabel>
-              {candidate.models.map((model) => (
-                <SelectItem
-                  key={model.model}
-                  value={threadMoveAgentKey({
-                    instanceId: candidate.instanceId,
-                    model: model.model,
-                  })}
-                >
-                  {model.name}
-                </SelectItem>
-              ))}
-            </SelectGroup>
-          ))}
-        </SelectPopup>
-      </Select>
-    </div>
+    <Select
+      value={selectedKey}
+      disabled={disabled}
+      onValueChange={(next) => {
+        if (leaveOut && next === LEAVE_OUT_KEY) {
+          onChange(null);
+          return;
+        }
+        const picked = next === null ? undefined : choices.get(next);
+        if (picked) onChange(picked.choice);
+      }}
+    >
+      <SelectTrigger className="w-full" aria-label={ariaLabel} data-testid={testId}>
+        <SelectValue>
+          {selectedKey === LEAVE_OUT_KEY
+            ? "Leave out"
+            : ((selectedKey !== null ? choices.get(selectedKey)?.label : undefined) ??
+              "Pick an agent")}
+        </SelectValue>
+      </SelectTrigger>
+      <SelectPopup alignItemWithTrigger={false}>
+        {agents.map((candidate) => (
+          <SelectGroup key={candidate.instanceId}>
+            <SelectGroupLabel>
+              {candidate.billing ? `${candidate.name} · ${candidate.billing}` : candidate.name}
+            </SelectGroupLabel>
+            {candidate.models.map((model) => (
+              <SelectItem
+                key={model.model}
+                value={threadMoveAgentKey({
+                  instanceId: candidate.instanceId,
+                  model: model.model,
+                })}
+              >
+                {model.name}
+              </SelectItem>
+            ))}
+          </SelectGroup>
+        ))}
+        {leaveOut ? (
+          <>
+            <SelectSeparator />
+            <SelectItem value={LEAVE_OUT_KEY}>Leave out</SelectItem>
+          </>
+        ) : null}
+      </SelectPopup>
+    </Select>
   );
 }
 

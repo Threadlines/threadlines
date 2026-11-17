@@ -29,8 +29,10 @@ import {
   MOVE_MAX_BYTES,
   moveThreadStateOf,
   nativeSessionFits,
+  sessionsThatFit,
 } from "./moveExport.ts";
 import { carryBringsWords, threadMoveCarry } from "../orchestration/threadMoveCarry.ts";
+import { seenThroughOf } from "./roomMove.ts";
 import { NATIVE_SESSION_MAX_BYTES, type NativeSessionExport } from "../provider/nativeSession.ts";
 
 const THREAD = ThreadId.make("thread-1");
@@ -179,6 +181,67 @@ describe("checkMoveTarget", () => {
     expect(heavy.sessionOutcomes?.[0]).toEqual({ instanceId: "mac-claude", outcome: "too_large" });
   });
 
+  it("a room's sessions share the move as the export shares them: the largest goes as a summary first", () => {
+    const peer = {
+      environmentId: MAC_MINI,
+      label: "Mac mini",
+      agents,
+      defaultAgent: claude,
+      projects: [{ canonicalKey: "example.com/repo", name: "Threadlines" }],
+      moves: true,
+      access: "allowed",
+      moveNativeSession: true,
+    } as unknown as PeerDescriptor;
+    const target = { environmentId: MAC_MINI, label: "Mac mini", described: Option.some(peer) };
+    const place = { canonicalKey: "example.com/repo", subdirectory: "", rootPath: "/repo" };
+    const thread = { modelSelection: claude } as OrchestrationThread;
+    const MB = 1024 * 1024;
+    const claudeSession = (size: number): NativeSessionExport => ({
+      driver: ProviderDriverKind.make("claudeAgent"),
+      cursor: { resume: "s" },
+      files: [{ relPath: "projects/-r/s.jsonl", absolutePath: "/c/s.jsonl", size }],
+    });
+    const SOL = "6f1d7c2a-1b2c-4d3e-8f90-0a1b2c3d4e5f";
+    const ADA = "7a2e8d3b-2c3d-4e4f-9a01-1b2c3d4e5f60";
+    const source = (participantId: string, handle: string) => ({
+      participantId: participantId as never,
+      handle,
+      driver: "claudeAgent",
+      model: "opus-5-5",
+    });
+    // 30 + 45 + 35 MB: over the move's 100 MB together, each fitting alone.
+    const preview = targetPreviewOf(target, {
+      thread,
+      place,
+      session: claudeSession(30 * MB),
+      room: [source(SOL, "Sol"), source(ADA, "Ada")],
+      roomSessions: new Map([
+        [SOL, claudeSession(45 * MB)],
+        [ADA, claudeSession(35 * MB)],
+      ]),
+    });
+    const outcomeOf = (participantId: string) =>
+      preview.roomAgents
+        ?.find((entry) => entry.participantId === participantId)
+        ?.sessionOutcomes?.find((entry) => entry.instanceId === "mac-claude")?.outcome;
+    expect(outcomeOf(SOL)).toBe("too_large");
+    expect(outcomeOf(ADA)).toBe("carries");
+    expect(preview.sessionOutcomes?.[0]).toEqual({ instanceId: "mac-claude", outcome: "carries" });
+    // Exactly what the export keeps.
+    expect(
+      [
+        ...sessionsThatFit(
+          [
+            { key: "own", bytes: 30 * MB },
+            { key: SOL, bytes: 45 * MB },
+            { key: ADA, bytes: 35 * MB },
+          ],
+          0,
+        ),
+      ].toSorted(),
+    ).toEqual([ADA, "own"].toSorted());
+  });
+
   it("waits on an unreachable target, whatever the agent", () => {
     expect(
       checkMoveTarget(
@@ -293,6 +356,8 @@ describe("what a thread carries, as the dialog says it (Part 3e)", () => {
       pullRequestAutoFix: false,
       pullRequestAutoMerge: null,
       linkedPullRequests: [],
+      participants: [],
+      agentRequests: { open: [] },
       ...patch,
     }) as unknown as OrchestrationThread;
   const view = { projects: [{ id: "project-1", kind: "project" }] } as never;
@@ -481,5 +546,35 @@ describe("exportThreadHistory", () => {
       ["Fix it.", false],
       ["Run the migration.", true],
     ]);
+  });
+});
+
+describe("how far a room agent's own session got (Part 3f, (i))", () => {
+  const SOL = "6f1d7c2a-1b2c-4d3e-8f90-0a1b2c3d4e5f";
+  const message = (id: string, sequence: number, participantId?: string, role = "assistant") => ({
+    id,
+    eventSequence: sequence,
+    role,
+    participantId,
+  });
+  const thread = (roomContext?: Record<string, { throughSequence: number }>) =>
+    ({
+      messages: [
+        message("m1", 1, undefined, "user"),
+        message("m2", 2, SOL),
+        message("m3", 3),
+        message("m4", 4, undefined, "user"),
+      ],
+      ...(roomContext !== undefined ? { roomContext } : {}),
+    }) as never;
+  const moved = new Set(["m1", "m2", "m3", "m4"]);
+
+  it("is its room context cursor when it has one, else its own last reply, never the room's last", () => {
+    expect(seenThroughOf(thread({ [SOL]: { throughSequence: 1 } }), SOL as never, moved)).toBe(
+      "m1",
+    );
+    expect(seenThroughOf(thread(), SOL as never, moved)).toBe("m2");
+    expect(seenThroughOf(thread(), null, moved)).toBe("m3");
+    expect(seenThroughOf(thread(), SOL as never, new Set(["m1"]))).toBeUndefined();
   });
 });

@@ -11,7 +11,9 @@ import {
   ThreadMoveBatchId,
   ThreadMoveId,
   ThreadMoveRequestId,
+  ThreadParticipantId,
   TurnId,
+  RoomAgentRequestId,
   type ModelSelection,
   type OrchestrationCommand,
   type OrchestrationEvent,
@@ -29,7 +31,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { decideOrchestrationCommand } from "./decider.ts";
 import { createEmptyReadModel, projectEvent } from "./projector.ts";
-import { threadMoveGuardRefusal } from "./threadMoveDecisions.ts";
+import { threadMoveGuardRefusal, threadMoveRefusals } from "./threadMoveDecisions.ts";
 
 const now = "2026-10-22T10:00:00.000Z";
 const modelSelection: ModelSelection = {
@@ -1791,6 +1793,452 @@ describe("a moved thread that moves on, or edits its goal before its agent knows
     ]);
     expect(planned[0]?.payload).toMatchObject({
       goal: { objective: "Ship the fix", status: "active" },
+    });
+  });
+});
+
+describe("a room moves with its agents (Part 3f, (i))", () => {
+  const REQUEST = ThreadMoveRequestId.make("request-room");
+  const SOL = ThreadParticipantId.make("6f1d7c2a-1b2c-4d3e-8f90-0a1b2c3d4e5f");
+  const ADA = ThreadParticipantId.make("7a2e8d3b-2c3d-4e4f-9a01-1b2c3d4e5f60");
+  const ROOMS = { rooms: true, threadState: true } as const;
+  const sol = {
+    id: SOL,
+    handle: "Sol",
+    modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6.1-sol" },
+    joinedAt: now,
+    leftAt: null,
+  };
+  const withThread = (
+    model: OrchestrationReadModel,
+    patch: Partial<OrchestrationThread>,
+  ): OrchestrationReadModel => ({
+    ...model,
+    threads: model.threads.map((thread) =>
+      thread.id === THREAD ? ({ ...thread, ...patch } as OrchestrationThread) : thread,
+    ),
+  });
+  const room = async () => withThread(await seeded(), { participants: [sol] });
+  const queue = (
+    takes: ThreadMoveTakes | undefined,
+    mode: ThreadPendingMoveMode = "when-done",
+  ): OrchestrationCommand => ({
+    type: "thread.move.queue",
+    commandId: nextCommandId(),
+    threadId: THREAD,
+    requestId: REQUEST,
+    target: MAC_MINI,
+    agent: modelSelection,
+    mode,
+    requestedBy: { kind: "user" },
+    ...(takes !== undefined ? { targetTakes: takes } : {}),
+    roomAgents: [{ participantId: SOL, agent: null }],
+    createdAt: now,
+  });
+  const openRequest = (status: "pending" | "running" | "awaiting_user") => ({
+    requestId: RoomAgentRequestId.make("request-" + status),
+    kind: status === "awaiting_user" ? ("invite" as const) : ("hand_off" as const),
+    from: { participantId: null },
+    to: { participantId: SOL },
+    callerTurnId: TurnId.make("turn-1"),
+    chainEpoch: 0,
+    status,
+    requestMessageId: MessageId.make("m-request-" + status),
+    createdAt: now,
+  });
+  const chainOf = (requests: ReadonlyArray<ReturnType<typeof openRequest>>) => ({
+    open: requests,
+    hold: false,
+    chainEpoch: 0,
+    requestsSinceUser: requests.length,
+    invitesPaused: false,
+    batchesSinceUser: [],
+  });
+
+  it("is refused for a computer that doesn't take rooms, and waits for its agents on one that does", async () => {
+    const model = await room();
+    expect((await apply(model, queue(undefined))).refusal).toContain(
+      "Threads with more than one agent can't move yet.",
+    );
+    const busy = withThread(model, {
+      agentRequests: chainOf([openRequest("pending"), openRequest("awaiting_user")]),
+    });
+    const queued = await apply(busy, queue(ROOMS));
+    expect(queued.refusal).toBeNull();
+    expect(threadOf(queued.model).pendingMove).toMatchObject({
+      roomAgents: [{ participantId: SOL, agent: null }],
+      targetTakes: ROOMS,
+      waitsFor: [
+        { code: "approval", words: "once you answer" },
+        { code: "side_turn", words: "when its agents finish" },
+      ],
+    });
+  });
+
+  it("a started move keeps the agent each room agent moves as, for its export", async () => {
+    const { model, refusal } = await apply(await room(), {
+      type: "thread.move.start",
+      commandId: nextCommandId(),
+      threadId: THREAD,
+      transferId: TRANSFER,
+      target: MAC_MINI,
+      agent: modelSelection,
+      targetTakes: ROOMS,
+      roomAgents: [{ participantId: SOL, agent: modelSelection }],
+      createdAt: now,
+    });
+    expect(refusal).toBeNull();
+    expect(threadOf(model).move?.roomAgents).toEqual([
+      { participantId: SOL, agent: modelSelection },
+    ]);
+  });
+
+  it("the project's lead chat stays refused, rooms or not", async () => {
+    const model = await room();
+    const view = {
+      ...model,
+      projects: model.projects.map((project) => ({ ...project, leadThreadId: THREAD })),
+    };
+    const codes = threadMoveRefusals(view, threadOf(model), {
+      rooms: true,
+      threadState: true,
+      generalChats: true,
+      outsideWork: true,
+    }).map((entry) => entry.code);
+    expect(codes).toContain("lead");
+  });
+
+  it("while it waits, the room's queued hand-offs and replies still go; from quiescing on nothing does, and no agent asks anew", async () => {
+    const handOff = {
+      messageId: MessageId.make("m-hand-off"),
+      text: "Take it from here",
+      attachments: [],
+      participantId: SOL,
+      fromAgent: { participantId: null },
+      requestId: RoomAgentRequestId.make("request-pending"),
+      runtimeMode: "auto",
+      interactionMode: "default",
+      createdAt: now,
+    } as OrchestrationQueuedFollowUp;
+    const usersOwn = {
+      messageId: MessageId.make("m-users"),
+      text: "Then this",
+      attachments: [],
+      runtimeMode: "auto",
+      interactionMode: "default",
+      createdAt: now,
+    } as OrchestrationQueuedFollowUp;
+    const pending = (stage: "waiting" | "quiescing") =>
+      ({
+        requestId: REQUEST,
+        target: MAC_MINI,
+        mode: "when-done",
+        stage,
+        requestedAt: now,
+        requestedBy: { kind: "user" },
+        targetTakes: ROOMS,
+      }) as const;
+    const send = (messageId: string): OrchestrationCommand => ({
+      type: "thread.follow-up.send-queued",
+      commandId: nextCommandId(),
+      threadId: THREAD,
+      messageId: MessageId.make(messageId),
+      createdAt: now,
+    });
+    const waiting = withThread(await room(), {
+      pendingMove: pending("waiting"),
+      queuedFollowUps: [handOff, usersOwn],
+    });
+    expect(threadMoveGuardRefusal(waiting, send("m-hand-off"))).toBeNull();
+    expect(threadMoveGuardRefusal(waiting, send("m-users"))).toContain("waiting to move");
+    const ask = {
+      type: "thread.agent-request.submit",
+      commandId: nextCommandId(),
+      threadId: THREAD,
+      requestId: RoomAgentRequestId.make("request-new"),
+      kind: "hand_off",
+      from: { participantId: null },
+      to: { participantId: SOL },
+      callerTurnId: TurnId.make("turn-1"),
+      chainEpoch: 0,
+      message: { messageId: MessageId.make("m-new-request"), text: "And this" },
+      createdAt: now,
+    } as unknown as OrchestrationCommand;
+    expect(threadMoveGuardRefusal(waiting, ask)).toContain("waiting to move");
+    const quiescing = withThread(waiting, { pendingMove: pending("quiescing") });
+    expect(threadMoveGuardRefusal(quiescing, send("m-hand-off"))).toContain("waiting to move");
+  });
+
+  it("while it waits, a queued hand-off is sent and its turn runs, so the chain finishes and the move can go", async () => {
+    const REQUEST_ID = RoomAgentRequestId.make("request-queued");
+    const handOff = {
+      messageId: MessageId.make("m-hand-off-drained"),
+      text: "Take it from here",
+      attachments: [],
+      participantId: SOL,
+      fromAgent: { participantId: null },
+      requestId: REQUEST_ID,
+      runtimeMode: "auto",
+      interactionMode: "default",
+      createdAt: now,
+    } as OrchestrationQueuedFollowUp;
+    const pending = (stage: "waiting" | "quiescing") =>
+      ({
+        requestId: REQUEST,
+        target: MAC_MINI,
+        mode: "when-done",
+        stage,
+        requestedAt: now,
+        requestedBy: { kind: "user" },
+        targetTakes: ROOMS,
+      }) as const;
+    let model = await project(await room(), "thread.message-sent", {
+      threadId: THREAD,
+      messageId: handOff.messageId,
+      role: "user",
+      text: handOff.text,
+      attachments: [],
+      participantId: SOL,
+      fromAgent: { participantId: null },
+      requestId: REQUEST_ID,
+      requestKind: "hand_off",
+      turnId: null,
+      streaming: false,
+      createdAt: now,
+      updatedAt: now,
+    });
+    model = withThread(model, {
+      pendingMove: pending("waiting"),
+      queuedFollowUps: [handOff],
+      agentRequests: chainOf([
+        { ...openRequest("pending"), requestId: REQUEST_ID, status: "queued" as never },
+      ]),
+    });
+    const send = (): OrchestrationCommand => ({
+      type: "thread.follow-up.send-queued",
+      commandId: nextCommandId(),
+      threadId: THREAD,
+      messageId: handOff.messageId,
+      createdAt: now,
+    });
+    // From quiescing on, nothing drains.
+    const quiescing = await apply(withThread(model, { pendingMove: pending("quiescing") }), send());
+    expect(quiescing.refusal).toContain("waiting to move");
+    // Waiting, it is sent: Sol's turn starts on it, through the whole decision.
+    const sent = await apply(model, send());
+    expect(sent.refusal).toBeNull();
+    const working = threadOf(sent.model);
+    expect(working.queuedFollowUps ?? []).toEqual([]);
+    expect(working.latestTurn?.state === "running" || working.session !== null).toBe(true);
+    // Its turn answers the hand-off: nothing open, so the move waits for nothing of the chain.
+    const settled = await apply(sent.model, {
+      type: "thread.agent-request.settle",
+      commandId: nextCommandId(),
+      threadId: THREAD,
+      requestId: REQUEST_ID,
+      outcome: "answered",
+      createdAt: now,
+    });
+    expect(settled.refusal).toBeNull();
+    const after = threadOf(settled.model);
+    expect(after.agentRequests.open).toEqual([]);
+    expect(
+      threadMoveRefusals(settled.model, after, ROOMS).filter(
+        (entry) => entry.words === "when its agents finish",
+      ),
+    ).toEqual([]);
+  });
+
+  it("stop and move now ends the agents' chain and every side answer, as Stop does", async () => {
+    const running = await project(await room(), "thread.session-set", {
+      threadId: THREAD,
+      session: {
+        threadId: THREAD,
+        status: "running",
+        providerName: "codex",
+        runtimeMode: "auto",
+        activeTurnId: TurnId.make("turn-1"),
+        lastError: null,
+        updatedAt: now,
+      },
+    });
+    const sideTurn = (id: string, askedBy?: { participantId: null }) => ({
+      sideTurnId: SideTurnId.make(id),
+      participantId: SOL,
+      messageId: MessageId.make("m-" + id),
+      status: "running",
+      startedAt: now,
+      kind: "ask",
+      ...(askedBy !== undefined
+        ? { askedBy, requestId: RoomAgentRequestId.make("request-running") }
+        : {}),
+    });
+    const busy = withThread(running, {
+      sideTurns: [sideTurn("users-side"), sideTurn("agents-side", { participantId: null })],
+      agentRequests: chainOf([openRequest("running")]),
+    } as Partial<OrchestrationThread>);
+    const { model, refusal } = await apply(busy, queue(ROOMS, "stop-now"));
+    expect(refusal).toBeNull();
+    const thread = threadOf(model);
+    expect(thread.agentRequests.open).toEqual([]);
+    expect(thread.agentRequests.hold).toBe(true);
+    const events = await Effect.runPromise(
+      decideOrchestrationCommand({ command: queue(ROOMS, "stop-now"), readModel: busy }),
+    );
+    const interrupted = (Array.isArray(events) ? events : [events])
+      .filter((event) => event.type === "thread.side-turn-interrupt-requested")
+      .map((event) => (event.payload as { sideTurnId: string }).sideTurnId)
+      .toSorted();
+    expect(interrupted).toEqual(["agents-side", "users-side"]);
+  });
+
+  it("an agent outside work limits stays here unless the other computer keeps the limit", async () => {
+    const limited = withThread(await seeded(), {
+      outsideWork: [
+        {
+          participantId: null,
+          connections: [{ connectionId: "connection-1", name: "Chat" }],
+          since: now,
+          version: 1,
+        },
+      ],
+    } as unknown as Partial<OrchestrationThread>);
+    expect((await apply(limited, queue({ threadState: true }))).refusal).toContain(
+      "An outside assistant's work limits this thread's agent",
+    );
+    expect(
+      (await apply(limited, queue({ threadState: true, outsideWork: true }))).refusal,
+    ).toBeNull();
+  });
+
+  describe("arriving", () => {
+    const ARRIVED = ThreadId.make("thread-room-arrived");
+    const importRoom = (extra: Record<string, unknown> = {}): OrchestrationCommand =>
+      ({
+        type: "thread.import",
+        commandId: nextCommandId(),
+        threadId: ARRIVED,
+        projectId: PROJECT,
+        title: "Review the fix",
+        modelSelection,
+        runtimeMode: "auto",
+        interactionMode: "default",
+        branch: "fix/flaky",
+        worktreePath: "/worktrees/moved-room",
+        movedFrom: { ...MAC_MINI, threadId: THREAD, movedAt: now },
+        messages: [
+          {
+            messageId: MessageId.make("m-hand-off-there"),
+            role: "user",
+            text: "Take it from here",
+            turnId: null,
+            participantId: SOL,
+            fromAgent: { participantId: null },
+            requestId: RoomAgentRequestId.make("request-there"),
+            requestKind: "hand_off",
+            requestOutcome: "answered",
+            createdAt: now,
+          },
+        ],
+        activities: [],
+        participants: [
+          { ...sol, movedIn: true, nativeSession: "carried" },
+          { ...sol, id: ADA, handle: "Ada", leftAt: now },
+        ],
+        agentRole: "Builder",
+        outsideWork: [
+          {
+            participantId: SOL,
+            connections: [{ connectionId: "connection-1", name: "Chat" }],
+            since: now,
+            version: 2,
+          },
+        ],
+        createdAt: now,
+        ...extra,
+      }) as unknown as OrchestrationCommand;
+
+    it("writes every agent, fenced, with the room fields and outside marks the move carried", async () => {
+      const { model, refusal } = await apply(await seeded(), importRoom());
+      expect(refusal).toBeNull();
+      const arrived = threadOf(model, ARRIVED);
+      expect(arrived.movedFrom?.fenced).toBe(true);
+      expect(arrived.agentRole).toBe("Builder");
+      expect(arrived.participants).toMatchObject([
+        { id: SOL, handle: "Sol", leftAt: null, movedIn: true, nativeSession: "carried" },
+        { id: ADA, handle: "Ada", leftAt: now },
+      ]);
+      expect(arrived.outsideWork).toMatchObject([{ participantId: SOL, version: 2 }]);
+      expect(arrived.messages[0]).toMatchObject({
+        participantId: SOL,
+        fromAgent: { participantId: null },
+        requestKind: "hand_off",
+        requestOutcome: "answered",
+        imported: true,
+      });
+      expect(arrived.roomContext ?? {}).toEqual({});
+      expect(arrived.sentModels ?? {}).toEqual({});
+    });
+
+    it("refuses a room naming an agent that didn't come, or too many agents", async () => {
+      const stranger = ThreadParticipantId.make("8b3f9e4c-3d4e-4f50-8b12-2c3d4e5f6071");
+      const strange = await apply(
+        await seeded(),
+        importRoom({
+          outsideWork: [{ participantId: stranger, connections: [], since: now, version: 1 }],
+        }),
+      );
+      expect(strange.refusal).toContain("names an agent that didn't come");
+      const many = Array.from({ length: 17 }, (_, index) => ({
+        ...sol,
+        id: ThreadParticipantId.make(
+          "9c4f0a5d-4e5f-4061-9c23-" + index.toString(16).padStart(12, "0"),
+        ),
+        handle: "Agent " + index,
+      }));
+      const crowded = await apply(
+        await seeded(),
+        importRoom({ participants: many, messages: [], outsideWork: [] }),
+      );
+      expect(crowded.refusal).toContain("too many agents");
+    });
+
+    it("a room agent's carried session proves itself or falls back on its own; the thread's debt stays", async () => {
+      let { model } = await apply(await seeded(), importRoom());
+      ({ model } = await apply(model, {
+        type: "thread.history-seed.delivered",
+        commandId: nextCommandId(),
+        threadId: ARRIVED,
+        messageId: MessageId.make("m-hand-off-there"),
+        nativeSession: "resumed",
+        participantId: SOL,
+        createdAt: now,
+      }));
+      let arrived = threadOf(model, ARRIVED);
+      expect(arrived.participants[0]?.nativeSession).toBe("resumed");
+      expect(arrived.historySeedOwed).toBe(true);
+      // Resumed: no longer carried, so it can't fall back.
+      const late = await apply(model, {
+        type: "thread.native-session.fall-back",
+        commandId: nextCommandId(),
+        threadId: ARRIVED,
+        reason: "turn_failed",
+        participantId: SOL,
+        createdAt: now,
+      });
+      expect(late.refusal).toContain("no carried agent session");
+      ({ model } = await apply(await seeded(), importRoom()));
+      ({ model } = await apply(model, {
+        type: "thread.native-session.fall-back",
+        commandId: nextCommandId(),
+        threadId: ARRIVED,
+        reason: "resume_failed",
+        participantId: SOL,
+        createdAt: now,
+      }));
+      arrived = threadOf(model, ARRIVED);
+      expect(arrived.participants[0]?.nativeSession).toBe("fell_back");
+      expect(arrived.nativeSession).toBeUndefined();
     });
   });
 });

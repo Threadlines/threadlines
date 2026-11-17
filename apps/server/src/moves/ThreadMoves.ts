@@ -22,6 +22,7 @@ import * as NodePath from "node:path";
 import {
   CommandId,
   type EnvironmentId,
+  type MessageId,
   type ModelSelection,
   type OrchestrationThread,
   type PeerDescriptor,
@@ -40,6 +41,8 @@ import {
   type ThreadMovePreviewManyThread,
   type ThreadMoveSessionOutcome,
   type ThreadMoveNote,
+  type ThreadMoveRoomAgentChoice,
+  type ThreadMoveRoomAgentTarget,
   type ThreadMoveStartInput,
   type ThreadMoveTakes,
   type ThreadMoveTargetPreview,
@@ -77,7 +80,19 @@ import {
   threadMoveRefusals,
 } from "../orchestration/threadMoveDecisions.ts";
 import { ThreadActionGate } from "./ThreadActionGate.ts";
+import {
+  cantComeWords,
+  movingRoomAgents,
+  type RoomAgentSource,
+  resolveRoomAgents,
+  seenThroughOf,
+  suggestRoomAgent,
+} from "./roomMove.ts";
 import type { NativeSessionExport } from "../provider/nativeSession.ts";
+import {
+  participantSessionKey,
+  sessionSlotParticipantId,
+} from "@threadlines/shared/threadParticipants";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
 import { makeThreadMoveContextReader } from "./threadMoveView.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
@@ -88,12 +103,14 @@ import { type ProjectPlace, resolveProjectPlace } from "../project/projectPlace.
 import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
 import {
   estimateMoveOtherBytes,
+  exportThreadHistory,
   inspectMoveCheckout,
   type MoveCheckout,
   moveThreadStateOf,
   nativeSessionFits,
   movePayloadPath,
   readMoveExport,
+  sessionsThatFit,
   sha256OfFile,
   summarizeMoveChanges,
   summarizeScratchFolder,
@@ -149,6 +166,8 @@ export interface ThreadMovesShape {
     readonly targetEnvironmentId: EnvironmentId;
     /** Absent: the target's suggested agent, checked when the move starts. */
     readonly agent?: ModelSelection | undefined;
+    /** A room's picks (ThreadMoveRoomAgentChoice); one not listed takes the suggestion when it starts. */
+    readonly roomAgents?: ReadonlyArray<ThreadMoveRoomAgentChoice> | undefined;
     /** The computers as already described (a batch); absent: described now. */
     readonly targets?: ReadonlyArray<DescribedTarget> | undefined;
   }) => Effect.Effect<
@@ -182,6 +201,8 @@ export interface ThreadMovesShape {
     readonly targetEnvironmentId: EnvironmentId;
     /** Absent: the agent the target suggests now. */
     readonly agent?: ModelSelection | undefined;
+    /** A room's picks; an agent not listed takes what the target suggests now. */
+    readonly roomAgents?: ReadonlyArray<ThreadMoveRoomAgentChoice> | undefined;
   }) => Effect.Effect<QueuedMoveStart>;
   readonly cancel: (threadId: ThreadId) => Effect.Effect<void, ThreadMoveError>;
   /** Run unfinished moves to their end, and every move started from now on. */
@@ -252,8 +273,13 @@ export function takesOf(peer: PeerDescriptor): ThreadMoveTakes {
   return {
     ...(peer.moveThreadState === true ? { threadState: true as const } : {}),
     ...(peer.moveGeneralChats === true ? { generalChats: true as const } : {}),
+    ...(peer.moveRooms === true ? { rooms: true as const } : {}),
+    ...(peer.moveOutsideWork === true ? { outsideWork: true as const } : {}),
   };
 }
+
+/** The thread's own agent's key among the sessions a preview weighs (room agents go by their ids). */
+const OWN_SESSION = "own";
 
 /** The name General Chats has on every computer, as the dialog's project line says it. */
 const GENERAL_CHATS_NAME = "General chats";
@@ -327,6 +353,10 @@ export function targetPreviewOf(
     /** Whether GitHub is signed in there, per computer (`peer.move.readiness`). */
     readonly gitHubReady?: ReadonlyMap<string, boolean> | undefined;
     readonly goalHoldsTurn?: boolean | undefined;
+    /** A room's moving agents as they run here (roomMove.ts). */
+    readonly room?: ReadonlyArray<RoomAgentSource> | undefined;
+    /** Each room agent's own session as it would travel; absent: not looked at. */
+    readonly roomSessions?: ReadonlyMap<string, NativeSessionExport | null> | undefined;
   } | null,
 ): ThreadMoveTargetPreview {
   const { environmentId, label } = target;
@@ -380,13 +410,67 @@ export function targetPreviewOf(
       ? suggestAgent(peer, forThread.thread)
       : ((peer.defaultAgent ?? undefined) as ModelSelection | undefined);
   const session = forThread?.session;
+  // What each agent would get of its own session there (Parts 3d and 3f,
+  // (i)), allotted as the export allots it (sessionsThatFit): every session
+  // that carries shares the move's 100 MB, the largest left behind first.
+  // Weighed with every agent on the agent that computer suggests for it.
+  const otherBytes = forThread?.otherBytes ?? 0;
+  const room = refusal !== undefined ? [] : (forThread?.room ?? []);
+  const driverOf = (instanceId: string | undefined) =>
+    peer.agents.find((agent) => agent.instanceId === instanceId)?.driver;
+  const sessionBytes = (entry: NativeSessionExport) =>
+    entry.files.reduce((sum, file) => sum + file.size, 0);
+  const sessionOf = (key: string) =>
+    key === OWN_SESSION ? (session ?? null) : (forThread?.roomSessions?.get(key) ?? null);
+  const suggestedFor = (key: string) => {
+    if (key === OWN_SESSION) return suggested;
+    const source = room.find((entry) => entry.participantId === key);
+    return source === undefined ? undefined : suggestRoomAgent(peer, source);
+  };
+  const byDefault = [OWN_SESSION, ...room.map((source) => source.participantId as string)].flatMap(
+    (key) => {
+      const own = sessionOf(key);
+      return own !== null &&
+        peer.moveNativeSession === true &&
+        driverOf(suggestedFor(key)?.instanceId) === own.driver
+        ? [{ key, bytes: sessionBytes(own) }]
+        : [];
+    },
+  );
+  const outcomeFor = (key: string, instanceId: string): ThreadMoveSessionOutcome => {
+    const own = sessionOf(key);
+    if (own === null || peer.moveNativeSession !== true || driverOf(instanceId) !== own.driver) {
+      return "summary";
+    }
+    const weighed = byDefault.some((entry) => entry.key === key)
+      ? byDefault
+      : [...byDefault, { key, bytes: sessionBytes(own) }];
+    return sessionsThatFit(weighed, otherBytes).has(key) ? "carries" : "too_large";
+  };
   const sessionOutcomes =
     session === undefined
       ? []
       : peer.agents.map((agent) => ({
           instanceId: agent.instanceId,
-          outcome: sessionOutcomeFor(session, peer, agent.instanceId, forThread?.otherBytes),
+          outcome: outcomeFor(OWN_SESSION, agent.instanceId),
         }));
+  // A room (Part 3f, (i)): each agent's match there, or why none.
+  const roomAgents: ThreadMoveRoomAgentTarget[] = room.map((source) => {
+    const suggestedAgent = suggestRoomAgent(peer, source);
+    const outcomes = forThread?.roomSessions?.has(source.participantId)
+      ? peer.agents.map((agent) => ({
+          instanceId: agent.instanceId,
+          outcome: outcomeFor(source.participantId, agent.instanceId),
+        }))
+      : [];
+    return {
+      participantId: source.participantId,
+      ...(suggestedAgent !== undefined
+        ? { suggestedAgent }
+        : { cantCome: cantComeWords(source.handle, peer.label, source.driver) }),
+      ...(outcomes.length > 0 ? { sessionOutcomes: outcomes } : {}),
+    };
+  });
   return {
     environmentId,
     label: peer.label,
@@ -409,6 +493,7 @@ export function targetPreviewOf(
     ...(suggested !== undefined ? { suggestedAgent: suggested } : {}),
     ...(peer.moveStagedApproval === true ? { stagedApproval: true } : {}),
     ...(sessionOutcomes.length > 0 ? { sessionOutcomes } : {}),
+    ...(roomAgents.length > 0 ? { roomAgents } : {}),
   };
 }
 
@@ -595,6 +680,22 @@ const make = Effect.gen(function* () {
   const moveDir = (transferId: string) => NodePath.join(config.stateDir, "moves", transferId);
 
   const readMoveContext = yield* makeThreadMoveContextReader;
+
+  /** A room's moving agents as they run here: each one's driver and model (roomMove.ts). */
+  const roomSourcesOf = (thread: OrchestrationThread) =>
+    Effect.forEach(movingRoomAgents(thread), (participant) =>
+      providers.getInstanceInfo(participant.modelSelection.instanceId).pipe(
+        Effect.map((info): string => info.driverKind),
+        // An agent whose instance is gone here matches nothing there.
+        Effect.orElseSucceed((): string => participant.modelSelection.instanceId),
+        Effect.map((driver): RoomAgentSource => ({
+          participantId: participant.id,
+          handle: participant.handle,
+          driver,
+          model: participant.modelSelection.model,
+        })),
+      ),
+    );
   const readModel = snapshots
     .getCommandReadModel()
     .pipe(Effect.mapError(() => moveError("This computer's threads couldn't be read.")));
@@ -735,6 +836,20 @@ const make = Effect.gen(function* () {
               Effect.orElseSucceed(() => false),
             )
           : false;
+      // A room's agents, and (for the dialogs) each one's own session.
+      const room = carry.room ? yield* roomSourcesOf(thread) : [];
+      const roomSessions =
+        options.withSession === true && room.length > 0
+          ? new Map(
+              yield* Effect.forEach(room, (source) =>
+                providers
+                  .exportNativeSession(participantSessionKey(thread.id, source.participantId))
+                  .pipe(
+                    Effect.map((exported) => [source.participantId as string, exported] as const),
+                  ),
+              ),
+            )
+          : undefined;
       const targets = described.map((target) =>
         targetPreviewOf(target, {
           thread,
@@ -744,6 +859,8 @@ const make = Effect.gen(function* () {
           carry,
           gitHubReady,
           goalHoldsTurn,
+          room,
+          roomSessions,
         }),
       );
       const waitsFor = moveWaitsOf(refusals);
@@ -751,6 +868,7 @@ const make = Effect.gen(function* () {
       return {
         thread,
         carry,
+        room,
         described,
         // A move that doesn't wait refuses a busy thread too.
         busy: threadMoveRefusal(view, thread, ALL_MOVE_TAKES),
@@ -760,6 +878,16 @@ const make = Effect.gen(function* () {
           ...(changes !== undefined ? { changes } : {}),
           ...(folder !== undefined ? { folder } : {}),
           ...(brings.length > 0 ? { brings } : {}),
+          ...(room.length > 0
+            ? {
+                room: {
+                  agents: room.map((source) => ({
+                    participantId: source.participantId,
+                    name: source.handle,
+                  })),
+                },
+              }
+            : {}),
           targets,
         } satisfies ThreadMovePreview,
       };
@@ -835,6 +963,7 @@ const make = Effect.gen(function* () {
     target: ThreadMoveTargetPreview,
     agent: ModelSelection,
     takes: ThreadMoveTakes,
+    roomAgents: ReadonlyArray<ThreadMoveRoomAgentChoice>,
     queuedRequestId?: ThreadMoveRequestId,
   ) =>
     actionGate.withThread(
@@ -850,6 +979,7 @@ const make = Effect.gen(function* () {
           agent,
           ...(queuedRequestId !== undefined ? { queuedRequestId } : {}),
           targetTakes: takes,
+          ...(roomAgents.length > 0 ? { roomAgents } : {}),
           createdAt: yield* nowIso,
         });
         return transferId;
@@ -867,11 +997,18 @@ const make = Effect.gen(function* () {
       if ("unreachable" in checked) {
         return yield* moveError(checked.unreachable.refusal ?? "That computer can't be reached.");
       }
+      const room = resolveRoomAgents(
+        checked.ok,
+        inspected.room.map((source) => source.participantId),
+        input.roomAgents,
+      );
+      if ("refusal" in room) return yield* moveError(room.refusal);
       const transferId = yield* dispatchStart(
         input.threadId,
         checked.ok,
         input.agent,
         takesFrom(inspected.described, input.targetEnvironmentId),
+        room.roomAgents,
       ).pipe(Effect.mapError((error) => moveError(error.message)));
       return { transferId };
     });
@@ -886,6 +1023,15 @@ const make = Effect.gen(function* () {
       if (shown.refusal !== undefined) return yield* moveError(shown.refusal);
       const checked = checkMoveTarget(shown, input.targetEnvironmentId, input.agent);
       if ("refusal" in checked) return yield* moveError(checked.refusal);
+      // A pick the computer doesn't have is refused now; the rest is decided when it starts.
+      if ("ok" in checked) {
+        const room = resolveRoomAgents(
+          checked.ok,
+          inspected.room.map((source) => source.participantId),
+          input.roomAgents,
+        );
+        if ("refusal" in room) return yield* moveError(room.refusal);
+      }
       return {
         label: "ok" in checked ? checked.ok.label : checked.unreachable.label,
         takes: takesFrom(inspected.described, input.targetEnvironmentId),
@@ -897,7 +1043,7 @@ const make = Effect.gen(function* () {
       const context = yield* readMoveContext(input.threadId).pipe(Effect.option);
       if (Option.isNone(context) || context.value === null) return { kind: "ok" } as const;
       const carry = threadMoveCarry(context.value.view, context.value.thread);
-      if (!carry.needs.threadState && !carry.needs.generalChats) return { kind: "ok" } as const;
+      if (Object.values(carry.needs).every((needed) => !needed)) return { kind: "ok" } as const;
       const peer = yield* client
         .describe(input.targetEnvironmentId, { fresh: true })
         .pipe(Effect.timeout(DESCRIBE_WAIT), Effect.option);
@@ -932,11 +1078,19 @@ const make = Effect.gen(function* () {
           words: `Waiting for ${checked.unreachable.label} to connect.`,
         } as const;
       }
+      // Each room agent as the user picked it, else what that computer suggests now.
+      const room = resolveRoomAgents(
+        checked.ok,
+        inspected.success.room.map((source) => source.participantId),
+        input.roomAgents,
+      );
+      if ("refusal" in room) return { kind: "blocked", words: room.refusal } as const;
       const started = yield* dispatchStart(
         input.threadId,
         checked.ok,
         checked.agent,
         takesFrom(inspected.success.described, input.targetEnvironmentId),
+        room.roomAgents,
         input.requestId,
       ).pipe(Effect.result);
       return started._tag === "Success"
@@ -1205,10 +1359,21 @@ const make = Effect.gen(function* () {
       // Part 3e); one that doesn't never gets it, and couldn't have been
       // offered a thread that needs it.
       const takes = detail.value.move?.targetTakes;
+      const withRoom = takes?.rooms === true;
       const state =
         takes?.threadState === true
-          ? moveThreadStateOf(threadMoveCarry({ projects: model.projects }, detail.value))
+          ? moveThreadStateOf(
+              threadMoveCarry({ projects: model.projects }, detail.value),
+              withRoom ? sessionSlotParticipantId(detail.value.session) : null,
+            )
           : undefined;
+      // A room's agents and their sessions, and the marks outside work left,
+      // only for a computer that takes them (Part 3f).
+      const room =
+        withRoom && detail.value.participants.length > 0
+          ? yield* roomExportOf(detail.value, targetEnvironmentId)
+          : undefined;
+      const outsideWork = takes?.outsideWork === true ? (detail.value.outsideWork ?? []) : [];
       const source = {
         environmentId: descriptor.environmentId,
         environmentLabel: environment.currentLabel(),
@@ -1224,11 +1389,15 @@ const make = Effect.gen(function* () {
           agent,
           nativeSession,
           state,
+          room,
+          outsideWork,
         });
       }
       const { place, checkout } = yield* whereFrom(detail.value, project.workspaceRoot);
       return yield* writeMoveExport({
         state,
+        room,
+        outsideWork,
         git,
         checkout,
         transferId,
@@ -1267,6 +1436,66 @@ const make = Effect.gen(function* () {
         ? null
         : session;
     });
+
+  /**
+   * A room as the move carries it (Part 3f, (i)): every agent's record, those
+   * who left and guests included, with the driver and model it ran here and
+   * the agent it moves as there (the move's `roomAgents`; none for one left
+   * out, or that left or is a guest), and the sessions of those whose agent
+   * there is the same driver.
+   */
+  const roomExportOf = (thread: OrchestrationThread, environmentId: EnvironmentId) =>
+    Effect.gen(function* () {
+      const chosen = thread.move?.roomAgents ?? [];
+      const moving = new Set(movingRoomAgents(thread).map((participant) => participant.id));
+      // How far each agent's own session got, among the messages that move.
+      const movedIds = new Set<string>(
+        exportThreadHistory(thread, { room: true }).messages.map((message) => message.messageId),
+      );
+      const participants = yield* Effect.forEach(thread.participants, (participant) =>
+        Effect.gen(function* () {
+          const driver = yield* providers
+            .getInstanceInfo(participant.modelSelection.instanceId)
+            .pipe(
+              Effect.map((info): string => info.driverKind),
+              Effect.orElseSucceed((): string => participant.modelSelection.instanceId),
+            );
+          const agent = moving.has(participant.id)
+            ? (chosen.find((entry) => entry.participantId === participant.id)?.agent ?? null)
+            : null;
+          return {
+            id: participant.id,
+            handle: participant.handle,
+            ...(participant.role !== undefined ? { role: participant.role } : {}),
+            joinedAt: participant.joinedAt,
+            leftAt: participant.leftAt,
+            ...(participant.guest !== undefined ? { guest: participant.guest } : {}),
+            source: { driver, model: participant.modelSelection.model },
+            ...(agent !== null ? { agent } : {}),
+            ...withSeen(seenThroughOf(thread, participant.id, movedIds)),
+          };
+        }),
+      );
+      const sessions = yield* Effect.forEach(
+        participants.flatMap((participant) =>
+          participant.agent !== undefined ? [{ id: participant.id, agent: participant.agent }] : [],
+        ),
+        ({ id, agent }) =>
+          sessionToCarry(participantSessionKey(thread.id, id), environmentId, agent).pipe(
+            Effect.map((session) => (session === null ? [] : [{ participantId: id, session }])),
+          ),
+      );
+      const ownSeen = seenThroughOf(thread, null, movedIds);
+      return {
+        ...(thread.agentRole !== undefined ? { agentRole: thread.agentRole } : {}),
+        ...(ownSeen !== undefined ? { ownAgentSeenThroughMessageId: ownSeen } : {}),
+        participants,
+        sessions: sessions.flat(),
+      };
+    });
+
+  const withSeen = (seen: MessageId | undefined) =>
+    seen !== undefined ? { seenThroughMessageId: seen } : {};
 
   /** Sends the payload from where the other computer's copy ends, reporting every 10%. */
   const send = (

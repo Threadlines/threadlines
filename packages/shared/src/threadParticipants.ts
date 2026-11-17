@@ -259,6 +259,8 @@ export function applyRoomAgentUpdate(
     readonly handle?: string | undefined;
     /** A guest joins the thread as a member. */
     readonly joined?: true | undefined;
+    /** A moved-in agent's carried session proved itself or fell back. */
+    readonly nativeSession?: OrchestrationThreadParticipant["nativeSession"] | undefined;
   },
 ): {
   readonly participants: OrchestrationThreadParticipant[];
@@ -285,6 +287,7 @@ export function applyRoomAgentUpdate(
               ? { modelSelection: update.modelSelection }
               : {}),
             ...(update.handle !== undefined ? { handle: update.handle } : {}),
+            ...(update.nativeSession !== undefined ? { nativeSession: update.nativeSession } : {}),
           },
     ),
     agentRole: room.agentRole,

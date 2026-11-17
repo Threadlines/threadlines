@@ -13,6 +13,7 @@ import {
   ProviderInstanceId,
   ThreadId,
   ThreadMoveId,
+  ThreadParticipantId,
   TurnId,
   GENERAL_CHATS_PROJECT_ID,
   type OrchestrationCommand,
@@ -33,10 +34,12 @@ import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts"
 import {
   estimateMoveOtherBytes,
   inspectMoveCheckout,
+  type MoveExportInput,
   movePayloadPath,
   writeMoveExport,
   writeScratchExport,
 } from "../moves/moveExport.ts";
+import { participantSessionKey } from "@threadlines/shared/threadParticipants";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ProjectionThreadRepository } from "../persistence/Services/ProjectionThreads.ts";
@@ -204,10 +207,18 @@ function testLayer(
               title: "Threadlines",
               workspaceRoot: repos.b,
             } as never),
+          // An instance this computer doesn't have ("gone") is refused.
           resolveAgentFor: (input) =>
-            Effect.succeed({
-              selection: { instanceId: input.agent.instanceId, model: input.agent.model ?? "m" },
-            } as never),
+            Effect.succeed(
+              (input.agent.instanceId === "gone"
+                ? { refused: "Mac mini has no such agent." }
+                : {
+                    selection: {
+                      instanceId: input.agent.instanceId,
+                      model: input.agent.model ?? "m",
+                    },
+                  }) as never,
+            ),
         }),
         Layer.mock(OrchestrationEngineService)({
           dispatch: (command) =>
@@ -300,6 +311,9 @@ const pack = (
   repos: ReturnType<typeof makeRepos>,
   nativeSession?: NativeSessionExport | null,
   state?: PeerMoveThreadState,
+  room?: Pick<MoveExportInput, "room" | "outsideWork"> & {
+    readonly thread?: OrchestrationThread;
+  },
 ) =>
   Effect.gen(function* () {
     const git = yield* GitVcsDriver.GitVcsDriver;
@@ -311,7 +325,9 @@ const pack = (
       transferId: TRANSFER,
       dir,
       attachmentsDir: path.join(repos.root, "attachments"),
-      thread: movingThread(),
+      thread: room?.thread ?? movingThread(),
+      room: room?.room,
+      outsideWork: room?.outsideWork,
       projectTitle: "Threadlines",
       subdirectory: "",
       canonicalKey: "example.com/repo",
@@ -1340,6 +1356,188 @@ describe("LinkMoves, a General Chats thread", () => {
       ),
     );
   });
+});
+
+describe("LinkMoves, a room (Part 3f, (i))", () => {
+  const SOL = ThreadParticipantId.make("6f1d7c2a-1b2c-4d3e-8f90-0a1b2c3d4e5f");
+  const ADA = ThreadParticipantId.make("7a2e8d3b-2c3d-4e4f-9a01-1b2c3d4e5f60");
+  const at = "2026-10-22T10:00:00.000Z";
+  /** The moving thread as a room: Sol's reply, and the user's message to it. */
+  const roomThread = (): OrchestrationThread => {
+    const thread = movingThread();
+    return {
+      ...thread,
+      participants: [],
+      messages: [
+        ...thread.messages,
+        {
+          id: MessageId.make("m3"),
+          role: "user",
+          text: "Sol, review it",
+          participantId: SOL,
+          turnId: null,
+          streaming: false,
+          createdAt: at,
+          updatedAt: at,
+        },
+        {
+          id: MessageId.make("m4"),
+          role: "assistant",
+          text: "Looks right.",
+          participantId: SOL,
+          turnId: "turn-2",
+          agentModels: {
+            [SOL]: { modelSelection: agent, nameIndex: 1 },
+          },
+          streaming: false,
+          createdAt: at,
+          updatedAt: at,
+        },
+      ],
+    } as unknown as OrchestrationThread;
+  };
+  const participant = (id: ThreadParticipantId, handle: string, agentThere?: typeof agent) => ({
+    id,
+    handle,
+    joinedAt: at,
+    leftAt: null,
+    source: { driver: "codex", model: "gpt-6.1-sol" },
+    ...(agentThere !== undefined
+      ? { agent: agentThere, seenThroughMessageId: MessageId.make("m4") }
+      : {}),
+  });
+  const outsideWork = [
+    {
+      participantId: SOL,
+      connections: [{ connectionId: "connection-1", name: "Chat" }],
+      since: at,
+      version: 1,
+    },
+    {
+      participantId: ADA,
+      connections: [{ connectionId: "connection-1", name: "Chat" }],
+      since: at,
+      version: 1,
+    },
+  ] as unknown as MoveExportInput["outsideWork"];
+
+  it.live(
+    "lands its agents with fresh ids, each with its own session, fenced; one with no agent here as having left",
+    () => {
+      const repos = makeRepos();
+      const dispatched: OrchestrationCommand[] = [];
+      const carry: CarryRecord = { home: path.join(repos.root, "claude-b"), adopted: [] };
+      return Effect.gen(function* () {
+        const session = yield* exportClaudeNativeSession({
+          configDir: claudeHomeWithSession(repos.root),
+          resumeCursor: { resume: SESSION, turnCount: 1 },
+        });
+        const { manifest, payload } = yield* pack(repos, null, undefined, {
+          thread: roomThread(),
+          room: {
+            agentRole: "Builder",
+            participants: [participant(SOL, "Sol", agent), participant(ADA, "Ada")],
+            sessions: session === null ? [] : [{ participantId: SOL, session }],
+          },
+          outsideWork,
+        });
+        // The session's files name their agent; the thread's own agent carries none.
+        const sessionParts = manifest.parts.filter((part) => part.kind === "session");
+        assert.isAbove(sessionParts.length, 0);
+        assert(sessionParts.every((part) => part.participantId === SOL));
+        assert.equal(manifest.session, undefined);
+        assert.equal(moveManifestRefusal(manifest), null);
+        assert.equal((yield* deliver(manifest, payload)).status, "committed");
+
+        const command = dispatched.find((entry) => entry.type === "thread.import");
+        assert(command?.type === "thread.import");
+        const participants = command.participants ?? [];
+        const sol = participants.find((entry) => entry.handle === "Sol");
+        const ada = participants.find((entry) => entry.handle === "Ada");
+        assert(sol !== undefined && ada !== undefined);
+        // Ids of this computer's own, never the sender's.
+        assert.notEqual(sol.id, SOL);
+        assert.notEqual(ada.id, ADA);
+        assert.deepInclude(sol, {
+          leftAt: null,
+          movedIn: true,
+          nativeSession: "carried",
+          modelSelection: agent,
+        });
+        assert.equal(ada.leftAt, command.createdAt);
+        assert.equal(ada.movedIn, undefined);
+        assert.equal(command.agentRole, "Builder");
+        // Sol's session is bound under its own key here, nothing else is.
+        assert.deepEqual(
+          carry.adopted.map((entry) => entry.threadId),
+          [participantSessionKey(command.threadId, sol.id)],
+        );
+        // Its messages name it by its id here.
+        const reply = command.messages.find((message) => message.text === "Looks right.");
+        assert.equal(reply?.participantId, sol.id);
+        // Its carried session saw up to its own reply: named by its id here.
+        assert.equal(sol.movedSeenThrough, reply?.messageId);
+        assert.deepEqual(Object.keys(reply?.agentModels ?? {}), [sol.id]);
+        // Outside work still limits it here; Ada's mark goes with Ada.
+        assert.deepEqual(
+          (command.outsideWork ?? []).map((mark) => mark.participantId),
+          [sol.id],
+        );
+        // The "Moved here" line says who came, and who didn't with why.
+        assert.include(command.arrival?.brought ?? [], "its agents Sol");
+        assert.include(
+          command.arrival?.left ?? [],
+          "Ada didn't come: this computer has no Codex agent.",
+        );
+      }).pipe(Effect.provide(testLayer(repos, dispatched, "allowed", () => false, [], carry)));
+    },
+  );
+
+  it.live(
+    "refuses a room agent this computer doesn't have, and a part naming no agent of the room",
+    () => {
+      const repos = makeRepos();
+      const dispatched: OrchestrationCommand[] = [];
+      return Effect.gen(function* () {
+        const { manifest } = yield* pack(repos, null, undefined, {
+          thread: roomThread(),
+          room: {
+            participants: [
+              participant(SOL, "Sol", {
+                instanceId: ProviderInstanceId.make("gone"),
+                model: "gpt-6.1-sol",
+              }),
+            ],
+            sessions: [],
+          },
+        });
+        const moves = yield* LinkMoves;
+        const state = yield* moves.prepare(link("allowed"), { transferId: TRANSFER, manifest });
+        assert.equal(state.status, "aborted");
+        assert.include(state.reason ?? "", "Sol: Mac mini has no such agent.");
+        assert.equal(
+          moveManifestRefusal({
+            ...manifest,
+            thread: {
+              ...manifest.thread,
+              messages: [
+                ...manifest.thread.messages,
+                {
+                  messageId: MessageId.make("m-stranger"),
+                  role: "user",
+                  text: "Hi",
+                  turnId: null,
+                  participantId: ADA,
+                  createdAt: at,
+                },
+              ],
+            },
+          }),
+          "a message names an agent the room doesn't have",
+        );
+      }).pipe(Effect.provide(testLayer(repos, dispatched)));
+    },
+  );
 });
 
 describe("what a move may write here", () => {

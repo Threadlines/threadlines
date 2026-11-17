@@ -8,6 +8,7 @@ import {
   ThreadMoveId,
   ThreadMoveRequestId,
   type ThreadMoveTargetPreview,
+  ThreadParticipantId,
   type ThreadPendingMove,
   TurnId,
 } from "@threadlines/contracts";
@@ -29,7 +30,9 @@ import {
   pickDefaultMoveTarget,
   threadMoveAgentSelection,
   threadMoveNotesFor,
+  threadMoveRoomAgentRows,
   threadMoveSessionOutcome,
+  type ThreadMoveRoomPicks,
 } from "./threadMove";
 
 const MAC_MINI = EnvironmentId.make("environment-mac-mini");
@@ -328,6 +331,66 @@ describe("picking where and with whom", () => {
     expect(
       threadMoveAgentSelection(withSuggestion, { instanceId: "codex", model: "gpt-5-mini" }),
     ).toEqual({ instanceId: "codex", model: "gpt-5-mini" });
+  });
+
+  it("presets a room's agents to the agent suggested there, else leaves them out with why", () => {
+    const sol = ThreadParticipantId.make("participant-sol");
+    const ada = ThreadParticipantId.make("participant-ada");
+    const room = {
+      agents: [
+        { participantId: sol, name: "Sol" },
+        { participantId: ada, name: "Ada" },
+      ],
+    };
+    const suggestedAgent = {
+      instanceId: ProviderInstanceId.make("claudeAgent"),
+      model: "claude-opus-5-5",
+      options: [{ id: "effort", value: "high" }],
+    };
+    const there = target({
+      roomAgents: [
+        {
+          participantId: ada,
+          suggestedAgent,
+          sessionOutcomes: [{ instanceId: "claudeAgent", outcome: "carries" }],
+        },
+        { participantId: sol, cantCome: "Sol can't come: Mac mini has no Pi agent." },
+      ],
+    });
+    const rows = (picks: ThreadMoveRoomPicks) =>
+      threadMoveRoomAgentRows(room, there, picks).map(({ name, cantCome, session, choice }) => ({
+        name,
+        cantCome,
+        session,
+        agent: choice.agent,
+      }));
+    expect(rows(new Map())).toEqual([
+      {
+        name: "Sol",
+        cantCome: "Sol can't come: Mac mini has no Pi agent.",
+        session: null,
+        agent: null,
+      },
+      // The suggestion as it came, options included.
+      { name: "Ada", cantCome: null, session: "carries", agent: suggestedAgent },
+    ]);
+    // Picked by hand: Sol comes as Codex with a summary, Ada is left out.
+    expect(
+      rows(
+        new Map([
+          [sol, { instanceId: "codex", model: "gpt-5-mini" }],
+          [ada, null],
+        ]),
+      ),
+    ).toEqual([
+      {
+        name: "Sol",
+        cantCome: null,
+        session: "summary",
+        agent: { instanceId: "codex", model: "gpt-5-mini" },
+      },
+      { name: "Ada", cantCome: null, session: null, agent: null },
+    ]);
   });
 
   it("says under the agent whether it keeps its memory, for the agent picked", () => {

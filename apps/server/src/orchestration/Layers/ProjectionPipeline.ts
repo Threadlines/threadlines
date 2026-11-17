@@ -571,6 +571,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             movedFrom: event.payload.movedFrom ?? null,
             historySeedOwed: event.payload.historySeedOwed === true ? 1 : 0,
             nativeSession: event.payload.nativeSession ?? null,
+            ...(event.payload.outsideWork !== undefined
+              ? { outsideWork: event.payload.outsideWork }
+              : {}),
             effectiveCwd: null,
             effectiveCwdSource: null,
             goal: null,
@@ -676,6 +679,21 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             threadId: event.payload.threadId,
           });
           if (Option.isNone(existingRow)) return;
+          // A room agent's carried session proved itself: only its own record changes.
+          if (event.payload.participantId !== undefined) {
+            if (event.payload.nativeSession === undefined) return;
+            yield* projectionThreadRepository.upsert({
+              ...existingRow.value,
+              participants: applyRoomAgentUpdate(
+                { participants: existingRow.value.participants ?? [] },
+                {
+                  participantId: event.payload.participantId,
+                  nativeSession: event.payload.nativeSession,
+                },
+              ).participants,
+            });
+            return;
+          }
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             historySeedOwed: 0,
@@ -1691,6 +1709,12 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...(event.payload.sentFrom !== undefined ? { sentFrom: event.payload.sentFrom } : {}),
             ...(event.payload.trigger !== undefined ? { trigger: event.payload.trigger } : {}),
             ...(event.payload.notSent === true ? { notSent: true as const } : {}),
+            ...(event.payload.requestOutcome !== undefined
+              ? { requestOutcome: event.payload.requestOutcome }
+              : {}),
+            ...(event.payload.requestError !== undefined
+              ? { requestError: event.payload.requestError }
+              : {}),
             ...(event.payload.afterMove === true ? { afterMove: true as const } : {}),
             isStreaming: event.payload.streaming,
             createdAt: previousMessage?.createdAt ?? event.payload.createdAt,

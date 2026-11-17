@@ -1964,6 +1964,199 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
+  describe("a room moved here (docs/design/fleet.md, Part 3f, (i))", () => {
+    const now = "2026-01-01T00:00:00.000Z";
+    const moved = ThreadId.make("thread-room-moved");
+    const SOL = ThreadParticipantId.make("6f1d7c2a-1b2c-4d3e-8f90-0a1b2c3d4e5f");
+
+    /** Imports a room whose agent Sol came with the move, carried or not; returns how to write to Sol. */
+    const importRoom = async (
+      harness: Awaited<ReturnType<typeof createHarness>>,
+      carried: boolean,
+      /** Sol's carried session saw the moved messages up to this one. */
+      seenThrough?: string,
+    ) => {
+      const own = (await harness.readModel()).threads.find((thread) => thread.id === "thread-1");
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.import",
+          commandId: CommandId.make("cmd-room-import"),
+          threadId: moved,
+          projectId: asProjectId("project-1"),
+          title: "Moved room",
+          modelSelection: own!.modelSelection,
+          runtimeMode: "approval-required",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          branch: null,
+          worktreePath: null,
+          movedFrom: {
+            environmentId: EnvironmentId.make("environment-windows"),
+            label: "Windows PC",
+            threadId: ThreadId.make("thread-there"),
+            movedAt: now,
+          },
+          messages: [
+            {
+              messageId: asMessageId("room-there-1"),
+              role: "user",
+              text: "what we said there",
+              turnId: null,
+              createdAt: now,
+            },
+            {
+              messageId: asMessageId("room-there-2"),
+              role: "assistant",
+              text: "what Sol answered there",
+              participantId: SOL,
+              turnId: null,
+              createdAt: now,
+            },
+            {
+              messageId: asMessageId("room-there-3"),
+              role: "assistant",
+              text: "what the own agent said after Sol's last turn",
+              turnId: null,
+              createdAt: now,
+            },
+          ],
+          activities: [],
+          participants: [
+            {
+              id: SOL,
+              handle: "Sol",
+              modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-sol" },
+              joinedAt: now,
+              leftAt: null,
+              movedIn: true,
+              ...(carried ? { nativeSession: "carried" as const } : {}),
+              ...(seenThrough !== undefined ? { movedSeenThrough: asMessageId(seenThrough) } : {}),
+            },
+          ],
+          createdAt: now,
+        }),
+      );
+      return (id: string, text: string) =>
+        Effect.runPromise(
+          harness.engine.dispatch({
+            type: "thread.turn.start",
+            commandId: CommandId.make("cmd-room-moved-turn-" + id),
+            threadId: moved,
+            message: {
+              messageId: asMessageId("room-moved-message-" + id),
+              role: "user",
+              text,
+              attachments: [],
+            },
+            participantId: SOL,
+            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            runtimeMode: "approval-required",
+            createdAt: now,
+          }),
+        );
+    };
+    /** The next start reports how it went, with a conversation the room's cursor can name. */
+    const nextStart = (
+      harness: Awaited<ReturnType<typeof createHarness>>,
+      outcome: Partial<ProviderSession>,
+    ) => {
+      const start = harness.startSession.getMockImplementation();
+      if (!start) throw new Error("expected the harness start implementation");
+      // On the runtime the harness lists too, as an adapter's session would be.
+      harness.startSession.mockImplementationOnce((key, input) =>
+        start(key, input).pipe(
+          Effect.map((session) =>
+            Object.assign(session, { providerThreadId: "sol-native", ...outcome }),
+          ),
+        ),
+      );
+    };
+    const sentInput = (harness: Awaited<ReturnType<typeof createHarness>>, index: number) =>
+      (harness.sendTurn.mock.calls[index]?.[0] as { readonly input?: string } | undefined)?.input;
+
+    it("an agent that came with it gets the whole conversation once, not a joining agent's last messages", async () => {
+      const harness = await createHarness();
+      const send = await importRoom(harness, false);
+      nextStart(harness, {});
+      await send("1", "Sol, carry on");
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+      const first = sentInput(harness, 0);
+      expect(first).toContain("prior context");
+      // The whole conversation, with each agent's replies under its own name.
+      expect(harness.seedBuildInputs.at(-1)).toMatchObject({
+        threadId: moved,
+        forParticipantId: SOL,
+      });
+      expect(first).toContain("The conversation so far is above.");
+      expect(first).not.toContain("You were just brought into this thread.");
+      // Caught up here now: the next message goes with no summary.
+      await waitFor(async () =>
+        Boolean(
+          (await harness.readModel()).threads.find((thread) => thread.id === moved)?.roomContext?.[
+            SOL
+          ],
+        ),
+      );
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("cmd-room-moved-settled"),
+          threadId: moved,
+          session: {
+            threadId: moved,
+            status: "ready",
+            providerName: "codex",
+            participantId: SOL,
+            runtimeMode: "approval-required",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: now,
+          },
+          createdAt: now,
+        }),
+      );
+      await send("2", "and then this");
+      await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+      expect(sentInput(harness, 1)).not.toContain("prior context");
+    });
+
+    it("an agent whose carried session wouldn't reopen gets the whole conversation, not the last messages", async () => {
+      const harness = await createHarness();
+      const send = await importRoom(harness, true);
+      nextStart(harness, { resumeFailed: true });
+      await send("1", "Sol, carry on");
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+      const first = sentInput(harness, 0);
+      expect(first).toContain("prior context");
+      expect(first).toContain("The conversation so far is above.");
+      expect(first).not.toContain("You were just brought into this thread.");
+      expect(harness.seedBuildInputs.at(-1)).toMatchObject({ forParticipantId: SOL });
+    });
+
+    it("an agent that reopened its carried session is caught up on what it never saw there", async () => {
+      const harness = await createHarness();
+      const send = await importRoom(harness, true, "room-there-2");
+      nextStart(harness, { resumed: true });
+      await send("1", "Sol, carry on");
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+      const first = sentInput(harness, 0);
+      expect(first).not.toContain("prior context");
+      expect(first).toContain("what the own agent said after Sol's last turn");
+      expect(first).not.toContain("what we said there");
+    });
+
+    it("an agent that reopened its carried session gets no summary", async () => {
+      const harness = await createHarness();
+      const send = await importRoom(harness, true);
+      nextStart(harness, { resumed: true });
+      await send("1", "Sol, carry on");
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+      const first = sentInput(harness, 0);
+      expect(first).not.toContain("prior context");
+      expect(first).not.toContain("You were just brought into this thread.");
+      expect(first?.endsWith("Sol, carry on")).toBe(true);
+    });
+  });
+
   it("says in the chat why an access change could not restart the session", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
