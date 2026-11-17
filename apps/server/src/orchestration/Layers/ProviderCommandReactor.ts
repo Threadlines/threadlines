@@ -83,6 +83,7 @@ import * as DateTime from "effect/DateTime";
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Equal from "effect/Equal";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -157,6 +158,7 @@ import { inviteAnswerRefusal } from "../agentInvites.ts";
 import { handOffReplyText } from "../agentRequestDecisions.ts";
 import { isCancelledReport } from "../childThreadDecisions.ts";
 import { NO_BACKGROUND_TASKS } from "../sessionBackgroundTasks.ts";
+import { isRestorePaid } from "../threadMoveDecisions.ts";
 import { SideAnswerStartError } from "../Errors.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderAdapterValidationError = Schema.is(ProviderAdapterValidationError);
@@ -437,6 +439,14 @@ const PROVIDER_INTERRUPT_ACK_TIMEOUT = Duration.seconds(10);
 /** How long preparing a session for a turn (a restart included) may take. */
 const TURN_PREPARATION_TIMEOUT = Duration.seconds(90);
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
+
+/**
+ * Whether a thread's queue waits for its move (docs/design/fleet.md, Part
+ * 3e, (e)): while a move waits, sending it would keep the thread from ever
+ * being free; once it moves, its queue went with it.
+ */
+const queueWaitsForMove = (thread: Pick<OrchestrationThread, "pendingMove" | "move">) =>
+  (thread.pendingMove ?? null) !== null || (thread.move ?? null) !== null;
 
 const decodeFellBackPayload = Schema.decodeUnknownOption(ThreadNativeSessionFellBackPayload);
 
@@ -3954,17 +3964,35 @@ const make = Effect.gen(function* () {
             }
           }),
         ),
+        // A resume (status only) on a session whose provider holds no goal
+        // (a moved thread's, or one whose session started fresh) carries the
+        // goal the thread reads, with what is left of its budget: alone it
+        // would fail on Claude and do nothing on Codex.
         Effect.flatMap(() =>
+          event.payload.objective === undefined &&
+          event.payload.status === "active" &&
+          thread.goal !== null
+            ? providerService.getThreadGoal({ threadId: goalHolderSessionKey }).pipe(
+                Effect.map((held) => (held === null ? thread.goal : null)),
+                Effect.orElseSucceed(() => null),
+              )
+            : Effect.succeed(null),
+        ),
+        Effect.flatMap((resumed) =>
           providerService.setThreadGoal({
             threadId: goalHolderSessionKey,
             modelSelection: goalModelSelection,
             ...(event.payload.objective !== undefined
               ? { objective: event.payload.objective }
-              : {}),
+              : resumed !== null
+                ? { objective: resumed.objective }
+                : {}),
             ...(event.payload.status !== undefined ? { status: event.payload.status } : {}),
             ...(event.payload.tokenBudget !== undefined
               ? { tokenBudget: event.payload.tokenBudget }
-              : {}),
+              : resumed !== null && resumed.tokenBudget !== null
+                ? { tokenBudget: Math.max(1, resumed.tokenBudget - resumed.tokensUsed) }
+                : {}),
           }),
         ),
         Effect.asVoid,
@@ -5586,6 +5614,11 @@ const make = Effect.gen(function* () {
   const processFollowUpQueued = Effect.fn("processFollowUpQueued")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.follow-up-queued" }>,
   ) {
+    // A moved thread's queue, written by its import: the move's own kick
+    // sends its head (docs/design/fleet.md, Part 3e), so nothing goes twice.
+    if (event.payload.imported === true) {
+      return;
+    }
     // A message the user sent after Stop means they are moving on. One an
     // agent queued (in this thread, or from another thread) never does.
     const fromUser = !isAgentOrigin(event.payload.followUp);
@@ -5597,6 +5630,10 @@ const make = Effect.gen(function* () {
     const thread = yield* resolveThread(event.payload.threadId);
     const status = thread?.session?.status;
     if (!thread) {
+      return;
+    }
+    // While a move waits or runs the queue waits too, or the thread never gets free.
+    if (queueWaitsForMove(thread)) {
       return;
     }
     if (status === "running" || status === "starting") {
@@ -5641,6 +5678,89 @@ const make = Effect.gen(function* () {
       return;
     }
     yield* sendQueuedFollowUp(threadId, messageId, createdAt);
+  });
+
+  /**
+   * A moved thread's goal, or one a move that didn't happen put back, reaches
+   * the provider after the conversation does (docs/design/fleet.md, Part 3e,
+   * "Arrival"): once a turn ends with nothing left in the queue, a goal the
+   * thread reads as working that the provider doesn't hold as working is
+   * given to it, with what is left of its budget. Given only after the
+   * message that told the agent, never while a turn runs (a Claude `/goal`
+   * cuts a running turn short; whether Codex takes one mid-turn is
+   * unverified), and again after a carried session fell back to a fresh one.
+   * Only threads that moved here, or owe it back: nothing for any other.
+   */
+  const giveGoalAfterMove = Effect.fnUntraced(function* (
+    thread: OrchestrationThread,
+    createdAt: string,
+  ) {
+    const owed = thread.moveRestoreOwed ?? null;
+    // A put-back paid but for its last steps: its message went and the queue is through.
+    const finishing = owed !== null && isRestorePaid(owed);
+    const owesGoal = finishing && owed?.goalOwed === true;
+    if ((thread.movedFrom ?? null) === null && !finishing) return;
+    if ((thread.queuedFollowUps ?? []).length > 0) return;
+    // Rooms can't move: the thread's own agent holds its goal.
+    if (sessionSlotParticipantId(thread.session) !== null) return;
+    const goal = thread.goal;
+    // A goal put back reads paused when the move's stop paused it after the
+    // put-back read it (Codex): it was working, so it works again.
+    if (goal !== null && (goal.status === "active" || (owesGoal && goal.status === "paused"))) {
+      const held = yield* providerService
+        .getThreadGoal({ threadId: thread.id })
+        .pipe(Effect.option);
+      // Unreadable: tried again at the next turn end.
+      if (Option.isNone(held)) return;
+      if (held.value === null || held.value.status !== "active") {
+        const given = yield* providerService
+          .setThreadGoal({
+            threadId: thread.id,
+            modelSelection: thread.modelSelection,
+            status: "active",
+            // The provider counts from zero again: what is left of the budget.
+            ...(held.value === null
+              ? {
+                  objective: goal.objective,
+                  ...(goal.tokenBudget !== null
+                    ? { tokenBudget: Math.max(1, goal.tokenBudget - goal.tokensUsed) }
+                    : {}),
+                }
+              : {}),
+          })
+          .pipe(Effect.exit);
+        if (Exit.isFailure(given)) {
+          yield* appendProviderFailureActivity({
+            threadId: thread.id,
+            kind: "provider.goal.failed",
+            summary: "Goal update failed",
+            detail: formatFailureDetail(given.cause),
+            turnId: null,
+            createdAt,
+          });
+          return;
+        }
+      }
+    }
+    if (finishing && owed !== null) {
+      yield* orchestrationEngine
+        .dispatch({
+          type: "thread.move.restore",
+          commandId: serverCommandId("move-restore-finished"),
+          threadId: thread.id,
+          at: owed.at,
+          finished: true,
+          createdAt,
+        })
+        .pipe(
+          Effect.catch((error) =>
+            Effect.logInfo("provider command reactor: a put-back goal wasn't recorded", {
+              threadId: thread.id,
+              detail: String(error),
+            }),
+          ),
+        );
+    }
   });
 
   const maybeSendNextQueuedFollowUp = Effect.fnUntraced(function* (
@@ -5703,6 +5823,13 @@ const make = Effect.gen(function* () {
       return;
     }
     const thread = yield* resolveThread(threadId);
+    // A turn that ended while a move waits is what the move waited for.
+    if (thread !== undefined && queueWaitsForMove(thread)) {
+      return;
+    }
+    if (turnFinished && thread !== undefined) {
+      yield* giveGoalAfterMove(thread, event.occurredAt);
+    }
     const next = thread ? nextQueuedFollowUp(thread) : undefined;
     if (!thread || !next) {
       return;

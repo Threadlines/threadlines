@@ -6,8 +6,10 @@ import {
   ChildRequestId,
   EnvironmentId,
   IsoDateTime,
+  MessageId,
   NonNegativeInt,
   OutsideAgentConnectionId,
+  PositiveInt,
   ThreadId,
   ThreadMoveId,
   TrimmedNonEmptyString,
@@ -16,16 +18,23 @@ import { ComputerLinkAccess } from "./links.ts";
 import { OutsideAgentConnectionKind } from "./outsideAgents.ts";
 import { ProviderOptionSelections } from "./model.ts";
 import {
+  ChatAttachment,
+  ChatSkillReferenceList,
   KnownAssistant,
+  MessageComposer,
+  MessageSentFrom,
   ModelSelection,
+  OrchestrationProposedPlan,
   OrchestrationThreadActivity,
   OutsideAgentAccess,
   OrchestrationThreadDoneOverride,
   ProviderInteractionMode,
   RemoteThreadFiling,
   RuntimeMode,
+  ThreadGoalStatus,
   ThreadImportMessage,
 } from "./orchestration.ts";
+import { PullRequestMergeMethod } from "./pullRequest.ts";
 
 /**
  * What one linked computer's server may ask of another (docs/design/fleet.md,
@@ -153,6 +162,15 @@ export const PeerAgent = Schema.Struct({
   ),
   /** The provider kind (`codex`, `claudeAgent`, ...), to pick the caller's kind by default. */
   driver: Schema.String,
+  /**
+   * It keeps a thread's goal (docs/design/fleet.md, Part 3e); with
+   * `goalBudget` false, not a goal's token budget. Absent: it doesn't, or an
+   * older server that doesn't say.
+   */
+  threadGoals: Schema.optional(Schema.Boolean),
+  goalBudget: Schema.optional(Schema.Boolean),
+  /** It sets itself times to come back (check-backs). Absent: it doesn't, or an older server. */
+  checkBacks: Schema.optional(Schema.Boolean),
 });
 export type PeerAgent = typeof PeerAgent.Type;
 
@@ -198,6 +216,19 @@ export const PeerDescriptor = Schema.Struct({
    * server, which refuses a manifest with them, so it is never sent one.
    */
   moveNativeSession: Schema.optional(Schema.Boolean),
+  /**
+   * Takes what a moved thread had going (docs/design/fleet.md, Part 3e): its
+   * goal, check-backs, pull request switches, queued messages and plans
+   * (PeerMoveManifest's `thread.state`), runs its arrival, and answers
+   * `peer.move.readiness`. Absent: an older server, which would drop that
+   * state without a word, so a thread with any is never sent to it.
+   */
+  moveThreadState: Schema.optional(Schema.Boolean),
+  /**
+   * Takes a General Chats thread and its folder (PeerMoveScratchManifest).
+   * Absent: an older server, which can't read one, so it is never sent one.
+   */
+  moveGeneralChats: Schema.optional(Schema.Boolean),
   /**
    * Says how the caller's threads here are filed (`filing` on `thread` watch
    * events) and takes `peer.thread.wrap`. Absent: an older server that can't.
@@ -469,16 +500,132 @@ export const PeerMoveSession = Schema.Struct({
 });
 export type PeerMoveSession = typeof PeerMoveSession.Type;
 
-/** What a moved thread brings and how to rebuild it here. */
-export const PeerMoveManifest = Schema.Struct({
+/** At most this much of a moved thread's state, encoded (PeerMoveThreadState). */
+export const PEER_MOVE_STATE_MAX_BYTES = 2 * 1024 * 1024;
+/** At most this many of each kind of thing a moved thread's state carries. */
+export const PEER_MOVE_STATE_MAX_QUEUED = 50;
+export const PEER_MOVE_STATE_MAX_CHECK_BACKS = 50;
+export const PEER_MOVE_STATE_MAX_PLANS = 100;
+export const PEER_MOVE_STATE_MAX_PULL_REQUESTS = 50;
+
+/**
+ * What a moved thread had going (docs/design/fleet.md, Part 3e), with the
+ * sending computer's ids: only to a computer that says `moveThreadState`.
+ * `goal.pickUp`: it was working when the move stopped its agent, so it is
+ * picked up there. Check-backs travel as what the agent is told to set again.
+ * Queued messages are the user's own; their attachments are `attachment`
+ * parts. `plansLeftBehind`: older plans past the limit that stayed.
+ */
+export const PeerMoveThreadState = Schema.Struct({
+  goal: Schema.optional(
+    Schema.Struct({
+      objective: TrimmedNonEmptyString,
+      status: ThreadGoalStatus,
+      tokenBudget: Schema.NullOr(NonNegativeInt),
+      tokensUsed: NonNegativeInt,
+      timeUsedSeconds: NonNegativeInt,
+      createdAt: IsoDateTime,
+      updatedAt: IsoDateTime,
+      checks: Schema.optional(NonNegativeInt),
+      lastCheck: Schema.optional(TrimmedNonEmptyString),
+      pickUp: Schema.Boolean,
+    }),
+  ),
+  checkBacks: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        scheduledFor: IsoDateTime,
+        recurring: Schema.Boolean,
+        exact: Schema.Boolean,
+        schedule: Schema.optional(TrimmedNonEmptyString),
+        cron: Schema.optional(TrimmedNonEmptyString),
+        description: Schema.optional(TrimmedNonEmptyString),
+        prompt: Schema.optional(TrimmedNonEmptyString),
+        durable: Schema.Boolean,
+      }),
+    ),
+  ),
+  pullRequests: Schema.optional(
+    Schema.Struct({
+      autoFix: Schema.Boolean,
+      autoMerge: Schema.NullOr(PullRequestMergeMethod),
+      linked: Schema.Array(
+        Schema.Struct({
+          number: PositiveInt,
+          url: TrimmedNonEmptyString,
+          autoFix: Schema.Boolean,
+          autoMerge: Schema.NullOr(PullRequestMergeMethod),
+        }),
+      ),
+    }),
+  ),
+  queuedFollowUps: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        messageId: MessageId,
+        text: Schema.String,
+        attachments: Schema.Array(ChatAttachment),
+        skills: Schema.optional(ChatSkillReferenceList),
+        composer: Schema.optional(MessageComposer),
+        sentFrom: Schema.optional(MessageSentFrom),
+        interactionMode: ProviderInteractionMode,
+        createdAt: IsoDateTime,
+      }),
+    ),
+  ),
+  proposedPlans: Schema.optional(Schema.Array(OrchestrationProposedPlan)),
+  plansLeftBehind: Schema.optional(NonNegativeInt),
+});
+export type PeerMoveThreadState = typeof PeerMoveThreadState.Type;
+
+/** Where a moved thread came from, as both kinds of manifest say it. */
+const PeerMoveSource = Schema.Struct({
+  environmentId: EnvironmentId,
+  environmentLabel: TrimmedNonEmptyString,
+  threadId: ThreadId,
+});
+
+/** A moved thread's own history, as both kinds of manifest carry it. */
+const PeerMoveThread = Schema.Struct({
+  title: TrimmedNonEmptyString,
+  runtimeMode: RuntimeMode,
+  interactionMode: ProviderInteractionMode,
+  messages: Schema.Array(ThreadImportMessage),
+  activities: Schema.Array(OrchestrationThreadActivity),
+  /** What it had going: see PeerMoveThreadState. Absent: nothing, or an older sender. */
+  state: Schema.optional(PeerMoveThreadState),
+});
+
+/**
+ * A General Chats thread moving here (docs/design/fleet.md, Part 3e, (d)):
+ * no project to match and no git; its folder's files are the `file` parts,
+ * by their paths in the folder. Only to a computer that says
+ * `moveGeneralChats`: an older one can't decode it.
+ */
+export const PeerMoveScratchManifest = Schema.Struct({
+  workspace: Schema.Literal("scratch"),
   totalBytes: NonNegativeInt,
   sha256: TrimmedNonEmptyString,
   parts: Schema.Array(PeerMovePart),
-  source: Schema.Struct({
-    environmentId: EnvironmentId,
-    environmentLabel: TrimmedNonEmptyString,
-    threadId: ThreadId,
+  source: PeerMoveSource,
+  project: Schema.Struct({ title: TrimmedNonEmptyString }),
+  thread: PeerMoveThread,
+  agent: ModelSelection,
+  summary: Schema.Struct({
+    messageCount: NonNegativeInt,
+    files: NonNegativeInt,
   }),
+  session: Schema.optional(PeerMoveSession),
+  sessionOmitted: Schema.optional(Schema.Literal("too_large")),
+});
+export type PeerMoveScratchManifest = typeof PeerMoveScratchManifest.Type;
+
+/** What a moved thread in a git checkout brings and how to rebuild it here. */
+export const PeerMoveGitManifest = Schema.Struct({
+  totalBytes: NonNegativeInt,
+  sha256: TrimmedNonEmptyString,
+  parts: Schema.Array(PeerMovePart),
+  source: PeerMoveSource,
   project: Schema.Struct({
     canonicalKey: TrimmedNonEmptyString,
     /** The project's folder in the repository ("" at the root); absent from older senders. */
@@ -491,14 +638,13 @@ export const PeerMoveManifest = Schema.Struct({
     branch: Schema.NullOr(TrimmedNonEmptyString),
     /** The commit the bundle starts after; null when there is no bundle (nothing unpushed). */
     baseSha: Schema.NullOr(TrimmedNonEmptyString),
+    /**
+     * The branch on the project's remote that `branch` tracks there, so the
+     * branch made here tracks it too. Absent: it tracks none, or an older sender.
+     */
+    upstreamBranch: Schema.optional(TrimmedNonEmptyString),
   }),
-  thread: Schema.Struct({
-    title: TrimmedNonEmptyString,
-    runtimeMode: RuntimeMode,
-    interactionMode: ProviderInteractionMode,
-    messages: Schema.Array(ThreadImportMessage),
-    activities: Schema.Array(OrchestrationThreadActivity),
-  }),
+  thread: PeerMoveThread,
   /** The agent to run it with here, by this computer's instance id. */
   agent: ModelSelection,
   summary: Schema.Struct({
@@ -516,7 +662,35 @@ export const PeerMoveManifest = Schema.Struct({
   /** Why no session came although one could have: it was too large to send. */
   sessionOmitted: Schema.optional(Schema.Literal("too_large")),
 });
+export type PeerMoveGitManifest = typeof PeerMoveGitManifest.Type;
+
+/**
+ * What a moved thread brings and how to rebuild it here: from a git
+ * checkout, or (only to a computer that says `moveGeneralChats`) a General
+ * Chats folder. Every manifest an older computer sends, or stored, is the
+ * first.
+ */
+export const PeerMoveManifest = Schema.Union([PeerMoveGitManifest, PeerMoveScratchManifest]);
 export type PeerMoveManifest = typeof PeerMoveManifest.Type;
+
+/** Whether a manifest is a General Chats thread's (no git). */
+export const isScratchMoveManifest = (
+  manifest: PeerMoveManifest,
+): manifest is PeerMoveScratchManifest => "workspace" in manifest;
+
+/**
+ * Asked before a thread with pull request switches moves here: whether
+ * GitHub is signed in for the project, so the dialog can warn
+ * (docs/design/fleet.md, Part 3e, (c)). Only of a computer that says
+ * `moveThreadState`.
+ */
+export const PeerMoveReadinessInput = Schema.Struct({ canonicalKey: TrimmedNonEmptyString });
+export type PeerMoveReadinessInput = typeof PeerMoveReadinessInput.Type;
+export const PeerMoveReadinessResult = Schema.Struct({
+  /** Absent: it couldn't tell. */
+  gitHubReady: Schema.optional(Schema.Boolean),
+});
+export type PeerMoveReadinessResult = typeof PeerMoveReadinessResult.Type;
 
 /**
  * `staged_awaiting_approval` (docs/design/fleet.md, Part 3c): every byte is
@@ -685,6 +859,7 @@ export const PEER_METHODS = {
   moveFinish: "peer.move.finish",
   moveStatus: "peer.move.status",
   moveAbort: "peer.move.abort",
+  moveReadiness: "peer.move.readiness",
   outsideAsk: "peer.outside.ask",
   outsideStatus: "peer.outside.status",
   outsideForget: "peer.outside.forget",
@@ -827,6 +1002,13 @@ export const PeerMoveAbortRpc = Rpc.make(PEER_METHODS.moveAbort, {
   error: PeerRpcError,
 });
 
+/** Whether the project's pull requests can be watched here (docs/design/fleet.md, Part 3e). */
+export const PeerMoveReadinessRpc = Rpc.make(PEER_METHODS.moveReadiness, {
+  payload: PeerMoveReadinessInput,
+  success: PeerMoveReadinessResult,
+  error: PeerRpcError,
+});
+
 export const PeerRpcGroup = RpcGroup.make(
   PeerDescribeRpc,
   PeerRequestStartRpc,
@@ -844,6 +1026,7 @@ export const PeerRpcGroup = RpcGroup.make(
   PeerMoveFinishRpc,
   PeerMoveStatusRpc,
   PeerMoveAbortRpc,
+  PeerMoveReadinessRpc,
   PeerOutsideAskRpc,
   PeerOutsideStatusRpc,
   PeerOutsideForgetRpc,

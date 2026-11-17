@@ -14,12 +14,19 @@
 import { LEAD_MOVE_REFUSAL } from "@threadlines/shared/projectLead";
 import {
   EventId,
+  MessageId,
   type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationReadModel,
+  type OrchestrationQueuedFollowUp,
   type OrchestrationThread,
+  type OrchestrationThreadMove,
   type ThreadId,
   type ThreadMoveHold,
+  type ThreadMoveInterrupted,
+  type ThreadMoveRestore,
+  type ThreadMoveTakes,
+  type ThreadMoveTarget,
   ThreadMoveNotStartedActivityKind,
   type ThreadMoveNotStartedPayload,
   type ThreadMoveWait,
@@ -36,7 +43,15 @@ import {
 } from "@threadlines/shared/pendingRequests";
 import { isRoomThread } from "@threadlines/shared/threadParticipants";
 
+import { arrivalMessageText, resumedGoalMessageText } from "../moves/arrivalMessage.ts";
+import { derivedUuid } from "./childRequestIds.ts";
 import { childHasLiveWork } from "./childThreadDecisions.ts";
+import {
+  interruptedOf,
+  mergeInterrupted,
+  sameInterrupted,
+  threadMoveCarry,
+} from "./threadMoveCarry.ts";
 import {
   SETTINGS_CHANGE_CANCELLED,
   cancelWaitingSettingsChanges,
@@ -122,13 +137,31 @@ export interface ThreadMoveView {
   readonly threads: ReadonlyArray<OrchestrationThread>;
 }
 
-/** A thread's checkout: its worktree, else its project's folder. */
+/**
+ * A thread's checkout, as a key two threads share when they work in the same
+ * files: its worktree, else its project's folder. A general chat works in a
+ * folder of its own (generalChatThreadScratchCwd), so no two of them share one.
+ */
 function checkoutOf(readModel: ThreadMoveView, thread: OrchestrationThread) {
-  return (
-    thread.worktreePath ??
-    readModel.projects.find((entry) => entry.id === thread.projectId)?.workspaceRoot ??
-    null
-  );
+  if (thread.worktreePath !== null) return thread.worktreePath;
+  const project = readModel.projects.find((entry) => entry.id === thread.projectId);
+  if (project === undefined) return null;
+  return project.kind === "general-chat"
+    ? `${project.workspaceRoot}\u0000${thread.id}`
+    : project.workspaceRoot;
+}
+
+/** Whose queued message keeps a thread here, in words. */
+function foreignQueuedWords(entry: OrchestrationQueuedFollowUp): string {
+  const whose =
+    entry.scheduledTaskId !== undefined
+      ? "A scheduled task's message"
+      : entry.fromOutside !== undefined
+        ? "An outside assistant's message"
+        : entry.fromThread !== undefined
+          ? "A message from another thread"
+          : "An agent's message";
+  return `${whose} is waiting its turn. Move once it has been sent, or remove it.`;
 }
 
 /**
@@ -142,8 +175,13 @@ function checkoutOf(readModel: ThreadMoveView, thread: OrchestrationThread) {
 export function threadMoveRefusals(
   readModel: ThreadMoveView,
   thread: OrchestrationThread,
+  takes?: ThreadMoveTakes | null,
 ): ReadonlyArray<ThreadMoveRefusalEntry> {
   const found: ThreadMoveRefusalEntry[] = [];
+  // What rides along (docs/design/fleet.md, Part 3e) is refused only when the
+  // other computer doesn't take it. Absent `takes`: nothing beyond v1.
+  const carry = threadMoveCarry(readModel, thread);
+  const takesState = takes?.threadState === true;
   if (thread.deletedAt !== null) found.push(blocked("deleted", "This thread was deleted."));
   if (thread.archivedAt !== null) {
     found.push(blocked("archived", "Archived threads can't move. Unarchive it first."));
@@ -157,7 +195,7 @@ export function threadMoveRefusals(
     );
   }
   const project = readModel.projects.find((candidate) => candidate.id === thread.projectId);
-  if (project?.kind === "general-chat") {
+  if (project?.kind === "general-chat" && takes?.generalChats !== true) {
     found.push(blocked("general_chat", "General chats can't move yet."));
   }
   // Words only: the move's refusal code is a closed set older peers decode.
@@ -193,29 +231,32 @@ export function threadMoveRefusals(
   ) {
     found.push(blocked("has_children", "Threads that started other threads can't move yet."));
   }
-  // Queued follow-ups would start the next turn the moment this one ends.
-  if ((thread.queuedFollowUps ?? []).length > 0) {
+  // A message queued by something on this computer answers to it (a
+  // scheduled run, an outside assistant, another thread), so it is sent
+  // here. The user's own travel when the other computer takes them.
+  const foreign = carry.foreignQueued[0];
+  if (foreign !== undefined) {
+    found.push(blocked("queued_messages", foreignQueuedWords(foreign)));
+  } else if (carry.queuedFollowUps.length > 0 && !takesState) {
+    // They would start the next turn the moment this one ends.
     found.push(blocked("queued_messages", "Send or remove your queued messages first."));
   }
   // Only the user's answer clears a plan, and implementing it starts a turn.
-  const latestTurnId = thread.latestTurn?.turnId ?? null;
-  if (
-    thread.proposedPlans.some(
-      (plan) =>
-        latestTurnId !== null &&
-        plan.turnId === latestTurnId &&
-        plan.implementedAt === null &&
-        plan.dismissedAt === null,
-    )
-  ) {
+  if (carry.planWaiting && !takesState) {
     found.push(blocked("plan", "Implement or dismiss the plan first."));
   }
-  if (thread.goal !== null && thread.goal.status !== "complete") {
+  if (carry.goal !== null && carry.goal.status !== "complete" && !takesState) {
     found.push(blocked("goal", "This thread has a goal set. Clear it first."));
   }
-  if ((thread.checkBacks ?? []).length > 0) {
+  if (carry.checkBacks.length > 0 && !takesState) {
+    // A saved one can't be cancelled here: stopping the runtime doesn't remove it.
     found.push(
-      blocked("check_back", "This thread's agent set itself a time to come back. Cancel it first."),
+      blocked(
+        "check_back",
+        carry.checkBacks.every((checkBack) => checkBack.durable)
+          ? "Claude saved this thread's check-back to disk. Ask the agent to delete it, then move."
+          : "This thread's agent set itself a time to come back. Cancel it first.",
+      ),
     );
   }
   const runRequestIds = new Set(
@@ -235,7 +276,7 @@ export function threadMoveRefusals(
       ),
     );
   }
-  if (threadPullRequestAutomationArmed(thread)) {
+  if (threadPullRequestAutomationArmed(thread) && !takesState) {
     found.push(
       blocked(
         "pull_request_automation",
@@ -312,8 +353,9 @@ export function firstMoveBlock(refusals: ReadonlyArray<ThreadMoveRefusalEntry>) 
 export function threadMoveRefusal(
   readModel: ThreadMoveView,
   thread: OrchestrationThread,
+  takes?: ThreadMoveTakes | null,
 ): string | null {
-  const refusals = threadMoveRefusals(readModel, thread);
+  const refusals = threadMoveRefusals(readModel, thread, takes);
   const block = firstMoveBlock(refusals);
   if (block !== null) return block.words;
   const first = refusals[0];
@@ -342,6 +384,9 @@ const FROZEN_THREAD_COMMANDS: ReadonlySet<OrchestrationCommand["type"]> = new Se
   "thread.activity.append",
   "thread.effective-cwd.set",
   "thread.check-backs.set",
+  // What the provider reports of its goal as the move's stop pauses it: the
+  // goal bar must say what the provider holds, should the move be dropped.
+  "thread.goal.state.set",
   "thread.pull-request.link",
   "thread.diffstat.rebase",
   "thread.realtime.state.set",
@@ -387,6 +432,9 @@ const WORK_START_COMMANDS: ReadonlySet<OrchestrationCommand["type"]> = new Set([
   "thread.continue-at-reset.fire",
   "thread.pull-request-automation.set",
   "thread.continue-at-reset.set",
+  // The queue doesn't drain while a move waits, or the thread is never free
+  // (docs/design/fleet.md, Part 3e, (e)); what goes into a running turn still does.
+  "thread.follow-up.send-queued",
 ]);
 
 /** Whether `command`, on its own thread, starts work there. */
@@ -400,6 +448,8 @@ function startsWork(command: OrchestrationCommand): boolean {
       );
     case "thread.continue-at-reset.set":
       return command.enabled;
+    case "thread.follow-up.send-queued":
+      return command.steeredTurnId === undefined && command.steerIntoTurnId === undefined;
     default:
       return true;
   }
@@ -476,17 +526,19 @@ export function decideMoveStart(
 ): ThreadMoveDecision {
   const pending = thread.pendingMove ?? null;
   const queuedRequestId = command.queuedRequestId;
+  // What the other computer said just now that it takes.
+  const takes = command.targetTakes;
   if (queuedRequestId === undefined) {
     if (pending !== null) {
       return refuse(`A move to ${pending.target.label} is already waiting. Cancel it first.`);
     }
-    const refusal = threadMoveRefusal(readModel, thread);
+    const refusal = threadMoveRefusal(readModel, thread, takes);
     if (refusal !== null) return refuse(refusal);
   } else {
     if (pending === null || pending.requestId !== queuedRequestId) {
       return refuse("That queued move was cancelled or replaced.");
     }
-    const refusals = threadMoveRefusals(readModel, thread);
+    const refusals = threadMoveRefusals(readModel, thread, takes);
     const block = firstMoveBlock(refusals);
     if (block !== null) return refuse(block.words);
     if (refusals.length > 0) return refuse(BUSY_WORDS);
@@ -494,6 +546,16 @@ export function decideMoveStart(
       return refuse("This thread's agent hasn't stopped yet.");
     }
   }
+  // What its stop took: a queued move's, with what a stop planned here (a
+  // direct move whose session still runs) takes now.
+  // What an earlier move that didn't happen still owes the thread comes along.
+  const owed = thread.moveRestoreOwed ?? null;
+  const interrupted =
+    queuedRequestId !== undefined
+      ? mergeInterrupted(thread, pending?.interrupted)
+      : sessionStopped(thread) && owed === null
+        ? undefined
+        : mergeInterrupted(thread, owed?.interrupted);
   const started: PlannedEvent = {
     ...baseFor(thread.id),
     type: "thread.move-started",
@@ -507,6 +569,8 @@ export function decideMoveStart(
       ...(pending?.batchId !== undefined && queuedRequestId !== undefined
         ? { batchId: pending.batchId }
         : {}),
+      ...(interrupted !== undefined ? { interrupted } : {}),
+      ...(takes !== undefined ? { targetTakes: takes } : {}),
     },
   };
   const queueEnded: PlannedEvent[] =
@@ -531,11 +595,14 @@ export function decideMoveStart(
     command.createdAt,
     baseFor,
   );
+  // The move holds what was owed now (its `interrupted`).
+  const absorbed = owed !== null ? [restoreSet(thread, null, command.createdAt, baseFor)] : [];
   if (sessionStopped(thread)) {
-    return [...cancelled, ...queueEnded, started];
+    return [...cancelled, ...absorbed, ...queueEnded, started];
   }
   return [
     ...cancelled,
+    ...absorbed,
     started,
     {
       ...baseFor(thread.id),
@@ -549,6 +616,51 @@ export function decideMoveStart(
 function currentPendingMove(thread: OrchestrationThread, requestId: string) {
   const pending = thread.pendingMove ?? null;
   return pending !== null && pending.requestId === requestId ? pending : null;
+}
+
+/** Records what a move that didn't happen owes the thread back, or (null) that it is paid. */
+function restoreSet(
+  thread: OrchestrationThread,
+  owed: ThreadMoveRestore | null,
+  at: string,
+  baseFor: EventBase,
+): PlannedEvent {
+  return {
+    ...baseFor(thread.id),
+    type: "thread.move-restore-set",
+    payload: { threadId: thread.id, moveRestoreOwed: owed, updatedAt: at },
+  };
+}
+
+/**
+ * What a move that ends without moving owes the thread (docs/design/fleet.md,
+ * Part 3e, "Put back"): what its stop took, and a send of the queued messages
+ * that waited for it. None when there is nothing to put back.
+ */
+function restoreOwedEvents(
+  thread: OrchestrationThread,
+  target: ThreadMoveTarget,
+  interrupted: ThreadMoveInterrupted | undefined,
+  at: string,
+  baseFor: EventBase,
+): PlannedEvent[] {
+  // An archived or deleted thread is gone: nothing starts on it.
+  if (thread.deletedAt !== null || thread.archivedAt !== null) return [];
+  const queued = (thread.queuedFollowUps ?? []).length > 0;
+  if (interrupted === undefined && !queued) return [];
+  return [
+    restoreSet(
+      thread,
+      {
+        target,
+        ...(interrupted !== undefined ? { interrupted } : {}),
+        ...(queued ? { queued: true as const } : {}),
+        at,
+      },
+      at,
+      baseFor,
+    ),
+  ];
 }
 
 /** Ending every runtime of the thread: "Stop and move now", and the barrier before a freeze. */
@@ -598,7 +710,7 @@ export function decideMoveQueue(
       ? []
       : refuse(`A move to ${pending.target.label} is already waiting. Cancel it first.`);
   }
-  const refusals = threadMoveRefusals(readModel, thread);
+  const refusals = threadMoveRefusals(readModel, thread, command.targetTakes);
   const block = firstMoveBlock(refusals);
   if (block !== null) return refuse(block.words);
   // A command runs in the user's own terminal tab, which the server doesn't
@@ -606,6 +718,11 @@ export function decideMoveQueue(
   if (command.mode === "stop-now" && refusals.some((entry) => entry.code === "command_run")) {
     return refuse(STOP_NOW_COMMAND_RUN_WORDS);
   }
+  // What an earlier move that didn't happen still owes comes along, and what
+  // "Stop and move now" stops is recorded before it is gone.
+  const owed = thread.moveRestoreOwed ?? null;
+  const interrupted =
+    command.mode === "stop-now" ? mergeInterrupted(thread, owed?.interrupted) : owed?.interrupted;
   const queued: PlannedEvent = {
     ...baseFor(thread.id),
     type: "thread.move-queued",
@@ -622,12 +739,15 @@ export function decideMoveQueue(
         waitsFor: moveWaitsOf(refusals),
         hold: null,
         ...(command.batchId !== undefined ? { batchId: command.batchId } : {}),
+        ...(interrupted !== undefined ? { interrupted } : {}),
+        ...(command.targetTakes !== undefined ? { targetTakes: command.targetTakes } : {}),
       },
     },
   };
+  const absorbed = owed !== null ? [restoreSet(thread, null, command.createdAt, baseFor)] : [];
   return command.mode === "stop-now"
-    ? [queued, ...sessionStopEvents(thread, command.createdAt, baseFor)]
-    : [queued];
+    ? [...absorbed, queued, ...sessionStopEvents(thread, command.createdAt, baseFor)]
+    : [...absorbed, queued];
 }
 
 /**
@@ -645,10 +765,11 @@ export function decideMoveSetMode(
 ): ThreadMoveDecision {
   const pending = currentPendingMove(thread, command.requestId);
   if (pending === null || pending.mode === command.mode) return [];
-  const refusals = threadMoveRefusals(readModel, thread);
+  const refusals = threadMoveRefusals(readModel, thread, pending.targetTakes);
   if (refusals.some((entry) => entry.code === "command_run")) {
     return refuse(STOP_NOW_COMMAND_RUN_WORDS);
   }
+  const interrupted = mergeInterrupted(thread, pending.interrupted);
   const modeSet: PlannedEvent = {
     ...baseFor(thread.id),
     type: "thread.move-mode-set",
@@ -656,6 +777,7 @@ export function decideMoveSetMode(
       threadId: thread.id,
       requestId: command.requestId,
       mode: command.mode,
+      ...(interrupted !== undefined ? { interrupted } : {}),
       updatedAt: command.createdAt,
     },
   };
@@ -670,7 +792,8 @@ export function decideMoveUnqueue(
   command: CommandOf<"thread.move.unqueue">,
   baseFor: EventBase,
 ): ThreadMoveDecision {
-  if (currentPendingMove(thread, command.requestId) === null) return [];
+  const pending = currentPendingMove(thread, command.requestId);
+  if (pending === null) return [];
   return [
     {
       ...baseFor(thread.id),
@@ -682,6 +805,7 @@ export function decideMoveUnqueue(
         endedAt: command.createdAt,
       },
     },
+    ...restoreOwedEvents(thread, pending.target, pending.interrupted, command.createdAt, baseFor),
   ];
 }
 
@@ -698,21 +822,31 @@ export function decideMoveQuiesce(
 ): ThreadMoveDecision {
   const pending = currentPendingMove(thread, command.requestId);
   if (pending === null) return [];
-  const refusals = threadMoveRefusals(readModel, thread);
+  const refusals = threadMoveRefusals(readModel, thread, pending.targetTakes);
   const block = firstMoveBlock(refusals);
   if (block !== null) return refuse(block.words);
   if (refusals.length > 0) return refuse(BUSY_WORDS);
-  if (pending.stage === "quiescing") {
-    return sessionStopped(thread) ? [] : sessionStopEvents(thread, command.createdAt, baseFor);
-  }
-  return [
-    {
-      ...baseFor(thread.id),
-      type: "thread.move-quiescing",
-      payload: { threadId: thread.id, requestId: command.requestId, updatedAt: command.createdAt },
+  // What the stop takes, recorded before it is gone; only ever added to, so a
+  // move that went back to waiting doesn't forget its goal was working.
+  const interrupted = mergeInterrupted(thread, pending.interrupted);
+  const quiescing: PlannedEvent = {
+    ...baseFor(thread.id),
+    type: "thread.move-quiescing",
+    payload: {
+      threadId: thread.id,
+      requestId: command.requestId,
+      ...(interrupted !== undefined ? { interrupted } : {}),
+      updatedAt: command.createdAt,
     },
-    ...sessionStopEvents(thread, command.createdAt, baseFor),
-  ];
+  };
+  if (pending.stage === "quiescing") {
+    if (sessionStopped(thread)) return [];
+    return [
+      ...(sameInterrupted(interrupted, pending.interrupted) ? [] : [quiescing]),
+      ...sessionStopEvents(thread, command.createdAt, baseFor),
+    ];
+  }
+  return [quiescing, ...sessionStopEvents(thread, command.createdAt, baseFor)];
 }
 
 /**
@@ -805,6 +939,10 @@ export function decideMoveQueueEnd(
         },
       },
     },
+    // An archived or deleted thread gets nothing back.
+    ...(command.reason === "blocked"
+      ? restoreOwedEvents(thread, pending.target, pending.interrupted, command.createdAt, baseFor)
+      : []),
   ];
 }
 
@@ -903,6 +1041,7 @@ export function decideMoveAbort(
         },
       },
     },
+    ...restoreOwedEvents(thread, move.target, move.interrupted, command.createdAt, baseFor),
   ];
 }
 
@@ -925,6 +1064,50 @@ export function decideMoveComplete(
         movedAt: command.createdAt,
       },
     },
+    ...readOnlyCopyEvents(thread, command.createdAt, baseFor),
+  ];
+}
+
+/**
+ * The read-only copy a moved thread leaves keeps nothing that acts for it
+ * (docs/design/fleet.md, Part 3e): its queued messages went with it, and its
+ * pull request switches are off, so neither the queue nor the watcher here
+ * ever works for a thread that lives on the other computer now.
+ */
+function readOnlyCopyEvents(
+  thread: OrchestrationThread,
+  at: string,
+  baseFor: EventBase,
+): PlannedEvent[] {
+  const unqueued: PlannedEvent[] = (thread.queuedFollowUps ?? []).map((entry) => ({
+    ...baseFor(thread.id),
+    type: "thread.follow-up-unqueued",
+    payload: {
+      threadId: thread.id,
+      messageId: entry.messageId,
+      reason: "cancelled",
+      createdAt: at,
+    },
+  }));
+  const switchesOff = (pullRequestNumber?: number): PlannedEvent => ({
+    ...baseFor(thread.id),
+    type: "thread.pull-request-automation-changed",
+    payload: {
+      threadId: thread.id,
+      ...(pullRequestNumber !== undefined ? { pullRequestNumber } : {}),
+      autoFix: false,
+      autoMerge: null,
+      updatedAt: at,
+    },
+  });
+  const own = thread.pullRequestAutoFix || thread.pullRequestAutoMerge !== null;
+  const linked = (thread.linkedPullRequests ?? []).filter(
+    (entry) => entry.autoFix || entry.autoMerge !== null,
+  );
+  return [
+    ...unqueued,
+    ...(own ? [switchesOff()] : []),
+    ...linked.map((entry) => switchesOff(entry.number)),
   ];
 }
 
@@ -994,6 +1177,7 @@ export function decideThreadImport(
     type: "thread.activity-appended",
     payload: { threadId: command.threadId, activity: { ...activity, turnId: null } },
   }));
+  const arrival = command.arrival;
   const boundary: PlannedEvent = {
     ...base(),
     type: "thread.activity-appended",
@@ -1011,13 +1195,292 @@ export function decideThreadImport(
           movedAt: command.movedFrom.movedAt,
           // Which the agent got: its own session, or (absent) a summary.
           ...(command.nativeSession !== undefined ? { nativeSession: command.nativeSession } : {}),
+          // What came along, and what didn't, in plain words.
+          ...(arrival !== undefined && arrival.brought.length > 0
+            ? { brought: arrival.brought }
+            : {}),
+          ...(arrival !== undefined && arrival.left.length > 0 ? { left: arrival.left } : {}),
         },
         turnId: null,
         createdAt: command.createdAt,
       },
     },
   };
-  return [created, ...messages, ...activities, boundary];
+  return [created, ...messages, ...activities, ...importedState(command, base), boundary];
+}
+
+/**
+ * What a moved thread had going, written with it (docs/design/fleet.md, Part
+ * 3e): its goal as it arrives, its pull requests and their switches, its
+ * plans, and its queue (the arrival message first). The queue's events are
+ * marked `imported`: nothing sends on them; the move's own kick sends its head.
+ */
+function importedState(
+  command: CommandOf<"thread.import">,
+  base: () => Omit<OrchestrationEvent, "sequence" | "type" | "payload">,
+): PlannedEvent[] {
+  const threadId = command.threadId;
+  const at = command.createdAt;
+  const events: PlannedEvent[] = [];
+  if (command.goal !== undefined) {
+    events.push({
+      ...base(),
+      type: "thread.goal-state-set",
+      payload: { threadId, goal: { ...command.goal, threadId }, updatedAt: at },
+    });
+  }
+  const pullRequests = command.pullRequests;
+  if (pullRequests !== undefined) {
+    for (const linked of pullRequests.linked) {
+      events.push({
+        ...base(),
+        type: "thread.pull-request-linked",
+        payload: { threadId, number: linked.number, url: linked.url, linkedAt: at },
+      });
+      if (linked.autoFix || linked.autoMerge !== null) {
+        events.push({
+          ...base(),
+          type: "thread.pull-request-automation-changed",
+          payload: {
+            threadId,
+            pullRequestNumber: linked.number,
+            autoFix: linked.autoFix,
+            autoMerge: linked.autoMerge,
+            updatedAt: at,
+          },
+        });
+      }
+    }
+    if (pullRequests.autoFix || pullRequests.autoMerge !== null) {
+      events.push({
+        ...base(),
+        type: "thread.pull-request-automation-changed",
+        payload: {
+          threadId,
+          autoFix: pullRequests.autoFix,
+          autoMerge: pullRequests.autoMerge,
+          updatedAt: at,
+        },
+      });
+    }
+  }
+  for (const proposedPlan of command.proposedPlans ?? []) {
+    events.push({
+      ...base(),
+      type: "thread.proposed-plan-upserted",
+      payload: { threadId, proposedPlan },
+    });
+  }
+  const message = command.arrival?.message;
+  const queue: OrchestrationQueuedFollowUp[] = [
+    ...(message !== undefined
+      ? [
+          {
+            messageId: message.messageId,
+            text: message.text,
+            attachments: [],
+            afterMove: true as const,
+            runtimeMode: command.runtimeMode,
+            interactionMode: command.interactionMode,
+            createdAt: at,
+          },
+        ]
+      : []),
+    ...(command.queuedFollowUps ?? []),
+  ];
+  for (const followUp of queue) {
+    events.push({
+      ...base(),
+      type: "thread.follow-up-queued",
+      payload: { threadId, followUp, imported: true },
+    });
+  }
+  return events;
+}
+
+/**
+ * Puts back what a move that didn't happen took (docs/design/fleet.md, Part
+ * 3e, "Put back"), from what was recorded when it stopped the agent, not
+ * from how the goal reads now: a goal that was working is on again (one that
+ * finished since stays finished, one the user paused stays paused), the
+ * agent is told what it had going (queued ahead of the user's messages, and
+ * sent like them), and the queued messages that waited are sent. One
+ * decision, which clears what was owed, so it is paid once.
+ */
+export function decideMoveRestore(
+  thread: OrchestrationThread,
+  command: CommandOf<"thread.move.restore">,
+  baseFor: EventBase,
+): ThreadMoveDecision {
+  const owed = thread.moveRestoreOwed ?? null;
+  // Paid already, or a newer record since: no news.
+  if (owed === null || owed.at !== command.at) return [];
+  const at = command.createdAt;
+  // The last of it: its message went, the queue is through, the provider
+  // holds the goal again.
+  if (command.finished === true) {
+    return isRestorePaid(owed) ? [restoreSet(thread, null, at, baseFor)] : [];
+  }
+  if (isRestorePaid(owed)) return [];
+  const events: PlannedEvent[] = [];
+  // Paused by the move's stop (Codex): on again. Claude can't pause one, so
+  // it still reads active; the agent's message brings it back to work, and
+  // the provider is given it once that is done (`goalOwed`).
+  const goal = thread.goal;
+  const goalBack =
+    owed.interrupted?.goalActive === true &&
+    goal !== null &&
+    (goal.status === "active" || goal.status === "paused");
+  if (goalBack && goal !== null && goal.status === "paused") {
+    events.push({
+      ...baseFor(thread.id),
+      type: "thread.goal-state-set",
+      payload: {
+        threadId: thread.id,
+        goal: { ...goal, status: "active", updatedAt: at },
+        updatedAt: at,
+      },
+    });
+  }
+  if (command.message !== undefined) {
+    events.push({
+      ...baseFor(thread.id),
+      type: "thread.follow-up-queued",
+      payload: {
+        threadId: thread.id,
+        followUp: {
+          messageId: command.message.messageId,
+          text: command.message.text,
+          attachments: [],
+          afterMove: true,
+          runtimeMode: thread.runtimeMode,
+          interactionMode: thread.interactionMode,
+          createdAt: at,
+        },
+      },
+    });
+  }
+  // Paid; what is still to come stays on record until it is done, so a
+  // restart before the message went (or before the goal was given) finishes it.
+  const told = command.message?.messageId;
+  events.push(
+    restoreSet(
+      thread,
+      told !== undefined || goalBack
+        ? {
+            target: owed.target,
+            ...(told !== undefined ? { told } : {}),
+            ...(goalBack ? { goalOwed: true as const } : {}),
+            at: owed.at,
+          }
+        : null,
+      at,
+      baseFor,
+    ),
+  );
+  return events;
+}
+
+/**
+ * Whether a move's record of what it owes back is already paid, and only
+ * its last steps are left (ThreadMoveRestore.told, goalOwed).
+ */
+export const isRestorePaid = (owed: ThreadMoveRestore) =>
+  owed.interrupted === undefined && owed.queued !== true;
+
+/**
+ * Resume, on a moved thread whose agent hasn't been given the conversation
+ * yet (docs/design/fleet.md, Part 3e, (a)): no provider call, which would
+ * set the goal on an agent that doesn't know the thread. The goal reads
+ * active, and a message for the agent is queued; once it is sent, the
+ * reactor gives the provider the goal (what is left of its budget). Null:
+ * not that case, decided as any other goal change.
+ */
+export function decideMovedGoalResume(
+  thread: OrchestrationThread,
+  command: CommandOf<"thread.goal.set">,
+  baseFor: EventBase,
+): ThreadMoveDecision | null {
+  const current = thread.goal;
+  // A resume, an edit or a new goal: anything that would set the goal working.
+  const working = command.status === undefined || command.status === "active";
+  const objective = command.objective ?? current?.objective;
+  if (
+    !working ||
+    objective === undefined ||
+    (thread.movedFrom ?? null) === null ||
+    thread.historySeedOwed !== true ||
+    (command.objective === undefined && current?.status === "active")
+  ) {
+    return null;
+  }
+  const at = command.createdAt;
+  const goal = {
+    threadId: thread.id,
+    objective,
+    status: "active" as const,
+    tokenBudget:
+      command.tokenBudget !== undefined
+        ? command.tokenBudget
+        : command.objective !== undefined
+          ? null
+          : (current?.tokenBudget ?? null),
+    tokensUsed: command.objective !== undefined ? 0 : (current?.tokensUsed ?? 0),
+    timeUsedSeconds: command.objective !== undefined ? 0 : (current?.timeUsedSeconds ?? 0),
+    createdAt: command.objective !== undefined ? at : (current?.createdAt ?? at),
+    updatedAt: at,
+  };
+  return [
+    {
+      ...baseFor(thread.id),
+      type: "thread.goal-state-set",
+      payload: { threadId: thread.id, goal, updatedAt: at },
+    },
+    {
+      ...baseFor(thread.id),
+      type: "thread.follow-up-queued",
+      payload: {
+        threadId: thread.id,
+        followUp: {
+          messageId: MessageId.make(derivedUuid("move-goal-resume", command.commandId)),
+          text: resumedGoalMessageText(objective),
+          attachments: [],
+          afterMove: true,
+          runtimeMode: thread.runtimeMode,
+          interactionMode: thread.interactionMode,
+          createdAt: at,
+        },
+      },
+    },
+  ];
+}
+
+/**
+ * The message a move that didn't happen leaves for the thread's agent, or
+ * null: what its stop took, from the record of it.
+ */
+export function restoreMessageText(
+  thread: Pick<OrchestrationThread, "goal">,
+  owed: ThreadMoveRestore,
+  now: string,
+  canSetCheckBacks: boolean,
+): string | null {
+  const goal = thread.goal;
+  const goalWorking =
+    owed.interrupted?.goalActive === true &&
+    goal !== null &&
+    (goal.status === "active" || goal.status === "paused");
+  return arrivalMessageText({
+    kind: "stayed",
+    from: "",
+    to: owed.target.label,
+    goal: goalWorking && goal !== null ? { objective: goal.objective } : null,
+    // Saved ones too: the agent's next session restores them, and the
+    // message has it look (CronList) before it sets any again.
+    checkBacks: owed.interrupted?.checkBacks ?? [],
+    canSetCheckBacks,
+    now,
+  });
 }
 
 export function decideHistorySeedDelivered(

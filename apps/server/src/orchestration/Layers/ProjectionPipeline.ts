@@ -43,6 +43,7 @@ import {
 
 import { toPersistenceSqlError, type ProjectionRepositoryError } from "../../persistence/Errors.ts";
 import { nextThreadMoveState } from "@threadlines/shared/threadMoveProjection";
+import { withQueuedFollowUp } from "@threadlines/shared/queuedFollowUps";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
 import { ProjectionPendingApprovalRepository } from "../../persistence/Services/ProjectionPendingApprovals.ts";
 import { ProjectionProjectRepository } from "../../persistence/Services/ProjectionProjects.ts";
@@ -655,6 +656,18 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           const next = nextThreadMoveState(state, event);
           if (next === state) return;
           yield* projectionThreadRepository.upsert({ ...existingRow.value, ...next });
+          return;
+        }
+
+        case "thread.move-restore-set": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) return;
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            moveRestoreOwed: event.payload.moveRestoreOwed,
+          });
           return;
         }
 
@@ -1271,12 +1284,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           const { followUp } = event.payload;
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
-            queuedFollowUps: [
-              ...(existingRow.value.queuedFollowUps ?? []).filter(
-                (queued) => queued.messageId !== followUp.messageId,
-              ),
-              followUp,
-            ],
+            queuedFollowUps: withQueuedFollowUp(existingRow.value.queuedFollowUps ?? [], followUp),
             updatedAt: event.occurredAt,
           });
           return;
@@ -1645,6 +1653,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...(event.payload.composer !== undefined ? { composer: event.payload.composer } : {}),
             ...(event.payload.sentFrom !== undefined ? { sentFrom: event.payload.sentFrom } : {}),
             ...(event.payload.trigger !== undefined ? { trigger: event.payload.trigger } : {}),
+            ...(event.payload.afterMove === true ? { afterMove: true as const } : {}),
             isStreaming: event.payload.streaming,
             createdAt: previousMessage?.createdAt ?? event.payload.createdAt,
             updatedAt: event.payload.updatedAt,

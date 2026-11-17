@@ -11,7 +11,11 @@
  * and turns each reported list into check-backs, and tells a turn that a
  * fired check-back started from any other.
  */
-import type { RuntimeCheckBack, TurnTrigger } from "@threadlines/contracts";
+import {
+  CHECK_BACK_PROMPT_MAX_CHARS,
+  type RuntimeCheckBack,
+  type TurnTrigger,
+} from "@threadlines/contracts";
 import { nextCronMatch } from "@threadlines/shared/cronSchedule";
 
 /** One entry of the Stop hook's `session_crons`. */
@@ -69,6 +73,15 @@ function clip(text: string): string | undefined {
   return flat.length > DESCRIPTION_MAX_LENGTH
     ? `${flat.slice(0, DESCRIPTION_MAX_LENGTH - 1)}…`
     : flat;
+}
+
+/** A check-back's prompt as kept (OrchestrationCheckBack.prompt): trimmed, and clipped. */
+function keptPrompt(text: string): string | undefined {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return undefined;
+  return trimmed.length > CHECK_BACK_PROMPT_MAX_CHARS
+    ? `${trimmed.slice(0, CHECK_BACK_PROMPT_MAX_CHARS - 1)}…`
+    : trimmed;
 }
 
 function promptMatches(full: string, reported: string): boolean {
@@ -204,6 +217,10 @@ export function claudeCheckBacksFromSessionCrons(
     state.prompts.set(cron.id, prompt);
     const description = clip(wakeup?.reason ?? prompt);
     const schedule = cron.recurring ? record?.schedule : undefined;
+    // What the agent is told when it comes back, and the cron it set: what a
+    // moved thread's agent sets again elsewhere (docs/design/fleet.md, Part 3e).
+    const kept = keptPrompt(prompt);
+    const cronExpression = asString(cron.schedule)?.trim();
     checkBacks.push({
       id: cron.id,
       scheduledFor: new Date(fire.ms).toISOString(),
@@ -211,6 +228,8 @@ export function claudeCheckBacksFromSessionCrons(
       recurring: cron.recurring,
       ...(schedule ? { schedule } : {}),
       ...(description ? { description } : {}),
+      ...(kept ? { prompt: kept } : {}),
+      ...(cronExpression ? { cron: cronExpression } : {}),
       // A job neither set by a CronCreate nor a wake-up this session saw came
       // from disk (a durable job the CLI restored): it outlives the session.
       durable: record ? record.durable : wakeup === undefined,

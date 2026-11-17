@@ -104,6 +104,13 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
    * move here holds its bytes back until Allow.
    */
   threadMoveStagedApproval: Schema.optionalKey(Schema.Boolean),
+  /**
+   * The server moves threads with what they had going (docs/design/fleet.md,
+   * Part 3e): a goal, check-backs, pull request switches, queued messages,
+   * plans, and General Chats threads. Absent: clients don't offer Move on a
+   * General Chats thread, nor list one in the Move threads dialog.
+   */
+  threadMoveState: Schema.optionalKey(Schema.Boolean),
   /** The server sets up projects copied from another computer (`projectSetups.*`). */
   projectSetup: Schema.optionalKey(Schema.Boolean),
   /** The server reports when it froze (`subscribeServerStalls`). */

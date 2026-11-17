@@ -177,6 +177,7 @@ import {
   estimateTimelineRowHeight,
   resolveAssistantMessageCopyState,
   foldsAgentMessage,
+  movedInBroughtLine,
   scheduledRunMessageId,
   shouldCollapseUserMessage,
   stretchDurationMs,
@@ -2390,6 +2391,8 @@ function MessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "messag
       return row.message.fromOutside !== undefined ? (
         <OutsideAgentMessageTimelineRow row={row} origin={row.message.fromOutside} />
       ) : null;
+    case "after-move":
+      return <AfterMoveMessageTimelineRow row={row} />;
     case "user":
       return <UserTimelineRow row={row} />;
     case "invite":
@@ -2476,14 +2479,17 @@ function ForkContextTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "fo
 /**
  * Where a thread that moved here from another computer starts being this
  * computer's: a quiet rule across the conversation with one line in it,
- * saying whether its agent kept its memory or got a summary. The history
- * above came with the move, and revert stops at this line. A carried
- * session that couldn't be resumed here gets a line of its own, later.
+ * saying whether its agent kept its memory or got a summary. Under it, what
+ * came along ("Its goal · 2 queued messages"), then each thing that didn't,
+ * with why. The history above came with the move, and revert stops at this
+ * line. A carried session that couldn't be resumed here gets a line of its
+ * own, later.
  */
 function MovedInTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "moved-in" }> }) {
   const ctx = use(TimelineRowCtx);
   const { movedIn } = row;
   const fellBack = movedIn.agentGot === "fell_back";
+  const brought = movedInBroughtLine(movedIn.brought);
   return (
     <div className="mx-auto max-w-4xl px-1">
       <div
@@ -2509,6 +2515,16 @@ function MovedInTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "moved-
         </span>
         <span aria-hidden="true" className="h-px min-w-6 flex-1 bg-border" />
       </div>
+      {brought !== null || movedIn.left.length > 0 ? (
+        <div className="mt-0.5 px-6 text-center text-xs leading-[18px] text-muted-foreground">
+          {brought !== null ? <p data-testid="moved-in-brought">{brought}</p> : null}
+          {movedIn.left.map((sentence) => (
+            <p key={sentence} data-testid="moved-in-left">
+              {sentence}
+            </p>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -3295,6 +3311,57 @@ function OutsideAgentMessageTimelineRow({
           environmentId={ctx.activeThreadEnvironmentId}
           skills={ctx.skills}
           className="text-foreground/80"
+          searchHighlightQuery={
+            ctx.activeSearchTargetMessageId === message.id ? ctx.searchTargetQuery : undefined
+          }
+        />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * What Threadlines wrote for the agent when the thread moved here, or when
+ * its move didn't happen (ChatMessage.afterMove, docs/design/fleet.md, Part
+ * 3e): a goal to carry on with, check-backs to set again. Folded like the
+ * messages agents send each other, under Threadlines' name, never read as
+ * the user's.
+ */
+function AfterMoveMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
+  const ctx = use(TimelineRowCtx);
+  const { message } = row;
+  // Written for this thread's agent, which reads its paths in this checkout.
+  const fold = useAgentMessageFold(row, ctx.markdownCwd);
+  return (
+    <div
+      className="group min-w-0 px-1 py-0.5"
+      data-after-move-message={message.id}
+      title={formatTimestamp(message.createdAt, ctx.timestampFormat)}
+    >
+      <div className="mb-1 flex min-h-5 min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-[10.5px] text-muted-foreground">
+        <span className="min-w-0 truncate text-foreground">Threadlines</span>
+        <span className="shrink-0">·</span>
+        <span className="min-w-0 truncate">to the agent, about the move</span>
+        {message.text.length > 0 && !fold.folded ? (
+          <div className={AGENT_MESSAGE_COPY_CLASS}>
+            <MessageCopyButton
+              text={message.text}
+              ariaLabel="Copy message"
+              size="icon-xs"
+              variant="ghost"
+              className="-my-1.5 text-muted-foreground hover:text-foreground"
+            />
+          </div>
+        ) : null}
+      </div>
+      <div className="border-l border-border pl-3">
+        <AgentMessageBody
+          text={message.text}
+          fold={fold}
+          cwd={ctx.markdownCwd}
+          environmentId={ctx.activeThreadEnvironmentId}
+          skills={ctx.skills}
+          className="text-muted-foreground"
           searchHighlightQuery={
             ctx.activeSearchTargetMessageId === message.id ? ctx.searchTargetQuery : undefined
           }
