@@ -235,6 +235,10 @@
       "types": "./src/releaseNotes.ts",
       "import": "./src/releaseNotes.ts"
     },
+    "./queuedFollowUps": {
+      "types": "./src/queuedFollowUps.ts",
+      "import": "./src/queuedFollowUps.ts"
+    },
     "./checkBacks": {
       "types": "./src/checkBacks.ts",
       "import": "./src/checkBacks.ts"

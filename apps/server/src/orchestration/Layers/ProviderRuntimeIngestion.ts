@@ -2733,12 +2733,17 @@ const make = Effect.gen(function* () {
           createdAt: event.createdAt,
         });
       }
+      // A move's stop ends them on purpose: it carries them (docs/design/fleet.md, Part 3e, (b)).
+      const movingTo = (thread.pendingMove ?? thread.move ?? null)?.target.label;
       for (const [index, ended] of (event.payload.ended ?? []).entries()) {
         yield* appendCheckBackActivity({
           event,
           threadId: thread.id,
           kind: "check-back.ended",
-          summary: "Check-back cancelled",
+          summary:
+            movingTo !== undefined
+              ? `Check-back ended: this thread is moving to ${movingTo}`
+              : "Check-back cancelled",
           tag: `check-back-ended-${index}`,
           payload: {
             scheduledFor: ended.scheduledFor,

@@ -1,6 +1,7 @@
 import {
   CommandId,
   EnvironmentId,
+  MessageId,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
@@ -10,9 +11,12 @@ import {
   type ModelSelection,
   type OrchestrationCommand,
   type OrchestrationEvent,
+  type OrchestrationQueuedFollowUp,
   type OrchestrationReadModel,
   type OrchestrationSession,
+  type OrchestrationThread,
   type ThreadMoveRequestId,
+  type ThreadMoveTakes,
 } from "@threadlines/contracts";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -27,7 +31,7 @@ import { createEmptyReadModel, projectEvent } from "../orchestration/projector.t
 import type { ProviderStopConfirmation } from "../provider/Services/ProviderAdapter.ts";
 import { makeMoveQueue, type MoveQueueShape } from "./MoveQueue.ts";
 import type { ThreadMoveBatchRow } from "./ThreadMoveBatchRepository.ts";
-import type { QueuedMoveStart } from "./ThreadMoves.ts";
+import type { QueuedMoveStart, ThreadMovesShape } from "./ThreadMoves.ts";
 
 const now = "2026-11-15T10:00:00.000Z";
 const PROJECT = ProjectId.make("project-1");
@@ -67,6 +71,11 @@ async function harness(options?: { readonly model?: OrchestrationReadModel }) {
     beforeQuiesce: null as null | (() => Effect.Effect<void, ThreadMoveError>),
     /** Runs right before a Cancel lands, as if the start won the race. */
     beforeUnqueue: null as null | (() => Effect.Effect<void, ThreadMoveError>),
+    /** What the target takes (docs/design/fleet.md, Part 3e): everything, unless a test says. */
+    takes: { threadState: true, generalChats: true } as ThreadMoveTakes,
+    /** What the target answers before the stop, asked whether it takes what the thread carries. */
+    carryAnswer: { kind: "ok" } as Effect.Success<ReturnType<ThreadMovesShape["checkCarry"]>>,
+    carryChecks: 0,
   };
 
   const dispatch = (command: OrchestrationCommand): Effect.Effect<void, ThreadMoveError> =>
@@ -146,6 +155,7 @@ async function harness(options?: { readonly model?: OrchestrationReadModel }) {
         target: { environmentId: MAC_MINI, label: "Mac mini" },
         agent,
         queuedRequestId: input.requestId,
+        targetTakes: state.takes,
         createdAt: now,
       }).pipe(Effect.result);
       return started._tag === "Success"
@@ -173,7 +183,18 @@ async function harness(options?: { readonly model?: OrchestrationReadModel }) {
           state.quiesceCalls += 1;
           return state.confirmation;
         }),
-      checkQueue: () => Effect.succeed({ label: "Mac mini" }),
+      restoreOwedThreadIds: Effect.sync(() =>
+        model.threads
+          .filter((thread) => (thread.moveRestoreOwed ?? null) !== null)
+          .map((thread) => thread.id),
+      ),
+      setsCheckBacks: () => Effect.succeed(true),
+      checkQueue: () => Effect.sync(() => ({ label: "Mac mini", takes: state.takes })),
+      checkCarry: () =>
+        Effect.sync(() => {
+          state.carryChecks += 1;
+          return state.carryAnswer;
+        }),
       describeTargets: Effect.succeed([]),
       startQueued,
       batches: {
@@ -320,8 +341,10 @@ describe("MoveQueue", () => {
     await h.close();
   });
 
-  it("ends as blocked when the agent set a check-back during the turn", async () => {
+  it("ends as blocked when the agent set a check-back during the turn, for a computer that can't take it", async () => {
     const h = await harness();
+    // An older computer: check-backs don't travel to it.
+    h.state.takes = {};
     await h.startReactor();
     await h.setSession("running", { activeTurnId: TURN });
     await h.queueMove();
@@ -515,6 +538,8 @@ describe("MoveQueue, several threads at once", () => {
 
   it("decides each thread on its own and answers for every one of them", async () => {
     const h = await harness();
+    // An older computer: pull request switches don't travel to it.
+    h.state.takes = {};
     await h.startReactor();
     await addBlockedThread(h);
     await h.setSession("running", { activeTurnId: TURN });
@@ -589,6 +614,260 @@ describe("MoveQueue, several threads at once", () => {
     expect(h.thread().move?.queuedRequestId).toBe(requestId);
     // Once started, it's no longer a waiting move to switch.
     await h.run(h.queue.setMode({ threadId: THREAD, requestId, mode: "stop-now" }));
+    await h.close();
+  });
+});
+
+describe("MoveQueue, what a thread had going (Part 3e)", () => {
+  const GOAL = {
+    threadId: THREAD,
+    objective: "Make the suite pass",
+    status: "active" as const,
+    tokenBudget: null,
+    tokensUsed: 0,
+    timeUsedSeconds: 0,
+    createdAt: now,
+    updatedAt: now,
+  };
+  /** The seeded thread with `patch` applied: what it has going when the test starts. */
+  const seededWith = async (patch: Partial<OrchestrationThread>) => {
+    const model = await seeded();
+    return {
+      ...model,
+      threads: model.threads.map((thread) =>
+        thread.id === THREAD ? ({ ...thread, ...patch } as OrchestrationThread) : thread,
+      ),
+    };
+  };
+  const queuedMessage = (id: string) =>
+    ({
+      messageId: MessageId.make(id),
+      text: "and then this",
+      attachments: [],
+      runtimeMode: "auto",
+      interactionMode: "default",
+      createdAt: now,
+    }) as OrchestrationQueuedFollowUp;
+
+  it("a target that doesn't take what the thread carries ends the move before anything is stopped", async () => {
+    const h = await harness({ model: await seededWith({ goal: GOAL }) });
+    h.state.carryAnswer = {
+      kind: "blocked",
+      words: "Update Threadlines on Mac mini to move this thread: it has a goal.",
+    };
+    await h.startReactor();
+    await h.setSession("ready");
+    await h.queueMove();
+    await waitFor(() => (h.thread().pendingMove ?? null) === null, "the wait to end");
+    expect(h.state.quiesceCalls).toBe(0);
+    expect(h.thread().session?.status).toBe("ready");
+    expect(h.thread().lastMoveOutcome).toMatchObject({
+      result: "not_moved",
+      reason: "blocked",
+      words: "Update Threadlines on Mac mini to move this thread: it has a goal.",
+    });
+    // Nothing was stopped, so nothing is owed back.
+    expect(h.thread().moveRestoreOwed ?? null).toBeNull();
+    await h.close();
+  });
+
+  it("a target that can't be reached holds the move with its agent still at work", async () => {
+    const h = await harness({ model: await seededWith({ goal: GOAL }) });
+    h.state.carryAnswer = { kind: "unreachable", words: "Waiting for Mac mini to connect." };
+    await h.startReactor();
+    await h.setSession("ready");
+    await h.queueMove();
+    await waitFor(
+      () => h.thread().pendingMove?.hold?.kind === "target_unreachable",
+      "the move to be held",
+    );
+    expect(h.state.quiesceCalls).toBe(0);
+    expect(h.thread().pendingMove?.stage).toBe("waiting");
+    h.state.carryAnswer = { kind: "ok" };
+    await h.linkChanged();
+    await waitFor(() => (h.thread().move ?? null) !== null, "the move to start");
+    expect(h.thread().move?.interrupted).toMatchObject({ goalActive: true });
+    await h.close();
+  });
+
+  it("a cancel puts back the goal and the check-backs its stop took, the agent told ahead of the queue", async () => {
+    const h = await harness({
+      model: await seededWith({
+        goal: GOAL,
+        checkBacks: [
+          {
+            id: "check-back-1",
+            participantId: null,
+            scheduledFor: "2026-11-15T12:00:00.000Z",
+            exact: true,
+            recurring: false,
+            prompt: "Look at CI on #212",
+            durable: false,
+          },
+        ],
+        queuedFollowUps: [queuedMessage("q-1")],
+      }),
+    });
+    h.state.online = false;
+    await h.startReactor();
+    await h.setSession("ready");
+    const { requestId } = await h.queueMove("stop-now");
+    await waitFor(
+      () => h.thread().pendingMove?.hold?.kind === "target_unreachable",
+      "the move to be held",
+    );
+    // The stop ended the check-back, as Claude's runtime reports it.
+    await h.dispatch({
+      type: "thread.check-backs.set",
+      commandId: nextCommandId(),
+      threadId: THREAD,
+      participantId: null,
+      checkBacks: [],
+      createdAt: now,
+    });
+    await h.run(h.queue.unqueue({ threadId: THREAD, requestId }));
+    await waitFor(
+      () => h.thread().queuedFollowUps?.[0]?.afterMove === true,
+      "the agent to be told",
+    );
+    const [told, mine] = h.thread().queuedFollowUps ?? [];
+    expect(told?.text).toContain("The move to Mac mini didn't happen");
+    expect(told?.text).toContain("Your goal is still on: Make the suite pass. Carry on with it.");
+    expect(told?.text).toContain("Look at CI on #212");
+    expect(mine?.messageId).toBe("q-1");
+    // Only the goal's hand-over to the provider is left (the reactor's, after the message).
+    expect(h.thread().moveRestoreOwed).toMatchObject({ goalOwed: true });
+    await h.close();
+  });
+
+  it("a cancel sends the queue that waited for the move", async () => {
+    const h = await harness({
+      model: await seededWith({ queuedFollowUps: [queuedMessage("q-1")] }),
+    });
+    h.state.online = false;
+    await h.startReactor();
+    await h.setSession("ready");
+    const { requestId } = await h.queueMove();
+    await waitFor(
+      () => h.thread().pendingMove?.hold?.kind === "target_unreachable",
+      "the move to be held",
+    );
+    await h.run(h.queue.unqueue({ threadId: THREAD, requestId }));
+    await waitFor(() => (h.thread().queuedFollowUps ?? []).length === 0, "the queue to be sent");
+    // Sent as its turn: the message is the thread's now.
+    expect(h.thread().messages.map((message) => message.id)).toContain("q-1");
+    expect(h.thread().moveRestoreOwed ?? null).toBeNull();
+    await h.close();
+  });
+
+  it("a dropped move puts back what its stop took", async () => {
+    const h = await harness({ model: await seededWith({ goal: GOAL }) });
+    await h.startReactor();
+    await h.setSession("ready");
+    await h.queueMove("stop-now");
+    await waitFor(() => (h.thread().move ?? null) !== null, "the move to start");
+    const transferId = h.thread().move!.transferId;
+    await h.dispatch({
+      type: "thread.move.abort",
+      commandId: nextCommandId(),
+      threadId: THREAD,
+      transferId,
+      reason: "Mac mini didn't allow the move.",
+      code: "denied",
+      createdAt: now,
+    });
+    await waitFor(
+      () => h.thread().queuedFollowUps?.[0]?.afterMove === true,
+      "the agent to be told",
+    );
+    expect(h.thread().queuedFollowUps?.[0]?.text).toContain("Your goal is still on");
+    await h.close();
+  });
+
+  it("what a move owes back is still paid after a restart", async () => {
+    const first = await harness({ model: await seededWith({ goal: GOAL }) });
+    first.state.online = false;
+    await first.setSession("ready");
+    const { requestId } = await first.queueMove("stop-now");
+    // The last process recorded the cancel, and stopped before it paid.
+    await first.dispatch({
+      type: "thread.move.unqueue",
+      commandId: nextCommandId(),
+      threadId: THREAD,
+      requestId,
+      createdAt: now,
+    });
+    expect(first.thread().moveRestoreOwed?.interrupted).toMatchObject({ goalActive: true });
+    await first.close();
+
+    const restarted = await harness({ model: first.model() });
+    await restarted.startReactor();
+    await waitFor(
+      () => restarted.thread().queuedFollowUps?.[0]?.afterMove === true,
+      "the agent to be told",
+    );
+    expect(restarted.thread().moveRestoreOwed).toMatchObject({ goalOwed: true });
+    await restarted.close();
+  });
+});
+
+describe("MoveQueue, a put-back a restart cut short (Part 3e)", () => {
+  const at = "2026-11-15T09:00:00.000Z";
+  const target = { environmentId: MAC_MINI, label: "Mac mini" };
+  const withRecord = async (patch: Partial<OrchestrationThread>) => {
+    const model = await seeded();
+    return {
+      ...model,
+      threads: model.threads.map((thread) =>
+        thread.id === THREAD ? ({ ...thread, ...patch } as OrchestrationThread) : thread,
+      ),
+    };
+  };
+
+  it("sends the message it wrote, still queued when the last process stopped", async () => {
+    const told = MessageId.make("m-told");
+    const h = await harness({
+      model: await withRecord({
+        moveRestoreOwed: { target, told, goalOwed: true, at },
+        queuedFollowUps: [
+          {
+            messageId: told,
+            text: "The move to Mac mini didn't happen.",
+            attachments: [],
+            afterMove: true,
+            runtimeMode: "auto",
+            interactionMode: "default",
+            createdAt: at,
+          },
+        ],
+      }),
+    });
+    await h.startReactor();
+    await waitFor(() => h.thread().messages.some((message) => message.id === told), "sent");
+    expect(h.thread().messages.find((message) => message.id === told)?.afterMove).toBe(true);
+    // The goal still waits for that turn to end (the reactor's to give).
+    expect(h.thread().moveRestoreOwed).toMatchObject({ goalOwed: true });
+    await h.close();
+  });
+
+  it("gives the goal back once everything else went, and the record clears", async () => {
+    const h = await harness({
+      model: await withRecord({
+        moveRestoreOwed: { target, goalOwed: true, at },
+        goal: {
+          threadId: THREAD,
+          objective: "Make the suite pass",
+          status: "paused",
+          tokenBudget: null,
+          tokensUsed: 0,
+          timeUsedSeconds: 0,
+          createdAt: at,
+          updatedAt: at,
+        },
+      }),
+    });
+    await h.startReactor();
+    await waitFor(() => (h.thread().moveRestoreOwed ?? null) === null, "the record to clear");
     await h.close();
   });
 });

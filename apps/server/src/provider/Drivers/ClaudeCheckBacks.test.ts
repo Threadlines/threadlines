@@ -40,6 +40,9 @@ describe("Claude check-backs", () => {
         recurring: true,
         schedule: "every 5 minutes",
         description: "Look at the deploy",
+        // What a moved thread's agent is told to set again (fleet.md, Part 3e).
+        prompt: "Look at the deploy",
+        cron: "*/5 * * * *",
         durable: false,
       },
       {
@@ -48,6 +51,8 @@ describe("Claude check-backs", () => {
         exact: true,
         recurring: false,
         description: "Waiting for CI on PR #502",
+        prompt: "Check CI on #502",
+        cron: "42 15 20 10 *",
         durable: false,
       },
     ]);

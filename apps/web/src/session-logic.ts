@@ -606,6 +606,14 @@ export interface MovedInEntry {
    * summary instead.
    */
   readonly agentGot: "memory" | "summary" | "fell_back";
+  /**
+   * What came along besides the conversation ("its goal", "2 queued
+   * messages"), and what didn't, each a full sentence with why, in the
+   * server's plain words (docs/design/fleet.md, Part 3e). Empty on the
+   * fell-back line, and for a move from before they were said.
+   */
+  readonly brought: ReadonlyArray<string>;
+  readonly left: ReadonlyArray<string>;
 }
 
 /** An MCP app card: the finished tool call whose tool ships the app
@@ -1839,6 +1847,8 @@ export function deriveMovedInEntries(
               fromLabel: boundary.fromLabel,
               movedAt: boundary.movedAt,
               agentGot: "fell_back",
+              brought: [],
+              left: [],
             },
           ];
     }
@@ -1853,6 +1863,8 @@ export function deriveMovedInEntries(
       fromLabel,
       movedAt: asTrimmedString(payload?.movedAt) ?? activity.createdAt,
       agentGot: payload?.nativeSession === "carried" ? "memory" : "summary",
+      brought: trimmedStrings(payload?.brought),
+      left: trimmedStrings(payload?.left),
     };
     return [boundary];
   });
@@ -4744,6 +4756,15 @@ function extractMcpToolResultText(payload: Record<string, unknown> | null): stri
       : JSON.stringify(structured);
   }
   return mcpContentText(result.content);
+}
+
+/** The non-empty strings of `value`, trimmed, when it is a list; else none. */
+function trimmedStrings(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    const text = asTrimmedString(item);
+    return text === null ? [] : [text];
+  });
 }
 
 function asTrimmedString(value: unknown): string | null {

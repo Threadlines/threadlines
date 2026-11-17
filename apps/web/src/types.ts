@@ -148,6 +148,12 @@ export interface ChatMessage {
    * offers a revert.
    */
   imported?: true | undefined;
+  /**
+   * See OrchestrationMessage.afterMove: Threadlines wrote it for the agent
+   * when the thread moved here, or when its move didn't happen. Shown as a
+   * quiet system-written row, never as the user's.
+   */
+  afterMove?: true | undefined;
   turnId?: TurnId | null;
   createdAt: string;
   completedAt?: string | undefined;

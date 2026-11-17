@@ -59,6 +59,7 @@ import * as Schema from "effect/Schema";
 
 import { forkPullRequestBranchPrefix, GitManager } from "../../git/GitManager.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
+import { ThreadActionGate } from "../../moves/ThreadActionGate.ts";
 import { PullRequestService } from "../../pullRequest/PullRequestService.ts";
 import type { GitWorktreeEntry } from "../../vcs/GitVcsDriver.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
@@ -261,11 +262,23 @@ function isSamePullRequest(left: string, right: string): boolean {
 }
 
 /**
+ * Whether the thread is moving to another computer, or waits to (docs/
+ * design/fleet.md, Part 3e, (c)): nothing here acts for it then, not a look,
+ * a baseline step, a turn or a merge. One that moved lives there now.
+ */
+function isMoving(thread: Pick<OrchestrationThreadShell, "pendingMove" | "move">): boolean {
+  return (thread.pendingMove ?? null) !== null || (thread.move ?? null) !== null;
+}
+
+/**
  * Whether the watcher has anything to do for a thread's pull requests: fixing
- * or merging its own or one it holds by number. An archived thread has nothing.
+ * or merging its own or one it holds by number. An archived thread has
+ * nothing, and neither has one that moves (isMoving).
  */
 function isWatched(thread: OrchestrationThreadShell): boolean {
-  return threadPullRequestAutomationArmed(thread) && thread.archivedAt === null;
+  return (
+    threadPullRequestAutomationArmed(thread) && thread.archivedAt === null && !isMoving(thread)
+  );
 }
 
 /**
@@ -422,6 +435,9 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
     const gitManager = yield* GitManager;
     const gitWorkflow = yield* GitWorkflowService;
     const pullRequestService = yield* PullRequestService;
+    // Shared with the move: an act holds it from the read that decides it
+    // through the act, so a freeze lands before it or after it, never during.
+    const actionGate = yield* ThreadActionGate;
 
     const sweepIntervalMs = Math.max(1, options?.sweepIntervalMs ?? DEFAULT_SWEEP_INTERVAL_MS);
     const inMotionIntervalMs = Math.max(
@@ -780,34 +796,43 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
         // one means "not now", so the thread is read again just before a merge
         // that cannot be taken back. Background work the agent left running
         // does not: see `hasWorkInProgress`.
-        const latest = yield* attempt(
-          "thread-read",
-          thread.id,
-          projectionSnapshotQuery.getThreadShellById(thread.id),
-        );
-        if (
-          latest === null ||
-          Option.isNone(latest) ||
-          mergeSwitchOf(latest.value, number, input.holders) === null ||
-          awaitsAgentOrUser(latest.value)
-        ) {
-          return false;
-        }
-
         // The method the user chose, unless the repository has since stopped
         // allowing it; then the host's own first choice.
         const mergeMethod = detail.mergeMethods.includes(input.mergeMethod)
           ? input.mergeMethod
           : detail.mergeMethods[0];
-        const outcome = yield* Effect.exit(
-          pullRequestService.runAction({
-            projectId: input.reference.projectId,
-            repository: input.reference.repository,
-            number,
-            action: "merge",
-            ...(mergeMethod === undefined ? {} : { mergeMethod }),
+        // A move under way, or waiting, means not here either.
+        const outcome = yield* actionGate.withThread(
+          thread.id,
+          Effect.gen(function* () {
+            const latest = yield* attempt(
+              "thread-read",
+              thread.id,
+              projectionSnapshotQuery.getThreadShellById(thread.id),
+            );
+            if (
+              latest === null ||
+              Option.isNone(latest) ||
+              isMoving(latest.value) ||
+              mergeSwitchOf(latest.value, number, input.holders) === null ||
+              awaitsAgentOrUser(latest.value)
+            ) {
+              return null;
+            }
+            return yield* Effect.exit(
+              pullRequestService.runAction({
+                projectId: input.reference.projectId,
+                repository: input.reference.repository,
+                number,
+                action: "merge",
+                ...(mergeMethod === undefined ? {} : { mergeMethod }),
+              }),
+            );
           }),
         );
+        if (outcome === null) {
+          return false;
+        }
         const landing =
           Exit.isSuccess(outcome) && outcome.value.state === "merged"
             ? "merged"
@@ -918,37 +943,47 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
         // before the host is asked. The agent has looked once a turn asked
         // for since the hand-off has completed; one stopped or failed has not,
         // and a time that does not parse proves nothing either way.
-        const latest = yield* attempt(
-          "thread-read",
+        const acted = yield* actionGate.withThread(
           input.threadId,
-          projectionSnapshotQuery.getThreadShellById(input.threadId),
-        );
-        if (latest === null || Option.isNone(latest)) {
-          return;
-        }
-        const thread = latest.value;
-        const turn = thread.latestTurn;
-        const lookedSince =
-          turn !== null &&
-          turn.state === "completed" &&
-          Date.parse(turn.requestedAt) >= Date.parse(pending.requestedAt);
-        if (
-          !fixSwitchOn(thread, number, input.holders) ||
-          hasWorkInProgress(thread) ||
-          !lookedSince
-        ) {
-          return;
-        }
+          Effect.gen(function* () {
+            const latest = yield* attempt(
+              "thread-read",
+              input.threadId,
+              projectionSnapshotQuery.getThreadShellById(input.threadId),
+            );
+            if (latest === null || Option.isNone(latest) || isMoving(latest.value)) {
+              return null;
+            }
+            const thread = latest.value;
+            const turn = thread.latestTurn;
+            const lookedSince =
+              turn !== null &&
+              turn.state === "completed" &&
+              Date.parse(turn.requestedAt) >= Date.parse(pending.requestedAt);
+            if (
+              !fixSwitchOn(thread, number, input.holders) ||
+              hasWorkInProgress(thread) ||
+              !lookedSince
+            ) {
+              return null;
+            }
 
-        yield* forget;
-        const outcome = yield* Effect.exit(
-          pullRequestService.runAction({
-            projectId: input.reference.projectId,
-            repository: input.reference.repository,
-            number,
-            action: "enable-auto-merge",
+            yield* forget;
+            const outcome = yield* Effect.exit(
+              pullRequestService.runAction({
+                projectId: input.reference.projectId,
+                repository: input.reference.repository,
+                number,
+                action: "enable-auto-merge",
+              }),
+            );
+            return { thread, outcome };
           }),
         );
+        if (acted === null) {
+          return;
+        }
+        const { thread, outcome } = acted;
         if (Exit.isSuccess(outcome)) {
           yield* Effect.logInfo("pull-request.auto-fix.requeued", { threadId: thread.id, number });
           yield* appendAutoMergeActivity({
@@ -1240,34 +1275,46 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
         // be sent to. What would have been said stays news: the baseline goes
         // back to the one this look started from, and the first look after
         // that says it if it still needs saying.
-        const latest = yield* attempt(
-          "thread-read",
+        // A move under way, or waiting, means not here: the news stays news.
+        const turn = yield* actionGate.withThread(
           thread.id,
-          projectionSnapshotQuery.getThreadShellById(thread.id),
+          Effect.gen(function* () {
+            const latest = yield* attempt(
+              "thread-read",
+              thread.id,
+              projectionSnapshotQuery.getThreadShellById(thread.id),
+            );
+            if (
+              latest === null ||
+              Option.isNone(latest) ||
+              isMoving(latest.value) ||
+              !fixSwitchOn(latest.value, number, watch.holders) ||
+              hasWorkInProgress(latest.value) ||
+              (checkout.kind === "folder" && (yield* folderBusyElsewhere(thread.id, checkout.path)))
+            ) {
+              return null;
+            }
+            return {
+              requestedAt: yield* startTurn({
+                thread: latest.value,
+                number,
+                text,
+                trigger: [
+                  newQueueRemoval === null ? null : "merge-queue",
+                  newlyFailing.length === 0 ? null : "checks",
+                  newComments.length === 0 ? null : "comments",
+                ]
+                  .filter((part) => part !== null)
+                  .join("-and-"),
+              }),
+            };
+          }),
         );
-        if (
-          latest === null ||
-          Option.isNone(latest) ||
-          !fixSwitchOn(latest.value, number, watch.holders) ||
-          hasWorkInProgress(latest.value) ||
-          (checkout.kind === "folder" && (yield* folderBusyElsewhere(thread.id, checkout.path)))
-        ) {
+        if (turn === null) {
           yield* Ref.update(baselinesRef, (map) => map.set(key, baseline));
           return "watching";
         }
-
-        const requestedAt = yield* startTurn({
-          thread: latest.value,
-          number,
-          text,
-          trigger: [
-            newQueueRemoval === null ? null : "merge-queue",
-            newlyFailing.length === 0 ? null : "checks",
-            newComments.length === 0 ? null : "comments",
-          ]
-            .filter((part) => part !== null)
-            .join("-and-"),
-        });
+        const { requestedAt } = turn;
         // The baseline advances either way: a dispatch the engine refused is not
         // one to retry every two minutes.
         yield* Ref.update(baselinesRef, (map) =>

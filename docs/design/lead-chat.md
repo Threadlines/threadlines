@@ -503,7 +503,7 @@ Built (piece 4), where it differs from or adds to the rulings:
 
 - The Stop events carry the turn they are for (`stopsTurnId` on
   `thread.turn-interrupt-requested` and `thread.session-stop-requested`); the projector
-  and the SQLite projection fold it into the session (migration 117). The web store does
+  and the SQLite projection fold it into the session (migration 118). The web store does
   not: nothing on screen reads it. A session update keeps it until a turn starts (the
   session is starting, or running another turn).
 - A retry during the wait does not settle the held request: it sends the very message

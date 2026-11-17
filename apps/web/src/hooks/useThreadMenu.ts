@@ -139,7 +139,7 @@ export function useThreadMenu() {
       attachedChild,
       putBack,
       workingChildCount,
-      moveOffered: readThreadMoveOffered(thread.environmentId, thread.moveStatus),
+      moveOffered: readThreadMoveOffered(thread),
       running: isThreadTurnRunning(full?.session),
       customOrder: target.customOrder ?? null,
       lead: readLeadMenuState(useStore.getState(), thread),

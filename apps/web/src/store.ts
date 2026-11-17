@@ -103,6 +103,7 @@ import {
   type ThreadMoveEvent,
   type ThreadMoveState,
 } from "@threadlines/shared/threadMoveProjection";
+import { withQueuedFollowUp } from "@threadlines/shared/queuedFollowUps";
 import {
   roomSideModelSelection,
   roomSideRole,
@@ -421,6 +422,7 @@ function mapMessage(environmentId: EnvironmentId, message: OrchestrationMessage)
     ...(message.trigger ? { trigger: message.trigger } : {}),
     ...(message.notSent ? { notSent: true as const } : {}),
     ...(message.imported ? { imported: true as const } : {}),
+    ...(message.afterMove ? { afterMove: true as const } : {}),
   };
 }
 
@@ -1049,12 +1051,14 @@ function latestIso(left: string | null, right: string | null): string | null {
  * When the latest message a person wrote was sent, in transcript order. One
  * pass, remembered per messages list: a summary is rebuilt on every streamed
  * event, and a reply streaming leaves the list's user messages as they were.
+ * The one Threadlines wrote for the agent after a move isn't a person's.
  */
 const latestUserWrittenMessageAt = keyedMemo((messages: Thread["messages"]): string | null => {
   let latest: ChatMessage | undefined;
   for (const message of messages) {
     if (
       isUserWrittenMessage(message) &&
+      message.afterMove !== true &&
       (latest === undefined || compareTranscriptOrder(message, latest) >= 0)
     ) {
       latest = message;
@@ -2168,6 +2172,9 @@ function upsertThreadMessage(
     ...(message.fromThread !== undefined ? { fromThread: message.fromThread } : {}),
     ...(message.fromOutside !== undefined ? { fromOutside: message.fromOutside } : {}),
     ...(message.imported ? { imported: true as const } : {}),
+    ...(existingMessage.afterMove === true || message.afterMove === true
+      ? { afterMove: true as const }
+      : {}),
     // The write that created the message stamps it; an optimistic copy has
     // none, so the server's first write fills it in.
     ...(existingMessage.agentModels === undefined && message.agentModels !== undefined
@@ -2836,12 +2843,7 @@ function applyEnvironmentOrchestrationEvent(
     case "thread.follow-up-queued":
       return updateThreadState(state, event.payload.threadId, (thread) => ({
         ...thread,
-        queuedFollowUps: [
-          ...(thread.queuedFollowUps ?? []).filter(
-            (queued) => queued.messageId !== event.payload.followUp.messageId,
-          ),
-          event.payload.followUp,
-        ],
+        queuedFollowUps: withQueuedFollowUp(thread.queuedFollowUps ?? [], event.payload.followUp),
       }));
 
     case "thread.follow-up-unqueued":
@@ -3103,6 +3105,7 @@ function applyEnvironmentOrchestrationEvent(
           ...(event.payload.trigger !== undefined ? { trigger: event.payload.trigger } : {}),
           ...(event.payload.imported ? { imported: true } : {}),
           ...(event.payload.notSent === true ? { notSent: true as const } : {}),
+          ...(event.payload.afterMove ? { afterMove: true } : {}),
           turnId: event.payload.turnId,
           streaming: event.payload.streaming,
           createdAt: event.payload.createdAt,

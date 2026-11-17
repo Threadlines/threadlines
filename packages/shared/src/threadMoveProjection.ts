@@ -61,9 +61,22 @@ function nextPendingMove(
     // "Stop the agents and move now": the sessions end in the same decision,
     // so the fence holds from here, as for a move queued that way.
     case "thread.move-mode-set":
-      return { ...current, mode: event.payload.mode, stage: "quiescing" };
+      return {
+        ...current,
+        mode: event.payload.mode,
+        stage: "quiescing",
+        ...(event.payload.interrupted !== undefined
+          ? { interrupted: event.payload.interrupted }
+          : {}),
+      };
     case "thread.move-quiescing":
-      return { ...current, stage: "quiescing" };
+      return {
+        ...current,
+        stage: "quiescing",
+        ...(event.payload.interrupted !== undefined
+          ? { interrupted: event.payload.interrupted }
+          : {}),
+      };
     case "thread.move-queue-status-set":
       return { ...current, waitsFor: event.payload.waitsFor, hold: event.payload.hold };
     case "thread.move-queue-ended":
@@ -91,6 +104,8 @@ function nextMove(
         ? { queuedRequestId: payload.queuedRequestId }
         : {}),
       ...(payload.batchId !== undefined ? { batchId: payload.batchId } : {}),
+      ...(payload.interrupted !== undefined ? { interrupted: payload.interrupted } : {}),
+      ...(payload.targetTakes !== undefined ? { targetTakes: payload.targetTakes } : {}),
     };
   }
   if (!("transferId" in event.payload)) return move;
