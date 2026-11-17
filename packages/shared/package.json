@@ -427,6 +427,10 @@
       "types": "./src/childThreads.ts",
       "import": "./src/childThreads.ts"
     },
+    "./projectLead": {
+      "types": "./src/projectLead.ts",
+      "import": "./src/projectLead.ts"
+    },
     "./threadFiling": {
       "types": "./src/threadFiling.ts",
       "import": "./src/threadFiling.ts"

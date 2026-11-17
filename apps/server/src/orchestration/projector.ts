@@ -392,6 +392,9 @@ export function projectEvent(
                   ...(payload.phoneAlertsMuted !== undefined
                     ? { phoneAlertsMuted: payload.phoneAlertsMuted }
                     : {}),
+                  ...(payload.leadThreadId !== undefined
+                    ? { leadThreadId: payload.leadThreadId }
+                    : {}),
                   updatedAt: payload.updatedAt,
                 }
               : project,

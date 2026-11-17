@@ -1119,6 +1119,54 @@ describe("ProviderCommandReactor", () => {
     expect(harness.sendTurn.mock.calls.length).toBe(1);
   });
 
+  it("tells the lead chat's agent its role at each turn start, not in a steered message", async () => {
+    const harness = await createHarness();
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "project.lead.set",
+        commandId: CommandId.make("cmd-lead-set"),
+        projectId: asProjectId("project-1"),
+        threadId: ThreadId.make("thread-1"),
+      }),
+    );
+    const send = (id: string, extra: { readonly trigger?: "usageLimitReset" }) =>
+      Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make(`cmd-turn-start-${id}`),
+          threadId: ThreadId.make("thread-1"),
+          message: { messageId: asMessageId(id), role: "user", text: id, attachments: [] },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          ...extra,
+          createdAt: "2026-01-01T00:00:00.000Z",
+        }),
+      );
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const defaultSendTurn = harness.sendTurn.getMockImplementation();
+    if (!defaultSendTurn) throw new Error("sendTurn mock has no implementation");
+    harness.sendTurn.mockImplementationOnce((input: unknown) =>
+      Effect.promise(() => gate).pipe(Effect.flatMap(() => defaultSendTurn(input))),
+    );
+    // A continue at the reset starts a turn like any other; the user's message
+    // during it is steered into that turn.
+    await send("continue-at-reset", { trigger: "usageLimitReset" });
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    await send("user-wrote-during-start", {});
+    release();
+    await waitFor(() => harness.steerTurn.mock.calls.length === 1);
+
+    const role = 'This thread is the lead chat for the project "Provider Project"';
+    const started = harness.sendTurn.mock.calls[0]?.[0] as { readonly input?: string };
+    const steered = harness.steerTurn.mock.calls[0]?.[0] as { readonly input?: string };
+    expect(started.input).toContain(role);
+    expect(steered.input).toContain("user-wrote-during-start");
+    expect(steered.input).not.toContain(role);
+  });
+
   it("steers the user's message into a continue that already reached the agent", async () => {
     const harness = await createHarness();
     const send = (

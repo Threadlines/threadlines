@@ -92,6 +92,15 @@ describe("childStartRefusal", () => {
         count: 4,
       })?.outcome,
     ).toBe("limit");
+    // A project's lead chat gets twice the budget.
+    expect(
+      childStartRefusal(caller({ childRequests: state }), {
+        from: PRIMARY,
+        callerTurnId: TURN,
+        count: 4,
+        isLead: true,
+      }),
+    ).toBeNull();
   });
 
   it("refuses outside the caller's own turn and after Stop", () => {

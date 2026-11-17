@@ -258,6 +258,8 @@ import { resolveComposerSkillReferences } from "../../providerSkillReferences";
 import { useIsPhoneViewport } from "../../hooks/useMediaQuery";
 import { ComposerDictationControl } from "./ComposerDictationControl";
 import { useDictation } from "../../dictation/useDictation";
+import { useStore } from "../../store";
+import { readLeadProjectName } from "../../leadChat";
 
 const ATTACHMENT_SIZE_LIMIT_LABEL = `${Math.round(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES / (1024 * 1024))}MB`;
 
@@ -1613,6 +1615,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       }),
     [canReferenceWorkspaceFiles, composerSkills, roomMentionAgents.length],
   );
+  // The project's lead chat invites work by name.
+  const leadProjectName = useStore((state) => readLeadProjectName(state, routeThreadRef));
   const defaultComposerPlaceholder = useMemo(
     () =>
       buildDefaultComposerPlaceholder({
@@ -1620,8 +1624,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         canInvokeSkills: composerSkills.some((skill) => skill.enabled),
         canMentionAgents: roomMentionAgents.length > 0,
         recipientName: roomsShown && roomAgents.inRoom ? roomAgents.recipient.name : undefined,
+        leadProjectName: leadProjectName ?? undefined,
       }),
     [
+      leadProjectName,
       canReferenceWorkspaceFiles,
       composerSkills,
       roomAgents.inRoom,

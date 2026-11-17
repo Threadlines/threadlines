@@ -15,6 +15,7 @@ import {
   SIDE_ANSWER_OUTCOME_ACTIVITY_KIND,
   type SideTurnId,
   TurnId,
+  type ThreadId,
   type ThreadParticipantId,
 } from "@threadlines/contracts";
 import { saferRuntimeMode } from "@threadlines/shared/runtimeMode";
@@ -48,6 +49,7 @@ import {
 import { isTurnAside } from "@threadlines/shared/transcriptRevert";
 import { CONTINUE_AT_RESET_MESSAGE, continueAtResetTimeMs } from "@threadlines/shared/usageLimits";
 import { isAttachedChild } from "@threadlines/shared/childThreads";
+import { leadSetRefusal } from "@threadlines/shared/projectLead";
 import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
 
 import { OrchestrationCommandInvariantError } from "./Errors.ts";
@@ -67,6 +69,7 @@ import {
 } from "./agentRequestDecisions.ts";
 import {
   findProjectById,
+  isProjectLeadThread,
   listThreadsByProjectId,
   requireNonNegativeInteger,
   requireProject,
@@ -880,6 +883,37 @@ function holdCommandOutputOnStop(
   }));
 }
 
+/**
+ * Clears the lead pointer of every project that names one of `threadIds`
+ * (docs/design/lead-chat.md: archive and delete end a lead in the same
+ * decision). Reads the raw pointer, so a stale one is cleaned up too.
+ */
+function leadClearEvents(
+  readModel: OrchestrationReadModel,
+  threadIds: ReadonlyArray<ThreadId>,
+  commandId: OrchestrationCommand["commandId"],
+  occurredAt: string,
+): PlannedOrchestrationEvent[] {
+  return readModel.projects
+    .filter(
+      (project) =>
+        project.deletedAt === null &&
+        project.leadThreadId !== undefined &&
+        project.leadThreadId !== null &&
+        threadIds.includes(project.leadThreadId),
+    )
+    .map((project) => ({
+      ...withEventBase({
+        aggregateKind: "project",
+        aggregateId: project.id,
+        occurredAt,
+        commandId,
+      }),
+      type: "project.meta-updated" as const,
+      payload: { projectId: project.id, leadThreadId: null, updatedAt: occurredAt },
+    }));
+}
+
 export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand")(function* ({
   command,
   readModel,
@@ -979,6 +1013,44 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           ...(command.phoneAlertsMuted !== undefined
             ? { phoneAlertsMuted: command.phoneAlertsMuted }
             : {}),
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
+    case "project.lead.set": {
+      const project = yield* requireWorkspaceProject({
+        readModel,
+        command,
+        projectId: command.projectId,
+      });
+      if (command.threadId !== null) {
+        const thread = yield* requireThread({
+          readModel,
+          command,
+          threadId: command.threadId,
+        });
+        const refusal = leadSetRefusal(project, thread);
+        if (refusal !== null) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: refusal,
+          });
+        }
+      }
+      // One pointer: naming a new lead replaces the old one in this event.
+      const occurredAt = yield* nowIso;
+      return {
+        ...withEventBase({
+          aggregateKind: "project",
+          aggregateId: command.projectId,
+          occurredAt,
+          commandId: command.commandId,
+        }),
+        type: "project.meta-updated",
+        payload: {
+          projectId: command.projectId,
+          leadThreadId: command.threadId,
           updatedAt: occurredAt,
         },
       };
@@ -1445,9 +1517,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               })),
           })
         : [];
-      return familyEvents.length === 0 && childDeletes.length === 0
+      const leadEvents = leadClearEvents(readModel, [thread.id], command.commandId, occurredAt);
+      return familyEvents.length === 0 && childDeletes.length === 0 && leadEvents.length === 0
         ? deletedEvent
-        : [...familyEvents, ...childDeletes, deletedEvent];
+        : [...familyEvents, ...childDeletes, ...leadEvents, deletedEvent];
     }
 
     case "thread.archive": {
@@ -1523,7 +1596,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               ];
         }),
       ];
-      return familyEvents.length === 0 ? archivedEvent : [...familyEvents, archivedEvent];
+      const leadEvents = leadClearEvents(
+        readModel,
+        [thread.id, ...plan.archive.map((child) => child.id)],
+        command.commandId,
+        occurredAt,
+      );
+      return familyEvents.length === 0 && leadEvents.length === 0
+        ? archivedEvent
+        : [...familyEvents, ...leadEvents, archivedEvent];
     }
 
     case "thread.unarchive": {
@@ -2419,6 +2500,13 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      // A lead chat is top-level by definition.
+      if (command.attached && isProjectLeadThread(readModel, thread)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "This is the project's lead chat. Pick another lead first.",
+        });
+      }
       return yield* planChildThreadDecision(
         command.type,
         decideParentAttachmentSet(

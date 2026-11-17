@@ -877,6 +877,11 @@ export function isThreadDone(
      * threads" is on: whether that parent is wrapped. Absent: rule 4 is off.
      */
     readonly childWrapUp?: { readonly parentDone: boolean } | null;
+    /**
+     * Its project's lead chat (docs/design/lead-chat.md): kept like a pinned
+     * thread, so no idle or pull request rule files it away.
+     */
+    readonly lead?: boolean;
   },
 ): boolean {
   const childWrapUp = options.childWrapUp ?? null;
@@ -890,7 +895,7 @@ export function isThreadDone(
     {
       held: () => !canMarkThreadDone(thread, { now: options.now, handedBackCompletionSeen }),
       freshOverride: () => freshThreadDoneOverride(thread, override),
-      pinned: thread.pinnedAt !== null,
+      pinned: thread.pinnedAt !== null || options.lead === true,
       childFinished: childWrapUp !== null && (handedBackCompletionSeen || childWrapUp.parentDone),
       filedByPullRequest: () =>
         isFiledByPullRequest(thread, override, options.pullRequestSettledAt),
@@ -1061,6 +1066,8 @@ export function fileInboxThreads(input: {
   readonly wrapUpIdleThreads: boolean;
   /** When the thread's pull requests landed, if a landing should file it; null otherwise. */
   readonly pullRequestSettledAt: (thread: SidebarThreadSummary, threadKey: string) => string | null;
+  /** Scoped keys of the projects' lead chats; see `staysOnTop`. */
+  readonly leadThreadKeys?: ReadonlySet<string>;
 }): FiledInboxThread[] {
   const prepared = input.threads.map((thread) => {
     const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
@@ -1097,6 +1104,7 @@ export function fileInboxThreads(input: {
         autoDoneAfterDays: input.wrapUpIdleThreads ? INBOX_AUTO_DONE_AFTER_DAYS : null,
         pullRequestSettledAt: input.pullRequestSettledAt(item.thread, item.threadKey),
         childWrapUp,
+        lead: input.leadThreadKeys?.has(item.threadKey) === true,
       },
     );
     doneByKey.set(item.threadKey, isDone);
@@ -1130,6 +1138,18 @@ export function isUnreadFinishedWork(entry: {
     latestTurn: entry.thread.latestTurn,
     lastVisitedAt: entry.lastVisitedAt,
   });
+}
+
+/**
+ * Whether an inbox row stays at the top of its list: pinned, or its project's
+ * lead chat (docs/design/lead-chat.md). The sort, the fold, the custom order
+ * and the line under the pins all read this one rule.
+ */
+export function staysOnTop(entry: {
+  readonly thread: { readonly pinnedAt: string | null };
+  readonly isLead?: boolean | undefined;
+}): boolean {
+  return entry.thread.pinnedAt !== null || entry.isLead === true;
 }
 
 /**
@@ -1179,6 +1199,17 @@ function compareUnplacedThreads(left: InboxSortInput, right: InboxSortInput): nu
  * bottom, so nothing but the user ever moves a row.
  */
 export function sortInboxThreadsBy<T extends InboxSortInput>(
+  threads: readonly T[],
+  sort: InboxSort,
+  customOrder: readonly string[],
+  /** A project's lead chat goes first, ahead of the pins, in every sort. */
+  isLead: (thread: T) => boolean = () => false,
+): T[] {
+  const sorted = sortInboxThreadsWithoutLeads(threads, sort, customOrder);
+  return [...sorted.filter(isLead), ...sorted.filter((thread) => !isLead(thread))];
+}
+
+function sortInboxThreadsWithoutLeads<T extends InboxSortInput>(
   threads: readonly T[],
   sort: InboxSort,
   customOrder: readonly string[],
@@ -1298,16 +1329,26 @@ export function trimInboxCustomOrder(
 
 /** The rows a live row can swap with: under the same group header, on the same side of the pins. */
 export function inboxCustomOrderPeers<
-  R extends { readonly entry: { readonly threadKey: string; readonly thread: InboxSortInput } },
+  R extends {
+    readonly entry: {
+      readonly threadKey: string;
+      readonly thread: InboxSortInput;
+      readonly isLead?: boolean | undefined;
+    };
+  },
 >(rows: readonly R[], threadKey: string, groupKeyOf: (row: R) => string | null): string[] {
   const row = rows.find((candidate) => candidate.entry.threadKey === threadKey);
   if (row === undefined) return [];
+  // The lead chat has no peers: it stays first.
+  if (row.entry.isLead === true) return [];
   const group = groupKeyOf(row);
-  const pinned = row.entry.thread.pinnedAt !== null;
+  const pinned = staysOnTop(row.entry);
   return rows
     .filter(
       (candidate) =>
-        (candidate.entry.thread.pinnedAt !== null) === pinned && groupKeyOf(candidate) === group,
+        candidate.entry.isLead !== true &&
+        staysOnTop(candidate.entry) === pinned &&
+        groupKeyOf(candidate) === group,
     )
     .map((candidate) => candidate.entry.threadKey);
 }
@@ -2495,12 +2536,17 @@ export function groupInboxLiveRows<R>(
 
 /** How many lines between pinned and unpinned rows the list draws: one per group with both. */
 export function countInboxPinDividers<
-  R extends { readonly entry: { readonly thread: { readonly pinnedAt: string | null } } },
+  R extends {
+    readonly entry: {
+      readonly thread: { readonly pinnedAt: string | null };
+      readonly isLead?: boolean | undefined;
+    };
+  },
 >(rows: readonly R[], groupKeyOf: (row: R) => string | null): number {
   const pinned = new Set<string | null>();
   const unpinned = new Set<string | null>();
   for (const row of rows) {
-    (row.entry.thread.pinnedAt === null ? unpinned : pinned).add(groupKeyOf(row));
+    (staysOnTop(row.entry) ? pinned : unpinned).add(groupKeyOf(row));
   }
   return [...pinned].filter((group) => unpinned.has(group)).length;
 }

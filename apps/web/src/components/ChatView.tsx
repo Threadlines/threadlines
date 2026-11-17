@@ -160,6 +160,7 @@ import {
   selectWorkspaceProjectsAcrossEnvironments,
   useStore,
 } from "../store";
+import { readLeadProjectName } from "../leadChat";
 import { createProjectSelectorByRef, createThreadSelectorByRef } from "../storeSelectors";
 import { useUiStateStore } from "../uiStateStore";
 import {
@@ -2221,6 +2222,9 @@ export default function ChatView(props: ChatViewProps) {
   const parentEnvironmentId = remoteOrigin?.environmentId ?? environmentId;
   const parentThreadId = remoteOrigin?.threadId ?? activeThread?.parentThreadId ?? null;
   const knownParentTitle = useThreadTitle(parentEnvironmentId, parentThreadId);
+  const isLeadChat = useStore(
+    (state) => activeThreadRef !== null && readLeadProjectName(state, activeThreadRef) !== null,
+  );
   const parentHeaderContext = useMemo<ParentThreadHeaderContext | null>(() => {
     if (parentThreadId === null) return null;
     const parentThreadRef = scopeThreadRef(parentEnvironmentId, parentThreadId);
@@ -8768,6 +8772,7 @@ export default function ChatView(props: ChatViewProps) {
       taskProgress={taskProgress}
       forkContext={forkHeaderContext}
       parentContext={parentHeaderContext}
+      isLeadChat={isLeadChat}
       outsideOrigin={activeThread.outsideOrigin ?? null}
       onOpenParentThread={headerHandlers.onOpenParentThread}
       backgroundRuns={headerBackgroundRuns}

@@ -42,6 +42,7 @@ import {
   useStore,
 } from "../store";
 import type { Project, SidebarThreadSummary } from "../types";
+import { leadThreadKeysOf } from "../leadChat";
 import { useUiStateStore } from "../uiStateStore";
 import { useRelativeTimeTick } from "./useRelativeTimeTick";
 import { useSettings } from "./useSettings";
@@ -70,6 +71,8 @@ export interface InboxEntry {
   deliveredAt: string | null;
   /** Wrapped by the user's own word rather than a wrap-up rule. */
   wrappedByUser: boolean;
+  /** Its project's lead chat (docs/design/lead-chat.md); see `staysOnTop`. */
+  isLead: boolean;
 }
 
 /** A general chat with its seen-aware status, and when the user last saw it. */
@@ -96,6 +99,8 @@ export interface InboxThreads {
   /** The pull requests each inbox thread's agent opened on other branches, where it has any. */
   readonly linkedPullRequestsByThreadKey: ReadonlyMap<string, readonly ThreadPullRequest[]>;
   readonly nowIso: string;
+  /** Scoped keys of every project's lead chat. */
+  readonly leadThreadKeys: ReadonlySet<string>;
   readonly entries: InboxEntry[];
   readonly generalChatEntries: InboxGeneralChatEntry[];
 }
@@ -304,9 +309,15 @@ export function useInboxThreads(): InboxThreads {
     settledPullRequestEntries,
   ]);
 
+  const leadThreadKeys = useMemo(
+    () => leadThreadKeysOf(projects, sidebarThreads),
+    [projects, sidebarThreads],
+  );
+
   const entries = useMemo<InboxEntry[]>(
     () =>
       fileInboxThreads({
+        leadThreadKeys,
         threads: inboxThreads,
         seenSources: { seenThreadOverlays, threadSeedVisitedAtById },
         doneOverlays: doneThreadOverlays,
@@ -337,20 +348,23 @@ export function useInboxThreads(): InboxThreads {
           isDone,
           // A pinned row never offers the wrap-up check: the pin says "keep
           // this here", and a hover affordance that files it away contradicts
-          // it. Unpinning brings the action back.
+          // it. Unpinning brings the action back. A lead chat is kept the same way.
           canMarkDone:
             thread.pinnedAt === null &&
+            !leadThreadKeys.has(threadKey) &&
             canMarkThreadDone({ ...thread, lastVisitedAt }, { now: nowIso }),
           doneAt: isDone ? resolveDoneTimestamp(thread, override) : null,
           seenAt,
           settledAt: resolveDoneTimestamp(thread, null),
           deliveredAt: thread.handedBackAt ?? null,
           wrappedByUser: isDone && freshThreadDoneOverride(thread, override)?.state === "done",
+          isLead: leadThreadKeys.has(threadKey),
         };
       }),
     [
       doneThreadOverlays,
       inboxThreads,
+      leadThreadKeys,
       linkedPullRequestsByThreadKey,
       nowIso,
       pullRequestByThreadKey,
@@ -392,6 +406,7 @@ export function useInboxThreads(): InboxThreads {
     pullRequestByThreadKey,
     linkedPullRequestsByThreadKey,
     nowIso,
+    leadThreadKeys,
     entries,
     generalChatEntries,
   };

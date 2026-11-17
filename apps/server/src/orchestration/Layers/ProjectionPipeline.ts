@@ -469,6 +469,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...(event.payload.phoneAlertsMuted !== undefined
               ? { phoneAlertsMuted: event.payload.phoneAlertsMuted }
               : {}),
+            ...(event.payload.leadThreadId !== undefined
+              ? { leadThreadId: event.payload.leadThreadId }
+              : {}),
             updatedAt: event.payload.updatedAt,
           });
           return;

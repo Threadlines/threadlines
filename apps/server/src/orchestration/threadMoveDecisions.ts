@@ -11,6 +11,7 @@
  * `thread.move.start` ends the pending move as it freezes the thread. Each
  * function returns the events to plan, or a refusal to report.
  */
+import { LEAD_MOVE_REFUSAL } from "@threadlines/shared/projectLead";
 import {
   EventId,
   type OrchestrationCommand,
@@ -69,7 +70,8 @@ export type ThreadMoveBlockCode =
   | "goal"
   | "check_back"
   | "command_request"
-  | "pull_request_automation";
+  | "pull_request_automation"
+  | "lead";
 
 /**
  * One reason a thread can't move right now. A `wait` goes away on its own
@@ -112,7 +114,10 @@ const blocked = (code: ThreadMoveBlockCode, words: string): ThreadMoveRefusalEnt
 /** What the move checks read: the projects, and the threads they can see. */
 export interface ThreadMoveView {
   readonly projects: ReadonlyArray<
-    Pick<OrchestrationReadModel["projects"][number], "id" | "kind" | "workspaceRoot">
+    Pick<
+      OrchestrationReadModel["projects"][number],
+      "id" | "kind" | "workspaceRoot" | "leadThreadId"
+    >
   >;
   readonly threads: ReadonlyArray<OrchestrationThread>;
 }
@@ -154,6 +159,10 @@ export function threadMoveRefusals(
   const project = readModel.projects.find((candidate) => candidate.id === thread.projectId);
   if (project?.kind === "general-chat") {
     found.push(blocked("general_chat", "General chats can't move yet."));
+  }
+  // Words only: the move's refusal code is a closed set older peers decode.
+  if ((project?.leadThreadId ?? null) === thread.id && thread.archivedAt === null) {
+    found.push(blocked("lead", LEAD_MOVE_REFUSAL));
   }
   if (isRoomThread(thread) || thread.agentRequests.open.length > 0) {
     found.push(blocked("room", "Threads with more than one agent can't move yet."));

@@ -6,6 +6,7 @@ import type {
   ProjectId,
   ThreadId,
 } from "@threadlines/contracts";
+import { projectLeadThreadId } from "@threadlines/shared/projectLead";
 import * as Effect from "effect/Effect";
 
 import { OrchestrationCommandInvariantError } from "./Errors.ts";
@@ -29,6 +30,18 @@ export function findProjectById(
   projectId: ProjectId,
 ): OrchestrationProject | undefined {
   return readModel.projects.find((project) => project.id === projectId);
+}
+
+/** Whether `thread` is its project's lead chat now (docs/design/lead-chat.md). */
+export function isProjectLeadThread(
+  readModel: OrchestrationReadModel,
+  thread: Pick<OrchestrationThread, "id" | "projectId">,
+): boolean {
+  return (
+    projectLeadThreadId(findProjectById(readModel, thread.projectId), (threadId) =>
+      findThreadById(readModel, threadId),
+    ) === thread.id
+  );
 }
 
 export function listThreadsByProjectId(

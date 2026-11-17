@@ -1,5 +1,7 @@
 import type { ContextMenuItem } from "@threadlines/contracts";
 
+import { leadMenuLabel, type LeadMenuState } from "../leadChat";
+
 /** Everything a thread's menu can do. Every surface that offers it offers the same. */
 export type ThreadMenuAction =
   | "rename"
@@ -10,6 +12,7 @@ export type ThreadMenuAction =
   | "reopen"
   | "move-up"
   | "move-down"
+  | "lead"
   | "separate"
   | "attach"
   | "stop-children"
@@ -33,6 +36,8 @@ export interface ThreadMenuFacts {
   readonly moveOffered: boolean;
   /** Its agent is mid-turn: archiving waits until it stops. */
   readonly running: boolean;
+  /** What it can do about its project's lead chat; null where that isn't offered. */
+  readonly lead?: LeadMenuState | null;
   /** A row of the inbox's custom order, and where it can go; null anywhere else. */
   readonly customOrder?: {
     readonly canMoveUp: boolean;
@@ -78,6 +83,18 @@ export function describeThreadMenu(facts: ThreadMenuFacts): ContextMenuItem<Thre
       ...asGroup<ThreadMenuAction>([
         { id: "move-up", label: "Move up", disabled: !facts.customOrder.canMoveUp },
         { id: "move-down", label: "Move down", disabled: !facts.customOrder.canMoveDown },
+      ]),
+    );
+  }
+
+  if (facts.lead) {
+    items.push(
+      ...asGroup<ThreadMenuAction>([
+        {
+          id: "lead",
+          label: leadMenuLabel(facts.lead),
+          disabled: facts.lead.kind === "make" && facts.lead.refusal !== null,
+        },
       ]),
     );
   }

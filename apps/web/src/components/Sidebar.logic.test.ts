@@ -1269,6 +1269,19 @@ describe("inbox done lifecycle", () => {
     ).toBe(true);
   });
 
+  it("keeps a project's lead chat like a pinned thread: no idle or landing filing", () => {
+    const stale = { ...base, latestUserMessageAt: "2026-07-24T12:00:00.000Z" };
+    const options = {
+      now: NOW,
+      autoDoneAfterDays: 2,
+      pullRequestSettledAt: "2026-07-28T11:30:00.000Z",
+      lead: true,
+    };
+    expect(isThreadDone(stale, null, options)).toBe(false);
+    // The user's own word still files it.
+    expect(isThreadDone(stale, { state: "done", at: NOW }, options)).toBe(true);
+  });
+
   it("files a thread at once when its pull request lands, unless it is pinned", () => {
     // A merged branch is finished work: it does not wait out the idle timer.
     const fresh = { ...base, latestUserMessageAt: "2026-07-28T11:00:00.000Z" };
@@ -1649,6 +1662,23 @@ describe("the inbox's sorts", () => {
       "Apple 10",
       "banana",
     ]);
+  });
+
+  it("puts a project's lead chat first in every sort, ahead of the pins", () => {
+    const threads = [
+      thread("quiet-lead", 1),
+      thread("busy", 2, { lastMessageDay: 29 }),
+      thread("pinned", 3, { pinned: true }),
+    ];
+    const isLead = (entry: { readonly id: string }) => entry.id === "quiet-lead";
+    expect(ids(sortInboxThreadsBy(threads, "recent", [], isLead))).toEqual([
+      "quiet-lead",
+      "pinned",
+      "busy",
+    ]);
+    expect(
+      ids(sortInboxThreadsBy(threads, "custom", [key("busy"), key("quiet-lead")], isLead)),
+    ).toEqual(["quiet-lead", "pinned", "busy"]);
   });
 
   it("keeps a custom order through activity, with threads it hasn't placed at the bottom", () => {

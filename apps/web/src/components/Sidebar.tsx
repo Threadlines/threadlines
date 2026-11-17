@@ -103,6 +103,7 @@ import {
   shouldClearThreadSelectionOnMouseDown,
   sortDoneThreads,
   sortInboxThreadsBy,
+  staysOnTop,
   describeInboxGroupMenu,
   countInboxPinDividers,
   moveInInboxGroupOrder,
@@ -468,6 +469,15 @@ function InboxWrappedDayLabel({ group }: { group: WrappedDayGroup }) {
       {WRAPPED_DAY_GROUP_LABELS[group]}
     </li>
   );
+}
+
+/**
+ * Where a row says its work lives: a project's lead chat says "Lead" there,
+ * with the project's name when the row names one ("Lead · threadlines").
+ */
+function leadRowPlace(isLead: boolean, projectLabel: string | null): string | null {
+  if (!isLead) return projectLabel;
+  return projectLabel === null ? "Lead" : `Lead · ${projectLabel}`;
 }
 
 /** What the line between pinned and unpinned rows takes up; see {@link InboxPinDivider}. */
@@ -942,6 +952,7 @@ export default function Sidebar() {
           heads.map((entry) => entry.thread),
           inboxSort,
           inboxCustomOrder,
+          (thread) => lookup(thread).isLead,
         ).map(lookup),
       sortDone: (heads) =>
         sortDoneThreads(
@@ -1029,10 +1040,11 @@ export default function Sidebar() {
         const hiddenByGroup =
           groupKey !== null &&
           collapsedInboxGroups[groupKey] === true &&
+          !row.entry.isLead &&
           !inboxLiveRowHolds(row, routeThreadKey);
         const isFamily = row.children.length > 0 || row.remoteChildren.length > 0;
         return {
-          pinned: row.entry.thread.pinnedAt !== null,
+          pinned: staysOnTop(row.entry),
           alwaysShown:
             inboxLiveRowHasAttention(row) ||
             inboxLiveRowHolds(row, routeThreadKey) ||
@@ -1084,7 +1096,7 @@ export default function Sidebar() {
           inboxLiveRowHasAttention(row) ||
           inboxLiveRowHolds(row, routeThreadKey) ||
           inboxLiveRowHolds(row, renamingThreadKey),
-        isPinned: (row) => row.entry.thread.pinnedAt !== null,
+        isPinned: (row) => staysOnTop(row.entry),
         limit: liveFoldLimit + revealedLiveCount,
         // New threads go to the bottom of a custom order, so a fold would hide
         // the newest ones. Every row there is where the user put it.
@@ -1297,9 +1309,11 @@ export default function Sidebar() {
           working: counts.working,
           collapsed,
         },
+        // A folded group still shows its project's lead chat: it never folds.
         rows: collapsed
           ? group.rows.filter(
               (row) =>
+                row.entry.isLead ||
                 row.entry.threadKey === routeThreadKey ||
                 inboxLiveRowHoldsOpenChild(row, routeThreadKey),
             )
@@ -2250,8 +2264,9 @@ export default function Sidebar() {
                                 rowIndex,
                               ) => (
                                 <React.Fragment key={entry.threadKey}>
-                                  {entry.thread.pinnedAt === null &&
-                                  section.rows[rowIndex - 1]?.entry.thread.pinnedAt != null ? (
+                                  {!staysOnTop(entry) &&
+                                  section.rows[rowIndex - 1] !== undefined &&
+                                  staysOnTop(section.rows[rowIndex - 1]!.entry) ? (
                                     <InboxPinDivider />
                                   ) : null}
                                   <InboxReorderRow threadKey={entry.threadKey}>
@@ -2262,9 +2277,11 @@ export default function Sidebar() {
                                       // header right above it already does. Scoped
                                       // to projects, it still names it: the menu that
                                       // says so is out of sight.
-                                      projectLabel={
-                                        sidebarGrouping !== "project" ? entry.projectLabel : null
-                                      }
+                                      projectLabel={leadRowPlace(
+                                        entry.isLead,
+                                        sidebarGrouping !== "project" ? entry.projectLabel : null,
+                                      )}
+                                      isLead={entry.isLead}
                                       // Under a project group's header the project's
                                       // mark is said once, there.
                                       showProjectMark={sidebarGrouping !== "project"}

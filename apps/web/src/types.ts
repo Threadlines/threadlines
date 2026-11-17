@@ -198,6 +198,11 @@ export interface Project {
   scripts: ProjectScript[];
   /** This project's threads send no phone alerts. */
   phoneAlertsMuted?: boolean | undefined;
+  /**
+   * The project's lead chat (docs/design/lead-chat.md). Read it through
+   * `projectLeadThreadId`, which ignores a pointer at an archived thread.
+   */
+  leadThreadId?: ThreadId | null | undefined;
 }
 
 export interface Thread {

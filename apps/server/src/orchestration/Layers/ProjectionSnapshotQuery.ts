@@ -759,6 +759,7 @@ function mapProjectShellRow(
     defaultModelSelection: row.defaultModelSelection,
     scripts: row.scripts,
     ...(row.phoneAlertsMuted ? { phoneAlertsMuted: true } : {}),
+    ...((row.leadThreadId ?? null) !== null ? { leadThreadId: row.leadThreadId } : {}),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -884,6 +885,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           default_model_selection_json AS "defaultModelSelection",
           scripts_json AS "scripts",
           phone_alerts_muted AS "phoneAlertsMuted",
+          lead_thread_id AS "leadThreadId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
           deleted_at AS "deletedAt"
@@ -1821,6 +1823,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           default_model_selection_json AS "defaultModelSelection",
           scripts_json AS "scripts",
           phone_alerts_muted AS "phoneAlertsMuted",
+          lead_thread_id AS "leadThreadId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
           deleted_at AS "deletedAt"
@@ -1845,6 +1848,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           default_model_selection_json AS "defaultModelSelection",
           scripts_json AS "scripts",
           phone_alerts_muted AS "phoneAlertsMuted",
+          lead_thread_id AS "leadThreadId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
           deleted_at AS "deletedAt"
@@ -2840,6 +2844,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 defaultModelSelection: row.defaultModelSelection,
                 scripts: row.scripts,
                 ...(row.phoneAlertsMuted ? { phoneAlertsMuted: true } : {}),
+                ...((row.leadThreadId ?? null) !== null ? { leadThreadId: row.leadThreadId } : {}),
                 createdAt: row.createdAt,
                 updatedAt: row.updatedAt,
                 deletedAt: row.deletedAt,
@@ -3068,6 +3073,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   defaultModelSelection: row.defaultModelSelection,
                   scripts: row.scripts,
                   ...(row.phoneAlertsMuted ? { phoneAlertsMuted: true } : {}),
+                  ...((row.leadThreadId ?? null) !== null
+                    ? { leadThreadId: row.leadThreadId }
+                    : {}),
                   createdAt: row.createdAt,
                   updatedAt: row.updatedAt,
                   deletedAt: row.deletedAt,
@@ -3546,6 +3554,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                     defaultModelSelection: option.value.defaultModelSelection,
                     scripts: option.value.scripts,
                     ...(option.value.phoneAlertsMuted ? { phoneAlertsMuted: true } : {}),
+                    ...((option.value.leadThreadId ?? null) !== null
+                      ? { leadThreadId: option.value.leadThreadId }
+                      : {}),
                     createdAt: option.value.createdAt,
                     updatedAt: option.value.updatedAt,
                     deletedAt: option.value.deletedAt,
