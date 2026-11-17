@@ -52,6 +52,26 @@ export function transcriptAuthor(
     : undefined;
 }
 
+/**
+ * Whether an agent was given this message, so history may include it: not
+ * `notSent` (never reached the agent), and not still waiting in the thread's
+ * queue (an agent's message is written into the chat when it is queued).
+ * Every history handed to an agent filters through this (context seeds, a
+ * fork's context, a room's catch-up note); explicit reads (`thread_read`,
+ * `room_history`) keep the message and label it instead.
+ */
+export function reachedAgent(
+  message: { readonly id: string; readonly notSent?: true | undefined },
+  thread: {
+    readonly queuedFollowUps?: ReadonlyArray<{ readonly messageId: string }> | undefined;
+  },
+): boolean {
+  return (
+    message.notSent !== true &&
+    !(thread.queuedFollowUps ?? []).some((queued) => queued.messageId === message.id)
+  );
+}
+
 /** The message's author line and origin. */
 export function messageAuthor(
   message: Pick<

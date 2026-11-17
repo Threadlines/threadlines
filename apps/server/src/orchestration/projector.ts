@@ -1004,11 +1004,26 @@ export function projectEvent(
         event.type,
         "payload",
       ).pipe(
-        Effect.map((payload) =>
-          updateChildRequests(nextBase, payload.threadId, (state) =>
+        Effect.map((payload) => {
+          const next = updateChildRequests(nextBase, payload.threadId, (state) =>
             childRequestStateOn.leadPass(state, payload),
-          ),
-        ),
+          );
+          // Refused right before it reached the agent: the message never ran.
+          if (payload.kind !== "not-run") return next;
+          const thread = next.threads.find((entry) => entry.id === payload.threadId);
+          return thread === undefined
+            ? next
+            : {
+                ...next,
+                threads: updateThread(next.threads, payload.threadId, {
+                  messages: thread.messages.map((message) =>
+                    message.id === payload.messageId
+                      ? { ...message, notSent: true as const }
+                      : message,
+                  ),
+                }),
+              };
+        }),
       );
 
     case "thread.remote-child-updated":

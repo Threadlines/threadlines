@@ -3120,13 +3120,33 @@ const make = Effect.gen(function* () {
         });
       }).pipe(Effect.ignoreCause({ log: true }));
 
+    // A lead chat's pass refused at the last check never reached the agent:
+    // the decider marks it so no history carries it, and the lead hears.
+    const markPassNotRun = (detail: string) =>
+      detail.includes(PASS_ABOVE_CEILING_DETAIL)
+        ? Effect.gen(function* () {
+            yield* orchestrationEngine.dispatch({
+              type: "thread.lead-pass.not-run",
+              commandId: serverCommandId("lead-pass-not-run"),
+              threadId: event.payload.threadId,
+              messageId: event.payload.messageId,
+              createdAt: yield* nowIso,
+            });
+          }).pipe(Effect.ignoreCause({ log: true }))
+        : Effect.void;
+
+    // What else a turn that could not start ends: its hand-off, its pass.
+    const afterFailedStart = (cause: Cause.Cause<unknown>) =>
+      Cause.hasInterruptsOnly(cause)
+        ? Effect.void
+        : Effect.andThen(
+            failHandOffForFailedStart(formatFailureDetail(cause)),
+            markPassNotRun(formatFailureDetail(cause)),
+          );
+
     const recoverTurnStartFailure = (cause: Cause.Cause<unknown>) =>
       handleTurnStartFailure(cause).pipe(
-        Effect.andThen(
-          Cause.hasInterruptsOnly(cause)
-            ? Effect.void
-            : failHandOffForFailedStart(formatFailureDetail(cause)),
-        ),
+        Effect.andThen(afterFailedStart(cause)),
         Effect.catchCause((recoveryCause) =>
           Effect.logWarning("provider command reactor failed to recover turn start failure", {
             eventType: event.type,
@@ -3360,11 +3380,7 @@ const make = Effect.gen(function* () {
         Effect.map(Option.some),
         Effect.catchCause((cause) =>
           handleTurnStartFailure(cause).pipe(
-            Effect.andThen(
-              Cause.hasInterruptsOnly(cause)
-                ? Effect.void
-                : failHandOffForFailedStart(formatFailureDetail(cause)),
-            ),
+            Effect.andThen(afterFailedStart(cause)),
             Effect.as(Option.none()),
           ),
         ),

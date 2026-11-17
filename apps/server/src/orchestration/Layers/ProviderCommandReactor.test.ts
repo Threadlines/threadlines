@@ -3851,6 +3851,12 @@ describe("ProviderCommandReactor", () => {
         payload: { detail: expect.stringContaining("more access than the lead chat") },
       });
       expect(harness.sendTurn).not.toHaveBeenCalled();
+      // It never reached the agent, so no history will carry it.
+      const passMessage = async () =>
+        (await harness.readModel()).threads
+          .find((entry) => entry.id === threadId)
+          ?.messages.find((entry) => entry.id === asMessageId("pass-message"));
+      await waitFor(async () => (await passMessage())?.notSent === true);
     });
   });
 

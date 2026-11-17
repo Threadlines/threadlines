@@ -41,6 +41,8 @@ export interface RoomHistoryEntry {
   readonly text: string;
   readonly clipped?: boolean;
   readonly streaming?: boolean;
+  /** It never reached the agent (OrchestrationMessage.notSent): shown, never acted on. */
+  readonly notSent?: boolean;
   readonly attachments?: ReadonlyArray<RoomHistoryAttachment>;
 }
 
@@ -75,6 +77,7 @@ function labelMessage(
     ...(message.requestKind !== undefined ? { requestKind: message.requestKind } : {}),
     ...(onTheSide ? { onTheSide: true } : {}),
     ...(message.streaming ? { streaming: true } : {}),
+    ...(message.notSent === true ? { notSent: true } : {}),
     ...(message.attachments !== undefined && message.attachments.length > 0
       ? {
           attachments: message.attachments.map((attachment) => ({

@@ -3675,10 +3675,22 @@ function applyEnvironmentOrchestrationEvent(
         childRequestStateOn.reset(current, event.payload),
       );
 
-    case "thread.lead-pass-recorded":
-      return updateChildRequestState(state, event.payload.threadId, (current) =>
+    case "thread.lead-pass-recorded": {
+      const next = updateChildRequestState(state, event.payload.threadId, (current) =>
         childRequestStateOn.leadPass(current, event.payload),
       );
+      // Refused right before it reached the agent: the message never ran.
+      return event.payload.kind !== "not-run"
+        ? next
+        : updateThreadState(next, event.payload.threadId, (thread) => ({
+            ...thread,
+            messages: thread.messages.map((message) =>
+              message.id === event.payload.messageId
+                ? { ...message, notSent: true as const }
+                : message,
+            ),
+          }));
+    }
 
     // Agents' settings changes (docs/design/agent-settings-changes.md),
     // folded through the reducer the server's projector uses.
