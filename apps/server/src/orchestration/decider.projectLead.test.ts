@@ -413,6 +413,33 @@ describe("lead chat passes", () => {
     expect(message?.notSent).toBe(true);
   });
 
+  it("marks a pass Stop dropped before it started, and says so to the lead", async () => {
+    const ran = (
+      await run(
+        await run(await leadAndHandMade(), pass()).then((r) => r.model),
+        sendQueued(PASS_MESSAGE),
+      )
+    ).model;
+    const stopped = (
+      await run(ran, {
+        type: "thread.lead-pass.not-run",
+        commandId: CommandId.make("not-run-stopped"),
+        threadId: OTHER,
+        messageId: PASS_MESSAGE,
+        reason: "stopped",
+        createdAt: now,
+      })
+    ).model;
+    const target = threadIn(stopped, OTHER);
+    expect(target.messages.find((entry) => entry.id === PASS_MESSAGE)?.notSent).toBe(true);
+    expect(
+      target.activities.find((entry) => entry.kind === LEAD_PASS_NOT_RUN_ACTIVITY_KIND)?.summary,
+    ).toBe("Not run: this thread was stopped before it started.");
+    expect(threadIn(stopped, LEAD).childRequests.pendingNotes[0]?.text).toContain(
+      "the user stopped that thread",
+    );
+  });
+
   it("marks a pass refused right before it reached the agent, and never runs it again", async () => {
     const ran = (
       await run(
@@ -426,6 +453,7 @@ describe("lead chat passes", () => {
       commandId: CommandId.make("not-run"),
       threadId: OTHER,
       messageId: PASS_MESSAGE,
+      reason: "ceiling",
       createdAt: now,
     });
     const target = threadIn(refused.model, OTHER);
@@ -444,6 +472,7 @@ describe("lead chat passes", () => {
           commandId: CommandId.make("not-run-again"),
           threadId: OTHER,
           messageId: PASS_MESSAGE,
+          reason: "stopped",
           createdAt: now,
         })
       ).events,

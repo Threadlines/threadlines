@@ -353,6 +353,8 @@ function passCeilingCancelEvents(
   base: () => Omit<OrchestrationEvent, "sequence" | "type" | "payload">,
   createdAt: string,
   from: "queue" | "start" = "queue",
+  /** Why, in the lead's note: the access went up (default), or the user stopped it. */
+  stopped = false,
 ): PlannedOrchestrationEvent[] {
   const origin = queued.fromThread;
   const lead =
@@ -413,7 +415,9 @@ function passCeilingCancelEvents(
               note: {
                 requestId: origin.requestId,
                 recipient: { participantId: origin.passedBy ?? null },
-                text: `The message you passed to "${thread.title}" (thread ${thread.id}) did not run: that thread has more access than this lead chat now. Tell the user, who can send it there.`,
+                text: stopped
+                  ? `The message you passed to "${thread.title}" (thread ${thread.id}) did not run: the user stopped that thread before it started. Tell the user, who can send it there.`
+                  : `The message you passed to "${thread.title}" (thread ${thread.id}) did not run: that thread has more access than this lead chat now. Tell the user, who can send it there.`,
                 createdAt,
               },
               createdAt,
@@ -2395,7 +2399,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         readModel,
         target,
         { messageId: message.id, fromThread: message.fromThread },
-        "Not run: this thread has more access than the lead chat.",
+        command.reason === "stopped"
+          ? "Not run: this thread was stopped before it started."
+          : "Not run: this thread has more access than the lead chat.",
         () =>
           withEventBase({
             aggregateKind: "thread",
@@ -2405,6 +2411,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           }),
         command.createdAt,
         "start",
+        command.reason === "stopped",
       );
     }
 

@@ -3858,6 +3858,79 @@ describe("ProviderCommandReactor", () => {
           ?.messages.find((entry) => entry.id === asMessageId("pass-message"));
       await waitFor(async () => (await passMessage())?.notSent === true);
     });
+
+    it("doesn't send a lead chat's pass marked never sent while its turn was prepared", async () => {
+      const threadId = ThreadId.make("marked-thread");
+      let hold: Deferred.Deferred<void> | null = null;
+      const harness = await createHarness({
+        beforeThreadRead: (id) =>
+          id === threadId && hold !== null ? Deferred.await(hold) : Effect.void,
+      });
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd-create-marked"),
+          threadId,
+          projectId: asProjectId("project-1"),
+          title: "Fix the flaky test",
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          branch: null,
+          worktreePath: null,
+          createdAt: "2026-01-01T00:00:00.000Z",
+        }),
+      );
+      hold = Effect.runSync(Deferred.make<void>());
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-marked-pass-turn"),
+          threadId,
+          message: {
+            messageId: asMessageId("pass-message"),
+            role: "user",
+            text: "Run the migration",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          fromThread: {
+            threadId: ThreadId.make("lead-thread"),
+            requestId: ChildRequestId.make("pass-request"),
+            kind: "request",
+            ceiling: {
+              runtimeMode: "approval-required",
+              interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            },
+          },
+          createdAt: "2026-01-01T00:00:01.000Z",
+        }),
+      );
+      // A retry accepted just before the mark landed: the mark lands first here.
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.lead-pass.not-run",
+          commandId: CommandId.make("cmd-mark-not-run"),
+          threadId,
+          messageId: asMessageId("pass-message"),
+          reason: "ceiling",
+          createdAt: "2026-01-01T00:00:02.000Z",
+        }),
+      );
+      Effect.runSync(Deferred.succeed(hold, undefined));
+      hold = null;
+
+      const failure = async () =>
+        (await harness.readModel()).threads
+          .find((entry) => entry.id === threadId)
+          ?.activities.find((activity) => activity.kind === "provider.turn.start.failed");
+      await waitFor(async () => (await failure()) !== undefined);
+      expect(await failure()).toMatchObject({
+        payload: { detail: expect.stringContaining("was never sent") },
+      });
+      expect(harness.sendTurn).not.toHaveBeenCalled();
+    });
   });
 
   it("picks up the room tools at the next turn, never in the middle of one", async () => {

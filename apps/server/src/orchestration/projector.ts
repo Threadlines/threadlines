@@ -1381,6 +1381,7 @@ export function projectEvent(
             ...(payload.composer !== undefined ? { composer: payload.composer } : {}),
             ...(payload.sentFrom !== undefined ? { sentFrom: payload.sentFrom } : {}),
             ...(payload.trigger !== undefined ? { trigger: payload.trigger } : {}),
+            ...(payload.notSent === true ? { notSent: true as const } : {}),
             turnId: payload.turnId,
             streaming: payload.streaming,
             createdAt: payload.createdAt,
@@ -1419,7 +1420,9 @@ export function projectEvent(
                     ...(entry.trigger === undefined && message.trigger !== undefined
                       ? { trigger: message.trigger }
                       : {}),
-                    ...(entry.notSent === true ? { notSent: true as const } : {}),
+                    ...(entry.notSent === true || message.notSent === true
+                      ? { notSent: true as const }
+                      : {}),
                   }
                 : entry,
             )

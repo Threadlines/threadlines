@@ -1666,6 +1666,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...(event.payload.composer !== undefined ? { composer: event.payload.composer } : {}),
             ...(event.payload.sentFrom !== undefined ? { sentFrom: event.payload.sentFrom } : {}),
             ...(event.payload.trigger !== undefined ? { trigger: event.payload.trigger } : {}),
+            ...(event.payload.notSent === true ? { notSent: true as const } : {}),
             isStreaming: event.payload.streaming,
             createdAt: previousMessage?.createdAt ?? event.payload.createdAt,
             updatedAt: event.payload.updatedAt,

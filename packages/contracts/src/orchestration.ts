@@ -4932,16 +4932,18 @@ const ThreadLeadPassCommand = Schema.Struct({
 });
 
 /**
- * A lead chat's pass was refused right before it went to the agent: the
- * thread's access was raised above its ceiling after the decider let it
- * through (docs/design/lead-chat.md, "Access"). Server only, from the
- * provider reactor. `threadId` is the thread it was passed to.
+ * A lead chat's pass never went to the agent after the queue let it go: the
+ * thread's access was raised above its ceiling, or Stop landed, while its
+ * turn was prepared (docs/design/lead-chat.md, "Access"). Server only, from
+ * the provider reactor. `threadId` is the thread it was passed to.
  */
 const ThreadLeadPassNotRunCommand = Schema.Struct({
   type: Schema.Literal("thread.lead-pass.not-run"),
   commandId: CommandId,
   threadId: ThreadId,
   messageId: MessageId,
+  /** `ceiling`: its access went above the pass's. `stopped`: Stop landed while it was prepared. */
+  reason: Schema.Literals(["ceiling", "stopped"]),
   createdAt: IsoDateTime,
 });
 
@@ -6042,6 +6044,8 @@ export const ThreadMessageSentPayload = Schema.Struct({
   streaming: Schema.Boolean,
   /** See OrchestrationMessage.imported. */
   imported: Schema.optional(Schema.Literal(true)),
+  /** See OrchestrationMessage.notSent: an imported message that never reached the agent there. */
+  notSent: Schema.optional(Schema.Literal(true)),
   /** Missing means legacy behavior for events written before assistant
    * segments carried an explicit turn-settlement decision. */
   completesTurn: Schema.optional(Schema.Boolean),

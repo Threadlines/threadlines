@@ -3102,6 +3102,7 @@ function applyEnvironmentOrchestrationEvent(
           ...(event.payload.sentFrom !== undefined ? { sentFrom: event.payload.sentFrom } : {}),
           ...(event.payload.trigger !== undefined ? { trigger: event.payload.trigger } : {}),
           ...(event.payload.imported ? { imported: true } : {}),
+          ...(event.payload.notSent === true ? { notSent: true as const } : {}),
           turnId: event.payload.turnId,
           streaming: event.payload.streaming,
           createdAt: event.payload.createdAt,
