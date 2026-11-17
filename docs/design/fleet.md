@@ -986,7 +986,7 @@ Nothing in Part 3's transfer, Part 3b's queue and barrier, Part 3c's batches or 
 
 ### The rule
 
-**What was going to run by itself here runs by itself there.** A goal that was working, a check-back that was due, a message waiting its turn, auto-fix watching a pull request: each keeps going on the other computer without the user setting it up again. A thread with none of these still arrives idle, as today. (Will's call 1 below: the default is that this starts work on arrival.)
+**What was going to run by itself here runs by itself there, fenced.** A goal that was working, a check-back that was due, a message waiting its turn: each keeps going on the other computer without the user setting it up again, as far as the link's permission allows (its access ceiling caps the thread's mode). A thread with none of these still arrives idle, as today. (Will's call 1 below: the default is that this starts work on arrival.) Two things are the other computer's user's to give, not the move's (Security changes, below): pull request switches arrive off, and the thread works behind the link fence (no Threadlines tools) until that user sends it a message.
 
 Three more rules follow from the requirements:
 
@@ -996,14 +996,14 @@ Three more rules follow from the requirements:
 
 ### What each one does
 
-| The thread has                          | What happens                                                                                                                                                         | Still refused                                                                                                                                     |
-| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| (a) A goal                              | **Carried.** The goal, its budget and its counts come along. One that was working is picked up there by itself. One the user had paused arrives paused, with Resume. | Nothing. An agent picked there that can't keep goals gets none: the arrival line says so and quotes the goal.                                     |
-| (b) Check-backs                         | **Set up again there.** The agent's timers end with its process here. On arrival the agent is told what it had planned and when, and sets them again itself.         | Nothing. An agent picked there that can't set check-backs is still told once, on arrival.                                                         |
-| (c) Pull request auto-fix or auto-merge | **Carried.** The switches and the linked pull requests come along and start watching there. They stop here when the thread freezes.                                  | Nothing. They arrive switched off, with why, when the thread's branch had to be renamed there.                                                    |
-| (d) A General Chats thread              | **Carried.** The chat and every file in its folder land in General chats on the other computer.                                                                      | A folder over the move's 100 MB limit, with its size.                                                                                             |
-| (e) Queued messages                     | **Carried.** The user's own queued messages wait here while the move waits, travel with their attachments, and are sent there in order.                              | A queued message from a scheduled task, another thread or an outside assistant: "…is waiting its turn. Move once it has been sent, or remove it." |
-| (f) A plan waiting                      | **Carried.** The thread's plans come along. The waiting one arrives waiting, and Implement and Dismiss work there.                                                   | Nothing.                                                                                                                                          |
+| The thread has                          | What happens                                                                                                                                                            | Still refused                                                                                                                                     |
+| --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| (a) A goal                              | **Carried.** The goal, its budget and its counts come along. One that was working is picked up there by itself. One the user had paused arrives paused, with Resume.    | Nothing. An agent picked there that can't keep goals gets none: the arrival line says so and quotes the goal.                                     |
+| (b) Check-backs                         | **Set up again there.** The agent's timers end with its process here. On arrival the agent is told what it had planned and when, and sets them again itself.            | Nothing. An agent picked there that can't set check-backs is still told once, on arrival.                                                         |
+| (c) Pull request auto-fix or auto-merge | **Linked, off.** The linked pull requests come along; every switch arrives off. The thread's notice there says what was on, with Turn on. They stop here at the freeze. | Nothing. When the branch had to be renamed there, there is no Turn on: the arrival line says why.                                                 |
+| (d) A General Chats thread              | **Carried.** The chat and every file in its folder land in General chats on the other computer.                                                                         | A folder over the move's 100 MB limit, with its size.                                                                                             |
+| (e) Queued messages                     | **Carried.** The user's own queued messages wait here while the move waits, travel with their attachments, and are sent there in order.                                 | A queued message from a scheduled task, another thread or an outside assistant: "…is waiting its turn. Move once it has been sent, or remove it." |
+| (f) A plan waiting                      | **Carried.** The thread's plans come along. The waiting one arrives waiting, and Implement and Dismiss work there.                                                      | Nothing.                                                                                                                                          |
 
 All of it only when the other computer says it takes it (Capabilities). Against an older computer, every one of these is refused exactly as today.
 
@@ -1012,16 +1012,16 @@ All of it only when the other computer says it takes it (Capabilities). Against 
 - **Move dialog** (single thread and batch). Under the agent line from Part 3d, one quiet line per thing that comes along, in the server's words:
   - "Its goal carries on there." or "Its goal arrives paused."
   - "Its agent sets its 2 check-backs again there."
-  - "Auto-fix keeps watching pull request #212 from there."
+  - "Auto-fix for pull request #212 arrives off, for you to turn on there."
   - "2 queued messages are sent there."
   - "The plan waits for you there."
   - General Chats: "Lands in General chats on Windows PC · 14 files". The branch and "Staged changes arrive as unstaged changes" lines don't show.
 - **Warnings**, same place, when something won't work as it did:
-  - "GitHub isn't signed in on Windows PC. Auto-fix waits there until you sign in."
+  - "GitHub isn't signed in on Windows PC. Sign in there before you turn auto-fix on."
   - "Codex on Windows PC can't set check-backs. It's told once what was planned."
   - Claude with a working goal: "It's working toward its goal. Move when it's done waits until it gets there."
 - **The batch dialog and the quit dialog** (Part 3c) stop greying these threads out. Working General Chats threads are listed with the project threads.
-- **On the other computer**, the "Moved here from Mac" line lists what arrived ("its goal · 2 queued messages · auto-fix for #212") and, on a second line, anything that didn't ("Auto-fix is off here: this computer already has a branch named `fix-login`, so pushes from this thread wouldn't reach pull request #212.").
+- **On the other computer**, the "Moved here from Mac" line lists what arrived ("its goal · 2 queued messages · pull request #212") and, on a second line, anything that didn't, or waits for the user there ("Auto-fix was on for pull request #212 on Mac. It's off here until you turn it on." "Its agent can't use other threads, rooms or schedules here until you send it a message."). A notice above the message box says the same about the switches, with Turn on.
 - **The arrival message.** When the agent has to be told something (a goal to carry on with, check-backs to set again), the first message on the other computer is one Threadlines wrote. It shows as a quiet system-written row, like the "Continue where you left off." row after a restart, not as something the user typed.
 - **On this computer**, the read-only copy shows no queue, no armed switches and no goal controls. If the move didn't happen: "The move to Windows PC didn't happen. Your goal and check-backs are back on here."
 
@@ -1115,14 +1115,14 @@ Not for `gone` (the thread was archived or deleted). To make this rare, the queu
 
 ### (c) Pull request auto-fix and auto-merge
 
-**Decision: carry the switches, stop them here at the freeze.** GitHub-side auto-merge (`gh pr merge --auto`) lives on GitHub and needs nothing.
+**Decision: carry the links, not the switches; stop them here at the freeze.** (Changed by the security review, below: this section first carried the switches on.) GitHub-side auto-merge (`gh pr merge --auto`) lives on GitHub and needs nothing.
 
 - **Here.** `PullRequestAutomationWatcher` skips any thread with `pendingMove` or `move`: no look, no baseline step, no turn, no merge. Today it knows nothing of moves. Its merge is a direct `gh` call that no command guard sees, so an armed frozen thread would still merge from this computer. A turn refused by the move guard also still steps the baseline, which would swallow a failure. `decideMoveComplete` turns the switches off on the read-only copy (`thread.pull-request-automation-changed`). A dropped move leaves them on, and the watcher picks up where its baseline was.
 - **Manifest:** `thread.state.pullRequests { autoFix, autoMerge, linked: [{ number, url, autoFix, autoMerge }] }`, and `git.upstreamBranch?` (the branch on the project's remote that this branch tracks).
-- **Import:** `thread.pull-request-linked` for each, then `thread.pull-request-automation-changed`, in the import decision. The watcher there sees a switch turned on while it runs, so it treats what is failing now as news. That is the right start: a check that failed during the move gets fixed. Its turn cap starts again.
+- **Import:** `thread.pull-request-linked` for each, every switch off. What was on goes to `movedFrom.pullRequestSwitches`; the thread's notice and the arrival line offer it, and Turn on sends the normal `thread.pull-request-automation.set` from the user's client, once per pull request. Any switch set there clears the offer (`clearsMovedSwitches` on `thread.pull-request-automation-changed`). The watcher sees a switch turned on while it runs, so it treats what is failing now as news. Its turn cap starts again.
 - **The branch keeps its upstream.** The import creates the branch with no upstream today. The thread's own pull request is found by upstream name, else by local name, and the "wait for unpushed commits" guard before a merge compares against the upstream. A moved thread can arrive with commits that were never pushed. At the `worktree` stage, when `<remote>/<upstreamBranch>` exists after the fetch, the import sets `branch.<name>.remote` and `.merge`. For every move, not only armed ones.
-- **Arrives off, with why,** when the branch had to be renamed (`<branch>-from-<computer>`): a plain push from it would not reach the pull request. Also when the upstream couldn't be set on an armed thread.
-- **No GitHub sign-in there** (Will's call 2). Default: move anyway, switches on, and say so at both ends. The watcher there fails quietly today (logs only), so the arrival line carries it: "Auto-fix came along, but GitHub isn't signed in on this computer. Sign in and it starts."
+- **No Turn on, with why,** when the branch had to be renamed (`<branch>-from-<computer>`): a plain push from it would not reach the pull request. Also when the upstream couldn't be set on an armed thread.
+- **No GitHub sign-in there** (Will's call 2). Move anyway, and say so at both ends: "GitHub isn't signed in on this computer. Sign in before you turn them on."
 - **Asking the target.** New `peer.move.readiness { canonicalKey } → { gitHubReady?: boolean }`, called by the preview only for a thread with armed switches and a target with `moveThreadState`. It runs the probe behind `server.discoverSourceControl`. Not on `peer.describe`: every preview would pay for a `gh` call.
 - **Risks.**
   - Whether `remoteStatus` reports unpushed commits with no upstream is unverified. If it reports none, auto-merge could merge a pull request that lacks the thread's local commits. Setting the upstream closes it. Test it with a real repo.
@@ -1195,7 +1195,7 @@ Not for `gone` (the thread was archived or deleted). To make this rare, the queu
 Each has a default written into this plan, so the build can start. Changing one is small.
 
 1. **Work starts on arrival.** Default: yes. A goal that was working, check-backs and queued messages make the other computer start a turn by itself when the thread lands (under Ask first, when its user allows the move). That spends that computer's usage with nobody watching, which is what a goal or a check-back already does. The other choice: everything arrives held, with one "Pick up here" button on the thread. It is the same build with the kick moved from `LinkMoves` to that button.
-2. **Auto-fix, and the other computer has no GitHub sign-in.** Default: warn and move. Refusing would block a shutdown over something fixable later, and the switches would sit idle on a computer that is off anyway.
+2. **Auto-fix, and the other computer has no GitHub sign-in.** Default: warn and move. Refusing would block a shutdown over something fixable later. (The switches arrive off now either way: Security changes, below.)
 3. **Check-backs Claude saved to disk.** Default: bring them like the others, through the arrival message. The copy Claude saved stays in this computer's folder. The other choice: keep refusing those, with the honest words.
 4. **General Chats files.** Default: every file in the chat's folder, up to 100 MB, refused above that with the size. The other choice: offer "move without its files".
 5. **A live check on real agents.** Three facts decide details here and can't be read from our code: whether Claude re-arms a goal on a forked resume, where it keeps saved check-backs, and how Codex takes a goal set during a turn. Checking them needs a few real Claude and Codex turns. Without an OK the build follows this plan's safe side (set the goal when the provider holds none; "Run CronList" first) and the report says a real resume is unverified.
@@ -1269,6 +1269,29 @@ These win over the text above where they differ.
 6. **No plan is dropped silently.**
    - Every proposed plan is carried, up to 100. Past that, the oldest stay behind, and the dialog and the "Moved here" line say "N older plans stayed on <source>".
    - The newest plan, the one with Implement, always comes.
+
+### Security changes (Nov 17, PR #976 review)
+
+These win over everything above in Part 3e. What a move carries came from another computer, so it gets no more trust than work that computer's agent starts here over the link.
+
+1. **Pull request switches arrive off, every one.**
+   - A switch acts with this computer's GitHub sign-in: auto-fix starts turns, auto-merge merges. The other computer can't turn one on here.
+   - The linked pull requests still come along, so the thread's pull request rows show.
+   - What was on rides in `ThreadMovedFrom.pullRequestSwitches`. The "Moved here" line says it ("Auto-fix was on for pull request #212 on Mac. It's off here until you turn it on."). So does a notice above the message box, with Turn on and a dismiss.
+   - Turn on sends the normal `thread.pull-request-automation.set` from the user's client, one per pull request. Never from the peer.
+   - Any switch the user sets here clears the offer (`clearsMovedSwitches`).
+2. **A moved thread works behind the link fence until the user here takes it over.**
+   - The import sets `ThreadMovedFrom.fenced`. A new optional field, not a new kind of thread.
+   - Every place that fences a thread another computer's agent started (`remoteOrigin`) fences this one too, through one rule (`orchestration/linkFence.ts`):
+     - the room and guide tools the reactor gives the agent;
+     - the thread and room tool handlers' guard, `thread_read` and `thread_list` included;
+     - the schedule tools;
+     - continuing it on a schedule.
+   - Work still picks up on arrival as the link's permission allows, fenced. Its mode stays capped by the link's access ceiling, as before.
+   - **The fence lifts** when a message the user sent on this computer starts a turn in the thread: `liftsMoveFence` on that `thread.turn-start-requested`, which clears `fenced` in every projection. A restart keeps whatever the projection holds.
+   - **What doesn't lift it:** the arrival message, queued messages the move carried (`imported` on the queued entry), and anything Threadlines or an agent sends: another thread, an outside assistant, a scheduled task, a restart or usage-limit resume, pull request auto-fix (`keepsMoveFence`).
+   - A session started fenced is restarted with resume at the next start after the lift, so the agent gets its tools.
+   - The "Moved here" line says it: "Its agent can't use other threads, rooms or schedules here until you send it a message."
 
 ## Part 4: The rail and the Fleet page
 

@@ -65,6 +65,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import { childRequestCommandId, derivedUuid } from "../orchestration/childRequestIds.ts";
+import { isLinkFenced, linkFenceRefusal } from "../orchestration/linkFence.ts";
 import {
   checkoutMoveRefusal,
   childHasLiveWork,
@@ -458,11 +459,20 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
       if (thread === undefined) {
         return { refusal: { outcome: "refused" as const, detail: GONE } };
       }
-      // A thread another computer's agent started here never gets these
+      // A thread another computer's agent started here never gets these, nor
+      // one that moved here until the user here takes it over
       // (docs/design/fleet.md, "Fence"); its runtime has no thread tools, so
-      // this only guards a stale credential.
-      if ((thread.remoteOrigin ?? null) !== null) {
-        return { refusal: { outcome: "not_allowed" as const, detail: REMOTE_ORIGIN_REFUSAL } };
+      // this guards a stale credential, and a runtime from before the move.
+      if (isLinkFenced(thread)) {
+        return {
+          refusal: {
+            outcome: "not_allowed" as const,
+            detail:
+              (thread.remoteOrigin ?? null) !== null
+                ? REMOTE_ORIGIN_REFUSAL
+                : linkFenceRefusal(thread, "thread tools"),
+          },
+        };
       }
       return { mode, thread };
     });

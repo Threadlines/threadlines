@@ -99,6 +99,7 @@ import {
 import { getThreadFromEnvironmentState } from "./threadDerivation";
 import { threadMoveStatus } from "./threadMove";
 import {
+  movedFromAfter,
   nextThreadMoveState,
   type ThreadMoveEvent,
   type ThreadMoveState,
@@ -719,7 +720,9 @@ function movedFromEqual(
     : a.environmentId === b.environmentId &&
         a.label === b.label &&
         a.threadId === b.threadId &&
-        a.movedAt === b.movedAt;
+        a.movedAt === b.movedAt &&
+        a.fenced === b.fenced &&
+        JSON.stringify(a.pullRequestSwitches) === JSON.stringify(b.pullRequestSwitches);
 }
 
 /** The child-thread fields a sidebar row reads, from a shell or a loaded thread. */
@@ -2775,6 +2778,9 @@ function applyEnvironmentOrchestrationEvent(
             autoFix,
             autoMerge,
           }),
+          ...(event.payload.clearsMovedSwitches === true
+            ? { movedFrom: movedFromAfter(thread.movedFrom, { clearsSwitches: true }) }
+            : {}),
           updatedAt: event.payload.updatedAt,
         }));
       }
@@ -2782,6 +2788,9 @@ function applyEnvironmentOrchestrationEvent(
         ...thread,
         ...(autoFix === undefined ? {} : { pullRequestAutoFix: autoFix }),
         ...(autoMerge === undefined ? {} : { pullRequestAutoMerge: autoMerge }),
+        ...(event.payload.clearsMovedSwitches === true
+          ? { movedFrom: movedFromAfter(thread.movedFrom, { clearsSwitches: true }) }
+          : {}),
         updatedAt: event.payload.updatedAt,
       }));
     }

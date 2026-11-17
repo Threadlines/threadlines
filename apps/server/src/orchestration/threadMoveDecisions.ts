@@ -1111,10 +1111,15 @@ function readOnlyCopyEvents(
   ];
 }
 
+/** The "Moved here" line's word on the fence a moved thread works behind (ThreadMovedFrom.fenced). */
+const MOVED_FENCE_WORDS =
+  "Its agent can't use other threads, rooms or schedules here until you send it a message.";
+
 /**
  * A moved thread arriving: created with its history and the boundary that
  * says where it came from, in one decision. Refused when the thread exists,
- * so a repeated import is no second copy.
+ * so a repeated import is no second copy. Every import comes from another
+ * computer, so the thread arrives fenced (docs/design/fleet.md, Part 3e).
  */
 export function decideThreadImport(
   readModel: OrchestrationReadModel,
@@ -1141,7 +1146,8 @@ export function decideThreadImport(
       interactionMode: command.interactionMode,
       branch: command.branch,
       worktreePath: command.worktreePath,
-      movedFrom: command.movedFrom,
+      // It came from another computer: fenced until the user here sends it a message.
+      movedFrom: { ...command.movedFrom, fenced: true },
       historySeedOwed: true,
       ...(command.nativeSession !== undefined ? { nativeSession: command.nativeSession } : {}),
       createdAt: command.createdAt,
@@ -1178,6 +1184,7 @@ export function decideThreadImport(
     payload: { threadId: command.threadId, activity: { ...activity, turnId: null } },
   }));
   const arrival = command.arrival;
+  const left = [...(arrival?.left ?? []), MOVED_FENCE_WORDS];
   const boundary: PlannedEvent = {
     ...base(),
     type: "thread.activity-appended",
@@ -1199,7 +1206,7 @@ export function decideThreadImport(
           ...(arrival !== undefined && arrival.brought.length > 0
             ? { brought: arrival.brought }
             : {}),
-          ...(arrival !== undefined && arrival.left.length > 0 ? { left: arrival.left } : {}),
+          left,
         },
         turnId: null,
         createdAt: command.createdAt,
@@ -1211,9 +1218,11 @@ export function decideThreadImport(
 
 /**
  * What a moved thread had going, written with it (docs/design/fleet.md, Part
- * 3e): its goal as it arrives, its pull requests and their switches, its
- * plans, and its queue (the arrival message first). The queue's events are
- * marked `imported`: nothing sends on them; the move's own kick sends its head.
+ * 3e): its goal as it arrives, its pull requests, its plans, and its queue
+ * (the arrival message first). The pull requests' switches stay off whatever
+ * the command says: only the user here turns one on (the offer is
+ * `movedFrom.pullRequestSwitches`). The queue's events are marked `imported`:
+ * nothing sends on them; the move's own kick sends its head.
  */
 function importedState(
   command: CommandOf<"thread.import">,
@@ -1236,31 +1245,6 @@ function importedState(
         ...base(),
         type: "thread.pull-request-linked",
         payload: { threadId, number: linked.number, url: linked.url, linkedAt: at },
-      });
-      if (linked.autoFix || linked.autoMerge !== null) {
-        events.push({
-          ...base(),
-          type: "thread.pull-request-automation-changed",
-          payload: {
-            threadId,
-            pullRequestNumber: linked.number,
-            autoFix: linked.autoFix,
-            autoMerge: linked.autoMerge,
-            updatedAt: at,
-          },
-        });
-      }
-    }
-    if (pullRequests.autoFix || pullRequests.autoMerge !== null) {
-      events.push({
-        ...base(),
-        type: "thread.pull-request-automation-changed",
-        payload: {
-          threadId,
-          autoFix: pullRequests.autoFix,
-          autoMerge: pullRequests.autoMerge,
-          updatedAt: at,
-        },
       });
     }
   }
@@ -1286,7 +1270,8 @@ function importedState(
           },
         ]
       : []),
-    ...(command.queuedFollowUps ?? []),
+    // Sent there by the user, but here by the move: no turn of theirs lifts the fence.
+    ...(command.queuedFollowUps ?? []).map((entry) => ({ ...entry, imported: true as const })),
   ];
   for (const followUp of queue) {
     events.push({

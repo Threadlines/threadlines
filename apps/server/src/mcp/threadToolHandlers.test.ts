@@ -1388,6 +1388,37 @@ describe("thread tools across linked computers", () => {
       expect(tools.dispatched).toEqual([]);
     }),
   );
+
+  it.effect(
+    "gives a thread that moved here no thread tools until the user here takes it over",
+    () =>
+      Effect.gen(function* () {
+        const movedFrom = {
+          environmentId: EnvironmentId.make("env-windows"),
+          label: "Windows PC",
+          threadId: ThreadId.make("windows-thread"),
+          movedAt: "2026-01-01T00:00:00.000Z",
+        };
+        const fenced = yield* makeTools({
+          links: fakeLinks(),
+          caller: makeThread({ movedFrom: { ...movedFrom, fenced: true } }),
+        });
+        const read = yield* fenced.handlers.thread_read(mainCaller(), { threadId: CHILD });
+        const listed = yield* fenced.handlers.thread_list(mainCaller(), { scope: "project" });
+        expect(read.outcome).toBe("not_allowed");
+        expect(read.detail).toContain("moved here from Windows PC");
+        expect(listed.outcome).toBe("not_allowed");
+        // Once it has: the same thread reads as any other.
+        const lifted = yield* makeTools({
+          links: fakeLinks(),
+          caller: makeThread({ movedFrom }),
+          others: [makeChild()],
+        });
+        expect(
+          (yield* lifted.handlers.thread_read(mainCaller(), { threadId: CHILD })).outcome,
+        ).toBe("ok");
+      }),
+  );
 });
 
 describe("thread_move", () => {

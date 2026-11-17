@@ -223,7 +223,7 @@ describe("isThreadMoveOffered", () => {
 describe("what comes along", () => {
   it("keeps the notes for any agent, and those naming the agent picked", () => {
     const notes = [
-      { words: "GitHub isn't signed in on Mac mini. Auto-fix waits there until you sign in." },
+      { words: "GitHub isn't signed in on Mac mini. Sign in there before you turn auto-fix on." },
       {
         words: "Codex on Mac mini can't set check-backs. It's told once what was planned.",
         instanceIds: ["codex"],

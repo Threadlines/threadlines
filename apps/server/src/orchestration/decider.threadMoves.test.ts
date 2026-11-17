@@ -1344,21 +1344,23 @@ describe("a move carries what its thread had going (Part 3e)", () => {
       }),
     );
     const planned = Array.isArray(events) ? events : [events];
+    // The pull request is linked, its switches stay off: the peer can't
+    // turn one on here, whatever its command says.
     expect(planned.map((event) => event.type)).toEqual([
       "thread.created",
       "thread.goal-state-set",
       "thread.pull-request-linked",
-      "thread.pull-request-automation-changed",
-      "thread.pull-request-automation-changed",
       "thread.proposed-plan-upserted",
       "thread.follow-up-queued",
       "thread.follow-up-queued",
       "thread.activity-appended",
     ]);
+    // It arrives fenced.
+    expect(planned[0]?.payload).toMatchObject({ movedFrom: { fenced: true } });
     const queuedEvents = planned.filter((event) => event.type === "thread.follow-up-queued");
     expect(queuedEvents.map((event) => event.payload)).toMatchObject([
       { imported: true, followUp: { messageId: "m-arrival", afterMove: true } },
-      { imported: true, followUp: { messageId: "q-there" } },
+      { imported: true, followUp: { messageId: "q-there", imported: true } },
     ]);
     expect(planned.at(-1)?.payload).toMatchObject({
       activity: {
@@ -1407,6 +1409,155 @@ describe("a move carries what its thread had going (Part 3e)", () => {
       "thread.goal-state-set",
       "thread.follow-up-queued",
     ]);
+  });
+});
+
+describe("what a moved thread is trusted with (Part 3e, security changes)", () => {
+  const ARRIVED = ThreadId.make("thread-arrived-fenced");
+  const PULL_REQUEST = { number: 212, url: "https://github.com/acme/w/pull/212" };
+  const imported = async () =>
+    (
+      await apply(await seeded(), {
+        type: "thread.import",
+        commandId: nextCommandId(),
+        threadId: ARRIVED,
+        projectId: PROJECT,
+        title: "Fix the flaky test",
+        modelSelection,
+        runtimeMode: "auto",
+        interactionMode: "default",
+        branch: "fix/flaky",
+        worktreePath: "/worktrees/moved-fenced",
+        movedFrom: {
+          ...MAC_MINI,
+          threadId: THREAD,
+          movedAt: now,
+          pullRequestSwitches: {
+            autoFix: false,
+            autoMerge: null,
+            linked: [{ ...PULL_REQUEST, autoFix: true, autoMerge: "squash" }],
+          },
+        },
+        messages: [],
+        activities: [],
+        pullRequests: {
+          autoFix: false,
+          autoMerge: null,
+          linked: [{ ...PULL_REQUEST, autoFix: false, autoMerge: null }],
+        },
+        queuedFollowUps: [
+          {
+            messageId: MessageId.make("q-there"),
+            text: "and then this",
+            attachments: [],
+            runtimeMode: "auto",
+            interactionMode: "default",
+            createdAt: now,
+          },
+        ],
+        arrival: {
+          message: { messageId: MessageId.make("m-arrival"), text: "This thread moved." },
+          brought: ["pull request #212"],
+          left: [],
+        },
+        createdAt: now,
+      })
+    ).model;
+  const userTurn = (extra: Record<string, unknown> = {}): OrchestrationCommand =>
+    ({
+      type: "thread.turn.start",
+      commandId: nextCommandId(),
+      threadId: ARRIVED,
+      message: {
+        messageId: MessageId.make(`m-${sequence}`),
+        role: "user",
+        text: "Carry on",
+        attachments: [],
+      },
+      runtimeMode: "auto",
+      interactionMode: "default",
+      createdAt: now,
+      ...extra,
+    }) as OrchestrationCommand;
+  const sendQueued = (messageId: string): OrchestrationCommand => ({
+    type: "thread.follow-up.send-queued",
+    commandId: nextCommandId(),
+    threadId: ARRIVED,
+    messageId: MessageId.make(messageId),
+    createdAt: now,
+  });
+
+  it("an imported pull request switch arrives off, and the user's own turn-on works and ends the offer", async () => {
+    let model = await imported();
+    const arrived = threadOf(model, ARRIVED);
+    expect(arrived.linkedPullRequests).toMatchObject([
+      { number: 212, autoFix: false, autoMerge: null },
+    ]);
+    expect(arrived.movedFrom?.pullRequestSwitches?.linked).toMatchObject([
+      { number: 212, autoFix: true, autoMerge: "squash" },
+    ]);
+
+    let refusal: string | null;
+    ({ model, refusal } = await apply(model, {
+      type: "thread.pull-request-automation.set",
+      commandId: nextCommandId(),
+      threadId: ARRIVED,
+      pullRequestNumber: 212,
+      autoFix: true,
+      autoMerge: "squash",
+    }));
+    expect(refusal).toBeNull();
+    const turnedOn = threadOf(model, ARRIVED);
+    expect(turnedOn.linkedPullRequests).toMatchObject([
+      { number: 212, autoFix: true, autoMerge: "squash" },
+    ]);
+    expect(turnedOn.movedFrom?.pullRequestSwitches).toBeUndefined();
+    expect(turnedOn.movedFrom?.fenced).toBe(true);
+  });
+
+  it("the arrival and the move's queued messages leave the fence up; the user's own message here lifts it", async () => {
+    let model = await imported();
+    expect(threadOf(model, ARRIVED).movedFrom?.fenced).toBe(true);
+    // The arrival kick, then the user's message from there.
+    let refusal: string | null;
+    ({ model, refusal } = await apply(model, sendQueued("m-arrival")));
+    expect(refusal).toBeNull();
+    expect(threadOf(model, ARRIVED).queuedFollowUps).toHaveLength(1);
+    expect(threadOf(model, ARRIVED).movedFrom?.fenced).toBe(true);
+    model = await project(model, "thread.session-set", {
+      threadId: ARRIVED,
+      session: {
+        threadId: ARRIVED,
+        status: "ready",
+        providerName: "codex",
+        runtimeMode: "auto",
+        activeTurnId: null,
+        lastError: null,
+        updatedAt: now,
+      },
+    });
+    ({ model, refusal } = await apply(
+      model,
+      sendQueued(threadOf(model, ARRIVED).queuedFollowUps![0]!.messageId),
+    ));
+    expect(refusal).toBeNull();
+    expect(threadOf(model, ARRIVED).queuedFollowUps ?? []).toHaveLength(0);
+    expect(threadOf(model, ARRIVED).movedFrom?.fenced).toBe(true);
+
+    // Pull request auto-fix, and a restart's resume, are Threadlines' words, not the user's.
+    for (const extra of [{ keepsMoveFence: true }, { trigger: "serverRestart" }]) {
+      const decided = await Effect.runPromise(
+        decideOrchestrationCommand({ readModel: model, command: userTurn(extra) }),
+      );
+      const planned = Array.isArray(decided) ? decided : [decided];
+      const requested = planned.find((event) => event.type === "thread.turn-start-requested");
+      expect(requested?.payload).not.toHaveProperty("liftsMoveFence");
+    }
+
+    ({ model } = await apply(model, userTurn()));
+    expect(threadOf(model, ARRIVED).movedFrom?.fenced).toBeUndefined();
+    // The rest of where it came from stays.
+    expect(threadOf(model, ARRIVED).movedFrom).toMatchObject({ label: "Mac mini" });
   });
 });
 

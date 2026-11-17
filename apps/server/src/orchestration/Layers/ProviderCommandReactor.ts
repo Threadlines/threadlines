@@ -159,6 +159,7 @@ import { handOffReplyText } from "../agentRequestDecisions.ts";
 import { isCancelledReport } from "../childThreadDecisions.ts";
 import { NO_BACKGROUND_TASKS } from "../sessionBackgroundTasks.ts";
 import { isRestorePaid } from "../threadMoveDecisions.ts";
+import { isLinkFenced } from "../linkFence.ts";
 import { SideAnswerStartError } from "../Errors.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderAdapterValidationError = Schema.is(ProviderAdapterValidationError);
@@ -634,6 +635,15 @@ const make = Effect.gen(function* () {
    * restart there is no live session left to move.
    */
   const threadsMovedAwayFromSession = new Set<ThreadId>();
+
+  /**
+   * Sessions started behind the link fence (linkFence.ts), which got no
+   * Threadlines tools, not even the guide. A moved thread's fence lifts with
+   * the user's message here, and its next start restarts the session (with
+   * resume) to pick them up. In memory only: after a server restart every
+   * session starts again with the thread as it is then.
+   */
+  const sessionsStartedFenced = new Set<ThreadId>();
 
   /**
    * Sessions that came up without their conversation (the provider couldn't
@@ -1401,10 +1411,11 @@ const make = Effect.gen(function* () {
     // started here gets none of them: it must not reach other threads here
     // (docs/design/fleet.md, "Fence"). Nor does one an outside agent started:
     // through its tools the agent could reach past what it was allowed
-    // (docs/design/outside-agents.md, "Fence").
+    // (docs/design/outside-agents.md, "Fence"). Nor does one that moved here
+    // with work from the other computer, until the user here sends it a
+    // message (Part 3e).
     const scheduledRunTools = (thread.scheduledRun ?? null) !== null && participantId === null;
-    const fencedOff =
-      (thread.remoteOrigin ?? null) !== null || (thread.outsideOrigin ?? null) !== null;
+    const fencedOff = isLinkFenced(thread) || (thread.outsideOrigin ?? null) !== null;
     const roomToolsWanted =
       !fencedOff &&
       (hasAgentRecords(thread) ||
@@ -1415,6 +1426,10 @@ const make = Effect.gen(function* () {
     // it can't start threads, its agent can say where that is turned on
     // (docs/design/app-guide.md, "The tool").
     const guideTools = !fencedOff && !roomToolsWanted;
+    const noteSessionFence = Effect.sync(() => {
+      if (fencedOff) sessionsStartedFenced.add(sessionKey);
+      else sessionsStartedFenced.delete(sessionKey);
+    });
 
     const desiredRuntimeMode = early?.runtimeMode ?? thread.runtimeMode;
     const requestedModelSelection = options?.modelSelection;
@@ -1637,6 +1652,7 @@ const make = Effect.gen(function* () {
       }).pipe(
         Effect.andThen(
           providerService.startSession(sessionKey, sessionStartInput(input)).pipe(
+            Effect.tap(() => noteSessionFence),
             withMetrics({
               timer: providerSessionStartDuration,
               attributes: { provider: preferredProvider, startKind },
@@ -1770,6 +1786,7 @@ const make = Effect.gen(function* () {
         (activeSession === undefined || (yield* providerService.isEarlySession(sessionKey)))
       ) {
         yield* providerService.startEarlySession(sessionKey, sessionStartInput());
+        yield* noteSessionFence;
       }
       return { sessionThreadId: sessionKey, nativeForkApplied: false };
     }
@@ -1908,10 +1925,13 @@ const make = Effect.gen(function* () {
             : Effect.void;
 
       // A runtime started before its thread became a room, or before invites
-      // were turned on, has no room tools. It gets them by restarting with
-      // resume, once; an adapter that could not attach them reports false,
-      // and restarting again would not help.
-      const roomToolsMissing = roomToolsWanted && activeSession?.roomTools === undefined;
+      // were turned on, or behind a fence that has lifted since, has no room
+      // tools (or no guide). It gets them by restarting with resume, once; an
+      // adapter that could not attach them reports false, and restarting
+      // again would not help.
+      const roomToolsMissing =
+        (roomToolsWanted && activeSession?.roomTools === undefined) ||
+        (!fencedOff && activeSession !== undefined && sessionsStartedFenced.has(sessionKey));
       // An agent outside text reached sheds it by starting fresh for a turn
       // that isn't from outside: the old runtime, and whatever it left
       // running, loses its token.

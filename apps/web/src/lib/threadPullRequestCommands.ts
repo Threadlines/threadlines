@@ -2,6 +2,7 @@ import type {
   DispatchResult,
   PullRequestMergeMethod,
   ScopedThreadRef,
+  ThreadMovedFrom,
 } from "@threadlines/contracts";
 
 import { readEnvironmentApi } from "../environmentApi";
@@ -96,4 +97,39 @@ export async function setThreadPullRequestDismissed(
     number: pullRequestNumber,
     dismissed,
   });
+}
+
+/**
+ * Turn back on the switches a moved thread had on before its move
+ * (ThreadMovedFrom.pullRequestSwitches, docs/design/fleet.md, Part 3e): one
+ * `thread.pull-request-automation.set` per pull request, the user's own, as
+ * if each switch were flipped here. The first clears the offer. Rejects when
+ * the environment is not connected or a command is refused.
+ */
+export async function turnOnMovedPullRequestSwitches(
+  threadRef: ScopedThreadRef,
+  switches: NonNullable<ThreadMovedFrom["pullRequestSwitches"]>,
+): Promise<void> {
+  const api = readEnvironmentApi(threadRef.environmentId);
+  if (!api) {
+    throw new Error(`Environment ${threadRef.environmentId} is not connected.`);
+  }
+  const targets = [
+    { pullRequest: null, autoFix: switches.autoFix, autoMerge: switches.autoMerge },
+    ...switches.linked.map((entry) => ({
+      pullRequest: { number: entry.number, url: entry.url },
+      autoFix: entry.autoFix,
+      autoMerge: entry.autoMerge,
+    })),
+  ].filter((target) => target.autoFix || target.autoMerge !== null);
+  for (const target of targets) {
+    await api.orchestration.dispatchCommand({
+      type: "thread.pull-request-automation.set",
+      commandId: newCommandId(),
+      threadId: threadRef.threadId,
+      ...switchTarget(target.pullRequest),
+      ...(target.autoFix ? { autoFix: true } : {}),
+      ...(target.autoMerge !== null ? { autoMerge: target.autoMerge } : {}),
+    });
+  }
 }
