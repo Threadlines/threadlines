@@ -115,11 +115,18 @@ function buildEntries(input: {
     readonly createdAt: string;
   }>;
   readonly excludeMessageId?: string | undefined;
+  /** Messages still waiting in the queue: no agent was sent them yet. */
+  readonly queuedMessageIds?: ReadonlySet<string> | undefined;
 }): ReadonlyArray<ThreadContextSeedEntry> {
   const items: Array<{ readonly createdAt: string; readonly entry: ThreadContextSeedEntry }> = [];
 
   for (const message of input.messages) {
     if (message.id !== undefined && message.id === input.excludeMessageId) {
+      continue;
+    }
+    // An agent's or another thread's message is written into the chat when it
+    // is queued, before it runs: one still waiting was sent to no agent yet.
+    if (message.id !== undefined && input.queuedMessageIds?.has(message.id) === true) {
       continue;
     }
     const attached = (message.attachments ?? []).map((attachment) => attachment.name);
@@ -191,6 +198,7 @@ export const makeThreadContextSeedBuilder = (deps: {
         messages: thread.messages,
         activities: thread.activities,
         excludeMessageId: input.excludeMessageId,
+        queuedMessageIds: new Set((thread.queuedFollowUps ?? []).map((queued) => queued.messageId)),
       });
 
       if (entries.length === 0 && pointer === undefined) {
