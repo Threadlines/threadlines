@@ -196,6 +196,27 @@ describe("ThreadContextSeedBuilder", () => {
     expect(value.entries.map((entry) => entry.text)).toEqual(["previous context"]);
   });
 
+  it("leaves out messages still waiting in the queue: no agent was sent them yet", async () => {
+    const thread = {
+      ...fakeThread(
+        [
+          { id: "sent", role: "user", text: "ran earlier", createdAt: "2026-01-01T00:00:00Z" },
+          {
+            id: "queued-pass",
+            role: "user",
+            text: "passed on, waiting",
+            createdAt: "2026-01-01T00:00:01Z",
+          },
+          { id: "current", role: "user", text: "switch now", createdAt: "2026-01-01T00:00:03Z" },
+        ],
+        [],
+      ),
+      queuedFollowUps: [{ messageId: "queued-pass" }],
+    } as unknown as OrchestrationThread;
+    const seed = await build({ thread, excludeMessageId: "current" });
+    expect(Option.getOrThrow(seed).entries.map((entry) => entry.text)).toEqual(["ran earlier"]);
+  });
+
   it("returns a workspace-only seed when the thread detail read fails", async () => {
     const seed = await build({
       thread: null,
