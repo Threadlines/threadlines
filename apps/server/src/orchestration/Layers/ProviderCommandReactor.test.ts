@@ -3347,8 +3347,16 @@ describe("ProviderCommandReactor", () => {
         runtimeMode: "full-access",
         createdAt: now,
       });
-    const settleReady = (id: string) =>
-      dispatch({
+    // The runtime goes ready once its turn is done. The reactor records a
+    // sent turn as running a moment after the send; wait for that first, or
+    // its late write would land on top of this ready and the next turn would
+    // read as arriving mid-turn.
+    const settleReady = async (id: string) => {
+      await waitFor(async () => {
+        const session = await projectedSession(harness, threadId);
+        return session?.status === "running" && session.activeTurnId === asTurnId("turn-1");
+      });
+      await dispatch({
         type: "thread.session.set",
         commandId: CommandId.make(`cmd-ready-${id}`),
         threadId,
@@ -3363,6 +3371,7 @@ describe("ProviderCommandReactor", () => {
         },
         createdAt: now,
       });
+    };
 
     // Before the thread is a room: no room tools, only the app guide.
     await startTurn("before-room");
@@ -3406,8 +3415,16 @@ describe("ProviderCommandReactor", () => {
     const threadId = ThreadId.make("thread-moved-here");
     const dispatch = (command: Parameters<typeof harness.engine.dispatch>[0]) =>
       Effect.runPromise(harness.engine.dispatch(command));
-    const settleReady = (id: string) =>
-      dispatch({
+    // The runtime goes ready once its turn is done. The reactor records a
+    // sent turn as running a moment after the send; wait for that first, or
+    // its late write would land on top of this ready and the next turn would
+    // read as arriving mid-turn.
+    const settleReady = async (id: string) => {
+      await waitFor(async () => {
+        const session = await projectedSession(harness, threadId);
+        return session?.status === "running" && session.activeTurnId === asTurnId("turn-1");
+      });
+      await dispatch({
         type: "thread.session.set",
         commandId: CommandId.make(`cmd-ready-${id}`),
         threadId,
@@ -3422,6 +3439,7 @@ describe("ProviderCommandReactor", () => {
         },
         createdAt: now,
       });
+    };
     await dispatch({
       type: "thread.import",
       commandId: CommandId.make("cmd-import"),
@@ -3477,7 +3495,10 @@ describe("ProviderCommandReactor", () => {
       runtimeMode: "full-access",
       createdAt: now,
     });
-    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+    await waitFor(
+      () => harness.sendTurn.mock.calls.length === 2 || harness.steerTurn.mock.calls.length > 0,
+    );
+    expect(harness.steerTurn.mock.calls.length, "steered instead of a new turn").toBe(0);
     expect(harness.startSession.mock.calls.length).toBe(2);
     expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
       guideTools: true,
