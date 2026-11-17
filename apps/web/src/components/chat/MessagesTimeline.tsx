@@ -3234,7 +3234,16 @@ function ThreadMessageTimelineRow({
           }
         />
       </div>
-      {message.requestOutcome === "cancelled" ? (
+      {message.notSent === true ? (
+        // A lead chat's pass that never reached the agent; the line in the
+        // thread below says why.
+        <p
+          className="mt-1 pl-3 text-xs leading-4 text-muted-foreground"
+          data-thread-message-outcome="not-sent"
+        >
+          Not sent
+        </p>
+      ) : message.requestOutcome === "cancelled" ? (
         <p
           className="mt-1 pl-3 text-xs leading-4 text-muted-foreground"
           data-thread-message-outcome="cancelled"

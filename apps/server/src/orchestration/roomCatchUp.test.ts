@@ -1,9 +1,11 @@
 import {
   CheckpointRef,
+  ChildRequestId,
   MessageId,
   ProviderInstanceId,
   RoomAgentRequestId,
   SideTurnId,
+  ThreadId,
   ThreadParticipantId,
   TurnId,
   type OrchestrationMessage,
@@ -207,6 +209,38 @@ describe("buildRoomCatchUp", () => {
     expect(note).toContain("(3 earlier messages left out.)");
     expect(note).not.toContain("message 2\n");
     expect(note).toContain(`message ${ROOM_JOIN_MESSAGE_COUNT + 2}`);
+  });
+
+  it("leaves a lead chat's pass that never ran out of a joining agent's note", () => {
+    const ceiling = { runtimeMode: "approval-required", interactionMode: "default" } as const;
+    const pass = (id: string, text: string, extra: Partial<OrchestrationMessage> = {}) =>
+      message(id, "user", text, null, {
+        fromThread: {
+          threadId: ThreadId.make("lead"),
+          requestId: ChildRequestId.make(`request-${id}`),
+          kind: "request",
+          ceiling,
+        },
+        ...extra,
+      });
+    const note = buildRoomCatchUp({
+      thread: thread(
+        [
+          pass("ran", "passed on and done"),
+          pass("refused", "passed on, refused at its ceiling", { notSent: true }),
+          pass("waiting", "passed on, still waiting"),
+          message("now", "user", "astra, take a look", astraId),
+        ],
+        { queuedFollowUps: [{ messageId: "waiting" }] },
+      ),
+      participantId: astraId,
+      messageId: MessageId.make("now"),
+      ...main,
+    })?.note;
+
+    expect(note).toContain("passed on and done");
+    expect(note).not.toContain("refused at its ceiling");
+    expect(note).not.toContain("still waiting");
   });
 
   it("delivers a side exchange that landed before the agent's own reply", () => {

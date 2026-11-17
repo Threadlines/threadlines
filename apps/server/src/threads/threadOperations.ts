@@ -474,6 +474,7 @@ export function readThreadPage(
       origin,
       ...text,
       ...(message.streaming ? { streaming: true } : {}),
+      ...(message.notSent === true ? { notSent: true } : {}),
     };
   };
   const wanted = input.messageId?.trim();

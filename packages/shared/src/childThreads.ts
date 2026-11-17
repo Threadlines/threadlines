@@ -768,7 +768,7 @@ export const childRequestStateOn = {
   leadPass: (
     state: OrchestrationChildRequestState,
     pass: {
-      readonly kind: "sent" | "refused" | "started";
+      readonly kind: "sent" | "refused" | "started" | "not-run";
       readonly note?: ChildRequestNote | undefined;
       readonly ceiling?: LeadPassCeiling | undefined;
     },
@@ -776,6 +776,9 @@ export const childRequestStateOn = {
     switch (pass.kind) {
       case "sent":
         return { ...state, sendsSinceUser: state.sendsSinceUser + 1 };
+      // Its mark is on the message, not on the thread's requests.
+      case "not-run":
+        return state;
       case "started": {
         const passCeiling = narrowerModeCeiling(
           state.passCeiling,

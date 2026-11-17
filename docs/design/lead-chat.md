@@ -268,11 +268,16 @@ coordinate it.
     note to the lead on its next turn. The provider layer checks the ceiling once more
     right before the turn goes to the agent (the user may raise access after the
     decision), against the thread and the live runtime, as it does for outside agents;
-    a pass refused there fails its turn with a line saying so. A pass still waiting in
-    the queue is not part of the history a new agent is given. Open: a pass taken
-    back, or refused at that last check, stays in the chat and can still reach a later
-    agent's history (hand-off seed, room catch-up), since nothing records that it
-    never ran. A retry by the user is refused the same way,
+    a pass refused there fails its turn with a line saying so. A pass that never
+    reached the agent is `notSent` (OrchestrationMessage.notSent): taken back at the
+    queue, taken off it by the user, or dropped after the queue let it go
+    (`thread.lead-pass.not-run`: refused at that last check, or stopped while its turn
+    was prepared; it also writes the line and the lead's note). The mark moves with
+    the thread to another computer. No history an agent is given includes a
+    `notSent` or still-queued message (`reachedAgent`: the hand-off seed, a fork's
+    context, a room's catch-up note); `thread_read` and `room_history` keep it,
+    labelled. It is never retried or resent ("Send it yourself to run it."), and it
+    says "Not sent" on screen. A retry by the user is refused the same way,
     with "Send it yourself to run it." The user's thread's access is never changed.
   - **No fan-out.** Once a pass starts its turn in a thread, that thread cannot call
     `thread_start` until the user writes there ("This thread is working on something
