@@ -33,6 +33,7 @@ import {
   childDeliveryAfterRestart,
   childDeliveryForQuietCandidate,
   finishedTurnAfterRestart,
+  isHeldByContinueAtReset,
   isQuietCandidate,
 } from "../childThreadDelivery.ts";
 import {
@@ -57,6 +58,16 @@ const QUIET_GRACE = Duration.seconds(15);
  * request is settled from the stop.
  */
 const STOP_GRACE = Duration.seconds(5);
+
+/**
+ * How long an errored child whose answering turn hasn't ended yet gets for
+ * that end before its request is settled from the error. A provider can
+ * report the session's error first and the turn's end, with a usage limit's
+ * reset time, later: Codex refreshes usage first and gives up on that after
+ * 15 s (freshProviderSnapshot). The turn's end decides whether the request
+ * waits to continue at the reset (docs/design/lead-chat.md, ruling 3).
+ */
+const LATE_TURN_END_GRACE = Duration.seconds(20);
 
 type ReactorEvent = Extract<
   OrchestrationEvent,
@@ -282,6 +293,19 @@ export const makeChildThreadReactor = Effect.gen(function* () {
       if ((status === "stopped" || status === "error") && !stopChecks.has(childId)) {
         stopChecks.add(childId);
         yield* Effect.sleep(STOP_GRACE).pipe(
+          // An error whose turn hasn't ended yet: its end may still come,
+          // with the reset time, up to the bound; then the error settles it.
+          Effect.andThen(
+            status === "error"
+              ? readThread(childId).pipe(
+                  Effect.flatMap((latest) =>
+                    latest?.latestTurn?.state === "running"
+                      ? Effect.sleep(Duration.subtract(LATE_TURN_END_GRACE, STOP_GRACE))
+                      : Effect.void,
+                  ),
+                )
+              : Effect.void,
+          ),
           Effect.andThen(settleStoppedAnswers(parent.id, childId, status)),
           Effect.ensuring(Effect.sync(() => stopChecks.delete(childId))),
           Effect.forkDetach,
@@ -325,7 +349,9 @@ export const makeChildThreadReactor = Effect.gen(function* () {
       for (const request of parent.childRequests.open) {
         if (
           request.childThreadId !== childId ||
-          (request.status !== "running" && request.status !== "awaiting_background")
+          (request.status !== "running" && request.status !== "awaiting_background") ||
+          // Waiting to continue at a usage limit's reset: the continue answers it.
+          isHeldByContinueAtReset(child, request)
         ) {
           continue;
         }
@@ -404,6 +430,11 @@ export const makeChildThreadReactor = Effect.gen(function* () {
             outcome: "cancelled",
             note: "A thread you started is gone, so its answer won't come back.",
           });
+          continue;
+        }
+        // Still waiting to continue at a usage limit's reset (the wait is
+        // kept across a restart): the continue answers it.
+        if (isHeldByContinueAtReset(child, request)) {
           continue;
         }
         const childTurns = yield* turns

@@ -23,6 +23,7 @@ import {
   type RemoteThreadFiling,
   type RoomAgentRef,
   type LocalChildStart,
+  type MessageId,
   type ProviderInteractionMode,
   type RuntimeMode,
   type ThreadId,
@@ -576,12 +577,14 @@ export const childRequestStateOn = {
       readonly status: ChildRequestStatus;
       readonly candidateTurnId?: TurnId | undefined;
       readonly remote?: RemoteChildRequest | undefined;
+      readonly childMessageId?: MessageId | undefined;
     },
   ): OrchestrationChildRequestState => {
     const changes = (entry: OrchestrationChildRequest) =>
       entry.requestId === update.requestId &&
       (entry.status !== update.status ||
         entry.candidateTurnId !== update.candidateTurnId ||
+        (update.childMessageId !== undefined && entry.childMessageId !== update.childMessageId) ||
         (update.remote !== undefined && !sameRemoteRequest(entry.remote, update.remote)));
     return state.open.some(changes)
       ? {
@@ -596,6 +599,9 @@ export const childRequestStateOn = {
                 ? { candidateTurnId: update.candidateTurnId }
                 : {}),
               ...(update.remote !== undefined ? { remote: update.remote } : {}),
+              ...(update.childMessageId !== undefined
+                ? { childMessageId: update.childMessageId }
+                : {}),
             };
           }),
         }

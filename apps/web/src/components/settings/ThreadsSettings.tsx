@@ -740,7 +740,7 @@ export function ContinueAfterUsageLimitsRow() {
   return (
     <SettingsRow
       place="threads.continueAfterUsageLimits"
-      description="When a Claude or Codex usage limit stops a thread, it continues on its own once the limit resets, while Threadlines is running on that computer."
+      description="When a Claude or Codex usage limit stops a thread, it continues on its own once the limit resets, while Threadlines is running on that computer. A thread an agent started waits too, and answers that agent after."
       resetAction={
         on ? (
           <SettingResetButton

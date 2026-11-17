@@ -108,6 +108,8 @@ import {
   ThreadChildRequestUpdatedPayload,
   ThreadChildRequestsResetPayload,
   ThreadLeadPassRecordedPayload,
+  ThreadSessionStopRequestedPayload,
+  ThreadTurnInterruptRequestedPayload,
   ThreadHandedBackPayload,
   ThreadRemoteCancelQueuedPayload,
   ThreadRemoteCancelsDeliveredPayload,
@@ -1586,6 +1588,32 @@ export function projectEvent(
       );
 
     // Waiting to continue is not work on the thread either.
+    // Stop names the turn it is for: no usage limit brings that turn back
+    // (OrchestrationSession.stopRequestedTurnId).
+    case "thread.turn-interrupt-requested":
+    case "thread.session-stop-requested":
+      return decodeForEvent(
+        event.type === "thread.turn-interrupt-requested"
+          ? ThreadTurnInterruptRequestedPayload
+          : ThreadSessionStopRequestedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => {
+          const session = nextBase.threads.find((entry) => entry.id === payload.threadId)?.session;
+          if (session == null || payload.stopsTurnId === undefined) {
+            return nextBase;
+          }
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.threadId, {
+              session: { ...session, stopRequestedTurnId: payload.stopsTurnId },
+            }),
+          };
+        }),
+      );
+
     case "thread.continue-at-reset-set":
       return decodeForEvent(
         ThreadContinueAtResetSetPayload,

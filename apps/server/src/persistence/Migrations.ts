@@ -136,6 +136,7 @@ import Migration0113 from "./Migrations/113_LinkMoveStagedApproval.ts";
 import Migration0114 from "./Migrations/114_LinkMoveAbortCode.ts";
 import Migration0115 from "./Migrations/115_ThreadNativeSession.ts";
 import Migration0116 from "./Migrations/116_ProjectLeadThread.ts";
+import Migration0117 from "./Migrations/117_SessionStopRequestedTurn.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -264,6 +265,7 @@ export const migrationEntries = [
   [114, "LinkMoveAbortCode", Migration0114],
   [115, "ThreadNativeSession", Migration0115],
   [116, "ProjectLeadThread", Migration0116],
+  [117, "SessionStopRequestedTurn", Migration0117],
 ] as const;
 
 /** Highest id in the full registry, so the "n of total" count is the real total. */

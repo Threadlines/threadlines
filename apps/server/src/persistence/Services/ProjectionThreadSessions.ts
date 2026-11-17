@@ -59,9 +59,18 @@ export const ProjectionThreadSession = Schema.Struct({
   lastErrorUsageLimit: Schema.optional(Schema.NullOr(OrchestrationSessionUsageLimit)),
   /** See OrchestrationSession.continueAtReset. Absent on write clears it. */
   continueAtReset: Schema.optional(Schema.NullOr(OrchestrationContinueAtReset)),
+  /** See OrchestrationSession.stopRequestedTurnId. Absent on write clears it. */
+  stopRequestedTurnId: Schema.optional(Schema.NullOr(TurnId)),
   updatedAt: IsoDateTime,
 });
 export type ProjectionThreadSession = typeof ProjectionThreadSession.Type;
+
+export const SetProjectionThreadSessionStopRequestedInput = Schema.Struct({
+  threadId: ThreadId,
+  turnId: TurnId,
+});
+export type SetProjectionThreadSessionStopRequestedInput =
+  typeof SetProjectionThreadSessionStopRequestedInput.Type;
 
 export const GetProjectionThreadSessionInput = Schema.Struct({
   threadId: ThreadId,
@@ -130,6 +139,11 @@ export interface ProjectionThreadSessionRepositoryShape {
    */
   readonly setContinueAtReset: (
     input: SetProjectionThreadSessionContinueAtResetInput,
+  ) => Effect.Effect<void, ProjectionRepositoryError>;
+
+  /** Record the turn the user asked to stop (OrchestrationSession.stopRequestedTurnId). */
+  readonly setStopRequested: (
+    input: SetProjectionThreadSessionStopRequestedInput,
   ) => Effect.Effect<void, ProjectionRepositoryError>;
 
   /** Every thread waiting to continue after a usage limit. */

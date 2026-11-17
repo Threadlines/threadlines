@@ -1856,6 +1856,14 @@ export const OrchestrationSession = Schema.Struct({
    * the thread is archived. See OrchestrationContinueAtReset.
    */
   continueAtReset: Schema.optional(Schema.NullOr(OrchestrationContinueAtReset)),
+  /**
+   * The turn the user asked to stop (`thread.turn.interrupt` or
+   * `thread.session.stop` while it ran), kept until the next turn starts. A
+   * usage limit failure that lands after Stop never arms "Continue at reset"
+   * for it (docs/design/lead-chat.md, "Rulings after the third review").
+   * The projections own it; a writer's copy is ignored.
+   */
+  stopRequestedTurnId: Schema.optional(Schema.NullOr(TurnId)),
   updatedAt: IsoDateTime,
 });
 export type OrchestrationSession = typeof OrchestrationSession.Type;
@@ -5742,6 +5750,12 @@ export const ThreadChildRequestUpdatedPayload = Schema.Struct({
   candidateTurnId: Schema.optional(TurnId),
   /** See OrchestrationChildRequest.remote; replaces it when present. */
   remote: Schema.optional(RemoteChildRequest),
+  /**
+   * The message whose turn now answers the request: a held request rebound
+   * to the continue Threadlines sent after a usage limit reset
+   * (docs/design/lead-chat.md, "Usage limits"). Absent: unchanged.
+   */
+  childMessageId: Schema.optional(MessageId),
   updatedAt: IsoDateTime,
 });
 
@@ -6108,6 +6122,8 @@ export const ThreadFollowUpUnqueuedPayload = Schema.Struct({
 export const ThreadTurnInterruptRequestedPayload = Schema.Struct({
   threadId: ThreadId,
   turnId: Schema.optional(TurnId),
+  /** The turn this Stop is for, kept as the session's `stopRequestedTurnId`. */
+  stopsTurnId: Schema.optional(TurnId),
   createdAt: IsoDateTime,
 });
 
@@ -6176,6 +6192,8 @@ export const ThreadRevertedPayload = Schema.Struct({
 
 export const ThreadSessionStopRequestedPayload = Schema.Struct({
   threadId: ThreadId,
+  /** The turn this Stop is for, kept as the session's `stopRequestedTurnId`. */
+  stopsTurnId: Schema.optional(TurnId),
   createdAt: IsoDateTime,
 });
 

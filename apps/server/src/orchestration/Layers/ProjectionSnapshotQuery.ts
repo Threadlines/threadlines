@@ -569,6 +569,7 @@ function mapSessionRow(
     ...(row.lastErrorDismissedAt ? { lastErrorDismissedAt: row.lastErrorDismissedAt } : {}),
     ...(row.lastErrorUsageLimit ? { lastErrorUsageLimit: row.lastErrorUsageLimit } : {}),
     ...(row.continueAtReset ? { continueAtReset: row.continueAtReset } : {}),
+    ...(row.stopRequestedTurnId ? { stopRequestedTurnId: row.stopRequestedTurnId } : {}),
     updatedAt: row.updatedAt,
   };
 }
@@ -1387,6 +1388,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           last_error_dismissed_at AS "lastErrorDismissedAt",
           last_error_usage_limit AS "lastErrorUsageLimit",
           continue_at_reset AS "continueAtReset",
+          stop_requested_turn_id AS "stopRequestedTurnId",
           updated_at AS "updatedAt"
         FROM projection_thread_sessions
         ORDER BY thread_id ASC
@@ -1442,6 +1444,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sessions.last_error_dismissed_at AS "lastErrorDismissedAt",
           sessions.last_error_usage_limit AS "lastErrorUsageLimit",
           sessions.continue_at_reset AS "continueAtReset",
+          sessions.stop_requested_turn_id AS "stopRequestedTurnId",
           sessions.updated_at AS "updatedAt"
         FROM projection_thread_sessions sessions
         INNER JOIN projection_threads threads
@@ -1477,6 +1480,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sessions.last_error_dismissed_at AS "lastErrorDismissedAt",
           sessions.last_error_usage_limit AS "lastErrorUsageLimit",
           sessions.continue_at_reset AS "continueAtReset",
+          sessions.stop_requested_turn_id AS "stopRequestedTurnId",
           sessions.updated_at AS "updatedAt"
         FROM projection_thread_sessions sessions
         INNER JOIN projection_threads threads
@@ -2389,6 +2393,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           last_error_dismissed_at AS "lastErrorDismissedAt",
           last_error_usage_limit AS "lastErrorUsageLimit",
           continue_at_reset AS "continueAtReset",
+          stop_requested_turn_id AS "stopRequestedTurnId",
           updated_at AS "updatedAt"
         FROM projection_thread_sessions
         WHERE thread_id = ${threadId}
@@ -3861,6 +3866,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               last_error_dismissed_at AS "lastErrorDismissedAt",
               last_error_usage_limit AS "lastErrorUsageLimit",
               continue_at_reset AS "continueAtReset",
+              stop_requested_turn_id AS "stopRequestedTurnId",
+          stop_requested_turn_id AS "stopRequestedTurnId",
               updated_at AS "updatedAt"
             FROM projection_thread_sessions
             WHERE ${sql.in("thread_id", threadIds)}

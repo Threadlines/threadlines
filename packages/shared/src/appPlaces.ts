@@ -1506,7 +1506,7 @@ const ROWS = [
     parent: "threads.newThreads",
     title: "Continue after usage limits",
     about:
-      "When a Claude or Codex usage limit stops a thread, it continues on its own once the limit resets. Each limit's notice above the composer also has a Continue at reset switch.",
+      "When a Claude or Codex usage limit stops a thread, it continues on its own once the limit resets, including threads an agent started, which answer it after. Each limit's notice above the composer also has a Continue at reset switch.",
     keywords: ["usage limit", "rate limit", "resume", "reset"],
     value: onOff((settings) => settings.continueAfterUsageLimits),
     widensAgents: true,
