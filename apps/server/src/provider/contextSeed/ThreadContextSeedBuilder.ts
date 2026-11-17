@@ -107,6 +107,8 @@ function buildEntries(input: {
     readonly text: string;
     readonly attachments?: ReadonlyArray<{ readonly name: string }> | undefined;
     readonly fromOutside?: OrchestrationMessage["fromOutside"];
+    readonly fromThread?: OrchestrationMessage["fromThread"];
+    readonly fromAgent?: OrchestrationMessage["fromAgent"];
     readonly notSent?: true | undefined;
     readonly createdAt: string;
   }>;

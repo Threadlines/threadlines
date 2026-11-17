@@ -276,7 +276,10 @@ coordinate it.
     the thread to another computer. No history an agent is given includes a
     `notSent` or still-queued message (`reachedAgent`: the hand-off seed, a fork's
     context, a room's catch-up note); `thread_read` and `room_history` keep it,
-    labelled. It is never retried or resent ("Send it yourself to run it."), and it
+    labelled. A pass that did run is never called the user's in that history: the
+    hand-off seed and a fork's context name a message another agent wrote as that
+    agent's (`transcriptAuthor`), as `thread_read` and `room_history` already did.
+    It is never retried or resent ("Send it yourself to run it."), and it
     says "Not sent" on screen. A retry by the user is refused the same way,
     with "Send it yourself to run it." The user's thread's access is never changed.
   - **No fan-out.** Once a pass starts its turn in a thread, that thread cannot call
