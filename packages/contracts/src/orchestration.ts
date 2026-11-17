@@ -613,6 +613,16 @@ export const AgentThreadsMode = Schema.Literals(["off", "ask", "auto"]);
 export type AgentThreadsMode = typeof AgentThreadsMode.Type;
 
 /**
+ * The most a lead chat's pass may run with (docs/design/lead-chat.md,
+ * "Access"): the lead's access and interaction mode when it passed it.
+ */
+export const LeadPassCeiling = Schema.Struct({
+  runtimeMode: RuntimeMode,
+  interactionMode: ProviderInteractionMode,
+});
+export type LeadPassCeiling = typeof LeadPassCeiling.Type;
+
+/**
  * A message that crossed between a thread and one it started: a `request` its
  * parent's agent wrote into the child, or a `report`, the child's answer
  * delivered into the parent. An agent wrote it either way, never the user. A
@@ -645,12 +655,7 @@ export const ThreadMessageOrigin = Schema.Struct({
    * Nothing is owed back for a pass: no request is recorded on the lead.
    * Only a pass carries it.
    */
-  ceiling: Schema.optional(
-    Schema.Struct({
-      runtimeMode: RuntimeMode,
-      interactionMode: ProviderInteractionMode,
-    }),
-  ),
+  ceiling: Schema.optional(LeadPassCeiling),
   /** A pass: the lead's agent that passed it (a room's agent), for its notes. Absent: its own. */
   passedBy: Schema.optional(ThreadParticipantId),
 });
@@ -2671,10 +2676,12 @@ export const OrchestrationChildRequestState = Schema.Struct({
   remoteCancels: Schema.optional(Schema.Array(RemoteChildCancel)),
   /**
    * A message the lead chat passed on started a turn here since the user
-   * last wrote (docs/design/lead-chat.md, "No fan-out"): this thread's agents
-   * can't start threads until the user writes here. Absent: they can.
+   * last wrote (docs/design/lead-chat.md, "No fan-out"): the narrowest
+   * ceiling of those passes. Until the user writes here, this thread's agents
+   * can't start threads, and message only their own threads that are within
+   * it on this computer. Absent: no pass holds them.
    */
-  startsBlockedByPass: Schema.optional(Schema.Literal(true)),
+  passCeiling: Schema.optional(LeadPassCeiling),
 });
 export type OrchestrationChildRequestState = typeof OrchestrationChildRequestState.Type;
 
@@ -5924,6 +5931,8 @@ export const ThreadLeadPassRecordedPayload = Schema.Struct({
   messageId: MessageId,
   targetThreadId: ThreadId,
   note: Schema.optional(ChildRequestNote),
+  /** `started`: the pass's ceiling, which now holds the target (`passCeiling`). */
+  ceiling: Schema.optional(LeadPassCeiling),
   createdAt: IsoDateTime,
 });
 

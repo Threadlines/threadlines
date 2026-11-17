@@ -41,7 +41,12 @@ const testLayer = ServerConfig.layerTest(process.cwd(), { prefix: "pi-adapter-" 
   Layer.provideMerge(NodeServices.layer),
 );
 
-const folder = () => realpathSync(mkdtempSync(join(tmpdir(), "threadlines-pi-project-")));
+/**
+ * A project folder, named as the adapter names it. The adapter resolves a
+ * session's folder with the native realpath, which on Windows also expands
+ * short names in the temp path (`PROGRA~1` is `Program Files`).
+ */
+const folder = () => realpathSync.native(mkdtempSync(join(tmpdir(), "threadlines-pi-project-")));
 
 /** `withoutEnv`: variables the test Pi must not see, such as a provider's key. */
 const setupWith = (withoutEnv: ReadonlyArray<string>) =>

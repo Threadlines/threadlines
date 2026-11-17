@@ -100,7 +100,8 @@ it("adds a working helper with a test, commits it, says it is scripted, and stay
   // not through a symlink. (Every request is allowed here.)
   const outside = tempFolder("demo-agent-outside-");
   NodeFS.writeFileSync(NodePath.join(outside, "keep.md"), "keep\n");
-  NodeFS.symlinkSync(outside, NodePath.join(repo, "linked"));
+  // A junction on Windows, which needs no Developer Mode; other systems ignore the type.
+  NodeFS.symlinkSync(outside, NodePath.join(repo, "linked"), "junction");
   const escape = await prompt(
     repo,
     `Remove ./../${NodePath.basename(outside)}/keep.md and linked/keep.md`,

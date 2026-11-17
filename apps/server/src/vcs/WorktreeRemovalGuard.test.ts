@@ -57,7 +57,8 @@ describe("ensureWorktreeRemovable", () => {
     const real = NodePath.join(base, "feature");
     const linked = NodePath.join(base, "linked");
     NodeFs.mkdirSync(real);
-    NodeFs.symlinkSync(real, linked);
+    // A junction on Windows, which any user can make; a symlink elsewhere.
+    NodeFs.symlinkSync(real, linked, "junction");
     return Effect.gen(function* () {
       const exit = yield* ensureWorktreeRemovable({
         worktreePath: real,

@@ -6,6 +6,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 
 import { readConfinedFile, writeConfinedFile } from "./confinedFiles.ts";
+import { canMakeSymlinks } from "./testUtils/symlinks.ts";
 
 // Symlinks and hard links to a file inside the folder are covered through
 // PageStore's image reads (PageStore.test.ts); these cover the rest.
@@ -28,7 +29,8 @@ afterEach(() => {
 describe("readConfinedFile", () => {
   it("refuses a path that leaves the folder through '..' or a linked folder", async () => {
     fs.writeFileSync(path.join(outside, "secret.txt"), "TOKEN=1");
-    fs.symlinkSync(outside, path.join(root, "linked"));
+    // A junction on Windows, which any user can make; a symlink elsewhere.
+    fs.symlinkSync(outside, path.join(root, "linked"), "junction");
 
     for (const escape of [
       [root, "..", "outside", "secret.txt"].join(path.sep),
@@ -74,7 +76,8 @@ describe("writeConfinedFile", () => {
     expect(list()).toEqual(["flow.js"]);
   });
 
-  it("never writes through a link at the target name", async () => {
+  // Links to files need symlink rights, which Windows grants only with Developer Mode.
+  it.skipIf(!canMakeSymlinks)("never writes through a link at the target name", async () => {
     const target = path.join(outside, "victim.txt");
     fs.writeFileSync(target, "original");
     fs.symlinkSync(target, path.join(root, "flow.js"));

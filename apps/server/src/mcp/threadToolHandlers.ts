@@ -143,7 +143,7 @@ export interface ThreadToolDeps {
    * call to the host (PullRequestObservations.known). Absent: none listed.
    */
   readonly knownPullRequests?: (input: {
-    readonly repository: string | null;
+    readonly repositoryKey: string | null;
     readonly branch: string | null;
     readonly urls: ReadonlyArray<string>;
   }) => Effect.Effect<
@@ -1547,11 +1547,7 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
       // Which thread leads the project, and what each listed thread's pull
       // requests are as already known here (docs/design/lead-chat.md).
       const project = yield* deps.readProject(thread.projectId);
-      const identity = project?.repositoryIdentity ?? null;
-      const repository =
-        identity?.owner !== undefined && identity.name !== undefined
-          ? `${identity.owner}/${identity.name}`
-          : null;
+      const repositoryKey = project?.repositoryIdentity?.canonicalKey ?? null;
       type KnownPullRequest = NonNullable<ThreadSummary["pullRequests"]>[number];
       const pullRequestsOf = (
         shell: OrchestrationThreadShell,
@@ -1559,7 +1555,7 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
         (deps.knownPullRequests === undefined
           ? Effect.succeed([])
           : deps.knownPullRequests({
-              repository,
+              repositoryKey,
               branch: shell.branch,
               urls: shell.linkedPullRequests.map((linked) => linked.url),
             })
