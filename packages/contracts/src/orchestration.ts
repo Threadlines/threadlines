@@ -1105,6 +1105,33 @@ export const ThreadMovedFrom = Schema.Struct({
   label: TrimmedNonEmptyString,
   threadId: ThreadId,
   movedAt: IsoDateTime,
+  /**
+   * What it carried came from another computer, so it works fenced, as a
+   * thread another computer's agent started here does (ThreadRemoteOrigin):
+   * no Threadlines tools, until a message the user sends here starts a turn
+   * (docs/design/fleet.md, Part 3e). Absent: not fenced (anymore).
+   */
+  fenced: Schema.optional(Schema.Literal(true)),
+  /**
+   * The pull request switches that were on there. They arrive off: a switch
+   * acts with this computer's GitHub sign-in, so only this computer's user
+   * turns it on (`thread.pull-request-automation.set`, which clears this).
+   * Absent: none was on, or they were turned on here since.
+   */
+  pullRequestSwitches: Schema.optional(
+    Schema.Struct({
+      autoFix: Schema.Boolean,
+      autoMerge: Schema.NullOr(PullRequestMergeMethod),
+      linked: Schema.Array(
+        Schema.Struct({
+          number: PositiveInt,
+          url: TrimmedNonEmptyString,
+          autoFix: Schema.Boolean,
+          autoMerge: Schema.NullOr(PullRequestMergeMethod),
+        }),
+      ),
+    }),
+  ),
 });
 export type ThreadMovedFrom = typeof ThreadMovedFrom.Type;
 
@@ -2264,6 +2291,12 @@ export const OrchestrationQueuedFollowUp = Schema.Struct({
   overtakes: Schema.optional(MessageId),
   /** See OrchestrationMessage.afterMove: kept so the message is written with it when sent. */
   afterMove: Schema.optional(Schema.Literal(true)),
+  /**
+   * Carried from another computer by a move (docs/design/fleet.md, Part 3e):
+   * written by the user there, not here, so sending it doesn't lift the
+   * thread's fence (ThreadMovedFrom.fenced).
+   */
+  imported: Schema.optional(Schema.Literal(true)),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   createdAt: IsoDateTime,
@@ -3812,6 +3845,11 @@ export const ThreadTurnStartCommand = Schema.Struct({
   trigger: Schema.optional(MessageTrigger),
   /** Server only: a scheduled or event task's run sent it (see ThreadTurnStartRequestedPayload). */
   scheduledTaskId: Schema.optional(ScheduledTaskId),
+  /**
+   * Server only: Threadlines wrote it (pull request auto-fix), not the user,
+   * so it doesn't lift a moved thread's fence (ThreadMovedFrom.fenced).
+   */
+  keepsMoveFence: Schema.optional(Schema.Literal(true)),
   createdAt: IsoDateTime,
 });
 
@@ -5385,6 +5423,8 @@ const ThreadImportCommand = Schema.Struct({
    * 3e), all with this computer's ids. `goal` is written as it arrives
    * (working, paused or finished); the queue is written behind the arrival
    * message and isn't sent by its events (the move's own kick sends it).
+   * `pullRequests` links them; their switches are written off whatever they
+   * say here (see ThreadMovedFrom.pullRequestSwitches).
    */
   goal: Schema.optional(OrchestrationThreadGoal),
   pullRequests: Schema.optional(
@@ -5780,6 +5820,12 @@ export const ThreadPullRequestAutomationChangedPayload = Schema.Struct({
   pullRequestNumber: Schema.optional(PositiveInt),
   autoFix: Schema.optional(Schema.Boolean),
   autoMerge: Schema.optional(Schema.NullOr(PullRequestMergeMethod)),
+  /**
+   * The user set a switch on a thread that moved here with switches on
+   * there: what was on there (ThreadMovedFrom.pullRequestSwitches) is no
+   * longer offered.
+   */
+  clearsMovedSwitches: Schema.optional(Schema.Literal(true)),
   updatedAt: IsoDateTime,
 });
 
@@ -6274,6 +6320,11 @@ export const ThreadTurnStartRequestedPayload = Schema.Struct({
    * the message does not carry it.
    */
   scheduledTaskId: Schema.optional(ScheduledTaskId),
+  /**
+   * The user's own message on this computer starts this turn in a thread
+   * that moved here fenced (ThreadMovedFrom.fenced): the fence lifts.
+   */
+  liftsMoveFence: Schema.optional(Schema.Literal(true)),
   createdAt: IsoDateTime,
 });
 

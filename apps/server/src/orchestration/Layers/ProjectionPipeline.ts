@@ -42,7 +42,7 @@ import {
 } from "@threadlines/shared/pendingRequests";
 
 import { toPersistenceSqlError, type ProjectionRepositoryError } from "../../persistence/Errors.ts";
-import { nextThreadMoveState } from "@threadlines/shared/threadMoveProjection";
+import { movedFromAfter, nextThreadMoveState } from "@threadlines/shared/threadMoveProjection";
 import { withQueuedFollowUp } from "@threadlines/shared/queuedFollowUps";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
 import { ProjectionPendingApprovalRepository } from "../../persistence/Services/ProjectionPendingApprovals.ts";
@@ -733,6 +733,13 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                 existingRow.value.linkedPullRequests,
                 { pullRequestNumber, autoFix, autoMerge },
               ),
+              ...(event.payload.clearsMovedSwitches === true
+                ? {
+                    movedFrom: movedFromAfter(existingRow.value.movedFrom, {
+                      clearsSwitches: true,
+                    }),
+                  }
+                : {}),
               updatedAt: event.payload.updatedAt,
             });
             return;
@@ -741,6 +748,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...existingRow.value,
             ...(autoFix === undefined ? {} : { pullRequestAutoFix: autoFix ? 1 : 0 }),
             ...(autoMerge === undefined ? {} : { pullRequestAutoMerge: autoMerge }),
+            ...(event.payload.clearsMovedSwitches === true
+              ? {
+                  movedFrom: movedFromAfter(existingRow.value.movedFrom, { clearsSwitches: true }),
+                }
+              : {}),
             updatedAt: event.payload.updatedAt,
           });
           return;
@@ -1032,6 +1044,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             participants,
+            // See the in-memory projector: the user here took it over.
+            ...(event.payload.liftsMoveFence === true
+              ? { movedFrom: movedFromAfter(existingRow.value.movedFrom, { liftsFence: true }) }
+              : {}),
             sentModels: recordTurnModel(
               { ...existingRow.value, participants },
               participantId,

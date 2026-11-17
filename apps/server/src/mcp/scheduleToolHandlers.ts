@@ -24,6 +24,7 @@ import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 
 import { derivedUuid } from "../orchestration/childRequestIds.ts";
+import { isLinkFenced, linkFenceRefusal } from "../orchestration/linkFence.ts";
 import {
   providerModelReasoning,
   reasoningLevel,
@@ -135,8 +136,13 @@ export function makeScheduleToolHandlers(deps: ScheduleToolDeps) {
         return { refusal: { outcome: "refused" as const, detail: GONE } };
       }
       // The fence: its runtime has no Threadlines tools; this guards a stale credential.
-      if ((thread.remoteOrigin ?? null) !== null) {
-        return { refusal: { outcome: "not_allowed" as const, detail: REMOTE_ORIGIN_REFUSAL } };
+      if (isLinkFenced(thread)) {
+        return {
+          refusal: {
+            outcome: "not_allowed" as const,
+            detail: linkFenceRefusal(thread, "schedule tools"),
+          },
+        };
       }
       return { mode, thread, service };
     });
@@ -372,8 +378,14 @@ export function makeScheduleToolHandlers(deps: ScheduleToolDeps) {
         return { outcome: "not_a_run" as const, detail: NO_SCHEDULES };
       }
       const thread = yield* deps.readThread(scope.threadId);
-      if (thread === undefined || (thread.remoteOrigin ?? null) !== null) {
-        return { outcome: "not_allowed" as const, detail: REMOTE_ORIGIN_REFUSAL };
+      if (thread === undefined || isLinkFenced(thread)) {
+        return {
+          outcome: "not_allowed" as const,
+          detail:
+            thread === undefined
+              ? REMOTE_ORIGIN_REFUSAL
+              : linkFenceRefusal(thread, "schedule tools"),
+        };
       }
       const latched = yield* latchCallerTurn(deps.readThread, scope);
       if ("gone" in latched) return { outcome: "not_a_run" as const, detail: GONE };

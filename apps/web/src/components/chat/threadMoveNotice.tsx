@@ -14,6 +14,9 @@
  * when held). One that ended without starting says why ("Didn't move: …")
  * until the user dismisses it.
  *
+ * On the computer it lands on, a moved thread's pull request switches arrive
+ * off (Part 3e): a notice says what was on there, with Turn on.
+ *
  * @module threadMoveNotice
  */
 import {
@@ -25,6 +28,7 @@ import {
   type ThreadPendingMove,
 } from "@threadlines/contracts";
 import { scopeThreadRef } from "@threadlines/client-runtime";
+import { pullRequestSwitchesWords } from "@threadlines/shared/threadMoveProjection";
 import { useNavigate } from "@tanstack/react-router";
 import * as Schema from "effect/Schema";
 import { useCallback, useMemo, useState } from "react";
@@ -37,6 +41,7 @@ import {
 import { usePrimaryEnvironmentId } from "../../environments/primary";
 import { useSavedEnvironmentRuntimeStore } from "../../environments/runtime";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
+import { turnOnMovedPullRequestSwitches } from "../../lib/threadPullRequestCommands";
 import { useStore } from "../../store";
 import {
   describePendingMove,
@@ -429,5 +434,84 @@ export function useMoveNotStartedNotice(input: {
             onDismiss: dismiss,
           },
     [anotherMove, dismiss, dismissed, latest],
+  );
+}
+
+const MOVED_SWITCHES_DISMISSALS_STORAGE_KEY = "threadlines:moved-switches-dismissals:v1";
+
+/**
+ * The pull request switches a thread had on before it moved here, which
+ * arrive off (docs/design/fleet.md, Part 3e, (c)): what was on there, with
+ * Turn on, which flips each one here as the user would. Gone once any switch
+ * is set here (the server clears the offer), or dismissed on this device.
+ */
+export function useMovedPullRequestSwitchesNotice(input: {
+  readonly thread: Pick<Thread, "id" | "environmentId" | "movedFrom"> | undefined;
+}): ComposerNotice | null {
+  const { thread } = input;
+  const [dismissals, setDismissals] = useLocalStorage(
+    MOVED_SWITCHES_DISMISSALS_STORAGE_KEY,
+    { keys: [] },
+    MoveNotStartedDismissalsSchema,
+  );
+  const [turningOn, setTurningOn] = useState<ThreadId | null>(null);
+  const movedFrom = thread?.movedFrom ?? null;
+  const switches = movedFrom?.pullRequestSwitches;
+  const on = useMemo(
+    () => (switches === undefined ? null : pullRequestSwitchesWords(switches)),
+    [switches],
+  );
+  const dismissalKey =
+    thread && movedFrom ? `${thread.environmentId}:${thread.id}:${movedFrom.movedAt}` : null;
+  const dismissed = dismissalKey !== null && dismissals.keys.includes(dismissalKey);
+  const dismiss = useCallback(() => {
+    if (dismissalKey === null) return;
+    setDismissals((current) =>
+      current.keys.includes(dismissalKey)
+        ? current
+        : { keys: [...current.keys, dismissalKey].slice(-MAX_MOVE_NOT_STARTED_DISMISSALS) },
+    );
+  }, [dismissalKey, setDismissals]);
+  const environmentId = thread?.environmentId ?? null;
+  const threadId = thread?.id ?? null;
+  const turnOn = useCallback(() => {
+    if (environmentId === null || threadId === null || switches === undefined) return;
+    setTurningOn(threadId);
+    void (async () => {
+      try {
+        await turnOnMovedPullRequestSwitches(scopeThreadRef(environmentId, threadId), switches);
+      } catch (error) {
+        toastManager.add(
+          failureNotice({
+            title: "Couldn't turn them on",
+            reason: error instanceof Error ? error.message : "The server didn't answer.",
+          }),
+        );
+      } finally {
+        setTurningOn((current) => (current === threadId ? null : current));
+      }
+    })();
+  }, [environmentId, switches, threadId]);
+  const busy = threadId !== null && turningOn === threadId;
+  const label = movedFrom?.label ?? null;
+  const movedAt = movedFrom?.movedAt ?? null;
+  return useMemo<ComposerNotice | null>(
+    () =>
+      on === null || label === null || dismissed
+        ? null
+        : {
+            id: `moved-pull-request-switches:${movedAt}`,
+            severity: "info",
+            lead: `${on.words} ${on.plural ? "are" : "is"} off.`,
+            detail: `${on.plural ? "They were" : "It was"} on for ${on.what} on ${label}.`,
+            actions: (
+              <Button size="xs" disabled={busy} onClick={turnOn}>
+                Turn on
+              </Button>
+            ),
+            dismissLabel: on.plural ? "Leave them off" : "Leave it off",
+            onDismiss: dismiss,
+          },
+    [busy, dismiss, dismissed, label, movedAt, on, turnOn],
   );
 }

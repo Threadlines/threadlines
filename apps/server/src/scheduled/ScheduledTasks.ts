@@ -121,6 +121,7 @@ import {
 import { ThreadBootstrap } from "../orchestration/Services/ThreadBootstrap.ts";
 import { ProjectionTurnRepository } from "../persistence/Services/ProjectionTurns.ts";
 import { derivedUuid } from "../orchestration/childRequestIds.ts";
+import { isLinkFenced } from "../orchestration/linkFence.ts";
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import { SystemWake } from "../power/Services/SystemWake.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
@@ -747,9 +748,11 @@ const make = Effect.gen(function* () {
         if (thread.projectId !== task.projectId) {
           return yield* taskError("The thread it should continue is in another project.");
         }
-        if ((thread.remoteOrigin ?? null) !== null) {
+        if (isLinkFenced(thread)) {
           return yield* taskError(
-            "A thread another computer started can't be continued on a schedule.",
+            (thread.remoteOrigin ?? null) !== null
+              ? "A thread another computer started can't be continued on a schedule."
+              : "A thread that moved here can't be continued on a schedule until you send it a message here.",
           );
         }
         if (agentLeft(thread, task.target)) return yield* taskError(AGENT_LEFT_TASK);
