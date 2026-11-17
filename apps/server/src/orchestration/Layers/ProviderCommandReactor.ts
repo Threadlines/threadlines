@@ -33,6 +33,7 @@ import {
   type OutsideAgentConnectionId,
   type OutsideAgentRef,
   type OutsideTurnOrigin,
+  type LeadPassCeiling,
   type RuntimeMode,
   ThreadAccessRaiseDeferredActivityKind,
   type ThreadAccessRaiseDeferredPayload,
@@ -51,7 +52,7 @@ import {
 import { renderThreadContextSeed, withContextSeedPreamble } from "@threadlines/shared/contextSeed";
 import { LEAD_WITHOUT_TOOLS_TEXT, leadRoleText } from "@threadlines/shared/projectLead";
 import { agentInvitesMode, agentThreadsMode } from "@threadlines/shared/serverSettings";
-import { notesFor, remoteChildOf } from "@threadlines/shared/childThreads";
+import { notesFor, remoteChildOf, withinModeCeiling } from "@threadlines/shared/childThreads";
 import { settingsChangeNotesFor } from "@threadlines/shared/settingsChangeState";
 import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
 import { exceedsRuntimeMode, saferRuntimeMode } from "@threadlines/shared/runtimeMode";
@@ -222,6 +223,10 @@ export interface ForkTurnBoundary {
   readonly lastTurnId?: TurnId;
 }
 
+/** Why a lead chat's pass did not go to the agent: the thread's access went above its ceiling. */
+const PASS_ABOVE_CEILING_DETAIL =
+  "This message the lead chat passed on wasn't sent: this thread has more access than the lead chat now. Send it yourself to run it.";
+
 /** One ensure call's launch mark: its generation and instance, once marked. */
 interface SessionLaunch {
   generation: number | null;
@@ -252,6 +257,13 @@ interface EnsureSessionOptions {
    * on the same read of the thread the session starts from.
    */
   readonly outsideCeiling?: OutsideTurnOrigin;
+  /**
+   * The turn is a lead chat's pass (docs/design/lead-chat.md, "Access"): it
+   * runs only while the thread is within the pass's ceiling, checked on the
+   * same read of the thread the session starts from, since the user may have
+   * raised its access after the decider let the pass through.
+   */
+  readonly passCeiling?: LeadPassCeiling;
   /**
    * A turn that isn't from outside: an agent outside text reached
    * (OrchestrationOutsideWork) starts fresh for it, a new runtime with a
@@ -1334,6 +1346,14 @@ const make = Effect.gen(function* () {
         detail: `This message from ${outsideCeiling.name} wasn't sent: the thread's access was raised above what it may use.`,
       });
     }
+    const passCeiling = options?.passCeiling;
+    if (passCeiling !== undefined && !withinModeCeiling(thread, passCeiling)) {
+      return yield* new ProviderAdapterRequestError({
+        provider: providerErrorLabel(undefined),
+        method: "thread.turn.start",
+        detail: PASS_ABOVE_CEILING_DETAIL,
+      });
+    }
     const sessionKey = participantSessionKey(threadId, participantId);
     const shedsOutsideWork =
       options?.shedOutsideWork === true &&
@@ -2348,6 +2368,11 @@ const make = Effect.gen(function* () {
     }
 
     const sessionKey = participantSessionKey(input.threadId, input.participantId);
+    // Read from the stored message, which keeps it for good: a retry or a
+    // resend of a pass carries no origin on its turn.
+    const passCeiling =
+      thread.messages.find((message) => message.id === input.messageId)?.fromThread?.ceiling ??
+      input.fromThread?.ceiling;
     const ensured = yield* ensureSessionForThread(input.threadId, input.createdAt, {
       participantId: input.participantId,
       ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
@@ -2355,6 +2380,7 @@ const make = Effect.gen(function* () {
       preservePendingTurnStartup: true,
       ...(forkFrom !== undefined ? { forkFrom } : {}),
       ...(input.fromOutside !== undefined ? { outsideCeiling: input.fromOutside } : {}),
+      ...(passCeiling !== undefined ? { passCeiling } : {}),
       ...(input.sentByPerson === true && input.fromOutside === undefined
         ? { shedOutsideWork: true }
         : {}),
@@ -2378,6 +2404,25 @@ const make = Effect.gen(function* () {
         provider: providerErrorLabel(activeSession.provider),
         method: "thread.turn.start",
         detail: `This message from ${input.fromOutside.name} wasn't sent: the agent here still runs with more access than it may use.`,
+      });
+    }
+    // A pass goes only to a runtime within its ceiling, in the mode it runs.
+    if (
+      passCeiling !== undefined &&
+      ((activeSession !== undefined &&
+        exceedsRuntimeMode(activeSession.runtimeMode, passCeiling.runtimeMode)) ||
+        !withinModeCeiling(
+          {
+            runtimeMode: thread.runtimeMode,
+            interactionMode: input.interactionMode ?? thread.interactionMode,
+          },
+          passCeiling,
+        ))
+    ) {
+      return yield* new ProviderAdapterRequestError({
+        provider: providerErrorLabel(activeSession?.provider),
+        method: "thread.turn.start",
+        detail: PASS_ABOVE_CEILING_DETAIL,
       });
     }
     // In a room, what the other agents said and changed since this agent's
