@@ -193,7 +193,7 @@ const FamilyTabButton = memo(function FamilyTabButton({
 }: {
   tab: FamilyTab;
   active: boolean;
-  /** Share the row's width (desktop); on a phone each is as wide as its words. */
+  /** May shrink when the row is crowded (desktop); on a phone each keeps its width and the row scrolls. */
   fill: boolean;
   onOpen: (target: ScopedThreadRef) => void;
   buttonRef?: React.RefObject<HTMLButtonElement | null> | undefined;
@@ -234,7 +234,9 @@ const FamilyTabButton = memo(function FamilyTabButton({
       disabled={tab.threadRef === null}
       className={cn(
         "flex h-6 items-center gap-1.5 rounded-md px-2 text-xs transition-colors focus-ring",
-        fill ? "min-w-0 max-w-56 flex-1 basis-0" : "shrink-0",
+        // As wide as its title up to a cap, packed to the left like the right
+        // panel's strip; tabs only shrink (toward the fit's floor) when crowded.
+        fill ? "min-w-0 max-w-50 shrink" : "shrink-0",
         active
           ? "bg-accent text-foreground"
           : "text-muted-foreground hover:text-foreground disabled:hover:text-muted-foreground",
