@@ -13,9 +13,13 @@ import {
   ProviderInstanceId,
   ThreadId,
   ThreadMoveId,
+  TurnId,
+  GENERAL_CHATS_PROJECT_ID,
   type OrchestrationCommand,
   type OrchestrationThread,
+  type OrchestrationThreadShell,
   type PeerMoveManifest,
+  type PeerMoveThreadState,
 } from "@threadlines/contracts";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -31,6 +35,7 @@ import {
   inspectMoveCheckout,
   movePayloadPath,
   writeMoveExport,
+  writeScratchExport,
 } from "../moves/moveExport.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
@@ -42,6 +47,7 @@ import {
   importClaudeNativeSession,
 } from "../provider/Drivers/ClaudeNativeSession.ts";
 import type { NativeSessionExport } from "../provider/nativeSession.ts";
+import type { ProviderAdapterCapabilities } from "../provider/Services/ProviderAdapter.ts";
 import {
   ProviderService,
   type ProviderServiceShape,
@@ -53,6 +59,7 @@ import { LinkMoveRepositoryLive } from "./LinkMoveRepository.ts";
 import {
   binaryPatchBytes,
   linkMoveKey,
+  linkMoveThreadId,
   LinkMoves,
   LinkMovesLive,
   MAX_STAGED_MOVES_PER_LINK,
@@ -154,6 +161,12 @@ interface CarryRecord {
   readonly forgotten?: Array<ThreadId>;
   /** The engine fails to create the moved thread. */
   readonly failImport?: boolean;
+  /** What the agent here keeps of a moved thread (docs/design/fleet.md, Part 3e). */
+  readonly capabilities?: Partial<ProviderAdapterCapabilities>;
+  /** This computer's General Chats folder, for a general chat that moves here. */
+  readonly generalChatsRoot?: string;
+  /** The moved thread as it reads here once it landed (its queue, its session). */
+  readonly shell?: () => OrchestrationThreadShell | undefined;
 }
 
 /** The services LinkMoves leans on, with this computer's git real and the rest faked. */
@@ -213,6 +226,22 @@ function testLayer(
         }),
         Layer.mock(ProjectionSnapshotQuery)({
           getCommandReadModel: () => Effect.succeed({ threads: [], projects: [] } as never),
+          getProjectCatalog: () =>
+            Effect.succeed({
+              projects:
+                carry.generalChatsRoot === undefined
+                  ? []
+                  : [
+                      {
+                        id: GENERAL_CHATS_PROJECT_ID,
+                        kind: "general-chat",
+                        title: "General Chats",
+                        workspaceRoot: carry.generalChatsRoot,
+                        deletedAt: null,
+                      },
+                    ],
+            } as never),
+          getThreadShellById: () => Effect.succeed(Option.fromUndefinedOr(carry.shell?.())),
         }),
         Layer.mock(ProjectionThreadRepository)({ getById: () => Effect.succeed(Option.none()) }),
         Layer.mock(RelayDeviceRepository)({ getDevice: () => Effect.succeed(Option.none()) }),
@@ -223,6 +252,12 @@ function testLayer(
           importNativeSession: ({ instanceId: _instanceId, ...input }) =>
             importClaudeNativeSession({ ...input, configDir: carry.home }),
           adoptNativeSession: (input) => Effect.sync(() => void carry.adopted.push(input)),
+          getCapabilities: () =>
+            Effect.succeed({
+              sessionModelSwitch: "in-session",
+              threadGoals: "supported",
+              ...carry.capabilities,
+            } as ProviderAdapterCapabilities),
           forgetNativeSession: (threadId) =>
             Effect.sync(() => void carry.forgotten?.push(threadId)),
         }),
@@ -261,7 +296,11 @@ const link = (access: PeerLink["access"]): PeerLink => ({
 });
 
 /** Packs `repos.a`'s thread the way the computer it leaves does. */
-const pack = (repos: ReturnType<typeof makeRepos>, nativeSession?: NativeSessionExport | null) =>
+const pack = (
+  repos: ReturnType<typeof makeRepos>,
+  nativeSession?: NativeSessionExport | null,
+  state?: PeerMoveThreadState,
+) =>
   Effect.gen(function* () {
     const git = yield* GitVcsDriver.GitVcsDriver;
     const checkout = yield* inspectMoveCheckout(git, repos.a, "origin");
@@ -283,6 +322,7 @@ const pack = (repos: ReturnType<typeof makeRepos>, nativeSession?: NativeSession
       },
       agent,
       nativeSession,
+      state,
     });
     return { manifest, payload: fs.readFileSync(movePayloadPath(dir)), checkout };
   });
@@ -924,6 +964,362 @@ describe("LinkMoves, a clean thread", () => {
       }).pipe(Effect.provide(testLayer(repos, dispatched)));
     },
   );
+});
+
+describe("LinkMoves, what a thread had going (Part 3e)", () => {
+  const at = "2026-10-22T10:00:00.000Z";
+  const carried = (extra?: Partial<PeerMoveThreadState>): PeerMoveThreadState => ({
+    goal: {
+      objective: "Make the suite pass",
+      status: "active",
+      tokenBudget: 5_000,
+      tokensUsed: 1_200,
+      timeUsedSeconds: 60,
+      createdAt: at,
+      updatedAt: at,
+      pickUp: true,
+    },
+    checkBacks: [
+      {
+        scheduledFor: "2030-01-01T10:00:00.000Z",
+        recurring: false,
+        exact: true,
+        prompt: "Look at CI on #212",
+        durable: false,
+      },
+    ],
+    pullRequests: {
+      autoFix: true,
+      autoMerge: null,
+      linked: [
+        { number: 212, url: "https://example.com/repo/pull/212", autoFix: true, autoMerge: null },
+      ],
+    },
+    queuedFollowUps: [
+      {
+        messageId: MessageId.make("q-1"),
+        text: "and then this",
+        attachments: [],
+        interactionMode: "default",
+        createdAt: at,
+      },
+    ],
+    proposedPlans: [
+      {
+        id: "plan-1",
+        turnId: TurnId.make("turn-1"),
+        planMarkdown: "1. Fix it",
+        implementedAt: null,
+        implementationThreadId: ThreadId.make("thread-a"),
+        dismissedAt: null,
+        createdAt: at,
+        updatedAt: at,
+      },
+    ],
+    plansLeftBehind: 3,
+    ...extra,
+  });
+  /** The moved thread as it reads here: the queue its import wrote, and no session. */
+  const landedShell = (dispatched: OrchestrationCommand[]) => () => {
+    const imported = dispatched.find((entry) => entry.type === "thread.import");
+    if (imported?.type !== "thread.import") return undefined;
+    const head = imported.arrival?.message?.messageId ?? imported.queuedFollowUps?.[0]?.messageId;
+    return {
+      queuedFollowUps: head === undefined ? [] : [{ messageId: head }],
+      session: null,
+    } as unknown as OrchestrationThreadShell;
+  };
+  const importOf = (dispatched: OrchestrationCommand[]) => {
+    const command = dispatched.find((entry) => entry.type === "thread.import");
+    assert(command?.type === "thread.import");
+    return command;
+  };
+  const sends = (dispatched: OrchestrationCommand[]) =>
+    dispatched.filter((entry) => entry.type === "thread.follow-up.send-queued");
+
+  it.live("lands with its goal, pull requests, plans and queue, and sends its arrival once", () => {
+    const repos = makeRepos();
+    const dispatched: OrchestrationCommand[] = [];
+    return Effect.gen(function* () {
+      const { manifest, payload } = yield* pack(repos, null, carried());
+      const state = yield* deliver(manifest, payload);
+      assert.equal(state.status, "committed", state.reason);
+      const command = importOf(dispatched);
+      // Working, it is picked up here, with its budget as it was.
+      assert.deepInclude(command.goal, { status: "active", tokenBudget: 5_000, tokensUsed: 1_200 });
+      assert.deepEqual(command.pullRequests, {
+        autoFix: true,
+        autoMerge: null,
+        linked: [
+          { number: 212, url: "https://example.com/repo/pull/212", autoFix: true, autoMerge: null },
+        ],
+      });
+      // This computer's ids, the plan pointing at the thread it is now.
+      assert.notEqual(command.queuedFollowUps?.[0]?.messageId, "q-1");
+      assert.equal(command.queuedFollowUps?.[0]?.runtimeMode, "auto-accept-edits");
+      assert.notEqual(command.proposedPlans?.[0]?.id, "plan-1");
+      assert.equal(command.proposedPlans?.[0]?.implementationThreadId, command.threadId);
+      const message = command.arrival?.message?.text ?? "";
+      assert.include(message, "This thread moved from Windows PC to Mac mini");
+      assert.include(message, "Your goal is still on: Make the suite pass. Carry on with it.");
+      // This computer's agent (a Codex) can't set check-backs: told once.
+      assert.include(message, "you can't set them here");
+      assert.include(message, "Look at CI on #212");
+      assert.deepEqual(command.arrival?.brought, [
+        "its goal",
+        "auto-fix for #212",
+        "1 queued message",
+        "its plan",
+      ]);
+      assert.include(command.arrival?.left.join("\n"), "can't set them");
+      assert.include(command.arrival?.left.join("\n"), "3 older plans stayed on Windows PC.");
+      // One send: the arrival message, by the move's own command id.
+      assert.deepEqual(
+        sends(dispatched).map((entry) =>
+          entry.type === "thread.follow-up.send-queued" ? entry.messageId : null,
+        ),
+        [command.arrival?.message?.messageId ?? null],
+      );
+
+      // A restart before the arrival was recorded sends it then.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE link_moves SET stage = 'applied'`;
+      dispatched.splice(0, dispatched.length, command);
+      const moves = yield* LinkMoves;
+      yield* Effect.scoped(moves.startReactor().pipe(Effect.andThen(Effect.sleep("300 millis"))));
+      assert.lengthOf(sends(dispatched), 1);
+    }).pipe(
+      Effect.provide(
+        testLayer(repos, dispatched, "allowed", () => false, [], {
+          home: os.tmpdir(),
+          adopted: [],
+          shell: landedShell(dispatched),
+        }),
+      ),
+    );
+  });
+
+  it.live(
+    "a token budget going to Claude arrives paused, and Claude sets its check-backs again",
+    () => {
+      const repos = makeRepos();
+      const dispatched: OrchestrationCommand[] = [];
+      return Effect.gen(function* () {
+        const { manifest, payload } = yield* pack(repos, null, carried());
+        assert.equal((yield* deliver(manifest, payload)).status, "committed");
+        const command = importOf(dispatched);
+        assert.deepInclude(command.goal, { status: "paused", tokenBudget: null });
+        assert.include(
+          command.arrival?.left.join("\n"),
+          "Its goal came paused: the agent here can't keep its token budget. Resume runs it without one.",
+        );
+        const message = command.arrival?.message?.text ?? "";
+        assert.notInclude(message, "Your goal is still on");
+        assert.include(message, "Run CronList, then set again the ones you still need");
+      }).pipe(
+        Effect.provide(
+          testLayer(repos, dispatched, "allowed", () => false, [], {
+            home: os.tmpdir(),
+            adopted: [],
+            capabilities: { threadGoalBudget: "unsupported", checkBacks: "supported" },
+            shell: landedShell(dispatched),
+          }),
+        ),
+      );
+    },
+  );
+
+  it.live("a goal that finished arrives finished, and nobody is told to carry on with it", () => {
+    const repos = makeRepos();
+    const dispatched: OrchestrationCommand[] = [];
+    return Effect.gen(function* () {
+      const finished = carried({ checkBacks: [], queuedFollowUps: [] });
+      const { manifest, payload } = yield* pack(repos, null, {
+        ...finished,
+        goal: { ...finished.goal!, status: "complete", pickUp: true },
+      });
+      assert.equal((yield* deliver(manifest, payload)).status, "committed");
+      const command = importOf(dispatched);
+      assert.equal(command.goal?.status, "complete");
+      assert.isUndefined(command.arrival?.message);
+      assert.lengthOf(sends(dispatched), 0);
+    }).pipe(
+      Effect.provide(
+        testLayer(repos, dispatched, "allowed", () => false, [], {
+          home: os.tmpdir(),
+          adopted: [],
+          shell: landedShell(dispatched),
+        }),
+      ),
+    );
+  });
+
+  it.live("a branch renamed here arrives with its switches off, and says why", () => {
+    const repos = makeRepos();
+    // This computer already has a branch of that name, elsewhere.
+    run(repos.b, "branch", "feature/move-me");
+    const dispatched: OrchestrationCommand[] = [];
+    return Effect.gen(function* () {
+      const { manifest, payload } = yield* pack(repos, null, carried());
+      assert.equal((yield* deliver(manifest, payload)).status, "committed");
+      const command = importOf(dispatched);
+      assert.equal(command.branch, "feature/move-me-from-windows-pc");
+      assert.deepEqual(command.pullRequests, {
+        autoFix: false,
+        autoMerge: null,
+        linked: [
+          {
+            number: 212,
+            url: "https://example.com/repo/pull/212",
+            autoFix: false,
+            autoMerge: null,
+          },
+        ],
+      });
+      assert.include(
+        command.arrival?.left.join("\n"),
+        "Auto-fix is off here: this computer already has a branch named `feature/move-me`, so pushes from this thread wouldn't reach pull request #212.",
+      );
+    }).pipe(
+      Effect.provide(
+        testLayer(repos, dispatched, "allowed", () => false, [], {
+          home: os.tmpdir(),
+          adopted: [],
+          shell: landedShell(dispatched),
+        }),
+      ),
+    );
+  });
+
+  it.live("the branch made here tracks the one it tracked there, when the remote has it", () => {
+    const repos = makeRepos();
+    run(repos.a, "push", "--quiet", "-u", "origin", "feature/move-me");
+    const dispatched: OrchestrationCommand[] = [];
+    return Effect.gen(function* () {
+      const { manifest, payload } = yield* pack(repos);
+      assert(!("workspace" in manifest));
+      assert.equal(manifest.git.upstreamBranch, "feature/move-me");
+      assert.equal((yield* deliver(manifest, payload)).status, "committed");
+      const command = importOf(dispatched);
+      assert.equal(
+        run(command.worktreePath!, "rev-parse", "--abbrev-ref", "feature/move-me@{upstream}"),
+        "origin/feature/move-me",
+      );
+    }).pipe(Effect.provide(testLayer(repos, dispatched)));
+  });
+});
+
+describe("LinkMoves, a General Chats thread", () => {
+  /** A general chat's folder on the computer it leaves, with files in it. */
+  const chatFolder = (root: string) => {
+    const folder = path.join(root, "general-a", "threads", "thread-a");
+    fs.mkdirSync(path.join(folder, "data"), { recursive: true });
+    fs.writeFileSync(path.join(folder, "notes.md"), "# Ideas\n");
+    fs.writeFileSync(path.join(folder, "data", "out.csv"), "a,b\n1,2\n");
+    fs.writeFileSync(path.join(folder, "run.sh"), "#!/bin/sh\necho hi\n", { mode: 0o755 });
+    return folder;
+  };
+  const packChat = (root: string) =>
+    Effect.gen(function* () {
+      const dir = path.join(root, "export-chat");
+      const manifest = yield* writeScratchExport({
+        dir,
+        folder: chatFolder(root),
+        attachmentsDir: path.join(root, "attachments"),
+        thread: movingThread(),
+        source: {
+          environmentId: EnvironmentId.make("environment-windows"),
+          environmentLabel: "Windows PC",
+          threadId: ThreadId.make("thread-a"),
+        },
+        agent,
+      });
+      return { manifest, payload: fs.readFileSync(movePayloadPath(dir)) };
+    });
+  const landedFolder = (root: string) =>
+    path.join(
+      root,
+      "general-b",
+      "threads",
+      linkMoveThreadId(linkMoveKey("device-windows", TRANSFER)),
+    );
+
+  it.live("lands in General chats with every file of its folder", () => {
+    const repos = makeRepos();
+    const dispatched: OrchestrationCommand[] = [];
+    return Effect.gen(function* () {
+      const { manifest, payload } = yield* packChat(repos.root);
+      assert.deepEqual(manifest.summary, { messageCount: 2, files: 3 });
+      const state = yield* deliver(manifest, payload);
+      assert.equal(state.status, "committed", state.reason);
+      const command = dispatched.find((entry) => entry.type === "thread.import");
+      assert(command?.type === "thread.import");
+      assert.equal(command.projectId, GENERAL_CHATS_PROJECT_ID);
+      assert.isNull(command.worktreePath);
+      assert.isNull(command.branch);
+      const folder = landedFolder(repos.root);
+      assert.deepEqual(filesUnder(folder), ["data/out.csv", "notes.md", "run.sh"]);
+      assert.equal(fs.readFileSync(path.join(folder, "notes.md"), "utf8"), "# Ideas\n");
+      if (process.platform !== "win32") {
+        assert.notEqual(fs.statSync(path.join(folder, "run.sh")).mode & 0o111, 0);
+      }
+    }).pipe(
+      Effect.provide(
+        testLayer(repos, dispatched, "allowed", () => false, [], {
+          home: os.tmpdir(),
+          adopted: [],
+          generalChatsRoot: path.join(repos.root, "general-b"),
+        }),
+      ),
+    );
+  });
+
+  it.live("a folder already there stops the move, and is left as it was", () => {
+    const repos = makeRepos();
+    const folder = landedFolder(repos.root);
+    fs.mkdirSync(folder, { recursive: true });
+    fs.writeFileSync(path.join(folder, "theirs.txt"), "not the move's\n");
+    const dispatched: OrchestrationCommand[] = [];
+    return Effect.gen(function* () {
+      const { manifest, payload } = yield* packChat(repos.root);
+      const state = yield* deliver(manifest, payload);
+      assert.equal(state.status, "aborted");
+      assert.include(state.reason, "already has a folder");
+      assert.deepEqual(filesUnder(folder), ["theirs.txt"]);
+    }).pipe(
+      Effect.provide(
+        testLayer(repos, dispatched, "allowed", () => false, [], {
+          home: os.tmpdir(),
+          adopted: [],
+          generalChatsRoot: path.join(repos.root, "general-b"),
+        }),
+      ),
+    );
+  });
+
+  it.live("a move dropped after its files arrived takes its own folder away", () => {
+    const repos = makeRepos();
+    const dispatched: OrchestrationCommand[] = [];
+    return Effect.gen(function* () {
+      const { manifest, payload } = yield* packChat(repos.root);
+      const state = yield* deliver(manifest, payload);
+      assert.equal(state.status, "aborted");
+      const folder = landedFolder(repos.root);
+      for (let tries = 0; tries < 100 && fs.existsSync(folder); tries += 1) {
+        yield* Effect.sleep("20 millis");
+      }
+      assert.isFalse(fs.existsSync(folder));
+    }).pipe(
+      Effect.provide(
+        testLayer(repos, dispatched, "allowed", () => false, [], {
+          home: os.tmpdir(),
+          adopted: [],
+          failImport: true,
+          generalChatsRoot: path.join(repos.root, "general-b"),
+        }),
+      ),
+    );
+  });
 });
 
 describe("what a move may write here", () => {

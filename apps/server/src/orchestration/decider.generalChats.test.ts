@@ -20,6 +20,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { decideOrchestrationCommand } from "./decider.ts";
 import { resolveThreadProviderCwd } from "./generalChats.ts";
 import { createEmptyReadModel, projectEvent } from "./projector.ts";
+import { threadMoveRefusals } from "./threadMoveDecisions.ts";
 
 const now = "2026-01-01T00:00:00.000Z";
 const asCommandId = (value: string): CommandId => CommandId.make(value);
@@ -564,5 +565,58 @@ describe("resolveThreadProviderCwd", () => {
     });
 
     expect(cwd).toBe("/worktrees/project-a/thread-a");
+  });
+});
+
+describe("moving a general chat (docs/design/fleet.md, Part 3e)", () => {
+  async function apply(readModel: OrchestrationReadModel, command: OrchestrationCommand) {
+    const decided = await Effect.runPromise(decideOrchestrationCommand({ command, readModel }));
+    let model = readModel;
+    for (const [index, event] of (Array.isArray(decided) ? decided : [decided]).entries()) {
+      model = await Effect.runPromise(
+        projectEvent(model, { ...event, sequence: model.snapshotSequence + index + 1 } as never),
+      );
+    }
+    return model;
+  }
+  const chat = (id: string): OrchestrationCommand => ({
+    type: "thread.create",
+    commandId: asCommandId(`cmd-create-${id}`),
+    threadId: asThreadId(id),
+    projectId: asProjectId("project-general-chats"),
+    title: id,
+    modelSelection,
+    interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+    runtimeMode: "full-access",
+    branch: null,
+    worktreePath: null,
+    createdAt: now,
+  });
+
+  it("works in a folder of its own: another chat at work doesn't hold its move", async () => {
+    let model = await seedGeneralChatsReadModel();
+    model = await apply(model, chat("chat-busy"));
+    model = await apply(model, chat("chat-moving"));
+    model = await apply(model, {
+      type: "thread.session.set",
+      commandId: asCommandId("cmd-busy-session"),
+      threadId: asThreadId("chat-busy"),
+      session: {
+        threadId: asThreadId("chat-busy"),
+        status: "running",
+        providerName: "codex",
+        runtimeMode: "full-access",
+        activeTurnId: null,
+        lastError: null,
+        updatedAt: now,
+      },
+      createdAt: now,
+    } as OrchestrationCommand);
+    const moving = model.threads.find((thread) => thread.id === "chat-moving")!;
+    expect(threadMoveRefusals(model, moving, { threadState: true, generalChats: true })).toEqual(
+      [],
+    );
+    // An older computer still can't take one.
+    expect(threadMoveRefusals(model, moving).map((entry) => entry.code)).toEqual(["general_chat"]);
   });
 });

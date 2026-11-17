@@ -11016,6 +11016,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       activeTurnSteering: "supported",
       threadGoals: "supported",
       threadGoalPause: "unsupported",
+      // `/goal` takes only the condition.
+      threadGoalBudget: "unsupported",
+      checkBacks: "supported",
       earlySessionStart: "supported",
     },
     startSession,

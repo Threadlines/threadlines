@@ -27,6 +27,7 @@ import {
 import { cn } from "../lib/utils";
 import { selectSidebarThreadSummaryByRef, useStore } from "../store";
 import {
+  describeThreadMoveLanding,
   describeThreadMoveSession,
   describeThreadMoveWaits,
   formatThreadMoveChanges,
@@ -36,6 +37,7 @@ import {
   threadMoveAgentKey,
   threadMoveAgentSelection,
   threadMoveSessionOutcome,
+  threadMoveNotesFor,
   threadMoveStopNowRefusal,
   type ThreadMoveAgentChoice,
 } from "../threadMove";
@@ -144,6 +146,12 @@ export function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThread
   const unreachable = queues && target?.unreachable === true;
   const agentSelection: ModelSelection | null =
     target !== null && agent !== null ? threadMoveAgentSelection(target, agent) : null;
+  // A General Chats thread: its folder goes, with no branch or staged changes.
+  const folder = preview?.folder;
+  // What comes along, then what won't work there as it did, for the agent picked.
+  const pickedInstanceId = unreachable ? null : (agentSelection?.instanceId ?? null);
+  const brings = threadMoveNotesFor(preview?.brings, pickedInstanceId);
+  const notes = threadMoveNotesFor(target?.notes, pickedInstanceId);
   const canMove =
     preview !== null &&
     preview.refusal === undefined &&
@@ -180,9 +188,9 @@ export function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThread
       <DialogHeader>
         <DialogTitle>Move to another computer</DialogTitle>
         <DialogDescription>
-          {title
-            ? `“${title}” goes with its messages and its code changes.`
-            : "The thread goes with its messages and its code changes."}
+          {`${title ? `“${title}”` : "The thread"} goes with its messages and its ${
+            folder !== undefined ? "files" : "code changes"
+          }.`}
         </DialogDescription>
       </DialogHeader>
       <DialogPanel className="space-y-4">
@@ -254,12 +262,13 @@ export function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThread
                   className="surface-group space-y-0.5 px-3.5 py-2.5"
                   data-testid="thread-move-preview"
                 >
-                  <p className="text-[13.5px] leading-[19px] font-medium text-foreground">
-                    {target.projectName
-                      ? `Lands in ${target.projectName} on ${target.label}`
-                      : `Lands on ${target.label}`}
+                  <p
+                    className="text-[13.5px] leading-[19px] font-medium text-foreground"
+                    data-testid="thread-move-landing"
+                  >
+                    {describeThreadMoveLanding(target, folder)}
                   </p>
-                  {preview.changes ? (
+                  {folder === undefined && preview.changes ? (
                     <p
                       className="text-[12.5px] leading-[18px] text-muted-foreground"
                       data-testid="thread-move-changes"
@@ -267,9 +276,11 @@ export function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThread
                       {formatThreadMoveChanges(preview.changes)}
                     </p>
                   ) : null}
-                  <p className="text-[12.5px] leading-[18px] text-muted-foreground">
-                    Staged changes arrive as unstaged changes.
-                  </p>
+                  {folder === undefined ? (
+                    <p className="text-[12.5px] leading-[18px] text-muted-foreground">
+                      Staged changes arrive as unstaged changes.
+                    </p>
+                  ) : null}
                   <p className="text-[12.5px] leading-[18px] text-muted-foreground">
                     Your copy here stays, read-only.
                   </p>
@@ -305,6 +316,28 @@ export function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThread
                     ) : null}
                   </>
                 )}
+                {brings.length > 0 || notes.length > 0 ? (
+                  <div className="space-y-0.5" data-testid="thread-move-carries">
+                    {brings.map((line) => (
+                      <p
+                        key={line}
+                        className="text-[12.5px] leading-[18px] text-muted-foreground"
+                        data-testid="thread-move-brings"
+                      >
+                        {line}
+                      </p>
+                    ))}
+                    {notes.map((line) => (
+                      <p
+                        key={line}
+                        className="text-[12.5px] leading-[18px] text-foreground"
+                        data-testid="thread-move-note"
+                      >
+                        {line}
+                      </p>
+                    ))}
+                  </div>
+                ) : null}
                 {working ? (
                   <MoveWhenField
                     label={target.label}

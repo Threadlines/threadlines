@@ -7,6 +7,7 @@
  * @module threadMove
  */
 import {
+  GENERAL_CHATS_PROJECT_ID,
   type ModelSelection,
   type ThreadMoveBatchId,
   type ThreadMoveBatchMember,
@@ -15,6 +16,8 @@ import {
   type OrchestrationThreadMove,
   type OutboundComputerLink,
   type ThreadMoveChanges,
+  type ThreadMoveNote,
+  type ThreadMovePreview,
   THREAD_MOVE_BATCH_MAX,
   ThreadMoveNotStartedActivityKind,
   type ThreadMoveOutcome,
@@ -98,20 +101,31 @@ export function threadMoveStatusWord(status: ThreadMoveStatus): string {
   return MOVE_STATUS_WORDS[status];
 }
 
+/** A thread in General Chats: every computer files them under the same project. */
+export function isGeneralChatsThread(thread: { readonly projectId: string }): boolean {
+  return thread.projectId === GENERAL_CHATS_PROJECT_ID;
+}
+
 /**
  * Whether to offer "Move to another computer" for a thread: its computer
  * moves threads, links to at least one computer right now, and the thread
- * isn't moving or moved already. Everything else (a room, live work, a
- * computer that can't take it) the dialog shows with its reason.
+ * isn't moving or moved already. A General Chats thread also needs a
+ * computer that moves those (`threadMoveState`, Part 3e). Everything else (a
+ * room, live work, a computer that can't take it) the dialog shows with its
+ * reason.
  */
 export function isThreadMoveOffered(input: {
   readonly supportsThreadMove: boolean;
+  /** The thread's computer moves threads with what they had going, General Chats ones included. */
+  readonly movesThreadState: boolean;
+  readonly generalChat: boolean;
   /** The thread's computer's own links, as last heard; null when not heard. */
   readonly outbound: ReadonlyArray<OutboundComputerLink> | null;
   readonly moveStatus: ThreadMoveStatus | undefined;
 }): boolean {
   return (
     input.supportsThreadMove &&
+    (!input.generalChat || input.movesThreadState) &&
     input.moveStatus === undefined &&
     (input.outbound ?? []).some((link) => link.state === "active")
   );
@@ -163,6 +177,38 @@ export function formatThreadMoveChanges(
   ]
     .filter((part): part is string => part !== null)
     .join(" · ");
+}
+
+/**
+ * Where the dialog says the thread lands: "Lands in threadlines on Mac mini",
+ * or "Lands on Mac mini" when the project's name isn't known. A General Chats
+ * thread (`folder`) says how many files its folder takes along: "Lands in
+ * General chats on Windows PC · 14 files".
+ */
+export function describeThreadMoveLanding(
+  target: { readonly label: string; readonly projectName?: string | undefined },
+  folder: ThreadMovePreview["folder"],
+): string {
+  const lands = target.projectName
+    ? `Lands in ${target.projectName} on ${target.label}`
+    : `Lands on ${target.label}`;
+  return folder === undefined ? lands : `${lands} · ${plural(folder.files, "file", "files")}`;
+}
+
+/**
+ * The words of the notes that hold for the agent picked (`instanceId`): those
+ * for any agent, and those naming it. None picked yet (null): only those for
+ * any agent.
+ */
+export function threadMoveNotesFor(
+  notes: ReadonlyArray<ThreadMoveNote> | undefined,
+  instanceId: string | null,
+): string[] {
+  return (notes ?? []).flatMap((note) =>
+    note.instanceIds === undefined || (instanceId !== null && note.instanceIds.includes(instanceId))
+      ? [note.words]
+      : [],
+  );
 }
 
 /**
@@ -599,9 +645,11 @@ export interface MoveCandidate<TThreadId extends string = string> {
 
 /**
  * A computer's open threads, the ones a batch can ask to move: its inbox
- * rows (project threads, not archived, not wrapped up; General Chats never
- * join the inbox), less those already moving or moved. Working ones first,
- * each half in inbox order, at most THREAD_MOVE_BATCH_MAX.
+ * rows (project threads, not archived, not wrapped up), then its general
+ * chats (`generalChats`, given only when the computer moves them,
+ * `threadMoveState`; they never join the inbox), less those already moving
+ * or moved. Working ones first, each half in that order, at most
+ * THREAD_MOVE_BATCH_MAX.
  */
 export function listMoveCandidates<
   TThread extends {
@@ -613,10 +661,12 @@ export function listMoveCandidates<
   },
 >(
   entries: ReadonlyArray<{ readonly thread: TThread; readonly isDone: boolean }>,
+  generalChats: ReadonlyArray<{ readonly thread: TThread }>,
   sourceEnvironmentId: string,
   isWorking: (thread: TThread) => boolean,
 ): MoveCandidate<TThread["id"]>[] {
-  const open = entries.flatMap(({ thread, isDone }) =>
+  const listed = [...entries, ...generalChats.map(({ thread }) => ({ thread, isDone: false }))];
+  const open = listed.flatMap(({ thread, isDone }) =>
     thread.environmentId === sourceEnvironmentId &&
     !isDone &&
     thread.archivedAt === null &&
@@ -687,6 +737,12 @@ export interface MoveCandidateWords {
   readonly words: string;
   /** What its agent gets of its session there (describeThreadMoveSession); absent when refused. */
   readonly session?: string;
+  /** What comes along with it, in the server's words (Part 3e); absent when refused. */
+  readonly brings?: ReadonlyArray<string>;
+  /** What won't work there as it did, for the agent it moves with (Part 3e); absent when refused. */
+  readonly notes?: ReadonlyArray<string>;
+  /** A General Chats thread: "Lands in General chats on Windows PC · 14 files". */
+  readonly landing?: string;
 }
 
 /**
@@ -696,6 +752,8 @@ export interface MoveCandidateWords {
 export function describeMoveCandidate(
   preview: ThreadMovePreviewManyThread,
   targetEnvironmentId: string | null,
+  /** The computer's name, for a General Chats thread's landing line. */
+  targetLabel?: string,
 ): MoveCandidateWords {
   if (preview.refusal !== undefined) return { kind: "refused", words: preview.refusal };
   const targetRefusal =
@@ -707,9 +765,30 @@ export function describeMoveCandidate(
     preview.sessionOutcomes?.find((entry) => entry.environmentId === targetEnvironmentId)
       ?.outcome ?? "summary";
   const session = describeThreadMoveSession(outcome);
-  return (preview.waitsFor ?? []).length > 0
-    ? { kind: "wait", words: "Moves when the agent finishes", session }
-    : { kind: "now", words: "Moves now", session };
+  // The agent there is the one it suggests, not named here: only the lines for any agent.
+  const brings = threadMoveNotesFor(preview.brings, null);
+  // The server says them already for that agent.
+  const lines = preview.targetLines?.find((entry) => entry.environmentId === targetEnvironmentId);
+  const notes = threadMoveNotesFor(lines?.notes, null);
+  const landing =
+    preview.folder !== undefined && targetLabel !== undefined
+      ? describeThreadMoveLanding(
+          {
+            label: targetLabel,
+            ...(lines?.projectName !== undefined ? { projectName: lines.projectName } : {}),
+          },
+          preview.folder,
+        )
+      : undefined;
+  const waits = (preview.waitsFor ?? []).length > 0;
+  return {
+    kind: waits ? "wait" : "now",
+    words: waits ? "Moves when the agent finishes" : "Moves now",
+    session,
+    ...(brings.length > 0 ? { brings } : {}),
+    ...(notes.length > 0 ? { notes } : {}),
+    ...(landing !== undefined ? { landing } : {}),
+  };
 }
 
 /**

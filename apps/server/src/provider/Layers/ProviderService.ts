@@ -2430,6 +2430,29 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     },
   );
 
+  const getThreadGoal: ProviderServiceShape["getThreadGoal"] = Effect.fn("getThreadGoal")(
+    function* (rawInput) {
+      const input = yield* decodeInputOrValidationError({
+        operation: "ProviderService.getThreadGoal",
+        schema: ProviderClearThreadGoalServiceInput,
+        payload: rawInput,
+      });
+      const routed = yield* resolveRoutableSession({
+        threadId: input.threadId,
+        operation: "ProviderService.getThreadGoal",
+        allowRecovery: false,
+      });
+      if (
+        !routed.isActive ||
+        routed.adapter.capabilities.threadGoals !== "supported" ||
+        routed.adapter.getThreadGoal === undefined
+      ) {
+        return null;
+      }
+      return yield* routed.adapter.getThreadGoal(routed.threadId);
+    },
+  );
+
   const pauseThreadGoalForStop: ProviderServiceShape["pauseThreadGoalForStop"] = Effect.fn(
     "pauseThreadGoalForStop",
   )(function* (rawInput) {
@@ -3272,6 +3295,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     compactContext,
     setThreadGoal,
     pauseThreadGoalForStop,
+    getThreadGoal,
     clearThreadGoal,
     respondToRequest,
     respondToUserInput,

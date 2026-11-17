@@ -241,6 +241,7 @@ describe("ProviderSessionReaper", () => {
       compactContext: () => unsupported(),
       setThreadGoal: () => unsupported(),
       pauseThreadGoalForStop: () => Effect.succeed(null),
+      getThreadGoal: () => Effect.succeed(null),
       clearThreadGoal: () => unsupported(),
       respondToRequest: () => unsupported(),
       respondToUserInput: () => unsupported(),

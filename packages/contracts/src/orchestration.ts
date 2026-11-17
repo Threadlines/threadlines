@@ -820,6 +820,94 @@ export const ThreadMoveTarget = Schema.Struct({
 });
 export type ThreadMoveTarget = typeof ThreadMoveTarget.Type;
 
+/** A check-back's prompt is kept up to this many characters (OrchestrationCheckBack.prompt). */
+export const CHECK_BACK_PROMPT_MAX_CHARS = 2_000;
+
+/**
+ * A time an agent set itself to come back to the thread (Claude's
+ * ScheduleWakeup and CronCreate). It belongs to the agent that set it, not
+ * to the session slot, and lives only as long as that agent's runtime unless
+ * `durable`.
+ */
+export const OrchestrationCheckBack = Schema.Struct({
+  /** The provider's id for the schedule. */
+  id: TrimmedNonEmptyString,
+  /** The room agent that set it; null for the thread's own agent. */
+  participantId: Schema.NullOr(ThreadParticipantId),
+  /** When it fires next. */
+  scheduledFor: IsoDateTime,
+  /** True when the provider stated the time; false when it was worked out
+   *  from the schedule, which the provider may run a little late. */
+  exact: Schema.Boolean,
+  recurring: Schema.Boolean,
+  /** The provider's own wording of a repeating schedule ("every 5 minutes"). */
+  schedule: Schema.optional(TrimmedNonEmptyString),
+  /** Why the agent will come back, in its words, clipped. */
+  description: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * What the agent will be told when it comes back, as it wrote it, clipped
+   * at CHECK_BACK_PROMPT_MAX_CHARS: what a moved thread's agent is told to
+   * set again on the computer it moved to (docs/design/fleet.md, Part 3e).
+   */
+  prompt: Schema.optional(TrimmedNonEmptyString),
+  /** The schedule as a cron expression, when the agent gave one. */
+  cron: Schema.optional(TrimmedNonEmptyString),
+  /** Saved by the provider to outlive the runtime that set it. */
+  durable: Schema.Boolean,
+});
+export type OrchestrationCheckBack = typeof OrchestrationCheckBack.Type;
+
+/**
+ * What the other computer takes beyond a plain thread (docs/design/fleet.md,
+ * Part 3e), as it said when the move was checked: `threadState`, a goal,
+ * check-backs, pull request switches, queued messages and plans;
+ * `generalChats`, a thread with no git checkout. Absent fields: it doesn't.
+ * The decider can't see links, so the answer travels on the move's commands.
+ */
+export const ThreadMoveTakes = Schema.Struct({
+  threadState: Schema.optional(Schema.Literal(true)),
+  generalChats: Schema.optional(Schema.Literal(true)),
+});
+export type ThreadMoveTakes = typeof ThreadMoveTakes.Type;
+
+/**
+ * What a move's stop took from the thread (docs/design/fleet.md, Part 3e,
+ * "What the stop takes"): its goal was working (`goalActive`), and the
+ * check-backs its agent had set, which end with its session. Recorded by the
+ * decision that plans the stop, and only ever added to, so the thread gets
+ * them back if the move doesn't happen and the other computer picks them up
+ * if it does.
+ */
+export const ThreadMoveInterrupted = Schema.Struct({
+  goalActive: Schema.optional(Schema.Literal(true)),
+  checkBacks: Schema.optional(Schema.Array(OrchestrationCheckBack)),
+});
+export type ThreadMoveInterrupted = typeof ThreadMoveInterrupted.Type;
+
+/**
+ * What a move that didn't happen owes the thread back (docs/design/fleet.md,
+ * Part 3e, "Put back"): what its stop took (`interrupted`), and a send of the
+ * queued messages that waited for the move. Recorded by the decision that
+ * ends the move without moving it, and cleared once the server paid it, so a
+ * restart in between still pays it.
+ */
+export const ThreadMoveRestore = Schema.Struct({
+  target: ThreadMoveTarget,
+  interrupted: Schema.optional(ThreadMoveInterrupted),
+  /** The queued messages it held back: the queue is sent again. */
+  queued: Schema.optional(Schema.Literal(true)),
+  /**
+   * Paid, but not yet through: the message the agent was told (`told`, queued
+   * ahead of the user's) and, once it and the queue are sent, the goal the
+   * provider is given again (`goalOwed`). Set only with neither `interrupted`
+   * nor `queued`; cleared once done, so a restart in between finishes it.
+   */
+  told: Schema.optional(MessageId),
+  goalOwed: Schema.optional(Schema.Literal(true)),
+  at: IsoDateTime,
+});
+export type ThreadMoveRestore = typeof ThreadMoveRestore.Type;
+
 /**
  * A thread moving, or moved, to a linked computer. From the moment it starts
  * the thread is frozen here: the decider refuses everything but archiving,
@@ -852,6 +940,10 @@ export const OrchestrationThreadMove = Schema.Struct({
   queuedRequestId: Schema.optional(ThreadMoveRequestId),
   /** The batch its queued move was part of (`moves.queueMany`). Absent: moved on its own. */
   batchId: Schema.optional(ThreadMoveBatchId),
+  /** What the move's stop took from the thread (ThreadMoveInterrupted). Absent: nothing. */
+  interrupted: Schema.optional(ThreadMoveInterrupted),
+  /** What the other computer said it takes (ThreadMoveTakes). Absent: nothing beyond v1. */
+  targetTakes: Schema.optional(ThreadMoveTakes),
   /** The other computer took it: the thread there. */
   movedAway: Schema.optional(
     Schema.Struct({
@@ -945,6 +1037,15 @@ export const ThreadPendingMove = Schema.Struct({
   hold: Schema.optional(Schema.NullOr(ThreadMoveHold)),
   /** Queued with other threads (`moves.queueMany`): their batch. Absent: on its own. */
   batchId: Schema.optional(ThreadMoveBatchId),
+  /** What the move's stop took from the thread (ThreadMoveInterrupted). Absent: nothing yet. */
+  interrupted: Schema.optional(ThreadMoveInterrupted),
+  /**
+   * What the other computer takes (ThreadMoveTakes), as it said when the move
+   * was queued; one that couldn't be reached then is taken to take
+   * everything, and is asked again before the thread's agent is stopped.
+   * Absent: nothing beyond v1.
+   */
+  targetTakes: Schema.optional(ThreadMoveTakes),
 });
 export type ThreadPendingMove = typeof ThreadPendingMove.Type;
 
@@ -1205,6 +1306,13 @@ export const OrchestrationMessage = Schema.Struct({
    * count: this computer's turns start after it.
    */
   imported: Schema.optional(Schema.Literal(true)),
+  /**
+   * Threadlines wrote it for the agent when the thread moved here, or when a
+   * move didn't happen (docs/design/fleet.md, Part 3e, "The arrival
+   * message"): shown as a quiet system-written row. Not a MessageTrigger, a
+   * closed list older clients decode; an older client shows it as the user's.
+   */
+  afterMove: Schema.optional(Schema.Literal(true)),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -1902,32 +2010,6 @@ export const OrchestrationThreadGoal = Schema.Struct({
 });
 export type OrchestrationThreadGoal = typeof OrchestrationThreadGoal.Type;
 
-/**
- * A time an agent set itself to come back to the thread (Claude's
- * ScheduleWakeup and CronCreate). It belongs to the agent that set it, not
- * to the session slot, and lives only as long as that agent's runtime unless
- * `durable`.
- */
-export const OrchestrationCheckBack = Schema.Struct({
-  /** The provider's id for the schedule. */
-  id: TrimmedNonEmptyString,
-  /** The room agent that set it; null for the thread's own agent. */
-  participantId: Schema.NullOr(ThreadParticipantId),
-  /** When it fires next. */
-  scheduledFor: IsoDateTime,
-  /** True when the provider stated the time; false when it was worked out
-   *  from the schedule, which the provider may run a little late. */
-  exact: Schema.Boolean,
-  recurring: Schema.Boolean,
-  /** The provider's own wording of a repeating schedule ("every 5 minutes"). */
-  schedule: Schema.optional(TrimmedNonEmptyString),
-  /** Why the agent will come back, in its words, clipped. */
-  description: Schema.optional(TrimmedNonEmptyString),
-  /** Saved by the provider to outlive the runtime that set it. */
-  durable: Schema.Boolean,
-});
-export type OrchestrationCheckBack = typeof OrchestrationCheckBack.Type;
-
 export const ThreadDoneOverrideState = Schema.Literals(["done", "active"]);
 export type ThreadDoneOverrideState = typeof ThreadDoneOverrideState.Type;
 
@@ -2180,6 +2262,8 @@ export const OrchestrationQueuedFollowUp = Schema.Struct({
    * if it has, this one is steered into its turn.
    */
   overtakes: Schema.optional(MessageId),
+  /** See OrchestrationMessage.afterMove: kept so the message is written with it when sent. */
+  afterMove: Schema.optional(Schema.Literal(true)),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   createdAt: IsoDateTime,
@@ -2837,6 +2921,12 @@ export const OrchestrationThread = Schema.Struct({
   movedFrom: Schema.optional(Schema.NullOr(ThreadMovedFrom)),
   /** See OrchestrationThreadShell.lastMoveOutcome. */
   lastMoveOutcome: Schema.optional(Schema.NullOr(ThreadMoveOutcome)),
+  /**
+   * A move that didn't happen owes the thread what its stop took
+   * (ThreadMoveRestore); cleared once the server put it back. Absent or null:
+   * nothing owed.
+   */
+  moveRestoreOwed: Schema.optional(Schema.NullOr(ThreadMoveRestore)),
   /**
    * Moved here: the next turn's agent hasn't been given the conversation yet.
    * Its first send carries a seed built from the imported transcript; the
@@ -5083,6 +5173,8 @@ const ThreadMoveStartCommand = Schema.Struct({
    * thread's current one; the queued move ends in the same decision.
    */
   queuedRequestId: Schema.optional(ThreadMoveRequestId),
+  /** What the other computer just said it takes (ThreadMoveTakes). Absent: nothing beyond v1. */
+  targetTakes: Schema.optional(ThreadMoveTakes),
   createdAt: IsoDateTime,
 });
 
@@ -5103,6 +5195,11 @@ const ThreadMoveQueueCommand = Schema.Struct({
   requestedBy: ThreadMoveRequester,
   /** Queued with other threads (`moves.queueMany`). */
   batchId: Schema.optional(ThreadMoveBatchId),
+  /**
+   * What the other computer takes (ThreadMoveTakes), as it said when the move
+   * was checked; all of it when it couldn't be reached. Absent: nothing beyond v1.
+   */
+  targetTakes: Schema.optional(ThreadMoveTakes),
   createdAt: IsoDateTime,
 });
 
@@ -5207,6 +5304,35 @@ const ThreadMoveCompleteCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/**
+ * Server only: put back what a move that didn't happen took
+ * (OrchestrationThread.moveRestoreOwed, docs/design/fleet.md, Part 3e): a
+ * goal that was working is on again, the agent is told (`message`, queued
+ * ahead of the user's), and the queued messages that waited are sent. One
+ * decision, which clears what is owed.
+ */
+const ThreadMoveRestoreCommand = Schema.Struct({
+  type: Schema.Literal("thread.move.restore"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  /** The record it pays: one paid since, or replaced, makes this no news. */
+  at: IsoDateTime,
+  /** What the agent is told; absent when there is nothing to tell it. */
+  message: Schema.optional(Schema.Struct({ messageId: MessageId, text: TrimmedNonEmptyString })),
+  /**
+   * The queued message to send now, in the same decision (an idle thread
+   * with nothing to tell its agent): the queue's head. Absent: a message
+   * told, or a turn running, sends the queue on its own.
+   */
+  sendQueued: Schema.optional(MessageId),
+  /**
+   * The rest of a paid record is done (ThreadMoveRestore.told and goalOwed):
+   * the message was sent, the queue through, the provider holds the goal.
+   */
+  finished: Schema.optional(Schema.Literal(true)),
+  createdAt: IsoDateTime,
+});
+
 /** One message a move brings, as the computer it left had it. */
 export const ThreadImportMessage = Schema.Struct({
   messageId: MessageId,
@@ -5254,6 +5380,37 @@ const ThreadImportCommand = Schema.Struct({
   activities: Schema.Array(OrchestrationThreadActivity),
   /** The move carried its agent's session, and this computer's binding holds it. */
   nativeSession: Schema.optional(Schema.Literal("carried")),
+  /**
+   * What the thread had going, as it lands here (docs/design/fleet.md, Part
+   * 3e), all with this computer's ids. `goal` is written as it arrives
+   * (working, paused or finished); the queue is written behind the arrival
+   * message and isn't sent by its events (the move's own kick sends it).
+   */
+  goal: Schema.optional(OrchestrationThreadGoal),
+  pullRequests: Schema.optional(
+    Schema.Struct({
+      autoFix: Schema.Boolean,
+      autoMerge: Schema.NullOr(PullRequestMergeMethod),
+      linked: Schema.Array(OrchestrationThreadLinkedPullRequest),
+    }),
+  ),
+  queuedFollowUps: Schema.optional(Schema.Array(OrchestrationQueuedFollowUp)),
+  proposedPlans: Schema.optional(Schema.Array(OrchestrationProposedPlan)),
+  /**
+   * What the "Moved here" line says came along (`brought`) and didn't
+   * (`left`), in plain words, and the message Threadlines writes for the
+   * agent when it has to be told something (a goal to carry on with,
+   * check-backs to set again): queued ahead of the user's.
+   */
+  arrival: Schema.optional(
+    Schema.Struct({
+      message: Schema.optional(
+        Schema.Struct({ messageId: MessageId, text: TrimmedNonEmptyString }),
+      ),
+      brought: Schema.Array(TrimmedNonEmptyString),
+      left: Schema.Array(TrimmedNonEmptyString),
+    }),
+  ),
   createdAt: IsoDateTime,
 });
 
@@ -5347,6 +5504,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadMoveCancelCommand,
   ThreadMoveAbortCommand,
   ThreadMoveCompleteCommand,
+  ThreadMoveRestoreCommand,
   ThreadImportCommand,
   ThreadStartCommand,
   ThreadHistorySeedDeliveredCommand,
@@ -5464,6 +5622,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.move-cancel-requested",
   "thread.move-aborted",
   "thread.moved-away",
+  "thread.move-restore-set",
   "thread.history-seed-delivered",
   "thread.handed-back",
   "thread.parent-attachment-set",
@@ -5808,6 +5967,10 @@ export const ThreadMoveStartedPayload = Schema.Struct({
   queuedRequestId: Schema.optional(ThreadMoveRequestId),
   /** See OrchestrationThreadMove.batchId. */
   batchId: Schema.optional(ThreadMoveBatchId),
+  /** See OrchestrationThreadMove.interrupted. */
+  interrupted: Schema.optional(ThreadMoveInterrupted),
+  /** See OrchestrationThreadMove.targetTakes. */
+  targetTakes: Schema.optional(ThreadMoveTakes),
 });
 
 export const ThreadMoveQueuedPayload = Schema.Struct({
@@ -5819,12 +5982,16 @@ export const ThreadMoveModeSetPayload = Schema.Struct({
   threadId: ThreadId,
   requestId: ThreadMoveRequestId,
   mode: ThreadPendingMoveMode,
+  /** What the stop it plans takes, with what earlier stops took (ThreadPendingMove.interrupted). */
+  interrupted: Schema.optional(ThreadMoveInterrupted),
   updatedAt: IsoDateTime,
 });
 
 export const ThreadMoveQuiescingPayload = Schema.Struct({
   threadId: ThreadId,
   requestId: ThreadMoveRequestId,
+  /** What the stop it plans takes, with what earlier stops took (ThreadPendingMove.interrupted). */
+  interrupted: Schema.optional(ThreadMoveInterrupted),
   updatedAt: IsoDateTime,
 });
 
@@ -5878,6 +6045,13 @@ export const ThreadMovedAwayPayload = Schema.Struct({
   transferId: ThreadMoveId,
   movedThreadId: ThreadId,
   movedAt: IsoDateTime,
+});
+
+/** What a move that didn't happen owes the thread (OrchestrationThread.moveRestoreOwed); null: paid. */
+export const ThreadMoveRestoreSetPayload = Schema.Struct({
+  threadId: ThreadId,
+  moveRestoreOwed: Schema.NullOr(ThreadMoveRestore),
+  updatedAt: IsoDateTime,
 });
 
 export const ThreadHistorySeedDeliveredPayload = Schema.Struct({
@@ -6046,6 +6220,8 @@ export const ThreadMessageSentPayload = Schema.Struct({
   imported: Schema.optional(Schema.Literal(true)),
   /** See OrchestrationMessage.notSent: an imported message that never reached the agent there. */
   notSent: Schema.optional(Schema.Literal(true)),
+  /** See OrchestrationMessage.afterMove. */
+  afterMove: Schema.optional(Schema.Literal(true)),
   /** Missing means legacy behavior for events written before assistant
    * segments carried an explicit turn-settlement decision. */
   completesTurn: Schema.optional(Schema.Boolean),
@@ -6133,6 +6309,11 @@ export const ThreadFollowUpAcceptedPayload = ThreadFollowUpSubmittedPayload;
 export const ThreadFollowUpQueuedPayload = Schema.Struct({
   threadId: ThreadId,
   followUp: OrchestrationQueuedFollowUp,
+  /**
+   * Written by a moved thread's import (docs/design/fleet.md, Part 3e): the
+   * queue isn't sent on this event; the import's own kick sends its head.
+   */
+  imported: Schema.optional(Schema.Literal(true)),
 });
 
 /** `sent` when its turn started, `cancelled` when the user took it back. */
@@ -6677,6 +6858,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.moved-away"),
     payload: ThreadMovedAwayPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.move-restore-set"),
+    payload: ThreadMoveRestoreSetPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

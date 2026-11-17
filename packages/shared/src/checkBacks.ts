@@ -36,6 +36,8 @@ export function sameCheckBacks(
         checkBack.recurring === other.recurring &&
         checkBack.schedule === other.schedule &&
         checkBack.description === other.description &&
+        checkBack.prompt === other.prompt &&
+        checkBack.cron === other.cron &&
         checkBack.durable === other.durable
       );
     })

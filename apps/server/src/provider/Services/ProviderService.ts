@@ -273,6 +273,15 @@ export interface ProviderServiceShape {
   }) => Effect.Effect<RuntimeThreadGoalSnapshot, ProviderServiceError>;
 
   /**
+   * The goal the thread's live provider session holds, as the provider says
+   * it; null when it holds none, or there is no live goal-capable session.
+   * Never recovers a cold session.
+   */
+  readonly getThreadGoal: (input: {
+    readonly threadId: ThreadId;
+  }) => Effect.Effect<RuntimeThreadGoalSnapshot | null, ProviderServiceError>;
+
+  /**
    * Pause an active goal before stopping its live provider session.
    * Never recovers a cold session. Returns the authoritative provider state
    * (still active where goals cannot pause), or null when there is no live

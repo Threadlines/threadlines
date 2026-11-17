@@ -2381,6 +2381,8 @@ export type TimelineMessageView =
   | "assistant"
   | "thread-message"
   | "outside-message"
+  /** Threadlines wrote it for the agent when the thread moved (ChatMessage.afterMove). */
+  | "after-move"
   | "user"
   | "invite"
   | "side-answer-reply"
@@ -2389,7 +2391,7 @@ export type TimelineMessageView =
 export function timelineMessageView(
   message: Pick<
     ChatMessage,
-    "role" | "fromThread" | "fromOutside" | "fromAgent" | "requestKind" | "requestId"
+    "role" | "fromThread" | "fromOutside" | "fromAgent" | "requestKind" | "requestId" | "afterMove"
   >,
   sideAnswerRequests: { has(requestId: NonNullable<ChatMessage["requestId"]>): boolean },
 ): TimelineMessageView | null {
@@ -2397,6 +2399,7 @@ export function timelineMessageView(
   if (message.role !== "user") return null;
   if (message.fromThread !== undefined) return "thread-message";
   if (message.fromOutside !== undefined) return "outside-message";
+  if (message.afterMove === true) return "after-move";
   if (message.fromAgent === undefined) return "user";
   if (message.requestKind === "invite") return "invite";
   if (
@@ -2471,6 +2474,19 @@ const rowHeightEstimates = new WeakMap<
 
 /** The moved-here boundary (MovedInTimelineRow): an 18px line and the row's 16px bottom padding. */
 const MOVED_IN_ROW_ESTIMATED_PX = 34;
+/** Each line under it: what came along, and each thing that didn't. */
+const MOVED_IN_LINE_PX = 18;
+
+/**
+ * What came along with a thread that moved here, as the line under its
+ * boundary says it: "Its goal · 2 queued messages · auto-fix for #212".
+ * Null when nothing did.
+ */
+export function movedInBroughtLine(brought: ReadonlyArray<string>): string | null {
+  if (brought.length === 0) return null;
+  const line = brought.join(" · ");
+  return `${line.charAt(0).toUpperCase()}${line.slice(1)}`;
+}
 
 /** An agent page's panel around its frame (AgentPageRow): padding, and the
  *  title line above the frame with its margin. */
@@ -2511,10 +2527,12 @@ function estimateRowContentHeight(row: MessagesTimelineRow, width: number): numb
         row.message.role === "user" &&
         (row.message.fromAgent !== undefined ||
           row.message.fromThread !== undefined ||
-          row.message.fromOutside !== undefined)
+          row.message.fromOutside !== undefined ||
+          row.message.afterMove === true)
       ) {
-        // An agent's message to another: a meta line over its text, no bubble,
-        // or over its first line while it shows folded.
+        // An agent's message to another, or Threadlines' to the agent after a
+        // move: a meta line over its text, no bubble, or over its first line
+        // while it shows folded.
         return foldsAgentMessage(row.message.text)
           ? 28 + TEXT_LINE_PX
           : 28 + estimateTextLines(row.message.text, column - 24) * TEXT_LINE_PX;
@@ -2571,8 +2589,15 @@ function estimateRowContentHeight(row: MessagesTimelineRow, width: number): numb
       return MCP_APP_CARD_ESTIMATED_PX;
     case "fork-context":
       return 90;
-    case "moved-in":
-      return MOVED_IN_ROW_ESTIMATED_PX;
+    case "moved-in": {
+      // Under the rule, inside its 48px side padding, in the line's smaller type.
+      const lineWidth = (column - 48) * (12 / 13);
+      const brought = movedInBroughtLine(row.movedIn.brought);
+      const lines =
+        (brought === null ? 0 : estimateTextLines(brought, lineWidth)) +
+        row.movedIn.left.reduce((sum, sentence) => sum + estimateTextLines(sentence, lineWidth), 0);
+      return MOVED_IN_ROW_ESTIMATED_PX + (lines > 0 ? 2 + lines * MOVED_IN_LINE_PX : 0);
+    }
     case "proposed-plan":
       return 240;
     case "page":

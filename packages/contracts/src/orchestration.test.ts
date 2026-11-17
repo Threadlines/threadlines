@@ -18,15 +18,22 @@ import {
   OrchestrationProposedPlan,
   OrchestrationSession,
   OrchestrationThread,
+  OrchestrationCheckBack,
   OrchestrationThreadMove,
   ProjectCreateCommand,
   ThreadMovePhase,
+  ThreadPendingMove,
   ThreadTurnStartCommand,
   ThreadCreatedPayload,
   ThreadTurnDiff,
   ThreadTurnStartRequestedPayload,
 } from "./orchestration.ts";
-import { EnvironmentId, ThreadMoveBatchId, ThreadMoveId } from "./baseSchemas.ts";
+import {
+  EnvironmentId,
+  ThreadMoveBatchId,
+  ThreadMoveId,
+  ThreadMoveRequestId,
+} from "./baseSchemas.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 
 const decodeTurnDiffInput = Schema.decodeUnknownEffect(OrchestrationGetTurnDiffInput);
@@ -625,4 +632,68 @@ it("an app from before step 2 still reads a move waiting for its target", () => 
   });
   const read = Schema.decodeUnknownSync(BaseOrchestrationThreadMove)(move);
   assert.strictEqual(read.phase, "exporting");
+});
+
+// What an app from before step 4a (docs/design/fleet.md, Part 3e) decodes of a
+// queued move and a check-back: the fields it knew, no more.
+const BaseThreadPendingMove = Schema.Struct({
+  requestId: Schema.String,
+  target: Schema.Struct({ environmentId: Schema.String, label: Schema.String }),
+  mode: Schema.Literals(["when-done", "stop-now"]),
+  stage: Schema.Literals(["waiting", "quiescing"]),
+  requestedAt: Schema.String,
+  requestedBy: Schema.Struct({ kind: Schema.Literal("user") }),
+});
+const BaseOrchestrationCheckBack = Schema.Struct({
+  id: Schema.String,
+  participantId: Schema.NullOr(Schema.String),
+  scheduledFor: Schema.String,
+  exact: Schema.Boolean,
+  recurring: Schema.Boolean,
+  durable: Schema.Boolean,
+});
+
+it("an app from before step 4a still reads a move that carries what its thread had going", () => {
+  const checkBack = Schema.decodeUnknownSync(OrchestrationCheckBack)({
+    id: "job-1",
+    participantId: null,
+    scheduledFor: "2026-11-17T14:32:00.000Z",
+    exact: true,
+    recurring: false,
+    prompt: "Check CI on #212",
+    cron: "32 14 17 11 *",
+    durable: false,
+  });
+  const encodedCheckBack = Schema.encodeSync(OrchestrationCheckBack)(checkBack);
+  assert.strictEqual(
+    Schema.decodeUnknownSync(BaseOrchestrationCheckBack)(encodedCheckBack).id,
+    "job-1",
+  );
+  const interrupted = { goalActive: true as const, checkBacks: [checkBack] };
+  const targetTakes = { threadState: true as const, generalChats: true as const };
+  const pending = Schema.encodeSync(ThreadPendingMove)({
+    requestId: ThreadMoveRequestId.make("request-1"),
+    target: { environmentId: EnvironmentId.make("environment-mac"), label: "Mac mini" },
+    mode: "stop-now",
+    stage: "quiescing",
+    requestedAt: "2026-11-17T14:00:00.000Z",
+    requestedBy: { kind: "user" },
+    interrupted,
+    targetTakes,
+  });
+  assert.strictEqual(Schema.decodeUnknownSync(BaseThreadPendingMove)(pending).stage, "quiescing");
+  const move = Schema.encodeSync(OrchestrationThreadMove)({
+    transferId: ThreadMoveId.make("move-1"),
+    target: { environmentId: EnvironmentId.make("environment-mac"), label: "Mac mini" },
+    agent: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+    phase: "exporting",
+    cancelRequested: false,
+    startedAt: "2026-11-17T14:01:00.000Z",
+    interrupted,
+    targetTakes,
+  });
+  assert.strictEqual(
+    Schema.decodeUnknownSync(BaseOrchestrationThreadMove)(move).phase,
+    "exporting",
+  );
 });

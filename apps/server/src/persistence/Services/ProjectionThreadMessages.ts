@@ -81,6 +81,8 @@ export const ProjectionThreadMessage = Schema.Struct({
   trigger: Schema.optional(MessageTrigger),
   /** See OrchestrationMessage.notSent. Once set, kept. */
   notSent: Schema.optional(Schema.Literal(true)),
+  /** See OrchestrationMessage.afterMove. Once set, kept. */
+  afterMove: Schema.optional(Schema.Literal(true)),
   isStreaming: Schema.Boolean,
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
