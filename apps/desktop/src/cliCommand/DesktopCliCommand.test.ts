@@ -75,6 +75,23 @@ function setupIn(directory: string, overrides: Partial<CliCommandSetup> = {}): C
 
 const temp = (name: string) => mkdtempSync(join(tmpdir(), `threadlines-cli-command-${name}-`));
 
+/**
+ * Whether this machine can make a symbolic link. Windows allows one only with
+ * Developer Mode on or as an administrator; elsewhere it always can.
+ */
+function canMakeSymlinks(): boolean {
+  if (process.platform !== "win32") return true;
+  const directory = temp("link-probe");
+  try {
+    symlinkSync(join(directory, "target"), join(directory, "link"));
+    return true;
+  } catch {
+    return false;
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
 describe("DesktopCliCommand", () => {
   it.effect("installs a script that runs this app's server as the command, and removes it", () =>
     Effect.gen(function* () {
@@ -112,21 +129,24 @@ describe("DesktopCliCommand", () => {
       assert.equal(installed.outcome, "done");
       assert.equal(installed.status.state, "installed");
       const target = join(directory, "threadlines");
-      assert.equal(statSync(target).mode & 0o777, 0o755);
+      // Windows has no Unix permission bits, and no shell to run the script.
+      if (process.platform !== "win32") {
+        assert.equal(statSync(target).mode & 0o777, 0o755);
 
-      const output = execFileSync(target, ["thread", "start", "web", "fix the login bug"], {
-        encoding: "utf8",
-      });
-      assert.deepEqual(output.trimEnd().split("\n"), [
-        "1",
-        "1",
-        home,
-        "/opt/Threadlines/resources/app.asar/apps/server/dist/bin.mjs",
-        "thread",
-        "start",
-        "web",
-        "fix the login bug",
-      ]);
+        const output = execFileSync(target, ["thread", "start", "web", "fix the login bug"], {
+          encoding: "utf8",
+        });
+        assert.deepEqual(output.trimEnd().split("\n"), [
+          "1",
+          "1",
+          home,
+          "/opt/Threadlines/resources/app.asar/apps/server/dist/bin.mjs",
+          "thread",
+          "start",
+          "web",
+          "fix the login bug",
+        ]);
+      }
 
       // Another copy's script is told apart, and Install again replaces it.
       writeFileSync(target, readFileSync(target, "utf8").replace(executablePath, "/elsewhere"));
@@ -141,23 +161,26 @@ describe("DesktopCliCommand", () => {
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
-  it.effect("replaces npm's threadlines link without writing through it", () =>
-    Effect.gen(function* () {
-      const root = temp("link");
-      const directory = join(root, "bin");
-      mkdirSync(directory);
-      const npmBin = join(root, "npm-bin.mjs");
-      writeFileSync(npmBin, "// npm's threadlines\n");
-      symlinkSync(npmBin, join(directory, "threadlines"));
-      const command = yield* make(setupIn(directory), fakeSystem().system);
+  it.effect.skipIf(!canMakeSymlinks())(
+    "replaces npm's threadlines link without writing through it",
+    () =>
+      Effect.gen(function* () {
+        const root = temp("link");
+        const directory = join(root, "bin");
+        mkdirSync(directory);
+        const npmBin = join(root, "npm-bin.mjs");
+        writeFileSync(npmBin, "// npm's threadlines\n");
+        symlinkSync(npmBin, join(directory, "threadlines"));
+        const command = yield* make(setupIn(directory), fakeSystem().system);
 
-      assert.equal((yield* command.status).state, "other_copy");
-      assert.equal((yield* command.install).status.state, "installed");
-      assert.equal(readFileSync(npmBin, "utf8"), "// npm's threadlines\n");
-    }).pipe(Effect.provide(NodeServices.layer)),
+        assert.equal((yield* command.status).state, "other_copy");
+        assert.equal((yield* command.install).status.state, "installed");
+        assert.equal(readFileSync(npmBin, "utf8"), "// npm's threadlines\n");
+      }).pipe(Effect.provide(NodeServices.layer)),
   );
 
-  it.effect(
+  // Windows has no Unix permission bits, so chmod can't keep the user out of the folder.
+  it.effect.skipIf(process.platform === "win32")(
     "asks for an administrator on macOS when the folder isn't the user's, and Cancel changes nothing",
     () =>
       Effect.gen(function* () {
@@ -181,38 +204,42 @@ describe("DesktopCliCommand", () => {
       }).pipe(Effect.provide(NodeServices.layer)),
   );
 
-  it("installs as root by writing the script itself, replacing a link instead of following it", () => {
-    const root = temp("root-command");
-    const directory = join(root, "bin");
-    mkdirSync(directory);
-    const secret = join(root, "root-only");
-    writeFileSync(secret, "secret\n", { mode: 0o600 });
-    const target = join(directory, "threadlines");
-    symlinkSync(secret, target);
-    const script = renderCliCommandScript({
-      platform: "darwin",
-      executablePath: "/Applications/Threadlines.app/Contents/MacOS/Threadlines",
-      entryPath:
-        "/Applications/Threadlines.app/Contents/Resources/app.asar/apps/server/dist/bin.mjs",
-      threadlinesHome: `${root}/it's "home" \\ $HOME 100%`,
-      appImagePath: null,
-    });
-    const command = administratorInstallCommand({ directory, target, script });
-    // Run as this user here: the same shell command `do shell script` hands to root.
-    execFileSync("/bin/sh", ["-c", command]);
-    assert.equal(readFileSync(target, "utf8"), script);
-    assert.equal(statSync(target).mode & 0o777, 0o755);
-    assert.isFalse(lstatSync(target).isSymbolicLink());
-    assert.equal(readFileSync(secret, "utf8"), "secret\n");
-    assert.equal(statSync(secret).mode & 0o777, 0o600);
-
-    if (process.platform === "darwin") {
-      // And through AppleScript's own quoting, minus the password prompt.
-      rmSync(target);
-      execFileSync("/usr/bin/osascript", ["-e", doShellScript(command, false)]);
+  // The administrator command is a macOS shell command: it needs /bin/sh and Unix permission bits.
+  it.skipIf(process.platform === "win32")(
+    "installs as root by writing the script itself, replacing a link instead of following it",
+    () => {
+      const root = temp("root-command");
+      const directory = join(root, "bin");
+      mkdirSync(directory);
+      const secret = join(root, "root-only");
+      writeFileSync(secret, "secret\n", { mode: 0o600 });
+      const target = join(directory, "threadlines");
+      symlinkSync(secret, target);
+      const script = renderCliCommandScript({
+        platform: "darwin",
+        executablePath: "/Applications/Threadlines.app/Contents/MacOS/Threadlines",
+        entryPath:
+          "/Applications/Threadlines.app/Contents/Resources/app.asar/apps/server/dist/bin.mjs",
+        threadlinesHome: `${root}/it's "home" \\ $HOME 100%`,
+        appImagePath: null,
+      });
+      const command = administratorInstallCommand({ directory, target, script });
+      // Run as this user here: the same shell command `do shell script` hands to root.
+      execFileSync("/bin/sh", ["-c", command]);
       assert.equal(readFileSync(target, "utf8"), script);
-    }
-  });
+      assert.equal(statSync(target).mode & 0o777, 0o755);
+      assert.isFalse(lstatSync(target).isSymbolicLink());
+      assert.equal(readFileSync(secret, "utf8"), "secret\n");
+      assert.equal(statSync(secret).mode & 0o777, 0o600);
+
+      if (process.platform === "darwin") {
+        // And through AppleScript's own quoting, minus the password prompt.
+        rmSync(target);
+        execFileSync("/usr/bin/osascript", ["-e", doShellScript(command, false)]);
+        assert.equal(readFileSync(target, "utf8"), script);
+      }
+    },
+  );
 
   it.effect(
     "on Windows, writes threadlines.cmd and adds its folder to the user's PATH, keeping the rest",
@@ -330,16 +357,19 @@ describe("the dev build's command", () => {
       path: NodePath.posix as never,
     });
     assert.equal(posix, `node '/Users/a/it'\\''s $HOME/apps/server/src/bin.ts' connect --dev`);
-    assert.equal(
-      execFileSync(
-        "/bin/sh",
-        ["-c", `printf '%s' ${posix.slice("node ".length, posix.indexOf(" connect"))}`],
-        {
-          encoding: "utf8",
-        },
-      ),
-      "/Users/a/it's $HOME/apps/server/src/bin.ts",
-    );
+    // Windows has no /bin/sh to read the quoted path back.
+    if (process.platform !== "win32") {
+      assert.equal(
+        execFileSync(
+          "/bin/sh",
+          ["-c", `printf '%s' ${posix.slice("node ".length, posix.indexOf(" connect"))}`],
+          {
+            encoding: "utf8",
+          },
+        ),
+        "/Users/a/it's $HOME/apps/server/src/bin.ts",
+      );
+    }
     assert.equal(
       cliCommandDevCommand({
         platform: "win32",

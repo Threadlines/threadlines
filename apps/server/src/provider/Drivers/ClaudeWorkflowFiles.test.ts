@@ -190,7 +190,8 @@ describe("saveClaudeWorkflowCommand", () => {
     const elsewhere = path.join(tmp, "elsewhere");
     fs.mkdirSync(elsewhere);
     fs.mkdirSync(path.join(repo, ".claude"));
-    fs.symlinkSync(elsewhere, path.join(repo, ".claude", "workflows"));
+    // A junction on Windows, which any user can make; a symlink elsewhere.
+    fs.symlinkSync(elsewhere, path.join(repo, ".claude", "workflows"), "junction");
 
     await expect(save({ location: "project" })).rejects.toBeInstanceOf(ClaudeWorkflowFileError);
     await expect(save({ location: "project", dryRun: true })).rejects.toBeInstanceOf(
