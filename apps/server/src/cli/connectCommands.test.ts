@@ -471,8 +471,11 @@ describe("threadlines connect", () => {
         assert.include(said.join("\n"), `If no page opened, open this link on this computer:`);
         assert.include(said.join("\n"), `http://127.0.0.1:${threadlines.port}/`);
         const first = readCredentials(base).resources[resource];
-        assert.equal(statSync(credentialsPath).mode & 0o777, 0o600);
-        assert.equal(statSync(join(base, "userdata", "cli")).mode & 0o777, 0o700);
+        // Windows has no Unix permission bits to check.
+        if (process.platform !== "win32") {
+          assert.equal(statSync(credentialsPath).mode & 0o777, 0o600);
+          assert.equal(statSync(join(base, "userdata", "cli")).mode & 0o777, 0o700);
+        }
         const listed = yield* run(["projects", "--base-dir", base]);
         assert.equal(listed.code, EXIT.done);
         assert.equal(listed.stdout, "web  /repo/web  project-web");

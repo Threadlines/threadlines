@@ -249,14 +249,24 @@ describe("GitVcsDriver git launch", () => {
       Layer.provideMerge(NodeServices.layer),
     );
 
+    // The probe skips the real git.exe for a server started from Git Bash
+    // (MSYSTEM) or with its own GIT_EXEC_PATH. Both are cleared, so the shell
+    // that runs this test does not decide the outcome.
+    const env: NodeJS.ProcessEnv = { MSYSTEM: undefined, GIT_EXEC_PATH: undefined };
     return Effect.gen(function* () {
       const driver = yield* GitVcsDriver.GitVcsDriver;
       yield* driver.execute({
         operation: "test.read",
         cwd: process.cwd(),
         args: ["rev-parse", "HEAD"],
+        env,
       });
-      yield* driver.execute({ operation: "test.status", cwd: process.cwd(), args: ["status"] });
+      yield* driver.execute({
+        operation: "test.status",
+        cwd: process.cwd(),
+        args: ["status"],
+        env,
+      });
 
       const [read, status] = spawned;
       assert.equal(read?.command, realGit);
@@ -323,12 +333,17 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
           [undefined, undefined, "initializing"],
         );
         // Git reports checkouts by their real path, which on macOS resolves
-        // the temp directory's symlink.
+        // the temp directory's symlink. On Windows git writes it with forward
+        // slashes, and the listing passes it on as git wrote it.
         const liveRealPath = yield* fileSystem.realPath(livePath);
-        assert.equal(worktrees[1]?.path, liveRealPath);
+        assert.equal(
+          worktrees[1]?.path,
+          process.platform === "win32" ? liveRealPath.replaceAll("\\", "/") : liveRealPath,
+        );
         assert.isUndefined(worktrees.find((worktree) => worktree.branch === "deleted-branch"));
 
-        // The same enumeration backs listRefs' branch-to-checkout mapping.
+        // The same enumeration backs listRefs' branch-to-checkout mapping,
+        // which gives the path in this system's own form.
         const refs = yield* driver.listRefs({ cwd });
         assert.equal(
           refs.refs.find((ref) => ref.name === "live-branch")?.worktreePath,

@@ -1,3 +1,5 @@
+import * as NodePath from "node:path";
+
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -1155,6 +1157,10 @@ describe("Claude keychain item per account", () => {
     );
 
     expect(credential).toEqual({ _tag: "Absent" });
-    expect(new Set(services)).toEqual(new Set(["Claude Code-credentials-f9be197a"]));
+    // Only the account folder's item. The folder is resolved on this machine,
+    // so on Windows it gains a drive letter and the item's name changes with it.
+    expect(new Set(services)).toEqual(
+      new Set([claudeKeychainServiceName({ CLAUDE_CONFIG_DIR: NodePath.resolve("/tmp/work") })]),
+    );
   });
 });

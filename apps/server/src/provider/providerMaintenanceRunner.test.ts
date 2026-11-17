@@ -18,6 +18,7 @@ import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { vi } from "vite-plus/test";
 
 import {
   ProviderRegistry,
@@ -159,6 +160,11 @@ function mockSpawnerLayer(
   );
 }
 
+/**
+ * Runs `effect` as if on `platform`, with an empty PATH so a command lookup
+ * misses on every machine. A real Windows PATH would turn `powershell.exe`
+ * into its full System32 path.
+ */
 function withProcessPlatform<A, E, R>(
   platform: NodeJS.Platform,
   effect: Effect.Effect<A, E, R>,
@@ -167,11 +173,13 @@ function withProcessPlatform<A, E, R>(
     Effect.sync(() => {
       const descriptor = Object.getOwnPropertyDescriptor(process, "platform");
       Object.defineProperty(process, "platform", { value: platform });
+      vi.stubEnv("PATH", "");
       return descriptor;
     }),
     () => effect,
     (descriptor) =>
       Effect.sync(() => {
+        vi.unstubAllEnvs();
         if (descriptor) {
           Object.defineProperty(process, "platform", descriptor);
         }

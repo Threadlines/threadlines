@@ -130,4 +130,29 @@ describe("PullRequestObservations", () => {
       assert.strictEqual(first[0]?.number, 7);
     }),
   );
+
+  it.effect("finds a branch's pull request only in the same repository on the same host", () =>
+    Effect.gen(function* () {
+      const observations = yield* make;
+      const gitlab = (path: string, number: number): PullRequestRead =>
+        read({
+          provider: "gitlab",
+          repository: path,
+          number,
+          url: `https://gitlab.com/${path}/-/merge_requests/${number}`,
+        });
+      yield* observations.observe(Effect.succeed(1), () => [
+        gitlab("org/app", 1),
+        gitlab("org/public/app", 2),
+        read({ number: 3, url: "https://ghe.example.com/org/app/pull/3", repository: "org/app" }),
+      ]);
+      const numbersAt = (repositoryKey: string) =>
+        observations
+          .known({ repositoryKey, branch: "fix-it", urls: [] })
+          .pipe(Effect.map((known) => known.map((entry) => entry.number)));
+      assert.deepStrictEqual(yield* numbersAt("gitlab.com/org/public/app"), [2]);
+      assert.deepStrictEqual(yield* numbersAt("gitlab.com/org/app"), [1]);
+      assert.deepStrictEqual(yield* numbersAt("github.com/org/app"), []);
+    }),
+  );
 });
