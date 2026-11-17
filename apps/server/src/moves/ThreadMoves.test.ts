@@ -24,7 +24,12 @@ import {
   previewManyThread,
   targetPreviewOf,
 } from "./ThreadMoves.ts";
-import { MOVE_MAX_BYTES, moveThreadStateOf, nativeSessionFits } from "./moveExport.ts";
+import {
+  exportThreadHistory,
+  MOVE_MAX_BYTES,
+  moveThreadStateOf,
+  nativeSessionFits,
+} from "./moveExport.ts";
 import { carryBringsWords, threadMoveCarry } from "../orchestration/threadMoveCarry.ts";
 import { NATIVE_SESSION_MAX_BYTES, type NativeSessionExport } from "../provider/nativeSession.ts";
 
@@ -450,6 +455,31 @@ describe("what a thread carries, as the dialog says it (Part 3e)", () => {
           },
         ],
       },
+    ]);
+  });
+});
+
+describe("exportThreadHistory", () => {
+  it("sends an agent's message still waiting in the queue as never sent", () => {
+    const message = (id: string, text: string) => ({
+      id: MessageId.make(id),
+      role: "user" as const,
+      text,
+      turnId: null,
+      streaming: false,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    const thread = {
+      messages: [message("ran", "Fix it."), message("waiting", "Run the migration.")],
+      activities: [],
+      queuedFollowUps: [{ messageId: MessageId.make("waiting") }],
+    } as unknown as OrchestrationThread;
+    expect(
+      exportThreadHistory(thread).messages.map((entry) => [entry.text, entry.notSent ?? false]),
+    ).toEqual([
+      ["Fix it.", false],
+      ["Run the migration.", true],
     ]);
   });
 });

@@ -41,15 +41,47 @@ export const outsideAgentAuthor = (agent: { readonly name: string }): string =>
 
 /**
  * The name a transcript handed to an agent gives a message instead of its
- * role's ("User"), or undefined to keep the role's: an outside agent's
- * message carries the agent's name.
+ * role's ("User"), or undefined to keep the role's. A user-role message some
+ * agent wrote is never called the user's: an outside agent's carries its
+ * name, another thread's agent's says so (a parent's request, a lead chat's
+ * pass, a child's report), and so does one from another agent in the thread.
+ * A transcript has no names to look up, so the last two are general.
  */
 export function transcriptAuthor(
-  message: Pick<OrchestrationMessage, "role" | "fromOutside">,
+  message: Pick<OrchestrationMessage, "role" | "fromOutside" | "fromThread" | "fromAgent">,
 ): string | undefined {
-  return message.role === "user" && message.fromOutside !== undefined
-    ? outsideAgentAuthor(message.fromOutside)
-    : undefined;
+  if (message.role !== "user") {
+    return undefined;
+  }
+  if (message.fromOutside !== undefined) {
+    return outsideAgentAuthor(message.fromOutside);
+  }
+  if (message.fromThread !== undefined) {
+    return message.fromThread.kind === "request"
+      ? "Agent in another thread (request)"
+      : "Agent in another thread (report)";
+  }
+  return message.fromAgent !== undefined ? "Another agent in this thread" : undefined;
+}
+
+/**
+ * Whether an agent was given this message, so history may include it: not
+ * `notSent` (never reached the agent), and not still waiting in the thread's
+ * queue (an agent's message is written into the chat when it is queued).
+ * Every history handed to an agent filters through this (context seeds, a
+ * fork's context, a room's catch-up note); explicit reads (`thread_read`,
+ * `room_history`) keep the message and label it instead.
+ */
+export function reachedAgent(
+  message: { readonly id: string; readonly notSent?: true | undefined },
+  thread: {
+    readonly queuedFollowUps?: ReadonlyArray<{ readonly messageId: string }> | undefined;
+  },
+): boolean {
+  return (
+    message.notSent !== true &&
+    !(thread.queuedFollowUps ?? []).some((queued) => queued.messageId === message.id)
+  );
 }
 
 /** The message's author line and origin. */
@@ -63,9 +95,8 @@ export function messageAuthor(
   if (message.role !== "user") {
     return { author: names.agentName(message.participantId), origin: "agent" };
   }
-  const outside = transcriptAuthor(message);
-  if (outside !== undefined) {
-    return { author: outside, origin: "user" };
+  if (message.fromOutside !== undefined) {
+    return { author: outsideAgentAuthor(message.fromOutside), origin: "user" };
   }
   if (message.fromThread !== undefined) {
     return message.fromThread.kind === "request"

@@ -112,6 +112,10 @@ A project's lead chat is a thread set up to coordinate the project; see the lead
 
 Any thread can be the lead. Use "Make this the lead chat" in a thread's menu (right-click its row, or click the title above the chat), or the command palette. The project's menu in the project picker has Open lead chat, or New lead chat, which starts a thread in the project folder and makes it the lead. "Go to lead chat" in the command palette opens it.
 
+The lead can also pass a message to a thread you started by hand in the project. That is one-way: the thread works on it and answers there, not back in the lead, and it can't start threads of its own for it until you write there. The lead can't pass work into a room, a thread another thread still owns, or one you stopped. A pass never runs with more access than the lead had.
+
+When an agent asks to start several threads, the card has a checkbox per thread, so you can start some and leave the rest; the agent is told which.
+
 Only one thread leads a project; making another the lead replaces it. "Stop using as lead chat" turns it back into an ordinary thread, and the threads it started stay with it. Archiving or deleting the lead ends it. A lead can't move to another computer, and each computer keeps its own lead for a project.
 
 The lead's row sits at the top of the sidebar with a flag, says Lead where the project name goes, and never wraps up on its own. The chat shows a Lead chat label beside the title.

@@ -465,6 +465,8 @@ export const OrchestrationProjectCatalogEntry = Schema.Struct({
   kind: ProjectKind.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROJECT_KIND))),
   title: TrimmedNonEmptyString,
   workspaceRoot: TrimmedNonEmptyString,
+  /** The project's lead chat, when it has an open one (docs/design/lead-chat.md). */
+  leadThreadId: Schema.optional(ThreadId),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   deletedAt: Schema.NullOr(IsoDateTime),
@@ -611,6 +613,16 @@ export const AgentThreadsMode = Schema.Literals(["off", "ask", "auto"]);
 export type AgentThreadsMode = typeof AgentThreadsMode.Type;
 
 /**
+ * The most a lead chat's pass may run with (docs/design/lead-chat.md,
+ * "Access"): the lead's access and interaction mode when it passed it.
+ */
+export const LeadPassCeiling = Schema.Struct({
+  runtimeMode: RuntimeMode,
+  interactionMode: ProviderInteractionMode,
+});
+export type LeadPassCeiling = typeof LeadPassCeiling.Type;
+
+/**
  * A message that crossed between a thread and one it started: a `request` its
  * parent's agent wrote into the child, or a `report`, the child's answer
  * delivered into the parent. An agent wrote it either way, never the user. A
@@ -635,6 +647,17 @@ export const ThreadMessageOrigin = Schema.Struct({
    * With no child to check, only Stop or a wrap (the delivery epoch) cancels it.
    */
   neverMade: Schema.optional(Schema.Boolean),
+  /**
+   * A pass (docs/design/lead-chat.md): the project's lead chat passed this
+   * message into a thread it did not start. The lead's access and interaction
+   * mode when it passed it, kept on the message for good: every decision that
+   * starts a turn from it refuses when the thread has more access by then.
+   * Nothing is owed back for a pass: no request is recorded on the lead.
+   * Only a pass carries it.
+   */
+  ceiling: Schema.optional(LeadPassCeiling),
+  /** A pass: the lead's agent that passed it (a room's agent), for its notes. Absent: its own. */
+  passedBy: Schema.optional(ThreadParticipantId),
 });
 export type ThreadMessageOrigin = typeof ThreadMessageOrigin.Type;
 
@@ -1279,8 +1302,11 @@ export const OrchestrationMessage = Schema.Struct({
   /** See MessageTrigger. Written with the message and kept. */
   trigger: Schema.optional(MessageTrigger),
   /**
-   * A message Threadlines wrote for the user (`trigger`) that never reached
-   * the agent: the user wrote before it went, and theirs went instead.
+   * A message that never reached the agent, kept in the chat: a continue
+   * Threadlines wrote for the user (`trigger`) that the user's own message
+   * overtook, or a lead chat's pass that was taken back or refused at its
+   * ceiling. Once set, kept. No history an agent is given includes it
+   * (`reachedAgent`), and it is never retried.
    */
   notSent: Schema.optional(Schema.Literal(true)),
   /**
@@ -1383,6 +1409,13 @@ export type ThreadCheckoutSwitchDeferredPayload = typeof ThreadCheckoutSwitchDef
  * turn is refused (CheckpointRevert).
  */
 export const ThreadCheckoutMovedActivityKind = "thread.checkout.moved";
+
+/**
+ * A lead chat's pass that never ran here: its turn would have started with
+ * more access than the lead had when it passed it (docs/design/lead-chat.md,
+ * "Access"). Payload `{ messageId }`; the summary is the line the chat shows.
+ */
+export const LEAD_PASS_NOT_RUN_ACTIVITY_KIND = "lead-chat.pass-not-run";
 export const ThreadCheckoutMovedPayload = Schema.Struct({
   /** The thread whose checkout it moved into, with its title then. */
   ownerThreadId: ThreadId,
@@ -2753,6 +2786,14 @@ export const OrchestrationChildRequestState = Schema.Struct({
   remoteChildren: Schema.optional(Schema.Array(RemoteChildThread)),
   /** Cancels still owed to linked computers, oldest first. Absent: none. */
   remoteCancels: Schema.optional(Schema.Array(RemoteChildCancel)),
+  /**
+   * A message the lead chat passed on started a turn here since the user
+   * last wrote (docs/design/lead-chat.md, "No fan-out"): the narrowest
+   * ceiling of those passes. Until the user writes here, this thread's agents
+   * can't start threads, and message only their own threads that are within
+   * it on this computer. Absent: no pass holds them.
+   */
+  passCeiling: Schema.optional(LeadPassCeiling),
 });
 export type OrchestrationChildRequestState = typeof OrchestrationChildRequestState.Type;
 
@@ -4099,6 +4140,12 @@ const ThreadChildRequestRespondCommand = Schema.Struct({
   threadId: ThreadId,
   batchId: ChildRequestBatchId,
   choice: Schema.Literals(["start", "decline"]),
+  /**
+   * With `start`: only these of the batch start, and the rest are declined in
+   * the same answer (capability `childStartSelection`). Absent: the whole
+   * batch.
+   */
+  requestIds: Schema.optional(Schema.Array(ChildRequestId)),
   createdAt: IsoDateTime,
 });
 
@@ -4992,6 +5039,42 @@ const ThreadChildSendCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/**
+ * The project's lead chat passes a message into a thread it did not start
+ * (docs/design/lead-chat.md, "A pass"). Server only, from `thread_send`.
+ * One-way: the message lands in `targetThreadId` as the lead's, and nothing
+ * is recorded on the lead but its send count. `requestId` names the pass
+ * (`fromThread.requestId` on the message); `ceiling` is the lead's access.
+ */
+const ThreadLeadPassCommand = Schema.Struct({
+  type: Schema.Literal("thread.lead.pass"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  from: RoomAgentRef,
+  callerTurnId: TurnId,
+  targetThreadId: ThreadId,
+  requestId: ChildRequestId,
+  messageId: MessageId,
+  text: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+});
+
+/**
+ * A lead chat's pass never went to the agent after the queue let it go: the
+ * thread's access was raised above its ceiling, or Stop landed, while its
+ * turn was prepared (docs/design/lead-chat.md, "Access"). Server only, from
+ * the provider reactor. `threadId` is the thread it was passed to.
+ */
+const ThreadLeadPassNotRunCommand = Schema.Struct({
+  type: Schema.Literal("thread.lead-pass.not-run"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  messageId: MessageId,
+  /** `ceiling`: its access went above the pass's. `stopped`: Stop landed while it was prepared. */
+  reason: Schema.Literals(["ceiling", "stopped"]),
+  createdAt: IsoDateTime,
+});
+
 /** Child threads: a request moved on (set up, its turn started, background wait). */
 const ThreadChildRequestUpdateCommand = Schema.Struct({
   type: Schema.Literal("thread.child-request.update"),
@@ -5468,6 +5551,8 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadNativeSessionFallBackCommand,
   ThreadChildStartCommand,
   ThreadChildSendCommand,
+  ThreadLeadPassCommand,
+  ThreadLeadPassNotRunCommand,
   ThreadChildRequestUpdateCommand,
   ThreadChildRequestSettleCommand,
   ThreadChildNotesDeliveredCommand,
@@ -5563,6 +5648,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.child-notes-delivered",
   "thread.child-deliveries-cancelled",
   "thread.child-requests-reset",
+  "thread.lead-pass-recorded",
   "thread.remote-child-updated",
   "thread.remote-cancel-queued",
   "thread.remote-cancels-delivered",
@@ -6048,6 +6134,38 @@ export const ThreadChildDeliveriesCancelledPayload = Schema.Struct({
 /** The user wrote: the per-message child thread counts start over. */
 export const ThreadChildRequestsResetPayload = Schema.Struct({
   threadId: ThreadId,
+  /**
+   * A turn Threadlines started for the user (a continue at the reset, after a
+   * restart or an account switch), not the user writing: the counts start
+   * over, but a pass's block on starting threads stays.
+   */
+  keepsPassBlock: Schema.optional(Schema.Literal(true)),
+  createdAt: IsoDateTime,
+});
+
+/**
+ * The lead chat's passes (docs/design/lead-chat.md, "A pass"). On the lead:
+ * `sent` counts one toward its sends since the user wrote; `refused` (the
+ * passed message could not run, its ceiling was over) leaves `note` for the
+ * lead's next turn. On the thread passed to: `started` (the pass started its
+ * turn there) blocks its agents from starting threads until the user writes.
+ */
+export const ThreadLeadPassRecordedPayload = Schema.Struct({
+  threadId: ThreadId,
+  /**
+   * `sent`, `refused` (with the lead's `note`): on the lead. `started`: the
+   * pass started its turn in the target. `not-run`: on the target, the pass
+   * was refused right before it went to the agent, so its message is
+   * `notSent`. (One taken off the queue is marked by that, see
+   * withUnqueuedAgentMessage.)
+   */
+  kind: Schema.Literals(["sent", "refused", "started", "not-run"]),
+  /** The pass's message, in the thread it was passed to. */
+  messageId: MessageId,
+  targetThreadId: ThreadId,
+  note: Schema.optional(ChildRequestNote),
+  /** `started`: the pass's ceiling, which now holds the target (`passCeiling`). */
+  ceiling: Schema.optional(LeadPassCeiling),
   createdAt: IsoDateTime,
 });
 
@@ -6146,6 +6264,8 @@ export const ThreadMessageSentPayload = Schema.Struct({
   streaming: Schema.Boolean,
   /** See OrchestrationMessage.imported. */
   imported: Schema.optional(Schema.Literal(true)),
+  /** See OrchestrationMessage.notSent: an imported message that never reached the agent there. */
+  notSent: Schema.optional(Schema.Literal(true)),
   /** See OrchestrationMessage.afterMove. */
   afterMove: Schema.optional(Schema.Literal(true)),
   /** Missing means legacy behavior for events written before assistant
@@ -6724,6 +6844,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.child-requests-reset"),
     payload: ThreadChildRequestsResetPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.lead-pass-recorded"),
+    payload: ThreadLeadPassRecordedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

@@ -307,7 +307,7 @@ export interface ConnectToolDeps {
 export type ConnectProject = Pick<
   OrchestrationProjectCatalogEntry,
   "id" | "kind" | "title" | "workspaceRoot"
->;
+> & { readonly leadThreadId?: ThreadId | null | undefined };
 
 type Refusal = {
   readonly outcome: "limit" | "not_allowed";
@@ -748,6 +748,7 @@ export const makeConnectToolHandlers = (
             projectId: project.id,
             name: project.title,
             folder: assistant ? lastPathSegment(project.workspaceRoot) : project.workspaceRoot,
+            ...(project.leadThreadId != null ? { leadThreadId: project.leadThreadId } : {}),
           })),
         } satisfies ProjectsResult;
       });

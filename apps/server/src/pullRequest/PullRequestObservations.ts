@@ -19,6 +19,7 @@ import type {
   PullRequestState,
   SourceControlProviderKind,
 } from "@threadlines/contracts";
+import { normalizeGitRemoteUrl } from "@threadlines/shared/git";
 import { pullRequestIdentityKey } from "@threadlines/shared/sourceControl";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -167,6 +168,17 @@ export interface PullRequestObservationsShape {
   ) => Effect.Effect<ObservedRead<A>, E, R>;
   /** Every record kept, oldest change first, then each change as it lands. */
   readonly stream: Stream.Stream<PullRequestObservation>;
+  /**
+   * What is already known about a thread's pull requests, with no call to the
+   * host: the one from its branch in the repository at `repositoryKey` (its
+   * remote's host and whole path, RepositoryIdentity.canonicalKey), and the
+   * ones at `urls`. Pull requests nobody has read yet are left out.
+   */
+  readonly known: (input: {
+    readonly repositoryKey: string | null;
+    readonly branch: string | null;
+    readonly urls: ReadonlyArray<string>;
+  }) => Effect.Effect<ReadonlyArray<PullRequestObservation>>;
 }
 
 export class PullRequestObservations extends Context.Service<
@@ -239,7 +251,26 @@ export const make = Effect.gen(function* () {
     }),
   );
 
-  return { observe, stream } satisfies PullRequestObservationsShape;
+  const known: PullRequestObservationsShape["known"] = (input) =>
+    Ref.get(state).pipe(
+      Effect.map((current) => {
+        // Matched on the address, host and whole path, so another host's or
+        // another group's `owner/name` with the same branch never answers.
+        const repositoryPrefix =
+          input.repositoryKey === null ? null : `${input.repositoryKey.toLowerCase()}/`;
+        const urls = new Set(input.urls);
+        return Array.from(current.records.values(), (entry) => entry.observation).filter(
+          (observation) =>
+            urls.has(observation.url) ||
+            (repositoryPrefix !== null &&
+              input.branch !== null &&
+              observation.headBranch === input.branch &&
+              normalizeGitRemoteUrl(observation.url).startsWith(repositoryPrefix)),
+        );
+      }),
+    );
+
+  return { observe, stream, known } satisfies PullRequestObservationsShape;
 });
 
 export const layer = Layer.effect(PullRequestObservations, make);

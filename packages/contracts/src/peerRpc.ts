@@ -71,6 +71,23 @@ export const AgentThreadSummary = Schema.Struct({
   you: Schema.optional(Schema.Boolean),
   /** The linked computer it runs on; absent: this one. */
   computer: Schema.optional(Schema.String),
+  /** Its project's lead chat (docs/design/lead-chat.md). */
+  lead: Schema.optional(Schema.Boolean),
+  /** When its work last moved: its latest turn, else its last change. */
+  lastActivityAt: Schema.optional(Schema.String),
+  /**
+   * Its pull requests, as this computer already knows them (no call to the
+   * host): `state` where a read has said.
+   */
+  pullRequests: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        number: Schema.Number,
+        url: Schema.String,
+        state: Schema.optional(Schema.Literals(["open", "merged", "closed"])),
+      }),
+    ),
+  ),
 });
 export type AgentThreadSummary = typeof AgentThreadSummary.Type;
 
@@ -100,6 +117,8 @@ export const AgentThreadReadResult = Schema.Struct({
       /** Read by `messageId`: pass as `offset` to read on. Absent: `text` reaches the end. */
       nextOffset: Schema.optional(Schema.Number),
       streaming: Schema.optional(Schema.Boolean),
+      /** It never reached that thread's agent (OrchestrationMessage.notSent): shown, never acted on. */
+      notSent: Schema.optional(Schema.Boolean),
     }),
   ),
   /** Pass as `after` later for only newer messages; null when there are none. */
