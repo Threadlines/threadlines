@@ -653,38 +653,7 @@ export function hideRightPanel(threadKey: string | null): void {
   mutate(threadKey, hideRightPanelState);
 }
 
-/**
- * A tab something outside the route wants opened on a thread the next time
- * its route can show it: code that has no navigation of its own (a command
- * finishing) asks here, and the route opens it, URL and all, once the thread
- * is on screen with that tab available. Session-scoped like the strips.
- */
-const queuedTabByThreadKey = new Map<string, RightPanelTab>();
-
-export function queueRightPanelTab(threadKey: string, tab: RightPanelTab): void {
-  queuedTabByThreadKey.set(threadKey, tab);
-  notify();
-}
-
-/** The tab queued for this thread, if any. The route opens it, then clears it. */
-export function useQueuedRightPanelTab(threadKey: string | null): RightPanelTab | null {
-  return useSyncExternalStore(
-    subscribe,
-    useCallback(
-      () => (threadKey ? (queuedTabByThreadKey.get(threadKey) ?? null) : null),
-      [threadKey],
-    ),
-  );
-}
-
-export function clearQueuedRightPanelTab(threadKey: string): void {
-  if (queuedTabByThreadKey.delete(threadKey)) {
-    notify();
-  }
-}
-
 export function resetRightPanelTabsForTests(): void {
   stateByThreadKey.clear();
-  queuedTabByThreadKey.clear();
   notify();
 }

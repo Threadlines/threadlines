@@ -1,0 +1,200 @@
+/**
+ * Family tabs (docs/design/lead-chat.md, "Family tabs"): a thread that
+ * started other threads, and each thread it started, show one row of tabs
+ * under the chat header. Which threads are on the row is the sidebar's own
+ * family rule (`liveFamilyOf`); how the row lays them out is decided here,
+ * as data, so the component only draws it.
+ */
+import { scopeThreadRef } from "@threadlines/client-runtime";
+import type { ScopedThreadRef } from "@threadlines/contracts";
+
+import type { SidebarThreadSummary } from "../../types";
+
+import {
+  familyParentKeyOf,
+  type InboxFamilyEntry,
+  type InboxRemoteChild,
+  inboxStatusWord,
+  isChildThreadNeedingYou,
+  isNeedsUserStatus,
+  liveFamilyOf,
+} from "../Sidebar.logic";
+
+/** One tab on the row. */
+export interface FamilyTab {
+  /** The thread's scoped key (or the remote child's key). */
+  readonly key: string;
+  /** What a click opens; null for a child this app has no thread for. */
+  readonly threadRef: ScopedThreadRef | null;
+  readonly kind: "parent" | "child";
+  readonly title: string;
+  /** The parent is its project's lead chat: its tab is the flag and "Lead". */
+  readonly lead: boolean;
+  /** A child's status dot class and word; null for the parent or a quiet child. */
+  readonly dotClass: string | null;
+  readonly statusWord: string | null;
+  /** Wrapped and still in the family: a check instead of a dot. */
+  readonly done: boolean;
+  /** Waiting on the user (what makes "+N" amber when it is hidden). */
+  readonly needsYou: boolean;
+  /** The computer it runs on when the app can't see that computer. */
+  readonly computerLabel: string | null;
+  /** Where the sidebar files it, for the menu's Wrap up or Reopen; null where it has none. */
+  readonly inbox: { readonly isDone: boolean; readonly canMarkDone: boolean } | null;
+}
+
+/** The row for the open thread's family, or null when it has none. */
+export interface FamilyTabs {
+  /** The parent's key: the row belongs to the family, never to the open thread. */
+  readonly familyKey: string;
+  readonly tabs: readonly FamilyTab[];
+  readonly openKey: string;
+}
+
+/** What the row reads about each thread, filed the way the sidebar files it. */
+export interface FamilyTabEntry extends InboxFamilyEntry {
+  readonly thread: SidebarThreadSummary;
+  readonly isLead?: boolean | undefined;
+  /** Whether its row offers Wrap up (InboxEntry.canMarkDone). */
+  readonly canMarkDone?: boolean | undefined;
+}
+
+/**
+ * The open thread's family as tabs: on a parent with at least one member, and
+ * on each member while its parent is live. The parent first, then its
+ * threads in the order the sidebar draws them. Null for a thread with no
+ * family, a child the user made its own, or one whose parent is wrapped.
+ */
+export function familyTabsOf<E extends FamilyTabEntry>(input: {
+  readonly openKey: string;
+  readonly entries: readonly E[];
+  readonly remoteChildrenOf: (parent: E) => readonly InboxRemoteChild[];
+  readonly now: string;
+}): FamilyTabs | null {
+  const byKey = new Map(input.entries.map((entry) => [entry.threadKey, entry] as const));
+  const open = byKey.get(input.openKey);
+  if (open === undefined) return null;
+  const parentKey = familyParentKeyOf(open.thread) ?? open.threadKey;
+  const parent = byKey.get(parentKey);
+  if (parent === undefined) return null;
+  const family = liveFamilyOf({
+    parent,
+    children: input.entries.filter(
+      (entry) =>
+        entry.threadKey !== parent.threadKey && familyParentKeyOf(entry.thread) === parentKey,
+    ),
+    remoteChildren: input.remoteChildrenOf(parent),
+    activeThreadKey: input.openKey,
+    now: input.now,
+  });
+  if (family === null) return null;
+  // The open child must be one of them (it always is while its parent is live).
+  if (
+    parent.threadKey !== input.openKey &&
+    !family.children.some((child) => child.threadKey === input.openKey)
+  ) {
+    return null;
+  }
+  const childTab = (child: E): FamilyTab => ({
+    key: child.threadKey,
+    threadRef: scopeThreadRef(child.thread.environmentId, child.thread.id),
+    kind: "child",
+    title: child.thread.title,
+    lead: false,
+    dotClass: child.isDone ? null : (child.status?.dotClass ?? null),
+    statusWord: child.isDone ? null : inboxStatusWord(child.status),
+    done: child.isDone,
+    needsYou: !child.isDone && isNeedsUserStatus(child.status),
+    computerLabel: null,
+    inbox: { isDone: child.isDone, canMarkDone: child.canMarkDone === true },
+  });
+  const remoteTab = (child: InboxRemoteChild): FamilyTab => ({
+    key: child.threadKey,
+    threadRef: null,
+    kind: "child",
+    title: child.title,
+    lead: false,
+    dotClass: child.isDone ? null : (child.status?.dotClass ?? null),
+    statusWord: child.isDone ? null : inboxStatusWord(child.status),
+    done: child.isDone,
+    needsYou: isChildThreadNeedingYou(child),
+    computerLabel: child.computerLabel,
+    inbox: null,
+  });
+  return {
+    familyKey: parent.threadKey,
+    openKey: input.openKey,
+    tabs: [
+      {
+        key: parent.threadKey,
+        threadRef: scopeThreadRef(parent.thread.environmentId, parent.thread.id),
+        kind: "parent",
+        title: parent.thread.title,
+        lead: parent.isLead === true,
+        dotClass: null,
+        statusWord: null,
+        done: false,
+        needsYou: !parent.isDone && isNeedsUserStatus(parent.status),
+        computerLabel: null,
+        inbox: { isDone: parent.isDone, canMarkDone: parent.canMarkDone === true },
+      },
+      ...family.children.map(childTab),
+      ...family.remoteChildren.map(remoteTab),
+    ],
+  };
+}
+
+/** Whether two rows draw the same: the row skips a redraw when nothing it shows changed. */
+export function sameFamilyTabs(left: FamilyTabs | null, right: FamilyTabs | null): boolean {
+  if (left === right) return true;
+  if (left === null || right === null) return false;
+  return (
+    left.familyKey === right.familyKey &&
+    left.openKey === right.openKey &&
+    left.tabs.length === right.tabs.length &&
+    left.tabs.every((tab, index) => {
+      const other = right.tabs[index]!;
+      return (
+        tab.key === other.key &&
+        tab.title === other.title &&
+        tab.lead === other.lead &&
+        tab.dotClass === other.dotClass &&
+        tab.statusWord === other.statusWord &&
+        tab.done === other.done &&
+        tab.needsYou === other.needsYou &&
+        tab.computerLabel === other.computerLabel &&
+        tab.inbox?.isDone === other.inbox?.isDone &&
+        tab.inbox?.canMarkDone === other.inbox?.canMarkDone
+      );
+    })
+  );
+}
+
+/** The narrowest a tab gets before the rest move behind "+N". */
+export const FAMILY_TAB_MIN_WIDTH_PX = 96;
+
+/**
+ * Which tabs fit the row, in order, and which go behind "+N". Tabs shrink to
+ * `minTabPx`; past that, the last ones move behind the menu, which takes
+ * `overflowPx` itself. The open thread's tab is always on the row: when it
+ * would be hidden it takes the last place that fits.
+ */
+export function fitFamilyTabs(input: {
+  readonly tabs: readonly FamilyTab[];
+  readonly openKey: string;
+  readonly rowPx: number;
+  readonly minTabPx?: number;
+  readonly overflowPx: number;
+}): { readonly shown: readonly FamilyTab[]; readonly hidden: readonly FamilyTab[] } {
+  const minTabPx = input.minTabPx ?? FAMILY_TAB_MIN_WIDTH_PX;
+  const all = input.tabs;
+  if (all.length * minTabPx <= input.rowPx) return { shown: all, hidden: [] };
+  const fit = Math.max(1, Math.floor((input.rowPx - input.overflowPx) / minTabPx));
+  let shown = all.slice(0, fit);
+  if (!shown.some((tab) => tab.key === input.openKey)) {
+    const open = all.find((tab) => tab.key === input.openKey);
+    if (open !== undefined) shown = [...shown.slice(0, Math.max(0, fit - 1)), open];
+  }
+  const shownKeys = new Set(shown.map((tab) => tab.key));
+  return { shown, hidden: all.filter((tab) => !shownKeys.has(tab.key)) };
+}

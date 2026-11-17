@@ -161,6 +161,7 @@ import {
   useStore,
 } from "../store";
 import { readLeadProjectName } from "../leadChat";
+import { FamilyTabs, useFamilyTabsShown } from "./chat/FamilyTabs";
 import { createProjectSelectorByRef, createThreadSelectorByRef } from "../storeSelectors";
 import { useUiStateStore } from "../uiStateStore";
 import {
@@ -2223,6 +2224,7 @@ export default function ChatView(props: ChatViewProps) {
   const parentEnvironmentId = remoteOrigin?.environmentId ?? environmentId;
   const parentThreadId = remoteOrigin?.threadId ?? activeThread?.parentThreadId ?? null;
   const knownParentTitle = useThreadTitle(parentEnvironmentId, parentThreadId);
+  const familyTabsShown = useFamilyTabsShown(activeThreadKey);
   const isLeadChat = useStore(
     (state) => activeThreadRef !== null && readLeadProjectName(state, activeThreadRef) !== null,
   );
@@ -8779,8 +8781,9 @@ export default function ChatView(props: ChatViewProps) {
       fileBrowserAvailable={!isGeneralChatThread}
       taskProgress={taskProgress}
       forkContext={forkHeaderContext}
-      parentContext={parentHeaderContext}
-      isLeadChat={isLeadChat}
+      // The family row under the header says both while it shows.
+      parentContext={familyTabsShown ? null : parentHeaderContext}
+      isLeadChat={isLeadChat && !familyTabsShown}
       outsideOrigin={activeThread.outsideOrigin ?? null}
       onOpenParentThread={headerHandlers.onOpenParentThread}
       backgroundRuns={headerBackgroundRuns}
@@ -8896,6 +8899,10 @@ export default function ChatView(props: ChatViewProps) {
       >
         {chatHeader}
       </TitleBarContent>
+      {/* The open thread's family: its parent and the threads it started. */}
+      {activeThreadRef !== null && routeKind === "server" ? (
+        <FamilyTabs threadRef={activeThreadRef} />
+      ) : null}
 
       {threadErrorRateLimitResetCreditDialog}
       <ForkThreadDialog
