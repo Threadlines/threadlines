@@ -37,6 +37,7 @@ import {
 } from "@threadlines/shared/roomAgentRequests";
 import { applyAgentPagePublication } from "@threadlines/shared/agentPages";
 import { nextThreadMoveState } from "@threadlines/shared/threadMoveProjection";
+import { withQueuedFollowUp } from "@threadlines/shared/queuedFollowUps";
 import {
   applyCommandRequestDismissed,
   applyCommandRequested,
@@ -115,6 +116,7 @@ import {
   ThreadRemoteCancelsDeliveredPayload,
   ThreadRemoteChildUpdatedPayload,
   ThreadHistorySeedDeliveredPayload,
+  ThreadMoveRestoreSetPayload,
   ThreadParentAttachmentSetPayload,
   ThreadSideTurnInterruptRequestedPayload,
   ThreadSideTurnRunningPayload,
@@ -1098,6 +1100,17 @@ export function projectEvent(
       });
     }
 
+    // What a move that didn't happen owes the thread back, or that it's paid.
+    case "thread.move-restore-set":
+      return decodeForEvent(ThreadMoveRestoreSetPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            moveRestoreOwed: payload.moveRestoreOwed,
+          }),
+        })),
+      );
+
     case "thread.history-seed-delivered":
       return decodeForEvent(
         ThreadHistorySeedDeliveredPayload,
@@ -1384,6 +1397,7 @@ export function projectEvent(
             ...(payload.sentFrom !== undefined ? { sentFrom: payload.sentFrom } : {}),
             ...(payload.trigger !== undefined ? { trigger: payload.trigger } : {}),
             ...(payload.notSent === true ? { notSent: true as const } : {}),
+            ...(payload.afterMove === true ? { afterMove: true as const } : {}),
             turnId: payload.turnId,
             streaming: payload.streaming,
             createdAt: payload.createdAt,
@@ -1424,6 +1438,9 @@ export function projectEvent(
                       : {}),
                     ...(entry.notSent === true || message.notSent === true
                       ? { notSent: true as const }
+                      : {}),
+                    ...(entry.afterMove === true || message.afterMove === true
+                      ? { afterMove: true as const }
                       : {}),
                   }
                 : entry,
@@ -1527,12 +1544,7 @@ export function projectEvent(
           return {
             ...nextBase,
             threads: updateThread(nextBase.threads, payload.threadId, {
-              queuedFollowUps: [
-                ...(thread.queuedFollowUps ?? []).filter(
-                  (queued) => queued.messageId !== payload.followUp.messageId,
-                ),
-                payload.followUp,
-              ],
+              queuedFollowUps: withQueuedFollowUp(thread.queuedFollowUps ?? [], payload.followUp),
               updatedAt: payload.followUp.createdAt,
             }),
           };

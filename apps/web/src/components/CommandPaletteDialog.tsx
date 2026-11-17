@@ -616,8 +616,13 @@ export function OpenCommandPaletteDialog() {
   // Clearing this computer (Part 3c): several of its threads to a linked one.
   const moveThreadsOffered = useMoveThreadsOffered(primaryEnvironmentId, null);
   const activeThreadMoveOffered = useThreadMoveOffered(
-    activeThread?.environmentId ?? null,
-    activeThread ? threadMoveStatus(activeThread) : undefined,
+    activeThread
+      ? {
+          environmentId: activeThread.environmentId,
+          projectId: activeThread.projectId,
+          moveStatus: threadMoveStatus(activeThread),
+        }
+      : null,
   );
   // The open thread's own actions are its menu's (useThreadMenu); the inbox
   // says whether it offers Wrap up or Reopen. This mounts only while open.

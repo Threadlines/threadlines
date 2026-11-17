@@ -66,6 +66,7 @@ import {
   ThreadPendingMove,
   ThreadMovedFrom,
   ThreadMoveOutcome,
+  ThreadMoveRestore,
   ThreadRemoteOrigin,
   ThreadScheduledRun,
   ThreadWorktreeOrigin,
@@ -183,6 +184,7 @@ type ThreadLineageRow = Pick<
   | "pendingMove"
   | "movedFrom"
   | "lastMoveOutcome"
+  | "moveRestoreOwed"
   | "historySeedOwed"
   | "historySeedMessageId"
   | "nativeSession"
@@ -204,6 +206,8 @@ const threadLineageFields = (row: ThreadLineageRow) => ({
   ...(row.outsideOrigin ? { outsideOrigin: row.outsideOrigin } : {}),
   ...(row.outsideWork && row.outsideWork.length > 0 ? { outsideWork: row.outsideWork } : {}),
   ...threadMoveFields(row),
+  // What a move that didn't happen owes back: the server's alone, never on a shell.
+  ...(row.moveRestoreOwed ? { moveRestoreOwed: row.moveRestoreOwed } : {}),
   ...((row.historySeedOwed ?? 0) > 0 ? { historySeedOwed: true } : {}),
   ...(row.historySeedMessageId ? { historySeedMessageId: row.historySeedMessageId } : {}),
   ...(row.nativeSession ? { nativeSession: row.nativeSession } : {}),
@@ -275,6 +279,7 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
     sentFrom: Schema.NullOr(Schema.fromJsonString(MessageSentFrom)),
     trigger: Schema.NullOr(MessageTrigger),
     notSent: Schema.NullOr(Schema.Number),
+    afterMove: Schema.optional(Schema.NullOr(Schema.Number)),
   }),
 );
 const ProjectionThreadProposedPlanDbRowSchema = ProjectionThreadProposedPlan.mapFields(
@@ -320,6 +325,7 @@ const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
     pendingMove: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadPendingMove))),
     movedFrom: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadMovedFrom))),
     lastMoveOutcome: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadMoveOutcome))),
+    moveRestoreOwed: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadMoveRestore))),
   }),
 );
 const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
@@ -657,6 +663,7 @@ function mapThreadMessageRow(
     ...(row.sentFrom !== null ? { sentFrom: row.sentFrom } : {}),
     ...(row.trigger !== null ? { trigger: row.trigger } : {}),
     ...(row.notSent === 1 ? { notSent: true as const } : {}),
+    ...(row.afterMove === 1 ? { afterMove: true as const } : {}),
     turnId: row.turnId,
     streaming: row.isStreaming === 1,
     createdAt: row.createdAt,
@@ -975,6 +982,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           pending_move_json AS "pendingMove",
           moved_from_json AS "movedFrom",
           last_move_outcome_json AS "lastMoveOutcome",
+          move_restore_owed_json AS "moveRestoreOwed",
           history_seed_owed AS "historySeedOwed",
           history_seed_message_id AS "historySeedMessageId",
           native_session AS "nativeSession",
@@ -1046,6 +1054,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           pending_move_json AS "pendingMove",
           moved_from_json AS "movedFrom",
           last_move_outcome_json AS "lastMoveOutcome",
+          move_restore_owed_json AS "moveRestoreOwed",
           history_seed_owed AS "historySeedOwed",
           history_seed_message_id AS "historySeedMessageId",
           native_session AS "nativeSession",
@@ -1119,6 +1128,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           pending_move_json AS "pendingMove",
           moved_from_json AS "movedFrom",
           last_move_outcome_json AS "lastMoveOutcome",
+          move_restore_owed_json AS "moveRestoreOwed",
           history_seed_owed AS "historySeedOwed",
           history_seed_message_id AS "historySeedMessageId",
           native_session AS "nativeSession",
@@ -1169,6 +1179,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sent_from AS "sentFrom",
           message_trigger AS "trigger",
           not_sent AS "notSent",
+          after_move AS "afterMove",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -1230,6 +1241,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sent_from AS "sentFrom",
           message_trigger AS "trigger",
           not_sent AS "notSent",
+          after_move AS "afterMove",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -1960,6 +1972,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           pending_move_json AS "pendingMove",
           moved_from_json AS "movedFrom",
           last_move_outcome_json AS "lastMoveOutcome",
+          move_restore_owed_json AS "moveRestoreOwed",
           history_seed_owed AS "historySeedOwed",
           history_seed_message_id AS "historySeedMessageId",
           native_session AS "nativeSession",
@@ -2007,6 +2020,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sent_from AS "sentFrom",
           message_trigger AS "trigger",
           not_sent AS "notSent",
+          after_move AS "afterMove",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -3795,6 +3809,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     pending_move_json AS "pendingMove",
     moved_from_json AS "movedFrom",
     last_move_outcome_json AS "lastMoveOutcome",
+    move_restore_owed_json AS "moveRestoreOwed",
     history_seed_owed AS "historySeedOwed",
     history_seed_message_id AS "historySeedMessageId",
     native_session AS "nativeSession",

@@ -44,6 +44,17 @@ export const ThreadMoveAgentSessionOutcome = Schema.Struct({
 });
 export type ThreadMoveAgentSessionOutcome = typeof ThreadMoveAgentSessionOutcome.Type;
 
+/**
+ * One line the move dialog shows about what a thread takes along, or what
+ * won't work as it did: always the server's words. `instanceIds`: it holds
+ * only while one of those agents (on the computer it's about) is picked.
+ */
+export const ThreadMoveNote = Schema.Struct({
+  words: TrimmedNonEmptyString,
+  instanceIds: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
+});
+export type ThreadMoveNote = typeof ThreadMoveNote.Type;
+
 /** One computer this thread could move to, as this computer sees it now. */
 export const ThreadMoveTargetPreview = Schema.Struct({
   environmentId: EnvironmentId,
@@ -80,6 +91,13 @@ export const ThreadMoveTargetPreview = Schema.Struct({
    * thread's agent session. An agent not listed, or absent: `summary`.
    */
   sessionOutcomes: Schema.optional(Schema.Array(ThreadMoveAgentSessionOutcome)),
+  /**
+   * What won't work there as it did here, in the server's words
+   * (docs/design/fleet.md, Part 3e): "GitHub isn't signed in on Windows PC…".
+   * A note with `instanceIds` holds only for those of its agents (the dialog
+   * shows it while one of them is picked); without, for any.
+   */
+  notes: Schema.optional(Schema.Array(ThreadMoveNote)),
 });
 export type ThreadMoveTargetPreview = typeof ThreadMoveTargetPreview.Type;
 
@@ -107,6 +125,13 @@ export const ThreadMovePreview = Schema.Struct({
    */
   waitsFor: Schema.optional(Schema.Array(ThreadMoveWait)),
   changes: Schema.optional(ThreadMoveChanges),
+  /**
+   * What comes along besides the conversation (docs/design/fleet.md, Part
+   * 3e), one line each in the server's words: "Its goal carries on there."
+   */
+  brings: Schema.optional(Schema.Array(ThreadMoveNote)),
+  /** A General Chats thread: its folder, in place of `changes`. */
+  folder: Schema.optional(Schema.Struct({ files: NonNegativeInt, bytes: NonNegativeInt })),
   targets: Schema.Array(ThreadMoveTargetPreview),
 });
 export type ThreadMovePreview = typeof ThreadMovePreview.Type;
@@ -197,6 +222,25 @@ export const ThreadMovePreviewManyThread = Schema.Struct({
   waitsFor: Schema.optional(Schema.Array(ThreadMoveWait)),
   /** The computers it alone can't go to, and why. A computer not listed takes it. */
   targetRefusals: Schema.optional(Schema.Array(ThreadMoveTargetRefusal)),
+  /** What comes along with it besides the conversation: see ThreadMovePreview.brings. */
+  brings: Schema.optional(Schema.Array(ThreadMoveNote)),
+  /** A General Chats thread: its folder, as ThreadMovePreview.folder. */
+  folder: Schema.optional(Schema.Struct({ files: NonNegativeInt, bytes: NonNegativeInt })),
+  /**
+   * Per computer that would take it, what is its own there (docs/design/
+   * fleet.md, Part 3e): the project it lands in, and what won't work there as
+   * it did (ThreadMoveTargetPreview.notes), for the agent a batch moves it
+   * with (the one that computer suggests). A computer not listed: nothing.
+   */
+  targetLines: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        environmentId: EnvironmentId,
+        projectName: Schema.optional(TrimmedNonEmptyString),
+        notes: Schema.optional(Schema.Array(ThreadMoveNote)),
+      }),
+    ),
+  ),
   /**
    * Per computer, what the agent it would suggest for this thread gets of its
    * agent session (docs/design/fleet.md, Part 3d). A computer not listed,

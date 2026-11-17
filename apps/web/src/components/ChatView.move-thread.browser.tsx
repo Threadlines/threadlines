@@ -1,6 +1,7 @@
 import {
   type ComputerLinkPendingRequest,
   EventId,
+  GENERAL_CHATS_PROJECT_ID,
   MessageId,
   ORCHESTRATION_WS_METHODS,
   type OrchestrationEvent,
@@ -41,6 +42,8 @@ import {
   THREAD_REF,
   THREAD_TITLE,
   LOCAL_ENVIRONMENT_ID,
+  PROJECT_ID,
+  createUserMessage,
   NOW_ISO,
   rpcHarness,
   WIDE_FOOTER_VIEWPORT,
@@ -101,6 +104,7 @@ function withMoveCapabilities(
     readonly threadMoveQueue?: true;
     readonly threadMoveBatch?: true;
     readonly threadMoveStagedApproval?: true;
+    readonly threadMoveState?: true;
   },
 ): void {
   withComputerLinksFixture(nextFixture);
@@ -141,6 +145,37 @@ function withTestThread(
     ...snapshot,
     threads: snapshot.threads.map((thread) =>
       thread.id === THREAD_ID ? { ...thread, ...overrides } : thread,
+    ),
+  };
+}
+
+/** What didn't come along with a thread that moved here, as the server says it. */
+const MOVED_IN_LEFT_SENTENCE =
+  "Auto-fix is off here: this computer already has a branch named `fix-login`, so pushes from this thread wouldn't reach pull request #212.";
+
+/** The snapshot with this computer's General Chats, holding the threads `threadIds`. */
+function withGeneralChats(
+  snapshot: OrchestrationReadModel,
+  threadIds: ReadonlyArray<ThreadId>,
+): OrchestrationReadModel {
+  return {
+    ...snapshot,
+    projects: [
+      ...snapshot.projects,
+      {
+        id: GENERAL_CHATS_PROJECT_ID,
+        kind: "general-chat" as const,
+        title: "General Chats",
+        workspaceRoot: "/repo/general-chats",
+        defaultModelSelection: null,
+        scripts: [],
+        createdAt: NOW_ISO,
+        updatedAt: NOW_ISO,
+        deletedAt: null,
+      },
+    ],
+    threads: snapshot.threads.map((thread) =>
+      threadIds.includes(thread.id) ? { ...thread, projectId: GENERAL_CHATS_PROJECT_ID } : thread,
     ),
   };
 }
@@ -327,8 +362,17 @@ describe("ChatView (full app): moving a thread to another computer", () => {
         }),
       );
       await vi.waitFor(() => {
-        expect(readThreadMoveOffered(LOCAL_ENVIRONMENT_ID, undefined)).toBe(true);
+        expect(
+          readThreadMoveOffered({ environmentId: LOCAL_ENVIRONMENT_ID, projectId: PROJECT_ID }),
+        ).toBe(true);
       });
+      // Not for a General Chats thread: this computer doesn't move those.
+      expect(
+        readThreadMoveOffered({
+          environmentId: LOCAL_ENVIRONMENT_ID,
+          projectId: GENERAL_CHATS_PROJECT_ID,
+        }),
+      ).toBe(false);
       await openSidebarThreadMenu(THREAD_ID);
       await expect
         .element(page.getByText("Move to another computer", { exact: true }))
@@ -384,7 +428,9 @@ describe("ChatView (full app): moving a thread to another computer", () => {
       await waitForServerConfigToApply();
       await saveMacMini("connected");
       await vi.waitFor(() => {
-        expect(readThreadMoveOffered(LOCAL_ENVIRONMENT_ID, undefined)).toBe(true);
+        expect(
+          readThreadMoveOffered({ environmentId: LOCAL_ENVIRONMENT_ID, projectId: PROJECT_ID }),
+        ).toBe(true);
       });
       await openCommandPaletteFromTrigger();
       await page
@@ -466,6 +512,170 @@ describe("ChatView (full app): moving a thread to another computer", () => {
     }
   });
 
+  it("says what comes along, and what won't work there for the agent picked", async () => {
+    setPrimaryLinksSnapshot(
+      fleetLinksSnapshot({
+        outbound: [fleetOutboundLink(FLEET_OFFLINE_ENVIRONMENT_ID, "Mac mini")],
+      }),
+    );
+    const macMini = FLEET_MOVE_PREVIEW.targets[1]!;
+    const codexOnly = "Codex on Mac mini can't set check-backs. It's told once what was planned.";
+    const github = "GitHub isn't signed in on Mac mini. Auto-fix waits there until you sign in.";
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-move-brings" as MessageId,
+        targetText: "move brings",
+      }),
+      configureFixture: (fixture) =>
+        withMoveCapabilities(fixture, { threadMove: true, threadMoveState: true }),
+      resolveRpc: (body) => {
+        if (body._tag !== WS_METHODS.movesPreview) return undefined;
+        return {
+          ...FLEET_MOVE_PREVIEW,
+          brings: [
+            { words: "Its goal carries on there." },
+            { words: "2 queued messages are sent there." },
+          ],
+          targets: [
+            {
+              ...macMini,
+              agents: [
+                ...macMini.agents,
+                {
+                  instanceId: "claudeAgent",
+                  name: "Claude",
+                  billing: "Claude Max",
+                  driver: "claudeAgent",
+                  models: [{ model: "claude-opus-5-5", name: "Opus 5.5" }],
+                },
+              ],
+              notes: [{ words: codexOnly, instanceIds: ["codex"] }, { words: github }],
+            },
+          ],
+        } satisfies ThreadMovePreview;
+      },
+    });
+
+    const linesOf = (testId: string) =>
+      Array.from(document.querySelectorAll<HTMLElement>(`[data-testid="${testId}"]`)).map(
+        (line) => line.textContent,
+      );
+    try {
+      await waitForServerConfigToApply();
+      await saveMacMini("connected");
+      await openCommandPaletteFromTrigger();
+      await page
+        .getByTestId("command-palette")
+        .getByText("Move to another computer", { exact: true })
+        .click();
+      const dialog = page.getByTestId("thread-move-dialog");
+      await expect
+        .element(dialog.getByTestId("thread-move-agent"))
+        .toMatchTextContent("Codex · GPT-5");
+      // Under the agent: what comes along, then what won't work as it did.
+      await expect.element(dialog.getByTestId("thread-move-carries")).toBeVisible();
+      expect(linesOf("thread-move-brings")).toEqual([
+        "Its goal carries on there.",
+        "2 queued messages are sent there.",
+      ]);
+      expect(linesOf("thread-move-note")).toEqual([codexOnly, github]);
+
+      // Claude picked: the note about Codex goes, the one for any agent stays.
+      await dialog.getByTestId("thread-move-agent").click();
+      await page.getByRole("option", { name: "Opus 5.5" }).click();
+      await expect
+        .element(dialog.getByTestId("thread-move-agent"))
+        .toMatchTextContent("Claude · Opus 5.5");
+      await vi.waitFor(() => expect(linesOf("thread-move-note")).toEqual([github]));
+      expect(linesOf("thread-move-brings")).toHaveLength(2);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("offers a General Chats thread where its computer moves them, landing in General chats with its files", async () => {
+    setPrimaryLinksSnapshot(
+      fleetLinksSnapshot({
+        outbound: [fleetOutboundLink(FLEET_OFFLINE_ENVIRONMENT_ID, "Mac mini")],
+      }),
+    );
+    const macMini = FLEET_MOVE_PREVIEW.targets[1]!;
+    const chatId = "thread-move-general-chat" as ThreadId;
+    const withChat = withGeneralChats(
+      addThreadToSnapshot(
+        createSnapshotForTargetUser({
+          targetMessageId: "msg-user-move-general-chat" as MessageId,
+          targetText: "move general chat",
+        }),
+        chatId,
+      ),
+      [chatId],
+    );
+    const previews: Array<NormalizedWsRpcRequestBody> = [];
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: {
+        ...withChat,
+        threads: withChat.threads.map((thread) =>
+          thread.id === chatId ? { ...thread, title: "Best way to store passkeys" } : thread,
+        ),
+      },
+      configureFixture: (fixture) =>
+        withMoveCapabilities(fixture, { threadMove: true, threadMoveState: true }),
+      resolveRpc: (body) => {
+        if (body._tag !== WS_METHODS.movesPreview) return undefined;
+        previews.push(body);
+        return {
+          folder: { files: 14, bytes: 48_000 },
+          targets: [{ ...macMini, projectName: "General chats" }],
+        } satisfies ThreadMovePreview;
+      },
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      await saveMacMini("connected");
+      await vi.waitFor(() => {
+        expect(
+          readThreadMoveOffered({
+            environmentId: LOCAL_ENVIRONMENT_ID,
+            projectId: GENERAL_CHATS_PROJECT_ID,
+          }),
+        ).toBe(true);
+      });
+      // The chat's own row menu, in the General Chats list, offers the move.
+      await page.getByTestId("rail-chats").click();
+      const row = page
+        .getByTestId("chats-list-row")
+        .filter({ hasText: "Best way to store passkeys" });
+      await expect.element(row).toBeVisible();
+      const rect = row.element().getBoundingClientRect();
+      row.element().dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: rect.left + 20,
+          clientY: rect.top + 8,
+        }),
+      );
+      await page.getByText("Move to another computer", { exact: true }).click();
+      const dialog = page.getByTestId("thread-move-dialog");
+      await expect
+        .element(dialog.getByTestId("thread-move-landing"))
+        .toHaveTextContent("Lands in General chats on Mac mini · 14 files");
+      // No branch: no changes line, and nothing staged to speak of.
+      const preview = dialog.getByTestId("thread-move-preview");
+      await expect.element(preview).toMatchTextContent("Your copy here stays, read-only.");
+      expect(preview.element().textContent).not.toContain("Staged changes");
+      expect(dialog.getByTestId("thread-move-changes").elements()).toHaveLength(0);
+      await expect.element(dialog.getByTestId("thread-move-confirm")).toBeEnabled();
+      expect(previews).toEqual([expect.objectContaining({ threadId: chatId })]);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("opens the thread's menu from its title in the header, by click or keyboard", async () => {
     setPrimaryLinksSnapshot(
       fleetLinksSnapshot({
@@ -496,7 +706,9 @@ describe("ChatView (full app): moving a thread to another computer", () => {
       await waitForServerConfigToApply();
       await saveMacMini("connected");
       await vi.waitFor(() => {
-        expect(readThreadMoveOffered(LOCAL_ENVIRONMENT_ID, undefined)).toBe(true);
+        expect(
+          readThreadMoveOffered({ environmentId: LOCAL_ENVIRONMENT_ID, projectId: PROJECT_ID }),
+        ).toBe(true);
       });
       const title = page.getByRole("button", { name: `${THREAD_TITLE}, thread menu` });
 
@@ -582,7 +794,9 @@ describe("ChatView (full app): moving a thread to another computer", () => {
       await waitForServerConfigToApply();
       await saveMacMini("connected");
       await vi.waitFor(() => {
-        expect(readThreadMoveOffered(LOCAL_ENVIRONMENT_ID, undefined)).toBe(true);
+        expect(
+          readThreadMoveOffered({ environmentId: LOCAL_ENVIRONMENT_ID, projectId: PROJECT_ID }),
+        ).toBe(true);
       });
       await openCommandPaletteFromTrigger();
       await page
@@ -696,7 +910,9 @@ describe("ChatView (full app): moving a thread to another computer", () => {
       await waitForServerConfigToApply();
       await saveMacMini("disconnected");
       await vi.waitFor(() => {
-        expect(readThreadMoveOffered(LOCAL_ENVIRONMENT_ID, undefined)).toBe(true);
+        expect(
+          readThreadMoveOffered({ environmentId: LOCAL_ENVIRONMENT_ID, projectId: PROJECT_ID }),
+        ).toBe(true);
       });
       await openCommandPaletteFromTrigger();
       await page
@@ -930,7 +1146,9 @@ describe("ChatView (full app): moving a thread to another computer", () => {
       await waitForServerConfigToApply();
       await saveMacMini("disconnected");
       await vi.waitFor(() => {
-        expect(readThreadMoveOffered(LOCAL_ENVIRONMENT_ID, undefined)).toBe(true);
+        expect(
+          readThreadMoveOffered({ environmentId: LOCAL_ENVIRONMENT_ID, projectId: PROJECT_ID }),
+        ).toBe(true);
       });
       await openCommandPaletteFromTrigger();
       await page
@@ -1152,12 +1370,25 @@ describe("ChatView (full app): moving a thread to another computer", () => {
     });
     const thread = base.threads[0]!;
     const importedCount = thread.messages.length - 4;
+    // What Threadlines wrote for the agent on arrival, first in line here.
+    const arrival = {
+      ...createUserMessage({
+        id: "msg-arrival" as MessageId,
+        text: "This thread moved from Mac mini to this computer, and your session was restarted for it.\n- Your goal is still on: ship the login fix. Carry on with it.",
+        offsetSeconds: importedCount * 3 - 0.5,
+      }),
+      afterMove: true as const,
+    };
     const mounted = await mountChatView({
       viewport: WIDE_FOOTER_VIEWPORT,
       snapshot: withTestThread(base, {
-        messages: thread.messages.map((message, index) =>
-          index < importedCount ? { ...message, imported: true as const } : message,
-        ),
+        messages: [
+          ...thread.messages
+            .slice(0, importedCount)
+            .map((message) => ({ ...message, imported: true as const })),
+          arrival,
+          ...thread.messages.slice(importedCount),
+        ],
         movedFrom: {
           environmentId: FLEET_OFFLINE_ENVIRONMENT_ID,
           label: "Mac mini",
@@ -1175,6 +1406,8 @@ describe("ChatView (full app): moving a thread to another computer", () => {
               fromLabel: "Mac mini",
               fromThreadId: "thread-on-mac-mini",
               movedAt: isoAt(importedCount * 3 - 1),
+              brought: ["its goal", "2 queued messages", "auto-fix for #212"],
+              left: [MOVED_IN_LEFT_SENTENCE],
             },
             turnId: null,
             createdAt: isoAt(importedCount * 3 - 1),
@@ -1198,6 +1431,28 @@ describe("ChatView (full app): moving a thread to another computer", () => {
       const top = (locator: typeof boundary) => locator.element().getBoundingClientRect().top;
       expect(top(lastImported)).toBeLessThan(top(boundary));
       expect(top(boundary)).toBeLessThan(top(firstHere));
+
+      // Under it, what came along, then what didn't, with why.
+      await expect
+        .element(page.getByTestId("moved-in-brought"))
+        .toHaveTextContent("Its goal · 2 queued messages · auto-fix for #212");
+      await expect
+        .element(page.getByTestId("moved-in-left"))
+        .toHaveTextContent(MOVED_IN_LEFT_SENTENCE);
+
+      // The arrival message is Threadlines', a quiet row under its name
+      // folded to its first line, not the user's bubble.
+      const arrivalRow = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-after-move-message="msg-arrival"]'),
+        "The arrival message should show as Threadlines' row.",
+      );
+      expect(arrivalRow.textContent).toContain("Threadlines·to the agent, about the move");
+      expect(arrivalRow.textContent).toContain(
+        "This thread moved from Mac mini to this computer, and your session was restarted for it.",
+      );
+      expect(arrivalRow.textContent).not.toContain("Your goal is still on");
+      expect(arrivalRow.closest(".bg-secondary")).toBeNull();
+      expect(top(boundary)).toBeLessThan(arrivalRow.getBoundingClientRect().top);
     } finally {
       await mounted.cleanup();
     }
@@ -1295,40 +1550,79 @@ describe("ChatView (full app): moving a thread to another computer", () => {
     );
     const idleId = "thread-batch-idle" as ThreadId;
     const goalId = "thread-batch-goal" as ThreadId;
+    const chatId = "thread-batch-general-chat" as ThreadId;
+    const familyId = "thread-batch-family" as ThreadId;
     const queueManys: Array<NormalizedWsRpcRequestBody> = [];
     const base = createSnapshotForTargetUser({
       targetMessageId: "msg-user-move-batch" as MessageId,
       targetText: "move batch",
     });
-    const snapshot = addThreadToSnapshot(addThreadToSnapshot(base, idleId), goalId);
+    const snapshot = withGeneralChats(
+      [idleId, goalId, chatId, familyId].reduce(addThreadToSnapshot, base),
+      [chatId],
+    );
+    const titles = new Map<string, string>([
+      [idleId, "Idle docs pass"],
+      [goalId, "Goal thread"],
+      [chatId, "Best way to store passkeys"],
+      [familyId, "Family thread"],
+    ]);
     const mounted = await mountChatView({
       viewport: WIDE_FOOTER_VIEWPORT,
       snapshot: {
         ...snapshot,
-        threads: snapshot.threads.map((thread) =>
-          thread.id === idleId
-            ? { ...thread, title: "Idle docs pass" }
-            : thread.id === goalId
-              ? { ...thread, title: "Goal thread" }
-              : thread,
-        ),
+        threads: snapshot.threads.map((thread) => ({
+          ...thread,
+          title: titles.get(thread.id) ?? thread.title,
+        })),
       },
+      // This computer moves threads with what they had going, General Chats included.
       configureFixture: (fixture) =>
         withMoveCapabilities(fixture, {
           threadMove: true,
           threadMoveQueue: true,
           threadMoveBatch: true,
+          threadMoveState: true,
         }),
       resolveRpc: (body) => {
         if (body._tag === WS_METHODS.movesPreviewMany) {
           const threadIds = (body as unknown as { threadIds: ThreadId[] }).threadIds;
+          const working = [{ code: "turn" as const, words: "when this turn ends" }];
           return {
             threads: threadIds.map((threadId) =>
               threadId === THREAD_ID
-                ? { threadId, waitsFor: [{ code: "turn", words: "when this turn ends" }] }
-                : threadId === goalId
-                  ? { threadId, refusal: "Has a goal set. Clear it first." }
-                  : { threadId },
+                ? { threadId, waitsFor: working }
+                : threadId === chatId
+                  ? {
+                      threadId,
+                      waitsFor: working,
+                      folder: { files: 14, bytes: 2_048 },
+                      targetLines: [
+                        {
+                          environmentId: FLEET_OFFLINE_ENVIRONMENT_ID,
+                          projectName: "General chats",
+                        },
+                      ],
+                    }
+                  : threadId === goalId
+                    ? {
+                        threadId,
+                        brings: [{ words: "Its goal carries on there." }],
+                        targetLines: [
+                          {
+                            environmentId: FLEET_OFFLINE_ENVIRONMENT_ID,
+                            notes: [
+                              {
+                                words:
+                                  "Its goal arrives paused: Claude on Mac mini can't keep its token budget. Resume runs it without one.",
+                              },
+                            ],
+                          },
+                        ],
+                      }
+                    : threadId === familyId
+                      ? { threadId, refusal: "It started threads that are still working." }
+                      : { threadId },
             ),
             targets: [{ ...FLEET_MOVE_PREVIEW.targets[1]!, projectName: undefined }],
           };
@@ -1352,12 +1646,17 @@ describe("ChatView (full app): moving a thread to another computer", () => {
       const dialog = page.getByTestId("move-threads-dialog");
       const list = dialog.getByTestId("move-threads-list");
       await expect.element(list).toBeVisible();
-      // The working thread leads, ticked; the idle one waits for the user.
+      // The working threads lead, ticked, the General Chats one with them;
+      // the idle ones wait for the user.
       const rows = Array.from(
         document.querySelectorAll<HTMLElement>('[data-testid^="move-threads-row-"]'),
       ).map((row) => row.dataset.testid);
-      expect(rows[0]).toBe(`move-threads-row-${THREAD_ID}`);
-      expect(rows).toHaveLength(3);
+      expect(rows.slice(0, 2)).toEqual([
+        `move-threads-row-${THREAD_ID}`,
+        `move-threads-row-${chatId}`,
+      ]);
+      expect(rows).toHaveLength(5);
+      await expect.element(dialog.getByTestId(`move-threads-tick-${chatId}`)).toBeChecked();
       await expect
         .element(dialog.getByTestId(`move-threads-words-${THREAD_ID}`))
         .toHaveTextContent("Moves when the agent finishes");
@@ -1366,24 +1665,42 @@ describe("ChatView (full app): moving a thread to another computer", () => {
         .element(dialog.getByTestId(`move-threads-words-${idleId}`))
         .toHaveTextContent("Moves now");
       await expect.element(dialog.getByTestId(`move-threads-tick-${idleId}`)).not.toBeChecked();
-      // One that can't move is listed, greyed out, with why.
+      // A thread with a goal moves, and says what comes along.
       await expect
         .element(dialog.getByTestId(`move-threads-words-${goalId}`))
-        .toHaveTextContent("Has a goal set. Clear it first.");
-      await expect.element(dialog.getByTestId(`move-threads-tick-${goalId}`)).toBeDisabled();
+        .toHaveTextContent("Moves now");
       await expect
-        .element(dialog.getByTestId("move-threads-confirm"))
-        .toHaveTextContent("Move 1 thread");
-
-      await dialog.getByTestId(`move-threads-tick-${idleId}`).click();
+        .element(dialog.getByTestId(`move-threads-brings-${goalId}`))
+        .toHaveTextContent("Its goal carries on there.");
+      // What won't work there as it did, for the agent it moves with.
+      await expect
+        .element(dialog.getByTestId(`move-threads-note-${goalId}`))
+        .toHaveTextContent(
+          "Its goal arrives paused: Claude on Mac mini can't keep its token budget. Resume runs it without one.",
+        );
+      await expect.element(dialog.getByTestId(`move-threads-tick-${goalId}`)).toBeEnabled();
+      // A General Chats thread says where it lands, with its files.
+      await expect
+        .element(dialog.getByTestId(`move-threads-landing-${chatId}`))
+        .toHaveTextContent("Lands in General chats on Mac mini · 14 files");
+      // One that can't move is listed, greyed out, with why.
+      await expect
+        .element(dialog.getByTestId(`move-threads-words-${familyId}`))
+        .toHaveTextContent("It started threads that are still working.");
+      await expect.element(dialog.getByTestId(`move-threads-tick-${familyId}`)).toBeDisabled();
       await expect
         .element(dialog.getByTestId("move-threads-confirm"))
         .toHaveTextContent("Move 2 threads");
+
+      await dialog.getByTestId(`move-threads-tick-${goalId}`).click();
+      await expect
+        .element(dialog.getByTestId("move-threads-confirm"))
+        .toHaveTextContent("Move 3 threads");
       await dialog.getByTestId("move-threads-confirm").click();
       await expect.element(page.getByTestId("move-threads-dialog")).not.toBeInTheDocument();
       expect(queueManys).toEqual([
         expect.objectContaining({
-          threadIds: [THREAD_ID, idleId],
+          threadIds: [THREAD_ID, chatId, goalId],
           targetEnvironmentId: FLEET_OFFLINE_ENVIRONMENT_ID,
           mode: "when-done",
         }),

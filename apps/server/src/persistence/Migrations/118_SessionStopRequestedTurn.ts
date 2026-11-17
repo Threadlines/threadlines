@@ -10,5 +10,11 @@ import * as SqlClient from "effect/sql/SqlClient";
  */
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* sql`ALTER TABLE projection_thread_sessions ADD COLUMN stop_requested_turn_id TEXT`;
+  // A development database may have it already, from when this was 117.
+  const columns = yield* sql<{ readonly name: string }>`
+    PRAGMA table_info(projection_thread_sessions)
+  `;
+  if (!columns.some((column) => column.name === "stop_requested_turn_id")) {
+    yield* sql`ALTER TABLE projection_thread_sessions ADD COLUMN stop_requested_turn_id TEXT`;
+  }
 });
