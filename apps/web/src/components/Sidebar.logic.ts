@@ -814,10 +814,7 @@ export function freshThreadDoneOverride(
   override: ThreadDoneOverride | null | undefined,
 ): ThreadDoneOverride | null {
   if (override == null) return null;
-  const lastActivityAt = resolveDoneTimestamp(thread, null);
-  return lastActivityAt !== null && Date.parse(lastActivityAt) > Date.parse(override.at)
-    ? null
-    : override;
+  return Date.parse(threadLastActivityAt(thread)) > Date.parse(override.at) ? null : override;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
@@ -1359,16 +1356,20 @@ type DoneSortInput = Pick<
 >;
 
 /**
- * Done rows are history, so they order by when the work ended: the explicit
- * mark when there is one, else the thread's last activity. Label and order
- * both come from here so they can never disagree.
+ * Done rows are history, so they order by when the work ended: the user's
+ * Wrap up while it still stands, else the thread's last activity. A mark that
+ * newer work outran no longer dates anything: the thread that comes back and
+ * wraps again (its pull request landing, or sitting idle) wrapped after that
+ * work, not on the old day. Label and order both come from here so they can
+ * never disagree.
  */
 export function resolveDoneTimestamp(
   thread: DoneSortInput,
   override: ThreadDoneOverride | null | undefined,
 ): string | null {
-  if (override?.state === "done" && !Number.isNaN(Date.parse(override.at))) {
-    return override.at;
+  const standing = freshThreadDoneOverride(thread, override);
+  if (standing?.state === "done" && !Number.isNaN(Date.parse(standing.at))) {
+    return standing.at;
   }
   return threadLastActivityAt(thread);
 }
