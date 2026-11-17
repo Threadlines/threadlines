@@ -358,6 +358,7 @@ import {
 import { type ComposerNotice, selectComposerNotices } from "./chat/composerNotices";
 import {
   useMoveNotStartedNotice,
+  useMovedPullRequestSwitchesNotice,
   usePendingMoveNotice,
   useThreadMoveNotice,
 } from "./chat/threadMoveNotice";
@@ -7396,6 +7397,8 @@ export default function ChatView(props: ChatViewProps) {
   });
   // A queued move that ended without starting says why until dismissed.
   const moveNotStartedNotice = useMoveNotStartedNotice({ thread: activeThread });
+  // Pull request switches that were on before the move arrive off: Turn on.
+  const movedSwitchesNotice = useMovedPullRequestSwitchesNotice({ thread: activeThread });
   // While a reply in chat answers the questions, the box says so, with the
   // way back to the card.
   const replyInChatNotice = useMemo<ComposerNotice | null>(
@@ -7433,12 +7436,14 @@ export default function ChatView(props: ChatViewProps) {
         removedAccountNotice,
         outsideWorkNotice,
         moveNotStartedNotice,
+        movedSwitchesNotice,
         ...infrastructureComposerNotices,
       ]),
     [
       checkoutMissingNotice,
       infrastructureComposerNotices,
       moveNotStartedNotice,
+      movedSwitchesNotice,
       outsideWorkNotice,
       providerStatusNotice,
       removedAccountNotice,

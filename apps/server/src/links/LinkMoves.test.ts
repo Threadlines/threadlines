@@ -1047,7 +1047,21 @@ describe("LinkMoves, what a thread had going (Part 3e)", () => {
       const command = importOf(dispatched);
       // Working, it is picked up here, with its budget as it was.
       assert.deepInclude(command.goal, { status: "active", tokenBudget: 5_000, tokensUsed: 1_200 });
+      // The pull request comes along with its switch off: only the user here
+      // turns it on, from the offer the thread keeps.
       assert.deepEqual(command.pullRequests, {
+        autoFix: false,
+        autoMerge: null,
+        linked: [
+          {
+            number: 212,
+            url: "https://example.com/repo/pull/212",
+            autoFix: false,
+            autoMerge: null,
+          },
+        ],
+      });
+      assert.deepEqual(command.movedFrom.pullRequestSwitches, {
         autoFix: true,
         autoMerge: null,
         linked: [
@@ -1067,12 +1081,16 @@ describe("LinkMoves, what a thread had going (Part 3e)", () => {
       assert.include(message, "Look at CI on #212");
       assert.deepEqual(command.arrival?.brought, [
         "its goal",
-        "auto-fix for #212",
+        "pull request #212",
         "1 queued message",
         "its plan",
       ]);
       assert.include(command.arrival?.left.join("\n"), "can't set them");
       assert.include(command.arrival?.left.join("\n"), "3 older plans stayed on Windows PC.");
+      assert.include(
+        command.arrival?.left.join("\n"),
+        "Auto-fix was on for this thread's pull request and #212 on Windows PC. It's off here until you turn it on.",
+      );
       // One send: the arrival message, by the move's own command id.
       assert.deepEqual(
         sends(dispatched).map((entry) =>
@@ -1180,6 +1198,8 @@ describe("LinkMoves, what a thread had going (Part 3e)", () => {
         command.arrival?.left.join("\n"),
         "Auto-fix is off here: this computer already has a branch named `feature/move-me`, so pushes from this thread wouldn't reach pull request #212.",
       );
+      // Turning it on wouldn't reach the pull request: nothing is offered.
+      assert.isUndefined(command.movedFrom.pullRequestSwitches);
     }).pipe(
       Effect.provide(
         testLayer(repos, dispatched, "allowed", () => false, [], {

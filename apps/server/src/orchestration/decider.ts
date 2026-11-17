@@ -114,6 +114,7 @@ import {
   withinModeCeiling,
 } from "./childThreadDecisions.ts";
 import { childDeliveryForQuietCandidate } from "./childThreadDelivery.ts";
+import { turnLiftsMoveFence } from "./linkFence.ts";
 import { projectEvent } from "./projector.ts";
 import { checkoutSelectedEvents, leavesLentWorktree, movesCheckout } from "./threadCheckout.ts";
 import { canReplaceThreadTitle } from "./threadTitle.ts";
@@ -1850,6 +1851,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           ...(pullRequestNumber === undefined ? {} : { pullRequestNumber }),
           ...(command.autoFix === undefined ? {} : { autoFix: command.autoFix }),
           ...(command.autoMerge === undefined ? {} : { autoMerge: command.autoMerge }),
+          // The user here set a switch, so the offer to turn on what was on
+          // before the move (Part 3e) has been answered.
+          ...(thread.movedFrom?.pullRequestSwitches === undefined
+            ? {}
+            : { clearsMovedSwitches: true as const }),
           updatedAt: occurredAt,
         },
       };
@@ -3451,6 +3457,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           ...(command.scheduledTaskId !== undefined
             ? { scheduledTaskId: command.scheduledTaskId }
             : {}),
+          // A person's own message on a thread that moved here fenced: they
+          // take it over (docs/design/fleet.md, Part 3e). Only a message
+          // proven theirs does (turnLiftsMoveFence).
+          ...(turnLiftsMoveFence(targetThread, command) ? { liftsMoveFence: true as const } : {}),
           createdAt: command.createdAt,
         },
       };
@@ -4142,10 +4152,22 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
                 event.type !== "thread.agent-requests-reset" &&
                 event.type !== "thread.child-requests-reset",
             )
-            .map((event): PlannedOrchestrationEvent =>
-              queued.afterMove === true &&
-              event.type === "thread.message-sent" &&
-              (event.payload as { readonly messageId?: unknown }).messageId === queued.messageId
+            .map((event): PlannedOrchestrationEvent => {
+              // What the move carried, or Threadlines wrote for it, isn't the
+              // user here taking the thread over: its fence stays.
+              if (
+                (queued.afterMove === true || queued.imported === true) &&
+                event.type === "thread.turn-start-requested"
+              ) {
+                const { liftsMoveFence: _lift, ...payload } = event.payload as Extract<
+                  OrchestrationEvent,
+                  { type: "thread.turn-start-requested" }
+                >["payload"];
+                return { ...event, payload } as PlannedOrchestrationEvent;
+              }
+              return queued.afterMove === true &&
+                event.type === "thread.message-sent" &&
+                (event.payload as { readonly messageId?: unknown }).messageId === queued.messageId
                 ? ({
                     ...event,
                     payload: {
@@ -4156,8 +4178,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
                       afterMove: true,
                     },
                   } as PlannedOrchestrationEvent)
-                : event,
-            ),
+                : event;
+            }),
         ];
       }
       // The agent's message was written when it was queued; sending it keeps

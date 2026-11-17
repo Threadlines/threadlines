@@ -36,7 +36,7 @@ import {
   withUnqueuedAgentMessage,
 } from "@threadlines/shared/roomAgentRequests";
 import { applyAgentPagePublication } from "@threadlines/shared/agentPages";
-import { nextThreadMoveState } from "@threadlines/shared/threadMoveProjection";
+import { movedFromAfter, nextThreadMoveState } from "@threadlines/shared/threadMoveProjection";
 import { withQueuedFollowUp } from "@threadlines/shared/queuedFollowUps";
 import {
   applyCommandRequestDismissed,
@@ -569,15 +569,22 @@ export function projectEvent(
                   autoFix,
                   autoMerge,
                 }),
+                ...(payload.clearsMovedSwitches === true
+                  ? { movedFrom: movedFromAfter(thread.movedFrom, { clearsSwitches: true }) }
+                  : {}),
                 updatedAt: payload.updatedAt,
               }),
             };
           }
+          const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
           return {
             ...nextBase,
             threads: updateThread(nextBase.threads, payload.threadId, {
               ...(autoFix === undefined ? {} : { pullRequestAutoFix: autoFix }),
               ...(autoMerge === undefined ? {} : { pullRequestAutoMerge: autoMerge }),
+              ...(payload.clearsMovedSwitches === true && thread !== undefined
+                ? { movedFrom: movedFromAfter(thread.movedFrom, { clearsSwitches: true }) }
+                : {}),
               updatedAt: payload.updatedAt,
             }),
           };
@@ -1209,6 +1216,10 @@ export function projectEvent(
             ...nextBase,
             threads: updateThread(nextBase.threads, payload.threadId, {
               participants,
+              // The user here took a thread that moved here over: its fence lifts.
+              ...(payload.liftsMoveFence === true
+                ? { movedFrom: movedFromAfter(thread.movedFrom, { liftsFence: true }) }
+                : {}),
               // What the turn is sent with, and its messages stamped with.
               sentModels: recordTurnModel(
                 { ...thread, participants },

@@ -56,6 +56,7 @@ import {
   type ProviderInstanceId,
   type ProviderInteractionMode,
   type PullRequestMergeMethod,
+  type ThreadMovedFrom,
   type RuntimeMode,
   PEER_MOVE_CHUNK_MAX_BYTES,
   PEER_MOVE_STATE_MAX_BYTES,
@@ -88,6 +89,10 @@ import { ServerConfig } from "../config.ts";
 import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";
 import { receivedPathRefusal, writeReceivedFile } from "../fs/receivedFiles.ts";
 import { ProjectSetupScriptRunner } from "../project/Services/ProjectSetupScriptRunner.ts";
+import {
+  movedPullRequestSwitchesWords,
+  pullRequestSwitchesWords,
+} from "@threadlines/shared/threadMoveProjection";
 import { arrivalMessageText } from "../moves/arrivalMessage.ts";
 import { MOVE_MAX_BYTES } from "../moves/moveExport.ts";
 import { derivedUuid } from "../orchestration/childRequestIds.ts";
@@ -1829,7 +1834,7 @@ const make = Effect.gen(function* () {
         ? device.value.label
         : row.manifest.source.environmentLabel;
       const scratch = isScratchMoveManifest(row.manifest);
-      const state = yield* importedState({
+      const { pullRequestSwitches, ...state } = yield* importedState({
         row,
         root: land.root,
         instanceId: agent.selection.instanceId,
@@ -1857,6 +1862,7 @@ const make = Effect.gen(function* () {
             label: fromLabel,
             threadId: row.manifest.source.threadId,
             movedAt: now,
+            ...(pullRequestSwitches !== undefined ? { pullRequestSwitches } : {}),
           },
           messages,
           activities,
@@ -1901,7 +1907,7 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const { row, now } = input;
       const state = row.manifest.thread.state;
-      if (state === undefined) return {};
+      if (state === undefined) return { pullRequestSwitches: undefined };
       const key = row.transferKey;
       const capabilities = yield* providers
         .getCapabilities(input.instanceId)
@@ -1969,7 +1975,11 @@ const make = Effect.gen(function* () {
         }
       }
 
-      // (c) Pull request switches.
+      // (c) Pull requests: the links come along, every switch off. A switch
+      // acts with this computer's GitHub sign-in, so only the user here turns
+      // one on; the "Moved here" line and the thread's notice offer what was
+      // on there (movedFrom.pullRequestSwitches).
+      let pullRequestSwitches: ThreadMovedFrom["pullRequestSwitches"];
       let pullRequests:
         | {
             readonly autoFix: boolean;
@@ -1996,33 +2006,37 @@ const make = Effect.gen(function* () {
           : untracked
             ? `Auto-fix is off here: this thread's branch couldn't track ${moved?.upstreamBranch ?? "its branch"} on this computer, so it can't tell what isn't pushed yet.`
             : null;
-        const linked = carriedSwitches.linked.map((entry) => ({
-          number: entry.number,
-          url: entry.url,
-          autoFix: off === null && entry.autoFix,
-          autoMerge: off === null ? entry.autoMerge : null,
-        }));
         pullRequests = {
-          autoFix: off === null && carriedSwitches.autoFix,
-          autoMerge: off === null ? carriedSwitches.autoMerge : null,
-          linked,
+          autoFix: false,
+          autoMerge: null,
+          linked: carriedSwitches.linked.map((entry) => ({
+            number: entry.number,
+            url: entry.url,
+            autoFix: false,
+            autoMerge: null,
+          })),
         };
+        if (numbers.length > 0) brought.push(which);
+        const wasOn = movedPullRequestSwitchesWords(carriedSwitches, input.fromLabel);
         if (off !== null) {
-          left.push(off);
-        } else {
+          if (pullRequestSwitchesWords(carriedSwitches) !== null) left.push(off);
+        } else if (wasOn !== null) {
+          pullRequestSwitches = {
+            autoFix: carriedSwitches.autoFix,
+            autoMerge: carriedSwitches.autoMerge,
+            linked: carriedSwitches.linked
+              .filter((entry) => entry.autoFix || entry.autoMerge !== null)
+              .map((entry) => ({
+                number: entry.number,
+                url: entry.url,
+                autoFix: entry.autoFix,
+                autoMerge: entry.autoMerge,
+              })),
+          };
+          left.push(wasOn);
           const ready = yield* gitHubReadiness(input.root);
-          const fixing =
-            carriedSwitches.autoFix || carriedSwitches.linked.some((entry) => entry.autoFix);
-          const merging =
-            carriedSwitches.autoMerge !== null ||
-            carriedSwitches.linked.some((entry) => entry.autoMerge !== null);
-          const switches =
-            fixing && merging ? "auto-fix and auto-merge" : fixing ? "auto-fix" : "auto-merge";
-          brought.push(`${switches} for ${which.replace(/^pull request /u, "")}`);
           if (ready.gitHubReady === false) {
-            left.push(
-              "Auto-fix came along, but GitHub isn't signed in on this computer. Sign in and it starts.",
-            );
+            left.push("GitHub isn't signed in on this computer. Sign in before you turn them on.");
           }
         }
       }
@@ -2039,7 +2053,7 @@ const make = Effect.gen(function* () {
             (attachment) => input.attachments.get(attachment.id) ?? attachment,
           ),
           ...(entry.composer !== undefined ? { composer: entry.composer } : {}),
-          ...(entry.sentFrom !== undefined ? { sentFrom: entry.sentFrom } : {}),
+          // Not `sentFrom`: only this server stamps it (decideThreadImport drops one too).
           runtimeMode: input.runtimeMode,
           interactionMode: input.interactionMode,
           createdAt: entry.createdAt,
@@ -2098,6 +2112,7 @@ const make = Effect.gen(function* () {
         ...(pullRequests !== undefined ? { pullRequests } : {}),
         ...(queuedFollowUps.length > 0 ? { queuedFollowUps } : {}),
         ...(proposedPlans.length > 0 ? { proposedPlans } : {}),
+        ...(pullRequestSwitches !== undefined ? { pullRequestSwitches } : {}),
         arrival: {
           ...(text !== null ? { message: { messageId: arrivalMessageId(row), text } } : {}),
           brought,

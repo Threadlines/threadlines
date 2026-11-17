@@ -7,6 +7,7 @@ import {
   getSidebarIdlePrewarmThreadIds,
   getSidebarThreadIdsToPrewarm,
   resolveAdjacentThreadId,
+  resolveDoneTimestamp,
   getFallbackThreadIdAfterDelete,
   getProjectSortTimestamp,
   hasUnseenCompletion,
@@ -1328,6 +1329,26 @@ describe("inbox done lifecycle", () => {
     expect(
       isThreadDone(quietSince, { state: "active", at: "2026-07-28T11:20:00.000Z" }, options),
     ).toBe(true);
+  });
+
+  it("dates a thread that wrapped again by its new work, not an old Wrap up", () => {
+    // Wrapped by hand days ago, used again today, then filed by its pull
+    // request landing: the row says today, not the day of the old mark.
+    const oldMark = { state: "done", at: "2026-07-24T12:00:00.000Z" } as const;
+    const usedAgain = {
+      ...base,
+      latestUserMessageAt: "2026-07-28T11:00:00.000Z",
+      lastVisitedAt: "2026-07-28T11:10:00.000Z",
+    };
+    expect(
+      isThreadDone(usedAgain, oldMark, {
+        now: NOW,
+        pullRequestSettledAt: "2026-07-28T11:30:00.000Z",
+      }),
+    ).toBe(true);
+    expect(resolveDoneTimestamp(usedAgain, oldMark)).toBe("2026-07-28T11:00:00.000Z");
+    // A Wrap up given after the last work still dates the row.
+    expect(resolveDoneTimestamp(usedAgain, doneMark)).toBe(NOW);
   });
 
   it("lets a thread an agent will come back to wrap up, and brings it back when the agent does", () => {

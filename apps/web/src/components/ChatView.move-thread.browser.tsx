@@ -46,6 +46,7 @@ import {
   createUserMessage,
   NOW_ISO,
   rpcHarness,
+  wsRequests,
   WIDE_FOOTER_VIEWPORT,
   isoAt,
   createSnapshotForTargetUser,
@@ -520,7 +521,7 @@ describe("ChatView (full app): moving a thread to another computer", () => {
     );
     const macMini = FLEET_MOVE_PREVIEW.targets[1]!;
     const codexOnly = "Codex on Mac mini can't set check-backs. It's told once what was planned.";
-    const github = "GitHub isn't signed in on Mac mini. Auto-fix waits there until you sign in.";
+    const github = "GitHub isn't signed in on Mac mini. Sign in there before you turn auto-fix on.";
     const mounted = await mountChatView({
       viewport: WIDE_FOOTER_VIEWPORT,
       snapshot: createSnapshotForTargetUser({
@@ -1453,6 +1454,60 @@ describe("ChatView (full app): moving a thread to another computer", () => {
       expect(arrivalRow.textContent).not.toContain("Your goal is still on");
       expect(arrivalRow.closest(".bg-secondary")).toBeNull();
       expect(top(boundary)).toBeLessThan(arrivalRow.getBoundingClientRect().top);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("says which pull request switches were on before the move, and turns them on from here", async () => {
+    const pullRequest = { number: 212, url: "https://github.com/acme/w/pull/212" };
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: withTestThread(
+        createSnapshotForTargetUser({
+          targetMessageId: "msg-user-moved-switches" as MessageId,
+          targetText: "moved with switches",
+        }),
+        {
+          linkedPullRequests: [{ ...pullRequest, autoFix: false, autoMerge: null }],
+          movedFrom: {
+            environmentId: FLEET_OFFLINE_ENVIRONMENT_ID,
+            label: "Mac mini",
+            threadId: "thread-on-mac-mini" as ThreadId,
+            movedAt: NOW_ISO,
+            fenced: true,
+            pullRequestSwitches: {
+              autoFix: false,
+              autoMerge: null,
+              linked: [{ ...pullRequest, autoFix: true, autoMerge: null }],
+            },
+          },
+        },
+      ),
+    });
+
+    try {
+      await expect.element(page.getByText("Auto-fix is off.", { exact: true })).toBeInTheDocument();
+      await expect
+        .element(page.getByText("It was on for pull request #212 on Mac mini."))
+        .toBeInTheDocument();
+      await page.getByRole("button", { name: "Turn on", exact: true }).click();
+      await vi.waitFor(() =>
+        expect(
+          wsRequests.filter(
+            (request) =>
+              request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+              (request as { type?: string }).type === "thread.pull-request-automation.set",
+          ),
+        ).toMatchObject([
+          { pullRequestNumber: 212, pullRequestUrl: pullRequest.url, autoFix: true },
+        ]),
+      );
+      // Left off instead: the notice goes, on this device.
+      await page.getByRole("button", { name: "Leave it off" }).click();
+      await expect
+        .element(page.getByText("Auto-fix is off.", { exact: true }))
+        .not.toBeInTheDocument();
     } finally {
       await mounted.cleanup();
     }
