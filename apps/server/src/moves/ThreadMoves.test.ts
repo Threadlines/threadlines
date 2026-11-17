@@ -1,13 +1,16 @@
 import {
   EnvironmentId,
+  MessageId,
   type ModelSelection,
   type OrchestrationThread,
+  type OrchestrationThreadGoal,
   type PeerDescriptor,
   type PeerMoveState,
   ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
   type ThreadMovePreview,
+  TurnId,
 } from "@threadlines/contracts";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -21,7 +24,8 @@ import {
   previewManyThread,
   targetPreviewOf,
 } from "./ThreadMoves.ts";
-import { MOVE_MAX_BYTES, nativeSessionFits } from "./moveExport.ts";
+import { MOVE_MAX_BYTES, moveThreadStateOf, nativeSessionFits } from "./moveExport.ts";
+import { carryBringsWords, threadMoveCarry } from "../orchestration/threadMoveCarry.ts";
 import { NATIVE_SESSION_MAX_BYTES, type NativeSessionExport } from "../provider/nativeSession.ts";
 
 const THREAD = ThreadId.make("thread-1");
@@ -247,5 +251,203 @@ describe("offerUntilTaken", () => {
     const { result, seen } = await offer([full]);
     expect(result).toEqual({ kind: "answered", state: full });
     expect(seen).toEqual({ offers: 1, waiting: 0 });
+  });
+});
+
+describe("what a thread carries, as the dialog says it (Part 3e)", () => {
+  const goal = (status: OrchestrationThreadGoal["status"], tokenBudget: number | null = null) => ({
+    threadId: THREAD,
+    objective: "Make the suite pass",
+    status,
+    tokenBudget,
+    tokensUsed: 0,
+    timeUsedSeconds: 0,
+    createdAt: "2026-11-17T10:00:00.000Z",
+    updatedAt: "2026-11-17T10:00:00.000Z",
+  });
+  const plan = (index: number, waiting = false) => ({
+    id: `plan-${index}`,
+    turnId: waiting ? TurnId.make("turn-last") : TurnId.make(`turn-${index}`),
+    planMarkdown: `${index}. Do it`,
+    implementedAt: waiting ? null : "2026-11-17T10:00:00.000Z",
+    implementationThreadId: null,
+    dismissedAt: null,
+    createdAt: "2026-11-17T10:00:00.000Z",
+    updatedAt: "2026-11-17T10:00:00.000Z",
+  });
+  const threadWith = (patch: Partial<OrchestrationThread>) =>
+    ({
+      id: THREAD,
+      projectId: "project-1",
+      modelSelection: codex,
+      goal: null,
+      checkBacks: [],
+      queuedFollowUps: [],
+      proposedPlans: [],
+      latestTurn: null,
+      pullRequestAutoFix: false,
+      pullRequestAutoMerge: null,
+      linkedPullRequests: [],
+      ...patch,
+    }) as unknown as OrchestrationThread;
+  const view = { projects: [{ id: "project-1", kind: "project" }] } as never;
+  const peer = (extra: Partial<PeerDescriptor>) =>
+    ({
+      environmentId: MAC_MINI,
+      label: "Mac mini",
+      access: "allowed",
+      agents: [
+        { ...agents[0]!, threadGoals: true, goalBudget: false, checkBacks: true },
+        { ...agents[1]!, threadGoals: true, goalBudget: true, checkBacks: false },
+      ],
+      defaultAgent: claude,
+      projects: [{ canonicalKey: "example.com/repo", name: "Threadlines" }],
+      moves: true,
+      ...extra,
+    }) as unknown as PeerDescriptor;
+  const target = (described: PeerDescriptor) => ({
+    environmentId: MAC_MINI,
+    label: "Mac mini",
+    described: Option.some(described),
+  });
+  const place = { canonicalKey: "example.com/repo", subdirectory: "", rootPath: "/repo" };
+
+  it("a computer that can't take what the thread has going is refused, in words that say why", () => {
+    const thread = threadWith({ goal: goal("active") });
+    const carry = threadMoveCarry(view, thread);
+    const older = targetPreviewOf(target(peer({})), { thread, place, carry });
+    expect(older.refusal).toBe(
+      "Update Threadlines on Mac mini to move this thread: it has a goal.",
+    );
+    // Never as the code an older app reads as "set the project up there".
+    expect(older.refusalCode).toBeUndefined();
+    const current = targetPreviewOf(target(peer({ moveThreadState: true })), {
+      thread,
+      place,
+      carry,
+    });
+    expect(current.refusal).toBeUndefined();
+  });
+
+  it("warns per agent picked, in the server's words", () => {
+    const thread = threadWith({
+      goal: goal("active", 50_000),
+      checkBacks: [
+        {
+          id: "cb-1",
+          participantId: null,
+          scheduledFor: "2026-11-17T14:32:00.000Z",
+          exact: true,
+          recurring: false,
+          durable: false,
+        },
+      ],
+      pullRequestAutoFix: true,
+    });
+    const preview = targetPreviewOf(target(peer({ moveThreadState: true })), {
+      thread,
+      place,
+      carry: threadMoveCarry(view, thread),
+      gitHubReady: new Map([[MAC_MINI, false]]),
+      goalHoldsTurn: true,
+    });
+    expect(preview.notes).toEqual([
+      { words: "GitHub isn't signed in on Mac mini. Auto-fix waits there until you sign in." },
+      {
+        words:
+          "Its goal arrives paused: Claude on Mac mini can't keep its token budget. Resume runs it without one.",
+        instanceIds: ["mac-claude"],
+      },
+      {
+        words: "Codex on Mac mini can't set check-backs. It's told once what was planned.",
+        instanceIds: ["mac-codex"],
+      },
+      { words: "It's working toward its goal. Move when it's done waits until it gets there." },
+    ]);
+  });
+
+  it("says what comes along, one line each", () => {
+    const thread = threadWith({
+      goal: goal("paused"),
+      queuedFollowUps: [
+        {
+          messageId: MessageId.make("q-1"),
+          text: "then this",
+          attachments: [],
+          runtimeMode: "auto",
+          interactionMode: "default",
+          createdAt: "2026-11-17T10:00:00.000Z",
+        },
+      ],
+      linkedPullRequests: [
+        { number: 212, url: "https://example.com/pull/212", autoFix: true, autoMerge: null },
+      ],
+    });
+    expect(carryBringsWords(threadMoveCarry(view, thread))).toEqual([
+      "Its goal arrives paused.",
+      "Auto-fix keeps watching pull request #212 from there.",
+      "1 queued message is sent there.",
+    ]);
+  });
+
+  it("past 100 plans the oldest stay, the newest (with Implement) always comes, and it says so", () => {
+    const plans = [...Array.from({ length: 102 }, (_, index) => plan(index)), plan(102, true)];
+    const thread = threadWith({
+      proposedPlans: plans,
+      latestTurn: { turnId: TurnId.make("turn-last") } as OrchestrationThread["latestTurn"],
+    });
+    const carry = threadMoveCarry(view, thread);
+    expect(carry.proposedPlans).toHaveLength(100);
+    expect(carry.proposedPlans.at(-1)?.id).toBe("plan-102");
+    expect(carry.plansLeftBehind).toBe(3);
+    expect(carryBringsWords(carry)).toEqual([
+      "The plan waits for you there.",
+      "3 older plans stay on this computer.",
+    ]);
+    expect(moveThreadStateOf(carry)).toMatchObject({ plansLeftBehind: 3 });
+  });
+
+  it("a goal that finished is never picked up, whatever the move's stop recorded", () => {
+    const thread = threadWith({
+      goal: goal("complete"),
+      move: { interrupted: { goalActive: true } } as OrchestrationThread["move"],
+    });
+    expect(moveThreadStateOf(threadMoveCarry(view, thread))?.goal).toMatchObject({
+      status: "complete",
+      pickUp: false,
+    });
+    const working = threadWith({
+      goal: goal("paused"),
+      move: { interrupted: { goalActive: true } } as OrchestrationThread["move"],
+    });
+    expect(moveThreadStateOf(threadMoveCarry(view, working))?.goal?.pickUp).toBe(true);
+  });
+  it("a batch row keeps the warnings that hold for the agent it moves with", () => {
+    const thread = threadWith({
+      modelSelection: claude,
+      goal: goal("active", 50_000),
+      pullRequestAutoFix: true,
+    });
+    const own = targetPreviewOf(target(peer({ moveThreadState: true })), {
+      thread,
+      place,
+      carry: threadMoveCarry(view, thread),
+      gitHubReady: new Map([[MAC_MINI, false]]),
+    });
+    // A batch moves it with the agent Mac mini suggests: its own Claude.
+    expect(own.suggestedAgent?.instanceId).toBe("mac-claude");
+    const row = previewManyThread(THREAD, { targets: [own] }, [own]);
+    expect(row.targetLines).toEqual([
+      {
+        environmentId: MAC_MINI,
+        notes: [
+          { words: "GitHub isn't signed in on Mac mini. Auto-fix waits there until you sign in." },
+          {
+            words:
+              "Its goal arrives paused: Claude on Mac mini can't keep its token budget. Resume runs it without one.",
+          },
+        ],
+      },
+    ]);
   });
 });

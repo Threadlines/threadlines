@@ -97,7 +97,8 @@ export const ComposerFollowUpQueue = memo(function ComposerFollowUpQueue({
  * One an agent queued (a room hand-off, a reply, or another thread's request
  * or answer) names who queued it and stays as it is: Stop cancels it. An
  * outside agent's names it too and can be removed, but not edited: the words
- * are its, not the user's.
+ * are its, not the user's. So is the one Threadlines wrote for the agent
+ * after a move (`afterMove`).
  */
 function QueuedFollowUpLine({
   followUp,
@@ -123,15 +124,20 @@ function QueuedFollowUpLine({
   const fromOutside = followUp.fromOutside;
   const fromThreadTitle = useThreadTitle(environmentId, fromThread?.threadId);
   const byAgent = isAgentOrigin(followUp);
-  const queuedBy = fromAgent
-    ? ` from ${nameOf(fromAgent.participantId)} for ${nameOf(followUp.participantId)}`
-    : fromThread
-      ? ` from ${fromThreadTitle ?? unnamedThreadOrigin(fromThread)}`
-      : fromOutside
-        ? ` from ${fromOutside.name}`
-        : roomAgents !== null
-          ? ` for ${nameOf(followUp.participantId)}`
-          : null;
+  const afterMove = followUp.afterMove === true;
+  // Words that aren't the user's: removable at most, never edited.
+  const notUsers = byAgent || afterMove;
+  const queuedBy = afterMove
+    ? " from Threadlines"
+    : fromAgent
+      ? ` from ${nameOf(fromAgent.participantId)} for ${nameOf(followUp.participantId)}`
+      : fromThread
+        ? ` from ${fromThreadTitle ?? unnamedThreadOrigin(fromThread)}`
+        : fromOutside
+          ? ` from ${fromOutside.name}`
+          : roomAgents !== null
+            ? ` for ${nameOf(followUp.participantId)}`
+            : null;
   return (
     <li
       className="flex min-w-0 items-center gap-2 py-0.5 text-xs"
@@ -146,9 +152,11 @@ function QueuedFollowUpLine({
             ? "The last reply stopped, so this waits until the next reply finishes."
             : fromOutside
               ? `${fromOutside.name} sent this from outside Threadlines. It sends when the current work finishes; Stop or Remove cancels it.`
-              : byAgent
-                ? "An agent queued this. It sends when the current work finishes; Stop cancels it."
-                : "Sends when the current work finishes."
+              : afterMove
+                ? "Threadlines wrote this for the agent about the move. It sends when the current work finishes; Remove cancels it."
+                : byAgent
+                  ? "An agent queued this. It sends when the current work finishes; Stop cancels it."
+                  : "Sends when the current work finishes."
         }
       >
         {paused ? "Paused" : "Queued"}
@@ -157,14 +165,14 @@ function QueuedFollowUpLine({
       <span
         className={cn(
           "min-w-0 flex-1 truncate",
-          byAgent ? "text-muted-foreground" : "text-foreground/80",
+          notUsers ? "text-muted-foreground" : "text-foreground/80",
         )}
       >
         {describeQueuedFollowUp(followUp, attachmentOnlyPrompt)}
       </span>
       {byAgent && !fromOutside ? null : (
         <>
-          {fromOutside ? null : (
+          {notUsers ? null : (
             <button
               type="button"
               className={ACTION_CLASS}

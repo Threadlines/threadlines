@@ -18,8 +18,11 @@ import type {
   ModelSelection,
   OrchestrationThread,
   OrchestrationThreadActivity,
+  PeerMoveGitManifest,
   PeerMoveManifest,
   PeerMovePart,
+  PeerMoveScratchManifest,
+  PeerMoveThreadState,
   ThreadId,
   ThreadImportMessage,
   ThreadMoveId,
@@ -28,6 +31,7 @@ import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 
 import { resolveAttachmentPath } from "../attachmentStore.ts";
+import type { ThreadMoveCarry } from "../orchestration/threadMoveCarry.ts";
 import { NATIVE_SESSION_MAX_BYTES, type NativeSessionExport } from "../provider/nativeSession.ts";
 import type { GitVcsDriverShape } from "../vcs/GitVcsDriver.ts";
 
@@ -99,6 +103,8 @@ export interface MoveCheckout {
   /** The last commit the remote has; null when the head itself is there (nothing unpushed). */
   readonly baseSha: string | null;
   readonly unpushedCommits: number;
+  /** The branch on the remote that `branch` tracks; null: none, or another remote's. */
+  readonly upstreamBranch: string | null;
 }
 
 /**
@@ -170,6 +176,10 @@ export function inspectMoveCheckout(
       remoteName,
       baseSha: baseSha === headSha ? null : baseSha,
       unpushedCommits: unpushed,
+      upstreamBranch:
+        upstream !== null && upstream.startsWith(`${remoteName}/`)
+          ? upstream.slice(remoteName.length + 1)
+          : null,
     };
   });
 }
@@ -406,6 +416,11 @@ export interface MoveExportInput {
    * within both caps; past either, the move goes without it and says why.
    */
   readonly nativeSession?: NativeSessionExport | null | undefined;
+  /**
+   * What the thread had going (moveThreadStateOf), for a computer that takes
+   * it; its queued messages' attachments travel as parts.
+   */
+  readonly state?: PeerMoveThreadState | undefined;
 }
 
 /**
@@ -454,7 +469,7 @@ export function sha256OfFile(path: string) {
  */
 export function writeMoveExport(
   input: MoveExportInput,
-): Effect.Effect<PeerMoveManifest, ThreadMoveFailure> {
+): Effect.Effect<PeerMoveGitManifest, ThreadMoveFailure> {
   const { git, checkout, dir } = input;
   const root = checkout.root;
   const attempt = Effect.gen(function* () {
@@ -566,15 +581,95 @@ export function writeMoveExport(
       }
     }
     const history = exportThreadHistory(input.thread);
-    const attachmentIds = new Set<string>();
-    for (const message of history.messages) {
+    parts.push(...(yield* attachmentParts(history, input.attachmentsDir, input.state)));
+    const otherBytes = parts.reduce((sum, part) => sum + part.size, 0);
+    if (otherBytes > MOVE_MAX_BYTES) {
+      return yield* fail(
+        `This thread's changes come to ${Math.ceil(otherBytes / (1024 * 1024))} MB. Moves carry at most 100 MB.`,
+      );
+    }
+    const session = yield* sessionParts(input.nativeSession ?? null, otherBytes);
+    parts.push(...session.parts);
+
+    const payload = yield* writePayload(dir, parts);
+    if (payload === null) return yield* new CheckoutChanged();
+    const after = yield* checkoutFingerprint(git, root, afterDiffPath);
+    yield* fsCall("Couldn't tidy up.", async () => {
+      await NodeFs.rm(NodePath.join(dir, "bundle.tmp"), { force: true });
+      await NodeFs.rm(diffPath, { force: true });
+      await NodeFs.rm(afterDiffPath, { force: true });
+    });
+    if (after.key !== before.key) return yield* new CheckoutChanged();
+
+    const manifest: PeerMoveGitManifest = {
+      totalBytes: payload.totalBytes,
+      sha256: payload.sha256,
+      parts: payload.table,
+      source: input.source,
+      project: {
+        canonicalKey: input.canonicalKey,
+        subdirectory: input.subdirectory,
+        title: input.projectTitle,
+      },
+      git: {
+        headSha: checkout.headSha,
+        branch: checkout.branch,
+        baseSha: checkout.baseSha,
+        ...(checkout.upstreamBranch !== null ? { upstreamBranch: checkout.upstreamBranch } : {}),
+      },
+      thread: {
+        title: input.thread.title,
+        runtimeMode: input.thread.runtimeMode,
+        interactionMode: input.thread.interactionMode,
+        messages: history.messages,
+        activities: history.activities,
+        ...(input.state !== undefined ? { state: input.state } : {}),
+      },
+      agent: input.agent,
+      summary: {
+        messageCount: history.messages.length,
+        trackedFiles: tracked.length,
+        untrackedFiles: untracked.length,
+        unpushedCommits: checkout.unpushedCommits,
+      },
+      ...session.manifest,
+    };
+    yield* writeManifest(dir, manifest);
+    return manifest;
+  });
+  const changedReason = "The checkout changed while this thread was being packed. Try again.";
+  return attempt.pipe(
+    Effect.catchTag("CheckoutChanged", () => attempt),
+    Effect.catchTag("CheckoutChanged", () => fail(changedReason)),
+  );
+}
+
+/**
+ * The attachments a move carries, one part each: its history's messages', and
+ * its queued messages' (docs/design/fleet.md, Part 3e, (e)). A missing one
+ * travels as its name alone.
+ */
+function attachmentParts(
+  history: ReturnType<typeof exportThreadHistory>,
+  attachmentsDir: string,
+  state: PeerMoveThreadState | undefined,
+) {
+  return Effect.gen(function* () {
+    const parts: PendingPart[] = [];
+    const seen = new Set<string>();
+    const carriers = [...history.messages, ...(state?.queuedFollowUps ?? [])];
+    for (const message of carriers) {
       for (const attachment of message.attachments ?? []) {
-        if (attachmentIds.has(attachment.id)) continue;
-        attachmentIds.add(attachment.id);
-        const path = resolveAttachmentPath({ attachmentsDir: input.attachmentsDir, attachment });
-        // A missing attachment travels as its name alone.
+        if (seen.has(attachment.id)) continue;
+        seen.add(attachment.id);
+        const path = resolveAttachmentPath({ attachmentsDir, attachment });
         const size =
-          path === null ? null : yield* fileSize(path).pipe(Effect.orElseSucceed(() => null));
+          path === null
+            ? null
+            : yield* fsCall("Couldn't read the packed thread.", () => NodeFs.stat(path)).pipe(
+                Effect.map((stat) => stat.size),
+                Effect.orElseSucceed(() => null),
+              );
         if (path !== null && size !== null) {
           parts.push({
             kind: "attachment",
@@ -585,47 +680,72 @@ export function writeMoveExport(
         }
       }
     }
+    return parts;
+  });
+}
 
-    const otherBytes = parts.reduce((sum, part) => sum + part.size, 0);
-    if (otherBytes > MOVE_MAX_BYTES) {
-      return yield* fail(
-        `This thread's changes come to ${Math.ceil(otherBytes / (1024 * 1024))} MB. Moves carry at most 100 MB.`,
-      );
-    }
-    // The agent's session goes last, and only within both caps: past them,
-    // the move goes without it and the agent gets a summary.
-    const session = input.nativeSession ?? null;
+/**
+ * The agent's session as parts, last and only within both caps: past them,
+ * the move goes without it and the agent gets a summary, and the manifest
+ * says why. A session file that can't be read, or vanished since it was
+ * found, leaves the session behind; it never fails the move.
+ */
+function sessionParts(session: NativeSessionExport | null, otherBytes: number) {
+  return Effect.gen(function* () {
     const sessionBytes = session?.files.reduce((sum, file) => sum + file.size, 0) ?? 0;
     const carriesSession = session !== null && nativeSessionFits(sessionBytes, otherBytes);
-    // Read up front (both caps bound it): a session file that can't be read,
-    // or vanished since it was found, leaves the session behind and the move
-    // goes on with a summary, never failing the move itself.
-    const sessionBytesRead =
+    const read =
       session !== null && carriesSession
         ? yield* Effect.tryPromise(() =>
             Promise.all(session.files.map((file) => NodeFs.readFile(file.absolutePath))),
           ).pipe(Effect.orElseSucceed(() => null))
         : null;
-    const sessionPacked =
+    const packed =
       session !== null &&
-      sessionBytesRead !== null &&
+      read !== null &&
       nativeSessionFits(
-        sessionBytesRead.reduce((sum, bytes) => sum + bytes.length, 0),
+        read.reduce((sum, bytes) => sum + bytes.length, 0),
         otherBytes,
       );
-    if (session !== null && sessionBytesRead !== null && sessionPacked) {
-      session.files.forEach((file, index) => {
-        const bytes = sessionBytesRead[index]!;
-        parts.push({
-          kind: "session",
-          path: file.relPath,
-          size: bytes.length,
-          read: () => Promise.resolve(bytes),
-        });
-      });
-    }
-    const totalBytes = parts.reduce((sum, part) => sum + part.size, 0);
+    const parts: PendingPart[] =
+      session !== null && read !== null && packed
+        ? session.files.map((file, index) => {
+            const bytes = read[index]!;
+            return {
+              kind: "session" as const,
+              path: file.relPath,
+              size: bytes.length,
+              read: () => Promise.resolve(bytes),
+            };
+          })
+        : [];
+    const manifest = {
+      ...(session !== null && packed
+        ? {
+            session: {
+              driver: session.driver,
+              ...(session.cliVersion !== undefined ? { cliVersion: session.cliVersion } : {}),
+              cursor: session.cursor,
+            },
+          }
+        : {}),
+      // Too large when it was sized, or when it was read: an unreadable
+      // session is simply left behind.
+      ...(session !== null && (!carriesSession || (read !== null && !packed))
+        ? { sessionOmitted: "too_large" as const }
+        : {}),
+    };
+    return { parts, manifest };
+  });
+}
 
+/**
+ * Writes the parts one after another to a temp payload, with each part's
+ * hash and the whole's. Null when a part changed size since it was sized
+ * (the packing runs again).
+ */
+function writePayload(dir: string, parts: ReadonlyArray<PendingPart>) {
+  return Effect.gen(function* () {
     const payloadTemp = NodePath.join(dir, "payload.bin.tmp");
     const whole = createHash("sha256");
     let offset = 0;
@@ -636,7 +756,6 @@ export function writeMoveExport(
       try {
         for (const part of parts) {
           const bytes = await part.read();
-          // Changed since it was sized: pack it again.
           if (bytes.length !== part.size) {
             resized = true;
             break;
@@ -659,66 +778,286 @@ export function writeMoveExport(
         await handle.close();
       }
     });
-    if (resized) return yield* new CheckoutChanged();
-    const after = yield* checkoutFingerprint(git, root, afterDiffPath);
-    yield* fsCall("Couldn't tidy up.", async () => {
-      await NodeFs.rm(NodePath.join(dir, "bundle.tmp"), { force: true });
-      await NodeFs.rm(diffPath, { force: true });
-      await NodeFs.rm(afterDiffPath, { force: true });
-    });
-    if (after.key !== before.key) return yield* new CheckoutChanged();
+    if (resized) return null;
+    return { table, totalBytes: offset, sha256: whole.digest("hex") };
+  });
+}
 
-    const manifest: PeerMoveManifest = {
-      totalBytes,
-      sha256: whole.digest("hex"),
-      parts: table,
+/** The manifest and the payload under their final names: a finished export is whole. */
+function writeManifest(dir: string, manifest: PeerMoveManifest) {
+  const manifestTemp = `${moveManifestPath(dir)}.tmp`;
+  return fsCall("Couldn't write the packed thread.", async () => {
+    await NodeFs.writeFile(manifestTemp, JSON.stringify(manifest));
+    await NodeFs.rename(NodePath.join(dir, "payload.bin.tmp"), movePayloadPath(dir));
+    await NodeFs.rename(manifestTemp, moveManifestPath(dir));
+  });
+}
+
+/** At most this many files in a general chat's folder, as in any move. */
+const MOVE_MAX_FILES = 20_000;
+
+/** One file of a general chat's folder, as found. */
+interface ScratchEntry {
+  readonly path: string;
+  readonly absolute: string;
+  readonly kind: "file" | "symlink";
+  readonly size: number;
+  readonly mtimeMs: number;
+  readonly executable: boolean;
+}
+
+/**
+ * Every file under a general chat's folder (docs/design/fleet.md, Part 3e,
+ * (d)), with Part 3's rules for new files: regular files keep their
+ * executable bit, symbolic links go as their text, anything else refuses the
+ * move. A folder that was never made has no files.
+ */
+function listScratchFolder(folder: string) {
+  return Effect.gen(function* () {
+    const found: ScratchEntry[] = [];
+    const walk = async (relative: string): Promise<string | null> => {
+      const absoluteDir = relative.length === 0 ? folder : NodePath.join(folder, relative);
+      let entries: Array<import("node:fs").Dirent>;
+      try {
+        entries = await NodeFs.readdir(absoluteDir, { withFileTypes: true });
+      } catch (error) {
+        if (relative.length === 0 && (error as NodeJS.ErrnoException).code === "ENOENT") {
+          return null;
+        }
+        throw error;
+      }
+      for (const entry of entries.toSorted((left, right) => left.name.localeCompare(right.name))) {
+        const path = relative.length === 0 ? entry.name : `${relative}/${entry.name}`;
+        const absolute = NodePath.join(folder, path);
+        const stat = await NodeFs.lstat(absolute);
+        if (stat.isDirectory()) {
+          const refused = await walk(path);
+          if (refused !== null) return refused;
+        } else if (stat.isSymbolicLink()) {
+          const target = await NodeFs.readlink(absolute);
+          found.push({
+            path,
+            absolute,
+            kind: "symlink",
+            size: Buffer.byteLength(target, "utf8"),
+            mtimeMs: stat.mtimeMs,
+            executable: false,
+          });
+        } else if (stat.isFile()) {
+          found.push({
+            path,
+            absolute,
+            kind: "file",
+            size: stat.size,
+            mtimeMs: stat.mtimeMs,
+            executable: (stat.mode & 0o111) !== 0,
+          });
+        } else {
+          return `${path} isn't a regular file, so this chat can't move.`;
+        }
+      }
+      return null;
+    };
+    const refused = yield* fsCall("Couldn't read this chat's folder.", () => walk(""));
+    if (refused !== null) return yield* fail(refused);
+    return found;
+  });
+}
+
+/** A listing's key: equal before and after packing means what was packed is what's there. */
+const scratchKey = (entries: ReadonlyArray<ScratchEntry>) =>
+  entries.map((entry) => `${entry.path}:${entry.kind}:${entry.size}:${entry.mtimeMs}`).join("\n");
+
+/** Why a general chat's folder is too big to move, or null. */
+function scratchSizeRefusal(entries: ReadonlyArray<ScratchEntry>): string | null {
+  const bytes = entries.reduce((sum, entry) => sum + entry.size, 0);
+  if (bytes > MOVE_MAX_BYTES) {
+    return `This chat's folder is ${Math.ceil(bytes / (1024 * 1024))} MB. Moves take up to 100 MB.`;
+  }
+  if (entries.length > MOVE_MAX_FILES) {
+    return `This chat's folder has ${entries.length.toLocaleString("en-US")} files. Moves take up to ${MOVE_MAX_FILES.toLocaleString("en-US")}.`;
+  }
+  return null;
+}
+
+/**
+ * What the move dialog says of a general chat's folder: how many files and
+ * bytes, or why it can't move (too big, or a file that isn't one).
+ */
+export function summarizeScratchFolder(folder: string) {
+  return listScratchFolder(folder).pipe(
+    Effect.map((entries) => ({
+      files: entries.length,
+      bytes: entries.reduce((sum, entry) => sum + entry.size, 0),
+      refusal: scratchSizeRefusal(entries),
+    })),
+    Effect.catch((failure) =>
+      Effect.succeed({ files: 0, bytes: 0, refusal: failure.reason as string | null }),
+    ),
+  );
+}
+
+export interface ScratchExportInput {
+  readonly dir: string;
+  /** The chat's own folder (generalChatThreadScratchCwd). */
+  readonly folder: string;
+  readonly attachmentsDir: string;
+  readonly thread: OrchestrationThread;
+  readonly source: MoveExportInput["source"];
+  readonly agent: ModelSelection;
+  readonly nativeSession?: NativeSessionExport | null | undefined;
+  readonly state?: PeerMoveThreadState | undefined;
+}
+
+/**
+ * Packs a General Chats thread (docs/design/fleet.md, Part 3e, (d)): every
+ * file in its folder, its attachments and its history, and its session. No
+ * bundle and no diff. The folder is listed before and after packing (path,
+ * size, time); a change means it packs once more, then gives up.
+ */
+export function writeScratchExport(
+  input: ScratchExportInput,
+): Effect.Effect<PeerMoveScratchManifest, ThreadMoveFailure> {
+  const attempt = Effect.gen(function* () {
+    yield* fsCall("Couldn't make room to pack this thread.", () =>
+      NodeFs.mkdir(input.dir, { recursive: true }),
+    );
+    const before = yield* listScratchFolder(input.folder);
+    const tooBig = scratchSizeRefusal(before);
+    if (tooBig !== null) return yield* fail(tooBig);
+    const parts: PendingPart[] = before.map((entry) =>
+      entry.kind === "symlink"
+        ? {
+            kind: "file" as const,
+            path: entry.path,
+            mode: "symlink" as const,
+            size: entry.size,
+            read: async () => Buffer.from(await NodeFs.readlink(entry.absolute), "utf8"),
+          }
+        : {
+            kind: "file" as const,
+            path: entry.path,
+            mode: entry.executable ? ("executable" as const) : ("file" as const),
+            size: entry.size,
+            read: () => NodeFs.readFile(entry.absolute),
+          },
+    );
+    const history = exportThreadHistory(input.thread);
+    parts.push(...(yield* attachmentParts(history, input.attachmentsDir, input.state)));
+    const otherBytes = parts.reduce((sum, part) => sum + part.size, 0);
+    if (otherBytes > MOVE_MAX_BYTES) {
+      return yield* fail(
+        `This chat comes to ${Math.ceil(otherBytes / (1024 * 1024))} MB with its attachments. Moves carry at most 100 MB.`,
+      );
+    }
+    const session = yield* sessionParts(input.nativeSession ?? null, otherBytes);
+    parts.push(...session.parts);
+    const payload = yield* writePayload(input.dir, parts);
+    if (payload === null) return yield* new CheckoutChanged();
+    const after = yield* listScratchFolder(input.folder);
+    if (scratchKey(after) !== scratchKey(before)) return yield* new CheckoutChanged();
+    const manifest: PeerMoveScratchManifest = {
+      workspace: "scratch",
+      totalBytes: payload.totalBytes,
+      sha256: payload.sha256,
+      parts: payload.table,
       source: input.source,
-      project: {
-        canonicalKey: input.canonicalKey,
-        subdirectory: input.subdirectory,
-        title: input.projectTitle,
-      },
-      git: { headSha: checkout.headSha, branch: checkout.branch, baseSha: checkout.baseSha },
+      project: { title: "General chats" },
       thread: {
         title: input.thread.title,
         runtimeMode: input.thread.runtimeMode,
         interactionMode: input.thread.interactionMode,
         messages: history.messages,
         activities: history.activities,
+        ...(input.state !== undefined ? { state: input.state } : {}),
       },
       agent: input.agent,
-      summary: {
-        messageCount: history.messages.length,
-        trackedFiles: tracked.length,
-        untrackedFiles: untracked.length,
-        unpushedCommits: checkout.unpushedCommits,
-      },
-      ...(session !== null && sessionPacked
-        ? {
-            session: {
-              driver: session.driver,
-              ...(session.cliVersion !== undefined ? { cliVersion: session.cliVersion } : {}),
-              cursor: session.cursor,
-            },
-          }
-        : {}),
-      // Too large when it was sized, or when it was read: an unreadable
-      // session is simply left behind.
-      ...(session !== null && (!carriesSession || (sessionBytesRead !== null && !sessionPacked))
-        ? { sessionOmitted: "too_large" as const }
-        : {}),
+      summary: { messageCount: history.messages.length, files: before.length },
+      ...session.manifest,
     };
-    const manifestTemp = `${moveManifestPath(dir)}.tmp`;
-    yield* fsCall("Couldn't write the packed thread.", async () => {
-      await NodeFs.writeFile(manifestTemp, JSON.stringify(manifest));
-      await NodeFs.rename(payloadTemp, movePayloadPath(dir));
-      await NodeFs.rename(manifestTemp, moveManifestPath(dir));
-    });
+    yield* writeManifest(input.dir, manifest);
     return manifest;
   });
-  const changedReason = "The checkout changed while this thread was being packed. Try again.";
+  const changedReason = "This chat's files changed while it was being packed. Try again.";
   return attempt.pipe(
     Effect.catchTag("CheckoutChanged", () => attempt),
     Effect.catchTag("CheckoutChanged", () => fail(changedReason)),
   );
+}
+
+/**
+ * What a moved thread had going, as the manifest carries it (docs/design/
+ * fleet.md, Part 3e), from what it carries (threadMoveCarry). Only for a
+ * computer that takes it. A goal that finished, or anything but working or
+ * paused, is never picked up, whatever the move's stop recorded.
+ */
+export function moveThreadStateOf(carry: ThreadMoveCarry): PeerMoveThreadState | undefined {
+  const goal = carry.goal;
+  const state: PeerMoveThreadState = {
+    ...(goal !== null
+      ? {
+          goal: {
+            objective: goal.objective,
+            status: goal.status,
+            tokenBudget: goal.tokenBudget,
+            tokensUsed: goal.tokensUsed,
+            timeUsedSeconds: goal.timeUsedSeconds,
+            createdAt: goal.createdAt,
+            updatedAt: goal.updatedAt,
+            ...(goal.checks !== undefined ? { checks: goal.checks } : {}),
+            ...(goal.lastCheck !== undefined ? { lastCheck: goal.lastCheck } : {}),
+            pickUp: carry.goalWorking && (goal.status === "active" || goal.status === "paused"),
+          },
+        }
+      : {}),
+    ...(carry.checkBacks.length > 0
+      ? {
+          checkBacks: carry.checkBacks.map((checkBack) => ({
+            scheduledFor: checkBack.scheduledFor,
+            recurring: checkBack.recurring,
+            exact: checkBack.exact,
+            ...(checkBack.schedule !== undefined ? { schedule: checkBack.schedule } : {}),
+            ...(checkBack.cron !== undefined ? { cron: checkBack.cron } : {}),
+            ...(checkBack.description !== undefined ? { description: checkBack.description } : {}),
+            ...(checkBack.prompt !== undefined ? { prompt: checkBack.prompt } : {}),
+            durable: checkBack.durable,
+          })),
+        }
+      : {}),
+    ...(carry.pullRequests !== null
+      ? {
+          pullRequests: {
+            autoFix: carry.pullRequests.autoFix,
+            autoMerge: carry.pullRequests.autoMerge,
+            linked: carry.pullRequests.linked.map((entry) => ({
+              number: entry.number,
+              url: entry.url,
+              autoFix: entry.autoFix,
+              autoMerge: entry.autoMerge,
+            })),
+          },
+        }
+      : {}),
+    ...(carry.queuedFollowUps.length > 0
+      ? {
+          queuedFollowUps: carry.queuedFollowUps.map((entry) => ({
+            messageId: entry.messageId,
+            text: entry.text,
+            attachments: entry.attachments,
+            ...(entry.skills !== undefined ? { skills: entry.skills } : {}),
+            ...(entry.composer !== undefined ? { composer: entry.composer } : {}),
+            ...(entry.sentFrom !== undefined ? { sentFrom: entry.sentFrom } : {}),
+            interactionMode: entry.interactionMode,
+            createdAt: entry.createdAt,
+          })),
+        }
+      : {}),
+    ...(carry.proposedPlans.length > 0
+      ? {
+          proposedPlans: carry.proposedPlans.map(({ eventSequence: _sequence, ...plan }) => plan),
+        }
+      : {}),
+    ...(carry.plansLeftBehind > 0 ? { plansLeftBehind: carry.plansLeftBehind } : {}),
+  };
+  return Object.keys(state).length > 0 ? state : undefined;
 }

@@ -87,6 +87,7 @@ function messageBlocks(
         }),
       );
     case "outside-message":
+    case "after-move":
       // Markdown, its file links read against this thread's checkout, like
       // the user's own prompt would be; all of it, folded or not.
       return cached(message, `${view}|${contextKey}`, () =>

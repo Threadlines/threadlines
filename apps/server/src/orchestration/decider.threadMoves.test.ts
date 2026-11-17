@@ -15,7 +15,12 @@ import {
   type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationReadModel,
+  type OrchestrationQueuedFollowUp,
   type OrchestrationSession,
+  type OrchestrationThread,
+  type OrchestrationThreadGoal,
+  type ThreadGoalStatus,
+  type ThreadMoveTakes,
   type ThreadPendingMoveMode,
 } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
@@ -822,5 +827,667 @@ describe("a move that waits for the thread to be free", () => {
     // The thread works again.
     expect((await apply(model, rename("Back to work"))).refusal).toBeNull();
     expect(threadMoveGuardRefusal(model, turnStart())).toBeNull();
+  });
+});
+
+describe("a move carries what its thread had going (Part 3e)", () => {
+  const REQUEST = ThreadMoveRequestId.make("request-carry");
+  const TAKES_ALL = { threadState: true, generalChats: true } as const;
+  const queue = (
+    options: {
+      readonly mode?: ThreadPendingMoveMode;
+      readonly takes?: ThreadMoveTakes;
+      readonly threadId?: ThreadId;
+    } = {},
+  ): OrchestrationCommand => ({
+    type: "thread.move.queue",
+    commandId: nextCommandId(),
+    threadId: options.threadId ?? THREAD,
+    requestId: REQUEST,
+    target: MAC_MINI,
+    agent: modelSelection,
+    mode: options.mode ?? "when-done",
+    requestedBy: { kind: "user" },
+    ...(options.takes !== undefined ? { targetTakes: options.takes } : {}),
+    createdAt: now,
+  });
+  const withThread = (
+    model: OrchestrationReadModel,
+    patch: Partial<OrchestrationThread>,
+    threadId = THREAD,
+  ): OrchestrationReadModel => ({
+    ...model,
+    threads: model.threads.map((thread) =>
+      thread.id === threadId ? ({ ...thread, ...patch } as OrchestrationThread) : thread,
+    ),
+  });
+  const goal = (status: ThreadGoalStatus, extra?: Partial<OrchestrationThreadGoal>) => ({
+    threadId: THREAD,
+    objective: "Make the suite pass",
+    status,
+    tokenBudget: null,
+    tokensUsed: 0,
+    timeUsedSeconds: 0,
+    createdAt: now,
+    updatedAt: now,
+    ...extra,
+  });
+  const checkBack = (id: string, durable = false) => ({
+    id,
+    participantId: null,
+    scheduledFor: "2026-10-22T10:30:00.000Z",
+    exact: true,
+    recurring: false,
+    description: "Look at CI",
+    prompt: "Look at CI on #212",
+    durable,
+  });
+  const queued = (id: string, extra?: Record<string, unknown>) =>
+    ({
+      messageId: MessageId.make(id),
+      text: "and then this",
+      attachments: [],
+      runtimeMode: "auto",
+      interactionMode: "default",
+      createdAt: now,
+      ...extra,
+    }) as OrchestrationQueuedFollowUp;
+  const withSession = (
+    model: OrchestrationReadModel,
+    status: OrchestrationSession["status"],
+    activeTurnId: TurnId | null = null,
+  ) =>
+    project(model, "thread.session-set", {
+      threadId: THREAD,
+      session: {
+        threadId: THREAD,
+        status,
+        providerName: "codex",
+        runtimeMode: "auto",
+        activeTurnId,
+        lastError: null,
+        updatedAt: now,
+      },
+    });
+
+  it("each thing a thread had going is refused for a computer that doesn't take it, and allowed for one that does", async () => {
+    const base = await seeded();
+    const latestTurn = {
+      turnId: TurnId.make("turn-plan"),
+      state: "completed",
+      requestedAt: now,
+      startedAt: now,
+      completedAt: now,
+      assistantMessageId: null,
+    } as OrchestrationThread["latestTurn"];
+    const cases: ReadonlyArray<readonly [string, OrchestrationReadModel, string]> = [
+      ["a goal", withThread(base, { goal: goal("active") }), "has a goal set"],
+      ["a check-back", withThread(base, { checkBacks: [checkBack("cb-1")] }), "come back"],
+      ["pull request auto-fix", withThread(base, { pullRequestAutoFix: true }), "auto-fix"],
+      ["a queued message", withThread(base, { queuedFollowUps: [queued("q-1")] }), "queued"],
+      [
+        "a plan waiting",
+        withThread(base, {
+          latestTurn,
+          proposedPlans: [
+            {
+              id: "plan-1",
+              turnId: TurnId.make("turn-plan"),
+              planMarkdown: "1. Fix it",
+              implementedAt: null,
+              implementationThreadId: null,
+              dismissedAt: null,
+              createdAt: now,
+              updatedAt: now,
+            },
+          ],
+        }),
+        "plan",
+      ],
+    ];
+    for (const [what, model, words] of cases) {
+      expect((await apply(model, queue())).refusal, what).toContain(words);
+      expect(
+        (await apply(model, queue({ takes: { threadState: true } }))).refusal,
+        what,
+      ).toBeNull();
+    }
+
+    // A general chat: no project to match, its own folder.
+    const GENERAL = ProjectId.make("project-general-chats");
+    const CHAT = ThreadId.make("thread-chat");
+    let model = base;
+    ({ model } = await apply(model, {
+      type: "project.create",
+      commandId: nextCommandId(),
+      projectId: GENERAL,
+      kind: "general-chat",
+      title: "General Chats",
+      workspaceRoot: "/state/general-chats",
+      createdAt: now,
+    } as OrchestrationCommand));
+    ({ model } = await apply(model, {
+      type: "thread.create",
+      commandId: nextCommandId(),
+      threadId: CHAT,
+      projectId: GENERAL,
+      title: "Ideas",
+      modelSelection,
+      runtimeMode: "auto",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdAt: now,
+    }));
+    expect((await apply(model, queue({ threadId: CHAT }))).refusal).toContain("General chats");
+    expect(
+      (await apply(model, queue({ threadId: CHAT, takes: { threadState: true } }))).refusal,
+    ).toContain("General chats");
+    expect((await apply(model, queue({ threadId: CHAT, takes: TAKES_ALL }))).refusal).toBeNull();
+  });
+
+  it("a message queued by a scheduled task, another thread or an assistant still keeps the thread here", async () => {
+    const model = withThread(await seeded(), {
+      queuedFollowUps: [queued("q-scheduled", { scheduledTaskId: "task-1" })],
+    });
+    expect((await apply(model, queue({ takes: TAKES_ALL }))).refusal).toContain(
+      "A scheduled task's message is waiting its turn. Move once it has been sent, or remove it.",
+    );
+  });
+
+  it("a check-back Claude saved to disk is named as such for a computer that can't take it", async () => {
+    const model = withThread(await seeded(), { checkBacks: [checkBack("cb-saved", true)] });
+    expect((await apply(model, queue())).refusal).toContain(
+      "Claude saved this thread's check-back to disk. Ask the agent to delete it, then move.",
+    );
+  });
+
+  it("each decision that plans the stop records what it takes, and only ever adds to it", async () => {
+    const working = withThread(
+      await withSession(await seeded(), "running", TurnId.make("turn-1")),
+      { goal: goal("active"), checkBacks: [checkBack("cb-1")] },
+    );
+    // Stop and move now: at once.
+    const stopNow = await apply(working, queue({ mode: "stop-now", takes: TAKES_ALL }));
+    expect(threadOf(stopNow.model).pendingMove?.interrupted).toEqual({
+      goalActive: true,
+      checkBacks: [checkBack("cb-1")],
+    });
+
+    // Move when it's done: nothing yet, then the barrier's quiesce once it's free.
+    const free = withThread(await withSession(await seeded(), "ready"), {
+      goal: goal("active"),
+      checkBacks: [checkBack("cb-1")],
+    });
+    let model = (await apply(free, queue({ takes: TAKES_ALL }))).model;
+    expect(threadOf(model).pendingMove?.interrupted).toBeUndefined();
+    ({ model } = await apply(model, {
+      type: "thread.move.quiesce",
+      commandId: nextCommandId(),
+      threadId: THREAD,
+      requestId: REQUEST,
+      createdAt: now,
+    }));
+    expect(threadOf(model).pendingMove?.interrupted).toMatchObject({ goalActive: true });
+    // The stop paused the goal and ended the check-back; a turn slipped in
+    // and set another: asked to stop again, the record keeps both and the goal.
+    model = withThread(await withSession(model, "ready"), {
+      goal: goal("paused"),
+      checkBacks: [checkBack("cb-2")],
+    });
+    ({ model } = await apply(model, {
+      type: "thread.move.quiesce",
+      commandId: nextCommandId(),
+      threadId: THREAD,
+      requestId: REQUEST,
+      createdAt: now,
+    }));
+    expect(threadOf(model).pendingMove?.interrupted).toEqual({
+      goalActive: true,
+      checkBacks: [checkBack("cb-1"), checkBack("cb-2")],
+    });
+
+    // The freeze carries it to the move, with what the target said it takes.
+    model = withThread(await withSession(model, "stopped"), { checkBacks: [] });
+    ({ model } = await apply(model, {
+      type: "thread.move.start",
+      commandId: nextCommandId(),
+      threadId: THREAD,
+      transferId: TRANSFER,
+      target: MAC_MINI,
+      agent: modelSelection,
+      queuedRequestId: REQUEST,
+      targetTakes: TAKES_ALL,
+      createdAt: now,
+    }));
+    expect(threadOf(model).move).toMatchObject({
+      interrupted: { goalActive: true },
+      targetTakes: TAKES_ALL,
+    });
+
+    // "Stop the agents and move now" on a waiting move records it too.
+    const waiting = (await apply(free, queue({ takes: TAKES_ALL }))).model;
+    const switched = await apply(waiting, {
+      type: "thread.move.set-mode",
+      commandId: nextCommandId(),
+      threadId: THREAD,
+      requestId: REQUEST,
+      mode: "stop-now",
+      createdAt: now,
+    });
+    expect(threadOf(switched.model).pendingMove?.interrupted).toMatchObject({ goalActive: true });
+
+    // A direct move whose session still runs records it in the freeze.
+    const ready = withThread(await withSession(await seeded(), "ready"), {
+      goal: goal("active"),
+    });
+    const direct = await apply(ready, {
+      ...startMove(),
+      targetTakes: TAKES_ALL,
+    } as OrchestrationCommand);
+    expect(direct.refusal).toBeNull();
+    expect(threadOf(direct.model).move?.interrupted).toEqual({ goalActive: true });
+  });
+
+  it("a frozen thread still takes what its provider reports of its goal", async () => {
+    const frozen = (
+      await apply(withThread(await seeded(), { goal: goal("active") }), {
+        ...startMove(),
+        targetTakes: TAKES_ALL,
+      } as OrchestrationCommand)
+    ).model;
+    const reported = await apply(frozen, {
+      type: "thread.goal.state.set",
+      commandId: nextCommandId(),
+      threadId: THREAD,
+      goal: goal("paused"),
+      createdAt: now,
+    });
+    expect(reported.refusal).toBeNull();
+    expect(threadOf(reported.model).goal?.status).toBe("paused");
+  });
+
+  it("no queued message is sent while a move waits; what goes into a running turn still does", async () => {
+    const model = withThread((await apply(await seeded(), queue({ takes: TAKES_ALL }))).model, {
+      queuedFollowUps: [queued("q-1")],
+    });
+    const send = {
+      type: "thread.follow-up.send-queued",
+      commandId: nextCommandId(),
+      threadId: THREAD,
+      messageId: MessageId.make("q-1"),
+      createdAt: now,
+    } as OrchestrationCommand;
+    expect(threadMoveGuardRefusal(model, send)).toContain("waiting to move");
+    expect(
+      threadMoveGuardRefusal(model, { ...send, steeredTurnId: TurnId.make("turn-1") } as never),
+    ).toBeNull();
+  });
+
+  it("the read-only copy keeps no queue and no switch on", async () => {
+    let model = withThread(await seeded(), {
+      queuedFollowUps: [queued("q-1")],
+      pullRequestAutoFix: true,
+      linkedPullRequests: [
+        {
+          number: 212,
+          url: "https://github.com/acme/w/pull/212",
+          autoFix: false,
+          autoMerge: "squash",
+        },
+      ],
+    });
+    ({ model } = await apply(model, {
+      ...startMove(),
+      targetTakes: TAKES_ALL,
+    } as OrchestrationCommand));
+    ({ model } = await apply(model, {
+      type: "thread.move.complete",
+      commandId: nextCommandId(),
+      threadId: THREAD,
+      transferId: TRANSFER,
+      movedThreadId: ThreadId.make("thread-there"),
+      createdAt: now,
+    }));
+    const copy = threadOf(model);
+    expect(copy.queuedFollowUps ?? []).toEqual([]);
+    expect(copy.pullRequestAutoFix).toBe(false);
+    expect(copy.linkedPullRequests).toMatchObject([
+      { number: 212, autoFix: false, autoMerge: null },
+    ]);
+  });
+
+  it("a move that doesn't happen owes back what its stop took, until it is paid", async () => {
+    const working = withThread(
+      await withSession(await seeded(), "running", TurnId.make("turn-1")),
+      { goal: goal("active"), checkBacks: [checkBack("cb-1")], queuedFollowUps: [queued("q-1")] },
+    );
+    let model = (await apply(working, queue({ mode: "stop-now", takes: TAKES_ALL }))).model;
+    // The stop paused the goal (Codex) and ended the check-back.
+    model = withThread(await withSession(model, "stopped"), {
+      goal: goal("paused"),
+      checkBacks: [],
+    });
+    ({ model } = await apply(model, {
+      type: "thread.move.unqueue",
+      commandId: nextCommandId(),
+      threadId: THREAD,
+      requestId: REQUEST,
+      createdAt: now,
+    }));
+    const owed = threadOf(model).moveRestoreOwed;
+    expect(owed).toMatchObject({
+      target: MAC_MINI,
+      interrupted: { goalActive: true, checkBacks: [checkBack("cb-1")] },
+      queued: true,
+    });
+
+    // Paid in one decision: the goal is on again, the agent's message goes
+    // ahead of the user's queue, and only the goal's hand-over is left.
+    ({ model } = await apply(model, {
+      type: "thread.move.restore",
+      commandId: nextCommandId(),
+      threadId: THREAD,
+      at: owed!.at,
+      message: {
+        messageId: MessageId.make("m-put-back"),
+        text: "The move to Mac mini didn't happen.",
+      },
+      createdAt: now,
+    }));
+    const paid = threadOf(model);
+    expect(paid.goal?.status).toBe("active");
+    expect(paid.queuedFollowUps?.map((entry) => entry.messageId)).toEqual(["m-put-back", "q-1"]);
+    expect(paid.queuedFollowUps?.[0]?.afterMove).toBe(true);
+    expect(paid.moveRestoreOwed).toMatchObject({ goalOwed: true });
+    // The same pay again is no news; the goal's hand-over clears it.
+    const again = await Effect.runPromise(
+      decideOrchestrationCommand({
+        readModel: model,
+        command: {
+          type: "thread.move.restore",
+          commandId: nextCommandId(),
+          threadId: THREAD,
+          at: owed!.at,
+          createdAt: now,
+        },
+      }),
+    );
+    expect(Array.isArray(again) ? again : [again]).toEqual([]);
+    ({ model } = await apply(model, {
+      type: "thread.move.restore",
+      commandId: nextCommandId(),
+      threadId: THREAD,
+      at: owed!.at,
+      finished: true,
+      createdAt: now,
+    }));
+    expect(threadOf(model).moveRestoreOwed ?? null).toBeNull();
+  });
+
+  it("a goal that finished stays finished, and an archived thread is owed nothing", async () => {
+    const stopped = (
+      await apply(
+        withThread(await withSession(await seeded(), "running", TurnId.make("turn-1")), {
+          goal: goal("active"),
+        }),
+        queue({ mode: "stop-now", takes: TAKES_ALL }),
+      )
+    ).model;
+    // The goal was met as its agent stopped.
+    let model = withThread(await withSession(stopped, "stopped"), { goal: goal("complete") });
+    ({ model } = await apply(model, {
+      type: "thread.move.queue-end",
+      commandId: nextCommandId(),
+      threadId: THREAD,
+      requestId: REQUEST,
+      reason: "blocked",
+      words: "Update Threadlines on Mac mini to move this thread: it has a goal.",
+      createdAt: now,
+    }));
+    const owed = threadOf(model).moveRestoreOwed!;
+    ({ model } = await apply(model, {
+      type: "thread.move.restore",
+      commandId: nextCommandId(),
+      threadId: THREAD,
+      at: owed.at,
+      createdAt: now,
+    }));
+    expect(threadOf(model).goal?.status).toBe("complete");
+    expect(threadOf(model).moveRestoreOwed ?? null).toBeNull();
+
+    const gone = await apply(stopped, {
+      type: "thread.move.queue-end",
+      commandId: nextCommandId(),
+      threadId: THREAD,
+      requestId: REQUEST,
+      reason: "gone",
+      words: "This thread was archived.",
+      createdAt: now,
+    });
+    expect(threadOf(gone.model).moveRestoreOwed ?? null).toBeNull();
+  });
+
+  it("a dropped move owes back what its stop took", async () => {
+    let model = withThread(await withSession(await seeded(), "ready"), {
+      goal: goal("active"),
+    });
+    ({ model } = await apply(model, {
+      ...startMove(),
+      targetTakes: TAKES_ALL,
+    } as OrchestrationCommand));
+    ({ model } = await apply(model, {
+      type: "thread.move.abort",
+      commandId: nextCommandId(),
+      threadId: THREAD,
+      transferId: TRANSFER,
+      reason: "Mac mini didn't allow the move.",
+      code: "denied",
+      createdAt: now,
+    }));
+    expect(threadOf(model).moveRestoreOwed).toMatchObject({ interrupted: { goalActive: true } });
+  });
+
+  it("an import writes the goal, pull requests, plans and queue with the thread, the arrival first", async () => {
+    const model = await seeded();
+    const ARRIVED = ThreadId.make("thread-arrived");
+    const events = await Effect.runPromise(
+      decideOrchestrationCommand({
+        readModel: model,
+        command: {
+          type: "thread.import",
+          commandId: nextCommandId(),
+          threadId: ARRIVED,
+          projectId: PROJECT,
+          title: "Fix the flaky test",
+          modelSelection,
+          runtimeMode: "auto",
+          interactionMode: "default",
+          branch: "fix/flaky",
+          worktreePath: "/worktrees/moved-1",
+          movedFrom: { ...MAC_MINI, threadId: THREAD, movedAt: now },
+          messages: [],
+          activities: [],
+          goal: { ...goal("active"), threadId: ARRIVED },
+          pullRequests: {
+            autoFix: true,
+            autoMerge: null,
+            linked: [
+              {
+                number: 212,
+                url: "https://github.com/acme/w/pull/212",
+                autoFix: true,
+                autoMerge: null,
+              },
+            ],
+          },
+          queuedFollowUps: [queued("q-there")],
+          proposedPlans: [
+            {
+              id: "plan-there",
+              turnId: null,
+              planMarkdown: "1. Fix it",
+              implementedAt: null,
+              implementationThreadId: null,
+              dismissedAt: null,
+              createdAt: now,
+              updatedAt: now,
+            },
+          ],
+          arrival: {
+            message: { messageId: MessageId.make("m-arrival"), text: "This thread moved." },
+            brought: ["its goal", "1 queued message", "auto-fix for #212"],
+            left: [],
+          },
+          createdAt: now,
+        },
+      }),
+    );
+    const planned = Array.isArray(events) ? events : [events];
+    expect(planned.map((event) => event.type)).toEqual([
+      "thread.created",
+      "thread.goal-state-set",
+      "thread.pull-request-linked",
+      "thread.pull-request-automation-changed",
+      "thread.pull-request-automation-changed",
+      "thread.proposed-plan-upserted",
+      "thread.follow-up-queued",
+      "thread.follow-up-queued",
+      "thread.activity-appended",
+    ]);
+    const queuedEvents = planned.filter((event) => event.type === "thread.follow-up-queued");
+    expect(queuedEvents.map((event) => event.payload)).toMatchObject([
+      { imported: true, followUp: { messageId: "m-arrival", afterMove: true } },
+      { imported: true, followUp: { messageId: "q-there" } },
+    ]);
+    expect(planned.at(-1)?.payload).toMatchObject({
+      activity: {
+        kind: "thread.moved-in",
+        payload: { brought: ["its goal", "1 queued message", "auto-fix for #212"] },
+      },
+    });
+  });
+
+  it("resume on a moved thread whose agent wasn't given the conversation waits for the message that gives it", async () => {
+    const ARRIVED = ThreadId.make("thread-resumed");
+    const arrived = (
+      await apply(await seeded(), {
+        type: "thread.import",
+        commandId: nextCommandId(),
+        threadId: ARRIVED,
+        projectId: PROJECT,
+        title: "Fix the flaky test",
+        modelSelection,
+        runtimeMode: "auto",
+        interactionMode: "default",
+        branch: "fix/flaky",
+        worktreePath: "/worktrees/moved-2",
+        movedFrom: { ...MAC_MINI, threadId: THREAD, movedAt: now },
+        messages: [],
+        activities: [],
+        goal: { ...goal("paused"), threadId: ARRIVED },
+        createdAt: now,
+      })
+    ).model;
+    const resumed = await Effect.runPromise(
+      decideOrchestrationCommand({
+        readModel: arrived,
+        command: {
+          type: "thread.goal.set",
+          commandId: nextCommandId(),
+          threadId: ARRIVED,
+          status: "active",
+          createdAt: now,
+        },
+      }),
+    );
+    const planned = Array.isArray(resumed) ? resumed : [resumed];
+    // No provider call: the goal reads on, and a message for its agent waits.
+    expect(planned.map((event) => event.type)).toEqual([
+      "thread.goal-state-set",
+      "thread.follow-up-queued",
+    ]);
+  });
+});
+
+describe("a moved thread that moves on, or edits its goal before its agent knows it (Part 3e)", () => {
+  const ARRIVED = ThreadId.make("thread-arrived-twice");
+  const importHere = (extra: Record<string, unknown>): OrchestrationCommand =>
+    ({
+      type: "thread.import",
+      commandId: nextCommandId(),
+      threadId: ARRIVED,
+      projectId: PROJECT,
+      title: "Fix the flaky test",
+      modelSelection,
+      runtimeMode: "auto",
+      interactionMode: "default",
+      branch: "fix/flaky",
+      worktreePath: "/worktrees/moved-3",
+      movedFrom: { ...MAC_MINI, threadId: THREAD, movedAt: now },
+      messages: [],
+      activities: [],
+      createdAt: now,
+      ...extra,
+    }) as OrchestrationCommand;
+
+  it("a plan that arrived waiting still keeps the thread from a computer that can't take it", async () => {
+    const arrived = (
+      await apply(
+        await seeded(),
+        importHere({
+          proposedPlans: [
+            {
+              id: "plan-there",
+              turnId: null,
+              planMarkdown: "1. Fix it",
+              implementedAt: null,
+              implementationThreadId: null,
+              dismissedAt: null,
+              createdAt: now,
+              updatedAt: now,
+            },
+          ],
+        }),
+      )
+    ).model;
+    const queueOn = (takes?: ThreadMoveTakes): OrchestrationCommand => ({
+      type: "thread.move.queue",
+      commandId: nextCommandId(),
+      threadId: ARRIVED,
+      requestId: ThreadMoveRequestId.make("request-again"),
+      target: { environmentId: EnvironmentId.make("environment-pc"), label: "Windows PC" },
+      agent: modelSelection,
+      mode: "when-done",
+      requestedBy: { kind: "user" },
+      ...(takes !== undefined ? { targetTakes: takes } : {}),
+      createdAt: now,
+    });
+    expect((await apply(arrived, queueOn())).refusal).toContain("plan");
+    expect((await apply(arrived, queueOn({ threadState: true }))).refusal).toBeNull();
+  });
+
+  it("a goal set before its agent was given the conversation waits for the message that gives it", async () => {
+    const arrived = (await apply(await seeded(), importHere({}))).model;
+    const decided = await Effect.runPromise(
+      decideOrchestrationCommand({
+        readModel: arrived,
+        command: {
+          type: "thread.goal.set",
+          commandId: nextCommandId(),
+          threadId: ARRIVED,
+          objective: "Ship the fix",
+          createdAt: now,
+        },
+      }),
+    );
+    const planned = Array.isArray(decided) ? decided : [decided];
+    expect(planned.map((event) => event.type)).toEqual([
+      "thread.goal-state-set",
+      "thread.follow-up-queued",
+    ]);
+    expect(planned[0]?.payload).toMatchObject({
+      goal: { objective: "Ship the fix", status: "active" },
+    });
   });
 });

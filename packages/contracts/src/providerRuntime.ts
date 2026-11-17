@@ -555,6 +555,10 @@ export const RuntimeCheckBack = Schema.Struct({
   recurring: Schema.Boolean,
   schedule: Schema.optional(TrimmedNonEmptyStringSchema),
   description: Schema.optional(TrimmedNonEmptyStringSchema),
+  /** See OrchestrationCheckBack.prompt. */
+  prompt: Schema.optional(TrimmedNonEmptyStringSchema),
+  /** See OrchestrationCheckBack.cron. */
+  cron: Schema.optional(TrimmedNonEmptyStringSchema),
   durable: Schema.Boolean,
 });
 export type RuntimeCheckBack = typeof RuntimeCheckBack.Type;

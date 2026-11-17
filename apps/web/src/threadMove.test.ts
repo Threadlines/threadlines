@@ -18,14 +18,17 @@ import {
   describeMoveBatchProgress,
   describeMoveCandidate,
   describePendingMove,
+  describeThreadMoveLanding,
   describeThreadMoveProgress,
   describeThreadMoveSession,
   formatThreadMoveChanges,
   isThreadMoveOffered,
   isThreadMoveStalled,
+  listMoveCandidates,
   pickDefaultMoveAgent,
   pickDefaultMoveTarget,
   threadMoveAgentSelection,
+  threadMoveNotesFor,
   threadMoveSessionOutcome,
 } from "./threadMove";
 
@@ -199,6 +202,8 @@ describe("isThreadMoveOffered", () => {
     const offered = (input: Partial<Parameters<typeof isThreadMoveOffered>[0]>) =>
       isThreadMoveOffered({
         supportsThreadMove: true,
+        movesThreadState: false,
+        generalChat: false,
         outbound: [link()],
         moveStatus: undefined,
         ...input,
@@ -209,6 +214,68 @@ describe("isThreadMoveOffered", () => {
     expect(offered({ outbound: null })).toBe(false);
     expect(offered({ moveStatus: "moving" })).toBe(false);
     expect(offered({ moveStatus: "moved" })).toBe(false);
+    // A General Chats thread, only where its computer moves those.
+    expect(offered({ generalChat: true })).toBe(false);
+    expect(offered({ generalChat: true, movesThreadState: true })).toBe(true);
+  });
+});
+
+describe("what comes along", () => {
+  it("keeps the notes for any agent, and those naming the agent picked", () => {
+    const notes = [
+      { words: "GitHub isn't signed in on Mac mini. Auto-fix waits there until you sign in." },
+      {
+        words: "Codex on Mac mini can't set check-backs. It's told once what was planned.",
+        instanceIds: ["codex"],
+      },
+    ];
+    expect(threadMoveNotesFor(notes, "codex")).toEqual([notes[0]!.words, notes[1]!.words]);
+    expect(threadMoveNotesFor(notes, "claudeAgent")).toEqual([notes[0]!.words]);
+    // No agent picked yet (a computer out of reach): only the ones for any.
+    expect(threadMoveNotesFor(notes, null)).toEqual([notes[0]!.words]);
+    expect(threadMoveNotesFor(undefined, "codex")).toEqual([]);
+  });
+
+  it("says a General Chats thread lands in General chats with its files", () => {
+    expect(describeThreadMoveLanding(target(), undefined)).toBe("Lands in threadlines on Mac mini");
+    expect(
+      describeThreadMoveLanding(target({ projectName: "General chats" }), {
+        files: 14,
+        bytes: 2_048,
+      }),
+    ).toBe("Lands in General chats on Mac mini · 14 files");
+    expect(
+      describeThreadMoveLanding(target({ projectName: "General chats" }), { files: 1, bytes: 9 }),
+    ).toBe("Lands in General chats on Mac mini · 1 file");
+  });
+
+  it("lists a computer's general chats after its inbox threads, working ones first", () => {
+    const thread = (id: string, overrides: { archivedAt?: string } = {}) => ({
+      id,
+      environmentId: MAC_MINI,
+      title: id,
+      archivedAt: overrides.archivedAt ?? null,
+    });
+    const working = new Set(["chat-working", "inbox-working"]);
+    const candidates = listMoveCandidates(
+      [
+        { thread: thread("inbox-idle"), isDone: false },
+        { thread: thread("inbox-working"), isDone: false },
+      ],
+      [
+        { thread: thread("chat-idle") },
+        { thread: thread("chat-working") },
+        { thread: thread("chat-archived", { archivedAt: "2026-10-22T09:00:00.000Z" }) },
+      ],
+      MAC_MINI,
+      (candidate) => working.has(candidate.id),
+    );
+    expect(candidates.map((candidate) => [candidate.threadId, candidate.working])).toEqual([
+      ["inbox-working", true],
+      ["chat-working", true],
+      ["inbox-idle", false],
+      ["chat-idle", false],
+    ]);
   });
 });
 
@@ -295,6 +362,30 @@ describe("picking where and with whom", () => {
       kind: "refused",
       words: "Has a goal set.",
     });
+    // What comes along with it, in the server's words.
+    expect(
+      describeMoveCandidate({ ...row, brings: [{ words: "Its goal carries on there." }] }, MAC_MINI)
+        .brings,
+    ).toEqual(["Its goal carries on there."]);
+    // Its own lines on the computer picked: what won't work there, and a chat's landing.
+    const chat = {
+      ...row,
+      folder: { files: 14, bytes: 2_048 },
+      targetLines: [
+        {
+          environmentId: MAC_MINI,
+          projectName: "General chats",
+          notes: [{ words: "Codex on Mac mini can't set check-backs." }],
+        },
+      ],
+    };
+    expect(describeMoveCandidate(chat, MAC_MINI, "Mac mini")).toMatchObject({
+      landing: "Lands in General chats on Mac mini · 14 files",
+      notes: ["Codex on Mac mini can't set check-backs."],
+    });
+    expect(
+      describeMoveCandidate(chat, EnvironmentId.make("environment-windows")).notes,
+    ).toBeUndefined();
   });
 });
 

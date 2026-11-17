@@ -8,6 +8,7 @@ import {
   CommandRequestId,
   CommandRunId,
   EnvironmentId,
+  ThreadMoveRequestId,
   ModelSelection,
   type MessageSentFrom,
   type OrchestrationCommand,
@@ -417,6 +418,11 @@ describe("ProviderCommandReactor", () => {
     const pauseThreadGoalForStop = vi.fn<ProviderServiceShape["pauseThreadGoalForStop"]>(() =>
       Effect.succeed(null),
     );
+    // The goal the provider holds; tests that move a thread set it.
+    let heldGoal: Effect.Success<ReturnType<ProviderServiceShape["getThreadGoal"]>> = null;
+    const getThreadGoal = vi.fn<ProviderServiceShape["getThreadGoal"]>(() =>
+      Effect.sync(() => heldGoal),
+    );
     const respondToRequest = vi.fn<ProviderServiceShape["respondToRequest"]>(() => Effect.void);
     const respondToUserInput = vi.fn<ProviderServiceShape["respondToUserInput"]>(() => Effect.void);
     const stopSession = vi.fn((input: unknown) =>
@@ -551,6 +557,7 @@ describe("ProviderCommandReactor", () => {
       compactContext,
       setThreadGoal: setThreadGoal as ProviderServiceShape["setThreadGoal"],
       pauseThreadGoalForStop,
+      getThreadGoal,
       clearThreadGoal: clearThreadGoal as ProviderServiceShape["clearThreadGoal"],
       respondToRequest: respondToRequest as ProviderServiceShape["respondToRequest"],
       respondToUserInput: respondToUserInput as ProviderServiceShape["respondToUserInput"],
@@ -802,6 +809,10 @@ describe("ProviderCommandReactor", () => {
       compactContext,
       setThreadGoal,
       pauseThreadGoalForStop,
+      getThreadGoal,
+      setHeldGoal: (goal: typeof heldGoal) => {
+        heldGoal = goal;
+      },
       clearThreadGoal,
       respondToRequest,
       respondToUserInput,
@@ -5347,6 +5358,277 @@ describe("ProviderCommandReactor", () => {
           createdAt: "2026-01-01T00:00:01.000Z",
         }),
       );
+
+    describe("a thread that moves with what it had going (fleet.md, Part 3e)", () => {
+      const MOVED = ThreadId.make("thread-moved-here");
+      const at = "2026-01-01T00:00:00.000Z";
+      const sessionOf = (
+        harness: Awaited<ReturnType<typeof createHarness>>,
+        id: ThreadId,
+        status: "running" | "ready",
+        stamp: string,
+      ) =>
+        Effect.runPromise(
+          harness.engine.dispatch({
+            type: "thread.session.set",
+            commandId: CommandId.make(`cmd-moved-session-${id}-${status}-${stamp}`),
+            threadId: id,
+            session: {
+              threadId: id,
+              status,
+              providerName: "codex",
+              providerInstanceId: ProviderInstanceId.make("codex"),
+              runtimeMode: "approval-required",
+              activeTurnId: status === "running" ? asTurnId(`turn-${stamp}`) : null,
+              pendingBackgroundTaskCount: 0,
+              lastError: null,
+              updatedAt: stamp,
+            },
+            createdAt: stamp,
+          }),
+        );
+      const queued = (id: string, extra?: Record<string, unknown>) => ({
+        messageId: asMessageId(id),
+        text: `message ${id}`,
+        attachments: [],
+        runtimeMode: "approval-required" as const,
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        createdAt: at,
+        ...extra,
+      });
+
+      it("a queue waits while its thread waits to move: the turn's end sends nothing", async () => {
+        const harness = await createHarness();
+        await setSession(harness, "running", "2026-01-01T00:00:01.000Z");
+        await submit(harness, {
+          messageId: asMessageId("q-wait"),
+          text: "then this",
+          delivery: "queue",
+        });
+        await waitFor(async () => (await readThread(harness))?.queuedFollowUps?.length === 1);
+        await Effect.runPromise(
+          harness.engine.dispatch({
+            type: "thread.move.queue",
+            commandId: CommandId.make("cmd-move-queue-wait"),
+            threadId,
+            requestId: ThreadMoveRequestId.make("request-wait"),
+            target: { environmentId: EnvironmentId.make("env-mac"), label: "Mac mini" },
+            mode: "when-done",
+            requestedBy: { kind: "user" },
+            targetTakes: { threadState: true },
+            createdAt: "2026-01-01T00:00:02.500Z",
+          }),
+        );
+        await setSession(harness, "ready", "2026-01-01T00:00:03.000Z");
+        await harness.drain();
+        expect(harness.sendTurn).not.toHaveBeenCalled();
+        expect(
+          (await readThread(harness))?.queuedFollowUps?.map((entry) => entry.messageId),
+        ).toEqual(["q-wait"]);
+      });
+
+      it("an import's queue goes by its kick alone, and its goal reaches the provider once the queue is through", async () => {
+        const harness = await createHarness();
+        await Effect.runPromise(
+          harness.engine.dispatch({
+            type: "thread.import",
+            commandId: CommandId.make("cmd-import-moved"),
+            threadId: MOVED,
+            projectId: asProjectId("project-1"),
+            title: "Make the suite pass",
+            modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+            runtimeMode: "approval-required",
+            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            branch: null,
+            worktreePath: null,
+            movedFrom: {
+              environmentId: EnvironmentId.make("env-windows"),
+              label: "Windows PC",
+              threadId: ThreadId.make("thread-there"),
+              movedAt: at,
+            },
+            messages: [],
+            activities: [],
+            goal: {
+              threadId: MOVED,
+              objective: "Make the suite pass",
+              status: "active",
+              tokenBudget: 5_000,
+              tokensUsed: 1_200,
+              timeUsedSeconds: 60,
+              createdAt: at,
+              updatedAt: at,
+            },
+            queuedFollowUps: [queued("q-moved")],
+            arrival: {
+              message: { messageId: asMessageId("m-arrival"), text: "This thread moved." },
+              brought: ["its goal", "1 queued message"],
+              left: [],
+            },
+            createdAt: at,
+          }),
+        );
+        await harness.drain();
+        // Its own events send nothing.
+        expect(harness.sendTurn).not.toHaveBeenCalled();
+
+        // The move's kick: the arrival message, first.
+        await Effect.runPromise(
+          harness.engine.dispatch({
+            type: "thread.follow-up.send-queued",
+            commandId: CommandId.make("cmd-arrive-moved"),
+            threadId: MOVED,
+            messageId: asMessageId("m-arrival"),
+            createdAt: "2026-01-01T00:00:01.000Z",
+          }),
+        );
+        await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+        expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({ messageId: "m-arrival" });
+        const arrived = (await harness.readModel()).threads.find((entry) => entry.id === MOVED);
+        expect(arrived?.messages.find((entry) => entry.id === "m-arrival")?.afterMove).toBe(true);
+
+        // Its turn ends: the user's queued message goes next, the goal not yet.
+        await sessionOf(harness, MOVED, "running", "2026-01-01T00:00:02.000Z");
+        await sessionOf(harness, MOVED, "ready", "2026-01-01T00:00:03.000Z");
+        await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+        expect(harness.sendTurn.mock.calls[1]?.[0]).toMatchObject({ messageId: "q-moved" });
+        expect(harness.setThreadGoal).not.toHaveBeenCalled();
+
+        // That one ends with nothing left: the provider holds no goal, so it is
+        // given the goal, with what is left of its budget.
+        await sessionOf(harness, MOVED, "running", "2026-01-01T00:00:04.000Z");
+        await sessionOf(harness, MOVED, "ready", "2026-01-01T00:00:05.000Z");
+        await waitFor(() => harness.setThreadGoal.mock.calls.length === 1);
+        expect(harness.setThreadGoal.mock.calls[0]?.[0]).toMatchObject({
+          threadId: MOVED,
+          objective: "Make the suite pass",
+          status: "active",
+          tokenBudget: 3_800,
+        });
+
+        // Once the provider holds it working, a later turn's end gives nothing more.
+        harness.setHeldGoal({
+          objective: "Make the suite pass",
+          status: "active",
+          tokenBudget: 3_800,
+          tokensUsed: 10,
+          timeUsedSeconds: 1,
+          createdAt: at,
+          updatedAt: at,
+        });
+        await sessionOf(harness, MOVED, "running", "2026-01-01T00:00:06.000Z");
+        await sessionOf(harness, MOVED, "ready", "2026-01-01T00:00:07.000Z");
+        await harness.drain();
+        expect(harness.setThreadGoal).toHaveBeenCalledTimes(1);
+      });
+
+      it("a goal put back after a dropped move works again once its message went, even if the stop paused it late", async () => {
+        const harness = await createHarness();
+        const goal = (status: "active" | "paused") => ({
+          threadId,
+          objective: "Keep the suite green",
+          status,
+          tokenBudget: null,
+          tokensUsed: 0,
+          timeUsedSeconds: 0,
+          createdAt: at,
+          updatedAt: at,
+        });
+        const dispatch = (command: Record<string, unknown>) =>
+          Effect.runPromise(harness.engine.dispatch(command as never));
+        await dispatch({
+          type: "thread.goal.state.set",
+          commandId: CommandId.make("cmd-put-back-goal"),
+          threadId,
+          goal: goal("active"),
+          createdAt: at,
+        });
+        const requestId = ThreadMoveRequestId.make("request-put-back");
+        await dispatch({
+          type: "thread.move.queue",
+          commandId: CommandId.make("cmd-put-back-queue"),
+          threadId,
+          requestId,
+          target: { environmentId: EnvironmentId.make("env-mac"), label: "Mac mini" },
+          mode: "stop-now",
+          requestedBy: { kind: "user" },
+          targetTakes: { threadState: true },
+          createdAt: at,
+        });
+        await dispatch({
+          type: "thread.move.unqueue",
+          commandId: CommandId.make("cmd-put-back-unqueue"),
+          threadId,
+          requestId,
+          createdAt: "2026-01-01T00:00:01.000Z",
+        });
+        const owedAt = (await readThread(harness))?.moveRestoreOwed?.at;
+        expect(owedAt).toBeDefined();
+        await dispatch({
+          type: "thread.move.restore",
+          commandId: CommandId.make("cmd-put-back-pay"),
+          threadId,
+          at: owedAt,
+          message: { messageId: asMessageId("m-put-back"), text: "The move didn't happen." },
+          createdAt: "2026-01-01T00:00:02.000Z",
+        });
+        await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+        expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({ messageId: "m-put-back" });
+        // The move's stop paused it only now (its pause answered late).
+        await dispatch({
+          type: "thread.goal.state.set",
+          commandId: CommandId.make("cmd-put-back-late-pause"),
+          threadId,
+          goal: goal("paused"),
+          createdAt: "2026-01-01T00:00:03.000Z",
+        });
+        await setSession(harness, "running", "2026-01-01T00:00:04.000Z");
+        await setSession(harness, "ready", "2026-01-01T00:00:05.000Z");
+        await waitFor(() => harness.setThreadGoal.mock.calls.length === 1);
+        expect(harness.setThreadGoal.mock.calls[0]?.[0]).toMatchObject({
+          objective: "Keep the suite green",
+          status: "active",
+        });
+        await waitFor(async () => ((await readThread(harness))?.moveRestoreOwed ?? null) === null);
+      });
+
+      it("Resume on a session whose provider holds no goal gives it the goal the thread reads", async () => {
+        const harness = await createHarness();
+        await Effect.runPromise(
+          harness.engine.dispatch({
+            type: "thread.goal.state.set",
+            commandId: CommandId.make("cmd-goal-paused-here"),
+            threadId,
+            goal: {
+              threadId,
+              objective: "Keep the suite green",
+              status: "paused",
+              tokenBudget: 10_000,
+              tokensUsed: 4_000,
+              timeUsedSeconds: 30,
+              createdAt: at,
+              updatedAt: at,
+            },
+            createdAt: at,
+          }),
+        );
+        await Effect.runPromise(
+          harness.engine.dispatch({
+            type: "thread.goal.set",
+            commandId: CommandId.make("cmd-goal-resume-here"),
+            threadId,
+            status: "active",
+            createdAt: "2026-01-01T00:00:01.000Z",
+          }),
+        );
+        await waitFor(() => harness.setThreadGoal.mock.calls.length === 1);
+        expect(harness.setThreadGoal.mock.calls[0]?.[0]).toMatchObject({
+          objective: "Keep the suite green",
+          status: "active",
+          tokenBudget: 6_000,
+        });
+      });
+    });
 
     it("sends a queued message as the next turn once the running turn completes", async () => {
       const harness = await createHarness();

@@ -14,6 +14,7 @@ import { describeComputerLinkFailure } from "../../environments/links/computerLi
 import {
   readThreadMovesClient,
   useThreadMoveBatchSupported,
+  useThreadMoveStateSupported,
 } from "../../environments/links/threadMoves";
 import { usePrimaryEnvironmentId } from "../../environments/primary";
 import { rememberMoveBatch } from "../../moveBatchProgress";
@@ -97,12 +98,14 @@ function QuitConfirmationDescription({
 const NO_THREAD_IDS: readonly ThreadId[] = [];
 
 /**
- * This computer's working threads a move can take: running here, not in
- * General Chats (which never move), not moving already.
+ * This computer's working threads a move can take: running here, not moving
+ * already, and not in General Chats unless this computer moves those
+ * (`movesGeneralChats`, its `threadMoveState`).
  */
 function selectWorkingMovableThreadIds(
   state: AppState,
   primaryEnvironmentId: EnvironmentId | null,
+  movesGeneralChats: boolean,
 ): readonly ThreadId[] {
   if (primaryEnvironmentId === null) return NO_THREAD_IDS;
   const projectById = selectEnvironmentState(state, primaryEnvironmentId).projectById;
@@ -111,7 +114,7 @@ function selectWorkingMovableThreadIds(
       (thread) =>
         thread.environmentId === primaryEnvironmentId &&
         thread.moveStatus === undefined &&
-        projectById[thread.projectId]?.kind !== "general-chat",
+        (movesGeneralChats || projectById[thread.projectId]?.kind !== "general-chat"),
     )
     .map((thread) => thread.id);
 }
@@ -134,11 +137,14 @@ type QuitMoveOffer =
 function useQuitMoveOffer(asking: boolean): QuitMoveOffer {
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const supportsBatch = useThreadMoveBatchSupported(primaryEnvironmentId);
+  const movesGeneralChats = useThreadMoveStateSupported(primaryEnvironmentId);
   const canWait = window.desktopBridge?.quitAfterMoves !== undefined;
   const enabled = asking && supportsBatch && canWait;
   const threadIds = useStore(
     useShallow((state: AppState) =>
-      enabled ? selectWorkingMovableThreadIds(state, primaryEnvironmentId) : NO_THREAD_IDS,
+      enabled
+        ? selectWorkingMovableThreadIds(state, primaryEnvironmentId, movesGeneralChats)
+        : NO_THREAD_IDS,
     ),
   );
   const [offer, setOffer] = useState<QuitMoveOffer>({ status: "none" });

@@ -2646,6 +2646,120 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
     }),
   );
 
+  it.effect(
+    "keeps what a move owes back, and the message it wrote for the agent, in every read",
+    () =>
+      Effect.gen(function* () {
+        const engine = yield* OrchestrationEngineService;
+        const snapshots = yield* ProjectionSnapshotQuery;
+        const createdAt = "2026-01-01T00:00:00.000Z";
+        const threadId = ThreadId.make("thread-move-restore");
+        const requestId = ThreadMoveRequestId.make("request-move-restore");
+        const target = { environmentId: EnvironmentId.make("environment-pc"), label: "Windows PC" };
+        yield* engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("cmd-move-restore-project"),
+          projectId: ProjectId.make("project-move-restore"),
+          title: "Move Restore",
+          workspaceRoot: "/tmp/project-move-restore",
+          createdAt,
+        });
+        yield* engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd-move-restore-thread"),
+          threadId,
+          projectId: ProjectId.make("project-move-restore"),
+          title: "Move me",
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+          interactionMode: "default",
+          runtimeMode: "approval-required",
+          branch: null,
+          worktreePath: null,
+          createdAt,
+        });
+        const goal = {
+          threadId,
+          objective: "Make the suite pass",
+          status: "active" as const,
+          tokenBudget: null,
+          tokensUsed: 0,
+          timeUsedSeconds: 0,
+          createdAt,
+          updatedAt: createdAt,
+        };
+        yield* engine.dispatch({
+          type: "thread.goal.state.set",
+          commandId: CommandId.make("cmd-move-restore-goal"),
+          threadId,
+          goal,
+          createdAt,
+        });
+        yield* engine.dispatch({
+          type: "thread.move.queue",
+          commandId: CommandId.make("cmd-move-restore-queue"),
+          threadId,
+          requestId,
+          target,
+          mode: "stop-now",
+          requestedBy: { kind: "user" },
+          targetTakes: { threadState: true },
+          createdAt,
+        });
+        yield* engine.dispatch({
+          type: "thread.move.unqueue",
+          commandId: CommandId.make("cmd-move-restore-unqueue"),
+          threadId,
+          requestId,
+          createdAt: "2026-01-01T00:00:01.000Z",
+        });
+        const owed = Option.getOrThrow(
+          yield* snapshots.getThreadDetailById(threadId),
+        ).moveRestoreOwed;
+        assert.deepEqual(owed, {
+          target,
+          interrupted: { goalActive: true },
+          at: "2026-01-01T00:00:01.000Z",
+        });
+        // What the decider reads after a restart: the same record.
+        const model = yield* snapshots.getCommandReadModel();
+        assert.deepEqual(
+          model.threads.find((thread) => thread.id === threadId)?.moveRestoreOwed,
+          owed,
+        );
+
+        yield* engine.dispatch({
+          type: "thread.move.restore",
+          commandId: CommandId.make("cmd-move-restore-pay"),
+          threadId,
+          at: owed!.at,
+          message: { messageId: MessageId.make("m-put-back"), text: "The move didn't happen." },
+          createdAt: "2026-01-01T00:00:02.000Z",
+        });
+        const paid = Option.getOrThrow(yield* snapshots.getThreadDetailById(threadId));
+        assert.equal(paid.queuedFollowUps?.[0]?.afterMove, true);
+        assert.deepInclude(paid.moveRestoreOwed, { goalOwed: true });
+        yield* engine.dispatch({
+          type: "thread.follow-up.send-queued",
+          commandId: CommandId.make("cmd-move-restore-send"),
+          threadId,
+          messageId: MessageId.make("m-put-back"),
+          createdAt: "2026-01-01T00:00:03.000Z",
+        });
+        const sent = Option.getOrThrow(yield* snapshots.getThreadDetailById(threadId));
+        assert.equal(sent.messages.find((message) => message.id === "m-put-back")?.afterMove, true);
+        yield* engine.dispatch({
+          type: "thread.move.restore",
+          commandId: CommandId.make("cmd-move-restore-goal-given"),
+          threadId,
+          at: owed!.at,
+          finished: true,
+          createdAt: "2026-01-01T00:00:04.000Z",
+        });
+        const done = Option.getOrThrow(yield* snapshots.getThreadDetailById(threadId));
+        assert.equal(done.moveRestoreOwed ?? null, null);
+      }),
+  );
+
   it.effect("projects persist updated scripts from project.meta.update", () =>
     Effect.gen(function* () {
       const engine = yield* OrchestrationEngineService;
