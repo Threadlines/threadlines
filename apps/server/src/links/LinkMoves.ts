@@ -2053,7 +2053,7 @@ const make = Effect.gen(function* () {
             (attachment) => input.attachments.get(attachment.id) ?? attachment,
           ),
           ...(entry.composer !== undefined ? { composer: entry.composer } : {}),
-          ...(entry.sentFrom !== undefined ? { sentFrom: entry.sentFrom } : {}),
+          // Not `sentFrom`: only this server stamps it (decideThreadImport drops one too).
           runtimeMode: input.runtimeMode,
           interactionMode: input.interactionMode,
           createdAt: entry.createdAt,
