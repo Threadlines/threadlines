@@ -2429,6 +2429,44 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("shows a config warning once, not again for each thread Codex opens", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const eventsFiber = yield* Stream.take(adapter.streamEvents, 2).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      const stale = "`[features].multi_agent` is deprecated.";
+      const warning = (id: string, method: string, payload: unknown, threadId = "thread-1") =>
+        runtime.emit({
+          id: asEventId(id),
+          kind: "notification",
+          provider: ProviderDriverKind.make("codex"),
+          threadId: asThreadId("thread-1"),
+          createdAt: "2026-01-01T00:00:00.000Z",
+          method,
+          payload: { ...(payload as object), threadId },
+        } as ProviderEvent);
+
+      yield* warning("evt-config", "configWarning", { summary: stale, details: null });
+      yield* warning("evt-main", "warning", { message: stale });
+      yield* warning("evt-subagent", "warning", { message: stale }, "child-thread");
+      yield* warning("evt-other", "warning", { message: "Something else went wrong." });
+
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+      assert.deepStrictEqual(
+        events.map((event) =>
+          event.type === "config.warning"
+            ? event.payload.summary
+            : event.type === "runtime.warning"
+              ? event.payload.message
+              : event.type,
+        ),
+        [stale, "Something else went wrong."],
+      );
+    }),
+  );
+
   it.effect("maps realtime started notifications with upstream realtime session ids", () =>
     Effect.gen(function* () {
       const { adapter, runtime } = yield* startLifecycleRuntime();
