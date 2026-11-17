@@ -2,15 +2,15 @@
  * The right sidebar's tab model.
  *
  * The sidebar is one browser-style panel with a tab strip: Source, Diff,
- * Pull request, Agents and Media are surfaces you open into it, each at most
- * once. Two things have to
+ * Pull request, Agents, Media and Threads are surfaces you open into it, each
+ * at most once. Two things have to
  * agree about it — the route that renders the panel and the chat header that
  * toggles it — so the state lives here rather than in either of them.
  *
  * Split of authority:
  *
  * - The URL owns the ACTIVE tab, mapped onto the params that already existed
- *   (`sourceControl=1`, `diff=1`, `agents=1`, `media=1`). Deep links keep working and an
+ *   (`sourceControl=1`, `diff=1`, `agents=1`, `media=1`, `threads=1`). Deep links keep working and an
  *   explicit `0` still means closed.
  * - This module owns what the URL cannot say: which tabs are in the strip,
  *   whether the sidebar is showing at all (it can be open on the launcher with
@@ -29,7 +29,13 @@ import {
 
 /** A surface the sidebar can open, and the key its active state is filed under
  *  in the URL. */
-export type RightPanelTab = "sourceControl" | "diff" | "pullRequest" | "agents" | "media";
+export type RightPanelTab =
+  | "sourceControl"
+  | "diff"
+  | "pullRequest"
+  | "agents"
+  | "media"
+  | "threads";
 
 /** Launcher order and `+` menu order. The strip itself is ordered by when each
  *  tab was opened, like a browser's, so this is only how the fixed menus list
@@ -40,6 +46,7 @@ export const RIGHT_PANEL_TAB_ORDER: ReadonlyArray<RightPanelTab> = [
   "pullRequest",
   "agents",
   "media",
+  "threads",
 ];
 
 export interface RightPanelSurface {
@@ -82,6 +89,13 @@ export const RIGHT_PANEL_SURFACES: Readonly<Record<RightPanelTab, RightPanelSurf
     // want is a picture, a video or a PDF an agent made, not a build input.
     label: "Media",
     description: "Pictures and files agents made.",
+  },
+  threads: {
+    id: "threads",
+    // The project's threads grouped by what needs the user, on every thread of
+    // the project (docs/design/lead-chat.md, "Threads panel").
+    label: "Threads",
+    description: "This project's threads.",
   },
 };
 
@@ -336,6 +350,9 @@ export function activeRightPanelTabFromSearch(search: DiffRouteSearch): RightPan
   if (search.media === "1") {
     return "media";
   }
+  if (search.threads === "1") {
+    return "threads";
+  }
   if (search.sourceControl === "1") {
     return "sourceControl";
   }
@@ -352,7 +369,8 @@ export function isRightPanelClosedInSearch(search: DiffRouteSearch): boolean {
     search.sourceControl === "0" ||
     search.pullRequest === "0" ||
     search.agents === "0" ||
-    search.media === "0"
+    search.media === "0" ||
+    search.threads === "0"
   );
 }
 
@@ -388,6 +406,7 @@ export function rightPanelTabSearchParams<T extends Record<string, unknown>>(
     pullRequest: tab === "pullRequest" ? ("1" as const) : ("0" as const),
     agents: tab === "agents" ? ("1" as const) : ("0" as const),
     media: tab === "media" ? ("1" as const) : ("0" as const),
+    threads: tab === "threads" ? ("1" as const) : ("0" as const),
   };
 }
 
@@ -634,7 +653,38 @@ export function hideRightPanel(threadKey: string | null): void {
   mutate(threadKey, hideRightPanelState);
 }
 
+/**
+ * A tab something outside the route wants opened on a thread the next time
+ * its route can show it: code that has no navigation of its own (a command
+ * finishing) asks here, and the route opens it, URL and all, once the thread
+ * is on screen with that tab available. Session-scoped like the strips.
+ */
+const queuedTabByThreadKey = new Map<string, RightPanelTab>();
+
+export function queueRightPanelTab(threadKey: string, tab: RightPanelTab): void {
+  queuedTabByThreadKey.set(threadKey, tab);
+  notify();
+}
+
+/** The tab queued for this thread, if any. The route opens it, then clears it. */
+export function useQueuedRightPanelTab(threadKey: string | null): RightPanelTab | null {
+  return useSyncExternalStore(
+    subscribe,
+    useCallback(
+      () => (threadKey ? (queuedTabByThreadKey.get(threadKey) ?? null) : null),
+      [threadKey],
+    ),
+  );
+}
+
+export function clearQueuedRightPanelTab(threadKey: string): void {
+  if (queuedTabByThreadKey.delete(threadKey)) {
+    notify();
+  }
+}
+
 export function resetRightPanelTabsForTests(): void {
   stateByThreadKey.clear();
+  queuedTabByThreadKey.clear();
   notify();
 }

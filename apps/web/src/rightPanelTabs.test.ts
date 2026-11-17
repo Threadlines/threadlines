@@ -45,10 +45,17 @@ function openedOn(tab: RightPanelTab): RightPanelTabsState {
 
 describe("availableRightPanelTabs", () => {
   it("offers only the surfaces a thread actually has", () => {
-    expect(ALL_TABS).toEqual(["sourceControl", "diff", "pullRequest", "agents", "media"]);
+    expect(ALL_TABS).toEqual([
+      "sourceControl",
+      "diff",
+      "pullRequest",
+      "agents",
+      "media",
+      "threads",
+    ]);
     // No repository, so no changes and no diff.
     expect(availableRightPanelTabs({ isGeneralChat: true, isDraft: false })).toEqual(["agents"]);
-    // No turn yet, so no agents and no media.
+    // No turn yet, so no agents, no media and no project board.
     expect(availableRightPanelTabs({ isGeneralChat: false, isDraft: true })).toEqual([
       "sourceControl",
       "diff",
@@ -63,6 +70,7 @@ describe("activeRightPanelTabFromSearch", () => {
     expect(activeRightPanelTabFromSearch({ sourceControl: "1" })).toBe("sourceControl");
     expect(activeRightPanelTabFromSearch({ agents: "1" })).toBe("agents");
     expect(activeRightPanelTabFromSearch({ media: "1" })).toBe("media");
+    expect(activeRightPanelTabFromSearch({ threads: "1" })).toBe("threads");
     expect(activeRightPanelTabFromSearch({ pullRequest: "1" })).toBe("pullRequest");
     expect(activeRightPanelTabFromSearch({ diff: "1" })).toBe("diff");
     // The diff key wins, which is what `parseDiffRouteSearch` already enforces.
@@ -77,6 +85,7 @@ describe("activeRightPanelTabFromSearch", () => {
     expect(isRightPanelClosedInSearch({ sourceControl: "0", agents: "1" })).toBe(false);
     expect(isRightPanelClosedInSearch({ pullRequest: "1" })).toBe(false);
     expect(isRightPanelClosedInSearch({ media: "0" })).toBe(true);
+    expect(isRightPanelClosedInSearch({ threads: "0" })).toBe(true);
   });
 });
 
@@ -104,6 +113,12 @@ describe("rightPanelTabSearchParams", () => {
       pullRequest: "0",
       agents: "0",
       media: "1",
+      threads: "0",
+    });
+    expect(rightPanelTabSearchParams({}, "threads")).toMatchObject({
+      sourceControl: "0",
+      media: "0",
+      threads: "1",
     });
   });
 

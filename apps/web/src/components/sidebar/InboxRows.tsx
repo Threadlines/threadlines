@@ -139,7 +139,7 @@ const ROW_ACTIONS_CLASS_NAME =
  * Every pull request a thread has, its own first, each once: a linked one can
  * be the thread's own after the thread moves onto its branch.
  */
-function threadPullRequestList(
+export function threadPullRequestList(
   own: ThreadPullRequest | null,
   linked: readonly ThreadPullRequest[],
 ): readonly ThreadPullRequest[] {
@@ -153,7 +153,7 @@ function threadPullRequestList(
  * so a merged branch reads the same violet wherever the thread ends up.
  * Renders nothing without a pull request.
  */
-function ThreadPullRequestBadge({
+export function ThreadPullRequestBadge({
   pullRequests,
   provider,
   threadRef,
