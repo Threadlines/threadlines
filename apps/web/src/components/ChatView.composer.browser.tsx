@@ -1288,6 +1288,90 @@ describe("ChatView (full app): composer", () => {
     }
   });
 
+  it("keeps words selected after Tab when Tab's own focus lands a frame late", async () => {
+    const suggestion = "Commit this and open the PR";
+    const { mounted, composerEditor } = await mountPromptSuggestion(suggestion);
+    // A busy tab draws its next frame late: what Tab put off until then
+    // runs after the user's next keys.
+    const realRequestAnimationFrame = window.requestAnimationFrame;
+    const heldFrames: FrameRequestCallback[] = [];
+    try {
+      await page.getByTestId("composer-editor").fill("commit this");
+      await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-prompt-suggestion-remainder="true"]'),
+        "Typing the suggestion's first words dropped the rest of it.",
+      );
+      window.requestAnimationFrame = (callback) => {
+        heldFrames.push(callback);
+        return heldFrames.length;
+      };
+      composerEditor.focus();
+      composerEditor.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }),
+      );
+      await waitForElement(
+        () =>
+          composerEditor.textContent?.trim() === "commit this and open the PR"
+            ? composerEditor
+            : null,
+        "Tab never finished the suggestion.",
+      );
+      await page.getByTestId("composer-editor").fill("commit this");
+      await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-prompt-suggestion-remainder="true"]'),
+        "The rest did not come back after retyping the suggestion's first words.",
+      );
+      await userEvent.keyboard("{Shift>}{ArrowLeft}{ArrowLeft}{/Shift}");
+      window.requestAnimationFrame = realRequestAnimationFrame;
+      for (const callback of heldFrames.splice(0)) callback(performance.now());
+      await nextFrames(3);
+      await waitForSuggestionGone("The rest stayed after the cursor while words were selected.");
+      expect(window.getSelection()?.toString()).toBe("is");
+    } finally {
+      window.requestAnimationFrame = realRequestAnimationFrame;
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps words selected right after Tab when Tab's own focus lands a frame late", async () => {
+    const suggestion = "Commit this and open the PR";
+    const { mounted, composerEditor } = await mountPromptSuggestion(suggestion);
+    const realRequestAnimationFrame = window.requestAnimationFrame;
+    const heldFrames: FrameRequestCallback[] = [];
+    try {
+      await page.getByTestId("composer-editor").fill("commit this");
+      await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-prompt-suggestion-remainder="true"]'),
+        "Typing the suggestion's first words dropped the rest of it.",
+      );
+      window.requestAnimationFrame = (callback) => {
+        heldFrames.push(callback);
+        return heldFrames.length;
+      };
+      composerEditor.focus();
+      composerEditor.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }),
+      );
+      await waitForElement(
+        () =>
+          composerEditor.textContent?.trim() === "commit this and open the PR"
+            ? composerEditor
+            : null,
+        "Tab never finished the suggestion.",
+      );
+      // The text is still what Tab wrote; only words got selected since.
+      await userEvent.keyboard("{Shift>}{ArrowLeft}{ArrowLeft}{/Shift}");
+      await vi.waitFor(() => expect(window.getSelection()?.toString()).toBe("PR"));
+      window.requestAnimationFrame = realRequestAnimationFrame;
+      for (const callback of heldFrames.splice(0)) callback(performance.now());
+      await nextFrames(3);
+      expect(window.getSelection()?.toString()).toBe("PR");
+    } finally {
+      window.requestAnimationFrame = realRequestAnimationFrame;
+      await mounted.cleanup();
+    }
+  });
+
   it("lines the rest of the suggestion up with the typed words wherever they wrap", async () => {
     // The long word starts past the middle of the first line, so while it is
     // half typed it fits there, but the whole word does not.
