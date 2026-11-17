@@ -2737,6 +2737,8 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
           },
           runtimeMode: "approval-required",
           interactionMode: "default",
+          // Stamped from the app's sign-in, as the server does for a person's send.
+          sentFrom: { kind: "computer", place: "here" },
           createdAt,
         });
         const lifted = yield* movedFromNow();

@@ -604,8 +604,6 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
             modelSelection: input.thread.modelSelection,
             runtimeMode: input.thread.runtimeMode,
             interactionMode: input.thread.interactionMode,
-            // Its message is ours, not the user's: a moved thread stays fenced.
-            keepsMoveFence: true,
             createdAt,
           })
           .pipe(
