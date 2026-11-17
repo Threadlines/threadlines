@@ -7,7 +7,7 @@
  */
 import { scopedThreadKey, scopeProjectRef, scopeThreadRef } from "@threadlines/client-runtime";
 import type { EnvironmentId, ProjectId, ScopedThreadRef, ThreadId } from "@threadlines/contracts";
-import { CheckIcon, ChevronDownIcon, FlagIcon } from "lucide-react";
+import { CheckIcon, ChevronDownIcon, CrownIcon } from "lucide-react";
 import React, { memo, useCallback, useMemo, useState } from "react";
 
 import { type InboxEntry, useInboxThreads } from "../../hooks/useInboxThreads";
@@ -167,7 +167,7 @@ export const ProjectBoardPanel = memo(function ProjectBoardPanel({
             className="inline-flex shrink-0 cursor-pointer items-center gap-1 rounded-sm text-[12px] text-muted-foreground transition-colors hover:text-foreground focus-ring"
             onClick={() => onOpenThread(scopeThreadRef(environmentId, leadThreadId))}
           >
-            <FlagIcon aria-hidden="true" className="size-3" />
+            <CrownIcon aria-hidden="true" className="size-3" />
             Lead chat
           </button>
         ) : null}
@@ -357,7 +357,7 @@ const BoardRow = memo(function BoardRow({
           />
         )}
         {entry.isLead ? (
-          <FlagIcon aria-label="Lead chat" className="size-2.5 shrink-0 text-muted-foreground" />
+          <CrownIcon aria-label="Lead chat" className="size-2.5 shrink-0 text-muted-foreground" />
         ) : null}
         <span
           className={cn(
