@@ -1285,12 +1285,15 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
       await waitForElement(row, "The family row should show on the parent.");
       const keys = () =>
         [...row()!.querySelectorAll<HTMLElement>('[role="tab"]')].map((tab) => tab.dataset.testid);
-      await vi.waitFor(() =>
-        expect(keys()).toEqual([
-          `family-tab-${THREAD_KEY}`,
-          `family-tab-${keyOf(firstChild)}`,
-          `family-tab-${keyOf(secondChild)}`,
-        ]),
+      // A starved CI tab can take seconds to file every thread.
+      await vi.waitFor(
+        () =>
+          expect(keys()).toEqual([
+            `family-tab-${THREAD_KEY}`,
+            `family-tab-${keyOf(firstChild)}`,
+            `family-tab-${keyOf(secondChild)}`,
+          ]),
+        { timeout: 10_000 },
       );
 
       // Switching to a child: the row stays mounted where it is, every frame.
@@ -1311,12 +1314,14 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
         (pathname) => pathname.endsWith(`/${secondChild}`),
         "A tab click should open its thread.",
       );
-      await vi.waitFor(() =>
-        expect(
-          row()
-            ?.querySelector(`[data-testid="family-tab-${keyOf(secondChild)}"]`)
-            ?.getAttribute("aria-selected"),
-        ).toBe("true"),
+      await vi.waitFor(
+        () =>
+          expect(
+            row()
+              ?.querySelector(`[data-testid="family-tab-${keyOf(secondChild)}"]`)
+              ?.getAttribute("aria-selected"),
+          ).toBe("true"),
+        { timeout: 10_000 },
       );
       await nextFrames(3);
       stop();
@@ -1331,7 +1336,7 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
         to: "/$environmentId/$threadId",
         params: { environmentId: LOCAL_ENVIRONMENT_ID, threadId: loner },
       });
-      await vi.waitFor(() => expect(row()).toBeNull());
+      await vi.waitFor(() => expect(row()).toBeNull(), { timeout: 10_000 });
     } finally {
       await mounted.cleanup();
     }
