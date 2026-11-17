@@ -40,6 +40,7 @@ import {
   ThreadMoveAbortedPayload as ContractsThreadMoveAbortedPayloadSchema,
   ThreadMovedAwayPayload as ContractsThreadMovedAwayPayloadSchema,
   ThreadHistorySeedDeliveredPayload as ContractsThreadHistorySeedDeliveredPayloadSchema,
+  ThreadMoveRestoreSetPayload as ContractsThreadMoveRestoreSetPayloadSchema,
   ThreadRemoteChildUpdatedPayload as ContractsThreadRemoteChildUpdatedPayloadSchema,
   ThreadParentAttachmentSetPayload as ContractsThreadParentAttachmentSetPayloadSchema,
   ThreadSideTurnInterruptRequestedPayload as ContractsThreadSideTurnInterruptRequestedPayloadSchema,
@@ -137,6 +138,7 @@ export const ThreadMoveCancelRequestedPayload = ContractsThreadMoveCancelRequest
 export const ThreadMoveAbortedPayload = ContractsThreadMoveAbortedPayloadSchema;
 export const ThreadMovedAwayPayload = ContractsThreadMovedAwayPayloadSchema;
 export const ThreadHistorySeedDeliveredPayload = ContractsThreadHistorySeedDeliveredPayloadSchema;
+export const ThreadMoveRestoreSetPayload = ContractsThreadMoveRestoreSetPayloadSchema;
 export const ThreadParentAttachmentSetPayload = ContractsThreadParentAttachmentSetPayloadSchema;
 export const ThreadSideTurnInterruptRequestedPayload =
   ContractsThreadSideTurnInterruptRequestedPayloadSchema;

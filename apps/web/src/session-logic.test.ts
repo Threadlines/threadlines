@@ -5298,9 +5298,27 @@ describe("a thread that moved here from another computer", () => {
         fromLabel: "Mac mini",
         movedAt: "2026-02-23T00:04:00.000Z",
         agentGot: "summary",
+        brought: [],
+        left: [],
       }),
     ]);
     expect(deriveWorkLogEntries([movedIn])).toEqual([]);
+
+    // What came along, and what didn't, in the server's words.
+    const withState = {
+      ...movedIn,
+      payload: {
+        ...(movedIn.payload as Record<string, unknown>),
+        brought: ["its goal", "2 queued messages", " "],
+        left: ["Auto-fix is off here: this computer already has a branch named `fix-login`."],
+      },
+    };
+    expect(deriveMovedInEntries([withState])).toEqual([
+      expect.objectContaining({
+        brought: ["its goal", "2 queued messages"],
+        left: ["Auto-fix is off here: this computer already has a branch named `fix-login`."],
+      }),
+    ]);
 
     // Moved with its agent's own session, which then couldn't be resumed here.
     const carried = {

@@ -1,10 +1,13 @@
 import {
   CommandId,
+  EnvironmentId,
   EventId,
   MessageId,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  ThreadMoveId,
+  ThreadMoveRequestId,
   TurnId,
   type OrchestrationCommand,
   type OrchestrationEvent,
@@ -45,6 +48,11 @@ import {
   type ProjectionSnapshotQueryShape,
 } from "../Services/ProjectionSnapshotQuery.ts";
 import { PullRequestAutomationWatcher } from "../Services/PullRequestAutomationWatcher.ts";
+import {
+  makeThreadActionGate,
+  ThreadActionGate,
+  type ThreadActionGateShape,
+} from "../../moves/ThreadActionGate.ts";
 import { makePullRequestAutomationWatcherLive } from "./PullRequestAutomationWatcher.ts";
 
 const NOW_ISO = "2026-05-04T10:00:00.000Z";
@@ -461,6 +469,8 @@ describe("PullRequestAutomationWatcher", () => {
     readonly holdStatusRead?: (cwd: string) => Promise<void> | undefined;
     /** Runs as the watcher picks an event up, just before it acts on it. */
     readonly onEventHeard?: () => void;
+    /** The gate the watcher shares with moves; its own when absent. */
+    readonly gate?: ThreadActionGateShape;
   }) {
     let script = input.script;
     let threads = input.threads;
@@ -598,6 +608,7 @@ describe("PullRequestAutomationWatcher", () => {
         }),
       ),
       Layer.provideMerge(Layer.succeed(PullRequestService, pullRequestService)),
+      Layer.provideMerge(Layer.succeed(ThreadActionGate, input.gate ?? makeThreadActionGate())),
     );
     runtime = ManagedRuntime.make(layer);
     const watcher = await runtime.runPromise(Effect.service(PullRequestAutomationWatcher));
@@ -1552,6 +1563,136 @@ describe("PullRequestAutomationWatcher", () => {
 
   describe("merge when checks pass", () => {
     const armed = thread({ pullRequestAutoFix: false, pullRequestAutoMerge: "rebase" });
+
+    describe("a thread that moves to another computer (fleet.md, Part 3e)", () => {
+      const moving = {
+        transferId: ThreadMoveId.make("transfer-1"),
+        target: { environmentId: EnvironmentId.make("environment-mac-mini"), label: "Mac mini" },
+        agent: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6.1-sol" },
+        phase: "exporting" as const,
+        cancelRequested: false,
+        startedAt: NOW_ISO,
+      };
+      const waiting = {
+        requestId: ThreadMoveRequestId.make("request-1"),
+        target: moving.target,
+        mode: "when-done" as const,
+        stage: "waiting" as const,
+        requestedAt: NOW_ISO,
+        requestedBy: { kind: "user" as const },
+      };
+
+      it("is never looked at, nor merged, while it waits to move, moves, or once it moved", async () => {
+        for (const state of [
+          { pendingMove: waiting },
+          { move: moving },
+          {
+            move: { ...moving, movedAway: { threadId: ThreadId.make("there"), movedAt: NOW_ISO } },
+          },
+        ]) {
+          const { actions, commands, statusReads, sweep } = await createHarness({
+            threads: [{ ...armed, ...state }],
+            script: {
+              remote: OPEN_PULL_REQUEST,
+              detail: mergeable([PASSING_CHECK]),
+              activity: activity(),
+              merge: () => Effect.succeed({ state: "merged" }),
+            },
+          });
+          await sweep();
+          // No look at all: no read of its checkout, so no baseline step either.
+          expect(statusReads).toEqual([]);
+          expect(actions).toEqual([]);
+          expect(commands).toEqual([]);
+        }
+      });
+
+      it("does not merge once the thread froze for its move while the host was being read", async () => {
+        const gate = makeThreadActionGate();
+        let freeze = () => {};
+        const order: string[] = [];
+        const { actions, setThreads, sweep } = await createHarness({
+          threads: [armed],
+          gate,
+          script: {
+            remote: OPEN_PULL_REQUEST,
+            get detail() {
+              freeze();
+              return mergeable([PASSING_CHECK]);
+            },
+            activity: activity(),
+            merge: () => Effect.succeed({ state: "merged" }),
+          },
+        });
+        // The move takes the gate around its freeze, just as the watcher
+        // decides to merge: the watcher waits for it, then reads the thread
+        // as moving and stands down.
+        let frozen: Promise<void> = Promise.resolve();
+        freeze = () => {
+          freeze = () => {};
+          frozen = Effect.runPromise(
+            gate.withThread(
+              THREAD_ID,
+              Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 50))).pipe(
+                Effect.andThen(
+                  Effect.sync(() => {
+                    setThreads([{ ...armed, move: moving }]);
+                    order.push("frozen");
+                  }),
+                ),
+              ),
+            ),
+          );
+        };
+        await sweep();
+        await frozen;
+        expect(order).toEqual(["frozen"]);
+        expect(actions).toEqual([]);
+      });
+
+      it("a merge already under way finishes before the freeze, which waits for it", async () => {
+        const gate = makeThreadActionGate();
+        const order: string[] = [];
+        let letMergeFinish = () => {};
+        const mergeHeld = new Promise<void>((resolve) => {
+          letMergeFinish = resolve;
+        });
+        let mergeStarted = () => {};
+        const started = new Promise<void>((resolve) => {
+          mergeStarted = resolve;
+        });
+        const { actions, sweep } = await createHarness({
+          threads: [armed],
+          gate,
+          script: {
+            remote: OPEN_PULL_REQUEST,
+            detail: mergeable([PASSING_CHECK]),
+            activity: activity(),
+            merge: () =>
+              Effect.promise(async () => {
+                mergeStarted();
+                await mergeHeld;
+                order.push("merged");
+                return { state: "merged" as const };
+              }),
+          },
+        });
+        const sweeping = sweep();
+        await started;
+        const freezing = Effect.runPromise(
+          gate.withThread(
+            THREAD_ID,
+            Effect.sync(() => order.push("frozen")),
+          ),
+        );
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        expect(order).toEqual([]);
+        letMergeFinish();
+        await Promise.all([sweeping, freezing]);
+        expect(order).toEqual(["merged", "frozen"]);
+        expect(actions.map((action) => action.action)).toEqual(["merge"]);
+      });
+    });
 
     it("waits for checks and pushes, then merges once and turns itself off", async () => {
       const { actions, commands, setScript, sweep } = await createHarness({

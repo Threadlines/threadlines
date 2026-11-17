@@ -27,6 +27,7 @@ import { LinkMoveRepositoryLive } from "./links/LinkMoveRepository.ts";
 import { LinkMovesLive } from "./links/LinkMoves.ts";
 import { MoveQueueLive } from "./moves/MoveQueue.ts";
 import { ThreadMoveBatchRepositoryLive } from "./moves/ThreadMoveBatchRepository.ts";
+import { ThreadActionGateLive } from "./moves/ThreadActionGate.ts";
 import { ThreadMovesLive } from "./moves/ThreadMoves.ts";
 import { layer as ProcessRunnerLive } from "./processRunner.ts";
 import { ProjectSetupRepositoryLive } from "./projectSetup/ProjectSetupRepository.ts";
@@ -392,8 +393,10 @@ const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(PullRequestAutomationWatcherLive),
   Layer.provideMerge(
     // Adapters ask it before the provider's own scheduling tools (step 3 of
-    // docs/design/assistants.md).
-    Layer.mergeAll(ThreadPullRequestLinkerLive, OutsideWorkLookupLive),
+    // docs/design/assistants.md). The pull request watcher and the move share
+    // the action gate: no act for a thread lands across its freeze
+    // (docs/design/fleet.md, Part 3e).
+    Layer.mergeAll(ThreadPullRequestLinkerLive, OutsideWorkLookupLive, ThreadActionGateLive),
   ),
 );
 

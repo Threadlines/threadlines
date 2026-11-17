@@ -1,8 +1,8 @@
 /**
  * The body of "Move threads" (MoveThreadsDialog.tsx): the computer they go
  * to, the computer's open threads (working ones first and ticked, idle ones
- * unticked, ones that can't move greyed out with why), one choice for the
- * working ones, and "Move N threads". Its own chunk, loaded the first time
+ * unticked, ones that can't move greyed out with why, each with what comes
+ * along), one choice for the working ones, and "Move N threads". Its own chunk, loaded the first time
  * the host shows a request.
  */
 import type {
@@ -16,7 +16,10 @@ import type {
 import { useEffect, useMemo, useState } from "react";
 
 import { describeComputerLinkFailure } from "../environments/links/computerLinks";
-import { requireThreadMovesClient } from "../environments/links/threadMoves";
+import {
+  requireThreadMovesClient,
+  useThreadMoveStateSupported,
+} from "../environments/links/threadMoves";
 import { useInboxThreads } from "../hooks/useInboxThreads";
 import { rememberMoveBatch } from "../moveBatchProgress";
 import { cn } from "../lib/utils";
@@ -55,11 +58,18 @@ const plural = (count: number, one: string, many: string) => `${count} ${count =
 export function MoveThreadsDialogContent({ request }: { request: MoveThreadsDialogRequest }) {
   const { sourceEnvironmentId } = request;
   const sourceLabel = useComputerLabel()(sourceEnvironmentId, sourceEnvironmentId);
-  const { entries } = useInboxThreads();
+  const { entries, generalChatEntries } = useInboxThreads();
+  // General Chats threads go too where the computer moves them (Part 3e).
+  const movesGeneralChats = useThreadMoveStateSupported(sourceEnvironmentId);
   // The list as it was when the dialog opened: rows don't jump while the
   // user ticks them, even as threads start and finish.
   const [candidates] = useState(() =>
-    listMoveCandidates(entries, sourceEnvironmentId, isSidebarThreadRunning),
+    listMoveCandidates(
+      entries,
+      movesGeneralChats ? generalChatEntries : [],
+      sourceEnvironmentId,
+      isSidebarThreadRunning,
+    ),
   );
   const [previewState, setPreviewState] = useState<PreviewState>({ status: "loading" });
   const [targetId, setTargetId] = useState<EnvironmentId | null>(null);
@@ -130,12 +140,12 @@ export function MoveThreadsDialogContent({ request }: { request: MoveThreadsDial
               {
                 candidate,
                 preview: threadPreview,
-                words: describeMoveCandidate(threadPreview, targetId),
+                words: describeMoveCandidate(threadPreview, targetId, target?.label),
               },
             ]
           : [];
       }),
-    [candidates, previewById, targetId],
+    [candidates, previewById, targetId, target?.label],
   );
   // What goes: the ticked rows that can go to the computer picked now.
   const chosen = rows.filter(
@@ -196,8 +206,8 @@ export function MoveThreadsDialogContent({ request }: { request: MoveThreadsDial
       <DialogHeader>
         <DialogTitle>Move threads</DialogTitle>
         <DialogDescription>
-          Threads on {sourceLabel} go with their messages and code changes. Your copies here stay,
-          read-only.
+          Threads on {sourceLabel} go with their messages, and code changes or a chat's files. Your
+          copies here stay, read-only.
         </DialogDescription>
       </DialogHeader>
       <DialogPanel className="space-y-4">
@@ -374,6 +384,14 @@ function CandidateList({
                 >
                   {words.words}
                 </span>
+                {words.landing !== undefined ? (
+                  <span
+                    className="block text-[12.5px] leading-[18px] text-muted-foreground"
+                    data-testid={`move-threads-landing-${candidate.threadId}`}
+                  >
+                    {words.landing}
+                  </span>
+                ) : null}
                 {words.session !== undefined ? (
                   <span
                     className="block text-[12.5px] leading-[18px] text-muted-foreground"
@@ -382,6 +400,24 @@ function CandidateList({
                     {words.session}
                   </span>
                 ) : null}
+                {(words.brings ?? []).map((line) => (
+                  <span
+                    key={line}
+                    className="block text-[12.5px] leading-[18px] text-muted-foreground"
+                    data-testid={`move-threads-brings-${candidate.threadId}`}
+                  >
+                    {line}
+                  </span>
+                ))}
+                {(words.notes ?? []).map((line) => (
+                  <span
+                    key={line}
+                    className="block text-[12.5px] leading-[18px] text-foreground"
+                    data-testid={`move-threads-note-${candidate.threadId}`}
+                  >
+                    {line}
+                  </span>
+                ))}
               </span>
             </label>
           </li>

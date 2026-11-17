@@ -6507,8 +6507,11 @@ export default function ChatView(props: ChatViewProps) {
     // The box holds one message for one agent. In a room, only the messages
     // for the first one's agent come back; the rest stay queued for theirs.
     // What an agent queued (a hand-off, a reply, another thread's request or
-    // answer) is never the user's to edit.
-    const usersOwn = followUps.filter((followUp) => !isAgentOrigin(followUp));
+    // answer), or Threadlines wrote for the agent after a move, is never the
+    // user's to edit.
+    const usersOwn = followUps.filter(
+      (followUp) => !isAgentOrigin(followUp) && followUp.afterMove !== true,
+    );
     const firstAgentId = usersOwn[0]?.participantId ?? null;
     const returning = isRoom(activeThread)
       ? usersOwn.filter((followUp) => (followUp.participantId ?? null) === firstAgentId)

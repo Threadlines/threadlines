@@ -21,6 +21,7 @@ import { randomUUID } from "node:crypto";
 
 import {
   CommandId,
+  MessageId,
   type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationThread,
@@ -54,11 +55,14 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { ComputerLinks } from "../links/ComputerLinks.ts";
+import { derivedUuid } from "../orchestration/childRequestIds.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import {
   firstMoveBlock,
+  isRestorePaid,
   moveWaitsOf,
+  restoreMessageText,
   sameMoveStatus,
   type ThreadMoveRefusalEntry,
   threadMoveRefusals,
@@ -124,8 +128,13 @@ export interface MoveQueueDeps {
   readonly readContext: (threadId: ThreadId) => Effect.Effect<ThreadMoveContext | null>;
   /** Threads with a queued move, for the startup scan. */
   readonly pendingThreadIds: Effect.Effect<ReadonlyArray<ThreadId>>;
+  /** Threads a move that didn't happen still owes (moveRestoreOwed), for the startup scan. */
+  readonly restoreOwedThreadIds: Effect.Effect<ReadonlyArray<ThreadId>>;
+  /** Whether the thread's agent sets itself check-backs (the put-back message says what to do). */
+  readonly setsCheckBacks: (thread: OrchestrationThread) => Effect.Effect<boolean>;
   readonly quiesce: (threadId: ThreadId) => Effect.Effect<ProviderStopConfirmation>;
   readonly checkQueue: ThreadMovesShape["checkQueue"];
+  readonly checkCarry: ThreadMovesShape["checkCarry"];
   /** Every linked computer, described once, for a batch. */
   readonly describeTargets: ThreadMovesShape["describeTargets"];
   readonly startQueued: ThreadMovesShape["startQueued"];
@@ -231,7 +240,12 @@ const sessionMark = (thread: OrchestrationThread) => {
 
 /** A thread's move checks, from the thread alone: no other thread or project. */
 const localRefusals = (thread: OrchestrationThread) =>
-  threadMoveRefusals({ projects: [], threads: [thread] }, thread);
+  threadMoveRefusals(
+    { projects: [], threads: [thread] },
+    thread,
+    // What the target said it takes, when the move was queued.
+    thread.pendingMove?.targetTakes,
+  );
 
 interface TrackedMove {
   requestId: ThreadMoveRequestId;
@@ -446,9 +460,41 @@ export const makeMoveQueue = (
         if (yield* settleRefusals(threadId, pending, localRefusals(thread))) return;
         const context = yield* deps.readContext(threadId);
         if (context === null) return yield* forget(threadId);
-        const refusals = threadMoveRefusals(context.view, context.thread);
+        const refusals = threadMoveRefusals(
+          context.view,
+          context.thread,
+          context.thread.pendingMove?.targetTakes,
+        );
         if (yield* settleRefusals(threadId, pending, refusals)) return;
-        yield* report(threadId, pending, [], pending.hold ?? null);
+        // Before anything is stopped: whether the target takes what the thread
+        // carries (docs/design/fleet.md, Part 3e). One that doesn't ends the
+        // move here, with nothing to put back; one that can't be reached holds
+        // it, its agent still at work.
+        if (pending.stage === "waiting") {
+          const carried = yield* deps.checkCarry({
+            threadId,
+            targetEnvironmentId: pending.target.environmentId,
+            label: pending.target.label,
+          });
+          if (carried.kind === "blocked") {
+            yield* end(threadId, requestId, "blocked", carried.words);
+            return;
+          }
+          if (carried.kind === "unreachable") {
+            yield* report(threadId, pending, [], {
+              kind: "target_unreachable",
+              words: carried.words,
+            });
+            return yield* held(threadId, entry);
+          }
+        }
+        // Waiting, only that answer held it; it is in now.
+        yield* report(
+          threadId,
+          pending,
+          [],
+          pending.stage === "waiting" ? null : (pending.hold ?? null),
+        );
 
         // The barrier: the fence goes up and its sessions stop.
         if (pending.stage === "waiting" || !sessionStopped(thread)) {
@@ -526,6 +572,138 @@ export const makeMoveQueue = (
       });
 
     // -------------------------------------------------------------------------
+    // Put back (docs/design/fleet.md, Part 3e): what a move that didn't happen
+    // owes the thread, from the record its end left (moveRestoreOwed).
+    // -------------------------------------------------------------------------
+
+    /** Threads being paid now, so two events for one thread pay once. */
+    const paying = new Set<ThreadId>();
+
+    /**
+     * Pays what the thread is owed, in one decision that clears the record:
+     * the goal that was working is on again and its agent is told (with its
+     * check-backs to set again), and the queue that waited is sent. A thread
+     * that queued another move since carries it there instead. Fails, and is
+     * tried again, while the record stays.
+     */
+    const payRestore = (
+      threadId: ThreadId,
+      options: { readonly attempt?: number; readonly startup?: boolean } = {},
+    ): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        const attempt = options.attempt ?? 0;
+        if (paying.has(threadId)) return;
+        paying.add(threadId);
+        yield* Effect.gen(function* () {
+          const thread = yield* deps.readThread(threadId);
+          const owed = thread?.moveRestoreOwed ?? null;
+          if (thread === null || owed === null) return;
+          if ((thread.pendingMove ?? null) !== null || (thread.move ?? null) !== null) return;
+          const now = yield* nowIso;
+          // Paid, with its last steps left: the reactor takes them as turns
+          // end. Only a restart in between needs this: the message it wrote
+          // (or the queue after it) is sent, or once all of it went, the
+          // goal is given back and the record clears.
+          if (isRestorePaid(owed)) {
+            if (options.startup !== true) return;
+            const busy =
+              thread.session?.status === "running" || thread.session?.status === "starting";
+            if (busy) return;
+            const head = (thread.queuedFollowUps ?? [])[0];
+            if (head !== undefined) {
+              yield* deps.dispatch({
+                type: "thread.follow-up.send-queued",
+                commandId: CommandId.make(
+                  `server:thread-move-restore:${threadId}:${owed.at}:${head.messageId}`,
+                ),
+                threadId,
+                messageId: head.messageId,
+                createdAt: now,
+              });
+              return;
+            }
+            const goal = thread.goal;
+            if (
+              owed.goalOwed === true &&
+              (goal?.status === "active" || goal?.status === "paused")
+            ) {
+              // A resume: the provider is given the goal the thread reads.
+              yield* deps.dispatch({
+                type: "thread.goal.set",
+                commandId: CommandId.make(`server:thread-move-restore:${threadId}:${owed.at}:goal`),
+                threadId,
+                status: "active",
+                createdAt: now,
+              });
+            }
+            yield* deps.dispatch({
+              type: "thread.move.restore",
+              commandId: CommandId.make(
+                `server:thread-move-restore:${threadId}:${owed.at}:finished`,
+              ),
+              threadId,
+              at: owed.at,
+              finished: true,
+              createdAt: now,
+            });
+            return;
+          }
+          const text = restoreMessageText(thread, owed, now, yield* deps.setsCheckBacks(thread));
+          const busy =
+            thread.session?.status === "running" || thread.session?.status === "starting";
+          // Told something, the message goes first and the queue follows it;
+          // nothing to tell, an idle thread sends its queue now. A turn at
+          // work sends it as it ends, as always.
+          const head = (thread.queuedFollowUps ?? [])[0];
+          // A send that was refused once isn't tried again: the queue is left
+          // for the user, and what was owed is still paid.
+          const sendQueued =
+            attempt === 0 && text === null && owed.queued === true && !busy && head !== undefined
+              ? head.messageId
+              : undefined;
+          yield* deps.dispatch({
+            type: "thread.move.restore",
+            commandId: CommandId.make(`server:thread-move-restore:${threadId}:${owed.at}`),
+            threadId,
+            at: owed.at,
+            ...(text !== null
+              ? {
+                  message: {
+                    messageId: MessageId.make(derivedUuid("move-restore", threadId, owed.at)),
+                    text,
+                  },
+                }
+              : {}),
+            ...(sendQueued !== undefined ? { sendQueued } : {}),
+            createdAt: now,
+          });
+        }).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("move queue: what a move owed couldn't be put back yet", {
+              threadId,
+              detail: error.message,
+            }).pipe(
+              // A restart tries again after the last of these.
+              Effect.andThen(
+                attempt >= 3
+                  ? Effect.void
+                  : Effect.sleep(retryDelay(attempt)).pipe(
+                      Effect.andThen(
+                        Effect.suspend(() =>
+                          payRestore(threadId, { ...options, attempt: attempt + 1 }),
+                        ),
+                      ),
+                      Effect.forkIn(scope),
+                      Effect.asVoid,
+                    ),
+              ),
+            ),
+          ),
+          Effect.ensuring(Effect.sync(() => paying.delete(threadId))),
+        );
+      });
+
+    // -------------------------------------------------------------------------
     // The service.
     // -------------------------------------------------------------------------
 
@@ -540,7 +718,7 @@ export const makeMoveQueue = (
       },
     ) =>
       Effect.gen(function* () {
-        const { label } = yield* deps.checkQueue({
+        const { label, takes } = yield* deps.checkQueue({
           threadId: input.threadId,
           targetEnvironmentId: input.targetEnvironmentId,
           agent: input.agent,
@@ -558,6 +736,7 @@ export const makeMoveQueue = (
             mode: input.mode,
             requestedBy: input.requestedBy ?? { kind: "user" },
             ...(batch !== undefined ? { batchId: batch.batchId } : {}),
+            targetTakes: takes,
             createdAt: yield* nowIso,
           })
           .pipe(Effect.mapError((error) => moveError(error.message)));
@@ -741,6 +920,10 @@ export const makeMoveQueue = (
               yield* schedule(threadId, Duration.zero);
             }
           }
+          // What moves that didn't happen still owe (a restart before it was paid).
+          for (const threadId of yield* deps.restoreOwedThreadIds) {
+            yield* payRestore(threadId, { startup: true });
+          }
         }).pipe(
           Effect.catchCause((cause) =>
             Effect.logWarning("move queue: the queued moves couldn't be read", { cause }),
@@ -769,6 +952,16 @@ export const makeMoveQueue = (
                   yield* forget(event.payload.threadId);
                 }
                 return;
+              }
+              // A move that didn't happen owes the thread what it took.
+              if (
+                event.type === "thread.move-restore-set" &&
+                event.payload.moveRestoreOwed !== null
+              ) {
+                return yield* payRestore(event.payload.threadId).pipe(
+                  Effect.forkIn(scope),
+                  Effect.asVoid,
+                );
               }
               // Another thread working in the same folder holds a move: any
               // session change anywhere is a reason to look again.
@@ -837,8 +1030,22 @@ export const MoveQueueLive = Layer.effect(
         Effect.map((rows) => rows.map((row) => row.threadId)),
         Effect.orDie,
       ),
+      restoreOwedThreadIds: sql<{ readonly threadId: ThreadId }>`
+        SELECT thread_id AS "threadId"
+        FROM projection_threads
+        WHERE move_restore_owed_json IS NOT NULL AND deleted_at IS NULL
+      `.pipe(
+        Effect.map((rows) => rows.map((row) => row.threadId)),
+        Effect.orDie,
+      ),
+      setsCheckBacks: (thread) =>
+        providers.getCapabilities(thread.modelSelection.instanceId).pipe(
+          Effect.map((capabilities) => capabilities.checkBacks === "supported"),
+          Effect.orElseSucceed(() => false),
+        ),
       quiesce: providers.quiesceThread,
       checkQueue: threadMoves.checkQueue,
+      checkCarry: threadMoves.checkCarry,
       describeTargets: threadMoves.describeTargets,
       startQueued: threadMoves.startQueued,
       cancelMove: threadMoves.cancel,

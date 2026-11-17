@@ -34,19 +34,35 @@ import {
   type ComputerLinkPendingRequest,
   ComputerLinkError,
   EventId,
+  GENERAL_CHATS_PROJECT_ID,
+  isScratchMoveManifest,
   type LinksRespondRequestInput,
   MessageId,
+  type OrchestrationProposedPlan,
+  type OrchestrationQueuedFollowUp,
+  type OrchestrationThreadGoal,
+  type OrchestrationThreadLinkedPullRequest,
   type PeerMoveChunkInput,
   type PeerMoveInput,
   type PeerMoveManifest,
   type PeerMovePart,
   type PeerMovePrepareInput,
   type PeerMoveAbortCode,
+  type PeerMoveReadinessInput,
+  type PeerMoveReadinessResult,
   type PeerMoveRefusalCode,
   type PeerMoveState,
+  type PeerMoveThreadState,
   type ProviderInstanceId,
+  type ProviderInteractionMode,
+  type PullRequestMergeMethod,
   type RuntimeMode,
   PEER_MOVE_CHUNK_MAX_BYTES,
+  PEER_MOVE_STATE_MAX_BYTES,
+  PEER_MOVE_STATE_MAX_CHECK_BACKS,
+  PEER_MOVE_STATE_MAX_PLANS,
+  PEER_MOVE_STATE_MAX_PULL_REQUESTS,
+  PEER_MOVE_STATE_MAX_QUEUED,
   PeerRpcError,
   ThreadId,
   type ThreadImportMessage,
@@ -72,8 +88,11 @@ import { ServerConfig } from "../config.ts";
 import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";
 import { receivedPathRefusal, writeReceivedFile } from "../fs/receivedFiles.ts";
 import { ProjectSetupScriptRunner } from "../project/Services/ProjectSetupScriptRunner.ts";
+import { arrivalMessageText } from "../moves/arrivalMessage.ts";
 import { MOVE_MAX_BYTES } from "../moves/moveExport.ts";
 import { derivedUuid } from "../orchestration/childRequestIds.ts";
+import { generalChatThreadScratchCwd } from "../orchestration/generalChats.ts";
+
 import { clampLaunchToCeiling } from "../orchestration/childThreadDecisions.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
@@ -82,6 +101,7 @@ import { discardSessionFiles, releaseSessionFiles } from "../provider/nativeSess
 import { ProviderService } from "../provider/Services/ProviderService.ts";
 import { RepositoryIdentityResolver } from "../project/Services/RepositoryIdentityResolver.ts";
 import { RelayDeviceRepository } from "../relay/RelayDeviceRepository.ts";
+import { GitHubCli } from "../sourceControl/GitHubCli.ts";
 import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
 import { makeKeyedLock } from "./keyedLock.ts";
 import { LinkMoveRepository, type LinkMoveRow } from "./LinkMoveRepository.ts";
@@ -154,6 +174,14 @@ export interface LinkMovesShape {
   readonly pendingChanges: Stream.Stream<void>;
   /** An inbound link was removed: its unfinished moves are dropped. */
   readonly dropLink: (deviceId: string) => Effect.Effect<void>;
+  /**
+   * Whether a project's pull requests can be watched here (`peer.move.readiness`,
+   * docs/design/fleet.md, Part 3e, (c)): asked before a thread with switches on moves.
+   */
+  readonly readiness: (
+    link: PeerLink,
+    input: PeerMoveReadinessInput,
+  ) => Effect.Effect<PeerMoveReadinessResult, PeerRpcError>;
   /** Settle what the previous process left, and sweep hourly. */
   readonly startReactor: () => Effect.Effect<void, never, Scope.Scope>;
 }
@@ -200,9 +228,14 @@ export function moveManifestRefusal(manifest: PeerMoveManifest): string | null {
   if (next !== manifest.totalBytes) return "its parts don't add up";
   const count = (kind: PeerMovePart["kind"]) =>
     manifest.parts.filter((part) => part.kind === kind).length;
-  if (count("bundle") > 1 || count("diff") > 1) return "it has more than one bundle or diff";
-  if ((count("bundle") === 1) !== (manifest.git.baseSha !== null)) {
-    return "its commits don't match its base";
+  if (isScratchMoveManifest(manifest)) {
+    // A general chat's folder is its files alone.
+    if (count("bundle") > 0 || count("diff") > 0) return "a general chat carries no commits";
+  } else {
+    if (count("bundle") > 1 || count("diff") > 1) return "it has more than one bundle or diff";
+    if ((count("bundle") === 1) !== (manifest.git.baseSha !== null)) {
+      return "its commits don't match its base";
+    }
   }
   const seen = new Set<string>();
   for (const part of manifest.parts) {
@@ -224,7 +257,44 @@ export function moveManifestRefusal(manifest: PeerMoveManifest): string | null {
   if (count("session") > 0 !== (manifest.session !== undefined)) {
     return "its session doesn't match its files";
   }
+  return moveStateRefusal(manifest.thread.state);
+}
+
+/** Why what a moved thread had going can't be taken, or null: within its bounds. */
+function moveStateRefusal(state: PeerMoveThreadState | undefined): string | null {
+  if (state === undefined) return null;
+  if (JSON.stringify(state).length > PEER_MOVE_STATE_MAX_BYTES) {
+    return "what it had going is too big";
+  }
+  if ((state.queuedFollowUps ?? []).length > PEER_MOVE_STATE_MAX_QUEUED) {
+    return "it has too many queued messages";
+  }
+  if ((state.checkBacks ?? []).length > PEER_MOVE_STATE_MAX_CHECK_BACKS) {
+    return "it has too many check-backs";
+  }
+  if ((state.proposedPlans ?? []).length > PEER_MOVE_STATE_MAX_PLANS) {
+    return "it has too many plans";
+  }
+  if ((state.pullRequests?.linked ?? []).length > PEER_MOVE_STATE_MAX_PULL_REQUESTS) {
+    return "it has too many pull requests";
+  }
   return null;
+}
+
+/** The git half of a move's manifest; a general chat has none. */
+const gitOf = (manifest: PeerMoveManifest) =>
+  isScratchMoveManifest(manifest) ? null : manifest.git;
+
+/** What the allow card says a move brings: a general chat's files count as new files. */
+function moveSummaryOf(manifest: PeerMoveManifest) {
+  return isScratchMoveManifest(manifest)
+    ? { branch: null, trackedFiles: 0, untrackedFiles: manifest.summary.files, unpushedCommits: 0 }
+    : {
+        branch: manifest.git.branch,
+        trackedFiles: manifest.summary.trackedFiles,
+        untrackedFiles: manifest.summary.untrackedFiles,
+        unpushedCommits: manifest.summary.unpushedCommits,
+      };
 }
 
 const BASE85 =
@@ -319,6 +389,9 @@ const make = Effect.gen(function* () {
   const setupScripts = yield* ProjectSetupScriptRunner;
   const environment = yield* ServerEnvironment;
   const providers = yield* ProviderService;
+  // GitHub's sign-in, for the pull request switches a move brings; none in a
+  // server built without it (tests), which then can't tell.
+  const gitHubCli = yield* Effect.serviceOption(GitHubCli);
   // Read at each use: the computer can be renamed while this runs.
   const ownLabel = environment.currentLabel;
   const pendingHub = yield* PubSub.sliding<void>(1);
@@ -429,6 +502,18 @@ const make = Effect.gen(function* () {
   /** The project here a move lands in, and the remote it fetches from. */
   const landing = (manifest: PeerMoveManifest) =>
     Effect.gen(function* () {
+      // A general chat lands in this computer's General chats.
+      if (isScratchMoveManifest(manifest)) {
+        const catalog = yield* snapshots
+          .getProjectCatalog()
+          .pipe(Effect.orElseSucceed(() => ({ projects: [] as const })));
+        const project = catalog.projects.find(
+          (entry) => entry.id === GENERAL_CHATS_PROJECT_ID && entry.deletedAt === null,
+        );
+        return project === undefined
+          ? null
+          : { project, root: project.workspaceRoot, remoteName: "" };
+      }
       const project = yield* requests.projectForKey(
         manifest.project.canonicalKey,
         manifest.project.subdirectory,
@@ -480,6 +565,29 @@ const make = Effect.gen(function* () {
           Effect.as(true),
           Effect.orElseSucceed(() => false),
         ));
+      // A general chat made only its folder.
+      if (isScratchMoveManifest(row.manifest)) {
+        const folder = row.worktreePath;
+        if (folder !== null) {
+          const ours = yield* ownsScratchFolder(row, folder);
+          if (ours === null) clean = false;
+          else if (ours) {
+            yield* Effect.promise(() =>
+              NodeFs.rm(folder, { recursive: true, force: true }).catch(() => undefined),
+            );
+            if ((yield* pathState(folder)) !== false) clean = false;
+          }
+        }
+        if (!clean) return;
+        yield* moves
+          .markCleaned({
+            linkDeviceId: row.linkDeviceId,
+            transferId: row.transferId,
+            now: yield* nowIso,
+          })
+          .pipe(Effect.ignore);
+        return;
+      }
       // The repository recorded when the import began (nothing was made in
       // git before that). One deleted since took its refs and worktree list
       // with it; one that is there but can't be read, or can't be told
@@ -525,7 +633,7 @@ const make = Effect.gen(function* () {
             if (
               row.branch !== null &&
               at.ok &&
-              at.out === row.manifest.git.headSha &&
+              at.out === gitOf(row.manifest)?.headSha &&
               (yield* ownsBranch(repo, row.branch, row))
             ) {
               const deleted = yield* runGit(repo, ["branch", "-D", row.branch]);
@@ -547,6 +655,30 @@ const make = Effect.gen(function* () {
           now: yield* nowIso,
         })
         .pipe(Effect.ignore);
+    });
+
+  /** Where a general chat moved here keeps its files: its own folder in General chats. */
+  const scratchFolderOf = (root: string, row: Pick<LinkMoveRow, "threadId">) =>
+    generalChatThreadScratchCwd(root, row.threadId, NodePath);
+
+  /**
+   * Whether `folder` is the one this general chat's move made, so clean-up
+   * may remove it: it is the folder named from this move's thread, and no
+   * thread with that id exists here (only that thread's sessions could have
+   * made it otherwise). Null when that can't be read.
+   */
+  const ownsScratchFolder = (row: LinkMoveRow, folder: string) =>
+    Effect.gen(function* () {
+      const land = yield* landing(row.manifest);
+      const named =
+        land !== null
+          ? folder === scratchFolderOf(land.root, row)
+          : NodePath.basename(folder) === row.threadId &&
+            NodePath.basename(NodePath.dirname(folder)) === "threads";
+      if (!named) return false;
+      const thread = yield* threadRows.getById({ threadId: row.threadId }).pipe(Effect.option);
+      if (Option.isNone(thread)) return null;
+      return Option.isNone(thread.value);
     });
 
   /** Whether `path` is there: false only when it's confirmed gone, null when that can't be told. */
@@ -916,7 +1048,8 @@ const make = Effect.gen(function* () {
    */
   const settleLanded = (row: LinkMoveRow) =>
     Effect.gen(function* () {
-      if (row.worktreePath !== null) {
+      // A general chat's folder gets no setup script: it isn't a project's worktree.
+      if (row.worktreePath !== null && !isScratchMoveManifest(row.manifest)) {
         const land = yield* landing(row.manifest);
         if (land !== null) {
           yield* setupScripts
@@ -969,6 +1102,7 @@ const make = Effect.gen(function* () {
           yield* settleLanded(row).pipe(
             Effect.mapError(() => peerFailure(`${ownLabel()} couldn't record that.`)),
           );
+          yield* arrive(row);
           return stateOf({ ...row, status: "committed" });
         }
         const why = reason ?? "The move was cancelled.";
@@ -1047,7 +1181,9 @@ const make = Effect.gen(function* () {
       yield* setStage(row, { repoRoot: top.out });
       yield* runGit(land.root, ["fetch", "--quiet", land.remoteName], GIT_FETCH_TIMEOUT_MS);
       const bundle = row.manifest.parts.find((part) => part.kind === "bundle");
-      const { headSha, baseSha } = row.manifest.git;
+      const moved = gitOf(row.manifest);
+      if (moved === null) return yield* stop(`${ownLabel()} lost track of the move.`);
+      const { headSha, baseSha } = moved;
       if (bundle !== undefined && baseSha === null) {
         return yield* stop(`${ownLabel()} can't take commits that start from nothing.`);
       }
@@ -1151,7 +1287,9 @@ const make = Effect.gen(function* () {
    */
   const expansionBytes = (row: LinkMoveRow, root: string) =>
     Effect.gen(function* () {
-      const { headSha, baseSha } = row.manifest.git;
+      const moved = gitOf(row.manifest);
+      if (moved === null) return null;
+      const { headSha, baseSha } = moved;
       const committed =
         baseSha === null || !row.manifest.parts.some((part) => part.kind === "bundle")
           ? 0
@@ -1172,7 +1310,7 @@ const make = Effect.gen(function* () {
   /** The branch name the move takes here: its own, else one marked with where it came from. */
   const pickBranch = (root: string, row: LinkMoveRow) =>
     Effect.gen(function* () {
-      const source = row.manifest.git.branch;
+      const source = gitOf(row.manifest)?.branch ?? null;
       const from = row.manifest.source.environmentLabel
         .toLowerCase()
         .replace(/[^a-z0-9]+/g, "-")
@@ -1209,7 +1347,9 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const land = yield* landing(row.manifest);
       if (land === null) return yield* stop(`${ownLabel()} doesn't have this project anymore.`);
-      const { headSha } = row.manifest.git;
+      const moved = gitOf(row.manifest);
+      if (moved === null) return yield* stop(`${ownLabel()} lost track of the move.`);
+      const { headSha } = moved;
       const branch = row.branch ?? (yield* pickBranch(land.root, row));
       const path =
         row.worktreePath ??
@@ -1239,6 +1379,7 @@ const make = Effect.gen(function* () {
         }
         const head = yield* runGit(path, ["rev-parse", "HEAD"]);
         if (head.ok && head.out === headSha) {
+          if (row.branch !== null) yield* trackUpstream(land, row, row.branch);
           yield* setStage(row, { stage: "worktree" });
           return;
         }
@@ -1277,8 +1418,40 @@ const make = Effect.gen(function* () {
         return yield* stop(`${ownLabel()}'s worktree for it isn't at the moved commit.`);
       }
       yield* runGit(land.root, ["update-ref", "-d", tempRef(row)]);
+      yield* trackUpstream(land, row, name);
       yield* setStage(row, { stage: "worktree" });
     });
+
+  /**
+   * The branch made here tracks the branch it tracked there, when the remote
+   * has it (docs/design/fleet.md, Part 3e, (c)): the thread's own pull
+   * request is found by it, and a merge waits for commits not pushed to it.
+   * For every move, whatever its switches. Best effort: a branch left without
+   * one says so at the commit (`upstreamOf`).
+   */
+  const trackUpstream = (
+    land: { readonly root: string; readonly remoteName: string },
+    row: LinkMoveRow,
+    branch: string,
+  ) =>
+    Effect.gen(function* () {
+      const upstream = gitOf(row.manifest)?.upstreamBranch;
+      if (upstream === undefined || land.remoteName.length === 0) return;
+      const remoteRef = `refs/remotes/${land.remoteName}/${upstream}`;
+      const there = yield* runGit(land.root, ["rev-parse", "--verify", "--quiet", remoteRef]);
+      if (!there.ok) return;
+      yield* runGit(land.root, ["config", `branch.${branch}.remote`, land.remoteName]);
+      yield* runGit(land.root, ["config", `branch.${branch}.merge`, `refs/heads/${upstream}`]);
+    });
+
+  /** The upstream the moved thread's branch tracks here (`<remote>/<branch>`), or null. */
+  const upstreamOf = (root: string, branch: string) =>
+    runGit(root, [
+      "rev-parse",
+      "--abbrev-ref",
+      "--symbolic-full-name",
+      `${branch}@{upstream}`,
+    ]).pipe(Effect.map((result) => (result.ok && result.out.length > 0 ? result.out : null)));
 
   /** Writes one new file, refusing any parent that is a symbolic link. */
   const writeNewFile = (root: string, part: PeerMovePart, bytes: Buffer) =>
@@ -1301,7 +1474,9 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const path = row.worktreePath;
       if (path === null) return yield* stop(`${ownLabel()} lost track of the move's worktree.`);
-      const { headSha } = row.manifest.git;
+      const moved = gitOf(row.manifest);
+      if (moved === null) return yield* stop(`${ownLabel()} lost track of the move.`);
+      const { headSha } = moved;
       const status = yield* runGit(path, ["status", "--porcelain"]);
       if (status.out.length > 0) {
         // Ours, uncommitted, never handed to a thread: back to the moved commit.
@@ -1349,6 +1524,82 @@ const make = Effect.gen(function* () {
       yield* setStage(row, { stage: "applied" });
     });
 
+  /**
+   * A general chat's own folder in General chats here (docs/design/fleet.md,
+   * Part 3e, (d)), named from the move's thread: recorded before it is made,
+   * then made with an exclusive mkdir, so a folder already there that holds
+   * anything stops the move rather than being written into.
+   */
+  const folderStage = (row: LinkMoveRow) =>
+    Effect.gen(function* () {
+      const land = yield* landing(row.manifest);
+      if (land === null) return yield* stop(`${ownLabel()} has no General chats to put it in.`);
+      const folder = row.worktreePath ?? scratchFolderOf(land.root, row);
+      const firstTime = row.worktreePath === null;
+      // One there with anything in it before this move picked it isn't its
+      // own: the move stops before it is on record, so clean-up never touches it.
+      if (firstTime) {
+        const held = yield* Effect.promise(() =>
+          NodeFs.readdir(folder).then(
+            (entries) => entries.length > 0,
+            (error: NodeJS.ErrnoException) => error.code !== "ENOENT",
+          ),
+        );
+        if (held) return yield* stop(`${ownLabel()} already has a folder at ${folder}.`);
+        yield* setStage(row, { worktreePath: folder });
+      }
+      const made = yield* Effect.tryPromise(async () => {
+        await NodeFs.mkdir(NodePath.dirname(folder), { recursive: true });
+        try {
+          await NodeFs.mkdir(folder);
+          return "made" as const;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+          return (await NodeFs.readdir(folder)).length === 0
+            ? ("empty" as const)
+            : ("full" as const);
+        }
+      }).pipe(
+        Effect.mapError(
+          () => new ImportStop({ reason: `${ownLabel()} couldn't make a folder for this chat.` }),
+        ),
+      );
+      // One there before this move picked it isn't its own.
+      if (made === "full" && firstTime) {
+        return yield* stop(`${ownLabel()} already has a folder at ${folder}.`);
+      }
+      yield* setStage(row, { stage: "folder" });
+    });
+
+  /** A general chat's files, into its folder. A crashed write starts again in an emptied folder. */
+  const scratchApplyStage = (row: LinkMoveRow) =>
+    Effect.gen(function* () {
+      const folder = row.worktreePath;
+      if (folder === null) return yield* stop(`${ownLabel()} lost track of the chat's folder.`);
+      const entries = yield* Effect.tryPromise(() => NodeFs.readdir(folder)).pipe(
+        Effect.mapError(() => new ImportStop({ reason: `${ownLabel()} lost the chat's folder.` })),
+      );
+      if (entries.length > 0) {
+        if ((yield* ownsScratchFolder(row, folder)) !== true) {
+          return yield* stop(`A thread on ${ownLabel()} is using that folder.`);
+        }
+        yield* Effect.tryPromise(async () => {
+          await NodeFs.rm(folder, { recursive: true, force: true });
+          await NodeFs.mkdir(folder);
+        }).pipe(
+          Effect.mapError(
+            () => new ImportStop({ reason: `${ownLabel()} couldn't empty the chat's folder.` }),
+          ),
+        );
+      }
+      for (const part of row.manifest.parts.filter((entry) => entry.kind === "file")) {
+        const refusal = movePathRefusal(part.path ?? "");
+        if (refusal !== null) return yield* stop(`${ownLabel()} can't take it: ${refusal}.`);
+        yield* writeNewFile(folder, part, yield* partBytes(row, part));
+      }
+      yield* setStage(row, { stage: "applied" });
+    });
+
   /** The new attachment a moved one becomes here: an id of this thread, written beside the others. */
   const importAttachments = (row: LinkMoveRow) =>
     Effect.gen(function* () {
@@ -1360,7 +1611,12 @@ const make = Effect.gen(function* () {
           .filter((part) => part.kind === "attachment")
           .map((part) => [part.attachmentId!, part] as const),
       );
-      for (const message of row.manifest.thread.messages) {
+      // The history's, and the queued messages' (docs/design/fleet.md, Part 3e, (e)).
+      const carriers = [
+        ...row.manifest.thread.messages,
+        ...(row.manifest.thread.state?.queuedFollowUps ?? []),
+      ];
+      for (const message of carriers) {
         for (const attachment of message.attachments ?? []) {
           if (remapped.has(attachment.id)) continue;
           const id = `${segment}-${derivedUuid("link-move-attachment", row.transferKey, attachment.id)}`;
@@ -1569,6 +1825,20 @@ const make = Effect.gen(function* () {
           ? yield* carrySession(row, agent.selection.instanceId, capped.runtimeMode)
           : false;
       const now = yield* nowIso;
+      const fromLabel = Option.isSome(device)
+        ? device.value.label
+        : row.manifest.source.environmentLabel;
+      const scratch = isScratchMoveManifest(row.manifest);
+      const state = yield* importedState({
+        row,
+        root: land.root,
+        instanceId: agent.selection.instanceId,
+        runtimeMode: capped.runtimeMode,
+        interactionMode: capped.interactionMode,
+        attachments,
+        fromLabel,
+        now,
+      });
       const dispatched = yield* engine
         .dispatch({
           type: "thread.import",
@@ -1579,19 +1849,19 @@ const make = Effect.gen(function* () {
           modelSelection: agent.selection,
           runtimeMode: capped.runtimeMode,
           interactionMode: capped.interactionMode,
-          branch: row.branch,
-          worktreePath: row.worktreePath,
+          // A general chat works in its folder as every general chat does: by its id.
+          branch: scratch ? null : row.branch,
+          worktreePath: scratch ? null : row.worktreePath,
           movedFrom: {
             environmentId: row.manifest.source.environmentId,
-            label: Option.isSome(device)
-              ? device.value.label
-              : row.manifest.source.environmentLabel,
+            label: fromLabel,
             threadId: row.manifest.source.threadId,
             movedAt: now,
           },
           messages,
           activities,
           ...(carried ? { nativeSession: "carried" as const } : {}),
+          ...state,
           createdAt: now,
         })
         .pipe(Effect.uninterruptible, Effect.exit);
@@ -1602,6 +1872,319 @@ const make = Effect.gen(function* () {
       const carriedFiles = yield* readCarriedRecord(row);
       if (carriedFiles !== null) yield* releaseSessionFiles(carriedFiles, row.transferKey);
       yield* settleLanded(row).pipe(Effect.ignore);
+      yield* arrive(row);
+    });
+
+  /** The ids a move's import gives the queue it writes: its arrival message, then the user's. */
+  const arrivalMessageId = (row: Pick<LinkMoveRow, "transferKey">) =>
+    MessageId.make(derivedUuid("link-move-arrival", row.transferKey));
+  const queuedMessageId = (row: Pick<LinkMoveRow, "transferKey">, id: string) =>
+    MessageId.make(derivedUuid("link-move-queued", row.transferKey, id));
+
+  /**
+   * What a moved thread had going, as it lands here (docs/design/fleet.md,
+   * Part 3e), for the agent picked here: its goal as it arrives, its pull
+   * request switches (off, with why, when its branch had to be renamed), its
+   * plans and queue with this computer's ids, and the arrival: the message
+   * its agent is told, and the "Moved here" line's two lists.
+   */
+  const importedState = (input: {
+    readonly row: LinkMoveRow;
+    readonly root: string;
+    readonly instanceId: ProviderInstanceId;
+    readonly runtimeMode: RuntimeMode;
+    readonly interactionMode: ProviderInteractionMode;
+    readonly attachments: ReadonlyMap<string, ChatAttachment>;
+    readonly fromLabel: string;
+    readonly now: string;
+  }) =>
+    Effect.gen(function* () {
+      const { row, now } = input;
+      const state = row.manifest.thread.state;
+      if (state === undefined) return {};
+      const key = row.transferKey;
+      const capabilities = yield* providers
+        .getCapabilities(input.instanceId)
+        .pipe(Effect.orElseSucceed(() => null));
+      const keepsGoals = capabilities?.threadGoals === "supported";
+      const keepsBudgets = keepsGoals && capabilities?.threadGoalBudget !== "unsupported";
+      const setsCheckBacks = capabilities?.checkBacks === "supported";
+      const brought: string[] = [];
+      const left: string[] = [];
+
+      // (a) The goal.
+      let goal: OrchestrationThreadGoal | undefined;
+      let goalToTell: { readonly objective: string } | null = null;
+      const carriedGoal = state.goal;
+      if (carriedGoal !== undefined) {
+        // Only a goal still working or paused is picked up; one that finished stays finished.
+        const pickUp =
+          carriedGoal.pickUp &&
+          (carriedGoal.status === "active" || carriedGoal.status === "paused");
+        const { pickUp: _pickUp, ...record } = carriedGoal;
+        if (!keepsGoals) {
+          left.push(
+            `Its goal didn't come along: the agent here can't keep goals. It was: ${carriedGoal.objective}`,
+          );
+          if (pickUp) goalToTell = { objective: carriedGoal.objective };
+        } else if (
+          carriedGoal.tokenBudget !== null &&
+          !keepsBudgets &&
+          carriedGoal.status !== "complete"
+        ) {
+          // The agent here refuses a budget: the goal waits, and Resume runs it without one.
+          goal = { ...record, threadId: row.threadId, status: "paused", tokenBudget: null };
+          left.push(
+            "Its goal came paused: the agent here can't keep its token budget. Resume runs it without one.",
+          );
+        } else {
+          const status = pickUp
+            ? "active"
+            : carriedGoal.status === "active" ||
+                carriedGoal.status === "paused" ||
+                carriedGoal.status === "usageLimited"
+              ? "paused"
+              : carriedGoal.status;
+          goal = { ...record, threadId: row.threadId, status };
+          if (pickUp) goalToTell = { objective: carriedGoal.objective };
+          if (carriedGoal.status !== "complete") {
+            brought.push(status === "paused" ? "its goal, paused" : "its goal");
+          }
+        }
+      }
+
+      // (b) Check-backs: the agent sets them again (or is told once).
+      const checkBacks = state.checkBacks ?? [];
+      if (checkBacks.length > 0) {
+        if (setsCheckBacks) {
+          brought.push(
+            checkBacks.length === 1
+              ? "a check-back to set again"
+              : `${checkBacks.length} check-backs to set again`,
+          );
+        } else {
+          left.push(
+            "Its check-backs didn't come along: the agent here can't set them. It's told once what was planned.",
+          );
+        }
+      }
+
+      // (c) Pull request switches.
+      let pullRequests:
+        | {
+            readonly autoFix: boolean;
+            readonly autoMerge: PullRequestMergeMethod | null;
+            readonly linked: ReadonlyArray<OrchestrationThreadLinkedPullRequest>;
+          }
+        | undefined;
+      const carriedSwitches = state.pullRequests;
+      if (carriedSwitches !== undefined) {
+        const moved = gitOf(row.manifest);
+        const numbers = carriedSwitches.linked.map((entry) => `#${entry.number}`);
+        const which =
+          numbers.length > 0 ? `pull request ${numbers.join(", ")}` : "its pull request";
+        // A branch renamed here doesn't push to the pull request; one that
+        // tracks nothing can't tell what isn't pushed yet.
+        const renamed = moved?.branch !== null && row.branch !== moved?.branch;
+        const untracked =
+          !renamed &&
+          moved?.upstreamBranch !== undefined &&
+          row.branch !== null &&
+          (yield* upstreamOf(input.root, row.branch)) === null;
+        const off = renamed
+          ? `Auto-fix is off here: this computer already has a branch named \`${moved?.branch ?? ""}\`, so pushes from this thread wouldn't reach ${which}.`
+          : untracked
+            ? `Auto-fix is off here: this thread's branch couldn't track ${moved?.upstreamBranch ?? "its branch"} on this computer, so it can't tell what isn't pushed yet.`
+            : null;
+        const linked = carriedSwitches.linked.map((entry) => ({
+          number: entry.number,
+          url: entry.url,
+          autoFix: off === null && entry.autoFix,
+          autoMerge: off === null ? entry.autoMerge : null,
+        }));
+        pullRequests = {
+          autoFix: off === null && carriedSwitches.autoFix,
+          autoMerge: off === null ? carriedSwitches.autoMerge : null,
+          linked,
+        };
+        if (off !== null) {
+          left.push(off);
+        } else {
+          const ready = yield* gitHubReadiness(input.root);
+          const fixing =
+            carriedSwitches.autoFix || carriedSwitches.linked.some((entry) => entry.autoFix);
+          const merging =
+            carriedSwitches.autoMerge !== null ||
+            carriedSwitches.linked.some((entry) => entry.autoMerge !== null);
+          const switches =
+            fixing && merging ? "auto-fix and auto-merge" : fixing ? "auto-fix" : "auto-merge";
+          brought.push(`${switches} for ${which.replace(/^pull request /u, "")}`);
+          if (ready.gitHubReady === false) {
+            left.push(
+              "Auto-fix came along, but GitHub isn't signed in on this computer. Sign in and it starts.",
+            );
+          }
+        }
+      }
+
+      // (e) The user's queued messages, on the agent picked here, with this computer's ids.
+      const skipped = (state.queuedFollowUps ?? []).filter(
+        (entry) => (entry.skills ?? []).length > 0,
+      ).length;
+      const queuedFollowUps: OrchestrationQueuedFollowUp[] = (state.queuedFollowUps ?? []).map(
+        (entry) => ({
+          messageId: queuedMessageId(row, entry.messageId),
+          text: entry.text,
+          attachments: entry.attachments.map(
+            (attachment) => input.attachments.get(attachment.id) ?? attachment,
+          ),
+          ...(entry.composer !== undefined ? { composer: entry.composer } : {}),
+          ...(entry.sentFrom !== undefined ? { sentFrom: entry.sentFrom } : {}),
+          runtimeMode: input.runtimeMode,
+          interactionMode: input.interactionMode,
+          createdAt: entry.createdAt,
+        }),
+      );
+      if (queuedFollowUps.length > 0) {
+        brought.push(
+          queuedFollowUps.length === 1
+            ? "1 queued message"
+            : `${queuedFollowUps.length} queued messages`,
+        );
+      }
+      if (skipped > 0) {
+        left.push("Skills named in its queued messages stayed behind: send them again here.");
+      }
+
+      // (f) Plans, with this computer's ids.
+      const key2 = (id: string) => derivedUuid("link-move-turn", key, id);
+      const proposedPlans: OrchestrationProposedPlan[] = (state.proposedPlans ?? []).map(
+        (plan) => ({
+          id: derivedUuid("link-move-plan", key, plan.id),
+          turnId: plan.turnId === null ? null : TurnId.make(key2(plan.turnId)),
+          planMarkdown: plan.planMarkdown,
+          implementedAt: plan.implementedAt,
+          implementationThreadId:
+            plan.implementationThreadId === row.manifest.source.threadId ? row.threadId : null,
+          dismissedAt: plan.dismissedAt,
+          createdAt: plan.createdAt,
+          updatedAt: plan.updatedAt,
+        }),
+      );
+      const newest = proposedPlans.at(-1);
+      if (newest !== undefined && newest.implementedAt === null && newest.dismissedAt === null) {
+        brought.push("its plan");
+      }
+      const behind = state.plansLeftBehind ?? 0;
+      if (behind > 0) {
+        left.push(
+          behind === 1
+            ? `1 older plan stayed on ${input.fromLabel}.`
+            : `${behind} older plans stayed on ${input.fromLabel}.`,
+        );
+      }
+
+      const text = arrivalMessageText({
+        kind: "moved",
+        from: input.fromLabel,
+        to: ownLabel(),
+        goal: goalToTell,
+        checkBacks,
+        canSetCheckBacks: setsCheckBacks,
+        now,
+      });
+      return {
+        ...(goal !== undefined ? { goal } : {}),
+        ...(pullRequests !== undefined ? { pullRequests } : {}),
+        ...(queuedFollowUps.length > 0 ? { queuedFollowUps } : {}),
+        ...(proposedPlans.length > 0 ? { proposedPlans } : {}),
+        arrival: {
+          ...(text !== null ? { message: { messageId: arrivalMessageId(row), text } } : {}),
+          brought,
+          left,
+        },
+      };
+    });
+
+  /**
+   * Whether GitHub is signed in here for the project at `root`: `gh auth
+   * status` answers. Absent: it couldn't tell (no `gh`, a read that failed).
+   */
+  const gitHubReadiness = (root: string) =>
+    Effect.gen(function* () {
+      if (Option.isNone(gitHubCli)) return {} satisfies PeerMoveReadinessResult;
+      const result = yield* gitHubCli.value
+        .execute({ cwd: root, args: ["auth", "status"], timeoutMs: 15_000 })
+        .pipe(Effect.option);
+      return Option.isSome(result)
+        ? ({ gitHubReady: true } satisfies PeerMoveReadinessResult)
+        : ({ gitHubReady: false } satisfies PeerMoveReadinessResult);
+    });
+
+  const readiness: LinkMovesShape["readiness"] = (link, input) =>
+    Effect.gen(function* () {
+      const authority = yield* requests.authority(link.deviceId);
+      if (!authority.ok) return yield* new PeerRpcError({ detail: authority.text });
+      const project = yield* requests.projectForKey(input.canonicalKey);
+      if (project === undefined) return {};
+      return yield* gitHubReadiness(project.workspaceRoot);
+    });
+
+  /**
+   * The arrival (docs/design/fleet.md, Part 3e, "One kick"): the head of the
+   * queue its import wrote is sent, with a command id from the move, then the
+   * move is recorded as arrived. The import's queue events send nothing, so
+   * this is the one send; a restart before it is recorded sends it then. A
+   * thread already at work here (its user sent something first) is left to
+   * its turn's end, which sends the queue as it always does.
+   */
+  const arrive = (row: LinkMoveRow) =>
+    Effect.gen(function* () {
+      const state = row.manifest.thread.state;
+      const ids = new Set<string>([
+        arrivalMessageId(row),
+        ...(state?.queuedFollowUps ?? []).map((entry) => queuedMessageId(row, entry.messageId)),
+      ]);
+      // Unreadable: left for the sweep to try again, never taken as gone.
+      const shell = yield* snapshots.getThreadShellById(row.threadId).pipe(Effect.option);
+      if (Option.isNone(shell)) return;
+      const thread = Option.getOrNull(shell.value);
+      const head =
+        state === undefined || thread === null
+          ? undefined
+          : (thread.queuedFollowUps ?? []).find((entry) => ids.has(entry.messageId));
+      const busy = thread?.session?.status === "running" || thread?.session?.status === "starting";
+      if (head !== undefined && !busy) {
+        const commandId = CommandId.make(`server:link-move:${row.transferKey}:arrive`);
+        const sent = yield* engine
+          .dispatch({
+            type: "thread.follow-up.send-queued",
+            commandId,
+            threadId: row.threadId,
+            messageId: head.messageId,
+            createdAt: yield* nowIso,
+          })
+          .pipe(Effect.exit);
+        if (Exit.isFailure(sent)) {
+          // A refusal the engine recorded is an answer (the message went some
+          // other way); anything else is tried again by the sweep.
+          const receipt = yield* engine
+            .getCommandReceipt(commandId)
+            .pipe(Effect.orElseSucceed(() => Option.none()));
+          yield* Effect.logWarning("moved thread's arrival wasn't sent", {
+            threadId: row.threadId,
+            cause: sent.cause,
+          });
+          if (Option.isNone(receipt)) return;
+        }
+      }
+      yield* moves
+        .markArrived({
+          linkDeviceId: row.linkDeviceId,
+          transferId: row.transferId,
+          now: yield* nowIso,
+        })
+        .pipe(Effect.ignore);
     });
 
   /**
@@ -1619,7 +2202,8 @@ const make = Effect.gen(function* () {
           Effect.gen(function* () {
             switch (row.stage) {
               case null:
-                yield* fetchStage(row);
+                // A general chat has a folder of its own, not a checkout.
+                yield* isScratchMoveManifest(row.manifest) ? folderStage(row) : fetchStage(row);
                 return false;
               case "fetched":
                 yield* worktreeStage(row);
@@ -1627,8 +2211,13 @@ const make = Effect.gen(function* () {
               case "worktree":
                 yield* applyStage(row);
                 return false;
+              case "folder":
+                yield* scratchApplyStage(row);
+                return false;
               case "applied":
                 yield* commitStage(row);
+                return true;
+              case "arrived":
                 return true;
             }
           }),
@@ -1809,10 +2398,7 @@ const make = Effect.gen(function* () {
         kind: "move",
         move: {
           messageCount: row.manifest.summary.messageCount,
-          branch: row.manifest.git.branch,
-          trackedFiles: row.manifest.summary.trackedFiles,
-          untrackedFiles: row.manifest.summary.untrackedFiles,
-          unpushedCommits: row.manifest.summary.unpushedCommits,
+          ...moveSummaryOf(row.manifest),
           ...(row.stagedApproval
             ? { bytesReceived: row.bytesReceived, totalBytes: row.manifest.totalBytes }
             : {}),
@@ -1861,6 +2447,7 @@ const make = Effect.gen(function* () {
       if (row.status === "importing") {
         if (yield* importLanded(row)) {
           yield* settleLanded(row).pipe(Effect.ignore);
+          yield* arrive(row);
         } else {
           yield* runImport(row.linkDeviceId, row.transferId).pipe(Effect.forkIn(scope));
         }
@@ -1875,6 +2462,9 @@ const make = Effect.gen(function* () {
         );
       }
     }
+    // Moves that landed before their arrival was sent (a restart between).
+    const unarrived = yield* moves.listUnarrived.pipe(Effect.orElseSucceed(() => []));
+    for (const row of unarrived) yield* lock(row.transferKey)(arrive(row));
     const owed = yield* moves.listCleanupOwed.pipe(Effect.orElseSucceed(() => []));
     for (const row of owed) yield* lock(row.transferKey)(cleanUp(row));
     const settled = yield* moves
@@ -1907,6 +2497,7 @@ const make = Effect.gen(function* () {
     pending,
     pendingChanges: Stream.fromPubSub(pendingHub),
     dropLink,
+    readiness,
     startReactor,
   });
 });
