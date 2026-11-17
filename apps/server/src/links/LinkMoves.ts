@@ -1550,6 +1550,8 @@ const make = Effect.gen(function* () {
         ...(message.completesTurn !== undefined ? { completesTurn: message.completesTurn } : {}),
         ...(message.agentModels !== undefined ? { agentModels: message.agentModels } : {}),
         ...(message.sentFrom !== undefined ? { sentFrom: message.sentFrom } : {}),
+        // Never reached the agent there: no history here may carry it either.
+        ...(message.notSent === true ? { notSent: true as const } : {}),
         createdAt: message.createdAt,
       }));
       const activities = row.manifest.thread.activities.map((activity) => ({

@@ -992,6 +992,18 @@ describe("thread_read", () => {
           }),
           message({ eventSequence: 2, text: "Also look at the index." }),
           message({ eventSequence: 3, role: "assistant", text: "It is safe." }),
+          // A lead chat's pass that never ran: shown, labelled.
+          message({
+            eventSequence: 4,
+            text: "Run the migration.",
+            notSent: true,
+            fromThread: {
+              threadId: PARENT,
+              requestId: "request-2" as never,
+              kind: "request",
+              ceiling: { runtimeMode: "approval-required", interactionMode: "default" },
+            },
+          }),
         ],
       });
       const tools = yield* makeTools({ others: [child] });
@@ -1001,15 +1013,22 @@ describe("thread_read", () => {
         ["thread_request", `Request from thread "Parent" (${PARENT})`],
         ["user", "User"],
         ["agent", "GPT-6 Astra"],
+        ["thread_request", `Request from thread "Parent" (${PARENT})`],
+      ]);
+      expect(result.messages.map((entry) => entry.notSent ?? false)).toEqual([
+        false,
+        false,
+        false,
+        true,
       ]);
       expect(result.thread).toMatchObject({ threadId: CHILD, startedBy: "you", attached: true });
-      expect(result.next).toBe(3);
+      expect(result.next).toBe(4);
 
       const later = yield* tools.handlers.thread_read(mainCaller(), {
         threadId: CHILD,
         after: 2,
       });
-      expect(later.messages.map((entry) => entry.sequence)).toEqual([3]);
+      expect(later.messages.map((entry) => entry.sequence)).toEqual([3, 4]);
     }),
   );
 

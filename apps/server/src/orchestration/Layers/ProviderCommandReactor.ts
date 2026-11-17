@@ -223,6 +223,10 @@ export interface ForkTurnBoundary {
   readonly lastTurnId?: TurnId;
 }
 
+/** Why a pass marked never sent did not go when a retry asked for it. */
+const PASS_NOT_SENT_DETAIL =
+  "This message the lead chat passed on was never sent. Send it yourself to run it.";
+
 /** Why a lead chat's pass did not go to the agent: the thread's access went above its ceiling. */
 const PASS_ABOVE_CEILING_DETAIL =
   "This message the lead chat passed on wasn't sent: this thread has more access than the lead chat now. Send it yourself to run it.";
@@ -2370,9 +2374,17 @@ const make = Effect.gen(function* () {
     const sessionKey = participantSessionKey(input.threadId, input.participantId);
     // Read from the stored message, which keeps it for good: a retry or a
     // resend of a pass carries no origin on its turn.
-    const passCeiling =
-      thread.messages.find((message) => message.id === input.messageId)?.fromThread?.ceiling ??
-      input.fromThread?.ceiling;
+    const storedMessage = thread.messages.find((message) => message.id === input.messageId);
+    const passCeiling = storedMessage?.fromThread?.ceiling ?? input.fromThread?.ceiling;
+    // Marked as never sent while this turn was prepared (a retry the user
+    // made just before the mark landed): it stays unsent.
+    if (passCeiling !== undefined && storedMessage?.notSent === true) {
+      return yield* new ProviderAdapterRequestError({
+        provider: providerErrorLabel(undefined),
+        method: "thread.turn.start",
+        detail: PASS_NOT_SENT_DETAIL,
+      });
+    }
     const ensured = yield* ensureSessionForThread(input.threadId, input.createdAt, {
       participantId: input.participantId,
       ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
@@ -3120,13 +3132,34 @@ const make = Effect.gen(function* () {
         });
       }).pipe(Effect.ignoreCause({ log: true }));
 
+    // A lead chat's pass refused at the last check never reached the agent:
+    // the decider marks it so no history carries it, and the lead hears.
+    const markPassNotRun = (reason: "ceiling" | "stopped") =>
+      Effect.gen(function* () {
+        yield* orchestrationEngine.dispatch({
+          type: "thread.lead-pass.not-run",
+          commandId: serverCommandId("lead-pass-not-run"),
+          threadId: event.payload.threadId,
+          messageId: event.payload.messageId,
+          reason,
+          createdAt: yield* nowIso,
+        });
+      }).pipe(Effect.ignoreCause({ log: true }));
+
+    // What else a turn that could not start ends: its hand-off, its pass.
+    const afterFailedStart = (cause: Cause.Cause<unknown>) =>
+      Cause.hasInterruptsOnly(cause)
+        ? Effect.void
+        : Effect.andThen(
+            failHandOffForFailedStart(formatFailureDetail(cause)),
+            formatFailureDetail(cause).includes(PASS_ABOVE_CEILING_DETAIL)
+              ? markPassNotRun("ceiling")
+              : Effect.void,
+          );
+
     const recoverTurnStartFailure = (cause: Cause.Cause<unknown>) =>
       handleTurnStartFailure(cause).pipe(
-        Effect.andThen(
-          Cause.hasInterruptsOnly(cause)
-            ? Effect.void
-            : failHandOffForFailedStart(formatFailureDetail(cause)),
-        ),
+        Effect.andThen(afterFailedStart(cause)),
         Effect.catchCause((recoveryCause) =>
           Effect.logWarning("provider command reactor failed to recover turn start failure", {
             eventType: event.type,
@@ -3164,6 +3197,10 @@ const make = Effect.gen(function* () {
         messageId: event.payload.messageId,
       });
       yield* dropStart("Stopped before the turn started.");
+      // A lead chat's pass never ran: marked, so no later history carries it.
+      if (message.fromThread?.ceiling !== undefined) {
+        yield* markPassNotRun("stopped");
+      }
       return true;
     });
 
@@ -3360,11 +3397,7 @@ const make = Effect.gen(function* () {
         Effect.map(Option.some),
         Effect.catchCause((cause) =>
           handleTurnStartFailure(cause).pipe(
-            Effect.andThen(
-              Cause.hasInterruptsOnly(cause)
-                ? Effect.void
-                : failHandOffForFailedStart(formatFailureDetail(cause)),
-            ),
+            Effect.andThen(afterFailedStart(cause)),
             Effect.as(Option.none()),
           ),
         ),

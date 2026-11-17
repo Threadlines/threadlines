@@ -306,6 +306,15 @@ describe("moving a thread to a linked computer", () => {
           turnId: TurnId.make("moved-turn-1"),
           createdAt: now,
         },
+        // Never reached the agent there: it stays unsent here.
+        {
+          messageId: MessageId.make("moved-message-3"),
+          role: "user",
+          text: "Run the migration.",
+          turnId: null,
+          notSent: true,
+          createdAt: now,
+        },
       ],
       activities: [
         {
@@ -325,9 +334,12 @@ describe("moving a thread to a linked computer", () => {
     const arrived = threadOf(after, ARRIVED);
     expect(arrived.movedFrom).toMatchObject({ label: "Windows PC", threadId: THREAD });
     expect(arrived.historySeedOwed).toBe(true);
-    expect(arrived.messages.map((message) => [message.text, message.imported])).toEqual([
-      ["Why does it flake?", true],
-      ["A timer races the click.", true],
+    expect(
+      arrived.messages.map((message) => [message.text, message.imported, message.notSent ?? false]),
+    ).toEqual([
+      ["Why does it flake?", true, false],
+      ["A timer races the click.", true, false],
+      ["Run the migration.", true, true],
     ]);
     // Tool steps carry no turn of this computer's, so every revert keeps them.
     expect(arrived.activities.map((activity) => [activity.kind, activity.turnId])).toEqual([
@@ -356,6 +368,7 @@ describe("moving a thread to a linked computer", () => {
     expect(threadOf(undone, ARRIVED).messages.map((message) => message.text)).toEqual([
       "Why does it flake?",
       "A timer races the click.",
+      "Run the migration.",
       "Run the tests",
     ]);
     // An undo that keeps it owes nothing.

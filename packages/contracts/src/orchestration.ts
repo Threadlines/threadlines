@@ -1174,8 +1174,11 @@ export const OrchestrationMessage = Schema.Struct({
   /** See MessageTrigger. Written with the message and kept. */
   trigger: Schema.optional(MessageTrigger),
   /**
-   * A message Threadlines wrote for the user (`trigger`) that never reached
-   * the agent: the user wrote before it went, and theirs went instead.
+   * A message that never reached the agent, kept in the chat: a continue
+   * Threadlines wrote for the user (`trigger`) that the user's own message
+   * overtook, or a lead chat's pass that was taken back or refused at its
+   * ceiling. Once set, kept. No history an agent is given includes it
+   * (`reachedAgent`), and it is never retried.
    */
   notSent: Schema.optional(Schema.Literal(true)),
   /**
@@ -4928,6 +4931,22 @@ const ThreadLeadPassCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/**
+ * A lead chat's pass never went to the agent after the queue let it go: the
+ * thread's access was raised above its ceiling, or Stop landed, while its
+ * turn was prepared (docs/design/lead-chat.md, "Access"). Server only, from
+ * the provider reactor. `threadId` is the thread it was passed to.
+ */
+const ThreadLeadPassNotRunCommand = Schema.Struct({
+  type: Schema.Literal("thread.lead-pass.not-run"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  messageId: MessageId,
+  /** `ceiling`: its access went above the pass's. `stopped`: Stop landed while it was prepared. */
+  reason: Schema.Literals(["ceiling", "stopped"]),
+  createdAt: IsoDateTime,
+});
+
 /** Child threads: a request moved on (set up, its turn started, background wait). */
 const ThreadChildRequestUpdateCommand = Schema.Struct({
   type: Schema.Literal("thread.child-request.update"),
@@ -5335,6 +5354,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadChildStartCommand,
   ThreadChildSendCommand,
   ThreadLeadPassCommand,
+  ThreadLeadPassNotRunCommand,
   ThreadChildRequestUpdateCommand,
   ThreadChildRequestSettleCommand,
   ThreadChildNotesDeliveredCommand,
@@ -5912,7 +5932,14 @@ export const ThreadChildRequestsResetPayload = Schema.Struct({
  */
 export const ThreadLeadPassRecordedPayload = Schema.Struct({
   threadId: ThreadId,
-  kind: Schema.Literals(["sent", "refused", "started"]),
+  /**
+   * `sent`, `refused` (with the lead's `note`): on the lead. `started`: the
+   * pass started its turn in the target. `not-run`: on the target, the pass
+   * was refused right before it went to the agent, so its message is
+   * `notSent`. (One taken off the queue is marked by that, see
+   * withUnqueuedAgentMessage.)
+   */
+  kind: Schema.Literals(["sent", "refused", "started", "not-run"]),
   /** The pass's message, in the thread it was passed to. */
   messageId: MessageId,
   targetThreadId: ThreadId,
@@ -6017,6 +6044,8 @@ export const ThreadMessageSentPayload = Schema.Struct({
   streaming: Schema.Boolean,
   /** See OrchestrationMessage.imported. */
   imported: Schema.optional(Schema.Literal(true)),
+  /** See OrchestrationMessage.notSent: an imported message that never reached the agent there. */
+  notSent: Schema.optional(Schema.Literal(true)),
   /** Missing means legacy behavior for events written before assistant
    * segments carried an explicit turn-settlement decision. */
   completesTurn: Schema.optional(Schema.Boolean),
