@@ -1,6 +1,8 @@
 import {
+  ChildRequestId,
   OutsideAgentConnectionId,
   ProviderDriverKind,
+  ThreadId,
   type ThreadContextSeedEntry,
 } from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
@@ -87,6 +89,27 @@ describe("renderSeedEntries with authors", () => {
     ]);
     expect(rendered).toContain("**Claude Code (outside agent):** Fix it");
     expect(rendered).toContain("**User:** Thanks");
+  });
+
+  it("never calls another agent's message the user's", () => {
+    const fromThread = {
+      threadId: ThreadId.make("thread-lead"),
+      requestId: ChildRequestId.make("request-1"),
+    };
+    expect(transcriptAuthor({ role: "user", fromThread: { ...fromThread, kind: "request" } })).toBe(
+      "Agent in another thread (request)",
+    );
+    expect(transcriptAuthor({ role: "user", fromThread: { ...fromThread, kind: "report" } })).toBe(
+      "Agent in another thread (report)",
+    );
+    expect(transcriptAuthor({ role: "user", fromAgent: { participantId: null } })).toBe(
+      "Another agent in this thread",
+    );
+    // The user's own words, and an agent's reply, keep their role's name.
+    expect(transcriptAuthor({ role: "user" })).toBeUndefined();
+    expect(
+      transcriptAuthor({ role: "assistant", fromThread: { ...fromThread, kind: "report" } }),
+    ).toBeUndefined();
   });
 });
 
