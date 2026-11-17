@@ -1710,6 +1710,25 @@ function mapNativeSubagentMetadata(
   };
 }
 
+/**
+ * The text of a plain Codex config or runtime warning, or undefined for any
+ * other event. Codex reports a config problem once as `configWarning` when the
+ * app server starts, then again as a `warning` for every thread it opens,
+ * subagents included, so one stale setting would otherwise show once per
+ * agent. A session keeps the texts it has shown and drops repeats.
+ */
+function plainWarningText(event: ProviderEvent): string | undefined {
+  if (event.method === "configWarning") {
+    return trimText(
+      readPayload(EffectCodexSchema.V2ConfigWarningNotification, event.payload)?.summary,
+    );
+  }
+  if (event.method === "warning") {
+    return trimText(readPayload(EffectCodexSchema.V2WarningNotification, event.payload)?.message);
+  }
+  return undefined;
+}
+
 export function mapToRuntimeEvents(
   event: ProviderEvent,
   canonicalThreadId: ThreadId,
@@ -3481,6 +3500,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           making: undefined,
         };
         let resendingTurn = false;
+        const shownWarnings = new Set<string>();
 
         // The session context owns and explicitly interrupts this fiber. It
         // must not inherit the short-lived caller that happens to start the
@@ -3521,6 +3541,13 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
               yield* options.releaseRealtimeAudio(event.threadId);
             }
             yield* writeNativeEvent(event);
+            const warningText = plainWarningText(event);
+            if (warningText !== undefined) {
+              if (shownWarnings.has(warningText)) {
+                return;
+              }
+              shownWarnings.add(warningText);
+            }
             const mappedEvents = yield* withUsageLimitReset(
               mapToRuntimeEvents(event, event.threadId),
             );
