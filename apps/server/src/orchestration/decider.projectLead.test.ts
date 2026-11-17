@@ -296,7 +296,55 @@ describe("lead chat passes", () => {
     expect(ran.events.some((event) => event.type === "thread.turn-start-requested")).toBe(true);
     // Nothing is owed back: no request settles anywhere.
     expect(ran.events.some((event) => event.type.startsWith("thread.child-request"))).toBe(false);
-    expect(threadIn(ran.model, OTHER).childRequests.startsBlockedByPass).toBe(true);
+    expect(threadIn(ran.model, OTHER).childRequests.passCeiling).toEqual({
+      runtimeMode: "auto-accept-edits",
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+    });
+  });
+
+  it("holds what a passed-to thread sends its own threads to the pass's ceiling", async () => {
+    const RAISED = ThreadId.make("raised-child");
+    const ran = (
+      await run(
+        await run(
+          await leadAndHandMade({
+            session: session(OTHER, { status: "ready", activeTurnId: null }),
+          }),
+          pass(),
+        ).then((r) => r.model),
+        sendQueued(PASS_MESSAGE),
+      )
+    ).model;
+    const OTHER_TURN = TurnId.make("other-turn-1");
+    const own = { parentThreadId: OTHER, attachedToParent: true };
+    const working = {
+      ...ran,
+      threads: [
+        ...ran.threads.map((entry) =>
+          entry.id === OTHER
+            ? { ...entry, session: session(OTHER, { activeTurnId: OTHER_TURN }) }
+            : entry,
+        ),
+        // The user raised this one above its parent, and above the lead.
+        thread(RAISED, { ...own, runtimeMode: "full-access" }),
+        thread(CHILD, { ...own, runtimeMode: "approval-required" }),
+      ],
+    };
+    const send = (childThreadId: ThreadId): OrchestrationCommand => ({
+      type: "thread.child.send",
+      commandId: CommandId.make(`send-to-${childThreadId}`),
+      threadId: OTHER,
+      requestId: ChildRequestId.make(`send-to-${childThreadId}`),
+      from: PRIMARY,
+      callerTurnId: OTHER_TURN,
+      childThreadId,
+      childMessageId: MessageId.make(`message-to-${childThreadId}`),
+      text: "Run it with full access.",
+      createdAt: now,
+    });
+    expect(await refusal(working, send(RAISED))).toContain("more access than the lead chat");
+    const within = await run(working, send(CHILD));
+    expect(threadIn(within.model, OTHER).childRequests.open).toHaveLength(1);
   });
 
   it("refuses rooms, threads another thread owns, and threads the user stopped", async () => {
@@ -482,7 +530,7 @@ describe("lead chat passes", () => {
       ),
     };
     const wrote = (await run(settled, turn("user", { composer: "typed" }))).model;
-    expect(threadIn(wrote, OTHER).childRequests.startsBlockedByPass).toBeUndefined();
+    expect(threadIn(wrote, OTHER).childRequests.passCeiling).toBeUndefined();
   });
 
   it("starts only the threads the user left checked, and tells the agent which it didn't", async () => {

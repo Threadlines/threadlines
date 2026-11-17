@@ -33,6 +33,20 @@ import { buildClaudeSystemPromptAppend } from "./Layers/ClaudeAdapter.ts";
 
 const utf8Bytes = (text: string) => Buffer.byteLength(text, "utf8");
 
+/**
+ * Runs `measure` as on Linux, where the budget is measured. The prompt names
+ * the user's shell, which is a byte longer on Windows.
+ */
+function onLinux<A>(measure: () => A): A {
+  const platform = Object.getOwnPropertyDescriptor(process, "platform");
+  Object.defineProperty(process, "platform", { value: "linux" });
+  try {
+    return measure();
+  } finally {
+    if (platform) Object.defineProperty(process, "platform", platform);
+  }
+}
+
 /** Every tool an ordinary thread's Claude session is given over MCP. */
 const threadTools: ReadonlyArray<Tool.Any> = [
   ...[
@@ -74,14 +88,16 @@ it("what a Claude thread is sent on every request matches the committed budget",
     // command requests, schedules and the room tools, in a
     // Threadlines-managed worktree.
     claudeSystemAppendBytes: utf8Bytes(
-      buildClaudeSystemPromptAppend({
-        pageAssetsDir: "/tmp/threadlines-page-assets/thread",
-        artifacts: true,
-        commandRequests: true,
-        room: { tools: roomToolsFor(undefined), schedules: true },
-        lockdown: false,
-        managedWorktree: true,
-      }),
+      onLinux(() =>
+        buildClaudeSystemPromptAppend({
+          pageAssetsDir: "/tmp/threadlines-page-assets/thread",
+          artifacts: true,
+          commandRequests: true,
+          room: { tools: roomToolsFor(undefined), schedules: true },
+          lockdown: false,
+          managedWorktree: true,
+        }),
+      ),
     ),
     // In the prompt from the first turn. `mark_long_running`, Claude's own
     // in-process tool, is there too and is not measured here.

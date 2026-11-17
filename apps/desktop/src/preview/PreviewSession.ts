@@ -29,7 +29,7 @@ import { readdirSync } from "node:fs";
 import { join } from "node:path";
 
 import { isAppWindow } from "../electron/ElectronWindow.ts";
-import { browserIdentity } from "./previewIdentity.ts";
+import { pageLoadUserAgent } from "./previewIdentity.ts";
 import { choosePasskeyAccount } from "./previewPasskeys.ts";
 import { isPreviewPartition } from "./previewPartitions.ts";
 import { isPreviewPermissionAllowed } from "./previewPermissions.ts";
@@ -85,11 +85,24 @@ export class PreviewSession extends Context.Service<PreviewSession, PreviewSessi
   "@threadlines/desktop/preview/PreviewSession",
 ) {}
 
-// The session carries the user agent string, which reaches every request and
-// page in it. The other half of the name, the brand list, is set per page:
-// see `previewIdentity.ts`, and why the two must agree.
+// The session keeps Electron's own user agent string on purpose: with
+// Chromium's own brand list it makes a whole, honest name, which is what a
+// page gives on Google's sites and wherever nothing else names it. The Chrome
+// claim is made per page: see `previewIdentity.ts`.
 function configurePreviewSession(previewSession: Electron.Session): void {
-  previewSession.setUserAgent(browserIdentity(Electron.app).userAgent);
+  // Page loads only, so no other request waits on this: each request of one,
+  // redirects included, carries the name of the site it goes to.
+  previewSession.webRequest.onBeforeSendHeaders(
+    { urls: ["<all_urls>"], types: ["mainFrame"] },
+    (details, callback) => {
+      const userAgent = pageLoadUserAgent(details, previewSession.getUserAgent());
+      callback(
+        userAgent === null
+          ? {}
+          : { requestHeaders: { ...details.requestHeaders, "User-Agent": userAgent } },
+      );
+    },
+  );
   previewSession.setPermissionRequestHandler((_contents, permission, callback, details) => {
     callback(isPreviewPermissionAllowed(permission, details.requestingUrl));
   });

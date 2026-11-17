@@ -14,6 +14,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { ChildProcessSpawner } from "effect/process";
 import { homedir } from "node:os";
 import { PtyAdapter } from "./../terminal/Services/PTY.ts";
+import { canMakeSymlinks } from "../testUtils/symlinks.ts";
 import type * as CodexSchema from "effect-codex-app-server/schema";
 import {
   ProviderDriverKind,
@@ -2259,7 +2260,8 @@ Per-component (rounded)
   it.effect("treats only a direct child of a skills root as managed", () =>
     Effect.gen(function* () {
       const path = yield* Path.Path;
-      const root = path.join("/home", ".claude", "skills");
+      // Resolved, so it is absolute on Windows too (gaining a drive letter).
+      const root = path.resolve("/home", ".claude", "skills");
 
       assert.equal(
         skillDirectoryUnderRoots(path, [root], path.join(root, "writer", "SKILL.md")),
@@ -2468,7 +2470,8 @@ Per-component (rounded)
     }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
   });
 
-  it.effect("refuses to delete a skill entry that is a symlink", () => {
+  // Links to files need symlink rights, which Windows grants only with Developer Mode.
+  it.effect.skipIf(!canMakeSymlinks)("refuses to delete a skill entry that is a symlink", () => {
     const spawnerLayer = Layer.succeed(
       ChildProcessSpawner.ChildProcessSpawner,
       ChildProcessSpawner.make((command) =>
@@ -2662,7 +2665,21 @@ Per-component (rounded)
       });
 
       const claude = result.providers[0];
-      const skillsByName = new Map(claude?.skills.map((skill) => [skill.name, skill]));
+      // The walk up from the project goes past the temp folder too. On Windows
+      // that folder sits inside the real home, so the walk reaches the real
+      // ~/.claude/skills; skills from roots above the temp folder belong to the
+      // machine, not this test. Where nothing up there has skills, as on CI,
+      // this drops nothing.
+      const rootsAboveTemp: Array<string> = [];
+      for (let folder = path.dirname(repoDir); ; folder = path.dirname(folder)) {
+        rootsAboveTemp.push(path.join(folder, ".claude", "skills") + path.sep);
+        if (path.dirname(folder) === folder) break;
+      }
+      const skillsByName = new Map(
+        claude?.skills
+          .filter((skill) => !rootsAboveTemp.some((root) => skill.path.startsWith(root)))
+          .map((skill) => [skill.name, skill]),
+      );
 
       assert.deepEqual(
         [...skillsByName.keys()].toSorted((left, right) => left.localeCompare(right)),
