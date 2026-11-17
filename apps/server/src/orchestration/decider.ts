@@ -308,7 +308,7 @@ function resetChildRequestsForUser(
 ): ReadonlyArray<PlannedOrchestrationEvent> {
   const state = thread.childRequests;
   const keepsPassBlock = options?.keepsPassBlock === true;
-  const liftsBlock = state.startsBlockedByPass === true && !keepsPassBlock;
+  const liftsBlock = state.passCeiling !== undefined && !keepsPassBlock;
   return state.startsSinceUser === 0 && state.sendsSinceUser === 0 && !liftsBlock
     ? []
     : [
@@ -3406,10 +3406,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               },
             ]
           : [];
-      // A lead chat's pass starting its turn: no threads may be started from
-      // here until the user writes (docs/design/lead-chat.md, "No fan-out").
+      // A lead chat's pass starting its turn: until the user writes, no
+      // threads may be started from here, and its ceiling holds what this
+      // thread sends on (docs/design/lead-chat.md, "No fan-out").
+      const passCeiling = command.fromThread?.ceiling;
       const passStartedEvents: ReadonlyArray<PlannedOrchestrationEvent> =
-        command.fromThread?.ceiling !== undefined
+        passCeiling !== undefined
           ? [
               {
                 ...turnBase(),
@@ -3419,6 +3421,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
                   kind: "started",
                   messageId: command.message.messageId,
                   targetThreadId: command.threadId,
+                  ceiling: passCeiling,
                   createdAt: command.createdAt,
                 },
               },
@@ -3608,7 +3611,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       return [
         retrySessionEvent,
         retryTurnStartRequestedEvent,
-        // A lead chat's pass, run again: still no threads started from it.
+        // A lead chat's pass, run again: still held to its ceiling.
         ...(lastUserMessage.fromThread?.ceiling !== undefined
           ? [
               {
@@ -3624,6 +3627,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
                   kind: "started" as const,
                   messageId: lastUserMessage.id,
                   targetThreadId: command.threadId,
+                  ceiling: lastUserMessage.fromThread.ceiling,
                   createdAt: command.createdAt,
                 },
               },

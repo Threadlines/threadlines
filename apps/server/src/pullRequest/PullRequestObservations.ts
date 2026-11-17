@@ -19,6 +19,7 @@ import type {
   PullRequestState,
   SourceControlProviderKind,
 } from "@threadlines/contracts";
+import { normalizeGitRemoteUrl } from "@threadlines/shared/git";
 import { pullRequestIdentityKey } from "@threadlines/shared/sourceControl";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -169,11 +170,12 @@ export interface PullRequestObservationsShape {
   readonly stream: Stream.Stream<PullRequestObservation>;
   /**
    * What is already known about a thread's pull requests, with no call to the
-   * host: the one from its branch in `repository` (`owner/name`), and the ones
-   * at `urls`. Pull requests nobody has read yet are left out.
+   * host: the one from its branch in the repository at `repositoryKey` (its
+   * remote's host and whole path, RepositoryIdentity.canonicalKey), and the
+   * ones at `urls`. Pull requests nobody has read yet are left out.
    */
   readonly known: (input: {
-    readonly repository: string | null;
+    readonly repositoryKey: string | null;
     readonly branch: string | null;
     readonly urls: ReadonlyArray<string>;
   }) => Effect.Effect<ReadonlyArray<PullRequestObservation>>;
@@ -252,15 +254,18 @@ export const make = Effect.gen(function* () {
   const known: PullRequestObservationsShape["known"] = (input) =>
     Ref.get(state).pipe(
       Effect.map((current) => {
-        const repository = input.repository?.toLowerCase() ?? null;
+        // Matched on the address, host and whole path, so another host's or
+        // another group's `owner/name` with the same branch never answers.
+        const repositoryPrefix =
+          input.repositoryKey === null ? null : `${input.repositoryKey.toLowerCase()}/`;
         const urls = new Set(input.urls);
         return Array.from(current.records.values(), (entry) => entry.observation).filter(
           (observation) =>
             urls.has(observation.url) ||
-            (repository !== null &&
+            (repositoryPrefix !== null &&
               input.branch !== null &&
-              observation.repository.toLowerCase() === repository &&
-              observation.headBranch === input.branch),
+              observation.headBranch === input.branch &&
+              normalizeGitRemoteUrl(observation.url).startsWith(repositoryPrefix)),
         );
       }),
     );
