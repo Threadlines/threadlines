@@ -108,6 +108,8 @@ export const AgentThreadReadResult = Schema.Struct({
       /** Read by `messageId`: pass as `offset` to read on. Absent: `text` reaches the end. */
       nextOffset: Schema.optional(Schema.Number),
       streaming: Schema.optional(Schema.Boolean),
+      /** It never reached that thread's agent (OrchestrationMessage.notSent): shown, never acted on. */
+      notSent: Schema.optional(Schema.Boolean),
     }),
   ),
   /** Pass as `after` later for only newer messages; null when there are none. */

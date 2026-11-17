@@ -1523,12 +1523,30 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               { ...message.value, id: message.value.messageId },
               event.payload,
             );
-            if (marked.requestOutcome !== message.value.requestOutcome) {
+            if (
+              marked.requestOutcome !== message.value.requestOutcome ||
+              marked.notSent !== message.value.notSent
+            ) {
               yield* projectionThreadMessageRepository.upsert({
                 ...message.value,
                 requestOutcome: marked.requestOutcome,
+                ...(marked.notSent === true ? { notSent: true as const } : {}),
               });
             }
+          }
+          return;
+        }
+
+        // A lead chat's pass refused right before it reached the agent.
+        case "thread.lead-pass-recorded": {
+          if (event.payload.kind !== "not-run") {
+            return;
+          }
+          const message = yield* projectionThreadMessageRepository.getByMessageId({
+            messageId: event.payload.messageId,
+          });
+          if (Option.isSome(message) && message.value.notSent !== true) {
+            yield* projectionThreadMessageRepository.upsert({ ...message.value, notSent: true });
           }
           return;
         }
@@ -1648,6 +1666,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...(event.payload.composer !== undefined ? { composer: event.payload.composer } : {}),
             ...(event.payload.sentFrom !== undefined ? { sentFrom: event.payload.sentFrom } : {}),
             ...(event.payload.trigger !== undefined ? { trigger: event.payload.trigger } : {}),
+            ...(event.payload.notSent === true ? { notSent: true as const } : {}),
             isStreaming: event.payload.streaming,
             createdAt: previousMessage?.createdAt ?? event.payload.createdAt,
             updatedAt: event.payload.updatedAt,

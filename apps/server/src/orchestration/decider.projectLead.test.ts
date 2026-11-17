@@ -397,6 +397,106 @@ describe("lead chat passes", () => {
       true,
     );
     expect(threadIn(sent.model, LEAD).childRequests.pendingNotes[0]?.text).toContain("did not run");
+    expect(target.messages.find((entry) => entry.id === PASS_MESSAGE)?.notSent).toBe(true);
+  });
+
+  it("marks a pass the user took off the queue as never sent", async () => {
+    const passed = (await run(await leadAndHandMade(), pass())).model;
+    const unqueued = await run(passed, {
+      type: "thread.follow-up.unqueue",
+      commandId: CommandId.make("unqueue-pass"),
+      threadId: OTHER,
+      messageId: PASS_MESSAGE,
+      createdAt: now,
+    });
+    const message = threadIn(unqueued.model, OTHER).messages.find((m) => m.id === PASS_MESSAGE);
+    expect(message?.notSent).toBe(true);
+  });
+
+  it("marks a pass Stop dropped before it started, and says so to the lead", async () => {
+    const ran = (
+      await run(
+        await run(await leadAndHandMade(), pass()).then((r) => r.model),
+        sendQueued(PASS_MESSAGE),
+      )
+    ).model;
+    const stopped = (
+      await run(ran, {
+        type: "thread.lead-pass.not-run",
+        commandId: CommandId.make("not-run-stopped"),
+        threadId: OTHER,
+        messageId: PASS_MESSAGE,
+        reason: "stopped",
+        createdAt: now,
+      })
+    ).model;
+    const target = threadIn(stopped, OTHER);
+    expect(target.messages.find((entry) => entry.id === PASS_MESSAGE)?.notSent).toBe(true);
+    expect(
+      target.activities.find((entry) => entry.kind === LEAD_PASS_NOT_RUN_ACTIVITY_KIND)?.summary,
+    ).toBe("Not run: this thread was stopped before it started.");
+    expect(threadIn(stopped, LEAD).childRequests.pendingNotes[0]?.text).toContain(
+      "the user stopped that thread",
+    );
+  });
+
+  it("marks a pass refused right before it reached the agent, and never runs it again", async () => {
+    const ran = (
+      await run(
+        await run(await leadAndHandMade(), pass()).then((r) => r.model),
+        sendQueued(PASS_MESSAGE),
+      )
+    ).model;
+    // The provider layer's last check refused it: the thread's access went up.
+    const refused = await run(ran, {
+      type: "thread.lead-pass.not-run",
+      commandId: CommandId.make("not-run"),
+      threadId: OTHER,
+      messageId: PASS_MESSAGE,
+      reason: "ceiling",
+      createdAt: now,
+    });
+    const target = threadIn(refused.model, OTHER);
+    expect(target.messages.find((entry) => entry.id === PASS_MESSAGE)?.notSent).toBe(true);
+    expect(target.activities.some((entry) => entry.kind === LEAD_PASS_NOT_RUN_ACTIVITY_KIND)).toBe(
+      true,
+    );
+    expect(threadIn(refused.model, LEAD).childRequests.pendingNotes[0]?.text).toContain(
+      "did not run",
+    );
+    // Said once: a second report changes nothing.
+    expect(
+      (
+        await run(refused.model, {
+          type: "thread.lead-pass.not-run",
+          commandId: CommandId.make("not-run-again"),
+          threadId: OTHER,
+          messageId: PASS_MESSAGE,
+          reason: "stopped",
+          createdAt: now,
+        })
+      ).events,
+    ).toEqual([]);
+    // Back within the ceiling, a retry still doesn't send it.
+    const failed = {
+      ...refused.model,
+      threads: refused.model.threads.map((entry) =>
+        entry.id === OTHER
+          ? {
+              ...entry,
+              session: session(OTHER, { status: "error", activeTurnId: null, lastError: "boom" }),
+            }
+          : entry,
+      ),
+    };
+    expect(
+      await refusal(failed, {
+        type: "thread.turn.retry",
+        commandId: CommandId.make("retry-not-sent"),
+        threadId: OTHER,
+        createdAt: now,
+      }),
+    ).toContain("was never sent. Send it yourself to run it");
   });
 
   it("refuses to retry a pass above its ceiling: the user sends it themselves", async () => {

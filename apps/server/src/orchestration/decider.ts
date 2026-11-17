@@ -336,8 +336,11 @@ const personWrote = (command: {
 
 /**
  * A pass whose ceiling is under the thread's access when its turn would
- * start (docs/design/lead-chat.md, "Access"): taken off the queue, one line
- * in the thread, and a note for the lead's next turn when it is still there.
+ * start (docs/design/lead-chat.md, "Access"): it never runs and its message
+ * is `notSent`, one line in the thread, and a note for the lead's next turn
+ * when it is still there. `from` is where it was refused: taken off the
+ * queue (the unqueue marks it), or after the queue let it go, right before
+ * it reached the agent (`thread.lead-pass.not-run`).
  */
 function passCeilingCancelEvents(
   readModel: OrchestrationReadModel,
@@ -349,6 +352,9 @@ function passCeilingCancelEvents(
   refusal: string,
   base: () => Omit<OrchestrationEvent, "sequence" | "type" | "payload">,
   createdAt: string,
+  from: "queue" | "start" = "queue",
+  /** Why, in the lead's note: the access went up (default), or the user stopped it. */
+  stopped = false,
 ): PlannedOrchestrationEvent[] {
   const origin = queued.fromThread;
   const lead =
@@ -356,11 +362,28 @@ function passCeilingCancelEvents(
       ? undefined
       : readModel.threads.find((entry) => entry.id === origin.threadId);
   return [
-    {
-      ...base(),
-      type: "thread.follow-up-unqueued",
-      payload: { threadId: thread.id, messageId: queued.messageId, reason: "cancelled", createdAt },
-    },
+    from === "queue"
+      ? {
+          ...base(),
+          type: "thread.follow-up-unqueued",
+          payload: {
+            threadId: thread.id,
+            messageId: queued.messageId,
+            reason: "cancelled",
+            createdAt,
+          },
+        }
+      : {
+          ...base(),
+          type: "thread.lead-pass-recorded",
+          payload: {
+            threadId: thread.id,
+            kind: "not-run",
+            messageId: queued.messageId,
+            targetThreadId: thread.id,
+            createdAt,
+          },
+        },
     {
       ...base(),
       type: "thread.activity-appended",
@@ -392,7 +415,9 @@ function passCeilingCancelEvents(
               note: {
                 requestId: origin.requestId,
                 recipient: { participantId: origin.passedBy ?? null },
-                text: `The message you passed to "${thread.title}" (thread ${thread.id}) did not run: that thread has more access than this lead chat now. Tell the user, who can send it there.`,
+                text: stopped
+                  ? `The message you passed to "${thread.title}" (thread ${thread.id}) did not run: the user stopped that thread before it started. Tell the user, who can send it there.`
+                  : `The message you passed to "${thread.title}" (thread ${thread.id}) did not run: that thread has more access than this lead chat now. Tell the user, who can send it there.`,
                 createdAt,
               },
               createdAt,
@@ -2362,6 +2387,34 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       );
     }
 
+    // Refused right before it reached the agent (the provider reactor's last
+    // check): marked, said once, and the lead hears on its next turn.
+    case "thread.lead-pass.not-run": {
+      const target = yield* requireThread({ readModel, command, threadId: command.threadId });
+      const message = target.messages.find((entry) => entry.id === command.messageId);
+      if (message === undefined || message.fromThread?.ceiling === undefined || message.notSent) {
+        return [];
+      }
+      return passCeilingCancelEvents(
+        readModel,
+        target,
+        { messageId: message.id, fromThread: message.fromThread },
+        command.reason === "stopped"
+          ? "Not run: this thread was stopped before it started."
+          : "Not run: this thread has more access than the lead chat.",
+        () =>
+          withEventBase({
+            aggregateKind: "thread",
+            aggregateId: target.id,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          }),
+        command.createdAt,
+        "start",
+        command.reason === "stopped",
+      );
+    }
+
     case "thread.child.start":
     case "thread.child-request.respond":
     case "thread.child.send":
@@ -3522,6 +3575,17 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: `This message came from ${lastUserMessage.fromOutside.name}, outside Threadlines. Ask it to send it again, or write it yourself.`,
+        });
+      }
+      // A message that never reached the agent stays out of its history for
+      // good (OrchestrationMessage.notSent), so it never runs from here.
+      if (lastUserMessage.notSent === true) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail:
+            lastUserMessage.fromThread?.ceiling !== undefined
+              ? "This message the lead chat passed on was never sent. Send it yourself to run it."
+              : "This message was never sent. Write it again to send it.",
         });
       }
       // A lead chat's pass runs again only within the access it was passed

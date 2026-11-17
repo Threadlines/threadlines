@@ -140,7 +140,7 @@ export interface ChatMessage {
   sentFrom?: MessageSentFrom | undefined;
   /** See OrchestrationMessage.trigger: why Threadlines sent it for the user. */
   trigger?: MessageTrigger | undefined;
-  /** See OrchestrationMessage.notSent: the user wrote first, so it never went. */
+  /** See OrchestrationMessage.notSent: it never reached the agent (a continue the user overtook, a pass refused). */
   notSent?: true | undefined;
   /**
    * See OrchestrationMessage.imported: brought over when the thread moved
