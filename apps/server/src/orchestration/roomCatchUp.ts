@@ -29,7 +29,7 @@ import type {
 
 import { isRoomThread } from "@threadlines/shared/threadParticipants";
 
-import { messageAuthor } from "@threadlines/shared/messageAuthor";
+import { messageAuthor, reachedAgent } from "@threadlines/shared/messageAuthor";
 import { handOffReplyText } from "./agentRequestDecisions.ts";
 
 /** Messages an agent joining late gets verbatim. */
@@ -45,6 +45,8 @@ export interface RoomCatchUpInput {
     readonly agentRole?: string | undefined;
     readonly participants: ReadonlyArray<OrchestrationThreadParticipant>;
     readonly messages: ReadonlyArray<OrchestrationMessage>;
+    /** What still waits to be sent: kept out of the note (`reachedAgent`). */
+    readonly queuedFollowUps?: ReadonlyArray<{ readonly messageId: string }> | undefined;
     readonly checkpoints: ReadonlyArray<OrchestrationCheckpointSummary>;
   };
   /** The agent the turn is for. Null: the thread's own agent. */
@@ -209,7 +211,9 @@ export function buildRoomCatchUp(input: RoomCatchUpInput): RoomCatchUp | undefin
     (message) =>
       message.id !== input.messageId &&
       (message.role === "user" || message.role === "assistant") &&
-      message.text.trim().length > 0,
+      message.text.trim().length > 0 &&
+      // Only what an agent was given: a pass that never ran stays out.
+      reachedAgent(message, thread),
   );
   const ownerOf = (message: OrchestrationMessage) => message.participantId ?? null;
   // A reply arrives as the message below the note. The words it was taken

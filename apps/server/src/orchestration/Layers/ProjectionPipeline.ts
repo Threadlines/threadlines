@@ -873,6 +873,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         case "thread.child-notes-delivered":
         case "thread.child-deliveries-cancelled":
         case "thread.child-requests-reset":
+        case "thread.lead-pass-recorded":
         case "thread.remote-child-updated":
         case "thread.remote-cancel-queued":
         case "thread.remote-cancels-delivered": {
@@ -903,7 +904,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                                 state,
                                 event.payload.requestIds,
                               )
-                            : childRequestStateOn.reset(state);
+                            : event.type === "thread.lead-pass-recorded"
+                              ? childRequestStateOn.leadPass(state, event.payload)
+                              : childRequestStateOn.reset(state, event.payload);
           if (childRequests !== state) {
             yield* projectionThreadRepository.upsert({ ...existingRow.value, childRequests });
           }
@@ -1528,12 +1531,30 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               { ...message.value, id: message.value.messageId },
               event.payload,
             );
-            if (marked.requestOutcome !== message.value.requestOutcome) {
+            if (
+              marked.requestOutcome !== message.value.requestOutcome ||
+              marked.notSent !== message.value.notSent
+            ) {
               yield* projectionThreadMessageRepository.upsert({
                 ...message.value,
                 requestOutcome: marked.requestOutcome,
+                ...(marked.notSent === true ? { notSent: true as const } : {}),
               });
             }
+          }
+          return;
+        }
+
+        // A lead chat's pass refused right before it reached the agent.
+        case "thread.lead-pass-recorded": {
+          if (event.payload.kind !== "not-run") {
+            return;
+          }
+          const message = yield* projectionThreadMessageRepository.getByMessageId({
+            messageId: event.payload.messageId,
+          });
+          if (Option.isSome(message) && message.value.notSent !== true) {
+            yield* projectionThreadMessageRepository.upsert({ ...message.value, notSent: true });
           }
           return;
         }
@@ -1653,6 +1674,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...(event.payload.composer !== undefined ? { composer: event.payload.composer } : {}),
             ...(event.payload.sentFrom !== undefined ? { sentFrom: event.payload.sentFrom } : {}),
             ...(event.payload.trigger !== undefined ? { trigger: event.payload.trigger } : {}),
+            ...(event.payload.notSent === true ? { notSent: true as const } : {}),
             ...(event.payload.afterMove === true ? { afterMove: true as const } : {}),
             isStreaming: event.payload.streaming,
             createdAt: previousMessage?.createdAt ?? event.payload.createdAt,

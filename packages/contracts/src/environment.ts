@@ -200,6 +200,12 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
    * would refuse the command, so clients hide the lead actions for them.
    */
   projectLead: Schema.optionalKey(Schema.Boolean),
+  /**
+   * The approval card for starting several threads can start some of them
+   * (`thread.child-request.respond` `requestIds`). An older server would start
+   * the whole batch, so clients only show the checkboxes for this one.
+   */
+  childStartSelection: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 

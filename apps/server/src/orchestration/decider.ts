@@ -2,6 +2,7 @@ import {
   DEFAULT_PROJECT_KIND,
   EMPTY_AGENT_REQUEST_STATE,
   EventId,
+  LEAD_PASS_NOT_RUN_ACTIVITY_KIND,
   MessageId,
   type OrchestrationCommand,
   type OrchestrationContinueAtReset,
@@ -48,7 +49,7 @@ import {
 } from "@threadlines/shared/commandRuns";
 import { isTurnAside } from "@threadlines/shared/transcriptRevert";
 import { CONTINUE_AT_RESET_MESSAGE, continueAtResetTimeMs } from "@threadlines/shared/usageLimits";
-import { isAttachedChild } from "@threadlines/shared/childThreads";
+import { isAttachedChild, passCeilingRefusal } from "@threadlines/shared/childThreads";
 import { leadSetRefusal } from "@threadlines/shared/projectLead";
 import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
 
@@ -102,6 +103,7 @@ import {
   decideChildRequestUpdate,
   decideChildRespond,
   decideChildSend,
+  decideLeadPass,
   decideChildStart,
   decideChildrenStop,
   decideParentAttachmentSet,
@@ -294,22 +296,137 @@ function childEventBase(
     });
 }
 
-/** The user wrote: the per-message child thread counts start over. */
+/**
+ * The user wrote: the per-message child thread counts start over, and a
+ * lead chat's pass no longer blocks starting threads. A turn Threadlines
+ * started for the user (`keepsPassBlock`: a continue, a restart) resets the
+ * counts but keeps that block (docs/design/lead-chat.md, "No fan-out").
+ */
 function resetChildRequestsForUser(
   thread: OrchestrationThread,
   base: () => Omit<OrchestrationEvent, "sequence" | "type" | "payload">,
   createdAt: string,
+  options?: { readonly keepsPassBlock?: boolean },
 ): ReadonlyArray<PlannedOrchestrationEvent> {
   const state = thread.childRequests;
-  return state.startsSinceUser === 0 && state.sendsSinceUser === 0
+  const keepsPassBlock = options?.keepsPassBlock === true;
+  const liftsBlock = state.passCeiling !== undefined && !keepsPassBlock;
+  return state.startsSinceUser === 0 && state.sendsSinceUser === 0 && !liftsBlock
     ? []
     : [
         {
           ...base(),
           type: "thread.child-requests-reset",
-          payload: { threadId: thread.id, createdAt },
+          payload: {
+            threadId: thread.id,
+            ...(keepsPassBlock ? { keepsPassBlock: true as const } : {}),
+            createdAt,
+          },
         },
       ];
+}
+
+/**
+ * Whether a person sent this message from the app (they typed it, or their
+ * signed-in device sent it). Only that lifts a lead chat's pass block: a
+ * scheduled run, an automatic fix or a continue resets the counts but keeps it.
+ */
+const personWrote = (command: {
+  readonly composer?: unknown;
+  readonly sentFrom?: unknown;
+}): boolean => command.composer !== undefined || command.sentFrom !== undefined;
+
+/**
+ * A pass whose ceiling is under the thread's access when its turn would
+ * start (docs/design/lead-chat.md, "Access"): it never runs and its message
+ * is `notSent`, one line in the thread, and a note for the lead's next turn
+ * when it is still there. `from` is where it was refused: taken off the
+ * queue (the unqueue marks it), or after the queue let it go, right before
+ * it reached the agent (`thread.lead-pass.not-run`).
+ */
+function passCeilingCancelEvents(
+  readModel: OrchestrationReadModel,
+  thread: OrchestrationThread,
+  queued: {
+    readonly messageId: MessageId;
+    readonly fromThread?: OrchestrationMessage["fromThread"];
+  },
+  refusal: string,
+  base: () => Omit<OrchestrationEvent, "sequence" | "type" | "payload">,
+  createdAt: string,
+  from: "queue" | "start" = "queue",
+  /** Why, in the lead's note: the access went up (default), or the user stopped it. */
+  stopped = false,
+): PlannedOrchestrationEvent[] {
+  const origin = queued.fromThread;
+  const lead =
+    origin === undefined
+      ? undefined
+      : readModel.threads.find((entry) => entry.id === origin.threadId);
+  return [
+    from === "queue"
+      ? {
+          ...base(),
+          type: "thread.follow-up-unqueued",
+          payload: {
+            threadId: thread.id,
+            messageId: queued.messageId,
+            reason: "cancelled",
+            createdAt,
+          },
+        }
+      : {
+          ...base(),
+          type: "thread.lead-pass-recorded",
+          payload: {
+            threadId: thread.id,
+            kind: "not-run",
+            messageId: queued.messageId,
+            targetThreadId: thread.id,
+            createdAt,
+          },
+        },
+    {
+      ...base(),
+      type: "thread.activity-appended",
+      payload: {
+        threadId: thread.id,
+        activity: {
+          id: EventId.make(crypto.randomUUID()),
+          tone: "info",
+          kind: LEAD_PASS_NOT_RUN_ACTIVITY_KIND,
+          summary: refusal,
+          payload: { messageId: queued.messageId },
+          turnId: null,
+          createdAt,
+        },
+      },
+    },
+    ...(lead === undefined || lead.deletedAt !== null || origin === undefined
+      ? []
+      : [
+          {
+            ...base(),
+            aggregateId: lead.id,
+            type: "thread.lead-pass-recorded" as const,
+            payload: {
+              threadId: lead.id,
+              kind: "refused" as const,
+              messageId: queued.messageId,
+              targetThreadId: thread.id,
+              note: {
+                requestId: origin.requestId,
+                recipient: { participantId: origin.passedBy ?? null },
+                text: stopped
+                  ? `The message you passed to "${thread.title}" (thread ${thread.id}) did not run: the user stopped that thread before it started. Tell the user, who can send it there.`
+                  : `The message you passed to "${thread.title}" (thread ${thread.id}) did not run: that thread has more access than this lead chat now. Tell the user, who can send it there.`,
+                createdAt,
+              },
+              createdAt,
+            },
+          },
+        ]),
+  ];
 }
 
 type DecideOrchestrationCommandResult =
@@ -743,7 +860,9 @@ function decideFollowUpSubmit(
       return withLeadingEvents(
         [
           ...resetAgentRequestsForUser(targetThread, userBase, command.createdAt),
-          ...resetChildRequestsForUser(targetThread, userBase, command.createdAt),
+          ...resetChildRequestsForUser(targetThread, userBase, command.createdAt, {
+            keepsPassBlock: !personWrote(command),
+          }),
           ...closedQuestions,
         ],
         {
@@ -784,7 +903,9 @@ function decideFollowUpSubmit(
     return withLeadingEvents(
       [
         ...resetAgentRequestsForUser(targetThread, steerBase, command.createdAt),
-        ...resetChildRequestsForUser(targetThread, steerBase, command.createdAt),
+        ...resetChildRequestsForUser(targetThread, steerBase, command.createdAt, {
+          keepsPassBlock: !personWrote(command),
+        }),
         ...closedQuestions,
       ],
       {
@@ -2268,9 +2389,38 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       );
     }
 
+    // Refused right before it reached the agent (the provider reactor's last
+    // check): marked, said once, and the lead hears on its next turn.
+    case "thread.lead-pass.not-run": {
+      const target = yield* requireThread({ readModel, command, threadId: command.threadId });
+      const message = target.messages.find((entry) => entry.id === command.messageId);
+      if (message === undefined || message.fromThread?.ceiling === undefined || message.notSent) {
+        return [];
+      }
+      return passCeilingCancelEvents(
+        readModel,
+        target,
+        { messageId: message.id, fromThread: message.fromThread },
+        command.reason === "stopped"
+          ? "Not run: this thread was stopped before it started."
+          : "Not run: this thread has more access than the lead chat.",
+        () =>
+          withEventBase({
+            aggregateKind: "thread",
+            aggregateId: target.id,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          }),
+        command.createdAt,
+        "start",
+        command.reason === "stopped",
+      );
+    }
+
     case "thread.child.start":
     case "thread.child-request.respond":
     case "thread.child.send":
+    case "thread.lead.pass":
     case "thread.child-request.update":
     case "thread.child-request.settle":
     case "thread.child-notes.delivered":
@@ -2292,19 +2442,21 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             ? decideChildRespond(readModel, thread, command, baseFor)
             : command.type === "thread.child.send"
               ? decideChildSend(readModel, thread, command, baseFor)
-              : command.type === "thread.child-request.update"
-                ? decideChildRequestUpdate(thread, command, baseFor)
-                : command.type === "thread.child-request.settle"
-                  ? decideChildRequestSettle(readModel, thread, command, baseFor)
-                  : command.type === "thread.remote-child.update"
-                    ? decideRemoteChildUpdate(thread, command, baseFor)
-                    : command.type === "thread.remote-cancels.delivered"
-                      ? decideRemoteCancelsDelivered(thread, command, baseFor)
-                      : command.type === "thread.remote-request.queue"
-                        ? decideRemoteRequestQueue(thread, command, baseFor)
-                        : command.type === "thread.remote-handed-back.record"
-                          ? decideRemoteHandedBackRecord(thread, command, baseFor)
-                          : decideChildNotesDelivered(thread, command, baseFor),
+              : command.type === "thread.lead.pass"
+                ? decideLeadPass(readModel, thread, command, baseFor)
+                : command.type === "thread.child-request.update"
+                  ? decideChildRequestUpdate(thread, command, baseFor)
+                  : command.type === "thread.child-request.settle"
+                    ? decideChildRequestSettle(readModel, thread, command, baseFor)
+                    : command.type === "thread.remote-child.update"
+                      ? decideRemoteChildUpdate(thread, command, baseFor)
+                      : command.type === "thread.remote-cancels.delivered"
+                        ? decideRemoteCancelsDelivered(thread, command, baseFor)
+                        : command.type === "thread.remote-request.queue"
+                          ? decideRemoteRequestQueue(thread, command, baseFor)
+                          : command.type === "thread.remote-handed-back.record"
+                            ? decideRemoteHandedBackRecord(thread, command, baseFor)
+                            : decideChildNotesDelivered(thread, command, baseFor),
       );
     }
 
@@ -3003,6 +3155,14 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: "The request this turn answers was cancelled.",
         });
       }
+      // A lead chat's pass never starts above the access it was passed with.
+      const passStartRefusal = passCeilingRefusal(command, targetThread);
+      if (passStartRefusal !== null) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: passStartRefusal,
+        });
+      }
       // An outside agent's turn (docs/design/outside-agents.md): only in a
       // thread it started (any thread at Work), never above its ceiling,
       // never into a busy thread (an answer's own turn passes over its
@@ -3329,12 +3489,34 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               },
             ]
           : [];
+      // A lead chat's pass starting its turn: until the user writes, no
+      // threads may be started from here, and its ceiling holds what this
+      // thread sends on (docs/design/lead-chat.md, "No fan-out").
+      const passCeiling = command.fromThread?.ceiling;
+      const passStartedEvents: ReadonlyArray<PlannedOrchestrationEvent> =
+        passCeiling !== undefined
+          ? [
+              {
+                ...turnBase(),
+                type: "thread.lead-pass-recorded",
+                payload: {
+                  threadId: command.threadId,
+                  kind: "started",
+                  messageId: command.message.messageId,
+                  targetThreadId: command.threadId,
+                  ceiling: passCeiling,
+                  createdAt: command.createdAt,
+                },
+              },
+            ]
+          : [];
       return [
         userMessageEvent,
         ...(titleSeedEvent ? [titleSeedEvent] : []),
         ...(startingSessionEvent ? [startingSessionEvent] : []),
         turnStartRequestedEvent,
         ...requestRunningEvents,
+        ...passStartedEvents,
         // The user wrote: agents may make requests again. (A queued message
         // sent later drops these; it counted when the user queued it.) An
         // agent's message, another thread's or an outside agent's, is not
@@ -3342,7 +3524,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         ...(command.fromThread === undefined && command.fromOutside === undefined
           ? [
               ...resetAgentRequestsForUser(targetThread, turnBase, command.createdAt),
-              ...resetChildRequestsForUser(targetThread, turnBase, command.createdAt),
+              ...resetChildRequestsForUser(targetThread, turnBase, command.createdAt, {
+                keepsPassBlock: command.trigger !== undefined || !personWrote(command),
+              }),
               ...settleCandidateBeforeUserTurn(readModel, targetThread, command),
             ]
           : []),
@@ -3379,7 +3563,14 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // What sits beside a turn (an invite, an invited review, a message
       // steered into it while it ran) is never the turn's own message, so it
       // is never what a retry sends again.
-      const turnMessages = targetThread.messages.filter((message) => !isTurnAside(message));
+      // Nor is a message still waiting in the queue: it hasn't run yet, and
+      // runs from there in its turn.
+      const queuedIds = new Set(
+        (targetThread.queuedFollowUps ?? []).map((queued) => queued.messageId),
+      );
+      const turnMessages = targetThread.messages.filter(
+        (message) => !isTurnAside(message) && !queuedIds.has(message.id),
+      );
       if (!session || (command.type === "thread.turn.retry" && session.lastError === null)) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
@@ -3414,6 +3605,26 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: `This message came from ${lastUserMessage.fromOutside.name}, outside Threadlines. Ask it to send it again, or write it yourself.`,
+        });
+      }
+      // A message that never reached the agent stays out of its history for
+      // good (OrchestrationMessage.notSent), so it never runs from here.
+      if (lastUserMessage.notSent === true) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail:
+            lastUserMessage.fromThread?.ceiling !== undefined
+              ? "This message the lead chat passed on was never sent. Send it yourself to run it."
+              : "This message was never sent. Write it again to send it.",
+        });
+      }
+      // A lead chat's pass runs again only within the access it was passed
+      // with; above it, the user sends it themselves.
+      const retryPassRefusal = passCeilingRefusal(lastUserMessage, targetThread);
+      if (retryPassRefusal !== null) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `${retryPassRefusal} Send it yourself to run it.`,
         });
       }
       // A failed turn is retried with the agent that failed it: the slot
@@ -3494,6 +3705,28 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       return [
         retrySessionEvent,
         retryTurnStartRequestedEvent,
+        // A lead chat's pass, run again: still held to its ceiling.
+        ...(lastUserMessage.fromThread?.ceiling !== undefined
+          ? [
+              {
+                ...withEventBase({
+                  aggregateKind: "thread",
+                  aggregateId: command.threadId,
+                  occurredAt: command.createdAt,
+                  commandId: command.commandId,
+                }),
+                type: "thread.lead-pass-recorded" as const,
+                payload: {
+                  threadId: command.threadId,
+                  kind: "started" as const,
+                  messageId: lastUserMessage.id,
+                  targetThreadId: command.threadId,
+                  ceiling: lastUserMessage.fromThread.ceiling,
+                  createdAt: command.createdAt,
+                },
+              },
+            ]
+          : []),
         ...resetAgentRequestsForUser(
           targetThread,
           () =>
@@ -3740,6 +3973,20 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           !isOpenParentRequest(readModel, fromThread))
       ) {
         return [{ ...unqueuedEvent, payload: { ...unqueuedEvent.payload, reason: "cancelled" } }];
+      }
+      // A lead chat's pass runs only within the lead's access as it was when
+      // passed. A user message queued ahead may have widened the thread's
+      // access since; then the pass is taken back instead.
+      const passRefusal = passCeilingRefusal(queued, targetThread);
+      if (passRefusal !== null) {
+        return passCeilingCancelEvents(
+          readModel,
+          targetThread,
+          queued,
+          passRefusal,
+          sendBase,
+          command.createdAt,
+        );
       }
       // A message an agent queued carries no model: its agent's current one
       // applies (the thread's own model for the thread's own agent), so a

@@ -33,6 +33,7 @@ import {
   type OutsideAgentConnectionId,
   type OutsideAgentRef,
   type OutsideTurnOrigin,
+  type LeadPassCeiling,
   type RuntimeMode,
   ThreadAccessRaiseDeferredActivityKind,
   type ThreadAccessRaiseDeferredPayload,
@@ -51,7 +52,7 @@ import {
 import { renderThreadContextSeed, withContextSeedPreamble } from "@threadlines/shared/contextSeed";
 import { LEAD_WITHOUT_TOOLS_TEXT, leadRoleText } from "@threadlines/shared/projectLead";
 import { agentInvitesMode, agentThreadsMode } from "@threadlines/shared/serverSettings";
-import { notesFor, remoteChildOf } from "@threadlines/shared/childThreads";
+import { notesFor, remoteChildOf, withinModeCeiling } from "@threadlines/shared/childThreads";
 import { settingsChangeNotesFor } from "@threadlines/shared/settingsChangeState";
 import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
 import { exceedsRuntimeMode, saferRuntimeMode } from "@threadlines/shared/runtimeMode";
@@ -224,6 +225,14 @@ export interface ForkTurnBoundary {
   readonly lastTurnId?: TurnId;
 }
 
+/** Why a pass marked never sent did not go when a retry asked for it. */
+const PASS_NOT_SENT_DETAIL =
+  "This message the lead chat passed on was never sent. Send it yourself to run it.";
+
+/** Why a lead chat's pass did not go to the agent: the thread's access went above its ceiling. */
+const PASS_ABOVE_CEILING_DETAIL =
+  "This message the lead chat passed on wasn't sent: this thread has more access than the lead chat now. Send it yourself to run it.";
+
 /** One ensure call's launch mark: its generation and instance, once marked. */
 interface SessionLaunch {
   generation: number | null;
@@ -254,6 +263,13 @@ interface EnsureSessionOptions {
    * on the same read of the thread the session starts from.
    */
   readonly outsideCeiling?: OutsideTurnOrigin;
+  /**
+   * The turn is a lead chat's pass (docs/design/lead-chat.md, "Access"): it
+   * runs only while the thread is within the pass's ceiling, checked on the
+   * same read of the thread the session starts from, since the user may have
+   * raised its access after the decider let the pass through.
+   */
+  readonly passCeiling?: LeadPassCeiling;
   /**
    * A turn that isn't from outside: an agent outside text reached
    * (OrchestrationOutsideWork) starts fresh for it, a new runtime with a
@@ -1344,6 +1360,14 @@ const make = Effect.gen(function* () {
         detail: `This message from ${outsideCeiling.name} wasn't sent: the thread's access was raised above what it may use.`,
       });
     }
+    const passCeiling = options?.passCeiling;
+    if (passCeiling !== undefined && !withinModeCeiling(thread, passCeiling)) {
+      return yield* new ProviderAdapterRequestError({
+        provider: providerErrorLabel(undefined),
+        method: "thread.turn.start",
+        detail: PASS_ABOVE_CEILING_DETAIL,
+      });
+    }
     const sessionKey = participantSessionKey(threadId, participantId);
     const shedsOutsideWork =
       options?.shedOutsideWork === true &&
@@ -2128,7 +2152,12 @@ const make = Effect.gen(function* () {
           : undefined) ??
         remoteChild?.title ??
         "another thread";
-      if (fromThread.kind === "request") {
+      if (fromThread.kind === "request" && fromThread.ceiling !== undefined) {
+        // A pass (docs/design/lead-chat.md): one-way, from the project's lead.
+        lines.push(
+          `The project's lead chat "${otherTitle}" passed this on. It is from another agent, not typed by the user. Your reply stays in this thread, where the user reads it. Do the work here; you can't start threads for it.`,
+        );
+      } else if (fromThread.kind === "request") {
         lines.push(
           thread.attachedToParent || fromThread.environmentId !== undefined
             ? `Another agent started this thread from the thread "${otherTitle}", and your final reply goes back to it automatically. Work in this thread's own checkout, and end with the answer it needs.`
@@ -2353,6 +2382,19 @@ const make = Effect.gen(function* () {
     }
 
     const sessionKey = participantSessionKey(input.threadId, input.participantId);
+    // Read from the stored message, which keeps it for good: a retry or a
+    // resend of a pass carries no origin on its turn.
+    const storedMessage = thread.messages.find((message) => message.id === input.messageId);
+    const passCeiling = storedMessage?.fromThread?.ceiling ?? input.fromThread?.ceiling;
+    // Marked as never sent while this turn was prepared (a retry the user
+    // made just before the mark landed): it stays unsent.
+    if (passCeiling !== undefined && storedMessage?.notSent === true) {
+      return yield* new ProviderAdapterRequestError({
+        provider: providerErrorLabel(undefined),
+        method: "thread.turn.start",
+        detail: PASS_NOT_SENT_DETAIL,
+      });
+    }
     const ensured = yield* ensureSessionForThread(input.threadId, input.createdAt, {
       participantId: input.participantId,
       ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
@@ -2360,6 +2402,7 @@ const make = Effect.gen(function* () {
       preservePendingTurnStartup: true,
       ...(forkFrom !== undefined ? { forkFrom } : {}),
       ...(input.fromOutside !== undefined ? { outsideCeiling: input.fromOutside } : {}),
+      ...(passCeiling !== undefined ? { passCeiling } : {}),
       ...(input.sentByPerson === true && input.fromOutside === undefined
         ? { shedOutsideWork: true }
         : {}),
@@ -2383,6 +2426,25 @@ const make = Effect.gen(function* () {
         provider: providerErrorLabel(activeSession.provider),
         method: "thread.turn.start",
         detail: `This message from ${input.fromOutside.name} wasn't sent: the agent here still runs with more access than it may use.`,
+      });
+    }
+    // A pass goes only to a runtime within its ceiling, in the mode it runs.
+    if (
+      passCeiling !== undefined &&
+      ((activeSession !== undefined &&
+        exceedsRuntimeMode(activeSession.runtimeMode, passCeiling.runtimeMode)) ||
+        !withinModeCeiling(
+          {
+            runtimeMode: thread.runtimeMode,
+            interactionMode: input.interactionMode ?? thread.interactionMode,
+          },
+          passCeiling,
+        ))
+    ) {
+      return yield* new ProviderAdapterRequestError({
+        provider: providerErrorLabel(activeSession?.provider),
+        method: "thread.turn.start",
+        detail: PASS_ABOVE_CEILING_DETAIL,
       });
     }
     // In a room, what the other agents said and changed since this agent's
@@ -3080,13 +3142,34 @@ const make = Effect.gen(function* () {
         });
       }).pipe(Effect.ignoreCause({ log: true }));
 
+    // A lead chat's pass refused at the last check never reached the agent:
+    // the decider marks it so no history carries it, and the lead hears.
+    const markPassNotRun = (reason: "ceiling" | "stopped") =>
+      Effect.gen(function* () {
+        yield* orchestrationEngine.dispatch({
+          type: "thread.lead-pass.not-run",
+          commandId: serverCommandId("lead-pass-not-run"),
+          threadId: event.payload.threadId,
+          messageId: event.payload.messageId,
+          reason,
+          createdAt: yield* nowIso,
+        });
+      }).pipe(Effect.ignoreCause({ log: true }));
+
+    // What else a turn that could not start ends: its hand-off, its pass.
+    const afterFailedStart = (cause: Cause.Cause<unknown>) =>
+      Cause.hasInterruptsOnly(cause)
+        ? Effect.void
+        : Effect.andThen(
+            failHandOffForFailedStart(formatFailureDetail(cause)),
+            formatFailureDetail(cause).includes(PASS_ABOVE_CEILING_DETAIL)
+              ? markPassNotRun("ceiling")
+              : Effect.void,
+          );
+
     const recoverTurnStartFailure = (cause: Cause.Cause<unknown>) =>
       handleTurnStartFailure(cause).pipe(
-        Effect.andThen(
-          Cause.hasInterruptsOnly(cause)
-            ? Effect.void
-            : failHandOffForFailedStart(formatFailureDetail(cause)),
-        ),
+        Effect.andThen(afterFailedStart(cause)),
         Effect.catchCause((recoveryCause) =>
           Effect.logWarning("provider command reactor failed to recover turn start failure", {
             eventType: event.type,
@@ -3124,6 +3207,10 @@ const make = Effect.gen(function* () {
         messageId: event.payload.messageId,
       });
       yield* dropStart("Stopped before the turn started.");
+      // A lead chat's pass never ran: marked, so no later history carries it.
+      if (message.fromThread?.ceiling !== undefined) {
+        yield* markPassNotRun("stopped");
+      }
       return true;
     });
 
@@ -3320,11 +3407,7 @@ const make = Effect.gen(function* () {
         Effect.map(Option.some),
         Effect.catchCause((cause) =>
           handleTurnStartFailure(cause).pipe(
-            Effect.andThen(
-              Cause.hasInterruptsOnly(cause)
-                ? Effect.void
-                : failHandOffForFailedStart(formatFailureDetail(cause)),
-            ),
+            Effect.andThen(afterFailedStart(cause)),
             Effect.as(Option.none()),
           ),
         ),
@@ -5578,7 +5661,19 @@ const make = Effect.gen(function* () {
               }),
             ),
           );
-        return;
+        // The decider can take a message back instead of starting its turn
+        // (a cancelled report, a lead chat's pass over its ceiling): then
+        // the next one goes, as nothing else will move the queue.
+        const after = yield* resolveThread(threadId);
+        const takenBack =
+          after !== undefined &&
+          after.session?.status !== "starting" &&
+          after.session?.status !== "running" &&
+          !(after.queuedFollowUps ?? []).some((queued) => queued.messageId === current);
+        const next = takenBack ? nextQueuedFollowUp(after) : undefined;
+        if (next === undefined || next.messageId === current) return;
+        candidate = next.messageId;
+        continue;
       }
       yield* orchestrationEngine
         .dispatch({

@@ -179,6 +179,8 @@ const shellOf = (thread: OrchestrationThread): OrchestrationThreadShell =>
     pendingChildApproval: false,
     awaitedChildThreadCount: 0,
     doneOverride: null,
+    // Every real thread carries it (decoding defaults it); some fixtures leave it out.
+    linkedPullRequests: (thread as Partial<OrchestrationThread>).linkedPullRequests ?? [],
   }) as unknown as OrchestrationThreadShell;
 
 const mainCaller = (): McpInvocationScope => ({
@@ -210,6 +212,8 @@ const makeTools = (options: {
   /** The branch checked out in a folder; any other folder has none. */
   readonly branches?: Readonly<Record<string, string>>;
   readonly moves?: ThreadToolMoves;
+  /** The project's lead chat (docs/design/lead-chat.md). */
+  readonly leadThreadId?: ThreadId;
 }) =>
   Effect.gen(function* () {
     let caller = options.caller ?? makeThread();
@@ -259,7 +263,12 @@ const makeTools = (options: {
             .filter((thread) => thread.projectId === PROJECT)
             .map(shellOf),
         ),
-      readProject: () => Effect.succeed({ kind: "workspace" as const, workspaceRoot: "/project" }),
+      readProject: () =>
+        Effect.succeed({
+          kind: "workspace" as const,
+          workspaceRoot: "/project",
+          leadThreadId: options.leadThreadId ?? null,
+        }),
       providers: Effect.succeed(PROVIDERS),
       userDefaultModel: Effect.succeed(options.userDefault ?? null),
       threadsMode: Effect.succeed(options.mode ?? "auto"),
@@ -638,6 +647,47 @@ describe("thread_send", () => {
   );
 });
 
+describe("thread_send from the project's lead chat", () => {
+  it.effect("passes a message to a thread the user started, one-way", () =>
+    Effect.gen(function* () {
+      const handMade = makeChild({ id: STRANGER, parentThreadId: null, attachedToParent: false });
+      const tools = yield* makeTools({ others: [handMade], leadThreadId: PARENT });
+      const result = yield* tools.handlers.thread_send(mainCaller(), {
+        threadId: STRANGER,
+        message: "Fix the flaky test.",
+      });
+      expect(result).toMatchObject({ outcome: "sent", reportsBack: false, threadId: STRANGER });
+      const [passed] = ofType(tools.dispatched, "thread.lead.pass");
+      expect(passed).toMatchObject({ threadId: PARENT, targetThreadId: STRANGER });
+      expect(ofType(tools.dispatched, "thread.child.send")).toHaveLength(0);
+    }),
+  );
+
+  it.effect(
+    "refuses a thread another thread owns, and anything from a thread that isn't the lead",
+    () =>
+      Effect.gen(function* () {
+        const owned = makeChild({ id: STRANGER, parentThreadId: ThreadId.make("someone-else") });
+        const lead = yield* makeTools({ others: [owned], leadThreadId: PARENT });
+        const refused = yield* lead.handlers.thread_send(mainCaller(), {
+          threadId: STRANGER,
+          message: "Fix it.",
+        });
+        expect(refused.outcome).toBe("not_yours");
+        expect(refused.detail).toContain("Message the thread that started it");
+
+        const handMade = makeChild({ id: STRANGER, parentThreadId: null, attachedToParent: false });
+        const plain = yield* makeTools({ others: [handMade] });
+        const notLead = yield* plain.handlers.thread_send(mainCaller(), {
+          threadId: STRANGER,
+          message: "Fix it.",
+        });
+        expect(notLead.outcome).toBe("not_yours");
+        expect(lead.dispatched.length + plain.dispatched.length).toBe(0);
+      }),
+  );
+});
+
 describe("an existing checkout", () => {
   /** A thread the parent started that has finished its work, on its own branch. */
   const coder = (patch: Partial<OrchestrationThread> = {}) =>
@@ -942,6 +992,18 @@ describe("thread_read", () => {
           }),
           message({ eventSequence: 2, text: "Also look at the index." }),
           message({ eventSequence: 3, role: "assistant", text: "It is safe." }),
+          // A lead chat's pass that never ran: shown, labelled.
+          message({
+            eventSequence: 4,
+            text: "Run the migration.",
+            notSent: true,
+            fromThread: {
+              threadId: PARENT,
+              requestId: "request-2" as never,
+              kind: "request",
+              ceiling: { runtimeMode: "approval-required", interactionMode: "default" },
+            },
+          }),
         ],
       });
       const tools = yield* makeTools({ others: [child] });
@@ -951,15 +1013,22 @@ describe("thread_read", () => {
         ["thread_request", `Request from thread "Parent" (${PARENT})`],
         ["user", "User"],
         ["agent", "GPT-6 Astra"],
+        ["thread_request", `Request from thread "Parent" (${PARENT})`],
+      ]);
+      expect(result.messages.map((entry) => entry.notSent ?? false)).toEqual([
+        false,
+        false,
+        false,
+        true,
       ]);
       expect(result.thread).toMatchObject({ threadId: CHILD, startedBy: "you", attached: true });
-      expect(result.next).toBe(3);
+      expect(result.next).toBe(4);
 
       const later = yield* tools.handlers.thread_read(mainCaller(), {
         threadId: CHILD,
         after: 2,
       });
-      expect(later.messages.map((entry) => entry.sequence)).toEqual([3]);
+      expect(later.messages.map((entry) => entry.sequence)).toEqual([3, 4]);
     }),
   );
 

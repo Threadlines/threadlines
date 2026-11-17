@@ -57,8 +57,10 @@ import {
   childSendRefusal,
   childStartRefusal,
   isAttachedChild,
+  leadPassRefusal,
   ownChildRefusal,
   remoteChildOf,
+  withinModeCeiling,
 } from "@threadlines/shared/childThreads";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -130,7 +132,26 @@ export interface ThreadToolDeps {
   readonly readProject: (
     projectId: ProjectId,
   ) => Effect.Effect<
-    Pick<OrchestrationProjectShell, "kind" | "workspaceRoot" | "leadThreadId"> | undefined
+    | Pick<
+        OrchestrationProjectShell,
+        "kind" | "workspaceRoot" | "leadThreadId" | "repositoryIdentity"
+      >
+    | undefined
+  >;
+  /**
+   * A thread's pull requests as this computer already knows them, with no
+   * call to the host (PullRequestObservations.known). Absent: none listed.
+   */
+  readonly knownPullRequests?: (input: {
+    readonly repositoryKey: string | null;
+    readonly branch: string | null;
+    readonly urls: ReadonlyArray<string>;
+  }) => Effect.Effect<
+    ReadonlyArray<{
+      readonly number: number;
+      readonly url: string;
+      readonly state: "open" | "merged" | "closed";
+    }>
   >;
   /** The provider snapshots: who a child could run on. */
   readonly providers: Effect.Effect<ReadonlyArray<ServerProvider>>;
@@ -1523,20 +1544,55 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
             )
           : [];
       const scheduleAnswerWaiting = yield* waitingOnScheduleAnswers;
-      return {
-        outcome: "ok",
-        threads: [
-          ...listed.map((shell) =>
+      // Which thread leads the project, and what each listed thread's pull
+      // requests are as already known here (docs/design/lead-chat.md).
+      const project = yield* deps.readProject(thread.projectId);
+      const repositoryKey = project?.repositoryIdentity?.canonicalKey ?? null;
+      type KnownPullRequest = NonNullable<ThreadSummary["pullRequests"]>[number];
+      const pullRequestsOf = (
+        shell: OrchestrationThreadShell,
+      ): Effect.Effect<ReadonlyArray<KnownPullRequest>> =>
+        (deps.knownPullRequests === undefined
+          ? Effect.succeed([])
+          : deps.knownPullRequests({
+              repositoryKey,
+              branch: shell.branch,
+              urls: shell.linkedPullRequests.map((linked) => linked.url),
+            })
+        ).pipe(
+          Effect.map((known) => {
+            const byUrl = new Map<string, KnownPullRequest>(
+              known.map((entry) => [
+                entry.url,
+                { number: entry.number, url: entry.url, state: entry.state },
+              ]),
+            );
+            // One its agent opened that nobody has read yet: no state to say.
+            for (const linked of shell.linkedPullRequests) {
+              if (!byUrl.has(linked.url)) {
+                byUrl.set(linked.url, { number: linked.number, url: linked.url });
+              }
+            }
+            return [...byUrl.values()];
+          }),
+        );
+      const summaries = yield* Effect.forEach(listed, (shell) =>
+        pullRequestsOf(shell).pipe(
+          Effect.map((pullRequests): ThreadSummary =>
             summarizeThread(shell, {
               caller: thread,
               providers,
               titleOf: (threadId) => titles.get(threadId),
               scheduleAnswerWaiting,
+              leadThreadId: project?.leadThreadId ?? null,
+              pullRequests,
             }),
           ),
-          ...settingUp,
-          ...remote,
-        ],
+        ),
+      );
+      return {
+        outcome: "ok",
+        threads: [...summaries, ...settingUp, ...remote],
       } satisfies ThreadListResult;
     });
 
@@ -1720,6 +1776,15 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
       }
       const owned = yield* ownChild(thread, scope, input.threadId);
       if ("refusal" in owned) {
+        // The project's lead chat may pass a message to a thread it did not
+        // start (docs/design/lead-chat.md, "Tools"): one-way, never a move.
+        if (
+          owned.refusal.outcome === "not_yours" &&
+          checkoutReference === undefined &&
+          (yield* isLeadThread(thread))
+        ) {
+          return yield* leadPass(scope, thread, input.threadId, input.message);
+        }
         return owned.refusal satisfies ThreadSendResult;
       }
       const childThreadId = owned.child.id;
@@ -1845,6 +1910,114 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
                       : ""
                   } ${sentDetail[outcome]}`,
             threadId: childThreadId,
+          } satisfies ThreadSendResult;
+        }),
+      );
+    });
+
+  /**
+   * The lead chat passes `message` to a thread it did not start. Nothing is
+   * owed back: the thread answers where the user reads it. The decider checks
+   * the same rules again (leadPassRefusal) and the access ceiling.
+   */
+  const leadPass = (
+    scope: McpInvocationScope,
+    lead: OrchestrationThread,
+    targetReference: string,
+    message: string,
+  ): Effect.Effect<ThreadSendResult> =>
+    Effect.gen(function* () {
+      const targetId = targetReference.trim();
+      const text = message.trim();
+      if (text.length === 0) {
+        return { outcome: "refused", detail: "Say what you want from the thread." };
+      }
+      if (text.length > THREAD_PROMPT_CHAR_LIMIT) {
+        return {
+          outcome: "refused",
+          detail: `Keep the message under ${THREAD_PROMPT_CHAR_LIMIT.toLocaleString("en-US")} characters.`,
+        };
+      }
+      const callerTurnId = lead.session?.activeTurnId ?? NO_TURN;
+      const key = [
+        scope.threadId,
+        scope.participantId ?? "primary",
+        callerTurnId,
+        "thread_send:pass",
+        targetId,
+        text,
+      ].join("\u0000");
+      const requestId = ChildRequestId.make(derivedUuid(key, "request"));
+      const messageId = MessageId.make(derivedUuid(key, "message"));
+      const passedDetail = {
+        sent: "Passed on. That thread works on it where the user reads it; nothing comes back to you. Read it later with thread_read if the user asks.",
+        queued:
+          "Passed on. That thread is busy and takes it after its current turn; nothing comes back to you. Read it later with thread_read if the user asks.",
+      } as const;
+      return yield* deps.requests.join(key, () =>
+        Effect.gen(function* () {
+          const [caller, target] = yield* Effect.all([
+            deps.readThread(scope.threadId),
+            deps.readThread(ThreadId.make(targetId)),
+          ]);
+          if (caller === undefined) {
+            return { outcome: "refused", detail: GONE } satisfies ThreadSendResult;
+          }
+          // The same pass, already made in this turn: that one stands.
+          if (target?.messages.some((entry) => entry.id === messageId)) {
+            return {
+              outcome: "sent",
+              detail: passedDetail.sent,
+              threadId: targetId,
+              reportsBack: false,
+            } satisfies ThreadSendResult;
+          }
+          const refusal = leadPassRefusal(caller, target ?? null, {
+            from: from(scope),
+            callerTurnId,
+            isLead: yield* isLeadThread(caller),
+          });
+          if (refusal !== null || target === undefined) {
+            return {
+              outcome:
+                refusal?.outcome === "limit"
+                  ? ("limit" as const)
+                  : refusal?.outcome === "not_allowed"
+                    ? ("not_yours" as const)
+                    : ("refused" as const),
+              detail: refusal?.detail ?? NOT_FOUND,
+              threadId: targetId,
+            } satisfies ThreadSendResult;
+          }
+          if (!withinModeCeiling(target, caller)) {
+            return {
+              outcome: "refused",
+              detail:
+                "That thread has more access than the lead chat, so it can't take work from it. Tell the user, who can send it there.",
+              threadId: targetId,
+            } satisfies ThreadSendResult;
+          }
+          const outcome = childIsBusy(target, caller) ? ("queued" as const) : ("sent" as const);
+          const rejected = yield* dispatch({
+            type: "thread.lead.pass",
+            commandId: childRequestCommandId(requestId, "pass"),
+            threadId: scope.threadId,
+            from: from(scope),
+            callerTurnId,
+            targetThreadId: target.id,
+            requestId,
+            messageId,
+            text,
+            createdAt: yield* nowIso,
+          });
+          if (rejected !== undefined) {
+            return rejected satisfies ThreadSendResult;
+          }
+          return {
+            outcome,
+            detail: passedDetail[outcome],
+            threadId: target.id,
+            reportsBack: false,
           } satisfies ThreadSendResult;
         }),
       );

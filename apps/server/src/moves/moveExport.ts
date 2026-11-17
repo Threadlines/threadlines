@@ -283,6 +283,10 @@ export function exportThreadHistory(thread: OrchestrationThread): {
   readonly messages: ReadonlyArray<ThreadImportMessage>;
   readonly activities: ReadonlyArray<OrchestrationThreadActivity>;
 } {
+  // An agent's message still waiting in the queue is written into the chat
+  // but never ran here, and only the user's own queued messages move: it
+  // arrives as never sent (reachedAgent), so no history there carries it.
+  const queuedIds = new Set((thread.queuedFollowUps ?? []).map((queued) => queued.messageId));
   const messages = thread.messages
     .filter(
       (message) =>
@@ -304,7 +308,7 @@ export function exportThreadHistory(thread: OrchestrationThread): {
       ...(message.fromOutside !== undefined ? { fromOutside: message.fromOutside } : {}),
       ...(message.sentFrom !== undefined ? { sentFrom: message.sentFrom } : {}),
       ...(message.trigger !== undefined ? { trigger: message.trigger } : {}),
-      ...(message.notSent === true ? { notSent: true as const } : {}),
+      ...(message.notSent === true || queuedIds.has(message.id) ? { notSent: true as const } : {}),
       createdAt: message.createdAt,
     }));
   const activities = thread.activities

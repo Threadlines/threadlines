@@ -108,6 +108,7 @@ import {
   ThreadChildRequestSubmittedPayload,
   ThreadChildRequestUpdatedPayload,
   ThreadChildRequestsResetPayload,
+  ThreadLeadPassRecordedPayload,
   ThreadHandedBackPayload,
   ThreadRemoteCancelQueuedPayload,
   ThreadRemoteCancelsDeliveredPayload,
@@ -992,8 +993,39 @@ export function projectEvent(
         "payload",
       ).pipe(
         Effect.map((payload) =>
-          updateChildRequests(nextBase, payload.threadId, childRequestStateOn.reset),
+          updateChildRequests(nextBase, payload.threadId, (state) =>
+            childRequestStateOn.reset(state, payload),
+          ),
         ),
+      );
+
+    case "thread.lead-pass-recorded":
+      return decodeForEvent(
+        ThreadLeadPassRecordedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => {
+          const next = updateChildRequests(nextBase, payload.threadId, (state) =>
+            childRequestStateOn.leadPass(state, payload),
+          );
+          // Refused right before it reached the agent: the message never ran.
+          if (payload.kind !== "not-run") return next;
+          const thread = next.threads.find((entry) => entry.id === payload.threadId);
+          return thread === undefined
+            ? next
+            : {
+                ...next,
+                threads: updateThread(next.threads, payload.threadId, {
+                  messages: thread.messages.map((message) =>
+                    message.id === payload.messageId
+                      ? { ...message, notSent: true as const }
+                      : message,
+                  ),
+                }),
+              };
+        }),
       );
 
     case "thread.remote-child-updated":
@@ -1362,6 +1394,7 @@ export function projectEvent(
             ...(payload.composer !== undefined ? { composer: payload.composer } : {}),
             ...(payload.sentFrom !== undefined ? { sentFrom: payload.sentFrom } : {}),
             ...(payload.trigger !== undefined ? { trigger: payload.trigger } : {}),
+            ...(payload.notSent === true ? { notSent: true as const } : {}),
             ...(payload.afterMove === true ? { afterMove: true as const } : {}),
             turnId: payload.turnId,
             streaming: payload.streaming,
@@ -1401,7 +1434,9 @@ export function projectEvent(
                     ...(entry.trigger === undefined && message.trigger !== undefined
                       ? { trigger: message.trigger }
                       : {}),
-                    ...(entry.notSent === true ? { notSent: true as const } : {}),
+                    ...(entry.notSent === true || message.notSent === true
+                      ? { notSent: true as const }
+                      : {}),
                     ...(entry.afterMove === true || message.afterMove === true
                       ? { afterMove: true as const }
                       : {}),

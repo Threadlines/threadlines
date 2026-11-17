@@ -42,6 +42,8 @@ import {
   isSettingUpChildStart,
   ownChildRefusal,
   remoteChildOf,
+  leadPassRefusal,
+  withinModeCeiling,
 } from "@threadlines/shared/childThreads";
 import {
   APPROVAL_ACTIVITY_KINDS,
@@ -53,6 +55,7 @@ import { activeParticipants } from "@threadlines/shared/threadParticipants";
 
 import { handOffReplyText } from "./agentRequestDecisions.ts";
 import { isProjectLeadThread } from "./commandInvariants.ts";
+
 import { checkoutSelectedEvents } from "./threadCheckout.ts";
 import { currentAgentModel, messageAgentModels } from "./messageAgentModels.ts";
 
@@ -70,17 +73,6 @@ type CommandOf<Type extends OrchestrationCommand["type"]> = Extract<
 export type ChildThreadDecision = ReadonlyArray<PlannedEvent> | { readonly refusal: string };
 
 const refuse = (refusal: string) => ({ refusal });
-
-/** Whether `child` asks for no more than `ceiling` allows. Plan is narrower than default. */
-export function withinModeCeiling(
-  child: { readonly runtimeMode: RuntimeMode; readonly interactionMode: ProviderInteractionMode },
-  ceiling: { readonly runtimeMode: RuntimeMode; readonly interactionMode: ProviderInteractionMode },
-): boolean {
-  return (
-    !exceedsRuntimeMode(child.runtimeMode, ceiling.runtimeMode) &&
-    (ceiling.interactionMode !== "plan" || child.interactionMode === "plan")
-  );
-}
 
 /**
  * A launch narrowed to its parent's access now: a request approved after the
@@ -511,16 +503,39 @@ export function decideChildRespond(
         `The user said not now to starting ${quotedList(titles)}. Don't ask again unless the user asks you to.`,
     );
   }
-  return batch.map((request): PlannedEvent => ({
-    ...baseFor(parent.id),
-    type: "thread.child-request-updated",
-    payload: {
-      threadId: parent.id,
-      requestId: request.requestId,
-      status: "starting",
-      updatedAt: command.createdAt,
-    },
-  }));
+  // Some of the batch, picked on the card: the rest are declined with it.
+  const picked = command.requestIds === undefined ? undefined : new Set(command.requestIds);
+  const starting =
+    picked === undefined ? batch : batch.filter((request) => picked.has(request.requestId));
+  if (starting.length === 0) {
+    return refuse("Pick at least one thread to start, or say not now.");
+  }
+  const declined = batch.filter((request) => !starting.includes(request));
+  const startedTitles = starting.map((request) => titleOf(readModel, request, parent));
+  return [
+    ...(declined.length === 0
+      ? []
+      : settleOpenRequests(
+          readModel,
+          baseFor,
+          parent,
+          declined,
+          "declined",
+          command.createdAt,
+          (titles) =>
+            `The user started ${quotedList(startedTitles)} but not ${quotedList(titles)}. Don't ask again for those unless the user asks you to.`,
+        )),
+    ...starting.map((request): PlannedEvent => ({
+      ...baseFor(parent.id),
+      type: "thread.child-request-updated",
+      payload: {
+        threadId: parent.id,
+        requestId: request.requestId,
+        status: "starting",
+        updatedAt: command.createdAt,
+      },
+    })),
+  ];
 }
 
 /** A message from an agent to one of its children (`thread.child.send`). */
@@ -673,6 +688,93 @@ export function decideChildSend(
           interactionMode: child.interactionMode,
           createdAt: command.createdAt,
         },
+      },
+    },
+  ];
+}
+
+/**
+ * The lead chat passes a message to a thread it did not start
+ * (`thread.lead.pass`, docs/design/lead-chat.md, "A pass"). One-way: the
+ * message is queued in the target as the lead's, with the lead's access as
+ * its ceiling, and only the lead's send count is recorded. The tool handler
+ * checked the same rules first.
+ */
+export function decideLeadPass(
+  readModel: OrchestrationReadModel,
+  lead: OrchestrationThread,
+  command: CommandOf<"thread.lead.pass">,
+  baseFor: ChildEventBase,
+): ChildThreadDecision {
+  const target = findThread(readModel, command.targetThreadId);
+  const refusal = leadPassRefusal(lead, target, {
+    from: command.from,
+    callerTurnId: command.callerTurnId,
+    isLead: isProjectLeadThread(readModel, lead),
+  });
+  if (refusal !== null || target === null) {
+    return refuse(refusal?.detail ?? "That thread is gone.");
+  }
+  if (target.messages.some((message) => message.id === command.messageId)) {
+    return refuse("That message was already sent.");
+  }
+  const ceiling = { runtimeMode: lead.runtimeMode, interactionMode: lead.interactionMode };
+  if (!withinModeCeiling(target, ceiling)) {
+    return refuse(
+      "That thread has more access than the lead chat, so it can't take work from it. Tell the user, who can send it there.",
+    );
+  }
+  const fromThread = {
+    threadId: lead.id,
+    requestId: command.requestId,
+    kind: "request" as const,
+    ceiling,
+    ...(command.from.participantId !== null && command.from.participantId !== undefined
+      ? { passedBy: command.from.participantId }
+      : {}),
+  };
+  return [
+    {
+      ...baseFor(target.id),
+      type: "thread.message-sent",
+      payload: {
+        threadId: target.id,
+        messageId: command.messageId,
+        role: "user",
+        text: command.text,
+        attachments: [],
+        fromThread,
+        turnId: null,
+        streaming: false,
+        createdAt: command.createdAt,
+        updatedAt: command.createdAt,
+      },
+    },
+    {
+      ...baseFor(target.id),
+      type: "thread.follow-up-queued",
+      payload: {
+        threadId: target.id,
+        followUp: {
+          messageId: command.messageId,
+          text: command.text,
+          attachments: [],
+          fromThread,
+          runtimeMode: target.runtimeMode,
+          interactionMode: target.interactionMode,
+          createdAt: command.createdAt,
+        },
+      },
+    },
+    {
+      ...baseFor(lead.id),
+      type: "thread.lead-pass-recorded",
+      payload: {
+        threadId: lead.id,
+        kind: "sent",
+        messageId: command.messageId,
+        targetThreadId: target.id,
+        createdAt: command.createdAt,
       },
     },
   ];
@@ -1751,4 +1853,4 @@ export const isAgentQueued = (queued: {
   readonly fromThread?: unknown;
 }) => isAgentOrigin(queued);
 
-export { isAttachedChild };
+export { isAttachedChild, withinModeCeiling };

@@ -28,7 +28,7 @@ import {
   type SeedBudget,
   splitSeedEntriesByBudget,
 } from "@threadlines/shared/contextSeed";
-import { transcriptAuthor } from "@threadlines/shared/messageAuthor";
+import { reachedAgent, transcriptAuthor } from "@threadlines/shared/messageAuthor";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -107,6 +107,9 @@ function buildEntries(input: {
     readonly text: string;
     readonly attachments?: ReadonlyArray<{ readonly name: string }> | undefined;
     readonly fromOutside?: OrchestrationMessage["fromOutside"];
+    readonly fromThread?: OrchestrationMessage["fromThread"];
+    readonly fromAgent?: OrchestrationMessage["fromAgent"];
+    readonly notSent?: true | undefined;
     readonly createdAt: string;
   }>;
   readonly activities: ReadonlyArray<{
@@ -115,11 +118,19 @@ function buildEntries(input: {
     readonly createdAt: string;
   }>;
   readonly excludeMessageId?: string | undefined;
+  /** Whether an agent was given the message (`reachedAgent`): history holds only those. */
+  readonly reachedAgent: (message: {
+    readonly id: string;
+    readonly notSent?: true | undefined;
+  }) => boolean;
 }): ReadonlyArray<ThreadContextSeedEntry> {
   const items: Array<{ readonly createdAt: string; readonly entry: ThreadContextSeedEntry }> = [];
 
   for (const message of input.messages) {
     if (message.id !== undefined && message.id === input.excludeMessageId) {
+      continue;
+    }
+    if (message.id !== undefined && !input.reachedAgent({ ...message, id: message.id })) {
       continue;
     }
     const attached = (message.attachments ?? []).map((attachment) => attachment.name);
@@ -191,6 +202,7 @@ export const makeThreadContextSeedBuilder = (deps: {
         messages: thread.messages,
         activities: thread.activities,
         excludeMessageId: input.excludeMessageId,
+        reachedAgent: (message) => reachedAgent(message, thread),
       });
 
       if (entries.length === 0 && pointer === undefined) {
