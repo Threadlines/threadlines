@@ -3493,6 +3493,8 @@ describe("ProviderCommandReactor", () => {
       message: { messageId: asMessageId("user-here"), role: "user", text: "go", attachments: [] },
       interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
       runtimeMode: "full-access",
+      // Stamped from the app's sign-in, as the server does for a person's send.
+      sentFrom: { kind: "computer", place: "here" },
       createdAt: now,
     });
     await waitFor(

@@ -114,6 +114,7 @@ import {
   withinModeCeiling,
 } from "./childThreadDecisions.ts";
 import { childDeliveryForQuietCandidate } from "./childThreadDelivery.ts";
+import { turnLiftsMoveFence } from "./linkFence.ts";
 import { projectEvent } from "./projector.ts";
 import { checkoutSelectedEvents, leavesLentWorktree, movesCheckout } from "./threadCheckout.ts";
 import { canReplaceThreadTitle } from "./threadTitle.ts";
@@ -3456,18 +3457,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           ...(command.scheduledTaskId !== undefined
             ? { scheduledTaskId: command.scheduledTaskId }
             : {}),
-          // The user's own message on a thread that moved here fenced: they
-          // take it over (docs/design/fleet.md, Part 3e). A queued message the
-          // move carried, or one Threadlines wrote, never does (see
-          // thread.follow-up.send-queued).
-          ...(targetThread.movedFrom?.fenced === true &&
-          command.fromThread === undefined &&
-          command.fromOutside === undefined &&
-          command.scheduledTaskId === undefined &&
-          command.trigger === undefined &&
-          command.keepsMoveFence !== true
-            ? { liftsMoveFence: true as const }
-            : {}),
+          // A person's own message on a thread that moved here fenced: they
+          // take it over (docs/design/fleet.md, Part 3e). Only a message
+          // proven theirs does (turnLiftsMoveFence).
+          ...(turnLiftsMoveFence(targetThread, command) ? { liftsMoveFence: true as const } : {}),
           createdAt: command.createdAt,
         },
       };

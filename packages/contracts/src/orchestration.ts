@@ -3845,11 +3845,6 @@ export const ThreadTurnStartCommand = Schema.Struct({
   trigger: Schema.optional(MessageTrigger),
   /** Server only: a scheduled or event task's run sent it (see ThreadTurnStartRequestedPayload). */
   scheduledTaskId: Schema.optional(ScheduledTaskId),
-  /**
-   * Server only: Threadlines wrote it (pull request auto-fix), not the user,
-   * so it doesn't lift a moved thread's fence (ThreadMovedFrom.fenced).
-   */
-  keepsMoveFence: Schema.optional(Schema.Literal(true)),
   createdAt: IsoDateTime,
 });
 
@@ -6321,8 +6316,9 @@ export const ThreadTurnStartRequestedPayload = Schema.Struct({
    */
   scheduledTaskId: Schema.optional(ScheduledTaskId),
   /**
-   * The user's own message on this computer starts this turn in a thread
-   * that moved here fenced (ThreadMovedFrom.fenced): the fence lifts.
+   * A person's own message, sent from the app (its `sentFrom`), starts this
+   * turn in a thread that moved here fenced (ThreadMovedFrom.fenced): the
+   * fence lifts.
    */
   liftsMoveFence: Schema.optional(Schema.Literal(true)),
   createdAt: IsoDateTime,

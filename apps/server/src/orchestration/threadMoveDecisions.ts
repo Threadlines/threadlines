@@ -1270,8 +1270,15 @@ function importedState(
           },
         ]
       : []),
-    // Sent there by the user, but here by the move: no turn of theirs lifts the fence.
-    ...(command.queuedFollowUps ?? []).map((entry) => ({ ...entry, imported: true as const })),
+    // Sent there by the user, but here by the move: no turn of theirs lifts
+    // the fence. The other computer said where it was sent from, and only
+    // this server stamps that (MessageSentFrom), so it is dropped.
+    ...(command.queuedFollowUps ?? []).map(
+      ({ sentFrom: _peerSaid, ...entry }): OrchestrationQueuedFollowUp => ({
+        ...entry,
+        imported: true as const,
+      }),
+    ),
   ];
   for (const followUp of queue) {
     events.push({

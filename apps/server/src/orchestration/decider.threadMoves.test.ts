@@ -1,5 +1,6 @@
 import {
   CommandId,
+  CommandRunId,
   EnvironmentId,
   EventId,
   MessageId,
@@ -1428,7 +1429,9 @@ describe("a move carries what its thread had going (Part 3e)", () => {
 describe("what a moved thread is trusted with (Part 3e, security changes)", () => {
   const ARRIVED = ThreadId.make("thread-arrived-fenced");
   const PULL_REQUEST = { number: 212, url: "https://github.com/acme/w/pull/212" };
-  const imported = async () =>
+  /** Where the server says a person's message came from (withMessageSentFrom). */
+  const AT_THIS_COMPUTER = { kind: "computer", place: "here" } as const;
+  const imported = async (extra: Record<string, unknown> = {}) =>
     (
       await apply(await seeded(), {
         type: "thread.import",
@@ -1463,6 +1466,8 @@ describe("what a moved thread is trusted with (Part 3e, security changes)", () =
             messageId: MessageId.make("q-there"),
             text: "and then this",
             attachments: [],
+            // The other computer's word for where it was sent from.
+            sentFrom: AT_THIS_COMPUTER,
             runtimeMode: "auto",
             interactionMode: "default",
             createdAt: now,
@@ -1474,8 +1479,28 @@ describe("what a moved thread is trusted with (Part 3e, security changes)", () =
           left: [],
         },
         createdAt: now,
-      })
+        ...extra,
+      } as OrchestrationCommand)
     ).model;
+  /** Arrived with nothing queued, so each case queues its own message. */
+  const importedEmpty = () => imported({ queuedFollowUps: [], arrival: undefined });
+  const withSession = (
+    model: OrchestrationReadModel,
+    status: OrchestrationSession["status"],
+    activeTurnId: TurnId | null = null,
+  ) =>
+    project(model, "thread.session-set", {
+      threadId: ARRIVED,
+      session: {
+        threadId: ARRIVED,
+        status,
+        providerName: "codex",
+        runtimeMode: "auto",
+        activeTurnId,
+        lastError: null,
+        updatedAt: now,
+      },
+    });
   const userTurn = (extra: Record<string, unknown> = {}): OrchestrationCommand =>
     ({
       type: "thread.turn.start",
@@ -1531,6 +1556,10 @@ describe("what a moved thread is trusted with (Part 3e, security changes)", () =
   it("the arrival and the move's queued messages leave the fence up; the user's own message here lifts it", async () => {
     let model = await imported();
     expect(threadOf(model, ARRIVED).movedFrom?.fenced).toBe(true);
+    // Only this server says where a message came from: the other computer's word is dropped.
+    expect(
+      threadOf(model, ARRIVED).queuedFollowUps?.find((entry) => entry.messageId === "q-there"),
+    ).not.toHaveProperty("sentFrom");
     // The arrival kick, then the user's message from there.
     let refusal: string | null;
     ({ model, refusal } = await apply(model, sendQueued("m-arrival")));
@@ -1557,8 +1586,9 @@ describe("what a moved thread is trusted with (Part 3e, security changes)", () =
     expect(threadOf(model, ARRIVED).queuedFollowUps ?? []).toHaveLength(0);
     expect(threadOf(model, ARRIVED).movedFrom?.fenced).toBe(true);
 
-    // Pull request auto-fix, and a restart's resume, are Threadlines' words, not the user's.
-    for (const extra of [{ keepsMoveFence: true }, { trigger: "serverRestart" }]) {
+    // Pull request auto-fix (no device, as Threadlines sends it) and a
+    // restart's resume are not a person here.
+    for (const extra of [{}, { trigger: "serverRestart", sentFrom: AT_THIS_COMPUTER }]) {
       const decided = await Effect.runPromise(
         decideOrchestrationCommand({ readModel: model, command: userTurn(extra) }),
       );
@@ -1567,10 +1597,119 @@ describe("what a moved thread is trusted with (Part 3e, security changes)", () =
       expect(requested?.payload).not.toHaveProperty("liftsMoveFence");
     }
 
-    ({ model } = await apply(model, userTurn()));
+    ({ model } = await apply(model, userTurn({ sentFrom: AT_THIS_COMPUTER })));
     expect(threadOf(model, ARRIVED).movedFrom?.fenced).toBeUndefined();
     // The rest of where it came from stays.
     expect(threadOf(model, ARRIVED).movedFrom).toMatchObject({ label: "Mac mini" });
+  });
+
+  it("a person's queued message lifts the fence once it is sent", async () => {
+    const turn = TurnId.make("turn-busy");
+    let model = await withSession(await importedEmpty(), "running", turn);
+    let refusal: string | null;
+    ({ model, refusal } = await apply(model, {
+      type: "thread.follow-up.submit",
+      commandId: nextCommandId(),
+      threadId: ARRIVED,
+      turnId: turn,
+      message: {
+        messageId: MessageId.make("m-when-done"),
+        role: "user",
+        text: "Then this",
+        attachments: [],
+      },
+      delivery: "queue",
+      composer: "typed",
+      sentFrom: AT_THIS_COMPUTER,
+      createdAt: now,
+    }));
+    expect(refusal).toBeNull();
+    model = await withSession(model, "ready");
+    ({ model, refusal } = await apply(model, sendQueued("m-when-done")));
+    expect(refusal).toBeNull();
+    expect(threadOf(model, ARRIVED).movedFrom?.fenced).toBeUndefined();
+  });
+
+  it("command output sent once the agent is idle leaves the fence up", async () => {
+    let model = await withSession(await importedEmpty(), "ready");
+    model = await project(model, "thread.command-run-started", {
+      threadId: ARRIVED,
+      run: {
+        runId: "run-1",
+        terminalId: "terminal-run",
+        mode: "run",
+        dialect: "posix",
+        command: "pnpm test",
+        source: { kind: "request", requestId: "request-1" },
+        turnId: "turn-asked",
+        participantId: null,
+        cwd: "/worktrees/moved-fenced",
+        autoSend: true,
+      },
+      createdAt: now,
+    });
+    let refusal: string | null;
+    ({ model, refusal } = await apply(model, {
+      type: "thread.command-run.deliver-output",
+      commandId: nextCommandId(),
+      threadId: ARRIVED,
+      runId: CommandRunId.make("run-1"),
+      automatic: true,
+      message: { messageId: MessageId.make("command-output:run-1"), text: "I ran pnpm test" },
+      createdAt: now,
+    }));
+    expect(refusal).toBeNull();
+    expect(threadOf(model, ARRIVED).queuedFollowUps).toMatchObject([
+      { messageId: "command-output:run-1" },
+    ]);
+    ({ model, refusal } = await apply(model, sendQueued("command-output:run-1")));
+    expect(refusal).toBeNull();
+    expect(threadOf(model, ARRIVED).messages.at(-1)).toMatchObject({
+      id: "command-output:run-1",
+    });
+    expect(threadOf(model, ARRIVED).movedFrom?.fenced).toBe(true);
+  });
+
+  it("pull request auto-fix that waited behind a continue leaves the fence up when it starts alone", async () => {
+    let model = await withSession(await importedEmpty(), "ready");
+    let refusal: string | null;
+    // A restart's continue, still starting.
+    ({ model, refusal } = await apply(
+      model,
+      userTurn({
+        message: {
+          messageId: MessageId.make("m-continue"),
+          role: "user",
+          text: "Continue where you left off.",
+          attachments: [],
+        },
+        trigger: "serverRestart",
+      }),
+    ));
+    expect(refusal).toBeNull();
+    // Auto-fix's turn, as the watcher sends it: it overtakes the continue and waits.
+    ({ model, refusal } = await apply(
+      model,
+      userTurn({
+        message: {
+          messageId: MessageId.make("m-auto-fix"),
+          role: "user",
+          text: "Fix the failing check",
+          attachments: [],
+        },
+        modelSelection,
+      }),
+    ));
+    expect(refusal).toBeNull();
+    expect(threadOf(model, ARRIVED).queuedFollowUps).toMatchObject([
+      { messageId: "m-auto-fix", overtakes: "m-continue" },
+    ]);
+    // The continue never started; the auto-fix goes as its own turn.
+    model = await withSession(model, "ready");
+    ({ model, refusal } = await apply(model, sendQueued("m-auto-fix")));
+    expect(refusal).toBeNull();
+    expect(threadOf(model, ARRIVED).queuedFollowUps ?? []).toHaveLength(0);
+    expect(threadOf(model, ARRIVED).movedFrom?.fenced).toBe(true);
   });
 });
 

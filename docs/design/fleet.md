@@ -1288,8 +1288,8 @@ These win over everything above in Part 3e. What a move carries came from anothe
      - the schedule tools;
      - continuing it on a schedule.
    - Work still picks up on arrival as the link's permission allows, fenced. Its mode stays capped by the link's access ceiling, as before.
-   - **The fence lifts** when a message the user sent on this computer starts a turn in the thread: `liftsMoveFence` on that `thread.turn-start-requested`, which clears `fenced` in every projection. A restart keeps whatever the projection holds.
-   - **What doesn't lift it:** the arrival message, queued messages the move carried (`imported` on the queued entry), and anything Threadlines or an agent sends: another thread, an outside assistant, a scheduled task, a restart or usage-limit resume, pull request auto-fix (`keepsMoveFence`).
+   - **The fence lifts** when a message a person sent from the app starts a turn in the thread, directly or from the queue ("send when done"): `liftsMoveFence` on that `thread.turn-start-requested`, which clears `fenced` in every projection. A restart keeps whatever the projection holds. The rule is an allow-list (`turnLiftsMoveFence` in `linkFence.ts`): the message must carry `sentFrom`, which only this server stamps from the connection's sign-in, so nothing Threadlines writes can lift it by forgetting a marker.
+   - **What doesn't lift it:** the arrival message (`afterMove`), queued messages the move carried (`imported` on the queued entry; the other computer's `sentFrom` on them is dropped at import), and anything Threadlines or an agent sends: command output, another thread, an outside assistant, a scheduled task, a restart or usage-limit resume, a retry, pull request auto-fix. A device the server can't name (no `sentFrom`) can't lift it either.
    - A session started fenced is restarted with resume at the next start after the lift, so the agent gets its tools.
    - The "Moved here" line says it: "Its agent can't use other threads, rooms or schedules here until you send it a message."
 
