@@ -839,9 +839,27 @@ export async function refreshPullRequestList(
 }
 
 /**
+ * The order the page asks environments in: this device first, then the other
+ * computers by id so the order holds still. The page keeps one row per pull
+ * request and seats it with the first listing to carry it
+ * ({@link mergePullRequestListResults}), so this order decides which computer
+ * a pull request both list is shown under and acted on from.
+ */
+export function orderPullRequestEnvironments(input: {
+  readonly primary: PullRequestEnvironment | null;
+  readonly others: readonly PullRequestEnvironment[];
+}): readonly PullRequestEnvironment[] {
+  const others = input.others.toSorted((left, right) =>
+    left.environmentId.localeCompare(right.environmentId),
+  );
+  return input.primary === null ? others : [input.primary, ...others];
+}
+
+/**
  * Every environment that can serve the page: this device plus each connected
- * saved computer whose server reports the capability. A server too old to know
- * about pull requests omits the key, and an absent capability is a no.
+ * saved computer whose server reports the capability, in
+ * {@link orderPullRequestEnvironments} order. A server too old to know about
+ * pull requests omits the key, and an absent capability is a no.
  */
 export function usePullRequestEnvironments(): readonly PullRequestEnvironment[] {
   const primaryEnvironmentId = usePrimaryEnvironmentId();
@@ -852,20 +870,20 @@ export function usePullRequestEnvironments(): readonly PullRequestEnvironment[] 
   const savedEnvironmentRuntimeById = useSavedEnvironmentRuntimeStore((state) => state.byId);
 
   return useMemo(() => {
-    const environments: PullRequestEnvironment[] = [];
+    const primary: PullRequestEnvironment | null =
+      primaryEnvironmentId && primarySupported
+        ? {
+            environmentId: primaryEnvironmentId,
+            label: resolveEnvironmentOptionLabel({
+              isPrimary: true,
+              environmentId: primaryEnvironmentId,
+              runtimeLabel: primaryLabel,
+            }),
+          }
+        : null;
+    const others: PullRequestEnvironment[] = [];
     const seen = new Set<EnvironmentId>();
-
-    if (primaryEnvironmentId && primarySupported) {
-      seen.add(primaryEnvironmentId);
-      environments.push({
-        environmentId: primaryEnvironmentId,
-        label: resolveEnvironmentOptionLabel({
-          isPrimary: true,
-          environmentId: primaryEnvironmentId,
-          runtimeLabel: primaryLabel,
-        }),
-      });
-    }
+    if (primary) seen.add(primary.environmentId);
 
     for (const environmentId of Object.keys(savedEnvironmentRuntimeById) as EnvironmentId[]) {
       if (seen.has(environmentId)) continue;
@@ -874,7 +892,7 @@ export function usePullRequestEnvironments(): readonly PullRequestEnvironment[] 
       const descriptor = runtime.descriptor;
       if (!descriptor || descriptor.capabilities.pullRequests !== true) continue;
       seen.add(environmentId);
-      environments.push({
+      others.push({
         environmentId,
         label: resolveEnvironmentOptionLabel({
           isPrimary: false,
@@ -885,9 +903,7 @@ export function usePullRequestEnvironments(): readonly PullRequestEnvironment[] 
       });
     }
 
-    return environments.toSorted((left, right) =>
-      left.environmentId.localeCompare(right.environmentId),
-    );
+    return orderPullRequestEnvironments({ primary, others });
   }, [
     primaryEnvironmentId,
     primaryLabel,

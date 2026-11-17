@@ -10,6 +10,7 @@ vi.mock("../environmentApi", () => ({
 
 import {
   markPullRequestListSettled,
+  orderPullRequestEnvironments,
   PULL_REQUEST_ON_SCREEN_POLL_INTERVAL_MS,
   pullRequestDetailQueryOptions,
   pullRequestDiffQueryOptions,
@@ -38,6 +39,22 @@ function pace(attended: boolean | undefined, state: PullRequestDetail["state"]) 
   } as unknown as PullRequestDetail;
   return refetchInterval({ state: { data, status: "success" } });
 }
+
+describe("the environments the page asks", () => {
+  // The page seats a pull request two computers both list with whichever is
+  // asked first, so an id that sorts first must not pull rows off this device.
+  it("asks this device first, however the other computers' ids sort", () => {
+    const here = { environmentId: EnvironmentId.make("zz-this-mac"), label: "MacBook" };
+    const pc = { environmentId: EnvironmentId.make("aa-windows"), label: "DESKTOP" };
+    const laptop = { environmentId: EnvironmentId.make("mm-laptop"), label: "Laptop" };
+
+    expect(
+      orderPullRequestEnvironments({ primary: here, others: [laptop, pc] }).map(
+        (environment) => environment.label,
+      ),
+    ).toEqual(["MacBook", "DESKTOP", "Laptop"]);
+  });
+});
 
 describe("pull request detail reads", () => {
   it("keep an open pull request current only while someone looks at it", () => {
