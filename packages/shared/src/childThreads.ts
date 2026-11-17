@@ -18,6 +18,7 @@ import {
   type RemoteChildCancel,
   type RemoteChildRequest,
   type FamilyRemoteChild,
+  type LeadPassCeiling,
   type RemoteChildStart,
   type RemoteChildThread,
   type RemoteThreadFiling,
@@ -30,7 +31,7 @@ import {
   type TurnId,
 } from "@threadlines/contracts";
 
-import { exceedsRuntimeMode } from "./runtimeMode.ts";
+import { exceedsRuntimeMode, saferRuntimeMode } from "./runtimeMode.ts";
 import { isRoomThread } from "./threadParticipants.ts";
 
 /** What the rules read from a thread an agent works in. */
@@ -134,8 +135,9 @@ export function childStartRefusal(
   }
   // No fan-out (docs/design/lead-chat.md): one message in a lead chat must
   // not start threads through every thread it is passed to. Messaging this
-  // thread's own children still works (childSendRefusal doesn't check it).
-  if (thread.childRequests.startsBlockedByPass === true) {
+  // thread's own children still works, within the pass's ceiling
+  // (childSendRefusal).
+  if (thread.childRequests.passCeiling !== undefined) {
     return {
       outcome: "not_allowed",
       detail:
@@ -159,7 +161,11 @@ export function childStartRefusal(
   return null;
 }
 
-/** Why sending a message to `childThreadId` is refused, or null. */
+/**
+ * Why sending a message to `childThreadId` is refused, or null. `child`'s
+ * modes are absent for a thread on another computer, whose access this
+ * computer can't hold to a pass's ceiling.
+ */
 export function childSendRefusal(
   thread: ChildRequestCaller,
   child: {
@@ -167,6 +173,8 @@ export function childSendRefusal(
     readonly parentThreadId: ThreadId | null;
     readonly attachedToParent: boolean;
     readonly archivedAt: string | null;
+    readonly runtimeMode?: RuntimeMode | undefined;
+    readonly interactionMode?: ProviderInteractionMode | undefined;
   } | null,
   input: {
     readonly from: RoomAgentRef;
@@ -182,6 +190,30 @@ export function childSendRefusal(
   const ownRefusal = ownChildRefusal(thread, child);
   if (ownRefusal !== null) {
     return ownRefusal;
+  }
+  // Work the lead chat passed on keeps its ceiling when it is handed down:
+  // a pass never reaches a thread with more access than the lead's.
+  const passCeiling = thread.childRequests.passCeiling;
+  if (passCeiling !== undefined && child !== null) {
+    if (child.runtimeMode === undefined || child.interactionMode === undefined) {
+      return {
+        outcome: "not_allowed",
+        detail:
+          "This thread is working on something the lead chat passed on, and that thread is on another computer. Do the work here, or tell the user, who can send it there.",
+      };
+    }
+    if (
+      !withinModeCeiling(
+        { runtimeMode: child.runtimeMode, interactionMode: child.interactionMode },
+        passCeiling,
+      )
+    ) {
+      return {
+        outcome: "not_allowed",
+        detail:
+          "This thread is working on something the lead chat passed on, and that thread has more access than the lead chat. Do the work here, or tell the user, who can send it there.",
+      };
+    }
   }
   const limit = childRequestLimits({ isLead: input.isLead === true }).sends;
   if (thread.childRequests.sendsSinceUser >= limit) {
@@ -269,6 +301,34 @@ export function withinModeCeiling(
     (ceiling.interactionMode !== "plan" || child.interactionMode === "plan")
   );
 }
+
+/** The narrower of two ceilings: no more access than either allows. */
+export function narrowerModeCeiling(
+  left: LeadPassCeiling | undefined,
+  right: LeadPassCeiling,
+): LeadPassCeiling {
+  if (left === undefined) return right;
+  const narrower = {
+    runtimeMode: saferRuntimeMode(left.runtimeMode, right.runtimeMode),
+    interactionMode:
+      left.interactionMode === "plan" || right.interactionMode === "plan"
+        ? ("plan" as const)
+        : ("default" as const),
+  };
+  return narrower.runtimeMode === left.runtimeMode &&
+    narrower.interactionMode === left.interactionMode
+    ? left
+    : narrower;
+}
+
+/**
+ * What a `started` record without a ceiling holds the thread to: the least
+ * access there is. Every decision that records one sends the pass's ceiling.
+ */
+const SAFEST_PASS_CEILING: LeadPassCeiling = {
+  runtimeMode: "approval-required",
+  interactionMode: "plan",
+};
 
 /** What the pass rules read from the thread a lead chat passes a message to. */
 export interface LeadPassTarget {
@@ -687,11 +747,11 @@ export const childRequestStateOn = {
     state: OrchestrationChildRequestState,
     options?: { readonly keepsPassBlock?: boolean | undefined },
   ): OrchestrationChildRequestState => {
-    const liftsBlock = state.startsBlockedByPass === true && options?.keepsPassBlock !== true;
+    const liftsBlock = state.passCeiling !== undefined && options?.keepsPassBlock !== true;
     if (state.startsSinceUser === 0 && state.sendsSinceUser === 0 && !liftsBlock) {
       return state;
     }
-    const { startsBlockedByPass: _block, ...rest } = state;
+    const { passCeiling: _block, ...rest } = state;
     return {
       ...(liftsBlock ? rest : state),
       startsSinceUser: 0,
@@ -704,13 +764,19 @@ export const childRequestStateOn = {
     pass: {
       readonly kind: "sent" | "refused" | "started";
       readonly note?: ChildRequestNote | undefined;
+      readonly ceiling?: LeadPassCeiling | undefined;
     },
   ): OrchestrationChildRequestState => {
     switch (pass.kind) {
       case "sent":
         return { ...state, sendsSinceUser: state.sendsSinceUser + 1 };
-      case "started":
-        return state.startsBlockedByPass === true ? state : { ...state, startsBlockedByPass: true };
+      case "started": {
+        const passCeiling = narrowerModeCeiling(
+          state.passCeiling,
+          pass.ceiling ?? SAFEST_PASS_CEILING,
+        );
+        return passCeiling === state.passCeiling ? state : { ...state, passCeiling };
+      }
       case "refused": {
         const note = pass.note;
         return note === undefined ||

@@ -225,7 +225,10 @@ coordinate it.
     Without this, one message in a lead on Automatic could start threads through every
     thread it passes to. It is a fact on the thread, not on the turn, so a retry or a
     continue of that work cannot shed it. `thread_send` to that thread's own children
-    still works.
+    still works, held to the pass's ceiling: a child with more access than the lead,
+    or one on another computer, is refused ("Do the work here, or tell the user, who
+    can send it there."). The check is at send time; after that, only the user can
+    raise a child's access.
   - A pass counts against the lead's sends per user message.
   - What the target does with it is the target's business: the user's own queued
     messages go first; Stop, taking the message off the queue, revert and archive work
@@ -234,7 +237,9 @@ coordinate it.
   a thread it did not start.
 - **`thread_list`** summaries gain optional fields: `lead` (true on the lead),
   `lastActivityAt`, `pullRequests` (`number`, `url`, and `state` when the server already
-  holds an observation; no network call). Every agent sees which thread is the lead.
+  holds an observation; no network call; a branch's pull request is matched on the
+  project remote's host and whole path, never on `owner/name` alone). Every agent sees
+  which thread is the lead.
 - **Limits in a lead:** 10 starts and 20 sends per user message (5 and 10 elsewhere);
   5 per call stays. A scheduled or event run into the lead already counts as the user
   writing (`thread.follow-up.submit` resets the counters), so a lead fed by an event
@@ -299,11 +304,13 @@ the user. Your reply stays in this thread, where the user reads it."
   emits `turn-start-requested` for a stored message (`thread.turn.start`,
   `thread.follow-up.send-queued`, `thread.turn.retry`, `thread.turn.resend`), reading
   the ceiling from the message itself.
-- No fan-out is state: optional `startsBlockedByPass?: true` on the target's
-  `OrchestrationChildRequestState`, set by the decision that starts a pass's turn and
-  cleared by `thread.child-requests-reset` (the user wrote). `childStartRefusal` reads
-  it; `childSendRefusal` does not (both call `callerRefusal`, so the rule cannot live
-  there).
+- No fan-out is state: optional `passCeiling` on the target's
+  `OrchestrationChildRequestState`, the narrowest ceiling of the passes that started
+  turns there since the user wrote. The decision that starts a pass's turn sets it
+  (its `started` record carries the ceiling); `thread.child-requests-reset` clears it
+  (the user wrote). `childStartRefusal` refuses while it is set; `childSendRefusal`
+  refuses a child above it or on another computer (both call `callerRefusal`, so the
+  rule cannot live there).
 - Built (piece 2): the lead's send count, the refusal note and the "started" mark ride
   one event, `thread.lead-pass-recorded` (`kind`: `sent` on the lead, `refused` with
   the note on the lead, `started` on the target), so nothing settles a request that

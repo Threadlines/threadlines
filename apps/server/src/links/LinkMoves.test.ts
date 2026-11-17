@@ -77,8 +77,12 @@ function makeRepos() {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "link-moves-")));
   const origin = path.join(root, "origin.git");
   run(root, "init", "--bare", "--initial-branch=main", origin);
+  // Git for Windows turns on core.autocrlf for the whole computer by default,
+  // and then every checkout, the moved one included, has CRLF line endings
+  // where these tests read LF. Each clone turns it off before it checks out.
+  const clone = (target: string) => run(root, "clone", "-c", "core.autocrlf=false", origin, target);
   const seed = path.join(root, "seed");
-  run(root, "clone", origin, seed);
+  clone(seed);
   for (const name of ["a.txt", "b.txt", "c.txt", "d.txt"]) {
     fs.writeFileSync(path.join(seed, name), `${name} as pushed\n`);
   }
@@ -86,7 +90,7 @@ function makeRepos() {
   run(seed, "commit", "-m", "pushed");
   run(seed, "push", "origin", "HEAD:main");
   const a = path.join(root, "a");
-  run(root, "clone", origin, a);
+  clone(a);
   run(a, "checkout", "-b", "feature/move-me");
   fs.writeFileSync(path.join(a, "a.txt"), "a.txt from an unpushed commit\n");
   run(a, "commit", "-am", "unpushed");
@@ -99,7 +103,7 @@ function makeRepos() {
   fs.writeFileSync(path.join(a, "tool.sh"), "#!/bin/sh\necho hi\n", { mode: 0o755 });
   fs.writeFileSync(path.join(a, "image.bin"), Buffer.from([0, 1, 2, 255, 254, 0, 9]));
   const b = path.join(root, "b");
-  run(root, "clone", origin, b);
+  clone(b);
   return { root, origin, a, b };
 }
 
@@ -543,6 +547,11 @@ describe("LinkMoves", () => {
       });
       const { manifest, payload } = yield* pack(repos, session);
       assert.equal((yield* deliver(manifest, payload)).status, "aborted");
+      // The abort is recorded first and the clean-up follows it: the session
+      // goes a moment after the move reads aborted (its files, then its binding).
+      for (let tries = 0; tries < 200 && (carry.forgotten?.length ?? 0) === 0; tries += 1) {
+        yield* Effect.sleep("50 millis");
+      }
       assert.equal(carry.adopted.length, 1);
       assert.deepEqual(carry.forgotten, [carry.adopted[0]!.threadId]);
       assert.deepEqual(filesUnder(carry.home), ["projects/keep.jsonl"]);
@@ -756,13 +765,17 @@ describe("LinkMoves, receive before allow", () => {
       // Nobody answered within the day: the sweep drops it and its bytes.
       const sql = yield* SqlClient.SqlClient;
       yield* sql`UPDATE link_moves SET updated_at = '2000-01-01T00:00:00.000Z' WHERE transfer_id = ${EXPIRES}`;
+      const expiredStaging = yield* stagingOf(EXPIRES);
       yield* Effect.scoped(
         Effect.gen(function* () {
           yield* moves.startReactor();
+          // Until its bytes are gone too, which follows the recorded abort:
+          // closing this scope stops the sweep, mid clean-up or not.
           for (
             let tries = 0;
             tries < 200 &&
-            (yield* moves.status(link("ask"), { transferId: EXPIRES })).status !== "aborted";
+            ((yield* moves.status(link("ask"), { transferId: EXPIRES })).status !== "aborted" ||
+              fs.existsSync(expiredStaging));
             tries += 1
           ) {
             yield* Effect.sleep("20 millis");
@@ -773,7 +786,7 @@ describe("LinkMoves, receive before allow", () => {
       assert.equal(expired.status, "aborted");
       assert.include(expired.reason ?? "", "in time");
       assert.equal(expired.abortCode, "expired");
-      assert.isFalse(fs.existsSync(yield* stagingOf(EXPIRES)));
+      assert.isFalse(fs.existsSync(expiredStaging));
       assert.equal(dispatched.length, 0);
     }).pipe(Effect.provide(testLayer(repos, dispatched, "ask")));
   });

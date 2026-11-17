@@ -266,9 +266,7 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGeneration", (it) => {
           },
         }),
         argsMustContain:
-          process.platform === "win32"
-            ? "--settings {alwaysThinkingEnabled:false,workflowKeywordTriggerEnabled:false}"
-            : '--settings {"alwaysThinkingEnabled":false,"workflowKeywordTriggerEnabled":false}',
+          '--settings {"alwaysThinkingEnabled":false,"workflowKeywordTriggerEnabled":false}',
         argsMustNotContain: "--effort",
       },
       (textGeneration) =>
@@ -301,9 +299,7 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGeneration", (it) => {
           },
         }),
         argsMustContain:
-          process.platform === "win32"
-            ? "--effort max --settings {fastMode:true,workflowKeywordTriggerEnabled:false}"
-            : '--effort max --settings {"fastMode":true,"workflowKeywordTriggerEnabled":false}',
+          '--effort max --settings {"fastMode":true,"workflowKeywordTriggerEnabled":false}',
       },
       (textGeneration) =>
         Effect.gen(function* () {
@@ -339,10 +335,7 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGeneration", (it) => {
             body: "Body",
           },
         }),
-        argsMustContain:
-          process.platform === "win32"
-            ? "--effort xhigh --settings {workflowKeywordTriggerEnabled:false}"
-            : '--effort xhigh --settings {"workflowKeywordTriggerEnabled":false}',
+        argsMustContain: '--effort xhigh --settings {"workflowKeywordTriggerEnabled":false}',
         argsMustNotContain: "ultracode",
       },
       (textGeneration) =>
@@ -597,7 +590,7 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGeneration", (it) => {
         // The fake CLI joins argv with spaces, so the empty value shows as a
         // double space; PowerShell can drop an empty argument, so Windows
         // checks the flag alone.
-        argsMustContain: process.platform === "win32" ? "--tools" : "--tools  --strict-mcp-config",
+        argsMustContain: "--tools  --strict-mcp-config",
       },
       (textGeneration) =>
         Effect.gen(function* () {

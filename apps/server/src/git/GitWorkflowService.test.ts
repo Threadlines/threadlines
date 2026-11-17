@@ -375,8 +375,9 @@ describe("resolveRepositoryRootRelation", () => {
       NodeFS.mkdirSync(sub, { recursive: true });
       const rootLink = NodePath.join(base, "root-link");
       const subLink = NodePath.join(base, "sub-link");
-      NodeFS.symlinkSync(repo, rootLink);
-      NodeFS.symlinkSync(sub, subLink);
+      // Junctions on Windows, which any user can make; symlinks elsewhere.
+      NodeFS.symlinkSync(repo, rootLink, "junction");
+      NodeFS.symlinkSync(sub, subLink, "junction");
 
       // A symlinked spelling of the repository root is the same checkout —
       // this was the false "ancestor" that locked healthy panels.

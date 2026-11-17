@@ -144,6 +144,11 @@ describe("runProcess", () => {
     ),
   );
 
+  // The probe skips the real git.exe for a server started from Git Bash
+  // (MSYSTEM) or with its own GIT_EXEC_PATH. These tests clear both, so the
+  // shell that runs them does not decide the outcome.
+  const outsideGitBash: NodeJS.ProcessEnv = { MSYSTEM: undefined, GIT_EXEC_PATH: undefined };
+
   // Git for Windows' real git.exe, as the probe would find it behind the
   // launcher. Reads start on it without a console; anything that can run a
   // hook keeps one.
@@ -163,8 +168,12 @@ describe("runProcess", () => {
       }),
     );
     return Effect.gen(function* () {
-      yield* runWith(spawner)({ command: "git", args: ["rev-parse", "HEAD"] });
-      yield* runWith(spawner)({ command: "git", args: ["status", "--porcelain=2"] });
+      yield* runWith(spawner)({ command: "git", args: ["rev-parse", "HEAD"], env: outsideGitBash });
+      yield* runWith(spawner)({
+        command: "git",
+        args: ["status", "--porcelain=2"],
+        env: outsideGitBash,
+      });
 
       const [read, status] = spawned;
       expect(read?.command).toBe(realGit);
@@ -200,7 +209,11 @@ describe("runProcess", () => {
           );
     });
     return Effect.gen(function* () {
-      const result = yield* runWith(spawner)({ command: "git", args: ["rev-parse", "HEAD"] });
+      const result = yield* runWith(spawner)({
+        command: "git",
+        args: ["rev-parse", "HEAD"],
+        env: outsideGitBash,
+      });
       expect(result.stdout).toBe("abc");
       expect(spawned).toEqual(["C:\\Git\\mingw64\\bin\\git.exe", "git"]);
     }).pipe(Effect.provideService(GitInstallProbe, windowsProbe));

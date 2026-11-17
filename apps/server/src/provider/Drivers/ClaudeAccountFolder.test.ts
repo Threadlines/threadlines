@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 
+import { canMakeSymlinks } from "../../testUtils/symlinks.ts";
 import { materializeClaudeAccountFolder } from "./ClaudeAccountFolder.ts";
 
 const setup = Effect.gen(function* () {
@@ -16,34 +17,40 @@ const setup = Effect.gen(function* () {
   return { fileSystem, path, root, mainDir, accountDir };
 });
 
+// The tests that skip without `canMakeSymlinks` start from a file symlink the
+// user made, which Windows lets them make only with Developer Mode.
 it.layer(NodeServices.layer)("materializeClaudeAccountFolder", (it) => {
-  it.effect("shares config and history with the main folder and keeps the login private", () =>
-    Effect.gen(function* () {
-      const { fileSystem, path, root, mainDir, accountDir } = yield* setup;
-      // The user's settings are themselves a link into a dotfiles repo.
-      const dotfiles = path.join(root, "dotfiles-settings.json");
-      yield* fileSystem.writeFileString(dotfiles, "{}");
-      yield* fileSystem.symlink(dotfiles, path.join(mainDir, "settings.json"));
-      yield* fileSystem.writeFileString(path.join(mainDir, "CLAUDE.md"), "be terse");
-      yield* fileSystem.writeFileString(path.join(mainDir, ".credentials.json"), "main-login");
-      yield* fileSystem.writeFileString(path.join(mainDir, ".claude.json"), "{}");
+  it.effect.skipIf(!canMakeSymlinks)(
+    "shares config and history with the main folder and keeps the login private",
+    () =>
+      Effect.gen(function* () {
+        const { fileSystem, path, root, mainDir, accountDir } = yield* setup;
+        // The user's settings are themselves a link into a dotfiles repo.
+        const dotfiles = path.join(root, "dotfiles-settings.json");
+        yield* fileSystem.writeFileString(dotfiles, "{}");
+        yield* fileSystem.symlink(dotfiles, path.join(mainDir, "settings.json"));
+        yield* fileSystem.writeFileString(path.join(mainDir, "CLAUDE.md"), "be terse");
+        yield* fileSystem.writeFileString(path.join(mainDir, ".credentials.json"), "main-login");
+        yield* fileSystem.writeFileString(path.join(mainDir, ".claude.json"), "{}");
 
-      const result = yield* materializeClaudeAccountFolder({ mainDir, accountDir });
+        const result = yield* materializeClaudeAccountFolder({ mainDir, accountDir });
 
-      expect(result.sharesMainHistory).toBe(true);
-      expect(yield* fileSystem.readLink(path.join(accountDir, "projects"))).toBe(
-        path.join(mainDir, "projects"),
-      );
-      // Shared folders exist in the main folder before the account can write any.
-      expect(yield* fileSystem.exists(path.join(mainDir, "file-history"))).toBe(true);
-      expect(yield* fileSystem.readFileString(path.join(accountDir, "CLAUDE.md"))).toBe("be terse");
-      // Linked by path, so editing the dotfile still reaches every account.
-      expect(yield* fileSystem.readLink(path.join(accountDir, "settings.json"))).toBe(
-        path.join(mainDir, "settings.json"),
-      );
-      expect(yield* fileSystem.exists(path.join(accountDir, ".credentials.json"))).toBe(false);
-      expect(yield* fileSystem.exists(path.join(accountDir, ".claude.json"))).toBe(false);
-    }).pipe(Effect.scoped),
+        expect(result.sharesMainHistory).toBe(true);
+        expect(yield* fileSystem.readLink(path.join(accountDir, "projects"))).toBe(
+          path.join(mainDir, "projects"),
+        );
+        // Shared folders exist in the main folder before the account can write any.
+        expect(yield* fileSystem.exists(path.join(mainDir, "file-history"))).toBe(true);
+        expect(yield* fileSystem.readFileString(path.join(accountDir, "CLAUDE.md"))).toBe(
+          "be terse",
+        );
+        // Linked by path, so editing the dotfile still reaches every account.
+        expect(yield* fileSystem.readLink(path.join(accountDir, "settings.json"))).toBe(
+          path.join(mainDir, "settings.json"),
+        );
+        expect(yield* fileSystem.exists(path.join(accountDir, ".credentials.json"))).toBe(false);
+        expect(yield* fileSystem.exists(path.join(accountDir, ".claude.json"))).toBe(false);
+      }).pipe(Effect.scoped),
   );
 
   it.effect("keeps the account's own copies and stops claiming shared history", () =>
@@ -64,7 +71,7 @@ it.layer(NodeServices.layer)("materializeClaudeAccountFolder", (it) => {
     }).pipe(Effect.scoped),
   );
 
-  it.effect("removes a link that would share the main login", () =>
+  it.effect.skipIf(!canMakeSymlinks)("removes a link that would share the main login", () =>
     Effect.gen(function* () {
       const { fileSystem, path, mainDir, accountDir } = yield* setup;
       yield* fileSystem.writeFileString(path.join(mainDir, ".credentials.json"), "main-login");
@@ -82,7 +89,7 @@ it.layer(NodeServices.layer)("materializeClaudeAccountFolder", (it) => {
       );
     }).pipe(Effect.scoped),
   );
-  it.effect("leaves links the user made in a folder they chose", () =>
+  it.effect.skipIf(!canMakeSymlinks)("leaves links the user made in a folder they chose", () =>
     Effect.gen(function* () {
       const { fileSystem, path, root, mainDir, accountDir } = yield* setup;
       const ownSettings = path.join(root, "work-dotfiles-settings.json");

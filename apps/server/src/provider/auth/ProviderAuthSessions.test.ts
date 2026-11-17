@@ -11,6 +11,7 @@ import * as Schedule from "effect/Schedule";
 import * as Scope from "effect/Scope";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import * as NodePath from "node:path";
 import { expect } from "vite-plus/test";
 
 import { ServerSettingsService } from "../../serverSettings.ts";
@@ -183,7 +184,8 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("ProviderAuthSession
       const spawnInput = harness.ptyAdapter.spawnInputs[0]!;
       assert.equal(spawnInput.shell, "codex");
       assert.deepStrictEqual(spawnInput.args, ["login"]);
-      assert.equal(spawnInput.env.CODEX_HOME, "/tmp/codex-home");
+      // Resolved on this machine, so on Windows it gains a drive letter.
+      assert.equal(spawnInput.env.CODEX_HOME, NodePath.resolve("/tmp/codex-home"));
       // Credential overrides never reach an auth process.
       assert.equal(spawnInput.env.CLAUDE_CODE_OAUTH_TOKEN, undefined);
 

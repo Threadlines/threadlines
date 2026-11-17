@@ -270,9 +270,10 @@ describe("Grok launch", () => {
       args: ["install", "-g", "@xai-official/grok@latest"],
       environmentPatch: { NPM_CONFIG_PREFIX: root },
     });
-    // The brew that owns the cask, not whichever is first on PATH.
+    // The brew that owns the cask, not whichever is first on PATH. Homebrew
+    // paths join with "/" whatever machine runs this.
     expect(repairOf(await grokAt("Caskroom", "grok-build", "1.0.52", "grok"))).toMatchObject({
-      executable: path.join(root, "bin", "brew"),
+      executable: `${root}/bin/brew`,
       args: ["reinstall", "--cask", "grok-build"],
     });
     // xAI's installer would move the user to the stable channel, so it is not offered.

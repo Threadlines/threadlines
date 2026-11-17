@@ -6,6 +6,7 @@ import path from "node:path";
 import * as Effect from "effect/Effect";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 
+import { canMakeSymlinks } from "../testUtils/symlinks.ts";
 import { ensurePageAssetsDir, inlinePageImages, readPublishedPage } from "./PageStore.ts";
 
 // A 1x1 PNG.
@@ -55,11 +56,16 @@ describe("inlinePageImages", () => {
   it("refuses a link inside the folder that points at a file elsewhere", async () => {
     const outside = path.join(tmp, "secret.png");
     fs.writeFileSync(outside, PNG);
-    const symlink = path.join(assetsRoot, "linked.png");
-    fs.symlinkSync(outside, symlink);
     const hardlink = path.join(assetsRoot, "hard.png");
     fs.linkSync(outside, hardlink);
-    for (const reference of [symlink, hardlink]) {
+    const references = [hardlink];
+    // Windows makes symlinks only with Developer Mode; hard links it always allows.
+    if (canMakeSymlinks) {
+      const symlink = path.join(assetsRoot, "linked.png");
+      fs.symlinkSync(outside, symlink);
+      references.push(symlink);
+    }
+    for (const reference of references) {
       const result = await inline(`<img src="${reference}">`);
       expect(result._tag).toBe("Failure");
     }
@@ -106,11 +112,14 @@ describe("readPublishedPage", () => {
   it("refuses a link, or a second name, put where the published file was", async () => {
     const secret = path.join(tmp, "secret.txt");
     fs.writeFileSync(secret, "TOKEN=1");
-    const linked = path.join(tmp, "linked.html");
-    fs.symlinkSync(secret, linked);
     const renamed = path.join(tmp, "renamed.md");
     fs.linkSync(secret, renamed);
-    expect((await read(linked))._tag).toBe("Failure");
     expect((await read(renamed))._tag).toBe("Failure");
+    // Windows makes symlinks only with Developer Mode; hard links it always allows.
+    if (canMakeSymlinks) {
+      const linked = path.join(tmp, "linked.html");
+      fs.symlinkSync(secret, linked);
+      expect((await read(linked))._tag).toBe("Failure");
+    }
   });
 });

@@ -279,10 +279,15 @@ describe("resolveEditedCheckout", () => {
         // An edit through a link lands where the file really is: home reached
         // by another name is still home, and a link inside the helper that
         // points into the primary clone edits the primary clone.
+        // Junctions on Windows, which any user can make; symlinks elsewhere.
         yield* Effect.promise(async () => {
-          await NodeFS.symlink(home, NodePath.join(notes, "home-link"));
+          await NodeFS.symlink(home, NodePath.join(notes, "home-link"), "junction");
           await NodeFS.mkdir(NodePath.join(repo, "src"));
-          await NodeFS.symlink(NodePath.join(repo, "src"), NodePath.join(helper, "shared"));
+          await NodeFS.symlink(
+            NodePath.join(repo, "src"),
+            NodePath.join(helper, "shared"),
+            "junction",
+          );
         });
         assert.strictEqual(yield* edited(NodePath.join(notes, "home-link", "a.ts")), home);
         assert.strictEqual(
