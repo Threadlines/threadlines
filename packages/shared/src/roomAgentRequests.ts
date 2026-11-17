@@ -317,26 +317,41 @@ export const isAgentOrigin = (entry: {
 /**
  * A message an agent queued (a reply, or a child thread's report or request)
  * that was taken back before it was sent: it stays in the chat, marked
- * cancelled, and never started a turn. The projections and the web store all
- * apply it through this.
+ * cancelled, and never started a turn. A lead chat's pass (`fromThread.ceiling`)
+ * taken back is also `notSent`, which keeps it out of every history an agent
+ * is given (`reachedAgent`). The projections and the web store all apply it
+ * through this.
  */
 export const withUnqueuedAgentMessage = <
   Message extends {
     readonly id: string;
     readonly fromAgent?: unknown;
-    readonly fromThread?: unknown;
+    readonly fromThread?: { readonly ceiling?: unknown } | undefined;
+    readonly fromOutside?: unknown;
     readonly requestOutcome?: RoomAgentRequestOutcome | undefined;
+    readonly notSent?: true | undefined;
   },
 >(
   message: Message,
   unqueued: { readonly messageId: string; readonly reason: "sent" | "cancelled" },
-): Message =>
-  unqueued.reason === "cancelled" &&
-  message.id === unqueued.messageId &&
-  isAgentOrigin(message) &&
-  message.requestOutcome === undefined
-    ? { ...message, requestOutcome: "cancelled" }
+): Message => {
+  if (
+    unqueued.reason !== "cancelled" ||
+    message.id !== unqueued.messageId ||
+    !isAgentOrigin(message)
+  ) {
+    return message;
+  }
+  const outcome = message.requestOutcome === undefined;
+  const notSent = message.fromThread?.ceiling !== undefined && message.notSent !== true;
+  return outcome || notSent
+    ? {
+        ...message,
+        ...(outcome ? { requestOutcome: "cancelled" as const } : {}),
+        ...(notSent ? { notSent: true as const } : {}),
+      }
     : message;
+};
 
 /**
  * Whether the user wrote a message. In a room, an agent can write a user-role

@@ -21,7 +21,7 @@ import {
   withContextSeedPreamble,
 } from "@threadlines/shared/contextSeed";
 import { agentInvitesMode, agentThreadsMode } from "@threadlines/shared/serverSettings";
-import { transcriptAuthor } from "@threadlines/shared/messageAuthor";
+import { reachedAgent, transcriptAuthor } from "@threadlines/shared/messageAuthor";
 import { formatForkSourceExcerpt, truncate } from "@threadlines/shared/String";
 
 import { createAttachmentId, resolveAttachmentPath } from "../attachmentStore.ts";
@@ -276,10 +276,10 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
       // context-seed fallback so the provider never sees both the old and the
       // edited instruction. Assistant/system anchors still carry the selected
       // message as background before the new continuation instruction.
-      const sourceMessages = sourceThread.messages.slice(
-        0,
-        replacesUserPrompt ? selectedIndex : selectedIndex + 1,
-      );
+      // Only what an agent was given: a pass that never ran stays out.
+      const sourceMessages = sourceThread.messages
+        .slice(0, replacesUserPrompt ? selectedIndex : selectedIndex + 1)
+        .filter((message) => reachedAgent(message, sourceThread));
       const entries = [
         ...sourceMessages.map((message) => ({
           kind: "message" as const,
