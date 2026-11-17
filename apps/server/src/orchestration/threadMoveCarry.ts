@@ -23,6 +23,7 @@ import type {
 } from "@threadlines/contracts";
 import { PEER_MOVE_STATE_MAX_PLANS } from "@threadlines/contracts";
 import { linkedPullRequestArmed } from "@threadlines/shared/linkedPullRequests";
+import { pullRequestSwitchesWords } from "@threadlines/shared/threadMoveProjection";
 
 /** What a move view needs of a project to tell a General Chats thread. */
 export interface ThreadMoveCarryView {
@@ -196,35 +197,6 @@ export function carryNotTaken(
 const plural = (count: number, one: string, many: string) =>
   count === 1 ? `1 ${one}` : `${count} ${many}`;
 
-/** Which switches watch, in words: "Auto-fix", "Auto-merge", or both. */
-function switchesWords(
-  fix: boolean,
-  merge: boolean,
-): { readonly words: string; readonly verb: string } {
-  if (fix && merge) return { words: "Auto-fix and auto-merge", verb: "keep" };
-  return { words: fix ? "Auto-fix" : "Auto-merge", verb: "keeps" };
-}
-
-/**
- * What the pull request switches watch, in words ("pull request #212", or
- * "this thread's pull request"), and which switches are on.
- */
-export function pullRequestCarryWords(pullRequests: NonNullable<ThreadMoveCarry["pullRequests"]>) {
-  const fix = pullRequests.autoFix || pullRequests.linked.some((entry) => entry.autoFix);
-  const merge =
-    pullRequests.autoMerge !== null ||
-    pullRequests.linked.some((entry) => entry.autoMerge !== null);
-  const numbers = pullRequests.linked.map((entry) => `#${entry.number}`);
-  const own = pullRequests.autoFix || pullRequests.autoMerge !== null;
-  const what =
-    numbers.length === 0
-      ? "this thread's pull request"
-      : numbers.length === 1 && !own
-        ? `pull request ${numbers[0]}`
-        : `pull requests ${[...(own ? ["its own"] : []), ...numbers].join(", ")}`;
-  return { ...switchesWords(fix, merge), what };
-}
-
 /**
  * The move dialog's lines for what comes along (ThreadMovePreview.brings),
  * one per thing, in the server's words.
@@ -247,8 +219,13 @@ export function carryBringsWords(carry: ThreadMoveCarry): ReadonlyArray<string> 
     );
   }
   if (carry.pullRequests !== null) {
-    const { words, verb, what } = pullRequestCarryWords(carry.pullRequests);
-    lines.push(`${words} ${verb} watching ${what} from there.`);
+    // They arrive off: only the user there turns them on (Part 3e, (c)).
+    const on = pullRequestSwitchesWords(carry.pullRequests);
+    if (on !== null) {
+      lines.push(
+        `${on.words} for ${on.what} ${on.plural ? "arrive" : "arrives"} off, for you to turn on there.`,
+      );
+    }
   }
   if (carry.queuedFollowUps.length > 0) {
     lines.push(

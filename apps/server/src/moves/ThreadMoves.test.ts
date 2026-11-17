@@ -357,7 +357,7 @@ describe("what a thread carries, as the dialog says it (Part 3e)", () => {
       goalHoldsTurn: true,
     });
     expect(preview.notes).toEqual([
-      { words: "GitHub isn't signed in on Mac mini. Auto-fix waits there until you sign in." },
+      { words: "GitHub isn't signed in on Mac mini. Sign in there before you turn auto-fix on." },
       {
         words:
           "Its goal arrives paused: Claude on Mac mini can't keep its token budget. Resume runs it without one.",
@@ -390,7 +390,7 @@ describe("what a thread carries, as the dialog says it (Part 3e)", () => {
     });
     expect(carryBringsWords(threadMoveCarry(view, thread))).toEqual([
       "Its goal arrives paused.",
-      "Auto-fix keeps watching pull request #212 from there.",
+      "Auto-fix for pull request #212 arrives off, for you to turn on there.",
       "1 queued message is sent there.",
     ]);
   });
@@ -446,7 +446,9 @@ describe("what a thread carries, as the dialog says it (Part 3e)", () => {
       {
         environmentId: MAC_MINI,
         notes: [
-          { words: "GitHub isn't signed in on Mac mini. Auto-fix waits there until you sign in." },
+          {
+            words: "GitHub isn't signed in on Mac mini. Sign in there before you turn auto-fix on.",
+          },
           {
             words:
               "Its goal arrives paused: Claude on Mac mini can't keep its token budget. Resume runs it without one.",

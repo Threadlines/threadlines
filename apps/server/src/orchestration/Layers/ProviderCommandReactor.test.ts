@@ -3347,8 +3347,16 @@ describe("ProviderCommandReactor", () => {
         runtimeMode: "full-access",
         createdAt: now,
       });
-    const settleReady = (id: string) =>
-      dispatch({
+    // The runtime goes ready once its turn is done. The reactor records a
+    // sent turn as running a moment after the send; wait for that first, or
+    // its late write would land on top of this ready and the next turn would
+    // read as arriving mid-turn.
+    const settleReady = async (id: string) => {
+      await waitFor(async () => {
+        const session = await projectedSession(harness, threadId);
+        return session?.status === "running" && session.activeTurnId === asTurnId("turn-1");
+      });
+      await dispatch({
         type: "thread.session.set",
         commandId: CommandId.make(`cmd-ready-${id}`),
         threadId,
@@ -3363,6 +3371,7 @@ describe("ProviderCommandReactor", () => {
         },
         createdAt: now,
       });
+    };
 
     // Before the thread is a room: no room tools, only the app guide.
     await startTurn("before-room");
@@ -3396,6 +3405,107 @@ describe("ProviderCommandReactor", () => {
     await startTurn("again");
     await waitFor(() => harness.sendTurn.mock.calls.length === 3);
     expect(harness.startSession.mock.calls.length).toBe(2);
+  });
+
+  it("a thread that moved here works with no Threadlines tools until the user here sends it a message", async () => {
+    const harness = await createHarness({
+      serverSettings: { agentInvites: "off", agentThreads: "off" },
+    });
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-moved-here");
+    const dispatch = (command: Parameters<typeof harness.engine.dispatch>[0]) =>
+      Effect.runPromise(harness.engine.dispatch(command));
+    // The runtime goes ready once its turn is done. The reactor records a
+    // sent turn as running a moment after the send; wait for that first, or
+    // its late write would land on top of this ready and the next turn would
+    // read as arriving mid-turn.
+    const settleReady = async (id: string) => {
+      await waitFor(async () => {
+        const session = await projectedSession(harness, threadId);
+        return session?.status === "running" && session.activeTurnId === asTurnId("turn-1");
+      });
+      await dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make(`cmd-ready-${id}`),
+        threadId,
+        session: {
+          threadId,
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      });
+    };
+    await dispatch({
+      type: "thread.import",
+      commandId: CommandId.make("cmd-import"),
+      threadId,
+      projectId: asProjectId("project-1"),
+      title: "Fix the flaky test",
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+      runtimeMode: "full-access",
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      branch: null,
+      worktreePath: null,
+      movedFrom: {
+        environmentId: EnvironmentId.make("env-windows"),
+        label: "Windows PC",
+        threadId: ThreadId.make("windows-thread"),
+        movedAt: now,
+      },
+      messages: [],
+      activities: [],
+      queuedFollowUps: [
+        {
+          messageId: asMessageId("queued-there"),
+          text: "then run the suite",
+          attachments: [],
+          runtimeMode: "full-access",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          createdAt: now,
+        },
+      ],
+      createdAt: now,
+    });
+
+    // The move's own kick sends what the user queued there: still fenced.
+    await dispatch({
+      type: "thread.follow-up.send-queued",
+      commandId: CommandId.make("cmd-kick"),
+      threadId,
+      messageId: asMessageId("queued-there"),
+      createdAt: now,
+    });
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    expect(harness.startSession.mock.calls[0]?.[1]).not.toHaveProperty("roomTools");
+    expect(harness.startSession.mock.calls[0]?.[1]).not.toHaveProperty("guideTools");
+
+    // The user here takes it over: the runtime restarts with resume, with the guide.
+    await settleReady("1");
+    await dispatch({
+      type: "thread.turn.start",
+      commandId: CommandId.make("cmd-user-here"),
+      threadId,
+      message: { messageId: asMessageId("user-here"), role: "user", text: "go", attachments: [] },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "full-access",
+      // Stamped from the app's sign-in, as the server does for a person's send.
+      sentFrom: { kind: "computer", place: "here" },
+      createdAt: now,
+    });
+    await waitFor(
+      () => harness.sendTurn.mock.calls.length === 2 || harness.steerTurn.mock.calls.length > 0,
+    );
+    expect(harness.steerTurn.mock.calls.length, "steered instead of a new turn").toBe(0);
+    expect(harness.startSession.mock.calls.length).toBe(2);
+    expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
+      guideTools: true,
+      resumeCursor: { opaque: "resume-1" },
+    });
   });
 
   it("starts an agent outside work reached fresh for a person's next message, then clears its mark", async () => {
