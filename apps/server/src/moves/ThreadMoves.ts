@@ -277,7 +277,7 @@ export function targetNotesOf(
   const goal = carry.goal;
   if (carry.pullRequests !== null && extra.gitHubReady === false) {
     notes.push({
-      words: `GitHub isn't signed in on ${peer.label}. Auto-fix waits there until you sign in.`,
+      words: `GitHub isn't signed in on ${peer.label}. Sign in there before you turn auto-fix on.`,
     });
   }
   for (const agent of peer.agents) {

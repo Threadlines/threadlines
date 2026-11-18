@@ -2114,7 +2114,7 @@ describe("text selection popover with the real virtual list", () => {
           expect(window.getSelection()!.toString()).toBe("pelican");
           expect(isShown(selectionPopover())).toBe(true);
           expect(Math.abs(gapBelowWord() - gap)).toBeLessThanOrEqual(1);
-        });
+        }, AFTER_SCROLL);
       moveRow();
       await expectSelectionBack();
 

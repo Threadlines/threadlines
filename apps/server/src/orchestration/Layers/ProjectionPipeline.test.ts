@@ -2647,6 +2647,108 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
   );
 
   it.effect(
+    "keeps a moved thread's fence and its switch offer through a restart, until the user here ends each",
+    () =>
+      Effect.gen(function* () {
+        const engine = yield* OrchestrationEngineService;
+        const snapshots = yield* ProjectionSnapshotQuery;
+        const createdAt = "2026-01-01T00:00:00.000Z";
+        const threadId = ThreadId.make("thread-moved-fenced");
+        const projectId = ProjectId.make("project-moved-fenced");
+        const pullRequest = { number: 212, url: "https://github.com/acme/w/pull/212" };
+        yield* engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("cmd-moved-fenced-project"),
+          projectId,
+          title: "Moved Fenced",
+          workspaceRoot: "/tmp/project-moved-fenced",
+          createdAt,
+        });
+        yield* engine.dispatch({
+          type: "thread.import",
+          commandId: CommandId.make("cmd-moved-fenced-import"),
+          threadId,
+          projectId,
+          title: "Fix the flaky test",
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+          runtimeMode: "approval-required",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          movedFrom: {
+            environmentId: EnvironmentId.make("environment-pc"),
+            label: "Windows PC",
+            threadId: ThreadId.make("thread-there"),
+            movedAt: createdAt,
+            pullRequestSwitches: {
+              autoFix: false,
+              autoMerge: null,
+              linked: [{ ...pullRequest, autoFix: true, autoMerge: null }],
+            },
+          },
+          messages: [],
+          activities: [],
+          pullRequests: {
+            autoFix: false,
+            autoMerge: null,
+            linked: [{ ...pullRequest, autoFix: false, autoMerge: null }],
+          },
+          createdAt,
+        });
+        // What a restart reads: the command model, the shell and the detail.
+        const movedFromNow = () =>
+          Effect.gen(function* () {
+            const model = yield* snapshots.getCommandReadModel();
+            const shell = Option.getOrThrow(yield* snapshots.getThreadShellById(threadId));
+            const detail = Option.getOrThrow(yield* snapshots.getThreadDetailById(threadId));
+            assert.deepEqual(shell.movedFrom, detail.movedFrom);
+            return {
+              command: model.threads.find((thread) => thread.id === threadId)?.movedFrom,
+              detail: detail.movedFrom,
+            };
+          });
+        const arrived = yield* movedFromNow();
+        assert.equal(arrived.command?.fenced, true);
+        assert.equal(arrived.detail?.fenced, true);
+        assert.equal(arrived.detail?.pullRequestSwitches?.linked[0]?.autoFix, true);
+
+        // The user here turns the switch on: the offer goes, the fence stays.
+        yield* engine.dispatch({
+          type: "thread.pull-request-automation.set",
+          commandId: CommandId.make("cmd-moved-fenced-switch"),
+          threadId,
+          pullRequestNumber: pullRequest.number,
+          autoFix: true,
+        });
+        const switched = yield* movedFromNow();
+        assert.isUndefined(switched.detail?.pullRequestSwitches);
+        assert.equal(switched.command?.fenced, true);
+
+        // The user here sends it a message: the fence lifts, for good.
+        yield* engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-moved-fenced-turn"),
+          threadId,
+          message: {
+            messageId: MessageId.make("message-moved-fenced"),
+            role: "user",
+            text: "Carry on",
+            attachments: [],
+          },
+          runtimeMode: "approval-required",
+          interactionMode: "default",
+          // Stamped from the app's sign-in, as the server does for a person's send.
+          sentFrom: { kind: "computer", place: "here" },
+          createdAt,
+        });
+        const lifted = yield* movedFromNow();
+        assert.isUndefined(lifted.command?.fenced);
+        assert.isUndefined(lifted.detail?.fenced);
+        assert.equal(lifted.detail?.label, "Windows PC");
+      }),
+  );
+
+  it.effect(
     "keeps what a move owes back, and the message it wrote for the agent, in every read",
     () =>
       Effect.gen(function* () {

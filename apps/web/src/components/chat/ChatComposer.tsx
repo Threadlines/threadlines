@@ -2007,6 +2007,25 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     [composerDraftTarget, setComposerDraftPrompt],
   );
 
+  /**
+   * Puts the cursor at `cursor` (or the end) after a write to the message box,
+   * a frame later, once the write has rendered. A busy page draws that frame
+   * late, after the user's next keys: when the box no longer holds what was
+   * written, or the user has selected words in it since, it is left as is
+   * (moving the cursor then would undo the typing or collapse the selection).
+   */
+  const focusAfterWrite = useCallback(
+    (writtenPrompt: string, cursor: number | "end") => {
+      window.requestAnimationFrame(() => {
+        const editor = composerEditorRef.current;
+        if (!editor || promptRef.current !== writtenPrompt || editor.hasSelectedText()) return;
+        if (cursor === "end") editor.focusAtEnd();
+        else editor.focusAt(cursor);
+      });
+    },
+    [promptRef],
+  );
+
   /** Replaces what the message box holds and puts the cursor at its end. */
   const fillComposerPrompt = useCallback(
     (nextPrompt: string) => {
@@ -2015,11 +2034,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       const nextCursor = collapseExpandedComposerCursor(nextPrompt, nextPrompt.length);
       setComposerCursor(nextCursor);
       setComposerTrigger(null);
-      window.requestAnimationFrame(() => {
-        composerEditorRef.current?.focusAt(nextCursor);
-      });
+      focusAfterWrite(nextPrompt, nextCursor);
     },
-    [promptRef, setPrompt],
+    [focusAfterWrite, promptRef, setPrompt],
   );
 
   const addComposerAttachment = useCallback(
@@ -2209,9 +2226,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       // Only yank the caret to the end when text was actually inserted;
       // restoring attachments alone should leave the user where they were.
       if (promptChanged) {
-        window.requestAnimationFrame(() => {
-          composerEditorRef.current?.focusAtEnd();
-        });
+        focusAfterWrite(nextPrompt, "end");
       }
     },
     [
@@ -2224,6 +2239,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       composerAttachmentsRef,
       composerDraftTarget,
       composerPickedElementContextsRef,
+      focusAfterWrite,
       promptRef,
       setPrompt,
       takeStashEntry,
@@ -2789,13 +2805,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       setComposerCursor(nextCursor);
       setComposerTrigger(detectComposerTrigger(next.text, nextExpandedCursor));
       if (options?.focusEditorAfterReplace !== false) {
-        window.requestAnimationFrame(() => {
-          composerEditorRef.current?.focusAt(nextCursor);
-        });
+        focusAfterWrite(next.text, nextCursor);
       }
       return true;
     },
-    [promptRef, setPrompt],
+    [focusAfterWrite, promptRef, setPrompt],
   );
 
   // Dictation adds to what is typed instead of replacing it, so it lands at
@@ -2882,11 +2896,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     const nextCursor = collapseExpandedComposerCursor(nextPrompt, nextPrompt.length);
     setComposerCursor(nextCursor);
     setComposerTrigger(detectComposerTrigger(nextPrompt, nextPrompt.length));
-    window.requestAnimationFrame(() => {
-      composerEditorRef.current?.focusAt(nextCursor);
-    });
+    focusAfterWrite(nextPrompt, nextCursor);
     return true;
-  }, [promptRef, promptSuggestion, promptSuggestionView, readComposerSnapshot, setPrompt]);
+  }, [
+    focusAfterWrite,
+    promptRef,
+    promptSuggestion,
+    promptSuggestionView,
+    readComposerSnapshot,
+    setPrompt,
+  ]);
   // Up and Down bring back what the user wrote here before (shell style):
   // see stepPromptRecall. The recalled text is remembered so an edit hands
   // the arrows back to the caret.
@@ -2909,12 +2928,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       const nextCursor = collapseExpandedComposerCursor(step.value, step.value.length);
       setComposerCursor(nextCursor);
       setComposerTrigger(null);
-      window.requestAnimationFrame(() => {
-        composerEditorRef.current?.focusAt(nextCursor);
-      });
+      focusAfterWrite(step.value, nextCursor);
       return true;
     },
-    [promptRef, readComposerSnapshot, setPrompt, threadMessages],
+    [focusAfterWrite, promptRef, readComposerSnapshot, setPrompt, threadMessages],
   );
   // Stays set while the box fills and empties again, so the editor keeps the
   // suggestion mounted and its fade-in plays once.

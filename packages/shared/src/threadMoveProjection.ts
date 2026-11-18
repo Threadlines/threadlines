@@ -21,6 +21,7 @@ import type {
   OrchestrationThreadMove,
   ThreadMoveOutcome,
   ThreadMoveOutcomeReason,
+  ThreadMovedFrom,
   ThreadPendingMove,
 } from "@threadlines/contracts";
 
@@ -214,4 +215,85 @@ export function nextThreadMoveState(
     lastMoveOutcome === state.lastMoveOutcome
     ? state
     : { move, pendingMove, lastMoveOutcome };
+}
+
+/**
+ * Where a moved thread came from, after the user here took it over (the
+ * fence lifts: `liftsMoveFence`) or set one of its pull request switches
+ * (what was on there is no longer offered: `clearsMovedSwitches`). The same
+ * object when neither changes it. Every reader of those events applies it.
+ */
+export function movedFromAfter<T extends ThreadMovedFrom | null | undefined>(
+  movedFrom: T,
+  change: { readonly liftsFence?: boolean; readonly clearsSwitches?: boolean },
+): T {
+  if (movedFrom === null || movedFrom === undefined) return movedFrom;
+  const lift = change.liftsFence === true && movedFrom.fenced !== undefined;
+  const clear = change.clearsSwitches === true && movedFrom.pullRequestSwitches !== undefined;
+  if (!lift && !clear) return movedFrom;
+  const { fenced, pullRequestSwitches, ...rest } = movedFrom;
+  return {
+    ...rest,
+    ...(lift || fenced === undefined ? {} : { fenced }),
+    ...(clear || pullRequestSwitches === undefined ? {} : { pullRequestSwitches }),
+  } as T;
+}
+
+/** A thread's pull request switches, as a move carries them (own switch, then each linked one). */
+export interface MovedPullRequestSwitches {
+  readonly autoFix: boolean;
+  readonly autoMerge: unknown;
+  readonly linked: ReadonlyArray<{
+    readonly number: number;
+    readonly autoFix: boolean;
+    readonly autoMerge: unknown;
+  }>;
+}
+
+/**
+ * Which pull request switches are on, in words: `words` ("Auto-fix",
+ * "Auto-merge", or both), whether that is more than one switch (`plural`),
+ * and what they watch (`what`: "pull request #212", "this thread's pull
+ * request"). Null: none is on.
+ */
+export function pullRequestSwitchesWords(switches: MovedPullRequestSwitches): {
+  readonly words: string;
+  readonly plural: boolean;
+  readonly what: string;
+} | null {
+  const armed = switches.linked.filter((entry) => entry.autoFix || entry.autoMerge !== null);
+  const own = switches.autoFix || switches.autoMerge !== null;
+  const fix = switches.autoFix || armed.some((entry) => entry.autoFix);
+  const merge = switches.autoMerge !== null || armed.some((entry) => entry.autoMerge !== null);
+  if (!fix && !merge) return null;
+  const numbers = armed.map((entry) => `#${entry.number}`);
+  const what =
+    numbers.length === 0
+      ? "this thread's pull request"
+      : own
+        ? `this thread's pull request and ${numbers.join(", ")}`
+        : numbers.length === 1
+          ? `pull request ${numbers[0]}`
+          : `pull requests ${numbers.join(", ")}`;
+  return {
+    words: fix && merge ? "Auto-fix and auto-merge" : fix ? "Auto-fix" : "Auto-merge",
+    plural: fix && merge,
+    what,
+  };
+}
+
+/**
+ * What the "Moved here" line and the moved thread's notice say about the
+ * switches that were on before the move: they arrive off (docs/design/fleet.md,
+ * Part 3e, (c)). Null: none was on.
+ */
+export function movedPullRequestSwitchesWords(
+  switches: MovedPullRequestSwitches,
+  fromLabel: string,
+): string | null {
+  const on = pullRequestSwitchesWords(switches);
+  if (on === null) return null;
+  return on.plural
+    ? `${on.words} were on for ${on.what} on ${fromLabel}. They're off here until you turn them on.`
+    : `${on.words} was on for ${on.what} on ${fromLabel}. It's off here until you turn it on.`;
 }
