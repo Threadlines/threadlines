@@ -28,6 +28,7 @@ import type {
   PeerMoveRoom,
   PeerMoveRoomParticipant,
   PeerMoveScratchManifest,
+  PeerMoveStartedElsewhere,
   PeerMoveStartedThere,
   PeerMoveThreadState,
   ThreadId,
@@ -505,6 +506,8 @@ export interface MoveExportInput {
   readonly linkLineage?: PeerMoveLinkLineage | undefined;
   /** The threads its agent started on the target (Part 3f, (g)): see PeerMoveStartedThere. */
   readonly startedThere?: ReadonlyArray<PeerMoveStartedThere> | undefined;
+  /** A lone parent's threads on other computers (Part 3f, (g)): see PeerMoveStartedElsewhere. */
+  readonly startedElsewhere?: ReadonlyArray<PeerMoveStartedElsewhere> | undefined;
 }
 
 /**
@@ -748,6 +751,9 @@ export function writeMoveExport(
       ...(input.startedThere !== undefined && input.startedThere.length > 0
         ? { startedThere: [...input.startedThere] }
         : {}),
+      ...(input.startedElsewhere !== undefined && input.startedElsewhere.length > 0
+        ? { startedElsewhere: [...input.startedElsewhere] }
+        : {}),
     };
     yield* writeManifest(dir, manifest);
     return manifest;
@@ -833,6 +839,9 @@ function writeSharerExport(
       ...(input.linkLineage !== undefined ? { linkLineage: input.linkLineage } : {}),
       ...(input.startedThere !== undefined && input.startedThere.length > 0
         ? { startedThere: [...input.startedThere] }
+        : {}),
+      ...(input.startedElsewhere !== undefined && input.startedElsewhere.length > 0
+        ? { startedElsewhere: [...input.startedElsewhere] }
         : {}),
     };
     yield* writeManifest(input.dir, manifest);
@@ -1157,6 +1166,7 @@ export interface ScratchExportInput {
   readonly familyThreadIds?: ReadonlySet<string> | undefined;
   readonly linkLineage?: PeerMoveLinkLineage | undefined;
   readonly startedThere?: ReadonlyArray<PeerMoveStartedThere> | undefined;
+  readonly startedElsewhere?: ReadonlyArray<PeerMoveStartedElsewhere> | undefined;
 }
 
 /**
@@ -1274,6 +1284,9 @@ export function writeScratchExport(
       ...(input.linkLineage !== undefined ? { linkLineage: input.linkLineage } : {}),
       ...(input.startedThere !== undefined && input.startedThere.length > 0
         ? { startedThere: [...input.startedThere] }
+        : {}),
+      ...(input.startedElsewhere !== undefined && input.startedElsewhere.length > 0
+        ? { startedElsewhere: [...input.startedElsewhere] }
         : {}),
     };
     yield* writeManifest(input.dir, manifest);

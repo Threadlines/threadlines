@@ -10,6 +10,7 @@ import type {
   OrchestrationThread,
   PeerMoveFamily,
   PeerMoveLinkLineage,
+  PeerMoveStartedElsewhere,
   PeerMoveStartedThere,
   ThreadMoveFamily,
   ThreadMoveFamilyId,
@@ -83,12 +84,7 @@ export function familyManifestOf(
         .slice(0, PEER_MOVE_FAMILY_MAX_STAYED)
         .map((child) => ({ title: child.title }))
     : [];
-  const remoteStayed = isParent
-    ? (thread.childRequests.remoteChildren ?? [])
-        .filter((child) => child.environmentId !== targetEnvironmentId)
-        .slice(0, PEER_MOVE_FAMILY_MAX_STAYED)
-        .map((child) => ({ label: child.label, title: child.title }))
-    : [];
+  const remoteStayed = isParent ? startedElsewhereOf(thread, targetEnvironmentId) : [];
   const stopped = thread.move?.interrupted?.childRequestsStopped;
   return {
     id: family.id,
@@ -152,6 +148,22 @@ export function linkLineageOf(
     return undefined;
   }
   return { remoteParent: { threadId: parent.id, title: parent.title } };
+}
+
+/**
+ * The threads `thread`'s agent started on computers other than
+ * `targetEnvironmentId`, which stay there when it moves (docs/design/fleet.md,
+ * Part 3f, (g)): a family's `remoteStayed`, or a lone parent's
+ * `startedElsewhere`, for the "Moved here" line there.
+ */
+export function startedElsewhereOf(
+  thread: Pick<OrchestrationThread, "childRequests">,
+  targetEnvironmentId: EnvironmentId,
+): Array<PeerMoveStartedElsewhere> {
+  return (thread.childRequests.remoteChildren ?? [])
+    .filter((child) => child.environmentId !== targetEnvironmentId)
+    .slice(0, PEER_MOVE_FAMILY_MAX_STAYED)
+    .map((child) => ({ label: child.label, title: child.title }));
 }
 
 /**

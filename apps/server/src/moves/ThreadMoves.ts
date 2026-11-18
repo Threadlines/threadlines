@@ -89,6 +89,7 @@ import {
   familyManifestOf,
   familyThreadIdsOf,
   linkLineageOf,
+  startedElsewhereOf,
   startedThereOf,
 } from "./familyMove.ts";
 import {
@@ -1647,6 +1648,12 @@ const make = Effect.gen(function* () {
         takes?.adoptsChildren === true
           ? startedThereOf(detail.value, targetEnvironmentId)
           : undefined;
+      // The ones on other computers, for a parent moving without its family
+      // (a family's carry them as `remoteStayed`): words for the arrival.
+      const startedElsewhere =
+        moveFamily === undefined
+          ? startedElsewhereOf(detail.value, targetEnvironmentId)
+          : undefined;
       const source = {
         environmentId: descriptor.environmentId,
         environmentLabel: environment.currentLabel(),
@@ -1668,6 +1675,7 @@ const make = Effect.gen(function* () {
           familyThreadIds,
           linkLineage,
           startedThere,
+          startedElsewhere,
         });
       }
       const { place, checkout } = yield* whereFrom(detail.value, project.workspaceRoot);
@@ -1679,6 +1687,7 @@ const make = Effect.gen(function* () {
         familyThreadIds,
         linkLineage,
         startedThere,
+        startedElsewhere,
         git,
         checkout,
         transferId,

@@ -746,6 +746,19 @@ export const PeerMoveFamily = Schema.Struct({
 });
 export type PeerMoveFamily = typeof PeerMoveFamily.Type;
 
+/**
+ * The threads a parent moving without its family (docs/design/fleet.md, Part
+ * 3f, (g)) had its agent start on computers other than the receiving one: they
+ * stay there, and the "Moved here" line says so. A family move carries them
+ * in `PeerMoveFamily.remoteStayed` instead. Words only; the receiving computer
+ * acts on none of it. At most PEER_MOVE_FAMILY_MAX_STAYED.
+ */
+export const PeerMoveStartedElsewhere = Schema.Struct({
+  label: TrimmedNonEmptyString,
+  title: TrimmedNonEmptyString,
+});
+export type PeerMoveStartedElsewhere = typeof PeerMoveStartedElsewhere.Type;
+
 /** At most this many threads a manifest names as started on the receiving computer. */
 export const PEER_MOVE_MAX_STARTED_THERE = 50;
 
@@ -823,6 +836,8 @@ export const PeerMoveScratchManifest = Schema.Struct({
   linkLineage: Schema.optional(PeerMoveLinkLineage),
   /** The threads its agent started there: see PeerMoveStartedThere. */
   startedThere: Schema.optional(Schema.Array(PeerMoveStartedThere)),
+  /** The threads its agent started on other computers: see PeerMoveStartedElsewhere. */
+  startedElsewhere: Schema.optional(Schema.Array(PeerMoveStartedElsewhere)),
 });
 export type PeerMoveScratchManifest = typeof PeerMoveScratchManifest.Type;
 
@@ -876,6 +891,8 @@ export const PeerMoveGitManifest = Schema.Struct({
   linkLineage: Schema.optional(PeerMoveLinkLineage),
   /** The threads its agent started there: see PeerMoveStartedThere. */
   startedThere: Schema.optional(Schema.Array(PeerMoveStartedThere)),
+  /** The threads its agent started on other computers: see PeerMoveStartedElsewhere. */
+  startedElsewhere: Schema.optional(Schema.Array(PeerMoveStartedElsewhere)),
 });
 export type PeerMoveGitManifest = typeof PeerMoveGitManifest.Type;
 
