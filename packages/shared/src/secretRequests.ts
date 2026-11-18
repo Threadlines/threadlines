@@ -147,12 +147,33 @@ export function checkSecretValue(use: SecretRequestUse, value: string): SecretVa
  * never does it itself. A multi-line key's closing line breaks are its own
  * (a pasted PEM ends with one), so only spaces and tabs before them count.
  */
-export const hasEdgeWhitespace = (value: string, multiline = false): boolean =>
-  value.length > 0 && (multiline ? /^\s|[ \t](?:\r?\n)*$/ : /^\s|\s$/).test(value);
+export function hasEdgeWhitespace(value: string, multiline = false): boolean {
+  if (value.length === 0) return false;
+  if (!multiline) return /^\s|\s$/.test(value);
+  const end = closingBreaksStart(value);
+  return /^\s/.test(value) || isSpaceOrTab(value[end - 1]);
+}
 
 /** What Remove spaces leaves: the edges trimmed, a multi-line key's closing line breaks kept. */
-export const withoutEdgeWhitespace = (value: string, multiline = false): string =>
-  multiline ? value.replace(/^\s+/, "").replace(/[ \t]+((?:\r?\n)*)$/, "$1") : value.trim();
+export function withoutEdgeWhitespace(value: string, multiline = false): string {
+  if (!multiline) return value.trim();
+  const trimmed = value.trimStart();
+  const end = closingBreaksStart(trimmed);
+  let start = end;
+  while (start > 0 && isSpaceOrTab(trimmed[start - 1])) start -= 1;
+  return trimmed.slice(0, start) + trimmed.slice(end);
+}
+
+// Scanned by hand, not by a regex: a key can be 64 KB, and a pattern that
+// backtracks over runs of spaces or tabs would stall the card.
+const isSpaceOrTab = (char: string | undefined) => char === " " || char === "\t";
+
+/** Where a multi-line key's closing line breaks begin (its length when there are none). */
+function closingBreaksStart(value: string): number {
+  let end = value.length;
+  while (end > 0 && (value[end - 1] === "\n" || value[end - 1] === "\r")) end -= 1;
+  return end;
+}
 
 // ---------------------------------------------------------------------------
 // Env files.

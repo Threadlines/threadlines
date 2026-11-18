@@ -139,6 +139,12 @@ describe("edge whitespace", () => {
     expect(withoutEdgeWhitespace(`  ${pem.replace(/\n$/, "  \n")}`, true)).toBe(pem);
     expect(hasEdgeWhitespace("sk_test_1\n")).toBe(true);
     expect(withoutEdgeWhitespace(" sk_test_1 ")).toBe("sk_test_1");
+    // A long run of tabs before a non-space answers at once (no backtracking).
+    const tabs = `${"\t".repeat(50_000)}x`;
+    const startedAt = performance.now();
+    expect(hasEdgeWhitespace(tabs, true)).toBe(true);
+    expect(withoutEdgeWhitespace(tabs, true)).toBe("x");
+    expect(performance.now() - startedAt).toBeLessThan(200);
   });
 });
 
