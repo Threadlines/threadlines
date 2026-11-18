@@ -1014,10 +1014,13 @@ export function describeFamilyComing(count: number): string {
 /**
  * "2 threads it started on Windows PC stay there. It can't reach them from
  * Mac mini.", one line per computer, for the threads its agent started on
- * other computers. Those on the computer it moves to, when that computer
- * takes them back (`adoptsChildren`), become its threads there again
- * (docs/design/fleet.md, Part 3f, (g)): "'Fix tests' on Mac mini becomes its
- * thread there again."
+ * other computers. Those already on the computer it moves to become its
+ * threads there again when that computer takes them back (`adoptsChildren`,
+ * docs/design/fleet.md, Part 3f, (g)): "'Fix tests' on Mac mini becomes its
+ * thread there again." A computer that doesn't (an older one) keeps them
+ * apart beside it: "'Fix tests' is already on Mac mini. It stays separate, so
+ * this thread can't reach it." A child the server named no computer for (an
+ * older server) is matched to the target by its label.
  */
 export function describeRemoteChildrenStaying(
   remoteChildren: ReadonlyArray<{
@@ -1031,22 +1034,34 @@ export function describeRemoteChildrenStaying(
     readonly adoptsChildren?: true | undefined;
   },
 ): string[] {
-  const back = remoteChildren.filter(
-    (child) => target.adoptsChildren === true && child.environmentId === target.environmentId,
+  const onTarget = remoteChildren.filter((child) =>
+    child.environmentId !== undefined
+      ? child.environmentId === target.environmentId
+      : child.label === target.label,
   );
+  const back = target.adoptsChildren === true ? onTarget : [];
+  const beside = target.adoptsChildren === true ? [] : onTarget;
   const byLabel = new Map<string, number>();
   for (const child of remoteChildren) {
-    if (back.includes(child)) continue;
+    if (onTarget.includes(child)) continue;
     byLabel.set(child.label, (byLabel.get(child.label) ?? 0) + 1);
   }
-  const [only] = back;
+  const [onlyBack] = back;
+  const [onlyBeside] = beside;
   return [
     ...(back.length === 0
       ? []
       : [
-          back.length === 1 && only !== undefined
-            ? `'${only.title}' on ${target.label} becomes its thread there again.`
+          back.length === 1 && onlyBack !== undefined
+            ? `'${onlyBack.title}' on ${target.label} becomes its thread there again.`
             : `${back.length} threads it started on ${target.label} become its threads there again.`,
+        ]),
+    ...(beside.length === 0
+      ? []
+      : [
+          beside.length === 1 && onlyBeside !== undefined
+            ? `'${onlyBeside.title}' is already on ${target.label}. It stays separate, so this thread can't reach it.`
+            : `${beside.length} threads it started are already on ${target.label}. They stay separate, so this thread can't reach them.`,
         ]),
     ...[...byLabel].map(([label, count]) =>
       count === 1

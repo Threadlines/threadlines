@@ -475,11 +475,21 @@ describe("describeRemoteChildrenStaying", () => {
       "'Fix tests' on Mac mini becomes its thread there again.",
       "2 threads it started on Windows PC stay there. It can't reach them from Mac mini.",
     ]);
-    // An older Mac mini keeps them apart: today's words.
+    // An older Mac mini keeps them apart, beside it rather than "there".
     expect(
       describeRemoteChildrenStaying(children, { label: "Mac mini", environmentId: MAC }),
     ).toEqual([
-      "1 thread it started on Mac mini stays there. It can't reach it from Mac mini.",
+      "'Fix tests' is already on Mac mini. It stays separate, so this thread can't reach it.",
+      "2 threads it started on Windows PC stay there. It can't reach them from Mac mini.",
+    ]);
+    // An older server names no computer for its children: matched by name.
+    expect(
+      describeRemoteChildrenStaying(
+        children.map(({ label, title }) => ({ label, title })),
+        { label: "Mac mini", environmentId: MAC },
+      ),
+    ).toEqual([
+      "'Fix tests' is already on Mac mini. It stays separate, so this thread can't reach it.",
       "2 threads it started on Windows PC stay there. It can't reach them from Mac mini.",
     ]);
   });
