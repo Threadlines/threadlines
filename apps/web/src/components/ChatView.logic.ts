@@ -47,7 +47,7 @@ import {
 } from "../types";
 import { type ComposerAttachment, type DraftThreadState } from "../composerDraftStore";
 import * as Schema from "effect/Schema";
-import { selectThreadByRef, useStore } from "../store";
+import { selectThreadByRef, waitForAppState } from "../store";
 import {
   filterTerminalContextsWithText,
   stripInlineTerminalContextPlaceholders,
@@ -2311,44 +2311,10 @@ export async function waitForStartedServerThread(
   threadRef: ScopedThreadRef,
   timeoutMs = 1_000,
 ): Promise<boolean> {
-  const getThread = () => selectThreadByRef(useStore.getState(), threadRef);
-  const thread = getThread();
-
-  if (threadHasStarted(thread)) {
-    return true;
-  }
-
-  return await new Promise<boolean>((resolve) => {
-    let settled = false;
-    let timeoutId: ReturnType<typeof globalThis.setTimeout> | null = null;
-    const finish = (result: boolean) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      if (timeoutId !== null) {
-        globalThis.clearTimeout(timeoutId);
-      }
-      unsubscribe();
-      resolve(result);
-    };
-
-    const unsubscribe = useStore.subscribe((state) => {
-      if (!threadHasStarted(selectThreadByRef(state, threadRef))) {
-        return;
-      }
-      finish(true);
-    });
-
-    if (threadHasStarted(getThread())) {
-      finish(true);
-      return;
-    }
-
-    timeoutId = globalThis.setTimeout(() => {
-      finish(false);
-    }, timeoutMs);
-  });
+  return await waitForAppState(
+    (state) => threadHasStarted(selectThreadByRef(state, threadRef)),
+    timeoutMs,
+  );
 }
 
 export interface LocalDispatchSnapshot {

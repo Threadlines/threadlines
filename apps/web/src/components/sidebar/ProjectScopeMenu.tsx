@@ -509,6 +509,8 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
           const leadRef = projectLeadRef(useStore.getState(), member);
           const id = `lead:${member.physicalProjectKey}`;
           actionHandlers.set(id, async () => {
+            // It takes you to a thread: the project list closes behind it.
+            setMenuOpen(false);
             const target = leadRef ?? (await createLeadChat(member));
             if (target !== null) {
               await navigate({
