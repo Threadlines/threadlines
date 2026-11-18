@@ -482,6 +482,23 @@ export function isNeedsUserStatus(status: ThreadStatusPill | null): boolean {
 }
 
 /**
+ * Whether opening the thread now shows the user something new: an answer or a
+ * failure they haven't seen since `seenAt`, or a status that needs them. The
+ * chat then opens at the end, not where it was left (threadScrollMemory),
+ * since opening it marks it seen.
+ */
+export function threadHasNewsForUser(
+  thread: ThreadStatusInput,
+  seenAt: string | null | undefined,
+): boolean {
+  return (
+    hasUnseenCompletionSince(thread, seenAt) ||
+    hasUnseenSessionFailureSince(thread, seenAt) ||
+    isNeedsUserStatus(resolveThreadStatusPill({ thread: { ...thread, lastVisitedAt: undefined } }))
+  );
+}
+
+/**
  * The single word a row spends on status. Only states that stop the agent and
  * hand the thread back earn one; in-flight work reads as "working" with its
  * elapsed time, and everything else rests with a timestamp instead.

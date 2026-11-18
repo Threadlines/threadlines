@@ -36,7 +36,9 @@ import {
   __setEnvironmentApiOverrideForTests,
 } from "../environmentApi";
 import { getClientSettings, updateSettings } from "../hooks/useSettings";
+import { nextFrames, readAfterEachPaint } from "../lib/frameProbe.browser-harness";
 import { isMacPlatform } from "../lib/utils";
+import { forgetThreadScroll } from "../threadScrollMemory";
 import { useThreadSelectionStore } from "../threadSelectionStore";
 import { useUiStateStore } from "../uiStateStore";
 
@@ -231,6 +233,138 @@ describe("ChatView (full app): sidebar", () => {
           ),
         ).toBe(true);
       });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  // Scroll memory (threadScrollMemory): a chat left above the end opens there
+  // again, from its first drawn frame; left at the end, or with news, it
+  // opens at the end; a find target wins.
+  const SCROLL_OTHER_THREAD = "thread-scroll-memory-other" as ThreadId;
+  // The memory lives for the page, across tests: each one starts and ends clean.
+  const mountTwoThreads = async () => {
+    forgetThreadScroll(THREAD_KEY);
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: addThreadToSnapshot(
+        createSnapshotForTargetUser({
+          targetMessageId: "msg-user-scroll-memory-target" as MessageId,
+          targetText: "scroll memory target",
+        }),
+        SCROLL_OTHER_THREAD,
+      ),
+    });
+    return {
+      ...mounted,
+      cleanup: async () => {
+        forgetThreadScroll(THREAD_KEY);
+        await mounted.cleanup();
+      },
+    };
+  };
+  const chatList = () => document.querySelector<HTMLElement>('[data-chat-messages-list="true"]');
+  const listAtEnd = (list: HTMLElement) =>
+    list.scrollTop + list.clientHeight >= list.scrollHeight - 2;
+  const rowTop = (list: HTMLElement, rowId: string) => {
+    const row = list.querySelector(`[data-timeline-row-id="${rowId}"]`);
+    return row === null ? null : row.getBoundingClientRect().top - list.getBoundingClientRect().top;
+  };
+  const firstRowInView = (list: HTMLElement) => {
+    const listTop = list.getBoundingClientRect().top;
+    return [...list.querySelectorAll<HTMLElement>("[data-timeline-row-id]")].find(
+      (row) => row.getBoundingClientRect().bottom > listTop + 24,
+    )?.dataset.timelineRowId;
+  };
+  const openThread = (
+    mounted: Awaited<ReturnType<typeof mountTwoThreads>>,
+    threadId: ThreadId,
+    search?: Record<string, string>,
+  ) =>
+    mounted.router.navigate({
+      to: "/$environmentId/$threadId",
+      params: { environmentId: LOCAL_ENVIRONMENT_ID, threadId },
+      ...(search ? { search } : {}),
+    });
+  /** Opens the long chat at the end, then leaves it scrolled to its middle or its end. */
+  const leaveLongChat = async (
+    mounted: Awaited<ReturnType<typeof mountTwoThreads>>,
+    where: "middle" | "end",
+  ) => {
+    const list = await waitForElement(chatList, "The chat should show its messages.");
+    await vi.waitFor(() => expect(listAtEnd(list)).toBe(true), { timeout: 5_000 });
+    if (where === "middle") {
+      // Scrolled up by the wheel, as a reader leaves the end.
+      for (let step = 0; step < 6; step += 1) {
+        list.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -300 }));
+        list.scrollTop -= 300;
+        await nextFrames(2);
+      }
+      await vi.waitFor(() => expect(listAtEnd(list)).toBe(false));
+      await nextFrames(4);
+    }
+    const rowId = firstRowInView(list)!;
+    const top = rowTop(list, rowId)!;
+    await openThread(mounted, SCROLL_OTHER_THREAD);
+    await vi.waitFor(() => expect(document.querySelector("[data-timeline-row-id]")).toBeNull());
+    return { rowId, top };
+  };
+
+  it("opens a chat where it was left, from the first frame it draws", async () => {
+    const mounted = await mountTwoThreads();
+    try {
+      const left = await leaveLongChat(mounted, "middle");
+      // Every frame the long chat draws on the way back.
+      const frames: { top: number | null; atEnd: boolean }[] = [];
+      const stop = readAfterEachPaint(() => {
+        const list = chatList();
+        if (list?.querySelector("[data-timeline-row-id]")) {
+          frames.push({ top: rowTop(list, left.rowId), atEnd: listAtEnd(list) });
+        }
+      });
+      await openThread(mounted, THREAD_ID);
+      await vi.waitFor(() => expect(frames.length).toBeGreaterThan(5), { timeout: 5_000 });
+      stop();
+      expect(frames.every((frame) => frame.top !== null && !frame.atEnd)).toBe(true);
+      expect(Math.abs(frames.at(-1)!.top! - left.top)).toBeLessThanOrEqual(2);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("opens a chat left at its end at the end, and one with news at the end too", async () => {
+    const mounted = await mountTwoThreads();
+    try {
+      await leaveLongChat(mounted, "end");
+      await openThread(mounted, THREAD_ID);
+      await vi.waitFor(() => expect(listAtEnd(chatList()!)).toBe(true), { timeout: 5_000 });
+
+      // Left mid-history, then it came to need the user while away.
+      await leaveLongChat(mounted, "middle");
+      setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, THREAD_ID, "needs-you");
+      await openThread(mounted, THREAD_ID);
+      await vi.waitFor(() => expect(listAtEnd(chatList()!)).toBe(true), { timeout: 5_000 });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("opens at a find target rather than where the chat was left", async () => {
+    const mounted = await mountTwoThreads();
+    try {
+      await leaveLongChat(mounted, "middle");
+      await openThread(mounted, THREAD_ID, { focusMessageId: "msg-user-1", focusQuery: "" });
+      await vi.waitFor(
+        () => {
+          const list = chatList()!;
+          const top = rowTop(list, "msg-user-1");
+          expect(top).not.toBeNull();
+          // The target sits about a third of the way down, as find puts it.
+          expect(top! / list.clientHeight).toBeGreaterThan(0.1);
+          expect(top! / list.clientHeight).toBeLessThan(0.6);
+        },
+        { timeout: 5_000 },
+      );
     } finally {
       await mounted.cleanup();
     }

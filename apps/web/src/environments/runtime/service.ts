@@ -121,6 +121,7 @@ import {
   deriveLogicalProjectKeyFromSettings,
   derivePhysicalProjectKey,
 } from "../../logicalProject";
+import { forgetThreadScroll } from "../../threadScrollMemory";
 import { getClientSettings } from "~/hooks/useSettings";
 import { useOptimisticThreadMessagesStore } from "~/optimisticThreadMessages";
 
@@ -1323,7 +1324,9 @@ function applyRecoveredEventBatch(
     }
   }
   for (const threadId of batchEffects.removeTerminalStateThreadIds) {
-    useTerminalStateStore.getState().removeTerminalState(scopeThreadRef(environmentId, threadId));
+    const threadRef = scopeThreadRef(environmentId, threadId);
+    useTerminalStateStore.getState().removeTerminalState(threadRef);
+    forgetThreadScroll(scopedThreadKey(threadRef));
   }
 
   threadDetails.reconcileEvictionForEnvironment(environmentId);
@@ -1433,6 +1436,7 @@ function applyShellEvent(event: OrchestrationShellStreamEvent, environmentId: En
       threadDetails.warmNonIdle(environmentId, [event.thread]);
       if (previousThread?.archivedAt === null && event.thread.archivedAt !== null && threadRef) {
         useTerminalStateStore.getState().removeTerminalState(threadRef);
+        forgetThreadScroll(scopedThreadKey(threadRef));
       }
       // The shell carries every thread, including ones with no detail stream
       // open, so a server-held merge that ends off screen is seen here too.
@@ -1456,6 +1460,7 @@ function applyShellEvent(event: OrchestrationShellStreamEvent, environmentId: En
         useComposerDraftStore.getState().clearDraftThread(threadRef);
         useUiStateStore.getState().clearThreadUi(scopedThreadKey(threadRef));
         useTerminalStateStore.getState().removeTerminalState(threadRef);
+        forgetThreadScroll(scopedThreadKey(threadRef));
       }
       syncThreadUiFromStore();
       return;

@@ -128,8 +128,9 @@ Words below are the on-screen words. Copy follows the repo's copy rules (no em d
 
 A thread that started other threads, and each thread it started, show one row of tabs
 under the chat header: the parent first, then its threads. Clicking a tab opens that
-thread, the same full chat as today with its own message box, scroll position and
-draft. The point is that the user never loses their place: the lead (or any parent) is
+thread, the same full chat as today with its own message box and draft. It opens
+where it was left (see scroll memory in `apps/web/src/threadScrollMemory.ts`), or at the
+end when it was left there or has news. The point is that the user never loses their place: the lead (or any parent) is
 always one click away, and so is every thread it started.
 
 - **Which threads.** Exactly the members the sidebar shows for that parent's open
