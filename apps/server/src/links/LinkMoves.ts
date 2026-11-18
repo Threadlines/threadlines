@@ -2379,6 +2379,36 @@ const make = Effect.gen(function* () {
     });
 
   /**
+   * The "Moved here" words for the threads its agent started on this computer
+   * while it was on the one it came from (docs/design/fleet.md, Part 3f, (g),
+   * "Also when the child's computer is the target"), or null for none. They
+   * stay that computer's children, apart from the thread that arrives, which
+   * can't reach them. Read from this computer's own records alone: threads
+   * started over this very link by the thread the move came from. A failed
+   * read leaves the words out rather than the move.
+   */
+  const startedHereWords = (row: LinkMoveRow) =>
+    Effect.gen(function* () {
+      const ids = yield* threadRows.listIdsByRemoteLink({ linkDeviceId: row.linkDeviceId });
+      const found = yield* Effect.forEach(ids, (threadId) => threadRows.getById({ threadId }));
+      const titles = found.flatMap((entry) => {
+        const thread = Option.getOrUndefined(entry);
+        return thread !== undefined &&
+          thread.deletedAt === null &&
+          thread.archivedAt === null &&
+          thread.remoteOrigin?.linkDeviceId === row.linkDeviceId &&
+          thread.remoteOrigin.threadId === row.manifest.source.threadId
+          ? [thread.title]
+          : [];
+      });
+      if (titles.length === 0) return null;
+      const [only] = titles;
+      return titles.length === 1 && only !== undefined
+        ? `Its thread '${only}' is already on this computer. It stays separate, so this thread can't reach it.`
+        : `${titles.length} threads it started are already on this computer: ${titles.slice(0, PEER_MOVE_FAMILY_MAX_STAYED).join(", ")}. They stay separate, so this thread can't reach them.`;
+    }).pipe(Effect.orElseSucceed(() => null));
+
+  /**
    * The thread itself, and with it the commit. Waits for the engine's answer
    * without letting go. A family member in another's folder (docs/design/
    * fleet.md, Part 3f, (g)) takes the folder that member's move made here,
@@ -2579,6 +2609,8 @@ const make = Effect.gen(function* () {
         fromLabel,
       );
       if (across.left !== undefined) familyLeft.push(across.left);
+      const startedHere = yield* startedHereWords(row);
+      if (startedHere !== null) familyLeft.push(startedHere);
       // The "Moved here" line's room words first, then its family's, then
       // what the thread had going.
       const arrival =

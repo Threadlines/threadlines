@@ -267,6 +267,15 @@ function testLayer(
         // A thread here once its import was dispatched (a family's child reads
         // its parent), or one that was here already.
         Layer.mock(ProjectionThreadRepository)({
+          listIdsByRemoteLink: ({ linkDeviceId }) =>
+            Effect.succeed(
+              (carry.threadsHere ?? []).flatMap((row) =>
+                (row.remoteOrigin as { readonly linkDeviceId?: string } | undefined)
+                  ?.linkDeviceId === linkDeviceId
+                  ? [row.threadId]
+                  : [],
+              ),
+            ),
           getById: ({ threadId }) =>
             Effect.sync(() => {
               const here = carry.threadsHere?.find((row) => row.threadId === threadId);
@@ -1998,7 +2007,7 @@ describe("a thread moving across its link (Part 3f, (h))", () => {
   const moved = (
     repos: ReturnType<typeof makeRepos>,
     dispatched: OrchestrationCommand[],
-    lineage: NonNullable<MoveExportInput["linkLineage"]>,
+    lineage: MoveExportInput["linkLineage"],
     carry: Partial<CarryRecord> & { readonly sourceEnvironmentId?: EnvironmentId } = {},
   ) =>
     Effect.gen(function* () {
@@ -2109,6 +2118,58 @@ describe("a thread moving across its link (Part 3f, (h))", () => {
           );
         }),
       );
+    });
+  });
+
+  it.live("a parent arriving where a thread it started already is names that thread", () => {
+    const repos = makeRepos();
+    const dispatched: OrchestrationCommand[] = [];
+    /** A thread here that `startedBy` on Windows PC started, over `linkDeviceId`. */
+    const startedHere = (
+      threadId: string,
+      title: string,
+      {
+        linkDeviceId = "device-windows",
+        startedBy = "thread-a",
+        archivedAt = null as string | null,
+      },
+    ) => ({
+      threadId: ThreadId.make(threadId),
+      title,
+      deletedAt: null,
+      archivedAt,
+      remoteOrigin: {
+        linkDeviceId,
+        environmentId: WINDOWS,
+        environmentPinned: true,
+        environmentLabel: "Windows PC",
+        threadId: startedBy,
+        threadTitle: "Ship it",
+      },
+    });
+    return Effect.gen(function* () {
+      const state = yield* moved(repos, dispatched, undefined, {
+        pinnedEnvironmentId: WINDOWS,
+        threadsHere: [
+          startedHere("thread-child", "Fix tests", {}),
+          // Over another link, by another thread there, or archived: not this one's here.
+          startedHere("thread-other-link", "Other link", { linkDeviceId: "device-mac" }),
+          startedHere("thread-other-parent", "Other parent", { startedBy: "thread-b" }),
+          startedHere("thread-archived", "Archived", { archivedAt: "2026-11-17T10:00:00.000Z" }),
+        ],
+      });
+      assert.equal(state.status, "committed");
+      const imported = importOf(dispatched);
+      assert.deepEqual(
+        (imported.arrival?.left ?? []).filter((sentence) => sentence.includes("this computer")),
+        [
+          "Its thread 'Fix tests' is already on this computer. It stays separate, so this thread can't reach it.",
+        ],
+      );
+      // It stays apart: nothing here becomes its child.
+      assert.isUndefined(imported.adopt);
+      assert.isUndefined(imported.lineage);
+      assert.isUndefined(imported.remoteOrigin);
     });
   });
 

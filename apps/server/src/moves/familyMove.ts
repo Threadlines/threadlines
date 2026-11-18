@@ -53,12 +53,15 @@ export function checkoutOwnerOf(
  * and the parent's turn that started it (a child), the member whose folder
  * it shares there (one that doesn't own the folder it works in), and, on the
  * parent, the children that stay here, the ones its agent started on other
- * computers (they stay there), and the waits its move's stop ended.
+ * computers (they stay there), and the waits its move's stop ended. The ones
+ * on `targetEnvironmentId` aren't named: that computer names them from its
+ * own records, as threads already there.
  */
 export function familyManifestOf(
   view: Pick<ThreadMoveView, "projects" | "threads">,
   thread: OrchestrationThread,
   family: ThreadMoveFamily,
+  targetEnvironmentId: EnvironmentId,
 ): PeerMoveFamily {
   const members = familyMembersOf(view.threads, family.id);
   const memberIds = new Set<string>(members.map((member) => member.id));
@@ -81,6 +84,7 @@ export function familyManifestOf(
     : [];
   const remoteStayed = isParent
     ? (thread.childRequests.remoteChildren ?? [])
+        .filter((child) => child.environmentId !== targetEnvironmentId)
         .slice(0, PEER_MOVE_FAMILY_MAX_STAYED)
         .map((child) => ({ label: child.label, title: child.title }))
     : [];
