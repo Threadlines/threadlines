@@ -12,6 +12,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
+  ThreadMoveFamilyId,
   ThreadMoveId,
   ThreadParticipantId,
   TurnId,
@@ -58,9 +59,11 @@ import {
 import { RelayDeviceRepository } from "../relay/RelayDeviceRepository.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
-import { LinkMoveRepositoryLive } from "./LinkMoveRepository.ts";
+import { LinkMoveRepository, LinkMoveRepositoryLive } from "./LinkMoveRepository.ts";
 import {
   binaryPatchBytes,
+  linkFamilyKey,
+  linkFamilyThreadId,
   linkMoveKey,
   linkMoveThreadId,
   LinkMoves,
@@ -68,6 +71,7 @@ import {
   MAX_STAGED_MOVES_PER_LINK,
   moveManifestRefusal,
   movePathRefusal,
+  sameProjectAs,
 } from "./LinkMoves.ts";
 import { LinkRequests, type PeerLink } from "./LinkRequests.ts";
 
@@ -254,7 +258,25 @@ function testLayer(
             } as never),
           getThreadShellById: () => Effect.succeed(Option.fromUndefinedOr(carry.shell?.())),
         }),
-        Layer.mock(ProjectionThreadRepository)({ getById: () => Effect.succeed(Option.none()) }),
+        // A thread here once its import was dispatched (a family's child reads its parent).
+        Layer.mock(ProjectionThreadRepository)({
+          getById: ({ threadId }) =>
+            Effect.succeed(
+              Option.fromUndefinedOr(
+                dispatched
+                  .filter((command) => command.type === "thread.import")
+                  .find((command) => command.threadId === threadId) === undefined
+                  ? undefined
+                  : ({
+                      threadId,
+                      projectId: ProjectId.make("project-b"),
+                      deletedAt: null,
+                      move: null,
+                      pendingMove: null,
+                    } as never),
+              ),
+            ),
+        }),
         Layer.mock(RelayDeviceRepository)({ getDevice: () => Effect.succeed(Option.none()) }),
         // Every agent here is a Claude whose home is `carry.home`.
         Layer.mock(ProviderService)({
@@ -311,19 +333,24 @@ const pack = (
   repos: ReturnType<typeof makeRepos>,
   nativeSession?: NativeSessionExport | null,
   state?: PeerMoveThreadState,
-  room?: Pick<MoveExportInput, "room" | "outsideWork"> & {
+  room?: Pick<MoveExportInput, "room" | "outsideWork" | "family"> & {
     readonly thread?: OrchestrationThread;
+    /** Another thread of the same checkout (a family member), as its own transfer. */
+    readonly threadId?: ThreadId;
+    readonly transferId?: ThreadMoveId;
   },
 ) =>
   Effect.gen(function* () {
     const git = yield* GitVcsDriver.GitVcsDriver;
     const checkout = yield* inspectMoveCheckout(git, repos.a, "origin");
-    const dir = path.join(repos.root, "export");
+    const transferId = room?.transferId ?? TRANSFER;
+    const dir = path.join(repos.root, "export", transferId);
     const manifest = yield* writeMoveExport({
       git,
       checkout,
-      transferId: TRANSFER,
+      transferId,
       dir,
+      family: room?.family,
       attachmentsDir: path.join(repos.root, "attachments"),
       thread: room?.thread ?? movingThread(),
       room: room?.room,
@@ -334,7 +361,7 @@ const pack = (
       source: {
         environmentId: EnvironmentId.make("environment-windows"),
         environmentLabel: "Windows PC",
-        threadId: ThreadId.make("thread-a"),
+        threadId: room?.threadId ?? ThreadId.make("thread-a"),
       },
       agent,
       nativeSession,
@@ -343,22 +370,31 @@ const pack = (
     return { manifest, payload: fs.readFileSync(movePayloadPath(dir)), checkout };
   });
 
-/** Offers, sends and finishes a packed move, then waits for its import to settle. */
-const deliver = (manifest: PeerMoveManifest, payload: Buffer) =>
+/**
+ * Offers, sends and finishes a packed move, then waits for its import to
+ * settle (with `settle: false`, only until it is handed to the import).
+ */
+const deliver = (
+  manifest: PeerMoveManifest,
+  payload: Buffer,
+  transferId: ThreadMoveId = TRANSFER,
+  options: { readonly settle?: boolean } = {},
+) =>
   Effect.gen(function* () {
     const moves = yield* LinkMoves;
-    yield* moves.prepare(link("allowed"), { transferId: TRANSFER, manifest });
+    yield* moves.prepare(link("allowed"), { transferId, manifest });
     for (let offset = 0; offset < payload.length; offset += 64 * 1024) {
       yield* moves.chunk(link("allowed"), {
-        transferId: TRANSFER,
+        transferId,
         offset,
         data: payload.subarray(offset, offset + 64 * 1024).toString("base64"),
       });
     }
-    let state = yield* moves.finish(link("allowed"), { transferId: TRANSFER });
+    let state = yield* moves.finish(link("allowed"), { transferId });
+    if (options.settle === false) return state;
     for (let tries = 0; tries < 200 && state.status === "importing"; tries += 1) {
       yield* Effect.sleep("50 millis");
-      state = yield* moves.status(link("allowed"), { transferId: TRANSFER });
+      state = yield* moves.status(link("allowed"), { transferId });
     }
     return state;
   });
@@ -1596,6 +1632,304 @@ describe("what a move may write here", () => {
         parts: [{ ...manifest.parts[0]!, path: "fine.txt", length: 4 }],
       }),
       "add up",
+    );
+  });
+});
+
+describe("a family moving here (Part 3f, (g))", () => {
+  const FAMILY = ThreadMoveFamilyId.make("family-1");
+  const PARENT = ThreadId.make("thread-a");
+  const CHILD = ThreadId.make("thread-c1");
+  const OTHER_CHILD = ThreadId.make("thread-c2");
+  const familyKey = linkFamilyKey("device-windows", FAMILY);
+  const parentHere = linkFamilyThreadId(familyKey, PARENT);
+  const childHere = linkFamilyThreadId(familyKey, CHILD);
+  const transfer = (name: string) => ThreadMoveId.make(`transfer-${name}`);
+  const imports = (dispatched: ReadonlyArray<OrchestrationCommand>) =>
+    dispatched.flatMap((command) => (command.type === "thread.import" ? [command] : []));
+  /** Waits until the move's row reads `status` here. */
+  const untilStatus = (transferId: ThreadMoveId, status: string) =>
+    Effect.gen(function* () {
+      const rows = yield* LinkMoveRepository;
+      for (let tries = 0; tries < 200; tries += 1) {
+        const row = yield* rows.get("device-windows", transferId);
+        if (Option.isSome(row) && row.value.status === status) return row.value;
+        yield* Effect.sleep("50 millis");
+      }
+      return assert.fail(`${transferId} never reached ${status}`);
+    });
+
+  it.live(
+    "children that arrive first wait for their parent holding no slot, then land under it",
+    () => {
+      const repos = makeRepos();
+      const dispatched: OrchestrationCommand[] = [];
+      return Effect.gen(function* () {
+        const child = (threadId: ThreadId, name: string) =>
+          pack(repos, null, undefined, {
+            threadId,
+            transferId: transfer(name),
+            family: { id: FAMILY, parentThreadId: PARENT, parentTurnId: TurnId.make("turn-1") },
+          });
+        const first = yield* child(CHILD, "c1");
+        const second = yield* child(OTHER_CHILD, "c2");
+        // Two children, as many as one link moves here at once: both wait.
+        for (const [packed, name] of [
+          [first, "c1"],
+          [second, "c2"],
+        ] as const) {
+          const state = yield* deliver(packed.manifest, packed.payload, transfer(name), {
+            settle: false,
+          });
+          assert.equal(state.status, "importing");
+          yield* untilStatus(transfer(name), "waiting_for_family");
+        }
+        assert.deepEqual(imports(dispatched), []);
+        // Their waits hold no slot: the parent is taken, and lands first.
+        const parent = yield* pack(repos, null, undefined, {
+          transferId: transfer("p"),
+          family: { id: FAMILY, stayed: [{ title: "Review notes" }] },
+        });
+        const landed = yield* deliver(parent.manifest, parent.payload, transfer("p"));
+        assert.equal(landed.status, "committed");
+        yield* untilStatus(transfer("c1"), "committed");
+        yield* untilStatus(transfer("c2"), "committed");
+        const [parentImport, ...childImports] = imports(dispatched);
+        assert.equal(parentImport?.threadId, parentHere);
+        assert.equal(parentImport?.movedFrom.familyKey, familyKey);
+        assert.include(
+          parentImport?.arrival?.left ?? [],
+          "1 thread it started stayed on Windows PC: Review notes.",
+        );
+        assert.deepEqual(
+          childImports.map((command) => command.lineage?.parentThreadId).toSorted(),
+          [parentHere, parentHere],
+        );
+        // Its turn there is named as the parent's history names it here.
+        assert.equal(
+          childImports[0]?.lineage?.parentTurnId,
+          parentImport?.messages.find((message) => message.turnId !== null)?.turnId,
+        );
+        // The three manifests carry the same message ids there; here no two
+        // members share one (one would move another's message).
+        const ids = [parentImport, ...childImports].flatMap((command) =>
+          (command?.messages ?? []).map((message) => message.messageId),
+        );
+        assert.equal(ids.length, 6);
+        assert.equal(new Set(ids).size, ids.length);
+      }).pipe(Effect.provide(testLayer(repos, dispatched)));
+    },
+  );
+
+  it.live("a child whose parent is dropped is dropped too", () => {
+    const repos = makeRepos();
+    const dispatched: OrchestrationCommand[] = [];
+    return Effect.gen(function* () {
+      const child = yield* pack(repos, null, undefined, {
+        threadId: CHILD,
+        transferId: transfer("c1"),
+        family: { id: FAMILY, parentThreadId: PARENT },
+      });
+      yield* deliver(child.manifest, child.payload, transfer("c1"), { settle: false });
+      yield* untilStatus(transfer("c1"), "waiting_for_family");
+      const parent = yield* pack(repos, null, undefined, {
+        transferId: transfer("p"),
+        family: { id: FAMILY },
+      });
+      const moves = yield* LinkMoves;
+      yield* moves.prepare(link("allowed"), {
+        transferId: transfer("p"),
+        manifest: parent.manifest,
+      });
+      yield* moves.abort(link("allowed"), { transferId: transfer("p") });
+      const dropped = yield* untilStatus(transfer("c1"), "aborted");
+      assert.equal(dropped.reason, "Its parent thread didn't move.");
+      assert.deepEqual(imports(dispatched), []);
+    }).pipe(Effect.provide(testLayer(repos, dispatched)));
+  });
+
+  it.live(
+    "a member in a folder whose owner was dropped ends, and two members never hold each other's locks",
+    () => {
+      const repos = makeRepos();
+      const dispatched: OrchestrationCommand[] = [];
+      return Effect.gen(function* () {
+        const moves = yield* LinkMoves;
+        // One child makes its folder and waits for the parent; its sibling
+        // works in that folder and waits too.
+        const owner = yield* pack(repos, null, undefined, {
+          threadId: CHILD,
+          transferId: transfer("c1"),
+          family: { id: FAMILY, parentThreadId: PARENT },
+        });
+        yield* deliver(owner.manifest, owner.payload, transfer("c1"), { settle: false });
+        yield* untilStatus(transfer("c1"), "waiting_for_family");
+        const sibling = yield* pack(repos, null, undefined, {
+          threadId: OTHER_CHILD,
+          transferId: transfer("c2"),
+          family: { id: FAMILY, parentThreadId: PARENT, sharesCheckoutOf: CHILD },
+        });
+        yield* deliver(sibling.manifest, sibling.payload, transfer("c2"), { settle: false });
+        const waiting = yield* untilStatus(transfer("c2"), "waiting_for_family");
+        assert.equal(waiting.stage, "applied");
+        // The folder's owner is dropped: its sharer can't stay pointing at it.
+        yield* moves.abort(link("allowed"), { transferId: transfer("c1") });
+        const ended = yield* untilStatus(transfer("c2"), "aborted");
+        assert.equal(ended.reason, "The thread whose folder it works in didn't move.");
+        // The owner offered again, now in its sibling's folder: a sharer is
+        // nobody's folder, so it ends rather than waiting on it.
+        const again = yield* pack(repos, null, undefined, {
+          threadId: CHILD,
+          transferId: transfer("c1-again"),
+          family: { id: FAMILY, parentThreadId: PARENT, sharesCheckoutOf: OTHER_CHILD },
+        });
+        yield* deliver(again.manifest, again.payload, transfer("c1-again"), { settle: false });
+        yield* untilStatus(transfer("c1-again"), "aborted");
+        // The parent lands on its own; nothing waits on a lock.
+        const parent = yield* pack(repos, null, undefined, {
+          transferId: transfer("p"),
+          family: { id: FAMILY },
+        });
+        const landed = yield* deliver(parent.manifest, parent.payload, transfer("p"));
+        assert.equal(landed.status, "committed");
+        assert.deepEqual(
+          imports(dispatched).map((command) => command.threadId),
+          [parentHere],
+        );
+      }).pipe(Effect.provide(testLayer(repos, dispatched)));
+    },
+  );
+
+  it.live(
+    "a parent working in its child's folder lands with it, neither waiting on the other",
+    () => {
+      const repos = makeRepos();
+      const dispatched: OrchestrationCommand[] = [];
+      const setupRuns: string[] = [];
+      return Effect.gen(function* () {
+        // The parent works in the child's worktree there: the child sends the
+        // folder, the parent none of it.
+        const parent = yield* pack(repos, null, undefined, {
+          transferId: transfer("p"),
+          family: { id: FAMILY, sharesCheckoutOf: CHILD },
+        });
+        assert.deepEqual(
+          parent.manifest.parts.filter((part) => part.kind !== "attachment"),
+          [],
+        );
+        const child = yield* pack(repos, null, undefined, {
+          threadId: CHILD,
+          transferId: transfer("c1"),
+          family: { id: FAMILY, parentThreadId: PARENT },
+        });
+        yield* deliver(parent.manifest, parent.payload, transfer("p"), { settle: false });
+        yield* untilStatus(transfer("p"), "waiting_for_family");
+        yield* deliver(child.manifest, child.payload, transfer("c1"), { settle: false });
+        yield* untilStatus(transfer("p"), "committed");
+        const childRow = yield* untilStatus(transfer("c1"), "committed");
+        const [parentImport, childImport] = imports(dispatched);
+        assert.equal(parentImport?.threadId, parentHere);
+        assert.equal(childImport?.threadId, childHere);
+        assert.equal(parentImport?.worktreePath, childRow.worktreePath);
+        assert.equal(parentImport?.branch, childRow.branch);
+        // A guest there, as here: never the folder's owner.
+        assert.deepEqual(parentImport?.worktreeOrigin, { kind: "thread", threadId: childHere });
+        assert.equal(childImport?.lineage?.parentThreadId, parentHere);
+        // The folder's own move ran its setup, once.
+        assert.deepEqual(setupRuns, [childRow.worktreePath]);
+        assert.equal(
+          fs.readFileSync(path.join(childRow.worktreePath!, "c.txt"), "utf8"),
+          "c.txt unstaged\n",
+        );
+      }).pipe(Effect.provide(testLayer(repos, dispatched, "allowed", () => false, setupRuns)));
+    },
+  );
+
+  it.live("a child in its parent's folder takes it, and one dropped takes nothing of it", () => {
+    const repos = makeRepos();
+    const dispatched: OrchestrationCommand[] = [];
+    return Effect.gen(function* () {
+      const parent = yield* pack(repos, null, undefined, {
+        transferId: transfer("p"),
+        family: { id: FAMILY },
+      });
+      yield* deliver(parent.manifest, parent.payload, transfer("p"));
+      const parentRow = yield* untilStatus(transfer("p"), "committed");
+      const folder = parentRow.worktreePath!;
+      // A sharer offered and dropped before it lands: nothing of the folder goes.
+      const dropped = yield* pack(repos, null, undefined, {
+        threadId: OTHER_CHILD,
+        transferId: transfer("c2"),
+        family: { id: FAMILY, parentThreadId: PARENT, sharesCheckoutOf: PARENT },
+      });
+      const moves = yield* LinkMoves;
+      yield* moves.prepare(link("allowed"), {
+        transferId: transfer("c2"),
+        manifest: dropped.manifest,
+      });
+      yield* moves.abort(link("allowed"), { transferId: transfer("c2") });
+      yield* untilStatus(transfer("c2"), "aborted");
+      assert.isTrue(fs.existsSync(path.join(folder, "c.txt")));
+      // One that lands takes the parent's folder and branch, as a guest.
+      const child = yield* pack(repos, null, undefined, {
+        threadId: CHILD,
+        transferId: transfer("c1"),
+        family: { id: FAMILY, parentThreadId: PARENT, sharesCheckoutOf: PARENT },
+      });
+      const landed = yield* deliver(child.manifest, child.payload, transfer("c1"));
+      assert.equal(landed.status, "committed");
+      const childImport = imports(dispatched).find((command) => command.threadId === childHere);
+      assert.equal(childImport?.worktreePath, folder);
+      assert.deepEqual(childImport?.worktreeOrigin, { kind: "thread", threadId: parentHere });
+      assert.equal(childImport?.lineage?.parentThreadId, parentHere);
+      assert.isTrue(fs.existsSync(path.join(folder, "c.txt")));
+    }).pipe(Effect.provide(testLayer(repos, dispatched)));
+  });
+
+  it("shares a folder only between members that name the same project", () => {
+    const named = (canonicalKey: string, subdirectory?: string) =>
+      ({
+        project: {
+          canonicalKey,
+          title: "Repo",
+          ...(subdirectory !== undefined ? { subdirectory } : {}),
+        },
+      }) as unknown as PeerMoveManifest;
+    const generalChat = { project: { title: "General chats" } } as unknown as PeerMoveManifest;
+    assert.isTrue(sameProjectAs(named("example.com/repo"), named("example.com/repo", "")));
+    assert.isFalse(sameProjectAs(named("example.com/repo"), named("example.com/other")));
+    assert.isFalse(sameProjectAs(named("example.com/repo", "web"), named("example.com/repo")));
+    assert.isFalse(sameProjectAs(generalChat, named("example.com/repo")));
+  });
+
+  it("refuses a family member that names itself, or carries files into another's folder", () => {
+    const base = {
+      totalBytes: 0,
+      sha256: "x",
+      parts: [],
+      source: { environmentId: "e", environmentLabel: "Windows PC", threadId: CHILD },
+      git: { headSha: "h", branch: null, baseSha: null },
+      thread: { messages: [], activities: [] },
+    } as unknown as PeerMoveManifest;
+    assert.include(
+      moveManifestRefusal({ ...base, family: { id: FAMILY, parentThreadId: CHILD } }),
+      "itself as its parent",
+    );
+    assert.include(
+      moveManifestRefusal({ ...base, family: { id: FAMILY, sharesCheckoutOf: CHILD } }),
+      "shares its own folder",
+    );
+    assert.include(
+      moveManifestRefusal({
+        ...base,
+        totalBytes: 4,
+        parts: [{ kind: "file", offset: 0, length: 4, sha256: "y", path: "a.txt", mode: "file" }],
+        family: { id: FAMILY, sharesCheckoutOf: PARENT },
+      }),
+      "carries none of its files",
+    );
+    assert.isNull(
+      moveManifestRefusal({ ...base, family: { id: FAMILY, sharesCheckoutOf: PARENT } }),
     );
   });
 });

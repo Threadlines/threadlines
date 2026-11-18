@@ -2767,6 +2767,57 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
 
     // A move that waits for the thread to be free (docs/design/fleet.md, Part 3b).
     case "thread.move.queue": {
+      // A parent with the children that move with it (Part 3f, (g)): all
+      // queued in this one decision, the parent first, so no member packs
+      // before the family's members are known. A child its own checks refuse
+      // is left out and stays here.
+      if (command.children !== undefined && command.children.length > 0) {
+        const family = command.family;
+        if (family === undefined || family.parentThreadId !== undefined) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "Only a family's parent queues its children.",
+          });
+        }
+        const { children, ...parentCommand } = command;
+        const planned: PlannedOrchestrationEvent[] = [];
+        let nextReadModel = readModel;
+        let nextSequence = readModel.snapshotSequence;
+        const take = (
+          decided: PlannedOrchestrationEvent | ReadonlyArray<PlannedOrchestrationEvent>,
+        ) =>
+          Effect.gen(function* () {
+            for (const event of Array.isArray(decided) ? decided : [decided]) {
+              planned.push(event);
+              nextSequence += 1;
+              nextReadModel = yield* projectEvent(nextReadModel, {
+                ...event,
+                sequence: nextSequence,
+              } as OrchestrationEvent).pipe(Effect.orDie);
+            }
+          });
+        yield* take(yield* decideOrchestrationCommand({ command: parentCommand, readModel }));
+        for (const child of children) {
+          const decided = yield* decideOrchestrationCommand({
+            command: {
+              type: "thread.move.queue",
+              commandId: command.commandId,
+              threadId: child.threadId,
+              requestId: child.requestId,
+              target: command.target,
+              mode: command.mode,
+              requestedBy: command.requestedBy,
+              ...(command.batchId !== undefined ? { batchId: command.batchId } : {}),
+              ...(command.targetTakes !== undefined ? { targetTakes: command.targetTakes } : {}),
+              family: { id: family.id, parentThreadId: command.threadId },
+              createdAt: command.createdAt,
+            },
+            readModel: nextReadModel,
+          }).pipe(Effect.result);
+          if (decided._tag === "Success") yield* take(decided.success);
+        }
+        return planned;
+      }
       const thread = yield* requireThread({
         readModel,
         command,
@@ -2775,10 +2826,14 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       const baseFor = childEventBase(command, command.createdAt);
       const decided = decideMoveQueue(readModel, thread, command, baseFor);
       // "Stop and move now" holds command output the way Stop does, so a
-      // command finishing later can't wake the agent the move stopped.
+      // command finishing later can't wake the agent the move stopped, and
+      // ends its waits on the threads it started as Stop does (Part 3f, (g)).
       const held =
         command.mode === "stop-now" && !("refusal" in decided) && decided.length > 0
-          ? holdCommandOutputOnStop(thread, () => baseFor(thread.id), command.createdAt)
+          ? [
+              ...holdCommandOutputOnStop(thread, () => baseFor(thread.id), command.createdAt),
+              ...childStopEvents(readModel, thread, command, command.createdAt),
+            ]
           : [];
       return yield* planChildThreadDecision(
         command.type,
@@ -2795,10 +2850,14 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       });
       const baseFor = childEventBase(command, command.createdAt);
       const decided = decideMoveSetMode(readModel, thread, command, baseFor);
-      // Holds command output the way Stop does, as a move queued this way does.
+      // Holds command output and ends child waits the way Stop does, as a
+      // move queued this way does.
       const held =
         !("refusal" in decided) && decided.length > 0
-          ? holdCommandOutputOnStop(thread, () => baseFor(thread.id), command.createdAt)
+          ? [
+              ...holdCommandOutputOnStop(thread, () => baseFor(thread.id), command.createdAt),
+              ...childStopEvents(readModel, thread, command, command.createdAt),
+            ]
           : [];
       return yield* planChildThreadDecision(
         command.type,
@@ -2819,12 +2878,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       return yield* planChildThreadDecision(
         command.type,
         command.type === "thread.move.unqueue"
-          ? decideMoveUnqueue(thread, command, baseFor)
+          ? decideMoveUnqueue(readModel, thread, command, baseFor)
           : command.type === "thread.move.quiesce"
             ? decideMoveQuiesce(readModel, thread, command, baseFor)
             : command.type === "thread.move.queue-status"
               ? decideMoveQueueStatus(thread, command, baseFor)
-              : decideMoveQueueEnd(thread, command, baseFor),
+              : decideMoveQueueEnd(readModel, thread, command, baseFor),
       );
     }
 
@@ -2878,9 +2937,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             : command.type === "thread.move.cancel"
               ? decideMoveCancel(thread, command, baseFor)
               : command.type === "thread.move.abort"
-                ? decideMoveAbort(thread, command, baseFor)
+                ? decideMoveAbort(readModel, thread, command, baseFor)
                 : command.type === "thread.move.complete"
-                  ? decideMoveComplete(thread, command, baseFor)
+                  ? decideMoveComplete(readModel, thread, command, baseFor)
                   : command.type === "thread.native-session.fall-back"
                     ? decideNativeSessionFallBack(thread, command, baseFor)
                     : decideHistorySeedDelivered(thread, command, baseFor),

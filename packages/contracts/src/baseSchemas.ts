@@ -92,6 +92,13 @@ export type ThreadMoveRequestId = typeof ThreadMoveRequestId.Type;
 /** Threads queued to move together (`moves.queueMany`, docs/design/fleet.md, Part 3c). */
 export const ThreadMoveBatchId = makeEntityId("ThreadMoveBatchId");
 export type ThreadMoveBatchId = typeof ThreadMoveBatchId.Type;
+/**
+ * A parent and the children that move with it (docs/design/fleet.md, Part
+ * 3f, (g)): one id on each member's move, so the other computer can tell the
+ * family apart and land the parent first.
+ */
+export const ThreadMoveFamilyId = makeEntityId("ThreadMoveFamilyId");
+export type ThreadMoveFamilyId = typeof ThreadMoveFamilyId.Type;
 /** The requests one `thread_start` call made, approved or declined together. */
 export const ChildRequestBatchId = makeEntityId("ChildRequestBatchId");
 export type ChildRequestBatchId = typeof ChildRequestBatchId.Type;

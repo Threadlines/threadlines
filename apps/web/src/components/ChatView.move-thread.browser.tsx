@@ -9,7 +9,7 @@ import {
   type OrchestrationThreadMove,
   ProjectId,
   ProviderInstanceId,
-  type ThreadId,
+  ThreadId,
   ThreadMoveBatchId,
   ThreadMoveError,
   ThreadMoveId,
@@ -1058,6 +1058,101 @@ describe("ChatView (full app): moving a thread to another computer", () => {
     }
   });
 
+  it("brings the threads it started that are ticked, and says which stay and why", async () => {
+    setPrimaryLinksSnapshot(
+      fleetLinksSnapshot({
+        outbound: [fleetOutboundLink(FLEET_OFFLINE_ENVIRONMENT_ID, "Mac mini")],
+      }),
+    );
+    const macMini = FLEET_MOVE_PREVIEW.targets[1]!;
+    const fixTests = ThreadId.make("thread-fix-tests");
+    const review = ThreadId.make("thread-review");
+    const planning = ThreadId.make("thread-planning");
+    const queues: Array<NormalizedWsRpcRequestBody> = [];
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-move-family" as MessageId,
+        targetText: "move family",
+      }),
+      configureFixture: withThreadMoveQueueFixture,
+      resolveRpc: (body) => {
+        if (body._tag === WS_METHODS.movesPreview) {
+          return {
+            ...FLEET_MOVE_PREVIEW,
+            family: {
+              children: [
+                { threadId: fixTests, title: "Fix tests" },
+                { threadId: review, title: "Review" },
+                {
+                  threadId: planning,
+                  title: "Planning",
+                  refusal: "A command in this thread is waiting for you to run or dismiss it.",
+                },
+              ],
+              remoteChildren: [
+                { label: "Windows PC", title: "Changelog" },
+                { label: "Windows PC", title: "Release notes" },
+              ],
+            },
+            targets: [macMini],
+          } satisfies ThreadMovePreview;
+        }
+        if (body._tag === WS_METHODS.movesQueue) {
+          queues.push(body);
+          return { requestId: QUEUED_REQUEST_ID };
+        }
+        return undefined;
+      },
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      await saveMacMini("connected");
+      await openCommandPaletteFromTrigger();
+      await page
+        .getByTestId("command-palette")
+        .getByText("Move to another computer", { exact: true })
+        .click();
+      const dialog = page.getByTestId("thread-move-dialog");
+      await expect
+        .element(dialog.getByTestId("thread-move-family-coming"))
+        .toHaveTextContent("Its 2 threads move with it.");
+      // One that can't come says why, and that it stays.
+      await expect
+        .element(dialog.getByTestId(`thread-move-family-stays-${planning}`))
+        .toHaveTextContent(
+          "A command in this thread is waiting for you to run or dismiss it. It stays here as its own thread.",
+        );
+      await expect
+        .element(dialog.getByTestId("thread-move-family-remote"))
+        .toHaveTextContent(
+          "2 threads it started on Windows PC stay there. It can't reach them from Mac mini.",
+        );
+      // Unticked, one stays here as its own thread.
+      await dialog.getByTestId(`thread-move-family-tick-${review}`).click();
+      await expect
+        .element(dialog.getByTestId(`thread-move-family-stays-${review}`))
+        .toHaveTextContent("Stays here as its own thread.");
+      await expect
+        .element(dialog.getByTestId("thread-move-family-coming"))
+        .toHaveTextContent("Its thread moves with it.");
+
+      await dialog.getByTestId("thread-move-confirm").click();
+      await expect.element(page.getByTestId("thread-move-dialog")).not.toBeInTheDocument();
+      expect(queues).toEqual([
+        expect.objectContaining({
+          threadId: THREAD_ID,
+          targetEnvironmentId: FLEET_OFFLINE_ENVIRONMENT_ID,
+          familySelection: "explicit",
+          children: [fixTests],
+        }),
+      ]);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("says when a waiting move goes, holds new messages, and cancels the move it shows", async () => {
     setPrimaryLinksSnapshot(
       fleetLinksSnapshot({
@@ -1870,6 +1965,108 @@ describe("ChatView (full app): moving a thread to another computer", () => {
           threadIds: [THREAD_ID, chatId, goalId],
           targetEnvironmentId: FLEET_OFFLINE_ENVIRONMENT_ID,
           mode: "when-done",
+          familySelection: "explicit",
+        }),
+      ]);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("moves a family as one group: its threads under it, ticked with it, each one able to stay", async () => {
+    setPrimaryLinksSnapshot(
+      fleetLinksSnapshot({
+        outbound: [fleetOutboundLink(FLEET_OFFLINE_ENVIRONMENT_ID, "Mac mini")],
+      }),
+    );
+    const fixTestsId = "thread-family-fix-tests" as ThreadId;
+    const reviewId = "thread-family-review" as ThreadId;
+    const queueManys: Array<NormalizedWsRpcRequestBody> = [];
+    const base = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-move-family-batch" as MessageId,
+      targetText: "move family batch",
+    });
+    const snapshot = [fixTestsId, reviewId].reduce(addThreadToSnapshot, base);
+    const titles = new Map<string, string>([
+      [fixTestsId, "Fix tests"],
+      [reviewId, "Review"],
+    ]);
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads: snapshot.threads.map((thread) =>
+          titles.has(thread.id)
+            ? {
+                ...thread,
+                title: titles.get(thread.id)!,
+                parentThreadId: THREAD_ID,
+                attachedToParent: true,
+              }
+            : thread,
+        ),
+      },
+      configureFixture: (fixture) =>
+        withMoveCapabilities(fixture, {
+          threadMove: true,
+          threadMoveQueue: true,
+          threadMoveBatch: true,
+          threadMoveState: true,
+        }),
+      resolveRpc: (body) => {
+        if (body._tag === WS_METHODS.movesPreviewMany) {
+          const threadIds = (body as unknown as { threadIds: ThreadId[] }).threadIds;
+          return {
+            threads: threadIds.map((threadId) =>
+              threadId === THREAD_ID
+                ? { threadId, waitsFor: [{ code: "turn" as const, words: "when this turn ends" }] }
+                : { threadId },
+            ),
+            targets: [{ ...FLEET_MOVE_PREVIEW.targets[1]!, projectName: undefined }],
+          };
+        }
+        if (body._tag === WS_METHODS.movesQueueMany) {
+          queueManys.push(body);
+          return { batchId: "batch-family", queued: [], refused: [] };
+        }
+        return undefined;
+      },
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      await saveMacMini("connected");
+      await openCommandPaletteFromTrigger();
+      await page
+        .getByTestId("command-palette")
+        .getByText("Move threads to another computer…", { exact: true })
+        .click();
+      const dialog = page.getByTestId("move-threads-dialog");
+      await expect.element(dialog.getByTestId("move-threads-list")).toBeVisible();
+      // The parent leads (its agent works), its threads right under it, all ticked with it.
+      const rows = Array.from(
+        document.querySelectorAll<HTMLElement>('[data-testid^="move-threads-row-"]'),
+      ).map((row) => row.dataset.testid);
+      expect(rows).toEqual([
+        `move-threads-row-${THREAD_ID}`,
+        `move-threads-row-${fixTestsId}`,
+        `move-threads-row-${reviewId}`,
+      ]);
+      for (const id of [THREAD_ID, fixTestsId, reviewId]) {
+        await expect.element(dialog.getByTestId(`move-threads-tick-${id}`)).toBeChecked();
+      }
+      // One unticked stays here; the rest go, exactly those.
+      await dialog.getByTestId(`move-threads-tick-${reviewId}`).click();
+      await expect.element(dialog.getByTestId(`move-threads-tick-${THREAD_ID}`)).toBeChecked();
+      await expect
+        .element(dialog.getByTestId("move-threads-confirm"))
+        .toHaveTextContent("Move 2 threads");
+      await dialog.getByTestId("move-threads-confirm").click();
+      await expect.element(page.getByTestId("move-threads-dialog")).not.toBeInTheDocument();
+      expect(queueManys).toEqual([
+        expect.objectContaining({
+          threadIds: [THREAD_ID, fixTestsId],
+          familySelection: "explicit",
         }),
       ]);
     } finally {

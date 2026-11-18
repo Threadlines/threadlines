@@ -23,6 +23,7 @@ import {
   type OrchestrationThread,
   type OrchestrationThreadMove,
   type ThreadId,
+  type ThreadMoveFamily,
   type ThreadMoveHold,
   type ThreadMoveInterrupted,
   type ThreadMoveRestore,
@@ -49,9 +50,11 @@ import { isValidParticipantId } from "@threadlines/shared/threadParticipants";
 import { arrivalMessageText, resumedGoalMessageText } from "../moves/arrivalMessage.ts";
 import { decideAgentChainStop } from "./agentRequestDecisions.ts";
 import { derivedUuid } from "./childRequestIds.ts";
-import { childHasLiveWork } from "./childThreadDecisions.ts";
+import { childHasLiveWork, leftBehindEvents } from "./childThreadDecisions.ts";
 import {
+  drainsWhileMoveWaits,
   interruptedOf,
+  isFamilyQueued,
   isRoomAgentQueued,
   mergeInterrupted,
   sameInterrupted,
@@ -129,6 +132,14 @@ const wait = (code: ThreadMoveWaitCode, words = WAIT_WORDS[code]): ThreadMoveRef
 
 /** A room's agents still asking each other: no wait code of its own (a closed set), its own words. */
 const ROOM_CHAIN_WORDS = "when its agents finish";
+/** A parent waiting on its children's answers (Part 3f, (g)): the `background` code, its own words. */
+const FAMILY_WAIT_WORDS = "when the threads it started report back";
+/** A child whose parent's move ended before it, or was never there. */
+export const PARENT_DIDNT_MOVE_WORDS = "Its parent thread didn't move.";
+const CHILD_WORDS =
+  "This thread belongs to the thread that started it. Make it its own thread first.";
+const FAMILY_CHILD_WORDS =
+  "This thread moves with the thread that started it. Move that thread to bring this one along, or make this its own thread first.";
 const blocked = (code: ThreadMoveBlockCode, words: string): ThreadMoveRefusalEntry => ({
   kind: "blocked",
   code,
@@ -151,7 +162,10 @@ export interface ThreadMoveView {
  * files: its worktree, else its project's folder. A general chat works in a
  * folder of its own (generalChatThreadScratchCwd), so no two of them share one.
  */
-function checkoutOf(readModel: ThreadMoveView, thread: OrchestrationThread) {
+export function checkoutOf(
+  readModel: Pick<ThreadMoveView, "projects">,
+  thread: Pick<OrchestrationThread, "id" | "projectId" | "worktreePath">,
+) {
   if (thread.worktreePath !== null) return thread.worktreePath;
   const project = readModel.projects.find((entry) => entry.id === thread.projectId);
   if (project === undefined) return null;
@@ -180,17 +194,21 @@ function foreignQueuedWords(entry: OrchestrationQueuedFollowUp): string {
  * The same check runs in `moves.preview` (so the dialog explains before
  * anyone clicks), in `thread.move.queue`, and in the freeze decision. A
  * pending move isn't one of them: each caller decides about that itself.
+ * `family` is the family the move goes with (Part 3f, (g)): the thread's own
+ * queued move's or move's when not given.
  */
 export function threadMoveRefusals(
   readModel: ThreadMoveView,
   thread: OrchestrationThread,
   takes?: ThreadMoveTakes | null,
+  family: ThreadMoveFamily | undefined = thread.pendingMove?.family ?? thread.move?.family,
 ): ReadonlyArray<ThreadMoveRefusalEntry> {
   const found: ThreadMoveRefusalEntry[] = [];
   // What rides along (docs/design/fleet.md, Part 3e) is refused only when the
   // other computer doesn't take it. Absent `takes`: nothing beyond v1.
   const carry = threadMoveCarry(readModel, thread);
   const takesState = takes?.threadState === true;
+  const takesFamilies = takes?.families === true;
   if (thread.deletedAt !== null) found.push(blocked("deleted", "This thread was deleted."));
   if (thread.archivedAt !== null) {
     found.push(blocked("archived", "Archived threads can't move. Unarchive it first."));
@@ -239,13 +257,26 @@ export function threadMoveRefusals(
       blocked("remote_origin", "This thread was started from another computer, so it stays here."),
     );
   }
+  // A child moves only with its parent (Part 3f, (g)): its move names the
+  // parent's family, and the parent holds a move of that family (waiting,
+  // under way, or done). Moving alone across the link is a later step.
   if (thread.parentThreadId !== null && thread.attachedToParent) {
-    found.push(
-      blocked(
-        "child",
-        "This thread belongs to the thread that started it. Make it its own thread first.",
-      ),
-    );
+    const withParent =
+      takesFamilies &&
+      family?.parentThreadId === thread.parentThreadId &&
+      parentHoldsFamily(readModel, family);
+    if (!withParent) {
+      found.push(
+        blocked(
+          "child",
+          takesFamilies && family?.parentThreadId !== undefined
+            ? PARENT_DIDNT_MOVE_WORDS
+            : takesFamilies
+              ? FAMILY_CHILD_WORDS
+              : CHILD_WORDS,
+        ),
+      );
+    }
   }
   const hasLocalChildren = readModel.threads.some(
     (candidate) =>
@@ -254,18 +285,24 @@ export function threadMoveRefusals(
       candidate.deletedAt === null,
   );
   if (
-    hasLocalChildren ||
-    (thread.childRequests.remoteChildren ?? []).length > 0 ||
-    thread.childRequests.open.length > 0
+    !takesFamilies &&
+    (hasLocalChildren ||
+      (thread.childRequests.remoteChildren ?? []).length > 0 ||
+      thread.childRequests.open.length > 0)
   ) {
     found.push(blocked("has_children", "Threads that started other threads can't move yet."));
   }
   // A message queued by something on this computer answers to it (a
   // scheduled run, an outside assistant, another thread), so it is sent
   // here. The user's own travel when the other computer takes them.
-  // A room agent's hand-off or reply drains while the move waits (Part 3f,
-  // review change 4): something to wait for, not something to clear.
-  const foreign = carry.foreignQueued.find((entry) => !(takesRooms && isRoomAgentQueued(entry)));
+  // A room agent's hand-off or reply, and the family's own requests and
+  // answers, drain while the move waits (Part 3f, review change 4):
+  // something to wait for, not something to clear.
+  const foreign = carry.foreignQueued.find(
+    (entry) =>
+      !(takesRooms && isRoomAgentQueued(entry)) &&
+      !(takesFamilies && isFamilyQueued(thread, entry)),
+  );
   if (foreign !== undefined) {
     found.push(blocked("queued_messages", foreignQueuedWords(foreign)));
   } else if (carry.queuedFollowUps.length > 0 && !takesState) {
@@ -345,6 +382,20 @@ export function threadMoveRefusals(
       found.push(wait("side_turn", ROOM_CHAIN_WORDS));
     }
   }
+  // Waiting on the threads it started (Part 3f, (g)): "Move when it's done"
+  // waits for their answers; a start waiting for the user's OK, for them.
+  if (takesFamilies) {
+    const open = thread.childRequests.open;
+    if (open.some((request) => request.status === "awaiting_user")) {
+      found.push(wait("approval"));
+    }
+    if (
+      open.some((request) => request.status !== "awaiting_user") ||
+      (thread.queuedFollowUps ?? []).some((entry) => isFamilyQueued(thread, entry))
+    ) {
+      found.push(wait("background", FAMILY_WAIT_WORDS));
+    }
+  }
   if (
     (session?.pendingBackgroundTaskCount ?? 0) > 0 ||
     (session?.awaitedBackgroundTaskCount ?? 0) > 0
@@ -363,18 +414,58 @@ export function threadMoveRefusals(
   }
   if (thread.voiceActive === true) found.push(wait("voice"));
   // Another thread at work in the same checkout could change the files while
-  // they are being packed.
+  // they are being packed. One frozen for its own move can't: its agent is
+  // stopped, and nothing it holds (a plan, a queue) runs while it moves.
+  // A member of the same family's move waiting with it holds its user's
+  // queued messages and its plan for the move (they go along, not run here):
+  // only work that runs counts, or two members sharing a folder, each with a
+  // message queued, would wait on each other for good (Part 3f, (g)).
   const checkout = checkoutOf(readModel, thread);
+  const busyThere = (candidate: OrchestrationThread) =>
+    family !== undefined && candidate.pendingMove?.family?.id === family.id
+      ? childHasLiveWork({
+          ...candidate,
+          queuedFollowUps: (candidate.queuedFollowUps ?? []).filter((entry) =>
+            drainsWhileMoveWaits(candidate, entry),
+          ),
+          proposedPlans: [],
+        })
+      : childHasLiveWork(candidate);
   const sharedCheckoutBusy = readModel.threads.some(
     (candidate) =>
       candidate.id !== thread.id &&
       candidate.deletedAt === null &&
+      (candidate.move ?? null) === null &&
       checkoutOf(readModel, candidate) === checkout &&
-      childHasLiveWork(candidate),
+      busyThere(candidate),
   );
   if (sharedCheckoutBusy) found.push(wait("shared_checkout"));
   return found;
 }
+
+/**
+ * Whether the parent a family names holds a move of that family: queued,
+ * under way, or done (Part 3f, (g)). A child's move is only ever queued, and
+ * only goes on, while it does.
+ */
+export function parentHoldsFamily(
+  readModel: Pick<ThreadMoveView, "threads">,
+  family: ThreadMoveFamily,
+): boolean {
+  return holdsFamily(
+    readModel.threads.find((entry) => entry.id === family.parentThreadId),
+    family,
+  );
+}
+
+/** Whether `thread` (a family's parent, as read) holds a move of `family`. */
+export const holdsFamily = (
+  thread: Pick<OrchestrationThread, "pendingMove" | "move" | "deletedAt"> | undefined,
+  family: ThreadMoveFamily,
+) =>
+  thread !== undefined &&
+  thread.deletedAt === null &&
+  (thread.pendingMove?.family?.id === family.id || thread.move?.family?.id === family.id);
 
 /** The waits among a thread's move refusals, as clients see them. */
 export function moveWaitsOf(
@@ -398,8 +489,9 @@ export function threadMoveRefusal(
   readModel: ThreadMoveView,
   thread: OrchestrationThread,
   takes?: ThreadMoveTakes | null,
+  family?: ThreadMoveFamily,
 ): string | null {
-  const refusals = threadMoveRefusals(readModel, thread, takes);
+  const refusals = threadMoveRefusals(readModel, thread, takes, family);
   const block = firstMoveBlock(refusals);
   if (block !== null) return block.words;
   const first = refusals[0];
@@ -436,6 +528,9 @@ const FROZEN_THREAD_COMMANDS: ReadonlySet<OrchestrationCommand["type"]> = new Se
   "thread.realtime.state.set",
   "thread.settings-change.settle",
   "thread.settings-change.report-device",
+  // A linked computer confirmed the cancels the move's stop owed it (Part
+  // 3f, (g)): they drain from a frozen parent, never stranded on it.
+  "thread.remote-cancels.delivered",
   "thread.move.progress",
   "thread.move.cancel",
   "thread.move.abort",
@@ -482,13 +577,18 @@ const WORK_START_COMMANDS: ReadonlySet<OrchestrationCommand["type"]> = new Set([
   // An agent's new request of another (a hand-off, an ask, a review, an
   // invite) starts work; its open ones still settle (Part 3f, review change 4).
   "thread.agent-request.submit",
+  // So does a new thread, or a new message to one; answers already owed
+  // still come back (Part 3f, (g), review change 4).
+  "thread.child.start",
+  "thread.child.send",
 ]);
 
 /**
  * Whether `command`, on its own thread, starts work there. While a move
- * waits for its thread (`waiting`), a room agent's hand-off or reply already
- * queued is still sent: the room's chain drains, so the thread gets free
- * (docs/design/fleet.md, Part 3f, review change 4). Not from `quiescing` on.
+ * waits for its thread (`waiting`), a room agent's hand-off or reply, or the
+ * family's request or answer, already queued is still sent: what the thread
+ * has going drains, so it gets free (docs/design/fleet.md, Part 3f, review
+ * change 4). Not from `quiescing` on.
  */
 function startsWork(command: OrchestrationCommand, thread: OrchestrationThread): boolean {
   if (!WORK_START_COMMANDS.has(command.type)) return false;
@@ -510,7 +610,7 @@ function startsWork(command: OrchestrationCommand, thread: OrchestrationThread):
       return !(
         thread.pendingMove?.stage === "waiting" &&
         queued !== undefined &&
-        isRoomAgentQueued(queued)
+        drainsWhileMoveWaits(thread, queued)
       );
     }
     default:
@@ -519,9 +619,10 @@ function startsWork(command: OrchestrationCommand, thread: OrchestrationThread):
 }
 
 /**
- * Whether `command` is the turn a room's queued hand-off or reply starts as
- * it is sent while the move waits (docs/design/fleet.md, Part 3f, review
- * change 4): the turn for exactly that message, only at `waiting`.
+ * Whether `command` is the turn a room's queued hand-off or reply, or the
+ * family's request or answer, starts as it is sent while the move waits
+ * (docs/design/fleet.md, Part 3f, review change 4): the turn for exactly that
+ * message, only at `waiting`.
  */
 function drainsRoomChain(
   thread: OrchestrationThread,
@@ -534,7 +635,7 @@ function drainsRoomChain(
     command.message.messageId === drained.messageId &&
     thread.pendingMove?.stage === "waiting" &&
     (thread.move ?? null) === null &&
-    isRoomAgentQueued(drained)
+    drainsWhileMoveWaits(thread, drained)
   );
 }
 
@@ -621,7 +722,11 @@ export function decideMoveStart(
     if (pending !== null) {
       return refuse(`A move to ${pending.target.label} is already waiting. Cancel it first.`);
     }
-    const refusal = threadMoveRefusal(readModel, thread, takes);
+    // A move that doesn't wait never takes a family (Part 3f, (g)): an app
+    // that starts one expects the thread's children to come, so a thread with
+    // any is refused as before. Families move through the queue.
+    const { families: _families, ...alone } = takes ?? {};
+    const refusal = threadMoveRefusal(readModel, thread, alone);
     if (refusal !== null) return refuse(refusal);
   } else {
     if (pending === null || pending.requestId !== queuedRequestId) {
@@ -661,6 +766,9 @@ export function decideMoveStart(
       ...(interrupted !== undefined ? { interrupted } : {}),
       ...(takes !== undefined ? { targetTakes: takes } : {}),
       ...(command.roomAgents !== undefined ? { roomAgents: command.roomAgents } : {}),
+      ...(pending?.family !== undefined && queuedRequestId !== undefined
+        ? { family: pending.family }
+        : {}),
     },
   };
   const queueEnded: PlannedEvent[] =
@@ -812,7 +920,14 @@ export function decideMoveQueue(
       ? []
       : refuse(`A move to ${pending.target.label} is already waiting. Cancel it first.`);
   }
-  const refusals = threadMoveRefusals(readModel, thread, command.targetTakes);
+  // A family's member names its family; a child's must be its parent's (Part 3f, (g)).
+  if (
+    command.family?.parentThreadId !== undefined &&
+    command.family.parentThreadId !== thread.parentThreadId
+  ) {
+    return refuse("That thread didn't start this one.");
+  }
+  const refusals = threadMoveRefusals(readModel, thread, command.targetTakes, command.family);
   const block = firstMoveBlock(refusals);
   if (block !== null) return refuse(block.words);
   // A command runs in the user's own terminal tab, which the server doesn't
@@ -821,10 +936,13 @@ export function decideMoveQueue(
     return refuse(STOP_NOW_COMMAND_RUN_WORDS);
   }
   // What an earlier move that didn't happen still owes comes along, and what
-  // "Stop and move now" stops is recorded before it is gone.
+  // "Stop and move now" stops is recorded before it is gone: its waits on the
+  // threads it started end as Stop ends them (the caller plans that).
   const owed = thread.moveRestoreOwed ?? null;
   const interrupted =
-    command.mode === "stop-now" ? mergeInterrupted(thread, owed?.interrupted) : owed?.interrupted;
+    command.mode === "stop-now"
+      ? mergeInterrupted(thread, owed?.interrupted, thread.childRequests.open.length)
+      : owed?.interrupted;
   const queued: PlannedEvent = {
     ...baseFor(thread.id),
     type: "thread.move-queued",
@@ -844,6 +962,7 @@ export function decideMoveQueue(
         ...(interrupted !== undefined ? { interrupted } : {}),
         ...(command.targetTakes !== undefined ? { targetTakes: command.targetTakes } : {}),
         ...(command.roomAgents !== undefined ? { roomAgents: command.roomAgents } : {}),
+        ...(command.family !== undefined ? { family: command.family } : {}),
       },
     },
   };
@@ -872,7 +991,11 @@ export function decideMoveSetMode(
   if (refusals.some((entry) => entry.code === "command_run")) {
     return refuse(STOP_NOW_COMMAND_RUN_WORDS);
   }
-  const interrupted = mergeInterrupted(thread, pending.interrupted);
+  const interrupted = mergeInterrupted(
+    thread,
+    pending.interrupted,
+    thread.childRequests.open.length,
+  );
   const modeSet: PlannedEvent = {
     ...baseFor(thread.id),
     type: "thread.move-mode-set",
@@ -884,13 +1007,34 @@ export function decideMoveSetMode(
       updatedAt: command.createdAt,
     },
   };
-  return sessionStopped(thread) && liveSideTurns(thread).length === 0
+  return sessionStopped(thread) &&
+    liveSideTurns(thread).length === 0 &&
+    thread.childRequests.open.length === 0
     ? [modeSet]
     : [modeSet, ...sessionStopEvents(thread, command.createdAt, baseFor)];
 }
 
+/**
+ * A child whose own move ended here after its parent moved to another
+ * computer (docs/design/fleet.md, Part 3f, (g)): it stays as its own thread,
+ * and says why. Nothing for any other thread.
+ */
+function leftBehindAfterParent(
+  readModel: OrchestrationReadModel,
+  thread: OrchestrationThread,
+  at: string,
+  baseFor: EventBase,
+): ReadonlyArray<PlannedEvent> {
+  if (thread.parentThreadId === null || !thread.attachedToParent) return [];
+  const parent = readModel.threads.find((entry) => entry.id === thread.parentThreadId);
+  const move = parent?.move ?? null;
+  if (parent === undefined || move === null || move.movedAway === undefined) return [];
+  return leftBehindEvents(readModel, baseFor, parent, thread, move.target.label, at);
+}
+
 /** Cancel: the queued move `requestId` ends; a cancel for an older one changes nothing. */
 export function decideMoveUnqueue(
+  readModel: OrchestrationReadModel,
   thread: OrchestrationThread,
   command: CommandOf<"thread.move.unqueue">,
   baseFor: EventBase,
@@ -898,6 +1042,7 @@ export function decideMoveUnqueue(
   const pending = currentPendingMove(thread, command.requestId);
   if (pending === null) return [];
   return [
+    ...leftBehindAfterParent(readModel, thread, command.createdAt, baseFor),
     {
       ...baseFor(thread.id),
       type: "thread.move-queue-ended",
@@ -1002,12 +1147,17 @@ export function decideMoveQueueStatus(
  * says why ("Didn't move: …") until the user dismisses it.
  */
 export function decideMoveQueueEnd(
+  readModel: OrchestrationReadModel,
   thread: OrchestrationThread,
   command: CommandOf<"thread.move.queue-end">,
   baseFor: EventBase,
 ): ThreadMoveDecision {
   const pending = currentPendingMove(thread, command.requestId);
   if (pending === null) return [];
+  const leftBehind =
+    command.reason === "blocked"
+      ? leftBehindAfterParent(readModel, thread, command.createdAt, baseFor)
+      : [];
   const payload: ThreadMoveNotStartedPayload = {
     requestId: command.requestId,
     targetLabel: pending.target.label,
@@ -1046,6 +1196,7 @@ export function decideMoveQueueEnd(
     ...(command.reason === "blocked"
       ? restoreOwedEvents(thread, pending.target, pending.interrupted, command.createdAt, baseFor)
       : []),
+    ...leftBehind,
   ];
 }
 
@@ -1105,8 +1256,12 @@ export function decideMoveCancel(
   ];
 }
 
-/** The other computer confirmed the move was dropped: the thread unfreezes, and says why. */
+/**
+ * The other computer confirmed the move was dropped: the thread unfreezes, and
+ * says why. A child whose parent moved meanwhile stays as its own thread.
+ */
 export function decideMoveAbort(
+  readModel: OrchestrationReadModel,
   thread: OrchestrationThread,
   command: CommandOf<"thread.move.abort">,
   baseFor: EventBase,
@@ -1145,10 +1300,18 @@ export function decideMoveAbort(
       },
     },
     ...restoreOwedEvents(thread, move.target, move.interrupted, command.createdAt, baseFor),
+    ...leftBehindAfterParent(readModel, thread, command.createdAt, baseFor),
   ];
 }
 
+/**
+ * The other computer committed the move: the thread lives there now, and its
+ * copy here is read-only. Its children here that didn't come with it (not
+ * moving in its family, archived ones aside) become their own threads in the
+ * same decision (docs/design/fleet.md, Part 3f, (g)).
+ */
 export function decideMoveComplete(
+  readModel: OrchestrationReadModel,
   thread: OrchestrationThread,
   command: CommandOf<"thread.move.complete">,
   baseFor: EventBase,
@@ -1156,6 +1319,22 @@ export function decideMoveComplete(
   const move = currentMove(thread, command.transferId);
   if (move === null) return refuse("This thread isn't moving.");
   if (move.movedAway !== undefined) return [];
+  const familyId = move.family?.id;
+  const comesAlong = (child: OrchestrationThread) =>
+    familyId !== undefined &&
+    (child.pendingMove?.family?.id === familyId || child.move?.family?.id === familyId);
+  const leftBehind = readModel.threads
+    .filter(
+      (child) =>
+        child.parentThreadId === thread.id &&
+        child.attachedToParent &&
+        child.deletedAt === null &&
+        child.archivedAt === null &&
+        !comesAlong(child),
+    )
+    .flatMap((child) =>
+      leftBehindEvents(readModel, baseFor, thread, child, move.target.label, command.createdAt),
+    );
   return [
     {
       ...baseFor(thread.id),
@@ -1168,6 +1347,7 @@ export function decideMoveComplete(
       },
     },
     ...readOnlyCopyEvents(thread, command.createdAt, baseFor),
+    ...leftBehind,
   ];
 }
 
@@ -1238,6 +1418,26 @@ export function decideThreadImport(
   }
   const roomRefusal = importedRoomRefusal(command);
   if (roomRefusal !== null) return refuse(roomRefusal);
+  const familyRefusal = importedFamilyRefusal(readModel, command);
+  if (familyRefusal !== null) return refuse(familyRefusal);
+  // Every id it brings is its own: one another thread here already has would
+  // move that thread's message into this one (the projection keys messages
+  // by id alone).
+  const incoming = new Set<string>([
+    ...command.messages.map((message) => message.messageId),
+    ...(command.queuedFollowUps ?? []).map((entry) => entry.messageId),
+    ...(command.arrival?.message !== undefined ? [command.arrival.message.messageId] : []),
+  ]);
+  if (
+    readModel.threads.some(
+      (thread) =>
+        thread.id !== command.threadId &&
+        thread.messages.some((message) => incoming.has(message.id)),
+    )
+  ) {
+    return refuse("A message it brings is already another thread's here.");
+  }
+  const lineage = command.lineage;
   const base = () => baseFor(command.threadId);
   const created: PlannedEvent = {
     ...base(),
@@ -1251,6 +1451,17 @@ export function decideThreadImport(
       interactionMode: command.interactionMode,
       branch: command.branch,
       worktreePath: command.worktreePath,
+      // A child that came with its parent (Part 3f, (g)): in its family here,
+      // its answers owed nothing yet (a fresh attachment epoch).
+      ...(lineage !== undefined
+        ? {
+            parentThreadId: lineage.parentThreadId,
+            ...(lineage.parentTurnId !== null ? { parentTurnId: lineage.parentTurnId } : {}),
+            attachedToParent: true,
+          }
+        : {}),
+      // A family member in another member's folder: never its owner here.
+      ...(command.worktreeOrigin !== undefined ? { worktreeOrigin: command.worktreeOrigin } : {}),
       // It came from another computer: fenced until the user here sends it a message.
       movedFrom: { ...command.movedFrom, fenced: true },
       historySeedOwed: true,
@@ -1312,6 +1523,8 @@ export function decideThreadImport(
       ...(message.requestKind !== undefined ? { requestKind: message.requestKind } : {}),
       ...(message.requestOutcome !== undefined ? { requestOutcome: message.requestOutcome } : {}),
       ...(message.requestError !== undefined ? { requestError: message.requestError } : {}),
+      // A family's request or answer between threads that moved together.
+      ...(message.fromThread !== undefined ? { fromThread: message.fromThread } : {}),
       createdAt: message.createdAt,
       updatedAt: message.createdAt,
     },
@@ -1383,6 +1596,52 @@ function importedRoomRefusal(command: CommandOf<"thread.import">): string | null
   }
   for (const entry of command.outsideWork ?? []) {
     if (!known(entry.participantId)) return "An outside mark names an agent that didn't come.";
+  }
+  return null;
+}
+
+/**
+ * Why a moved family member can't be written as it is, or null (docs/design/
+ * fleet.md, Part 3f, (g)). A child lands under its parent only when that
+ * parent is here, came in the same family (the key this computer derived from
+ * the link both came over), is in the same project, isn't a child itself, and
+ * isn't moving on again: a linked computer can never put a thread under one
+ * of this computer's own. A guest marker names a member of the same family.
+ */
+function importedFamilyRefusal(
+  readModel: OrchestrationReadModel,
+  command: CommandOf<"thread.import">,
+): string | null {
+  const familyKey = command.movedFrom.familyKey;
+  const lineage = command.lineage;
+  if (lineage !== undefined) {
+    const parent = readModel.threads.find((entry) => entry.id === lineage.parentThreadId);
+    if (familyKey === undefined) return "A thread can only land under a parent that moved with it.";
+    if (parent === undefined || parent.deletedAt !== null) {
+      return "The thread that started it isn't here.";
+    }
+    if ((parent.movedFrom ?? null)?.familyKey !== familyKey) {
+      return "The thread that started it didn't move with it.";
+    }
+    if (parent.projectId !== command.projectId) {
+      return "The thread that started it is in another project.";
+    }
+    if (parent.parentThreadId !== null && parent.attachedToParent) {
+      return "The thread that started it is itself another thread's.";
+    }
+    if ((parent.move ?? null) !== null || (parent.pendingMove ?? null) !== null) {
+      return "The thread that started it is moving again.";
+    }
+  }
+  const origin = command.worktreeOrigin;
+  if (origin !== undefined) {
+    if (familyKey === undefined || origin.kind !== "thread") {
+      return "Only a thread that moved with its family can work in another's folder.";
+    }
+    const owner = readModel.threads.find((entry) => entry.id === origin.threadId);
+    if (owner !== undefined && (owner.movedFrom ?? null)?.familyKey !== familyKey) {
+      return "The folder it works in isn't its family's.";
+    }
   }
   return null;
 }

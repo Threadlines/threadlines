@@ -15,6 +15,7 @@ import {
   ChildRequestId,
   ThreadMoveId,
   ThreadMoveBatchId,
+  ThreadMoveFamilyId,
   ThreadMoveRequestId,
   CommandId,
   CommandRequestId,
@@ -877,8 +878,28 @@ export const ThreadMoveTakes = Schema.Struct({
    * (OrchestrationOutsideWork), so an agent limited here is limited there.
    */
   outsideWork: Schema.optional(Schema.Literal(true)),
+  /**
+   * A thread that started threads (docs/design/fleet.md, Part 3f, (g)): it
+   * moves with the children picked to come, lands before them, and the rest
+   * stay here as their own threads.
+   */
+  families: Schema.optional(Schema.Literal(true)),
 });
 export type ThreadMoveTakes = typeof ThreadMoveTakes.Type;
+
+/**
+ * A parent and the children that move with it (docs/design/fleet.md, Part
+ * 3f, (g)), as each member's move records it: the family's id, and on a
+ * child, its parent. A child's move is only ever queued while its parent
+ * holds a move with the same id, and the other computer lands the parent
+ * first. Absent on a move: it moves on its own.
+ */
+export const ThreadMoveFamily = Schema.Struct({
+  id: ThreadMoveFamilyId,
+  /** A child's: the parent it moves with. Absent: the parent. */
+  parentThreadId: Schema.optional(ThreadId),
+});
+export type ThreadMoveFamily = typeof ThreadMoveFamily.Type;
 
 /**
  * Which of the other computer's agents a room agent moves as
@@ -903,6 +924,12 @@ export type ThreadMoveRoomAgentChoice = typeof ThreadMoveRoomAgentChoice.Type;
 export const ThreadMoveInterrupted = Schema.Struct({
   goalActive: Schema.optional(Schema.Literal(true)),
   checkBacks: Schema.optional(Schema.Array(OrchestrationCheckBack)),
+  /**
+   * "Stop and move now" ended the thread's waiting on this many threads it
+   * started, as Stop does (docs/design/fleet.md, Part 3f, (g)): the "Moved
+   * here" line says so. Absent: none.
+   */
+  childRequestsStopped: Schema.optional(PositiveInt),
 });
 export type ThreadMoveInterrupted = typeof ThreadMoveInterrupted.Type;
 
@@ -968,6 +995,8 @@ export const OrchestrationThreadMove = Schema.Struct({
   targetTakes: Schema.optional(ThreadMoveTakes),
   /** A room: the agent each of its agents moves as (ThreadMoveRoomAgentChoice). */
   roomAgents: Schema.optional(Schema.Array(ThreadMoveRoomAgentChoice)),
+  /** The family it moves with (ThreadMoveFamily). Absent: on its own. */
+  family: Schema.optional(ThreadMoveFamily),
   /** The other computer took it: the thread there. */
   movedAway: Schema.optional(
     Schema.Struct({
@@ -1072,6 +1101,8 @@ export const ThreadPendingMove = Schema.Struct({
   targetTakes: Schema.optional(ThreadMoveTakes),
   /** A room: the agent each of its agents moves as (ThreadMoveRoomAgentChoice). */
   roomAgents: Schema.optional(Schema.Array(ThreadMoveRoomAgentChoice)),
+  /** The family it moves with (ThreadMoveFamily). Absent: on its own. */
+  family: Schema.optional(ThreadMoveFamily),
 });
 export type ThreadPendingMove = typeof ThreadPendingMove.Type;
 
@@ -1145,6 +1176,13 @@ export const ThreadMovedFrom = Schema.Struct({
    * session saw (OrchestrationThreadParticipant.movedSeenThrough). Absent: none known.
    */
   seenThrough: Schema.optional(MessageId),
+  /**
+   * It moved with its family (docs/design/fleet.md, Part 3f, (g)): the
+   * family as this computer names it, from the link it came over. A child
+   * that arrives later is put under its parent only when both carry the same
+   * key. Absent: it moved on its own.
+   */
+  familyKey: Schema.optional(TrimmedNonEmptyString),
   /**
    * The pull request switches that were on there. They arrive off: a switch
    * acts with this computer's GitHub sign-in, so only this computer's user
@@ -5292,6 +5330,20 @@ const ThreadMoveQueueCommand = Schema.Struct({
   targetTakes: Schema.optional(ThreadMoveTakes),
   /** A room: the agent each of its agents moves as; one not listed takes the suggestion. */
   roomAgents: Schema.optional(Schema.Array(ThreadMoveRoomAgentChoice)),
+  /**
+   * The family it moves with (ThreadMoveFamily). A child's is refused unless
+   * its parent holds a move of the same family.
+   */
+  family: Schema.optional(ThreadMoveFamily),
+  /**
+   * A parent's children that move with it, queued in the same decision as it
+   * (each with the target's suggested agent, and the parent's mode and
+   * target), so the family's members are all known before any of them packs.
+   * One a child's own checks refuse is left out and stays here. Needs `family`.
+   */
+  children: Schema.optional(
+    Schema.Array(Schema.Struct({ threadId: ThreadId, requestId: ThreadMoveRequestId })),
+  ),
   createdAt: IsoDateTime,
 });
 
@@ -5458,6 +5510,18 @@ export const ThreadImportMessage = Schema.Struct({
   requestKind: Schema.optional(RoomAgentMessageKind),
   requestOutcome: Schema.optional(RoomAgentRequestOutcome),
   requestError: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * A family's (docs/design/fleet.md, Part 3f, (g)): a request or report
+   * between threads that move together, with the receiving computer's ids.
+   * One naming a thread outside the family arrives as a plain message.
+   */
+  fromThread: Schema.optional(
+    Schema.Struct({
+      threadId: ThreadId,
+      requestId: ChildRequestId,
+      kind: Schema.Literals(["request", "report"]),
+    }),
+  ),
   createdAt: IsoDateTime,
 });
 export type ThreadImportMessage = typeof ThreadImportMessage.Type;
@@ -5514,6 +5578,25 @@ const ThreadImportCommand = Schema.Struct({
    * this computer's agent ids: they stay limited here until they start fresh.
    */
   outsideWork: Schema.optional(Schema.Array(OrchestrationOutsideWork)),
+  /**
+   * A child that moved with its parent (docs/design/fleet.md, Part 3f, (g)):
+   * it lands as that parent's child here. The parent must be here already,
+   * a thread that moved in the same family (`movedFrom.familyKey`), in the
+   * same project, and not a child itself; so a linked computer can never put
+   * a thread under one of this computer's own.
+   */
+  lineage: Schema.optional(
+    Schema.Struct({
+      parentThreadId: ThreadId,
+      parentTurnId: Schema.NullOr(TurnId),
+    }),
+  ),
+  /**
+   * It works in another family member's folder here (ThreadWorktreeOrigin
+   * `thread`), so it never restores the whole folder; derived here from the
+   * family, never from a path the other computer named.
+   */
+  worktreeOrigin: Schema.optional(ThreadWorktreeOrigin),
   /**
    * What the "Moved here" line says came along (`brought`) and didn't
    * (`left`), in plain words, and the message Threadlines writes for the
@@ -6111,6 +6194,8 @@ export const ThreadMoveStartedPayload = Schema.Struct({
   targetTakes: Schema.optional(ThreadMoveTakes),
   /** See OrchestrationThreadMove.roomAgents. */
   roomAgents: Schema.optional(Schema.Array(ThreadMoveRoomAgentChoice)),
+  /** See OrchestrationThreadMove.family. */
+  family: Schema.optional(ThreadMoveFamily),
 });
 
 export const ThreadMoveQueuedPayload = Schema.Struct({

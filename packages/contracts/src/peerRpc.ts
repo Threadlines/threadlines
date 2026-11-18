@@ -11,9 +11,11 @@ import {
   OutsideAgentConnectionId,
   PositiveInt,
   ThreadId,
+  ThreadMoveFamilyId,
   ThreadMoveId,
   ThreadParticipantId,
   TrimmedNonEmptyString,
+  TurnId,
 } from "./baseSchemas.ts";
 import { ComputerLinkAccess } from "./links.ts";
 import { OutsideAgentConnectionKind } from "./outsideAgents.ts";
@@ -266,6 +268,14 @@ export const PeerDescriptor = Schema.Struct({
    * them, so a thread with any is never sent to it.
    */
   moveOutsideWork: Schema.optional(Schema.Boolean),
+  /**
+   * Takes a thread that started threads, and its children with it
+   * (docs/design/fleet.md, Part 3f, (g)): PeerMoveManifest's `family`, the
+   * parent landed first, children under it, members sharing one folder.
+   * Absent: an older server, which would land each as its own thread, so a
+   * family is never sent to it.
+   */
+  moveFamilies: Schema.optional(Schema.Boolean),
   /**
    * Says how the caller's threads here are filed (`filing` on `thread` watch
    * events) and takes `peer.thread.wrap`. Absent: an older server that can't.
@@ -690,6 +700,34 @@ const PeerMoveThread = Schema.Struct({
   outsideWork: Schema.optional(Schema.Array(OrchestrationOutsideWork)),
 });
 
+/** At most this many threads a moved family's manifest names as staying behind. */
+export const PEER_MOVE_FAMILY_MAX_STAYED = 100;
+
+/**
+ * A thread that moves with its family (docs/design/fleet.md, Part 3f, (g)),
+ * with the sending computer's ids. Only to a computer that says
+ * `moveFamilies`. The receiving computer names every id from its own link and
+ * `id`, never from these alone: `parentThreadId` lands the thread under the
+ * parent that came in the same family, `sharesCheckoutOf` puts it in the
+ * folder that member's move makes (it carries no files of its own). On a
+ * parent: the children that stayed on the sending computer, the ones its
+ * agent started on other computers (they stay there), and how many of its
+ * waits "Stop and move now" ended.
+ */
+export const PeerMoveFamily = Schema.Struct({
+  id: ThreadMoveFamilyId,
+  parentThreadId: Schema.optional(ThreadId),
+  /** The parent's turn that started it there. */
+  parentTurnId: Schema.optional(TurnId),
+  sharesCheckoutOf: Schema.optional(ThreadId),
+  stayed: Schema.optional(Schema.Array(Schema.Struct({ title: TrimmedNonEmptyString }))),
+  remoteStayed: Schema.optional(
+    Schema.Array(Schema.Struct({ label: TrimmedNonEmptyString, title: TrimmedNonEmptyString })),
+  ),
+  childRequestsStopped: Schema.optional(PositiveInt),
+});
+export type PeerMoveFamily = typeof PeerMoveFamily.Type;
+
 /**
  * A General Chats thread moving here (docs/design/fleet.md, Part 3e, (d)):
  * no project to match and no git; its folder's files are the `file` parts,
@@ -711,6 +749,8 @@ export const PeerMoveScratchManifest = Schema.Struct({
   }),
   session: Schema.optional(PeerMoveSession),
   sessionOmitted: Schema.optional(Schema.Literal("too_large")),
+  /** It moves with its family: see PeerMoveFamily. */
+  family: Schema.optional(PeerMoveFamily),
 });
 export type PeerMoveScratchManifest = typeof PeerMoveScratchManifest.Type;
 
@@ -755,6 +795,11 @@ export const PeerMoveGitManifest = Schema.Struct({
   session: Schema.optional(PeerMoveSession),
   /** Why no session came although one could have: it was too large to send. */
   sessionOmitted: Schema.optional(Schema.Literal("too_large")),
+  /**
+   * It moves with its family: see PeerMoveFamily. With `sharesCheckoutOf` it
+   * has no bundle, diff or files, and `git` says where that folder stands.
+   */
+  family: Schema.optional(PeerMoveFamily),
 });
 export type PeerMoveGitManifest = typeof PeerMoveGitManifest.Type;
 

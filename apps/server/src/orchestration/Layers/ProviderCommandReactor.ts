@@ -161,7 +161,7 @@ import { isCancelledReport } from "../childThreadDecisions.ts";
 import { NO_BACKGROUND_TASKS } from "../sessionBackgroundTasks.ts";
 import { isRestorePaid } from "../threadMoveDecisions.ts";
 import { isLinkFenced } from "../linkFence.ts";
-import { isRoomAgentQueued } from "../threadMoveCarry.ts";
+import { drainsWhileMoveWaits } from "../threadMoveCarry.ts";
 import { SideAnswerStartError } from "../Errors.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderAdapterValidationError = Schema.is(ProviderAdapterValidationError);
@@ -497,15 +497,16 @@ const owesMovedConversation = (
 
 /**
  * What a thread's queue still sends while its move waits (docs/design/
- * fleet.md, Part 3f, review change 4): a room agent's hand-off or reply, so
- * the room's chain drains and the thread gets free; the user's own messages
- * wait to go with it. Nothing from `quiescing` on, nor once it moves.
+ * fleet.md, Part 3f, review change 4): a room agent's hand-off or reply, and
+ * its family's requests and answers (drainsWhileMoveWaits), so what it has
+ * going drains and the thread gets free; the user's own messages wait to go
+ * with it. Nothing from `quiescing` on, nor once it moves.
  */
-const roomDrainHead = (
-  thread: Pick<OrchestrationThread, "pendingMove" | "move" | "queuedFollowUps">,
+const moveDrainHead = (
+  thread: Pick<OrchestrationThread, "pendingMove" | "move" | "queuedFollowUps" | "parentThreadId">,
 ): OrchestrationQueuedFollowUp | undefined =>
   (thread.move ?? null) === null && thread.pendingMove?.stage === "waiting"
-    ? (thread.queuedFollowUps ?? []).find(isRoomAgentQueued)
+    ? (thread.queuedFollowUps ?? []).find((entry) => drainsWhileMoveWaits(thread, entry))
     : undefined;
 
 const decodeFellBackPayload = Schema.decodeUnknownOption(ThreadNativeSessionFellBackPayload);
@@ -5856,7 +5857,7 @@ const make = Effect.gen(function* () {
     // While a move waits or runs the queue waits too, or the thread never
     // gets free; a room agent's hand-off or reply drains while it waits.
     const waitsForMove = queueWaitsForMove(thread);
-    if (waitsForMove && roomDrainHead(thread)?.messageId !== event.payload.followUp.messageId) {
+    if (waitsForMove && moveDrainHead(thread)?.messageId !== event.payload.followUp.messageId) {
       return;
     }
     if (status === "running" || status === "starting") {
@@ -6060,9 +6061,9 @@ const make = Effect.gen(function* () {
     }
     const thread = yield* resolveThread(threadId);
     // A turn that ended while a move waits is what the move waited for; only
-    // a room agent's hand-off or reply still goes (roomDrainHead).
+    // a room agent's hand-off or reply, or the family's traffic, still goes (moveDrainHead).
     const waitsForMove = thread !== undefined && queueWaitsForMove(thread);
-    if (waitsForMove && roomDrainHead(thread) === undefined) {
+    if (waitsForMove && moveDrainHead(thread) === undefined) {
       return;
     }
     if (turnFinished && thread !== undefined && !waitsForMove) {
@@ -6070,7 +6071,7 @@ const make = Effect.gen(function* () {
     }
     const next = thread
       ? waitsForMove
-        ? roomDrainHead(thread)
+        ? moveDrainHead(thread)
         : nextQueuedFollowUp(thread)
       : undefined;
     if (!thread || !next) {

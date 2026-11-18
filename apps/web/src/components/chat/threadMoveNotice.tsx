@@ -72,9 +72,11 @@ export function buildThreadMoveNotice(input: {
   readonly sent?: boolean;
   /** The link to the other computer is gone or can't reach it (isThreadMoveStalled). */
   readonly stalled: boolean;
+  /** A child moving with its parent: the parent's title while it hasn't moved yet. */
+  readonly withParent?: string | null;
   readonly actions: ThreadMoveNoticeActions;
 }): ComposerNotice {
-  const { move, stalled, actions, sent = false } = input;
+  const { move, stalled, actions, sent = false, withParent = null } = input;
   const label = move.target.label;
   if (move.movedAway) {
     return {
@@ -109,7 +111,7 @@ export function buildThreadMoveNotice(input: {
   return {
     id: `thread-moving:${move.transferId}`,
     severity: "info",
-    lead: describeThreadMoveProgress(move, { sent }),
+    lead: describeThreadMoveProgress(move, { sent, withParent }),
     ...(move.cancelRequested
       ? {}
       : {
@@ -169,6 +171,15 @@ export function useThreadMoveNotice(input: {
         ] !== undefined,
   );
   const canOpen = movedThreadRef !== null && targetConnected && appHasMovedThread;
+  // A child moving with its parent (Part 3f, (g)) lands after it: until the
+  // parent has moved, its notice names the parent.
+  const familyParentId = move?.family?.parentThreadId ?? null;
+  const withParent = useStore((state) => {
+    if (familyParentId === null || thread === undefined) return null;
+    const parent =
+      state.environmentStateById[thread.environmentId]?.sidebarThreadSummaryById[familyParentId];
+    return parent === undefined || parent.moveStatus === "moved" ? null : parent.title;
+  });
 
   const onCancel = useCallback(() => {
     if (!thread) return;
@@ -210,6 +221,7 @@ export function useThreadMoveNotice(input: {
             move,
             stalled,
             sent,
+            withParent,
             actions: {
               onCancel,
               cancelling,
@@ -217,7 +229,7 @@ export function useThreadMoveNotice(input: {
               onContinueHere,
             },
           }),
-    [canOpen, cancelling, move, onCancel, onContinueHere, onOpen, sent, stalled],
+    [canOpen, cancelling, move, onCancel, onContinueHere, onOpen, sent, stalled, withParent],
   );
 }
 

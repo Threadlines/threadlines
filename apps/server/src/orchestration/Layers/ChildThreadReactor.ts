@@ -29,6 +29,7 @@ import {
   childReportMessageId,
   clampLaunchToCeiling,
 } from "../childThreadDecisions.ts";
+import { familyWorkStopped } from "../threadMoveCarry.ts";
 import {
   childDeliveryAfterRestart,
   childDeliveryForQuietCandidate,
@@ -100,6 +101,12 @@ export const makeChildThreadReactor = Effect.gen(function* () {
       ),
     );
 
+  /**
+   * Settles a parent's request, unless the parent's move stopped what acts
+   * for its family (familyWorkStopped): a frozen parent would refuse it, and
+   * an answer refused there is lost. Its move waited for, or ended, every
+   * request it had.
+   */
   const settle = (
     parent: OrchestrationThread,
     request: OrchestrationChildRequest,
@@ -111,6 +118,7 @@ export const makeChildThreadReactor = Effect.gen(function* () {
     },
   ) =>
     Effect.gen(function* () {
+      if (familyWorkStopped(parent)) return;
       yield* dispatch(
         {
           type: "thread.child-request.settle",
@@ -187,11 +195,13 @@ export const makeChildThreadReactor = Effect.gen(function* () {
         const parent = yield* readThread(parentId);
         const request = parent?.childRequests.open.find((entry) => entry.requestId === requestId);
         // A child on a linked computer is set up there (RemoteChildReactor).
+        // A parent whose move stopped its agent starts nothing.
         if (
           parent === undefined ||
           request === undefined ||
           request.status !== "starting" ||
-          request.remote !== undefined
+          request.remote !== undefined ||
+          familyWorkStopped(parent)
         ) {
           return;
         }
@@ -320,7 +330,7 @@ export const makeChildThreadReactor = Effect.gen(function* () {
       if (parent === undefined || child === undefined || request === undefined) {
         return;
       }
-      if (!isQuietCandidate(child, request)) {
+      if (!isQuietCandidate(child, request) || familyWorkStopped(parent)) {
         return;
       }
       const delivery = childDeliveryForQuietCandidate(child, request);
@@ -404,7 +414,8 @@ export const makeChildThreadReactor = Effect.gen(function* () {
     for (const summary of shell?.threads ?? []) {
       if (summary.awaitedChildThreadCount === 0 && !summary.pendingChildApproval) continue;
       const parent = yield* readThread(summary.id);
-      if (parent === undefined) continue;
+      // A parent whose move stopped its agent is left as it is (familyWorkStopped).
+      if (parent === undefined || familyWorkStopped(parent)) continue;
       for (const request of parent.childRequests.open) {
         if (request.status === "awaiting_user") {
           if (mode === "off") {
@@ -482,6 +493,7 @@ export const makeChildThreadReactor = Effect.gen(function* () {
       const report = queued.find((entry) => entry.fromThread?.kind === "report");
       const status = summary.session?.status;
       return report === undefined ||
+        familyWorkStopped(summary) ||
         queued.some((entry) => !isAgentOrigin(entry)) ||
         status === "running" ||
         status === "starting"

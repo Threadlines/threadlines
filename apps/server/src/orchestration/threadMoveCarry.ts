@@ -28,12 +28,18 @@ import { linkedPullRequestArmed } from "@threadlines/shared/linkedPullRequests";
 import { pullRequestSwitchesWords } from "@threadlines/shared/threadMoveProjection";
 import { isRoomThread } from "@threadlines/shared/threadParticipants";
 
-/** What a move view needs of a project to tell a General Chats thread. */
+/**
+ * What a move view needs of a project to tell a General Chats thread, and
+ * (when it has them) of other threads to tell a parent.
+ */
 export interface ThreadMoveCarryView {
   readonly projects: ReadonlyArray<{
     readonly id: OrchestrationThread["projectId"];
     readonly kind?: string | undefined;
   }>;
+  readonly threads?: ReadonlyArray<
+    Pick<OrchestrationThread, "id" | "parentThreadId" | "attachedToParent" | "deletedAt">
+  >;
 }
 
 export interface ThreadMoveCarry {
@@ -65,12 +71,18 @@ export interface ThreadMoveCarry {
   readonly room: boolean;
   /** Its agents outside work still limits (OrchestrationOutsideWork). */
   readonly outsideWork: ReadonlyArray<OrchestrationOutsideWork>;
+  /**
+   * (g) It started threads (here, or on other computers, or waits on some),
+   * or another thread started it: it moves as part of a family.
+   */
+  readonly family: boolean;
   /** What the other computer must take for this thread to move there. */
   readonly needs: {
     readonly threadState: boolean;
     readonly generalChats: boolean;
     readonly rooms: boolean;
     readonly outsideWork: boolean;
+    readonly families: boolean;
   };
 }
 
@@ -80,7 +92,47 @@ export const ALL_MOVE_TAKES: ThreadMoveTakes = {
   generalChats: true,
   rooms: true,
   outsideWork: true,
+  families: true,
 };
+
+/**
+ * A message from the thread's own family (docs/design/fleet.md, Part 3f,
+ * (g)): a child's answer queued in its parent, here or from another
+ * computer, or its parent's request queued in a child. A lead chat's pass
+ * isn't one: the lead never moves.
+ */
+export const isFamilyQueued = (
+  thread: Pick<OrchestrationThread, "parentThreadId">,
+  entry: OrchestrationQueuedFollowUp,
+) => {
+  const origin = entry.fromThread;
+  return (
+    origin !== undefined &&
+    origin.ceiling === undefined &&
+    (origin.kind === "report" ||
+      (origin.environmentId === undefined && origin.threadId === thread.parentThreadId))
+  );
+};
+
+/**
+ * Whether what acts for a thread's family stops for it (docs/design/fleet.md,
+ * Part 3f, rule 5 and review change 4): from the move's stop on (`quiescing`)
+ * and while it is frozen or moved away. A move still waiting (`waiting`)
+ * lets the answers it waits for keep settling.
+ */
+export const familyWorkStopped = (thread: Pick<OrchestrationThread, "pendingMove" | "move">) =>
+  (thread.move ?? null) !== null || thread.pendingMove?.stage === "quiescing";
+
+/**
+ * What a thread's queue still sends while its move waits (docs/design/
+ * fleet.md, Part 3f, review change 4): a room agent's hand-off or reply, and
+ * its family's requests and answers, so what the thread already has going
+ * finishes and it gets free. The user's own messages wait to go with it.
+ */
+export const drainsWhileMoveWaits = (
+  thread: Pick<OrchestrationThread, "parentThreadId">,
+  entry: OrchestrationQueuedFollowUp,
+) => isRoomAgentQueued(entry) || isFamilyQueued(thread, entry);
 
 /** A message a room agent queued for another (a hand-off or a reply): the room's chain drains it. */
 export const isRoomAgentQueued = (entry: OrchestrationQueuedFollowUp) =>
@@ -117,10 +169,15 @@ export function waitingPlanOf(
   );
 }
 
-/** What a move's stop took, merged with what the thread holds now (it is only ever added to). */
+/**
+ * What a move's stop took, merged with what the thread holds now (it is only
+ * ever added to). `childRequestsStopped`: the waits on its children this stop
+ * ends (Part 3f, (g)), added to the ones earlier stops ended.
+ */
 export function mergeInterrupted(
   thread: Pick<OrchestrationThread, "goal" | "checkBacks">,
   earlier: ThreadMoveInterrupted | null | undefined,
+  childRequestsStopped = 0,
 ): ThreadMoveInterrupted | undefined {
   const goalActive = earlier?.goalActive === true || thread.goal?.status === "active";
   const byId = new Map<string, OrchestrationCheckBack>();
@@ -129,10 +186,12 @@ export function mergeInterrupted(
   const checkBacks = [...byId.values()].toSorted((left, right) =>
     left.scheduledFor.localeCompare(right.scheduledFor),
   );
-  if (!goalActive && checkBacks.length === 0) return undefined;
+  const stopped = (earlier?.childRequestsStopped ?? 0) + childRequestsStopped;
+  if (!goalActive && checkBacks.length === 0 && stopped === 0) return undefined;
   return {
     ...(goalActive ? { goalActive: true as const } : {}),
     ...(checkBacks.length > 0 ? { checkBacks } : {}),
+    ...(stopped > 0 ? { childRequestsStopped: stopped } : {}),
   };
 }
 
@@ -143,7 +202,11 @@ export function sameInterrupted(
 ): boolean {
   const ids = (value: ThreadMoveInterrupted | null | undefined) =>
     (value?.checkBacks ?? []).map((checkBack) => checkBack.id).join("\0");
-  return (left?.goalActive === true) === (right?.goalActive === true) && ids(left) === ids(right);
+  return (
+    (left?.goalActive === true) === (right?.goalActive === true) &&
+    ids(left) === ids(right) &&
+    (left?.childRequestsStopped ?? 0) === (right?.childRequestsStopped ?? 0)
+  );
 }
 
 /** What the thread's move under way or waiting recorded its stop took. */
@@ -179,6 +242,16 @@ export function threadMoveCarry(
   const planWaiting = waitingPlanOf(thread) !== null;
   const room = isRoomThread(thread) || thread.agentRequests.open.length > 0;
   const outsideWork = thread.outsideWork ?? [];
+  const family =
+    (thread.parentThreadId !== null && thread.attachedToParent) ||
+    (thread.childRequests.remoteChildren ?? []).length > 0 ||
+    thread.childRequests.open.length > 0 ||
+    (view.threads ?? []).some(
+      (candidate) =>
+        candidate.parentThreadId === thread.id &&
+        candidate.attachedToParent &&
+        candidate.deletedAt === null,
+    );
   return {
     goal,
     goalWorking: interrupted?.goalActive === true,
@@ -192,7 +265,9 @@ export function threadMoveCarry(
     planWaiting,
     room,
     outsideWork,
+    family,
     needs: {
+      families: family,
       threadState:
         (goal !== null && goal.status !== "complete") ||
         checkBacks.length > 0 ||
@@ -217,6 +292,7 @@ export function carryNotTaken(
 ): string | null {
   if (carry.needs.generalChats && takes?.generalChats !== true) return "it's a general chat";
   if (carry.needs.rooms && takes?.rooms !== true) return "it has more than one agent";
+  if (carry.needs.families && takes?.families !== true) return "it started other threads";
   if (carry.needs.outsideWork && takes?.outsideWork !== true) {
     return "an outside assistant's work limits its agent here";
   }

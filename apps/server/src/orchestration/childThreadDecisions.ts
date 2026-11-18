@@ -1377,6 +1377,56 @@ export function decideParentAttachmentSet(
   ];
 }
 
+/** Activity on a child whose parent moved to another computer without it. */
+export const ParentMovedAwayActivityKind = "thread.parent-moved-away";
+
+/**
+ * A child that stays on this computer when its parent moves to another one
+ * (docs/design/fleet.md, Part 3f, (g)): it becomes its own thread, as a
+ * separation makes it, and its timeline says why ("Its parent thread moved
+ * to Windows PC, so this is its own thread now."). The parent can't reach it
+ * from there.
+ */
+export function leftBehindEvents(
+  readModel: OrchestrationReadModel,
+  baseFor: ChildEventBase,
+  parent: OrchestrationThread,
+  child: OrchestrationThread,
+  targetLabel: string,
+  at: string,
+): ReadonlyArray<PlannedEvent> {
+  const words = `Its parent thread moved to ${targetLabel}, so this is its own thread now.`;
+  return [
+    {
+      ...baseFor(child.id),
+      type: "thread.parent-attachment-set",
+      payload: {
+        threadId: child.id,
+        attached: false,
+        attachmentEpoch: child.parentAttachmentEpoch + 1,
+        at,
+      },
+    },
+    ...separationEvents(readModel, baseFor, parent, child, at),
+    {
+      ...baseFor(child.id),
+      type: "thread.activity-appended",
+      payload: {
+        threadId: child.id,
+        activity: {
+          id: EventId.make(`parent-moved-away:${child.id}:${child.parentAttachmentEpoch + 1}`),
+          tone: "info",
+          kind: ParentMovedAwayActivityKind,
+          summary: words,
+          payload: { parentThreadId: parent.id, targetLabel },
+          turnId: null,
+          createdAt: at,
+        },
+      },
+    },
+  ];
+}
+
 /** What the parent loses when `child` leaves its family. */
 function separationEvents(
   readModel: OrchestrationReadModel,

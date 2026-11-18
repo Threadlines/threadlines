@@ -20,6 +20,7 @@ import type {
   OrchestrationOutsideWork,
   OrchestrationThread,
   OrchestrationThreadActivity,
+  PeerMoveFamily,
   PeerMoveGitManifest,
   PeerMoveManifest,
   PeerMovePart,
@@ -292,7 +293,14 @@ interface PendingPart {
  */
 export function exportThreadHistory(
   thread: OrchestrationThread,
-  options: { readonly room?: boolean } = {},
+  options: {
+    readonly room?: boolean;
+    /**
+     * A family's members (Part 3f, (g)): a request or report between them
+     * keeps where it came from; one naming any other thread goes plain.
+     */
+    readonly familyThreadIds?: ReadonlySet<string> | undefined;
+  } = {},
 ): {
   readonly messages: ReadonlyArray<ThreadImportMessage>;
   readonly activities: ReadonlyArray<OrchestrationThreadActivity>;
@@ -324,6 +332,7 @@ export function exportThreadHistory(
       ...(message.trigger !== undefined ? { trigger: message.trigger } : {}),
       ...(message.notSent === true || queuedIds.has(message.id) ? { notSent: true as const } : {}),
       ...(options.room === true ? roomFieldsOf(message) : {}),
+      ...familyFieldsOf(message, options.familyThreadIds),
       createdAt: message.createdAt,
     }));
   const activities = thread.activities
@@ -342,6 +351,30 @@ export function exportThreadHistory(
       } satisfies OrchestrationThreadActivity;
     });
   return { messages, activities };
+}
+
+/**
+ * Where a family's message came from (a request or report between members),
+ * as the move carries it: only between threads that move together on this
+ * computer, never a lead chat's pass or a thread on another computer.
+ */
+function familyFieldsOf(
+  message: OrchestrationThread["messages"][number],
+  familyThreadIds: ReadonlySet<string> | undefined,
+) {
+  const origin = message.fromThread;
+  if (
+    familyThreadIds === undefined ||
+    origin === undefined ||
+    origin.environmentId !== undefined ||
+    origin.ceiling !== undefined ||
+    !familyThreadIds.has(origin.threadId)
+  ) {
+    return {};
+  }
+  return {
+    fromThread: { threadId: origin.threadId, requestId: origin.requestId, kind: origin.kind },
+  };
 }
 
 /** A room message's own fields, as the move carries them. */
@@ -458,6 +491,14 @@ export interface MoveExportInput {
   readonly room?: MoveRoomExport | undefined;
   /** The outside-work marks, for a computer that takes them. */
   readonly outsideWork?: ReadonlyArray<OrchestrationOutsideWork> | undefined;
+  /**
+   * Its family (Part 3f, (g)), for a computer that takes families. With
+   * `sharesCheckoutOf`, the folder is another member's to send: this one
+   * carries none of its files.
+   */
+  readonly family?: PeerMoveFamily | undefined;
+  /** The family's members here, whose requests and reports keep their origin. */
+  readonly familyThreadIds?: ReadonlySet<string> | undefined;
 }
 
 /**
@@ -524,6 +565,7 @@ export function sha256OfFile(path: string) {
 export function writeMoveExport(
   input: MoveExportInput,
 ): Effect.Effect<PeerMoveGitManifest, ThreadMoveFailure> {
+  if (input.family?.sharesCheckoutOf !== undefined) return writeSharerExport(input);
   const { git, checkout, dir } = input;
   const root = checkout.root;
   const attempt = Effect.gen(function* () {
@@ -634,7 +676,10 @@ export function writeMoveExport(
         return yield* fail(`${path} isn't a regular file, so it can't move.`);
       }
     }
-    const history = exportThreadHistory(input.thread, { room: input.room !== undefined });
+    const history = exportThreadHistory(input.thread, {
+      room: input.room !== undefined,
+      familyThreadIds: input.familyThreadIds,
+    });
     parts.push(...(yield* attachmentParts(history, input.attachmentsDir, input.state)));
     const otherBytes = parts.reduce((sum, part) => sum + part.size, 0);
     if (otherBytes > MOVE_MAX_BYTES) {
@@ -692,6 +737,7 @@ export function writeMoveExport(
         unpushedCommits: checkout.unpushedCommits,
       },
       ...session.manifest,
+      ...(input.family !== undefined ? { family: input.family } : {}),
     };
     yield* writeManifest(dir, manifest);
     return manifest;
@@ -701,6 +747,83 @@ export function writeMoveExport(
     Effect.catchTag("CheckoutChanged", () => attempt),
     Effect.catchTag("CheckoutChanged", () => fail(changedReason)),
   );
+}
+
+/**
+ * Packs a family member that works in another member's folder (docs/design/
+ * fleet.md, Part 3f, (g)): its history, attachments, state and session, but
+ * none of the folder's files, which the folder's owner sends. The other
+ * computer puts it in the folder that owner's move makes. `git` says where
+ * the folder stands, for the record; with no commits of its own it names no
+ * base.
+ */
+function writeSharerExport(
+  input: MoveExportInput,
+): Effect.Effect<PeerMoveGitManifest, ThreadMoveFailure> {
+  return Effect.gen(function* () {
+    yield* fsCall("Couldn't make room to pack this thread.", () =>
+      NodeFs.mkdir(input.dir, { recursive: true }),
+    );
+    const history = exportThreadHistory(input.thread, {
+      room: input.room !== undefined,
+      familyThreadIds: input.familyThreadIds,
+    });
+    const parts = [...(yield* attachmentParts(history, input.attachmentsDir, input.state))];
+    const otherBytes = parts.reduce((sum, part) => sum + part.size, 0);
+    if (otherBytes > MOVE_MAX_BYTES) {
+      return yield* fail(
+        `This thread's attachments come to ${Math.ceil(otherBytes / (1024 * 1024))} MB. Moves carry at most 100 MB.`,
+      );
+    }
+    const session = yield* sessionParts(
+      input.nativeSession ?? null,
+      input.room?.sessions ?? [],
+      otherBytes,
+    );
+    parts.push(...session.parts);
+    const payload = yield* writePayload(input.dir, parts);
+    if (payload === null) {
+      return yield* fail("This thread's attachments changed while it was being packed. Try again.");
+    }
+    const checkout = input.checkout;
+    const manifest: PeerMoveGitManifest = {
+      totalBytes: payload.totalBytes,
+      sha256: payload.sha256,
+      parts: payload.table,
+      source: input.source,
+      project: {
+        canonicalKey: input.canonicalKey,
+        subdirectory: input.subdirectory,
+        title: input.projectTitle,
+      },
+      git: {
+        headSha: checkout.headSha,
+        branch: checkout.branch,
+        baseSha: null,
+        ...(checkout.upstreamBranch !== null ? { upstreamBranch: checkout.upstreamBranch } : {}),
+      },
+      thread: {
+        title: input.thread.title,
+        runtimeMode: input.thread.runtimeMode,
+        interactionMode: input.thread.interactionMode,
+        messages: history.messages,
+        activities: history.activities,
+        ...(input.state !== undefined ? { state: input.state } : {}),
+        ...roomManifestOf(input, session.room),
+      },
+      agent: input.agent,
+      summary: {
+        messageCount: history.messages.length,
+        trackedFiles: 0,
+        untrackedFiles: 0,
+        unpushedCommits: 0,
+      },
+      ...session.manifest,
+      ...(input.family !== undefined ? { family: input.family } : {}),
+    };
+    yield* writeManifest(input.dir, manifest);
+    return manifest;
+  });
 }
 
 /**
@@ -1015,6 +1138,9 @@ export interface ScratchExportInput {
   readonly state?: PeerMoveThreadState | undefined;
   readonly room?: MoveRoomExport | undefined;
   readonly outsideWork?: ReadonlyArray<OrchestrationOutsideWork> | undefined;
+  /** Its family (Part 3f, (g)): a general chat has its own folder, so it shares none. */
+  readonly family?: PeerMoveFamily | undefined;
+  readonly familyThreadIds?: ReadonlySet<string> | undefined;
 }
 
 /**
@@ -1088,7 +1214,10 @@ export function writeScratchExport(
             read: () => NodeFs.readFile(entry.absolute),
           },
     );
-    const history = exportThreadHistory(input.thread, { room: input.room !== undefined });
+    const history = exportThreadHistory(input.thread, {
+      room: input.room !== undefined,
+      familyThreadIds: input.familyThreadIds,
+    });
     parts.push(...(yield* attachmentParts(history, input.attachmentsDir, input.state)));
     const otherBytes = parts.reduce((sum, part) => sum + part.size, 0);
     if (otherBytes > MOVE_MAX_BYTES) {
@@ -1125,6 +1254,7 @@ export function writeScratchExport(
       agent: input.agent,
       summary: { messageCount: history.messages.length, files: before.length },
       ...session.manifest,
+      ...(input.family !== undefined ? { family: input.family } : {}),
     };
     yield* writeManifest(input.dir, manifest);
     return manifest;

@@ -1,7 +1,8 @@
 /**
  * What the move checks (threadMoveRefusals) read about one thread, and no
  * more: the thread, the threads that could hold its move (its attached
- * children, and threads working in the same checkout), and their projects.
+ * children, its parent, and threads working in the same checkout), and their
+ * projects.
  * Loading the whole command read model for this costs about half a second
  * on an install with 3,000 threads; this costs a few milliseconds.
  */
@@ -44,7 +45,9 @@ export const makeThreadMoveContextReader = Effect.gen(function* () {
         project?.kind === "general-chat"
           ? null
           : (thread.worktreePath ?? project?.workspaceRoot ?? null);
-      // Its attached children, and every other thread in the same checkout.
+      // Its attached children, its parent (whose move a child's goes with,
+      // docs/design/fleet.md, Part 3f, (g)), and every other thread in the
+      // same checkout.
       const neighbors = yield* sql<{ readonly threadId: ThreadId }>`
         SELECT t.thread_id AS "threadId"
         FROM projection_threads t
@@ -53,6 +56,7 @@ export const makeThreadMoveContextReader = Effect.gen(function* () {
           AND t.thread_id <> ${threadId}
           AND (
             (t.parent_thread_id = ${threadId} AND t.attached_to_parent = 1)
+            OR t.thread_id = ${thread.parentThreadId}
             OR COALESCE(t.worktree_path, p.workspace_root) = ${checkout}
           )
       `;

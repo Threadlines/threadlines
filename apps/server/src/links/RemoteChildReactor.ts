@@ -72,6 +72,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";
 import { childReportMessageId } from "../orchestration/childThreadDecisions.ts";
+import { familyWorkStopped } from "../orchestration/threadMoveCarry.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionThreadRepository } from "../persistence/Services/ProjectionThreads.ts";
 import { ComputerLinkClient, type ComputerLinkUnavailableError } from "./ComputerLinkClient.ts";
@@ -97,14 +98,19 @@ export class RemoteChildReactor extends Context.Service<
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
 /** What the reactor needs of a parent, read from its stored row. */
-type Parent = Pick<OrchestrationThread, "id" | "title" | "participants" | "childRequests"> & {
-  readonly archivedAt: string | null;
-  readonly deletedAt: string | null;
-};
+type Parent = Pick<OrchestrationThread, "id" | "title" | "participants" | "childRequests"> &
+  Pick<OrchestrationThread, "move" | "pendingMove"> & {
+    readonly archivedAt: string | null;
+    readonly deletedAt: string | null;
+  };
 
-/** Its children there, while it still shows them: neither archived nor deleted. */
+/**
+ * Its children there, while it still shows them: neither archived nor
+ * deleted, nor stopped for its move (familyWorkStopped, docs/design/fleet.md,
+ * Part 3f, (g)): a parent that moved away no longer knows them.
+ */
 const childrenFollowed = (parent: Parent, environmentId: string) =>
-  parent.deletedAt !== null || parent.archivedAt !== null
+  parent.deletedAt !== null || parent.archivedAt !== null || familyWorkStopped(parent)
     ? []
     : (parent.childRequests.remoteChildren ?? []).filter(
         (child) => child.environmentId === environmentId,
@@ -239,6 +245,8 @@ const make = Effect.gen(function* () {
               title: found.value.title,
               participants: found.value.participants ?? [],
               childRequests: found.value.childRequests ?? EMPTY_CHILD_REQUEST_STATE,
+              move: found.value.move ?? null,
+              pendingMove: found.value.pendingMove ?? null,
               archivedAt: found.value.archivedAt,
               deletedAt: found.value.deletedAt,
             },
@@ -522,7 +530,8 @@ const make = Effect.gen(function* () {
           return;
         case "status": {
           const found = yield* findRequest(environmentId, event.requestId);
-          if (found === undefined) return;
+          // A parent whose move stopped its agent is written nothing.
+          if (found === undefined || familyWorkStopped(found.parent)) return;
           const { parent, request } = found;
           if (event.status === "awaiting_approval") {
             yield* updateRequest(parent, request, {
@@ -550,6 +559,7 @@ const make = Effect.gen(function* () {
         }
         case "thread": {
           for (const parent of yield* parentsHolding(environmentId, event.threadId)) {
+            if (familyWorkStopped(parent)) continue;
             const existing = remoteChildOf(parent.childRequests, event.threadId);
             if (existing === undefined || existing.environmentId !== environmentId) continue;
             const filing = event.filing ?? existing.filing;
@@ -583,6 +593,10 @@ const make = Effect.gen(function* () {
         }
         case "report": {
           const found = yield* findRequest(environmentId, event.requestId);
+          // A parent whose move stopped its agent can't take the answer (it
+          // would refuse it, and a refusal reads as settled meanwhile): the
+          // report stays unacked there and comes again with a later watch.
+          if (found !== undefined && familyWorkStopped(found.parent)) return;
           if (found !== undefined) {
             const { parent, request } = found;
             const silent =
@@ -687,7 +701,7 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       pendingAcks.delete(environmentId);
       for (const parent of yield* parentsOwing(environmentId)) {
-        for (const request of openRemote(parent, environmentId)) {
+        for (const request of familyWorkStopped(parent) ? [] : openRemote(parent, environmentId)) {
           if (request.remote === undefined) continue;
           yield* settleRequest(parent, request, {
             outcome: "failed",
@@ -867,6 +881,8 @@ const make = Effect.gen(function* () {
     laneOf(requestLanes, environmentId).withPermits(1)(
       Effect.gen(function* () {
         const owed = (yield* parentsOwing(environmentId))
+          // A parent whose move stopped its agent asks nothing new there.
+          .filter((parent) => !familyWorkStopped(parent))
           .flatMap((parent) =>
             openRemote(parent, environmentId)
               .filter(
