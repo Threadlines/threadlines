@@ -1594,7 +1594,12 @@ const make = Effect.gen(function* () {
       const family =
         moveFamily === undefined
           ? undefined
-          : familyManifestOf({ projects: model.projects, threads }, detail.value, moveFamily);
+          : familyManifestOf(
+              { projects: model.projects, threads },
+              detail.value,
+              moveFamily,
+              targetEnvironmentId,
+            );
       const familyThreadIds =
         moveFamily === undefined ? undefined : familyThreadIdsOf(threads, moveFamily);
       // Across the link its work came over (Part 3f, (h)), only for a
