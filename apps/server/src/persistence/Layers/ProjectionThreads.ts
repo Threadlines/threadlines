@@ -10,6 +10,7 @@ import {
   DeleteProjectionThreadInput,
   GetProjectionThreadInput,
   ListProjectionThreadsByProjectInput,
+  ListProjectionAdoptedChildrenInput,
   ListProjectionThreadsByRemoteLinkInput,
   ProjectionSideTurnsJson,
   ProjectionThread,
@@ -34,6 +35,7 @@ import {
   ThreadMovedFrom,
   ThreadMoveOutcome,
   ThreadMoveRestore,
+  ThreadAdoptedFromLink,
   ThreadRemoteOrigin,
   OrchestrationOutsideWork,
   OutsideAgentRef,
@@ -71,6 +73,7 @@ const ProjectionThreadDbRow = ProjectionThread.mapFields(
     movedFrom: Schema.NullOr(Schema.fromJsonString(ThreadMovedFrom)),
     lastMoveOutcome: Schema.NullOr(Schema.fromJsonString(ThreadMoveOutcome)),
     moveRestoreOwed: Schema.NullOr(Schema.fromJsonString(ThreadMoveRestore)),
+    adoptedFromLink: Schema.NullOr(Schema.fromJsonString(ThreadAdoptedFromLink)),
     roomContext: Schema.fromJsonString(
       Schema.Record(Schema.String, OrchestrationRoomContextCursor),
     ),
@@ -136,6 +139,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           moved_from_json,
           last_move_outcome_json,
           move_restore_owed_json,
+          adopted_from_link_json,
           history_seed_owed,
           history_seed_message_id,
           native_session,
@@ -207,6 +211,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           ${row.movedFrom ? JSON.stringify(row.movedFrom) : null},
           ${row.lastMoveOutcome ? JSON.stringify(row.lastMoveOutcome) : null},
           ${row.moveRestoreOwed ? JSON.stringify(row.moveRestoreOwed) : null},
+          ${row.adoptedFromLink ? JSON.stringify(row.adoptedFromLink) : null},
           ${row.historySeedOwed ?? 0},
           ${row.historySeedMessageId ?? null},
           ${row.nativeSession ?? null},
@@ -270,6 +275,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           moved_from_json = excluded.moved_from_json,
           last_move_outcome_json = excluded.last_move_outcome_json,
           move_restore_owed_json = excluded.move_restore_owed_json,
+          adopted_from_link_json = excluded.adopted_from_link_json,
           history_seed_owed = excluded.history_seed_owed,
           history_seed_message_id = excluded.history_seed_message_id,
           native_session = excluded.native_session,
@@ -340,6 +346,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           moved_from_json AS "movedFrom",
           last_move_outcome_json AS "lastMoveOutcome",
           move_restore_owed_json AS "moveRestoreOwed",
+          adopted_from_link_json AS "adoptedFromLink",
           history_seed_owed AS "historySeedOwed",
           history_seed_message_id AS "historySeedMessageId",
           native_session AS "nativeSession",
@@ -412,6 +419,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           moved_from_json AS "movedFrom",
           last_move_outcome_json AS "lastMoveOutcome",
           move_restore_owed_json AS "moveRestoreOwed",
+          adopted_from_link_json AS "adoptedFromLink",
           history_seed_owed AS "historySeedOwed",
           history_seed_message_id AS "historySeedMessageId",
           native_session AS "nativeSession",
@@ -439,6 +447,33 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
         FROM projection_threads
         WHERE remote_origin_json IS NOT NULL
           AND json_extract(remote_origin_json, '$.linkDeviceId') = ${linkDeviceId}
+          AND deleted_at IS NULL
+        ORDER BY created_at ASC, thread_id ASC
+      `,
+  });
+
+  const listAdoptedChildIdsRows = SqlSchema.findAll({
+    Request: ListProjectionAdoptedChildrenInput,
+    Result: Schema.Struct({ threadId: ThreadId }),
+    execute: ({ parentThreadId }) =>
+      sql`
+        SELECT thread_id AS "threadId"
+        FROM projection_threads
+        WHERE parent_thread_id = ${parentThreadId}
+          AND adopted_from_link_json IS NOT NULL
+        ORDER BY created_at ASC, thread_id ASC
+      `,
+  });
+
+  const listAttachedChildIdsRows = SqlSchema.findAll({
+    Request: ListProjectionAdoptedChildrenInput,
+    Result: Schema.Struct({ threadId: ThreadId }),
+    execute: ({ parentThreadId }) =>
+      sql`
+        SELECT thread_id AS "threadId"
+        FROM projection_threads
+        WHERE parent_thread_id = ${parentThreadId}
+          AND attached_to_parent > 0
           AND deleted_at IS NULL
         ORDER BY created_at ASC, thread_id ASC
       `,
@@ -476,6 +511,22 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
       ),
     );
 
+  const listAdoptedChildIds: ProjectionThreadRepositoryShape["listAdoptedChildIds"] = (input) =>
+    listAdoptedChildIdsRows(input).pipe(
+      Effect.map((rows) => rows.map((row) => row.threadId)),
+      Effect.mapError(
+        toPersistenceSqlError("ProjectionThreadRepository.listAdoptedChildIds:query"),
+      ),
+    );
+
+  const listAttachedChildIds: ProjectionThreadRepositoryShape["listAttachedChildIds"] = (input) =>
+    listAttachedChildIdsRows(input).pipe(
+      Effect.map((rows) => rows.map((row) => row.threadId)),
+      Effect.mapError(
+        toPersistenceSqlError("ProjectionThreadRepository.listAttachedChildIds:query"),
+      ),
+    );
+
   const deleteById: ProjectionThreadRepositoryShape["deleteById"] = (input) =>
     deleteProjectionThreadRow(input).pipe(
       Effect.mapError(toPersistenceSqlError("ProjectionThreadRepository.deleteById:query")),
@@ -486,6 +537,8 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
     getById,
     listByProjectId,
     listIdsByRemoteLink,
+    listAdoptedChildIds,
+    listAttachedChildIds,
     deleteById,
   } satisfies ProjectionThreadRepositoryShape;
 });

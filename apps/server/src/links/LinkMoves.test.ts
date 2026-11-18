@@ -184,6 +184,11 @@ interface CarryRecord {
   readonly linkLabel?: string;
   /** Threads already here, as their rows read. */
   readonly threadsHere?: ReadonlyArray<{ readonly threadId: ThreadId } & Record<string, unknown>>;
+  /**
+   * Threads this link gave up (LinkRequests.releaseThread), each with how
+   * many commands were dispatched by then.
+   */
+  readonly released?: Array<{ readonly threadId: ThreadId; readonly dispatchedBefore: number }>;
 }
 
 /** The services LinkMoves leans on, with this computer's git real and the rest faked. */
@@ -229,6 +234,10 @@ function testLayer(
               title: "Threadlines",
               workspaceRoot: repos.b,
             } as never),
+          releaseThread: (_deviceId, threadId) =>
+            Effect.sync(
+              () => void carry.released?.push({ threadId, dispatchedBefore: dispatched.length }),
+            ),
           // An instance this computer doesn't have ("gone") is refused.
           resolveAgentFor: (input) =>
             Effect.succeed(
@@ -279,6 +288,23 @@ function testLayer(
         // A thread here once its import was dispatched (a family's child reads
         // its parent), or one that was here already.
         Layer.mock(ProjectionThreadRepository)({
+          // As the decider would write them: every thread the import asked for.
+          listAdoptedChildIds: ({ parentThreadId }) =>
+            Effect.sync(() =>
+              dispatched.flatMap((command) =>
+                command.type === "thread.import" && command.threadId === parentThreadId
+                  ? (command.adoptsChildren?.children ?? []).map((child) => child.threadId)
+                  : [],
+              ),
+            ),
+          listAttachedChildIds: ({ parentThreadId }) =>
+            Effect.succeed(
+              (carry.threadsHere ?? []).flatMap((row) =>
+                row.parentThreadId === parentThreadId && row.attachedToParent === 1
+                  ? [row.threadId]
+                  : [],
+              ),
+            ),
           listIdsByRemoteLink: ({ linkDeviceId }) =>
             Effect.succeed(
               (carry.threadsHere ?? []).flatMap((row) =>
@@ -372,7 +398,10 @@ const pack = (
   repos: ReturnType<typeof makeRepos>,
   nativeSession?: NativeSessionExport | null,
   state?: PeerMoveThreadState,
-  room?: Pick<MoveExportInput, "room" | "outsideWork" | "family" | "linkLineage"> & {
+  room?: Pick<
+    MoveExportInput,
+    "room" | "outsideWork" | "family" | "linkLineage" | "startedThere"
+  > & {
     /** What the move says the computer it leaves calls itself. */
     readonly sourceEnvironmentId?: EnvironmentId | undefined;
     readonly sourceLabel?: string;
@@ -394,6 +423,7 @@ const pack = (
       dir,
       family: room?.family,
       linkLineage: room?.linkLineage,
+      startedThere: room?.startedThere,
       attachmentsDir: path.join(repos.root, "attachments"),
       thread: room?.thread ?? movingThread(),
       room: room?.room,
@@ -2263,6 +2293,161 @@ describe("a thread moving across its link (Part 3f, (h))", () => {
       assert.isUndefined(imported.adopt);
       assert.isUndefined(imported.lineage);
       assert.isUndefined(imported.remoteOrigin);
+    });
+  });
+
+  describe("a parent taking back the threads it started here (Part 3f, (g))", () => {
+    /** A thread the link started here for the moving thread (`thread-a` there). */
+    const startedHere = (threadId: string, title: string, extra: Record<string, unknown> = {}) => ({
+      threadId: ThreadId.make(threadId),
+      title,
+      projectId: ProjectId.make("project-b"),
+      runtimeMode: "approval-required",
+      interactionMode: "default",
+      move: null,
+      pendingMove: null,
+      parentThreadId: null,
+      attachedToParent: 0,
+      deletedAt: null,
+      archivedAt: null,
+      ...extra,
+      remoteOrigin: {
+        linkDeviceId: "device-windows",
+        environmentId: WINDOWS,
+        environmentPinned: true,
+        environmentLabel: "Windows PC",
+        threadId: "thread-a",
+        threadTitle: "Ship it",
+      },
+    });
+    const wrapped = { state: "done", at: "2026-11-17T09:00:00.000Z" } as const;
+    const startedThere = [
+      { threadId: ThreadId.make("thread-both"), override: wrapped },
+      // On its list there, but not a thread this link started here for it.
+      { threadId: ThreadId.make("thread-not-here") },
+    ];
+    const arriving = (
+      repos: ReturnType<typeof makeRepos>,
+      dispatched: OrchestrationCommand[],
+      carry: Pick<CarryRecord, "released" | "threadsHere">,
+      linkLineage?: MoveExportInput["linkLineage"],
+      listed: ReadonlyArray<{ readonly threadId: ThreadId }> = startedThere,
+    ) =>
+      Effect.gen(function* () {
+        const packed = yield* pack(repos, null, undefined, {
+          startedThere: [...listed],
+          linkLineage,
+        });
+        const state = yield* deliver(packed.manifest, packed.payload);
+        // Asked again (a restart, a lost answer): read from the threads, the same.
+        const again = yield* (yield* LinkMoves).status(link("allowed"), { transferId: TRANSFER });
+        return { state, again };
+      }).pipe(
+        Effect.provide(
+          testLayer(repos, dispatched, "allowed", () => false, [], {
+            home: os.tmpdir(),
+            adopted: [],
+            linkLabel: "Windows PC",
+            pinnedEnvironmentId: WINDOWS,
+            threadsHere: [
+              startedHere("thread-both", "Fix tests"),
+              startedHere("thread-only-here", "Only here"),
+            ],
+            ...carry,
+          }),
+        ),
+      );
+
+    it.live("only those both its list and this computer's records name, released first", () => {
+      const repos = makeRepos();
+      const dispatched: OrchestrationCommand[] = [];
+      const released: NonNullable<CarryRecord["released"]> = [];
+      return Effect.gen(function* () {
+        const { state, again } = yield* arriving(repos, dispatched, { released });
+        assert.equal(state.status, "committed");
+        const imported = importOf(dispatched);
+        assert.deepEqual(imported.adoptsChildren, {
+          linkDeviceId: "device-windows",
+          children: [{ threadId: ThreadId.make("thread-both"), override: wrapped }],
+        });
+        // Here but not on its list: it stays apart, with today's words.
+        assert.deepEqual(
+          (imported.arrival?.left ?? []).filter((sentence) => sentence.includes("this computer")),
+          [
+            "Its thread 'Only here' is already on this computer. It stays separate, so this thread can't reach it.",
+          ],
+        );
+        // The link let go of it before the import, and again once it landed.
+        assert.deepEqual(
+          released.map((entry) => entry.threadId),
+          ["thread-both", "thread-both"],
+        );
+        assert.isAtMost(released[0]!.dispatchedBefore, dispatched.indexOf(imported));
+        assert.isAbove(released[1]!.dispatchedBefore, dispatched.indexOf(imported));
+        assert.deepEqual(state.adopted, [ThreadId.make("thread-both")]);
+        assert.deepEqual(again.adopted, [ThreadId.make("thread-both")]);
+      });
+    });
+
+    it.live("a thread landing under a parent takes none back", () => {
+      const repos = makeRepos();
+      const dispatched: OrchestrationCommand[] = [];
+      const released: NonNullable<CarryRecord["released"]> = [];
+      return Effect.gen(function* () {
+        const { state } = yield* arriving(
+          repos,
+          dispatched,
+          { released },
+          { remoteParent: { threadId: ThreadId.make("thread-parent-on-windows"), title: "Ship" } },
+        );
+        assert.equal(state.status, "committed");
+        assert.isUndefined(importOf(dispatched).adoptsChildren);
+        assert.deepEqual(released, []);
+        assert.isUndefined(state.adopted);
+      });
+    });
+
+    it.live("one on its list that can't be taken back keeps its requests, and says why", () => {
+      const repos = makeRepos();
+      const dispatched: OrchestrationCommand[] = [];
+      const released: NonNullable<CarryRecord["released"]> = [];
+      const listed = ["thread-full-access", "thread-archived", "thread-moving"].map((id) => ({
+        threadId: ThreadId.make(id),
+      }));
+      return Effect.gen(function* () {
+        const { state } = yield* arriving(
+          repos,
+          dispatched,
+          {
+            released,
+            threadsHere: [
+              // More access than the parent gets here (its modes after the link's cap).
+              startedHere("thread-full-access", "Full access", { runtimeMode: "full-access" }),
+              startedHere("thread-archived", "Archived", {
+                archivedAt: "2026-11-17T10:00:00.000Z",
+              }),
+              startedHere("thread-moving", "Moving", { pendingMove: { requestId: "r" } }),
+            ],
+          },
+          undefined,
+          listed,
+        );
+        assert.equal(state.status, "committed");
+        const imported = importOf(dispatched);
+        assert.isUndefined(imported.adoptsChildren);
+        // Never released: what its link asked of it still stands.
+        assert.deepEqual(released, []);
+        const line = (title: string, why: string) =>
+          `Its thread '${title}' is already on this computer. It stays separate because ${why}, so this thread can't reach it.`;
+        assert.includeMembers(
+          [...(imported.arrival?.left ?? [])],
+          [
+            line("Full access", "it has more access than this thread has here"),
+            line("Archived", "it's archived"),
+            line("Moving", "it's moving"),
+          ],
+        );
+      });
     });
   });
 

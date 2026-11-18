@@ -1635,71 +1635,84 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             }),
           ),
         );
-      if (latencySendId !== undefined) {
-        yield* recordTurnLatency(turnLatency.sent(input.threadId, latencySendId, turn.turnId));
-      }
-      yield* directory.upsert({
-        threadId: input.threadId,
-        provider: routed.adapter.provider,
-        providerInstanceId: routed.instanceId,
-        status: "running",
-        ...(turn.resumeCursor !== undefined ? { resumeCursor: turn.resumeCursor } : {}),
-        runtimePayload: {
-          ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
-          activeTurnId: turn.turnId,
-          lastRuntimeEvent: "provider.sendTurn",
-          lastRuntimeEventAt: yield* nowIso,
-        },
-      });
-      if (input.telemetryContext?.kind === "thread_fork") {
-        const sourceModelSelection = input.telemetryContext.sourceModelSelection;
-        // Model names are read by agent kind (Pi's own list applies to every Pi instance).
-        const sourceDriver = sourceModelSelection
-          ? yield* registry.getByInstance(sourceModelSelection.instanceId).pipe(
-              Effect.map((adapter) => adapter.provider),
-              Effect.orElseSucceed(() => undefined),
-            )
-          : undefined;
-        yield* analytics.record("thread.fork.created", {
-          sourceProvider: sourceModelSelection?.instanceId ?? "unknown",
-          targetProvider: input.modelSelection?.instanceId ?? routed.instanceId,
-          providerChanged:
-            sourceModelSelection !== undefined &&
-            input.modelSelection !== undefined &&
-            sourceModelSelection.instanceId !== input.modelSelection.instanceId,
-          modelChanged:
-            sourceModelSelection !== undefined &&
-            input.modelSelection !== undefined &&
-            sourceModelSelection.model !== input.modelSelection.model,
-          hasForkContext: true,
-          seedMode: input.telemetryContext.seedMode ?? "context-seed",
-          includedMessageCount: input.telemetryContext.includedMessageCount,
-          includedToolSummaryCount: input.telemetryContext.includedToolSummaryCount,
-          includedAttachmentCount: input.telemetryContext.includedAttachmentCount,
-          omittedAttachmentCount: input.telemetryContext.omittedAttachmentCount,
-          ...analyticsModelProperties({
-            model: sourceModelSelection?.model,
-            provider: sourceDriver,
-            prefix: "source",
-          }),
+      // The provider has the turn from here: what follows is bookkeeping. A
+      // failure in it is logged, never reported as a turn that didn't start
+      // (the reactor would then call a message the agent read unsent).
+      yield* Effect.gen(function* () {
+        if (latencySendId !== undefined) {
+          yield* recordTurnLatency(turnLatency.sent(input.threadId, latencySendId, turn.turnId));
+        }
+        yield* directory.upsert({
+          threadId: input.threadId,
+          provider: routed.adapter.provider,
+          providerInstanceId: routed.instanceId,
+          status: "running",
+          ...(turn.resumeCursor !== undefined ? { resumeCursor: turn.resumeCursor } : {}),
+          runtimePayload: {
+            ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
+            activeTurnId: turn.turnId,
+            lastRuntimeEvent: "provider.sendTurn",
+            lastRuntimeEventAt: yield* nowIso,
+          },
+        });
+        if (input.telemetryContext?.kind === "thread_fork") {
+          const sourceModelSelection = input.telemetryContext.sourceModelSelection;
+          // Model names are read by agent kind (Pi's own list applies to every Pi instance).
+          const sourceDriver = sourceModelSelection
+            ? yield* registry.getByInstance(sourceModelSelection.instanceId).pipe(
+                Effect.map((adapter) => adapter.provider),
+                Effect.orElseSucceed(() => undefined),
+              )
+            : undefined;
+          yield* analytics.record("thread.fork.created", {
+            sourceProvider: sourceModelSelection?.instanceId ?? "unknown",
+            targetProvider: input.modelSelection?.instanceId ?? routed.instanceId,
+            providerChanged:
+              sourceModelSelection !== undefined &&
+              input.modelSelection !== undefined &&
+              sourceModelSelection.instanceId !== input.modelSelection.instanceId,
+            modelChanged:
+              sourceModelSelection !== undefined &&
+              input.modelSelection !== undefined &&
+              sourceModelSelection.model !== input.modelSelection.model,
+            hasForkContext: true,
+            seedMode: input.telemetryContext.seedMode ?? "context-seed",
+            includedMessageCount: input.telemetryContext.includedMessageCount,
+            includedToolSummaryCount: input.telemetryContext.includedToolSummaryCount,
+            includedAttachmentCount: input.telemetryContext.includedAttachmentCount,
+            omittedAttachmentCount: input.telemetryContext.omittedAttachmentCount,
+            ...analyticsModelProperties({
+              model: sourceModelSelection?.model,
+              provider: sourceDriver,
+              prefix: "source",
+            }),
+            ...analyticsModelProperties({
+              model: input.modelSelection?.model,
+              provider: routed.adapter.provider,
+              prefix: "target",
+            }),
+          });
+        }
+        yield* analytics.record("provider.turn.sent", {
+          ...analyticsAgentProperties({ provider: routed.adapter.provider, communityAgentId }),
           ...analyticsModelProperties({
             model: input.modelSelection?.model,
             provider: routed.adapter.provider,
-            prefix: "target",
           }),
+          interactionMode: input.interactionMode,
+          attachmentCount: input.attachments.length,
+          hasInput: typeof input.input === "string" && input.input.trim().length > 0,
+          ...(input.origin !== undefined ? { origin: input.origin } : {}),
         });
-      }
-      yield* analytics.record("provider.turn.sent", {
-        ...analyticsAgentProperties({ provider: routed.adapter.provider, communityAgentId }),
-        ...analyticsModelProperties({
-          model: input.modelSelection?.model,
-          provider: routed.adapter.provider,
-        }),
-        interactionMode: input.interactionMode,
-        attachmentCount: input.attachments.length,
-        hasInput: typeof input.input === "string" && input.input.trim().length > 0,
-        ...(input.origin !== undefined ? { origin: input.origin } : {}),
-      });
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("provider turn bookkeeping failed after the provider took the turn", {
+            threadId: input.threadId,
+            turnId: turn.turnId,
+            cause: Cause.pretty(cause),
+          }),
+        ),
+      );
       return turn;
     }).pipe(
       withMetrics({

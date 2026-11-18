@@ -21,6 +21,10 @@ import {
   type OrchestrationReadModel,
   type OrchestrationQueuedFollowUp,
   type OrchestrationThread,
+  type OrchestrationThreadDoneOverride,
+  type ProviderInteractionMode,
+  type RuntimeMode,
+  type ThreadRemoteOrigin,
   type OrchestrationThreadMove,
   type ThreadId,
   type ThreadMoveFamily,
@@ -37,6 +41,7 @@ import {
   type ThreadNativeSessionFellBackPayload,
   type ThreadPendingMove,
 } from "@threadlines/contracts";
+import { withinModeCeiling } from "@threadlines/shared/childThreads";
 import { hasLiveCommandRun } from "@threadlines/shared/commandRuns";
 import { threadPullRequestAutomationArmed } from "@threadlines/shared/linkedPullRequests";
 import {
@@ -52,7 +57,13 @@ import { arrivalMessageText, resumedGoalMessageText } from "../moves/arrivalMess
 import { linkMoveCopyThreadId } from "../moves/linkMoveIds.ts";
 import { decideAgentChainStop } from "./agentRequestDecisions.ts";
 import { derivedUuid } from "./childRequestIds.ts";
-import { cameHomeEvents, leftBehindEvents, movedAloneEvents } from "./childThreadDecisions.ts";
+import {
+  adoptedThereEvents,
+  attachedChildrenOf,
+  cameHomeEvents,
+  leftBehindEvents,
+  movedAloneEvents,
+} from "./childThreadDecisions.ts";
 import { hasBackgroundWork } from "./sessionBackgroundTasks.ts";
 import {
   drainsWhileMoveWaits,
@@ -573,17 +584,28 @@ export function remoteOriginMoveRefusal(
  * is (`environmentPinned`), where it came from is only the sender's word, so
  * it goes nowhere. Once a person here takes it over, the usual rules hold. A
  * null `target` asks about any computer: the dialog says per computer.
+ *
+ * The same holds for a thread another computer's agent started here that
+ * its parent took back when it moved here (`adoptedFromLink.fenced`, Part
+ * 3f, (g)): it goes back to that computer only, which its link proved.
  */
 export function fencedMoveRefusal(
-  thread: Pick<OrchestrationThread, "movedFrom">,
+  thread: Pick<OrchestrationThread, "movedFrom" | "adoptedFromLink">,
   target: ThreadMoveTarget | null,
 ): string | null {
+  if (target === null) return null;
   const from = thread.movedFrom ?? null;
-  if (from === null || from.fenced !== true || target === null) return null;
-  if (from.environmentPinned !== true) {
-    return `This thread moved here from ${from.label}, and this computer's link can't confirm which computer that is, so it stays here until you send it a message.`;
+  if (from !== null && from.fenced === true) {
+    if (from.environmentPinned !== true) {
+      return `This thread moved here from ${from.label}, and this computer's link can't confirm which computer that is, so it stays here until you send it a message.`;
+    }
+    if (target.environmentId !== from.environmentId) return fencedElsewhereWords(from.label);
   }
-  return target.environmentId === from.environmentId ? null : fencedElsewhereWords(from.label);
+  const adopted = thread.adoptedFromLink ?? null;
+  if (adopted !== null && adopted.fenced && target.environmentId !== adopted.environmentId) {
+    return `This thread was started by an agent on ${adopted.label}, and until you send it a message here it can only move back to ${adopted.label}.`;
+  }
+  return null;
 }
 
 /** The words for a fenced moved thread, moving anywhere but back where it came from. */
@@ -1477,9 +1499,11 @@ export function decideMoveAbort(
  * The other computer committed the move: the thread lives there now, and its
  * copy here is read-only. Its children here that didn't come with it (not
  * moving in its family, archived ones aside) become their own threads in the
- * same decision (docs/design/fleet.md, Part 3f, (g)). A child that moved
- * without its parent leaves the family here, and stays the parent's child
- * on that computer when that computer kept it so (`keptParent`, Part 3f, (h)).
+ * same decision (docs/design/fleet.md, Part 3f, (g)), and the threads it
+ * started on that computer that are its children there now (`adopted`)
+ * leave its records. A child that moved without its parent leaves the family
+ * here, and stays the parent's child on that computer when that computer
+ * kept it so (`keptParent`, Part 3f, (h)).
  */
 export function decideMoveComplete(
   readModel: OrchestrationReadModel,
@@ -1506,7 +1530,7 @@ function moveCompleteEvents(
   move: OrchestrationThreadMove,
   command: Pick<
     CommandOf<"thread.move.complete">,
-    "transferId" | "movedThreadId" | "keptParent" | "createdAt"
+    "transferId" | "movedThreadId" | "keptParent" | "adopted" | "createdAt"
   >,
   baseFor: EventBase,
   returned?: "adopted",
@@ -1540,6 +1564,15 @@ function moveCompleteEvents(
     },
     ...readOnlyCopyEvents(thread, command.createdAt, baseFor),
     ...leftBehind,
+    // Its threads on that computer that are its children there now (Part 3f, (g)).
+    ...adoptedThereEvents(
+      readModel,
+      baseFor,
+      thread,
+      move.target.environmentId,
+      command.adopted ?? [],
+      command.createdAt,
+    ),
     ...(move.family === undefined
       ? movedAloneEvents(
           readModel,
@@ -1672,6 +1705,7 @@ export function decideThreadImport(
   if (familyRefusal !== null) return refuse(familyRefusal);
   const linkRefusal = importedLinkLineageRefusal(readModel, command);
   if (linkRefusal !== null) return refuse(linkRefusal);
+  const adoption = importedAdoption(readModel, command);
   // Every id it brings is its own: one another thread here already has would
   // move that thread's message into this one (the projection keys messages
   // by id alone).
@@ -1794,8 +1828,10 @@ export function decideThreadImport(
     payload: { threadId: command.threadId, activity: { ...activity, turnId: null } },
   }));
   const arrival = command.arrival;
+  const brought = [...(arrival?.brought ?? []), ...adoption.brought];
   const left = [
     ...(arrival?.left ?? []),
+    ...adoption.left,
     command.remoteOrigin !== undefined
       ? remoteParentFenceWords(command.remoteOrigin)
       : MOVED_FENCE_WORDS,
@@ -1818,9 +1854,7 @@ export function decideThreadImport(
           // Which the agent got: its own session, or (absent) a summary.
           ...(command.nativeSession !== undefined ? { nativeSession: command.nativeSession } : {}),
           // What came along, and what didn't, in plain words.
-          ...(arrival !== undefined && arrival.brought.length > 0
-            ? { brought: arrival.brought }
-            : {}),
+          ...(brought.length > 0 ? { brought } : {}),
           left,
         },
         turnId: null,
@@ -1869,10 +1903,232 @@ export function decideThreadImport(
     ...activities,
     ...importedState(command, base),
     boundary,
+    ...adoptedEvents(command, adoption.adopted, baseFor),
     ...cameHome,
     ...completed,
   ];
 }
+
+/** At most this many titles a "Moved here" line names. */
+const ADOPTED_TITLES_NAMED = 10;
+
+const titlesOf = (threads: ReadonlyArray<{ readonly title: string }>) =>
+  threads
+    .slice(0, ADOPTED_TITLES_NAMED)
+    .map((thread) => thread.title)
+    .join(", ");
+
+/**
+ * Which of the threads here that the arriving thread's agent started over
+ * its link (`adoptsChildren`, docs/design/fleet.md, Part 3f, (g)) become its
+ * children, and the "Moved here" words for them and for the ones that stay
+ * apart. Never refuses the import: a thread that doesn't qualify stays as it
+ * is, with why. One gone meanwhile is left out of the words.
+ */
+function importedAdoption(
+  readModel: OrchestrationReadModel,
+  command: CommandOf<"thread.import">,
+): {
+  readonly adopted: ReadonlyArray<{
+    readonly thread: OrchestrationThread;
+    readonly override: OrchestrationThreadDoneOverride | undefined;
+  }>;
+  readonly brought: ReadonlyArray<string>;
+  readonly left: ReadonlyArray<string>;
+} {
+  const asked = command.adoptsChildren;
+  // Only a thread arriving on its own takes threads as its children here.
+  if (
+    asked === undefined ||
+    command.lineage !== undefined ||
+    command.remoteOrigin !== undefined ||
+    command.adopt !== undefined
+  ) {
+    return { adopted: [], brought: [], left: [] };
+  }
+  const adopted: Array<{
+    readonly thread: OrchestrationThread;
+    readonly override: OrchestrationThreadDoneOverride | undefined;
+  }> = [];
+  const apart: Array<{ readonly title: string; readonly why: string }> = [];
+  const seen = new Set<string>();
+  for (const entry of asked.children) {
+    if (seen.has(entry.threadId)) continue;
+    seen.add(entry.threadId);
+    const child = readModel.threads.find((thread) => thread.id === entry.threadId);
+    if (child === undefined || child.deletedAt !== null) continue;
+    const why = adoptionRefusal(
+      {
+        remoteOrigin: child.remoteOrigin ?? null,
+        projectId: child.projectId,
+        archivedAt: child.archivedAt,
+        moving: (child.move ?? null) !== null || (child.pendingMove ?? null) !== null,
+        inFamily:
+          (child.parentThreadId !== null && child.attachedToParent) ||
+          attachedChildrenOf(readModel, child.id).length > 0,
+        runtimeMode: child.runtimeMode,
+        interactionMode: child.interactionMode,
+      },
+      {
+        linkDeviceId: asked.linkDeviceId,
+        sourceThreadId: command.movedFrom.threadId,
+        fromEnvironmentId: command.movedFrom.environmentId,
+        fromPinned: command.movedFrom.environmentPinned === true,
+        projectId: command.projectId,
+        runtimeMode: command.runtimeMode,
+        interactionMode: command.interactionMode,
+      },
+    );
+    if (why === null) adopted.push({ thread: child, override: entry.override });
+    else apart.push({ title: child.title, why });
+  }
+  const [only] = adopted;
+  const brought =
+    adopted.length === 0
+      ? []
+      : [
+          adopted.length === 1 && only !== undefined
+            ? `Its thread '${only.thread.title}' was already on this computer. It's this thread's again.`
+            : `Its ${adopted.length} threads already on this computer are this thread's again: ${titlesOf(adopted.map((entry) => entry.thread))}.`,
+        ];
+  const left = apart.map((entry) => adoptionApartWords(entry.title, entry.why));
+  return { adopted, brought, left };
+}
+
+/** A thread here that the arriving thread's agent may have started over its link, as adoptionRefusal reads it. */
+export interface AdoptionCandidate {
+  readonly remoteOrigin: ThreadRemoteOrigin | null;
+  readonly projectId: string;
+  readonly archivedAt: string | null;
+  /** Queued to move, or moving. */
+  readonly moving: boolean;
+  /** Attached to a parent here, or a parent of attached threads itself. */
+  readonly inFamily: boolean;
+  readonly runtimeMode: RuntimeMode;
+  readonly interactionMode: ProviderInteractionMode;
+}
+
+/** The thread arriving, as its import will write it (its modes after the link's cap). */
+export interface AdoptionArrival {
+  /** The link the move came over, from the transfer's own record. */
+  readonly linkDeviceId: string;
+  /** The thread it was on the computer it came from. */
+  readonly sourceThreadId: string;
+  readonly fromEnvironmentId: string;
+  /** The link proved which computer that is. */
+  readonly fromPinned: boolean;
+  readonly projectId: string;
+  readonly runtimeMode: RuntimeMode;
+  readonly interactionMode: ProviderInteractionMode;
+}
+
+/**
+ * Why `child`, a thread here, can't become the arriving thread's child
+ * (docs/design/fleet.md, Part 3f, (g)), in words that finish "It stays
+ * separate because ...", or null. It must be one this very link started for
+ * the very thread that arrives, from the computer that link proved it is; in
+ * the arriving thread's project; not archived, moving or in a family here;
+ * and asking no more access than the arriving thread has here: a child never
+ * has more access than its parent, and its access is never lowered for it.
+ * LinkMoves asks it before the link lets go of a thread, and the decider
+ * again in the import's decision, so one that fails is never released.
+ */
+export function adoptionRefusal(child: AdoptionCandidate, arrival: AdoptionArrival): string | null {
+  const origin = child.remoteOrigin;
+  if (
+    origin === null ||
+    origin.linkDeviceId !== arrival.linkDeviceId ||
+    origin.threadId !== arrival.sourceThreadId ||
+    origin.environmentPinned !== true ||
+    !arrival.fromPinned ||
+    origin.environmentId !== arrival.fromEnvironmentId
+  ) {
+    return "this computer can't confirm this thread started it";
+  }
+  if (child.projectId !== arrival.projectId) return "it's in another project here";
+  if (child.archivedAt !== null) return "it's archived";
+  if (child.moving) return "it's moving";
+  if (child.inFamily) return "it's in another family here";
+  if (!withinModeCeiling(child, arrival)) {
+    return "it has more access than this thread has here";
+  }
+  return null;
+}
+
+/** The "Moved here" words for a thread it started here that stays apart, and why. */
+export const adoptionApartWords = (title: string, why: string) =>
+  `Its thread '${title}' is already on this computer. It stays separate because ${why}, so this thread can't reach it.`;
+
+/**
+ * Each adopted thread becomes the arriving thread's child (no parent turn, a
+ * fresh attachment epoch, so nothing owed under its old one comes back),
+ * stops being the other computer's (`remoteOrigin` goes) and works fenced
+ * until the user here sends it a message (`adoptedFromLink`). The user's
+ * Wrap up or Reopen given there stands when it is newer than the one here
+ * (the rule `fromLinkedComputer` follows). Its timeline says what happened.
+ */
+function adoptedEvents(
+  command: CommandOf<"thread.import">,
+  adopted: ReadonlyArray<{
+    readonly thread: OrchestrationThread;
+    readonly override: OrchestrationThreadDoneOverride | undefined;
+  }>,
+  baseFor: EventBase,
+): PlannedEvent[] {
+  const at = command.createdAt;
+  const label = command.movedFrom.label;
+  return adopted.flatMap(({ thread, override }): PlannedEvent[] => {
+    const epoch = thread.parentAttachmentEpoch + 1;
+    const newer =
+      override !== undefined &&
+      (thread.doneOverride === null ||
+        Date.parse(thread.doneOverride.at) < Date.parse(override.at));
+    return [
+      {
+        ...baseFor(thread.id),
+        type: "thread.parent-attachment-set",
+        payload: {
+          threadId: thread.id,
+          attached: true,
+          attachmentEpoch: epoch,
+          at,
+          adoptedBy: {
+            parentThreadId: command.threadId,
+            fromLink: { environmentId: command.movedFrom.environmentId, label, fenced: true },
+          },
+        },
+      },
+      ...(newer
+        ? [
+            {
+              ...baseFor(thread.id),
+              type: "thread.done-override-set" as const,
+              payload: { threadId: thread.id, state: override.state, at: override.at },
+            },
+          ]
+        : []),
+      {
+        ...baseFor(thread.id),
+        type: "thread.activity-appended",
+        payload: {
+          threadId: thread.id,
+          activity: {
+            id: EventId.make(`adopted-by-moved-parent:${thread.id}:${epoch}`),
+            tone: "info",
+            kind: AdoptedByMovedParentActivityKind,
+            summary: `'${command.title}' moved here from ${label}, and this is its thread again. Its agent can't use other threads, rooms or schedules here until you send it a message.`,
+            payload: { parentThreadId: command.threadId, fromLabel: label },
+            turnId: null,
+            createdAt: at,
+          },
+        },
+      },
+    ];
+  });
+}
+
+/** Activity on a thread its parent took back when it moved here (Part 3f, (g)). */
+export const AdoptedByMovedParentActivityKind = "thread.adopted-by-moved-parent";
 
 /**
  * Why a thread moving across the link its work came over can't land as it

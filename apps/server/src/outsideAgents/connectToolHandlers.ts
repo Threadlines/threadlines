@@ -473,10 +473,16 @@ const newestReply = (
 const TAKEN_BACK =
   "Your message was taken back before it was sent: the user pressed Stop or removed it, its turn didn't finish, or you may no longer send there. Read the thread, then send again if it still makes sense.";
 
-/** Whether `messageId` is neither in the thread nor waiting in its queue. */
-const messageTakenBack = (thread: OrchestrationThread, messageId: string) =>
-  !thread.messages.some((message) => message.id === messageId) &&
-  !(thread.queuedFollowUps ?? []).some((queued) => queued.messageId === messageId);
+/**
+ * Whether `messageId` never reached the agent: it left the queue unsent (so
+ * it is neither in the thread nor waiting there), or its turn was refused or
+ * stopped before it started (`notSent`).
+ */
+const messageTakenBack = (thread: OrchestrationThread, messageId: string) => {
+  const message = thread.messages.find((entry) => entry.id === messageId);
+  if (message !== undefined) return message.notSent === true;
+  return !(thread.queuedFollowUps ?? []).some((queued) => queued.messageId === messageId);
+};
 
 /** The caller's messages waiting in the thread's queue, for a result; nothing when none. */
 const queuedOf = (caller: OutsideAgentCaller, thread: OrchestrationThread | undefined) => {

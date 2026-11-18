@@ -1603,3 +1603,155 @@ describe("decider on a child's computer", () => {
     expect((await run(reopened.model, wrap("done", 25, "late-linked-wrap"))).events).toEqual([]);
   });
 });
+
+describe("decider for a link's thread its asker took back (Part 3f, (g))", () => {
+  const origin = {
+    linkDeviceId: "device-windows",
+    environmentId: EnvironmentId.make("env-windows"),
+    environmentPinned: true,
+    environmentLabel: "Windows PC",
+    threadId: ThreadId.make("windows-parent"),
+    threadTitle: "Ship the 0.6 release",
+  };
+  const running = {
+    turnId: TurnId.make("user-turn"),
+    state: "running" as const,
+    requestedAt: at(1),
+    startedAt: at(1),
+    completedAt: null,
+    assistantMessageId: null,
+  };
+  const session = {
+    threadId: CHILD,
+    status: "running" as const,
+    providerName: "codex",
+    runtimeMode: "auto" as const,
+    activeTurnId: TurnId.make("user-turn"),
+    lastError: null,
+    updatedAt: at(1),
+  };
+  /** The same thread, still the link's, and taken back as a child here. */
+  const stillTheLinks = readModel([
+    thread(CHILD, { remoteOrigin: origin, latestTurn: running, session }),
+  ]);
+  const takenBack = readModel([
+    thread(CHILD, {
+      remoteOrigin: null,
+      adoptedFromLink: { environmentId: origin.environmentId, label: "Windows PC", fenced: true },
+      latestTurn: running,
+      session,
+    }),
+  ]);
+  const byLink = { byLink: "device-windows" };
+
+  it("a stop, a Wrap up or an answer's record the link asked for is refused once it isn't the link's", async () => {
+    const stop = {
+      type: "thread.session.stop" as const,
+      commandId: CommandId.make("link-stop"),
+      threadId: CHILD,
+      createdAt: at(10),
+      ...byLink,
+    };
+    const wrap = {
+      type: "thread.done-override.set" as const,
+      commandId: CommandId.make("link-wrap"),
+      threadId: CHILD,
+      state: "done" as const,
+      at: at(10),
+      fromLinkedComputer: true,
+      ...byLink,
+    };
+    const record = {
+      type: "thread.remote-handed-back.record" as const,
+      commandId: CommandId.make("link-record"),
+      threadId: CHILD,
+      turnId: TurnId.make("user-turn"),
+      createdAt: at(10),
+      ...byLink,
+    };
+    expect((await run(stillTheLinks, stop)).events.length).toBeGreaterThan(0);
+    expect((await run(stillTheLinks, wrap)).events.length).toBeGreaterThan(0);
+    expect(await refused(stillTheLinks, record)).toBe(false);
+
+    expect(await refused(takenBack, stop)).toBe(true);
+    expect(await refused(takenBack, wrap)).toBe(true);
+    expect(await refused(takenBack, record)).toBe(true);
+    // This computer's own stop still stops it.
+    const { byLink: _, ...own } = stop;
+    expect((await run(takenBack, own)).events.length).toBeGreaterThan(0);
+  });
+
+  it("a link's queued request is taken back, not run, once the thread isn't the link's", async () => {
+    const messageId = MessageId.make("link-message");
+    const queued = {
+      messageId,
+      text: "Add the security fixes too.",
+      attachments: [],
+      fromThread: {
+        threadId: origin.threadId,
+        requestId: ChildRequestId.make("send-1"),
+        kind: "request" as const,
+        environmentId: origin.environmentId,
+      },
+      runtimeMode: "auto" as const,
+      interactionMode: "default" as const,
+      createdAt: at(2),
+    };
+    const idle = { latestTurn: null, session: null, queuedFollowUps: [queued] };
+    const sendQueued = {
+      type: "thread.follow-up.send-queued" as const,
+      commandId: CommandId.make("send-queued"),
+      threadId: CHILD,
+      messageId,
+      createdAt: at(10),
+    };
+    const sent = await run(
+      readModel([thread(CHILD, { remoteOrigin: origin, ...idle })]),
+      sendQueued,
+    );
+    expect(sent.events.map((event) => event.type)).toContain("thread.turn-start-requested");
+    const taken = await run(
+      readModel([thread(CHILD, { remoteOrigin: null, ...idle })]),
+      sendQueued,
+    );
+    expect(taken.events.map((event) => event.type)).toEqual(["thread.follow-up-unqueued"]);
+    expect(taken.events[0]?.payload).toMatchObject({ reason: "cancelled" });
+  });
+});
+
+describe("decider: a stop meant for one turn", () => {
+  const turn = (turnId: string) => ({
+    latestTurn: {
+      turnId: TurnId.make(turnId),
+      state: "running" as const,
+      requestedAt: at(1),
+      startedAt: at(1),
+      completedAt: null,
+      assistantMessageId: null,
+    },
+    session: {
+      threadId: CHILD,
+      status: "running" as const,
+      providerName: "codex",
+      runtimeMode: "auto" as const,
+      activeTurnId: TurnId.make(turnId),
+      lastError: null,
+      updatedAt: at(1),
+    },
+  });
+  const stop = (expectedTurnId: string | null) => ({
+    type: "thread.session.stop" as const,
+    commandId: CommandId.make(`stop-${expectedTurnId}`),
+    threadId: CHILD,
+    expectedTurnId: expectedTurnId === null ? null : TurnId.make(expectedTurnId),
+    createdAt: at(10),
+  });
+
+  it("never ends the turn that began after it was decided", async () => {
+    // The link's turn ended and the user's began before the stop landed.
+    const usersTurn = readModel([thread(CHILD, turn("user-turn"))]);
+    expect(await refused(usersTurn, stop("link-turn"))).toBe(true);
+    expect(await refused(usersTurn, stop(null))).toBe(true);
+    expect((await run(usersTurn, stop("user-turn"))).events.length).toBeGreaterThan(0);
+  });
+});

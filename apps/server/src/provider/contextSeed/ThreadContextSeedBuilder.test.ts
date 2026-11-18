@@ -196,7 +196,7 @@ describe("ThreadContextSeedBuilder", () => {
     expect(value.entries.map((entry) => entry.text)).toEqual(["previous context"]);
   });
 
-  it("holds only messages an agent was given: never a queued or not-sent pass", async () => {
+  it("holds only messages an agent was given: never a queued or not-sent message", async () => {
     const thread = {
       ...fakeThread(
         [
@@ -216,6 +216,15 @@ describe("ThreadContextSeedBuilder", () => {
             text: "refused at its ceiling",
             notSent: true,
             createdAt: "2026-01-01T00:00:03Z",
+          } as FakeMessage,
+          // An outside agent's message whose turn never ran.
+          {
+            id: "outside-refused",
+            role: "user",
+            text: "outside, never ran",
+            fromOutside: { connectionId: "connection-1", name: "Claude Code" },
+            notSent: true,
+            createdAt: "2026-01-01T00:00:03.5Z",
           } as FakeMessage,
           { id: "current", role: "user", text: "switch now", createdAt: "2026-01-01T00:00:04Z" },
         ],

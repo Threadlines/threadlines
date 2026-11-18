@@ -37,6 +37,7 @@ import {
   ThreadNativeSession,
   ThreadMoveOutcome,
   ThreadMoveRestore,
+  ThreadAdoptedFromLink,
   ThreadRemoteOrigin,
   OrchestrationOutsideWork,
   OutsideAgentRef,
@@ -191,6 +192,8 @@ export const ProjectionThread = Schema.Struct({
   archivedWithParentAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   /** See `OrchestrationThread.remoteOrigin`. Absent or null reads as none. */
   remoteOrigin: Schema.optional(Schema.NullOr(ThreadRemoteOrigin)),
+  /** See `OrchestrationThread.adoptedFromLink`. Absent or null reads as none. */
+  adoptedFromLink: Schema.optional(Schema.NullOr(ThreadAdoptedFromLink)),
   /** See `OrchestrationThread.scheduledRun`. Absent or null reads as none. */
   scheduledRun: Schema.optional(Schema.NullOr(ThreadScheduledRun)),
   /** See `OrchestrationThread.worktreeOrigin`. Absent or null reads as none. */
@@ -263,6 +266,11 @@ export const ListProjectionThreadsByRemoteLinkInput = Schema.Struct({
 export type ListProjectionThreadsByRemoteLinkInput =
   typeof ListProjectionThreadsByRemoteLinkInput.Type;
 
+export const ListProjectionAdoptedChildrenInput = Schema.Struct({
+  parentThreadId: ThreadId,
+});
+export type ListProjectionAdoptedChildrenInput = typeof ListProjectionAdoptedChildrenInput.Type;
+
 /**
  * ProjectionThreadRepositoryShape - Service API for projected thread records.
  */
@@ -296,6 +304,19 @@ export interface ProjectionThreadRepositoryShape {
    */
   readonly listIdsByRemoteLink: (
     input: ListProjectionThreadsByRemoteLinkInput,
+  ) => Effect.Effect<ReadonlyArray<ThreadId>, ProjectionRepositoryError>;
+
+  /**
+   * Ids of `parentThreadId`'s children that it took back over a link when it
+   * moved here (`adoptedFromLink`), deleted ones included.
+   */
+  readonly listAdoptedChildIds: (
+    input: ListProjectionAdoptedChildrenInput,
+  ) => Effect.Effect<ReadonlyArray<ThreadId>, ProjectionRepositoryError>;
+
+  /** Ids of `parentThreadId`'s attached children that aren't deleted. */
+  readonly listAttachedChildIds: (
+    input: ListProjectionAdoptedChildrenInput,
   ) => Effect.Effect<ReadonlyArray<ThreadId>, ProjectionRepositoryError>;
 
   /**

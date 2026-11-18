@@ -67,6 +67,7 @@ import {
   ThreadMovedFrom,
   ThreadMoveOutcome,
   ThreadMoveRestore,
+  ThreadAdoptedFromLink,
   ThreadRemoteOrigin,
   ThreadScheduledRun,
   ThreadWorktreeOrigin,
@@ -185,6 +186,7 @@ type ThreadLineageRow = Pick<
   | "movedFrom"
   | "lastMoveOutcome"
   | "moveRestoreOwed"
+  | "adoptedFromLink"
   | "historySeedOwed"
   | "historySeedMessageId"
   | "nativeSession"
@@ -201,6 +203,7 @@ const threadLineageFields = (row: ThreadLineageRow) => ({
   archivedWithParentAt: row.archivedWithParentAt ?? null,
   childRequests: row.childRequests ?? EMPTY_CHILD_REQUEST_STATE,
   ...(row.remoteOrigin ? { remoteOrigin: row.remoteOrigin } : {}),
+  ...(row.adoptedFromLink ? { adoptedFromLink: row.adoptedFromLink } : {}),
   ...(row.scheduledRun ? { scheduledRun: row.scheduledRun } : {}),
   ...(row.worktreeOrigin ? { worktreeOrigin: row.worktreeOrigin } : {}),
   ...(row.outsideOrigin ? { outsideOrigin: row.outsideOrigin } : {}),
@@ -243,6 +246,7 @@ const shellLineageFields = (row: ThreadLineageRow) => {
     awaitedChildThreadCount: awaitedChildRequestCount(childRequests),
     pendingChildApproval: hasPendingChildApproval(childRequests),
     ...(row.remoteOrigin ? { remoteOrigin: row.remoteOrigin } : {}),
+    ...(row.adoptedFromLink ? { adoptedFromLink: row.adoptedFromLink } : {}),
     ...(row.scheduledRun ? { scheduledRun: row.scheduledRun } : {}),
     ...(row.worktreeOrigin ? { worktreeOrigin: row.worktreeOrigin } : {}),
     ...(row.outsideOrigin ? { outsideOrigin: row.outsideOrigin } : {}),
@@ -326,6 +330,7 @@ const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
     movedFrom: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadMovedFrom))),
     lastMoveOutcome: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadMoveOutcome))),
     moveRestoreOwed: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadMoveRestore))),
+    adoptedFromLink: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadAdoptedFromLink))),
   }),
 );
 const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
@@ -983,6 +988,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           moved_from_json AS "movedFrom",
           last_move_outcome_json AS "lastMoveOutcome",
           move_restore_owed_json AS "moveRestoreOwed",
+          adopted_from_link_json AS "adoptedFromLink",
           history_seed_owed AS "historySeedOwed",
           history_seed_message_id AS "historySeedMessageId",
           native_session AS "nativeSession",
@@ -1055,6 +1061,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           moved_from_json AS "movedFrom",
           last_move_outcome_json AS "lastMoveOutcome",
           move_restore_owed_json AS "moveRestoreOwed",
+          adopted_from_link_json AS "adoptedFromLink",
           history_seed_owed AS "historySeedOwed",
           history_seed_message_id AS "historySeedMessageId",
           native_session AS "nativeSession",
@@ -1129,6 +1136,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           moved_from_json AS "movedFrom",
           last_move_outcome_json AS "lastMoveOutcome",
           move_restore_owed_json AS "moveRestoreOwed",
+          adopted_from_link_json AS "adoptedFromLink",
           history_seed_owed AS "historySeedOwed",
           history_seed_message_id AS "historySeedMessageId",
           native_session AS "nativeSession",
@@ -1973,6 +1981,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           moved_from_json AS "movedFrom",
           last_move_outcome_json AS "lastMoveOutcome",
           move_restore_owed_json AS "moveRestoreOwed",
+          adopted_from_link_json AS "adoptedFromLink",
           history_seed_owed AS "historySeedOwed",
           history_seed_message_id AS "historySeedMessageId",
           native_session AS "nativeSession",
@@ -3810,6 +3819,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     moved_from_json AS "movedFrom",
     last_move_outcome_json AS "lastMoveOutcome",
     move_restore_owed_json AS "moveRestoreOwed",
+    adopted_from_link_json AS "adoptedFromLink",
     history_seed_owed AS "historySeedOwed",
     history_seed_message_id AS "historySeedMessageId",
     native_session AS "nativeSession",

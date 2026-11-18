@@ -120,7 +120,7 @@ import {
   heldRequestEnded,
   isHeldByContinueAtReset,
 } from "./childThreadDelivery.ts";
-import { turnLiftsMoveFence } from "./linkFence.ts";
+import { NOT_THE_LINKS_THREAD, stillLinksThread, turnLiftsMoveFence } from "./linkFence.ts";
 import { projectEvent } from "./projector.ts";
 import { checkoutSelectedEvents, leavesLentWorktree, movesCheckout } from "./threadCheckout.ts";
 import { canReplaceThreadTitle } from "./threadTitle.ts";
@@ -355,7 +355,7 @@ const personWrote = (command: {
  * is `notSent`, one line in the thread, and a note for the lead's next turn
  * when it is still there. `from` is where it was refused: taken off the
  * queue (the unqueue marks it), or after the queue let it go, right before
- * it reached the agent (`thread.lead-pass.not-run`).
+ * it reached the agent (`thread.message.not-run`).
  */
 function passCeilingCancelEvents(
   readModel: OrchestrationReadModel,
@@ -469,6 +469,25 @@ function withoutGoalWaitMark(
       payload: { threadId: command.threadId, goal: unmarked, updatedAt: command.createdAt },
     },
   ];
+}
+
+/**
+ * Marks an outside agent's message that never reached the agent `notSent`
+ * (docs/design/outside-agents.md): the event every client already reads as
+ * "never reached the agent" (`thread.continue-at-reset-skipped`, named for
+ * its first use). The failure or note beside it says why.
+ */
+function outsideNotSentEvent(
+  base: Omit<OrchestrationEvent, "sequence" | "type" | "payload">,
+  threadId: ThreadId,
+  messageId: MessageId,
+  createdAt: string,
+): PlannedOrchestrationEvent {
+  return {
+    ...base,
+    type: "thread.continue-at-reset-skipped",
+    payload: { threadId, messageId, skippedAt: createdAt },
+  };
 }
 
 type DecideOrchestrationCommandResult =
@@ -1263,7 +1282,10 @@ const decideWaitEndOnStop = Effect.fn("decideWaitEndOnStop")(function* (
 });
 
 /** The turn a Stop is for: the one running now, if any. */
-function turnBeingStopped(thread: OrchestrationThread): TurnId | undefined {
+/** Why a stop meant for one turn is refused: the thread is at another one. */
+export const STOP_TURN_MOVED_ON = "The turn it meant to stop isn't the one running now.";
+
+export function turnBeingStopped(thread: OrchestrationThread): TurnId | undefined {
   return (
     thread.session?.activeTurnId ??
     (thread.latestTurn?.state === "running" ? thread.latestTurn.turnId : undefined) ??
@@ -2190,7 +2212,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       ) {
         return [];
       }
-      // A word from the parent's computer never takes back a newer one given here.
+      // A word from the parent's computer counts only while the thread is
+      // still that link's (Part 3f, (g)), and never takes back a newer one
+      // given here.
+      if (!stillLinksThread(thread, command.byLink)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: NOT_THE_LINKS_THREAD,
+        });
+      }
       const fromLinkedComputer = command.fromLinkedComputer === true;
       if (
         fromLinkedComputer &&
@@ -2635,12 +2665,37 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       );
     }
 
-    // Refused right before it reached the agent (the provider reactor's last
-    // check): marked, said once, and the lead hears on its next turn.
-    case "thread.lead-pass.not-run": {
+    // Never reached the agent after the queue let it go (the provider
+    // reactor's last check, Stop, or a start that failed): a message no one
+    // can send again is marked, so no history carries it.
+    case "thread.message.not-run": {
       const target = yield* requireThread({ readModel, command, threadId: command.threadId });
       const message = target.messages.find((entry) => entry.id === command.messageId);
-      if (message === undefined || message.fromThread?.ceiling === undefined || message.notSent) {
+      if (message === undefined || message.notSent === true) {
+        return [];
+      }
+      // An outside agent's message: the failure already said why in the
+      // thread, and its tools tell the agent it was not sent. The event is
+      // the one every client already reads as "never reached the agent".
+      if (message.fromOutside !== undefined) {
+        return [
+          outsideNotSentEvent(
+            withEventBase({
+              aggregateKind: "thread",
+              aggregateId: target.id,
+              occurredAt: command.createdAt,
+              commandId: command.commandId,
+            }),
+            target.id,
+            message.id,
+            command.createdAt,
+          ),
+        ];
+      }
+      // A lead chat's pass, refused at its ceiling or stopped: marked, said
+      // once, and the lead hears on its next turn. One that failed otherwise
+      // can be sent again by the user, so it stays as it is.
+      if (message.fromThread?.ceiling === undefined || command.reason === "failed") {
         return [];
       }
       return passCeilingCancelEvents(
@@ -4203,6 +4258,17 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         });
         return [unqueuedEvent, ...outsideTurn];
       }
+      // A linked computer's request runs only while the thread is still that
+      // computer's (Part 3f, (g)): once the thread that asked took it back
+      // as a child here, it is taken back, so the queue moves on.
+      if (
+        queued.fromThread?.kind === "request" &&
+        queued.fromThread.environmentId !== undefined &&
+        (targetThread.remoteOrigin?.environmentId !== queued.fromThread.environmentId ||
+          targetThread.remoteOrigin.threadId !== queued.fromThread.threadId)
+      ) {
+        return [{ ...unqueuedEvent, payload: { ...unqueuedEvent.payload, reason: "cancelled" } }];
+      }
       // A message an agent queued (a hand-off, a routed reply, or a child
       // thread's report or request) goes only to the agent it was for. If that
       // agent left, it is taken back and its request cancelled, never handed
@@ -4906,6 +4972,23 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      // A linked computer's stop stops only a thread still its own (Part 3f, (g)).
+      if (!stillLinksThread(thread, command.byLink)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: NOT_THE_LINKS_THREAD,
+        });
+      }
+      // A stop meant for one turn never ends the next.
+      if (
+        command.expectedTurnId !== undefined &&
+        (turnBeingStopped(thread) ?? null) !== command.expectedTurnId
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: STOP_TURN_MOVED_ON,
+        });
+      }
       const base = () =>
         withEventBase({
           aggregateKind: "thread",

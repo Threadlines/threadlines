@@ -36,7 +36,11 @@ import {
   withUnqueuedAgentMessage,
 } from "@threadlines/shared/roomAgentRequests";
 import { applyAgentPagePublication } from "@threadlines/shared/agentPages";
-import { movedFromAfter, nextThreadMoveState } from "@threadlines/shared/threadMoveProjection";
+import {
+  adoptedFromLinkAfterLift,
+  movedFromAfter,
+  nextThreadMoveState,
+} from "@threadlines/shared/threadMoveProjection";
 import { withQueuedFollowUp } from "@threadlines/shared/queuedFollowUps";
 import {
   applyCommandRequestDismissed,
@@ -1179,6 +1183,16 @@ export function projectEvent(
           threads: updateThread(nextBase.threads, payload.threadId, {
             attachedToParent: payload.attached,
             parentAttachmentEpoch: payload.attachmentEpoch,
+            // Taken back by the thread that started it over a link, which
+            // moved here (ThreadAdoptedFromLink): this computer's child now.
+            ...(payload.adoptedBy !== undefined
+              ? {
+                  parentThreadId: payload.adoptedBy.parentThreadId,
+                  parentTurnId: null,
+                  remoteOrigin: null,
+                  adoptedFromLink: payload.adoptedBy.fromLink,
+                }
+              : {}),
           }),
         })),
       );
@@ -1237,7 +1251,10 @@ export function projectEvent(
               participants,
               // The user here took a thread that moved here over: its fence lifts.
               ...(payload.liftsMoveFence === true
-                ? { movedFrom: movedFromAfter(thread.movedFrom, { liftsFence: true }) }
+                ? {
+                    movedFrom: movedFromAfter(thread.movedFrom, { liftsFence: true }),
+                    adoptedFromLink: adoptedFromLinkAfterLift(thread.adoptedFromLink),
+                  }
                 : {}),
               // What the turn is sent with, and its messages stamped with.
               sentModels: recordTurnModel(

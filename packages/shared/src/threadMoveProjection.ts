@@ -21,6 +21,7 @@ import type {
   OrchestrationThreadMove,
   ThreadMoveOutcome,
   ThreadMoveOutcomeReason,
+  ThreadAdoptedFromLink,
   ThreadMovedFrom,
   ThreadPendingMove,
 } from "@threadlines/contracts";
@@ -239,6 +240,18 @@ export function movedFromAfter<T extends ThreadMovedFrom | null | undefined>(
     ...(lift || fenced === undefined ? {} : { fenced }),
     ...(clear || pullRequestSwitches === undefined ? {} : { pullRequestSwitches }),
   } as T;
+}
+
+/**
+ * Where an adopted thread was started from (ThreadAdoptedFromLink), after a
+ * message the user sent here lifted the fence (`liftsMoveFence`, the same
+ * event that lifts a moved thread's). The same object when it isn't fenced.
+ */
+export function adoptedFromLinkAfterLift<T extends ThreadAdoptedFromLink | null | undefined>(
+  adopted: T,
+): T {
+  if (adopted === null || adopted === undefined || !adopted.fenced) return adopted;
+  return { ...adopted, fenced: false } as T;
 }
 
 /** A thread's pull request switches, as a move carries them (own switch, then each linked one). */

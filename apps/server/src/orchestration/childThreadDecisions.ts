@@ -57,6 +57,7 @@ import { activeParticipants } from "@threadlines/shared/threadParticipants";
 
 import { handOffReplyText } from "./agentRequestDecisions.ts";
 import { isProjectLeadThread } from "./commandInvariants.ts";
+import { NOT_THE_LINKS_THREAD, stillLinksThread } from "./linkFence.ts";
 
 import { checkoutSelectedEvents } from "./threadCheckout.ts";
 import { currentAgentModel, messageAgentModels } from "./messageAgentModels.ts";
@@ -1225,6 +1226,10 @@ export function decideRemoteHandedBackRecord(
   command: CommandOf<"thread.remote-handed-back.record">,
   baseFor: ChildEventBase,
 ): ChildThreadDecision {
+  // Only on a thread still that link's (Part 3f, (g)).
+  if (!stillLinksThread(thread, command.byLink)) {
+    return refuse(NOT_THE_LINKS_THREAD);
+  }
   const latest = thread.latestTurn;
   if (
     latest === null ||
@@ -1528,6 +1533,58 @@ export function cameHomeEvents(
   from: { readonly environmentId: EnvironmentId; readonly threadId: ThreadId },
   at: string,
 ): ReadonlyArray<PlannedEvent> {
+  return remoteChildGoneEvents(
+    readModel,
+    baseFor,
+    parent,
+    from,
+    at,
+    (titles, label) =>
+      `${quotedList(titles)} moved back to this computer before it answered from ${label}. Send it the message again here.`,
+  );
+}
+
+/**
+ * Threads a moved parent's agent started on the computer it moved to, which
+ * that computer took back as the parent's children there (`adopted` on the
+ * move's answer, docs/design/fleet.md, Part 3f, (g)), on the parent's
+ * read-only copy here, in the decision that records the move: their records
+ * go, and the requests still open for them settle as cancelled.
+ */
+export function adoptedThereEvents(
+  readModel: OrchestrationReadModel,
+  baseFor: ChildEventBase,
+  parent: OrchestrationThread,
+  environmentId: EnvironmentId,
+  threadIds: ReadonlyArray<ThreadId>,
+  at: string,
+): ReadonlyArray<PlannedEvent> {
+  return [...new Set(threadIds)].flatMap((threadId) =>
+    remoteChildGoneEvents(
+      readModel,
+      baseFor,
+      parent,
+      { environmentId, threadId },
+      at,
+      (titles, label) =>
+        `${quotedList(titles)} is this thread's again on ${label}, so its answer won't come back here.`,
+    ),
+  );
+}
+
+/**
+ * A parent's record of its child on a linked computer goes, and the
+ * requests still open for it there settle as cancelled with `words`. None
+ * when the parent holds no such record.
+ */
+function remoteChildGoneEvents(
+  readModel: OrchestrationReadModel,
+  baseFor: ChildEventBase,
+  parent: OrchestrationThread,
+  from: { readonly environmentId: EnvironmentId; readonly threadId: ThreadId },
+  at: string,
+  words: (titles: ReadonlyArray<string>, label: string) => string,
+): ReadonlyArray<PlannedEvent> {
   const record = (parent.childRequests.remoteChildren ?? []).find(
     (entry) => entry.environmentId === from.environmentId && entry.threadId === from.threadId,
   );
@@ -1538,15 +1595,8 @@ export function cameHomeEvents(
       (request.childThreadId === from.threadId || request.remote.threadId === from.threadId),
   );
   return [
-    ...settleOpenRequests(
-      readModel,
-      baseFor,
-      parent,
-      open,
-      "cancelled",
-      at,
-      (titles) =>
-        `${quotedList(titles)} moved back to this computer before it answered from ${record.label}. Send it the message again here.`,
+    ...settleOpenRequests(readModel, baseFor, parent, open, "cancelled", at, (titles) =>
+      words(titles, record.label),
     ),
     {
       ...baseFor(parent.id),

@@ -1006,6 +1006,31 @@ describe("thread_wait", () => {
       });
     }),
   );
+
+  it.effect("says a message whose turn never ran was taken back, so the agent can send again", () =>
+    Effect.gen(function* () {
+      const refused = ownThread("refused");
+      const world = yield* makeWorld({
+        threads: [
+          {
+            ...refused,
+            messages: refused.messages.map((message) => ({ ...message, notSent: true as const })),
+          },
+        ],
+      });
+      expect(
+        yield* world.handlers.thread_wait(CALLER, {
+          threadId: "refused",
+          messageId: "refused-first",
+        }),
+      ).toMatchObject({ outcome: "taken_back" });
+      // The agent's read labels it too.
+      const read = yield* world.handlers.thread_read(CALLER, { threadId: "refused" });
+      expect(read.messages.find((message) => message.messageId === "refused-first")).toMatchObject({
+        notSent: true,
+      });
+    }),
+  );
 });
 
 describe("connect tools: the assistants door", () => {

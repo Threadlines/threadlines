@@ -3780,12 +3780,23 @@ function applyEnvironmentOrchestrationEvent(
             },
       );
 
-    case "thread.parent-attachment-set":
+    case "thread.parent-attachment-set": {
+      // Taken back by the thread that started it over a link, which moved
+      // here: a child here now, no longer the other computer's.
+      const adoptedBy = event.payload.adoptedBy;
       return updateThreadState(state, event.payload.threadId, (thread) =>
-        (thread.attachedToParent ?? false) === event.payload.attached
-          ? thread
-          : { ...thread, attachedToParent: event.payload.attached },
+        adoptedBy !== undefined
+          ? {
+              ...thread,
+              attachedToParent: event.payload.attached,
+              parentThreadId: adoptedBy.parentThreadId,
+              remoteOrigin: null,
+            }
+          : (thread.attachedToParent ?? false) === event.payload.attached
+            ? thread
+            : { ...thread, attachedToParent: event.payload.attached },
       );
+    }
 
     case "thread.approval-response-requested":
     case "thread.user-input-response-requested":

@@ -119,6 +119,25 @@ const raiseTo = (runtimeMode: RuntimeMode): OrchestrationCommand => ({
 });
 
 describe("decider outside agents", () => {
+  it("marks the agent's message never sent when its turn never ran, and nothing else", async () => {
+    const created = await outsideThread();
+    const ran = await run(created.model, outsideTurn("refused"));
+    const notRun = (reason: "ceiling" | "stopped" | "failed", id: string) =>
+      run(ran.model, {
+        type: "thread.message.not-run",
+        commandId: CommandId.make(`not-run-${id}`),
+        threadId: THREAD,
+        messageId: MessageId.make(id),
+        reason,
+        createdAt: at(3),
+      });
+    const refused = await notRun("ceiling", "refused");
+    expect(refused.model.threads[0]?.messages[0]?.notSent).toBe(true);
+    // The failure beside it already said why: no lead note, no second line.
+    expect(refused.events.map((event) => event.type)).toEqual(["thread.continue-at-reset-skipped"]);
+    expect((await notRun("failed", "refused")).model.threads[0]?.messages[0]?.notSent).toBe(true);
+  });
+
   it("labels the thread and every message the agent writes with its name", async () => {
     const created = await outsideThread();
     expect(created.model.threads[0]?.outsideOrigin).toEqual(AGENT);

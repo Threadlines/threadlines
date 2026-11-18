@@ -49,6 +49,7 @@ import {
   ProviderAdapterRequestError,
   ProviderAdapterSessionClosedError,
   ProviderAdapterSessionNotFoundError,
+  ProviderSessionDirectoryPersistenceError,
   ProviderUnsupportedError,
   ProviderValidationError,
   type ProviderAdapterError,
@@ -884,6 +885,64 @@ it.effect("ProviderServiceLive reports a failure under the category the agent na
       recorded.find((entry) => entry.event === event)?.properties?.failureCategory;
     assert.equal(categoryOf("provider.runtime.error"), "rate_limit");
     assert.equal(categoryOf("provider.turn.failed"), "rate_limit");
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("ProviderServiceLive keeps a turn the provider took when a write after it fails", () =>
+  Effect.gen(function* () {
+    const codex = makeFakeCodexAdapter();
+    const registry = makeAdapterRegistryMock({
+      [ProviderDriverKind.make("codex")]: codex.adapter,
+    });
+    const realDirectory = ProviderSessionDirectoryLive.pipe(
+      Layer.provide(
+        ProviderSessionRuntimeRepositoryLive.pipe(Layer.provide(SqlitePersistenceMemory)),
+      ),
+    );
+    // The write that records the sent turn fails; every other write lands.
+    const directoryLayer = Layer.effect(
+      ProviderSessionDirectory,
+      Effect.gen(function* () {
+        const real = yield* ProviderSessionDirectory;
+        return {
+          ...real,
+          upsert: (binding) =>
+            binding.runtimePayload !== undefined &&
+            (binding.runtimePayload as { lastRuntimeEvent?: unknown }).lastRuntimeEvent ===
+              "provider.sendTurn"
+              ? Effect.fail(
+                  new ProviderSessionDirectoryPersistenceError({
+                    operation: "upsert",
+                    detail: "disk full in test harness",
+                  }),
+                )
+              : real.upsert(binding),
+        };
+      }),
+    ).pipe(Layer.provide(realDirectory));
+    const providerLayer = makeProviderServiceLive().pipe(
+      Layer.provide(ThreadSessionAdmissionPermissive),
+      Layer.provide(Layer.succeed(ProviderAdapterRegistry, registry)),
+      Layer.provide(directoryLayer),
+      Layer.provide(defaultServerSettingsLayer),
+      Layer.provideMerge(AnalyticsService.layerTest),
+      Layer.provide(Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers)),
+    );
+
+    const sent = yield* Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const threadId = asThreadId("thread-write-fails");
+      yield* provider.startSession(threadId, {
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+      return yield* provider.sendTurn({ threadId, input: "hello" }).pipe(Effect.exit);
+    }).pipe(Effect.provide(providerLayer));
+
+    // The agent has the message: the turn is not reported as never started.
+    assert.equal(Exit.isSuccess(sent), true);
   }).pipe(Effect.provide(NodeServices.layer)),
 );
 
