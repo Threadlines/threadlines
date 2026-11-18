@@ -992,6 +992,16 @@ export function withMoveFamilies<TThreadId extends string>(
   return [...out];
 }
 
+/**
+ * A child's choice to move with its family (docs/design/fleet.md, Part 3f,
+ * (h)): "Move its whole family (4 threads)", the count when the server gave it.
+ */
+export function describeChildFamilyMove(familySize: number | undefined): string {
+  return familySize === undefined
+    ? "Move its whole family"
+    : `Move its whole family (${familySize} threads)`;
+}
+
 /** "Its 3 threads move with it", for the threads of a family ticked to come. */
 export function describeFamilyComing(count: number): string {
   return count === 0

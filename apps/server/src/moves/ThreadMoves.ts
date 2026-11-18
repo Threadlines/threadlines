@@ -77,13 +77,15 @@ import {
 import {
   firstMoveBlock,
   holdsFamily,
+  fencedMoveRefusal,
   moveWaitsOf,
+  remoteOriginElsewhereWords,
   threadMoveRefusal,
   threadMoveRefusals,
   type ThreadMoveView,
 } from "../orchestration/threadMoveDecisions.ts";
 import { ThreadActionGate } from "./ThreadActionGate.ts";
-import { familyManifestOf, familyThreadIdsOf } from "./familyMove.ts";
+import { familyManifestOf, familyThreadIdsOf, linkLineageOf } from "./familyMove.ts";
 import {
   cantComeWords,
   movingRoomAgents,
@@ -287,6 +289,7 @@ export function takesOf(peer: PeerDescriptor): ThreadMoveTakes {
     ...(peer.moveRooms === true ? { rooms: true as const } : {}),
     ...(peer.moveOutsideWork === true ? { outsideWork: true as const } : {}),
     ...(peer.moveFamilies === true ? { families: true as const } : {}),
+    ...(peer.moveLinkLineage === true ? { linkLineage: true as const } : {}),
   };
 }
 
@@ -398,18 +401,31 @@ export function targetPreviewOf(
   // What the thread has going that this computer doesn't take (Part 3e): it
   // needs a newer Threadlines, whatever else it has.
   const notTaken = carry === undefined ? null : carryNotTaken(carry, takesOf(peer));
+  // Another computer's agent started it, or a move brought it and no person
+  // here has taken it over yet: it goes back there only (Part 3f, (h)).
+  const origin = forThread?.thread.remoteOrigin ?? null;
+  const notHome =
+    origin !== null
+      ? origin.environmentId !== environmentId
+        ? remoteOriginElsewhereWords(origin.environmentLabel)
+        : null
+      : forThread === null
+        ? null
+        : fencedMoveRefusal(forThread.thread, { environmentId, label });
   const refusal =
     peer.moves !== true
       ? `${peer.label} needs a newer Threadlines to take moved threads.`
       : peer.access === "off"
         ? `${peer.label} doesn't take work from this computer.`
-        : notTaken !== null
-          ? `Update Threadlines on ${peer.label} to move this thread: ${notTaken}.`
-          : noProject
-            ? `${peer.label} doesn't have this project.`
-            : peer.agents.length === 0
-              ? `${peer.label} has no agent ready.`
-              : undefined;
+        : notHome !== null
+          ? notHome
+          : notTaken !== null
+            ? `Update Threadlines on ${peer.label} to move this thread: ${notTaken}.`
+            : noProject
+              ? `${peer.label} doesn't have this project.`
+              : peer.agents.length === 0
+                ? `${peer.label} has no agent ready.`
+                : undefined;
   const notes =
     carry === undefined || refusal !== undefined
       ? []
@@ -490,6 +506,7 @@ export function targetPreviewOf(
     ...(refusal !== undefined &&
     peer.moves === true &&
     peer.access !== "off" &&
+    notHome === null &&
     notTaken === null &&
     noProject
       ? { refusalCode: "no_project" as const }
@@ -506,6 +523,16 @@ export function targetPreviewOf(
     ...(peer.moveStagedApproval === true ? { stagedApproval: true } : {}),
     ...(sessionOutcomes.length > 0 ? { sessionOutcomes } : {}),
     ...(roomAgents.length > 0 ? { roomAgents } : {}),
+    // A child moves there without its parent only when it stays its child
+    // across the link (Part 3f, (h)); else its whole family has to come.
+    ...(forThread !== null &&
+    forThread.thread.parentThreadId !== null &&
+    forThread.thread.attachedToParent &&
+    peer.moveLinkLineage !== true
+      ? {
+          aloneRefusal: `Update Threadlines on ${peer.label} to move it without the thread that started it.`,
+        }
+      : {}),
   };
 }
 
@@ -836,6 +863,15 @@ const make = Effect.gen(function* () {
         }
       }
       const described = options.targets ?? (yield* describeTargets);
+      // Another computer's agent started it: it can only go back there, so a
+      // computer with no link to that one has nowhere to send it (Part 3f, (h)).
+      const origin = thread.remoteOrigin ?? null;
+      if (
+        origin !== null &&
+        !described.some((target) => target.environmentId === origin.environmentId)
+      ) {
+        refusal ??= `${remoteOriginElsewhereWords(origin.environmentLabel)} Link this computer to ${origin.environmentLabel} in Fleet first.`;
+      }
       // Sizes only: the files are read when the move packs them.
       const session =
         options.withSession === true ? yield* providers.exportNativeSession(thread.id) : undefined;
@@ -949,6 +985,25 @@ const make = Effect.gen(function* () {
       if (parent === undefined && children.length === 0 && remoteChildren.length === 0) {
         return undefined;
       }
+      // A child's whole family, should it move with it: the parent and its children here.
+      const familySize =
+        parent === undefined
+          ? undefined
+          : yield* readMoveContext(parent.id).pipe(
+              Effect.map((context) =>
+                context === null
+                  ? undefined
+                  : 1 +
+                    context.view.threads.filter(
+                      (entry) =>
+                        entry.parentThreadId === parent.id &&
+                        entry.attachedToParent &&
+                        entry.deletedAt === null &&
+                        entry.archivedAt === null,
+                    ).length,
+              ),
+              Effect.orElseSucceed(() => undefined),
+            );
       // Each child's own checks, as if it came with this thread: its parent's
       // move doesn't exist yet, so that check is left out.
       const rows = yield* Effect.forEach(children, (child) =>
@@ -976,7 +1031,15 @@ const make = Effect.gen(function* () {
         ),
       );
       return {
-        ...(parent !== undefined ? { parent: { threadId: parent.id, title: parent.title } } : {}),
+        ...(parent !== undefined
+          ? {
+              parent: {
+                threadId: parent.id,
+                title: parent.title,
+                ...(familySize !== undefined ? { familySize } : {}),
+              },
+            }
+          : {}),
         children: rows,
         remoteChildren,
       } satisfies NonNullable<ThreadMovePreview["family"]>;
@@ -1264,7 +1327,11 @@ const make = Effect.gen(function* () {
           readonly waitingForTarget?: boolean;
         }
       | { readonly kind: "abort"; readonly reason: string; readonly code: ThreadMoveAbortCode }
-      | { readonly kind: "complete"; readonly movedThreadId: ThreadId },
+      | {
+          readonly kind: "complete";
+          readonly movedThreadId: ThreadId;
+          readonly keptParent: boolean;
+        },
   ) =>
     Effect.gen(function* () {
       const createdAt = yield* nowIso;
@@ -1307,6 +1374,7 @@ const make = Effect.gen(function* () {
                 threadId,
                 transferId,
                 movedThreadId: step.movedThreadId,
+                ...(step.keptParent ? { keptParent: true as const } : {}),
                 createdAt,
               },
       );
@@ -1437,6 +1505,8 @@ const make = Effect.gen(function* () {
         yield* dispatchStep(threadId, transferId, {
           kind: "complete",
           movedThreadId: state.threadId,
+          // That computer's own word, over the link: it kept the parent (Part 3f, (h)).
+          keptParent: state.keptParent === true,
         });
       } else if (state.status === "aborted") {
         yield* dispatchStep(threadId, transferId, {
@@ -1527,6 +1597,12 @@ const make = Effect.gen(function* () {
           : familyManifestOf({ projects: model.projects, threads }, detail.value, moveFamily);
       const familyThreadIds =
         moveFamily === undefined ? undefined : familyThreadIdsOf(threads, moveFamily);
+      // Across the link its work came over (Part 3f, (h)), only for a
+      // computer that takes it back that way.
+      const linkLineage =
+        takes?.linkLineage === true && moveFamily === undefined
+          ? linkLineageOf(threads, detail.value, targetEnvironmentId)
+          : undefined;
       const source = {
         environmentId: descriptor.environmentId,
         environmentLabel: environment.currentLabel(),
@@ -1546,6 +1622,7 @@ const make = Effect.gen(function* () {
           outsideWork,
           family,
           familyThreadIds,
+          linkLineage,
         });
       }
       const { place, checkout } = yield* whereFrom(detail.value, project.workspaceRoot);
@@ -1555,6 +1632,7 @@ const make = Effect.gen(function* () {
         outsideWork,
         family,
         familyThreadIds,
+        linkLineage,
         git,
         checkout,
         transferId,

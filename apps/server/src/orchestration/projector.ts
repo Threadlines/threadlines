@@ -1047,7 +1047,7 @@ export function projectEvent(
       ).pipe(
         Effect.map((payload) =>
           updateChildRequests(nextBase, payload.threadId, (state) =>
-            childRequestStateOn.remoteChildUpdated(state, payload.child),
+            childRequestStateOn.remoteChildUpdated(state, payload.child, payload.removed),
           ),
         ),
       );

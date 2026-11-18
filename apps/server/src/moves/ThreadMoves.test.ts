@@ -32,6 +32,7 @@ import {
   sessionsThatFit,
 } from "./moveExport.ts";
 import { carryBringsWords, threadMoveCarry } from "../orchestration/threadMoveCarry.ts";
+import { linkLineageOf } from "./familyMove.ts";
 import { seenThroughOf } from "./roomMove.ts";
 import { NATIVE_SESSION_MAX_BYTES, type NativeSessionExport } from "../provider/nativeSession.ts";
 
@@ -400,6 +401,112 @@ describe("what a thread carries, as the dialog says it (Part 3e)", () => {
       carry,
     });
     expect(current.refusal).toBeUndefined();
+  });
+
+  it("a thread another computer's agent started goes only home, and says so per computer (Part 3f, (h))", () => {
+    const thread = threadWith({
+      remoteOrigin: {
+        linkDeviceId: "device-mac",
+        environmentId: MAC_MINI,
+        environmentPinned: true,
+        environmentLabel: "Mac mini",
+        threadId: ThreadId.make("thread-on-mac"),
+        threadTitle: "Ship it",
+      },
+    });
+    const carry = threadMoveCarry(view, thread);
+    const third = targetPreviewOf(
+      {
+        environmentId: EnvironmentId.make("environment-linux"),
+        label: "Linux box",
+        described: Option.some(peer({ moveThreadState: true, moveLinkLineage: true })),
+      },
+      { thread, place, carry },
+    );
+    expect(third.refusal).toBe(
+      "This thread was started by an agent on Mac mini, which still directs it. It can move back to Mac mini, not to another computer.",
+    );
+    expect(third.refusalCode).toBeUndefined();
+    expect(
+      targetPreviewOf(target(peer({ moveThreadState: true })), { thread, place, carry }).refusal,
+    ).toBe(
+      "Update Threadlines on Mac mini to move this thread: an agent on another computer started it.",
+    );
+    expect(
+      targetPreviewOf(target(peer({ moveThreadState: true, moveLinkLineage: true })), {
+        thread,
+        place,
+        carry,
+      }).refusal,
+    ).toBeUndefined();
+    // Its manifest names home only to home.
+    expect(linkLineageOf([thread], thread, MAC_MINI)).toEqual({
+      home: { parentThreadId: "thread-on-mac" },
+    });
+    expect(
+      linkLineageOf([thread], thread, EnvironmentId.make("environment-linux")),
+    ).toBeUndefined();
+  });
+
+  it("a moved thread still fenced is offered only the computer it came from (Part 3f, (h))", () => {
+    const thread = threadWith({
+      movedFrom: {
+        environmentId: MAC_MINI,
+        label: "Mac mini",
+        threadId: ThreadId.make("thread-on-mac"),
+        movedAt: "2026-11-17T10:00:00.000Z",
+        fenced: true,
+      },
+    });
+    const carry = threadMoveCarry(view, thread);
+    const described = peer({ moveThreadState: true, moveLinkLineage: true });
+    expect(
+      targetPreviewOf(
+        {
+          environmentId: EnvironmentId.make("environment-linux"),
+          label: "Linux box",
+          described: Option.some(described),
+        },
+        { thread, place, carry },
+      ).refusal,
+    ).toBe(
+      "This thread moved here from Mac mini, and until you send it a message here it can only move back to Mac mini.",
+    );
+    expect(targetPreviewOf(target(described), { thread, place, carry }).refusal).toBeUndefined();
+  });
+
+  it("a child moves alone only to a computer that keeps it its parent's (Part 3f, (h))", () => {
+    const parent = threadWith({
+      id: ThreadId.make("thread-parent"),
+      title: "Ship it",
+      deletedAt: null,
+    });
+    const child = threadWith({ parentThreadId: parent.id, attachedToParent: true });
+    const carry = threadMoveCarry(view, child);
+    expect(
+      targetPreviewOf(target(peer({ moveThreadState: true, moveFamilies: true })), {
+        thread: child,
+        place,
+        carry,
+      }).aloneRefusal,
+    ).toBe("Update Threadlines on Mac mini to move it without the thread that started it.");
+    expect(
+      targetPreviewOf(
+        target(peer({ moveThreadState: true, moveFamilies: true, moveLinkLineage: true })),
+        { thread: child, place, carry },
+      ).aloneRefusal,
+    ).toBeUndefined();
+    expect(linkLineageOf([parent, child], child, MAC_MINI)).toEqual({
+      remoteParent: { threadId: parent.id, title: "Ship it" },
+    });
+    // A parent whose own move is only queued waits for this one: still its parent there.
+    const queued = { ...parent, pendingMove: { requestId: "request-parent" } } as never;
+    expect(linkLineageOf([queued, child], child, MAC_MINI)).toEqual({
+      remoteParent: { threadId: parent.id, title: "Ship it" },
+    });
+    // One frozen for its own move can't be reached from there: it arrives as its own thread.
+    const frozen = { ...parent, move: { transferId: "transfer-parent" } } as never;
+    expect(linkLineageOf([frozen, child], child, MAC_MINI)).toBeUndefined();
   });
 
   it("warns per agent picked, in the server's words", () => {

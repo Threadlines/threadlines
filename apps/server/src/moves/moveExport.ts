@@ -21,6 +21,7 @@ import type {
   OrchestrationThread,
   OrchestrationThreadActivity,
   PeerMoveFamily,
+  PeerMoveLinkLineage,
   PeerMoveGitManifest,
   PeerMoveManifest,
   PeerMovePart,
@@ -499,6 +500,8 @@ export interface MoveExportInput {
   readonly family?: PeerMoveFamily | undefined;
   /** The family's members here, whose requests and reports keep their origin. */
   readonly familyThreadIds?: ReadonlySet<string> | undefined;
+  /** It moves across the link its work came over (Part 3f, (h)): see PeerMoveLinkLineage. */
+  readonly linkLineage?: PeerMoveLinkLineage | undefined;
 }
 
 /**
@@ -738,6 +741,7 @@ export function writeMoveExport(
       },
       ...session.manifest,
       ...(input.family !== undefined ? { family: input.family } : {}),
+      ...(input.linkLineage !== undefined ? { linkLineage: input.linkLineage } : {}),
     };
     yield* writeManifest(dir, manifest);
     return manifest;
@@ -820,6 +824,7 @@ function writeSharerExport(
       },
       ...session.manifest,
       ...(input.family !== undefined ? { family: input.family } : {}),
+      ...(input.linkLineage !== undefined ? { linkLineage: input.linkLineage } : {}),
     };
     yield* writeManifest(input.dir, manifest);
     return manifest;
@@ -1141,6 +1146,7 @@ export interface ScratchExportInput {
   /** Its family (Part 3f, (g)): a general chat has its own folder, so it shares none. */
   readonly family?: PeerMoveFamily | undefined;
   readonly familyThreadIds?: ReadonlySet<string> | undefined;
+  readonly linkLineage?: PeerMoveLinkLineage | undefined;
 }
 
 /**
@@ -1255,6 +1261,7 @@ export function writeScratchExport(
       summary: { messageCount: history.messages.length, files: before.length },
       ...session.manifest,
       ...(input.family !== undefined ? { family: input.family } : {}),
+      ...(input.linkLineage !== undefined ? { linkLineage: input.linkLineage } : {}),
     };
     yield* writeManifest(input.dir, manifest);
     return manifest;

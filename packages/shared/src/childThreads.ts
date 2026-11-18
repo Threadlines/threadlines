@@ -696,15 +696,25 @@ export const childRequestStateOn = {
       ? state
       : { ...state, remoteCancels: [...cancels, cancel] };
   },
-  /** A child on a linked computer, new or changed; kept after its requests settle. */
+  /**
+   * A child on a linked computer, new or changed; kept after its requests
+   * settle. `removed`: it came home and is a child here again, so its record goes.
+   */
   remoteChildUpdated: (
     state: OrchestrationChildRequestState,
     child: RemoteChildThread,
+    removed?: boolean,
   ): OrchestrationChildRequestState => {
     const children = state.remoteChildren ?? [];
     const index = children.findIndex(
       (entry) => entry.environmentId === child.environmentId && entry.threadId === child.threadId,
     );
+    if (removed === true) {
+      if (index < 0) return state;
+      const rest = children.filter((_, at) => at !== index);
+      const { remoteChildren: _gone, ...without } = state;
+      return rest.length > 0 ? { ...state, remoteChildren: rest } : without;
+    }
     if (index >= 0 && sameRemoteChild(children[index]!, child)) {
       return state;
     }

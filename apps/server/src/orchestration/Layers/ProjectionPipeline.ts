@@ -926,7 +926,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                     : event.type === "thread.child-deliveries-cancelled"
                       ? childRequestStateOn.deliveriesCancelled(state, event.payload.deliveryEpoch)
                       : event.type === "thread.remote-child-updated"
-                        ? childRequestStateOn.remoteChildUpdated(state, event.payload.child)
+                        ? childRequestStateOn.remoteChildUpdated(
+                            state,
+                            event.payload.child,
+                            event.payload.removed,
+                          )
                         : event.type === "thread.remote-cancel-queued"
                           ? childRequestStateOn.remoteCancelQueued(state, event.payload.cancel)
                           : event.type === "thread.remote-cancels-delivered"

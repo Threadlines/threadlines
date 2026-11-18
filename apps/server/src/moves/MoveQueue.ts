@@ -1146,7 +1146,9 @@ export const makeMoveQueue = (
                 if (event.payload.reason !== "started") yield* lookAtAll(settleDelay, false);
                 return;
               }
-              if (event.type === "thread.move-aborted") {
+              // A move that settled: a parent waiting for its child's own move
+              // to finish (Part 3f, (h)) looks again.
+              if (event.type === "thread.move-aborted" || event.type === "thread.moved-away") {
                 yield* lookAtAll(settleDelay, false);
               }
               // A move that didn't happen owes the thread what it took.

@@ -19,6 +19,7 @@ import {
   ChildRequestId,
   type ChildRequestOutcome,
   type ChildThreadCheckout,
+  type EnvironmentId,
   EventId,
   MessageId,
   type OrchestrationChildRequest,
@@ -567,6 +568,14 @@ export function decideChildSend(
   if (refusal !== null || child === null) {
     return refuse(refusal?.detail ?? "That thread is gone.");
   }
+  // A child frozen for its move takes nothing here (docs/design/fleet.md,
+  // Part 3f, (h)): a message written now would never reach it.
+  const childMove = child.move ?? null;
+  if (childMove !== null) {
+    return refuse(
+      `That thread is moving to ${childMove.target.label}. Send it the message once it's there.`,
+    );
+  }
   if (
     child.messages.some((message) => message.id === command.childMessageId) ||
     parent.childRequests.open.some((request) => request.requestId === command.requestId)
@@ -837,7 +846,7 @@ function decideRemoteChildSend(
           text: command.text,
           remote: {
             environmentId: remoteChild.environmentId,
-            label: remoteLabelOf(parent, remoteChild.environmentId),
+            label: remoteLabelOf(parent, remoteChild.environmentId, remoteChild.label),
             threadId: remoteChild.threadId,
             status: "sending",
           },
@@ -849,12 +858,11 @@ function decideRemoteChildSend(
   ];
 }
 
-/** The name a parent last knew a linked computer by. */
-const remoteLabelOf = (parent: OrchestrationThread, environmentId: string) =>
+/** The name a parent last knew a linked computer by: its newest request's, else its child's record's. */
+const remoteLabelOf = (parent: OrchestrationThread, environmentId: string, recorded: string) =>
   parent.childRequests.open
     .toReversed()
-    .find((request) => request.remote?.environmentId === environmentId)?.remote?.label ??
-  "the other computer";
+    .find((request) => request.remote?.environmentId === environmentId)?.remote?.label ?? recorded;
 
 /** A request moved on (`thread.child-request.update`). */
 export function decideChildRequestUpdate(
@@ -1374,6 +1382,146 @@ export function decideParentAttachmentSet(
   return [
     attachmentEvent,
     ...separationEvents(readModel, baseFor, parent, child, command.createdAt),
+  ];
+}
+
+/** Activity on a child that moved to another computer without its parent. */
+export const MovedAloneActivityKind = "thread.moved-alone";
+
+/**
+ * A child that moved to another computer without its parent
+ * (docs/design/fleet.md, Part 3f, (h)), on the computer it left, in the
+ * decision that records the move. Its copy here leaves the family, so the
+ * parent never counts it as a child here; the parent's requests for it
+ * settle as cancelled, with a note for its agent. When that computer kept it
+ * the parent's child across the link (`keptParent`, its answer over the
+ * link), the parent keeps it as a child there, as a thread it started there,
+ * and reaches it over the link from now on.
+ */
+export function movedAloneEvents(
+  readModel: OrchestrationReadModel,
+  baseFor: ChildEventBase,
+  child: OrchestrationThread,
+  moved: {
+    readonly target: { readonly environmentId: EnvironmentId; readonly label: string };
+    readonly threadId: ThreadId;
+    readonly keptParent: boolean;
+  },
+  at: string,
+): ReadonlyArray<PlannedEvent> {
+  if (child.parentThreadId === null || !child.attachedToParent) return [];
+  const parent = findThread(readModel, child.parentThreadId);
+  const label = moved.target.label;
+  const kept = moved.keptParent && parent !== null && parent.deletedAt === null;
+  const words = kept
+    ? `It's still a thread of '${parent.title}', which reaches it on ${label}.`
+    : `It's its own thread on ${label}, so the thread that started it can't reach it there.`;
+  return [
+    {
+      ...baseFor(child.id),
+      type: "thread.parent-attachment-set",
+      payload: {
+        threadId: child.id,
+        attached: false,
+        attachmentEpoch: child.parentAttachmentEpoch + 1,
+        at,
+      },
+    },
+    {
+      ...baseFor(child.id),
+      type: "thread.activity-appended",
+      payload: {
+        threadId: child.id,
+        activity: {
+          id: EventId.make(`moved-alone:${child.id}:${child.parentAttachmentEpoch + 1}`),
+          tone: "info",
+          kind: MovedAloneActivityKind,
+          summary: words,
+          payload: { parentThreadId: child.parentThreadId, targetLabel: label, kept },
+          turnId: null,
+          createdAt: at,
+        },
+      },
+    },
+    ...(parent === null
+      ? []
+      : settleOpenRequests(
+          readModel,
+          baseFor,
+          parent,
+          requestsFor(parent, child.id),
+          "cancelled",
+          at,
+          (titles) =>
+            kept
+              ? `${quotedList(titles)} moved to ${label} before it answered. Send it the message again there.`
+              : `${quotedList(titles)} moved to ${label} as its own thread, so its answer won't come back to you.`,
+        )),
+    ...(kept
+      ? [
+          {
+            ...baseFor(parent.id),
+            type: "thread.remote-child-updated" as const,
+            payload: {
+              threadId: parent.id,
+              child: {
+                environmentId: moved.target.environmentId,
+                label,
+                threadId: moved.threadId,
+                // The name RemoteChildReactor gives an asker it can't name.
+                handle: "Agent",
+                title: child.title,
+                attachmentEpoch: 0,
+                cachedStatus: "idle",
+                updatedAt: at,
+              },
+              updatedAt: at,
+            },
+          },
+        ]
+      : []),
+  ];
+}
+
+/**
+ * A thread this computer's agent started on another computer, back home
+ * (docs/design/fleet.md, Part 3f, (h)), on the parent, in the decision that
+ * imports it as the parent's child here: the record of it on that computer
+ * goes, and the requests still open for it there settle as cancelled (that
+ * computer settles its side when the thread leaves it).
+ */
+export function cameHomeEvents(
+  readModel: OrchestrationReadModel,
+  baseFor: ChildEventBase,
+  parent: OrchestrationThread,
+  from: { readonly environmentId: EnvironmentId; readonly threadId: ThreadId },
+  at: string,
+): ReadonlyArray<PlannedEvent> {
+  const record = (parent.childRequests.remoteChildren ?? []).find(
+    (entry) => entry.environmentId === from.environmentId && entry.threadId === from.threadId,
+  );
+  if (record === undefined) return [];
+  const open = parent.childRequests.open.filter(
+    (request) =>
+      request.remote?.environmentId === from.environmentId &&
+      (request.childThreadId === from.threadId || request.remote.threadId === from.threadId),
+  );
+  return [
+    ...settleOpenRequests(
+      readModel,
+      baseFor,
+      parent,
+      open,
+      "cancelled",
+      at,
+      (titles) =>
+        `${quotedList(titles)} moved back to this computer before it answered from ${record.label}. Send it the message again here.`,
+    ),
+    {
+      ...baseFor(parent.id),
+      type: "thread.remote-child-updated",
+      payload: { threadId: parent.id, child: record, removed: true, updatedAt: at },
+    },
   ];
 }
 

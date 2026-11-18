@@ -83,6 +83,11 @@ export interface ThreadMoveCarry {
     readonly rooms: boolean;
     readonly outsideWork: boolean;
     readonly families: boolean;
+    /**
+     * Another computer's agent started it (`remoteOrigin`): it can only go
+     * back to that computer, as its child there (Part 3f, (h)).
+     */
+    readonly linkLineage: boolean;
   };
 }
 
@@ -93,6 +98,7 @@ export const ALL_MOVE_TAKES: ThreadMoveTakes = {
   rooms: true,
   outsideWork: true,
   families: true,
+  linkLineage: true,
 };
 
 /**
@@ -268,6 +274,7 @@ export function threadMoveCarry(
     family,
     needs: {
       families: family,
+      linkLineage: (thread.remoteOrigin ?? null) !== null,
       threadState:
         (goal !== null && goal.status !== "complete") ||
         checkBacks.length > 0 ||
@@ -293,6 +300,9 @@ export function carryNotTaken(
   if (carry.needs.generalChats && takes?.generalChats !== true) return "it's a general chat";
   if (carry.needs.rooms && takes?.rooms !== true) return "it has more than one agent";
   if (carry.needs.families && takes?.families !== true) return "it started other threads";
+  if (carry.needs.linkLineage && takes?.linkLineage !== true) {
+    return "an agent on another computer started it";
+  }
   if (carry.needs.outsideWork && takes?.outsideWork !== true) {
     return "an outside assistant's work limits its agent here";
   }
