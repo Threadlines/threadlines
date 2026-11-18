@@ -121,6 +121,28 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     }),
   );
 
+  it.effect("retries Electron packaging when Apple's timestamp server drops a signature", () =>
+    Effect.gen(function* () {
+      let attempts = 0;
+      const result = yield* retryTransientElectronPackaging(
+        Effect.suspend(() => {
+          attempts += 1;
+          return attempts < 2
+            ? Effect.fail(
+                new TestFailure({
+                  message:
+                    "Command failed: codesign --sign ... locale.pak\nlocale.pak: A timestamp was expected but was not found.",
+                }),
+              )
+            : Effect.succeed("built");
+        }),
+      );
+
+      assert.equal(result, "built");
+      assert.equal(attempts, 2);
+    }),
+  );
+
   it.effect("does not retry non-network packaging failures", () =>
     Effect.gen(function* () {
       let attempts = 0;
