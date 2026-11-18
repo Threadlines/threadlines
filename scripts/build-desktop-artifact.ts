@@ -564,20 +564,44 @@ const runCommand = Effect.fn("runCommand")(function* (command: ChildProcess.Comm
   }
 });
 
+/**
+ * What codesign prints when Apple's timestamp server (timestamp.apple.com)
+ * doesn't answer `--timestamp`. The server drops requests now and then; the
+ * same signature succeeds on the next try.
+ */
+const APPLE_TIMESTAMP_FAILURE_PATTERNS = [
+  "a timestamp was expected but was not found",
+  "the timestamp service is not available",
+] as const;
+
+function isAppleTimestampFailure(error: unknown): boolean {
+  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  return APPLE_TIMESTAMP_FAILURE_PATTERNS.some((pattern) => message.includes(pattern));
+}
+
+function isTransientPackagingFailure(error: unknown): boolean {
+  return isTransientNetworkFailure(error) || isAppleTimestampFailure(error);
+}
+
+/**
+ * Runs electron-builder again, up to twice, when it fails on a network blip or
+ * on Apple's timestamp server. Each run re-extracts Electron and signs from
+ * scratch, so a retry never sees a half-signed app.
+ */
 export function retryTransientElectronPackaging<A, E, R>(
   packaging: Effect.Effect<A, E, R>,
 ): Effect.Effect<A, E, R> {
   return packaging.pipe(
     Effect.tapError((error) =>
-      isTransientNetworkFailure(error)
+      isTransientPackagingFailure(error)
         ? Effect.logWarning(
-            "[desktop-artifact] Electron packaging hit a transient network failure; bounded retry policy active.",
+            "[desktop-artifact] Electron packaging hit a transient network or code-signing timestamp failure; bounded retry policy active.",
           )
         : Effect.void,
     ),
     Effect.retry({
       times: 2,
-      while: isTransientNetworkFailure,
+      while: isTransientPackagingFailure,
     }),
   );
 }
