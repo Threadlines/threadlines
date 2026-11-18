@@ -2048,6 +2048,7 @@ describe("a thread moving across its link (Part 3f, (h))", () => {
         threadTitle: "Ship it",
       });
       assert.equal(imported.movedFrom.environmentId, WINDOWS);
+      assert.equal(imported.movedFrom.environmentPinned, true);
       assert.isUndefined(imported.lineage);
       assert.isUndefined(imported.adopt);
     });
@@ -2063,6 +2064,8 @@ describe("a thread moving across its link (Part 3f, (h))", () => {
       assert.equal(plain.status, "committed");
       assert.isUndefined(plain.keptParent);
       assert.isUndefined(importOf(first).remoteOrigin);
+      // Where it came from is only the move's word: its fence lets it go nowhere.
+      assert.isUndefined(importOf(first).movedFrom.environmentPinned);
       assert.include(
         importOf(first).arrival?.left ?? [],
         "This computer can't confirm its link to Windows PC, so this is its own thread and 'Ship it' there can't reach it.",
@@ -2075,6 +2078,9 @@ describe("a thread moving across its link (Part 3f, (h))", () => {
       assert.equal(lied.status, "committed");
       assert.isUndefined(lied.keptParent);
       assert.isUndefined(importOf(second).remoteOrigin);
+      // It came from the computer the link was made for, whatever the move says.
+      assert.equal(importOf(second).movedFrom.environmentId, WINDOWS);
+      assert.equal(importOf(second).movedFrom.environmentPinned, true);
     });
   });
 
@@ -2091,6 +2097,50 @@ describe("a thread moving across its link (Part 3f, (h))", () => {
       assert.isUndefined(imported.remoteOrigin);
     });
   });
+
+  it.live(
+    "comes home under its parent when its move here still waits for this computer's answer",
+    () => {
+      const LEFT = ThreadId.make("thread-left-here");
+      /** The parent's child here, frozen for its own move (alone) to `environmentId`. */
+      const leftHere = (environmentId: string, movedAway = false) => ({
+        threadId: LEFT,
+        projectId: ProjectId.make("project-b"),
+        deletedAt: null,
+        parentThreadId: PARENT_HERE,
+        attachedToParent: 1,
+        pendingMove: null,
+        move: {
+          transferId: "transfer-left",
+          target: { environmentId, label: "Windows PC" },
+          ...(movedAway
+            ? { movedAway: { threadId: "thread-a", movedAt: "2026-11-17T10:00:00.000Z" } }
+            : {}),
+        },
+      });
+      const back = { home: { parentThreadId: PARENT_HERE, fromThreadId: LEFT } };
+      const cases = [
+        { left: leftHere(WINDOWS), adopt: { parentThreadId: PARENT_HERE, completesMoveOf: LEFT } },
+        // Moving to another computer, or already heard to have landed: its own thread.
+        { left: leftHere("environment-mac"), adopt: undefined },
+        { left: leftHere(WINDOWS, true), adopt: undefined },
+      ];
+      return Effect.forEach(cases, ({ left, adopt }) => {
+        const repos = makeRepos();
+        const dispatched: OrchestrationCommand[] = [];
+        return moved(repos, dispatched, back, {
+          pinnedEnvironmentId: WINDOWS,
+          // The parent holds nothing there yet: this computer hasn't heard.
+          threadsHere: [parentHere(WINDOWS, "thread-other"), left],
+        }).pipe(
+          Effect.map((state) => {
+            assert.equal(state.status, "committed");
+            assert.deepEqual(importOf(dispatched).adopt, adopt);
+          }),
+        );
+      });
+    },
+  );
 
   it.live("a home claim this computer's records don't back lands as its own thread", () => {
     const cases = [

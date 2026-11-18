@@ -114,7 +114,9 @@ export const familyThreadIdsOf = (
  * to `targetEnvironmentId` (docs/design/fleet.md, Part 3f, (h)), or nothing:
  *
  * - a thread another computer's agent started, going back to that computer:
- *   `home`, naming the thread there that started it;
+ *   `home`, naming the thread there that started it, and the thread there
+ *   it moved over from, when it did (that computer may not have heard yet
+ *   that its move landed);
  * - a child moving without its parent: `remoteParent`, naming the parent,
  *   unless the parent is gone, frozen for its own move or moved away (then it
  *   lands as a thread of its own there). A parent whose move is only queued
@@ -129,9 +131,16 @@ export function linkLineageOf(
 ): PeerMoveLinkLineage | undefined {
   const origin = thread.remoteOrigin ?? null;
   if (origin !== null) {
-    return origin.environmentId === targetEnvironmentId
-      ? { home: { parentThreadId: origin.threadId } }
-      : undefined;
+    if (origin.environmentId !== targetEnvironmentId) return undefined;
+    const from = thread.movedFrom ?? null;
+    return {
+      home: {
+        parentThreadId: origin.threadId,
+        ...(from !== null && from.environmentId === targetEnvironmentId
+          ? { fromThreadId: from.threadId }
+          : {}),
+      },
+    };
   }
   if (thread.parentThreadId === null || !thread.attachedToParent) return undefined;
   if ((thread.move ?? thread.pendingMove)?.family !== undefined) return undefined;

@@ -679,12 +679,15 @@ export const offerUntilTaken = <EPrepare, EStanding, EWaiting, R>(deps: {
 /**
  * The target and agent a move names, checked against what the target said
  * (`moves.preview`). No agent named: the one the target suggests for this
- * thread, as the dialog picks it; none there means the move can't go.
+ * thread, as the dialog picks it; none there means the move can't go. A
+ * child moving without its family (`family` absent) goes only to a computer
+ * that keeps it its parent's child (`aloneRefusal`, Part 3f, (h)).
  */
 export function checkMoveTarget(
   shown: ThreadMovePreview,
   environmentId: EnvironmentId,
   named: ModelSelection | undefined,
+  family: ThreadMoveFamily | undefined,
 ):
   | { readonly ok: ThreadMoveTargetPreview; readonly agent: ModelSelection }
   | { readonly unreachable: ThreadMoveTargetPreview }
@@ -693,6 +696,9 @@ export function checkMoveTarget(
   if (target === undefined) return { refusal: "This computer isn't linked to that one." };
   if (target.unreachable === true) return { unreachable: target };
   if (target.refusal !== undefined) return { refusal: target.refusal };
+  if (family === undefined && target.aloneRefusal !== undefined) {
+    return { refusal: target.aloneRefusal };
+  }
   const agent = named ?? target.suggestedAgent;
   if (agent === undefined) return { refusal: `${target.label} has no agent ready.` };
   const offered = target.agents.find((entry) => entry.instanceId === agent.instanceId);
@@ -1152,7 +1158,7 @@ const make = Effect.gen(function* () {
       const shown = inspected.preview;
       if (shown.refusal !== undefined) return yield* moveError(shown.refusal);
       if (inspected.busy !== null) return yield* moveError(inspected.busy);
-      const checked = checkMoveTarget(shown, input.targetEnvironmentId, input.agent);
+      const checked = checkMoveTarget(shown, input.targetEnvironmentId, input.agent, undefined);
       if ("refusal" in checked) return yield* moveError(checked.refusal);
       if ("unreachable" in checked) {
         return yield* moveError(checked.unreachable.refusal ?? "That computer can't be reached.");
@@ -1185,7 +1191,7 @@ const make = Effect.gen(function* () {
       });
       const shown = inspected.preview;
       if (shown.refusal !== undefined) return yield* moveError(shown.refusal);
-      const checked = checkMoveTarget(shown, input.targetEnvironmentId, input.agent);
+      const checked = checkMoveTarget(shown, input.targetEnvironmentId, input.agent, input.family);
       if ("refusal" in checked) return yield* moveError(checked.refusal);
       // A pick the computer doesn't have is refused now; the rest is decided when it starts.
       if ("ok" in checked) {
@@ -1234,7 +1240,12 @@ const make = Effect.gen(function* () {
       }
       const shown = inspected.success.preview;
       if (shown.refusal !== undefined) return { kind: "blocked", words: shown.refusal } as const;
-      const checked = checkMoveTarget(shown, input.targetEnvironmentId, input.agent);
+      const checked = checkMoveTarget(
+        shown,
+        input.targetEnvironmentId,
+        input.agent,
+        inspected.success.thread.pendingMove?.family,
+      );
       if ("refusal" in checked) return { kind: "blocked", words: checked.refusal } as const;
       if ("unreachable" in checked) {
         return {
@@ -1817,13 +1828,23 @@ const make = Effect.gen(function* () {
      * The thread was deleted while it moved: the other computer is asked
      * once to drop the move (one that already arrived there stays), and the
      * packed copy goes. Unreachable, its own expiry drops a move that never
-     * finished arriving.
+     * finished arriving. A move already recorded as landed only loses its
+     * packed copy.
      */
     const dropIfDeleted = Effect.gen(function* () {
       const row = yield* threadRows.getById({ threadId });
-      if (Option.isNone(row) || row.value.deletedAt === null) return;
+      if (Option.isNone(row)) return;
       const move = row.value.move ?? null;
-      if (move === null || move.transferId !== transferId || move.movedAway !== undefined) return;
+      if (move === null || move.transferId !== transferId) return;
+      // Completed by something other than this worker (the thread came back
+      // before it heard, Part 3f, (h)): only the packed copy is left to go.
+      if (move.movedAway !== undefined) {
+        yield* Effect.tryPromise(() =>
+          NodeFs.rm(moveDir(transferId), { recursive: true, force: true }),
+        ).pipe(Effect.ignore);
+        return;
+      }
+      if (row.value.deletedAt === null) return;
       yield* client
         .withPeer(move.target.environmentId, (peer) => peer["peer.move.abort"]({ transferId }))
         .pipe(Effect.ignore);

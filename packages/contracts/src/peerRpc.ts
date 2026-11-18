@@ -751,7 +751,11 @@ export type PeerMoveFamily = typeof PeerMoveFamily.Type;
  * - `home`: a thread an agent on the receiving computer started on the
  *   sending one, coming back. The receiving computer lands it under
  *   `parentThreadId` only when its own records already hold this very
- *   thread, on the sending computer, as that parent's child.
+ *   thread, on the sending computer, as that parent's child. `fromThreadId`
+ *   names the receiving computer's thread it moved over from, when it did:
+ *   one whose move to the sending computer is still waiting for its answer
+ *   there (it came back before that computer heard) lands under its parent
+ *   too, and that move completes.
  *
  * Neither is ever trusted beyond that: anything else lands as a thread of
  * its own.
@@ -760,7 +764,9 @@ export const PeerMoveLinkLineage = Schema.Struct({
   remoteParent: Schema.optional(
     Schema.Struct({ threadId: ThreadId, title: TrimmedNonEmptyString }),
   ),
-  home: Schema.optional(Schema.Struct({ parentThreadId: ThreadId })),
+  home: Schema.optional(
+    Schema.Struct({ parentThreadId: ThreadId, fromThreadId: Schema.optional(ThreadId) }),
+  ),
 });
 export type PeerMoveLinkLineage = typeof PeerMoveLinkLineage.Type;
 

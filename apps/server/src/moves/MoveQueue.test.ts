@@ -1,5 +1,6 @@
 import {
   CommandId,
+  CommandRunId,
   EnvironmentId,
   MessageId,
   ProjectId,
@@ -510,6 +511,97 @@ describe("MoveQueue", () => {
     await h.run(h.queue.unqueue({ threadId: THREAD, requestId }));
     expect(h.state.cancels).toBe(1);
     expect(h.thread().move?.cancelRequested).toBe(true);
+    await h.close();
+  });
+});
+
+describe("MoveQueue, another thread working in the same folder", () => {
+  const OTHER = ThreadId.make("thread-same-folder");
+  const RUN = CommandRunId.make("run-in-folder");
+
+  /** A second thread in the moving thread's folder, with a command still running in its terminal. */
+  async function sharingWithRunningCommand() {
+    let model = await seeded();
+    const decided = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.create",
+          commandId: nextCommandId(),
+          threadId: OTHER,
+          projectId: PROJECT,
+          title: "Update the docs",
+          modelSelection: agent,
+          runtimeMode: "auto",
+          interactionMode: "default",
+          branch: "fix/flaky",
+          worktreePath: "/worktrees/fix-flaky",
+          createdAt: now,
+        } as OrchestrationCommand,
+        readModel: model,
+      }),
+    );
+    for (const [index, planned] of (Array.isArray(decided) ? decided : [decided]).entries()) {
+      model = await Effect.runPromise(
+        projectEvent(model, { ...planned, sequence: 100 + index } as OrchestrationEvent),
+      );
+    }
+    return {
+      ...model,
+      threads: model.threads.map((thread) =>
+        thread.id === OTHER
+          ? {
+              ...thread,
+              commandRuns: [
+                {
+                  runId: RUN,
+                  terminalId: "terminal-docs",
+                  mode: "run",
+                  dialect: "posix",
+                  command: "pnpm docs:build",
+                  source: { kind: "message", messageId: MessageId.make("m-docs") },
+                  turnId: TURN,
+                  participantId: null,
+                  cwd: "/worktrees/fix-flaky",
+                  autoSend: false,
+                  status: "running",
+                  startedAt: now,
+                  finishedAt: null,
+                  exitCode: null,
+                  error: null,
+                  hasOutput: false,
+                  heldReason: null,
+                  outputSentAt: null,
+                  outputMessageId: null,
+                  createdAt: now,
+                  updatedAt: now,
+                },
+              ],
+            }
+          : thread,
+      ),
+    } as OrchestrationReadModel;
+  }
+
+  it("moves once the other thread's command ends, even when nothing else happens there", async () => {
+    const h = await harness({ model: await sharingWithRunningCommand() });
+    await h.startReactor();
+    await h.queueMove();
+    await waitFor(
+      () => h.thread().pendingMove?.waitsFor?.some((w) => w.code === "shared_checkout") === true,
+      "the shared folder wait",
+    );
+    await settle();
+    expect(h.thread().move ?? null).toBeNull();
+
+    // Interrupted: no turn starts there, and no session changes, to wake the move.
+    await h.dispatch({
+      type: "thread.command-run.update",
+      commandId: nextCommandId(),
+      threadId: OTHER,
+      progress: { runId: RUN, status: "interrupted", finishedAt: now },
+      createdAt: now,
+    });
+    await waitFor(() => (h.thread().move ?? null) !== null, "the move to start");
     await h.close();
   });
 });

@@ -9,6 +9,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
+  ThreadMoveFamilyId,
   type ThreadMovePreview,
   TurnId,
 } from "@threadlines/contracts";
@@ -70,18 +71,39 @@ const shown = (target: Partial<ThreadMovePreview["targets"][number]>): ThreadMov
 
 describe("checkMoveTarget", () => {
   it("takes the target's suggestion when the move names no agent, and a named one as named", () => {
-    expect(checkMoveTarget(shown({ suggestedAgent: claude }), MAC_MINI, undefined)).toMatchObject({
+    expect(
+      checkMoveTarget(shown({ suggestedAgent: claude }), MAC_MINI, undefined, undefined),
+    ).toMatchObject({
       agent: claude,
     });
-    expect(checkMoveTarget(shown({ suggestedAgent: claude }), MAC_MINI, codex)).toMatchObject({
+    expect(
+      checkMoveTarget(shown({ suggestedAgent: claude }), MAC_MINI, codex, undefined),
+    ).toMatchObject({
       agent: codex,
     });
   });
 
   it("can't go when the target suggests none and none is named", () => {
-    expect(checkMoveTarget(shown({}), MAC_MINI, undefined)).toEqual({
+    expect(checkMoveTarget(shown({}), MAC_MINI, undefined, undefined)).toEqual({
       refusal: "Mac mini has no agent ready.",
     });
+  });
+
+  it("a child moving alone goes only where it stays its parent's; with its family it still goes", () => {
+    // A computer that was offline when the move was queued, back on an older Threadlines.
+    const older = shown({
+      suggestedAgent: claude,
+      aloneRefusal: "Update Threadlines on Mac mini to move it without the thread that started it.",
+    });
+    expect(checkMoveTarget(older, MAC_MINI, undefined, undefined)).toEqual({
+      refusal: "Update Threadlines on Mac mini to move it without the thread that started it.",
+    });
+    expect(
+      checkMoveTarget(older, MAC_MINI, undefined, {
+        id: ThreadMoveFamilyId.make("family-1"),
+        parentThreadId: ThreadId.make("thread-parent"),
+      }),
+    ).toMatchObject({ agent: claude });
   });
 
   it("a batch lists a computer once, and a thread its own refusals there", () => {
@@ -252,6 +274,7 @@ describe("checkMoveTarget", () => {
           agents: [],
         }),
         MAC_MINI,
+        undefined,
         undefined,
       ),
     ).toHaveProperty("unreachable");
@@ -443,36 +466,60 @@ describe("what a thread carries, as the dialog says it (Part 3e)", () => {
     expect(linkLineageOf([thread], thread, MAC_MINI)).toEqual({
       home: { parentThreadId: "thread-on-mac" },
     });
+    // A child that moved here alone names the thread it moved over from, so
+    // home can land it under its parent before it heard that move landed.
+    const movedHere = {
+      ...thread,
+      movedFrom: {
+        environmentId: MAC_MINI,
+        environmentPinned: true as const,
+        label: "Mac mini",
+        threadId: ThreadId.make("thread-left-on-mac"),
+        movedAt: "2026-11-17T10:00:00.000Z",
+      },
+    };
+    expect(linkLineageOf([movedHere], movedHere, MAC_MINI)).toEqual({
+      home: { parentThreadId: "thread-on-mac", fromThreadId: "thread-left-on-mac" },
+    });
     expect(
       linkLineageOf([thread], thread, EnvironmentId.make("environment-linux")),
     ).toBeUndefined();
   });
 
   it("a moved thread still fenced is offered only the computer it came from (Part 3f, (h))", () => {
-    const thread = threadWith({
-      movedFrom: {
-        environmentId: MAC_MINI,
-        label: "Mac mini",
-        threadId: ThreadId.make("thread-on-mac"),
-        movedAt: "2026-11-17T10:00:00.000Z",
-        fenced: true,
-      },
-    });
+    const movedFrom = {
+      environmentId: MAC_MINI,
+      environmentPinned: true as const,
+      label: "Mac mini",
+      threadId: ThreadId.make("thread-on-mac"),
+      movedAt: "2026-11-17T10:00:00.000Z",
+      fenced: true as const,
+    };
+    const thread = threadWith({ movedFrom });
     const carry = threadMoveCarry(view, thread);
     const described = peer({ moveThreadState: true, moveLinkLineage: true });
-    expect(
-      targetPreviewOf(
-        {
-          environmentId: EnvironmentId.make("environment-linux"),
-          label: "Linux box",
-          described: Option.some(described),
-        },
-        { thread, place, carry },
-      ).refusal,
-    ).toBe(
+    const linux = {
+      environmentId: EnvironmentId.make("environment-linux"),
+      label: "Linux box",
+      described: Option.some(described),
+    };
+    expect(targetPreviewOf(linux, { thread, place, carry }).refusal).toBe(
       "This thread moved here from Mac mini, and until you send it a message here it can only move back to Mac mini.",
     );
     expect(targetPreviewOf(target(described), { thread, place, carry }).refusal).toBeUndefined();
+    // Over a link that never proved its computer, "back" is only the sender's
+    // word: while fenced it goes nowhere.
+    const { environmentPinned: _, ...unproven } = movedFrom;
+    const unpinned = threadWith({ movedFrom: unproven });
+    const unpinnedCarry = threadMoveCarry(view, unpinned);
+    const unconfirmed =
+      "This thread moved here from Mac mini, and this computer's link can't confirm which computer that is, so it stays here until you send it a message.";
+    expect(
+      targetPreviewOf(target(described), { thread: unpinned, place, carry: unpinnedCarry }).refusal,
+    ).toBe(unconfirmed);
+    expect(targetPreviewOf(linux, { thread: unpinned, place, carry: unpinnedCarry }).refusal).toBe(
+      unconfirmed,
+    );
   });
 
   it("a child moves alone only to a computer that keeps it its parent's (Part 3f, (h))", () => {

@@ -166,17 +166,6 @@ export function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThread
     target !== null && agent !== null ? threadMoveAgentSelection(target, agent) : null;
   // A General Chats thread: its folder goes, with no branch or staged changes.
   const folder = preview?.folder;
-  // What comes along, then what won't work there as it did, for the agent picked.
-  const pickedInstanceId = unreachable ? null : (agentSelection?.instanceId ?? null);
-  const brings = threadMoveNotesFor(preview?.brings, pickedInstanceId);
-  const notes = threadMoveNotesFor(target?.notes, pickedInstanceId);
-  // A room's other agents, each with the agent it moves as there or left out.
-  // Out of reach: none sent, and each takes the suggestion when the move starts.
-  const roomRows =
-    preview?.room !== undefined && target !== null && !unreachable
-      ? threadMoveRoomAgentRows(preview.room, target, roomPicks)
-      : null;
-  const roomAgents = roomRows?.map((row) => row.choice);
   // A parent's family (Part 3f, (g)): the children ticked to come, each that can.
   const family = preview?.family;
   const coming = (family?.children ?? []).filter(
@@ -191,7 +180,25 @@ export function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThread
       : target?.aloneRefusal !== undefined
         ? "family"
         : pickedChildMove;
-  const withFamily = parent !== undefined && childMove === "family";
+  const withFamily = queues && parent !== undefined && childMove === "family";
+  // With its whole family, every thread moves with the agent that computer
+  // suggests for it, as the parent's move queues them: nothing to pick here.
+  const suggestsAgents = unreachable || withFamily;
+  // What comes along, then what won't work there as it did, for the agent it gets.
+  const pickedInstanceId = unreachable
+    ? null
+    : withFamily
+      ? (target?.suggestedAgent?.instanceId ?? null)
+      : (agentSelection?.instanceId ?? null);
+  const brings = threadMoveNotesFor(preview?.brings, pickedInstanceId);
+  const notes = threadMoveNotesFor(target?.notes, pickedInstanceId);
+  // A room's other agents, each with the agent it moves as there or left out.
+  // Out of reach or with its family: none sent, and each takes the suggestion.
+  const roomRows =
+    preview?.room !== undefined && target !== null && !suggestsAgents
+      ? threadMoveRoomAgentRows(preview.room, target, roomPicks)
+      : null;
+  const roomAgents = roomRows?.map((row) => row.choice);
   const canMove =
     preview !== null &&
     preview.refusal === undefined &&
@@ -207,7 +214,7 @@ export function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThread
     try {
       const client = requireThreadMovesClient(threadRef.environmentId, computerLabel);
       const input = { threadId: threadRef.threadId, targetEnvironmentId: target.environmentId };
-      if (queues && withFamily) {
+      if (withFamily) {
         // The parent with every thread it started: the server's whole family,
         // each with the agent that computer suggests.
         await client.queue({
@@ -353,6 +360,10 @@ export function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThread
                   >
                     {target.refusal} The move waits for it to connect, then uses the agent{" "}
                     {target.label} suggests.
+                  </p>
+                ) : withFamily ? (
+                  <p className={LINE_CLASS} data-testid="thread-move-family-agents">
+                    Each thread uses the agent {target.label} suggests for it.
                   </p>
                 ) : (
                   <>

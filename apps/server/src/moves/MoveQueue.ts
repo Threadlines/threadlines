@@ -67,6 +67,7 @@ import {
   PARENT_DIDNT_MOVE_WORDS,
   restoreMessageText,
   sameMoveStatus,
+  sharedCheckoutBusyThreads,
   type ThreadMoveRefusalEntry,
   threadMoveRefusals,
 } from "../orchestration/threadMoveDecisions.ts";
@@ -315,6 +316,8 @@ interface TrackedMove {
   quiescedAtMs: number;
   /** The session the last quiesce saw (sessionMark). */
   quiescedSession: string;
+  /** The other threads in its folder the last full look waited on (sharedCheckoutBusyThreads). */
+  waitsOnThreads: ReadonlySet<ThreadId>;
 }
 
 export const makeMoveQueue = (
@@ -452,6 +455,7 @@ export const makeMoveQueue = (
           existing.holds = 0;
           existing.quiescedAtMs = 0;
           existing.quiescedSession = "";
+          existing.waitsOnThreads = new Set();
           return;
         }
         tracked.set(threadId, {
@@ -463,6 +467,7 @@ export const makeMoveQueue = (
           holds: 0,
           quiescedAtMs: 0,
           quiescedSession: "",
+          waitsOnThreads: new Set(),
         });
       });
 
@@ -529,6 +534,9 @@ export const makeMoveQueue = (
           context.thread,
           context.thread.pendingMove?.targetTakes,
         );
+        // Whatever those threads do next (a command run interrupted, a
+        // workflow or a voice chat ending) is a reason to look again.
+        entry.waitsOnThreads = new Set(sharedCheckoutBusyThreads(context.view, context.thread));
         if (yield* settleRefusals(threadId, pending, refusals)) return;
         // Before anything is stopped: whether the target takes what the thread
         // carries (docs/design/fleet.md, Part 3e). One that doesn't ends the
@@ -1167,8 +1175,13 @@ export const makeMoveQueue = (
                 return yield* lookAtAll(settleDelay, false);
               }
               const threadId = "threadId" in event.payload ? event.payload.threadId : undefined;
-              if (threadId !== undefined && tracked.has(threadId)) {
-                yield* schedule(threadId, settleDelay);
+              if (threadId === undefined) return;
+              if (tracked.has(threadId)) yield* schedule(threadId, settleDelay);
+              // A move waiting on this thread's work in its folder looks again.
+              for (const [waiting, entry] of tracked) {
+                if (waiting !== threadId && entry.waitsOnThreads.has(threadId)) {
+                  yield* schedule(waiting, settleDelay);
+                }
               }
             }),
           ),
