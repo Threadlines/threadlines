@@ -167,6 +167,7 @@ function makeThreadShellSnapshot(params: {
         awaitedChildThreadCount: 0,
         pendingChildApproval: false,
         pendingSettingsChange: false,
+        pendingSecretRequest: false,
       },
     ],
   };

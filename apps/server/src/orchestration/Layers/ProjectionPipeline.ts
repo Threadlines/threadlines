@@ -20,6 +20,7 @@ import {
 } from "@threadlines/shared/transcriptRevert";
 import { childRequestStateOn } from "@threadlines/shared/childThreads";
 import { applySettingsChangeEvent } from "@threadlines/shared/settingsChangeState";
+import { applySecretRequestEvent } from "@threadlines/shared/secretRequestState";
 import {
   ApprovalRequestId,
   EMPTY_AGENT_REQUEST_STATE,
@@ -966,6 +967,25 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           const settingsRequests = applySettingsChangeEvent(requests, event);
           if (settingsRequests !== requests) {
             yield* projectionThreadRepository.upsert({ ...existingRow.value, settingsRequests });
+          }
+          return;
+        }
+
+        case "thread.secret-request-created":
+        case "thread.secret-request-claimed":
+        case "thread.secret-request-settled":
+        case "thread.secret-request-removed":
+        case "thread.secret-request-notes-delivered": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          const requests = existingRow.value.secretRequests ?? [];
+          const secretRequests = applySecretRequestEvent(requests, event);
+          if (secretRequests !== requests) {
+            yield* projectionThreadRepository.upsert({ ...existingRow.value, secretRequests });
           }
           return;
         }

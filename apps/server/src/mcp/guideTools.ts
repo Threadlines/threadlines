@@ -10,7 +10,11 @@
 import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/ai";
 
-import { GUIDE_TOOL_NAME, SETTINGS_CHANGE_TOOL_NAME } from "./roomToolAccess.ts";
+import {
+  GUIDE_TOOL_NAME,
+  SECRET_REQUEST_TOOL_NAME,
+  SETTINGS_CHANGE_TOOL_NAME,
+} from "./roomToolAccess.ts";
 
 export const AppGuideResult = Schema.Struct({
   outcome: Schema.Literals(["ok", "no_match", "refused"]),
@@ -49,5 +53,5 @@ export function buildGuideInstructions(input: {
   /** What precedes the tool's name for this provider. */
   readonly toolPrefix: string;
 }): string {
-  return `<threadlines_guide>\nYou run inside Threadlines, the app the user drives you from. Questions about it (its threads, settings, linked computers, what you can or can't do here and why) are answered by \`${input.toolPrefix}${GUIDE_TOOL_NAME}\`, which knows this computer's actual settings; your memory and the web don't. Call it directly, before answering, and link the places it names with the links it gives. To change a setting the user asks for, call \`${input.toolPrefix}${SETTINGS_CHANGE_TOOL_NAME}\`; they accept it on a card.\n</threadlines_guide>`;
+  return `<threadlines_guide>\nYou run inside Threadlines, the app the user drives you from. Questions about it (its threads, settings, linked computers, what you can or can't do here and why) are answered by \`${input.toolPrefix}${GUIDE_TOOL_NAME}\`, which knows this computer's actual settings; your memory and the web don't. Call it directly, before answering, and link the places it names with the links it gives. To change a setting the user asks for, call \`${input.toolPrefix}${SETTINGS_CHANGE_TOOL_NAME}\`; they accept it on a card. When you need an API key, token or password from the user, call \`${input.toolPrefix}${SECRET_REQUEST_TOOL_NAME}\`. Never ask them to paste one into chat.\n</threadlines_guide>`;
 }

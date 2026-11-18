@@ -160,6 +160,7 @@ export function shouldWarmThreadShell(thread: OrchestrationThreadShell): boolean
     thread.hasPendingApprovals ||
     thread.pendingChildApproval ||
     thread.pendingSettingsChange ||
+    thread.pendingSecretRequest ||
     thread.hasPendingUserInput ||
     thread.hasActionableProposedPlan
   ) {
@@ -187,6 +188,7 @@ function isNonIdleThread(environmentId: EnvironmentId, threadId: ThreadId): bool
       sidebarThread.hasPendingApprovals ||
       sidebarThread.pendingChildApproval === true ||
       sidebarThread.pendingSettingsChange === true ||
+      sidebarThread.pendingSecretRequest === true ||
       sidebarThread.hasPendingUserInput ||
       sidebarThread.hasActionableProposedPlan
     ) {

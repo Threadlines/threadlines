@@ -490,6 +490,15 @@ export interface WsRpcClient {
     readonly reportDevice: RpcUnaryMethod<typeof WS_METHODS.settingsChangeReportDevice>;
   };
   /**
+   * Agents' requests for keys (docs/design/secret-requests.md), answered on
+   * the thread's own computer: the card's Save or Not now (the value goes
+   * wrapped in Redacted, never logged), and Remove now on a saved row.
+   */
+  readonly secretRequest: {
+    readonly respond: RpcUnaryMethod<typeof WS_METHODS.secretRequestRespond>;
+    readonly remove: RpcUnaryMethod<typeof WS_METHODS.secretRequestRemove>;
+  };
+  /**
    * Agents outside Threadlines (docs/design/outside-agents.md): owner only,
    * on servers whose descriptor reports `outsideAgents`.
    */
@@ -1371,6 +1380,12 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.request((client) => client[WS_METHODS.settingsChangeRespond](input)),
       reportDevice: (input) =>
         transport.request((client) => client[WS_METHODS.settingsChangeReportDevice](input)),
+    },
+    secretRequest: {
+      respond: (input) =>
+        transport.request((client) => client[WS_METHODS.secretRequestRespond](input)),
+      remove: (input) =>
+        transport.request((client) => client[WS_METHODS.secretRequestRemove](input)),
     },
     links: {
       subscribe: (listener, options) =>

@@ -79,6 +79,7 @@ import {
   SETTINGS_CHANGE_CANCELLED,
   cancelWaitingSettingsChanges,
 } from "./settingsChangeDecisions.ts";
+import { SECRET_REQUEST_CANCELLED, cancelWaitingSecretRequests } from "./secretRequestDecisions.ts";
 
 type PlannedEvent = Omit<OrchestrationEvent, "sequence">;
 type EventBase = (threadId: ThreadId) => Omit<OrchestrationEvent, "sequence" | "type" | "payload">;
@@ -712,6 +713,10 @@ const FROZEN_THREAD_COMMANDS: ReadonlySet<OrchestrationCommand["type"]> = new Se
   "thread.realtime.state.set",
   "thread.settings-change.settle",
   "thread.settings-change.report-device",
+  // A key the user already pressed Save on finishes (as failed: a moving
+  // thread takes no message), and the thread's key files are removed.
+  "thread.secret-request.settle",
+  "thread.secret-request.remove",
   // A linked computer confirmed the cancels the move's stop owed it (Part
   // 3f, (g)): they drain from a frozen parent, never stranded on it.
   "thread.remote-cancels.delivered",
@@ -971,13 +976,22 @@ export function decideMoveStart(
             },
           },
         ];
-  // Settings cards waiting for an answer don't move: they end here, with why.
-  const cancelled = cancelWaitingSettingsChanges(
-    thread,
-    SETTINGS_CHANGE_CANCELLED.moving(command.target.label),
-    command.createdAt,
-    baseFor,
-  );
+  // Settings cards and key requests waiting for an answer don't move: they
+  // end here, with why.
+  const cancelled = [
+    ...cancelWaitingSettingsChanges(
+      thread,
+      SETTINGS_CHANGE_CANCELLED.moving(command.target.label),
+      command.createdAt,
+      baseFor,
+    ),
+    ...cancelWaitingSecretRequests(
+      thread,
+      SECRET_REQUEST_CANCELLED.moving(command.target.label),
+      command.createdAt,
+      baseFor,
+    ),
+  ];
   // The move holds what was owed now (its `interrupted`).
   const absorbed = owed !== null ? [restoreSet(thread, null, command.createdAt, baseFor)] : [];
   if (sessionStopped(thread)) {

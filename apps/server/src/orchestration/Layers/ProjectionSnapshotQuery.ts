@@ -51,6 +51,7 @@ import {
   EMPTY_CHILD_REQUEST_STATE,
   OrchestrationAgentRequestState,
   OrchestrationChildRequestState,
+  OrchestrationSecretRequest,
   OrchestrationSettingsChangeRequest,
   OrchestrationAwaitedBackgroundTask,
   OrchestrationSessionStartup,
@@ -87,6 +88,7 @@ import type * as Statement from "effect/sql/Statement";
 import { awaitingInvite } from "@threadlines/shared/roomAgentRequests";
 import { liveSideTurnFields } from "@threadlines/shared/sideTurns";
 import { hasPendingSettingsChange } from "@threadlines/shared/settingsChangeState";
+import { hasPendingSecretRequest } from "@threadlines/shared/secretRequestState";
 import {
   awaitedChildRequestCount,
   hasPendingChildApproval,
@@ -317,6 +319,9 @@ const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
     ),
     settingsRequests: Schema.optional(
       Schema.NullOr(Schema.fromJsonString(Schema.Array(OrchestrationSettingsChangeRequest))),
+    ),
+    secretRequests: Schema.optional(
+      Schema.NullOr(Schema.fromJsonString(Schema.Array(OrchestrationSecretRequest))),
     ),
     remoteOrigin: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadRemoteOrigin))),
     scheduledRun: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadScheduledRun))),
@@ -629,10 +634,12 @@ function mapThreadShellRow(
     latestUserMessageAt: row.latestUserMessageAt,
     ...shellLineageFields(row),
     pendingSettingsChange: hasPendingSettingsChange(row.settingsRequests ?? []),
+    pendingSecretRequest: hasPendingSecretRequest(row.secretRequests ?? []),
     hasPendingApprovals:
       row.pendingApprovalCount > 0 ||
       hasPendingChildApproval(row.childRequests ?? EMPTY_CHILD_REQUEST_STATE) ||
-      hasPendingSettingsChange(row.settingsRequests ?? []),
+      hasPendingSettingsChange(row.settingsRequests ?? []) ||
+      hasPendingSecretRequest(row.secretRequests ?? []),
     hasPendingUserInput: row.pendingUserInputCount > 0 || hasAwaitingInvite(row.agentRequests),
     hasBlockingUserInput: row.blockingUserInputCount > 0,
     hasActionableProposedPlan: row.hasActionableProposedPlan > 0,
@@ -978,6 +985,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           archived_with_parent_at AS "archivedWithParentAt",
           child_requests AS "childRequests",
           settings_requests AS "settingsRequests",
+          secret_requests AS "secretRequests",
           remote_origin_json AS "remoteOrigin",
           scheduled_run_json AS "scheduledRun",
           worktree_origin_json AS "worktreeOrigin",
@@ -1051,6 +1059,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           archived_with_parent_at AS "archivedWithParentAt",
           child_requests AS "childRequests",
           settings_requests AS "settingsRequests",
+          secret_requests AS "secretRequests",
           remote_origin_json AS "remoteOrigin",
           scheduled_run_json AS "scheduledRun",
           worktree_origin_json AS "worktreeOrigin",
@@ -1126,6 +1135,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           archived_with_parent_at AS "archivedWithParentAt",
           child_requests AS "childRequests",
           settings_requests AS "settingsRequests",
+          secret_requests AS "secretRequests",
           remote_origin_json AS "remoteOrigin",
           scheduled_run_json AS "scheduledRun",
           worktree_origin_json AS "worktreeOrigin",
@@ -1712,6 +1722,25 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
+  // Threads holding key requests: startup recovery of claimed ones and the
+  // expiry timers of saved `commands` files.
+  const listSecretRequestRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: Schema.Struct({
+      threadId: ThreadId,
+      secretRequests: Schema.fromJsonString(Schema.Array(OrchestrationSecretRequest)),
+    }),
+    execute: () =>
+      sql`
+        SELECT
+          thread_id AS "threadId",
+          secret_requests AS "secretRequests"
+        FROM projection_threads
+        WHERE deleted_at IS NULL
+          AND secret_requests IS NOT NULL
+      `,
+  });
+
   // ISO-8601 UTC stamps compare lexicographically, so the window predicate is
   // plain string comparison. A turn overlaps the window if it started or
   // completed at/after `sinceIso`; a turn that started earlier and is still
@@ -1971,6 +2000,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           archived_with_parent_at AS "archivedWithParentAt",
           child_requests AS "childRequests",
           settings_requests AS "settingsRequests",
+          secret_requests AS "secretRequests",
           remote_origin_json AS "remoteOrigin",
           scheduled_run_json AS "scheduledRun",
           worktree_origin_json AS "worktreeOrigin",
@@ -2933,6 +2963,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 commandRequests: commandRequestsByThread.get(row.threadId) ?? [],
                 commandRuns: commandRunsByThread.get(row.threadId) ?? [],
                 settingsRequests: row.settingsRequests ?? [],
+                secretRequests: row.secretRequests ?? [],
                 activities: dropStaleContextWindowActivities(
                   retainThreadActivities(
                     activitiesByThread.get(row.threadId) ?? [],
@@ -3257,6 +3288,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   commandRequests: commandRequestsByThread.get(row.threadId) ?? [],
                   commandRuns: commandRunsByThread.get(row.threadId) ?? [],
                   settingsRequests: row.settingsRequests ?? [],
+                  secretRequests: row.secretRequests ?? [],
                   activities: [],
                   workflowRuns: workflowRunsByThread.get(row.threadId) ?? [],
                   checkpoints: [],
@@ -3756,6 +3788,16 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         ),
       );
 
+  const listSecretRequests: ProjectionSnapshotQueryShape["listSecretRequests"] = () =>
+    listSecretRequestRows(undefined).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.listSecretRequests:query",
+          "ProjectionSnapshotQuery.listSecretRequests:decodeRows",
+        ),
+      ),
+    );
+
   const listThreadTurnOverlapsSince: ProjectionSnapshotQueryShape["listThreadTurnOverlapsSince"] = (
     input,
   ) =>
@@ -3809,6 +3851,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     archived_with_parent_at AS "archivedWithParentAt",
     child_requests AS "childRequests",
     settings_requests AS "settingsRequests",
+    secret_requests AS "secretRequests",
     remote_origin_json AS "remoteOrigin",
     scheduled_run_json AS "scheduledRun",
     worktree_origin_json AS "worktreeOrigin",
@@ -4201,6 +4244,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           .slice(-MAX_THREAD_COMMAND_REQUESTS),
         commandRuns: commandRunRows.map((row) => row.json).slice(-MAX_THREAD_COMMAND_RUNS),
         settingsRequests: threadRow.value.settingsRequests ?? [],
+        secretRequests: threadRow.value.secretRequests ?? [],
         // The whole window, superseded context-window readings included: it is
         // what the live feed holds, and the chat tells that older turns' steps
         // were cut from it being full (turnsWithCutSteps in the web app).
@@ -4244,6 +4288,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     listThreadTurnOverlapsSince,
     listThreadIdsWithOpenAgentRequests,
     listClaimedSettingsChanges,
+    listSecretRequests,
     listThreadShells,
     getThreadShellById,
     getThreadDetailById,

@@ -46,6 +46,7 @@ const makeProjectionSnapshotQueryLayer = (project: OrchestrationProject) =>
     listThreadTurnOverlapsSince: () => Effect.die("unused"),
     listThreadIdsWithOpenAgentRequests: () => Effect.die("unused"),
     listClaimedSettingsChanges: () => Effect.die("unused"),
+    listSecretRequests: () => Effect.die("unused"),
     listThreadShells: () => Effect.succeed([]),
     getThreadShellById: () => Effect.die("unused"),
     getTurnActivities: () => Effect.succeed([]),

@@ -197,6 +197,10 @@ export function makeCannedRoomHandlers(
       outcome: "asked_user",
       detail: "A card asks the user to accept the change.",
     })),
+    secret_request: answer("secret_request", () => ({
+      outcome: "asked_user",
+      detail: "The user was asked on a card. A message arrives when they answer.",
+    })),
     alert_assistants: answer("alert_assistants", () => ({
       outcome: "no_receiver",
       detail: "No assistant is set up to receive alerts.",

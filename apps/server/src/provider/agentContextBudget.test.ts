@@ -24,6 +24,7 @@ import { PreviewPageTool, ShowPageTool } from "../mcp/pageTools.ts";
 import { roomToolsFor } from "../mcp/roomToolAccess.ts";
 import { RoomToolkit } from "../mcp/roomTools.ts";
 import { ScheduleToolkit } from "../mcp/scheduleTools.ts";
+import { SecretRequestToolkit } from "../mcp/secretRequestTools.ts";
 import { SettingsChangeToolkit } from "../mcp/settingsChangeTools.ts";
 import { FindVsCodeThemeTool, PreviewThemeTool, ShowThemeTool } from "../mcp/themeTools.ts";
 import { ThreadToolkit } from "../mcp/threadTools.ts";
@@ -57,6 +58,7 @@ const threadTools: ReadonlyArray<Tool.Any> = [
     ScheduleToolkit,
     GuideToolkit,
     SettingsChangeToolkit,
+    SecretRequestToolkit,
     AlertAssistantsToolkit,
   ].flatMap((toolkit) => Object.values(toolkit.tools) as ReadonlyArray<Tool.Any>),
   ShowPageTool,

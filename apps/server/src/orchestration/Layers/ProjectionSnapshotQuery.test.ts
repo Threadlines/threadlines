@@ -440,6 +440,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           commandRequests: [],
           commandRuns: [],
           settingsRequests: [],
+          secretRequests: [],
           activities: [
             {
               id: asEventId("activity-1"),
@@ -573,6 +574,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           awaitedChildThreadCount: 0,
           pendingChildApproval: false,
           pendingSettingsChange: false,
+          pendingSecretRequest: false,
           hasPendingUserInput: false,
           hasBlockingUserInput: false,
           hasActionableProposedPlan: false,

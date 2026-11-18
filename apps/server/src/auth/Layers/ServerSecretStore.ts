@@ -30,6 +30,21 @@ export const makeServerSecretStore = Effect.gen(function* () {
     ),
   );
 
+  // A crash between `set`'s write and its rename leaves a plain copy behind
+  // under a temp name that `list` never shows: remove those before any write.
+  yield* fileSystem.readDirectory(serverConfig.secretsDir).pipe(
+    Effect.flatMap((entries) =>
+      Effect.forEach(
+        entries.filter((entry) => entry.endsWith(".tmp")),
+        (entry) => fileSystem.remove(path.join(serverConfig.secretsDir, entry)),
+        { discard: true },
+      ),
+    ),
+    Effect.catch((cause) =>
+      Effect.logWarning("couldn't remove leftover secret temp files", { cause }),
+    ),
+  );
+
   const resolveSecretPath = (name: string) => path.join(serverConfig.secretsDir, `${name}.bin`);
 
   const isPlatformError = (u: unknown): u is PlatformError.PlatformError =>
@@ -54,7 +69,14 @@ export const makeServerSecretStore = Effect.gen(function* () {
     const secretPath = resolveSecretPath(name);
     const tempPath = `${secretPath}.${Crypto.randomUUID()}.tmp`;
     return Effect.gen(function* () {
-      yield* fileSystem.writeFile(tempPath, value);
+      // Private from the moment it exists, not narrowed after the write.
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const file = yield* fileSystem.open(tempPath, { flag: "wx", mode: 0o600 });
+          yield* file.writeAll(value);
+          yield* file.sync;
+        }),
+      );
       yield* fileSystem.chmod(tempPath, 0o600);
       yield* fileSystem.rename(tempPath, secretPath);
       yield* fileSystem.chmod(secretPath, 0o600);

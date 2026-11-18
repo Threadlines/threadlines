@@ -26,6 +26,7 @@ import type {
   ThreadId,
   TurnId,
   OrchestrationWorkflowRun,
+  OrchestrationSecretRequest,
   OrchestrationSettingsChangeRequest,
 } from "@threadlines/contracts";
 import * as Context from "effect/Context";
@@ -269,6 +270,19 @@ export interface ProjectionSnapshotQueryShape {
     ReadonlyArray<{
       readonly threadId: ThreadId;
       readonly request: OrchestrationSettingsChangeRequest;
+    }>,
+    ProjectionRepositoryError
+  >;
+
+  /**
+   * Every live thread's key requests (docs/design/secret-requests.md). Used
+   * at startup to settle claimed ones and to set saved files' expiry timers
+   * (AgentSecretRequests).
+   */
+  readonly listSecretRequests: () => Effect.Effect<
+    ReadonlyArray<{
+      readonly threadId: ThreadId;
+      readonly secretRequests: ReadonlyArray<OrchestrationSecretRequest>;
     }>,
     ProjectionRepositoryError
   >;

@@ -32,6 +32,7 @@ export type ThreadApprovalAsk =
   | "terminal-input"
   | "scheduled-task"
   | "settings"
+  | "secret"
   | "start-threads"
   | "other";
 
@@ -261,6 +262,17 @@ export function threadWaitingItems(
           .join(" · "),
         WAITING_DETAIL_CHAR_LIMIT,
       ),
+    });
+  }
+  for (const request of thread.secretRequests ?? []) {
+    if (request.status !== "waiting") continue;
+    items.push({
+      kind: "approval",
+      requestId: request.requestId,
+      askedAt: request.createdAt,
+      summary: `Wants a key: ${request.name}`,
+      asks: "secret",
+      detail: clip(request.reason, WAITING_DETAIL_CHAR_LIMIT),
     });
   }
   const batches = new Map<string, { askedAt: string; starts: number; sends: number }>();

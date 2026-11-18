@@ -54,6 +54,8 @@ import { LEAD_WITHOUT_TOOLS_TEXT, leadRoleText } from "@threadlines/shared/proje
 import { agentInvitesMode, agentThreadsMode } from "@threadlines/shared/serverSettings";
 import { notesFor, remoteChildOf, withinModeCeiling } from "@threadlines/shared/childThreads";
 import { settingsChangeNotesFor } from "@threadlines/shared/settingsChangeState";
+import { secretRequestNotesFor } from "@threadlines/shared/secretRequestState";
+import { secretRequestNote } from "@threadlines/shared/secretRequests";
 import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
 import { exceedsRuntimeMode, saferRuntimeMode } from "@threadlines/shared/runtimeMode";
 import { isOutsideMarked, outsideCeilingDetail, outsideWorkOf } from "../outsideTurns.ts";
@@ -2376,6 +2378,51 @@ const make = Effect.gen(function* () {
     };
   };
 
+  /**
+   * Agents' requests for keys: how the ones this agent asked for ended since
+   * its last turn, when no message told it already (Not now, cancelled, a
+   * save Threadlines stopped in the middle of), carried once
+   * (docs/design/secret-requests.md, "Telling the agent").
+   */
+  const secretRequestContext = (
+    thread: OrchestrationThread,
+    participantId: ThreadParticipantId | null,
+  ) => {
+    const settled = secretRequestNotesFor(thread.secretRequests, participantId);
+    const notes = settled.flatMap((request) => {
+      const text = secretRequestNote(request);
+      return text === null ? [] : [text];
+    });
+    return {
+      text:
+        notes.length === 0
+          ? undefined
+          : [
+              "About the keys you asked the user for, since your last turn:",
+              ...notes.map((note) => `- ${note}`),
+            ].join("\n"),
+      delivered:
+        settled.length === 0
+          ? Effect.void
+          : Effect.gen(function* () {
+              yield* orchestrationEngine.dispatch({
+                type: "thread.secret-request.deliver-notes",
+                commandId: serverCommandId("secret-request-notes"),
+                threadId: thread.id,
+                requestIds: settled.map((request) => request.requestId),
+                createdAt: yield* nowIso,
+              });
+            }).pipe(
+              Effect.catch((error) =>
+                Effect.logWarning("secret request notes were not marked delivered", {
+                  threadId: thread.id,
+                  detail: error.message,
+                }),
+              ),
+            ),
+    };
+  };
+
   const buildSendTurnRequestForThread = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
     readonly messageId: MessageId;
@@ -2691,6 +2738,7 @@ const make = Effect.gen(function* () {
     const leadContext = yield* leadChatContext(thread, activeSession?.roomTools);
     const scheduleContext = yield* scheduledTaskContext(thread, input.participantId);
     const settingsContext = settingsChangeContext(thread, input.participantId);
+    const secretContext = secretRequestContext(thread, input.participantId);
     const sentMessage = thread.messages.find((message) => message.id === input.messageId);
     // Which device the user sent it from, when that matters (see
     // messageSentFromNote). A native fork carries on the source thread's
@@ -2734,6 +2782,7 @@ const make = Effect.gen(function* () {
       outsideAgentContext(thread, input.messageId),
       scheduleContext.text,
       settingsContext.text,
+      secretContext.text,
     ]
       .filter((part): part is string => part !== undefined && part.length > 0)
       .join("\n\n");
@@ -2867,11 +2916,14 @@ const make = Effect.gen(function* () {
           : Effect.sync(() => {
               owedSeed.claimed = false;
             }),
-      // Child threads', scheduled tasks' and settings changes' notes this turn carries, cleared
-      // once it is taken.
+      // Child threads', scheduled tasks', settings changes' and key requests'
+      // notes this turn carries, cleared once it is taken.
       notesDelivered: Effect.andThen(
         childContext.delivered(input.createdAt),
-        Effect.andThen(scheduleContext.delivered, settingsContext.delivered),
+        Effect.andThen(
+          scheduleContext.delivered,
+          Effect.andThen(settingsContext.delivered, secretContext.delivered),
+        ),
       ),
       // Recorded only once the provider has taken the turn. A moved room's
       // agent caught up here is recorded even when its provider names no

@@ -95,6 +95,7 @@ type ThreadStatusInput = Pick<
   | "pendingChildApproval"
   | "pendingScheduleApproval"
   | "pendingSettingsChange"
+  | "pendingSecretRequest"
   | "awaitedChildThreadCount"
   | "checkBacks"
 > & {
@@ -316,13 +317,14 @@ export function resolveThreadStatusPill(input: {
   const { thread } = input;
 
   // Threads its agent asked to start, scheduled tasks it asked to create or
-  // change, and settings it asked to change wait for the user's yes like any
-  // other approval: blocking, and never wrapped away.
+  // change, settings it asked to change and keys it asked for wait for the
+  // user's yes like any other approval: blocking, and never wrapped away.
   if (
     thread.hasPendingApprovals ||
     thread.pendingChildApproval === true ||
     thread.pendingScheduleApproval === true ||
-    thread.pendingSettingsChange === true
+    thread.pendingSettingsChange === true ||
+    thread.pendingSecretRequest === true
   ) {
     return {
       label: "Pending Approval",
@@ -687,6 +689,7 @@ type InboxLifecycleInput = Pick<
   | "pendingChildApproval"
   | "pendingScheduleApproval"
   | "pendingSettingsChange"
+  | "pendingSecretRequest"
   | "awaitedChildThreadCount"
   | "handedBackTurnId"
   | "queuedFollowUpCount"

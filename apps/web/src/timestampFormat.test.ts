@@ -6,6 +6,7 @@ import {
   formatExpiresInLabel,
   formatRelativeTimeShortLabel,
   formatRelativeTimeUntilLabel,
+  formatTimeWithDay,
   getTimestampFormatOptions,
 } from "./timestampFormat";
 
@@ -108,5 +109,16 @@ describe("formatElapsedDurationLabel", () => {
     expect(formatElapsedDurationLabel("2026-04-07T11:45:00.000Z", NOW)).toBe("15m");
     expect(formatElapsedDurationLabel("2026-04-07T06:00:00.000Z", NOW)).toBe("6h");
     expect(formatElapsedDurationLabel("2026-04-03T12:00:00.000Z", NOW)).toBe("4d");
+  });
+});
+
+describe("formatTimeWithDay", () => {
+  it("names today and tomorrow in words, and dates anything further", () => {
+    const now = new Date(2026, 10, 18, 14, 14).getTime();
+    const at = (day: number, hour: number) => new Date(2026, 10, day, hour, 14).toISOString();
+    expect(formatTimeWithDay(at(18, 16), now, "12-hour")).toMatch(/^4:14\sPM today$/);
+    expect(formatTimeWithDay(at(19, 14), now, "12-hour")).toMatch(/^2:14\sPM tomorrow$/);
+    expect(formatTimeWithDay(at(19, 14), now, "24-hour")).toBe("14:14 tomorrow");
+    expect(formatTimeWithDay(at(21, 14), now, "12-hour")).not.toMatch(/today|tomorrow/);
   });
 });

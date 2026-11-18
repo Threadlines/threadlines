@@ -146,6 +146,8 @@ import { ComposerAgentInvitePanel } from "./ComposerAgentInvitePanel";
 import { ComposerChildThreadsPanel } from "./ComposerChildThreadsPanel";
 import { ComposerScheduleRequestPanel } from "./ComposerScheduleRequestPanel";
 import { ComposerSettingsChangePanel } from "./ComposerSettingsChangePanel";
+import { ComposerSecretRequestPanel } from "./ComposerSecretRequestPanel";
+import { dockedSecretRequest } from "./secretRequestCard.logic";
 import { useScheduledTaskRequestsForThread } from "../../lib/scheduledTasksState";
 import { ComposerRemoteStartPanel } from "./ComposerRemoteStartPanel";
 import { usePendingLinkRequests } from "../sidebar/linkedComputers";
@@ -204,6 +206,7 @@ import {
   resolveRoomSend,
   roomActivityAgent,
   roomAgentKey,
+  roomModelName,
   roomTurnOwners,
   useRoomAgentOptions,
   useRoomRecipientStore,
@@ -1195,6 +1198,27 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     () => shownSettingsChange(activeThread?.settingsRequests),
     [activeThread?.settingsRequests],
   );
+  // Keys the agent asked for (`secret_request`): one card at a time, the
+  // oldest first, named for the agent that asked as the room names it.
+  const pendingSecretRequest = useMemo(() => {
+    const docked = dockedSecretRequest(activeThread?.secretRequests);
+    if (docked === null || activeThread === undefined) return null;
+    const modelDisplayName: Parameters<typeof roomModelName>[2] = (model, entry) =>
+      getPickerModelName(model, entry.driverKind);
+    const labels = buildRoomAgentLabels(
+      {
+        modelSelection: activeThread.modelSelection,
+        participants: activeThread.participants,
+        agentRole: activeThread.agentRole,
+      },
+      providerInstanceEntries,
+      modelDisplayName,
+    );
+    const agentName =
+      labels?.get(roomAgentKey(docked.request.participantId))?.name ??
+      roomModelName(activeThread.modelSelection, providerInstanceEntries, modelDisplayName);
+    return { ...docked, agentName };
+  }, [activeThread, providerInstanceEntries]);
   // A thread the agent asked another computer to start, waiting for that
   // computer's user: the card that decides it sits here, in the thread that
   // asked, where the conversation says why.
@@ -3984,6 +4008,19 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   key={pendingSettingsChange.requestId}
                   threadRef={routeThreadRef}
                   request={pendingSettingsChange}
+                />
+              </div>
+            ) : pendingSecretRequest !== null ? (
+              <div className="rounded-t-[11px] border-b border-border/65 bg-muted/20">
+                <ComposerSecretRequestPanel
+                  // Its typed text belongs to this computer, thread and
+                  // request: a new key starts an empty card.
+                  key={`${routeThreadRef.environmentId}:${routeThreadRef.threadId}:${pendingSecretRequest.request.requestId}`}
+                  threadRef={routeThreadRef}
+                  request={pendingSecretRequest.request}
+                  agentName={pendingSecretRequest.agentName}
+                  position={pendingSecretRequest.position}
+                  count={pendingSecretRequest.count}
                 />
               </div>
             ) : pendingRemoteStart !== null ? (
