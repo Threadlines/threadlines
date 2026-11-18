@@ -7,7 +7,7 @@ import {
   type ThreadId,
 } from "@threadlines/contracts";
 import { makeDrainableWorker } from "@threadlines/shared/DrainableWorker";
-import { goalWaitOf, goalWaitStep } from "@threadlines/shared/goalWaitPause";
+import { goalWaitOf, goalWaitStep, turnAboutToStart } from "@threadlines/shared/goalWaitPause";
 import { sessionSlotParticipantId } from "@threadlines/shared/threadParticipants";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
@@ -27,7 +27,8 @@ const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 /**
  * Events that can change what a thread waits on, or its goal: its cards (the
  * threads, settings, invites and commands its agent asked for), the threads
- * it started, its session (a turn about to start or running) and its goal.
+ * it started, its queue and session (a turn about to start or running) and
+ * its goal.
  * Everything else (streamed text, tool calls) leaves both alone.
  */
 const WAIT_EVENT_PREFIXES = [
@@ -39,6 +40,7 @@ const WAIT_EVENT_PREFIXES = [
   "thread.agent-request",
   "thread.command-request",
   "thread.command-run-",
+  "thread.follow-up-",
   "thread.session-set",
   "thread.goal-state-set",
 ] as const;
@@ -89,7 +91,7 @@ export const make = Effect.gen(function* () {
     const step = goalWaitStep({
       goal: thread.goal,
       waiting: goalWaitOf(thread, scheduleAnswerWaiting) !== null,
-      turnStarting: thread.session?.status === "starting",
+      turnStarting: turnAboutToStart(thread),
     });
     if (step === null || !(yield* canPauseGoal(thread))) return;
     yield* orchestrationEngine

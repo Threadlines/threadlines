@@ -64,10 +64,21 @@ export function goalWaitOf(thread: GoalWaitFacts, scheduleAnswerWaiting: boolean
 }
 
 /**
+ * Whether a turn is about to start: the session is starting one, or a message
+ * waits in the queue to go next (a report from a thread it started is queued
+ * in the same decision that settles its request, then sent).
+ */
+export function turnAboutToStart(
+  thread: Pick<OrchestrationThread, "session" | "queuedFollowUps">,
+): boolean {
+  return thread.session?.status === "starting" || (thread.queuedFollowUps ?? []).length > 0;
+}
+
+/**
  * What to do with the thread's goal now: pause an active goal while it waits,
  * resume one this paused once the wait is over, or nothing. A resume waits
- * while a turn is about to start (`turnStarting`): resumed while idle, the
- * provider starts a goal turn of its own, and it would race the turn that
+ * while a turn is about to start (`turnAboutToStart`): resumed while idle,
+ * the provider starts a goal turn of its own, and it would race the turn that
  * ended the wait (a report, the output of a command). Resumed while that turn
  * runs, the goal carries on after it.
  */

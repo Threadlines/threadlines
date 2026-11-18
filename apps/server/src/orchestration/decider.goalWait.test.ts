@@ -240,9 +240,26 @@ describe("decider goal wait pause", () => {
     }));
     expect((await run(started, sync())).events).toEqual([]);
 
-    // The last report arrives as a turn about to start: the resume waits for it.
-    const reportStarting = patchThread(started, (thread) => ({
+    // The last report arrives: its request settles and the report waits in
+    // the queue to be sent, a turn about to start. The resume waits for it.
+    const reportQueued = patchThread(started, (thread) => ({
       childRequests: { ...thread.childRequests, open: [] },
+      queuedFollowUps: [
+        {
+          messageId: MessageId.make("report"),
+          text: "ok",
+          attachments: [],
+          runtimeMode: "approval-required",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          createdAt: at(4),
+        },
+      ],
+    }));
+    expect((await run(reportQueued, sync())).events).toEqual([]);
+
+    // Sent: the session is starting its turn.
+    const reportStarting = patchThread(reportQueued, () => ({
+      queuedFollowUps: [],
       session: {
         threadId: THREAD,
         status: "starting",

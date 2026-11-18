@@ -145,7 +145,12 @@ import {
 } from "./threadMoveDecisions.ts";
 import { carriedBackgroundTasks } from "./sessionBackgroundTasks.ts";
 import { questionsClosedByUserMessage, unansweredResponseRefusal } from "./userInput.ts";
-import { goalWaitOf, goalWaitStep, keepsGoalWaitMark } from "@threadlines/shared/goalWaitPause";
+import {
+  goalWaitOf,
+  goalWaitStep,
+  keepsGoalWaitMark,
+  turnAboutToStart,
+} from "@threadlines/shared/goalWaitPause";
 import {
   isContinueTrigger,
   RESTART_CONTINUE_MESSAGE,
@@ -5526,7 +5531,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       const step = goalWaitStep({
         goal,
         waiting: goalWaitOf(thread, command.scheduleAnswerWaiting) !== null,
-        turnStarting: thread.session?.status === "starting",
+        turnStarting: turnAboutToStart(thread),
       });
       if (step === null || goal === null) {
         return [];
