@@ -11,7 +11,6 @@ import {
   DEFAULT_PROVIDER_INTERACTION_MODE,
   type EnvironmentId,
   type ProjectId,
-  type ScopedProjectRef,
   type ScopedThreadRef,
   type ThreadId,
 } from "@threadlines/contracts";
@@ -24,6 +23,7 @@ import { readEnvironmentApi } from "./environmentApi";
 import { readEnvironmentDescriptor } from "./environments/runtime";
 import { newCommandId, newThreadId } from "./lib/utils";
 import {
+  fallbackNewThreadModelSelection,
   lastUsedSelection,
   readComputerConfig,
   resolveNewThreadDefaults,
@@ -32,7 +32,9 @@ import {
   type AppState,
   selectProjectByRef,
   selectSidebarThreadSummaryByRef,
+  selectThreadExistsByRef,
   useStore,
+  waitForAppState,
 } from "./store";
 import type { Project, SidebarThreadSummary } from "./types";
 
@@ -213,11 +215,12 @@ export function readProjectLeadRefForThread(threadRef: ScopedThreadRef): ScopedT
 
 /**
  * "New lead chat": makes a thread in the project's own folder (no worktree),
- * with the computer's default agent, makes it the lead and returns it. Null
- * when it couldn't, having said why.
+ * with the agent a new thread there would get, makes it the lead and returns
+ * it once this app has it, ready to open. Null when it couldn't, or when the
+ * thread hasn't reached this app in time, having said so either way.
  */
 export async function createLeadChat(
-  project: Pick<Project, "environmentId" | "id" | "defaultModelSelection">,
+  project: Pick<Project, "environmentId" | "id">,
 ): Promise<ScopedThreadRef | null> {
   const failure = "Couldn't start a lead chat";
   const api = readEnvironmentApi(project.environmentId);
@@ -231,18 +234,13 @@ export async function createLeadChat(
     return null;
   }
   const config = readComputerConfig(project.environmentId);
+  // The same agent a new thread here would get, down to the composer's own
+  // fallback when nothing is chosen, so the two never disagree. Not the
+  // project's stored `defaultModelSelection`: new threads ignore that old pin.
   const modelSelection =
     (config === null ? null : resolveNewThreadDefaults(config).modelSelection) ??
-    project.defaultModelSelection ??
-    lastUsedSelection();
-  if (modelSelection === null) {
-    toastManager.add({
-      type: "warning",
-      title: failure,
-      description: "Pick a default agent for new threads in Settings first.",
-    });
-    return null;
-  }
+    lastUsedSelection() ??
+    fallbackNewThreadModelSelection(config);
   const threadId = newThreadId();
   try {
     await api.orchestration.dispatchCommand({
@@ -267,8 +265,27 @@ export async function createLeadChat(
     projectId: project.id,
     threadId,
   });
-  return made ? scopeThreadRef(project.environmentId, threadId) : null;
+  if (!made) return null;
+  // Opened once this app has it: before that its page finds no thread there
+  // and goes home.
+  const ref = scopeThreadRef(project.environmentId, threadId);
+  const arrived = await waitForAppState(
+    (state) => selectThreadExistsByRef(state, ref),
+    THREAD_ARRIVAL_TIMEOUT_MS,
+  );
+  if (!arrived) {
+    toastManager.add({
+      type: "info",
+      title: "Lead chat started",
+      description: "It shows in the sidebar once this window catches up.",
+    });
+    return null;
+  }
+  return ref;
 }
+
+/** How long "New lead chat" waits for its thread to reach this app before opening it anyway. */
+const THREAD_ARRIVAL_TIMEOUT_MS = 10_000;
 
 /**
  * The project's name when `threadRef` is its lead chat, else null. A
