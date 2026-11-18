@@ -37,7 +37,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { linkMoveCopyThreadId } from "../moves/linkMoveIds.ts";
 import { decideOrchestrationCommand } from "./decider.ts";
 import { createEmptyReadModel, projectEvent } from "./projector.ts";
-import { isLinkFenced } from "./linkFence.ts";
+import { isLinkFenced, turnLiftsMoveFence } from "./linkFence.ts";
 import { messageSentFromSession } from "./messageSentFrom.ts";
 import { threadMoveGuardRefusal, threadMoveRefusals } from "./threadMoveDecisions.ts";
 
@@ -3687,5 +3687,298 @@ describe("across the link: a child alone, and a thread going home (Part 3f, (h))
         );
       });
     });
+  });
+});
+
+describe("a parent arriving beside threads it started here (Part 3f, (g))", () => {
+  const LINK = "device-mac-mini";
+  const SOURCE = ThreadId.make("thread-parent-on-mac");
+  const ARRIVED = ThreadId.make("thread-parent-arrived");
+  const STARTED = ThreadId.make("thread-started-here");
+  const THIRD = { environmentId: EnvironmentId.make("environment-third"), label: "Linux box" };
+  const TAKES: ThreadMoveTakes = { threadState: true, families: true, linkLineage: true };
+  const origin = (extra: Record<string, unknown> = {}) => ({
+    linkDeviceId: LINK,
+    environmentId: MAC_MINI.environmentId,
+    environmentPinned: true,
+    environmentLabel: "Mac mini",
+    threadId: SOURCE,
+    threadTitle: "Ship it",
+    ...extra,
+  });
+  /** A thread the link started here for SOURCE, before SOURCE moved here. */
+  const startedHere = async (
+    model: OrchestrationReadModel,
+    threadId: ThreadId = STARTED,
+    extra: Record<string, unknown> = {},
+  ) =>
+    (
+      await apply(model, {
+        type: "thread.create",
+        commandId: nextCommandId(),
+        threadId,
+        projectId: PROJECT,
+        title: "Fix tests",
+        modelSelection,
+        runtimeMode: "auto",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: `/worktrees/${threadId}`,
+        remoteOrigin: origin(),
+        createdAt: now,
+        ...extra,
+      } as OrchestrationCommand)
+    ).model;
+  const arrive = (
+    children: ReadonlyArray<{ readonly threadId: ThreadId; readonly override?: unknown }>,
+    extra: Record<string, unknown> = {},
+  ): OrchestrationCommand =>
+    ({
+      type: "thread.import",
+      commandId: nextCommandId(),
+      threadId: ARRIVED,
+      projectId: PROJECT,
+      title: "Ship it",
+      modelSelection,
+      runtimeMode: "auto",
+      interactionMode: "default",
+      branch: "ship",
+      worktreePath: `/worktrees/${ARRIVED}`,
+      movedFrom: { ...MAC_MINI, environmentPinned: true, threadId: SOURCE, movedAt: now },
+      messages: [],
+      activities: [],
+      adoptsChildren: { linkDeviceId: LINK, children },
+      createdAt: now,
+      ...extra,
+    }) as OrchestrationCommand;
+  const sends = (threadId: ThreadId, id: string, extra: Record<string, unknown> = {}) =>
+    ({
+      type: "thread.turn.start",
+      commandId: nextCommandId(),
+      threadId,
+      message: { messageId: MessageId.make(id), role: "user", text: "Go", attachments: [] },
+      sentFrom: { kind: "computer", place: "here" },
+      runtimeMode: "auto",
+      interactionMode: "default",
+      createdAt: now,
+      ...extra,
+    }) as OrchestrationCommand;
+  const boundaryOf = (model: OrchestrationReadModel) =>
+    threadOf(model, ARRIVED).activities.find((entry) => entry.kind === "thread.moved-in")
+      ?.payload as {
+      readonly brought?: ReadonlyArray<string>;
+      readonly left: ReadonlyArray<string>;
+    };
+
+  it("takes a thread it started here back as its child, fenced until a person writes in it", async () => {
+    const { model, refusal } = await apply(
+      await startedHere(await seeded()),
+      arrive([{ threadId: STARTED }]),
+    );
+    expect(refusal).toBeNull();
+    const child = threadOf(model, STARTED);
+    expect(child).toMatchObject({
+      parentThreadId: ARRIVED,
+      parentTurnId: null,
+      attachedToParent: true,
+      parentAttachmentEpoch: 1,
+      adoptedFromLink: { environmentId: MAC_MINI.environmentId, label: "Mac mini", fenced: true },
+    });
+    expect(child.remoteOrigin ?? null).toBeNull();
+    expect(isLinkFenced(child)).toBe(true);
+    expect(child.activities.at(-1)?.kind).toBe("thread.adopted-by-moved-parent");
+    expect(boundaryOf(model).brought).toContain(
+      "Its thread 'Fix tests' was already on this computer. It's this thread's again.",
+    );
+  });
+
+  it("leaves each thread that doesn't qualify as it is, says why, and still lands", async () => {
+    const OTHER_PROJECT = ProjectId.make("project-2");
+    let model = await seeded();
+    ({ model } = await apply(model, {
+      type: "project.create",
+      commandId: nextCommandId(),
+      projectId: OTHER_PROJECT,
+      title: "Other",
+      workspaceRoot: "/other",
+      createdAt: now,
+    }));
+    const cases = [
+      { remoteOrigin: origin({ linkDeviceId: "device-someone-else" }) },
+      { remoteOrigin: origin({ threadId: ThreadId.make("thread-other-on-mac") }) },
+      { remoteOrigin: origin({ environmentPinned: false }) },
+      { projectId: OTHER_PROJECT },
+      {},
+      {},
+    ];
+    const ids = cases.map((_, index) => ThreadId.make(`thread-case-${index}`));
+    for (const [index, extra] of cases.entries()) {
+      model = await startedHere(model, ids[index], { ...extra, title: `Case ${index}` });
+    }
+    ({ model } = await apply(model, {
+      type: "thread.archive",
+      commandId: nextCommandId(),
+      threadId: ids[4],
+      createdAt: now,
+    } as OrchestrationCommand));
+    const queued = await apply(model, {
+      type: "thread.move.queue",
+      commandId: nextCommandId(),
+      threadId: ids[5]!,
+      requestId: ThreadMoveRequestId.make("request-moving"),
+      target: MAC_MINI,
+      agent: modelSelection,
+      mode: "when-done",
+      requestedBy: { kind: "user" },
+      targetTakes: TAKES,
+      createdAt: now,
+    });
+    expect(queued.refusal).toBeNull();
+    model = queued.model;
+
+    let refusal: string | null;
+    ({ model, refusal } = await apply(model, arrive(ids.map((threadId) => ({ threadId })))));
+    expect(refusal).toBeNull();
+    for (const threadId of ids) {
+      expect(threadOf(model, threadId).parentThreadId).toBeNull();
+      expect(threadOf(model, threadId).remoteOrigin ?? null).not.toBeNull();
+    }
+    expect(boundaryOf(model).brought ?? []).toEqual([]);
+    const line = (index: number, why: string) =>
+      `Its thread 'Case ${index}' is already on this computer. It stays separate because ${why}, so this thread can't reach it.`;
+    expect(boundaryOf(model).left).toEqual(
+      expect.arrayContaining([
+        line(0, "this computer can't confirm this thread started it"),
+        line(1, "this computer can't confirm this thread started it"),
+        line(2, "this computer can't confirm this thread started it"),
+        line(3, "it's in another project here"),
+        line(4, "it's archived"),
+        line(5, "it's moving"),
+      ]),
+    );
+  });
+
+  it("never takes back a thread with more access than the parent has here, nor lowers it", async () => {
+    const { model, refusal } = await apply(
+      await startedHere(await seeded()),
+      arrive([{ threadId: STARTED }], { interactionMode: "plan" }),
+    );
+    expect(refusal).toBeNull();
+    const child = threadOf(model, STARTED);
+    expect(child.parentThreadId).toBeNull();
+    expect(child).toMatchObject({ runtimeMode: "auto", interactionMode: "default" });
+    expect(boundaryOf(model).left).toContain(
+      "Its thread 'Fix tests' is already on this computer. It stays separate because it has more access than this thread has here, so this thread can't reach it.",
+    );
+  });
+
+  it("a Wrap up given there stands only when it is newer than the word given here", async () => {
+    const LATER = ThreadId.make("thread-started-later");
+    let model = await startedHere(await startedHere(await seeded()), LATER, { title: "Review" });
+    ({ model } = await apply(model, {
+      type: "thread.done-override.set",
+      commandId: nextCommandId(),
+      threadId: STARTED,
+      state: "active",
+      at: "2026-10-22T09:30:00.000Z",
+    } as OrchestrationCommand));
+    const older = { state: "done", at: "2026-10-22T09:00:00.000Z" };
+    ({ model } = await apply(
+      model,
+      arrive([
+        { threadId: STARTED, override: older },
+        { threadId: LATER, override: older },
+      ]),
+    ));
+    expect(threadOf(model, STARTED).doneOverride).toEqual({
+      state: "active",
+      at: "2026-10-22T09:30:00.000Z",
+    });
+    expect(threadOf(model, LATER).doneOverride).toEqual(older);
+    expect(boundaryOf(model).brought).toContain(
+      "Its 2 threads already on this computer are this thread's again: Fix tests, Review.",
+    );
+  });
+
+  it("only a person's message in the child lifts its fence, and until then it goes only home", async () => {
+    let { model } = await apply(await startedHere(await seeded()), arrive([{ threadId: STARTED }]));
+    const third = await apply(model, {
+      type: "thread.move.queue",
+      commandId: nextCommandId(),
+      threadId: STARTED,
+      requestId: ThreadMoveRequestId.make("request-third"),
+      target: THIRD,
+      agent: modelSelection,
+      mode: "when-done",
+      requestedBy: { kind: "user" },
+      targetTakes: TAKES,
+      createdAt: now,
+    });
+    expect(third.refusal).toContain(
+      "This thread was started by an agent on Mac mini, and until you send it a message here it can only move back to Mac mini.",
+    );
+    // A scheduled run, or a message from another thread: still fenced.
+    const decided = await Effect.runPromise(
+      decideOrchestrationCommand({
+        readModel: model,
+        command: sends(STARTED, "m-scheduled", { scheduledTaskId: "task-1" }),
+      }),
+    );
+    const planned = Array.isArray(decided) ? decided : [decided];
+    const requested = planned.find((event) => event.type === "thread.turn-start-requested");
+    expect(requested?.payload).not.toHaveProperty("liftsMoveFence");
+    expect(
+      turnLiftsMoveFence(threadOf(model, STARTED), {
+        sentFrom: { kind: "computer", place: "here" },
+        fromThread: { threadId: ARRIVED, requestId: ChildRequestId.make("ask"), kind: "request" },
+        message: { messageId: MessageId.make("m-from-thread") },
+      }),
+    ).toBe(false);
+    // A person's message in the parent lifts the parent's fence, not the child's.
+    ({ model } = await apply(model, sends(ARRIVED, "m-parent")));
+    expect(threadOf(model, ARRIVED).movedFrom?.fenced).toBeUndefined();
+    expect(threadOf(model, STARTED).adoptedFromLink?.fenced).toBe(true);
+    ({ model } = await apply(model, sends(STARTED, "m-person")));
+    expect(threadOf(model, STARTED).adoptedFromLink).toMatchObject({ fenced: false });
+    expect(isLinkFenced(threadOf(model, STARTED))).toBe(false);
+  });
+
+  it("the copy that moved away stops keeping only the threads that became its children there", async () => {
+    let { model } = await apply(await seeded(), startMove());
+    const record = (environment: typeof MAC_MINI, threadId: string) =>
+      project(model, "thread.remote-child-updated", {
+        threadId: THREAD,
+        child: {
+          ...environment,
+          threadId: ThreadId.make(threadId),
+          handle: "Agent",
+          title: threadId,
+          attachmentEpoch: 0,
+          cachedStatus: "idle",
+          updatedAt: now,
+        },
+        updatedAt: now,
+      });
+    model = await record(MAC_MINI, "thread-adopted");
+    model = await record(MAC_MINI, "thread-kept-apart");
+    model = await record(THIRD, "thread-adopted");
+    ({ model } = await apply(model, {
+      type: "thread.move.complete",
+      commandId: nextCommandId(),
+      threadId: THREAD,
+      transferId: TRANSFER,
+      movedThreadId: ThreadId.make("thread-there"),
+      adopted: [ThreadId.make("thread-adopted")],
+      createdAt: now,
+    }));
+    expect(
+      (threadOf(model).childRequests.remoteChildren ?? []).map((entry) => [
+        entry.environmentId,
+        entry.threadId,
+      ]),
+    ).toEqual([
+      [MAC_MINI.environmentId, "thread-kept-apart"],
+      [THIRD.environmentId, "thread-adopted"],
+    ]);
   });
 });

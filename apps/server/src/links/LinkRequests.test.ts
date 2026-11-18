@@ -340,6 +340,73 @@ const stopRequestedFor = (events: ReadonlyArray<OrchestrationEvent>, threadId: T
       event.type === "thread.session-stop-requested" && event.payload.threadId === threadId,
   );
 
+const stopsFor = (events: ReadonlyArray<OrchestrationEvent>, threadId: ThreadId) =>
+  events.filter(
+    (event) =>
+      event.type === "thread.session-stop-requested" && event.payload.threadId === threadId,
+  ).length;
+
+/**
+ * The thread that asked (PARENT on Windows PC) moves here and takes the
+ * link's thread back as its child (docs/design/fleet.md, Part 3f, (g)):
+ * released by the link first, then imported, as LinkMoves does it.
+ */
+const takenBack = (
+  computer: Computer,
+  service: Effect.Success<ReturnType<Computer["boot"]>>,
+  threadId: ThreadId,
+) =>
+  Effect.gen(function* () {
+    yield* service.releaseThread(DEVICE, threadId);
+    yield* computer.engine.dispatch({
+      type: "thread.import",
+      commandId: CommandId.make("import-parent"),
+      threadId: ThreadId.make("parent-arrived"),
+      projectId: PROJECT,
+      title: "Ship the release",
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-astra" },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      movedFrom: {
+        environmentId: WINDOWS,
+        environmentPinned: true,
+        label: "Windows PC",
+        threadId: PARENT,
+        movedAt: AT,
+      },
+      messages: [],
+      activities: [],
+      adoptsChildren: { linkDeviceId: DEVICE, children: [{ threadId }] },
+      createdAt: AT,
+    });
+    const child = yield* computer.thread(threadId);
+    assert.equal(child?.parentThreadId, "parent-arrived");
+    assert.isNull(child?.remoteOrigin ?? null);
+  });
+
+/** The user here starts a turn in the thread, and its agent is at work on it. */
+const userTurnRunning = (computer: Computer, threadId: ThreadId) =>
+  Effect.gen(function* () {
+    yield* computer.engine.dispatch({
+      type: "thread.session.set",
+      commandId: CommandId.make("user-turn-running"),
+      threadId,
+      session: {
+        threadId,
+        status: "running",
+        providerName: "codex",
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        runtimeMode: "auto",
+        activeTurnId: TurnId.make("user-turn"),
+        lastError: null,
+        updatedAt: AT,
+      },
+      createdAt: AT,
+    });
+  });
+
 it.layer(NodeServices.layer)("LinkRequests", (it) => {
   it.effect("records a start once: a retry gets the same thread and starts nothing more", () =>
     Effect.gen(function* () {
@@ -1490,6 +1557,115 @@ it.layer(NodeServices.layer)("LinkRequests", (it) => {
         assert.isNull(send.reportId);
         assert.notEqual(send.status, "failed");
       }),
+  );
+
+  it.effect(
+    "once its asker took the thread back here, a late cancel stops nothing, after a restart too",
+    () =>
+      Effect.gen(function* () {
+        const computer = yield* makeComputer();
+        yield* computer.addLink(DEVICE, "allowed", "active", WINDOWS);
+        const { service, threadId } = yield* startedChild(computer, "request-1");
+        yield* takenBack(computer, service, threadId);
+        assert.equal((yield* computer.request("request-1")).status, "cancelled");
+        yield* userTurnRunning(computer, threadId);
+        const before = stopsFor(yield* computer.events, threadId);
+
+        // The stop-now cancel the asker owed from before it moved arrives late.
+        const late = yield* service.cancel(link(), ChildRequestId.make("request-1"), {
+          stopThread: true,
+        });
+        assert.equal(late.status, "cancelled");
+        assert.equal(stopsFor(yield* computer.events, threadId), before);
+        assert.isNull((yield* computer.request("request-1")).cleanup);
+
+        // The same cancel recorded just before the process died, its clean-up
+        // owed: the restart finishes it without touching the thread.
+        yield* computer.ledger.cancel({
+          linkDeviceId: DEVICE,
+          requestId: ChildRequestId.make("request-1"),
+          text: "Stopped.",
+          stopThread: true,
+          now: AT,
+        });
+        assert.equal((yield* computer.request("request-1")).cleanup, "stop");
+        const restarted = yield* computer.boot();
+        yield* restarted.startReactor();
+        assert.isNull((yield* computer.request("request-1")).cleanup);
+        assert.equal(stopsFor(yield* computer.events, threadId), before);
+      }),
+  );
+
+  it.effect("a thread its asker took back answers the link as not its own", () =>
+    Effect.gen(function* () {
+      const computer = yield* makeComputer();
+      yield* computer.addLink(DEVICE, "allowed", "active", WINDOWS);
+      const { service, threadId } = yield* startedChild(computer, "request-1");
+      yield* takenBack(computer, service, threadId);
+      const sent = yield* service.send(link(), {
+        requestId: ChildRequestId.make("send-late"),
+        threadId,
+        text: "One more thing.",
+      });
+      assert.equal(sent.status, "refused");
+      assert.equal((yield* service.readThread(link(), { threadId, limit: 10 })).outcome, "refused");
+      assert.equal((yield* service.stopThread(link(), threadId)).status, "not_yours");
+      assert.equal(
+        (yield* service.wrapThread(link(), {
+          threadId,
+          override: { state: "done", at: AT },
+        })).status,
+        "not_yours",
+      );
+      // A late ack of its old answer records nothing on it.
+      yield* service.ack(link(), { reportId: "request-1:report", delivered: true });
+      assert.isNull((yield* computer.thread(threadId))?.handedBackAt ?? null);
+    }),
+  );
+
+  it.effect("once released, a watch offers nothing more about the thread", () =>
+    Effect.gen(function* () {
+      const computer = yield* makeComputer();
+      yield* computer.addLink(DEVICE, "allowed", "active", WINDOWS);
+      const { service, threadId } = yield* startedChild(computer, "request-1");
+      // An answer the asker never acked, and the start still running.
+      yield* service.send(link(), {
+        requestId: ChildRequestId.make("send-1"),
+        threadId,
+        text: "Add the security fixes too.",
+      });
+      const child = (yield* computer.thread(threadId))!;
+      const answering = TurnId.make("turn-send");
+      yield* service.onTurnEnd({
+        child: {
+          ...child,
+          messages: [
+            ...child.messages,
+            {
+              id: MessageId.make("answer"),
+              role: "assistant",
+              text: "Added the two security fixes.",
+              turnId: answering,
+              streaming: false,
+              createdAt: AT,
+              updatedAt: AT,
+            },
+          ],
+        },
+        end: { turnId: answering, outcome: "completed" },
+        pendingMessageId: linkMessageId(DEVICE, "send-1"),
+        createdAt: AT,
+      });
+      const offered = yield* replay(service.watch(link(), {}));
+      assert.isAbove(offered.filter((event) => event.type !== "synced").length, 0);
+
+      yield* service.releaseThread(DEVICE, threadId);
+      const after = yield* replay(service.watch(link(), {}));
+      assert.deepEqual(
+        after.map((event) => event.type),
+        ["synced"],
+      );
+    }),
   );
 
   it.effect("answers a send with the turn its own message started, not another", () =>

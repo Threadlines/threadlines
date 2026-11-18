@@ -248,6 +248,21 @@ export interface LinkRequestsShape {
     }>,
     ComputerLinkError
   >;
+  /**
+   * A thread this link started is about to stop being its (docs/design/
+   * fleet.md, Part 3f, (g)): the thread that asked moved here over the link
+   * and takes it back as its own child. Each of the link's requests still
+   * open for it ends cancelled under its own lock, its message still waiting
+   * there is taken back, and the thread is stopped only while the turn
+   * running is that request's; then nothing about it is owed the link any
+   * more (LinkRequestRepository.closeForThread). Safe to call again.
+   */
+  readonly releaseThread: (
+    deviceId: string,
+    threadId: ThreadId,
+  ) => Effect.Effect<void, PeerRpcError>;
+  /** Every report about the thread counts as delivered: see LinkRequestRepository.closeForThread. */
+  readonly closeThread: (deviceId: string, threadId: ThreadId) => Effect.Effect<void, PeerRpcError>;
   readonly onTurnEnd: RemoteRequestTurnEndsShape["onTurnEnd"];
   /** See RemoteRequestGate. */
   readonly messageVerdict: RemoteRequestGateShape["messageVerdict"];
@@ -1036,16 +1051,25 @@ const make = Effect.gen(function* () {
   // ---------------------------------------------------------------------------
 
   /** A thread this link started, or undefined; fails when it can't be read. */
-  const linkThread = (link: PeerLink, threadId: ThreadId) =>
+  /**
+   * The thread, while it is one this link started (`remoteOrigin`) and isn't
+   * deleted; undefined otherwise. Everything a link's request, cancel, stop
+   * or ack does to a thread asks this first: a thread its asker took back as
+   * a child here (Part 3f, (g)) is this computer's own from then on, so a
+   * late cancel or a replayed clean-up never touches its new work.
+   */
+  const ownedThread = (deviceId: string, threadId: ThreadId) =>
     readThreadOrFail(threadId).pipe(
       Effect.map((thread) =>
         thread !== undefined &&
         thread.deletedAt === null &&
-        thread.remoteOrigin?.linkDeviceId === link.deviceId
+        thread.remoteOrigin?.linkDeviceId === deviceId
           ? thread
           : undefined,
       ),
     );
+
+  const linkThread = (link: PeerLink, threadId: ThreadId) => ownedThread(link.deviceId, threadId);
 
   const sendAnswer = (row: LinkRequestRow): PeerSendResult =>
     row.status === "cancelled"
@@ -1069,7 +1093,7 @@ const make = Effect.gen(function* () {
       const row = found.value;
       if (row.status !== "received" || row.payload?.kind !== "send") return sendAnswer(row);
       const input = row.payload.input;
-      const thread = row.threadId === null ? undefined : yield* readThreadOrFail(row.threadId);
+      const thread = row.threadId === null ? undefined : yield* ownedThread(deviceId, row.threadId);
       const origin = thread?.remoteOrigin ?? null;
       if (thread === undefined || origin === null || row.messageId === null) {
         const reason = `That thread is gone from ${ownLabel()}.`;
@@ -1255,7 +1279,8 @@ const make = Effect.gen(function* () {
       if (Option.isNone(found) || found.value.cleanup === null) return;
       const row = found.value;
       const cleanup = found.value.cleanup;
-      const thread = row.threadId === null ? undefined : yield* readThreadOrFail(row.threadId);
+      // Not the link's any more: nothing is done to it, and the clean-up ends.
+      const thread = row.threadId === null ? undefined : yield* ownedThread(deviceId, row.threadId);
       const messageId = row.messageId;
       if (
         thread !== undefined &&
@@ -1275,7 +1300,7 @@ const make = Effect.gen(function* () {
         );
       }
       if (thread !== undefined && cleanup === "stop") {
-        const current = yield* readThreadOrFail(thread.id);
+        const current = yield* ownedThread(deviceId, thread.id);
         if (current !== undefined) yield* stopIfWorking(deviceId, current);
       }
       yield* ledger
@@ -1304,6 +1329,73 @@ const make = Effect.gen(function* () {
       return {
         status: result.row.status === "cancelled" ? "cancelled" : "already_settled",
       } as const;
+    });
+
+  const releaseThread: LinkRequestsShape["releaseThread"] = (deviceId, threadId) =>
+    Effect.gen(function* () {
+      const rows = yield* ledger
+        .listByThread(threadId)
+        .pipe(Effect.mapError(() => peerError(`${ownLabel()} couldn't read the requests.`)));
+      for (const listed of rows) {
+        if (listed.linkDeviceId !== deviceId || isTerminalLinkRequest(listed)) continue;
+        yield* withRequestLock(
+          deviceId,
+          listed.requestId,
+        )(
+          Effect.gen(function* () {
+            const found = yield* readRequest(deviceId, listed.requestId);
+            if (Option.isNone(found) || isTerminalLinkRequest(found.value)) return;
+            const row = found.value;
+            // Ended, not published: the asker's copy of its thread moved away,
+            // and closeForThread below marks the report delivered.
+            yield* ledger
+              .cancel({
+                linkDeviceId: deviceId,
+                requestId: row.requestId,
+                text: "The thread that asked moved here.",
+                stopThread: false,
+                now: yield* nowIso,
+              })
+              .pipe(Effect.mapError(() => peerError(`${ownLabel()} couldn't record the cancel.`)));
+            const thread = yield* ownedThread(deviceId, threadId);
+            if (thread === undefined) return;
+            const messageId = row.messageId;
+            if (
+              messageId !== null &&
+              (thread.queuedFollowUps ?? []).some((queued) => queued.messageId === messageId)
+            ) {
+              yield* mustDispatch(
+                {
+                  type: "thread.follow-up.unqueue",
+                  commandId: linkCommandId(deviceId, row.requestId, "release-unqueue"),
+                  threadId,
+                  messageId,
+                  createdAt: yield* nowIso,
+                },
+                "take back the message of the thread that moved here",
+              );
+            }
+            // Only the turn this request asked for: any other is this computer's user's.
+            const current = yield* ownedThread(deviceId, threadId);
+            if (
+              current !== undefined &&
+              row.turnId !== null &&
+              current.latestTurn?.turnId === row.turnId &&
+              isRunning(current)
+            ) {
+              yield* stopIfWorking(deviceId, current);
+            }
+          }),
+        );
+      }
+      yield* closeThread(deviceId, threadId);
+    });
+
+  const closeThread: LinkRequestsShape["closeThread"] = (deviceId, threadId) =>
+    Effect.gen(function* () {
+      yield* ledger
+        .closeForThread({ linkDeviceId: deviceId, threadId, now: yield* nowIso })
+        .pipe(Effect.mapError(() => peerError(`${ownLabel()} couldn't record the requests.`)));
     });
 
   const cancel: LinkRequestsShape["cancel"] = (link, requestId, options) =>
@@ -1418,8 +1510,14 @@ const make = Effect.gen(function* () {
         const row = yield* ledger
           .getByReport(link.deviceId, input.reportId)
           .pipe(Effect.mapError(failed));
+        // A thread the link no longer has (its asker took it back here) records nothing.
+        const owned =
+          Option.isSome(row) && row.value.threadId !== null
+            ? yield* ownedThread(link.deviceId, row.value.threadId)
+            : undefined;
         if (
           Option.isSome(row) &&
+          owned !== undefined &&
           row.value.deliveredAt === null &&
           row.value.threadId !== null &&
           row.value.reportTurnId !== null
@@ -1680,13 +1778,8 @@ const make = Effect.gen(function* () {
     const attempt = yield* nowIso;
     for (const owed of stops.value) {
       yield* Effect.gen(function* () {
-        const thread = yield* readThreadOrFail(owed.threadId);
-        if (
-          thread === undefined ||
-          thread.deletedAt !== null ||
-          !isRunning(thread) ||
-          turnKeyOf(thread) !== owed.turnKey
-        ) {
+        const thread = yield* ownedThread(owed.linkDeviceId, owed.threadId);
+        if (thread === undefined || !isRunning(thread) || turnKeyOf(thread) !== owed.turnKey) {
           yield* ledger.clearThreadStopOwed(owed);
           yield* Effect.logInfo("link requests saw an unlinked link's thread stop", {
             threadId: owed.threadId,
@@ -2350,6 +2443,8 @@ const make = Effect.gen(function* () {
     oweDrain,
     drainDone,
     drainsOwed,
+    releaseThread,
+    closeThread,
     onTurnEnd,
     messageVerdict,
     startReactor,

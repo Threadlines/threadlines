@@ -42,7 +42,11 @@ import {
 } from "@threadlines/shared/pendingRequests";
 
 import { toPersistenceSqlError, type ProjectionRepositoryError } from "../../persistence/Errors.ts";
-import { movedFromAfter, nextThreadMoveState } from "@threadlines/shared/threadMoveProjection";
+import {
+  adoptedFromLinkAfterLift,
+  movedFromAfter,
+  nextThreadMoveState,
+} from "@threadlines/shared/threadMoveProjection";
 import { withQueuedFollowUp } from "@threadlines/shared/queuedFollowUps";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
 import { ProjectionPendingApprovalRepository } from "../../persistence/Services/ProjectionPendingApprovals.ts";
@@ -986,6 +990,15 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                   ...existingRow.value,
                   attachedToParent: event.payload.attached ? 1 : 0,
                   parentAttachmentEpoch: event.payload.attachmentEpoch,
+                  // See the in-memory projector: taken back over its link.
+                  ...(event.payload.adoptedBy !== undefined
+                    ? {
+                        parentThreadId: event.payload.adoptedBy.parentThreadId,
+                        parentTurnId: null,
+                        remoteOrigin: null,
+                        adoptedFromLink: event.payload.adoptedBy.fromLink,
+                      }
+                    : {}),
                 },
           );
           return;
@@ -1068,7 +1081,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             participants,
             // See the in-memory projector: the user here took it over.
             ...(event.payload.liftsMoveFence === true
-              ? { movedFrom: movedFromAfter(existingRow.value.movedFrom, { liftsFence: true }) }
+              ? {
+                  movedFrom: movedFromAfter(existingRow.value.movedFrom, { liftsFence: true }),
+                  adoptedFromLink: adoptedFromLinkAfterLift(existingRow.value.adoptedFromLink),
+                }
               : {}),
             sentModels: recordTurnModel(
               { ...existingRow.value, participants },

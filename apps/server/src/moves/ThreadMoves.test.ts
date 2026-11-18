@@ -33,7 +33,7 @@ import {
   sessionsThatFit,
 } from "./moveExport.ts";
 import { carryBringsWords, threadMoveCarry } from "../orchestration/threadMoveCarry.ts";
-import { linkLineageOf } from "./familyMove.ts";
+import { linkLineageOf, startedThereOf } from "./familyMove.ts";
 import { seenThroughOf } from "./roomMove.ts";
 import { NATIVE_SESSION_MAX_BYTES, type NativeSessionExport } from "../provider/nativeSession.ts";
 
@@ -554,6 +554,39 @@ describe("what a thread carries, as the dialog says it (Part 3e)", () => {
     // One frozen for its own move can't be reached from there: it arrives as its own thread.
     const frozen = { ...parent, move: { transferId: "transfer-parent" } } as never;
     expect(linkLineageOf([frozen, child], child, MAC_MINI)).toBeUndefined();
+  });
+
+  it("names only the threads it started on the target, each with the word given here (Part 3f, (g))", () => {
+    const record = (environmentId: EnvironmentId, threadId: string, override?: unknown) => ({
+      environmentId,
+      label: "Mac mini",
+      threadId: ThreadId.make(threadId),
+      handle: "Agent",
+      title: threadId,
+      attachmentEpoch: 0,
+      cachedStatus: "idle",
+      updatedAt: "2026-11-17T10:00:00.000Z",
+      ...(override !== undefined ? { override } : {}),
+    });
+    const wrapped = { state: "done", at: "2026-11-17T09:00:00.000Z" };
+    const thread = threadWith({
+      childRequests: {
+        open: [],
+        deliveryEpoch: 0,
+        startsSinceUser: 0,
+        sendsSinceUser: 0,
+        pendingNotes: [],
+        remoteChildren: [
+          record(MAC_MINI, "thread-wrapped", wrapped),
+          record(EnvironmentId.make("environment-linux"), "thread-on-linux"),
+          record(MAC_MINI, "thread-plain"),
+        ],
+      },
+    } as never);
+    expect(startedThereOf(thread, MAC_MINI)).toEqual([
+      { threadId: "thread-wrapped", override: wrapped },
+      { threadId: "thread-plain" },
+    ]);
   });
 
   it("warns per agent picked, in the server's words", () => {

@@ -595,8 +595,16 @@ const make = Effect.gen(function* () {
           const found = yield* findRequest(environmentId, event.requestId);
           // A parent whose move stopped its agent can't take the answer (it
           // would refuse it, and a refusal reads as settled meanwhile): the
-          // report stays unacked there and comes again with a later watch.
-          if (found !== undefined && familyWorkStopped(found.parent)) return;
+          // report stays unacked there and comes again with a later watch,
+          // should the move be dropped. Once the parent moved away it never
+          // takes one: the report is acked as not delivered, so that
+          // computer stops offering it.
+          if (found !== undefined && familyWorkStopped(found.parent)) {
+            if (found.parent.move?.movedAway !== undefined) {
+              yield* ackReport(environmentId, event.reportId, false);
+            }
+            return;
+          }
           if (found !== undefined) {
             const { parent, request } = found;
             const silent =

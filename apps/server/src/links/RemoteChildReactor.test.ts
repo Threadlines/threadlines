@@ -718,4 +718,44 @@ it.layer(NodeServices.layer)("RemoteChildReactor", (it) => {
         );
       }),
   );
+
+  it.effect(
+    "a parent that moved away acks a report about its thread there as not delivered, never again offered",
+    () =>
+      Effect.gen(function* () {
+        const computer = yield* makeComputer;
+        yield* computer.askForThread;
+        yield* computer.recordRemote("running", { status: "accepted", threadId: REMOTE_CHILD });
+        // Its copy here is read-only: it moved to Mac mini (and may have taken
+        // that thread back as its own there, docs/design/fleet.md, Part 3f, (g)).
+        const movedAway = {
+          move: {
+            transferId: "transfer-1",
+            target: { environmentId: MAC_MINI, label: "Mac mini" },
+            agent: MODEL,
+            phase: "exporting",
+            cancelRequested: false,
+            startedAt: AT,
+            movedAway: { threadId: ThreadId.make("thread-there"), movedAt: AT },
+          },
+        };
+        const asMoved = {
+          getById: (input: { readonly threadId: ThreadId }) =>
+            computer.threadRows
+              .getById(input)
+              .pipe(Effect.map(Option.map((row) => ({ ...row, ...movedAway }) as typeof row))),
+        };
+        yield* computer.boot({ watch: [report({}), { type: "synced" }] }, { threadRows: asMoved });
+        yield* eventually(
+          Effect.sync(() => computer.callsTo("peer.report.ack").length > 0),
+          "the report is acked",
+        );
+        assert.deepEqual(computer.callsTo("peer.report.ack")[0]?.payload, {
+          reportId: `${REQUEST}:report`,
+          delivered: false,
+        });
+        // Nothing was written into the read-only copy.
+        assert.lengthOf((yield* computer.stored).childRequests?.open ?? [], 1);
+      }),
+  );
 });

@@ -226,6 +226,7 @@ export const makePeerRpcLayer = (input: {
             moveOutsideWork: true,
             moveFamilies: true,
             moveLinkLineage: true,
+            moveAdoptsChildren: true,
             threadFiling: true,
             outsideAgents: true,
           } satisfies PeerDescriptor;
