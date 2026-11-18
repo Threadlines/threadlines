@@ -3585,6 +3585,37 @@ describe("across the link: a child alone, and a thread going home (Part 3f, (h))
         ).toContain("doesn't hold this thread");
       });
 
+      it("still lands under its parent when the answer beat it to the decision", async () => {
+        const moving = await movedAlone(await withChild(await seeded()));
+        // Read while the move still waited; the answer landed before the import did.
+        let { model } = await apply(moving, complete(true));
+        expect(threadOf(model).childRequests.remoteChildren).toHaveLength(1);
+        let refusal: string | null;
+        ({ model, refusal } = await apply(model, backFromThere(completesChild)));
+        expect(refusal).toBeNull();
+        expect(threadOf(model, ARRIVED)).toMatchObject({
+          parentThreadId: THREAD,
+          attachedToParent: true,
+        });
+        expect(threadOf(model).childRequests.remoteChildren ?? []).toEqual([]);
+        // The move it left on completed once, with that answer's words.
+        expect(threadOf(model, CHILD).activities.at(-1)?.summary).toBe(
+          "It's still a thread of 'Fix the flaky test', which reaches it on Mac mini.",
+        );
+      });
+
+      it("a claim over a link that never proved its computer doesn't cost the parent its child there", async () => {
+        const moving = await movedAlone(await withChild(await seeded()));
+        let { model } = await apply(moving, {
+          ...backFromThere(),
+          movedFrom: { ...MAC_MINI, threadId: THERE, movedAt: now },
+        } as OrchestrationCommand);
+        ({ model } = await apply(model, complete(true)));
+        expect(threadOf(model).childRequests.remoteChildren).toEqual([
+          expect.objectContaining({ environmentId: MAC_MINI.environmentId, threadId: THERE }),
+        ]);
+      });
+
       it("a late answer never makes a thread already back here the parent's child there", async () => {
         const moving = await movedAlone(await withChild(await seeded()));
         // An older computer there named no thread: it landed as its own thread.

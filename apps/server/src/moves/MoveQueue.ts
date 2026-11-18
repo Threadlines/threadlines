@@ -328,6 +328,12 @@ export const makeMoveQueue = (
     const retryDelay = deps.retryDelay ?? defaultRetryDelay;
     const settleDelay = deps.settleDelay ?? Duration.millis(250);
     const tracked = new Map<ThreadId, TrackedMove>();
+    /**
+     * The last event the reactor saw, overall and per thread: a look that
+     * read another thread before one of its events arrived looks again.
+     */
+    let lastSequence = 0;
+    const lastSequenceOf = new Map<ThreadId, number>();
 
     const dispatchIgnoringRefusal = (command: OrchestrationCommand) =>
       deps.dispatch(command).pipe(
@@ -527,6 +533,7 @@ export const makeMoveQueue = (
         ) {
           return;
         }
+        const readFrom = lastSequence;
         const context = yield* deps.readContext(threadId);
         if (context === null) return yield* forget(threadId);
         const refusals = threadMoveRefusals(
@@ -537,6 +544,12 @@ export const makeMoveQueue = (
         // Whatever those threads do next (a command run interrupted, a
         // workflow or a voice chat ending) is a reason to look again.
         entry.waitsOnThreads = new Set(sharedCheckoutBusyThreads(context.view, context.thread));
+        // One of them changed while this look read it: look again.
+        if (
+          [...entry.waitsOnThreads].some((other) => (lastSequenceOf.get(other) ?? 0) > readFrom)
+        ) {
+          entry.again = true;
+        }
         if (yield* settleRefusals(threadId, pending, refusals)) return;
         // Before anything is stopped: whether the target takes what the thread
         // carries (docs/design/fleet.md, Part 3e). One that doesn't ends the
@@ -1140,6 +1153,10 @@ export const makeMoveQueue = (
         yield* events.pipe(
           Stream.runForEach((event) =>
             Effect.gen(function* () {
+              lastSequence = Math.max(lastSequence, event.sequence);
+              if ("threadId" in event.payload) {
+                lastSequenceOf.set(event.payload.threadId, event.sequence);
+              }
               if (event.type === "thread.move-queued") {
                 yield* track(event.payload.threadId, event.payload.pendingMove.requestId);
                 return yield* schedule(event.payload.threadId, Duration.zero);

@@ -2370,14 +2370,31 @@ const make = Effect.gen(function* () {
         left: "The thread that started it isn't on this computer anymore, so this is its own thread.",
       };
       if (home === null) return own;
-      const found = yield* threadRows
-        .getById({ threadId: parentThreadId })
-        .pipe(
+      const read = (threadId: ThreadId) =>
+        threadRows.getById({ threadId }).pipe(
+          Effect.map(Option.getOrUndefined),
           Effect.mapError(
             () => new ImportStop({ reason: `${ownLabel()} couldn't read its threads.` }),
           ),
         );
-      const parent = Option.getOrUndefined(found);
+      // The thread it moved over from first, then the parent: its move's
+      // answer lands on both in one decision, so a parent read after a
+      // move that still waited either still waits or already holds it.
+      const fromThreadId = lineage.home?.fromThreadId;
+      const left = fromThreadId === undefined ? undefined : yield* read(fromThreadId);
+      const awaiting =
+        left !== undefined &&
+        awaitsLoneMoveAnswer(
+          {
+            deletedAt: left.deletedAt,
+            parentThreadId: left.parentThreadId ?? null,
+            attachedToParent: (left.attachedToParent ?? 0) > 0,
+            move: left.move ?? null,
+          },
+          parentThreadId,
+          home,
+        );
+      const parent = yield* read(parentThreadId);
       const canAdopt =
         parent !== undefined &&
         parent.deletedAt === null &&
@@ -2391,29 +2408,10 @@ const make = Effect.gen(function* () {
       );
       if (holds) return { adopt: { parentThreadId } };
       // Back before this computer heard its move there landed: the parent's
-      // child here whose own move to that computer still waits for the answer.
-      const fromThreadId = lineage.home?.fromThreadId;
-      if (fromThreadId === undefined) return own;
-      const left = Option.getOrUndefined(
-        yield* threadRows
-          .getById({ threadId: fromThreadId })
-          .pipe(
-            Effect.mapError(
-              () => new ImportStop({ reason: `${ownLabel()} couldn't read its threads.` }),
-            ),
-          ),
-      );
-      return left !== undefined &&
-        awaitsLoneMoveAnswer(
-          {
-            deletedAt: left.deletedAt,
-            parentThreadId: left.parentThreadId ?? null,
-            attachedToParent: (left.attachedToParent ?? 0) > 0,
-            move: left.move ?? null,
-          },
-          parentThreadId,
-          home,
-        )
+      // child here whose own move to that computer still waits for the
+      // answer. Should the answer land before the import, the decider finds
+      // the parent holding it instead.
+      return awaiting && fromThreadId !== undefined
         ? { adopt: { parentThreadId, completesMoveOf: fromThreadId } }
         : own;
     });

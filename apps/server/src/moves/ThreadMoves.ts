@@ -1404,13 +1404,16 @@ const make = Effect.gen(function* () {
 
   /**
    * Calls the other computer for a thread's move, waiting through outages
-   * (every 15 seconds) for as long as the thread is here: a move never gives
-   * up on its own, so the thread stays frozen until that computer answers.
-   * Deleting the thread ends the wait. An answer that refuses the call
-   * (PeerRpcError) is final and fails the call.
+   * (every 15 seconds) for as long as the thread is here and the move is
+   * still under way: a move never gives up on its own, so the thread stays
+   * frozen until that computer answers. Deleting the thread, or the move
+   * landing some other way (the thread came back, Part 3f, (h)), ends the
+   * wait. An answer that refuses the call (PeerRpcError) is final and fails
+   * the call.
    */
   const peerCall = <A>(
     threadId: ThreadId,
+    transferId: ThreadMoveId,
     environmentId: EnvironmentId,
     call: (peer: PeerClient) => Effect.Effect<A, PeerRpcError | RpcClientError.RpcClientError>,
   ) =>
@@ -1423,7 +1426,13 @@ const make = Effect.gen(function* () {
         while: (error) =>
           error._tag === "ComputerLinkUnavailableError"
             ? threadRows.getById({ threadId }).pipe(
-                Effect.map((row) => Option.isSome(row) && row.value.deletedAt === null),
+                Effect.map(
+                  (row) =>
+                    Option.isSome(row) &&
+                    row.value.deletedAt === null &&
+                    row.value.move?.transferId === transferId &&
+                    row.value.move.movedAway === undefined,
+                ),
                 Effect.orElseSucceed(() => true),
               )
             : Effect.succeed(false),
@@ -1459,11 +1468,11 @@ const make = Effect.gen(function* () {
           continue;
         }
         if (move.cancelRequested) {
-          return yield* peerCall(threadId, environmentId, (peer) =>
+          return yield* peerCall(threadId, transferId, environmentId, (peer) =>
             peer["peer.move.abort"]({ transferId }),
           );
         }
-        const state = yield* peerCall(threadId, environmentId, (peer) =>
+        const state = yield* peerCall(threadId, transferId, environmentId, (peer) =>
           peer["peer.move.status"]({ transferId }),
         );
         if (state.status !== waitingWhile) return state;
@@ -1764,7 +1773,7 @@ const make = Effect.gen(function* () {
         const move = yield* currentMove(threadId, transferId);
         if (move === null) return null;
         if (move.cancelRequested) {
-          return yield* peerCall(threadId, environmentId, (peer) =>
+          return yield* peerCall(threadId, transferId, environmentId, (peer) =>
             peer["peer.move.abort"]({ transferId }),
           );
         }
@@ -1782,7 +1791,7 @@ const make = Effect.gen(function* () {
           },
           catch: () => new ThreadMoveFailure({ reason: "The packed thread couldn't be read." }),
         });
-        const state = yield* peerCall(threadId, environmentId, (peer) =>
+        const state = yield* peerCall(threadId, transferId, environmentId, (peer) =>
           peer["peer.move.chunk"]({ transferId, offset, data: bytes.toString("base64") }),
         );
         if (state.status !== "receiving") return state;
@@ -1798,7 +1807,7 @@ const make = Effect.gen(function* () {
           });
         }
       }
-      return yield* peerCall(threadId, environmentId, (peer) =>
+      return yield* peerCall(threadId, transferId, environmentId, (peer) =>
         peer["peer.move.finish"]({ transferId }),
       );
     });
@@ -1817,7 +1826,9 @@ const make = Effect.gen(function* () {
      * record yet is asked again until it is.
      */
     const drop = (environmentId: EnvironmentId, reason: string) =>
-      peerCall(threadId, environmentId, (peer) => peer["peer.move.abort"]({ transferId })).pipe(
+      peerCall(threadId, transferId, environmentId, (peer) =>
+        peer["peer.move.abort"]({ transferId }),
+      ).pipe(
         Effect.retry({
           schedule: Schedule.spaced(Duration.seconds(15)),
           while: (error) => error._tag === "PeerRpcError",
@@ -1859,7 +1870,7 @@ const make = Effect.gen(function* () {
       const label = move.target.label;
       // Where the other computer stands, if it heard of this move at all: one
       // it never heard of reads aborted with no reason.
-      const known = yield* peerCall(threadId, environmentId, (peer) =>
+      const known = yield* peerCall(threadId, transferId, environmentId, (peer) =>
         peer["peer.move.status"]({ transferId }),
       );
       let state: PeerMoveState | null = known;
@@ -1904,7 +1915,7 @@ const make = Effect.gen(function* () {
         // allows it (an older one ignores that), and waited for while it is
         // busy with other moves.
         const offered = yield* offerUntilTaken({
-          prepare: peerCall(threadId, environmentId, (peer) =>
+          prepare: peerCall(threadId, transferId, environmentId, (peer) =>
             peer["peer.move.prepare"]({
               transferId,
               manifest: manifest.success,
@@ -2039,6 +2050,21 @@ const make = Effect.gen(function* () {
           const move = thread.move ?? null;
           if (thread.deletedAt === null && move !== null && move.movedAway === undefined) {
             yield* runMove(thread.id, move.transferId).pipe(Effect.forkScoped);
+          }
+        }
+        // A packed copy left by a move that landed while no worker was there
+        // to tidy it (the thread came back first, then this computer stopped).
+        const packed = new Set(
+          yield* Effect.tryPromise(() =>
+            NodeFs.readdir(NodePath.join(config.stateDir, "moves")),
+          ).pipe(Effect.orElseSucceed((): ReadonlyArray<string> => [])),
+        );
+        for (const thread of model.value.threads) {
+          const move = thread.move ?? null;
+          if (move !== null && move.movedAway !== undefined && packed.has(move.transferId)) {
+            yield* Effect.tryPromise(() =>
+              NodeFs.rm(moveDir(move.transferId), { recursive: true, force: true }),
+            ).pipe(Effect.ignore);
           }
         }
       }

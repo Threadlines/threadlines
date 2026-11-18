@@ -79,6 +79,8 @@ async function harness(options?: { readonly model?: OrchestrationReadModel }) {
     carryChecks: 0,
     /** How long checking a child that moves with its parent takes (a target that answers slowly). */
     childCheckMs: 0,
+    /** Runs once after a look read the threads, before it gets them (something changed meanwhile). */
+    duringContextRead: null as null | (() => Effect.Effect<void, ThreadMoveError>),
   };
 
   const dispatch = (command: OrchestrationCommand): Effect.Effect<void, ThreadMoveError> =>
@@ -174,9 +176,17 @@ async function harness(options?: { readonly model?: OrchestrationReadModel }) {
       readThread: (threadId) =>
         Effect.sync(() => model.threads.find((entry) => entry.id === threadId) ?? null),
       readContext: (threadId) =>
-        Effect.sync(() => {
-          const thread = model.threads.find((entry) => entry.id === threadId);
-          return thread === undefined ? null : { thread, view: model };
+        Effect.gen(function* () {
+          const view = model;
+          const meanwhile = state.duringContextRead;
+          if (meanwhile !== null) {
+            state.duringContextRead = null;
+            yield* meanwhile().pipe(Effect.orDie);
+            // The reactor takes the event in before this look gets its read.
+            yield* Effect.sleep(Duration.millis(30));
+          }
+          const thread = view.threads.find((entry) => entry.id === threadId);
+          return thread === undefined ? null : { thread, view };
         }),
       pendingThreadIds: Effect.sync(() =>
         model.threads.filter((thread) => (thread.pendingMove ?? null) !== null).map((t) => t.id),
@@ -603,6 +613,34 @@ describe("MoveQueue, another thread working in the same folder", () => {
     });
     await waitFor(() => (h.thread().move ?? null) !== null, "the move to start");
     await h.close();
+  });
+
+  it("after a restart, an end that lands while a look reads the folder still wakes the move", async () => {
+    const first = await harness({ model: await sharingWithRunningCommand() });
+    await first.startReactor();
+    await first.queueMove();
+    await waitFor(
+      () =>
+        first.thread().pendingMove?.waitsFor?.some((w) => w.code === "shared_checkout") === true,
+      "the shared folder wait",
+    );
+    const left = first.model();
+    await first.close();
+
+    // The wait is already on record, so the look that finds it again reports nothing new.
+    const restarted = await harness({ model: left });
+    // The command ends after the look read the threads, before it knows whom it waits on.
+    restarted.state.duringContextRead = () =>
+      restarted.dispatchEffect({
+        type: "thread.command-run.update",
+        commandId: nextCommandId(),
+        threadId: OTHER,
+        progress: { runId: RUN, status: "interrupted", finishedAt: now },
+        createdAt: now,
+      });
+    await restarted.startReactor();
+    await waitFor(() => (restarted.thread().move ?? null) !== null, "the move to start");
+    await restarted.close();
   });
 });
 

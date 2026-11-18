@@ -1560,7 +1560,11 @@ function moveCompleteEvents(
   ];
 }
 
-/** Whether the thread `threadId` on `environmentId` has since moved here. */
+/**
+ * Whether the thread `threadId` on `environmentId` has since moved here,
+ * over a link that proved that computer: the sender's word alone could
+ * otherwise cost a parent its child there.
+ */
 const cameBackFrom = (
   readModel: Pick<OrchestrationReadModel, "threads">,
   environmentId: string,
@@ -1569,7 +1573,8 @@ const cameBackFrom = (
   readModel.threads.some(
     (entry) =>
       entry.deletedAt === null &&
-      entry.movedFrom?.environmentId === environmentId &&
+      entry.movedFrom?.environmentPinned === true &&
+      entry.movedFrom.environmentId === environmentId &&
       entry.movedFrom.threadId === threadId,
   );
 
@@ -1848,7 +1853,10 @@ export function decideThreadImport(
       : readModel.threads.find((thread) => thread.id === adopt.completesMoveOf);
   const leftMove = leftCopy?.move ?? null;
   const completed =
-    leftCopy === undefined || leftMove === null
+    leftCopy === undefined ||
+    leftMove === null ||
+    adoptedBy === undefined ||
+    !awaitsLoneMoveAnswer(leftCopy, adoptedBy.id, command.movedFrom.environmentId)
       ? []
       : moveCompleteEvents(
           readModel,
@@ -1922,23 +1930,23 @@ function importedLinkLineageRefusal(
   if (parent.projectId !== command.projectId) {
     return "The thread that started it is in another project.";
   }
-  // Back before this computer heard its move there landed: the thread it
-  // moved over from is still the parent's child, moving alone to exactly
-  // that computer, and this import completes that move.
-  const completes = adopt.completesMoveOf;
-  if (completes !== undefined) {
-    const left = readModel.threads.find((entry) => entry.id === completes);
-    return left !== undefined &&
-      awaitsLoneMoveAnswer(left, parent.id, command.movedFrom.environmentId)
-      ? null
-      : "The thread that started it doesn't hold this thread.";
-  }
   const held = (parent.childRequests.remoteChildren ?? []).some(
     (entry) =>
       entry.environmentId === command.movedFrom.environmentId &&
       entry.threadId === command.movedFrom.threadId,
   );
-  return held ? null : "The thread that started it doesn't hold this thread.";
+  if (held) return null;
+  // Back before this computer heard its move there landed: the thread it
+  // moved over from is still the parent's child, moving alone to exactly
+  // that computer, and this import completes that move. Had the answer
+  // landed first, the parent holds it (above).
+  const completes = adopt.completesMoveOf;
+  const left =
+    completes === undefined ? undefined : readModel.threads.find((entry) => entry.id === completes);
+  return left !== undefined &&
+    awaitsLoneMoveAnswer(left, parent.id, command.movedFrom.environmentId)
+    ? null
+    : "The thread that started it doesn't hold this thread.";
 }
 
 /**
