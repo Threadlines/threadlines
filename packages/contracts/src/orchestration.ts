@@ -1388,8 +1388,9 @@ export const OrchestrationMessage = Schema.Struct({
   /**
    * A message that never reached the agent, kept in the chat: a continue
    * Threadlines wrote for the user (`trigger`) that the user's own message
-   * overtook, or a lead chat's pass that was taken back or refused at its
-   * ceiling. Once set, kept. No history an agent is given includes it
+   * overtook, a lead chat's pass that was taken back or refused at its
+   * ceiling, or an outside agent's message that was taken back or whose turn
+   * never ran. Once set, kept. No history an agent is given includes it
    * (`reachedAgent`), and it is never retried.
    */
   notSent: Schema.optional(Schema.Literal(true)),
@@ -5161,18 +5162,27 @@ const ThreadLeadPassCommand = Schema.Struct({
 });
 
 /**
- * A lead chat's pass never went to the agent after the queue let it go: the
- * thread's access was raised above its ceiling, or Stop landed, while its
- * turn was prepared (docs/design/lead-chat.md, "Access"). Server only, from
- * the provider reactor. `threadId` is the thread it was passed to.
+ * A message another agent sent never went to this thread's agent after the
+ * queue let it go, so it is `notSent` (OrchestrationMessage.notSent) and no
+ * history an agent is given carries it. Two kinds of message have no way to
+ * be sent again and so are marked: a lead chat's pass (its ceiling was
+ * exceeded, or Stop landed, while its turn was prepared; the pass's lead
+ * hears, docs/design/lead-chat.md, "Access") and an outside agent's message
+ * (refused at its ceiling, or its turn could not start or was stopped,
+ * docs/design/outside-agents.md). Anything else is left alone. Server only,
+ * from the provider reactor.
  */
-const ThreadLeadPassNotRunCommand = Schema.Struct({
-  type: Schema.Literal("thread.lead-pass.not-run"),
+const ThreadMessageNotRunCommand = Schema.Struct({
+  type: Schema.Literal("thread.message.not-run"),
   commandId: CommandId,
   threadId: ThreadId,
   messageId: MessageId,
-  /** `ceiling`: its access went above the pass's. `stopped`: Stop landed while it was prepared. */
-  reason: Schema.Literals(["ceiling", "stopped"]),
+  /**
+   * `ceiling`: the thread's access went above what the message may use.
+   * `stopped`: Stop landed while its turn was prepared. `failed`: its turn
+   * could not start for another reason.
+   */
+  reason: Schema.Literals(["ceiling", "stopped", "failed"]),
   createdAt: IsoDateTime,
 });
 
@@ -5765,7 +5775,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadChildStartCommand,
   ThreadChildSendCommand,
   ThreadLeadPassCommand,
-  ThreadLeadPassNotRunCommand,
+  ThreadMessageNotRunCommand,
   ThreadChildRequestUpdateCommand,
   ThreadChildRequestSettleCommand,
   ThreadChildNotesDeliveredCommand,
@@ -6719,7 +6729,13 @@ export const ThreadErrorDismissedPayload = Schema.Struct({
 });
 
 /** "Continue at reset" turned on, moved later, or off (null) for the failure `lastErrorAt` names. */
-/** A "Continue where you left off." message the user's own message overtook; see OrchestrationMessage.notSent. */
+/**
+ * A message that never reached the agent is now `notSent` (see
+ * OrchestrationMessage.notSent): a "Continue where you left off." the user's
+ * own message overtook, or an outside agent's message whose turn never ran
+ * (`thread.message.not-run`). The name is the first case's; the event only
+ * marks the message, and every client already reads it.
+ */
 export const ThreadContinueAtResetSkippedPayload = Schema.Struct({
   threadId: ThreadId,
   messageId: MessageId,

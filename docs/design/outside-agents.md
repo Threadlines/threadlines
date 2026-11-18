@@ -444,7 +444,8 @@ polling. A send to a working thread now waits in the thread's queue.
   connection's running threads, so a start can't take the slot its turn will
   use.
 - **Following it.** `thread_wait` takes the send's `messageId`: done once that
-  message's turn ended, `taken_back` if it left the queue unsent. Without one,
+  message's turn ended, `taken_back` if it never reached the agent (it left the
+  queue unsent, or its turn never ran). Without one,
   `thread_wait` doesn't answer `done` while any of the caller's messages still
   waits in the thread. `thread_read` and `thread_wait` list the caller's queued
   messages (`queued`). `threadlines thread send --wait` follows its message and
@@ -468,6 +469,22 @@ polling. A send to a working thread now waits in the thread's queue.
   can't serialize against the user's own sends; the decider can.
 - The decider is serialized, so a raise or a user's send can't slip between
   the check and the turn.
+- **A message that never ran.** An agent's message whose accepted turn never
+  reached the agent (the reactor's last ceiling check refused it, its start
+  failed before the provider took it, Stop landed while it was prepared, or a
+  restart cut it off while it was starting) stays in the chat marked
+  `notSent` ("Not sent"). No history a later agent is given carries it
+  (`reachedAgent`), its retry stays refused, and `thread_read` and
+  `thread_wait` tell the agent it was not sent. The reactor sends
+  `thread.message.not-run`, the server-only command a lead chat's pass that
+  never ran uses too; for an outside message the decider marks it with
+  `thread.continue-at-reset-skipped`, an event every client already reads as
+  "never reached the agent", so no client meets a new event. A restart marks
+  one it finds still starting before it settles the session, so a startup
+  that dies in between marks it on the next one. Honest limit: Claude reports
+  a turn started a moment before its prompt is queued, and a queued prompt is
+  written to the program a moment later; a restart in that gap leaves the
+  message unmarked.
 - **Build check.** The reactor must start the provider at the mode recorded on
   the turn-start event, not re-read the thread's.
   - Today the decider emits the thread's current mode (decider.ts:2450).

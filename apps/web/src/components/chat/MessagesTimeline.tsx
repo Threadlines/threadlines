@@ -3350,12 +3350,7 @@ function ThreadMessageTimelineRow({
       {message.notSent === true ? (
         // A lead chat's pass that never reached the agent; the line in the
         // thread below says why.
-        <p
-          className="mt-1 pl-3 text-xs leading-4 text-muted-foreground"
-          data-thread-message-outcome="not-sent"
-        >
-          Not sent
-        </p>
+        <MessageNotSentNote />
       ) : message.requestOutcome === "cancelled" ? (
         <p
           className="mt-1 pl-3 text-xs leading-4 text-muted-foreground"
@@ -3422,7 +3417,22 @@ function OutsideAgentMessageTimelineRow({
           }
         />
       </div>
+      {/* Refused or taken back before it reached the agent; the line in the
+          thread below says why. */}
+      {message.notSent === true ? <MessageNotSentNote /> : null}
     </div>
+  );
+}
+
+/** Under a message another agent sent that never reached this thread's agent. */
+function MessageNotSentNote() {
+  return (
+    <p
+      className="mt-1 pl-3 text-xs leading-4 text-muted-foreground"
+      data-thread-message-outcome="not-sent"
+    >
+      Not sent
+    </p>
   );
 }
 

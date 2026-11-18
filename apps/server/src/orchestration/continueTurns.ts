@@ -43,7 +43,8 @@ export function turnStartingMessage(
 }
 
 /** The newest user message that started a turn for `participantId` (null: the thread's own agent). */
-function latestTurnStartFor(
+/** The message the newest turn for `participantId` was asked for with. */
+export function latestTurnStartFor(
   thread: OrchestrationThread,
   participantId: ThreadParticipantId | null,
 ): OrchestrationMessage | undefined {
