@@ -82,9 +82,15 @@ export const RoomAgentsBar = memo(function RoomAgentsBar(props: {
   return (
     <div
       data-room-agents-bar="true"
-      className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-border px-1.5 py-1.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      className="flex shrink-0 items-start gap-1 border-b border-border px-1.5 py-1.5"
     >
-      <div role="radiogroup" aria-label="Send to" className="flex min-w-0 items-center gap-1">
+      {/* Pills wrap onto more lines rather than scroll: every agent stays in
+          view, and "+" keeps its place at the end of the first line. */}
+      <div
+        role="radiogroup"
+        aria-label="Send to"
+        className="flex min-w-0 flex-1 flex-wrap items-center gap-1"
+      >
         {agents.rows.map((row, index) => {
           const selected = !props.adding && row.id === agents.recipient.id;
           // One tab stop for the group: the picked pill, or the first while adding.
