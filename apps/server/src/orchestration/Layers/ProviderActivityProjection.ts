@@ -1300,8 +1300,12 @@ export function projectRuntimeEventToActivities(
           tone: "warning",
           kind: "provider.config.warning",
           summary: event.payload.summary,
+          // The row already shows the summary; a detail line repeating it
+          // would print the same warning twice.
           payload: {
-            detail: event.payload.details ?? event.payload.summary,
+            ...(event.payload.details && event.payload.details !== event.payload.summary
+              ? { detail: event.payload.details }
+              : {}),
             ...(event.payload.path ? { path: event.payload.path } : {}),
             ...(event.payload.range !== undefined ? { range: event.payload.range } : {}),
           },
