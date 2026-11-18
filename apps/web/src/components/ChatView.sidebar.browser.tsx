@@ -36,6 +36,7 @@ import {
   __setEnvironmentApiOverrideForTests,
 } from "../environmentApi";
 import { getClientSettings, updateSettings } from "../hooks/useSettings";
+import { readAfterEachPaint } from "../lib/frameProbe.browser-harness";
 import { isMacPlatform } from "../lib/utils";
 import { useThreadSelectionStore } from "../threadSelectionStore";
 import { useUiStateStore } from "../uiStateStore";
@@ -76,6 +77,8 @@ import {
   waitForURL,
   waitForComposerEditor,
   waitForServerConfigToApply,
+  withCodexModels,
+  sendShellThreadUpsert,
   mountChatView,
   fixture,
   clickProjectMenuItem,
@@ -310,6 +313,113 @@ describe("ChatView (full app): sidebar", () => {
     } finally {
       await mounted.cleanup();
     }
+  });
+
+  // The server says it made the thread a moment before this app hears of it,
+  // as a real one does: "New lead chat" must open it once it is here, and
+  // stay there (the thread page goes home for a thread it does not know).
+  const startsALeadChatFromTheProjectMenu = async (defaultAgent: "chosen" | "none") => {
+    const capabilities = { repositoryIdentity: true, projectLead: true };
+    const created: { threadId: ThreadId; model: string }[] = [];
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-new-lead-target" as MessageId,
+        targetText: "new lead target",
+      }),
+      configureFixture: (nextFixture) => {
+        withCodexModels(nextFixture);
+        // An old pin from when the project was made: new threads ignore it.
+        nextFixture.snapshot = {
+          ...nextFixture.snapshot,
+          projects: nextFixture.snapshot.projects.map((project) => ({
+            ...project,
+            defaultModelSelection: {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: "gpt-4.1",
+            },
+          })),
+        };
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          environment: { ...nextFixture.serverConfig.environment, capabilities },
+          settings: {
+            ...nextFixture.serverConfig.settings,
+            newThreadModelSelection:
+              defaultAgent === "chosen"
+                ? { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-astra" }
+                : null,
+          },
+        };
+        nextFixture.welcome = {
+          ...nextFixture.welcome,
+          environment: { ...nextFixture.welcome.environment, capabilities },
+        };
+      },
+      resolveRpc: (body) => {
+        if (
+          body._tag !== ORCHESTRATION_WS_METHODS.dispatchCommand ||
+          body.type !== "thread.create"
+        ) {
+          return undefined;
+        }
+        const threadId = body.threadId as ThreadId;
+        created.push({ threadId, model: (body.modelSelection as { model: string }).model });
+        setTimeout(() => {
+          fixture.snapshot = addThreadToSnapshot(fixture.snapshot, threadId);
+          sendShellThreadUpsert(threadId);
+        }, 400);
+        return { sequence: fixture.snapshot.snapshotSequence + 1 };
+      },
+    });
+    const paths: string[] = [];
+    const stop = readAfterEachPaint(() => paths.push(mounted.router.state.location.pathname));
+    try {
+      await page.getByTestId("inbox-scope-label").click();
+      const projectItem = await waitForElement(
+        () => document.querySelector<HTMLElement>('[role="menuitemcheckbox"]:not(:first-child)'),
+        "The project list should name the project.",
+      );
+      const rect = projectItem.getBoundingClientRect();
+      projectItem.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: rect.left + 20,
+          clientY: rect.top + 8,
+        }),
+      );
+      await page.getByRole("button", { name: "New lead chat", exact: true }).click();
+      await vi.waitFor(() => expect(created).toHaveLength(1), { timeout: 5_000 });
+      const leadPath = `/${LOCAL_ENVIRONMENT_ID}/${created[0]!.threadId}`;
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname === leadPath,
+        "New lead chat should open the new lead.",
+      );
+      // Still there a while later, never sent home on the way.
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      stop();
+      expect(mounted.router.state.location.pathname).toBe(leadPath);
+      expect(paths.indexOf(leadPath)).toBeGreaterThanOrEqual(0);
+      expect(paths.slice(paths.indexOf(leadPath))).not.toContain("/");
+      // The project list closed behind it.
+      expect(document.querySelector('[role="menuitemcheckbox"]')).toBeNull();
+      return created[0]!;
+    } finally {
+      stop();
+      await mounted.cleanup();
+    }
+  };
+
+  it("opens a new lead chat from the project menu once it has arrived, and stays there", async () => {
+    expect((await startsALeadChatFromTheProjectMenu("chosen")).model).toBe("gpt-6-astra");
+  });
+
+  it("starts a lead chat with no default agent chosen, on the agent a new thread would get", async () => {
+    // Codex at the model a fresh draft's composer settles on, not the
+    // project's old pin.
+    expect((await startsALeadChatFromTheProjectMenu("none")).model).toBe("gpt-5.6-sol");
   });
 
   it("narrows the live list to rooms from the View button and marks it while it does", async () => {
