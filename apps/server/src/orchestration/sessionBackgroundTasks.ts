@@ -45,6 +45,26 @@ export function carriedBackgroundTasks(
   };
 }
 
+/**
+ * Whether a session has background work running: `awaited`, the tasks its
+ * agent waits on (it wakes when they finish); `any`, every task its runtime
+ * holds, a dev server it left running included. Stopping the runtime kills
+ * them all.
+ */
+export function hasBackgroundWork(
+  session:
+    | Pick<OrchestrationSession, "pendingBackgroundTaskCount" | "awaitedBackgroundTaskCount">
+    | null
+    | undefined,
+  which: "awaited" | "any",
+): boolean {
+  const { pendingBackgroundTaskCount, awaitedBackgroundTaskCount } =
+    carriedBackgroundTasks(session);
+  return which === "awaited"
+    ? awaitedBackgroundTaskCount > 0
+    : pendingBackgroundTaskCount > 0 || awaitedBackgroundTaskCount > 0;
+}
+
 /** Longest task description a session carries. The provider allows far more
  *  (Claude: 1000 characters), and the sidebar shows one line of it. */
 const AWAITED_TASK_DESCRIPTION_MAX_LENGTH = 120;

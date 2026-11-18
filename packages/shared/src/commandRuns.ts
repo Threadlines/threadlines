@@ -32,6 +32,16 @@ export function isCommandRunSettled(status: CommandRunStatus): boolean {
   return FINAL_RUN_STATUSES.has(status);
 }
 
+/**
+ * A run still going in the thread's terminal: opening, running, or typed in
+ * and waiting for the user's Enter. Closing the terminal ends it.
+ */
+export function hasLiveCommandRun(
+  runs: ReadonlyArray<Pick<OrchestrationCommandRun, "status">> | undefined,
+): boolean {
+  return (runs ?? []).some((run) => !isCommandRunSettled(run.status));
+}
+
 /** Output still due to go to its agent by itself. */
 export function commandRunAwaitsAutoSend(
   run: Pick<OrchestrationCommandRun, "autoSend" | "outputSentAt">,

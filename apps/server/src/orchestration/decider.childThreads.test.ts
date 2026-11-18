@@ -3,6 +3,7 @@ import {
   ChildRequestBatchId,
   ChildRequestId,
   CommandId,
+  CommandRunId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   EMPTY_AGENT_REQUEST_STATE,
   EnvironmentId,
@@ -10,6 +11,7 @@ import {
   EventId,
   MessageId,
   type OrchestrationCommand,
+  type OrchestrationCommandRun,
   type OrchestrationEvent,
   type OrchestrationReadModel,
   type OrchestrationSession,
@@ -497,6 +499,56 @@ describe("decider child threads", () => {
       threadId: PARENT,
     });
     expect(threadIn(unarchived.model, settled.id).archivedAt).toBeNull();
+  });
+
+  it("archiving a parent separates a child with a dev server or a terminal command still running", async () => {
+    // Archiving stops each archived child's runtime and closes its terminals.
+    const commandRun = (status: OrchestrationCommandRun["status"]): OrchestrationCommandRun => ({
+      runId: CommandRunId.make(`run-${status}`),
+      terminalId: "terminal-1",
+      mode: "run",
+      dialect: "posix",
+      command: "pnpm dev",
+      source: { kind: "message", messageId: MessageId.make("reply-1") },
+      turnId: TurnId.make("child-turn-1"),
+      participantId: null,
+      cwd: "/repo",
+      autoSend: false,
+      status,
+      startedAt: now,
+      finishedAt: status === "finished" ? now : null,
+      exitCode: status === "finished" ? 0 : null,
+      error: null,
+      hasOutput: true,
+      heldReason: null,
+      outputSentAt: null,
+      outputMessageId: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const child = (id: string, overrides: Partial<OrchestrationThread>) =>
+      thread(ThreadId.make(id), { parentThreadId: PARENT, attachedToParent: true, ...overrides });
+    // A dev server its agent doesn't wait on: the turn is over.
+    const devServer = child("dev-server", {
+      session: session(ThreadId.make("dev-server"), {
+        status: "ready",
+        activeTurnId: null,
+        pendingBackgroundTaskCount: 1,
+        awaitedBackgroundTaskCount: 0,
+      }),
+    });
+    const inTerminal = child("in-terminal", { commandRuns: [commandRun("running")] });
+    const ranEarlier = child("ran-earlier", { commandRuns: [commandRun("finished")] });
+    const archived = await run(readModel([thread(PARENT), devServer, inTerminal, ranEarlier]), {
+      type: "thread.archive",
+      commandId: CommandId.make("archive"),
+      threadId: PARENT,
+    });
+    for (const live of [devServer, inTerminal]) {
+      expect(threadIn(archived.model, live.id).archivedAt).toBeNull();
+      expect(threadIn(archived.model, live.id).attachedToParent).toBe(false);
+    }
+    expect(threadIn(archived.model, ranEarlier.id).archivedAt).not.toBeNull();
   });
 
   it("lets only the server start a thread as another's child, and never under a child", async () => {
