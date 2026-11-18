@@ -1178,6 +1178,40 @@ describe("ProviderCommandReactor", () => {
     expect(steered.input).not.toContain(role);
   });
 
+  it("gives a goal set in the lead chat the lead's role, apart from the objective", async () => {
+    const harness = await createHarness();
+    const setGoal = (id: string) =>
+      Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.goal.set",
+          commandId: CommandId.make(`cmd-goal-set-${id}`),
+          threadId: ThreadId.make("thread-1"),
+          objective: `Goal ${id}`,
+          createdAt: "2026-01-01T00:00:00.000Z",
+        }),
+      );
+    // Not the lead yet: the goal goes as it is.
+    await setGoal("before");
+    await waitFor(() => harness.setThreadGoal.mock.calls.length === 1);
+    expect(harness.setThreadGoal.mock.calls[0]?.[0].context).toBeUndefined();
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "project.lead.set",
+        commandId: CommandId.make("cmd-lead-set"),
+        projectId: asProjectId("project-1"),
+        threadId: ThreadId.make("thread-1"),
+      }),
+    );
+    await setGoal("after");
+    await waitFor(() => harness.setThreadGoal.mock.calls.length === 2);
+    const asLead = harness.setThreadGoal.mock.calls[1]?.[0];
+    expect(asLead?.objective).toBe("Goal after");
+    expect(asLead?.context).toContain(
+      'This thread is the lead chat for the project "Provider Project"',
+    );
+  });
+
   it("steers the user's message into a continue that already reached the agent", async () => {
     const harness = await createHarness();
     const send = (

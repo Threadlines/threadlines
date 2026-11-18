@@ -56,12 +56,26 @@ describe("thread auto-archive candidates", () => {
       inactiveDays: 30,
       nowMs: NOW_MS,
       threads: [excluded, thread("included")],
+      projects: [],
       excludeThreadKeys: new Set([
         scopedThreadKey(scopeThreadRef(excluded.environmentId, excluded.id)),
       ]),
     });
 
     expect(candidates.map((candidate) => candidate.id)).toEqual([ThreadId.make("included")]);
+  });
+
+  it("keeps each project's lead chat, as it keeps a pinned thread", () => {
+    const candidates = selectAutoArchiveCandidates({
+      inactiveDays: 30,
+      nowMs: NOW_MS,
+      threads: [thread("lead"), thread("other")],
+      projects: [
+        { id: PROJECT_ID, environmentId: ENVIRONMENT_ID, leadThreadId: ThreadId.make("lead") },
+      ],
+    });
+
+    expect(candidates.map((candidate) => candidate.id)).toEqual([ThreadId.make("other")]);
   });
 
   it("groups candidates by project", () => {
@@ -78,6 +92,7 @@ describe("thread auto-archive candidates", () => {
       inactiveDays: 30,
       nowMs: NOW_MS,
       threads: [thread("one"), thread("two")],
+      projects: [project],
     });
 
     expect(groupAutoArchiveCandidatesByProject({ candidates, projects: [project] })).toMatchObject([

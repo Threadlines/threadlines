@@ -26,6 +26,8 @@ export interface AutoArchiveProjectGroup {
 
 interface SelectAutoArchiveCandidatesInput {
   readonly threads: ReadonlyArray<SidebarThreadSummary>;
+  /** The threads' projects, which say which thread is each one's lead chat. */
+  readonly projects: ReadonlyArray<Pick<Project, "environmentId" | "id" | "leadThreadId">>;
   readonly inactiveDays: AutoArchiveInactiveThreadsDays;
   readonly nowMs?: number | undefined;
   readonly excludeThreadKeys?: ReadonlySet<string> | undefined;
@@ -46,12 +48,24 @@ export function resolveAutoArchivePreviewDays(
 
 export function selectAutoArchiveCandidates({
   threads,
+  projects,
   inactiveDays,
   nowMs = Date.now(),
   excludeThreadKeys,
 }: SelectAutoArchiveCandidatesInput): ReadonlyArray<AutoArchiveCandidate> {
+  const leadThreadKeys = new Set(
+    projects.flatMap((project) =>
+      project.leadThreadId != null
+        ? [scopedThreadKey(scopeThreadRef(project.environmentId, project.leadThreadId))]
+        : [],
+    ),
+  );
   return selectSharedAutoArchiveCandidates({
-    threads,
+    threads: threads.map((thread) =>
+      leadThreadKeys.has(scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)))
+        ? { ...thread, lead: true }
+        : thread,
+    ),
     inactiveDays,
     nowMs,
     isExcluded:

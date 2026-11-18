@@ -124,6 +124,7 @@ const ProviderSetThreadGoalServiceInput = Schema.Struct({
   status: Schema.optional(ThreadGoalStatus),
   tokenBudget: Schema.optional(Schema.NullOr(NonNegativeInt)),
   modelSelection: Schema.optional(ModelSelection),
+  context: Schema.optional(Schema.String),
 });
 const ProviderClearThreadGoalServiceInput = Schema.Struct({
   threadId: ThreadId,
@@ -2351,6 +2352,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         ...(input.status !== undefined ? { status: input.status } : {}),
         ...(input.tokenBudget !== undefined ? { tokenBudget: input.tokenBudget } : {}),
         ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
+        ...(input.context !== undefined ? { context: input.context } : {}),
       });
       // Project the authoritative response directly: goal notifications keep
       // later autonomous updates flowing, but the requester's own change must

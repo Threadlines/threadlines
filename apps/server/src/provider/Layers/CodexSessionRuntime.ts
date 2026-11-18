@@ -455,6 +455,10 @@ export interface CodexSessionRuntimeSetGoalInput {
   /** Codex 0.163+ records only "user" edits in the model's history; older
    *  app-servers ignore the field. */
   readonly origin: "user" | "automatic";
+  /** Put in the model's history as a developer message just before the goal
+   *  is set, so the turns Codex runs for the goal read it (a lead chat's
+   *  role). Best effort: an app-server that refuses it still gets the goal. */
+  readonly context?: string;
 }
 
 export type CodexSessionRuntimeError =
@@ -3261,6 +3265,28 @@ const makeCodexSessionRuntimeIn = (
       setGoal: (input) =>
         Effect.gen(function* () {
           const providerThreadId = yield* readProviderThreadId;
+          if (input.context !== undefined && input.context.trim().length > 0) {
+            yield* withCodexRequestTimeout(
+              "add a Codex goal's context",
+              client.raw.request("thread/inject_items", {
+                threadId: providerThreadId,
+                items: [
+                  {
+                    type: "message",
+                    role: "developer",
+                    content: [{ type: "input_text", text: input.context }],
+                  },
+                ],
+              }),
+            ).pipe(
+              Effect.catch((cause) =>
+                Effect.logWarning("codex goal context was not added", {
+                  threadId: providerThreadId,
+                  cause,
+                }),
+              ),
+            );
+          }
           const rawResponse = yield* withCodexRequestTimeout(
             "set a Codex thread goal",
             client.raw.request("thread/goal/set", {

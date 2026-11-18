@@ -6744,6 +6744,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
   const queueGoalCommand = Effect.fn("queueGoalCommand")(function* (
     context: ClaudeSessionContext,
     command: { readonly kind: "set" | "clear"; readonly args: string },
+    goalContext?: string,
   ) {
     const reply = yield* Deferred.make<ClaudeGoalCommandOutcome>();
     const request: ClaudeGoalCommandRequest = { ...command, sentAtMs: Date.now() };
@@ -6751,16 +6752,19 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     const messages: Array<SDKUserMessage> = [];
     // A goal can be the first thing a thread handed over from another agent
     // asks for; the handoff's context goes in ahead of it, as it would ahead
-    // of a message.
+    // of a message. So does what the goal's work should read first (a lead
+    // chat's role), unless a turn is running: that turn already heard it.
     const seed = context.pendingContextSeedText;
-    if (
-      command.kind === "set" &&
-      seed !== undefined &&
-      supportsClaudeAppendOnly(context.cliVersion)
-    ) {
+    const leading =
+      command.kind === "set" && supportsClaudeAppendOnly(context.cliVersion)
+        ? [seed, context.turnState ? undefined : goalContext]
+            .filter((part): part is string => part !== undefined && part.trim().length > 0)
+            .join("\n\n")
+        : "";
+    if (leading.length > 0) {
       messages.push(
         deliverAsWritten(
-          buildUserMessage({ sdkContent: [{ type: "text", text: seed }], appendOnly: true }),
+          buildUserMessage({ sdkContent: [{ type: "text", text: leading }], appendOnly: true }),
           context.cliVersion,
         ),
       );
@@ -6788,8 +6792,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
   const sendGoalCommand = Effect.fn("sendGoalCommand")(function* (
     context: ClaudeSessionContext,
     command: { readonly kind: "set" | "clear"; readonly args: string },
+    goalContext?: string,
   ) {
-    const { reply, request } = yield* queueGoalCommand(context, command);
+    const { reply, request } = yield* queueGoalCommand(context, command, goalContext);
     yield* ensureGoalWatch(context);
     const outcome = yield* Deferred.await(reply).pipe(
       Effect.timeoutOption(CLAUDE_GOAL_REPLY_TIMEOUT),
@@ -6920,7 +6925,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       threadId: input.threadId,
       modelSelection: input.modelSelection,
     });
-    const outcome = yield* sendGoalCommand(context, { kind: "set", args: objective });
+    const outcome = yield* sendGoalCommand(
+      context,
+      { kind: "set", args: objective },
+      input.context,
+    );
     if (!outcome.accepted) {
       return yield* refuse(outcome.text.length > 0 ? outcome.text : "Claude did not set the goal.");
     }

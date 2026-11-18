@@ -12,7 +12,8 @@ export type ThreadMenuAction =
   | "reopen"
   | "move-up"
   | "move-down"
-  | "lead"
+  | "make-lead"
+  | "stop-lead"
   | "separate"
   | "attach"
   | "stop-children"
@@ -91,7 +92,9 @@ export function describeThreadMenu(facts: ThreadMenuFacts): ContextMenuItem<Thre
     items.push(
       ...asGroup<ThreadMenuAction>([
         {
-          id: "lead",
+          // Make and stop are separate actions, as pin and unpin are: a menu
+          // left open while another client changes the lead does what it says.
+          id: facts.lead.kind === "stop" ? "stop-lead" : "make-lead",
           label: leadMenuLabel(facts.lead),
           disabled: facts.lead.kind === "make" && facts.lead.refusal !== null,
         },

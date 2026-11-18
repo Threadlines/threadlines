@@ -4188,10 +4188,30 @@ const make = Effect.gen(function* () {
               )
             : Effect.succeed(null),
         ),
+        // A goal that starts work in the lead carries the lead's role, as a
+        // turn there would: the provider runs that work without a turn start
+        // of ours (docs/design/lead-chat.md, "Role text").
         Effect.flatMap((resumed) =>
+          (event.payload.objective !== undefined || event.payload.status === "active"
+            ? providerService
+                .listSessions()
+                .pipe(
+                  Effect.flatMap((sessions) =>
+                    leadChatContext(
+                      thread,
+                      sessions.find((session) => session.threadId === goalHolderSessionKey)
+                        ?.roomTools,
+                    ),
+                  ),
+                )
+            : Effect.succeed(undefined)
+          ).pipe(Effect.map((context) => ({ resumed, context }))),
+        ),
+        Effect.flatMap(({ resumed, context }) =>
           providerService.setThreadGoal({
             threadId: goalHolderSessionKey,
             modelSelection: goalModelSelection,
+            ...(context !== undefined ? { context } : {}),
             ...(event.payload.objective !== undefined
               ? { objective: event.payload.objective }
               : resumed !== null
@@ -5950,11 +5970,18 @@ const make = Effect.gen(function* () {
       // Unreadable: tried again at the next turn end.
       if (Option.isNone(held)) return;
       if (held.value === null || held.value.status !== "active") {
+        // Made the lead here since it arrived: the goal's work hears it.
+        const leadContext = yield* leadChatContext(
+          thread,
+          (yield* providerService.listSessions()).find((session) => session.threadId === holderKey)
+            ?.roomTools,
+        );
         const given = yield* providerService
           .setThreadGoal({
             threadId: holderKey,
             modelSelection: holderModel,
             status: "active",
+            ...(leadContext !== undefined ? { context: leadContext } : {}),
             // The provider counts from zero again: what is left of the budget.
             ...(held.value === null
               ? {

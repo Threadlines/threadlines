@@ -12485,6 +12485,32 @@ describe("ClaudeAdapterLive goals", () => {
     },
   );
 
+  it.effect("puts a goal's context ahead of /goal without a turn of its own", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const { adapter } = yield* startGoalSession(harness);
+      const setting = yield* adapter.setThreadGoal!({
+        threadId: THREAD_ID,
+        objective: "Tests pass",
+        origin: "user",
+        context: "This thread is the lead chat.",
+      }).pipe(Effect.forkChild);
+      const sent = yield* Effect.promise(() =>
+        readPromptMessages(harness.getLastCreateQueryInput(), 2),
+      );
+      assert.deepEqual(sent.map(promptMessageShape), [
+        { origin: undefined, shouldQuery: false, text: "This thread is the lead chat." },
+        { origin: { kind: "human" }, shouldQuery: undefined, text: "/goal Tests pass" },
+      ]);
+      harness.query.emit(goalReply("Tests pass", "Goal set: Tests pass"));
+      const goal = yield* Fiber.join(setting);
+      assert.equal(goal.objective, "Tests pass");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   // As Claude Code 2.1.301 answers it: the running turn's result comes first,
   // then the clear's own answer and its zero-turn result.
   it.effect(

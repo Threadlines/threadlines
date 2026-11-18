@@ -86,8 +86,15 @@ const makeThreadAutoArchiveSweeper = (options?: ThreadAutoArchiveSweeperLiveOpti
           )
           .map((thread) => thread.parentThreadId),
       );
+      const leadThreadIds = new Set(
+        snapshot.projects.flatMap((project) =>
+          project.leadThreadId != null ? [project.leadThreadId] : [],
+        ),
+      );
       const candidates = selectAutoArchiveCandidates({
-        threads: snapshot.threads,
+        threads: snapshot.threads.map((thread) =>
+          leadThreadIds.has(thread.id) ? { ...thread, lead: true } : thread,
+        ),
         inactiveDays,
         nowMs,
         isExcluded: (thread) => liveChildParents.has(thread.id),
