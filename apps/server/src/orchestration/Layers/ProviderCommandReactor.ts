@@ -161,6 +161,7 @@ import { isCancelledReport } from "../childThreadDecisions.ts";
 import { NO_BACKGROUND_TASKS } from "../sessionBackgroundTasks.ts";
 import { isRestorePaid } from "../threadMoveDecisions.ts";
 import { isLinkFenced } from "../linkFence.ts";
+import { isRoomAgentQueued } from "../threadMoveCarry.ts";
 import { SideAnswerStartError } from "../Errors.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderAdapterValidationError = Schema.is(ProviderAdapterValidationError);
@@ -465,6 +466,48 @@ const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 const queueWaitsForMove = (thread: Pick<OrchestrationThread, "pendingMove" | "move">) =>
   (thread.pendingMove ?? null) !== null || (thread.move ?? null) !== null;
 
+/** A moved agent's carried session: the thread's own agent's, or a room agent's own. */
+const movedNativeSessionOf = (
+  thread: Pick<OrchestrationThread, "nativeSession" | "participants">,
+  participantId: ThreadParticipantId | null,
+) =>
+  participantId === null
+    ? thread.nativeSession
+    : thread.participants.find((entry) => entry.id === participantId)?.nativeSession;
+
+/**
+ * Whether an agent that came with a move hasn't been given the conversation
+ * here yet (docs/design/fleet.md, Parts 3d and 3f, (i)): the thread's own
+ * agent while the thread owes it (historySeedOwed); a room agent that came
+ * with the move until its conversation is caught up here (its room context
+ * cursor). Both from the projection, so they hold across restarts.
+ */
+const owesMovedConversation = (
+  thread: Pick<
+    OrchestrationThread,
+    "historySeedOwed" | "movedFrom" | "participants" | "roomContext"
+  >,
+  participantId: ThreadParticipantId | null,
+) =>
+  participantId === null
+    ? thread.historySeedOwed === true
+    : (thread.movedFrom ?? null) !== null &&
+      thread.participants.find((entry) => entry.id === participantId)?.movedIn === true &&
+      thread.roomContext?.[roomAgentKey(participantId)] === undefined;
+
+/**
+ * What a thread's queue still sends while its move waits (docs/design/
+ * fleet.md, Part 3f, review change 4): a room agent's hand-off or reply, so
+ * the room's chain drains and the thread gets free; the user's own messages
+ * wait to go with it. Nothing from `quiescing` on, nor once it moves.
+ */
+const roomDrainHead = (
+  thread: Pick<OrchestrationThread, "pendingMove" | "move" | "queuedFollowUps">,
+): OrchestrationQueuedFollowUp | undefined =>
+  (thread.move ?? null) === null && thread.pendingMove?.stage === "waiting"
+    ? (thread.queuedFollowUps ?? []).find(isRoomAgentQueued)
+    : undefined;
+
 const decodeFellBackPayload = Schema.decodeUnknownOption(ThreadNativeSessionFellBackPayload);
 
 /** A carried session fell back, and its refused message couldn't go again on its own. */
@@ -683,6 +726,13 @@ const make = Effect.gen(function* () {
        * imported conversation.
        */
       readonly moved?: true;
+      /**
+       * Owed because a room agent came with the move (OrchestrationThreadParticipant.movedIn)
+       * and hasn't been given the conversation here: paid like `moved`, only
+       * with the conversation itself, but recorded by its room context cursor,
+       * never on the thread (docs/design/fleet.md, Part 3f, (i)).
+       */
+      readonly movedAgent?: true;
       /**
        * The runtime started seeded with the conversation, by its start time
        * (ProviderSession.createdAt): a send on that runtime adds no seed of
@@ -1469,10 +1519,9 @@ const make = Effect.gen(function* () {
     // got the conversation). A drop that fails fails this start; the next
     // one tries again.
     if (
-      participantId === null &&
       early === undefined &&
-      thread.nativeSession === "fell_back" &&
-      thread.historySeedOwed === true
+      movedNativeSessionOf(thread, participantId) === "fell_back" &&
+      owesMovedConversation(thread, participantId)
     ) {
       const live = yield* resolveActiveSession(sessionKey);
       if (live === undefined || carriedRuntimes.get(sessionKey) === live.createdAt) {
@@ -1705,7 +1754,7 @@ const make = Effect.gen(function* () {
     // send.
     const noteCarriedStart = (session: ProviderSession | "handoff") =>
       Effect.gen(function* () {
-        if (participantId !== null || thread.nativeSession !== "carried") return;
+        if (movedNativeSessionOf(thread, participantId) !== "carried") return;
         if (session !== "handoff" && session.resumed === true) {
           carriedRuntimes.set(sessionKey, session.createdAt);
           return;
@@ -1716,7 +1765,7 @@ const make = Effect.gen(function* () {
             driverKind: desiredDriverKind,
             cwd: effectiveCwd,
             claimed: false,
-            moved: true,
+            ...(participantId === null ? { moved: true as const } : { movedAgent: true as const }),
           });
         }
         yield* orchestrationEngine
@@ -1725,6 +1774,7 @@ const make = Effect.gen(function* () {
             commandId: serverCommandId("native-session-fall-back"),
             threadId,
             reason: "resume_failed",
+            ...(participantId !== null ? { participantId } : {}),
             createdAt: yield* nowIso,
           })
           .pipe(Effect.ignoreCause({ log: true }));
@@ -2493,29 +2543,46 @@ const make = Effect.gen(function* () {
     // A debt for another reason (the provider couldn't reopen its
     // conversation) on a thread that still owes its moved history is that
     // debt too: the seed it pays with is the same conversation, and paying
-    // it must record the move's delivery.
+    // it must record the move's delivery. So for a moved room's agent whose
+    // carried session wouldn't reopen (Part 3f, (i)): it is owed the whole
+    // conversation, never a joining agent's last few messages.
     const unmarked = owedHistorySeeds.get(sessionKey);
     if (
       unmarked !== undefined &&
       unmarked.moved !== true &&
+      unmarked.movedAgent !== true &&
       unmarked.carriedBy === undefined &&
       !unmarked.claimed &&
-      thread.historySeedOwed === true &&
-      input.participantId === null
+      owesMovedConversation(thread, input.participantId)
     ) {
-      owedHistorySeeds.set(sessionKey, { ...unmarked, moved: true });
+      owedHistorySeeds.set(
+        sessionKey,
+        input.participantId === null
+          ? { ...unmarked, moved: true }
+          : { ...unmarked, movedAgent: true },
+      );
     }
     // A runtime that reopened a session the move carried holds the
     // conversation itself: it owes no summary while that session proves
-    // itself (docs/design/fleet.md, Part 3d).
+    // itself (docs/design/fleet.md, Part 3d). A room agent's own too (Part 3f).
     const onCarriedSession =
-      thread.nativeSession === "carried" &&
+      movedNativeSessionOf(thread, input.participantId) === "carried" &&
       activeSession !== undefined &&
       carriedRuntimes.get(sessionKey) === activeSession.createdAt;
+    // A moved room's agent that came with the move and whose conversation
+    // isn't caught up here yet (Part 3f, (i)): it gets the whole conversation
+    // once, as the summary, unless it reopened its carried session; then it
+    // is caught up on what was said here since. Never the last few messages
+    // a joining agent gets.
+    const firstHereInMovedRoom =
+      (thread.movedFrom ?? null) !== null &&
+      isRoomThread(thread) &&
+      (input.participantId === null ||
+        thread.participants.find((entry) => entry.id === input.participantId)?.movedIn === true) &&
+      thread.roomContext?.[agentKey] === undefined;
     if (
       !owedHistorySeeds.has(sessionKey) &&
-      thread.historySeedOwed === true &&
-      input.participantId === null &&
+      owesMovedConversation(thread, input.participantId) &&
       activeSession !== undefined &&
       !onCarriedSession
     ) {
@@ -2523,23 +2590,58 @@ const make = Effect.gen(function* () {
         driverKind: activeSession.provider,
         cwd: thread.worktreePath ?? undefined,
         claimed: false,
-        moved: true,
+        ...(input.participantId === null
+          ? { moved: true as const }
+          : { movedAgent: true as const }),
       });
     }
     const owed = owedHistorySeeds.get(sessionKey);
     const owedCandidate = owed !== undefined && !owed.claimed ? owed : undefined;
-    const roomPaysHistory = owedCandidate !== undefined && isRoomThread(thread);
+    // Paid with the whole conversation as the summary (above): the note only
+    // introduces the room, from where the summary ends.
+    const movedSummary =
+      firstHereInMovedRoom &&
+      owedCandidate !== undefined &&
+      (owedCandidate.moved === true || owedCandidate.movedAgent === true);
+    const roomPaysHistory = owedCandidate !== undefined && isRoomThread(thread) && !movedSummary;
+    // A carried session holds what it saw where it was: up to the last
+    // message it was given there (each agent's own, not the room's last),
+    // so its first turn here is caught up on everything after; with nothing
+    // known, on everything.
+    const seenThrough =
+      input.participantId === null
+        ? thread.movedFrom?.seenThrough
+        : thread.participants.find((entry) => entry.id === input.participantId)?.movedSeenThrough;
+    const seenSequence =
+      seenThrough === undefined
+        ? 0
+        : (thread.messages.find((message) => message.id === seenThrough)?.eventSequence ?? 0);
+    const roomCursor: OrchestrationRoomContextCursor | null =
+      firstHereInMovedRoom && onCarriedSession
+        ? { conversationId, throughSequence: seenSequence, partialMessageIds: [] }
+        : movedSummary
+          ? {
+              conversationId,
+              throughSequence: Math.max(
+                0,
+                ...thread.messages
+                  .filter((message) => message.id !== input.messageId)
+                  .map((message) => message.eventSequence ?? 0),
+              ),
+              partialMessageIds: [],
+            }
+          : storedCursor !== null &&
+              conversationId !== null &&
+              storedCursor.conversationId === conversationId
+            ? storedCursor
+            : null;
     const roomCatchUp = buildRoomCatchUp({
       thread,
       participantId: input.participantId,
       messageId: input.messageId,
-      cursor:
-        storedCursor !== null &&
-        conversationId !== null &&
-        storedCursor.conversationId === conversationId
-          ? storedCursor
-          : null,
+      cursor: roomCursor,
       ...(roomPaysHistory ? { fresh: true } : {}),
+      ...(movedSummary ? { introduce: true } : {}),
       lane: "main",
     });
     // A natively forked session already holds the full source history; the
@@ -2555,13 +2657,14 @@ const make = Effect.gen(function* () {
               toProvider: owedCandidate.driverKind,
               excludeMessageId: input.messageId,
               ...(owedCandidate.cwd ? { cwd: owedCandidate.cwd } : {}),
+              forParticipantId: input.participantId,
             })
             .pipe(Effect.map(Option.getOrUndefined));
     // A moved thread's debt is only paid with the conversation itself: the
     // builder falls back to a workspace pointer when it can't read the
     // transcript, and that send must leave the debt owed.
     const movedSeedEmpty =
-      owedCandidate?.moved === true &&
+      (owedCandidate?.moved === true || owedCandidate?.movedAgent === true) &&
       owedCandidate.carriedBy === undefined &&
       (builtSeed === undefined || builtSeed.entries.length === 0) &&
       thread.messages.some((message) => message.imported === true);
@@ -2769,9 +2872,12 @@ const make = Effect.gen(function* () {
         childContext.delivered(input.createdAt),
         Effect.andThen(scheduleContext.delivered, settingsContext.delivered),
       ),
-      // Recorded only once the provider has taken the turn.
+      // Recorded only once the provider has taken the turn. A moved room's
+      // agent caught up here is recorded even when its provider names no
+      // conversation: the record says it was given the conversation (Part
+      // 3f, (i)), and a cursor with no conversation is never read back as one.
       roomContext:
-        roomCatchUp !== undefined && conversationId !== null
+        roomCatchUp !== undefined && (conversationId !== null || firstHereInMovedRoom)
           ? { agentKey, cursor: { conversationId, ...roomCatchUp.cursor } }
           : undefined,
       // The model the turn request recorded for this agent (recordTurnModel).
@@ -5747,8 +5853,10 @@ const make = Effect.gen(function* () {
     if (!thread) {
       return;
     }
-    // While a move waits or runs the queue waits too, or the thread never gets free.
-    if (queueWaitsForMove(thread)) {
+    // While a move waits or runs the queue waits too, or the thread never
+    // gets free; a room agent's hand-off or reply drains while it waits.
+    const waitsForMove = queueWaitsForMove(thread);
+    if (waitsForMove && roomDrainHead(thread)?.messageId !== event.payload.followUp.messageId) {
       return;
     }
     if (status === "running" || status === "starting") {
@@ -5762,8 +5870,13 @@ const make = Effect.gen(function* () {
       return;
     }
     // A message an agent queued waits behind any the user queued; the queue
-    // release sends those first (see nextQueuedFollowUp).
-    if (!fromUser && (thread.queuedFollowUps ?? []).some((entry) => !isAgentOrigin(entry))) {
+    // release sends those first (see nextQueuedFollowUp). Not while a move
+    // waits: the user's go with the move.
+    if (
+      !waitsForMove &&
+      !fromUser &&
+      (thread.queuedFollowUps ?? []).some((entry) => !isAgentOrigin(entry))
+    ) {
       return;
     }
     const next = event.payload.followUp;
@@ -5816,22 +5929,30 @@ const make = Effect.gen(function* () {
     const owesGoal = finishing && owed?.goalOwed === true;
     if ((thread.movedFrom ?? null) === null && !finishing) return;
     if ((thread.queuedFollowUps ?? []).length > 0) return;
-    // Rooms can't move: the thread's own agent holds its goal.
-    if (sessionSlotParticipantId(thread.session) !== null) return;
+    // The goal is the agent's that holds the thread's session slot: in a
+    // moved room (Part 3f, (i)) the one it arrived for, told by its own
+    // arrival message.
+    const holder = sessionSlotParticipantId(thread.session);
+    const holderKey = participantSessionKey(thread.id, holder);
+    const holderModel =
+      holder === null
+        ? thread.modelSelection
+        : thread.participants.find((entry) => entry.id === holder)?.modelSelection;
+    if (holderModel === undefined) return;
     const goal = thread.goal;
     // A goal put back reads paused when the move's stop paused it after the
     // put-back read it (Codex): it was working, so it works again.
     if (goal !== null && (goal.status === "active" || (owesGoal && goal.status === "paused"))) {
       const held = yield* providerService
-        .getThreadGoal({ threadId: thread.id })
+        .getThreadGoal({ threadId: holderKey })
         .pipe(Effect.option);
       // Unreadable: tried again at the next turn end.
       if (Option.isNone(held)) return;
       if (held.value === null || held.value.status !== "active") {
         const given = yield* providerService
           .setThreadGoal({
-            threadId: thread.id,
-            modelSelection: thread.modelSelection,
+            threadId: holderKey,
+            modelSelection: holderModel,
             status: "active",
             // The provider counts from zero again: what is left of the budget.
             ...(held.value === null
@@ -5938,14 +6059,20 @@ const make = Effect.gen(function* () {
       return;
     }
     const thread = yield* resolveThread(threadId);
-    // A turn that ended while a move waits is what the move waited for.
-    if (thread !== undefined && queueWaitsForMove(thread)) {
+    // A turn that ended while a move waits is what the move waited for; only
+    // a room agent's hand-off or reply still goes (roomDrainHead).
+    const waitsForMove = thread !== undefined && queueWaitsForMove(thread);
+    if (waitsForMove && roomDrainHead(thread) === undefined) {
       return;
     }
-    if (turnFinished && thread !== undefined) {
+    if (turnFinished && thread !== undefined && !waitsForMove) {
       yield* giveGoalAfterMove(thread, event.occurredAt);
     }
-    const next = thread ? nextQueuedFollowUp(thread) : undefined;
+    const next = thread
+      ? waitsForMove
+        ? roomDrainHead(thread)
+        : nextQueuedFollowUp(thread)
+      : undefined;
     if (!thread || !next) {
       return;
     }
@@ -6075,7 +6202,7 @@ const make = Effect.gen(function* () {
     // the next start (ensureSessionForThread), which is the resend's.
     const payload = decodeFellBackPayload(activity.payload);
     if (Option.isNone(payload) || payload.value.resendMessageId === undefined) return;
-    owedHistorySeeds.delete(threadId);
+    owedHistorySeeds.delete(participantSessionKey(threadId, payload.value.participantId ?? null));
     yield* orchestrationEngine
       .dispatch({
         type: "thread.turn.resend",

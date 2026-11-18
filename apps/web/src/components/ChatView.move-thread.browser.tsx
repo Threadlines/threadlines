@@ -16,6 +16,7 @@ import {
   type ThreadMovePreview,
   ThreadMoveRequestId,
   type ThreadPendingMove,
+  ThreadParticipantId,
   WS_METHODS,
 } from "@threadlines/contracts";
 import { page, userEvent } from "vite-plus/test/browser";
@@ -941,6 +942,117 @@ describe("ChatView (full app): moving a thread to another computer", () => {
       );
       // No agent: Mac mini's suggestion is picked once the move starts.
       expect(queues[0]).not.toHaveProperty("agent");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("picks an agent there for each of a room's agents, or leaves it out, and asks for those", async () => {
+    setPrimaryLinksSnapshot(
+      fleetLinksSnapshot({
+        outbound: [fleetOutboundLink(FLEET_OFFLINE_ENVIRONMENT_ID, "Mac mini")],
+      }),
+    );
+    const macMini = FLEET_MOVE_PREVIEW.targets[1]!;
+    const sol = ThreadParticipantId.make("participant-sol");
+    const ada = ThreadParticipantId.make("participant-ada");
+    const solCantCome = "Sol can't come: Mac mini has no Pi agent.";
+    const queues: Array<NormalizedWsRpcRequestBody> = [];
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-move-room" as MessageId,
+        targetText: "move room",
+      }),
+      configureFixture: withThreadMoveQueueFixture,
+      resolveRpc: (body) => {
+        if (body._tag === WS_METHODS.movesPreview) {
+          return {
+            ...FLEET_MOVE_PREVIEW,
+            room: {
+              agents: [
+                { participantId: ada, name: "Ada" },
+                { participantId: sol, name: "Sol" },
+              ],
+            },
+            targets: [
+              {
+                ...macMini,
+                roomAgents: [
+                  {
+                    participantId: ada,
+                    suggestedAgent: {
+                      instanceId: ProviderInstanceId.make("codex"),
+                      model: "gpt-5",
+                    },
+                    sessionOutcomes: [{ instanceId: "codex", outcome: "carries" }],
+                  },
+                  { participantId: sol, cantCome: solCantCome },
+                ],
+              },
+            ],
+          } satisfies ThreadMovePreview;
+        }
+        if (body._tag === WS_METHODS.movesQueue) {
+          queues.push(body);
+          return { requestId: QUEUED_REQUEST_ID };
+        }
+        return undefined;
+      },
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      await saveMacMini("connected");
+      await openCommandPaletteFromTrigger();
+      await page
+        .getByTestId("command-palette")
+        .getByText("Move to another computer", { exact: true })
+        .click();
+      const dialog = page.getByTestId("thread-move-dialog");
+      // The thread's own agent keeps its picker; each other agent gets a row.
+      await expect
+        .element(dialog.getByTestId("thread-move-agent"))
+        .toMatchTextContent("Codex · GPT-5");
+      const adaPicker = dialog.getByTestId(`thread-move-room-agent-picker-${ada}`);
+      const solPicker = dialog.getByTestId(`thread-move-room-agent-picker-${sol}`);
+      await expect.element(adaPicker).toHaveTextContent("Codex · GPT-5");
+      await expect
+        .element(dialog.getByTestId(`thread-move-room-agent-line-${ada}`))
+        .toHaveTextContent("The agent keeps its full memory.");
+      // No match there: left out, with why.
+      await expect.element(solPicker).toHaveTextContent("Leave out");
+      await expect
+        .element(dialog.getByTestId(`thread-move-room-agent-line-${sol}`))
+        .toHaveTextContent(solCantCome);
+
+      // Sol comes as GPT-5 mini after all, with a summary; Ada is left out.
+      await solPicker.click();
+      await page.getByRole("option", { name: "GPT-5 mini" }).click();
+      await expect.element(solPicker).toHaveTextContent("Codex · GPT-5 mini");
+      await expect
+        .element(dialog.getByTestId(`thread-move-room-agent-line-${sol}`))
+        .toHaveTextContent("The agent gets a summary of the conversation.");
+      await adaPicker.click();
+      await page.getByRole("option", { name: "Leave out" }).click();
+      await expect.element(adaPicker).toHaveTextContent("Leave out");
+      await expect
+        .element(dialog.getByTestId(`thread-move-room-agent-line-${ada}`))
+        .not.toBeInTheDocument();
+
+      await dialog.getByTestId("thread-move-confirm").click();
+      await expect.element(page.getByTestId("thread-move-dialog")).not.toBeInTheDocument();
+      expect(queues).toEqual([
+        expect.objectContaining({
+          threadId: THREAD_ID,
+          targetEnvironmentId: FLEET_OFFLINE_ENVIRONMENT_ID,
+          agent: { instanceId: "codex", model: "gpt-5" },
+          roomAgents: [
+            { participantId: ada, agent: null },
+            { participantId: sol, agent: { instanceId: "codex", model: "gpt-5-mini" } },
+          ],
+        }),
+      ]);
     } finally {
       await mounted.cleanup();
     }

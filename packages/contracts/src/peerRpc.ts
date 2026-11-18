@@ -12,6 +12,7 @@ import {
   PositiveInt,
   ThreadId,
   ThreadMoveId,
+  ThreadParticipantId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
 import { ComputerLinkAccess } from "./links.ts";
@@ -24,12 +25,14 @@ import {
   MessageComposer,
   MessageSentFrom,
   ModelSelection,
+  OrchestrationOutsideWork,
   OrchestrationProposedPlan,
   OrchestrationThreadActivity,
   OutsideAgentAccess,
   OrchestrationThreadDoneOverride,
   ProviderInteractionMode,
   RemoteThreadFiling,
+  RoomAgentRole,
   RuntimeMode,
   ThreadGoalStatus,
   ThreadImportMessage,
@@ -248,6 +251,21 @@ export const PeerDescriptor = Schema.Struct({
    * Absent: an older server, which can't read one, so it is never sent one.
    */
   moveGeneralChats: Schema.optional(Schema.Boolean),
+  /**
+   * Takes a thread with more than one agent (docs/design/fleet.md, Part 3f,
+   * (i)): its agents' records and sessions (PeerMoveManifest's `thread.room`,
+   * `session` parts naming a `participantId`) and the room fields of its
+   * messages. Absent: an older server, which would take the parts as the
+   * thread's own agent's, so a room is never sent to it.
+   */
+  moveRooms: Schema.optional(Schema.Boolean),
+  /**
+   * Takes the marks outside work left on a thread's agents
+   * (PeerMoveManifest's `thread.outsideWork`), so an agent whose tools are
+   * limited here arrives limited. Absent: an older server, which would drop
+   * them, so a thread with any is never sent to it.
+   */
+  moveOutsideWork: Schema.optional(Schema.Boolean),
   /**
    * Says how the caller's threads here are filed (`filing` on `thread` watch
    * events) and takes `peer.thread.wrap`. Absent: an older server that can't.
@@ -502,6 +520,12 @@ export const PeerMovePart = Schema.Struct({
   mode: Schema.optional(Schema.Literals(["file", "executable", "symlink"])),
   /** `attachment`: the id the moved messages use for it on the sending computer. */
   attachmentId: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * `session`: a room agent's session (PeerMoveRoom), by its id in the
+   * manifest. Absent: the thread's own agent's. Only to a computer that
+   * says `moveRooms`.
+   */
+  participantId: Schema.optional(ThreadParticipantId),
 });
 export type PeerMovePart = typeof PeerMovePart.Type;
 
@@ -526,6 +550,8 @@ export const PEER_MOVE_STATE_MAX_QUEUED = 50;
 export const PEER_MOVE_STATE_MAX_CHECK_BACKS = 50;
 export const PEER_MOVE_STATE_MAX_PLANS = 100;
 export const PEER_MOVE_STATE_MAX_PULL_REQUESTS = 50;
+/** At most this many agents in a moved room, those who left and guests included. */
+export const PEER_MOVE_ROOM_MAX_PARTICIPANTS = 16;
 
 /**
  * What a moved thread had going (docs/design/fleet.md, Part 3e), with the
@@ -548,6 +574,8 @@ export const PeerMoveThreadState = Schema.Struct({
       checks: Schema.optional(NonNegativeInt),
       lastCheck: Schema.optional(TrimmedNonEmptyString),
       pickUp: Schema.Boolean,
+      /** A room's: the agent that held the goal (a room agent's id in the manifest). Absent: the thread's own. */
+      participantId: Schema.optional(ThreadParticipantId),
     }),
   ),
   checkBacks: Schema.optional(
@@ -561,6 +589,8 @@ export const PeerMoveThreadState = Schema.Struct({
         description: Schema.optional(TrimmedNonEmptyString),
         prompt: Schema.optional(TrimmedNonEmptyString),
         durable: Schema.Boolean,
+        /** A room agent's (its id in the manifest). Absent: the thread's own agent's. */
+        participantId: Schema.optional(ThreadParticipantId),
       }),
     ),
   ),
@@ -589,6 +619,8 @@ export const PeerMoveThreadState = Schema.Struct({
         sentFrom: Schema.optional(MessageSentFrom),
         interactionMode: ProviderInteractionMode,
         createdAt: IsoDateTime,
+        /** For a room agent (its id in the manifest). Absent: the thread's own agent. */
+        participantId: Schema.optional(ThreadParticipantId),
       }),
     ),
   ),
@@ -604,6 +636,42 @@ const PeerMoveSource = Schema.Struct({
   threadId: ThreadId,
 });
 
+/**
+ * One agent of a moved room (docs/design/fleet.md, Part 3f, (i)), with the
+ * sending computer's id: its record (those who left and guests included, so
+ * old messages keep their author), the driver and model it ran there, and
+ * the receiving computer's agent it moves as. Absent `agent`: it doesn't come
+ * (left out, or no match there), so it arrives as having left. `session`:
+ * its own carried session, whose files are the `session` parts naming it.
+ */
+export const PeerMoveRoomParticipant = Schema.Struct({
+  id: ThreadParticipantId,
+  handle: TrimmedNonEmptyString,
+  role: Schema.optional(RoomAgentRole),
+  joinedAt: IsoDateTime,
+  leftAt: Schema.NullOr(IsoDateTime),
+  guest: Schema.optional(Schema.Boolean),
+  source: Schema.Struct({ driver: Schema.String, model: Schema.String }),
+  agent: Schema.optional(ModelSelection),
+  session: Schema.optional(PeerMoveSession),
+  sessionOmitted: Schema.optional(Schema.Literal("too_large")),
+  /**
+   * The last of the moved messages its own session saw (the sender's id), so
+   * a carried session is caught up on the rest. Absent: not known.
+   */
+  seenThroughMessageId: Schema.optional(MessageId),
+});
+export type PeerMoveRoomParticipant = typeof PeerMoveRoomParticipant.Type;
+
+/** A moved room: its agents, and the user's name for the thread's own agent. */
+export const PeerMoveRoom = Schema.Struct({
+  agentRole: Schema.optional(RoomAgentRole),
+  participants: Schema.Array(PeerMoveRoomParticipant),
+  /** See PeerMoveRoomParticipant.seenThroughMessageId, for the thread's own agent. */
+  ownAgentSeenThroughMessageId: Schema.optional(MessageId),
+});
+export type PeerMoveRoom = typeof PeerMoveRoom.Type;
+
 /** A moved thread's own history, as both kinds of manifest carry it. */
 const PeerMoveThread = Schema.Struct({
   title: TrimmedNonEmptyString,
@@ -613,6 +681,13 @@ const PeerMoveThread = Schema.Struct({
   activities: Schema.Array(OrchestrationThreadActivity),
   /** What it had going: see PeerMoveThreadState. Absent: nothing, or an older sender. */
   state: Schema.optional(PeerMoveThreadState),
+  /** A room: see PeerMoveRoom. Only to a computer that says `moveRooms`. */
+  room: Schema.optional(PeerMoveRoom),
+  /**
+   * Its agents outside work still limits (OrchestrationOutsideWork; null
+   * `participantId`: its own agent). Only to a computer that says `moveOutsideWork`.
+   */
+  outsideWork: Schema.optional(Schema.Array(OrchestrationOutsideWork)),
 });
 
 /**

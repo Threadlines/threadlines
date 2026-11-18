@@ -552,6 +552,7 @@ export const makeMoveQueue = (
           requestId,
           targetEnvironmentId: pending.target.environmentId,
           agent: pending.agent,
+          roomAgents: pending.roomAgents,
         });
         switch (outcome.kind) {
           case "started":
@@ -722,6 +723,7 @@ export const makeMoveQueue = (
           threadId: input.threadId,
           targetEnvironmentId: input.targetEnvironmentId,
           agent: input.agent,
+          roomAgents: input.roomAgents,
           targets: batch?.targets,
         });
         const requestId = batch?.requestId ?? ThreadMoveRequestId.make(randomUUID());
@@ -733,6 +735,7 @@ export const makeMoveQueue = (
             requestId,
             target: { environmentId: input.targetEnvironmentId, label },
             ...(input.agent !== undefined ? { agent: input.agent } : {}),
+            ...(input.roomAgents !== undefined ? { roomAgents: input.roomAgents } : {}),
             mode: input.mode,
             requestedBy: input.requestedBy ?? { kind: "user" },
             ...(batch !== undefined ? { batchId: batch.batchId } : {}),

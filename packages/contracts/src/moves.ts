@@ -9,6 +9,7 @@ import {
   ThreadMoveBatchId,
   ThreadMoveId,
   ThreadMoveRequestId,
+  ThreadParticipantId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
 import { ComputerLinkAccess } from "./links.ts";
@@ -16,6 +17,7 @@ import {
   ModelSelection,
   ThreadMoveHold,
   ThreadMovePhase,
+  ThreadMoveRoomAgentChoice,
   ThreadMoveTarget,
   ThreadMoveWait,
   ThreadPendingMoveMode,
@@ -54,6 +56,22 @@ export const ThreadMoveNote = Schema.Struct({
   instanceIds: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
 });
 export type ThreadMoveNote = typeof ThreadMoveNote.Type;
+
+/**
+ * One room agent on a computer the thread could move to (docs/design/fleet.md,
+ * Part 3f, (i)): the agent there to suggest (the same driver and model, else
+ * that driver's default model), and what it would get of its session. Absent
+ * `suggestedAgent`: none matches, and `cantCome` says so in the server's words
+ * ("Sol can't come: Windows PC has no Codex agent.").
+ */
+export const ThreadMoveRoomAgentTarget = Schema.Struct({
+  participantId: ThreadParticipantId,
+  suggestedAgent: Schema.optional(ModelSelection),
+  cantCome: Schema.optional(TrimmedNonEmptyString),
+  /** Per agent there, what it would get of this agent's session; absent: `summary` for every one. */
+  sessionOutcomes: Schema.optional(Schema.Array(ThreadMoveAgentSessionOutcome)),
+});
+export type ThreadMoveRoomAgentTarget = typeof ThreadMoveRoomAgentTarget.Type;
 
 /** One computer this thread could move to, as this computer sees it now. */
 export const ThreadMoveTargetPreview = Schema.Struct({
@@ -98,6 +116,8 @@ export const ThreadMoveTargetPreview = Schema.Struct({
    * shows it while one of them is picked); without, for any.
    */
   notes: Schema.optional(Schema.Array(ThreadMoveNote)),
+  /** A room (ThreadMovePreview.room): each of its agents on this computer. */
+  roomAgents: Schema.optional(Schema.Array(ThreadMoveRoomAgentTarget)),
 });
 export type ThreadMoveTargetPreview = typeof ThreadMoveTargetPreview.Type;
 
@@ -132,6 +152,18 @@ export const ThreadMovePreview = Schema.Struct({
   brings: Schema.optional(Schema.Array(ThreadMoveNote)),
   /** A General Chats thread: its folder, in place of `changes`. */
   folder: Schema.optional(Schema.Struct({ files: NonNegativeInt, bytes: NonNegativeInt })),
+  /**
+   * A room (docs/design/fleet.md, Part 3f, (i)): its agents besides the
+   * thread's own, each with its name here. The dialog picks an agent for each
+   * on the chosen computer (ThreadMoveTargetPreview.roomAgents), or leaves it out.
+   */
+  room: Schema.optional(
+    Schema.Struct({
+      agents: Schema.Array(
+        Schema.Struct({ participantId: ThreadParticipantId, name: TrimmedNonEmptyString }),
+      ),
+    }),
+  ),
   targets: Schema.Array(ThreadMoveTargetPreview),
 });
 export type ThreadMovePreview = typeof ThreadMovePreview.Type;
@@ -144,6 +176,8 @@ export const ThreadMoveStartInput = Schema.Struct({
   targetEnvironmentId: EnvironmentId,
   /** One of the target's agents, by its own instance id. */
   agent: ModelSelection,
+  /** A room: the agent each of its agents moves as (null leaves it out); one not listed takes the suggestion. */
+  roomAgents: Schema.optional(Schema.Array(ThreadMoveRoomAgentChoice)),
 });
 export type ThreadMoveStartInput = typeof ThreadMoveStartInput.Type;
 
@@ -168,6 +202,8 @@ export const ThreadMoveQueueInput = Schema.Struct({
    */
   agent: Schema.optional(ModelSelection),
   mode: ThreadPendingMoveMode,
+  /** A room: the agent each of its agents moves as (null leaves it out); one not listed takes the suggestion. */
+  roomAgents: Schema.optional(Schema.Array(ThreadMoveRoomAgentChoice)),
 });
 export type ThreadMoveQueueInput = typeof ThreadMoveQueueInput.Type;
 

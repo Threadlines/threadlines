@@ -9,6 +9,7 @@ import {
   type OrchestrationEvent,
   type OrchestrationMessage,
   type OrchestrationReadModel,
+  type OrchestrationQueuedFollowUp,
   type OrchestrationSession,
   type OrchestrationSessionUsageLimit,
   type OrchestrationThread,
@@ -442,9 +443,12 @@ type DecideOrchestrationCommandResult =
 const decideCommandSequence = Effect.fn("decideCommandSequence")(function* ({
   commands,
   readModel,
+  drained,
 }: {
   readonly commands: ReadonlyArray<OrchestrationCommand>;
   readonly readModel: OrchestrationReadModel;
+  /** See decideOrchestrationCommand's `drained`. */
+  readonly drained?: OrchestrationQueuedFollowUp | undefined;
 }): Effect.fn.Return<ReadonlyArray<PlannedOrchestrationEvent>, OrchestrationCommandInvariantError> {
   let nextReadModel = readModel;
   let nextSequence = readModel.snapshotSequence;
@@ -454,6 +458,7 @@ const decideCommandSequence = Effect.fn("decideCommandSequence")(function* ({
     const decided = yield* decideOrchestrationCommand({
       command: nextCommand,
       readModel: nextReadModel,
+      ...(drained !== undefined ? { drained } : {}),
     });
     const nextEvents = Array.isArray(decided) ? decided : [decided];
     for (const nextEvent of nextEvents) {
@@ -1234,12 +1239,19 @@ function turnBeingStopped(thread: OrchestrationThread): TurnId | undefined {
 export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand")(function* ({
   command,
   readModel,
+  drained,
 }: {
   readonly command: OrchestrationCommand;
   readonly readModel: OrchestrationReadModel;
+  /**
+   * Internal: the queued message a `thread.follow-up.send-queued` is sending,
+   * for the turn it decides in turn (threadMoveGuardRefusal lets a room's
+   * hand-off or reply through while a move waits).
+   */
+  readonly drained?: OrchestrationQueuedFollowUp | undefined;
 }): Effect.fn.Return<DecideOrchestrationCommandResult, OrchestrationCommandInvariantError> {
   // A thread moving or moved to another computer is frozen here.
-  const frozenRefusal = threadMoveGuardRefusal(readModel, command);
+  const frozenRefusal = threadMoveGuardRefusal(readModel, command, drained);
   if (frozenRefusal !== null) {
     return yield* new OrchestrationCommandInvariantError({
       commandType: command.type,
@@ -4292,6 +4304,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         agentQueued || scheduledQueued ? targetThread.interactionMode : queued.interactionMode;
       const turnEvents = yield* decideCommandSequence({
         readModel,
+        // A room's hand-off or reply drains while a move waits: its turn too.
+        drained: queued,
         commands: [
           ...(runtimeMode !== targetThread.runtimeMode
             ? [

@@ -458,6 +458,7 @@ export function projectEvent(
             ...(payload.nativeSession !== undefined
               ? { nativeSession: payload.nativeSession }
               : {}),
+            ...(payload.outsideWork !== undefined ? { outsideWork: payload.outsideWork } : {}),
             voiceActive: false,
             latestTurn: null,
             createdAt: payload.createdAt,
@@ -1125,16 +1126,32 @@ export function projectEvent(
         event.type,
         "payload",
       ).pipe(
-        Effect.map((payload) => ({
-          ...nextBase,
-          threads: updateThread(nextBase.threads, payload.threadId, {
-            historySeedOwed: false,
-            historySeedMessageId: payload.messageId,
-            ...(payload.nativeSession !== undefined
-              ? { nativeSession: payload.nativeSession }
-              : {}),
-          }),
-        })),
+        Effect.map((payload) => {
+          // A room agent's carried session proved itself: only its own record changes.
+          if (payload.participantId !== undefined) {
+            const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+            if (thread === undefined || payload.nativeSession === undefined) return nextBase;
+            return {
+              ...nextBase,
+              threads: updateThread(nextBase.threads, payload.threadId, {
+                participants: applyRoomAgentUpdate(thread, {
+                  participantId: payload.participantId,
+                  nativeSession: payload.nativeSession,
+                }).participants,
+              }),
+            };
+          }
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.threadId, {
+              historySeedOwed: false,
+              historySeedMessageId: payload.messageId,
+              ...(payload.nativeSession !== undefined
+                ? { nativeSession: payload.nativeSession }
+                : {}),
+            }),
+          };
+        }),
       );
 
     // Neither moves `updatedAt`: a handed-back answer and a family change
@@ -1408,6 +1425,10 @@ export function projectEvent(
             ...(payload.sentFrom !== undefined ? { sentFrom: payload.sentFrom } : {}),
             ...(payload.trigger !== undefined ? { trigger: payload.trigger } : {}),
             ...(payload.notSent === true ? { notSent: true as const } : {}),
+            ...(payload.requestOutcome !== undefined
+              ? { requestOutcome: payload.requestOutcome }
+              : {}),
+            ...(payload.requestError !== undefined ? { requestError: payload.requestError } : {}),
             ...(payload.afterMove === true ? { afterMove: true as const } : {}),
             turnId: payload.turnId,
             streaming: payload.streaming,
