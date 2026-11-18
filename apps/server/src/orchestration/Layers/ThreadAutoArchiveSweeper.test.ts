@@ -108,10 +108,26 @@ function runningSession(threadId: ThreadId): OrchestrationSession {
 
 function makeSnapshotQuery(
   threads: readonly OrchestrationThreadShell[],
+  leadThreadId?: ThreadId,
 ): ProjectionSnapshotQueryShape {
   const shellSnapshot = {
     snapshotSequence: 1,
-    projects: [],
+    projects:
+      leadThreadId === undefined
+        ? []
+        : [
+            {
+              id: PROJECT_ID,
+              kind: "workspace" as const,
+              title: "Project",
+              workspaceRoot: "/repo/project",
+              defaultModelSelection: null,
+              scripts: [],
+              leadThreadId,
+              createdAt: daysAgo(60),
+              updatedAt: daysAgo(60),
+            },
+          ],
     threads: [...threads],
     updatedAt: new Date(NOW_MS).toISOString(),
   };
@@ -157,6 +173,7 @@ describe("ThreadAutoArchiveSweeper", () => {
   async function createHarness(input: {
     readonly inactiveDays: AutoArchiveInactiveThreadsDays;
     readonly threads: readonly OrchestrationThreadShell[];
+    readonly leadThreadId?: ThreadId;
     readonly failingThreadIds?: ReadonlySet<ThreadId>;
     readonly settingsShape?: ServerSettingsShape;
     /** The children each parent's archive takes along, as the decider would decide. */
@@ -243,7 +260,12 @@ describe("ThreadAutoArchiveSweeper", () => {
             })
           : Layer.succeed(ServerSettingsService, input.settingsShape),
       ),
-      Layer.provideMerge(Layer.succeed(ProjectionSnapshotQuery, makeSnapshotQuery(input.threads))),
+      Layer.provideMerge(
+        Layer.succeed(
+          ProjectionSnapshotQuery,
+          makeSnapshotQuery(input.threads, input.leadThreadId),
+        ),
+      ),
       Layer.provideMerge(Layer.succeed(OrchestrationEngineService, orchestrationEngine)),
     );
     runtime = ManagedRuntime.make(layer);
@@ -318,10 +340,13 @@ describe("ThreadAutoArchiveSweeper", () => {
       inactiveDays: 30,
       threads: [
         thread("pinned", { pinnedAt: daysAgo(40) }),
+        // The project's lead chat: archiving it would end its role.
+        thread("lead"),
         { ...running, session: runningSession(running.id) },
         thread("approval", { hasPendingApprovals: true }),
         thread("recent", { updatedAt: daysAgo(2) }),
       ],
+      leadThreadId: ThreadId.make("lead"),
     });
 
     expect(await runtime!.runPromise(sweeper.sweepNow())).toBe(0);

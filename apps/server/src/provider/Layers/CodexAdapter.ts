@@ -4006,6 +4006,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           ...(input.objective !== undefined ? { objective: input.objective } : {}),
           ...(input.status !== undefined ? { status: input.status } : {}),
           ...(input.tokenBudget !== undefined ? { tokenBudget: input.tokenBudget } : {}),
+          ...(input.context !== undefined ? { context: input.context } : {}),
         }),
       ),
       Effect.map(normalizeCodexThreadGoal),

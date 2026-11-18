@@ -79,6 +79,11 @@ export interface ProviderSetThreadGoalInput {
   /** The model the goal's work should run on, for providers that start that
    *  work as a turn of their own (Claude). */
   readonly modelSelection?: ModelSelection;
+  /** What the agent reads ahead of the goal's work (a lead chat's role), as
+   *  a turn start would carry it. Never part of the objective. A driver puts
+   *  it in the agent's history without a turn of its own, or drops it when it
+   *  has no way to. */
+  readonly context?: string;
 }
 
 export interface ProviderAdapterCapabilities {

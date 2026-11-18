@@ -485,7 +485,11 @@ const PALETTE_THREAD_ACTIONS: Partial<
     }
   >
 > = {
-  lead: {
+  "make-lead": {
+    searchTerms: ["lead chat", "lead", "coordinate", "project lead"],
+    icon: <CrownIcon className={ITEM_ICON_CLASS} />,
+  },
+  "stop-lead": {
     searchTerms: ["lead chat", "lead", "coordinate", "project lead"],
     icon: <CrownIcon className={ITEM_ICON_CLASS} />,
   },
@@ -2247,21 +2251,18 @@ export function OpenCommandPaletteDialog() {
       },
     });
   }
+  // The open thread's or draft's project (none until its computer's projects
+  // load); the first project only when neither is open.
   const leadScopeProject =
-    (activeThread
-      ? projects.find(
-          (project) =>
-            project.environmentId === activeThread.environmentId &&
-            project.id === activeThread.projectId,
-        )
-      : undefined) ??
-    (defaultProjectRef
-      ? projects.find(
-          (project) =>
-            project.environmentId === defaultProjectRef.environmentId &&
-            project.id === defaultProjectRef.projectId,
-        )
-      : undefined);
+    currentProjectId !== null
+      ? (currentProject ?? undefined)
+      : defaultProjectRef
+        ? projects.find(
+            (project) =>
+              project.environmentId === defaultProjectRef.environmentId &&
+              project.id === defaultProjectRef.projectId,
+          )
+        : undefined;
   if (
     leadScopeProject !== undefined &&
     leadScopeProject.kind === "workspace" &&

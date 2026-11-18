@@ -223,9 +223,14 @@ export function useThreadMenu() {
         case "move":
           openThreadMoveDialog(threadRef);
           return;
-        case "lead": {
+        case "make-lead":
+        case "stop-lead": {
+          // The click does what the item said. Since the menu opened, another
+          // client may have done it already (nothing to do) or made it
+          // refused (the item would read disabled now).
           const lead = readLeadMenuState(useStore.getState(), thread);
-          if (lead === null || (lead.kind === "make" && lead.refusal !== null)) return;
+          if (lead === null || lead.kind !== (action === "make-lead" ? "make" : "stop")) return;
+          if (lead.kind === "make" && lead.refusal !== null) return;
           const made = await setProjectLead({
             environmentId: thread.environmentId,
             projectId: thread.projectId,

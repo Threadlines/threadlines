@@ -1092,6 +1092,56 @@ describe("ChatView (full app): command palette and search", () => {
     }
   });
 
+  it("offers New lead chat for the draft's project, not the first project", async () => {
+    const capabilities = { repositoryIdentity: true, projectLead: true };
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotWithSecondaryProject({ includeSecondaryThread: false }),
+      configureFixture: (nextFixture) => {
+        // The first project already has its lead.
+        nextFixture.snapshot = {
+          ...nextFixture.snapshot,
+          projects: nextFixture.snapshot.projects.map((project) =>
+            project.id === PROJECT_ID ? { ...project, leadThreadId: THREAD_ID } : project,
+          ),
+        };
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          environment: { ...nextFixture.serverConfig.environment, capabilities },
+        };
+        nextFixture.welcome = {
+          ...nextFixture.welcome,
+          environment: { ...nextFixture.welcome.environment, capabilities },
+        };
+      },
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      const palette = page.getByTestId("command-palette");
+      await openCommandPaletteFromTrigger();
+      await page.getByPlaceholder("Search commands, projects, and threads...").fill("clients/docs");
+      await palette.getByText("Docs Portal", { exact: true }).click();
+      const draftPath = await waitForURL(
+        mounted.router,
+        (path) => UUID_ROUTE_RE.test(path),
+        "Route should have changed to a draft in the second project.",
+      );
+      expect(
+        useComposerDraftStore.getState().getDraftSession(draftIdFromPath(draftPath))?.projectId,
+      ).toBe(SECOND_PROJECT_ID);
+      await expect.element(palette).not.toBeInTheDocument();
+
+      await openCommandPaletteFromTrigger();
+      await page.getByPlaceholder("Search commands, projects, and threads...").fill("new lead");
+      // Named for the draft's project; the first project's lead hides nothing.
+      await expect.element(palette.getByText("New lead chat", { exact: true })).toBeInTheDocument();
+      await expect.element(palette.getByText("Docs Portal", { exact: true })).toBeInTheDocument();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("filters archived threads out of command palette search results", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,

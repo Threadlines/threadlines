@@ -2282,9 +2282,10 @@ export function ArchivedThreadsPanel({ hostedStatic }: { readonly hostedStatic: 
     () =>
       selectAutoArchiveCandidates({
         threads: sidebarThreads,
+        projects,
         inactiveDays: autoArchivePreviewDays,
       }),
-    [autoArchivePreviewDays, sidebarThreads],
+    [autoArchivePreviewDays, projects, sidebarThreads],
   );
   const inactiveThreadGroups = useMemo(
     () =>
@@ -2351,6 +2352,7 @@ export function ArchivedThreadsPanel({ hostedStatic }: { readonly hostedStatic: 
       if (nextDays !== 0) {
         const nextCandidates = selectAutoArchiveCandidates({
           threads: sidebarThreads,
+          projects,
           inactiveDays: nextDays,
         });
         if (nextCandidates.length > 0) {

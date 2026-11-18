@@ -6,6 +6,9 @@ export interface AutoArchiveThreadFields {
   readonly latestUserMessageAt: string | null;
   readonly archivedAt: string | null;
   readonly pinnedAt: string | null;
+  /** It is its project's lead chat (docs/design/lead-chat.md): kept like a
+   *  pinned thread, since archiving it would end its role. */
+  readonly lead?: boolean | undefined;
   readonly hasPendingApprovals: boolean;
   readonly hasPendingUserInput: boolean;
   readonly hasActionableProposedPlan: boolean;
@@ -29,7 +32,7 @@ export function getAutoArchiveThreadInactiveSince(thread: AutoArchiveThreadField
 }
 
 export function isAutoArchiveProtectedThread(thread: AutoArchiveThreadFields): boolean {
-  if (thread.archivedAt !== null || thread.pinnedAt !== null) {
+  if (thread.archivedAt !== null || thread.pinnedAt !== null || thread.lead === true) {
     return true;
   }
 

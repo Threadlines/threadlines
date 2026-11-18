@@ -38,6 +38,7 @@ import {
 import { getClientSettings, updateSettings } from "../hooks/useSettings";
 import { nextFrames, readAfterEachPaint } from "../lib/frameProbe.browser-harness";
 import { isMacPlatform } from "../lib/utils";
+import { useStore } from "../store";
 import { useThreadSelectionStore } from "../threadSelectionStore";
 import { useUiStateStore } from "../uiStateStore";
 
@@ -45,6 +46,7 @@ import { DEFAULT_CLIENT_SETTINGS } from "@threadlines/contracts/settings";
 import {
   THREAD_ID,
   THREAD_TITLE,
+  PROJECT_ID,
   SECOND_PROJECT_ID,
   LOCAL_ENVIRONMENT_ID,
   BrowserHostHarness,
@@ -81,6 +83,8 @@ import {
   sendShellThreadUpsert,
   mountChatView,
   fixture,
+  rpcHarness,
+  toShellSnapshot,
   clickProjectMenuItem,
   registerChatViewSuiteHooks,
   openCommandPaletteFromTrigger,
@@ -434,6 +438,27 @@ describe("ChatView (full app): sidebar", () => {
       await openRowMenu(THREAD_ID);
       await page.getByRole("button", { name: "Stop using as lead chat", exact: true }).click();
       await vi.waitFor(() => expect(leadSets()).toEqual([otherThreadId, null]));
+
+      // Another client makes the other thread the lead while this menu is
+      // open: its "Stop using" must not turn into making this one the lead.
+      await openRowMenu(THREAD_ID);
+      const stop = page.getByRole("button", { name: "Stop using as lead chat", exact: true });
+      await expect.element(stop).toBeVisible();
+      const [project] = toShellSnapshot(fixture.snapshot).projects;
+      rpcHarness.emitStreamValue(ORCHESTRATION_WS_METHODS.subscribeShell, {
+        kind: "project-upserted",
+        sequence: fixture.snapshot.snapshotSequence + 1,
+        project: { ...project!, leadThreadId: otherThreadId },
+      });
+      await vi.waitFor(() =>
+        expect(
+          useStore.getState().environmentStateById[LOCAL_ENVIRONMENT_ID]?.projectById[PROJECT_ID]
+            ?.leadThreadId,
+        ).toBe(otherThreadId),
+      );
+      await stop.click();
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(leadSets()).toEqual([otherThreadId, null]);
     } finally {
       await mounted.cleanup();
     }

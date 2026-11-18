@@ -270,6 +270,9 @@ export interface ProviderServiceShape {
     /** The model the goal's work runs on, where the provider starts that
      *  work itself (Claude). */
     readonly modelSelection?: ModelSelection;
+    /** What the agent reads ahead of the goal's work (a lead chat's role).
+     *  See `ProviderSetThreadGoalInput.context`. */
+    readonly context?: string;
   }) => Effect.Effect<RuntimeThreadGoalSnapshot, ProviderServiceError>;
 
   /**

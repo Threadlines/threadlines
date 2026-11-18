@@ -97,10 +97,15 @@ Words below are the on-screen words. Copy follows the repo's copy rules (no em d
   rules they don't know (a follow-up).
 - **Not allowed, with the reason shown on the disabled item:** General Chats; a thread
   another thread started and still owns; a thread from another computer or an outside
-  agent; an archived thread; a thread with a move pending; an agent that cannot use the
-  thread tools; "Agents can start threads" off (the reason links to that setting).
+  agent; an archived thread; a thread with a move pending; "Agents can start threads"
+  off (the reason names that setting).
+- **An agent that cannot use the thread tools (built):** not refused at the menu.
+  Whether a runtime takes the thread tools is known only once it is up, and a room's
+  agents differ. Each turn whose runtime came up without them adds a line to the role
+  text telling the agent to say it can't coordinate the lead (`LEAD_WITHOUT_TOOLS_TEXT`).
 - **Takes effect at the thread's next turn.** A turn already running is not told.
-- **Ends by itself** when the lead thread is archived or deleted. Moving the lead to
+- **Ends by itself** when the lead thread is archived or deleted. Auto-archive keeps
+  the lead as it keeps a pinned thread, so an idle lead is never archived for the user. Moving the lead to
   another computer is refused: "This is the project's lead chat. Pick another lead
   first."
 - Nothing is lost when a lead stops being one: it becomes an ordinary thread, and the
@@ -233,6 +238,8 @@ coordinate it.
   finished and what needs them. Do not repeat the report.
 - Threads you started report back by themselves. Do not poll them. A thread you did not
   start does not report back: the user sees its answer there.
+- Here you may start 10 threads (at most 5 per call) and send 20 messages per user
+  message.
 ```
 
 - It is a preference, not a fence: we cannot remove file tools on every provider.
@@ -240,6 +247,14 @@ coordinate it.
   (the turn got the text when it started), and a room agent's side answer (read-only,
   not lead work). Both are named in the builder's tests so a change is deliberate.
 - In a room that is the lead, each agent's turns get it.
+- **Goals (built):** a goal's work starts on the provider, not through a turn start, so
+  setting or resuming a goal in the lead carries the role too, apart from the objective.
+  Claude reads it as a no-reply message just before `/goal`. Codex gets it as a
+  developer message in the thread's history (`thread/inject_items`) before
+  `thread/goal/set`, so the turns it runs for the goal read it; an app-server that
+  refuses that still gets the goal.
+- **The role text states the lead's limits** (starts and sends per user message), and
+  so do the `thread_start` and `thread_send` descriptions.
 
 ### Tools
 
@@ -520,15 +535,15 @@ Built (piece 4), where it differs from or adds to the rulings:
 ## Every surface
 
 - **Entry points:** thread menus (sidebar, header), project menu, command palette,
-  keybinding command, new-thread screen (a "Lead chat" link beside the project's thread
+  new-thread screen (a "Lead chat" link beside the project's thread
   map when one exists).
 - **Clients:** web, desktop and the phone view share the components. Board logic that
   is not view code goes in `packages/client-runtime`.
 - **Providers:** a lead needs the thread tools. Codex, Claude, OpenCode, Muse and Pi
   get them; ACP agents (fx, Cursor, Antigravity, Grok, community agents) only when they
-  take an HTTP tool server, decided in the generic core. Where they do not, "Make this
-  the lead chat" is disabled with the reason. Role text reaches all of them through
-  the per-turn context. A room can be the lead: requests already carry the asking
+  take an HTTP tool server, decided in the generic core. Where they do not, the role
+  text tells the agent to say it can't coordinate (see "An agent that cannot use the
+  thread tools"). Role text reaches all of them through the per-turn context. A room can be the lead: requests already carry the asking
   agent.
 - **Contracts:** project field and command, two capability flags, the origin's
   `ceiling`, respond's `requestIds`, the update event's `childMessageId`, summary
@@ -549,7 +564,7 @@ files and go in that order from one builder. 3 is web only and can run beside 2 
 piece 1's contracts are committed. 5 is web only and can run beside 4.
 
 1. **Lead role.** Project field, command, cascades, migration, capability; role text
-   on every turn start; limits; menus, palette, keybinding command, sidebar row and
+   on every turn start; limits; menus, palette, sidebar row and
    sort, header chip, placeholder; guide topic. Tests: decider (set, replace, refusals,
    cascades, ghost pointer), a restart round-trip of the pointer, role text present on
    person, task, report, retry and continue turns and absent on steers and side
