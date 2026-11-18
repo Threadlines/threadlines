@@ -1910,6 +1910,33 @@ routing.layer("ProviderServiceLive routing", (it) => {
     }),
   );
 
+  it.effect(
+    "sends a goal pause Threadlines made for a wait as automatic, and a user's as theirs",
+    () =>
+      Effect.gen(function* () {
+        const provider = yield* ProviderService;
+        const threadId = asThreadId("thread-goal-wait-pause");
+
+        yield* provider.startSession(threadId, {
+          provider: CODEX_DRIVER,
+          providerInstanceId: codexInstanceId,
+          threadId,
+          cwd: "/tmp/project-goal-wait",
+          runtimeMode: "full-access",
+        });
+        yield* provider.setThreadGoal({ threadId, objective: "Count to eight" });
+        routing.codex.setThreadGoal.mockClear();
+
+        yield* provider.setThreadGoal({ threadId, status: "paused", origin: "automatic" });
+        yield* provider.setThreadGoal({ threadId, status: "active" });
+
+        assert.deepEqual(routing.codex.setThreadGoal.mock.calls, [
+          [{ threadId, status: "paused", origin: "automatic" }],
+          [{ threadId, status: "active", origin: "user" }],
+        ]);
+      }),
+  );
+
   it.effect("does not recover a stopped session just to pause its goal", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService;

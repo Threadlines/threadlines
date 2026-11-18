@@ -4212,6 +4212,8 @@ const make = Effect.gen(function* () {
             threadId: goalHolderSessionKey,
             modelSelection: goalModelSelection,
             ...(context !== undefined ? { context } : {}),
+            // A pause or resume for a wait (thread.goal.wait.sync) is ours, not the user's.
+            ...(event.payload.origin !== undefined ? { origin: event.payload.origin } : {}),
             ...(event.payload.objective !== undefined
               ? { objective: event.payload.objective }
               : resumed !== null

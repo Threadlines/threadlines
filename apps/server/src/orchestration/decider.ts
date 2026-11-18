@@ -145,6 +145,7 @@ import {
 } from "./threadMoveDecisions.ts";
 import { carriedBackgroundTasks } from "./sessionBackgroundTasks.ts";
 import { questionsClosedByUserMessage, unansweredResponseRefusal } from "./userInput.ts";
+import { goalWaitOf, goalWaitStep, keepsGoalWaitMark } from "@threadlines/shared/goalWaitPause";
 import {
   isContinueTrigger,
   RESTART_CONTINUE_MESSAGE,
@@ -433,6 +434,35 @@ function passCeilingCancelEvents(
             },
           },
         ]),
+  ];
+}
+
+/**
+ * The goal without the mark of a pause Threadlines made for a wait, as one
+ * event, when it has one: the user acted on the goal themselves.
+ */
+function withoutGoalWaitMark(
+  thread: OrchestrationThread,
+  command: Pick<OrchestrationCommand, "commandId"> & {
+    readonly threadId: ThreadId;
+    readonly createdAt: string;
+  },
+): PlannedOrchestrationEvent[] {
+  const goal = thread.goal;
+  if (goal?.pausedForWait !== true) return [];
+  const { pausedForWait: _mark, ...unmarked } = goal;
+  return [
+    {
+      ...withEventBase({
+        aggregateKind: "thread",
+        aggregateId: command.threadId,
+        occurredAt: command.createdAt,
+        commandId: command.commandId,
+        metadata: {},
+      }),
+      type: "thread.goal-state-set",
+      payload: { threadId: command.threadId, goal: unmarked, updatedAt: command.createdAt },
+    },
   ];
 }
 
@@ -5424,53 +5454,113 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // Resume on a moved thread whose agent hasn't been given the
       // conversation yet: no provider call, the goal waits for the message
       // that gives it (docs/design/fleet.md, Part 3e, (a)).
+      // The user's own pause, resume or edit stands: a pause Threadlines made
+      // for a wait is theirs now, never undone when the wait ends.
+      const unmarked = withoutGoalWaitMark(goalThread, command);
       const movedResume = decideMovedGoalResume(
         goalThread,
         command,
         childEventBase(command, command.createdAt),
       );
       if (movedResume !== null) {
-        return yield* planChildThreadDecision(command.type, movedResume);
+        const moved = yield* planChildThreadDecision(command.type, movedResume);
+        return [...unmarked, ...(Array.isArray(moved) ? moved : [moved])];
       }
-      return {
-        ...withEventBase({
-          aggregateKind: "thread",
-          aggregateId: command.threadId,
-          occurredAt: command.createdAt,
-          commandId: command.commandId,
-          metadata: {},
-        }),
-        type: "thread.goal-set-requested",
-        payload: {
-          threadId: command.threadId,
-          ...(command.objective !== undefined ? { objective: command.objective } : {}),
-          ...(command.status !== undefined ? { status: command.status } : {}),
-          ...(command.tokenBudget !== undefined ? { tokenBudget: command.tokenBudget } : {}),
-          createdAt: command.createdAt,
+      return [
+        ...unmarked,
+        {
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+            metadata: {},
+          }),
+          type: "thread.goal-set-requested",
+          payload: {
+            threadId: command.threadId,
+            ...(command.objective !== undefined ? { objective: command.objective } : {}),
+            ...(command.status !== undefined ? { status: command.status } : {}),
+            ...(command.tokenBudget !== undefined ? { tokenBudget: command.tokenBudget } : {}),
+            createdAt: command.createdAt,
+          },
         },
-      };
+      ];
     }
 
     case "thread.goal.clear": {
-      yield* requireThread({
+      const clearedThread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
-      return {
-        ...withEventBase({
+      return [
+        // Nothing resumes a goal the user cleared, whatever the provider says first.
+        ...withoutGoalWaitMark(clearedThread, command),
+        {
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+            metadata: {},
+          }),
+          type: "thread.goal-clear-requested",
+          payload: {
+            threadId: command.threadId,
+            createdAt: command.createdAt,
+          },
+        },
+      ];
+    }
+
+    // The goal pauses while the thread waits on a card or on threads it
+    // started, and resumes when that wait ends (docs/design/goal-wait-pause.md).
+    case "thread.goal.wait.sync": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const goal = thread.goal;
+      const step = goalWaitStep({
+        goal,
+        waiting: goalWaitOf(thread, command.scheduleAnswerWaiting) !== null,
+        turnStarting: thread.session?.status === "starting",
+      });
+      if (step === null || goal === null) {
+        return [];
+      }
+      const base = () =>
+        withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
           occurredAt: command.createdAt,
           commandId: command.commandId,
           metadata: {},
-        }),
-        type: "thread.goal-clear-requested",
-        payload: {
-          threadId: command.threadId,
-          createdAt: command.createdAt,
+        });
+      const { pausedForWait: _mark, ...unmarkedGoal } = goal;
+      return [
+        {
+          ...base(),
+          type: "thread.goal-state-set",
+          payload: {
+            threadId: command.threadId,
+            goal: step === "pause" ? { ...goal, pausedForWait: true as const } : unmarkedGoal,
+            updatedAt: command.createdAt,
+          },
         },
-      };
+        {
+          ...base(),
+          type: "thread.goal-set-requested",
+          payload: {
+            threadId: command.threadId,
+            status: step === "pause" ? ("paused" as const) : ("active" as const),
+            origin: "automatic" as const,
+            createdAt: command.createdAt,
+          },
+        },
+      ];
     }
 
     case "thread.check-backs.set": {
@@ -5536,11 +5626,21 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.goal.state.set": {
-      yield* requireThread({
+      const goalThread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
+      // A pause Threadlines made for a wait stays marked through the
+      // provider's reports while the goal is active or paused; a goal that
+      // ended or hit a limit is the provider's, and loses it.
+      const { pausedForWait: _reported, ...reported } = command.goal ?? {};
+      const goal =
+        command.goal === null
+          ? null
+          : keepsGoalWaitMark(goalThread.goal, command.goal)
+            ? { ...command.goal, pausedForWait: true as const }
+            : (reported as typeof command.goal);
       return {
         ...withEventBase({
           aggregateKind: "thread",
@@ -5552,7 +5652,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "thread.goal-state-set",
         payload: {
           threadId: command.threadId,
-          goal: command.goal,
+          goal,
           updatedAt: command.createdAt,
         },
       };

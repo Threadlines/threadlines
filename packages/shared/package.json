@@ -431,6 +431,10 @@
       "types": "./src/childThreads.ts",
       "import": "./src/childThreads.ts"
     },
+    "./goalWaitPause": {
+      "types": "./src/goalWaitPause.ts",
+      "import": "./src/goalWaitPause.ts"
+    },
     "./projectLead": {
       "types": "./src/projectLead.ts",
       "import": "./src/projectLead.ts"

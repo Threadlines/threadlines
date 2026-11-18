@@ -125,6 +125,7 @@ const ProviderSetThreadGoalServiceInput = Schema.Struct({
   tokenBudget: Schema.optional(Schema.NullOr(NonNegativeInt)),
   modelSelection: Schema.optional(ModelSelection),
   context: Schema.optional(Schema.String),
+  origin: Schema.optional(Schema.Literals(["user", "automatic"])),
 });
 const ProviderClearThreadGoalServiceInput = Schema.Struct({
   threadId: ThreadId,
@@ -2347,7 +2348,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       }
       const goal = yield* routed.adapter.setThreadGoal({
         threadId: routed.threadId,
-        origin: "user",
+        origin: input.origin ?? "user",
         ...(input.objective !== undefined ? { objective: input.objective } : {}),
         ...(input.status !== undefined ? { status: input.status } : {}),
         ...(input.tokenBudget !== undefined ? { tokenBudget: input.tokenBudget } : {}),

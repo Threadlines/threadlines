@@ -273,6 +273,8 @@ export interface ProviderServiceShape {
     /** What the agent reads ahead of the goal's work (a lead chat's role).
      *  See `ProviderSetThreadGoalInput.context`. */
     readonly context?: string;
+    /** Who asked; the user when absent. See `ProviderSetThreadGoalInput.origin`. */
+    readonly origin?: "user" | "automatic";
   }) => Effect.Effect<RuntimeThreadGoalSnapshot, ProviderServiceError>;
 
   /**

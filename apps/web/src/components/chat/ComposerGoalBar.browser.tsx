@@ -5,6 +5,8 @@ import { page } from "vite-plus/test/browser";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
+import { goalWaitPauseLabel } from "@threadlines/shared/goalWaitPause";
+
 import { ComposerGoalBar, threadGoalControls } from "./ComposerGoalBar";
 
 const goal = (overrides: Partial<OrchestrationThreadGoal>): OrchestrationThreadGoal => ({
@@ -23,6 +25,7 @@ const renderBar = (input: {
   readonly driver: string;
   readonly goal: OrchestrationThreadGoal | null;
   readonly editorOpen?: boolean;
+  readonly waitLabel?: string | null;
 }) => {
   const controls = threadGoalControls(ProviderDriverKind.make(input.driver));
   if (controls === null) throw new Error(`${input.driver} has no goals`);
@@ -30,6 +33,7 @@ const renderBar = (input: {
   render(
     <ComposerGoalBar
       goal={input.goal}
+      waitLabel={input.waitLabel ?? null}
       controls={controls}
       editorOpen={input.editorOpen ?? false}
       isDispatching={false}
@@ -62,6 +66,20 @@ describe("ComposerGoalBar", () => {
     await page.getByRole("textbox").fill("Make the build pass");
     await page.getByRole("button", { name: "Set goal" }).click();
     expect(onSetGoal).toHaveBeenCalledWith({ objective: "Make the build pass" });
+  });
+
+  it("says why Threadlines paused a goal while its thread waits, and still offers Resume", async () => {
+    renderBar({
+      driver: "codex",
+      goal: goal({ status: "paused", pausedForWait: true }),
+      waitLabel: goalWaitPauseLabel({ pendingChildApproval: true, awaitedChildThreadCount: 0 }),
+    });
+    await expect.element(page.getByText("Paused until you answer")).toBeVisible();
+    await expect.element(page.getByRole("button", { name: "Resume goal" })).toBeVisible();
+    // After Start, the threads it started are what it waits on.
+    expect(goalWaitPauseLabel({ awaitedChildThreadCount: 1 })).toBe(
+      "Paused while its threads work",
+    );
   });
 
   it("keeps Codex's tokens, budget and pause", async () => {

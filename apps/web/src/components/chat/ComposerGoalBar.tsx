@@ -58,6 +58,8 @@ export function formatGoalChecks(checks: number): string {
 
 interface ComposerGoalBarProps {
   readonly goal: OrchestrationThreadGoal | null;
+  /** Why Threadlines paused the goal while the thread waits; null when it didn't. */
+  readonly waitLabel?: string | null;
   readonly controls: ThreadGoalControls;
   readonly editorOpen: boolean;
   readonly isDispatching: boolean;
@@ -124,6 +126,7 @@ function parseTokenBudgetDraft(draft: string): number | null | undefined {
  */
 export function ComposerGoalBar({
   goal,
+  waitLabel = null,
   controls,
   editorOpen,
   isDispatching,
@@ -187,6 +190,11 @@ export function ComposerGoalBar({
       >
         {goal.objective}
       </button>
+      {waitLabel !== null ? (
+        <span className="shrink-0 text-muted-foreground" data-goal-wait-label="true">
+          {waitLabel}
+        </span>
+      ) : null}
       <span className="shrink-0 tabular-nums text-muted-foreground">
         {controls.progress === "checks" ? (
           formatGoalChecks(goal.checks ?? 0)

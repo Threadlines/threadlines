@@ -2126,6 +2126,12 @@ export const OrchestrationThreadGoal = Schema.Struct({
   checks: Schema.optional(NonNegativeInt),
   /** Claude: the evaluator's latest reason (not met yet, or why it is done). */
   lastCheck: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * Threadlines paused it while the thread waits on a card or on threads it
+   * started, and resumes it when that wait ends (docs/design/goal-wait-pause.md).
+   * The user's own pause, resume or clear, and a goal that ends, take it away.
+   */
+  pausedForWait: Schema.optional(Schema.Literal(true)),
 });
 export type OrchestrationThreadGoal = typeof OrchestrationThreadGoal.Type;
 
@@ -4327,6 +4333,21 @@ const ThreadCheckBacksSetCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/**
+ * Server-internal: bring the thread's goal in line with what the thread waits
+ * on (docs/design/goal-wait-pause.md). The decider pauses an active goal while
+ * the thread waits, and resumes one it paused when the wait is over; anything
+ * else is a no-op. `scheduleAnswerWaiting`: a card asks the user about its
+ * agent's scheduled-task change, which the scheduler holds, not the thread.
+ */
+const ThreadGoalWaitSyncCommand = Schema.Struct({
+  type: Schema.Literal("thread.goal.wait.sync"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  scheduleAnswerWaiting: Schema.Boolean,
+  createdAt: IsoDateTime,
+});
+
 /** Provider-internal: record provider-reported goal state (null when the
  *  provider cleared it). Emitted by runtime ingestion off `goal.updated` /
  *  `goal.cleared` events. */
@@ -5784,6 +5805,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadGoalSetCommand,
   ThreadGoalClearCommand,
   ThreadGoalStateSetCommand,
+  ThreadGoalWaitSyncCommand,
   ThreadMessageUserRecordCommand,
   ThreadMessageAssistantDeltaCommand,
   ThreadMessageAssistantCompleteCommand,
@@ -6747,6 +6769,8 @@ export const ThreadGoalSetRequestedPayload = Schema.Struct({
   objective: Schema.optional(TrimmedNonEmptyString),
   status: Schema.optional(ThreadGoalStatus),
   tokenBudget: Schema.optional(Schema.NullOr(NonNegativeInt)),
+  /** Threadlines paused or resumed it for a wait, not the user (`thread.goal.wait.sync`). */
+  origin: Schema.optional(Schema.Literal("automatic")),
   createdAt: IsoDateTime,
 });
 

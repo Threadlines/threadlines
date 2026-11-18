@@ -7,6 +7,7 @@ import {
 } from "../Services/OrchestrationReactor.ts";
 import { CheckpointReactor } from "../Services/CheckpointReactor.ts";
 import { ChildThreadReactor } from "../Services/ChildThreadReactor.ts";
+import { GoalWaitReactor } from "../Services/GoalWaitReactor.ts";
 import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
 import { ThreadDeletionReactor } from "../Services/ThreadDeletionReactor.ts";
@@ -16,6 +17,7 @@ export const makeOrchestrationReactor = Effect.gen(function* () {
   const providerRuntimeIngestion = yield* ProviderRuntimeIngestionService;
   const providerCommandReactor = yield* ProviderCommandReactor;
   const childThreadReactor = yield* ChildThreadReactor;
+  const goalWaitReactor = yield* GoalWaitReactor;
   const checkpointReactor = yield* CheckpointReactor;
   const threadDeletionReactor = yield* ThreadDeletionReactor;
   const threadDiffStatBaselineReactor = yield* ThreadDiffStatBaselineReactor;
@@ -25,6 +27,7 @@ export const makeOrchestrationReactor = Effect.gen(function* () {
     yield* providerCommandReactor.start();
     // After the sessions the previous process left are settled.
     yield* childThreadReactor.start();
+    yield* goalWaitReactor.start();
     yield* checkpointReactor.start();
     yield* threadDeletionReactor.start();
     yield* threadDiffStatBaselineReactor.start();

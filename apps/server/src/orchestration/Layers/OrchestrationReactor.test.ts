@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { CheckpointReactor } from "../Services/CheckpointReactor.ts";
 import { ChildThreadReactor } from "../Services/ChildThreadReactor.ts";
+import { GoalWaitReactor } from "../Services/GoalWaitReactor.ts";
 import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
 import { ThreadDeletionReactor } from "../Services/ThreadDeletionReactor.ts";
@@ -24,7 +25,7 @@ describe("OrchestrationReactor", () => {
     runtime = null;
   });
 
-  it("starts provider ingestion, provider command, child thread, checkpoint, thread deletion, and diff-stat baseline reactors", async () => {
+  it("starts provider ingestion, provider command, child thread, goal wait, checkpoint, thread deletion, and diff-stat baseline reactors", async () => {
     const started: string[] = [];
 
     runtime = ManagedRuntime.make(
@@ -53,6 +54,15 @@ describe("OrchestrationReactor", () => {
           Layer.succeed(ChildThreadReactor, {
             start: () => {
               started.push("child-thread-reactor");
+              return Effect.void;
+            },
+            drain: Effect.void,
+          }),
+        ),
+        Layer.provideMerge(
+          Layer.succeed(GoalWaitReactor, {
+            start: () => {
+              started.push("goal-wait-reactor");
               return Effect.void;
             },
             drain: Effect.void,
@@ -96,6 +106,7 @@ describe("OrchestrationReactor", () => {
       "provider-runtime-ingestion",
       "provider-command-reactor",
       "child-thread-reactor",
+      "goal-wait-reactor",
       "checkpoint-reactor",
       "thread-deletion-reactor",
       "thread-diffstat-baseline-reactor",
