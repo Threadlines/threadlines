@@ -2142,8 +2142,10 @@ describe("ChatView (full app): moving a thread to another computer", () => {
       const rows = Array.from(
         document.querySelectorAll<HTMLElement>('[data-testid^="move-threads-row-"]'),
       ).map((row) => row.dataset.testid);
-      expect(rows).toEqual([
-        `move-threads-row-${THREAD_ID}`,
+      // The two children are listed in the order this app received them,
+      // which two streams race to set, so only their place under it is fixed.
+      expect(rows[0]).toBe(`move-threads-row-${THREAD_ID}`);
+      expect(rows.slice(1).toSorted()).toEqual([
         `move-threads-row-${fixTestsId}`,
         `move-threads-row-${reviewId}`,
       ]);
