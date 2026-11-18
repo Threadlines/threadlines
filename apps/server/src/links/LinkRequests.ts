@@ -82,6 +82,8 @@ import {
   childReasoningRefusal,
 } from "../orchestration/childThreadAgents.ts";
 import { clampLaunchToCeiling, movingChildRefusal } from "../orchestration/childThreadDecisions.ts";
+import { turnBeingStopped } from "../orchestration/decider.ts";
+import { NOT_THE_LINKS_THREAD } from "../orchestration/linkFence.ts";
 import {
   type ChildDelivery,
   type ChildDeliveryRequest,
@@ -578,6 +580,16 @@ const make = Effect.gen(function* () {
             );
       }),
     );
+
+  /** Whether `error` is the engine refusing a command for `detail` (now, or this command id before). */
+  const refusedFor = (error: unknown, detail: string) => {
+    const tagged = error as { readonly _tag?: string; readonly detail?: string };
+    return (
+      (tagged._tag === "OrchestrationCommandInvariantError" ||
+        tagged._tag === "OrchestrationCommandPreviouslyRejectedError") &&
+      (tagged.detail ?? "").includes(detail)
+    );
+  };
 
   /** A dispatch the asking computer must hear failed, so it tries again. */
   const mustDispatch = (command: OrchestrationCommand, what: string) =>
@@ -1245,40 +1257,80 @@ const make = Effect.gen(function* () {
    * didn't take), not a replay of the first. The stop names the link
    * (`byLink`), so the decider refuses it when the thread stopped being the
    * link's after it was read here (its asker took it back, Part 3f, (g)):
-   * that refusal is an answer (`not_yours`), not a failure. `asLink: false`
-   * is this computer's own stop, of a turn it found the link's request
-   * started.
+   * that refusal is an answer (`not_yours`). Any other refusal fails, as any
+   * failed stop does, so the asker keeps the stop and tries again.
    */
-  const stopIfWorking = (
-    deviceId: string,
-    thread: OrchestrationThread,
-    retry?: string,
-    options: { readonly asLink?: boolean } = {},
-  ) =>
+  const stopIfWorking = (deviceId: string, thread: OrchestrationThread, retry?: string) =>
     Effect.gen(function* () {
       if (!isWorking(thread)) return "not_running" as const;
-      const command: OrchestrationCommand = {
-        type: "thread.session.stop",
-        commandId: CommandId.make(
-          `server:link-stop:${deviceId}:${thread.id}:${turnKeyOf(thread)}${
-            retry === undefined ? "" : `:retry:${retry}`
-          }`,
-        ),
-        threadId: thread.id,
-        ...(options.asLink === false ? {} : { byLink: deviceId }),
-        createdAt: yield* nowIso,
-      };
-      if (options.asLink === false) {
-        yield* mustDispatch(command, "stop that thread");
-        return "stopped" as const;
+      return yield* engine
+        .dispatch({
+          type: "thread.session.stop",
+          commandId: CommandId.make(
+            `server:link-stop:${deviceId}:${thread.id}:${turnKeyOf(thread)}${
+              retry === undefined ? "" : `:retry:${retry}`
+            }`,
+          ),
+          threadId: thread.id,
+          byLink: deviceId,
+          createdAt: yield* nowIso,
+        })
+        .pipe(
+          Effect.as("stopped" as const),
+          Effect.catch((error) =>
+            refusedFor(error, NOT_THE_LINKS_THREAD)
+              ? Effect.succeed("not_yours" as const)
+              : Effect.logInfo("link requests could not stop that thread", {
+                  detail: String(error),
+                }).pipe(
+                  Effect.andThen(
+                    Effect.fail(peerError(`${ownLabel()} couldn't stop that thread.`)),
+                  ),
+                ),
+          ),
+        );
+    });
+
+  /**
+   * Stops the turn `row`'s own message started in `threadId`, if that turn
+   * is still running and still the newest started there (read from the
+   * thread's turn starts: the ledger has no turn id while it runs). The stop
+   * names that turn (`expectedTurnId`), so should the turn end and another
+   * (the user's) begin before it lands, the decider refuses it, and this
+   * looks again. Fails when it can't tell or the stop isn't recorded.
+   */
+  const stopRequestTurn = (deviceId: string, threadId: ThreadId, row: LinkRequestRow) =>
+    Effect.gen(function* () {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const current = yield* readThreadOrFail(threadId);
+        if (current === undefined || !isRunning(current)) return;
+        const starts = yield* readTurnStarts(threadId);
+        const newest = [...starts].reduce<readonly [string, number] | null>(
+          (last, entry) => (last === null || entry[1] > last[1] ? entry : last),
+          null,
+        );
+        const ownTurn =
+          (row.turnId !== null && current.latestTurn?.turnId === row.turnId) ||
+          (row.messageId !== null && newest?.[0] === row.messageId);
+        if (!ownTurn) return;
+        const expectedTurnId = turnBeingStopped(current) ?? null;
+        const stopped = yield* dispatchUnlessRefused(
+          {
+            type: "thread.session.stop",
+            commandId: linkCommandId(
+              deviceId,
+              row.requestId,
+              `release-stop:${expectedTurnId ?? "none"}:${attempt}`,
+            ),
+            threadId,
+            expectedTurnId,
+            createdAt: yield* nowIso,
+          },
+          "stop the turn the request started",
+        );
+        if (stopped === "ok") return;
       }
-      const stopped = yield* dispatchUnlessRefused(command, "stop that thread");
-      if (stopped === "ok") return "stopped" as const;
-      // Refused: either no longer the link's, or for a reason a retry won't change.
-      const now = yield* readThreadOrFail(thread.id);
-      return now !== undefined && now.remoteOrigin?.linkDeviceId === deviceId
-        ? ("not_running" as const)
-        : ("not_yours" as const);
+      return yield* peerError(`${ownLabel()} couldn't stop the turn the request started.`);
     });
 
   /**
@@ -1363,6 +1415,9 @@ const make = Effect.gen(function* () {
             const found = yield* readRequest(deviceId, listed.requestId);
             if (Option.isNone(found) || isTerminalLinkRequest(found.value)) return;
             const row = found.value;
+            // Its own turn is stopped while the request is still open, so a
+            // retry after anything that fails here decides it again.
+            yield* stopRequestTurn(deviceId, threadId, row);
             // Ended, not published: the asker's copy of its thread moved away,
             // and closeForThread below marks the report delivered.
             yield* ledger
@@ -1392,19 +1447,6 @@ const make = Effect.gen(function* () {
                 "take back the message of the thread that moved here",
               );
             }
-            // Only the turn this request's own message started, still the
-            // newest started here: any later one is this computer's user's.
-            const current = yield* readThreadOrFail(threadId);
-            if (current === undefined || !isRunning(current)) return;
-            const starts = yield* readTurnStarts(threadId);
-            const newest = [...starts].reduce<readonly [string, number] | null>(
-              (last, entry) => (last === null || entry[1] > last[1] ? entry : last),
-              null,
-            );
-            const ownTurn =
-              (row.turnId !== null && current.latestTurn?.turnId === row.turnId) ||
-              (row.messageId !== null && newest?.[0] === row.messageId);
-            if (ownTurn) yield* stopIfWorking(deviceId, current, undefined, { asLink: false });
           }),
         );
       }

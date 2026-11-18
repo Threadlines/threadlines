@@ -1718,3 +1718,40 @@ describe("decider for a link's thread its asker took back (Part 3f, (g))", () =>
     expect(taken.events[0]?.payload).toMatchObject({ reason: "cancelled" });
   });
 });
+
+describe("decider: a stop meant for one turn", () => {
+  const turn = (turnId: string) => ({
+    latestTurn: {
+      turnId: TurnId.make(turnId),
+      state: "running" as const,
+      requestedAt: at(1),
+      startedAt: at(1),
+      completedAt: null,
+      assistantMessageId: null,
+    },
+    session: {
+      threadId: CHILD,
+      status: "running" as const,
+      providerName: "codex",
+      runtimeMode: "auto" as const,
+      activeTurnId: TurnId.make(turnId),
+      lastError: null,
+      updatedAt: at(1),
+    },
+  });
+  const stop = (expectedTurnId: string | null) => ({
+    type: "thread.session.stop" as const,
+    commandId: CommandId.make(`stop-${expectedTurnId}`),
+    threadId: CHILD,
+    expectedTurnId: expectedTurnId === null ? null : TurnId.make(expectedTurnId),
+    createdAt: at(10),
+  });
+
+  it("never ends the turn that began after it was decided", async () => {
+    // The link's turn ended and the user's began before the stop landed.
+    const usersTurn = readModel([thread(CHILD, turn("user-turn"))]);
+    expect(await refused(usersTurn, stop("link-turn"))).toBe(true);
+    expect(await refused(usersTurn, stop(null))).toBe(true);
+    expect((await run(usersTurn, stop("user-turn"))).events.length).toBeGreaterThan(0);
+  });
+});

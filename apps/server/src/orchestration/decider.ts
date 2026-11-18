@@ -1228,7 +1228,10 @@ const decideWaitEndOnStop = Effect.fn("decideWaitEndOnStop")(function* (
 });
 
 /** The turn a Stop is for: the one running now, if any. */
-function turnBeingStopped(thread: OrchestrationThread): TurnId | undefined {
+/** Why a stop meant for one turn is refused: the thread is at another one. */
+export const STOP_TURN_MOVED_ON = "The turn it meant to stop isn't the one running now.";
+
+export function turnBeingStopped(thread: OrchestrationThread): TurnId | undefined {
   return (
     thread.session?.activeTurnId ??
     (thread.latestTurn?.state === "running" ? thread.latestTurn.turnId : undefined) ??
@@ -4895,6 +4898,16 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: NOT_THE_LINKS_THREAD,
+        });
+      }
+      // A stop meant for one turn never ends the next.
+      if (
+        command.expectedTurnId !== undefined &&
+        (turnBeingStopped(thread) ?? null) !== command.expectedTurnId
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: STOP_TURN_MOVED_ON,
         });
       }
       const base = () =>

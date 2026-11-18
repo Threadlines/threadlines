@@ -4332,6 +4332,12 @@ const ThreadSessionStopCommand = Schema.Struct({
    * by a request that was read before that.
    */
   byLink: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * Server only: the turn it means to stop (null: no turn has started yet).
+   * Refused when the thread is at another turn by then, so a stop decided
+   * for one turn never ends the next one, which may be the user's.
+   */
+  expectedTurnId: Schema.optional(Schema.NullOr(TurnId)),
   createdAt: IsoDateTime,
 });
 

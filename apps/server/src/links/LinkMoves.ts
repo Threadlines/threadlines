@@ -2516,14 +2516,15 @@ const make = Effect.gen(function* () {
    * are let go by the link again (LinkRequests.releaseThread), so a request
    * that arrived between their release and the import ends too, and its
    * message is taken back. Read from the projection, so a restart in between
-   * finishes it.
+   * finishes it. One that fails leaves the move unsettled (`importing`), so
+   * the sweep tries the whole of it again before it settles.
    */
   const releaseAdopted = (row: LinkMoveRow) =>
     Effect.gen(function* () {
       const adopted = yield* threadRows.listAdoptedChildIds({ parentThreadId: row.threadId });
       for (const threadId of adopted) yield* requests.releaseThread(row.linkDeviceId, threadId);
     }).pipe(
-      Effect.catch((error) =>
+      Effect.tapError((error) =>
         Effect.logWarning("a moved thread's adopted threads couldn't be released by their link", {
           threadId: row.threadId,
           detail: String(error),

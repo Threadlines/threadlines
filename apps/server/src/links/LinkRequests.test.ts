@@ -49,6 +49,7 @@ import {
   type ProjectionSnapshotQueryShape,
 } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { PersistenceSqlError } from "../persistence/Errors.ts";
+import { OrchestrationCommandInvariantError } from "../orchestration/Errors.ts";
 import {
   ThreadBootstrap,
   type ThreadBootstrapShape,
@@ -1650,7 +1651,7 @@ it.layer(NodeServices.layer)("LinkRequests", (it) => {
         const before = stopsFor(yield* computer.events, threadId);
 
         const late = yield* bootReadingStale(computer, threadId, stale);
-        yield* late.stopThread(link(), threadId);
+        assert.equal((yield* late.stopThread(link(), threadId)).status, "not_yours");
         yield* late.wrapThread(link(), { threadId, override: { state: "done", at: AT } });
         yield* late.ack(link(), { reportId: "send-1:report", delivered: true });
         assert.equal(stopsFor(yield* computer.events, threadId), before);
@@ -1671,8 +1672,19 @@ it.layer(NodeServices.layer)("LinkRequests", (it) => {
         yield* userTurnRunning(asked, first.threadId, "turn-asked");
         assert.isNull((yield* asked.request("request-1")).turnId);
         const before = stopsFor(yield* asked.events, first.threadId);
-        yield* first.service.releaseThread(DEVICE, first.threadId);
+        // The stop names the turn it means, so it can never end the next one.
+        const stops: Array<unknown> = [];
+        const recording = yield* asked.boot({
+          engine: {
+            dispatch: (command) => {
+              if (command.type === "thread.session.stop") stops.push(command.expectedTurnId);
+              return asked.engine.dispatch(command);
+            },
+          },
+        });
+        yield* recording.releaseThread(DEVICE, first.threadId);
         assert.equal(stopsFor(yield* asked.events, first.threadId), before + 1);
+        assert.deepEqual(stops, ["turn-asked"]);
 
         // The user started a turn here since: that one runs on.
         const mine = yield* makeComputer();
@@ -1697,6 +1709,66 @@ it.layer(NodeServices.layer)("LinkRequests", (it) => {
         yield* second.service.releaseThread(DEVICE, second.threadId);
         assert.equal(stopsFor(yield* mine.events, second.threadId), mineBefore);
         assert.equal((yield* mine.request("request-1")).status, "cancelled");
+      }),
+  );
+
+  it.effect(
+    "release decides its stop before it ends the request, so a retry decides it again",
+    () =>
+      Effect.gen(function* () {
+        const computer = yield* makeComputer();
+        yield* computer.addLink(DEVICE, "allowed", "active", WINDOWS);
+        const { threadId } = yield* startedChild(computer, "request-1");
+        yield* userTurnRunning(computer, threadId, "turn-asked");
+        let unreadable = true;
+        const service = yield* computer.boot({
+          snapshots: {
+            getThreadDetailById: (id: ThreadId) =>
+              unreadable
+                ? Effect.fail(
+                    new PersistenceSqlError({ operation: "getThreadDetailById", detail: "busy" }),
+                  )
+                : computer.snapshots.getThreadDetailById(id),
+          },
+        });
+        const before = stopsFor(yield* computer.events, threadId);
+        yield* Effect.flip(service.releaseThread(DEVICE, threadId));
+        // Still open: nothing was decided.
+        assert.notEqual((yield* computer.request("request-1")).status, "cancelled");
+        unreadable = false;
+        yield* service.releaseThread(DEVICE, threadId);
+        assert.equal(stopsFor(yield* computer.events, threadId), before + 1);
+        assert.equal((yield* computer.request("request-1")).status, "cancelled");
+      }),
+  );
+
+  it.effect(
+    "a link's stop refused for any reason but ownership fails, so the asker keeps it and tries again",
+    () =>
+      Effect.gen(function* () {
+        const computer = yield* makeComputer();
+        yield* computer.addLink(DEVICE, "allowed", "active", WINDOWS);
+        const { threadId } = yield* startedChild(computer, "request-1");
+        yield* userTurnRunning(computer, threadId, "turn-asked");
+        // Frozen for a move, say: the stop is refused, and the thread is still the link's.
+        const frozen = yield* computer.boot({
+          engine: {
+            dispatch: (command) =>
+              command.type === "thread.session.stop"
+                ? Effect.fail(
+                    new OrchestrationCommandInvariantError({
+                      commandType: command.type,
+                      detail: "This thread is moving to Linux box.",
+                    }),
+                  )
+                : computer.engine.dispatch(command),
+          },
+        });
+        yield* Effect.flip(frozen.stopThread(link(), threadId));
+        yield* Effect.flip(
+          frozen.cancel(link(), ChildRequestId.make("request-1"), { stopThread: true }),
+        );
+        assert.equal((yield* computer.request("request-1")).cleanup, "stop");
       }),
   );
 
