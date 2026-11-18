@@ -287,6 +287,14 @@ export const PeerDescriptor = Schema.Struct({
    */
   moveLinkLineage: Schema.optional(Schema.Boolean),
   /**
+   * Takes back the threads a moving thread's agent started here over this
+   * link as that thread's children (docs/design/fleet.md, Part 3f, (g)):
+   * PeerMoveManifest's `startedThere`, and `adopted` on the committed answer.
+   * Absent: an older server, which keeps them apart, so it is never sent the
+   * list.
+   */
+  moveAdoptsChildren: Schema.optional(Schema.Boolean),
+  /**
    * Says how the caller's threads here are filed (`filing` on `thread` watch
    * events) and takes `peer.thread.wrap`. Absent: an older server that can't.
    */
@@ -738,6 +746,24 @@ export const PeerMoveFamily = Schema.Struct({
 });
 export type PeerMoveFamily = typeof PeerMoveFamily.Type;
 
+/** At most this many threads a manifest names as started on the receiving computer. */
+export const PEER_MOVE_MAX_STARTED_THERE = 50;
+
+/**
+ * A thread the moving thread's agent started on the receiving computer
+ * (docs/design/fleet.md, Part 3f, (g), "Also when the child's computer is
+ * the target"), by the receiving computer's own id, as the sending
+ * computer's records hold it (RemoteChildThread), with the user's Wrap up or
+ * Reopen given on the sending computer. Only to a computer that says
+ * `moveAdoptsChildren`. The receiving computer takes back only the threads
+ * its own records also name as started over this link by this thread.
+ */
+export const PeerMoveStartedThere = Schema.Struct({
+  threadId: ThreadId,
+  override: Schema.optional(OrchestrationThreadDoneOverride),
+});
+export type PeerMoveStartedThere = typeof PeerMoveStartedThere.Type;
+
 /**
  * A thread moving across the link its work came over (docs/design/fleet.md,
  * Part 3f, (h)), with the sending computer's ids. Only to a computer that
@@ -795,6 +821,8 @@ export const PeerMoveScratchManifest = Schema.Struct({
   family: Schema.optional(PeerMoveFamily),
   /** It moves across the link its work came over: see PeerMoveLinkLineage. */
   linkLineage: Schema.optional(PeerMoveLinkLineage),
+  /** The threads its agent started there: see PeerMoveStartedThere. */
+  startedThere: Schema.optional(Schema.Array(PeerMoveStartedThere)),
 });
 export type PeerMoveScratchManifest = typeof PeerMoveScratchManifest.Type;
 
@@ -846,6 +874,8 @@ export const PeerMoveGitManifest = Schema.Struct({
   family: Schema.optional(PeerMoveFamily),
   /** It moves across the link its work came over: see PeerMoveLinkLineage. */
   linkLineage: Schema.optional(PeerMoveLinkLineage),
+  /** The threads its agent started there: see PeerMoveStartedThere. */
+  startedThere: Schema.optional(Schema.Array(PeerMoveStartedThere)),
 });
 export type PeerMoveGitManifest = typeof PeerMoveGitManifest.Type;
 
@@ -930,6 +960,13 @@ export const PeerMoveState = Schema.Struct({
    * own here, or an older server.
    */
   keptParent: Schema.optional(Schema.Literal(true)),
+  /**
+   * `committed`: the threads named in `startedThere` that became its
+   * children here, by their ids here (the calling computer's
+   * RemoteChildThread ids). Read from this computer's threads, so a retried
+   * call answers the same. Absent: none, or an older server.
+   */
+  adopted: Schema.optional(Schema.Array(ThreadId)),
 });
 export type PeerMoveState = typeof PeerMoveState.Type;
 

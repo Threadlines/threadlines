@@ -19,6 +19,7 @@ import {
   describeMoveBatchProgress,
   describeMoveCandidate,
   describePendingMove,
+  describeRemoteChildrenStaying,
   describeThreadMoveLanding,
   describeThreadMoveProgress,
   describeThreadMoveSession,
@@ -452,6 +453,35 @@ describe("picking where and with whom", () => {
     expect(
       describeMoveCandidate(chat, EnvironmentId.make("environment-windows")).notes,
     ).toBeUndefined();
+  });
+});
+
+describe("describeRemoteChildrenStaying", () => {
+  const MAC = "environment-mac-mini";
+  const children = [
+    { label: "Mac mini", title: "Fix tests", environmentId: MAC },
+    { label: "Windows PC", title: "Review", environmentId: "environment-windows" },
+    { label: "Windows PC", title: "Docs", environmentId: "environment-windows" },
+  ];
+
+  it("says the ones on the computer it moves to become its threads there again, when it takes them", () => {
+    expect(
+      describeRemoteChildrenStaying(children, {
+        label: "Mac mini",
+        environmentId: MAC,
+        adoptsChildren: true,
+      }),
+    ).toEqual([
+      "'Fix tests' on Mac mini becomes its thread there again.",
+      "2 threads it started on Windows PC stay there. It can't reach them from Mac mini.",
+    ]);
+    // An older Mac mini keeps them apart: today's words.
+    expect(
+      describeRemoteChildrenStaying(children, { label: "Mac mini", environmentId: MAC }),
+    ).toEqual([
+      "1 thread it started on Mac mini stays there. It can't reach it from Mac mini.",
+      "2 threads it started on Windows PC stay there. It can't reach them from Mac mini.",
+    ]);
   });
 });
 

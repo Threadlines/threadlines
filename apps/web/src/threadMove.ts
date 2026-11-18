@@ -1014,17 +1014,44 @@ export function describeFamilyComing(count: number): string {
 /**
  * "2 threads it started on Windows PC stay there. It can't reach them from
  * Mac mini.", one line per computer, for the threads its agent started on
- * other computers.
+ * other computers. Those on the computer it moves to, when that computer
+ * takes them back (`adoptsChildren`), become its threads there again
+ * (docs/design/fleet.md, Part 3f, (g)): "'Fix tests' on Mac mini becomes its
+ * thread there again."
  */
 export function describeRemoteChildrenStaying(
-  remoteChildren: ReadonlyArray<{ readonly label: string; readonly title: string }>,
-  targetLabel: string,
+  remoteChildren: ReadonlyArray<{
+    readonly label: string;
+    readonly title: string;
+    readonly environmentId?: string | undefined;
+  }>,
+  target: {
+    readonly label: string;
+    readonly environmentId: string;
+    readonly adoptsChildren?: true | undefined;
+  },
 ): string[] {
-  const byLabel = new Map<string, number>();
-  for (const child of remoteChildren) byLabel.set(child.label, (byLabel.get(child.label) ?? 0) + 1);
-  return [...byLabel].map(([label, count]) =>
-    count === 1
-      ? `1 thread it started on ${label} stays there. It can't reach it from ${targetLabel}.`
-      : `${count} threads it started on ${label} stay there. It can't reach them from ${targetLabel}.`,
+  const back = remoteChildren.filter(
+    (child) => target.adoptsChildren === true && child.environmentId === target.environmentId,
   );
+  const byLabel = new Map<string, number>();
+  for (const child of remoteChildren) {
+    if (back.includes(child)) continue;
+    byLabel.set(child.label, (byLabel.get(child.label) ?? 0) + 1);
+  }
+  const [only] = back;
+  return [
+    ...(back.length === 0
+      ? []
+      : [
+          back.length === 1 && only !== undefined
+            ? `'${only.title}' on ${target.label} becomes its thread there again.`
+            : `${back.length} threads it started on ${target.label} become its threads there again.`,
+        ]),
+    ...[...byLabel].map(([label, count]) =>
+      count === 1
+        ? `1 thread it started on ${label} stays there. It can't reach it from ${target.label}.`
+        : `${count} threads it started on ${label} stay there. It can't reach them from ${target.label}.`,
+    ),
+  ];
 }

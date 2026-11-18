@@ -28,6 +28,7 @@ import type {
   PeerMoveRoom,
   PeerMoveRoomParticipant,
   PeerMoveScratchManifest,
+  PeerMoveStartedThere,
   PeerMoveThreadState,
   ThreadId,
   ThreadImportMessage,
@@ -502,6 +503,8 @@ export interface MoveExportInput {
   readonly familyThreadIds?: ReadonlySet<string> | undefined;
   /** It moves across the link its work came over (Part 3f, (h)): see PeerMoveLinkLineage. */
   readonly linkLineage?: PeerMoveLinkLineage | undefined;
+  /** The threads its agent started on the target (Part 3f, (g)): see PeerMoveStartedThere. */
+  readonly startedThere?: ReadonlyArray<PeerMoveStartedThere> | undefined;
 }
 
 /**
@@ -742,6 +745,9 @@ export function writeMoveExport(
       ...session.manifest,
       ...(input.family !== undefined ? { family: input.family } : {}),
       ...(input.linkLineage !== undefined ? { linkLineage: input.linkLineage } : {}),
+      ...(input.startedThere !== undefined && input.startedThere.length > 0
+        ? { startedThere: [...input.startedThere] }
+        : {}),
     };
     yield* writeManifest(dir, manifest);
     return manifest;
@@ -825,6 +831,9 @@ function writeSharerExport(
       ...session.manifest,
       ...(input.family !== undefined ? { family: input.family } : {}),
       ...(input.linkLineage !== undefined ? { linkLineage: input.linkLineage } : {}),
+      ...(input.startedThere !== undefined && input.startedThere.length > 0
+        ? { startedThere: [...input.startedThere] }
+        : {}),
     };
     yield* writeManifest(input.dir, manifest);
     return manifest;
@@ -1147,6 +1156,7 @@ export interface ScratchExportInput {
   readonly family?: PeerMoveFamily | undefined;
   readonly familyThreadIds?: ReadonlySet<string> | undefined;
   readonly linkLineage?: PeerMoveLinkLineage | undefined;
+  readonly startedThere?: ReadonlyArray<PeerMoveStartedThere> | undefined;
 }
 
 /**
@@ -1262,6 +1272,9 @@ export function writeScratchExport(
       ...session.manifest,
       ...(input.family !== undefined ? { family: input.family } : {}),
       ...(input.linkLineage !== undefined ? { linkLineage: input.linkLineage } : {}),
+      ...(input.startedThere !== undefined && input.startedThere.length > 0
+        ? { startedThere: [...input.startedThere] }
+        : {}),
     };
     yield* writeManifest(input.dir, manifest);
     return manifest;

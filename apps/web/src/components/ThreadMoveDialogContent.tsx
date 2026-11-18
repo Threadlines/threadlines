@@ -416,7 +416,7 @@ export function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThread
                 (family.children.length > 0 || family.remoteChildren.length > 0) ? (
                   <FamilyField
                     family={family}
-                    targetLabel={target.label}
+                    target={target}
                     staying={staying}
                     comingCount={coming.length}
                     disabled={starting}
@@ -686,18 +686,18 @@ function ChildMoveField({
  * A parent's family (docs/design/fleet.md, Part 3f, (g)): its threads here,
  * ticked to come along, each unticked or unable to come staying here as its
  * own thread; and the threads its agent started on other computers, which
- * stay there.
+ * stay there (or, on the computer it moves to, may become its threads again).
  */
 function FamilyField({
   family,
-  targetLabel,
+  target,
   staying,
   comingCount,
   disabled,
   onToggle,
 }: {
   readonly family: NonNullable<ThreadMovePreview["family"]>;
-  readonly targetLabel: string;
+  readonly target: ThreadMoveTargetPreview;
   readonly staying: ReadonlySet<ThreadId>;
   readonly comingCount: number;
   readonly disabled: boolean;
@@ -759,7 +759,7 @@ function FamilyField({
           </ul>
         </>
       ) : null}
-      {describeRemoteChildrenStaying(family.remoteChildren, targetLabel).map((line) => (
+      {describeRemoteChildrenStaying(family.remoteChildren, target).map((line) => (
         <p key={line} className={LINE_CLASS} data-testid="thread-move-family-remote">
           {line}
         </p>

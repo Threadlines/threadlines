@@ -10,10 +10,11 @@ import type {
   OrchestrationThread,
   PeerMoveFamily,
   PeerMoveLinkLineage,
+  PeerMoveStartedThere,
   ThreadMoveFamily,
   ThreadMoveFamilyId,
 } from "@threadlines/contracts";
-import { PEER_MOVE_FAMILY_MAX_STAYED } from "@threadlines/contracts";
+import { PEER_MOVE_FAMILY_MAX_STAYED, PEER_MOVE_MAX_STARTED_THERE } from "@threadlines/contracts";
 
 import { checkoutOf, type ThreadMoveView } from "../orchestration/threadMoveDecisions.ts";
 
@@ -151,4 +152,23 @@ export function linkLineageOf(
     return undefined;
   }
   return { remoteParent: { threadId: parent.id, title: parent.title } };
+}
+
+/**
+ * The threads `thread`'s agent started on `targetEnvironmentId`, as its
+ * records here hold them, for a move there (docs/design/fleet.md, Part 3f,
+ * (g)): each with the user's Wrap up or Reopen given here. That computer
+ * takes back as the thread's children only those its own records also name.
+ */
+export function startedThereOf(
+  thread: Pick<OrchestrationThread, "childRequests">,
+  targetEnvironmentId: EnvironmentId,
+): ReadonlyArray<PeerMoveStartedThere> {
+  return (thread.childRequests.remoteChildren ?? [])
+    .filter((child) => child.environmentId === targetEnvironmentId)
+    .slice(0, PEER_MOVE_MAX_STARTED_THERE)
+    .map((child) => ({
+      threadId: child.threadId,
+      ...(child.override !== undefined ? { override: child.override } : {}),
+    }));
 }

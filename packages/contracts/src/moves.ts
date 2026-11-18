@@ -128,6 +128,12 @@ export const ThreadMoveTargetPreview = Schema.Struct({
    * Windows PC to move it on its own."). Absent: it can.
    */
   aloneRefusal: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * A thread that started threads on this computer: they become its threads
+   * there again (ThreadMovePreview.family.remoteChildren with this
+   * `environmentId`). Absent: they stay apart there, as an older server keeps them.
+   */
+  adoptsChildren: Schema.optional(Schema.Literal(true)),
 });
 export type ThreadMoveTargetPreview = typeof ThreadMoveTargetPreview.Type;
 
@@ -199,7 +205,12 @@ export const ThreadMovePreview = Schema.Struct({
         }),
       ),
       remoteChildren: Schema.Array(
-        Schema.Struct({ label: TrimmedNonEmptyString, title: TrimmedNonEmptyString }),
+        Schema.Struct({
+          label: TrimmedNonEmptyString,
+          title: TrimmedNonEmptyString,
+          /** The computer it is on. Absent from an older server. */
+          environmentId: Schema.optional(EnvironmentId),
+        }),
       ),
     }),
   ),

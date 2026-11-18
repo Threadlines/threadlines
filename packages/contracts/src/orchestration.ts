@@ -665,8 +665,11 @@ export type ThreadMessageOrigin = typeof ThreadMessageOrigin.Type;
 /**
  * A thread another computer's agent started here over a computer link
  * (docs/design/fleet.md, "Fence"): which link asked, and the asking thread on
- * that computer. Set once, at creation, and only by the server's link
- * handler; such a thread gets no Threadlines agent tools.
+ * that computer. Set at creation, and only by the server's link handler; such
+ * a thread gets no Threadlines agent tools. Cleared in one case only, by this
+ * computer: the asking thread moved here over that same link and took the
+ * thread back as its own child (ThreadAdoptedFromLink, docs/design/fleet.md,
+ * Part 3f, (g)).
  */
 export const ThreadRemoteOrigin = Schema.Struct({
   /** The asking computer's device id on this server (its link). */
@@ -683,6 +686,22 @@ export const ThreadRemoteOrigin = Schema.Struct({
   threadTitle: TrimmedNonEmptyString,
 });
 export type ThreadRemoteOrigin = typeof ThreadRemoteOrigin.Type;
+
+/**
+ * A thread another computer's agent started here that became a child here
+ * when that agent's thread moved here over the same link (docs/design/
+ * fleet.md, Part 3f, (g), "Also when the child's computer is the target"):
+ * the computer it was started from. `fenced`: it still works behind the link
+ * fence (no Threadlines tools, and it moves only back to `environmentId`)
+ * until a message the user sends here starts a turn in it. Written only by
+ * this computer, in the decision that imports the parent.
+ */
+export const ThreadAdoptedFromLink = Schema.Struct({
+  environmentId: EnvironmentId,
+  label: TrimmedNonEmptyString,
+  fenced: Schema.Boolean,
+});
+export type ThreadAdoptedFromLink = typeof ThreadAdoptedFromLink.Type;
 
 /**
  * A thread a scheduled task's run started (docs/design/fleet.md, Part 6):
@@ -890,6 +909,12 @@ export const ThreadMoveTakes = Schema.Struct({
    * there, and a thread another computer's agent started, going back home.
    */
   linkLineage: Schema.optional(Schema.Literal(true)),
+  /**
+   * A thread that started threads on that computer (docs/design/fleet.md,
+   * Part 3f, (g)): those threads become its children there again
+   * (PeerMoveManifest.startedThere).
+   */
+  adoptsChildren: Schema.optional(Schema.Literal(true)),
 });
 export type ThreadMoveTakes = typeof ThreadMoveTakes.Type;
 
@@ -3045,6 +3070,8 @@ export const OrchestrationThread = Schema.Struct({
   ),
   /** See OrchestrationThreadShell.remoteOrigin. */
   remoteOrigin: Schema.optional(Schema.NullOr(ThreadRemoteOrigin)),
+  /** See OrchestrationThreadShell.adoptedFromLink. */
+  adoptedFromLink: Schema.optional(Schema.NullOr(ThreadAdoptedFromLink)),
   /** See OrchestrationThreadShell.scheduledRun. */
   scheduledRun: Schema.optional(Schema.NullOr(ThreadScheduledRun)),
   /** See OrchestrationThreadShell.worktreeOrigin. */
@@ -3307,6 +3334,12 @@ export const OrchestrationThreadShell = Schema.Struct({
    * by <thread> on <computer>". Absent or null: started here.
    */
   remoteOrigin: Schema.optional(Schema.NullOr(ThreadRemoteOrigin)),
+  /**
+   * Started over a link, then taken back as a child here by the thread that
+   * started it, when that thread moved here (ThreadAdoptedFromLink). Absent
+   * or null: neither.
+   */
+  adoptedFromLink: Schema.optional(Schema.NullOr(ThreadAdoptedFromLink)),
   /** Moving, or moved, to a linked computer: see OrchestrationThreadMove. Absent or null: neither. */
   move: Schema.optional(Schema.NullOr(OrchestrationThreadMove)),
   /** A move waiting for the thread to be free: see ThreadPendingMove. Absent or null: none. */
@@ -3732,6 +3765,8 @@ const ThreadDoneOverrideSetCommand = Schema.Struct({
    * `at` unless it was seen later, in the same step.
    */
   fromLinkedComputer: Schema.optional(Schema.Boolean),
+  /** See ThreadSessionStopCommand.byLink. */
+  byLink: Schema.optional(TrimmedNonEmptyString),
 });
 
 /**
@@ -4290,6 +4325,20 @@ const ThreadSessionStopCommand = Schema.Struct({
   type: Schema.Literal("thread.session.stop"),
   commandId: CommandId,
   threadId: ThreadId,
+  /**
+   * Server only: a linked computer asked for it over its link (this device
+   * id). It does nothing unless the thread is still that link's
+   * (`remoteOrigin`), decided atomically with the stop, so a thread its
+   * asker took back as a child here (ThreadAdoptedFromLink) is never stopped
+   * by a request that was read before that.
+   */
+  byLink: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * Server only: the turn it means to stop (null: no turn has started yet).
+   * Refused when the thread is at another turn by then, so a stop decided
+   * for one turn never ends the next one, which may be the user's.
+   */
+  expectedTurnId: Schema.optional(Schema.NullOr(TurnId)),
   createdAt: IsoDateTime,
 });
 
@@ -5250,6 +5299,8 @@ const ThreadRemoteHandedBackRecordCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   turnId: TurnId,
+  /** See ThreadSessionStopCommand.byLink. */
+  byLink: Schema.optional(TrimmedNonEmptyString),
   createdAt: IsoDateTime,
 });
 
@@ -5474,6 +5525,12 @@ const ThreadMoveCompleteCommand = Schema.Struct({
    * child on that computer. Absent: it is a thread of its own there.
    */
   keptParent: Schema.optional(Schema.Literal(true)),
+  /**
+   * Threads its agent started on that computer that became its children
+   * there (PeerMoveState.adopted, docs/design/fleet.md, Part 3f, (g)): the
+   * copy here stops keeping them as children on that computer. Absent: none.
+   */
+  adopted: Schema.optional(Schema.Array(ThreadId)),
   createdAt: IsoDateTime,
 });
 
@@ -5652,6 +5709,27 @@ const ThreadImportCommand = Schema.Struct({
       parentThreadId: ThreadId,
       completesMoveOf: Schema.optional(
         Schema.Struct({ threadId: ThreadId, deviceId: TrimmedNonEmptyString }),
+      ),
+    }),
+  ),
+  /**
+   * Threads here that the moving thread's agent started over this link while
+   * it was on the computer it came from (docs/design/fleet.md, Part 3f, (g),
+   * "Also when the child's computer is the target"), each with the user's
+   * Wrap up or Reopen given there that this computer may not have yet. Each
+   * that still qualifies becomes the arriving thread's child, fenced until
+   * the user here sends it a message; one that doesn't stays as it is, and
+   * the "Moved here" line says why. `linkDeviceId` is the link the move came
+   * over, from the transfer's own record; only a top-level import has it.
+   */
+  adoptsChildren: Schema.optional(
+    Schema.Struct({
+      linkDeviceId: TrimmedNonEmptyString,
+      children: Schema.Array(
+        Schema.Struct({
+          threadId: ThreadId,
+          override: Schema.optional(OrchestrationThreadDoneOverride),
+        }),
       ),
     }),
   ),
@@ -6430,6 +6508,19 @@ export const ThreadParentAttachmentSetPayload = Schema.Struct({
   attached: Schema.Boolean,
   attachmentEpoch: NonNegativeInt,
   at: IsoDateTime,
+  /**
+   * A thread another computer's agent started here becomes the child of
+   * that agent's thread, which moved here (ThreadAdoptedFromLink): its
+   * parent is `parentThreadId` (no parent turn), it is no longer that
+   * computer's (`remoteOrigin` goes), and it works fenced until the user
+   * here sends it a message. Absent: only the attachment changes.
+   */
+  adoptedBy: Schema.optional(
+    Schema.Struct({
+      parentThreadId: ThreadId,
+      fromLink: ThreadAdoptedFromLink,
+    }),
+  ),
 });
 
 export const ThreadRoomContextRecordedPayload = Schema.Struct({

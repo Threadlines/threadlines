@@ -192,6 +192,18 @@ export interface LinkRequestRepositoryShape {
     readonly requestId: ChildRequestId;
     readonly cleanup: LinkRequestCleanup;
   }) => Effect.Effect<void, LinkRequestRepositoryError>;
+  /**
+   * A thread a link started stops being that link's (it became a child here
+   * of the thread that asked, docs/design/fleet.md, Part 3f, (g)): every
+   * report about it counts as delivered, so no watch offers one again, and
+   * nothing a cancel or an unlink still owes it is left to do. Call once its
+   * open requests ended; safe to call again.
+   */
+  readonly closeForThread: (input: {
+    readonly linkDeviceId: string;
+    readonly threadId: ThreadId;
+    readonly now: string;
+  }) => Effect.Effect<void, LinkRequestRepositoryError>;
   /** The asking computer recorded the report. */
   readonly markDelivered: (input: {
     readonly linkDeviceId: string;
@@ -475,6 +487,24 @@ const make = Effect.gen(function* () {
         AND cleanup = ${input.cleanup}
     `.pipe(Effect.asVoid, wrap("finishCleanup"));
 
+  const closeForThread: LinkRequestRepositoryShape["closeForThread"] = (input) =>
+    Effect.gen(function* () {
+      yield* sql`
+        UPDATE link_requests SET delivered_at = ${input.now}
+        WHERE link_device_id = ${input.linkDeviceId} AND thread_id = ${input.threadId}
+          AND report_id IS NOT NULL AND delivered_at IS NULL
+      `;
+      yield* sql`
+        UPDATE link_requests SET cleanup = NULL
+        WHERE link_device_id = ${input.linkDeviceId} AND thread_id = ${input.threadId}
+          AND cleanup IS NOT NULL
+      `;
+      yield* sql`
+        DELETE FROM link_thread_stops_owed
+        WHERE link_device_id = ${input.linkDeviceId} AND thread_id = ${input.threadId}
+      `;
+    }).pipe(sql.withTransaction, wrap("closeForThread"));
+
   const markDelivered: LinkRequestRepositoryShape["markDelivered"] = (input) =>
     sql`
       UPDATE link_requests SET delivered_at = ${input.now}
@@ -575,6 +605,7 @@ const make = Effect.gen(function* () {
     cancel,
     listCleanup,
     finishCleanup,
+    closeForThread,
     markDelivered,
     prune,
   });

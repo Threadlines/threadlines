@@ -85,7 +85,12 @@ import {
   type ThreadMoveView,
 } from "../orchestration/threadMoveDecisions.ts";
 import { ThreadActionGate } from "./ThreadActionGate.ts";
-import { familyManifestOf, familyThreadIdsOf, linkLineageOf } from "./familyMove.ts";
+import {
+  familyManifestOf,
+  familyThreadIdsOf,
+  linkLineageOf,
+  startedThereOf,
+} from "./familyMove.ts";
 import {
   cantComeWords,
   movingRoomAgents,
@@ -290,6 +295,7 @@ export function takesOf(peer: PeerDescriptor): ThreadMoveTakes {
     ...(peer.moveOutsideWork === true ? { outsideWork: true as const } : {}),
     ...(peer.moveFamilies === true ? { families: true as const } : {}),
     ...(peer.moveLinkLineage === true ? { linkLineage: true as const } : {}),
+    ...(peer.moveAdoptsChildren === true ? { adoptsChildren: true as const } : {}),
   };
 }
 
@@ -533,6 +539,8 @@ export function targetPreviewOf(
           aloneRefusal: `Update Threadlines on ${peer.label} to move it without the thread that started it.`,
         }
       : {}),
+    // The threads it started there become its threads there again (Part 3f, (g)).
+    ...(peer.moveAdoptsChildren === true ? { adoptsChildren: true as const } : {}),
   };
 }
 
@@ -987,6 +995,7 @@ const make = Effect.gen(function* () {
       const remoteChildren = (thread.childRequests.remoteChildren ?? []).map((entry) => ({
         label: entry.label,
         title: entry.title,
+        environmentId: entry.environmentId,
       }));
       if (parent === undefined && children.length === 0 && remoteChildren.length === 0) {
         return undefined;
@@ -1342,6 +1351,7 @@ const make = Effect.gen(function* () {
           readonly kind: "complete";
           readonly movedThreadId: ThreadId;
           readonly keptParent: boolean;
+          readonly adopted: ReadonlyArray<ThreadId>;
         },
   ) =>
     Effect.gen(function* () {
@@ -1386,6 +1396,7 @@ const make = Effect.gen(function* () {
                 transferId,
                 movedThreadId: step.movedThreadId,
                 ...(step.keptParent ? { keptParent: true as const } : {}),
+                ...(step.adopted.length > 0 ? { adopted: [...step.adopted] } : {}),
                 createdAt,
               },
       );
@@ -1527,6 +1538,8 @@ const make = Effect.gen(function* () {
           movedThreadId: state.threadId,
           // That computer's own word, over the link: it kept the parent (Part 3f, (h)).
           keptParent: state.keptParent === true,
+          // And which threads it started there are its children there now (Part 3f, (g)).
+          adopted: state.adopted ?? [],
         });
       } else if (state.status === "aborted") {
         yield* dispatchStep(threadId, transferId, {
@@ -1628,6 +1641,12 @@ const make = Effect.gen(function* () {
         takes?.linkLineage === true && moveFamily === undefined
           ? linkLineageOf(threads, detail.value, targetEnvironmentId)
           : undefined;
+      // The threads it started there, for a computer that takes them back
+      // as its children (Part 3f, (g)).
+      const startedThere =
+        takes?.adoptsChildren === true
+          ? startedThereOf(detail.value, targetEnvironmentId)
+          : undefined;
       const source = {
         environmentId: descriptor.environmentId,
         environmentLabel: environment.currentLabel(),
@@ -1648,6 +1667,7 @@ const make = Effect.gen(function* () {
           family,
           familyThreadIds,
           linkLineage,
+          startedThere,
         });
       }
       const { place, checkout } = yield* whereFrom(detail.value, project.workspaceRoot);
@@ -1658,6 +1678,7 @@ const make = Effect.gen(function* () {
         family,
         familyThreadIds,
         linkLineage,
+        startedThere,
         git,
         checkout,
         transferId,
