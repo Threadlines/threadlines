@@ -48,6 +48,16 @@ export function forgetThreadScroll(threadKey: string): void {
   anchors.delete(threadKey);
 }
 
+/**
+ * Keeps only the threads in `activeThreadKeys`: after a full thread list
+ * arrives (a reconnect), threads archived or deleted meanwhile are forgotten.
+ */
+export function forgetThreadScrollExcept(activeThreadKeys: ReadonlySet<string>): void {
+  for (const threadKey of anchors.keys()) {
+    if (!activeThreadKeys.has(threadKey)) anchors.delete(threadKey);
+  }
+}
+
 /** Where a list is, as the anchor is read from it. */
 export interface ListPlace {
   /** The list is at its end (LegendList's own `isAtEnd`). */

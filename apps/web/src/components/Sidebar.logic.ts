@@ -483,7 +483,8 @@ export function isNeedsUserStatus(status: ThreadStatusPill | null): boolean {
 
 /**
  * Whether opening the thread now shows the user something new: an answer or a
- * failure they haven't seen since `seenAt`, or a status that needs them. The
+ * failure they haven't seen since `seenAt`, or an approval or question waiting
+ * on them (a failure already seen is not news). The
  * chat then opens at the end, not where it was left (threadScrollMemory),
  * since opening it marks it seen.
  */
@@ -494,7 +495,9 @@ export function threadHasNewsForUser(
   return (
     hasUnseenCompletionSince(thread, seenAt) ||
     hasUnseenSessionFailureSince(thread, seenAt) ||
-    isNeedsUserStatus(resolveThreadStatusPill({ thread: { ...thread, lastVisitedAt: undefined } }))
+    isWaitingOnUserStatus(
+      resolveThreadStatusPill({ thread: { ...thread, lastVisitedAt: undefined } }),
+    )
   );
 }
 
@@ -1735,9 +1738,14 @@ const NEEDS_YOU_NOW: ReadonlySet<ThreadStatusPill["label"]> = new Set([
   "Awaiting Input",
 ]);
 
+/** An approval or a question waits on the user (a failure, seen or not, is not one). */
+export function isWaitingOnUserStatus(status: ThreadStatusPill | null): boolean {
+  return status !== null && NEEDS_YOU_NOW.has(status.label);
+}
+
 /** A child that is waiting on the user's answer: never folded out of sight. */
 export function isChildThreadNeedingYou(entry: InboxFamilyStatus): boolean {
-  return !entry.isDone && entry.status !== null && NEEDS_YOU_NOW.has(entry.status.label);
+  return !entry.isDone && isWaitingOnUserStatus(entry.status);
 }
 
 const IN_FLIGHT: ReadonlySet<ThreadStatusPill["label"]> = new Set([

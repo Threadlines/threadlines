@@ -1281,15 +1281,21 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   // anchor, or nothing at the end. Nothing is written while scrolling.
   const scrollMemoryKey = scrollMemory?.threadKey ?? null;
   useLayoutEffect(() => {
-    const list = listRef.current;
-    if (scrollMemoryKey === null || !legendListReady || list === null) return;
+    if (scrollMemoryKey === null) return;
     return () => {
-      // Layout cleanups run before the list leaves the page, so its rows are
-      // still drawn. The offset is read from the screen, not from the list's
-      // positions, which leave out its header and padding.
-      const state = list.getState?.();
-      const node = list.getScrollableNode?.();
-      if (!state || !(node instanceof HTMLElement)) return;
+      // Runs once, when the timeline is left. The list is read then, not
+      // when this ran: a pinned list is rebuilt when a turn settles, and an
+      // emptied chat has none. Layout cleanups run before the list leaves
+      // the page, so its rows are still drawn. The offset is read from the
+      // screen, not from the list's positions, which leave out its header
+      // and padding.
+      const list = listRef.current;
+      const state = list?.getState?.();
+      const node = list?.getScrollableNode?.();
+      if (!state || !(node instanceof HTMLElement)) {
+        forgetThreadScroll(scrollMemoryKey);
+        return;
+      }
       const firstRowKey = (state.data[state.start] as MessagesTimelineRow | undefined)?.id;
       const rowElement =
         firstRowKey === undefined
@@ -1307,7 +1313,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         }),
       );
     };
-  }, [legendListReady, listRef, scrollMemoryKey]);
+  }, [listRef, scrollMemoryKey]);
 
   const assignLegendListRef = useCallback(
     (instance: LegendListRef | null) => {

@@ -117,6 +117,7 @@ import { BrowserWsRpcHarness, type NormalizedWsRpcRequestBody } from "../../test
 
 import { DEFAULT_CLIENT_SETTINGS } from "@threadlines/contracts/settings";
 import { resetTestPage } from "../lib/testPage.browser-harness";
+import { forgetThreadScrollExcept } from "../threadScrollMemory";
 
 export const THREAD_ID = "thread-browser-test" as ThreadId;
 export const THREAD_TITLE = "Browser test thread";
@@ -3204,6 +3205,8 @@ export async function dispatchInputKey(
   await waitForLayout();
 }
 
+const NO_THREADS: ReadonlySet<string> = new Set();
+
 export async function mountChatView(options: {
   viewport: ViewportSpec;
   snapshot: OrchestrationReadModel;
@@ -3214,6 +3217,8 @@ export async function mountChatView(options: {
   /** Mount under StrictMode, as main.tsx does, so mount-time effect cleanups run. */
   strictMode?: boolean;
 }): Promise<MountedChatView> {
+  // Where chats were left lives for the page; each mount starts with none.
+  forgetThreadScrollExcept(NO_THREADS);
   fixture = buildFixture(options.snapshot);
   options.configureFixture?.(fixture);
   customWsRpcResolver = options.resolveRpc ?? null;
@@ -3258,6 +3263,7 @@ export async function mountChatView(options: {
   const cleanup = async () => {
     customWsRpcResolver = null;
     await finishCleanupStep("React's unmount", screen.unmount());
+    forgetThreadScrollExcept(NO_THREADS);
     host.remove();
     await finishCleanupStep("the animation frames after unmount", waitForLayout());
   };

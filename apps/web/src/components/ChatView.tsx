@@ -4943,13 +4943,11 @@ export default function ChatView(props: ChatViewProps) {
     setPullRequestDialogState(null);
     clearTimelineStickFrames();
     programmaticStickToBottomSuppressUntilRef.current = 0;
-    // A chat opening where it was left is not at its end; the list's scroll
-    // reports say where it is from there.
-    isAtEndRef.current = readThreadScroll(routeThreadKey) === null;
+    isAtEndRef.current = true;
     showScrollDebouncer.current.cancel();
     setShowScrollToBottom(false);
     setIsTimelineScrolledFarFromEnd(false);
-  }, [activeThread?.id, clearTimelineStickFrames, routeThreadKey]);
+  }, [activeThread?.id, clearTimelineStickFrames]);
 
   useEffect(() => {
     return () => {

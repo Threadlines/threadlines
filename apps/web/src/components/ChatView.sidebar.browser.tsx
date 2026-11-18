@@ -38,7 +38,6 @@ import {
 import { getClientSettings, updateSettings } from "../hooks/useSettings";
 import { nextFrames, readAfterEachPaint } from "../lib/frameProbe.browser-harness";
 import { isMacPlatform } from "../lib/utils";
-import { forgetThreadScroll } from "../threadScrollMemory";
 import { useThreadSelectionStore } from "../threadSelectionStore";
 import { useUiStateStore } from "../uiStateStore";
 
@@ -242,10 +241,8 @@ describe("ChatView (full app): sidebar", () => {
   // again, from its first drawn frame; left at the end, or with news, it
   // opens at the end; a find target wins.
   const SCROLL_OTHER_THREAD = "thread-scroll-memory-other" as ThreadId;
-  // The memory lives for the page, across tests: each one starts and ends clean.
-  const mountTwoThreads = async () => {
-    forgetThreadScroll(THREAD_KEY);
-    const mounted = await mountChatView({
+  const mountTwoThreads = () =>
+    mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: addThreadToSnapshot(
         createSnapshotForTargetUser({
@@ -255,14 +252,6 @@ describe("ChatView (full app): sidebar", () => {
         SCROLL_OTHER_THREAD,
       ),
     });
-    return {
-      ...mounted,
-      cleanup: async () => {
-        forgetThreadScroll(THREAD_KEY);
-        await mounted.cleanup();
-      },
-    };
-  };
   const chatList = () => document.querySelector<HTMLElement>('[data-chat-messages-list="true"]');
   const listAtEnd = (list: HTMLElement) =>
     list.scrollTop + list.clientHeight >= list.scrollHeight - 2;
@@ -327,6 +316,8 @@ describe("ChatView (full app): sidebar", () => {
       stop();
       expect(frames.every((frame) => frame.top !== null && !frame.atEnd)).toBe(true);
       expect(Math.abs(frames.at(-1)!.top! - left.top)).toBeLessThanOrEqual(2);
+      // Above the end, the way back down is offered as usual.
+      await expect.element(page.getByRole("button", { name: "Scroll to bottom" })).toBeVisible();
     } finally {
       await mounted.cleanup();
     }

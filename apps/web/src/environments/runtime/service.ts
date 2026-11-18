@@ -121,7 +121,7 @@ import {
   deriveLogicalProjectKeyFromSettings,
   derivePhysicalProjectKey,
 } from "../../logicalProject";
-import { forgetThreadScroll } from "../../threadScrollMemory";
+import { forgetThreadScroll, forgetThreadScrollExcept } from "../../threadScrollMemory";
 import { getClientSettings } from "~/hooks/useSettings";
 import { useOptimisticThreadMessagesStore } from "~/optimisticThreadMessages";
 
@@ -1236,6 +1236,7 @@ function reconcileSnapshotDerivedState() {
     draftThreadKeys: useComposerDraftStore.getState().listDraftThreadKeys(),
   });
   useTerminalStateStore.getState().removeOrphanedTerminalStates(activeThreadKeys);
+  forgetThreadScrollExcept(activeThreadKeys);
 }
 
 /**

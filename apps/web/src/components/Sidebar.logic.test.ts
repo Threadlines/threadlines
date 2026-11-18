@@ -16,6 +16,7 @@ import {
   THREAD_STATUS_DOT_CLASSES,
   resolveSeenThreadStatus,
   resolveThreadStatusPill,
+  threadHasNewsForUser,
   shouldClearThreadSelectionOnMouseDown,
   sortProjectsForSidebar,
   THREAD_JUMP_HINT_SHOW_DELAY_MS,
@@ -386,6 +387,40 @@ describe("isContextMenuPointerDown", () => {
         isMac: false,
       }),
     ).toBe(false);
+  });
+});
+
+describe("threadHasNewsForUser", () => {
+  const failed = {
+    hasActionableProposedPlan: false,
+    hasPendingApprovals: false,
+    hasPendingUserInput: false,
+    interactionMode: "default" as const,
+    latestTurn: null,
+    session: {
+      provider: ProviderDriverKind.make("codex"),
+      status: "error" as const,
+      createdAt: "2026-03-09T10:00:00.000Z",
+      updatedAt: "2026-03-09T11:00:00.000Z",
+      orchestrationStatus: "error" as const,
+      pendingBackgroundTaskCount: 0,
+    },
+  };
+
+  it("counts a failure until it is seen, and a question while it waits", () => {
+    expect(threadHasNewsForUser(failed, "2026-03-09T10:30:00.000Z")).toBe(true);
+    // Seen since it failed: the chat may open where it was left.
+    expect(threadHasNewsForUser(failed, "2026-03-09T11:30:00.000Z")).toBe(false);
+    expect(
+      threadHasNewsForUser(
+        {
+          ...failed,
+          hasPendingUserInput: true,
+          session: { ...failed.session, status: "running", orchestrationStatus: "running" },
+        },
+        "2026-03-09T11:30:00.000Z",
+      ),
+    ).toBe(true);
   });
 });
 
