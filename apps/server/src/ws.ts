@@ -98,6 +98,7 @@ import {
 } from "./orchestration/messageSentFrom.ts";
 import { RealtimeVoiceDevices } from "./orchestration/Services/RealtimeVoiceDevices.ts";
 import { coalesceLatestAggregateEvents } from "./orchestration/shellStreamCoalescing.ts";
+import { threadsArchivedWith } from "./orchestration/archivedWithParent.ts";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine.ts";
 import { ProviderCommandReactor } from "./orchestration/Services/ProviderCommandReactor.ts";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
@@ -1238,17 +1239,7 @@ const makeCoreRpcLayer = (
         readonly throughSequence: number;
       }) =>
         Effect.gen(function* () {
-          const archived = yield* orchestrationEngine.readEvents(input.fromSequenceExclusive).pipe(
-            Stream.takeWhile((event) => event.sequence <= input.throughSequence),
-            Stream.filter(
-              (event): event is Extract<OrchestrationEvent, { type: "thread.archived" }> =>
-                event.type === "thread.archived" &&
-                event.commandId === input.commandId &&
-                event.payload.threadId !== input.threadId,
-            ),
-            Stream.map((event) => event.payload.threadId),
-            Stream.runCollect,
-          );
+          const archived = yield* threadsArchivedWith(orchestrationEngine, input);
           if (archived.length === 0) {
             return;
           }
