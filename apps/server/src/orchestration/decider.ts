@@ -147,7 +147,6 @@ import { carriedBackgroundTasks } from "./sessionBackgroundTasks.ts";
 import { questionsClosedByUserMessage, unansweredResponseRefusal } from "./userInput.ts";
 import {
   isContinueTrigger,
-  latestTurnStartFor,
   RESTART_CONTINUE_MESSAGE,
   restartContinueVerdict,
   turnStartingMessage,
@@ -5367,46 +5366,27 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         });
       }
       if (verdict.kind === "note") {
-        const base = () =>
-          withEventBase({
+        return {
+          ...withEventBase({
             aggregateKind: "thread",
             aggregateId: command.threadId,
             occurredAt: command.createdAt,
             commandId: command.commandId,
-          });
-        // An outside agent's message whose turn never reached the provider
-        // (it was still starting, and no provider turn began after it was
-        // written) never reached the agent either: marked, as
-        // `thread.message.not-run` marks one, since no one can send it again.
-        const lastStart =
-          command.turnId === null ? latestTurnStartFor(thread, command.participantId) : undefined;
-        const unsent =
-          lastStart !== undefined &&
-          (thread.latestTurn === null ||
-            Date.parse(thread.latestTurn.requestedAt) < Date.parse(lastStart.createdAt))
-            ? lastStart
-            : undefined;
-        return [
-          {
-            ...base(),
-            type: "thread.activity-appended",
-            payload: {
-              threadId: command.threadId,
-              activity: {
-                id: command.activityId,
-                tone: "error",
-                kind: "provider.session.restart-interrupted",
-                summary: "Turn interrupted by a server restart",
-                payload: { detail: verdict.detail },
-                turnId: command.turnId,
-                createdAt: command.createdAt,
-              },
+          }),
+          type: "thread.activity-appended",
+          payload: {
+            threadId: command.threadId,
+            activity: {
+              id: command.activityId,
+              tone: "error",
+              kind: "provider.session.restart-interrupted",
+              summary: "Turn interrupted by a server restart",
+              payload: { detail: verdict.detail },
+              turnId: command.turnId,
+              createdAt: command.createdAt,
             },
           },
-          ...(unsent?.fromOutside !== undefined && unsent.notSent !== true
-            ? [outsideNotSentEvent(base(), command.threadId, unsent.id, command.createdAt)]
-            : []),
-        ];
+        };
       }
       return yield* decideCommandSequence({
         commands: [

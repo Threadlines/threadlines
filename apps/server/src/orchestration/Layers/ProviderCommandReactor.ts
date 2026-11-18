@@ -110,7 +110,7 @@ import { buildIndependentReviewPrompt } from "../roomReviewPrompt.ts";
 import { messageSentFromNote, previousMessageSentFrom } from "../messageSentFrom.ts";
 import { turnMessageOrigin } from "../turnOrigin.ts";
 import { agentMessageFrame, buildRoomCatchUp } from "../roomCatchUp.ts";
-import { isContinueTrigger } from "../continueTurns.ts";
+import { isContinueTrigger, latestTurnStartFor } from "../continueTurns.ts";
 
 import { pauseActiveThreadGoalForStop } from "../threadGoalLifecycle.ts";
 import { canReplaceThreadTitle } from "../threadTitle.ts";
@@ -7077,6 +7077,38 @@ const make = Effect.gen(function* () {
     "starting",
     "running",
   ]);
+  /**
+   * A restart cut off a turn the provider never took (the session was still
+   * starting): if it was for an outside agent's message, and no provider
+   * turn began after that message was written, the message never reached
+   * the agent, so it is marked (`thread.message.not-run`).
+   */
+  const markOutsideMessageCutBeforeStart = (
+    threadId: ThreadId,
+    participantId: ThreadParticipantId | null,
+  ) =>
+    Effect.gen(function* () {
+      const thread = yield* resolveThread(threadId);
+      if (thread === undefined) return;
+      const message = latestTurnStartFor(thread, participantId);
+      if (
+        message?.fromOutside === undefined ||
+        message.notSent === true ||
+        (thread.latestTurn !== null &&
+          Date.parse(thread.latestTurn.requestedAt) >= Date.parse(message.createdAt))
+      ) {
+        return;
+      }
+      yield* orchestrationEngine.dispatch({
+        type: "thread.message.not-run",
+        commandId: serverCommandId("message-not-run-restart"),
+        threadId,
+        messageId: message.id,
+        reason: "failed",
+        createdAt: yield* nowIso,
+      });
+    }).pipe(Effect.ignoreCause({ log: true }));
+
   const settleSessionsFromPreviousProcess = Effect.fn("settleSessionsFromPreviousProcess")(
     function* () {
       const snapshot = yield* projectionSnapshotQuery.getShellSnapshot();
@@ -7146,6 +7178,11 @@ const make = Effect.gen(function* () {
           continue;
         }
         const createdAt = yield* nowIso;
+        // Marked before the session is settled: a startup that dies in
+        // between finds the session still cut off and marks it again.
+        if (session.activeTurnId === null) {
+          yield* markOutsideMessageCutBeforeStart(thread.id, sessionSlotParticipantId(session));
+        }
         yield* setThreadSession({
           threadId: thread.id,
           session: {

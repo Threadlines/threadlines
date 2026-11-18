@@ -479,7 +479,12 @@ polling. A send to a working thread now waits in the thread's queue.
   `thread.message.not-run`, the server-only command a lead chat's pass that
   never ran uses too; for an outside message the decider marks it with
   `thread.continue-at-reset-skipped`, an event every client already reads as
-  "never reached the agent", so no client meets a new event.
+  "never reached the agent", so no client meets a new event. A restart marks
+  one it finds still starting before it settles the session, so a startup
+  that dies in between marks it on the next one. Honest limit: Claude reports
+  a turn started a moment before its prompt is queued, and a queued prompt is
+  written to the program a moment later; a restart in that gap leaves the
+  message unmarked.
 - **Build check.** The reactor must start the provider at the mode recorded on
   the turn-start event, not re-read the thread's.
   - Today the decider emits the thread's current mode (decider.ts:2450).

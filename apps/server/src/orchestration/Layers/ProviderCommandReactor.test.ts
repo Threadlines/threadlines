@@ -5380,6 +5380,81 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
+  it("marks an outside agent's message a restart cut off before the provider took it", async () => {
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-outside-restart");
+    const agent = {
+      connectionId: OutsideAgentConnectionId.make("connection-1"),
+      name: "Claude Code",
+    };
+    const harness = await createHarness({
+      beforeStart: (engine) =>
+        Effect.gen(function* () {
+          yield* engine.dispatch({
+            type: "project.create",
+            commandId: CommandId.make("cmd-project-outside-restart"),
+            projectId: asProjectId("project-outside-restart"),
+            title: "Project",
+            workspaceRoot: PROJECT_ROOT,
+            defaultModelSelection: null,
+            createdAt: now,
+          });
+          yield* engine.dispatch({
+            type: "thread.create",
+            commandId: CommandId.make("cmd-thread-outside-restart"),
+            threadId,
+            projectId: asProjectId("project-outside-restart"),
+            title: "Outside thread",
+            modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            runtimeMode: "approval-required",
+            branch: null,
+            worktreePath: null,
+            outsideOrigin: agent,
+            createdAt: now,
+          });
+          yield* engine.dispatch({
+            type: "thread.turn.start",
+            commandId: CommandId.make("cmd-turn-outside-restart"),
+            threadId,
+            message: {
+              messageId: asMessageId("outside-cut"),
+              role: "user",
+              text: "Make the test pass",
+              attachments: [],
+            },
+            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            runtimeMode: "approval-required",
+            fromOutside: { ...agent, access: "start", maxRuntimeMode: "approval-required" },
+            createdAt: now,
+          });
+          // The previous process died while the agent was still starting.
+          yield* engine.dispatch({
+            type: "thread.session.set",
+            commandId: CommandId.make("cmd-session-outside-restart"),
+            threadId,
+            session: {
+              threadId,
+              status: "starting",
+              providerName: "codex",
+              providerInstanceId: ProviderInstanceId.make("codex"),
+              runtimeMode: "approval-required",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: now,
+            },
+            createdAt: now,
+          });
+        }),
+    });
+    const message = async () =>
+      (await harness.readModel()).threads
+        .find((entry) => entry.id === threadId)
+        ?.messages.find((entry) => entry.id === asMessageId("outside-cut"));
+    await waitFor(async () => (await message())?.notSent === true);
+    expect(harness.sendTurn).not.toHaveBeenCalled();
+  });
+
   // A server restart mid-turn (crash, update, dev reload) leaves the session
   // row saying "running" with nothing behind it; without this the thread shows
   // "Preparing turn" forever and the only way out is deleting it.
