@@ -2468,6 +2468,8 @@ const make = Effect.gen(function* () {
    */
   const settleCarriedSession = Effect.fn("settleCarriedSession")(function* (input: {
     readonly thread: OrchestrationThread;
+    /** The room agent whose session it was; null: the thread's own agent. */
+    readonly participantId: ThreadParticipantId | null;
     readonly event: ProviderRuntimeEvent;
     readonly turnId: TurnId;
     readonly outcome: "completed" | "failed" | "interrupted";
@@ -2492,32 +2494,38 @@ const make = Effect.gen(function* () {
     if (rejected) {
       // Off the ingestion queue: ending the session waits for its process,
       // whose last events come through here.
-      yield* providerService.dropResumeCursor(input.thread.id).pipe(
-        Effect.andThen(
-          orchestrationEngine.dispatch({
-            type: "thread.native-session.fall-back",
-            commandId: providerCommandId(input.event, "native-session-fall-back"),
-            threadId: input.thread.id,
-            reason: "turn_failed",
-            ...(startedBy !== undefined ? { resendMessageId: startedBy } : {}),
-            createdAt: input.now,
-          }),
-        ),
-        Effect.catchCause((cause) =>
-          Effect.logWarning("a carried session's refused turn couldn't fall back yet", {
-            threadId: input.thread.id,
-            cause: Cause.pretty(cause),
-          }),
-        ),
-        Effect.forkDetach,
-      );
+      yield* providerService
+        .dropResumeCursor(participantSessionKey(input.thread.id, input.participantId))
+        .pipe(
+          Effect.andThen(
+            orchestrationEngine.dispatch({
+              type: "thread.native-session.fall-back",
+              commandId: providerCommandId(input.event, "native-session-fall-back"),
+              threadId: input.thread.id,
+              reason: "turn_failed",
+              ...(startedBy !== undefined ? { resendMessageId: startedBy } : {}),
+              ...(input.participantId !== null ? { participantId: input.participantId } : {}),
+              createdAt: input.now,
+            }),
+          ),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("a carried session's refused turn couldn't fall back yet", {
+              threadId: input.thread.id,
+              cause: Cause.pretty(cause),
+            }),
+          ),
+          Effect.forkDetach,
+        );
       return;
     }
     // The message whose send the session proved itself on, for a revert that takes it away.
     const messageId =
       startedBy ??
       input.thread.messages.findLast(
-        (message) => message.role === "user" && message.imported !== true,
+        (message) =>
+          message.role === "user" &&
+          message.imported !== true &&
+          (message.participantId ?? null) === input.participantId,
       )?.id;
     if (messageId === undefined) return;
     yield* orchestrationEngine.dispatch({
@@ -2526,6 +2534,7 @@ const make = Effect.gen(function* () {
       threadId: input.thread.id,
       messageId,
       nativeSession: "resumed",
+      ...(input.participantId !== null ? { participantId: input.participantId } : {}),
       createdAt: input.now,
     });
   });
@@ -3905,14 +3914,23 @@ const make = Effect.gen(function* () {
             });
           }
           // A moved thread's carried session proves itself by its first turn
-          // (docs/design/fleet.md, Part 3d).
+          // (docs/design/fleet.md, Part 3d), and so does each room agent's
+          // own (Part 3f, (i)).
+          const endedAgent = event.participantId ?? null;
+          const endedAgentSession =
+            endedAgent === null
+              ? detailedThread?.nativeSession
+              : detailedThread?.participants.find((entry) => entry.id === endedAgent)
+                  ?.nativeSession;
           if (
-            detailedThread?.nativeSession === "carried" &&
-            (event.participantId ?? null) === null &&
+            detailedThread !== undefined &&
+            detailedThread !== null &&
+            endedAgentSession === "carried" &&
             event.threadId === thread.id
           ) {
             yield* settleCarriedSession({
               thread: detailedThread,
+              participantId: endedAgent,
               event,
               turnId,
               outcome: turnOutcome,

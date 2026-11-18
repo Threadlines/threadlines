@@ -867,8 +867,30 @@ export type OrchestrationCheckBack = typeof OrchestrationCheckBack.Type;
 export const ThreadMoveTakes = Schema.Struct({
   threadState: Schema.optional(Schema.Literal(true)),
   generalChats: Schema.optional(Schema.Literal(true)),
+  /**
+   * A thread with more than one agent, its agents' sessions and records
+   * (docs/design/fleet.md, Part 3f, (i)).
+   */
+  rooms: Schema.optional(Schema.Literal(true)),
+  /**
+   * The marks outside work left on the thread's agents
+   * (OrchestrationOutsideWork), so an agent limited here is limited there.
+   */
+  outsideWork: Schema.optional(Schema.Literal(true)),
 });
 export type ThreadMoveTakes = typeof ThreadMoveTakes.Type;
+
+/**
+ * Which of the other computer's agents a room agent moves as
+ * (docs/design/fleet.md, Part 3f, (i)): one of its agents by its own
+ * instance id, or null to leave the agent out (it arrives as having left).
+ * An agent of the room not listed takes the agent that computer suggests.
+ */
+export const ThreadMoveRoomAgentChoice = Schema.Struct({
+  participantId: ThreadParticipantId,
+  agent: Schema.NullOr(ModelSelection),
+});
+export type ThreadMoveRoomAgentChoice = typeof ThreadMoveRoomAgentChoice.Type;
 
 /**
  * What a move's stop took from the thread (docs/design/fleet.md, Part 3e,
@@ -944,6 +966,8 @@ export const OrchestrationThreadMove = Schema.Struct({
   interrupted: Schema.optional(ThreadMoveInterrupted),
   /** What the other computer said it takes (ThreadMoveTakes). Absent: nothing beyond v1. */
   targetTakes: Schema.optional(ThreadMoveTakes),
+  /** A room: the agent each of its agents moves as (ThreadMoveRoomAgentChoice). */
+  roomAgents: Schema.optional(Schema.Array(ThreadMoveRoomAgentChoice)),
   /** The other computer took it: the thread there. */
   movedAway: Schema.optional(
     Schema.Struct({
@@ -1046,6 +1070,8 @@ export const ThreadPendingMove = Schema.Struct({
    * Absent: nothing beyond v1.
    */
   targetTakes: Schema.optional(ThreadMoveTakes),
+  /** A room: the agent each of its agents moves as (ThreadMoveRoomAgentChoice). */
+  roomAgents: Schema.optional(Schema.Array(ThreadMoveRoomAgentChoice)),
 });
 export type ThreadPendingMove = typeof ThreadPendingMove.Type;
 
@@ -1096,6 +1122,8 @@ export const ThreadNativeSessionFellBackPayload = Schema.Struct({
   reason: ThreadNativeSessionFellBackReason,
   /** `turn_failed`: the message the refused turn sent, sent again once on a seeded session. */
   resendMessageId: Schema.optional(MessageId),
+  /** A room agent's carried session (OrchestrationThreadParticipant.nativeSession). Absent: the thread's own agent's. */
+  participantId: Schema.optional(ThreadParticipantId),
 });
 export type ThreadNativeSessionFellBackPayload = typeof ThreadNativeSessionFellBackPayload.Type;
 
@@ -1112,6 +1140,11 @@ export const ThreadMovedFrom = Schema.Struct({
    * (docs/design/fleet.md, Part 3e). Absent: not fenced (anymore).
    */
   fenced: Schema.optional(Schema.Literal(true)),
+  /**
+   * A moved room's: the last moved message the thread's own agent's carried
+   * session saw (OrchestrationThreadParticipant.movedSeenThrough). Absent: none known.
+   */
+  seenThrough: Schema.optional(MessageId),
   /**
    * The pull request switches that were on there. They arrive off: a switch
    * acts with this computer's GitHub sign-in, so only this computer's user
@@ -2348,6 +2381,20 @@ export const OrchestrationThreadParticipant = Schema.Struct({
    * review's author, and never makes the thread a room.
    */
   guest: Schema.optional(Schema.Boolean),
+  /**
+   * It came with the thread when the thread moved here (docs/design/fleet.md,
+   * Part 3f, (i)): until its conversation is caught up here (a room context
+   * cursor), its first send carries the whole conversation, unless it
+   * reopened its carried session. Absent: it joined here.
+   */
+  movedIn: Schema.optional(Schema.Literal(true)),
+  /** Its own carried agent session, as the thread's (OrchestrationThread.nativeSession). */
+  nativeSession: Schema.optional(ThreadNativeSession),
+  /**
+   * Moved in with its carried session: the last moved message that session
+   * saw, so its first turn here is caught up on everything after it.
+   */
+  movedSeenThrough: Schema.optional(MessageId),
 });
 export type OrchestrationThreadParticipant = typeof OrchestrationThreadParticipant.Type;
 
@@ -5216,6 +5263,8 @@ const ThreadMoveStartCommand = Schema.Struct({
   queuedRequestId: Schema.optional(ThreadMoveRequestId),
   /** What the other computer just said it takes (ThreadMoveTakes). Absent: nothing beyond v1. */
   targetTakes: Schema.optional(ThreadMoveTakes),
+  /** A room: the agent each of its agents moves as, all of them. */
+  roomAgents: Schema.optional(Schema.Array(ThreadMoveRoomAgentChoice)),
   createdAt: IsoDateTime,
 });
 
@@ -5241,6 +5290,8 @@ const ThreadMoveQueueCommand = Schema.Struct({
    * was checked; all of it when it couldn't be reached. Absent: nothing beyond v1.
    */
   targetTakes: Schema.optional(ThreadMoveTakes),
+  /** A room: the agent each of its agents moves as; one not listed takes the suggestion. */
+  roomAgents: Schema.optional(Schema.Array(ThreadMoveRoomAgentChoice)),
   createdAt: IsoDateTime,
 });
 
@@ -5395,6 +5446,18 @@ export const ThreadImportMessage = Schema.Struct({
   trigger: Schema.optional(MessageTrigger),
   /** It never reached the agent there (OrchestrationMessage.notSent). */
   notSent: Schema.optional(Schema.Literal(true)),
+  /**
+   * A room's (docs/design/fleet.md, Part 3f, (i)), with the receiving
+   * computer's agent ids: the agent it was to or from, the agent that sent
+   * it to another, and the request it made or answered and how that ended.
+   * Only to a computer that takes rooms.
+   */
+  participantId: Schema.optional(Schema.NullOr(ThreadParticipantId)),
+  fromAgent: Schema.optional(RoomAgentRef),
+  requestId: Schema.optional(RoomAgentRequestId),
+  requestKind: Schema.optional(RoomAgentMessageKind),
+  requestOutcome: Schema.optional(RoomAgentRequestOutcome),
+  requestError: Schema.optional(TrimmedNonEmptyString),
   createdAt: IsoDateTime,
 });
 export type ThreadImportMessage = typeof ThreadImportMessage.Type;
@@ -5439,6 +5502,18 @@ const ThreadImportCommand = Schema.Struct({
   ),
   queuedFollowUps: Schema.optional(Schema.Array(OrchestrationQueuedFollowUp)),
   proposedPlans: Schema.optional(Schema.Array(OrchestrationProposedPlan)),
+  /**
+   * A room (docs/design/fleet.md, Part 3f, (i)): its agents with this
+   * computer's ids and agents, those that didn't come and guests already
+   * marked as having left, and the user's name for the thread's own agent.
+   */
+  participants: Schema.optional(Schema.Array(OrchestrationThreadParticipant)),
+  agentRole: Schema.optional(RoomAgentRole),
+  /**
+   * The agents outside work still limits (OrchestrationOutsideWork), with
+   * this computer's agent ids: they stay limited here until they start fresh.
+   */
+  outsideWork: Schema.optional(Schema.Array(OrchestrationOutsideWork)),
   /**
    * What the "Moved here" line says came along (`brought`) and didn't
    * (`left`), in plain words, and the message Threadlines writes for the
@@ -5499,6 +5574,8 @@ const ThreadHistorySeedDeliveredCommand = Schema.Struct({
    * the session itself held the conversation, so nothing more is owed.
    */
   nativeSession: Schema.optional(Schema.Literal("resumed")),
+  /** A room agent's carried session (OrchestrationThreadParticipant.nativeSession), only with `resumed`. */
+  participantId: Schema.optional(ThreadParticipantId),
   createdAt: IsoDateTime,
 });
 
@@ -5515,6 +5592,8 @@ const ThreadNativeSessionFallBackCommand = Schema.Struct({
   threadId: ThreadId,
   reason: ThreadNativeSessionFellBackReason,
   resendMessageId: Schema.optional(MessageId),
+  /** A room agent's carried session. Absent: the thread's own agent's. */
+  participantId: Schema.optional(ThreadParticipantId),
   createdAt: IsoDateTime,
 });
 
@@ -5783,6 +5862,8 @@ export const ThreadCreatedPayload = Schema.Struct({
   historySeedOwed: Schema.optional(Schema.Boolean),
   /** Imported with its agent's own session: see OrchestrationThread.nativeSession. */
   nativeSession: Schema.optional(Schema.Literal("carried")),
+  /** Imported with agents outside work still limits: see OrchestrationThread.outsideWork. */
+  outsideWork: Schema.optional(Schema.Array(OrchestrationOutsideWork)),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -5877,6 +5958,8 @@ export const ThreadParticipantUpdatedPayload = Schema.Struct({
   handle: Schema.optional(TrimmedNonEmptyString),
   /** A guest the user added to the thread: it becomes a member. */
   joined: Schema.optional(Schema.Literal(true)),
+  /** A moved-in agent's carried session proved itself or fell back (OrchestrationThreadParticipant.nativeSession). */
+  nativeSession: Schema.optional(ThreadNativeSession),
   updatedAt: IsoDateTime,
 });
 
@@ -6026,6 +6109,8 @@ export const ThreadMoveStartedPayload = Schema.Struct({
   interrupted: Schema.optional(ThreadMoveInterrupted),
   /** See OrchestrationThreadMove.targetTakes. */
   targetTakes: Schema.optional(ThreadMoveTakes),
+  /** See OrchestrationThreadMove.roomAgents. */
+  roomAgents: Schema.optional(Schema.Array(ThreadMoveRoomAgentChoice)),
 });
 
 export const ThreadMoveQueuedPayload = Schema.Struct({
@@ -6115,6 +6200,11 @@ export const ThreadHistorySeedDeliveredPayload = Schema.Struct({
   messageId: Schema.optional(MessageId),
   /** A carried session's turn succeeded: OrchestrationThread.nativeSession becomes `resumed`. */
   nativeSession: Schema.optional(Schema.Literal("resumed")),
+  /**
+   * A room agent's carried session proved itself: its own nativeSession
+   * becomes `resumed`, and the thread's debt is left as it is.
+   */
+  participantId: Schema.optional(ThreadParticipantId),
   updatedAt: IsoDateTime,
 });
 
@@ -6275,6 +6365,12 @@ export const ThreadMessageSentPayload = Schema.Struct({
   imported: Schema.optional(Schema.Literal(true)),
   /** See OrchestrationMessage.notSent: an imported message that never reached the agent there. */
   notSent: Schema.optional(Schema.Literal(true)),
+  /**
+   * An imported room request's end, as it ended where it was made (see
+   * OrchestrationMessage.requestOutcome); written only by a move's import.
+   */
+  requestOutcome: Schema.optional(RoomAgentRequestOutcome),
+  requestError: Schema.optional(TrimmedNonEmptyString),
   /** See OrchestrationMessage.afterMove. */
   afterMove: Schema.optional(Schema.Literal(true)),
   /** Missing means legacy behavior for events written before assistant

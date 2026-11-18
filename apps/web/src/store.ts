@@ -4102,6 +4102,35 @@ export function selectThreadByRef(
     : undefined;
 }
 
+/**
+ * Waits until `ready` holds for this app's state: something the server just
+ * made (a project, a thread) arriving over its stream a moment after the
+ * command that made it returned. True once it holds; false if it hasn't by
+ * `timeoutMs`. Open a new thread or project through this, so its page finds it.
+ */
+export function waitForAppState(
+  ready: (state: AppState) => boolean,
+  timeoutMs: number,
+): Promise<boolean> {
+  if (ready(useStore.getState())) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      unsubscribe();
+      resolve(result);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    const unsubscribe = useStore.subscribe((state) => {
+      if (ready(state)) finish(true);
+    });
+    // It may have come in between the first look and the subscription.
+    if (ready(useStore.getState())) finish(true);
+  });
+}
+
 export function selectThreadExistsByRef(
   state: AppState,
   ref: ScopedThreadRef | null | undefined,

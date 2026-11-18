@@ -1,7 +1,8 @@
 /**
  * What a thread carries when it moves (docs/design/fleet.md, Part 3e,
  * "Shared pieces"): its goal, check-backs, pull request switches, General
- * Chats folder, queued messages and plans, and which of the other computer's
+ * Chats folder, queued messages and plans, its room (Part 3f, (i)) and the
+ * marks outside work left on its agents, and which of the other computer's
  * capabilities each needs. One pure description for the three that must
  * agree: the move checks (`threadMoveRefusals`: refused or not), the dialog's
  * lines (the preview), and the export (what to pack).
@@ -12,6 +13,7 @@
  */
 import type {
   OrchestrationCheckBack,
+  OrchestrationOutsideWork,
   OrchestrationProposedPlan,
   OrchestrationQueuedFollowUp,
   OrchestrationThread,
@@ -24,6 +26,7 @@ import type {
 import { PEER_MOVE_STATE_MAX_PLANS } from "@threadlines/contracts";
 import { linkedPullRequestArmed } from "@threadlines/shared/linkedPullRequests";
 import { pullRequestSwitchesWords } from "@threadlines/shared/threadMoveProjection";
+import { isRoomThread } from "@threadlines/shared/threadParticipants";
 
 /** What a move view needs of a project to tell a General Chats thread. */
 export interface ThreadMoveCarryView {
@@ -58,12 +61,33 @@ export interface ThreadMoveCarry {
   readonly plansLeftBehind: number;
   /** (f) A plan waits for the user's Implement or Dismiss. */
   readonly planWaiting: boolean;
+  /** (i) It has more than one agent, or requests between agents still open. */
+  readonly room: boolean;
+  /** Its agents outside work still limits (OrchestrationOutsideWork). */
+  readonly outsideWork: ReadonlyArray<OrchestrationOutsideWork>;
   /** What the other computer must take for this thread to move there. */
-  readonly needs: { readonly threadState: boolean; readonly generalChats: boolean };
+  readonly needs: {
+    readonly threadState: boolean;
+    readonly generalChats: boolean;
+    readonly rooms: boolean;
+    readonly outsideWork: boolean;
+  };
 }
 
 /** Everything a current computer takes: the preview's "as if it took everything". */
-export const ALL_MOVE_TAKES: ThreadMoveTakes = { threadState: true, generalChats: true };
+export const ALL_MOVE_TAKES: ThreadMoveTakes = {
+  threadState: true,
+  generalChats: true,
+  rooms: true,
+  outsideWork: true,
+};
+
+/** A message a room agent queued for another (a hand-off or a reply): the room's chain drains it. */
+export const isRoomAgentQueued = (entry: OrchestrationQueuedFollowUp) =>
+  entry.fromAgent !== undefined &&
+  entry.fromThread === undefined &&
+  entry.fromOutside === undefined &&
+  entry.scheduledTaskId === undefined;
 
 /** A queued message the user wrote: none of an agent's, a thread's, an outside assistant's or a scheduled run's. */
 export const isUsersQueuedFollowUp = (entry: OrchestrationQueuedFollowUp) =>
@@ -153,6 +177,8 @@ export function threadMoveCarry(
   const foreignQueued = queued.filter((entry) => !isUsersQueuedFollowUp(entry));
   const proposedPlans = thread.proposedPlans.slice(-PEER_MOVE_STATE_MAX_PLANS);
   const planWaiting = waitingPlanOf(thread) !== null;
+  const room = isRoomThread(thread) || thread.agentRequests.open.length > 0;
+  const outsideWork = thread.outsideWork ?? [];
   return {
     goal,
     goalWorking: interrupted?.goalActive === true,
@@ -164,6 +190,8 @@ export function threadMoveCarry(
     proposedPlans,
     plansLeftBehind: thread.proposedPlans.length - proposedPlans.length,
     planWaiting,
+    room,
+    outsideWork,
     needs: {
       threadState:
         (goal !== null && goal.status !== "complete") ||
@@ -172,6 +200,8 @@ export function threadMoveCarry(
         queuedFollowUps.length > 0 ||
         planWaiting,
       generalChats: generalChat,
+      rooms: room,
+      outsideWork: outsideWork.length > 0,
     },
   };
 }
@@ -186,6 +216,10 @@ export function carryNotTaken(
   takes: ThreadMoveTakes | null | undefined,
 ): string | null {
   if (carry.needs.generalChats && takes?.generalChats !== true) return "it's a general chat";
+  if (carry.needs.rooms && takes?.rooms !== true) return "it has more than one agent";
+  if (carry.needs.outsideWork && takes?.outsideWork !== true) {
+    return "an outside assistant's work limits its agent here";
+  }
   if (!carry.needs.threadState || takes?.threadState === true) return null;
   if (carry.goal !== null && carry.goal.status !== "complete") return "it has a goal";
   if (carry.checkBacks.length > 0) return "its agent set itself a time to come back";

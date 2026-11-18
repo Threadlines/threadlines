@@ -20,6 +20,7 @@ import {
   OrchestrationThread,
   OrchestrationCheckBack,
   OrchestrationThreadMove,
+  OrchestrationThreadParticipant,
   ProjectCreateCommand,
   ThreadMovePhase,
   ThreadPendingMove,
@@ -33,7 +34,9 @@ import {
   ThreadMoveBatchId,
   ThreadMoveId,
   ThreadMoveRequestId,
+  ThreadParticipantId,
 } from "./baseSchemas.ts";
+import { PeerDescriptor, PeerMovePart } from "./peerRpc.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 
 const decodeTurnDiffInput = Schema.decodeUnknownEffect(OrchestrationGetTurnDiffInput);
@@ -696,4 +699,104 @@ it("an app from before step 4a still reads a move that carries what its thread h
     Schema.decodeUnknownSync(BaseOrchestrationThreadMove)(move).phase,
     "exporting",
   );
+});
+
+// What an app or a computer from before step 4b (docs/design/fleet.md, Part
+// 3f) decodes of a room's move, a moved-in agent and a computer that takes
+// rooms: the fields it knew, no more. A room is never sent to such a computer
+// (`moveRooms`), but it still reads the thread shells and descriptors.
+const BaseOrchestrationThreadParticipant = Schema.Struct({
+  id: Schema.String,
+  handle: Schema.String,
+  modelSelection: ModelSelection,
+  joinedAt: Schema.String,
+  leftAt: Schema.NullOr(Schema.String),
+  guest: Schema.optional(Schema.Boolean),
+});
+const BasePeerMovePart = Schema.Struct({
+  kind: Schema.Literals(["bundle", "diff", "file", "attachment", "session"]),
+  offset: Schema.Number,
+  length: Schema.Number,
+  sha256: Schema.String,
+  path: Schema.optional(Schema.String),
+});
+const BasePeerDescriptor = Schema.Struct({
+  environmentId: Schema.String,
+  label: Schema.String,
+  moves: Schema.optional(Schema.Boolean),
+  moveThreadState: Schema.optional(Schema.Boolean),
+});
+
+it("an app or computer from before step 4b still reads a room's move", () => {
+  const participantId = ThreadParticipantId.make("6f1d7c2a-1b2c-4d3e-8f90-0a1b2c3d4e5f");
+  const agent = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" };
+  const targetTakes = {
+    threadState: true as const,
+    rooms: true as const,
+    outsideWork: true as const,
+  };
+  const pending = Schema.encodeSync(ThreadPendingMove)({
+    requestId: ThreadMoveRequestId.make("request-1"),
+    target: { environmentId: EnvironmentId.make("environment-mac"), label: "Mac mini" },
+    mode: "when-done",
+    stage: "waiting",
+    requestedAt: "2026-11-17T14:00:00.000Z",
+    requestedBy: { kind: "user" },
+    targetTakes,
+    roomAgents: [{ participantId, agent }],
+  });
+  assert.strictEqual(Schema.decodeUnknownSync(BaseThreadPendingMove)(pending).stage, "waiting");
+  const move = Schema.encodeSync(OrchestrationThreadMove)({
+    transferId: ThreadMoveId.make("move-1"),
+    target: { environmentId: EnvironmentId.make("environment-mac"), label: "Mac mini" },
+    agent,
+    phase: "exporting",
+    cancelRequested: false,
+    startedAt: "2026-11-17T14:01:00.000Z",
+    targetTakes,
+    roomAgents: [{ participantId, agent: null }],
+  });
+  assert.strictEqual(
+    Schema.decodeUnknownSync(BaseOrchestrationThreadMove)(move).phase,
+    "exporting",
+  );
+  const participant = Schema.encodeSync(OrchestrationThreadParticipant)({
+    id: participantId,
+    handle: "Sol",
+    modelSelection: agent,
+    joinedAt: "2026-11-17T13:00:00.000Z",
+    leftAt: null,
+    movedIn: true,
+    nativeSession: "carried",
+  });
+  assert.strictEqual(
+    Schema.decodeUnknownSync(BaseOrchestrationThreadParticipant)(participant).handle,
+    "Sol",
+  );
+  const part = Schema.encodeSync(PeerMovePart)({
+    kind: "session",
+    offset: 0,
+    length: 10,
+    sha256: "abc",
+    path: "rollout.jsonl",
+    participantId,
+  });
+  assert.strictEqual(Schema.decodeUnknownSync(BasePeerMovePart)(part).kind, "session");
+  const descriptor = Schema.encodeSync(PeerDescriptor)({
+    environmentId: EnvironmentId.make("environment-mac"),
+    label: "Mac mini",
+    platform: "darwin",
+    serverVersion: "1.0.0",
+    directRoutes: [],
+    access: "allowed",
+    maxRuntimeMode: "full-access",
+    agents: [],
+    defaultAgent: null,
+    projects: [],
+    moves: true,
+    moveThreadState: true,
+    moveRooms: true,
+    moveOutsideWork: true,
+  });
+  assert.strictEqual(Schema.decodeUnknownSync(BasePeerDescriptor)(descriptor).moves, true);
 });

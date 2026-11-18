@@ -222,6 +222,8 @@ export const makePeerRpcLayer = (input: {
             moveNativeSession: true,
             moveThreadState: true,
             moveGeneralChats: true,
+            moveRooms: true,
+            moveOutsideWork: true,
             threadFiling: true,
             outsideAgents: true,
           } satisfies PeerDescriptor;

@@ -1293,6 +1293,256 @@ These win over everything above in Part 3e. What a move carries came from anothe
    - A session started fenced is restarted with resume at the next start after the lift, so the agent gets its tools.
    - The "Moved here" line says it: "Its agent can't use other threads, rooms or schedules here until you send it a message."
 
+## Part 3f: Families and rooms move too (Nov 17, v2 step 4b)
+
+After step 4a, three kinds of thread still can't move: one that started other threads, one that was started by another thread or by another computer's agent, and one with more than one agent. That is most of the threads worth moving. A thread that ever started a child stays unmovable for good, because the finished child keeps it a parent, and a room is how two agents work on one thing. Step 4b lifts those refusals where a move can be honest and safe, and keeps the rest with words that say the real reason.
+
+The transfer (Part 3), the queue and barrier (3b), batches (3c), session carry (3d), and what rides along and the arrival fence (3e) are unchanged in kind. Each thread still moves as its own transfer.
+
+### What each case does
+
+| The case                                                                | What happens                                                                                                                                                                                                       |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| A parent moves with its children                                        | **The family moves together** and arrives as a family: the children are still its children there.                                                                                                                  |
+| A parent moves and some children stay                                   | **They become their own threads here**, each with a line saying why. The parent can't reach them from the other computer.                                                                                          |
+| A parent has children on another computer                               | **They stay where they are.** The moved parent can't reach them. Named in the dialog and on arrival.                                                                                                               |
+| A parent is waiting on answers from its children                        | "Move when it's done" waits for the answers. "Stop and move now" ends the waiting as Stop does, and says so.                                                                                                       |
+| A child moves and its parent stays                                      | **It stays its parent's child**, as a thread on another computer: the parent can still send to it, read it and stop it over the link. There it is fenced for good, as any thread another computer's agent directs. |
+| A thread another computer's agent started (or a child that moved there) | **It can move back to that computer, and nowhere else.** At home it becomes a local child of the thread that started it again.                                                                                     |
+| A room                                                                  | **Carried with its agents.** Each agent is matched to one on the other computer. One that has no match stays behind, shown as having left, and the dialog says which.                                              |
+| The project's lead chat                                                 | Still refused, with today's words: each computer keeps its own lead.                                                                                                                                               |
+
+### Rules
+
+These hold for every case below. The first four are the link fence, and a move must never loosen it.
+
+1. **`remoteOrigin` is only ever written by the computer the thread is on, from the link it authenticated.** A manifest can ask for a thread to arrive as its sender's child. It can't supply the link, the environment, or anyone else's.
+2. **A thread with `remoteOrigin` moves only to `remoteOrigin.environmentId`**, and only when that identity is pinned (`environmentPinned`). This is checked in the decider, not the dialog. There is no path from "an agent on A started work on B" to that work running on C.
+3. **Every import arrives fenced** (`movedFrom.fenced`, Part 3e). Each thread of a family lifts its own fence with its own message from the user here. A message in the parent doesn't lift a child's.
+4. **A peer can't attach a thread under one of this computer's threads.** Lineage is written in two cases only: both threads arrived in the same family from the same link, or this computer's own records already name the incoming thread as that parent's child (coming home).
+5. **Never on two computers.** The reactors that act for a family (`ChildThreadReactor`, `RemoteChildReactor`) and the room's request chain stop for a thread with `pendingMove` or `move`, as the queue drain and the watcher do since 4a.
+6. **Nothing closed is extended.** Waits reuse existing codes with their own words. No new phase, hold kind, outcome, watch event or peer status.
+
+### What the user sees
+
+- **Move dialog, on a parent.** "Its 3 threads move with it", with the list and a tick each. Unticking one says "Stays here as its own thread." Children on another computer are listed apart: "2 threads it started on Windows PC stay there. It can't reach them from Mac mini."
+- **Move dialog, on a child.** Two choices: "Move just this thread" (default; "It stays a thread of <parent> on Mac, which can still send to it") and "Move its whole family (4 threads)".
+- **Move dialog, on a room.** One row per agent: its name here, and a picker of the other computer's agents, preset to the same agent and model when there is one. The last choice is "Leave out". An agent with no match reads "Sol can't come: Windows PC has no Codex agent." Under each, Part 3d's memory line.
+- **Batch and quit dialogs.** A family is one group: ticking any member ticks all of it, and it expands to untick members. A room is one row.
+- **While it moves.** Each thread shows its own notice (Part 3b). A child that is ready before its parent reads "Moves to Windows PC with <parent>."
+- **On the other computer.** Children are nested under the parent as here. The "Moved here" line names what stayed: "2 threads it started stayed on Mac: Fix tests, Review.", "Sol didn't come: this computer has no Codex agent." On a child that came alone: "Started by <parent> on Mac, which still directs it."
+- **On this computer.** A child left behind: "Its parent thread moved to Windows PC, so this is its own thread now." A child that went alone shows under its parent as a thread on Windows PC, as any thread started there does.
+- **A thread another computer started**, moving anywhere but home: "This thread was started by an agent on Mac, which still directs it. It can move back to Mac, not to another computer." When this computer has no link to Mac: "…Link this computer to Mac in Fleet first."
+
+### Capabilities
+
+- **`PeerDescriptor.moveFamilies`** and **`PeerDescriptor.moveRooms`** (new, optional). Without one, that kind of thread is refused with today's words, and nothing new is sent.
+- **`targetTakes`** (Part 3e) gains `families?: true` and `rooms?: true`.
+- No new client flag. The preview's new fields are optional, and an older client that sends none gets the server's defaults: the whole family, and the suggested agent for each room agent.
+
+### (g) A thread that started threads
+
+#### The family moves together
+
+A family is a parent and its attached local children that aren't archived or deleted. It is one level deep by the existing rule.
+
+- **How it's asked for.** `moves.queueMany` already takes a set of threads. The set decides: a parent and some of its children in one call are a family; a child without its parent moves alone (h); children left out stay behind. The single-thread dialog uses the same call when children are ticked. No new RPC.
+- **`familyId`.** The server gives the family one id, recorded on each member's pending move and move as `family?: { id, parentThreadId? }` (`parentThreadId` on children only), and in the batch record. The parent is queued first; a child's queue decision checks that its parent holds a move with the same family id.
+- **Each member is its own transfer**, with its own freeze, export and import. Nothing about one thread's move changes.
+- **Ids that members can name before they exist.** Today every new id derives from the transfer key `K = hash(L, T)`. A family member's thread, turn and message ids derive from the family key `FK = hash(L, familyId)` and the id it had here. So a child's import can name its parent's new id, and the parent's history can name its children's, whichever arrives first. Rows, locks, staging folders, git refs, worktrees and attachments keep deriving from `K`.
+- **The parent lands first.** On the other computer a child's import waits until its parent's has committed (`link_moves` gains `family_id` and `source_thread_id`, two nullable columns with an index). If the parent's move is dropped, the child's is dropped with "Its parent thread didn't move." The child's status to the sender stays `importing` while it waits. So no child ever sits there pointing at a parent that never came.
+- **On this computer** (`MoveQueue`):
+  - the parent's queued move ends without starting → the children's end too;
+  - the parent's transfer is dropped → the children's are cancelled (none can have committed);
+  - the parent moved and a child's move then fails → that child is left behind (below).
+- **Import.** `thread.import` gains `lineage?: { parentThreadId, parentTurnId, attachedToParent: true }`, filled by `LinkMoves` from `FK`. `decideThreadImport` checks the parent exists, isn't deleted, isn't itself a child, is in the same project, and came in the same family. The attachment epoch starts fresh.
+- **History keeps its labels.** `ThreadImportMessage` gains optional `fromThread`, kept only when it names a member of the family, with ids remapped by `FK`. Reports and requests between members keep "from <thread>". One that names a thread outside the family arrives as a plain message, as today.
+- **Threads that shared a folder share one there.** Members are grouped by checkout (`checkoutOf`). In a group, the owner is the thread whose worktree it is (not a guest: no `worktreeOrigin`), else the parent, else the oldest. Only the owner exports the files. A sharer's manifest says `family.sharesCheckoutOf: <owner's id here>` and has no bundle, diff or file parts; its import skips the git stages, waits for the owner's, and takes the owner's worktree and branch. Clean-up never removes a worktree for a sharer. If the owner's move fails, the sharer's fails with "The thread whose folder it works in didn't move." Without this, each would get its own copy and they would drift apart.
+- **The fence.** Parent and children each arrive fenced. Reports between them are `fromThread` messages, which don't lift it. After the user's message in the parent, `thread_list`, `thread_send` and `thread_stop` work on the children, which are found by `parentThreadId` as here.
+
+#### Children that stay
+
+A child that isn't in the set, or whose own move failed after the parent's committed.
+
+- `decideMoveComplete` for the parent detaches each attached local child still here, in the same decision. These are the events `thread.parent-attachment.set { attached: false }` writes: the parent's open requests for it settle as cancelled, and its queued reports are taken back. An activity is added on the child with the line above.
+- Why not keep them as the moved parent's children across the link: that needs a link from the other computer back to this one and its permission to direct threads here, which the move can't assume. Not in this step.
+- Archived children stay attached to the read-only copy, as history.
+
+#### Waiting on answers
+
+`childRequests.open` holds requests whose answers are owed. Today any open request refuses the move.
+
+- **"Move when it's done"** waits. A request to a child reuses the `background` wait code with the words "when the threads it started report back". A start or invite waiting for the user's OK (`awaiting_user`) reuses `approval`: "once you answer".
+- **"Stop and move now"** ends the waiting the way the user's Stop does: the delivery epoch rises and the open requests settle as stopped, in the decision that plans the session stop. Children in the family are stopped by their own moves. The "Moved here" line says: "It was waiting on 2 threads it started. They were stopped for the move."
+- No arrival message for this. The children arrive idle, like any thread stopped mid-turn, and a fenced parent couldn't send to them anyway.
+
+#### Children on another computer
+
+`childRequests.remoteChildren` lists threads this parent's agent started on linked computers. They stay listed after they finish, so today such a parent can never move.
+
+- **They stay where they are, and the moved parent doesn't know them.** Taking them along would mean the new computer directing threads that the child's computer let _this_ computer start. That is the hop rule 2 forbids, so nothing is re-pointed or handed over.
+- **Open remote requests:** "when done" waits for them as above. "Stop and move now" cancels them through the path Stop already uses (`cancelRequested`, `peer.request.cancel`, `peer.thread.stop`) and settles them here at once.
+- **`RemoteChildReactor` learns about moves.** It reads only `id`, `title`, `participants`, `childRequests`, `archivedAt` and `deletedAt` today. It now skips a parent with `move` set for watches and for anything that writes to the parent. One exception: `thread.remote-cancels.delivered` joins `FROZEN_THREAD_COMMANDS`, so cancels owed at the freeze still drain.
+- **A hole this closes.** On a frozen parent the reactor's four commands are refused. It reads a refused settle as "settled meanwhile" and acks the report as not delivered (RemoteChildReactor.ts ~609-619), so the answer is lost. No frozen parent can have remote children today, so it can't happen yet. Skipping frozen parents makes sure it never does.
+- **Also when the child's computer is the target.** The parent arrives beside threads it once started there and stays separate from them. Adopting them would turn a thread that is fenced for good into one a message can unfence.
+
+### (h) A child, and a thread another computer started
+
+#### A child moves alone
+
+The link the move travels over is the one a parent needs to direct a child on that computer. So the child keeps its parent.
+
+- **Asked for** by moving a child without its parent (`family.remoteParent` on its pending move).
+- **Manifest:** `family.remoteParent { threadId, title }`.
+- **Import.** `LinkMoves` builds `remoteOrigin` itself: `linkDeviceId` from the transfer's row, `environmentId` and label from the link's pinned identity, `threadId` and `threadTitle` from the manifest. That is the same trust as a thread this link starts here, where the sender also names its own parent. `thread.import` gains `remoteOrigin?`. The thread also has `movedFrom`.
+- **An unpinned link** can't prove where home is. The child arrives as its own thread, and both ends say so.
+- **Fenced for good.** `remoteOrigin` fences it whatever the user there types, like every thread another computer's agent directs. It is stricter than a plain moved thread, and it is what keeps rule 2 simple.
+- **On this computer.** `decideMoveComplete` for the child writes, in one decision, the parent's `remoteChildren` entry (as a remote start records one) and the detach of the read-only copy, so the parent doesn't count it as a local child. `RemoteChildReactor` picks it up from the parent's record. `thread_send`, `thread_read` and `thread_stop` then reach it through `peer.request.*`, which the other computer's `linkThread` accepts because the link matches.
+- **Its parent is itself moving or moved:** it arrives as its own thread.
+
+#### Moving back home
+
+The only move a `remoteOrigin` thread makes. It covers a child that moved out, and a thread started over the link.
+
+- **Decider.** `threadMoveRefusals` allows a `remoteOrigin` thread when `target.environmentId === remoteOrigin.environmentId`, `environmentPinned` is true and the target takes families. Any other target gets the words above. The `remote_origin` refusal stays for everything else.
+- **Manifest:** `family.home { parentThreadId }`, from `remoteOrigin.threadId`.
+- **Import at home.** The thread arrives over home's link from that computer. `LinkMoves` asks home's own records: does `parentThreadId` exist here, undeleted and not moving, with a `remoteChildren` entry for (the link's pinned environment, `manifest.source.threadId`)?
+  - **Yes:** `thread.import` carries `adopt { parentThreadId }`. The decider checks the record again and, in one decision, creates the thread as that parent's attached local child, removes the `remoteChildren` entry (a new event, `thread.remote-child-removed`), and settles any request still open for it as cancelled.
+  - **No** (the parent is gone, moved, or never held it): it arrives as its own thread, and the line says "The thread that started it isn't on this computer anymore."
+- **No `remoteOrigin` at home**, only `movedFrom.fenced`. Home is where the permission to start it came from, so the user there may take it over with a message.
+- **Where it left.** The request ledger's open rows for the thread settle as failed with "the thread moved to Mac", as an archive settles them.
+
+### (i) Rooms
+
+**Decision: carry the room with every agent that has a match.**
+
+- **Who comes.** Every participant is carried as a record, those who left and guests included, so old messages keep their authors. Each one still in the room needs an agent on the other computer.
+- **Matching.** New `suggestRoomAgent`: the same driver and model, else the same driver's default model, else none. Today's `suggestAgent` matches the model's name only, and looks at the thread's own agent only. The dialog shows the suggestion and lets the user pick any of the target's agents or "Leave out". A batch move, and a target that is offline when queued, take the suggestions when the move starts.
+- **An agent with no match, or left out,** arrives as having left (`leftAt` = the move's time). Its messages keep its name, and the dialog and the "Moved here" line say why it didn't come. The room goes on with the others. This is Will's call 3.
+- **Asked for:** `ThreadMoveQueueInput.roomAgents?: [{ participantId, agent: ModelSelection | null }]` (null leaves it out; absent takes the suggestion), kept on the pending move.
+- **Manifest:** `thread.room { agentRole?, participants: [{ id, handle, role?, joinedAt, leftAt, guest?, source: { driver, model }, agent?, session? }] }`. Messages gain `participantId`, `fromAgent` and the request kind and outcome; activities, check-backs and queued messages keep `participantId`.
+- **Import.**
+  - Participant ids are rebuilt from `K` and remapped everywhere, the keys inside `agentModels` included.
+  - `decideThreadImport` writes the participant events as `thread.create` with participants does.
+  - `LinkMoves` checks each handle is free, and each chosen agent and model exists here (`resolveAgent`). At most 16 agents.
+  - `sentModels`, `roomContext` and the request counters start empty.
+- **Each agent's memory.** Part 3d, once per agent: `exportNativeSession` for each participant's session key, when the matched agent is the same driver. A `session` part gains optional `participantId`. All sessions share the move's 100 MB, 50 MB each. When they don't fit, the largest go as a summary first, and the dialog's line for that agent says so. A participant gains optional `nativeSession`, as the thread has for its own agent.
+- **Each agent gets the conversation.** Today this would be wrong: in a room, a moved thread's first send gets only the join note (the last 8 messages) and skips the summary, for the thread's own agent and for the others. New rule in the reactor, for a thread with `movedFrom`: an agent that came with the move and has no `roomContext` cursor yet gets the whole conversation summary on its first send, unless it reopened its carried session. Then it is caught up only on what was said here. Derived from the projection, so it holds across restarts.
+- **Requests between agents.** A room is free when `agentRequests.open` is empty.
+  - **"Move when it's done"** waits for the chain to finish (reusing `side_turn`: "when its agents finish"). Agent hand-offs keep draining while the move waits. Only the user's own queued messages are held (Part 3e), and the request limit already bounds a chain.
+  - **An invite waiting for the user:** "once you answer".
+  - **"Stop and move now"** ends the chain as Stop does (`decideAgentChainStop`): requests settle as stopped and agents' queued messages are taken back. Today a move's stop skips this.
+- **What rides along, per agent.**
+  - The goal belongs to the agent holding the session slot, and check-backs name their agent. The arrival message (Part 3e) becomes one per agent that has something, addressed to it.
+  - A queued message for an agent that didn't come arrives as a not-sent message, with a line saying so.
+- **The fence** is per thread. No agent has room tools until the user's first message there, which lifts it for all of them.
+- **Per driver.** Session carry is Claude, Codex and Pi, as in 3d. Every other agent gets the summary.
+
+### Fixes this step needs in today's code
+
+- **`sessionStopEvents` interrupts one side answer** (`thread.sideTurn`). A room can have three (`sideTurns`). Interrupt all of them.
+- **Outside-work marks aren't carried** (`outsideWork`; moveExport.ts ~307 keeps only who wrote a message). An agent that outside text reached has limited tools until it starts fresh. With a carried session it arrives holding that text and without the limit, and the limit doesn't come back when the fence lifts. Carry the marks, remapped per agent. Check whether this is reachable after 4a for a single-agent thread. If it is, fix it there first.
+- **`ChildThreadReactor`** has no move check beyond the lent checkout. A settle aimed at a frozen parent is refused and only logged. It skips threads with `move`, and its startup pass does too.
+
+### Contracts
+
+- **`peerRpc.ts`**
+  - `PeerDescriptor.moveFamilies`, `.moveRooms`;
+  - `PeerMoveManifest.family? { id?, parentThreadId?, sharesCheckoutOf?, remoteParent?, home? }` and `thread.room?`;
+  - `PeerMovePart.participantId?`.
+- **`orchestration.ts`**
+  - `thread.import` gains `lineage?`, `remoteOrigin?`, `adopt?`, `participants?`, `agentRole?`;
+  - `ThreadImportMessage` gains `fromThread?`, `participantId?`, `fromAgent?`, request kind and outcome;
+  - `family?` and `roomAgents?` on `ThreadPendingMove` and `OrchestrationThreadMove`;
+  - `families?`, `rooms?` on `targetTakes`;
+  - `nativeSession?` on a participant;
+  - new event `thread.remote-child-removed`.
+- **`moves.ts`**
+  - `ThreadMovePreview.family? { parent?, children: [{ threadId, title, refusal? }], remoteChildren: [{ label, title }] }`;
+  - `ThreadMovePreview.room? { agents: [{ participantId, name }] }`;
+  - `ThreadMoveTargetPreview.roomAgents? [{ participantId, suggestedAgent?, sessionOutcome? }]`;
+  - `ThreadMoveQueueInput.roomAgents?`.
+- **Migration:** `link_moves.family_id`, `.source_thread_id`. New nullable columns, no rows rewritten.
+- **Bounds** (`moveManifestRefusal`): at most 16 participants; a family manifest names one parent or one home, never both.
+
+### Will's calls
+
+Each has a default in this plan.
+
+1. **A child that moves alone.** Default: it stays its parent's child across the link, and so is fenced for good on the other computer. The other choice: it becomes its own thread there, which a message can unfence, and the parent loses it.
+2. **Children left behind when the parent moves.** Default: they become their own threads here, with a line saying why. The other choice: refuse to move a parent unless every child comes.
+3. **A room agent with no match on the other computer.** Default: the room moves without it, shown as having left, named before and after. The other choice: refuse until every agent has a match.
+4. **Threads another computer's agent started.** Default: they may move back to that computer and nowhere else. The other choice: keep refusing them entirely. Simpler, but a child that moved out could then never come back.
+5. **Children on another computer when the parent moves.** Default: they stay and the parent loses them, named. The other choice: refuse to move such a parent, which keeps most of today's refusal.
+6. **Tools for a moved family.** Default: each thread needs its own message from the user to get its tools back. The other choice: a message in the parent also unfences the children that came with it. More convenient, and looser than the rule the security fix just set.
+
+### Build order
+
+Three PRs, each useful alone.
+
+1. **Rooms** (`moveRooms`): participants, matching, per-agent sessions and history, the chain stop, the two reactor fixes. Nothing here touches families.
+2. **Families together** (`moveFamilies`): the family id and `FK` ids, parent-first on the target, shared folders, children left behind, waiting on answers, children on another computer, the reactors' move checks.
+3. **Across the link:** a child alone, and moving back home. Smallest, and the most security-sensitive, so it gets Sol's review on its own.
+
+Each waits for the security scan before it merges.
+
+### Tests (focused)
+
+- **Decider.**
+  - A `remoteOrigin` thread is refused for any target but its pinned home, and for an unpinned one.
+  - A child's queue is refused unless its parent holds the same family id, or it moves alone to a target that takes families.
+  - `thread.import` with `lineage` is refused when the parent is missing, deleted, itself a child or from another family.
+  - `adopt` is refused when the parent holds no `remoteChildren` entry for that thread.
+  - The parent's moved-away detaches the children still here, and settles its requests for them.
+  - "Stop and move now" settles open child requests and open agent requests as stopped.
+- **LinkMoves.**
+  - A child staged before its parent imports after it; a dropped parent drops it.
+  - A sharer takes the owner's worktree, and its abort removes nothing.
+  - `remoteOrigin` is built from the link, whatever the manifest claims.
+  - A manifest naming a local thread of this computer as its parent is refused.
+  - Participants land with fresh ids, and an unknown instance is refused.
+- **Reactors.**
+  - `RemoteChildReactor` opens no watch for a moved-away parent, never acks a report for one, and still drains owed cancels.
+  - A child that moved alone is reachable from its parent by `thread_send`, and its answer comes back.
+  - A moved room's agent gets the whole summary once, and one on its carried session doesn't.
+  - Every imported thread is fenced; a message in the parent leaves the child fenced.
+- **Web.** The family list with ticks; the two choices on a child; the per-agent rows with "Leave out" and "can't come"; the family as one group in the batch dialog; the arrival lines.
+- **Live**, two servers with the stand-in fx agent: a parent and two children, one sharing its folder; a child alone, then a send from its parent and its answer; that child moving home; a two-agent room with one agent that has no match.
+
+### Out of scope
+
+- Keeping children as the moved parent's children when they stay behind (needs the reverse link's permission).
+- Handing a child on another computer over to the parent's new computer.
+- Adopting threads already on the target when their parent arrives.
+- Moving the lead chat.
+- A message in the parent unfencing its children (call 6).
+
+### Review changes (Nov 17, outside review of this plan)
+
+These win over the text above where they differ.
+
+1. **Sharers keep their guest marker.**
+   - The import carries each sharer's `worktreeOrigin` guest marker, remapped to the family's new ids, so a sharer can never do a whole-workspace restore of a checkout it doesn't own (CheckpointRevert.ts ~116). That holds even after the owner is gone.
+   - The manifest carries the marker, and the target re-derives it from the family's ownership map. It never trusts a raw path from the peer.
+2. **A wait for the family holds no admission slot.**
+   - A transfer that waits for another member (a parent's commit, a checkout's owner) moves to a new row state, `waiting_for_family`, with every byte staged.
+   - That state counts against the staging budget (20 moves, 2 GiB per link) like an Allow wait, and holds none of the in-flight slots (2 per link, 4 total). The member it waits for can always get a slot.
+3. **Checkouts first, then threads, so no cycle.**
+   - A family's import runs in two phases.
+     - **(a) Materialize every checkout the family uses.** Each checkout's owner transfer brings its files and makes the worktree, in any order, without waiting on any thread commit.
+     - **(b) Commit threads parent-first.**
+   - A sharer waits only for its checkout to be materialized, never for another thread's commit, so a parent working in its child's worktree can't deadlock.
+   - The family key orders phase (b); phase (a) has no ordering.
+4. **Waiting drains, quiescing stops.**
+   - While a move is pending at stage `waiting`, the requests the thread already has keep settling: child answers (RemoteChildReactor, ChildThreadReactor), the room's request chain, and side turns already asked. "Move when it's done" needs them finished. Starting new work stays refused, as in Part 3b.
+   - The room chain's sends of already-open requests are exempt from the waiting guard (threadMoveDecisions.ts ~435-437, ~493) during `waiting`. Not during `quiescing`.
+   - The reactors stop for the thread only from `quiescing` on, and when frozen.
+5. **An explicit family choice.**
+   - `moves.queueMany` and `moves.queue` gain an optional `familySelection: "explicit"`.
+   - Absent (older clients): a parent moves with its whole family, as promised.
+   - Present: exactly the listed threads move, and the unlisted children stay behind under the rule above.
+   - New clients always send it.
+
 ## Part 4: The rail and the Fleet page
 
 ### Rail

@@ -51,6 +51,7 @@ import {
   type PeerMoveReadinessInput,
   type PeerMoveReadinessResult,
   type PeerMoveRefusalCode,
+  type PeerMoveSession,
   type PeerMoveState,
   type PeerMoveThreadState,
   type ProviderInstanceId,
@@ -59,6 +60,7 @@ import {
   type ThreadMovedFrom,
   type RuntimeMode,
   PEER_MOVE_CHUNK_MAX_BYTES,
+  PEER_MOVE_ROOM_MAX_PARTICIPANTS,
   PEER_MOVE_STATE_MAX_BYTES,
   PEER_MOVE_STATE_MAX_CHECK_BACKS,
   PEER_MOVE_STATE_MAX_PLANS,
@@ -93,6 +95,10 @@ import {
   movedPullRequestSwitchesWords,
   pullRequestSwitchesWords,
 } from "@threadlines/shared/threadMoveProjection";
+import {
+  isValidParticipantId,
+  participantSessionKey,
+} from "@threadlines/shared/threadParticipants";
 import { arrivalMessageText } from "../moves/arrivalMessage.ts";
 import { MOVE_MAX_BYTES } from "../moves/moveExport.ts";
 import { derivedUuid } from "../orchestration/childRequestIds.ts";
@@ -108,7 +114,18 @@ import { RepositoryIdentityResolver } from "../project/Services/RepositoryIdenti
 import { RelayDeviceRepository } from "../relay/RelayDeviceRepository.ts";
 import { GitHubCli } from "../sourceControl/GitHubCli.ts";
 import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
+import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
+import { listThreadAgents } from "../threads/threadOperations.ts";
 import { makeKeyedLock } from "./keyedLock.ts";
+import {
+  movedParticipantId,
+  remapOutsideWork,
+  remapRoomActivity,
+  remapRoomMessage,
+  type RoomAgentResolution,
+  type RoomArrival,
+  roomArrivalOf,
+} from "./roomImport.ts";
 import { LinkMoveRepository, type LinkMoveRow } from "./LinkMoveRepository.ts";
 import { LinkRequests, linkIdentityRefusal, type PeerLink } from "./LinkRequests.ts";
 
@@ -259,10 +276,59 @@ export function moveManifestRefusal(manifest: PeerMoveManifest): string | null {
     // Its path only tells the session's files apart; the agent names where they go.
     if (part.kind === "session" && part.path === undefined) return "a session file has no name";
   }
-  if (count("session") > 0 !== (manifest.session !== undefined)) {
+  const ownSessionParts = manifest.parts.filter(
+    (part) => part.kind === "session" && part.participantId === undefined,
+  ).length;
+  if (ownSessionParts > 0 !== (manifest.session !== undefined)) {
     return "its session doesn't match its files";
   }
-  return moveStateRefusal(manifest.thread.state);
+  return moveRoomRefusal(manifest) ?? moveStateRefusal(manifest.thread.state);
+}
+
+/**
+ * Why a moved room can't be taken, or null (docs/design/fleet.md, Part 3f,
+ * (i)): at most PEER_MOVE_ROOM_MAX_PARTICIPANTS agents, each named once, a
+ * session part only for an agent the manifest says carries one (and each
+ * such agent with its files), and every message, mark and part naming an
+ * agent of the room.
+ */
+function moveRoomRefusal(manifest: PeerMoveManifest): string | null {
+  const room = manifest.thread.room;
+  const participants = room?.participants ?? [];
+  if (participants.length > PEER_MOVE_ROOM_MAX_PARTICIPANTS) return "its room has too many agents";
+  const ids = new Set<string>();
+  for (const participant of participants) {
+    if (!isValidParticipantId(participant.id) || ids.has(participant.id)) {
+      return "its room names an agent twice";
+    }
+    ids.add(participant.id);
+    if (participant.session !== undefined && participant.agent === undefined) {
+      return "its room carries a session for an agent that doesn't come";
+    }
+  }
+  const known = (id: string | null | undefined) => id === null || id === undefined || ids.has(id);
+  const sessionOwners = new Set<string>();
+  for (const part of manifest.parts) {
+    if (part.participantId === undefined) continue;
+    if (part.kind !== "session" || !ids.has(part.participantId)) {
+      return "a part names an agent the room doesn't have";
+    }
+    sessionOwners.add(part.participantId);
+  }
+  for (const participant of participants) {
+    if (sessionOwners.has(participant.id) !== (participant.session !== undefined)) {
+      return "a room agent's session doesn't match its files";
+    }
+  }
+  for (const message of manifest.thread.messages) {
+    if (!known(message.participantId) || !known(message.fromAgent?.participantId)) {
+      return "a message names an agent the room doesn't have";
+    }
+  }
+  for (const mark of manifest.thread.outsideWork ?? []) {
+    if (!known(mark.participantId)) return "an outside mark names an agent the room doesn't have";
+  }
+  return null;
 }
 
 /** Why what a moved thread had going can't be taken, or null: within its bounds. */
@@ -397,6 +463,21 @@ const make = Effect.gen(function* () {
   // GitHub's sign-in, for the pull request switches a move brings; none in a
   // server built without it (tests), which then can't tell.
   const gitHubCli = yield* Effect.serviceOption(GitHubCli);
+  const providerRegistry = yield* Effect.serviceOption(ProviderRegistry);
+  /** The drivers this computer has a ready agent of: why a room agent with none here didn't come. */
+  const readyDrivers = Option.isNone(providerRegistry)
+    ? Effect.succeed(new Set<string>())
+    : providerRegistry.value.getProviders.pipe(
+        Effect.map(
+          (all) =>
+            new Set<string>(
+              listThreadAgents(all, { interactionMode: "default" }).agents.map(
+                (agent) => agent.driver,
+              ),
+            ),
+        ),
+        Effect.orElseSucceed(() => new Set<string>()),
+      );
   // Read at each use: the computer can be renamed while this runs.
   const ownLabel = environment.currentLabel;
   const pendingHub = yield* PubSub.sliding<void>(1);
@@ -844,6 +925,14 @@ const make = Effect.gen(function* () {
             interactionMode: manifest.thread.interactionMode,
           });
           if ("refused" in agent) return gone(agent.refused);
+          // Each room agent the sender moves here must be one of this computer's.
+          const roomAgents = yield* resolveRoomAgents(manifest);
+          for (const participant of manifest.thread.room?.participants ?? []) {
+            const resolved = roomAgents.get(participant.id);
+            if (resolved !== undefined && "refused" in resolved) {
+              return gone(`${participant.handle}: ${resolved.refused}`);
+            }
+          }
           // An asking computer that reads the codes is told why a refusal
           // came; an older one is answered exactly as before.
           const asksStaged = input.stagedApproval === true;
@@ -1605,6 +1694,28 @@ const make = Effect.gen(function* () {
       yield* setStage(row, { stage: "applied" });
     });
 
+  /** What each room agent the sender moves here (one with `agent`) resolves to on this computer. */
+  const resolveRoomAgents = (manifest: PeerMoveManifest) =>
+    Effect.gen(function* () {
+      const resolved = new Map<string, RoomAgentResolution>();
+      for (const participant of manifest.thread.room?.participants ?? []) {
+        const agent = participant.agent;
+        if (agent === undefined) continue;
+        resolved.set(
+          participant.id,
+          yield* requests.resolveAgentFor({
+            agent: {
+              instanceId: agent.instanceId,
+              model: agent.model,
+              ...(agent.options !== undefined ? { options: agent.options } : {}),
+            },
+            interactionMode: manifest.thread.interactionMode,
+          }),
+        );
+      }
+      return resolved;
+    });
+
   /** The new attachment a moved one becomes here: an id of this thread, written beside the others. */
   const importAttachments = (row: LinkMoveRow) =>
     Effect.gen(function* () {
@@ -1663,11 +1774,32 @@ const make = Effect.gen(function* () {
   const carriedRecordPath = (row: Pick<LinkMoveRow, "transferKey">) =>
     NodePath.join(stagingDir(row), "carried-session.json");
 
+  /**
+   * Adds files a carried session writes to the record (a room carries one per
+   * agent, all on one record): only ever added to, so every file any of them
+   * may have written is taken back by an abort.
+   */
   const writeCarriedRecord = (row: LinkMoveRow, written: ReadonlyArray<string>) =>
-    Effect.tryPromise(async () => {
-      await NodeFs.mkdir(stagingDir(row), { recursive: true });
-      await NodeFs.writeFile(carriedRecordPath(row), JSON.stringify({ written }));
+    Effect.gen(function* () {
+      const earlier = (yield* readCarriedRecord(row)) ?? [];
+      yield* Effect.tryPromise(async () => {
+        await NodeFs.mkdir(stagingDir(row), { recursive: true });
+        await NodeFs.writeFile(
+          carriedRecordPath(row),
+          JSON.stringify({ written: [...new Set([...earlier, ...written])] }),
+        );
+      });
     });
+
+  /** Every binding a move's carried sessions may have written: the thread's own agent's and each room agent's. */
+  const carriedBindingKeys = (row: LinkMoveRow) => [
+    row.threadId,
+    ...(row.manifest.thread.room?.participants ?? [])
+      .filter((participant) => participant.session !== undefined)
+      .map((participant) =>
+        participantSessionKey(row.threadId, movedParticipantId(row.transferKey, participant.id)),
+      ),
+  ];
 
   /** The files a carried session wrote, as on record; none when it carried none. */
   const readCarriedRecord = (row: Pick<LinkMoveRow, "transferKey">) =>
@@ -1693,28 +1825,42 @@ const make = Effect.gen(function* () {
       const written = yield* readCarriedRecord(row);
       if (written === null) return true;
       const gone = yield* discardSessionFiles(written, row.transferKey);
-      const unbound = yield* providers.forgetNativeSession(row.threadId).pipe(
-        Effect.as(true),
-        Effect.orElseSucceed(() => false),
-      );
+      const unbound = (yield* Effect.forEach(carriedBindingKeys(row), (key) =>
+        providers.forgetNativeSession(key).pipe(
+          Effect.as(true),
+          Effect.orElseSucceed(() => false),
+        ),
+      )).every(Boolean);
       if (!gone || !unbound) return false;
       yield* Effect.promise(() => NodeFs.rm(carriedRecordPath(row), { force: true }));
       return true;
     });
 
+  /**
+   * One carried session: the thread's own agent's (`participantId` absent),
+   * or a room agent's (its id in the manifest), bound to `bindingKey`, the
+   * session key it runs under here.
+   */
   const carrySession = (
     row: LinkMoveRow,
+    carried: {
+      readonly session: PeerMoveSession | undefined;
+      readonly participantId?: string | undefined;
+      readonly bindingKey: ThreadId;
+    },
     instanceId: ProviderInstanceId,
     runtimeMode: RuntimeMode,
   ) =>
     Effect.gen(function* () {
-      const session = row.manifest.session;
+      const session = carried.session;
       const worktreePath = row.worktreePath;
       if (session === undefined || worktreePath === null) return false;
       const info = yield* providers.getInstanceInfo(instanceId).pipe(Effect.option);
       if (Option.isNone(info) || info.value.driverKind !== session.driver) return false;
       const files = yield* Effect.forEach(
-        row.manifest.parts.filter((part) => part.kind === "session"),
+        row.manifest.parts.filter(
+          (part) => part.kind === "session" && part.participantId === carried.participantId,
+        ),
         (part) =>
           partBytes(row, part).pipe(Effect.map((bytes) => ({ relPath: part.path ?? "", bytes }))),
       );
@@ -1740,14 +1886,15 @@ const make = Effect.gen(function* () {
       yield* writeCarriedRecord(row, imported.written);
       const adopted = yield* providers
         .adoptNativeSession({
-          threadId: row.threadId,
+          threadId: carried.bindingKey,
           instanceId,
           cursor: imported.cursor,
           runtimeMode,
         })
         .pipe(Effect.exit);
       if (Exit.isFailure(adopted)) {
-        yield* discardCarried(row);
+        // Only this session's files: another agent's stay carried.
+        yield* discardSessionFiles(imported.written, row.transferKey);
         return yield* Effect.failCause(adopted.cause);
       }
       return true;
@@ -1813,28 +1960,89 @@ const make = Effect.gen(function* () {
         ...(message.sentFrom !== undefined ? { sentFrom: message.sentFrom } : {}),
         // Never reached the agent there: no history here may carry it either.
         ...(message.notSent === true ? { notSent: true as const } : {}),
+        // A room's (remapped below): who it was to or from, and its request.
+        ...(message.participantId !== undefined ? { participantId: message.participantId } : {}),
+        ...(message.fromAgent !== undefined ? { fromAgent: message.fromAgent } : {}),
+        ...(message.requestId !== undefined ? { requestId: message.requestId } : {}),
+        ...(message.requestKind !== undefined ? { requestKind: message.requestKind } : {}),
+        ...(message.requestOutcome !== undefined ? { requestOutcome: message.requestOutcome } : {}),
+        ...(message.requestError !== undefined ? { requestError: message.requestError } : {}),
         createdAt: message.createdAt,
-      }));
-      const activities = row.manifest.thread.activities.map((activity) => ({
-        ...activity,
-        id: EventId.make(derivedUuid("link-move-activity", key, activity.id)),
-        turnId: null,
       }));
       const device = yield* devices
         .getDevice(row.linkDeviceId)
         .pipe(Effect.orElseSucceed(Option.none));
-      // A thread that already landed carried its session then (or didn't):
-      // its agent may have used it since, so it is never written again.
+      // A thread that already landed carried its sessions then (or didn't):
+      // its agents may have used them since, so they are never written again.
+      const landedBefore = yield* importLanded(row);
       const carried =
-        row.manifest.session !== undefined && !(yield* importLanded(row))
-          ? yield* carrySession(row, agent.selection.instanceId, capped.runtimeMode)
+        row.manifest.session !== undefined && !landedBefore
+          ? yield* carrySession(
+              row,
+              { session: row.manifest.session, bindingKey: row.threadId },
+              agent.selection.instanceId,
+              capped.runtimeMode,
+            )
           : false;
+      // A room's agents (docs/design/fleet.md, Part 3f, (i)): each as the
+      // agent picked here, with its own session when one came for it; one
+      // with none here arrives as having left.
+      const roomResolved = yield* resolveRoomAgents(row.manifest);
+      const carriedRoom = new Set<string>();
+      for (const participant of row.manifest.thread.room?.participants ?? []) {
+        const resolved = roomResolved.get(participant.id);
+        if (participant.session === undefined || landedBefore || resolved === undefined) continue;
+        if (!("selection" in resolved)) continue;
+        const bindingKey = participantSessionKey(
+          row.threadId,
+          movedParticipantId(key, participant.id),
+        );
+        if (
+          yield* carrySession(
+            row,
+            { session: participant.session, participantId: participant.id, bindingKey },
+            resolved.selection.instanceId,
+            capped.runtimeMode,
+          )
+        ) {
+          carriedRoom.add(participant.id);
+        }
+      }
       const now = yield* nowIso;
+      const drivers = yield* readyDrivers;
+      const room = roomArrivalOf({
+        room: row.manifest.thread.room,
+        transferKey: key,
+        now,
+        resolved: roomResolved,
+        carried: carriedRoom,
+        hasDriver: (driver) => drivers.has(driver),
+        messageIdHere: (id) => MessageId.make(derivedUuid("link-move-message", key, id)),
+      });
+      // How far the thread's own agent's carried session got, in a room.
+      const ownSeen = row.manifest.thread.room?.ownAgentSeenThroughMessageId;
+      const roomMessages = messages.map((message) => remapRoomMessage(message, room.ids));
+      const activities = row.manifest.thread.activities.map((activity) =>
+        remapRoomActivity(
+          {
+            ...activity,
+            id: EventId.make(derivedUuid("link-move-activity", key, activity.id)),
+            turnId: null,
+          },
+          room.ids,
+        ),
+      );
+      const outsideWork = remapOutsideWork(row.manifest.thread.outsideWork, room.ids, room.came);
       const fromLabel = Option.isSome(device)
         ? device.value.label
         : row.manifest.source.environmentLabel;
       const scratch = isScratchMoveManifest(row.manifest);
-      const { pullRequestSwitches, ...state } = yield* importedState({
+      const {
+        pullRequestSwitches,
+        arrival: stateArrival,
+        notSent,
+        ...state
+      } = yield* importedState({
         row,
         root: land.root,
         instanceId: agent.selection.instanceId,
@@ -1843,7 +2051,17 @@ const make = Effect.gen(function* () {
         attachments,
         fromLabel,
         now,
+        room,
       });
+      // The "Moved here" line's room words first, then what the thread had going.
+      const arrival =
+        stateArrival === undefined && room.brought.length === 0 && room.left.length === 0
+          ? undefined
+          : {
+              ...(stateArrival?.message !== undefined ? { message: stateArrival.message } : {}),
+              brought: [...room.brought, ...(stateArrival?.brought ?? [])],
+              left: [...room.left, ...(stateArrival?.left ?? [])],
+            };
       const dispatched = yield* engine
         .dispatch({
           type: "thread.import",
@@ -1862,12 +2080,20 @@ const make = Effect.gen(function* () {
             label: fromLabel,
             threadId: row.manifest.source.threadId,
             movedAt: now,
+            ...(carried && ownSeen !== undefined
+              ? { seenThrough: MessageId.make(derivedUuid("link-move-message", key, ownSeen)) }
+              : {}),
             ...(pullRequestSwitches !== undefined ? { pullRequestSwitches } : {}),
           },
-          messages,
+          // Queued messages for a room agent that didn't come: in the chat, never sent.
+          messages: [...roomMessages, ...notSent],
           activities,
           ...(carried ? { nativeSession: "carried" as const } : {}),
+          ...(room.participants.length > 0 ? { participants: room.participants } : {}),
+          ...(room.agentRole !== undefined ? { agentRole: room.agentRole } : {}),
+          ...(outsideWork.length > 0 ? { outsideWork } : {}),
           ...state,
+          ...(arrival !== undefined ? { arrival } : {}),
           createdAt: now,
         })
         .pipe(Effect.uninterruptible, Effect.exit);
@@ -1884,6 +2110,9 @@ const make = Effect.gen(function* () {
   /** The ids a move's import gives the queue it writes: its arrival message, then the user's. */
   const arrivalMessageId = (row: Pick<LinkMoveRow, "transferKey">) =>
     MessageId.make(derivedUuid("link-move-arrival", row.transferKey));
+  /** A room agent's arrival message (Part 3f, (i)), by its id there. */
+  const roomArrivalMessageId = (row: Pick<LinkMoveRow, "transferKey">, participantId: string) =>
+    MessageId.make(derivedUuid("link-move-arrival", row.transferKey, participantId));
   const queuedMessageId = (row: Pick<LinkMoveRow, "transferKey">, id: string) =>
     MessageId.make(derivedUuid("link-move-queued", row.transferKey, id));
 
@@ -1903,32 +2132,61 @@ const make = Effect.gen(function* () {
     readonly attachments: ReadonlyMap<string, ChatAttachment>;
     readonly fromLabel: string;
     readonly now: string;
+    /** A room's agents as they land (roomImport.ts). */
+    readonly room: RoomArrival;
   }) =>
     Effect.gen(function* () {
-      const { row, now } = input;
+      const { row, now, room } = input;
       const state = row.manifest.thread.state;
-      if (state === undefined) return { pullRequestSwitches: undefined };
+      if (state === undefined) {
+        return {
+          pullRequestSwitches: undefined,
+          arrival: undefined,
+          notSent: [] as ReadonlyArray<ThreadImportMessage>,
+        };
+      }
       const key = row.transferKey;
-      const capabilities = yield* providers
-        .getCapabilities(input.instanceId)
-        .pipe(Effect.orElseSucceed(() => null));
-      const keepsGoals = capabilities?.threadGoals === "supported";
-      const keepsBudgets = keepsGoals && capabilities?.threadGoalBudget !== "unsupported";
+      const capabilitiesOf = (instanceId: ProviderInstanceId) =>
+        providers.getCapabilities(instanceId).pipe(Effect.orElseSucceed(() => null));
+      const capabilities = yield* capabilitiesOf(input.instanceId);
       const setsCheckBacks = capabilities?.checkBacks === "supported";
       const brought: string[] = [];
       const left: string[] = [];
+      /** A room agent's name, by its id there. */
+      const handleOf = (id: string) =>
+        row.manifest.thread.room?.participants.find((entry) => entry.id === id)?.handle ??
+        "An agent";
 
-      // (a) The goal.
+      // (a) The goal: its agent's, the one that held it there (a room's
+      // session slot), or the thread's own.
       let goal: OrchestrationThreadGoal | undefined;
       let goalToTell: { readonly objective: string } | null = null;
       const carriedGoal = state.goal;
+      const goalHolder = carriedGoal?.participantId;
+      const holderHere = goalHolder === undefined ? undefined : room.came.get(goalHolder);
+      const goalCapabilities =
+        holderHere === undefined
+          ? capabilities
+          : yield* capabilitiesOf(holderHere.instanceId as ProviderInstanceId);
+      const keepsGoals = goalCapabilities?.threadGoals === "supported";
+      const keepsBudgets = keepsGoals && goalCapabilities?.threadGoalBudget !== "unsupported";
       if (carriedGoal !== undefined) {
         // Only a goal still working or paused is picked up; one that finished stays finished.
         const pickUp =
           carriedGoal.pickUp &&
           (carriedGoal.status === "active" || carriedGoal.status === "paused");
-        const { pickUp: _pickUp, ...record } = carriedGoal;
-        if (!keepsGoals) {
+        const { pickUp: _pickUp, participantId: _holder, ...record } = carriedGoal;
+        if (goalHolder !== undefined && holderHere === undefined) {
+          // The agent that held it didn't come: it waits for the user to resume it here.
+          goal = {
+            ...record,
+            threadId: row.threadId,
+            status: carriedGoal.status === "complete" ? "complete" : "paused",
+          };
+          if (carriedGoal.status !== "complete") {
+            left.push(`Its goal came paused: ${handleOf(goalHolder)}, who held it, didn't come.`);
+          }
+        } else if (!keepsGoals) {
           left.push(
             `Its goal didn't come along: the agent here can't keep goals. It was: ${carriedGoal.objective}`,
           );
@@ -1959,8 +2217,26 @@ const make = Effect.gen(function* () {
         }
       }
 
-      // (b) Check-backs: the agent sets them again (or is told once).
-      const checkBacks = state.checkBacks ?? [];
+      // (b) Check-backs: their agent sets them again (or is told once). A
+      // room agent's go to it; one that didn't come leaves its own behind.
+      const allCheckBacks = state.checkBacks ?? [];
+      const checkBacks = allCheckBacks.filter((entry) => entry.participantId === undefined);
+      const roomCheckBacks = new Map<string, typeof allCheckBacks>();
+      const stayedBehind = new Set<string>();
+      for (const entry of allCheckBacks) {
+        if (entry.participantId === undefined) continue;
+        if (!room.came.has(entry.participantId)) {
+          stayedBehind.add(entry.participantId);
+          continue;
+        }
+        roomCheckBacks.set(entry.participantId, [
+          ...(roomCheckBacks.get(entry.participantId) ?? []),
+          entry,
+        ]);
+      }
+      for (const id of stayedBehind) {
+        left.push(`Check-backs ${handleOf(id)} set stayed behind: it didn't come.`);
+      }
       if (checkBacks.length > 0) {
         if (setsCheckBacks) {
           brought.push(
@@ -2045,20 +2321,59 @@ const make = Effect.gen(function* () {
       const skipped = (state.queuedFollowUps ?? []).filter(
         (entry) => (entry.skills ?? []).length > 0,
       ).length;
-      const queuedFollowUps: OrchestrationQueuedFollowUp[] = (state.queuedFollowUps ?? []).map(
-        (entry) => ({
-          messageId: queuedMessageId(row, entry.messageId),
-          text: entry.text,
-          attachments: entry.attachments.map(
-            (attachment) => input.attachments.get(attachment.id) ?? attachment,
-          ),
-          ...(entry.composer !== undefined ? { composer: entry.composer } : {}),
-          // Not `sentFrom`: only this server stamps it (decideThreadImport drops one too).
-          runtimeMode: input.runtimeMode,
-          interactionMode: input.interactionMode,
-          createdAt: entry.createdAt,
-        }),
-      );
+      // One for a room agent that didn't come is written into the chat, never
+      // sent (Part 3f, (i)); the others go to their agent here.
+      const forAgent = (entry: { readonly participantId?: string | undefined }) =>
+        entry.participantId === undefined ? null : (room.ids.get(entry.participantId) ?? null);
+      const cameFor = (entry: { readonly participantId?: string | undefined }) =>
+        entry.participantId === undefined ||
+        room.came.has(entry.participantId) ||
+        !room.ids.has(entry.participantId);
+      const queuedFollowUps: OrchestrationQueuedFollowUp[] = (state.queuedFollowUps ?? [])
+        .filter(cameFor)
+        .map((entry) => {
+          const participantId = forAgent(entry);
+          return {
+            messageId: queuedMessageId(row, entry.messageId),
+            text: entry.text,
+            attachments: entry.attachments.map(
+              (attachment) => input.attachments.get(attachment.id) ?? attachment,
+            ),
+            ...(entry.composer !== undefined ? { composer: entry.composer } : {}),
+            // Not `sentFrom`: only this server stamps it (decideThreadImport drops one too).
+            ...(participantId !== null ? { participantId } : {}),
+            runtimeMode: input.runtimeMode,
+            interactionMode: input.interactionMode,
+            createdAt: entry.createdAt,
+          };
+        });
+      const unsentFor = new Set<string>();
+      const notSent: ThreadImportMessage[] = (state.queuedFollowUps ?? [])
+        .filter((entry) => !cameFor(entry))
+        .map((entry) => {
+          const participantId = forAgent(entry);
+          if (entry.participantId !== undefined) unsentFor.add(entry.participantId);
+          return {
+            messageId: queuedMessageId(row, entry.messageId),
+            role: "user" as const,
+            text: entry.text,
+            ...(entry.attachments.length > 0
+              ? {
+                  attachments: entry.attachments.map(
+                    (attachment) => input.attachments.get(attachment.id) ?? attachment,
+                  ),
+                }
+              : {}),
+            turnId: null,
+            // Not `sentFrom`: only this server stamps it (decideThreadImport drops one too).
+            ...(participantId !== null ? { participantId } : {}),
+            notSent: true as const,
+            createdAt: entry.createdAt,
+          };
+        });
+      for (const id of unsentFor) {
+        left.push(`Your queued message for ${handleOf(id)} wasn't sent: it didn't come.`);
+      }
       if (queuedFollowUps.length > 0) {
         brought.push(
           queuedFollowUps.length === 1
@@ -2098,21 +2413,55 @@ const make = Effect.gen(function* () {
         );
       }
 
+      // The arrival: one message per agent that has something to be told,
+      // addressed to it (the goal to its holder, check-backs to whoever set
+      // them); the thread's own agent's first, then the room's, then the
+      // user's queued messages.
       const text = arrivalMessageText({
         kind: "moved",
         from: input.fromLabel,
         to: ownLabel(),
-        goal: goalToTell,
+        goal: goalHolder === undefined ? goalToTell : null,
         checkBacks,
         canSetCheckBacks: setsCheckBacks,
         now,
       });
+      const roomArrivals: OrchestrationQueuedFollowUp[] = [];
+      for (const [oldId, selection] of room.came) {
+        const own = roomCheckBacks.get(oldId) ?? [];
+        const told = goalHolder === oldId ? goalToTell : null;
+        if (own.length === 0 && told === null) continue;
+        const agentCapabilities = yield* capabilitiesOf(selection.instanceId as ProviderInstanceId);
+        const agentText = arrivalMessageText({
+          kind: "moved",
+          from: input.fromLabel,
+          to: ownLabel(),
+          goal: told,
+          checkBacks: own,
+          canSetCheckBacks: agentCapabilities?.checkBacks === "supported",
+          now,
+        });
+        const participantId = room.ids.get(oldId);
+        if (agentText === null || participantId === undefined) continue;
+        roomArrivals.push({
+          messageId: roomArrivalMessageId(row, oldId),
+          text: agentText,
+          attachments: [],
+          participantId,
+          afterMove: true,
+          runtimeMode: input.runtimeMode,
+          interactionMode: input.interactionMode,
+          createdAt: now,
+        });
+      }
+      const queue = [...roomArrivals, ...queuedFollowUps];
       return {
         ...(goal !== undefined ? { goal } : {}),
         ...(pullRequests !== undefined ? { pullRequests } : {}),
-        ...(queuedFollowUps.length > 0 ? { queuedFollowUps } : {}),
+        ...(queue.length > 0 ? { queuedFollowUps: queue } : {}),
         ...(proposedPlans.length > 0 ? { proposedPlans } : {}),
         ...(pullRequestSwitches !== undefined ? { pullRequestSwitches } : {}),
+        notSent,
         arrival: {
           ...(text !== null ? { message: { messageId: arrivalMessageId(row), text } } : {}),
           brought,
@@ -2158,6 +2507,9 @@ const make = Effect.gen(function* () {
       const state = row.manifest.thread.state;
       const ids = new Set<string>([
         arrivalMessageId(row),
+        ...(row.manifest.thread.room?.participants ?? []).map((entry) =>
+          roomArrivalMessageId(row, entry.id),
+        ),
         ...(state?.queuedFollowUps ?? []).map((entry) => queuedMessageId(row, entry.messageId)),
       ]);
       // Unreadable: left for the sweep to try again, never taken as gone.

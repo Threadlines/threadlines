@@ -1,5 +1,6 @@
 import { scopeProjectRef } from "@threadlines/client-runtime";
 import {
+  DEFAULT_MODEL,
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   ProjectId,
@@ -20,6 +21,7 @@ import {
   applyMovedDraftDefaults,
   applyNewThreadDefaultsToDraft,
   buildNewThreadParticipants,
+  fallbackNewThreadModelSelection,
   placeDraftFromSettings,
   readComputerConfig,
   resolveNewThreadDefaults,
@@ -107,6 +109,33 @@ describe("resolveNewThreadDefaults", () => {
       modelSelection: opus,
       roomAgents: [{ modelSelection: astra }],
     });
+  });
+});
+
+describe("fallbackNewThreadModelSelection", () => {
+  const settings = DEFAULT_SERVER_SETTINGS;
+
+  it("settles where a fresh draft's composer does: Codex while it is on, else the first agent on", () => {
+    expect(fallbackNewThreadModelSelection({ settings, providers })).toEqual(astra);
+    const codexOff = [providers[0]!, { ...providers[1]!, enabled: false }];
+    expect(fallbackNewThreadModelSelection({ settings, providers: codexOff })).toEqual(opus);
+  });
+
+  it("takes the stock Codex over a custom Codex account listed before it", () => {
+    const work = provider({
+      driver: "codex",
+      instanceId: ProviderInstanceId.make("codex_work"),
+      models: [{ slug: "gpt-6-astra", name: "GPT-6 Astra" }],
+    });
+    expect(
+      fallbackNewThreadModelSelection({ settings, providers: [work, providers[1]!] }).instanceId,
+    ).toBe(CODEX);
+  });
+
+  it("uses the draft's offline fallback while the computer's agents are not known yet", () => {
+    const offline = { instanceId: CODEX, model: DEFAULT_MODEL };
+    expect(fallbackNewThreadModelSelection({ settings, providers: [] })).toEqual(offline);
+    expect(fallbackNewThreadModelSelection(null)).toEqual(offline);
   });
 });
 

@@ -107,6 +107,7 @@ function nextMove(
       ...(payload.batchId !== undefined ? { batchId: payload.batchId } : {}),
       ...(payload.interrupted !== undefined ? { interrupted: payload.interrupted } : {}),
       ...(payload.targetTakes !== undefined ? { targetTakes: payload.targetTakes } : {}),
+      ...(payload.roomAgents !== undefined ? { roomAgents: payload.roomAgents } : {}),
     };
   }
   if (!("transferId" in event.payload)) return move;

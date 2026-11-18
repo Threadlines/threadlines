@@ -18,6 +18,8 @@ import {
   type ThreadMoveChanges,
   type ThreadMoveNote,
   type ThreadMovePreview,
+  type ThreadMoveRoomAgentChoice,
+  type ThreadParticipantId,
   THREAD_MOVE_BATCH_MAX,
   ThreadMoveNotStartedActivityKind,
   type ThreadMoveOutcome,
@@ -325,14 +327,14 @@ const AGENT_KEY_SEPARATOR = "\u0000";
 export const threadMoveAgentKey = (choice: ThreadMoveAgentChoice) =>
   `${choice.instanceId}${AGENT_KEY_SEPARATOR}${choice.model}`;
 
-/** The agent to preselect: the target's suggestion when it has it, else its first model. */
-export function pickDefaultMoveAgent(
-  target: Pick<ThreadMoveTargetPreview, "agents" | "suggestedAgent">,
+/** `suggested` as a pick, when the target has that agent and model; else null. */
+function offeredChoice(
+  agents: ThreadMoveTargetPreview["agents"],
+  suggested: ModelSelection | undefined,
 ): ThreadMoveAgentChoice | null {
-  const suggested = target.suggestedAgent;
   if (
     suggested &&
-    target.agents.some(
+    agents.some(
       (agent) =>
         agent.instanceId === suggested.instanceId &&
         agent.models.some((model) => model.model === suggested.model),
@@ -340,6 +342,15 @@ export function pickDefaultMoveAgent(
   ) {
     return { instanceId: suggested.instanceId, model: suggested.model };
   }
+  return null;
+}
+
+/** The agent to preselect: the target's suggestion when it has it, else its first model. */
+export function pickDefaultMoveAgent(
+  target: Pick<ThreadMoveTargetPreview, "agents" | "suggestedAgent">,
+): ThreadMoveAgentChoice | null {
+  const suggested = offeredChoice(target.agents, target.suggestedAgent);
+  if (suggested) return suggested;
   for (const agent of target.agents) {
     const model = agent.models[0];
     if (model) return { instanceId: agent.instanceId, model: model.model };
@@ -360,6 +371,56 @@ export function threadMoveAgentSelection(
     return suggested;
   }
   return { instanceId: choice.instanceId as ModelSelection["instanceId"], model: choice.model };
+}
+
+/**
+ * The user's picks for a room's agents on one computer, by participant: an
+ * agent there, or null to leave it out. An agent without one keeps its preset.
+ */
+export type ThreadMoveRoomPicks = ReadonlyMap<ThreadParticipantId, ThreadMoveAgentChoice | null>;
+
+/** One of a room's agents (ThreadMovePreview.room) in the move dialog, on the computer picked. */
+export interface ThreadMoveRoomAgentRow {
+  readonly participantId: ThreadParticipantId;
+  /** Its name here. */
+  readonly name: string;
+  /** The agent picked there, or null: it's left out. */
+  readonly pick: ThreadMoveAgentChoice | null;
+  /** Why no agent there matches, in the server's words; only while it's left out. */
+  readonly cantCome: string | null;
+  /** What the agent picked gets of its session; null while it's left out. */
+  readonly session: ThreadMoveSessionOutcome | null;
+  /** What the move asks for it (the suggestion as it came, when that is the pick). */
+  readonly choice: ThreadMoveRoomAgentChoice;
+}
+
+/**
+ * A room's agents besides the thread's own, on `target` (docs/design/fleet.md,
+ * Part 3f, (i)): each preset to the agent `target` suggests for it, else left
+ * out, unless the user picked otherwise (`picks`).
+ */
+export function threadMoveRoomAgentRows(
+  room: NonNullable<ThreadMovePreview["room"]>,
+  target: Pick<ThreadMoveTargetPreview, "agents" | "roomAgents">,
+  picks: ThreadMoveRoomPicks,
+): ThreadMoveRoomAgentRow[] {
+  return room.agents.map(({ participantId, name }) => {
+    const there = target.roomAgents?.find((entry) => entry.participantId === participantId);
+    const pick = picks.has(participantId)
+      ? (picks.get(participantId) ?? null)
+      : offeredChoice(target.agents, there?.suggestedAgent);
+    return {
+      participantId,
+      name,
+      pick,
+      cantCome: pick === null ? (there?.cantCome ?? null) : null,
+      session: pick === null ? null : threadMoveSessionOutcome(there ?? {}, pick.instanceId),
+      choice: {
+        participantId,
+        agent: pick === null ? null : threadMoveAgentSelection(there ?? {}, pick),
+      },
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -717,12 +778,13 @@ export function describeThreadMoveSession(outcome: ThreadMoveSessionOutcome): st
 }
 
 /**
- * The session outcome for one of a target's agents, as the preview says it.
+ * The session outcome for one of a target's agents, as the preview says it
+ * for the thread's agent (or a room agent's entry, ThreadMoveRoomAgentTarget).
  * An agent it doesn't name (or a computer from before sessions travelled):
  * `summary`.
  */
 export function threadMoveSessionOutcome(
-  target: ThreadMoveTargetPreview,
+  target: Pick<ThreadMoveTargetPreview, "sessionOutcomes">,
   instanceId: string | null,
 ): ThreadMoveSessionOutcome {
   return (
