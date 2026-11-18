@@ -37,6 +37,7 @@ import {
   EMPTY_CHILD_REQUEST_STATE,
   RelayHostId,
   RelayInviteId,
+  RELAY_DEVICE_SESSION_SUBJECT,
 } from "@threadlines/contracts";
 import { assert, it } from "@effect/vitest";
 import { assertFailure, assertInclude, assertTrue } from "@effect/vitest/utils";
@@ -44,6 +45,7 @@ import * as Deferred from "effect/Deferred";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Cause from "effect/Cause";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -192,6 +194,7 @@ import * as PullRequestObservations from "./pullRequest/PullRequestObservations.
 import * as SourceControlRepositoryService from "./sourceControl/SourceControlRepositoryService.ts";
 import { ServerSecretStoreLive } from "./auth/Layers/ServerSecretStore.ts";
 import { ServerAuthLive } from "./auth/Layers/ServerAuth.ts";
+import { SessionCredentialService } from "./auth/Services/SessionCredentialService.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
 import * as StallMonitor from "./observability/StallMonitor.ts";
@@ -1165,8 +1168,10 @@ const buildAppUnderTest = (options?: {
       Layer.provide(layerConfig),
     );
 
-    yield* Layer.build(appLayer);
-    return config;
+    const app = yield* Layer.build(appLayer);
+    // The app's own sign-ins, for a case that needs one no HTTP route makes
+    // (a relay device's).
+    return { ...config, sessions: Context.get(app, SessionCredentialService) };
   });
 
 const parseSessionCookieFromWsUrl = (
@@ -5671,6 +5676,93 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             ["thread.side-turn.start", phone],
             ["thread.user-input.respond", phone],
             ["thread.turn.interrupt", undefined],
+          ],
+        );
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect(
+    "stamps a browser paired through the relay as a computer, and no sign-in a script made",
+    () =>
+      Effect.gen(function* () {
+        const dispatchedCommands: Array<OrchestrationCommand> = [];
+        const { sessions } = yield* buildAppUnderTest({
+          config: { host: "0.0.0.0" },
+          layers: {
+            orchestrationEngine: {
+              dispatch: (command) =>
+                Effect.sync(() => {
+                  dispatchedCommands.push(command);
+                  return { sequence: dispatchedCommands.length };
+                }),
+              readEvents: () => Stream.empty,
+            },
+          },
+        });
+        const baseUrl = yield* getWsServerUrl("/ws", { authenticated: false });
+        const withToken = (client: Parameters<typeof sessions.issue>[0]) =>
+          sessions.issue(client).pipe(
+            Effect.flatMap((issued) => sessions.issueWebSocketToken(issued.sessionId)),
+            Effect.map(({ token }) => `${baseUrl}?wsToken=${encodeURIComponent(token)}`),
+          );
+        // As RelayHost signs in a browser whose pairing the user approved.
+        const relayBrowserUrl = yield* withToken({
+          subject: RELAY_DEVICE_SESSION_SUBJECT,
+          method: "bearer-session-token",
+          role: "client",
+          client: { label: "Chrome on macOS", deviceType: "unknown", os: "macOS" },
+        });
+        // As `threadlines auth session issue` makes a token for a script or an agent.
+        const cliTokenUrl = yield* withToken({
+          subject: "cli-issued-session",
+          method: "bearer-session-token",
+          role: "owner",
+          client: { label: "deploy", deviceType: "bot" },
+        });
+        // A pairing link spent from curl.
+        const ownerCookie = yield* getAuthenticatedSessionCookieHeader();
+        const pairingResponse = yield* HttpClient.post("/api/auth/pairing-token", {
+          headers: { cookie: ownerCookie, "content-type": "application/json" },
+          body: HttpBody.text("{}", "application/json"),
+        });
+        const pairing = (yield* pairingResponse.json) as { readonly credential: string };
+        const curlBootstrap = yield* bootstrapBrowserSession(pairing.credential, {
+          headers: { "user-agent": "curl/8.7.1" },
+        });
+        const curlUrl = appendSessionCookieToWsUrl(
+          baseUrl,
+          curlBootstrap.cookie?.split(";")[0] ?? "",
+        );
+
+        for (const [index, url] of [relayBrowserUrl, cliTokenUrl, curlUrl].entries()) {
+          yield* Effect.scoped(
+            withWsRpcClient(url, (client) =>
+              client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+                type: "thread.turn.start",
+                commandId: CommandId.make(`cmd-signed-in-${index}`),
+                threadId: ThreadId.make("thread-signed-in"),
+                message: {
+                  messageId: MessageId.make(`message-signed-in-${index}`),
+                  role: "user",
+                  text: "Carry on",
+                  attachments: [],
+                },
+                runtimeMode: "full-access",
+                interactionMode: "default",
+                createdAt: "2026-01-01T00:00:00.000Z",
+              }),
+            ),
+          );
+        }
+
+        assert.deepEqual(
+          dispatchedCommands.map((command) =>
+            "sentFrom" in command ? command.sentFrom : undefined,
+          ),
+          [
+            { kind: "computer", name: "Chrome on macOS", os: "macOS", place: "elsewhere" },
+            undefined,
+            undefined,
           ],
         );
       }).pipe(Effect.provide(NodeHttpServer.layerTest)),

@@ -8,6 +8,7 @@ import {
   MessageId,
   ProjectId,
   ProviderInstanceId,
+  RELAY_DEVICE_SESSION_SUBJECT,
   SideTurnId,
   ThreadId,
   ThreadMoveBatchId,
@@ -17,6 +18,7 @@ import {
   ThreadParticipantId,
   TurnId,
   RoomAgentRequestId,
+  type AuthClientMetadata,
   type ModelSelection,
   type OrchestrationCommand,
   type OrchestrationEvent,
@@ -35,6 +37,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { decideOrchestrationCommand } from "./decider.ts";
 import { createEmptyReadModel, projectEvent } from "./projector.ts";
 import { isLinkFenced } from "./linkFence.ts";
+import { messageSentFromSession } from "./messageSentFrom.ts";
 import { threadMoveGuardRefusal, threadMoveRefusals } from "./threadMoveDecisions.ts";
 
 const now = "2026-10-22T10:00:00.000Z";
@@ -1633,6 +1636,43 @@ describe("what a moved thread is trusted with (Part 3e, security changes)", () =
     model = await withSession(model, "ready");
     ({ model, refusal } = await apply(model, sendQueued("m-when-done")));
     expect(refusal).toBeNull();
+    expect(threadOf(model, ARRIVED).movedFrom?.fenced).toBeUndefined();
+  });
+
+  it("a browser paired through the relay lifts the fence; a linked computer, a CLI token or a script can't", async () => {
+    const signedIn = (
+      subject: string,
+      role: "owner" | "client" | "peer",
+      client: AuthClientMetadata,
+    ) => messageSentFromSession({ subject, role, client }, "elsewhere");
+    const relayBrowser = signedIn(RELAY_DEVICE_SESSION_SUBJECT, "client", {
+      label: "Chrome on macOS",
+      deviceType: "unknown",
+      os: "macOS",
+    });
+    expect(relayBrowser).toEqual({
+      kind: "computer",
+      name: "Chrome on macOS",
+      os: "macOS",
+      place: "elsewhere",
+    });
+    const notAPerson = [
+      // A computer link through the relay: its pairing said "computer".
+      signedIn(RELAY_DEVICE_SESSION_SUBJECT, "peer", { deviceType: "desktop" }),
+      // `threadlines auth session issue`, an owner token for a script or an agent.
+      signedIn("cli-issued-session", "owner", { label: "deploy bot", deviceType: "bot" }),
+      // A paired sign-in from curl, and one that sent no user agent at all.
+      signedIn("one-time-token", "client", { deviceType: "bot", userAgent: "curl/8.7.1" }),
+      signedIn("one-time-token", "owner", { deviceType: "unknown" }),
+    ];
+    expect(notAPerson).toEqual([undefined, undefined, undefined, undefined]);
+
+    const fenced = await withSession(await importedEmpty(), "ready");
+    for (const sentFrom of notAPerson) {
+      const { model } = await apply(fenced, userTurn(sentFrom ? { sentFrom } : {}));
+      expect(threadOf(model, ARRIVED).movedFrom?.fenced).toBe(true);
+    }
+    const { model } = await apply(fenced, userTurn({ sentFrom: relayBrowser }));
     expect(threadOf(model, ARRIVED).movedFrom?.fenced).toBeUndefined();
   });
 

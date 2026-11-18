@@ -1,5 +1,7 @@
 import {
   type AuthClientMetadata,
+  type AuthSessionRole,
+  type MessageDeviceKind,
   type MessageId,
   type MessageSentFrom,
   type OrchestrationCommand,
@@ -41,27 +43,56 @@ export function sessionDevicePlace(
   return "elsewhere";
 }
 
+/** A signed-in session, as far as the device it was issued to goes. */
+export interface DeviceSession {
+  readonly subject: string;
+  readonly role: AuthSessionRole;
+  readonly client: AuthClientMetadata;
+}
+
 /**
- * The device a client session was issued to, as a user message records it
- * (see MessageSentFrom): by the name its user gave it, else what it called
- * itself, and where it is (sessionDevicePlace). Undefined for a device of
- * unknown kind.
+ * The kind of device a session was issued to, as MessageSentFrom.kind says
+ * it: a person's computer, phone or tablet. Undefined for a session that is
+ * no person's device the server can name: a linked computer's server
+ * (`peer`), a token the CLI issued or a sign-in that looked like a script
+ * (`bot`), and one that said nothing about itself (`unknown`). A browser
+ * paired through the relay is the one `unknown` that is a computer: its own
+ * pairing request called it a browser rather than a phone or a tablet, which
+ * RelayHost records as an unknown device type, and only a relay pairing the
+ * user approved gets that subject.
  */
-export function messageSentFromClient(
-  client: AuthClientMetadata,
+export function sessionDeviceKind(session: DeviceSession): MessageDeviceKind | undefined {
+  if (session.role === "peer") return undefined;
+  switch (session.client.deviceType) {
+    case "desktop":
+      return "computer";
+    case "mobile":
+      return "phone";
+    case "tablet":
+      return "tablet";
+    case "unknown":
+      return session.subject === RELAY_DEVICE_SESSION_SUBJECT ? "computer" : undefined;
+    case "bot":
+      return undefined;
+  }
+}
+
+/**
+ * The device a session was issued to, as a user message records it (see
+ * MessageSentFrom): its kind (sessionDeviceKind), the name its user gave it,
+ * else what it called itself, and where it is (sessionDevicePlace). Undefined
+ * for a session that is no person's device: its messages can't lift a moved
+ * thread's fence (turnLiftsMoveFence).
+ */
+export function messageSentFromSession(
+  session: DeviceSession,
   place: MessageSentFrom["place"],
 ): MessageSentFrom | undefined {
-  const kind =
-    client.deviceType === "desktop"
-      ? "computer"
-      : client.deviceType === "mobile"
-        ? "phone"
-        : client.deviceType === "tablet"
-          ? "tablet"
-          : undefined;
+  const kind = sessionDeviceKind(session);
   if (kind === undefined) {
     return undefined;
   }
+  const { client } = session;
   const name = client.name ?? client.label;
   return {
     kind,
@@ -73,20 +104,9 @@ export function messageSentFromClient(
   };
 }
 
-/**
- * Whether a session's device is a computer, for anything that asks if the user
- * is at one. Beyond what messageSentFromClient says, a browser paired through
- * the relay counts: its own pairing request called it a browser rather than a
- * phone or a tablet, which RelayHost records as an unknown device type.
- */
-export function sessionIsComputer(session: {
-  readonly subject: string;
-  readonly client: AuthClientMetadata;
-}): boolean {
-  if (session.client.deviceType === "desktop") return true;
-  return (
-    session.client.deviceType === "unknown" && session.subject === RELAY_DEVICE_SESSION_SUBJECT
-  );
+/** Whether a session's device is a computer, for anything that asks if the user is at one. */
+export function sessionIsComputer(session: DeviceSession): boolean {
+  return sessionDeviceKind(session) === "computer";
 }
 
 /**

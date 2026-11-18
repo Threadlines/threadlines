@@ -90,7 +90,8 @@ import { Keybindings } from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import { normalizeDispatchCommand, toDispatchCommandError } from "./orchestration/Normalizer.ts";
 import {
-  messageSentFromClient,
+  type DeviceSession,
+  messageSentFromSession,
   sessionIsComputer,
   sessionDevicePlace,
   withMessageSentFrom,
@@ -423,22 +424,29 @@ function toAuthAccessStreamEvent(
  */
 const followDeviceName = (
   sessions: SessionCredentialServiceShape,
-  sessionId: AuthSessionId,
+  session: DeviceSession & { readonly sessionId: AuthSessionId },
   sentFromRef: Ref.Ref<MessageSentFrom | undefined>,
   /** Where the device is (sessionDevicePlace): fixed for the session. */
   place: MessageSentFrom["place"],
 ) =>
   Effect.scoped(
     Effect.gen(function* () {
+      const { sessionId } = session;
       const changes = yield* sessions.subscribeChanges;
       const current = yield* sessions.clientOf(sessionId);
       if (Option.isSome(current)) {
-        yield* Ref.set(sentFromRef, messageSentFromClient(current.value, place));
+        yield* Ref.set(
+          sentFromRef,
+          messageSentFromSession({ ...session, client: current.value }, place),
+        );
       }
       yield* changes.pipe(
         Stream.runForEach((change) =>
           change.type === "clientUpserted" && change.clientSession.sessionId === sessionId
-            ? Ref.set(sentFromRef, messageSentFromClient(change.clientSession.client, place))
+            ? Ref.set(
+                sentFromRef,
+                messageSentFromSession({ ...session, client: change.clientSession.client }, place),
+              )
             : Effect.void,
         ),
       );
@@ -447,7 +455,10 @@ const followDeviceName = (
     Effect.catchCause((cause) =>
       Cause.hasInterruptsOnly(cause)
         ? Effect.failCause(cause)
-        : Effect.logWarning("ws.device-name.follow-failed", { sessionId, cause }),
+        : Effect.logWarning("ws.device-name.follow-failed", {
+            sessionId: session.sessionId,
+            cause,
+          }),
     ),
     Effect.andThen(Effect.never),
   );
@@ -915,7 +926,10 @@ const makeCoreRpcLayer = (
       const currentSentFrom = sessions.clientOf(currentSessionId).pipe(
         Effect.flatMap((client) =>
           Option.isSome(client)
-            ? Ref.setAndGet(sentFromRef, messageSentFromClient(client.value, devicePlace))
+            ? Ref.setAndGet(
+                sentFromRef,
+                messageSentFromSession({ ...currentSession, client: client.value }, devicePlace),
+              )
             : Ref.get(sentFromRef),
         ),
         Effect.catch(() => Ref.get(sentFromRef)),
@@ -3618,7 +3632,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
         const session = yield* serverAuth.authenticateWebSocketUpgrade(request);
         const viewerId = randomUUIDv4Sync();
         const devicePlace = sessionDevicePlace(session);
-        const sentFromRef = yield* Ref.make(messageSentFromClient(session.client, devicePlace));
+        const sentFromRef = yield* Ref.make(messageSentFromSession(session, devicePlace));
         const rpcWebSocketHttpEffect = yield* RpcServer.toHttpEffectWebsocket(WsRpcGroup, {
           disableTracing: true,
         }).pipe(
@@ -3694,7 +3708,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
               rpcWebSocketHttpEffect,
               Effect.raceFirst(
                 closeWhenRevoked,
-                followDeviceName(sessions, session.sessionId, sentFromRef, devicePlace),
+                followDeviceName(sessions, session, sentFromRef, devicePlace),
               ),
             ),
           () =>
