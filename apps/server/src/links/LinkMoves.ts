@@ -33,6 +33,7 @@ import {
   CommandId,
   type ComputerLinkPendingRequest,
   ComputerLinkError,
+  EnvironmentId,
   EventId,
   GENERAL_CHATS_PROJECT_ID,
   isScratchMoveManifest,
@@ -70,6 +71,7 @@ import {
   PeerRpcError,
   ThreadId,
   type ThreadImportMessage,
+  type ThreadRemoteOrigin,
   type ThreadMoveRespondManyInput,
   type ThreadMoveRespondManyResult,
   TurnId,
@@ -369,8 +371,29 @@ export function moveManifestRefusal(manifest: PeerMoveManifest): string | null {
   return (
     moveRoomRefusal(manifest) ??
     moveFamilyRefusal(manifest) ??
+    moveLinkLineageRefusal(manifest) ??
     moveStateRefusal(manifest.thread.state)
   );
+}
+
+/**
+ * Why a thread moving across the link its work came over can't be taken, or
+ * null (docs/design/fleet.md, Part 3f, (h)): it names one parent or one
+ * home, never both, never itself, and never with a family. What it names is
+ * only ever a claim: the import checks it against this computer's own link
+ * and records (linkLanding).
+ */
+function moveLinkLineageRefusal(manifest: PeerMoveManifest): string | null {
+  const lineage = manifest.linkLineage;
+  if (lineage === undefined) return null;
+  if ((lineage.remoteParent === undefined) === (lineage.home === undefined)) {
+    return "it names one parent or one home, not both";
+  }
+  if (manifest.family !== undefined) return "a thread moving with its family moves on no link";
+  if (lineage.remoteParent?.threadId === manifest.source.threadId) {
+    return "it names itself as its parent";
+  }
+  return null;
 }
 
 /**
@@ -2280,6 +2303,82 @@ const make = Effect.gen(function* () {
   };
 
   /**
+   * How a thread moving across the link its work came over lands here
+   * (docs/design/fleet.md, Part 3f, (h)), decided from this computer's own
+   * link and records alone; the manifest only says which thread it means.
+   *
+   * - A child that moved without its parent (`remoteParent`) stays that
+   *   parent's child across the link: its `remoteOrigin` is this link, and
+   *   the computer this link was made for. A link that can't prove which
+   *   computer that is lands it as its own thread.
+   * - A thread coming home (`home`) lands under the parent here only when
+   *   that parent holds exactly this thread, on exactly the computer this
+   *   link was made for, as its child: a linked computer can never put a
+   *   thread under one of this computer's own.
+   *
+   * Anything else lands as a thread of its own, with the "Moved here" words
+   * saying why (`left`).
+   */
+  const linkLanding = (
+    row: LinkMoveRow,
+    projectId: string,
+    pinnedEnvironmentId: string | null,
+    fromLabel: string,
+  ) =>
+    Effect.gen(function* () {
+      const lineage = row.manifest.linkLineage;
+      if (lineage === undefined || row.familyKey !== null) return {};
+      const source = row.manifest.source;
+      // The computer this link was made for, and the one the move says it came from.
+      const home =
+        pinnedEnvironmentId !== null && pinnedEnvironmentId === source.environmentId
+          ? EnvironmentId.make(pinnedEnvironmentId)
+          : null;
+      const remoteParent = lineage.remoteParent;
+      if (remoteParent !== undefined) {
+        if (home === null) {
+          return {
+            left: `This computer can't confirm its link to ${fromLabel}, so this is its own thread and '${remoteParent.title}' there can't reach it.`,
+          };
+        }
+        const remoteOrigin: ThreadRemoteOrigin = {
+          linkDeviceId: row.linkDeviceId,
+          environmentId: home,
+          environmentPinned: true,
+          environmentLabel: fromLabel,
+          threadId: remoteParent.threadId,
+          threadTitle: remoteParent.title,
+        };
+        return { remoteOrigin, environmentId: home };
+      }
+      const parentThreadId = lineage.home?.parentThreadId;
+      if (parentThreadId === undefined) return {};
+      const own = {
+        left: "The thread that started it isn't on this computer anymore, so this is its own thread.",
+      };
+      if (home === null) return own;
+      const found = yield* threadRows
+        .getById({ threadId: parentThreadId })
+        .pipe(
+          Effect.mapError(
+            () => new ImportStop({ reason: `${ownLabel()} couldn't read its threads.` }),
+          ),
+        );
+      const parent = Option.getOrUndefined(found);
+      const holds =
+        parent !== undefined &&
+        parent.deletedAt === null &&
+        (parent.move ?? null) === null &&
+        (parent.pendingMove ?? null) === null &&
+        !((parent.parentThreadId ?? null) !== null && (parent.attachedToParent ?? 0) > 0) &&
+        parent.projectId === projectId &&
+        (parent.childRequests?.remoteChildren ?? []).some(
+          (entry) => entry.environmentId === home && entry.threadId === source.threadId,
+        );
+      return holds ? { adopt: { parentThreadId }, environmentId: home } : own;
+    });
+
+  /**
    * The thread itself, and with it the commit. Waits for the engine's answer
    * without letting go. A family member in another's folder (docs/design/
    * fleet.md, Part 3f, (g)) takes the folder that member's move made here,
@@ -2472,6 +2571,14 @@ const make = Effect.gen(function* () {
       // still here (Part 3f, (g)); otherwise as its own thread, with why.
       const lineage = family === null ? null : yield* family.lineage(land.project.id);
       const familyLeft = family === null ? [] : family.left(fromLabel, lineage?.left ?? null);
+      // Across the link its work came over (Part 3f, (h)): from this link alone.
+      const across = yield* linkLanding(
+        row,
+        land.project.id,
+        authority.pinnedEnvironmentId,
+        fromLabel,
+      );
+      if (across.left !== undefined) familyLeft.push(across.left);
       // The "Moved here" line's room words first, then its family's, then
       // what the thread had going.
       const arrival =
@@ -2505,7 +2612,7 @@ const make = Effect.gen(function* () {
           branch: scratch ? null : row.branch,
           worktreePath: scratch ? null : row.worktreePath,
           movedFrom: {
-            environmentId: row.manifest.source.environmentId,
+            environmentId: across.environmentId ?? row.manifest.source.environmentId,
             label: fromLabel,
             threadId: row.manifest.source.threadId,
             movedAt: now,
@@ -2519,6 +2626,8 @@ const make = Effect.gen(function* () {
           messages: [...roomMessages, ...notSent],
           activities,
           ...(lineage?.lineage !== undefined ? { lineage: lineage.lineage } : {}),
+          ...(across.remoteOrigin !== undefined ? { remoteOrigin: across.remoteOrigin } : {}),
+          ...(across.adopt !== undefined ? { adopt: across.adopt } : {}),
           ...(family?.worktreeOrigin !== undefined
             ? { worktreeOrigin: family.worktreeOrigin }
             : {}),
@@ -3340,12 +3449,33 @@ const make = Effect.gen(function* () {
       Effect.asVoid,
     );
 
+  /**
+   * A committed move's answer says whether the thread landed as its parent's
+   * child across this link (`keptParent`, docs/design/fleet.md, Part 3f,
+   * (h)): read from the thread itself, which only this computer wrote, so a
+   * retried call answers the same.
+   */
+  const withKeptParent = (link: PeerLink) => (answer: Effect.Effect<PeerMoveState, PeerRpcError>) =>
+    Effect.flatMap(answer, (state) =>
+      state.status !== "committed" || state.threadId === undefined
+        ? Effect.succeed(state)
+        : threadRows.getById({ threadId: state.threadId }).pipe(
+            Effect.map((row) =>
+              Option.isSome(row) && row.value.remoteOrigin?.linkDeviceId === link.deviceId
+                ? { ...state, keptParent: true as const }
+                : state,
+            ),
+            // Never read as "its own thread" when it may not be: the asker tries again.
+            Effect.mapError(() => peerFailure(`${ownLabel()} couldn't read its threads.`)),
+          ),
+    );
+
   return LinkMoves.of({
-    prepare,
-    chunk,
-    finish,
-    status,
-    abort,
+    prepare: (link, input) => prepare(link, input).pipe(withKeptParent(link)),
+    chunk: (link, input) => chunk(link, input).pipe(withKeptParent(link)),
+    finish: (link, input) => finish(link, input).pipe(withKeptParent(link)),
+    status: (link, input) => status(link, input).pipe(withKeptParent(link)),
+    abort: (link, input) => abort(link, input).pipe(withKeptParent(link)),
     respond,
     respondMany,
     pending,

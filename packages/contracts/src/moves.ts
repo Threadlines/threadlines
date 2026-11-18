@@ -5,6 +5,7 @@ import {
   EnvironmentId,
   IsoDateTime,
   NonNegativeInt,
+  PositiveInt,
   ThreadId,
   ThreadMoveBatchId,
   ThreadMoveId,
@@ -121,6 +122,12 @@ export const ThreadMoveTargetPreview = Schema.Struct({
   notes: Schema.optional(Schema.Array(ThreadMoveNote)),
   /** A room (ThreadMovePreview.room): each of its agents on this computer. */
   roomAgents: Schema.optional(Schema.Array(ThreadMoveRoomAgentTarget)),
+  /**
+   * A child (ThreadMovePreview.family.parent): why it can't move there
+   * without its parent, which then has to come along ("Update Threadlines on
+   * Windows PC to move it on its own."). Absent: it can.
+   */
+  aloneRefusal: Schema.optional(TrimmedNonEmptyString),
 });
 export type ThreadMoveTargetPreview = typeof ThreadMoveTargetPreview.Type;
 
@@ -171,11 +178,19 @@ export const ThreadMovePreview = Schema.Struct({
    * A thread that started threads (docs/design/fleet.md, Part 3f, (g)): its
    * children here that can come along, each with why it can't when it can't
    * (it then stays here as its own thread), and the threads its agent
-   * started on other computers, which stay there. On a child: its parent.
+   * started on other computers, which stay there. On a child: its parent,
+   * and how many threads moving the whole family moves (`familySize`: the
+   * parent and its children here; absent from an older server).
    */
   family: Schema.optional(
     Schema.Struct({
-      parent: Schema.optional(Schema.Struct({ threadId: ThreadId, title: TrimmedNonEmptyString })),
+      parent: Schema.optional(
+        Schema.Struct({
+          threadId: ThreadId,
+          title: TrimmedNonEmptyString,
+          familySize: Schema.optional(PositiveInt),
+        }),
+      ),
       children: Schema.Array(
         Schema.Struct({
           threadId: ThreadId,

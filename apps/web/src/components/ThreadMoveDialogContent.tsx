@@ -28,6 +28,7 @@ import {
 import { cn } from "../lib/utils";
 import { selectSidebarThreadSummaryByRef, useStore } from "../store";
 import {
+  describeChildFamilyMove,
   describeFamilyComing,
   describeRemoteChildrenStaying,
   describeThreadMoveLanding,
@@ -99,6 +100,8 @@ export function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThread
   const [roomPicks, setRoomPicks] = useState<ThreadMoveRoomPicks>(NO_ROOM_PICKS);
   // A parent's children the user unticked: they stay here as their own threads.
   const [staying, setStaying] = useState<ReadonlySet<ThreadId>>(() => new Set());
+  // A child: it moves on its own (staying its parent's child), or its whole family moves.
+  const [pickedChildMove, setChildMove] = useState<ChildMoveChoice>("alone");
   const [pickedMode, setMode] = useState<ThreadPendingMoveMode>("when-done");
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
@@ -179,6 +182,16 @@ export function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThread
   const coming = (family?.children ?? []).filter(
     (child) => child.refusal === undefined && !staying.has(child.threadId),
   );
+  // A child (Part 3f, (h)): on its own when that computer keeps it its
+  // parent's child, else with its whole family.
+  const parent = family?.parent;
+  const childMove: ChildMoveChoice =
+    parent === undefined
+      ? "alone"
+      : target?.aloneRefusal !== undefined
+        ? "family"
+        : pickedChildMove;
+  const withFamily = parent !== undefined && childMove === "family";
   const canMove =
     preview !== null &&
     preview.refusal === undefined &&
@@ -194,7 +207,15 @@ export function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThread
     try {
       const client = requireThreadMovesClient(threadRef.environmentId, computerLabel);
       const input = { threadId: threadRef.threadId, targetEnvironmentId: target.environmentId };
-      if (queues) {
+      if (queues && withFamily) {
+        // The parent with every thread it started: the server's whole family,
+        // each with the agent that computer suggests.
+        await client.queue({
+          threadId: parent.threadId,
+          targetEnvironmentId: target.environmentId,
+          mode: working ? mode : "when-done",
+        });
+      } else if (queues) {
         await client.queue({
           ...input,
           ...(unreachable || agentSelection === null ? {} : { agent: agentSelection }),
@@ -367,6 +388,19 @@ export function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThread
                       : null}
                   </>
                 )}
+                {parent !== undefined && queues ? (
+                  <ChildMoveField
+                    parent={parent}
+                    hereLabel={computerLabel}
+                    target={target}
+                    choice={childMove}
+                    disabled={starting}
+                    onChange={(next) => {
+                      setChildMove(next);
+                      setStartError(null);
+                    }}
+                  />
+                ) : null}
                 {family !== undefined &&
                 (family.children.length > 0 || family.remoteChildren.length > 0) ? (
                   <FamilyField
@@ -549,6 +583,91 @@ export function MoveWhenField({
         ))}
       </RadioGroup>
     </div>
+  );
+}
+
+/** How a child moves: on its own, or with the thread that started it and that thread's others. */
+type ChildMoveChoice = "alone" | "family";
+
+/**
+ * A child's two ways to move (docs/design/fleet.md, Part 3f, (h)): on its
+ * own, staying a thread of its parent, which still reaches it there; or its
+ * whole family, parent first. A computer that can't keep it its parent's
+ * child takes only the family, and says why.
+ */
+function ChildMoveField({
+  parent,
+  hereLabel,
+  target,
+  choice,
+  disabled,
+  onChange,
+}: {
+  readonly parent: NonNullable<NonNullable<ThreadMovePreview["family"]>["parent"]>;
+  readonly hereLabel: string;
+  readonly target: ThreadMoveTargetPreview;
+  readonly choice: ChildMoveChoice;
+  readonly disabled: boolean;
+  readonly onChange: (choice: ChildMoveChoice) => void;
+}) {
+  const choices: ReadonlyArray<{
+    readonly value: ChildMoveChoice;
+    readonly label: string;
+    readonly detail: string;
+    readonly refusal: string | null;
+  }> = [
+    {
+      value: "alone",
+      label: "Move just this thread",
+      detail: `It stays a thread of ${parent.title} on ${hereLabel}, which can still send to it.`,
+      refusal: target.aloneRefusal ?? null,
+    },
+    {
+      value: "family",
+      label: describeChildFamilyMove(parent.familySize),
+      detail: `${parent.title} and the threads it started move to ${target.label} together.`,
+      refusal: null,
+    },
+  ];
+  return (
+    <RadioGroup
+      value={choice}
+      disabled={disabled}
+      onValueChange={(value) => onChange(value as ChildMoveChoice)}
+      aria-label="What moves"
+      className="gap-0.5"
+      data-testid="thread-move-child"
+    >
+      {choices.map((entry) => (
+        <label
+          key={entry.value}
+          className={cn(
+            "flex items-start gap-2.5 rounded-lg px-1 py-1.5",
+            entry.refusal === null ? "cursor-pointer" : "cursor-default",
+          )}
+          data-testid={`thread-move-child-${entry.value}`}
+        >
+          <Radio value={entry.value} disabled={entry.refusal !== null} className="mt-0.5" />
+          <span className="min-w-0">
+            <span
+              className={cn(
+                "block text-[13.5px] font-medium",
+                entry.refusal !== null && "text-muted-foreground",
+              )}
+              data-testid={`thread-move-child-${entry.value}-label`}
+            >
+              {entry.label}
+            </span>
+            <span
+              className="block text-[12.5px] text-muted-foreground"
+              data-testid={`thread-move-child-${entry.value}-detail`}
+            >
+              {entry.refusal ?? entry.detail}
+            </span>
+          </span>
+        </label>
+      ))}
+    </RadioGroup>
   );
 }
 

@@ -25,16 +25,19 @@ type TurnStartCommand = Extract<OrchestrationCommand, { readonly type: "thread.t
  * restart or usage-limit continue, a retry, another thread, an outside agent,
  * a scheduled task) carries no `sentFrom` and leaves the fence up. A message
  * the move carried (`imported`) or Threadlines wrote for it (`afterMove`)
- * never lifts it either, whatever it carries.
+ * never lifts it either, whatever it carries. Nor does anything lift it on a
+ * thread another computer's agent directs (`remoteOrigin`): a child that
+ * moved there without its parent is fenced for good (Part 3f, (h)).
  */
 export function turnLiftsMoveFence(
-  thread: Pick<OrchestrationThread, "movedFrom" | "messages" | "queuedFollowUps">,
+  thread: Pick<OrchestrationThread, "movedFrom" | "messages" | "queuedFollowUps" | "remoteOrigin">,
   command: Pick<
     TurnStartCommand,
     "sentFrom" | "fromThread" | "fromOutside" | "scheduledTaskId" | "trigger"
   > & { readonly message: { readonly messageId: MessageId } },
 ): boolean {
   if (thread.movedFrom?.fenced !== true || command.sentFrom === undefined) return false;
+  if ((thread.remoteOrigin ?? null) !== null) return false;
   if (
     command.fromThread !== undefined ||
     command.fromOutside !== undefined ||

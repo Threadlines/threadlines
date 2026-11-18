@@ -24,6 +24,7 @@ import {
   ProjectCreateCommand,
   ThreadMovePhase,
   ThreadPendingMove,
+  ThreadRemoteChildUpdatedPayload,
   ThreadTurnStartCommand,
   ThreadCreatedPayload,
   ThreadTurnDiff,
@@ -40,8 +41,8 @@ import {
   ThreadMoveRequestId,
   ThreadParticipantId,
 } from "./baseSchemas.ts";
-import { ThreadMoveQueueInput } from "./moves.ts";
-import { PeerDescriptor, PeerMoveGitManifest, PeerMovePart } from "./peerRpc.ts";
+import { ThreadMovePreview, ThreadMoveQueueInput } from "./moves.ts";
+import { PeerDescriptor, PeerMoveGitManifest, PeerMovePart, PeerMoveState } from "./peerRpc.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 
 const decodeTurnDiffInput = Schema.decodeUnknownEffect(OrchestrationGetTurnDiffInput);
@@ -910,6 +911,128 @@ it("an app or computer from before families moved still reads a family's move", 
     projects: [],
     moves: true,
     moveFamilies: true,
+  });
+  assert.strictEqual(Schema.decodeUnknownSync(BasePeerDescriptor)(descriptor).moves, true);
+});
+
+// What an app or a computer from before threads crossed the link they came
+// over (docs/design/fleet.md, Part 3f, (h)) decodes of that move: the fields
+// it knew, no more. A child alone and a thread going home are never sent to
+// such a computer (`moveLinkLineage`), but it still reads descriptors, move
+// answers, previews and a parent's record of its children.
+const BasePeerMoveState = Schema.Struct({
+  status: Schema.Literals([
+    "awaiting_approval",
+    "receiving",
+    "staged_awaiting_approval",
+    "importing",
+    "committed",
+    "aborted",
+  ]),
+  bytesReceived: Schema.Number,
+  threadId: Schema.optional(Schema.String),
+});
+const BaseThreadRemoteChildUpdatedPayload = Schema.Struct({
+  threadId: Schema.String,
+  child: Schema.Struct({ environmentId: Schema.String, threadId: Schema.String }),
+  updatedAt: Schema.String,
+});
+const BaseThreadMovePreview = Schema.Struct({
+  family: Schema.optional(
+    Schema.Struct({
+      parent: Schema.optional(Schema.Struct({ threadId: Schema.String, title: Schema.String })),
+      children: Schema.Array(Schema.Struct({ threadId: Schema.String })),
+      remoteChildren: Schema.Array(Schema.Struct({ label: Schema.String })),
+    }),
+  ),
+  targets: Schema.Array(Schema.Struct({ environmentId: Schema.String, label: Schema.String })),
+});
+
+it("an app or computer from before threads crossed their link still reads that move", () => {
+  const environmentId = EnvironmentId.make("environment-mac");
+  const state = Schema.encodeSync(PeerMoveState)({
+    status: "committed",
+    bytesReceived: 10,
+    threadId: ThreadId.make("there"),
+    keptParent: true,
+  });
+  assert.strictEqual(Schema.decodeUnknownSync(BasePeerMoveState)(state).threadId, "there");
+  const manifest = Schema.encodeSync(PeerMoveGitManifest)({
+    totalBytes: 0,
+    sha256: "x",
+    parts: [],
+    source: {
+      environmentId: EnvironmentId.make("environment-windows"),
+      environmentLabel: "Windows PC",
+      threadId: ThreadId.make("c"),
+    },
+    project: { canonicalKey: "example.com/repo", title: "Threadlines" },
+    git: { headSha: "h", branch: "main", baseSha: null },
+    thread: {
+      title: "Fix tests",
+      runtimeMode: "auto-accept-edits",
+      interactionMode: "default",
+      messages: [],
+      activities: [],
+    },
+    agent: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+    summary: { messageCount: 0, trackedFiles: 0, untrackedFiles: 0, unpushedCommits: 0 },
+    linkLineage: { remoteParent: { threadId: ThreadId.make("p"), title: "Ship it" } },
+  });
+  assert.strictEqual(Schema.decodeUnknownSync(BasePeerMoveGitManifest)(manifest).sha256, "x");
+  const removed = Schema.encodeSync(ThreadRemoteChildUpdatedPayload)({
+    threadId: ThreadId.make("p"),
+    child: {
+      environmentId,
+      label: "Mac mini",
+      threadId: ThreadId.make("there"),
+      handle: "Agent",
+      title: "Fix tests",
+      attachmentEpoch: 0,
+      cachedStatus: "idle",
+      updatedAt: "2026-11-17T14:00:00.000Z",
+    },
+    removed: true,
+    updatedAt: "2026-11-17T14:00:00.000Z",
+  });
+  assert.strictEqual(
+    Schema.decodeUnknownSync(BaseThreadRemoteChildUpdatedPayload)(removed).child.threadId,
+    "there",
+  );
+  const preview = Schema.encodeSync(ThreadMovePreview)({
+    family: {
+      parent: { threadId: ThreadId.make("p"), title: "Ship it", familySize: 3 },
+      children: [],
+      remoteChildren: [],
+    },
+    targets: [
+      {
+        environmentId,
+        label: "Mac mini",
+        agents: [],
+        aloneRefusal:
+          "Update Threadlines on Mac mini to move it without the thread that started it.",
+      },
+    ],
+  });
+  assert.strictEqual(
+    Schema.decodeUnknownSync(BaseThreadMovePreview)(preview).family?.parent?.title,
+    "Ship it",
+  );
+  const descriptor = Schema.encodeSync(PeerDescriptor)({
+    environmentId,
+    label: "Mac mini",
+    platform: "darwin",
+    serverVersion: "1.0.0",
+    directRoutes: [],
+    access: "allowed",
+    maxRuntimeMode: "full-access",
+    agents: [],
+    defaultAgent: null,
+    projects: [],
+    moves: true,
+    moveFamilies: true,
+    moveLinkLineage: true,
   });
   assert.strictEqual(Schema.decodeUnknownSync(BasePeerDescriptor)(descriptor).moves, true);
 });

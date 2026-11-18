@@ -1153,6 +1153,101 @@ describe("ChatView (full app): moving a thread to another computer", () => {
     }
   });
 
+  it("a child moves just itself, staying its parent's, or its whole family", async () => {
+    setPrimaryLinksSnapshot(
+      fleetLinksSnapshot({
+        outbound: [fleetOutboundLink(FLEET_OFFLINE_ENVIRONMENT_ID, "Mac mini")],
+      }),
+    );
+    const macMini = FLEET_MOVE_PREVIEW.targets[1]!;
+    const parent = ThreadId.make("thread-ship-it");
+    const queues: Array<NormalizedWsRpcRequestBody> = [];
+    let aloneRefusal: string | undefined;
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-move-child" as MessageId,
+        targetText: "move child",
+      }),
+      configureFixture: withThreadMoveQueueFixture,
+      resolveRpc: (body) => {
+        if (body._tag === WS_METHODS.movesPreview) {
+          return {
+            ...FLEET_MOVE_PREVIEW,
+            family: {
+              parent: { threadId: parent, title: "Ship it", familySize: 4 },
+              children: [],
+              remoteChildren: [],
+            },
+            targets: [{ ...macMini, ...(aloneRefusal !== undefined ? { aloneRefusal } : {}) }],
+          } satisfies ThreadMovePreview;
+        }
+        if (body._tag === WS_METHODS.movesQueue) {
+          queues.push(body);
+          return { requestId: QUEUED_REQUEST_ID };
+        }
+        return undefined;
+      },
+    });
+
+    const openDialog = async () => {
+      await openCommandPaletteFromTrigger();
+      await page
+        .getByTestId("command-palette")
+        .getByText("Move to another computer", { exact: true })
+        .click();
+      return page.getByTestId("thread-move-dialog");
+    };
+
+    try {
+      await waitForServerConfigToApply();
+      await saveMacMini("connected");
+      let dialog = await openDialog();
+      // Just this thread by default: it stays the parent's, which can still send to it.
+      await expect
+        .element(dialog.getByTestId("thread-move-child-alone-detail"))
+        .toHaveTextContent(
+          "It stays a thread of Ship it on Local environment, which can still send to it.",
+        );
+      await expect
+        .element(dialog.getByTestId("thread-move-child-family-label"))
+        .toHaveTextContent("Move its whole family (4 threads)");
+      await dialog.getByTestId("thread-move-confirm").click();
+      await expect.element(page.getByTestId("thread-move-dialog")).not.toBeInTheDocument();
+      expect(queues.at(-1)).toEqual(
+        expect.objectContaining({
+          threadId: THREAD_ID,
+          targetEnvironmentId: FLEET_OFFLINE_ENVIRONMENT_ID,
+        }),
+      );
+
+      // The whole family: the parent is queued, with every thread it started.
+      dialog = await openDialog();
+      await dialog.getByTestId("thread-move-child-family").click();
+      await dialog.getByTestId("thread-move-confirm").click();
+      await expect.element(page.getByTestId("thread-move-dialog")).not.toBeInTheDocument();
+      expect(queues.at(-1)).toEqual({
+        _tag: WS_METHODS.movesQueue,
+        threadId: parent,
+        targetEnvironmentId: FLEET_OFFLINE_ENVIRONMENT_ID,
+        mode: "when-done",
+      });
+
+      // A computer that can't keep it its parent's takes only the family, and says why.
+      aloneRefusal =
+        "Update Threadlines on Mac mini to move it without the thread that started it.";
+      dialog = await openDialog();
+      await expect
+        .element(dialog.getByTestId("thread-move-child-alone-detail"))
+        .toHaveTextContent(aloneRefusal);
+      await dialog.getByTestId("thread-move-confirm").click();
+      await expect.element(page.getByTestId("thread-move-dialog")).not.toBeInTheDocument();
+      expect(queues.at(-1)).toEqual(expect.objectContaining({ threadId: parent }));
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("says when a waiting move goes, holds new messages, and cancels the move it shows", async () => {
     setPrimaryLinksSnapshot(
       fleetLinksSnapshot({

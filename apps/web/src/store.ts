@@ -3735,7 +3735,7 @@ function applyEnvironmentOrchestrationEvent(
     // Children on linked computers (docs/design/fleet.md), kept on the parent.
     case "thread.remote-child-updated":
       return updateChildRequestState(state, event.payload.threadId, (current) =>
-        childRequestStateOn.remoteChildUpdated(current, event.payload.child),
+        childRequestStateOn.remoteChildUpdated(current, event.payload.child, event.payload.removed),
       );
 
     case "thread.remote-cancel-queued":

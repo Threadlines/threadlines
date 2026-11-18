@@ -1543,6 +1543,21 @@ These win over the text above where they differ.
    - Present: exactly the listed threads move, and the unlisted children stay behind under the rule above.
    - New clients always send it.
 
+### Build notes for "across the link" (Nov 17)
+
+Where the build differs from the text above, and why.
+
+1. **Its own capability.** `PeerDescriptor.moveLinkLineage` and `targetTakes.linkLineage`, not `moveFamilies`: a computer that already takes families would read a lone child's manifest as a family member and wait for a parent that never comes.
+2. **Its own manifest field.** `PeerMoveManifest.linkLineage { remoteParent? | home? }` (exactly one, never with `family`), not `family.remoteParent` / `family.home`: `PeerMoveFamily.id` stays required, and nothing in the family code path sees these moves.
+3. **No new event.** "Moving back home" removes the parent's record with `thread.remote-child-updated` and a new optional `removed: true`, not a new `thread.remote-child-removed`: the event union is closed to clients that decode it. An older client keeps showing the record until it reloads.
+4. **Nothing new on the pending move.** A child queued without a family, to a computer that takes `linkLineage`, is a child moving alone. The export names `remoteParent` only when the parent is here and not moving; the other computer's committed answer says whether it kept the parent (`PeerMoveState.keptParent`, read from the thread it wrote), and `thread.move.complete` carries that into the decision that writes the parent's record.
+5. **The child's dialog.** "Move its whole family" queues the parent with no `familySelection` (the server's whole family). A computer without `linkLineage` disables "Move just this thread" with why (`ThreadMoveTargetPreview.aloneRefusal`).
+6. **Moves that don't wait** (`moves.start`, older apps) never cross the link, for a child or a thread going home.
+7. **A fenced thread goes only back where it came from** (review fix). A thread a move brought, still fenced (`movedFrom.fenced`), may move only to `movedFrom.environmentId` until a person here sends it a message, for every kind of move (single, batch, alone, family). Without this, a link-started thread that came home as a local child could move on to a third computer with nobody having taken it over.
+8. **A parent and its child moving alone never cross** (review fix). A parent's move waits (`background`, "when '<child>' finishes moving") while a child of it has a move of its own queued or under way; the freeze decision checks it again. A child doesn't start moving alone while its parent's move is under way, nor queue while its parent's is queued. Otherwise the parent's move could leave behind a child that lands on the other computer as the parent's child.
+9. **What a queued move holds isn't work in a shared folder** (review fix). A thread whose own move is queued holds its user's messages and its plan (the guard refuses them), so the shared-folder wait counts only what still runs there: everything that thread's own move would wait on (a turn and its approvals and questions, side answers, either background count, a command in the terminal, a workflow, a voice chat, the room's and the family's open requests), one list for both (`workWaits`), and while it waits (`waiting`) the room's and the family's messages that still drain. Otherwise a parent waiting for its child's own move, in the same folder, and the child waiting for the parent's held message, would wait on each other for good.
+10. **A queued parent keeps its lone child** (review fix). The export names `remoteParent` whenever the parent is here and not frozen or moved away. A parent whose own move is queued waits for the child, so if it cancels the child is still its child there, and if it moves later the child is one of its threads on another computer, which stay, named.
+
 ## Part 4: The rail and the Fleet page
 
 ### Rail

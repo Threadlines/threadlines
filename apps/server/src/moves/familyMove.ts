@@ -6,8 +6,10 @@
  * of its family. Pure: ThreadMoves reads the threads and asks these.
  */
 import type {
+  EnvironmentId,
   OrchestrationThread,
   PeerMoveFamily,
+  PeerMoveLinkLineage,
   ThreadMoveFamily,
   ThreadMoveFamilyId,
 } from "@threadlines/contracts";
@@ -102,3 +104,38 @@ export const familyThreadIdsOf = (
   family: ThreadMoveFamily,
 ): ReadonlySet<string> =>
   new Set<string>(familyMembersOf(threads, family.id).map((member) => member.id));
+
+/**
+ * What `thread`'s manifest says of the link its work came over, moving alone
+ * to `targetEnvironmentId` (docs/design/fleet.md, Part 3f, (h)), or nothing:
+ *
+ * - a thread another computer's agent started, going back to that computer:
+ *   `home`, naming the thread there that started it;
+ * - a child moving without its parent: `remoteParent`, naming the parent,
+ *   unless the parent is gone, frozen for its own move or moved away (then it
+ *   lands as a thread of its own there). A parent whose move is only queued
+ *   waits for this one, and if it moves later, this one is its child there.
+ *
+ * The other computer trusts neither beyond its own link and records.
+ */
+export function linkLineageOf(
+  threads: ReadonlyArray<OrchestrationThread>,
+  thread: OrchestrationThread,
+  targetEnvironmentId: EnvironmentId,
+): PeerMoveLinkLineage | undefined {
+  const origin = thread.remoteOrigin ?? null;
+  if (origin !== null) {
+    return origin.environmentId === targetEnvironmentId
+      ? { home: { parentThreadId: origin.threadId } }
+      : undefined;
+  }
+  if (thread.parentThreadId === null || !thread.attachedToParent) return undefined;
+  if ((thread.move ?? thread.pendingMove)?.family !== undefined) return undefined;
+  // A parent whose own move is queued waits for this one (threadMoveRefusals),
+  // so it is still here when this lands; one frozen or moved away isn't.
+  const parent = threads.find((entry) => entry.id === thread.parentThreadId);
+  if (parent === undefined || parent.deletedAt !== null || (parent.move ?? null) !== null) {
+    return undefined;
+  }
+  return { remoteParent: { threadId: parent.id, title: parent.title } };
+}

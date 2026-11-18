@@ -174,6 +174,12 @@ interface CarryRecord {
   readonly generalChatsRoot?: string;
   /** The moved thread as it reads here once it landed (its queue, its session). */
   readonly shell?: () => OrchestrationThreadShell | undefined;
+  /** The computer the link was made for, when its invite pinned it. */
+  readonly pinnedEnvironmentId?: string;
+  /** The link's name for that computer here (its device row). */
+  readonly linkLabel?: string;
+  /** Threads already here, as their rows read. */
+  readonly threadsHere?: ReadonlyArray<{ readonly threadId: ThreadId } & Record<string, unknown>>;
 }
 
 /** The services LinkMoves leans on, with this computer's git real and the rest faked. */
@@ -202,7 +208,7 @@ function testLayer(
                     ok: true,
                     access,
                     maxRuntimeMode: "auto-accept-edits",
-                    pinnedEnvironmentId: null,
+                    pinnedEnvironmentId: carry.pinnedEnvironmentId ?? null,
                   },
             ),
           projectForKey: () =>
@@ -258,14 +264,18 @@ function testLayer(
             } as never),
           getThreadShellById: () => Effect.succeed(Option.fromUndefinedOr(carry.shell?.())),
         }),
-        // A thread here once its import was dispatched (a family's child reads its parent).
+        // A thread here once its import was dispatched (a family's child reads
+        // its parent), or one that was here already.
         Layer.mock(ProjectionThreadRepository)({
           getById: ({ threadId }) =>
-            Effect.succeed(
-              Option.fromUndefinedOr(
-                dispatched
-                  .filter((command) => command.type === "thread.import")
-                  .find((command) => command.threadId === threadId) === undefined
+            Effect.sync(() => {
+              const here = carry.threadsHere?.find((row) => row.threadId === threadId);
+              if (here !== undefined) return Option.some(here as never);
+              const imported = dispatched
+                .flatMap((command) => (command.type === "thread.import" ? [command] : []))
+                .find((command) => command.threadId === threadId);
+              return Option.fromUndefinedOr(
+                imported === undefined
                   ? undefined
                   : ({
                       threadId,
@@ -273,11 +283,19 @@ function testLayer(
                       deletedAt: null,
                       move: null,
                       pendingMove: null,
+                      remoteOrigin: imported.remoteOrigin ?? null,
                     } as never),
-              ),
+              );
+            }),
+        }),
+        Layer.mock(RelayDeviceRepository)({
+          getDevice: () =>
+            Effect.succeed(
+              carry.linkLabel === undefined
+                ? Option.none()
+                : Option.some({ label: carry.linkLabel } as never),
             ),
         }),
-        Layer.mock(RelayDeviceRepository)({ getDevice: () => Effect.succeed(Option.none()) }),
         // Every agent here is a Claude whose home is `carry.home`.
         Layer.mock(ProviderService)({
           getInstanceInfo: () =>
@@ -333,7 +351,10 @@ const pack = (
   repos: ReturnType<typeof makeRepos>,
   nativeSession?: NativeSessionExport | null,
   state?: PeerMoveThreadState,
-  room?: Pick<MoveExportInput, "room" | "outsideWork" | "family"> & {
+  room?: Pick<MoveExportInput, "room" | "outsideWork" | "family" | "linkLineage"> & {
+    /** What the move says the computer it leaves calls itself. */
+    readonly sourceEnvironmentId?: EnvironmentId | undefined;
+    readonly sourceLabel?: string;
     readonly thread?: OrchestrationThread;
     /** Another thread of the same checkout (a family member), as its own transfer. */
     readonly threadId?: ThreadId;
@@ -351,6 +372,7 @@ const pack = (
       transferId,
       dir,
       family: room?.family,
+      linkLineage: room?.linkLineage,
       attachmentsDir: path.join(repos.root, "attachments"),
       thread: room?.thread ?? movingThread(),
       room: room?.room,
@@ -359,8 +381,8 @@ const pack = (
       subdirectory: "",
       canonicalKey: "example.com/repo",
       source: {
-        environmentId: EnvironmentId.make("environment-windows"),
-        environmentLabel: "Windows PC",
+        environmentId: room?.sourceEnvironmentId ?? EnvironmentId.make("environment-windows"),
+        environmentLabel: room?.sourceLabel ?? "Windows PC",
         threadId: room?.threadId ?? ThreadId.make("thread-a"),
       },
       agent,
@@ -1931,5 +1953,194 @@ describe("a family moving here (Part 3f, (g))", () => {
     assert.isNull(
       moveManifestRefusal({ ...base, family: { id: FAMILY, sharesCheckoutOf: PARENT } }),
     );
+  });
+});
+
+describe("a thread moving across its link (Part 3f, (h))", () => {
+  const WINDOWS = "environment-windows";
+  const PARENT_THERE = ThreadId.make("thread-parent-on-windows");
+  const PARENT_HERE = ThreadId.make("thread-parent-here");
+  const remoteParent = { remoteParent: { threadId: PARENT_THERE, title: "Ship it" } };
+  const home = { home: { parentThreadId: PARENT_HERE } };
+  const importOf = (dispatched: ReadonlyArray<OrchestrationCommand>) => {
+    const found = dispatched.find((command) => command.type === "thread.import");
+    return found?.type === "thread.import" ? found : assert.fail("nothing was imported");
+  };
+  /** This computer's thread, holding `threadId` on `environmentId` as its child there. */
+  const parentHere = (environmentId: string, threadId: string) => ({
+    threadId: PARENT_HERE,
+    projectId: ProjectId.make("project-b"),
+    deletedAt: null,
+    move: null,
+    pendingMove: null,
+    parentThreadId: null,
+    attachedToParent: 0,
+    childRequests: {
+      open: [],
+      deliveryEpoch: 0,
+      startsSinceUser: 0,
+      sendsSinceUser: 0,
+      pendingNotes: [],
+      remoteChildren: [
+        {
+          environmentId,
+          label: "Windows PC",
+          threadId,
+          handle: "Agent",
+          title: "Move me",
+          attachmentEpoch: 0,
+          cachedStatus: "idle",
+          updatedAt: "2026-11-17T10:00:00.000Z",
+        },
+      ],
+    },
+  });
+  const moved = (
+    repos: ReturnType<typeof makeRepos>,
+    dispatched: OrchestrationCommand[],
+    lineage: NonNullable<MoveExportInput["linkLineage"]>,
+    carry: Partial<CarryRecord> & { readonly sourceEnvironmentId?: EnvironmentId } = {},
+  ) =>
+    Effect.gen(function* () {
+      const packed = yield* pack(repos, null, undefined, {
+        linkLineage: lineage,
+        sourceEnvironmentId: carry.sourceEnvironmentId,
+        // What the move says it is called never names anything here.
+        sourceLabel: "Not Windows",
+      });
+      return yield* deliver(packed.manifest, packed.payload);
+    }).pipe(
+      Effect.provide(
+        testLayer(repos, dispatched, "allowed", () => false, [], {
+          home: os.tmpdir(),
+          adopted: [],
+          linkLabel: "Windows PC",
+          ...carry,
+        }),
+      ),
+    );
+
+  it.live("a child alone stays its parent's child, its link taken from the link itself", () => {
+    const repos = makeRepos();
+    const dispatched: OrchestrationCommand[] = [];
+    return Effect.gen(function* () {
+      const state = yield* moved(repos, dispatched, remoteParent, {
+        pinnedEnvironmentId: WINDOWS,
+      });
+      assert.equal(state.status, "committed");
+      assert.equal(state.keptParent, true);
+      const imported = importOf(dispatched);
+      assert.deepEqual(imported.remoteOrigin, {
+        linkDeviceId: "device-windows",
+        environmentId: EnvironmentId.make(WINDOWS),
+        environmentPinned: true,
+        environmentLabel: "Windows PC",
+        threadId: PARENT_THERE,
+        threadTitle: "Ship it",
+      });
+      assert.equal(imported.movedFrom.environmentId, WINDOWS);
+      assert.isUndefined(imported.lineage);
+      assert.isUndefined(imported.adopt);
+    });
+  });
+
+  it.live("a link that can't prove its computer, or a forged one, keeps no parent", () => {
+    const unpinned = makeRepos();
+    const forged = makeRepos();
+    const first: OrchestrationCommand[] = [];
+    const second: OrchestrationCommand[] = [];
+    return Effect.gen(function* () {
+      const plain = yield* moved(unpinned, first, remoteParent);
+      assert.equal(plain.status, "committed");
+      assert.isUndefined(plain.keptParent);
+      assert.isUndefined(importOf(first).remoteOrigin);
+      assert.include(
+        importOf(first).arrival?.left ?? [],
+        "This computer can't confirm its link to Windows PC, so this is its own thread and 'Ship it' there can't reach it.",
+      );
+      // The move says it came from a computer the link wasn't made for.
+      const lied = yield* moved(forged, second, remoteParent, {
+        pinnedEnvironmentId: WINDOWS,
+        sourceEnvironmentId: EnvironmentId.make("environment-mac"),
+      });
+      assert.equal(lied.status, "committed");
+      assert.isUndefined(lied.keptParent);
+      assert.isUndefined(importOf(second).remoteOrigin);
+    });
+  });
+
+  it.live("comes home under its parent only when this computer's own records hold it", () => {
+    const repos = makeRepos();
+    const dispatched: OrchestrationCommand[] = [];
+    return Effect.gen(function* () {
+      yield* moved(repos, dispatched, home, {
+        pinnedEnvironmentId: WINDOWS,
+        threadsHere: [parentHere(WINDOWS, "thread-a")],
+      });
+      const imported = importOf(dispatched);
+      assert.deepEqual(imported.adopt, { parentThreadId: PARENT_HERE });
+      assert.isUndefined(imported.remoteOrigin);
+    });
+  });
+
+  it.live("a home claim this computer's records don't back lands as its own thread", () => {
+    const cases = [
+      // The parent here never held that thread.
+      { pinnedEnvironmentId: WINDOWS, threadsHere: [parentHere(WINDOWS, "thread-other")] },
+      // It held a thread of that id on another computer, not the one this link is for.
+      { pinnedEnvironmentId: WINDOWS, threadsHere: [parentHere("environment-mac", "thread-a")] },
+      // A link that can't prove its computer.
+      { threadsHere: [parentHere(WINDOWS, "thread-a")] },
+      // No such parent here at all.
+      { pinnedEnvironmentId: WINDOWS },
+    ];
+    return Effect.forEach(cases, (carry) => {
+      const repos = makeRepos();
+      const dispatched: OrchestrationCommand[] = [];
+      return moved(repos, dispatched, home, carry).pipe(
+        Effect.map((state) => {
+          assert.equal(state.status, "committed");
+          const imported = importOf(dispatched);
+          assert.isUndefined(imported.adopt);
+          assert.isUndefined(imported.lineage);
+          assert.include(
+            imported.arrival?.left ?? [],
+            "The thread that started it isn't on this computer anymore, so this is its own thread.",
+          );
+        }),
+      );
+    });
+  });
+
+  it("refuses a manifest naming both a parent and a home, itself, or a family too", () => {
+    const base = {
+      totalBytes: 0,
+      sha256: "x",
+      parts: [],
+      source: { environmentId: "e", environmentLabel: "Windows PC", threadId: "thread-a" },
+      git: { headSha: "h", branch: null, baseSha: null },
+      thread: { messages: [], activities: [] },
+    } as unknown as PeerMoveManifest;
+    assert.include(
+      moveManifestRefusal({ ...base, linkLineage: { ...remoteParent, ...home } }),
+      "not both",
+    );
+    assert.include(moveManifestRefusal({ ...base, linkLineage: {} }), "not both");
+    assert.include(
+      moveManifestRefusal({
+        ...base,
+        linkLineage: { remoteParent: { threadId: ThreadId.make("thread-a"), title: "Me" } },
+      }),
+      "itself as its parent",
+    );
+    assert.include(
+      moveManifestRefusal({
+        ...base,
+        linkLineage: home,
+        family: { id: ThreadMoveFamilyId.make("family-1") },
+      }),
+      "moves on no link",
+    );
+    assert.isNull(moveManifestRefusal({ ...base, linkLineage: home }));
   });
 });

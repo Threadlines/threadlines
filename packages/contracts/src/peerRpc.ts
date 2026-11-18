@@ -277,6 +277,16 @@ export const PeerDescriptor = Schema.Struct({
    */
   moveFamilies: Schema.optional(Schema.Boolean),
   /**
+   * Takes a thread across the link it was started over (docs/design/fleet.md,
+   * Part 3f, (h)): a child moving without its parent stays that parent's
+   * child here (PeerMoveManifest's `linkLineage.remoteParent`), and a thread
+   * this computer's agent started there comes back home as its child again
+   * (`linkLineage.home`); `keptParent` on the committed answer. Absent: an
+   * older server, which would land either as a plain thread, so neither is
+   * ever sent to it.
+   */
+  moveLinkLineage: Schema.optional(Schema.Boolean),
+  /**
    * Says how the caller's threads here are filed (`filing` on `thread` watch
    * events) and takes `peer.thread.wrap`. Absent: an older server that can't.
    */
@@ -729,6 +739,32 @@ export const PeerMoveFamily = Schema.Struct({
 export type PeerMoveFamily = typeof PeerMoveFamily.Type;
 
 /**
+ * A thread moving across the link its work came over (docs/design/fleet.md,
+ * Part 3f, (h)), with the sending computer's ids. Only to a computer that
+ * says `moveLinkLineage`, and never with `family`. Exactly one of:
+ *
+ * - `remoteParent`: a child moving without its parent, which stays on the
+ *   sending computer. The receiving computer may land it as that parent's
+ *   child across the link: it writes the link and the computer itself
+ *   (`remoteOrigin`), from the link the move came over and only when that
+ *   link's computer is pinned; the sender names only its own thread.
+ * - `home`: a thread an agent on the receiving computer started on the
+ *   sending one, coming back. The receiving computer lands it under
+ *   `parentThreadId` only when its own records already hold this very
+ *   thread, on the sending computer, as that parent's child.
+ *
+ * Neither is ever trusted beyond that: anything else lands as a thread of
+ * its own.
+ */
+export const PeerMoveLinkLineage = Schema.Struct({
+  remoteParent: Schema.optional(
+    Schema.Struct({ threadId: ThreadId, title: TrimmedNonEmptyString }),
+  ),
+  home: Schema.optional(Schema.Struct({ parentThreadId: ThreadId })),
+});
+export type PeerMoveLinkLineage = typeof PeerMoveLinkLineage.Type;
+
+/**
  * A General Chats thread moving here (docs/design/fleet.md, Part 3e, (d)):
  * no project to match and no git; its folder's files are the `file` parts,
  * by their paths in the folder. Only to a computer that says
@@ -751,6 +787,8 @@ export const PeerMoveScratchManifest = Schema.Struct({
   sessionOmitted: Schema.optional(Schema.Literal("too_large")),
   /** It moves with its family: see PeerMoveFamily. */
   family: Schema.optional(PeerMoveFamily),
+  /** It moves across the link its work came over: see PeerMoveLinkLineage. */
+  linkLineage: Schema.optional(PeerMoveLinkLineage),
 });
 export type PeerMoveScratchManifest = typeof PeerMoveScratchManifest.Type;
 
@@ -800,6 +838,8 @@ export const PeerMoveGitManifest = Schema.Struct({
    * has no bundle, diff or files, and `git` says where that folder stands.
    */
   family: Schema.optional(PeerMoveFamily),
+  /** It moves across the link its work came over: see PeerMoveLinkLineage. */
+  linkLineage: Schema.optional(PeerMoveLinkLineage),
 });
 export type PeerMoveGitManifest = typeof PeerMoveGitManifest.Type;
 
@@ -877,6 +917,13 @@ export const PeerMoveState = Schema.Struct({
    * another reason, or an older server.
    */
   abortCode: Schema.optional(PeerMoveAbortCode),
+  /**
+   * `committed`: it landed as the child of the thread that started it on the
+   * calling computer, across this link (PeerMoveLinkLineage `remoteParent`),
+   * so that thread can still reach it here. Absent: it is a thread of its
+   * own here, or an older server.
+   */
+  keptParent: Schema.optional(Schema.Literal(true)),
 });
 export type PeerMoveState = typeof PeerMoveState.Type;
 

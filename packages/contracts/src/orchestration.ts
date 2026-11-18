@@ -884,6 +884,12 @@ export const ThreadMoveTakes = Schema.Struct({
    * stay here as their own threads.
    */
   families: Schema.optional(Schema.Literal(true)),
+  /**
+   * A thread moving across the link its work came over (docs/design/fleet.md,
+   * Part 3f, (h)): a child without its parent, which stays its parent's child
+   * there, and a thread another computer's agent started, going back home.
+   */
+  linkLineage: Schema.optional(Schema.Literal(true)),
 });
 export type ThreadMoveTakes = typeof ThreadMoveTakes.Type;
 
@@ -5445,6 +5451,12 @@ const ThreadMoveCompleteCommand = Schema.Struct({
   threadId: ThreadId,
   transferId: ThreadMoveId,
   movedThreadId: ThreadId,
+  /**
+   * A child that moved without its parent landed there as its parent's child
+   * across the link (PeerMoveState.keptParent): the parent here keeps it as a
+   * child on that computer. Absent: it is a thread of its own there.
+   */
+  keptParent: Schema.optional(Schema.Literal(true)),
   createdAt: IsoDateTime,
 });
 
@@ -5597,6 +5609,22 @@ const ThreadImportCommand = Schema.Struct({
    * family, never from a path the other computer named.
    */
   worktreeOrigin: Schema.optional(ThreadWorktreeOrigin),
+  /**
+   * A child that moved without its parent (docs/design/fleet.md, Part 3f,
+   * (h)): it lands as that parent's child across the link, fenced for good,
+   * as a thread that link started here is. Built by the link's move handler
+   * from the link the move came over (never from the manifest), only for a
+   * link whose computer is pinned, and for the computer it came from.
+   */
+  remoteOrigin: Schema.optional(ThreadRemoteOrigin),
+  /**
+   * A thread this computer's agent started on another computer, coming home
+   * (docs/design/fleet.md, Part 3f, (h)): it lands as `parentThreadId`'s
+   * child here, and that parent stops keeping it as a child on the computer
+   * it came from. Only when the parent here already holds exactly this
+   * thread there (`movedFrom`) as its child.
+   */
+  adopt: Schema.optional(Schema.Struct({ parentThreadId: ThreadId })),
   /**
    * What the "Moved here" line says came along (`brought`) and didn't
    * (`left`), in plain words, and the message Threadlines writes for the
@@ -6174,6 +6202,12 @@ export const ThreadRemoteCancelQueuedPayload = Schema.Struct({
 export const ThreadRemoteChildUpdatedPayload = Schema.Struct({
   threadId: ThreadId,
   child: RemoteChildThread,
+  /**
+   * The child left that computer for this one and is a child here again
+   * (docs/design/fleet.md, Part 3f, (h), "Moving back home"): its record goes.
+   * Absent: the record is written as `child` says.
+   */
+  removed: Schema.optional(Schema.Literal(true)),
   updatedAt: IsoDateTime,
 });
 

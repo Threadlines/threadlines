@@ -1961,6 +1961,26 @@ const make = Effect.gen(function* () {
           yield* publishThreadStatus(event.payload.threadId);
           return;
         }
+        // A thread this link started moved on (back to the computer that
+        // started it, docs/design/fleet.md, Part 3f, (h)): what it was asked
+        // here ends, as an archive ends it.
+        case "thread.moved-away": {
+          const rows = yield* ledger
+            .listByThread(event.payload.threadId)
+            .pipe(Effect.orElseSucceed(() => []));
+          if (rows.every(isTerminalLinkRequest)) return;
+          const thread = yield* readThread(event.payload.threadId);
+          const label = thread?.move?.target.label ?? "another computer";
+          for (const row of rows) {
+            if (isTerminalLinkRequest(row)) continue;
+            yield* settle(
+              row,
+              "failed",
+              `'${thread?.title ?? "That thread"}' moved to ${label} before it finished.`,
+            );
+          }
+          return;
+        }
         default:
           return;
       }

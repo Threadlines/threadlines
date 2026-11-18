@@ -1183,9 +1183,18 @@ const make = Effect.gen(function* () {
   const onEvent = (event: OrchestrationEvent) =>
     Effect.gen(function* () {
       if (event.type === "thread.remote-child-updated") {
-        // Followed from its first record; a word the user gave here goes out.
         const child = event.payload.child;
         const environmentId = child.environmentId;
+        // Came home (docs/design/fleet.md, Part 3f, (h)): no longer followed
+        // there, so an open watch starts over without it.
+        if (event.payload.removed === true) {
+          holdersByChild
+            .get(childKey(environmentId, child.threadId))
+            ?.delete(event.payload.threadId);
+          if (watching.has(environmentId)) rewatch.add(environmentId);
+          return;
+        }
+        // Followed from its first record; a word the user gave here goes out.
         follow(environmentId, event.payload.threadId, child.threadId);
         const owed = wrapOwed(child);
         if (owed) addTo(wrapOwers, environmentId, event.payload.threadId);
