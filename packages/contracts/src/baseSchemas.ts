@@ -80,6 +80,9 @@ export type CommandRunId = typeof CommandRunId.Type;
 /** A settings change an agent asked for (`settings_change`), answered on a card. */
 export const SettingsChangeRequestId = makeEntityId("SettingsChangeRequestId");
 export type SettingsChangeRequestId = typeof SettingsChangeRequestId.Type;
+/** A key an agent asked the user for (`secret_request`), answered on a card. */
+export const SecretRequestId = makeEntityId("SecretRequestId");
+export type SecretRequestId = typeof SecretRequestId.Type;
 /** One piece of work a thread's agent asked of a thread it started. */
 export const ChildRequestId = makeEntityId("ChildRequestId");
 export type ChildRequestId = typeof ChildRequestId.Type;

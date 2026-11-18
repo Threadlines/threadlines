@@ -186,6 +186,23 @@ it.layer(NodeServices.layer)("ServerSecretStoreLive", (it) => {
     }).pipe(Effect.provide(makeConcurrentCreateSecretStoreLayer())),
   );
 
+  it.effect("removes a crashed write's leftover temp copy when it starts", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      yield* fileSystem.makeDirectory(config.secretsDir, { recursive: true });
+      const leftover = `${config.secretsDir}/session-signing-key.bin.0c1d.tmp`;
+      yield* fileSystem.writeFileString(leftover, "a plain copy");
+
+      const secretStore = yield* Effect.service(ServerSecretStore).pipe(
+        Effect.provide(ServerSecretStoreLive),
+      );
+
+      expect(yield* fileSystem.exists(leftover)).toBe(false);
+      expect(yield* secretStore.list("")).toEqual([]);
+    }).pipe(Effect.provide(Layer.merge(makeServerConfigLayer(), NodeServices.layer))),
+  );
+
   it.effect("uses restrictive permissions for the secret directory and files", () =>
     Effect.gen(function* () {
       const chmodCalls: Array<{ readonly path: string; readonly mode: number }> = [];
@@ -198,6 +215,9 @@ it.layer(NodeServices.layer)("ServerSecretStoreLive", (it) => {
             ...fileSystem,
             makeDirectory: () => Effect.void,
             writeFile: () => Effect.void,
+            // `set` writes its temp file through an owner-only open.
+            open: () => Effect.succeed({ writeAll: () => Effect.void, sync: Effect.void } as never),
+            readDirectory: () => Effect.succeed([]),
             rename: () => Effect.void,
             chmod: (path, mode) =>
               Effect.sync(() => {

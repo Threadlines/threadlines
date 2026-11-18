@@ -8,6 +8,7 @@ import type {
   OrchestrationCheckBack,
   OrchestrationCommandRequest,
   OrchestrationCommandRun,
+  OrchestrationSecretRequest,
   OrchestrationSettingsChangeRequest,
   PullRequestMergeMethod,
   ChatFileAttachmentKind,
@@ -267,6 +268,12 @@ export interface Thread {
    */
   settingsRequests?: ReadonlyArray<OrchestrationSettingsChangeRequest>;
   /**
+   * See OrchestrationThread.secretRequests: keys its agents asked the user
+   * for (docs/design/secret-requests.md). Carried by the thread's detail
+   * stream only, so absent until it loads. Never holds a value.
+   */
+  secretRequests?: ReadonlyArray<OrchestrationSecretRequest>;
+  /**
    * Child threads (docs/design/child-threads.md): the thread whose agent
    * started this one, kept after it is separated. Absent or null: none.
    */
@@ -292,6 +299,8 @@ export interface Thread {
   pendingChildApproval?: boolean;
   /** A settings change its agent asked for is on its card, or being made. */
   pendingSettingsChange?: boolean;
+  /** A key its agent asked for is on its card, or being saved. */
+  pendingSecretRequest?: boolean;
   /** See ThreadShell.remoteOrigin. */
   remoteOrigin?: ThreadRemoteOrigin | null;
   /** See ThreadShell.move. */
@@ -417,6 +426,8 @@ export interface ThreadShell {
   pendingChildApproval?: boolean;
   /** A settings change its agent asked for is on its card, or being made. */
   pendingSettingsChange?: boolean;
+  /** A key its agent asked for is on its card, or being saved. */
+  pendingSecretRequest?: boolean;
   /**
    * Started by an agent on a linked computer: which computer and thread.
    * Absent or null: started on this thread's own computer.
@@ -553,6 +564,8 @@ export interface SidebarThreadSummary {
   pendingChildApproval?: boolean;
   /** See ThreadShell.pendingSettingsChange. */
   pendingSettingsChange?: boolean;
+  /** See ThreadShell.pendingSecretRequest. */
+  pendingSecretRequest?: boolean;
   /**
    * The thread's agent asked to create or change a scheduled task and a card
    * waits for the user's answer (from that computer's scheduled tasks feed,

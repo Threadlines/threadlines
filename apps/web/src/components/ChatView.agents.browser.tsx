@@ -14,8 +14,10 @@ import {
   type ProjectId,
   ProviderInstanceId,
   type OrchestrationEvent,
+  type OrchestrationSecretRequest,
   type OrchestrationSettingsChangeRequest,
   type RoomAgentRequestId,
+  SecretRequestId,
   SettingsChangeRequestId,
   type SideTurnId,
   type ThreadId,
@@ -23,6 +25,8 @@ import {
   type TurnId,
 } from "@threadlines/contracts";
 import { createModelCapabilities } from "@threadlines/shared/model";
+import { secretAnswerMessageId } from "@threadlines/shared/secretRequests";
+import * as Effect from "effect/Effect";
 import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
 import { page, userEvent } from "vite-plus/test/browser";
 import { describe, expect, it, vi } from "vite-plus/test";
@@ -71,7 +75,10 @@ import {
   waitForURL,
   fixture,
   rpcHarness,
+  createUserMessage,
 } from "./ChatView.browser-harness";
+import { selectSidebarThreadSummaryByRef, useStore } from "../store";
+import { resolveThreadStatusPill } from "./Sidebar.logic";
 import { readThemePreference } from "../hooks/useTheme";
 import { nextFrames, readAfterEachPaint } from "../lib/frameProbe.browser-harness";
 
@@ -1977,6 +1984,436 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
           allow: false,
         });
         expect(respondRequests()[1]!["claim"]).toBeUndefined();
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+  });
+
+  describe("an agent's request for a key", () => {
+    const CANARY = "sk_test_canary_4f9a";
+    const secretRequest = (
+      id: string,
+      overrides: Partial<OrchestrationSecretRequest> = {},
+    ): OrchestrationSecretRequest => ({
+      requestId: SecretRequestId.make(id),
+      participantId: null,
+      turnId: "turn-secret" as TurnId,
+      name: "STRIPE_SECRET_KEY",
+      reason: "To run the checkout tests against Stripe test mode.",
+      use: { kind: "env_file", path: ".env.local" },
+      replaces: false,
+      status: "waiting",
+      createdAt: isoAt(301),
+      noted: false,
+      ...overrides,
+    });
+    const snapshotWith = (
+      requests: ReadonlyArray<OrchestrationSecretRequest>,
+      extraMessages: ReadonlyArray<ReturnType<typeof createUserMessage>> = [],
+    ) => {
+      const base = createSnapshotForTargetUser({
+        targetMessageId: "msg-user-secret-request" as MessageId,
+        targetText: "set up stripe",
+      });
+      return {
+        ...base,
+        threads: base.threads.map((thread) =>
+          thread.id === THREAD_ID
+            ? {
+                ...thread,
+                secretRequests: requests,
+                messages: [...thread.messages, ...extraMessages],
+              }
+            : thread,
+        ),
+      };
+    };
+    let liveSequence = 0;
+    const sendLive = <T extends OrchestrationEvent["type"]>(
+      type: T,
+      payload: Extract<OrchestrationEvent, { type: T }>["payload"],
+    ) => {
+      liveSequence += 1;
+      rpcHarness.emitStreamValue(ORCHESTRATION_WS_METHODS.subscribeThread, {
+        kind: "event",
+        event: {
+          sequence: fixture.snapshot.snapshotSequence + liveSequence,
+          eventId: EventId.make(`evt-secret-request-${liveSequence}`),
+          aggregateKind: "thread",
+          aggregateId: THREAD_ID,
+          occurredAt: NOW_ISO,
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          type,
+          payload,
+        },
+      });
+    };
+    const respondRequests = () =>
+      wsRequests.filter((request) => request._tag === WS_METHODS.secretRequestRespond);
+    const panel = () =>
+      waitForElement(
+        () => document.querySelector<HTMLElement>('[data-testid="secret-request-panel"]'),
+        "Unable to find the key card.",
+      );
+    const field = (card: HTMLElement) =>
+      card.querySelector<HTMLInputElement | HTMLTextAreaElement>(
+        '[data-testid="secret-request-panel-field"]',
+      );
+    const button = (card: HTMLElement, name: string) =>
+      [...card.querySelectorAll<HTMLButtonElement>("button")].find(
+        (candidate) => candidate.textContent === name,
+      )!;
+    const text = (card: HTMLElement, testId: string) =>
+      card.querySelector(`[data-testid="secret-request-panel-${testId}"]`)?.textContent ?? null;
+    /** The value as it went over the wire, where the client unwrapped it to encode the frame. */
+    const sentValue = (request: Record<string, unknown>) =>
+      (request["answer"] as { readonly value?: unknown }).value;
+    const claimOf = (request: Record<string, unknown>) => ({
+      claimId: request["claimId"] as string,
+      deviceLabel: request["deviceLabel"] as string,
+    });
+    /** Whether the typed value is anywhere the app keeps state. */
+    const valueKeptAnywhere = () => {
+      const storage = [localStorage, sessionStorage].flatMap((store) =>
+        Object.keys(store).map((key) => `${key}=${store.getItem(key) ?? ""}`),
+      );
+      return (
+        storage.some((entry) => entry.includes(CANARY)) ||
+        JSON.stringify(useStore.getState()).includes(CANARY)
+      );
+    };
+    const deferred = <T,>() => {
+      let resolve!: (value: T) => void;
+      const promise = new Promise<T>((settle) => {
+        resolve = settle;
+      });
+      return { promise, resolve };
+    };
+    const waitOptions = { timeout: 8_000, interval: 16 };
+
+    it("shows Threadlines' own lines about where the key goes, and Save sends it once", async () => {
+      const request = secretRequest("secret-request-save", { replaces: true });
+      const answer = deferred<unknown>();
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: snapshotWith([request]),
+        resolveRpc: (body) =>
+          body._tag === WS_METHODS.secretRequestRespond ? answer.promise : undefined,
+      });
+
+      try {
+        const card = await panel();
+        expect(text(card, "heading")).toMatch(/.+ is asking for a key$/);
+        expect(text(card, "name")).toBe("STRIPE_SECRET_KEY");
+        expect(text(card, "reason")).toMatch(
+          / says: To run the checkout tests against Stripe test mode\.$/,
+        );
+        const computer = readPrimaryEnvironmentDescriptor()?.label;
+        expect(text(card, "replaces")).toBe(
+          "Replaces the STRIPE_SECRET_KEY already in .env.local.",
+        );
+        expect(text(card, "destination")).toBe(
+          `Saved as STRIPE_SECRET_KEY in .env.local, in this thread's folder on ${computer}. It stays out of the chat. The agent can read that file.`,
+        );
+        // A password field no password manager fills or saves, and not part
+        // of the message box's form.
+        const input = field(card) as HTMLInputElement;
+        expect(input.type).toBe("password");
+        expect(input.autocomplete).toBe("new-password");
+        expect(input.getAttribute("data-1p-ignore")).not.toBeNull();
+        expect(input.getAttribute("data-lpignore")).toBe("true");
+        expect(input.form).toBeNull();
+        expect(button(card, "Save").disabled).toBe(true);
+        // The sidebar shows the thread waits on the user.
+        const summary = selectSidebarThreadSummaryByRef(useStore.getState(), THREAD_REF);
+        expect(summary && resolveThreadStatusPill({ thread: summary })?.label).toBe(
+          "Pending Approval",
+        );
+
+        await userEvent.fill(input, CANARY);
+        const save = button(card, "Save");
+        expect(save.disabled).toBe(false);
+        save.click();
+        save.click();
+        await vi.waitFor(() => expect(respondRequests()).toHaveLength(1), waitOptions);
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect(respondRequests()).toHaveLength(1);
+        const sent = respondRequests()[0]!;
+        expect(sent).toMatchObject({
+          threadId: THREAD_ID,
+          requestId: request.requestId,
+          claimId: expect.any(String),
+          deviceLabel: expect.any(String),
+          answer: { type: "save" },
+        });
+        expect(sentValue(sent)).toBe(CANARY);
+        expect(valueKeptAnywhere()).toBe(false);
+
+        // The computer claims and saves it: the card goes.
+        sendLive("thread.secret-request-claimed", {
+          threadId: THREAD_ID,
+          requestId: request.requestId,
+          claim: claimOf(sent),
+          claimedAt: isoAt(302),
+        });
+        answer.resolve({ outcome: "saved" });
+        sendLive("thread.secret-request-settled", {
+          threadId: THREAD_ID,
+          requestId: request.requestId,
+          ending: "saved",
+          savedAt: isoAt(303),
+          noted: true,
+          settledAt: isoAt(303),
+        });
+        await vi.waitFor(
+          () => expect(document.querySelector('[data-testid="secret-request-panel"]')).toBeNull(),
+          waitOptions,
+        );
+        expect(valueKeptAnywhere()).toBe(false);
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("keeps the card and the field on a rejected value, and retries under the same claim", async () => {
+      const request = secretRequest("secret-request-rejected");
+      let calls = 0;
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: snapshotWith([request]),
+        resolveRpc: (body) => {
+          if (body._tag !== WS_METHODS.secretRequestRespond) return undefined;
+          calls += 1;
+          return calls === 1
+            ? {
+                outcome: "rejected",
+                detail:
+                  "An env file can't hold this value as typed. Ask the agent to request it for its commands instead.",
+              }
+            : Effect.die(new Error("the socket closed"));
+        },
+      });
+
+      try {
+        const card = await panel();
+        await userEvent.fill(field(card)!, CANARY);
+        button(card, "Save").click();
+        await vi.waitFor(
+          () =>
+            expect(text(card, "problem")).toBe(
+              "An env file can't hold this value as typed. Ask the agent to request it for its commands instead.",
+            ),
+          waitOptions,
+        );
+        expect(field(card)?.value).toBe(CANARY);
+
+        // A send that never got its answer keeps the field too, and the
+        // next Save is a retry under the same claim.
+        button(card, "Save").click();
+        await vi.waitFor(
+          () =>
+            expect(text(card, "problem")).toBe(
+              `Couldn't reach ${readPrimaryEnvironmentDescriptor()?.label}. Try again.`,
+            ),
+          waitOptions,
+        );
+        expect(field(card)?.value).toBe(CANARY);
+        const [first, second] = respondRequests();
+        expect(claimOf(second!).claimId).toBe(claimOf(first!).claimId);
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("clears typed text when the card is replaced or answered on another device, and says why", async () => {
+      const first = secretRequest("secret-request-first");
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: snapshotWith([first]),
+      });
+
+      try {
+        await userEvent.fill(field(await panel())!, CANARY);
+        // The agent asks again for the same key: a fresh card, empty.
+        const newer = secretRequest("secret-request-newer", { createdAt: isoAt(302) });
+        sendLive("thread.secret-request-created", {
+          threadId: THREAD_ID,
+          request: newer,
+          replaces: [first.requestId],
+        });
+        await vi.waitFor(async () => {
+          const card = await panel();
+          expect(card.parentElement?.innerHTML).not.toContain(CANARY);
+          expect(field(card)?.value).toBe("");
+          expect(document.body.textContent).toContain(
+            "The agent asked for STRIPE_SECRET_KEY again",
+          );
+        }, waitOptions);
+
+        // Typed again, then answered on a phone.
+        await userEvent.fill(field(await panel())!, CANARY);
+        sendLive("thread.secret-request-claimed", {
+          threadId: THREAD_ID,
+          requestId: newer.requestId,
+          claim: { claimId: "claim-phone", deviceLabel: "iPhone" },
+          claimedAt: isoAt(303),
+        });
+        await vi.waitFor(async () => {
+          const card = await panel();
+          expect(text(card, "status")).toBe("Answered on iPhone");
+          expect(field(card)).toBeNull();
+        }, waitOptions);
+        expect(respondRequests()).toHaveLength(0);
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("offers to remove edge spaces without trimming, and Not now declines under a claim", async () => {
+      const request = secretRequest("secret-request-spaces", {
+        use: { kind: "commands" },
+      });
+      const second = secretRequest("secret-request-second", {
+        name: "OPENAI_API_KEY",
+        createdAt: isoAt(302),
+      });
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: snapshotWith([request, second]),
+        resolveRpc: (body) =>
+          body._tag === WS_METHODS.secretRequestRespond ? { outcome: "declined" } : undefined,
+      });
+
+      try {
+        const card = await panel();
+        expect(text(card, "position")).toBe("1 of 2");
+        expect(text(card, "destination")).toMatch(
+          /^Kept in a private file on .+ until .+\. It stays out of the chat\. The agent can read it\.$/,
+        );
+        // A one-line field would drop the line break of a two-line paste and
+        // save an altered key: the paste is refused with the reason instead.
+        const pasted = new DataTransfer();
+        pasted.setData("text/plain", `${CANARY}\nsecond-line`);
+        field(card)!.dispatchEvent(
+          new ClipboardEvent("paste", { clipboardData: pasted, bubbles: true, cancelable: true }),
+        );
+        await vi.waitFor(() => expect(text(card, "problem")).toContain("line break"), waitOptions);
+        expect(field(card)?.value).toBe("");
+
+        await userEvent.fill(field(card)!, ` ${CANARY} `);
+        await vi.waitFor(
+          () => expect(text(card, "spaces")).toContain("This starts or ends with a space."),
+          waitOptions,
+        );
+        expect(field(card)?.value).toBe(` ${CANARY} `);
+        button(card, "Remove spaces").click();
+        await vi.waitFor(() => expect(field(card)?.value).toBe(CANARY), waitOptions);
+        expect(text(card, "spaces")).toBeNull();
+
+        button(card, "Not now").click();
+        await vi.waitFor(() => expect(respondRequests()).toHaveLength(1), waitOptions);
+        expect(respondRequests()[0]).toMatchObject({
+          requestId: request.requestId,
+          claimId: expect.any(String),
+          answer: { type: "decline" },
+        });
+        expect(sentValue(respondRequests()[0]!)).toBeUndefined();
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("turns Save off when the connection to the computer isn't encrypted", async () => {
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: snapshotWith([]),
+      });
+
+      try {
+        await waitForElement(
+          () => document.querySelector<HTMLElement>('[data-chat-composer-form="true"]'),
+          "Unable to find the composer.",
+        );
+        // This app reaches its server by a plain address on the network.
+        window.desktopBridge = {
+          getLocalEnvironmentBootstrap: () => ({
+            httpBaseUrl: "http://192.168.1.20:3773",
+            wsBaseUrl: "ws://192.168.1.20:3773",
+          }),
+        } as unknown as NonNullable<typeof window.desktopBridge>;
+        sendLive("thread.secret-request-created", {
+          threadId: THREAD_ID,
+          request: secretRequest("secret-request-unprotected"),
+        });
+        const card = await panel();
+        expect(text(card, "unprotected")).toBe(
+          `The connection to ${readPrimaryEnvironmentDescriptor()?.label} isn't encrypted, so a key can't be sent from here. Answer on that computer.`,
+        );
+        expect(button(card, "Save").disabled).toBe(true);
+        expect(field(card)?.disabled).toBe(true);
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("draws the saved message as a quiet row, with Remove now while the file is there", async () => {
+      const saved = secretRequest("secret-request-saved", {
+        use: { kind: "commands" },
+        status: "saved",
+        claim: { claimId: "claim-1", deviceLabel: "This Mac" },
+        savedAt: isoAt(303),
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+        settledAt: isoAt(303),
+        noted: true,
+      });
+      const message = createUserMessage({
+        id: secretAnswerMessageId(saved.requestId),
+        text: "I saved STRIPE_SECRET_KEY for your commands in a private file.",
+        offsetSeconds: 400,
+      });
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: snapshotWith([saved], [message]),
+        resolveRpc: (body) =>
+          body._tag === WS_METHODS.secretRequestRemove ? Effect.void : undefined,
+      });
+
+      try {
+        const row = await waitForElement(
+          () =>
+            document.querySelector<HTMLElement>(`[data-secret-answer-row="${saved.requestId}"]`),
+          "Unable to find the saved row.",
+        );
+        expect(row.querySelector("[data-secret-answer-text]")?.textContent).toMatch(
+          /^You saved STRIPE_SECRET_KEY for the agent's commands\. Removed at .+ tomorrow\.$/,
+        );
+        // A quiet row, not the bubble the agent's message text would be.
+        expect(document.body.textContent).not.toContain("in a private file.");
+        row.querySelector<HTMLButtonElement>("[data-secret-answer-remove]")!.click();
+        await vi.waitFor(
+          () =>
+            expect(
+              wsRequests.filter((request) => request._tag === WS_METHODS.secretRequestRemove),
+            ).toEqual([
+              expect.objectContaining({ threadId: THREAD_ID, requestId: saved.requestId }),
+            ]),
+          waitOptions,
+        );
+        sendLive("thread.secret-request-removed", {
+          threadId: THREAD_ID,
+          requestId: saved.requestId,
+          removedAt: isoAt(404),
+        });
+        await vi.waitFor(() => {
+          expect(row.querySelector("[data-secret-answer-text]")?.textContent).toBe(
+            "You saved STRIPE_SECRET_KEY for the agent's commands. Removed.",
+          );
+          expect(row.querySelector("[data-secret-answer-remove]")).toBeNull();
+        }, waitOptions);
       } finally {
         await mounted.cleanup();
       }

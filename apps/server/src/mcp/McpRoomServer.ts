@@ -66,6 +66,9 @@ import { offeredModels } from "../settingsChanges/modelChoices.ts";
 import { makeSettingsChangeToolHandler } from "./settingsChangeToolHandlers.ts";
 import { ThemeLibrary } from "../themes/ThemeLibrary.ts";
 import { SettingsChangeToolkit } from "./settingsChangeTools.ts";
+import { makeSecretRequestToolHandler } from "./secretRequestToolHandlers.ts";
+import { SecretRequestToolkit } from "./secretRequestTools.ts";
+import { AgentSecretRequests } from "../secrets/AgentSecretRequests.ts";
 import { makeAlertAssistantsToolHandler } from "./alertAssistantsToolHandlers.ts";
 import { AlertAssistantsToolkit } from "./alertAssistantsTools.ts";
 import { AssistantAlerts } from "../assistants/AssistantAlerts.ts";
@@ -82,6 +85,7 @@ export const RoomEndpointToolkit = Toolkit.merge(
   ScheduleToolkit,
   GuideToolkit,
   SettingsChangeToolkit,
+  SecretRequestToolkit,
   AlertAssistantsToolkit,
 );
 
@@ -119,6 +123,9 @@ const ROOM_TOOL_REACH = {
   // Only shows a card on the caller's own thread, but asks to change app-wide
   // settings: refused while outside work limits the caller.
   settings_change: "changes",
+  // Only shows a card on the caller's own thread, and the key lands in its
+  // own folder or its own private file.
+  secret_request: "own",
   // Only marks the caller's own turn, but sends word of it off this computer:
   // refused while outside work limits the caller.
   alert_assistants: "changes",
@@ -413,6 +420,13 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
           )
         : Effect.succeed([]),
     });
+    const secretRequests = yield* AgentSecretRequests;
+    const secretRequest = makeSecretRequestToolHandler({
+      engine,
+      readThread,
+      threadFolder: secretRequests.threadFolder,
+      destinations: secretRequests.destinations,
+    });
     const assistantAlerts = yield* Effect.serviceOption(AssistantAlerts);
     const alertAssistants = makeAlertAssistantsToolHandler({
       readThread,
@@ -511,6 +525,7 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
         own("scheduled_run_finish", (scope) => scheduleHandlers.scheduled_run_finish(scope, input)),
       settings_change: (input) =>
         changes("settings_change", (scope) => settingsChange(scope, input)),
+      secret_request: (input) => own("secret_request", (scope) => secretRequest(scope, input)),
       alert_assistants: () => changes("alert_assistants", alertAssistants),
       // Listed only to runtimes granted it; a call from any other is refused
       // too (a review runtime reads the checkout and nothing else). Refused

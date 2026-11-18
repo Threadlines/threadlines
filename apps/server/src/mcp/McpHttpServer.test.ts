@@ -18,6 +18,7 @@ import * as PreviewAutomationBroker from "../preview/PreviewAutomationBroker.ts"
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
+import { AgentSecretRequests } from "../secrets/AgentSecretRequests.ts";
 import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import { normalizeMcpHttpResponse } from "./McpHttpServer.ts";
@@ -147,7 +148,7 @@ describe("McpSessionRegistry", () => {
       registry.credentialFor({ sessionKey: THREAD, browser: true, room: true, guideOnly: true }),
     );
     expect([...((await Effect.runPromise(registry.resolve(main.token)))?.roomTools ?? [])]).toEqual(
-      ["app_guide", "settings_change", "alert_assistants"],
+      ["app_guide", "settings_change", "secret_request", "alert_assistants"],
     );
     const side = await Effect.runPromise(
       registry.credentialFor({
@@ -208,6 +209,7 @@ const roomServerStubs = (
     Layer.succeed(ProviderRegistry, { getProviders: Effect.succeed([]) } as never),
     Layer.succeed(ProviderService, { listSessions: () => Effect.succeed([]) } as never),
     Layer.succeed(GitVcsDriver, {} as never),
+    Layer.succeed(AgentSecretRequests, { destinations: {} } as never),
     ServerSettingsService.layerTest(settings),
     PreviewAutomationBroker.layer,
   );
@@ -453,6 +455,7 @@ describe("MCP endpoints", () => {
           expect("tools" in result.guideOnlyRoom ? result.guideOnlyRoom.tools : []).toEqual([
             "alert_assistants",
             "app_guide",
+            "secret_request",
             "settings_change",
           ]);
           for (const listed of [result.browser, result.scheduledRunRoom]) {

@@ -13,6 +13,7 @@ import {
   MessageId,
   OutsideAgentConnectionId,
   ProjectId,
+  SecretRequestId,
   SettingsChangeRequestId,
   ThreadId,
   SideTurnId,
@@ -4394,6 +4395,110 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
       assert.deepEqual(requestsOf((yield* query.getSnapshot()).threads), folded);
       assert.deepEqual(requestsOf((yield* query.getCommandReadModel()).threads), folded);
     }),
+  );
+
+  it.effect(
+    "reads agents' key requests back as the live fold left them, with the saved answer's message",
+    () =>
+      Effect.gen(function* () {
+        const engine = yield* OrchestrationEngineService;
+        const query = yield* ProjectionSnapshotQuery;
+        const threadId = yield* createClaudeThread(engine, "secret-request");
+        const turnId = TurnId.make("turn-secrets");
+        const createdAt = "2026-05-01T00:00:01.000Z";
+        const claim = { claimId: "claim-1", deviceLabel: "iPhone" };
+        const request = (id: string, name: string) =>
+          engine.dispatch({
+            type: "thread.secret-request.request",
+            commandId: CommandId.make(`cmd-secret-${id}`),
+            threadId,
+            requestId: SecretRequestId.make(id),
+            participantId: null,
+            turnId,
+            name,
+            reason: "To run the checkout tests.",
+            use: { kind: "commands" },
+            replaces: false,
+            createdAt,
+          });
+        const shellOf = Effect.map(query.getShellSnapshot(), (shell) =>
+          shell.threads.find((thread) => thread.id === threadId),
+        );
+
+        yield* request("secret-saved", "STRIPE_SECRET_KEY");
+        yield* request("secret-declined", "GITHUB_TOKEN");
+        const waiting = yield* shellOf;
+        assert.isTrue(waiting?.pendingSecretRequest);
+        assert.isTrue(waiting?.hasPendingApprovals);
+
+        yield* engine.dispatch({
+          type: "thread.secret-request.claim",
+          commandId: CommandId.make("cmd-secret-claim"),
+          threadId,
+          requestId: SecretRequestId.make("secret-saved"),
+          claim,
+          createdAt,
+        });
+        yield* engine.dispatch({
+          type: "thread.secret-request.settle",
+          commandId: CommandId.make("cmd-secret-settle-saved"),
+          threadId,
+          requestId: SecretRequestId.make("secret-saved"),
+          ending: "saved",
+          claim,
+          savedAt: createdAt,
+          expiresAt: "2026-05-02T00:00:01.000Z",
+          message: {
+            messageId: MessageId.make("secret-answer:secret-saved"),
+            text: "I saved STRIPE_SECRET_KEY for your commands in a private file.",
+          },
+          createdAt,
+        });
+        yield* engine.dispatch({
+          type: "thread.secret-request.settle",
+          commandId: CommandId.make("cmd-secret-settle-declined"),
+          threadId,
+          requestId: SecretRequestId.make("secret-declined"),
+          ending: "declined",
+          claim: { claimId: "claim-2", deviceLabel: "iPhone" },
+          createdAt,
+        });
+        const answered = yield* shellOf;
+        assert.isFalse(answered?.pendingSecretRequest);
+        assert.isFalse(answered?.hasPendingApprovals);
+
+        // The saved answer reached the agent as its own message (queued on an
+        // idle thread), and the declined one waits as a note.
+        const detail = Option.getOrUndefined(yield* query.getThreadDetailById(threadId));
+        const queued = (detail?.queuedFollowUps ?? []).map((entry) => String(entry.messageId));
+        const sent = (detail?.messages ?? []).map((message) => String(message.id));
+        assert.include([...queued, ...sent], "secret-answer:secret-saved");
+
+        const events = yield* Stream.runCollect(engine.readEvents(0));
+        let live = createEmptyReadModel(createdAt);
+        for (const event of events) live = yield* projectEvent(live, event);
+        const requestsOf = (threads: ReadonlyArray<OrchestrationThread>) =>
+          threads.find((thread) => thread.id === threadId)?.secretRequests;
+        const folded = requestsOf(live.threads);
+        assert.deepEqual(
+          folded?.map((entry) => [String(entry.requestId), entry.status, entry.noted]),
+          [
+            ["secret-saved", "saved", true],
+            ["secret-declined", "declined", false],
+          ],
+        );
+        assert.deepEqual(
+          requestsOf(Option.toArray(yield* query.getThreadDetailById(threadId))),
+          folded,
+        );
+        assert.deepEqual(requestsOf((yield* query.getSnapshot()).threads), folded);
+        assert.deepEqual(requestsOf((yield* query.getCommandReadModel()).threads), folded);
+        assert.deepEqual(
+          (yield* query.listSecretRequests()).find((row) => row.threadId === threadId)
+            ?.secretRequests,
+          folded,
+        );
+      }),
   );
 });
 

@@ -463,6 +463,14 @@
       "types": "./src/settingsChangeState.ts",
       "import": "./src/settingsChangeState.ts"
     },
+    "./secretRequestState": {
+      "types": "./src/secretRequestState.ts",
+      "import": "./src/secretRequestState.ts"
+    },
+    "./secretRequests": {
+      "types": "./src/secretRequests.ts",
+      "import": "./src/secretRequests.ts"
+    },
     "./messageAuthor": {
       "types": "./src/messageAuthor.ts",
       "import": "./src/messageAuthor.ts"

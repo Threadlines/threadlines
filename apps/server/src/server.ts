@@ -115,6 +115,7 @@ import * as McpApps from "./mcpApps/McpApps.ts";
 import { McpAppCallRepositoryLive } from "./persistence/Layers/McpAppCalls.ts";
 import * as CommandRuns from "./commandRuns/CommandRuns.ts";
 import * as AgentSettingsChanges from "./settingsChanges/AgentSettingsChanges.ts";
+import * as AgentSecretRequests from "./secrets/AgentSecretRequests.ts";
 import { PageFileSweepLive } from "./pages/PageFileSweep.ts";
 import * as PagePreview from "./pages/preview/PagePreview.ts";
 import { ThemeLibraryLive } from "./themes/ThemeLibrary.ts";
@@ -588,6 +589,9 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
       // Answers to agents' settings changes; it settles at startup what a
       // previous run left mid-change.
       AgentSettingsChanges.layer,
+      // Answers to agents' requests for keys; it settles at startup what a
+      // previous run left mid-save and sets saved files' expiry timers.
+      AgentSecretRequests.layer.pipe(Layer.provide(ProcessRunnerLive)),
       // The calls' table also serves thread deletion's cleanup.
       McpApps.layer.pipe(Layer.provideMerge(McpAppCallRepositoryLive)),
       // Outside agents' starts and sends by request id (`/mcp/connect`);

@@ -42,6 +42,7 @@ export * from "./themeShowcase.ts";
 export * from "./themeVsCode.ts";
 export * from "./moves.ts";
 export * from "./settingsChanges.ts";
+export * from "./secretRequests.ts";
 export * from "./projectSetup.ts";
 export * from "./outsideAgents.ts";
 export * from "./peerRpc.ts";

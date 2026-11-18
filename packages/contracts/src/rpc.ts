@@ -109,6 +109,12 @@ import {
   SettingsChangeRespondInput,
 } from "./settingsChanges.ts";
 import {
+  SecretRequestAnswer,
+  SecretRequestError,
+  SecretRequestRemoveInput,
+  SecretRequestRespondInput,
+} from "./secretRequests.ts";
+import {
   ThreadMoveBatchStatus,
   ThreadMoveBatchStatusInput,
   ThreadMoveCancelInput,
@@ -764,6 +770,8 @@ export const WS_METHODS = {
   scheduledTasksRespondRequest: "scheduledTasks.respondRequest",
   settingsChangeRespond: "settingsChange.respond",
   settingsChangeReportDevice: "settingsChange.reportDevice",
+  secretRequestRespond: "secretRequest.respond",
+  secretRequestRemove: "secretRequest.remove",
   scheduledTasksWebhookAddress: "scheduledTasks.webhookAddress",
   scheduledTasksRotateWebhookAddress: "scheduledTasks.rotateWebhookAddress",
   scheduledTasksSetWebhookSigningSecret: "scheduledTasks.setWebhookSigningSecret",
@@ -2217,6 +2225,19 @@ export const WsSettingsChangeReportDeviceRpc = Rpc.make(WS_METHODS.settingsChang
   error: SettingsChangeError,
 });
 
+/** Answers an agent's request for a key on its card (docs/design/secret-requests.md). */
+export const WsSecretRequestRespondRpc = Rpc.make(WS_METHODS.secretRequestRespond, {
+  payload: SecretRequestRespondInput,
+  success: SecretRequestAnswer,
+  error: SecretRequestError,
+});
+
+/** Remove now: a saved `commands` key's file goes before its 24 hours are up. */
+export const WsSecretRequestRemoveRpc = Rpc.make(WS_METHODS.secretRequestRemove, {
+  payload: SecretRequestRemoveInput,
+  error: SecretRequestError,
+});
+
 /** An event task's addresses (docs/design/event-tasks.md). */
 export const WsScheduledTasksWebhookAddressRpc = Rpc.make(WS_METHODS.scheduledTasksWebhookAddress, {
   payload: ScheduledTaskIdInput,
@@ -3009,6 +3030,8 @@ export const WsCoreRpcGroup = RpcGroup.make(
   WsScheduledTasksRespondRequestRpc,
   WsSettingsChangeRespondRpc,
   WsSettingsChangeReportDeviceRpc,
+  WsSecretRequestRespondRpc,
+  WsSecretRequestRemoveRpc,
   WsScheduledTasksWebhookAddressRpc,
   WsScheduledTasksRotateWebhookAddressRpc,
   WsScheduledTasksSetWebhookSigningSecretRpc,

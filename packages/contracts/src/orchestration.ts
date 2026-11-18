@@ -19,6 +19,7 @@ import {
   ThreadMoveRequestId,
   CommandId,
   CommandRequestId,
+  SecretRequestId,
   SettingsChangeRequestId,
   CommandRunId,
   EnvironmentId,
@@ -1793,6 +1794,98 @@ export const SettingsChangeEnding = Schema.Literals([
 export type SettingsChangeEnding = typeof SettingsChangeEnding.Type;
 
 /**
+ * Where a key an agent asked for goes (docs/design/secret-requests.md, "Uses").
+ * `env_file`: a `NAME=value` line in a git-ignored env file in the thread's
+ * folder. `commands`: a private file for the agent's shell commands, removed
+ * after 24 hours. Bound when asked; the value goes only there.
+ */
+export const SecretRequestUse = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("env_file"),
+    /** Relative to the thread's folder, e.g. ".env.local". */
+    path: TrimmedNonEmptyString,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("commands"),
+    /** A PEM key or JSON credentials: the card shows a text area. */
+    multiline: Schema.optional(Schema.Boolean),
+  }),
+]);
+export type SecretRequestUse = typeof SecretRequestUse.Type;
+
+/**
+ * waiting: on the card. claimed: an app pressed Save and the computer is
+ * writing it. The rest are endings: saved, failed, uncertain (Threadlines
+ * stopped mid-save), declined (Not now), replaced (asked again for the same
+ * name and use), cancelled (archived, moved, reverted away, or the agent left).
+ */
+export const SecretRequestStatus = Schema.Literals([
+  "waiting",
+  "claimed",
+  "saved",
+  "failed",
+  "uncertain",
+  "declined",
+  "replaced",
+  "cancelled",
+]);
+export type SecretRequestStatus = typeof SecretRequestStatus.Type;
+
+/** The app that answered: Save claims the card for it; Not now records it too. */
+export const SecretRequestClaim = Schema.Struct({
+  claimId: TrimmedNonEmptyString,
+  /** That app's device, as "Answered on <deviceLabel>" reads. */
+  deviceLabel: TrimmedNonEmptyString,
+});
+export type SecretRequestClaim = typeof SecretRequestClaim.Type;
+
+/**
+ * A key an agent asked the user for on its thread, from the card to the note
+ * it gets back. Never holds the value, its length or a hash of it.
+ */
+export const OrchestrationSecretRequest = Schema.Struct({
+  requestId: SecretRequestId,
+  /** The agent that asked, and the only one told. Null: the thread's own agent. */
+  participantId: Schema.NullOr(ThreadParticipantId),
+  turnId: TurnId,
+  /** The variable name, e.g. STRIPE_SECRET_KEY. */
+  name: TrimmedNonEmptyString,
+  /** Why the agent wants it, in its own words. Shown behind "<agent> says:". */
+  reason: TrimmedNonEmptyString,
+  use: SecretRequestUse,
+  /** env_file: the file already had this name when asked, so Save replaces it. */
+  replaces: Schema.Boolean,
+  /** env_file: the real path of the thread's folder when asked; the answer writes there or nowhere. */
+  folder: Schema.optional(TrimmedNonEmptyString),
+  /** env_file: the real path of the file's parent folder when asked. */
+  parent: Schema.optional(TrimmedNonEmptyString),
+  status: SecretRequestStatus,
+  claim: Schema.optional(SecretRequestClaim),
+  /** Why it ended as it did, for the note and the card. */
+  detail: Schema.optional(TrimmedNonEmptyString),
+  savedAt: Schema.optional(IsoDateTime),
+  /** commands: when its file is removed. */
+  expiresAt: Schema.optional(IsoDateTime),
+  /** commands: when its file was removed (Remove now, expiry, thread cleanup). */
+  removedAt: Schema.optional(IsoDateTime),
+  createdAt: IsoDateTime,
+  settledAt: Schema.optional(IsoDateTime),
+  /** The asking agent has been told how it ended (or nobody is left to tell). */
+  noted: Schema.Boolean,
+});
+export type OrchestrationSecretRequest = typeof OrchestrationSecretRequest.Type;
+
+/** How a card ends: by the answer, or by the thread moving on. */
+export const SecretRequestEnding = Schema.Literals([
+  "saved",
+  "failed",
+  "uncertain",
+  "declined",
+  "cancelled",
+]);
+export type SecretRequestEnding = typeof SecretRequestEnding.Type;
+
+/**
  * `run`: started as its own process, tracked to the end with its exit code.
  * `insert`: typed in, Enter left to the user; followed from there to the end
  * of the command it started, whose exit code the shell doesn't say.
@@ -3159,6 +3252,11 @@ export const OrchestrationThread = Schema.Struct({
     Schema.optional,
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
+  /** Keys its agents asked the user for: see OrchestrationSecretRequest. */
+  secretRequests: Schema.Array(OrchestrationSecretRequest).pipe(
+    Schema.optional,
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
   activities: Schema.Array(OrchestrationThreadActivity),
   subagents: Schema.Array(OrchestrationSubagent).pipe(
     Schema.optional,
@@ -3329,6 +3427,8 @@ export const OrchestrationThreadShell = Schema.Struct({
   pendingChildApproval: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /** A settings change its agent asked for is on its card, or being made. */
   pendingSettingsChange: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /** A key its agent asked for is on its card, or being saved. */
+  pendingSecretRequest: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /**
    * Started by an agent on a linked computer (ThreadRemoteOrigin): "Started
    * by <thread> on <computer>". Absent or null: started here.
@@ -4776,6 +4876,71 @@ const ThreadSettingsChangeNotesDeliverCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/** Server only: an agent asked the user for a key (`secret_request`); a card shows it. */
+const ThreadSecretRequestCommand = Schema.Struct({
+  type: Schema.Literal("thread.secret-request.request"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: SecretRequestId,
+  participantId: Schema.NullOr(ThreadParticipantId),
+  turnId: TurnId,
+  name: TrimmedNonEmptyString,
+  reason: TrimmedNonEmptyString,
+  use: SecretRequestUse,
+  replaces: Schema.Boolean,
+  folder: Schema.optional(TrimmedNonEmptyString),
+  parent: Schema.optional(TrimmedNonEmptyString),
+  createdAt: IsoDateTime,
+});
+
+/** Server only: an app pressed Save; only this claim writes the value. */
+const ThreadSecretRequestClaimCommand = Schema.Struct({
+  type: Schema.Literal("thread.secret-request.claim"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: SecretRequestId,
+  claim: SecretRequestClaim,
+  createdAt: IsoDateTime,
+});
+
+/**
+ * Server only: how a card ended. `declined` from waiting, with the claim of
+ * the app that said Not now; `saved`, `failed` and `uncertain` from claimed,
+ * by the claim that holds it. `message` wakes the asking agent with the
+ * outcome in the same decision, and marks the request noted.
+ */
+const ThreadSecretRequestSettleCommand = Schema.Struct({
+  type: Schema.Literal("thread.secret-request.settle"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: SecretRequestId,
+  ending: Schema.Literals(["saved", "failed", "uncertain", "declined"]),
+  claim: SecretRequestClaim,
+  detail: Schema.optional(TrimmedNonEmptyString),
+  savedAt: Schema.optional(IsoDateTime),
+  expiresAt: Schema.optional(IsoDateTime),
+  message: Schema.optional(Schema.Struct({ messageId: MessageId, text: TrimmedNonEmptyString })),
+  createdAt: IsoDateTime,
+});
+
+/** Server only: a saved `commands` key's file was removed. */
+const ThreadSecretRequestRemoveCommand = Schema.Struct({
+  type: Schema.Literal("thread.secret-request.remove"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: SecretRequestId,
+  createdAt: IsoDateTime,
+});
+
+/** Server only: the asking agents have been told how these ended. */
+const ThreadSecretRequestNotesDeliverCommand = Schema.Struct({
+  type: Schema.Literal("thread.secret-request.deliver-notes"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestIds: Schema.Array(SecretRequestId),
+  createdAt: IsoDateTime,
+});
+
 /** Server only: the user started a suggested command. */
 const ThreadCommandRunStartCommand = Schema.Struct({
   type: Schema.Literal("thread.command-run.start"),
@@ -5883,6 +6048,11 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadSettingsChangeSettleCommand,
   ThreadSettingsChangeReportDeviceCommand,
   ThreadSettingsChangeNotesDeliverCommand,
+  ThreadSecretRequestCommand,
+  ThreadSecretRequestClaimCommand,
+  ThreadSecretRequestSettleCommand,
+  ThreadSecretRequestRemoveCommand,
+  ThreadSecretRequestNotesDeliverCommand,
   ThreadCommandRunStartCommand,
   ThreadCommandRunUpdateCommand,
   ThreadCommandRunDeliverOutputCommand,
@@ -6006,6 +6176,11 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.settings-change-settled",
   "thread.settings-change-device-reported",
   "thread.settings-change-notes-delivered",
+  "thread.secret-request-created",
+  "thread.secret-request-claimed",
+  "thread.secret-request-settled",
+  "thread.secret-request-removed",
+  "thread.secret-request-notes-delivered",
   "thread.command-run-started",
   "thread.command-run-updated",
   "thread.command-run-output-recorded",
@@ -6942,6 +7117,47 @@ export const ThreadSettingsChangeNotesDeliveredPayload = Schema.Struct({
   deliveredAt: IsoDateTime,
 });
 
+/** The new request is waiting; the waiting one with the same name and use is replaced. */
+export const ThreadSecretRequestCreatedPayload = Schema.Struct({
+  threadId: ThreadId,
+  request: OrchestrationSecretRequest,
+  /** The waiting requests it replaced. Absent: none. */
+  replaces: Schema.optional(Schema.Array(SecretRequestId)),
+});
+
+export const ThreadSecretRequestClaimedPayload = Schema.Struct({
+  threadId: ThreadId,
+  requestId: SecretRequestId,
+  claim: SecretRequestClaim,
+  claimedAt: IsoDateTime,
+});
+
+export const ThreadSecretRequestSettledPayload = Schema.Struct({
+  threadId: ThreadId,
+  requestId: SecretRequestId,
+  ending: SecretRequestEnding,
+  /** Not now records the app that said it, so its retry gets the same answer. */
+  claim: Schema.optional(SecretRequestClaim),
+  detail: Schema.optional(TrimmedNonEmptyString),
+  savedAt: Schema.optional(IsoDateTime),
+  expiresAt: Schema.optional(IsoDateTime),
+  /** The asking agent was told in this decision, or nobody is left to tell. */
+  noted: Schema.optional(Schema.Boolean),
+  settledAt: IsoDateTime,
+});
+
+export const ThreadSecretRequestRemovedPayload = Schema.Struct({
+  threadId: ThreadId,
+  requestId: SecretRequestId,
+  removedAt: IsoDateTime,
+});
+
+export const ThreadSecretRequestNotesDeliveredPayload = Schema.Struct({
+  threadId: ThreadId,
+  requestIds: Schema.Array(SecretRequestId),
+  deliveredAt: IsoDateTime,
+});
+
 export const ThreadCommandRunStartedPayload = Schema.Struct({
   threadId: ThreadId,
   run: CommandRunStart,
@@ -7485,6 +7701,31 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.settings-change-notes-delivered"),
     payload: ThreadSettingsChangeNotesDeliveredPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.secret-request-created"),
+    payload: ThreadSecretRequestCreatedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.secret-request-claimed"),
+    payload: ThreadSecretRequestClaimedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.secret-request-settled"),
+    payload: ThreadSecretRequestSettledPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.secret-request-removed"),
+    payload: ThreadSecretRequestRemovedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.secret-request-notes-delivered"),
+    payload: ThreadSecretRequestNotesDeliveredPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

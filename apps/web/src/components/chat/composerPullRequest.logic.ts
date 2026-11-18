@@ -406,6 +406,7 @@ export function composerPullRequestThreadHold(
     | "hasPendingApprovals"
     | "pendingChildApproval"
     | "pendingSettingsChange"
+    | "pendingSecretRequest"
     | "hasPendingUserInput"
     | "hasActionableProposedPlan"
   >,
@@ -418,7 +419,8 @@ export function composerPullRequestThreadHold(
     hasPendingApprovals:
       thread.hasPendingApprovals ||
       thread.pendingChildApproval === true ||
-      thread.pendingSettingsChange === true,
+      thread.pendingSettingsChange === true ||
+      thread.pendingSecretRequest === true,
     hasPendingUserInput: thread.hasPendingUserInput,
     hasActionableProposedPlan: thread.hasActionableProposedPlan,
   });

@@ -517,6 +517,23 @@ The art is walled off: it runs in a worker in a sandboxed frame with no network,
 Settings that give agents more reach ({place:threads.agentThreads}, {place:threads.enableRooms}, access levels, linked computers, plugins and sign-ins), that archive or delete threads, or that share data ({place:general.usageAnalytics}) are yours alone: an agent links them for you instead.`,
   },
   {
+    id: "secret-requests",
+    title: "Agents ask for keys on a card",
+    keywords: [
+      "api key",
+      "token",
+      "password",
+      "secret",
+      "env file",
+      ".env",
+      "credentials",
+      "paste key",
+    ],
+    body: `When an agent needs an API key, token or password, it asks on a card above the message box instead of in chat. The card shows the name, the agent's reason, and, in Threadlines' own words, where the key goes: a NAME=value line in a git-ignored env file in the thread's folder (like .env.local), or a private file for the agent's commands that is removed after 24 hours. Save sends it to the thread's computer; Not now saves nothing. The agent hears the outcome, never the value.
+
+What this promises: Threadlines doesn't put the key in the chat, its stored events, logs or other apps. What it doesn't: the agent runs as you on that computer, so it can still read the file, and if it prints the key, the model sees it. A key pasted into chat is already in the conversation; replace it if that matters. Answering needs an encrypted connection to that computer. Archiving, moving or deleting the thread removes its private files, and a saved row for a private file has Remove now.`,
+  },
+  {
     id: "updates",
     title: "Updates and release tracks",
     keywords: ["update", "version", "nightly", "stable", "release", "what's new", "bug", "report"],

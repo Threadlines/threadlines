@@ -192,8 +192,8 @@ export interface SettingsChangeNotice {
   readonly description?: string;
 }
 
-/** A sentence from a server's detail: starts with a capital and ends with a stop. */
-function sentence(text: string): string {
+/** A sentence from a server's detail: starts with a capital and ends with a stop. Agent request cards share it. */
+export function sentence(text: string): string {
   const trimmed = text.trim();
   const capital = trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
   return /[.!?]$/u.test(capital) ? capital : `${capital}.`;

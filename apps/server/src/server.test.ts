@@ -184,6 +184,7 @@ import { AgentPages } from "./pages/AgentPages.ts";
 import { McpApps } from "./mcpApps/McpApps.ts";
 import { CommandRuns } from "./commandRuns/CommandRuns.ts";
 import { AgentSettingsChanges } from "./settingsChanges/AgentSettingsChanges.ts";
+import { AgentSecretRequests } from "./secrets/AgentSecretRequests.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
 import * as VcsDriverRegistry from "./vcs/VcsDriverRegistry.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
@@ -347,6 +348,7 @@ const makeDefaultOrchestrationThreadShell = (
     awaitedChildThreadCount: 0,
     pendingChildApproval: false,
     pendingSettingsChange: false,
+    pendingSecretRequest: false,
     hasPendingUserInput: false,
     hasActionableProposedPlan: false,
     cumulativeDiffStat: null,
@@ -792,6 +794,8 @@ const buildAppUnderTest = (options?: {
           // and the tool endpoint need something to call.
           // Agents' settings changes are tested on their own (AgentSettingsChanges.test.ts).
           Layer.mock(AgentSettingsChanges)({}),
+          // So are agents' requests for keys (AgentSecretRequests.test.ts).
+          Layer.mock(AgentSecretRequests)({ destinations: {} as never }),
           Layer.mock(CommandRuns)({
             request: () => Effect.succeed({ outcome: "off" as const, detail: "off in this test" }),
             start: () => Effect.fail(new CommandRunError({ message: "No runs in this test." })),

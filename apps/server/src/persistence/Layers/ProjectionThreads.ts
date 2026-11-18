@@ -28,6 +28,7 @@ import {
   OrchestrationRoomContextCursor,
   OrchestrationAgentRequestState,
   OrchestrationChildRequestState,
+  OrchestrationSecretRequest,
   OrchestrationSettingsChangeRequest,
   ThreadId,
   OrchestrationThreadMove,
@@ -62,6 +63,9 @@ const ProjectionThreadDbRow = ProjectionThread.mapFields(
     childRequests: Schema.NullOr(Schema.fromJsonString(OrchestrationChildRequestState)),
     settingsRequests: Schema.optional(
       Schema.NullOr(Schema.fromJsonString(Schema.Array(OrchestrationSettingsChangeRequest))),
+    ),
+    secretRequests: Schema.optional(
+      Schema.NullOr(Schema.fromJsonString(Schema.Array(OrchestrationSecretRequest))),
     ),
     remoteOrigin: Schema.NullOr(Schema.fromJsonString(ThreadRemoteOrigin)),
     scheduledRun: Schema.NullOr(Schema.fromJsonString(ThreadScheduledRun)),
@@ -129,6 +133,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           archived_with_parent_at,
           child_requests,
           settings_requests,
+          secret_requests,
           remote_origin_json,
           scheduled_run_json,
           worktree_origin_json,
@@ -201,6 +206,11 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
               ? JSON.stringify(row.settingsRequests)
               : null
           },
+          ${
+            row.secretRequests && row.secretRequests.length > 0
+              ? JSON.stringify(row.secretRequests)
+              : null
+          },
           ${row.remoteOrigin ? JSON.stringify(row.remoteOrigin) : null},
           ${row.scheduledRun ? JSON.stringify(row.scheduledRun) : null},
           ${row.worktreeOrigin ? JSON.stringify(row.worktreeOrigin) : null},
@@ -265,6 +275,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           archived_with_parent_at = excluded.archived_with_parent_at,
           child_requests = excluded.child_requests,
           settings_requests = excluded.settings_requests,
+          secret_requests = excluded.secret_requests,
           remote_origin_json = excluded.remote_origin_json,
           scheduled_run_json = excluded.scheduled_run_json,
           worktree_origin_json = excluded.worktree_origin_json,
@@ -336,6 +347,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           archived_with_parent_at AS "archivedWithParentAt",
           child_requests AS "childRequests",
           settings_requests AS "settingsRequests",
+          secret_requests AS "secretRequests",
           remote_origin_json AS "remoteOrigin",
           scheduled_run_json AS "scheduledRun",
           worktree_origin_json AS "worktreeOrigin",
@@ -409,6 +421,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           archived_with_parent_at AS "archivedWithParentAt",
           child_requests AS "childRequests",
           settings_requests AS "settingsRequests",
+          secret_requests AS "secretRequests",
           remote_origin_json AS "remoteOrigin",
           scheduled_run_json AS "scheduledRun",
           worktree_origin_json AS "worktreeOrigin",

@@ -104,6 +104,7 @@ const THREAD: OrchestrationThreadShell = {
   awaitedChildThreadCount: 0,
   pendingChildApproval: false,
   pendingSettingsChange: false,
+  pendingSecretRequest: false,
   hasPendingUserInput: false,
   hasActionableProposedPlan: false,
   cumulativeDiffStat: null,

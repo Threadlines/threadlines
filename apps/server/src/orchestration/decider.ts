@@ -48,6 +48,7 @@ import {
   commandRunAwaitsAutoSend,
   commandRunIdOfOutputMessage,
 } from "@threadlines/shared/commandRuns";
+import { secretRequestIdOfAnswerMessage } from "@threadlines/shared/secretRequests";
 import { isTurnAside } from "@threadlines/shared/transcriptRevert";
 import { CONTINUE_AT_RESET_MESSAGE, continueAtResetTimeMs } from "@threadlines/shared/usageLimits";
 import { isAttachedChild, passCeilingRefusal } from "@threadlines/shared/childThreads";
@@ -162,6 +163,16 @@ import {
   decideSettingsChangeRequest,
   decideSettingsChangeSettle,
 } from "./settingsChangeDecisions.ts";
+import {
+  SECRET_REQUEST_CANCELLED,
+  type SecretRequestDecision,
+  cancelWaitingSecretRequests,
+  decideSecretRequest,
+  decideSecretRequestClaim,
+  decideSecretRequestNotesDelivered,
+  decideSecretRequestRemove,
+  decideSecretRequestSettle,
+} from "./secretRequestDecisions.ts";
 import {
   outsideAnswerDecision,
   outsideQueueRefusal,
@@ -284,6 +295,13 @@ function planChildThreadDecision(commandType: string, decision: ChildThreadDecis
 
 /** Plan a settings-change decision's events, or refuse the command with its reason. */
 function planSettingsChangeDecision(commandType: string, decision: SettingsChangeDecision) {
+  return "refusal" in decision
+    ? Effect.fail(new OrchestrationCommandInvariantError({ commandType, detail: decision.refusal }))
+    : Effect.succeed(decision);
+}
+
+/** Plan a secret-request decision's events, or refuse the command with its reason. */
+function planSecretRequestDecision(commandType: string, decision: SecretRequestDecision) {
   return "refusal" in decision
     ? Effect.fail(new OrchestrationCommandInvariantError({ commandType, detail: decision.refusal }))
     : Effect.succeed(decision);
@@ -1927,6 +1945,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             baseFor,
           ),
         ),
+        // So do the keys they asked for.
+        ...[thread, ...plan.archive].flatMap((archived) =>
+          cancelWaitingSecretRequests(
+            archived,
+            SECRET_REQUEST_CANCELLED.archived,
+            occurredAt,
+            baseFor,
+          ),
+        ),
         // An archived thread doesn't continue by itself, now or after it comes back.
         ...[thread, ...plan.archive].flatMap((archived): PlannedOrchestrationEvent[] => {
           const waiting = archived.session?.continueAtReset ?? null;
@@ -3300,6 +3327,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       ];
       return [
         ...cancelAgentRequestsForLeaving(thread, participant.id, removeBase, command.createdAt),
+        // Keys it asked for and nobody answered yet: nobody is left to use them.
+        ...cancelWaitingSecretRequests(
+          thread,
+          SECRET_REQUEST_CANCELLED.agentLeft,
+          command.createdAt,
+          childEventBase(command, command.createdAt),
+          (request) => request.participantId === participant.id,
+          { noted: true },
+        ),
         ...childEvents,
         removed,
       ];
@@ -4362,6 +4398,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // while it waited, it is taken back and the run says why, never handed
       // to the thread's own agent.
       const outputRunId = commandRunIdOfOutputMessage(queued.messageId);
+      // The same for a key's answer: it goes to the agent that asked, or nowhere.
+      if (secretRequestIdOfAnswerMessage(queued.messageId) !== null && !queuedParticipantPresent) {
+        return [{ ...unqueuedEvent, payload: { ...unqueuedEvent.payload, reason: "cancelled" } }];
+      }
       if (outputRunId !== null && !queuedParticipantPresent) {
         const run = (targetThread.commandRuns ?? []).find((entry) => entry.runId === outputRunId);
         return [
@@ -5874,6 +5914,67 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       );
     }
 
+    // Agents' requests for keys (secretRequestDecisions.ts).
+    case "thread.secret-request.request":
+    case "thread.secret-request.claim":
+    case "thread.secret-request.remove":
+    case "thread.secret-request.deliver-notes": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const baseFor = childEventBase(command, command.createdAt);
+      return yield* planSecretRequestDecision(
+        command.type,
+        command.type === "thread.secret-request.request"
+          ? decideSecretRequest(thread, command, baseFor)
+          : command.type === "thread.secret-request.claim"
+            ? decideSecretRequestClaim(thread, command, baseFor)
+            : command.type === "thread.secret-request.remove"
+              ? decideSecretRequestRemove(thread, command, baseFor)
+              : decideSecretRequestNotesDelivered(thread, command, baseFor),
+      );
+    }
+
+    // Settled, and the asking agent told in the same decision: steered into
+    // its turn, or queued for it, as a finished command's output is.
+    case "thread.secret-request.settle": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const decision = decideSecretRequestSettle(
+        thread,
+        command,
+        childEventBase(command, command.createdAt),
+      );
+      if ("refusal" in decision) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: decision.refusal,
+        });
+      }
+      if (decision.deliver === undefined) return decision.events;
+      const delivered = yield* decideFollowUpSubmit(thread, {
+        type: "thread.follow-up.submit",
+        commandId: command.commandId,
+        threadId: command.threadId,
+        turnId: thread.session?.activeTurnId ?? decision.deliver.turnId,
+        message: {
+          messageId: decision.deliver.messageId,
+          role: "user",
+          text: decision.deliver.text,
+          attachments: [],
+        },
+        delivery: "steer",
+        participantId: decision.deliver.participantId,
+        createdAt: command.createdAt,
+      });
+      return [...decision.events, ...(Array.isArray(delivered) ? delivered : [delivered])];
+    }
+
     case "thread.command-request.create": {
       const thread = yield* requireThread({
         readModel,
@@ -6325,14 +6426,24 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // Settings cards waiting from the turns the revert took away go with
       // them. Decided here, where the revert happened, not when it was
       // asked for: a revert can still fail before this.
-      const cancelled = cancelWaitingSettingsChanges(
-        thread,
-        SETTINGS_CHANGE_CANCELLED.reverted,
-        command.createdAt,
-        childEventBase(command, command.createdAt),
-        (request) =>
-          command.keptTurnIds !== undefined && !command.keptTurnIds.includes(request.turnId),
-      );
+      const cancelled = [
+        ...cancelWaitingSettingsChanges(
+          thread,
+          SETTINGS_CHANGE_CANCELLED.reverted,
+          command.createdAt,
+          childEventBase(command, command.createdAt),
+          (request) =>
+            command.keptTurnIds !== undefined && !command.keptTurnIds.includes(request.turnId),
+        ),
+        ...cancelWaitingSecretRequests(
+          thread,
+          SECRET_REQUEST_CANCELLED.reverted,
+          command.createdAt,
+          childEventBase(command, command.createdAt),
+          (request) =>
+            command.keptTurnIds !== undefined && !command.keptTurnIds.includes(request.turnId),
+        ),
+      ];
       return cancelled.length === 0 ? revertedEvent : [...cancelled, revertedEvent];
     }
 

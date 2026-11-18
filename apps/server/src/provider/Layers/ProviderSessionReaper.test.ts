@@ -130,6 +130,7 @@ function makeReadModel(
       awaitedChildThreadCount: 0,
       pendingChildApproval: false,
       pendingSettingsChange: false,
+      pendingSecretRequest: false,
       hasPendingUserInput: false,
       hasActionableProposedPlan: false,
       latestTurn: null,
@@ -314,6 +315,7 @@ describe("ProviderSessionReaper", () => {
           listThreadTurnOverlapsSince: () => Effect.die("unused"),
           listThreadIdsWithOpenAgentRequests: () => Effect.die("unused"),
           listClaimedSettingsChanges: () => Effect.die("unused"),
+          listSecretRequests: () => Effect.die("unused"),
           listThreadShells: () => Effect.succeed([]),
           getThreadShellById: (threadId) => {
             const thread = input.readModel.threads.find((entry) => entry.id === threadId);

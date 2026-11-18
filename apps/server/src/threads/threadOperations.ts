@@ -136,6 +136,7 @@ export function threadStatus(
     thread.hasPendingApprovals ||
     thread.pendingChildApproval ||
     thread.pendingSettingsChange ||
+    thread.pendingSecretRequest ||
     scheduleAnswerWaiting
   ) {
     return needsTheUser("approval");

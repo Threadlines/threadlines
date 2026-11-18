@@ -107,6 +107,7 @@ import { AgentPages } from "./pages/AgentPages.ts";
 import { McpApps } from "./mcpApps/McpApps.ts";
 import { CommandRuns } from "./commandRuns/CommandRuns.ts";
 import { AgentSettingsChanges } from "./settingsChanges/AgentSettingsChanges.ts";
+import { AgentSecretRequests } from "./secrets/AgentSecretRequests.ts";
 import { ThreadBootstrap } from "./orchestration/Services/ThreadBootstrap.ts";
 import { ThreadSearch } from "./orchestration/Services/ThreadSearch.ts";
 import { UsageService } from "./usage/UsageService.ts";
@@ -277,6 +278,11 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
       | "thread.settings-change-settled"
       | "thread.settings-change-device-reported"
       | "thread.settings-change-notes-delivered"
+      | "thread.secret-request-created"
+      | "thread.secret-request-claimed"
+      | "thread.secret-request-settled"
+      | "thread.secret-request-removed"
+      | "thread.secret-request-notes-delivered"
       | "thread.handed-back"
       | "thread.parent-attachment-set"
       | "thread.pull-request-dismissed";
@@ -310,6 +316,13 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
     event.type === "thread.settings-change-settled" ||
     event.type === "thread.settings-change-device-reported" ||
     event.type === "thread.settings-change-notes-delivered" ||
+    // Keys agents asked for: the card and the saved rows (its shell only
+    // carries pendingSecretRequest).
+    event.type === "thread.secret-request-created" ||
+    event.type === "thread.secret-request-claimed" ||
+    event.type === "thread.secret-request-settled" ||
+    event.type === "thread.secret-request-removed" ||
+    event.type === "thread.secret-request-notes-delivered" ||
     // Which pull request rows are closed lives on the shell, but a detail
     // snapshot writes the shell too: one read before a close and delivered
     // after it would undo the close, so the change follows the snapshot here.
@@ -866,6 +879,7 @@ const makeCoreRpcLayer = (
       const mcpApps = yield* McpApps;
       const commandRuns = yield* CommandRuns;
       const agentSettingsChanges = yield* AgentSettingsChanges;
+      const agentSecretRequests = yield* AgentSecretRequests;
       const threadSearch = yield* ThreadSearch;
       const usage = yield* UsageService;
       const orchestrationEngine = yield* OrchestrationEngineService;
@@ -3475,6 +3489,15 @@ const makeCoreRpcLayer = (
         [WS_METHODS.settingsChangeRespond]: (input) =>
           observeRpcEffect(WS_METHODS.settingsChangeRespond, agentSettingsChanges.respond(input), {
             "rpc.aggregate": "settingsChange",
+          }),
+        // The value never reaches a span attribute: only the method and aggregate do.
+        [WS_METHODS.secretRequestRespond]: (input) =>
+          observeRpcEffect(WS_METHODS.secretRequestRespond, agentSecretRequests.respond(input), {
+            "rpc.aggregate": "secretRequest",
+          }),
+        [WS_METHODS.secretRequestRemove]: (input) =>
+          observeRpcEffect(WS_METHODS.secretRequestRemove, agentSecretRequests.remove(input), {
+            "rpc.aggregate": "secretRequest",
           }),
         [WS_METHODS.settingsChangeReportDevice]: (input) =>
           observeRpcEffect(

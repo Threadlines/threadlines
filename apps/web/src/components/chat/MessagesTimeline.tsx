@@ -73,6 +73,7 @@ import {
 } from "../ChatView.logic";
 import { AGENT_PAGE_TITLE_MIDDLE_PX, AgentPageRow } from "./AgentPageRow";
 import { McpAppCard } from "./McpAppCard";
+import { isSecretAnswerMessage, SecretAnswerRow } from "./SecretAnswerRow";
 import {
   CodeBlockRunScopeContext,
   CommandOutputMessage,
@@ -2725,7 +2726,27 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
   if (isCommandOutputMessage(row.message.id)) {
     return <CommandOutputTimelineRow row={row} />;
   }
+  if (isSecretAnswerMessage(row.message.id)) {
+    return <SecretAnswerTimelineRow row={row} />;
+  }
   return <UserMessageTimelineRow row={row} />;
+}
+
+/**
+ * How an agent's request for a key ended, sent to it as your message: a quiet
+ * row ("You saved STRIPE_SECRET_KEY to .env.local"), not a bubble.
+ */
+function SecretAnswerTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
+  const ctx = use(TimelineRowCtx);
+  return (
+    <SecretAnswerRow
+      messageId={row.message.id}
+      messageText={row.message.text}
+      environmentId={ctx.activeThreadEnvironmentId}
+      threadId={ctx.activeThreadId}
+      timestampFormat={ctx.timestampFormat}
+    />
+  );
 }
 
 /**

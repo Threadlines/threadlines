@@ -58,6 +58,10 @@ import {
   applySettingsChangeEvent,
   type SettingsChangeEvent,
 } from "@threadlines/shared/settingsChangeState";
+import {
+  applySecretRequestEvent,
+  type SecretRequestEvent,
+} from "@threadlines/shared/secretRequestState";
 import { applyWorkflowRunPatch } from "@threadlines/shared/workflowRuns";
 
 import { toProjectorDecodeError, type OrchestrationProjectorDecodeError } from "./Errors.ts";
@@ -83,6 +87,11 @@ import {
   ThreadSettingsChangeSettledPayload,
   ThreadSettingsChangeDeviceReportedPayload,
   ThreadSettingsChangeNotesDeliveredPayload,
+  ThreadSecretRequestCreatedPayload,
+  ThreadSecretRequestClaimedPayload,
+  ThreadSecretRequestSettledPayload,
+  ThreadSecretRequestRemovedPayload,
+  ThreadSecretRequestNotesDeliveredPayload,
   ThreadErrorDismissedPayload,
   ThreadContinueAtResetSetPayload,
   ThreadContinueAtResetSkippedPayload,
@@ -232,6 +241,25 @@ function updateSettingsRequests(
     : {
         ...base,
         threads: updateThread(base.threads, event.payload.threadId, { settingsRequests: next }),
+      };
+}
+
+/** Folds one secret-request event into its thread's requests (shared reducer). */
+function updateSecretRequests(
+  base: OrchestrationReadModel,
+  event: SecretRequestEvent,
+): OrchestrationReadModel {
+  const thread = base.threads.find((entry) => entry.id === event.payload.threadId);
+  if (thread === undefined) {
+    return base;
+  }
+  const requests = thread.secretRequests ?? [];
+  const next = applySecretRequestEvent(requests, event);
+  return next === requests
+    ? base
+    : {
+        ...base,
+        threads: updateThread(base.threads, event.payload.threadId, { secretRequests: next }),
       };
 }
 
@@ -1960,6 +1988,47 @@ export function projectEvent(
         event.type,
         "payload",
       ).pipe(Effect.map((payload) => updateSettingsRequests(nextBase, { ...event, payload })));
+
+    // Agents' requests for keys. No updatedAt bump: a card is not work on the thread.
+    case "thread.secret-request-created":
+      return decodeForEvent(
+        ThreadSecretRequestCreatedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(Effect.map((payload) => updateSecretRequests(nextBase, { ...event, payload })));
+
+    case "thread.secret-request-claimed":
+      return decodeForEvent(
+        ThreadSecretRequestClaimedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(Effect.map((payload) => updateSecretRequests(nextBase, { ...event, payload })));
+
+    case "thread.secret-request-settled":
+      return decodeForEvent(
+        ThreadSecretRequestSettledPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(Effect.map((payload) => updateSecretRequests(nextBase, { ...event, payload })));
+
+    case "thread.secret-request-removed":
+      return decodeForEvent(
+        ThreadSecretRequestRemovedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(Effect.map((payload) => updateSecretRequests(nextBase, { ...event, payload })));
+
+    case "thread.secret-request-notes-delivered":
+      return decodeForEvent(
+        ThreadSecretRequestNotesDeliveredPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(Effect.map((payload) => updateSecretRequests(nextBase, { ...event, payload })));
 
     // Suggested commands. Like pages, no updatedAt bump: they belong to a turn
     // whose messages already move the thread.
