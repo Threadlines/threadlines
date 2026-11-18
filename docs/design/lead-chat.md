@@ -142,7 +142,7 @@ always one click away, and so is every thread it started.
   member while its parent is live. A thread with no family has no row. A child the
   user made its own, or whose parent is wrapped or archived, has no row and keeps
   today's "Started by" chip.
-- **A tab.** The parent's tab is its title; a lead's is the flag and "Lead". A child's
+- **A tab.** The parent's tab is its title; a lead's is the crown and "Lead". A child's
   is its status dot (the family child rows' colours and words; a check once wrapped
   and still in the family) and its title. The open one has a quiet fill. Hover is a
   colour shift. Right-click or a long press opens the sidebar's thread menu. There is

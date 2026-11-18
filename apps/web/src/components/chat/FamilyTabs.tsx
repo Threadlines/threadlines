@@ -12,7 +12,7 @@
 import { parseScopedThreadKey, scopedThreadKey } from "@threadlines/client-runtime";
 import type { ScopedThreadRef } from "@threadlines/contracts";
 import { useNavigate } from "@tanstack/react-router";
-import { CheckIcon, FlagIcon } from "lucide-react";
+import { CheckIcon, CrownIcon } from "lucide-react";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { create } from "zustand";
 
@@ -248,7 +248,7 @@ const FamilyTabButton = memo(function FamilyTabButton({
     >
       {tab.kind === "parent" ? (
         tab.lead ? (
-          <FlagIcon aria-hidden="true" className="size-3 shrink-0" />
+          <CrownIcon aria-hidden="true" className="size-3 shrink-0" />
         ) : null
       ) : tab.done ? (
         <CheckIcon aria-hidden="true" className="size-3 shrink-0 text-muted-foreground" />

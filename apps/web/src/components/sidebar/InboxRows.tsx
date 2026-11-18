@@ -6,7 +6,7 @@ import {
   Clock3Icon,
   CloudIcon,
   CornerDownRightIcon,
-  FlagIcon,
+  CrownIcon,
   LinkIcon,
   MonitorUpIcon,
   GitForkIcon,
@@ -1143,7 +1143,7 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                     data-testid={`thread-lead-mark-${thread.id}`}
                     className="inline-flex shrink-0 items-center justify-center text-muted-foreground/50"
                   >
-                    <FlagIcon className="size-2.5" />
+                    <CrownIcon className="size-2.5" />
                   </span>
                 ) : null}
                 {threadProject && showProjectMark ? (

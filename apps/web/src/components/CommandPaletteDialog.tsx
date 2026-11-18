@@ -59,7 +59,7 @@ import {
   Trash2Icon,
   UsersRoundIcon,
   MonitorUpIcon,
-  FlagIcon,
+  CrownIcon,
   FolderSyncIcon,
   WaypointsIcon,
   CalendarClockIcon,
@@ -487,7 +487,7 @@ const PALETTE_THREAD_ACTIONS: Partial<
 > = {
   lead: {
     searchTerms: ["lead chat", "lead", "coordinate", "project lead"],
-    icon: <FlagIcon className={ITEM_ICON_CLASS} />,
+    icon: <CrownIcon className={ITEM_ICON_CLASS} />,
   },
   rename: {
     title: "Rename thread",
@@ -2238,7 +2238,7 @@ export function OpenCommandPaletteDialog() {
       searchTerms: ["lead chat", "lead", project.name],
       title: "Go to lead chat",
       description: project.name,
-      icon: <FlagIcon className={ITEM_ICON_CLASS} />,
+      icon: <CrownIcon className={ITEM_ICON_CLASS} />,
       run: async () => {
         await navigate({
           to: "/$environmentId/$threadId",
@@ -2275,7 +2275,7 @@ export function OpenCommandPaletteDialog() {
       searchTerms: ["new lead chat", "lead chat", "lead", "coordinate"],
       title: "New lead chat",
       description: leadScopeProject.name,
-      icon: <FlagIcon className={ITEM_ICON_CLASS} />,
+      icon: <CrownIcon className={ITEM_ICON_CLASS} />,
       run: async () => {
         const leadRef = await createLeadChat(leadScopeProject);
         if (leadRef !== null) {

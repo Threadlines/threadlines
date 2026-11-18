@@ -9,7 +9,7 @@ import { PULL_REQUEST_SETTLED_LIST_LIMIT, type ScopedProjectRef } from "@threadl
 import { useNavigate } from "@tanstack/react-router";
 import { useId, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
-import { FlagIcon } from "lucide-react";
+import { CrownIcon } from "lucide-react";
 
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import {
@@ -553,7 +553,7 @@ export function ProjectThreadMap({
             }}
             type="button"
           >
-            <FlagIcon aria-hidden="true" className="size-3" />
+            <CrownIcon aria-hidden="true" className="size-3" />
             Lead chat
           </button>
         ) : null}

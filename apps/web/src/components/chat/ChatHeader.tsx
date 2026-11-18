@@ -15,7 +15,7 @@ import {
   CornerDownRightIcon,
   FolderInputIcon,
   FolderOpenIcon,
-  FlagIcon,
+  CrownIcon,
   GitForkIcon,
   GlobeIcon,
   MessagesSquareIcon,
@@ -431,7 +431,7 @@ export const ChatHeader = memo(function ChatHeader({
         {isLeadChat ? (
           <span data-testid="lead-chat-chip" className={STARTED_BY_CHIP_CLASS}>
             <span className="inline-flex min-w-0 items-center gap-1">
-              <FlagIcon aria-hidden="true" className="size-3 shrink-0" />
+              <CrownIcon aria-hidden="true" className="size-3 shrink-0" />
               Lead chat
             </span>
           </span>
