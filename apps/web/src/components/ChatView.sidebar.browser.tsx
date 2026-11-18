@@ -464,6 +464,100 @@ describe("ChatView (full app): sidebar", () => {
     }
   });
 
+  /**
+   * The open thread with one thread it started, on a computer that keeps a
+   * lead chat, and no lead yet (or `lead` as the lead).
+   */
+  const mountFamily = async (lead: ThreadId | null) => {
+    window.localStorage.removeItem(
+      `threadlines:lead-chat-suggestion-dismissed:v1:${LOCAL_ENVIRONMENT_ID}:${PROJECT_ID}`,
+    );
+    const childId = "thread-lead-child" as ThreadId;
+    const withChild = addThreadToSnapshot(
+      createSnapshotForTargetUser({
+        targetMessageId: "msg-user-lead-family" as MessageId,
+        targetText: "lead family",
+      }),
+      childId,
+    );
+    const capabilities = { repositoryIdentity: true, projectLead: true };
+    return mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...withChild,
+        projects: withChild.projects.map((project) => ({ ...project, leadThreadId: lead })),
+        threads: withChild.threads.map((thread) =>
+          thread.id === childId
+            ? { ...thread, title: "Fix tests", parentThreadId: THREAD_ID, attachedToParent: true }
+            : thread,
+        ),
+      },
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          environment: { ...nextFixture.serverConfig.environment, capabilities },
+        };
+        nextFixture.welcome = {
+          ...nextFixture.welcome,
+          environment: { ...nextFixture.welcome.environment, capabilities },
+        };
+      },
+    });
+  };
+  const leadSetsSent = () =>
+    wsRequests.flatMap((request) =>
+      request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+      request.type === "project.lead.set"
+        ? [request.threadId]
+        : [],
+    );
+
+  it("offers a thread running other threads as the lead, once, and says what a lead is", async () => {
+    const mounted = await mountFamily(null);
+    try {
+      const suggestion = page.getByTestId("lead-chat-suggestion");
+      await expect
+        .element(suggestion)
+        .toMatchTextContent(/This thread is running other threads\. Make it the lead chat/u);
+      await page.getByTestId("lead-chat-suggestion-make").click();
+      await vi.waitFor(() => expect(leadSetsSent()).toEqual([THREAD_ID]));
+      await expect.element(suggestion).not.toBeInTheDocument();
+
+      // Once it leads, its tab is the crown, and a press on it says what that means.
+      const [project] = toShellSnapshot(fixture.snapshot).projects;
+      rpcHarness.emitStreamValue(ORCHESTRATION_WS_METHODS.subscribeShell, {
+        kind: "project-upserted",
+        sequence: fixture.snapshot.snapshotSequence + 1,
+        project: { ...project!, leadThreadId: THREAD_ID },
+      });
+      const leadTab = page.getByRole("tab", { name: `Lead: ${THREAD_TITLE}` });
+      await expect.element(leadTab).toBeVisible();
+      await leadTab.click();
+      const card = page.getByTestId("lead-chat-card");
+      await expect.element(card).toMatchTextContent(/Drop work here\./u);
+      await card.getByTestId("lead-chat-card-stop").click();
+      await vi.waitFor(() => expect(leadSetsSent()).toEqual([THREAD_ID, null]));
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps the lead suggestion away from a project once it is closed", async () => {
+    const mounted = await mountFamily(null);
+    try {
+      await page.getByTestId("lead-chat-suggestion-dismiss").click();
+      await expect.element(page.getByTestId("lead-chat-suggestion")).not.toBeInTheDocument();
+      expect(
+        window.localStorage.getItem(
+          `threadlines:lead-chat-suggestion-dismissed:v1:${LOCAL_ENVIRONMENT_ID}:${PROJECT_ID}`,
+        ),
+      ).toBe("true");
+      expect(leadSetsSent()).toEqual([]);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   // The server says it made the thread a moment before this app hears of it,
   // as a real one does: "New lead chat" must open it once it is here, and
   // stay there (the thread page goes home for a thread it does not know).

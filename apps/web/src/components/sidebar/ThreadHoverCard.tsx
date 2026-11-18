@@ -11,6 +11,7 @@ import {
   CircleDashedIcon,
   CloudIcon,
   CornerDownRightIcon,
+  CrownIcon,
   GitBranchIcon,
   GitForkIcon,
   MonitorIcon,
@@ -29,6 +30,7 @@ import {
 import { usePrimaryEnvironmentId } from "../../environments/primary";
 import { useServerProviders } from "../../rpc/serverState";
 import { selectProjectByRef, useStore } from "../../store";
+import { LEAD_MENU_SUBLABEL, projectLeadRef } from "../../leadChat";
 import { useThreadTitle } from "../../hooks/useThreadTitle";
 import { lendingThreadId } from "../../worktreeOrigin";
 import { useGitStatus } from "../../lib/gitStatusState";
@@ -207,6 +209,11 @@ function ThreadHoverCardContent({ thread, status, lineage }: ThreadHoverCardPayl
     [thread.environmentId, thread.id],
   );
   const loadedThread = useStore(useMemo(() => createThreadSelectorByRef(threadRef), [threadRef]));
+  // Its project's lead chat: the card says what that means, as the crown can't.
+  const isLead = useStore(
+    (state) =>
+      backingProject !== undefined && projectLeadRef(state, backingProject)?.threadId === thread.id,
+  );
 
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const isRemote = primaryEnvironmentId !== null && thread.environmentId !== primaryEnvironmentId;
@@ -289,6 +296,11 @@ function ThreadHoverCardContent({ thread, status, lineage }: ThreadHoverCardPayl
         {awaitedTasks ? <AwaitedTaskLines tasks={awaitedTasks} /> : null}
       </HoverCardStatusLine>
       <HoverCardDetails>
+        {isLead ? (
+          <HoverCardDetailRow icon={<CrownIcon className="size-3.5" />}>
+            Lead chat. {LEAD_MENU_SUBLABEL}.
+          </HoverCardDetailRow>
+        ) : null}
         {lineage?.startedBy ? (
           <HoverCardDetailRow icon={<CornerDownRightIcon className="size-3.5" />}>
             Started by {lineage.startedBy}

@@ -1,6 +1,6 @@
 import type { ContextMenuItem } from "@threadlines/contracts";
 
-import { leadMenuLabel, type LeadMenuState } from "../leadChat";
+import { LEAD_MENU_SUBLABEL, leadMenuLabel, type LeadMenuState } from "../leadChat";
 
 /** Everything a thread's menu can do. Every surface that offers it offers the same. */
 export type ThreadMenuAction =
@@ -96,6 +96,10 @@ export function describeThreadMenu(facts: ThreadMenuFacts): ContextMenuItem<Thre
           // left open while another client changes the lead does what it says.
           id: facts.lead.kind === "stop" ? "stop-lead" : "make-lead",
           label: leadMenuLabel(facts.lead),
+          // What a lead is, said where the user first meets the idea.
+          ...(facts.lead.kind === "make" && facts.lead.refusal === null
+            ? { sublabel: LEAD_MENU_SUBLABEL }
+            : {}),
           disabled: facts.lead.kind === "make" && facts.lead.refusal !== null,
         },
       ]),

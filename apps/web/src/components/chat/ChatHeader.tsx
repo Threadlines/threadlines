@@ -42,6 +42,7 @@ import { useComputerLabel } from "../sidebar/linkedComputers";
 import { useTitleBarHeaderRef } from "../sidebar/titleBarSlot";
 import { outsideOriginDescription } from "../../environments/outsideAgents/outsideAgents.logic";
 import { OutsideOriginMark } from "../outsideAgents/AssistantMark";
+import { LeadChatCard } from "./LeadChatHints";
 
 export interface ForkHeaderContext {
   readonly sourceThreadId: ThreadId;
@@ -428,13 +429,23 @@ export const ChatHeader = memo(function ChatHeader({
         {parentContext ? (
           <StartedByChip parent={parentContext} onOpen={onOpenParentThread} />
         ) : null}
-        {isLeadChat ? (
-          <span data-testid="lead-chat-chip" className={STARTED_BY_CHIP_CLASS}>
-            <span className="inline-flex min-w-0 items-center gap-1">
-              <CrownIcon aria-hidden="true" className="size-3 shrink-0" />
-              Lead chat
-            </span>
-          </span>
+        {isLeadChat && activeThreadRef !== null ? (
+          <LeadChatCard
+            threadRef={activeThreadRef}
+            renderTrigger={(showCard) => (
+              <button
+                type="button"
+                data-testid="lead-chat-chip"
+                className={STARTED_BY_CHIP_CLASS}
+                onClick={showCard}
+              >
+                <span className="inline-flex min-w-0 items-center gap-1">
+                  <CrownIcon aria-hidden="true" className="size-3 shrink-0" />
+                  Lead chat
+                </span>
+              </button>
+            )}
+          />
         ) : null}
         {outsideOrigin ? <OutsideOriginLabel origin={outsideOrigin} /> : null}
         {activeProjectName && !isGitRepo && sourceControlAvailable && (

@@ -26,6 +26,7 @@ import { requestIdleThreadDetailPrewarm } from "../../environments/runtime/servi
 import { cn } from "../../lib/utils";
 import { buildThreadRouteParams } from "../../threadRoutes";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
+import { LeadChatCard, LeadChatSuggestion } from "./LeadChatHints";
 import {
   type FamilyTab,
   type FamilyTabs as FamilyTabsModel,
@@ -157,30 +158,44 @@ const FamilyTabRow = memo(function FamilyTabRow({
           overflowPx: OVERFLOW_PX,
         });
 
+  // The parent, open and not leading yet, may be offered as the lead (LeadChatSuggestion).
+  const parentTab = family.tabs[0];
+  const suggestLead =
+    parentTab !== undefined &&
+    parentTab.kind === "parent" &&
+    !parentTab.lead &&
+    parentTab.threadRef !== null &&
+    parentTab.key === family.openKey
+      ? parentTab.threadRef
+      : null;
+
   return (
-    <div
-      ref={rowRef}
-      role="tablist"
-      aria-label="This thread's family"
-      data-testid="family-tabs"
-      data-family-key={family.familyKey}
-      className={cn(
-        "flex min-w-0 shrink-0 items-center gap-0.5 border-b border-border px-3 py-1 sm:px-5",
-        isMobile && "overflow-x-auto [scrollbar-width:none]",
-      )}
-    >
-      {shown.map((tab) => (
-        <FamilyTabButton
-          key={tab.key}
-          tab={tab}
-          active={tab.key === family.openKey}
-          fill={!isMobile}
-          onOpen={onOpen}
-          buttonRef={tab.key === family.openKey ? openTabRef : undefined}
-        />
-      ))}
-      {hidden.length > 0 ? <FamilyTabOverflow hidden={hidden} onOpen={onOpen} /> : null}
-    </div>
+    <>
+      <div
+        ref={rowRef}
+        role="tablist"
+        aria-label="This thread's family"
+        data-testid="family-tabs"
+        data-family-key={family.familyKey}
+        className={cn(
+          "flex min-w-0 shrink-0 items-center gap-0.5 border-b border-border px-3 py-1 sm:px-5",
+          isMobile && "overflow-x-auto [scrollbar-width:none]",
+        )}
+      >
+        {shown.map((tab) => (
+          <FamilyTabButton
+            key={tab.key}
+            tab={tab}
+            active={tab.key === family.openKey}
+            fill={!isMobile}
+            onOpen={onOpen}
+            buttonRef={tab.key === family.openKey ? openTabRef : undefined}
+          />
+        ))}
+        {hidden.length > 0 ? <FamilyTabOverflow hidden={hidden} onOpen={onOpen} /> : null}
+      </div>
+      {suggestLead !== null ? <LeadChatSuggestion parentRef={suggestLead} /> : null}
+    </>
   );
 });
 
@@ -221,7 +236,7 @@ const FamilyTabButton = memo(function FamilyTabButton({
       : tab.statusWord !== null
         ? `${tab.title}, ${tab.statusWord}`
         : tab.title;
-  return (
+  const tabButton = (showLeadCard: (() => void) | null) => (
     <button
       ref={buttonRef}
       type="button"
@@ -243,6 +258,8 @@ const FamilyTabButton = memo(function FamilyTabButton({
       )}
       onClick={() => {
         if (tab.threadRef !== null && !active) onOpen(tab.threadRef);
+        // A press on the open lead's tab says what a lead is (a phone never hovers).
+        else if (active) showLeadCard?.();
       }}
       {...touchHold}
     >
@@ -265,6 +282,11 @@ const FamilyTabButton = memo(function FamilyTabButton({
         {tab.kind === "parent" && tab.lead ? "Lead" : tab.title}
       </span>
     </button>
+  );
+  return tab.kind === "parent" && tab.lead && tab.threadRef !== null ? (
+    <LeadChatCard threadRef={tab.threadRef} renderTrigger={tabButton} />
+  ) : (
+    tabButton(null)
   );
 });
 

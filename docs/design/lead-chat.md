@@ -111,6 +111,29 @@ Words below are the on-screen words. Copy follows the repo's copy rules (no em d
 - Nothing is lost when a lead stops being one: it becomes an ordinary thread, and the
   threads it started stay its family.
 
+### Saying what a lead is
+
+A user meets the crown long before they read about it, so the app explains a lead
+where it shows one, and offers one at the moment a thread starts coordinating. It
+never makes a lead by itself. One set of words (`LEAD_CHAT_EXPLANATION` and
+`LEAD_MENU_SUBLABEL` in `apps/web/src/leadChat.ts`) is used everywhere.
+
+- **The crown's card.** Hovering the Lead tab on the family row, or the header's
+  "Lead chat" chip, opens a card: what a lead does, and "Stop using as lead chat". A
+  press on the open lead's tab or on the chip opens it too, which is how a phone gets
+  it. The sidebar's thread card gains a "Lead chat" line on the lead's row.
+- **The menu item.** "Make this the lead chat" carries a second line, "Stays on top
+  and hands out work to new threads". The web menu draws it; the desktop's native menu
+  shows it under the label on macOS 14.4 and later (Electron's `sublabel`), as the
+  item's hover text on any Mac (`toolTip`), and leaves it out on Windows and Linux.
+- **The suggestion.** Under the family tabs, on the parent, while its project has no
+  lead and the parent could lead it now (no refusal): "This thread is running other
+  threads. Make it the lead chat and it stays on top and hands out new work by
+  itself." with Make lead chat and a close button. Taking it or closing it keeps it
+  away from that project on this device for good (one localStorage key per project, so
+  two windows can't undo each other's). A project with a lead
+  never shows it.
+
 ### Sidebar
 
 - The lead's row carries a lead glyph before its title and "Lead" in place of the
