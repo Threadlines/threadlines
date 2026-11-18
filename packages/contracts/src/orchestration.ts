@@ -3764,6 +3764,8 @@ const ThreadDoneOverrideSetCommand = Schema.Struct({
    * `at` unless it was seen later, in the same step.
    */
   fromLinkedComputer: Schema.optional(Schema.Boolean),
+  /** See ThreadSessionStopCommand.byLink. */
+  byLink: Schema.optional(TrimmedNonEmptyString),
 });
 
 /**
@@ -4322,6 +4324,14 @@ const ThreadSessionStopCommand = Schema.Struct({
   type: Schema.Literal("thread.session.stop"),
   commandId: CommandId,
   threadId: ThreadId,
+  /**
+   * Server only: a linked computer asked for it over its link (this device
+   * id). It does nothing unless the thread is still that link's
+   * (`remoteOrigin`), decided atomically with the stop, so a thread its
+   * asker took back as a child here (ThreadAdoptedFromLink) is never stopped
+   * by a request that was read before that.
+   */
+  byLink: Schema.optional(TrimmedNonEmptyString),
   createdAt: IsoDateTime,
 });
 
@@ -5273,6 +5283,8 @@ const ThreadRemoteHandedBackRecordCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   turnId: TurnId,
+  /** See ThreadSessionStopCommand.byLink. */
+  byLink: Schema.optional(TrimmedNonEmptyString),
   createdAt: IsoDateTime,
 });
 

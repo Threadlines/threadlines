@@ -114,8 +114,16 @@ import { OrchestrationEngineService } from "../orchestration/Services/Orchestrat
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ComputerLinkRepository } from "./ComputerLinkRepository.ts";
 import { linkMoveCopyThreadId, linkMoveKey, linkMoveThreadId } from "../moves/linkMoveIds.ts";
-import { awaitsLoneMoveAnswer } from "../orchestration/threadMoveDecisions.ts";
-import { ProjectionThreadRepository } from "../persistence/Services/ProjectionThreads.ts";
+import {
+  type AdoptionArrival,
+  adoptionApartWords,
+  adoptionRefusal,
+  awaitsLoneMoveAnswer,
+} from "../orchestration/threadMoveDecisions.ts";
+import {
+  type ProjectionThread,
+  ProjectionThreadRepository,
+} from "../persistence/Services/ProjectionThreads.ts";
 import { discardSessionFiles, releaseSessionFiles } from "../provider/nativeSession.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
 import { RepositoryIdentityResolver } from "../project/Services/RepositoryIdentityResolver.ts";
@@ -1402,7 +1410,7 @@ const make = Effect.gen(function* () {
             );
         }
       }
-      yield* closeAdopted(row);
+      yield* releaseAdopted(row);
       return yield* moves.settle({
         linkDeviceId: row.linkDeviceId,
         transferId: row.transferId,
@@ -2440,12 +2448,13 @@ const make = Effect.gen(function* () {
   /**
    * The threads its agent started on this computer while it was on the one
    * it came from (docs/design/fleet.md, Part 3f, (g), "Also when the child's
-   * computer is the target"). Read from this computer's own records alone:
-   * threads started over this very link by the thread the move came from,
-   * still here (not archived, deleted or moved away). Those the manifest
-   * also names (`startedThere`) may become the arriving thread's children;
-   * the rest stay apart, and it can't reach them. A failed read names none
-   * rather than failing the move.
+   * computer is the target"), as their rows read. Read from this computer's
+   * own records alone: threads started over this very link by the thread the
+   * move came from, still here (not deleted or moved away; archived ones
+   * too, so one the manifest names can say why it stays apart). Those the
+   * manifest also names (`startedThere`) may become the arriving thread's
+   * children; the rest stay apart, and it can't reach them. A failed read
+   * names none rather than failing the move.
    */
   const threadsStartedHere = (row: LinkMoveRow) =>
     Effect.gen(function* () {
@@ -2453,38 +2462,69 @@ const make = Effect.gen(function* () {
       const found = yield* Effect.forEach(ids, (threadId) => threadRows.getById({ threadId }), {
         concurrency: 8,
       });
-      return found.flatMap(
-        (entry): Array<{ readonly threadId: ThreadId; readonly title: string }> => {
-          const thread = Option.getOrUndefined(entry);
-          return thread !== undefined &&
-            thread.deletedAt === null &&
-            thread.archivedAt === null &&
-            thread.move?.movedAway === undefined &&
-            thread.remoteOrigin?.linkDeviceId === row.linkDeviceId &&
-            thread.remoteOrigin.threadId === row.manifest.source.threadId
-            ? [{ threadId: thread.threadId, title: thread.title }]
-            : [];
-        },
-      );
+      return found.flatMap((entry): Array<ProjectionThread> => {
+        const thread = Option.getOrUndefined(entry);
+        return thread !== undefined &&
+          thread.deletedAt === null &&
+          thread.move?.movedAway === undefined &&
+          thread.remoteOrigin?.linkDeviceId === row.linkDeviceId &&
+          thread.remoteOrigin.threadId === row.manifest.source.threadId
+          ? [thread]
+          : [];
+      });
+    }).pipe(Effect.orElseSucceed((): ReadonlyArray<ProjectionThread> => []));
+
+  /**
+   * Which of the threads it started here the arriving thread may take back
+   * (the same check the decider makes again, adoptionRefusal), and the
+   * "Moved here" words for the ones the manifest names that stay apart.
+   * Only these are released: a thread that stays apart keeps what its link
+   * asked of it.
+   */
+  const adoptionCandidates = (listed: ReadonlyArray<ProjectionThread>, arrival: AdoptionArrival) =>
+    Effect.gen(function* () {
+      const adoptable: Array<ProjectionThread> = [];
+      const apart: Array<string> = [];
+      for (const thread of listed) {
+        const children = yield* threadRows.listAttachedChildIds({
+          parentThreadId: thread.threadId,
+        });
+        const why = adoptionRefusal(
+          {
+            remoteOrigin: thread.remoteOrigin ?? null,
+            projectId: thread.projectId,
+            archivedAt: thread.archivedAt,
+            moving: (thread.move ?? null) !== null || (thread.pendingMove ?? null) !== null,
+            inFamily:
+              ((thread.parentThreadId ?? null) !== null && (thread.attachedToParent ?? 0) > 0) ||
+              children.length > 0,
+            runtimeMode: thread.runtimeMode,
+            interactionMode: thread.interactionMode,
+          },
+          arrival,
+        );
+        if (why === null) adoptable.push(thread);
+        else apart.push(adoptionApartWords(thread.title, why));
+      }
+      return { adoptable, apart };
     }).pipe(
-      Effect.orElseSucceed(
-        (): ReadonlyArray<{ readonly threadId: ThreadId; readonly title: string }> => [],
-      ),
+      Effect.mapError(() => new ImportStop({ reason: `${ownLabel()} couldn't read its threads.` })),
     );
 
   /**
    * After the thread landed: the threads it took back as its children here
-   * owe the link nothing more (LinkRequests.closeThread), whatever arrived
-   * between their release and the import. Read from the projection, so a
-   * restart in between closes them too.
+   * are let go by the link again (LinkRequests.releaseThread), so a request
+   * that arrived between their release and the import ends too, and its
+   * message is taken back. Read from the projection, so a restart in between
+   * finishes it.
    */
-  const closeAdopted = (row: LinkMoveRow) =>
+  const releaseAdopted = (row: LinkMoveRow) =>
     Effect.gen(function* () {
       const adopted = yield* threadRows.listAdoptedChildIds({ parentThreadId: row.threadId });
-      for (const threadId of adopted) yield* requests.closeThread(row.linkDeviceId, threadId);
+      for (const threadId of adopted) yield* requests.releaseThread(row.linkDeviceId, threadId);
     }).pipe(
       Effect.catch((error) =>
-        Effect.logWarning("a moved thread's adopted threads couldn't be closed for their link", {
+        Effect.logWarning("a moved thread's adopted threads couldn't be released by their link", {
           threadId: row.threadId,
           detail: String(error),
         }),
@@ -2693,13 +2733,15 @@ const make = Effect.gen(function* () {
       // still here (Part 3f, (g)); otherwise as its own thread, with why.
       const lineage = family === null ? null : yield* family.lineage(land.project.id);
       const startedHere = yield* threadsStartedHere(row);
+      // Archived ones aren't named as here, unless the manifest names them (below).
+      const liveHere = startedHere.filter((thread) => thread.archivedAt === null);
       const familyLeft =
         family === null
           ? []
           : family.left(
               fromLabel,
               lineage?.left ?? null,
-              new Set(startedHere.map((entry) => entry.title)),
+              new Set(liveHere.map((entry) => entry.title)),
             );
       // Across the link its work came over (Part 3f, (h)): from this link alone.
       const across = yield* linkLanding(
@@ -2711,8 +2753,10 @@ const make = Effect.gen(function* () {
       if (across.left !== undefined) familyLeft.push(across.left);
       // The threads it started here that may be its children again (Part 3f,
       // (g)): named by both the manifest and this computer's own records,
-      // and only for a thread that lands on its own here. The decider checks
-      // each again and words the outcome; the others stay apart, named here.
+      // only for a thread that lands on its own here, and only those that
+      // pass the check the decider makes again (its modes as the import
+      // writes them). One the manifest names that doesn't pass says why;
+      // the others stay apart, named here.
       const askedBack = new Map(
         (row.manifest.startedThere ?? []).map((entry) => [entry.threadId as string, entry]),
       );
@@ -2720,16 +2764,22 @@ const make = Effect.gen(function* () {
         lineage?.lineage === undefined &&
         across.remoteOrigin === undefined &&
         across.adopt === undefined;
-      const adoptable = topLevel
-        ? startedHere.filter((entry) => askedBack.has(entry.threadId))
-        : [];
-      const adoptableIds = new Set<string>(adoptable.map((entry) => entry.threadId));
+      const listed = topLevel ? startedHere.filter((entry) => askedBack.has(entry.threadId)) : [];
+      const listedIds = new Set<string>(listed.map((entry) => entry.threadId));
+      const { adoptable, apart } = yield* adoptionCandidates(listed, {
+        linkDeviceId: row.linkDeviceId,
+        sourceThreadId: row.manifest.source.threadId,
+        fromEnvironmentId: authority.pinnedEnvironmentId ?? row.manifest.source.environmentId,
+        fromPinned: authority.pinnedEnvironmentId !== null,
+        projectId: land.project.id,
+        runtimeMode: capped.runtimeMode,
+        interactionMode: capped.interactionMode,
+      });
       const startedHereLine = startedHereWords(
-        startedHere
-          .filter((entry) => !adoptableIds.has(entry.threadId))
-          .map((entry) => entry.title),
+        liveHere.filter((entry) => !listedIds.has(entry.threadId)).map((entry) => entry.title),
       );
       if (startedHereLine !== null) familyLeft.push(startedHereLine);
+      familyLeft.push(...apart);
       // The "Moved here" line's room words first, then its family's, then
       // what the thread had going.
       const arrival =

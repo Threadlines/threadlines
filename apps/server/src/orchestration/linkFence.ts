@@ -81,3 +81,18 @@ export function linkFenceRefusal(thread: LinkFencedThread, tools: string): strin
   }
   return `This thread moved here from ${thread.movedFrom?.label ?? "another computer"}, so it has no ${tools} until the user here sends it a message.`;
 }
+
+/**
+ * Whether what a linked computer asked for over its link (`byLink`, its
+ * device id) may still act on the thread: nothing names a link, or the
+ * thread is still that link's (`remoteOrigin`). Asked in the decision
+ * itself, so a thread its asker took back as a child here (Part 3f, (g))
+ * is never stopped, wrapped or marked by a request read before that.
+ */
+export const stillLinksThread = (
+  thread: Pick<OrchestrationThread, "remoteOrigin">,
+  byLink: string | undefined,
+): boolean => byLink === undefined || thread.remoteOrigin?.linkDeviceId === byLink;
+
+/** Why a linked computer's stop, Wrap up or ack is refused on a thread no longer its own. */
+export const NOT_THE_LINKS_THREAD = "This thread isn't one that computer's link started anymore.";

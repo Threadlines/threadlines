@@ -57,6 +57,7 @@ import { activeParticipants } from "@threadlines/shared/threadParticipants";
 
 import { handOffReplyText } from "./agentRequestDecisions.ts";
 import { isProjectLeadThread } from "./commandInvariants.ts";
+import { NOT_THE_LINKS_THREAD, stillLinksThread } from "./linkFence.ts";
 
 import { checkoutSelectedEvents } from "./threadCheckout.ts";
 import { currentAgentModel, messageAgentModels } from "./messageAgentModels.ts";
@@ -1225,6 +1226,10 @@ export function decideRemoteHandedBackRecord(
   command: CommandOf<"thread.remote-handed-back.record">,
   baseFor: ChildEventBase,
 ): ChildThreadDecision {
+  // Only on a thread still that link's (Part 3f, (g)).
+  if (!stillLinksThread(thread, command.byLink)) {
+    return refuse(NOT_THE_LINKS_THREAD);
+  }
   const latest = thread.latestTurn;
   if (
     latest === null ||

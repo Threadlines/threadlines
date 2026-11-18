@@ -465,6 +465,20 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
       `,
   });
 
+  const listAttachedChildIdsRows = SqlSchema.findAll({
+    Request: ListProjectionAdoptedChildrenInput,
+    Result: Schema.Struct({ threadId: ThreadId }),
+    execute: ({ parentThreadId }) =>
+      sql`
+        SELECT thread_id AS "threadId"
+        FROM projection_threads
+        WHERE parent_thread_id = ${parentThreadId}
+          AND attached_to_parent > 0
+          AND deleted_at IS NULL
+        ORDER BY created_at ASC, thread_id ASC
+      `,
+  });
+
   const deleteProjectionThreadRow = SqlSchema.void({
     Request: DeleteProjectionThreadInput,
     execute: ({ threadId }) =>
@@ -505,6 +519,14 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
       ),
     );
 
+  const listAttachedChildIds: ProjectionThreadRepositoryShape["listAttachedChildIds"] = (input) =>
+    listAttachedChildIdsRows(input).pipe(
+      Effect.map((rows) => rows.map((row) => row.threadId)),
+      Effect.mapError(
+        toPersistenceSqlError("ProjectionThreadRepository.listAttachedChildIds:query"),
+      ),
+    );
+
   const deleteById: ProjectionThreadRepositoryShape["deleteById"] = (input) =>
     deleteProjectionThreadRow(input).pipe(
       Effect.mapError(toPersistenceSqlError("ProjectionThreadRepository.deleteById:query")),
@@ -516,6 +538,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
     listByProjectId,
     listIdsByRemoteLink,
     listAdoptedChildIds,
+    listAttachedChildIds,
     deleteById,
   } satisfies ProjectionThreadRepositoryShape;
 });

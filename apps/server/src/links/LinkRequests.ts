@@ -261,8 +261,6 @@ export interface LinkRequestsShape {
     deviceId: string,
     threadId: ThreadId,
   ) => Effect.Effect<void, PeerRpcError>;
-  /** Every report about the thread counts as delivered: see LinkRequestRepository.closeForThread. */
-  readonly closeThread: (deviceId: string, threadId: ThreadId) => Effect.Effect<void, PeerRpcError>;
   readonly onTurnEnd: RemoteRequestTurnEndsShape["onTurnEnd"];
   /** See RemoteRequestGate. */
   readonly messageVerdict: RemoteRequestGateShape["messageVerdict"];
@@ -1244,25 +1242,43 @@ const make = Effect.gen(function* () {
   /**
    * Stops a link's thread if it is still working; fails if the stop wasn't
    * recorded. `retry` makes it a new stop (the first one, already recorded,
-   * didn't take), not a replay of the first.
+   * didn't take), not a replay of the first. The stop names the link
+   * (`byLink`), so the decider refuses it when the thread stopped being the
+   * link's after it was read here (its asker took it back, Part 3f, (g)):
+   * that refusal is an answer (`not_yours`), not a failure. `asLink: false`
+   * is this computer's own stop, of a turn it found the link's request
+   * started.
    */
-  const stopIfWorking = (deviceId: string, thread: OrchestrationThread, retry?: string) =>
+  const stopIfWorking = (
+    deviceId: string,
+    thread: OrchestrationThread,
+    retry?: string,
+    options: { readonly asLink?: boolean } = {},
+  ) =>
     Effect.gen(function* () {
       if (!isWorking(thread)) return "not_running" as const;
-      yield* mustDispatch(
-        {
-          type: "thread.session.stop",
-          commandId: CommandId.make(
-            `server:link-stop:${deviceId}:${thread.id}:${turnKeyOf(thread)}${
-              retry === undefined ? "" : `:retry:${retry}`
-            }`,
-          ),
-          threadId: thread.id,
-          createdAt: yield* nowIso,
-        },
-        "stop that thread",
-      );
-      return "stopped" as const;
+      const command: OrchestrationCommand = {
+        type: "thread.session.stop",
+        commandId: CommandId.make(
+          `server:link-stop:${deviceId}:${thread.id}:${turnKeyOf(thread)}${
+            retry === undefined ? "" : `:retry:${retry}`
+          }`,
+        ),
+        threadId: thread.id,
+        ...(options.asLink === false ? {} : { byLink: deviceId }),
+        createdAt: yield* nowIso,
+      };
+      if (options.asLink === false) {
+        yield* mustDispatch(command, "stop that thread");
+        return "stopped" as const;
+      }
+      const stopped = yield* dispatchUnlessRefused(command, "stop that thread");
+      if (stopped === "ok") return "stopped" as const;
+      // Refused: either no longer the link's, or for a reason a retry won't change.
+      const now = yield* readThreadOrFail(thread.id);
+      return now !== undefined && now.remoteOrigin?.linkDeviceId === deviceId
+        ? ("not_running" as const)
+        : ("not_yours" as const);
     });
 
   /**
@@ -1279,8 +1295,9 @@ const make = Effect.gen(function* () {
       if (Option.isNone(found) || found.value.cleanup === null) return;
       const row = found.value;
       const cleanup = found.value.cleanup;
-      // Not the link's any more: nothing is done to it, and the clean-up ends.
-      const thread = row.threadId === null ? undefined : yield* ownedThread(deviceId, row.threadId);
+      // The link's own message is taken back wherever it waits; a thread no
+      // longer the link's is never stopped for it, and the clean-up ends.
+      const thread = row.threadId === null ? undefined : yield* readThreadOrFail(row.threadId);
       const messageId = row.messageId;
       if (
         thread !== undefined &&
@@ -1357,7 +1374,7 @@ const make = Effect.gen(function* () {
                 now: yield* nowIso,
               })
               .pipe(Effect.mapError(() => peerError(`${ownLabel()} couldn't record the cancel.`)));
-            const thread = yield* ownedThread(deviceId, threadId);
+            const thread = yield* readThreadOrFail(threadId);
             if (thread === undefined) return;
             const messageId = row.messageId;
             if (
@@ -1375,23 +1392,26 @@ const make = Effect.gen(function* () {
                 "take back the message of the thread that moved here",
               );
             }
-            // Only the turn this request asked for: any other is this computer's user's.
-            const current = yield* ownedThread(deviceId, threadId);
-            if (
-              current !== undefined &&
-              row.turnId !== null &&
-              current.latestTurn?.turnId === row.turnId &&
-              isRunning(current)
-            ) {
-              yield* stopIfWorking(deviceId, current);
-            }
+            // Only the turn this request's own message started, still the
+            // newest started here: any later one is this computer's user's.
+            const current = yield* readThreadOrFail(threadId);
+            if (current === undefined || !isRunning(current)) return;
+            const starts = yield* readTurnStarts(threadId);
+            const newest = [...starts].reduce<readonly [string, number] | null>(
+              (last, entry) => (last === null || entry[1] > last[1] ? entry : last),
+              null,
+            );
+            const ownTurn =
+              (row.turnId !== null && current.latestTurn?.turnId === row.turnId) ||
+              (row.messageId !== null && newest?.[0] === row.messageId);
+            if (ownTurn) yield* stopIfWorking(deviceId, current, undefined, { asLink: false });
           }),
         );
       }
       yield* closeThread(deviceId, threadId);
     });
 
-  const closeThread: LinkRequestsShape["closeThread"] = (deviceId, threadId) =>
+  const closeThread = (deviceId: string, threadId: ThreadId) =>
     Effect.gen(function* () {
       yield* ledger
         .closeForThread({ linkDeviceId: deviceId, threadId, now: yield* nowIso })
@@ -1531,6 +1551,7 @@ const make = Effect.gen(function* () {
               ),
               threadId: row.value.threadId,
               turnId: TurnId.make(row.value.reportTurnId),
+              byLink: link.deviceId,
               createdAt: yield* nowIso,
             },
             "record that its answer reached the thread that asked",
@@ -1567,6 +1588,7 @@ const make = Effect.gen(function* () {
           state: input.override.state,
           at: input.override.at,
           fromLinkedComputer: true,
+          byLink: link.deviceId,
         },
         input.override.state === "done" ? "wrap up that thread" : "reopen that thread",
       );
@@ -2444,7 +2466,6 @@ const make = Effect.gen(function* () {
     drainDone,
     drainsOwed,
     releaseThread,
-    closeThread,
     onTurnEnd,
     messageVerdict,
     startReactor,

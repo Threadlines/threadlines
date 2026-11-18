@@ -314,6 +314,11 @@ export interface ProjectionThreadRepositoryShape {
     input: ListProjectionAdoptedChildrenInput,
   ) => Effect.Effect<ReadonlyArray<ThreadId>, ProjectionRepositoryError>;
 
+  /** Ids of `parentThreadId`'s attached children that aren't deleted. */
+  readonly listAttachedChildIds: (
+    input: ListProjectionAdoptedChildrenInput,
+  ) => Effect.Effect<ReadonlyArray<ThreadId>, ProjectionRepositoryError>;
+
   /**
    * Soft-delete a projected thread row by id.
    */

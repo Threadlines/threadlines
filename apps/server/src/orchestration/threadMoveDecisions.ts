@@ -22,6 +22,9 @@ import {
   type OrchestrationQueuedFollowUp,
   type OrchestrationThread,
   type OrchestrationThreadDoneOverride,
+  type ProviderInteractionMode,
+  type RuntimeMode,
+  type ThreadRemoteOrigin,
   type OrchestrationThreadMove,
   type ThreadId,
   type ThreadMoveFamily,
@@ -1954,7 +1957,28 @@ function importedAdoption(
     seen.add(entry.threadId);
     const child = readModel.threads.find((thread) => thread.id === entry.threadId);
     if (child === undefined || child.deletedAt !== null) continue;
-    const why = adoptionRefusal(readModel, command, asked.linkDeviceId, child);
+    const why = adoptionRefusal(
+      {
+        remoteOrigin: child.remoteOrigin ?? null,
+        projectId: child.projectId,
+        archivedAt: child.archivedAt,
+        moving: (child.move ?? null) !== null || (child.pendingMove ?? null) !== null,
+        inFamily:
+          (child.parentThreadId !== null && child.attachedToParent) ||
+          attachedChildrenOf(readModel, child.id).length > 0,
+        runtimeMode: child.runtimeMode,
+        interactionMode: child.interactionMode,
+      },
+      {
+        linkDeviceId: asked.linkDeviceId,
+        sourceThreadId: command.movedFrom.threadId,
+        fromEnvironmentId: command.movedFrom.environmentId,
+        fromPinned: command.movedFrom.environmentPinned === true,
+        projectId: command.projectId,
+        runtimeMode: command.runtimeMode,
+        interactionMode: command.interactionMode,
+      },
+    );
     if (why === null) adopted.push({ thread: child, override: entry.override });
     else apart.push({ title: child.title, why });
   }
@@ -1967,61 +1991,73 @@ function importedAdoption(
             ? `Its thread '${only.thread.title}' was already on this computer. It's this thread's again.`
             : `Its ${adopted.length} threads already on this computer are this thread's again: ${titlesOf(adopted.map((entry) => entry.thread))}.`,
         ];
-  const left = apart.map(
-    (entry) =>
-      `Its thread '${entry.title}' is already on this computer. It stays separate because ${entry.why}, so this thread can't reach it.`,
-  );
+  const left = apart.map((entry) => adoptionApartWords(entry.title, entry.why));
   return { adopted, brought, left };
 }
 
+/** A thread here that the arriving thread's agent may have started over its link, as adoptionRefusal reads it. */
+export interface AdoptionCandidate {
+  readonly remoteOrigin: ThreadRemoteOrigin | null;
+  readonly projectId: string;
+  readonly archivedAt: string | null;
+  /** Queued to move, or moving. */
+  readonly moving: boolean;
+  /** Attached to a parent here, or a parent of attached threads itself. */
+  readonly inFamily: boolean;
+  readonly runtimeMode: RuntimeMode;
+  readonly interactionMode: ProviderInteractionMode;
+}
+
+/** The thread arriving, as its import will write it (its modes after the link's cap). */
+export interface AdoptionArrival {
+  /** The link the move came over, from the transfer's own record. */
+  readonly linkDeviceId: string;
+  /** The thread it was on the computer it came from. */
+  readonly sourceThreadId: string;
+  readonly fromEnvironmentId: string;
+  /** The link proved which computer that is. */
+  readonly fromPinned: boolean;
+  readonly projectId: string;
+  readonly runtimeMode: RuntimeMode;
+  readonly interactionMode: ProviderInteractionMode;
+}
+
 /**
- * Why `child`, a thread here, can't become the arriving thread's child, in
- * words that finish "It stays separate because ...", or null. It must be
- * one this very link started for the very thread that arrives, from the
- * computer that link proved it is; in the arriving thread's project; not
- * archived, moving or a parent itself; and asking no more access than the
- * arriving thread has here (its modes as this import writes them): a child
- * never has more access than its parent, and its access is never lowered
- * for it.
+ * Why `child`, a thread here, can't become the arriving thread's child
+ * (docs/design/fleet.md, Part 3f, (g)), in words that finish "It stays
+ * separate because ...", or null. It must be one this very link started for
+ * the very thread that arrives, from the computer that link proved it is; in
+ * the arriving thread's project; not archived, moving or in a family here;
+ * and asking no more access than the arriving thread has here: a child never
+ * has more access than its parent, and its access is never lowered for it.
+ * LinkMoves asks it before the link lets go of a thread, and the decider
+ * again in the import's decision, so one that fails is never released.
  */
-function adoptionRefusal(
-  readModel: OrchestrationReadModel,
-  command: CommandOf<"thread.import">,
-  linkDeviceId: string,
-  child: OrchestrationThread,
-): string | null {
-  const origin = child.remoteOrigin ?? null;
+export function adoptionRefusal(child: AdoptionCandidate, arrival: AdoptionArrival): string | null {
+  const origin = child.remoteOrigin;
   if (
     origin === null ||
-    origin.linkDeviceId !== linkDeviceId ||
-    origin.threadId !== command.movedFrom.threadId ||
+    origin.linkDeviceId !== arrival.linkDeviceId ||
+    origin.threadId !== arrival.sourceThreadId ||
     origin.environmentPinned !== true ||
-    command.movedFrom.environmentPinned !== true ||
-    origin.environmentId !== command.movedFrom.environmentId
+    !arrival.fromPinned ||
+    origin.environmentId !== arrival.fromEnvironmentId
   ) {
     return "this computer can't confirm this thread started it";
   }
-  if (child.projectId !== command.projectId) return "it's in another project here";
+  if (child.projectId !== arrival.projectId) return "it's in another project here";
   if (child.archivedAt !== null) return "it's archived";
-  if ((child.move ?? null) !== null || (child.pendingMove ?? null) !== null) {
-    return "it's moving";
-  }
-  if (
-    (child.parentThreadId !== null && child.attachedToParent) ||
-    attachedChildrenOf(readModel, child.id).length > 0
-  ) {
-    return "it's in another family here";
-  }
-  if (
-    !withinModeCeiling(child, {
-      runtimeMode: command.runtimeMode,
-      interactionMode: command.interactionMode,
-    })
-  ) {
+  if (child.moving) return "it's moving";
+  if (child.inFamily) return "it's in another family here";
+  if (!withinModeCeiling(child, arrival)) {
     return "it has more access than this thread has here";
   }
   return null;
 }
+
+/** The "Moved here" words for a thread it started here that stays apart, and why. */
+export const adoptionApartWords = (title: string, why: string) =>
+  `Its thread '${title}' is already on this computer. It stays separate because ${why}, so this thread can't reach it.`;
 
 /**
  * Each adopted thread becomes the arriving thread's child (no parent turn, a

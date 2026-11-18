@@ -120,7 +120,7 @@ import {
   heldRequestEnded,
   isHeldByContinueAtReset,
 } from "./childThreadDelivery.ts";
-import { turnLiftsMoveFence } from "./linkFence.ts";
+import { NOT_THE_LINKS_THREAD, stillLinksThread, turnLiftsMoveFence } from "./linkFence.ts";
 import { projectEvent } from "./projector.ts";
 import { checkoutSelectedEvents, leavesLentWorktree, movesCheckout } from "./threadCheckout.ts";
 import { canReplaceThreadTitle } from "./threadTitle.ts";
@@ -2155,7 +2155,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       ) {
         return [];
       }
-      // A word from the parent's computer never takes back a newer one given here.
+      // A word from the parent's computer counts only while the thread is
+      // still that link's (Part 3f, (g)), and never takes back a newer one
+      // given here.
+      if (!stillLinksThread(thread, command.byLink)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: NOT_THE_LINKS_THREAD,
+        });
+      }
       const fromLinkedComputer = command.fromLinkedComputer === true;
       if (
         fromLinkedComputer &&
@@ -4168,6 +4176,17 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         });
         return [unqueuedEvent, ...outsideTurn];
       }
+      // A linked computer's request runs only while the thread is still that
+      // computer's (Part 3f, (g)): once the thread that asked took it back
+      // as a child here, it is taken back, so the queue moves on.
+      if (
+        queued.fromThread?.kind === "request" &&
+        queued.fromThread.environmentId !== undefined &&
+        (targetThread.remoteOrigin?.environmentId !== queued.fromThread.environmentId ||
+          targetThread.remoteOrigin.threadId !== queued.fromThread.threadId)
+      ) {
+        return [{ ...unqueuedEvent, payload: { ...unqueuedEvent.payload, reason: "cancelled" } }];
+      }
       // A message an agent queued (a hand-off, a routed reply, or a child
       // thread's report or request) goes only to the agent it was for. If that
       // agent left, it is taken back and its request cancelled, never handed
@@ -4871,6 +4890,13 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      // A linked computer's stop stops only a thread still its own (Part 3f, (g)).
+      if (!stillLinksThread(thread, command.byLink)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: NOT_THE_LINKS_THREAD,
+        });
+      }
       const base = () =>
         withEventBase({
           aggregateKind: "thread",

@@ -186,10 +186,9 @@ interface CarryRecord {
   readonly threadsHere?: ReadonlyArray<{ readonly threadId: ThreadId } & Record<string, unknown>>;
   /**
    * Threads this link gave up (LinkRequests.releaseThread), each with how
-   * many commands were dispatched by then, and the ones closed for it after.
+   * many commands were dispatched by then.
    */
   readonly released?: Array<{ readonly threadId: ThreadId; readonly dispatchedBefore: number }>;
-  readonly closed?: Array<ThreadId>;
 }
 
 /** The services LinkMoves leans on, with this computer's git real and the rest faked. */
@@ -239,8 +238,6 @@ function testLayer(
             Effect.sync(
               () => void carry.released?.push({ threadId, dispatchedBefore: dispatched.length }),
             ),
-          closeThread: (_deviceId, threadId) =>
-            Effect.sync(() => void carry.closed?.push(threadId)),
           // An instance this computer doesn't have ("gone") is refused.
           resolveAgentFor: (input) =>
             Effect.succeed(
@@ -297,6 +294,14 @@ function testLayer(
               dispatched.flatMap((command) =>
                 command.type === "thread.import" && command.threadId === parentThreadId
                   ? (command.adoptsChildren?.children ?? []).map((child) => child.threadId)
+                  : [],
+              ),
+            ),
+          listAttachedChildIds: ({ parentThreadId }) =>
+            Effect.succeed(
+              (carry.threadsHere ?? []).flatMap((row) =>
+                row.parentThreadId === parentThreadId && row.attachedToParent === 1
+                  ? [row.threadId]
                   : [],
               ),
             ),
@@ -2293,11 +2298,19 @@ describe("a thread moving across its link (Part 3f, (h))", () => {
 
   describe("a parent taking back the threads it started here (Part 3f, (g))", () => {
     /** A thread the link started here for the moving thread (`thread-a` there). */
-    const startedHere = (threadId: string, title: string) => ({
+    const startedHere = (threadId: string, title: string, extra: Record<string, unknown> = {}) => ({
       threadId: ThreadId.make(threadId),
       title,
+      projectId: ProjectId.make("project-b"),
+      runtimeMode: "approval-required",
+      interactionMode: "default",
+      move: null,
+      pendingMove: null,
+      parentThreadId: null,
+      attachedToParent: 0,
       deletedAt: null,
       archivedAt: null,
+      ...extra,
       remoteOrigin: {
         linkDeviceId: "device-windows",
         environmentId: WINDOWS,
@@ -2316,11 +2329,15 @@ describe("a thread moving across its link (Part 3f, (h))", () => {
     const arriving = (
       repos: ReturnType<typeof makeRepos>,
       dispatched: OrchestrationCommand[],
-      carry: Pick<CarryRecord, "released" | "closed">,
+      carry: Pick<CarryRecord, "released" | "threadsHere">,
       linkLineage?: MoveExportInput["linkLineage"],
+      listed: ReadonlyArray<{ readonly threadId: ThreadId }> = startedThere,
     ) =>
       Effect.gen(function* () {
-        const packed = yield* pack(repos, null, undefined, { startedThere, linkLineage });
+        const packed = yield* pack(repos, null, undefined, {
+          startedThere: [...listed],
+          linkLineage,
+        });
         const state = yield* deliver(packed.manifest, packed.payload);
         // Asked again (a restart, a lost answer): read from the threads, the same.
         const again = yield* (yield* LinkMoves).status(link("allowed"), { transferId: TRANSFER });
@@ -2345,9 +2362,8 @@ describe("a thread moving across its link (Part 3f, (h))", () => {
       const repos = makeRepos();
       const dispatched: OrchestrationCommand[] = [];
       const released: NonNullable<CarryRecord["released"]> = [];
-      const closed: ThreadId[] = [];
       return Effect.gen(function* () {
-        const { state, again } = yield* arriving(repos, dispatched, { released, closed });
+        const { state, again } = yield* arriving(repos, dispatched, { released });
         assert.equal(state.status, "committed");
         const imported = importOf(dispatched);
         assert.deepEqual(imported.adoptsChildren, {
@@ -2361,13 +2377,13 @@ describe("a thread moving across its link (Part 3f, (h))", () => {
             "Its thread 'Only here' is already on this computer. It stays separate, so this thread can't reach it.",
           ],
         );
-        // The link let go of it before the import, and owes it nothing once it landed.
+        // The link let go of it before the import, and again once it landed.
         assert.deepEqual(
           released.map((entry) => entry.threadId),
-          ["thread-both"],
+          ["thread-both", "thread-both"],
         );
         assert.isAtMost(released[0]!.dispatchedBefore, dispatched.indexOf(imported));
-        assert.include(closed, ThreadId.make("thread-both"));
+        assert.isAbove(released[1]!.dispatchedBefore, dispatched.indexOf(imported));
         assert.deepEqual(state.adopted, [ThreadId.make("thread-both")]);
         assert.deepEqual(again.adopted, [ThreadId.make("thread-both")]);
       });
@@ -2381,13 +2397,56 @@ describe("a thread moving across its link (Part 3f, (h))", () => {
         const { state } = yield* arriving(
           repos,
           dispatched,
-          { released, closed: [] },
+          { released },
           { remoteParent: { threadId: ThreadId.make("thread-parent-on-windows"), title: "Ship" } },
         );
         assert.equal(state.status, "committed");
         assert.isUndefined(importOf(dispatched).adoptsChildren);
         assert.deepEqual(released, []);
         assert.isUndefined(state.adopted);
+      });
+    });
+
+    it.live("one on its list that can't be taken back keeps its requests, and says why", () => {
+      const repos = makeRepos();
+      const dispatched: OrchestrationCommand[] = [];
+      const released: NonNullable<CarryRecord["released"]> = [];
+      const listed = ["thread-full-access", "thread-archived", "thread-moving"].map((id) => ({
+        threadId: ThreadId.make(id),
+      }));
+      return Effect.gen(function* () {
+        const { state } = yield* arriving(
+          repos,
+          dispatched,
+          {
+            released,
+            threadsHere: [
+              // More access than the parent gets here (its modes after the link's cap).
+              startedHere("thread-full-access", "Full access", { runtimeMode: "full-access" }),
+              startedHere("thread-archived", "Archived", {
+                archivedAt: "2026-11-17T10:00:00.000Z",
+              }),
+              startedHere("thread-moving", "Moving", { pendingMove: { requestId: "r" } }),
+            ],
+          },
+          undefined,
+          listed,
+        );
+        assert.equal(state.status, "committed");
+        const imported = importOf(dispatched);
+        assert.isUndefined(imported.adoptsChildren);
+        // Never released: what its link asked of it still stands.
+        assert.deepEqual(released, []);
+        const line = (title: string, why: string) =>
+          `Its thread '${title}' is already on this computer. It stays separate because ${why}, so this thread can't reach it.`;
+        assert.includeMembers(
+          [...(imported.arrival?.left ?? [])],
+          [
+            line("Full access", "it has more access than this thread has here"),
+            line("Archived", "it's archived"),
+            line("Moving", "it's moving"),
+          ],
+        );
       });
     });
   });

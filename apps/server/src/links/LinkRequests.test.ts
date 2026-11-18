@@ -349,15 +349,18 @@ const stopsFor = (events: ReadonlyArray<OrchestrationEvent>, threadId: ThreadId)
 /**
  * The thread that asked (PARENT on Windows PC) moves here and takes the
  * link's thread back as its child (docs/design/fleet.md, Part 3f, (g)):
- * released by the link first, then imported, as LinkMoves does it.
+ * released by the link first, then imported, as LinkMoves does it
+ * (`release: false` imports only, as if the release had run before
+ * something new arrived).
  */
 const takenBack = (
   computer: Computer,
   service: Effect.Success<ReturnType<Computer["boot"]>>,
   threadId: ThreadId,
+  options: { readonly release?: boolean } = {},
 ) =>
   Effect.gen(function* () {
-    yield* service.releaseThread(DEVICE, threadId);
+    if (options.release !== false) yield* service.releaseThread(DEVICE, threadId);
     yield* computer.engine.dispatch({
       type: "thread.import",
       commandId: CommandId.make("import-parent"),
@@ -387,11 +390,11 @@ const takenBack = (
   });
 
 /** The user here starts a turn in the thread, and its agent is at work on it. */
-const userTurnRunning = (computer: Computer, threadId: ThreadId) =>
+const userTurnRunning = (computer: Computer, threadId: ThreadId, turnId = "user-turn") =>
   Effect.gen(function* () {
     yield* computer.engine.dispatch({
       type: "thread.session.set",
-      commandId: CommandId.make("user-turn-running"),
+      commandId: CommandId.make(`running-${turnId}`),
       threadId,
       session: {
         threadId,
@@ -399,12 +402,23 @@ const userTurnRunning = (computer: Computer, threadId: ThreadId) =>
         providerName: "codex",
         providerInstanceId: ProviderInstanceId.make("codex"),
         runtimeMode: "auto",
-        activeTurnId: TurnId.make("user-turn"),
+        activeTurnId: TurnId.make(turnId),
         lastError: null,
         updatedAt: AT,
       },
       createdAt: AT,
     });
+  });
+
+/** A service whose reads of `threadId` return `stale`: it read the thread just before it changed. */
+const bootReadingStale = (computer: Computer, threadId: ThreadId, stale: unknown) =>
+  computer.boot({
+    snapshots: {
+      getThreadDetailById: (id: ThreadId) =>
+        id === threadId
+          ? Effect.succeed(Option.some(stale as never))
+          : computer.snapshots.getThreadDetailById(id),
+    },
   });
 
 it.layer(NodeServices.layer)("LinkRequests", (it) => {
@@ -1593,6 +1607,123 @@ it.layer(NodeServices.layer)("LinkRequests", (it) => {
         yield* restarted.startReactor();
         assert.isNull((yield* computer.request("request-1")).cleanup);
         assert.equal(stopsFor(yield* computer.events, threadId), before);
+      }),
+  );
+
+  it.effect(
+    "a stop, Wrap up or ack the link read just before the take-back does nothing to the thread",
+    () =>
+      Effect.gen(function* () {
+        const computer = yield* makeComputer();
+        yield* computer.addLink(DEVICE, "allowed", "active", WINDOWS);
+        const { service, threadId } = yield* startedChild(computer, "request-1");
+        // An answer from the turn now running, which the asker hasn't acked yet.
+        yield* service.send(link(), {
+          requestId: ChildRequestId.make("send-1"),
+          threadId,
+          text: "Add the security fixes too.",
+        });
+        yield* userTurnRunning(computer, threadId, "turn-send");
+        const child = (yield* computer.thread(threadId))!;
+        yield* service.onTurnEnd({
+          child: {
+            ...child,
+            messages: [
+              ...child.messages,
+              {
+                id: MessageId.make("answer"),
+                role: "assistant",
+                text: "Added the two security fixes.",
+                turnId: TurnId.make("turn-send"),
+                streaming: false,
+                createdAt: AT,
+                updatedAt: AT,
+              },
+            ],
+          },
+          end: { turnId: TurnId.make("turn-send"), outcome: "completed" },
+          pendingMessageId: linkMessageId(DEVICE, "send-1"),
+          createdAt: AT,
+        });
+        const stale = yield* computer.thread(threadId);
+        yield* takenBack(computer, service, threadId, { release: false });
+        const before = stopsFor(yield* computer.events, threadId);
+
+        const late = yield* bootReadingStale(computer, threadId, stale);
+        yield* late.stopThread(link(), threadId);
+        yield* late.wrapThread(link(), { threadId, override: { state: "done", at: AT } });
+        yield* late.ack(link(), { reportId: "send-1:report", delivered: true });
+        assert.equal(stopsFor(yield* computer.events, threadId), before);
+        const after = (yield* computer.thread(threadId))!;
+        assert.isNull(after.doneOverride);
+        assert.isNull(after.handedBackTurnId);
+      }),
+  );
+
+  it.effect(
+    "release stops the turn the link's request started, and never one the user started after it",
+    () =>
+      Effect.gen(function* () {
+        // Its own turn running: the ledger has no turn id for it yet.
+        const asked = yield* makeComputer();
+        yield* asked.addLink(DEVICE, "allowed", "active", WINDOWS);
+        const first = yield* startedChild(asked, "request-1");
+        yield* userTurnRunning(asked, first.threadId, "turn-asked");
+        assert.isNull((yield* asked.request("request-1")).turnId);
+        const before = stopsFor(yield* asked.events, first.threadId);
+        yield* first.service.releaseThread(DEVICE, first.threadId);
+        assert.equal(stopsFor(yield* asked.events, first.threadId), before + 1);
+
+        // The user started a turn here since: that one runs on.
+        const mine = yield* makeComputer();
+        yield* mine.addLink(DEVICE, "allowed", "active", WINDOWS);
+        const second = yield* startedChild(mine, "request-1");
+        yield* mine.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("user-turn"),
+          threadId: second.threadId,
+          message: {
+            messageId: MessageId.make("m-user"),
+            role: "user",
+            text: "Also check the docs.",
+            attachments: [],
+          },
+          runtimeMode: "auto",
+          interactionMode: "default",
+          createdAt: AT,
+        });
+        yield* userTurnRunning(mine, second.threadId, "turn-user");
+        const mineBefore = stopsFor(yield* mine.events, second.threadId);
+        yield* second.service.releaseThread(DEVICE, second.threadId);
+        assert.equal(stopsFor(yield* mine.events, second.threadId), mineBefore);
+        assert.equal((yield* mine.request("request-1")).status, "cancelled");
+      }),
+  );
+
+  it.effect(
+    "a send that landed between the release and the take-back ends, and its message is taken back",
+    () =>
+      Effect.gen(function* () {
+        const computer = yield* makeComputer();
+        yield* computer.addLink(DEVICE, "allowed", "active", WINDOWS);
+        const { service, threadId } = yield* startedChild(computer, "request-1");
+        yield* service.releaseThread(DEVICE, threadId);
+        const sent = yield* service.send(link(), {
+          requestId: ChildRequestId.make("send-late"),
+          threadId,
+          text: "One more thing.",
+        });
+        assert.equal(sent.status, "queued");
+        yield* takenBack(computer, service, threadId, { release: false });
+        // Released again once it landed, as LinkMoves does.
+        yield* service.releaseThread(DEVICE, threadId);
+        assert.equal((yield* computer.request("send-late")).status, "cancelled");
+        const child = (yield* computer.thread(threadId))!;
+        assert.isFalse(
+          (child.queuedFollowUps ?? []).some(
+            (queued) => queued.messageId === linkMessageId(DEVICE, "send-late"),
+          ),
+        );
       }),
   );
 
