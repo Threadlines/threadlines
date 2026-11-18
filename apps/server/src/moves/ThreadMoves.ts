@@ -44,6 +44,7 @@ import {
   type ThreadMoveRoomAgentChoice,
   type ThreadMoveRoomAgentTarget,
   type ThreadMoveStartInput,
+  type ThreadMoveFamily,
   type ThreadMoveTakes,
   type ThreadMoveTargetPreview,
 } from "@threadlines/contracts";
@@ -75,11 +76,14 @@ import {
 } from "../orchestration/threadMoveCarry.ts";
 import {
   firstMoveBlock,
+  holdsFamily,
   moveWaitsOf,
   threadMoveRefusal,
   threadMoveRefusals,
+  type ThreadMoveView,
 } from "../orchestration/threadMoveDecisions.ts";
 import { ThreadActionGate } from "./ThreadActionGate.ts";
+import { familyManifestOf, familyThreadIdsOf } from "./familyMove.ts";
 import {
   cantComeWords,
   movingRoomAgents,
@@ -170,6 +174,13 @@ export interface ThreadMovesShape {
     readonly roomAgents?: ReadonlyArray<ThreadMoveRoomAgentChoice> | undefined;
     /** The computers as already described (a batch); absent: described now. */
     readonly targets?: ReadonlyArray<DescribedTarget> | undefined;
+    /** The family it moves with (ThreadMoveFamily), its parent queued already. */
+    readonly family?: ThreadMoveFamily | undefined;
+    /**
+     * A child about to be queued in the same decision as its parent: checked
+     * as if its parent held the family's move already.
+     */
+    readonly withParent?: boolean | undefined;
   }) => Effect.Effect<
     {
       readonly label: string;
@@ -275,6 +286,7 @@ export function takesOf(peer: PeerDescriptor): ThreadMoveTakes {
     ...(peer.moveGeneralChats === true ? { generalChats: true as const } : {}),
     ...(peer.moveRooms === true ? { rooms: true as const } : {}),
     ...(peer.moveOutsideWork === true ? { outsideWork: true as const } : {}),
+    ...(peer.moveFamilies === true ? { families: true as const } : {}),
   };
 }
 
@@ -754,6 +766,15 @@ const make = Effect.gen(function* () {
       readonly withChanges?: boolean;
       /** Say what each agent would get of the thread's own session (the dialogs). */
       readonly withSession?: boolean;
+      /** The family it is about to be queued with (its own queued move's when absent). */
+      readonly family?: ThreadMoveFamily | undefined;
+      /** Say what its family does (the single thread's dialog). */
+      readonly withFamily?: boolean;
+      /**
+       * Threads asked about with it (a batch): a child whose parent is one of
+       * them can go with it, so being a child is no refusal there.
+       */
+      readonly askedWith?: ReadonlySet<string> | undefined;
     } = {},
   ) =>
     Effect.gen(function* () {
@@ -767,7 +788,13 @@ const make = Effect.gen(function* () {
       const project = view.projects.find((entry) => entry.id === thread.projectId);
       // As if the other computer took everything (docs/design/fleet.md, Part
       // 3e): one that doesn't says so as its own refusal.
-      const refusals = threadMoveRefusals(view, thread, ALL_MOVE_TAKES);
+      const withParent =
+        thread.parentThreadId !== null &&
+        thread.attachedToParent &&
+        options.askedWith?.has(thread.parentThreadId) === true;
+      const refusals = threadMoveRefusals(view, thread, ALL_MOVE_TAKES, options.family).filter(
+        (entry) => !(withParent && entry.code === "child"),
+      );
       const carry = threadMoveCarry(view, thread);
       const pending = thread.pendingMove ?? null;
       let refusal: string | null =
@@ -865,6 +892,7 @@ const make = Effect.gen(function* () {
       );
       const waitsFor = moveWaitsOf(refusals);
       const brings = carryBringsWords(carry).map((words) => ({ words }));
+      const family = options.withFamily === true ? yield* familyPreviewOf(thread, view) : undefined;
       return {
         thread,
         carry,
@@ -888,9 +916,70 @@ const make = Effect.gen(function* () {
                 },
               }
             : {}),
+          ...(family !== undefined ? { family } : {}),
           targets,
         } satisfies ThreadMovePreview,
       };
+    });
+
+  /**
+   * A family as the move dialog shows it (docs/design/fleet.md, Part 3f,
+   * (g)): a parent's children here, each with why it can't come when it
+   * can't (then it stays as its own thread), and the threads its agent
+   * started on other computers, which stay there; a child's parent. None for
+   * a thread with neither.
+   */
+  const familyPreviewOf = (thread: OrchestrationThread, view: ThreadMoveView) =>
+    Effect.gen(function* () {
+      const parent =
+        thread.parentThreadId !== null && thread.attachedToParent
+          ? view.threads.find((entry) => entry.id === thread.parentThreadId)
+          : undefined;
+      const children = view.threads.filter(
+        (entry) =>
+          entry.parentThreadId === thread.id &&
+          entry.attachedToParent &&
+          entry.deletedAt === null &&
+          entry.archivedAt === null,
+      );
+      const remoteChildren = (thread.childRequests.remoteChildren ?? []).map((entry) => ({
+        label: entry.label,
+        title: entry.title,
+      }));
+      if (parent === undefined && children.length === 0 && remoteChildren.length === 0) {
+        return undefined;
+      }
+      // Each child's own checks, as if it came with this thread: its parent's
+      // move doesn't exist yet, so that check is left out.
+      const rows = yield* Effect.forEach(children, (child) =>
+        readMoveContext(child.id).pipe(
+          Effect.map((context) => {
+            const refusal =
+              context === null
+                ? "This thread is gone."
+                : firstMoveBlock(
+                    threadMoveRefusals(context.view, context.thread, ALL_MOVE_TAKES).filter(
+                      (entry) => entry.code !== "child",
+                    ),
+                  )?.words;
+            return {
+              threadId: child.id,
+              title: child.title,
+              ...(refusal !== undefined ? { refusal } : {}),
+            };
+          }),
+          Effect.orElseSucceed(() => ({
+            threadId: child.id,
+            title: child.title,
+            refusal: "This thread couldn't be read.",
+          })),
+        ),
+      );
+      return {
+        ...(parent !== undefined ? { parent: { threadId: parent.id, title: parent.title } } : {}),
+        children: rows,
+        remoteChildren,
+      } satisfies NonNullable<ThreadMovePreview["family"]>;
     });
 
   /**
@@ -932,16 +1021,24 @@ const make = Effect.gen(function* () {
   };
 
   const preview: ThreadMovesShape["preview"] = (threadId) =>
-    inspect(threadId, { withSession: true }).pipe(Effect.map((inspected) => inspected.preview));
+    inspect(threadId, { withSession: true, withFamily: true }).pipe(
+      Effect.map((inspected) => inspected.preview),
+    );
 
   const previewMany: ThreadMovesShape["previewMany"] = (threadIds) =>
     Effect.gen(function* () {
       const described = yield* describeTargets;
       const targets = described.map((target) => targetPreviewOf(target, null));
+      const askedWith = new Set<string>(threadIds);
       const threads = yield* Effect.forEach(
         threadIds,
         (threadId) =>
-          inspect(threadId, { targets: described, withChanges: false, withSession: true }).pipe(
+          inspect(threadId, {
+            targets: described,
+            withChanges: false,
+            withSession: true,
+            askedWith,
+          }).pipe(
             Effect.map(({ preview: shown }) => previewManyThread(threadId, shown, targets)),
             Effect.catch((error) => Effect.succeed({ threadId, refusal: error.detail })),
           ),
@@ -1018,6 +1115,10 @@ const make = Effect.gen(function* () {
       const inspected = yield* inspect(input.threadId, {
         targets: input.targets,
         withChanges: false,
+        family: input.family,
+        ...(input.withParent === true && input.family?.parentThreadId !== undefined
+          ? { askedWith: new Set<string>([input.family.parentThreadId]) }
+          : {}),
       });
       const shown = inspected.preview;
       if (shown.refusal !== undefined) return yield* moveError(shown.refusal);
@@ -1262,6 +1363,22 @@ const make = Effect.gen(function* () {
       for (;;) {
         const move = yield* currentMove(threadId, transferId);
         if (move === null) return null;
+        // A member whose parent's move, or whose folder's owner's move, ended
+        // without landing there (Part 3f, (g)) is dropped there too: the
+        // other computer never lands it without them, and would otherwise
+        // wait out its expiry.
+        if (!move.cancelRequested && (yield* familyRelativeGone(transferId, move.family))) {
+          yield* engine
+            .dispatch({
+              type: "thread.move.cancel",
+              commandId: CommandId.make(`server:thread-move:${transferId}:family-cancel`),
+              threadId,
+              transferId,
+              createdAt: yield* nowIso,
+            })
+            .pipe(Effect.ignore);
+          continue;
+        }
         if (move.cancelRequested) {
           return yield* peerCall(threadId, environmentId, (peer) =>
             peer["peer.move.abort"]({ transferId }),
@@ -1274,6 +1391,31 @@ const make = Effect.gen(function* () {
         yield* Effect.sleep(Duration.millis(delay));
         delay = Math.min(delay * 2, 15_000);
       }
+    });
+
+  /**
+   * Whether a family member's move can no longer land there (docs/design/
+   * fleet.md, Part 3f, (g)): a relative it waits for there (its parent, or
+   * the member whose folder it shares, as its packed manifest names it) no
+   * longer holds a move of the family here, or is gone. The other computer
+   * would wait for it until its own expiry. False for a thread that moves on
+   * its own, and while a relative can't be read.
+   */
+  const familyRelativeGone = (transferId: ThreadMoveId, family: ThreadMoveFamily | undefined) =>
+    Effect.gen(function* () {
+      if (family === undefined) return false;
+      const relatives: ThreadId[] = [];
+      if (family.parentThreadId !== undefined) relatives.push(family.parentThreadId);
+      const packed = yield* readMoveExport(moveDir(transferId));
+      const manifest =
+        packed === null ? Option.none() : yield* decodeManifest(packed).pipe(Effect.option);
+      const owner = Option.isSome(manifest) ? manifest.value.family?.sharesCheckoutOf : undefined;
+      if (owner !== undefined && owner !== family.parentThreadId) relatives.push(owner);
+      for (const threadId of relatives) {
+        const row = yield* threadRows.getById({ threadId }).pipe(Effect.orElseSucceed(() => null));
+        if (row !== null && !holdsFamily(Option.getOrUndefined(row), family)) return true;
+      }
+      return false;
     });
 
   /** moveAbortCode for a move as it stands now. */
@@ -1374,6 +1516,17 @@ const make = Effect.gen(function* () {
           ? yield* roomExportOf(detail.value, targetEnvironmentId)
           : undefined;
       const outsideWork = takes?.outsideWork === true ? (detail.value.outsideWork ?? []) : [];
+      // Its family (Part 3f, (g)), only for a computer that takes families.
+      const moveFamily = takes?.families === true ? detail.value.move?.family : undefined;
+      const threads = model.threads.map((entry) =>
+        entry.id === detail.value.id ? detail.value : entry,
+      );
+      const family =
+        moveFamily === undefined
+          ? undefined
+          : familyManifestOf({ projects: model.projects, threads }, detail.value, moveFamily);
+      const familyThreadIds =
+        moveFamily === undefined ? undefined : familyThreadIdsOf(threads, moveFamily);
       const source = {
         environmentId: descriptor.environmentId,
         environmentLabel: environment.currentLabel(),
@@ -1391,6 +1544,8 @@ const make = Effect.gen(function* () {
           state,
           room,
           outsideWork,
+          family,
+          familyThreadIds,
         });
       }
       const { place, checkout } = yield* whereFrom(detail.value, project.workspaceRoot);
@@ -1398,6 +1553,8 @@ const make = Effect.gen(function* () {
         state,
         room,
         outsideWork,
+        family,
+        familyThreadIds,
         git,
         checkout,
         transferId,

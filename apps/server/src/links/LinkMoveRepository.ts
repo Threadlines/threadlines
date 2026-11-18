@@ -28,11 +28,16 @@ import * as SqlSchema from "effect/sql/SqlSchema";
  * Where a move stands here, as recorded. `awaiting_approval` with
  * `stagedApproval` takes its bytes while it waits; the asking computer reads
  * it as `receiving`, then `staged_awaiting_approval` once every byte is here.
+ * `waiting_for_family`: a family member's import waits, every byte staged,
+ * for another member (its parent to commit, or the folder it shares to be
+ * made; docs/design/fleet.md, Part 3f, review change 2); it holds no slot in
+ * flight, and the asking computer reads it as `importing`.
  */
 export const LinkMoveStatus = Schema.Literals([
   "awaiting_approval",
   "receiving",
   "importing",
+  "waiting_for_family",
   "committed",
   "aborted",
 ]);
@@ -78,6 +83,13 @@ export const LinkMoveRow = Schema.Struct({
   abortCode: Schema.NullOr(PeerMoveAbortCode),
   /** An aborted move's clean-up is done. Null on an aborted row: still owed. */
   cleanedAt: Schema.NullOr(IsoDateTime),
+  /**
+   * A family member's (docs/design/fleet.md, Part 3f, (g)): the family's key
+   * here, from the link and the family's id. Null: it moves on its own.
+   */
+  familyKey: Schema.NullOr(Schema.String),
+  /** The thread's id on the computer it left, so another member's import can find this one. */
+  sourceThreadId: Schema.NullOr(Schema.String),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -105,9 +117,15 @@ export interface LinkMoveRepositoryShape {
     readonly stagedApproval: boolean;
     readonly manifest: PeerMoveManifest;
     readonly threadId: ThreadId;
+    readonly familyKey?: string | undefined;
     readonly reason?: string;
     readonly now: string;
   }) => Effect.Effect<LinkMoveRow, LinkMoveRepositoryError>;
+  /** A family's member, by its thread's id there: the newest such move. */
+  readonly findFamilyMember: (
+    familyKey: string,
+    sourceThreadId: string,
+  ) => Effect.Effect<Option.Option<LinkMoveRow>, LinkMoveRepositoryError>;
   readonly get: (
     linkDeviceId: string,
     transferId: string,
@@ -186,6 +204,8 @@ const make = Effect.gen(function* () {
       reason AS "reason",
       abort_code AS "abortCode",
       cleaned_at AS "cleanedAt",
+      family_id AS "familyKey",
+      source_thread_id AS "sourceThreadId",
       created_at AS "createdAt",
       updated_at AS "updatedAt"
     FROM link_moves
@@ -211,17 +231,33 @@ const make = Effect.gen(function* () {
   const get: LinkMoveRepositoryShape["get"] = (linkDeviceId, transferId) =>
     findOne({ linkDeviceId, transferId }).pipe(wrap("get"));
 
+  const findMember = SqlSchema.findOneOption({
+    Request: Schema.Struct({ familyKey: Schema.String, sourceThreadId: Schema.String }),
+    Result: LinkMoveDbRow,
+    execute: ({ familyKey, sourceThreadId }) =>
+      sql.unsafe(
+        `${select} WHERE family_id = ? AND source_thread_id = ? ORDER BY created_at DESC, transfer_id DESC LIMIT 1`,
+        [familyKey, sourceThreadId],
+      ),
+  });
+
+  const findFamilyMember: LinkMoveRepositoryShape["findFamilyMember"] = (
+    familyKey,
+    sourceThreadId,
+  ) => findMember({ familyKey, sourceThreadId }).pipe(wrap("findFamilyMember"));
+
   const insert: LinkMoveRepositoryShape["insert"] = (input) =>
     Effect.gen(function* () {
       const manifest = yield* encodeManifest(input.manifest);
       yield* sql`
         INSERT INTO link_moves (
           link_device_id, transfer_id, transfer_key, status, staged_approval, manifest_json,
-          bytes_received, thread_id, reason, created_at, updated_at
+          bytes_received, thread_id, reason, family_id, source_thread_id, created_at, updated_at
         ) VALUES (
           ${input.linkDeviceId}, ${input.transferId}, ${input.transferKey}, ${input.status},
           ${input.stagedApproval ? 1 : 0}, ${manifest}, 0, ${input.threadId},
-          ${input.reason ?? null}, ${input.now}, ${input.now}
+          ${input.reason ?? null}, ${input.familyKey ?? null}, ${input.manifest.source.threadId},
+          ${input.now}, ${input.now}
         )
         ON CONFLICT(link_device_id, transfer_id) DO NOTHING
       `;
@@ -307,7 +343,7 @@ const make = Effect.gen(function* () {
     markArrived,
     listUnarrived,
     insert,
-
+    findFamilyMember,
     get,
     listOpen,
     listCleanupOwed,

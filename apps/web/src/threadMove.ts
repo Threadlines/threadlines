@@ -247,10 +247,18 @@ export function threadMoveSentPercent(move: OrchestrationThreadMove): number | n
  */
 export function describeThreadMoveProgress(
   move: OrchestrationThreadMove,
-  options?: { readonly sent?: boolean },
+  options?: {
+    readonly sent?: boolean;
+    /**
+     * A child moving with its parent (docs/design/fleet.md, Part 3f, (g)):
+     * the parent's title while it hasn't moved yet. The child lands after it.
+     */
+    readonly withParent?: string | null;
+  },
 ): string {
   const label = move.target.label;
   if (move.cancelRequested) return "Stopping the move…";
+  if (options?.withParent != null) return `Moves to ${label} with ${options.withParent}.`;
   if (move.waitingForTarget === true) return `Waiting for ${label} to finish other moves`;
   switch (move.phase) {
     case "exporting":
@@ -702,6 +710,8 @@ export interface MoveCandidate<TThreadId extends string = string> {
   readonly title: string;
   /** Its agent is at work now (as this app last heard). */
   readonly working: boolean;
+  /** The thread that started it, while it is in that thread's family. */
+  readonly parentThreadId?: TThreadId;
 }
 
 /**
@@ -719,6 +729,8 @@ export function listMoveCandidates<
     readonly title: string;
     readonly archivedAt: string | null;
     readonly moveStatus?: ThreadMoveStatus | undefined;
+    readonly parentThreadId?: string | null | undefined;
+    readonly attachedToParent?: boolean | undefined;
   },
 >(
   entries: ReadonlyArray<{ readonly thread: TThread; readonly isDone: boolean }>,
@@ -732,7 +744,16 @@ export function listMoveCandidates<
     !isDone &&
     thread.archivedAt === null &&
     thread.moveStatus === undefined
-      ? [{ threadId: thread.id, title: thread.title, working: isWorking(thread) }]
+      ? [
+          {
+            threadId: thread.id,
+            title: thread.title,
+            working: isWorking(thread),
+            ...(thread.attachedToParent === true && typeof thread.parentThreadId === "string"
+              ? { parentThreadId: thread.parentThreadId as TThread["id"] }
+              : {}),
+          },
+        ]
       : [],
   );
   return [
@@ -864,4 +885,136 @@ export function orderMoveCandidates<T extends { readonly threadId: string }>(
   const working = (candidate: T) =>
     (previewById.get(candidate.threadId)?.waitsFor ?? []).length > 0;
   return [...candidates.filter(working), ...candidates.filter((candidate) => !working(candidate))];
+}
+
+// ----- families (docs/design/fleet.md, Part 3f, (g)) --------------------------------------
+
+/** A listed thread's family: its parent's id when that parent is listed too, else its own. */
+function familyRootOf<T extends { readonly threadId: string; readonly parentThreadId?: string }>(
+  candidates: ReadonlyArray<T>,
+  candidate: T,
+): string {
+  const parent = candidate.parentThreadId;
+  return parent !== undefined && candidates.some((entry) => entry.threadId === parent)
+    ? parent
+    : candidate.threadId;
+}
+
+/**
+ * The Move threads dialog's rows with each family together: a parent, then
+ * the children listed with it, in the order given otherwise. A family moves
+ * as one group (`depth` 1 marks a child under its parent).
+ */
+export function groupMoveFamilies<
+  T extends { readonly threadId: string; readonly parentThreadId?: string },
+>(candidates: ReadonlyArray<T>): Array<{ readonly candidate: T; readonly depth: 0 | 1 }> {
+  const grouped: Array<{ readonly candidate: T; readonly depth: 0 | 1 }> = [];
+  for (const candidate of candidates) {
+    if (familyRootOf(candidates, candidate) !== candidate.threadId) continue;
+    grouped.push({ candidate, depth: 0 });
+    for (const child of candidates) {
+      if (
+        child.threadId !== candidate.threadId &&
+        familyRootOf(candidates, child) === candidate.threadId
+      ) {
+        grouped.push({ candidate: child, depth: 1 });
+      }
+    }
+  }
+  return grouped;
+}
+
+/**
+ * A tick in the Move threads dialog, for families: ticking any member ticks
+ * all of it that can go (a child moves only with its parent), unticking a
+ * parent unticks its family, and unticking a child unticks only it, so it
+ * stays here as its own thread. `canGo` says which can go to the computer picked.
+ */
+export function toggleMoveFamily<
+  T extends { readonly threadId: string; readonly parentThreadId?: string },
+>(
+  ticked: ReadonlySet<T["threadId"]>,
+  candidates: ReadonlyArray<T>,
+  threadId: T["threadId"],
+  on: boolean,
+  canGo: (threadId: T["threadId"]) => boolean,
+): Set<T["threadId"]> {
+  const next = new Set(ticked);
+  const candidate = candidates.find((entry) => entry.threadId === threadId);
+  if (candidate === undefined) return next;
+  const root = familyRootOf(candidates, candidate);
+  const family = candidates.filter((entry) => familyRootOf(candidates, entry) === root);
+  if (on) {
+    for (const member of family) if (canGo(member.threadId)) next.add(member.threadId);
+  } else if (candidate.threadId === root) {
+    for (const member of family) next.delete(member.threadId);
+  } else {
+    next.delete(candidate.threadId);
+  }
+  return next;
+}
+
+/**
+ * The threads a move takes when each must come with its whole family here
+ * (the quit flow): every one asked, its parent when it is in a family, and
+ * that parent's children not archived. Asked in that order, parents first.
+ */
+export function withMoveFamilies<TThreadId extends string>(
+  threadIds: ReadonlyArray<TThreadId>,
+  threads: ReadonlyArray<{
+    readonly id: TThreadId;
+    readonly parentThreadId?: TThreadId | null | undefined;
+    readonly attachedToParent?: boolean | undefined;
+    readonly archivedAt: string | null;
+  }>,
+): TThreadId[] {
+  const byId = new Map(threads.map((thread) => [thread.id, thread] as const));
+  const out = new Set<TThreadId>();
+  for (const id of threadIds) {
+    const thread = byId.get(id);
+    const parent =
+      thread?.attachedToParent === true && thread.parentThreadId != null
+        ? byId.get(thread.parentThreadId)
+        : undefined;
+    const root = parent !== undefined && parent.archivedAt === null ? parent.id : id;
+    out.add(root);
+    for (const child of threads) {
+      if (
+        child.parentThreadId === root &&
+        child.attachedToParent === true &&
+        child.archivedAt === null
+      ) {
+        out.add(child.id);
+      }
+    }
+    out.add(id);
+  }
+  return [...out];
+}
+
+/** "Its 3 threads move with it", for the threads of a family ticked to come. */
+export function describeFamilyComing(count: number): string {
+  return count === 0
+    ? "None of its threads move with it."
+    : count === 1
+      ? "Its thread moves with it."
+      : `Its ${count} threads move with it.`;
+}
+
+/**
+ * "2 threads it started on Windows PC stay there. It can't reach them from
+ * Mac mini.", one line per computer, for the threads its agent started on
+ * other computers.
+ */
+export function describeRemoteChildrenStaying(
+  remoteChildren: ReadonlyArray<{ readonly label: string; readonly title: string }>,
+  targetLabel: string,
+): string[] {
+  const byLabel = new Map<string, number>();
+  for (const child of remoteChildren) byLabel.set(child.label, (byLabel.get(child.label) ?? 0) + 1);
+  return [...byLabel].map(([label, count]) =>
+    count === 1
+      ? `1 thread it started on ${label} stays there. It can't reach it from ${targetLabel}.`
+      : `${count} threads it started on ${label} stay there. It can't reach them from ${targetLabel}.`,
+  );
 }

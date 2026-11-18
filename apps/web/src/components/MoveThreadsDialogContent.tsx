@@ -26,12 +26,14 @@ import { cn } from "../lib/utils";
 import { isSidebarThreadRunning } from "../store";
 import {
   describeMoveCandidate,
+  groupMoveFamilies,
   isThreadMoveTargetPickable,
   listMoveCandidates,
   type MoveCandidate,
   orderMoveCandidates,
   pickDefaultMoveTarget,
   threadMoveStopNowRefusal,
+  toggleMoveFamily,
 } from "../threadMove";
 import type { MoveThreadsDialogRequest } from "./MoveThreadsDialog";
 import { closeMoveThreadsDialog } from "./MoveThreadsDialog";
@@ -96,17 +98,22 @@ export function MoveThreadsDialogContent({ request }: { request: MoveThreadsDial
               isThreadMoveTargetPickable(candidate),
           ) ?? pickDefaultMoveTarget(preview.targets);
         setTargetId(target?.environmentId ?? null);
-        // Working ones that can go come ticked; idle ones wait for the user.
+        // Working ones that can go come ticked, each with its family (Part
+        // 3f, (g)); idle ones wait for the user.
+        const canGo = (threadId: ThreadId) => {
+          const thread = preview.threads.find((entry) => entry.threadId === threadId);
+          return (
+            thread !== undefined &&
+            describeMoveCandidate(thread, target?.environmentId ?? null).kind !== "refused"
+          );
+        };
         setTicked(
-          new Set(
-            preview.threads
-              .filter(
-                (thread) =>
-                  (thread.waitsFor ?? []).length > 0 &&
-                  describeMoveCandidate(thread, target?.environmentId ?? null).kind !== "refused",
-              )
-              .map((thread) => thread.threadId),
-          ),
+          preview.threads
+            .filter((thread) => (thread.waitsFor ?? []).length > 0 && canGo(thread.threadId))
+            .reduce<ReadonlySet<ThreadId>>(
+              (ticks, thread) => toggleMoveFamily(ticks, candidates, thread.threadId, true, canGo),
+              new Set(),
+            ),
         );
         setPreviewState({ status: "ready", preview });
       } catch (error) {
@@ -131,20 +138,24 @@ export function MoveThreadsDialogContent({ request }: { request: MoveThreadsDial
       ),
     [preview],
   );
+  // Each family together, a parent's children under it (Part 3f, (g)).
   const rows = useMemo(
     () =>
-      orderMoveCandidates(candidates, previewById).flatMap((candidate) => {
-        const threadPreview = previewById.get(candidate.threadId);
-        return threadPreview
-          ? [
-              {
-                candidate,
-                preview: threadPreview,
-                words: describeMoveCandidate(threadPreview, targetId, target?.label),
-              },
-            ]
-          : [];
-      }),
+      groupMoveFamilies(orderMoveCandidates(candidates, previewById)).flatMap(
+        ({ candidate, depth }) => {
+          const threadPreview = previewById.get(candidate.threadId);
+          return threadPreview
+            ? [
+                {
+                  candidate,
+                  depth,
+                  preview: threadPreview,
+                  words: describeMoveCandidate(threadPreview, targetId, target?.label),
+                },
+              ]
+            : [];
+        },
+      ),
     [candidates, previewById, targetId, target?.label],
   );
   // What goes: the ticked rows that can go to the computer picked now.
@@ -159,13 +170,12 @@ export function MoveThreadsDialogContent({ request }: { request: MoveThreadsDial
   const canMove =
     target !== null && isThreadMoveTargetPickable(target) && chosen.length > 0 && !queueing;
 
+  // A family moves as one group: ticking any member ticks all of it that can
+  // go, and its members can be unticked one by one (they stay here).
   const toggle = (threadId: ThreadId, on: boolean) => {
-    setTicked((current) => {
-      const next = new Set(current);
-      if (on) next.add(threadId);
-      else next.delete(threadId);
-      return next;
-    });
+    const canGo = (id: ThreadId) =>
+      rows.some((row) => row.candidate.threadId === id && row.words.kind !== "refused");
+    setTicked((current) => toggleMoveFamily(current, candidates, threadId, on, canGo));
   };
 
   const move = async () => {
@@ -177,6 +187,8 @@ export function MoveThreadsDialogContent({ request }: { request: MoveThreadsDial
         threadIds: chosen.map((row) => row.candidate.threadId),
         targetEnvironmentId: target.environmentId,
         mode,
+        // Exactly the threads ticked: a parent's unticked children stay here.
+        familySelection: "explicit",
       });
       // Its target's Fleet row and page say how it goes, refusals included.
       rememberMoveBatch({
@@ -340,6 +352,8 @@ function CandidateList({
 }: {
   readonly rows: ReadonlyArray<{
     readonly candidate: MoveCandidate<ThreadId>;
+    /** 1: a child, under its parent. */
+    readonly depth: 0 | 1;
     readonly words: ReturnType<typeof describeMoveCandidate>;
   }>;
   readonly ticked: ReadonlySet<ThreadId>;
@@ -352,13 +366,14 @@ function CandidateList({
       aria-label="Threads"
       data-testid="move-threads-list"
     >
-      {rows.map(({ candidate, words }) => {
+      {rows.map(({ candidate, depth, words }) => {
         const refused = words.kind === "refused";
         return (
           <li key={candidate.threadId} data-testid={`move-threads-row-${candidate.threadId}`}>
             <label
               className={cn(
-                "flex items-start gap-2.5 px-3.5 py-1.5",
+                "flex items-start gap-2.5 py-1.5 pr-3.5",
+                depth === 1 ? "pl-9" : "pl-3.5",
                 refused ? "cursor-default" : "cursor-pointer",
               )}
             >

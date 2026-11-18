@@ -279,10 +279,12 @@ describe("QuitConfirmationDialog", () => {
 
       const dialog = page.getByRole("alertdialog");
       await dialog.getByRole("button", { name: "Move them to Studio Mac and quit" }).click();
+      // Each with its family here (none in this case), exactly those.
       expect(client.queueMany).toHaveBeenCalledWith({
         threadIds: [ThreadId.make("thread-a"), ThreadId.make("thread-b")],
         targetEnvironmentId: MAC_ID,
         mode: "when-done",
+        familySelection: "explicit",
       });
       expect(quitAfterMoves).toHaveBeenCalledWith({ batchId: BATCH_ID });
       // One moved, one waiting for its agent; then sent, which counts as done.

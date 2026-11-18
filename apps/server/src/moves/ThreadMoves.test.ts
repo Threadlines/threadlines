@@ -358,6 +358,9 @@ describe("what a thread carries, as the dialog says it (Part 3e)", () => {
       linkedPullRequests: [],
       participants: [],
       agentRequests: { open: [] },
+      parentThreadId: null,
+      attachedToParent: false,
+      childRequests: { open: [] },
       ...patch,
     }) as unknown as OrchestrationThread;
   const view = { projects: [{ id: "project-1", kind: "project" }] } as never;

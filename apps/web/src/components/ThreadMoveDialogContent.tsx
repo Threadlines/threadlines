@@ -8,6 +8,7 @@ import type {
   ModelSelection,
   ScopedProjectRef,
   ScopedThreadRef,
+  ThreadId,
   ThreadMovePreview,
   ThreadMoveTargetPreview,
   ThreadPendingMoveMode,
@@ -27,6 +28,8 @@ import {
 import { cn } from "../lib/utils";
 import { selectSidebarThreadSummaryByRef, useStore } from "../store";
 import {
+  describeFamilyComing,
+  describeRemoteChildrenStaying,
   describeThreadMoveLanding,
   describeThreadMoveSession,
   describeThreadMoveWaits,
@@ -47,6 +50,7 @@ import {
 import { openProjectSetupDialog } from "./ProjectSetupDialog";
 import { useComputerLabel } from "./sidebar/linkedComputers";
 import { Button } from "./ui/button";
+import { Checkbox } from "./ui/checkbox";
 import { Radio, RadioGroup } from "./ui/radio-group";
 import {
   DialogDescription,
@@ -93,6 +97,8 @@ export function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThread
   const [agent, setAgent] = useState<ThreadMoveAgentChoice | null>(null);
   // A room's other agents the user picked for on the computer picked; the rest keep their presets.
   const [roomPicks, setRoomPicks] = useState<ThreadMoveRoomPicks>(NO_ROOM_PICKS);
+  // A parent's children the user unticked: they stay here as their own threads.
+  const [staying, setStaying] = useState<ReadonlySet<ThreadId>>(() => new Set());
   const [pickedMode, setMode] = useState<ThreadPendingMoveMode>("when-done");
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
@@ -168,6 +174,11 @@ export function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThread
       ? threadMoveRoomAgentRows(preview.room, target, roomPicks)
       : null;
   const roomAgents = roomRows?.map((row) => row.choice);
+  // A parent's family (Part 3f, (g)): the children ticked to come, each that can.
+  const family = preview?.family;
+  const coming = (family?.children ?? []).filter(
+    (child) => child.refusal === undefined && !staying.has(child.threadId),
+  );
   const canMove =
     preview !== null &&
     preview.refusal === undefined &&
@@ -189,6 +200,13 @@ export function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThread
           ...(unreachable || agentSelection === null ? {} : { agent: agentSelection }),
           mode: working ? mode : "when-done",
           ...(roomAgents === undefined ? {} : { roomAgents }),
+          // Exactly the children ticked come; the rest stay here as their own threads.
+          ...(family === undefined
+            ? {}
+            : {
+                familySelection: "explicit" as const,
+                children: coming.map((child) => child.threadId),
+              }),
         });
       } else if (agentSelection !== null) {
         await client.start({
@@ -349,6 +367,25 @@ export function ThreadMoveDialogContent({ threadRef }: { threadRef: ScopedThread
                       : null}
                   </>
                 )}
+                {family !== undefined &&
+                (family.children.length > 0 || family.remoteChildren.length > 0) ? (
+                  <FamilyField
+                    family={family}
+                    targetLabel={target.label}
+                    staying={staying}
+                    comingCount={coming.length}
+                    disabled={starting}
+                    onToggle={(threadId, comes) => {
+                      setStaying((current) => {
+                        const next = new Set(current);
+                        if (comes) next.delete(threadId);
+                        else next.add(threadId);
+                        return next;
+                      });
+                      setStartError(null);
+                    }}
+                  />
+                ) : null}
                 {brings.length > 0 || notes.length > 0 ? (
                   <div className="space-y-0.5" data-testid="thread-move-carries">
                     {brings.map((line) => (
@@ -511,6 +548,92 @@ export function MoveWhenField({
           </label>
         ))}
       </RadioGroup>
+    </div>
+  );
+}
+
+/**
+ * A parent's family (docs/design/fleet.md, Part 3f, (g)): its threads here,
+ * ticked to come along, each unticked or unable to come staying here as its
+ * own thread; and the threads its agent started on other computers, which
+ * stay there.
+ */
+function FamilyField({
+  family,
+  targetLabel,
+  staying,
+  comingCount,
+  disabled,
+  onToggle,
+}: {
+  readonly family: NonNullable<ThreadMovePreview["family"]>;
+  readonly targetLabel: string;
+  readonly staying: ReadonlySet<ThreadId>;
+  readonly comingCount: number;
+  readonly disabled: boolean;
+  readonly onToggle: (threadId: ThreadId, comes: boolean) => void;
+}) {
+  return (
+    <div className="grid gap-1.5" data-testid="thread-move-family">
+      {family.children.length > 0 ? (
+        <>
+          <p
+            className="text-[13.5px] leading-[19px] text-foreground"
+            data-testid="thread-move-family-coming"
+          >
+            {describeFamilyComing(comingCount)}
+          </p>
+          <ul className="surface-group py-1" aria-label="Its threads">
+            {family.children.map((child) => {
+              const refused = child.refusal !== undefined;
+              const comes = !refused && !staying.has(child.threadId);
+              return (
+                <li key={child.threadId} data-testid={`thread-move-family-row-${child.threadId}`}>
+                  <label
+                    className={cn(
+                      "flex items-start gap-2.5 px-3.5 py-1.5",
+                      refused ? "cursor-default" : "cursor-pointer",
+                    )}
+                  >
+                    <Checkbox
+                      className="mt-0.5"
+                      checked={comes}
+                      disabled={refused || disabled}
+                      onCheckedChange={(checked) => onToggle(child.threadId, checked === true)}
+                      data-testid={`thread-move-family-tick-${child.threadId}`}
+                    />
+                    <span className="min-w-0 flex-1">
+                      <span
+                        className={cn(
+                          "block truncate text-[13.5px] leading-[19px]",
+                          refused ? "text-muted-foreground" : "text-foreground",
+                        )}
+                      >
+                        {child.title}
+                      </span>
+                      {comes ? null : (
+                        <span
+                          className={cn("block", LINE_CLASS)}
+                          data-testid={`thread-move-family-stays-${child.threadId}`}
+                        >
+                          {refused
+                            ? `${child.refusal} It stays here as its own thread.`
+                            : "Stays here as its own thread."}
+                        </span>
+                      )}
+                    </span>
+                  </label>
+                </li>
+              );
+            })}
+          </ul>
+        </>
+      ) : null}
+      {describeRemoteChildrenStaying(family.remoteChildren, targetLabel).map((line) => (
+        <p key={line} className={LINE_CLASS} data-testid="thread-move-family-remote">
+          {line}
+        </p>
+      ))}
     </div>
   );
 }

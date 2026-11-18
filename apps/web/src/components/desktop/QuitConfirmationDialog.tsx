@@ -1,6 +1,7 @@
 import {
   type DesktopQuitConfirmationRequest,
   type EnvironmentId,
+  THREAD_MOVE_BATCH_MAX,
   type ThreadId,
   ThreadMoveBatchId,
   type ThreadMoveBatchStatus,
@@ -30,6 +31,7 @@ import {
   isMoveBatchDone,
   moveBatchMisses,
   moveBatchNeedsYou,
+  withMoveFamilies,
 } from "../../threadMove";
 import {
   AlertDialog,
@@ -533,10 +535,17 @@ export function QuitConfirmationDialog() {
     try {
       const client = readThreadMovesClient(primaryEnvironmentId);
       if (client === null) throw new Error("This app isn't connected to this computer's server.");
+      // Each working thread goes with its whole family here (docs/design/
+      // fleet.md, Part 3f, (g)): a child moves only with its parent, and a
+      // computer about to shut down leaves none behind.
+      const summaries = Object.values(
+        selectEnvironmentState(useStore.getState(), primaryEnvironmentId).sidebarThreadSummaryById,
+      );
       const result = await client.queueMany({
-        threadIds: [...offer.threadIds],
+        threadIds: withMoveFamilies(offer.threadIds, summaries).slice(0, THREAD_MOVE_BATCH_MAX),
         targetEnvironmentId: target.environmentId,
         mode: "when-done",
+        familySelection: "explicit",
       });
       rememberMoveBatch({
         sourceEnvironmentId: primaryEnvironmentId,

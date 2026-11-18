@@ -304,7 +304,7 @@ const makeComputer = Effect.gen(function* () {
     .pipe(Effect.map((row) => Option.getOrThrow(row)));
   const callsTo = (method: string) => calls.filter((call) => call.method === method);
 
-  return { engine, snapshots, askForThread, recordRemote, boot, stored, callsTo };
+  return { engine, snapshots, threadRows, askForThread, recordRemote, boot, stored, callsTo };
 });
 
 const report = (patch: Partial<Extract<PeerWatchEvent, { type: "report" }>>): PeerWatchEvent => ({
@@ -659,5 +659,63 @@ it.layer(NodeServices.layer)("RemoteChildReactor", (it) => {
         cachedStatus: "idle",
       });
     }),
+  );
+
+  it.effect(
+    "a parent frozen for its move takes no answer and acks no report, while the cancels it owes still go",
+    () =>
+      Effect.gen(function* () {
+        const computer = yield* makeComputer;
+        yield* computer.askForThread;
+        yield* computer.recordRemote("running", { status: "accepted", threadId: REMOTE_CHILD });
+        // The parent reads as frozen for its move (docs/design/fleet.md, Part
+        // 3f, (g)), a request still open on it.
+        const frozen = {
+          move: {
+            transferId: "transfer-1",
+            target: { environmentId: EnvironmentId.make("env-other"), label: "Other" },
+            agent: MODEL,
+            phase: "exporting",
+            cancelRequested: false,
+            startedAt: AT,
+          },
+        };
+        const asFrozen = {
+          getById: (input: { readonly threadId: ThreadId }) =>
+            computer.threadRows
+              .getById(input)
+              .pipe(Effect.map(Option.map((row) => ({ ...row, ...frozen }) as typeof row))),
+        };
+        yield* computer.boot({ watch: [report({}), { type: "synced" }] }, { threadRows: asFrozen });
+        yield* eventually(
+          Effect.sync(() => computer.callsTo("peer.watch").length > 0),
+          "the watch opens",
+        );
+        yield* wallClockSleep(300);
+        // Its answer would be refused there and lost: it stays with that computer.
+        assert.deepEqual(computer.callsTo("peer.report.ack"), []);
+        assert.lengthOf((yield* computer.stored).childRequests?.open ?? [], 1);
+
+        // Stop (as the move's "Stop and move now" does) owes that computer a
+        // cancel: it still goes out from a frozen parent.
+        yield* computer.engine.dispatch({
+          type: "thread.session.stop",
+          commandId: CommandId.make("parent-stop"),
+          threadId: PARENT,
+          createdAt: AT,
+        });
+        yield* computer.boot({}, { threadRows: asFrozen });
+        yield* eventually(
+          Effect.sync(() => computer.callsTo("peer.request.cancel").length > 0),
+          "the cancel goes out",
+        );
+        yield* eventually(
+          Effect.map(
+            computer.stored,
+            (parent) => (parent.childRequests?.remoteCancels ?? []).length === 0,
+          ),
+          "the cancel is recorded as delivered",
+        );
+      }),
   );
 });

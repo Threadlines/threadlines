@@ -76,6 +76,8 @@ async function harness(options?: { readonly model?: OrchestrationReadModel }) {
     /** What the target answers before the stop, asked whether it takes what the thread carries. */
     carryAnswer: { kind: "ok" } as Effect.Success<ReturnType<ThreadMovesShape["checkCarry"]>>,
     carryChecks: 0,
+    /** How long checking a child that moves with its parent takes (a target that answers slowly). */
+    childCheckMs: 0,
   };
 
   const dispatch = (command: OrchestrationCommand): Effect.Effect<void, ThreadMoveError> =>
@@ -189,7 +191,10 @@ async function harness(options?: { readonly model?: OrchestrationReadModel }) {
           .map((thread) => thread.id),
       ),
       setsCheckBacks: () => Effect.succeed(true),
-      checkQueue: () => Effect.sync(() => ({ label: "Mac mini", takes: state.takes })),
+      checkQueue: (input) =>
+        Effect.sleep(
+          Duration.millis(input.family?.parentThreadId !== undefined ? state.childCheckMs : 0),
+        ).pipe(Effect.as({ label: "Mac mini", takes: state.takes })),
       checkCarry: () =>
         Effect.sync(() => {
           state.carryChecks += 1;
@@ -868,6 +873,155 @@ describe("MoveQueue, a put-back a restart cut short (Part 3e)", () => {
     });
     await h.startReactor();
     await waitFor(() => (h.thread().moveRestoreOwed ?? null) === null, "the record to clear");
+    await h.close();
+  });
+});
+
+describe("MoveQueue, a family (Part 3f, (g))", () => {
+  const CHILD = ThreadId.make("thread-child");
+  const OTHER = ThreadId.make("thread-other-child");
+  const addWorkingChild = async (h: Awaited<ReturnType<typeof harness>>, id: ThreadId) => {
+    await h.dispatch({
+      type: "thread.create",
+      commandId: nextCommandId(),
+      threadId: id,
+      projectId: PROJECT,
+      title: id === CHILD ? "Fix tests" : "Review",
+      modelSelection: agent,
+      runtimeMode: "auto",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: `/worktrees/${id}`,
+      parentThreadId: THREAD,
+      attachedToParent: true,
+      createdAt: now,
+    } as OrchestrationCommand);
+    // At work, so its own queued move waits rather than starting at once.
+    await h.dispatch({
+      type: "thread.session.set",
+      commandId: nextCommandId(),
+      threadId: id,
+      session: {
+        threadId: id,
+        status: "running",
+        providerName: "codex",
+        runtimeMode: "auto",
+        activeTurnId: TurnId.make(`turn-${id}`),
+        lastError: null,
+        updatedAt: now,
+      },
+      createdAt: now,
+    } as OrchestrationCommand);
+  };
+  const family = async () => {
+    const h = await harness();
+    h.state.takes = { threadState: true, families: true };
+    await h.startReactor();
+    await addWorkingChild(h, CHILD);
+    await addWorkingChild(h, OTHER);
+    await h.setSession("running", { activeTurnId: TURN });
+    const of = (id: ThreadId) => h.model().threads.find((entry) => entry.id === id)!;
+    return { h, of };
+  };
+
+  it("an older app's move takes the whole family; a parent's move that ends ends its children's", async () => {
+    const { h, of } = await family();
+    const { requestId } = await h.queueMove();
+    const id = h.thread().pendingMove?.family?.id;
+    expect(h.thread().pendingMove?.family).toEqual({ id });
+    for (const child of [CHILD, OTHER]) {
+      expect(of(child).pendingMove?.family).toEqual({ id, parentThreadId: THREAD });
+    }
+    await h.run(h.queue.unqueue({ threadId: THREAD, requestId }));
+    await waitFor(
+      () => [CHILD, OTHER].every((child) => (of(child).pendingMove ?? null) === null),
+      "its children's moves to end",
+    );
+    expect(of(CHILD).lastMoveOutcome).toMatchObject({
+      result: "not_moved",
+      words: "Its parent thread didn't move.",
+    });
+    // Its parent didn't move: it stays its child.
+    expect(of(CHILD).attachedToParent).toBe(true);
+    await h.close();
+  });
+
+  it("a current app moves exactly the threads it lists, each parent before its children", async () => {
+    const { h, of } = await family();
+    await h.run(
+      h.queue.queue({
+        threadId: THREAD,
+        targetEnvironmentId: MAC_MINI,
+        agent,
+        mode: "when-done",
+        familySelection: "explicit",
+        children: [CHILD],
+      }),
+    );
+    expect(of(CHILD).pendingMove?.family?.parentThreadId).toBe(THREAD);
+    expect(of(OTHER).pendingMove ?? null).toBeNull();
+    await h.run(
+      h.queue.unqueue({ threadId: THREAD, requestId: h.thread().pendingMove!.requestId }),
+    );
+    await waitFor(() => (of(CHILD).pendingMove ?? null) === null, "the child's move to end");
+
+    const result = await h.run(
+      h.queue.queueMany({
+        threadIds: [OTHER, THREAD],
+        targetEnvironmentId: MAC_MINI,
+        mode: "when-done",
+        familySelection: "explicit",
+      }),
+    );
+    expect(result.queued.map((entry) => entry.threadId)).toEqual([THREAD, OTHER]);
+    expect(of(OTHER).pendingMove?.family?.parentThreadId).toBe(THREAD);
+    expect(of(CHILD).pendingMove ?? null).toBeNull();
+    // A child listed without its parent moves on its own: not yet.
+    await h.run(
+      h.queue.queueMany({
+        threadIds: [CHILD],
+        targetEnvironmentId: MAC_MINI,
+        mode: "when-done",
+        familySelection: "explicit",
+      }),
+    );
+    expect(of(CHILD).pendingMove ?? null).toBeNull();
+    await h.close();
+  });
+
+  it("queues a family in one go: no member starts before every member is queued", async () => {
+    const h = await harness();
+    h.state.takes = { threadState: true, families: true };
+    // Its children are checked slowly; everyone is idle, so a move starts at once.
+    h.state.childCheckMs = 200;
+    await h.startReactor();
+    for (const id of [CHILD, OTHER]) {
+      await h.dispatch({
+        type: "thread.create",
+        commandId: nextCommandId(),
+        threadId: id,
+        projectId: PROJECT,
+        title: id,
+        modelSelection: agent,
+        runtimeMode: "auto",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: `/worktrees/${id}`,
+        parentThreadId: THREAD,
+        attachedToParent: true,
+        createdAt: now,
+      } as OrchestrationCommand);
+    }
+    const of = (id: ThreadId) => h.model().threads.find((entry) => entry.id === id)!;
+    let queuedAtFirstStart: boolean | null = null;
+    h.state.beforeStart = async () => {
+      queuedAtFirstStart = [THREAD, CHILD, OTHER].every(
+        (id) => (of(id).pendingMove ?? null) !== null || (of(id).move ?? null) !== null,
+      );
+    };
+    await h.queueMove();
+    await waitFor(() => queuedAtFirstStart !== null, "a move to start");
+    expect(queuedAtFirstStart).toBe(true);
     await h.close();
   });
 });

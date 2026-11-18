@@ -30,6 +30,8 @@ import {
   type ThreadMoveBatchMember,
   type ThreadMoveBatchStatus,
   ThreadMoveError,
+  type ThreadMoveFamily,
+  ThreadMoveFamilyId,
   type ThreadMoveHold,
   ThreadMoveRequestId,
   type ThreadMoveQueueInput,
@@ -62,6 +64,7 @@ import {
   firstMoveBlock,
   isRestorePaid,
   moveWaitsOf,
+  PARENT_DIDNT_MOVE_WORDS,
   restoreMessageText,
   sameMoveStatus,
   type ThreadMoveRefusalEntry,
@@ -238,14 +241,68 @@ const sessionMark = (thread: OrchestrationThread) => {
     : `${session.status}:${session.activeTurnId ?? ""}:${session.updatedAt}`;
 };
 
-/** A thread's move checks, from the thread alone: no other thread or project. */
+/**
+ * A thread's move checks, from the thread alone: no other thread or project.
+ * Whether a child's parent still moves needs the parent, so that one waits
+ * for the full look.
+ */
 const localRefusals = (thread: OrchestrationThread) =>
   threadMoveRefusals(
     { projects: [], threads: [thread] },
     thread,
     // What the target said it takes, when the move was queued.
     thread.pendingMove?.targetTakes,
-  );
+  ).filter((entry) => entry.code !== "child");
+
+/** One thread a queue call moves, with the family it moves in (docs/design/fleet.md, Part 3f, (g)). */
+export interface PlannedMove {
+  readonly threadId: ThreadId;
+  readonly family?: ThreadMoveFamily;
+}
+
+/**
+ * The threads a queue call moves, in order: each parent first with its
+ * family's id, then the children that come with it (all of them, or with
+ * `explicit` only those asked for), then the rest as asked. A child asked for
+ * without its parent moves on its own (its own check refuses that for now).
+ * `childrenOf` lists a thread's children here that could come.
+ */
+export const planFamilies = (
+  asked: ReadonlyArray<ThreadId>,
+  options: {
+    readonly explicit: boolean;
+    /** A single thread's call: its children asked for besides it. */
+    readonly alsoAsked?: ReadonlyArray<ThreadId> | undefined;
+    readonly childrenOf: (threadId: ThreadId) => Effect.Effect<ReadonlyArray<ThreadId>>;
+    readonly newFamilyId: () => ThreadMoveFamilyId;
+  },
+): Effect.Effect<ReadonlyArray<PlannedMove>> =>
+  Effect.gen(function* () {
+    const unique = [...new Set(asked)];
+    const askedSet = new Set<ThreadId>([...unique, ...(options.alsoAsked ?? [])]);
+    const coming = new Map<ThreadId, ReadonlyArray<ThreadId>>();
+    for (const threadId of unique) {
+      const children = yield* options.childrenOf(threadId);
+      const picked = options.explicit ? children.filter((child) => askedSet.has(child)) : children;
+      if (picked.length > 0) coming.set(threadId, picked);
+    }
+    const withParent = new Set([...coming.values()].flat());
+    const planned: PlannedMove[] = [];
+    for (const threadId of unique) {
+      if (withParent.has(threadId)) continue;
+      const children = coming.get(threadId);
+      if (children === undefined) {
+        planned.push({ threadId });
+        continue;
+      }
+      const id = options.newFamilyId();
+      planned.push({ threadId, family: { id } });
+      for (const child of children) {
+        planned.push({ threadId: child, family: { id, parentThreadId: threadId } });
+      }
+    }
+    return planned;
+  });
 
 interface TrackedMove {
   requestId: ThreadMoveRequestId;
@@ -456,8 +513,15 @@ export const makeMoveQueue = (
         // A newer queued move than the one this was watching: watch it instead.
         yield* track(threadId, pending.requestId);
         const requestId = pending.requestId;
-        // From the thread alone first: while it works, nothing else needs reading.
-        if (yield* settleRefusals(threadId, pending, localRefusals(thread))) return;
+        // From the thread alone first: while it works, nothing else needs
+        // reading. A family's child always reads its parent: its move ends
+        // with the parent's, at work or not (Part 3f, (g)).
+        if (
+          pending.family?.parentThreadId === undefined &&
+          (yield* settleRefusals(threadId, pending, localRefusals(thread)))
+        ) {
+          return;
+        }
         const context = yield* deps.readContext(threadId);
         if (context === null) return yield* forget(threadId);
         const refusals = threadMoveRefusals(
@@ -708,15 +772,30 @@ export const makeMoveQueue = (
     // The service.
     // -------------------------------------------------------------------------
 
-    /** Checks one move and records it as the thread's queued move: `queue`, and each of a batch. */
+    /**
+     * Checks one move and records it as the thread's queued move: `queue`, and
+     * each of a batch. A parent's children that come with it (`children`,
+     * planFamilies) are checked first, each as if its parent were queued, and
+     * queued in the same decision as the parent (docs/design/fleet.md, Part
+     * 3f, (g)), so no member packs before every member is known. One refused
+     * stays here (`refusedChildren`, with why).
+     */
     const queueOne = (
-      input: ThreadMoveQueueInput & { readonly requestedBy?: ThreadMoveRequester },
+      input: ThreadMoveQueueInput & {
+        readonly requestedBy?: ThreadMoveRequester;
+        /** The family it moves with (planFamilies). */
+        readonly family?: ThreadMoveFamily | undefined;
+      },
       batch?: {
-        readonly batchId: ThreadMoveBatchId;
+        readonly batchId?: ThreadMoveBatchId | undefined;
         readonly targets: ReadonlyArray<DescribedTarget>;
         /** Recorded in the batch before it is queued. */
-        readonly requestId: ThreadMoveRequestId;
+        readonly requestId?: ThreadMoveRequestId | undefined;
       },
+      children: ReadonlyArray<{
+        readonly threadId: ThreadId;
+        readonly requestId: ThreadMoveRequestId;
+      }> = [],
     ) =>
       Effect.gen(function* () {
         const { label, takes } = yield* deps.checkQueue({
@@ -725,7 +804,26 @@ export const makeMoveQueue = (
           agent: input.agent,
           roomAgents: input.roomAgents,
           targets: batch?.targets,
+          family: input.family,
         });
+        const coming: Array<{ threadId: ThreadId; requestId: ThreadMoveRequestId }> = [];
+        const refusedChildren: Array<{ threadId: ThreadId; words: string }> = [];
+        const family = input.family;
+        if (family !== undefined) {
+          for (const child of children) {
+            const checked = yield* deps
+              .checkQueue({
+                threadId: child.threadId,
+                targetEnvironmentId: input.targetEnvironmentId,
+                targets: batch?.targets,
+                family: { id: family.id, parentThreadId: input.threadId },
+                withParent: true,
+              })
+              .pipe(Effect.result);
+            if (checked._tag === "Success") coming.push(child);
+            else refusedChildren.push({ threadId: child.threadId, words: checked.failure.detail });
+          }
+        }
         const requestId = batch?.requestId ?? ThreadMoveRequestId.make(randomUUID());
         yield* deps
           .dispatch({
@@ -738,16 +836,77 @@ export const makeMoveQueue = (
             ...(input.roomAgents !== undefined ? { roomAgents: input.roomAgents } : {}),
             mode: input.mode,
             requestedBy: input.requestedBy ?? { kind: "user" },
-            ...(batch !== undefined ? { batchId: batch.batchId } : {}),
+            ...(batch?.batchId !== undefined ? { batchId: batch.batchId } : {}),
             targetTakes: takes,
+            ...(input.family !== undefined ? { family: input.family } : {}),
+            ...(coming.length > 0 ? { children: coming } : {}),
             createdAt: yield* nowIso,
           })
           .pipe(Effect.mapError((error) => moveError(error.message)));
-        return { requestId, label };
+        // A child its own checks refused in that decision (a race since its
+        // check) holds no queued move: it stays too.
+        for (const child of coming) {
+          const queuedNow = (yield* deps.readThread(child.threadId))?.pendingMove ?? null;
+          if (queuedNow?.requestId !== child.requestId) {
+            refusedChildren.push({
+              threadId: child.threadId,
+              words: "It couldn't move with the thread that started it.",
+            });
+          }
+        }
+        return { requestId, label, refusedChildren };
       });
 
+    /** A thread's children here that could move with it: attached, neither archived nor deleted. */
+    const childrenOf = (threadId: ThreadId) =>
+      deps
+        .readContext(threadId)
+        .pipe(
+          Effect.map((context) =>
+            (context?.view.threads ?? [])
+              .filter(
+                (child) =>
+                  child.parentThreadId === threadId &&
+                  child.attachedToParent &&
+                  child.deletedAt === null &&
+                  child.archivedAt === null,
+              )
+              .map((child) => child.id),
+          ),
+        );
+
+    const newFamilyId = () => ThreadMoveFamilyId.make(randomUUID());
+
+    /**
+     * One thread, and the children that come with it (docs/design/fleet.md,
+     * Part 3f, (g)): all of them unless the call says which (`explicit`).
+     * The thread is queued first; a child refused stays here, and becomes its
+     * own thread if the parent moves.
+     */
     const queue: MoveQueueShape["queue"] = (input) =>
-      queueOne(input).pipe(Effect.map(({ requestId }) => ({ requestId })));
+      Effect.gen(function* () {
+        const planned = yield* planFamilies([input.threadId], {
+          explicit: input.familySelection === "explicit",
+          alsoAsked: input.children,
+          childrenOf,
+          newFamilyId,
+        });
+        const [own, ...children] = planned;
+        // With children, the computers are asked once for all of them.
+        const targets = children.length > 0 ? yield* deps.describeTargets : undefined;
+        const { requestId, refusedChildren } = yield* queueOne(
+          { ...input, family: own?.family },
+          targets !== undefined ? { targets } : undefined,
+          children.map((child) => ({
+            threadId: child.threadId,
+            requestId: ThreadMoveRequestId.make(randomUUID()),
+          })),
+        );
+        for (const child of refusedChildren) {
+          yield* Effect.logInfo("move queue: a thread stays behind its parent", child);
+        }
+        return { requestId };
+      });
 
     const unrecorded = () => moveError("The moves couldn't be recorded. Try again.");
 
@@ -763,9 +922,16 @@ export const makeMoveQueue = (
           onNone: () => described?.label ?? "the other computer",
           onSome: (peer) => peer.label,
         });
-        const planned = threadIds.map((threadId) => ({
-          threadId,
+        // Each parent with the children that come with it (Part 3f, (g)).
+        const families = yield* planFamilies(threadIds, {
+          explicit: input.familySelection === "explicit",
+          childrenOf,
+          newFamilyId,
+        });
+        const planned = families.map((entry) => ({
+          threadId: entry.threadId,
           requestId: ThreadMoveRequestId.make(randomUUID()),
+          ...(entry.family !== undefined ? { family: entry.family } : {}),
         }));
         const row: ThreadMoveBatchRow = {
           batchId,
@@ -775,26 +941,47 @@ export const makeMoveQueue = (
           // Each member's queued move is named before any is queued, so a
           // batch cut short (a crash, a failed write) still knows every move
           // it made; one never queued reads as not moved.
-          members: planned,
+          members: planned.map(({ threadId, requestId }) => ({ threadId, requestId })),
           refused: [],
         };
         yield* deps.batches.upsert(row).pipe(Effect.mapError(unrecorded));
         const queued: Array<{ threadId: ThreadId; requestId: ThreadMoveRequestId }> = [];
         const refused: Array<{ threadId: ThreadId; words: string }> = [];
+        // A parent and its children go in one decision; its children are
+        // queued (or refused) with it.
+        const plannedChildrenOf = (parentId: ThreadId) =>
+          planned.filter((entry) => entry.family?.parentThreadId === parentId);
         for (const member of planned) {
+          if (member.family?.parentThreadId !== undefined) continue;
           const requestId = member.requestId;
+          const children = plannedChildrenOf(member.threadId);
           const one = yield* queueOne(
             {
               threadId: member.threadId,
               targetEnvironmentId: input.targetEnvironmentId,
               mode: input.mode,
+              family: member.family,
             },
             { batchId, targets, requestId },
+            children.map(({ threadId, requestId: childRequestId }) => ({
+              threadId,
+              requestId: childRequestId,
+            })),
           ).pipe(Effect.result);
           if (one._tag === "Success") {
             queued.push({ threadId: member.threadId, requestId });
+            const left = new Set(one.success.refusedChildren.map((entry) => entry.threadId));
+            for (const child of children) {
+              if (!left.has(child.threadId)) {
+                queued.push({ threadId: child.threadId, requestId: child.requestId });
+              }
+            }
+            refused.push(...one.success.refusedChildren);
           } else {
             refused.push({ threadId: member.threadId, words: one.failure.detail });
+            for (const child of children) {
+              refused.push({ threadId: child.threadId, words: PARENT_DIDNT_MOVE_WORDS });
+            }
           }
         }
         // The refusals' words; without them a refused member still reads as
@@ -954,7 +1141,13 @@ export const makeMoveQueue = (
                 if (entry?.requestId === event.payload.requestId) {
                   yield* forget(event.payload.threadId);
                 }
+                // A parent's move that ended without starting ends its
+                // family's queued moves too (Part 3f, (g)): they look again.
+                if (event.payload.reason !== "started") yield* lookAtAll(settleDelay, false);
                 return;
+              }
+              if (event.type === "thread.move-aborted") {
+                yield* lookAtAll(settleDelay, false);
               }
               // A move that didn't happen owes the thread what it took.
               if (

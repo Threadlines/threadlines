@@ -30,6 +30,9 @@ import { PeerAgent } from "./peerRpc.ts";
  * computer before it freezes the thread; the move then runs on its own.
  */
 
+/** At most this many threads in one `moves.previewMany` or `moves.queueMany`. */
+export const THREAD_MOVE_BATCH_MAX = 100;
+
 /**
  * What a move does with the thread's agent session, for one agent on the
  * other computer (docs/design/fleet.md, Part 3d): `carries`, the agent keeps
@@ -164,9 +167,39 @@ export const ThreadMovePreview = Schema.Struct({
       ),
     }),
   ),
+  /**
+   * A thread that started threads (docs/design/fleet.md, Part 3f, (g)): its
+   * children here that can come along, each with why it can't when it can't
+   * (it then stays here as its own thread), and the threads its agent
+   * started on other computers, which stay there. On a child: its parent.
+   */
+  family: Schema.optional(
+    Schema.Struct({
+      parent: Schema.optional(Schema.Struct({ threadId: ThreadId, title: TrimmedNonEmptyString })),
+      children: Schema.Array(
+        Schema.Struct({
+          threadId: ThreadId,
+          title: TrimmedNonEmptyString,
+          refusal: Schema.optional(TrimmedNonEmptyString),
+        }),
+      ),
+      remoteChildren: Schema.Array(
+        Schema.Struct({ label: TrimmedNonEmptyString, title: TrimmedNonEmptyString }),
+      ),
+    }),
+  ),
   targets: Schema.Array(ThreadMoveTargetPreview),
 });
 export type ThreadMovePreview = typeof ThreadMovePreview.Type;
+
+/**
+ * Which of a parent's children come along (docs/design/fleet.md, Part 3f,
+ * review change 5). `explicit`: exactly the threads asked for move, and its
+ * children not asked for stay here as their own threads. Absent (an older
+ * app): a parent moves with its whole family.
+ */
+export const ThreadMoveFamilySelection = Schema.Literal("explicit");
+export type ThreadMoveFamilySelection = typeof ThreadMoveFamilySelection.Type;
 
 export const ThreadMovePreviewInput = Schema.Struct({ threadId: ThreadId });
 export type ThreadMovePreviewInput = typeof ThreadMovePreviewInput.Type;
@@ -204,6 +237,15 @@ export const ThreadMoveQueueInput = Schema.Struct({
   mode: ThreadPendingMoveMode,
   /** A room: the agent each of its agents moves as (null leaves it out); one not listed takes the suggestion. */
   roomAgents: Schema.optional(Schema.Array(ThreadMoveRoomAgentChoice)),
+  /** See ThreadMoveFamilySelection. */
+  familySelection: Schema.optional(ThreadMoveFamilySelection),
+  /**
+   * With `familySelection: "explicit"`, the children of this thread that come
+   * along, each with the agent the target suggests for it. Absent: none.
+   */
+  children: Schema.optional(
+    Schema.Array(ThreadId).check(Schema.isMaxLength(THREAD_MOVE_BATCH_MAX)),
+  ),
 });
 export type ThreadMoveQueueInput = typeof ThreadMoveQueueInput.Type;
 
@@ -229,9 +271,6 @@ export const ThreadMoveRetryInput = Schema.Struct({
 export type ThreadMoveRetryInput = typeof ThreadMoveRetryInput.Type;
 
 // ----- several threads at once (docs/design/fleet.md, Part 3c) ---------------------------
-
-/** At most this many threads in one `moves.previewMany` or `moves.queueMany`. */
-export const THREAD_MOVE_BATCH_MAX = 100;
 
 const BatchThreadIds = Schema.Array(ThreadId).check(
   Schema.isMinLength(1),
@@ -311,6 +350,8 @@ export const ThreadMoveQueueManyInput = Schema.Struct({
   threadIds: BatchThreadIds,
   targetEnvironmentId: EnvironmentId,
   mode: ThreadPendingMoveMode,
+  /** See ThreadMoveFamilySelection: a parent's children come only when listed. */
+  familySelection: Schema.optional(ThreadMoveFamilySelection),
 });
 export type ThreadMoveQueueManyInput = typeof ThreadMoveQueueManyInput.Type;
 

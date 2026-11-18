@@ -29,7 +29,7 @@ import * as NodeZlib from "node:zlib";
 
 import {
   type ChatAttachment,
-  type ChildRequestId,
+  ChildRequestId,
   CommandId,
   type ComputerLinkPendingRequest,
   ComputerLinkError,
@@ -60,6 +60,7 @@ import {
   type ThreadMovedFrom,
   type RuntimeMode,
   PEER_MOVE_CHUNK_MAX_BYTES,
+  PEER_MOVE_FAMILY_MAX_STAYED,
   PEER_MOVE_ROOM_MAX_PARTICIPANTS,
   PEER_MOVE_STATE_MAX_BYTES,
   PEER_MOVE_STATE_MAX_CHECK_BACKS,
@@ -85,6 +86,7 @@ import * as PubSub from "effect/PubSub";
 import * as Schedule from "effect/Schedule";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import { resolveAttachmentPath, toSafeThreadAttachmentSegment } from "../attachmentStore.ts";
 import { ServerConfig } from "../config.ts";
@@ -131,6 +133,12 @@ import { LinkRequests, linkIdentityRefusal, type PeerLink } from "./LinkRequests
 
 /** A move nobody allowed, or that stopped arriving, ends after a day. */
 export const LINK_MOVE_TTL_MS = 24 * 60 * 60 * 1000;
+/**
+ * A family member that arrived and waits for a relative (its parent can wait
+ * on its other threads for a long time) waits a week before it ends. The
+ * computer it left drops it sooner once that relative's move ends there.
+ */
+export const LINK_MOVE_FAMILY_TTL_MS = 7 * LINK_MOVE_TTL_MS;
 /**
  * Moves in flight one link may have here at once, and all links together:
  * every unfinished move except one held for this computer's user with every
@@ -215,6 +223,12 @@ export class LinkMoves extends Context.Service<LinkMoves, LinkMovesShape>()(
 /** An import stage that can't go on: the move ends aborted with this reason. */
 class ImportStop extends Data.TaggedError("ImportStop")<{ readonly reason: string }> {}
 
+/** How a family's child lands here: under its parent, or as its own thread with why. */
+interface FamilyLanding {
+  readonly lineage?: { readonly parentThreadId: ThreadId; readonly parentTurnId: TurnId | null };
+  readonly left?: string;
+}
+
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
 /** hash(link, transfer): every resource a move makes here is named from it. */
@@ -224,6 +238,55 @@ export const linkMoveKey = (linkDeviceId: string, transferId: string) =>
 /** The thread a move becomes here. */
 export const linkMoveThreadId = (transferKey: string) =>
   ThreadId.make(derivedUuid("link-move-thread", transferKey));
+
+/**
+ * hash(link, family id): a family's key here (docs/design/fleet.md, Part 3f,
+ * (g)). Its members' threads, turns and messages are named from it and their
+ * ids there, so each can name the others before they arrive. From the link
+ * the move came over, so no other computer can name a family's threads.
+ */
+export const linkFamilyKey = (linkDeviceId: string, familyId: string) =>
+  createHash("sha256").update(`family\u0000${linkDeviceId}\u0000${familyId}`).digest("hex");
+
+/** A family member's thread here, from its family's key and its id there. */
+export const linkFamilyThreadId = (familyKey: string, sourceThreadId: string) =>
+  ThreadId.make(derivedUuid("link-move-family-thread", familyKey, sourceThreadId));
+
+/**
+ * A moved message's id here: from the move's transfer key, or for a family
+ * member from the family's key and the member's own thread there, so two
+ * members never name a message alike whatever ids their manifests carry.
+ */
+export const linkMoveMessageId = (
+  row: Pick<LinkMoveRow, "transferKey" | "familyKey" | "manifest">,
+  id: string,
+) =>
+  MessageId.make(
+    row.familyKey === null
+      ? derivedUuid("link-move-message", row.transferKey, id)
+      : derivedUuid("link-move-message", row.familyKey, row.manifest.source.threadId, id),
+  );
+
+/**
+ * A moved turn's id here, as linkMoveMessageId names messages. `sourceThreadId`
+ * is the thread there whose turn it is: a child names its parent's turn as
+ * the parent's own import names it.
+ */
+export const linkMoveTurnId = (
+  row: Pick<LinkMoveRow, "transferKey" | "familyKey">,
+  sourceThreadId: string,
+  id: string,
+) =>
+  TurnId.make(
+    row.familyKey === null
+      ? derivedUuid("link-move-turn", row.transferKey, id)
+      : derivedUuid("link-move-turn", row.familyKey, sourceThreadId, id),
+  );
+
+/** The words a child's move ends with when its parent's didn't land here. */
+const PARENT_DIDNT_MOVE = "Its parent thread didn't move.";
+/** The words a member's move ends with when the folder it works in didn't come. */
+const OWNER_DIDNT_MOVE = "The thread whose folder it works in didn't move.";
 
 const isWindows = process.platform === "win32";
 const isCaseInsensitive = process.platform === "win32" || process.platform === "darwin";
@@ -282,7 +345,46 @@ export function moveManifestRefusal(manifest: PeerMoveManifest): string | null {
   if (ownSessionParts > 0 !== (manifest.session !== undefined)) {
     return "its session doesn't match its files";
   }
-  return moveRoomRefusal(manifest) ?? moveStateRefusal(manifest.thread.state);
+  return (
+    moveRoomRefusal(manifest) ??
+    moveFamilyRefusal(manifest) ??
+    moveStateRefusal(manifest.thread.state)
+  );
+}
+
+/**
+ * Why a moved family member can't be taken, or null (docs/design/fleet.md,
+ * Part 3f, (g)): it names neither itself as its parent nor its own folder's
+ * owner, a parent's turn only with the parent, and lists within bounds. One
+ * that shares another's folder carries none of the folder's files and no
+ * commits of its own; a general chat shares no folder.
+ */
+function moveFamilyRefusal(manifest: PeerMoveManifest): string | null {
+  const family = manifest.family;
+  if (family === undefined) return null;
+  const self = manifest.source.threadId;
+  if (family.parentThreadId === self) return "it names itself as its parent";
+  if (family.parentTurnId !== undefined && family.parentThreadId === undefined) {
+    return "it names a parent's turn without its parent";
+  }
+  if (
+    (family.stayed ?? []).length > PEER_MOVE_FAMILY_MAX_STAYED ||
+    (family.remoteStayed ?? []).length > PEER_MOVE_FAMILY_MAX_STAYED
+  ) {
+    return "it names too many threads";
+  }
+  if (family.sharesCheckoutOf === undefined) return null;
+  if (family.sharesCheckoutOf === self) return "it shares its own folder";
+  if (isScratchMoveManifest(manifest)) return "a general chat shares no folder";
+  if (manifest.git.baseSha !== null) return "a thread in another's folder carries no commits";
+  if (
+    manifest.parts.some(
+      (part) => part.kind === "bundle" || part.kind === "diff" || part.kind === "file",
+    )
+  ) {
+    return "a thread in another's folder carries none of its files";
+  }
+  return null;
 }
 
 /**
@@ -460,6 +562,28 @@ const make = Effect.gen(function* () {
   const setupScripts = yield* ProjectSetupScriptRunner;
   const environment = yield* ServerEnvironment;
   const providers = yield* ProviderService;
+  const sql = yield* SqlClient.SqlClient;
+
+  /** Whether any of `messages` has an id a thread other than `threadId` already holds here. */
+  const messageIdsTaken = (
+    threadId: ThreadId,
+    messages: ReadonlyArray<{ readonly messageId: string }>,
+  ) =>
+    Effect.gen(function* () {
+      const ids = messages.map((message) => message.messageId);
+      for (let start = 0; start < ids.length; start += 500) {
+        const chunk = ids.slice(start, start + 500);
+        const rows = yield* sql<{ readonly found: number }>`
+          SELECT 1 AS "found" FROM projection_thread_messages
+          WHERE thread_id <> ${threadId} AND message_id IN ${sql.in(chunk)}
+          LIMIT 1
+        `;
+        if (rows.length > 0) return true;
+      }
+      return false;
+    }).pipe(
+      Effect.mapError(() => new ImportStop({ reason: `${ownLabel()} couldn't read its threads.` })),
+    );
   // GitHub's sign-in, for the pull request switches a move brings; none in a
   // server built without it (tests), which then can't tell.
   const gitHubCli = yield* Effect.serviceOption(GitHubCli);
@@ -487,6 +611,8 @@ const make = Effect.gen(function* () {
   const scope = yield* Effect.scope;
   /** Imports running in this process, so a second `finish` doesn't start another. */
   const importing = new Set<string>();
+  /** Imports asked to start while they were ending: each runs once more (runImport). */
+  const importAgain = new Set<string>();
   const peerFailure = (detail: string) => new PeerRpcError({ detail });
 
   const stagingDir = (row: Pick<LinkMoveRow, "transferKey">) =>
@@ -507,7 +633,7 @@ const make = Effect.gen(function* () {
       ? row.bytesReceived >= row.manifest.totalBytes
         ? "staged_awaiting_approval"
         : "receiving"
-      : waitingToImport(row)
+      : waitingToImport(row) || row.status === "waiting_for_family"
         ? "importing"
         : row.status;
   const stateOf = (row: LinkMoveRow): PeerMoveState => ({
@@ -537,16 +663,22 @@ const make = Effect.gen(function* () {
     row.status === "receiving" &&
     row.stagedApproval &&
     row.bytesReceived >= row.manifest.totalBytes;
-  /** Holds no slot in flight: waiting for Allow, or for a slot, with every byte here. */
-  const holdsNoSlot = (row: LinkMoveRow) => staged(row) || waitingToImport(row);
+  /**
+   * Holds no slot in flight: waiting for Allow, or for a slot, with every
+   * byte here; or waiting for another member of its family (Part 3f, review
+   * change 2), so the member it waits for can always get one.
+   */
+  const holdsNoSlot = (row: LinkMoveRow) =>
+    staged(row) || waitingToImport(row) || row.status === "waiting_for_family";
   /**
    * Counts against the link's staging budget: sent before Allow, and its bytes
    * still in staging, waiting for Allow (all here or still arriving) or,
-   * allowed, waiting for an import slot. Its import holds a slot in flight
-   * instead.
+   * allowed, waiting for an import slot; or waiting for its family. Its import
+   * holds a slot in flight instead.
    */
   const holdsStaging = (row: LinkMoveRow) =>
-    row.stagedApproval && (row.status === "awaiting_approval" || waitingToImport(row));
+    row.status === "waiting_for_family" ||
+    (row.stagedApproval && (row.status === "awaiting_approval" || waitingToImport(row)));
 
   /** A move's row. Fails when it couldn't be read: an outage must never read as "never heard of it". */
   const readRow = (linkDeviceId: string, transferId: string) =>
@@ -673,6 +805,20 @@ const make = Effect.gen(function* () {
           })
           .pipe(Effect.ignore);
         return;
+      }
+      // A family's folder that a member still coming shares (docs/design/
+      // fleet.md, Part 3f, (g)) stays until that member lands (then a thread
+      // uses it) or is dropped: clean-up stays owed, and the sweep tries again.
+      if (row.familyKey !== null && row.manifest.family?.sharesCheckoutOf === undefined) {
+        const open = yield* moves.listOpen.pipe(Effect.option);
+        const sharedStill =
+          Option.isNone(open) ||
+          open.value.some(
+            (entry) =>
+              entry.familyKey === row.familyKey &&
+              entry.manifest.family?.sharesCheckoutOf === row.sourceThreadId,
+          );
+        if (sharedStill) return;
       }
       // The repository recorded when the import began (nothing was made in
       // git before that). One deleted since took its refs and worktree list
@@ -883,6 +1029,9 @@ const make = Effect.gen(function* () {
       if (settled) {
         if (row.status === "awaiting_approval") yield* announcePending;
         yield* cleanUp({ ...row, status: "aborted", reason, abortCode: abortCode ?? null });
+        // Its family's members waiting on it (Part 3f, (g)) end too, and a
+        // slot it held goes to the next one: looked at once this lock is let go.
+        yield* Effect.suspend(() => startImports).pipe(Effect.forkIn(scope));
       }
       return settled;
     });
@@ -933,6 +1082,21 @@ const make = Effect.gen(function* () {
               return gone(`${participant.handle}: ${resolved.refused}`);
             }
           }
+          // A family member (Part 3f, (g)): its thread is named from the
+          // family's key here, so its relatives can name it before it lands.
+          // One member moves here once.
+          const familyKey =
+            manifest.family !== undefined
+              ? linkFamilyKey(link.deviceId, manifest.family.id)
+              : undefined;
+          if (familyKey !== undefined) {
+            const earlier = yield* moves
+              .findFamilyMember(familyKey, manifest.source.threadId)
+              .pipe(Effect.mapError(() => peerFailure(`${ownLabel()} couldn't read its moves.`)));
+            if (Option.isSome(earlier) && earlier.value.status !== "aborted") {
+              return gone("That thread is already moving here with its family.");
+            }
+          }
           // An asking computer that reads the codes is told why a refusal
           // came; an older one is answered exactly as before.
           const asksStaged = input.stagedApproval === true;
@@ -947,7 +1111,23 @@ const make = Effect.gen(function* () {
               if (!current.ok) return gone(current.text);
               const held = current.access === "ask" && asksStaged;
               const open = yield* moves.listOpen;
-              if (held) {
+              // A family member may wait here for its relatives holding no
+              // slot (Part 3f, review change 2): it counts against the staging
+              // budget from the start, as a move held for Allow does. One its
+              // relatives here already wait for (their parent, or the folder
+              // they share) is never refused for their waits: the member they
+              // wait for can always come.
+              const source = manifest.source.threadId;
+              const awaited =
+                familyKey !== undefined &&
+                open.some(
+                  (entry) =>
+                    entry.familyKey === familyKey &&
+                    entry.status === "waiting_for_family" &&
+                    (entry.manifest.family?.parentThreadId === source ||
+                      entry.manifest.family?.sharesCheckoutOf === source),
+                );
+              if ((held || familyKey !== undefined) && !awaited) {
                 const waiting = open.filter(
                   (entry) => entry.linkDeviceId === link.deviceId && holdsStaging(entry),
                 );
@@ -957,7 +1137,9 @@ const make = Effect.gen(function* () {
                   bytes + manifest.totalBytes > MAX_STAGED_BYTES_PER_LINK
                 ) {
                   return refused(
-                    `${ownLabel()} is holding other moves until its user allows them.`,
+                    held
+                      ? `${ownLabel()} is holding other moves until its user allows them.`
+                      : `${ownLabel()} is holding as many moves as it can while their families arrive.`,
                     "staging_full",
                   );
                 }
@@ -980,7 +1162,11 @@ const make = Effect.gen(function* () {
                 status: current.access === "ask" ? "awaiting_approval" : "receiving",
                 stagedApproval: held,
                 manifest,
-                threadId: linkMoveThreadId(transferKey),
+                threadId:
+                  familyKey !== undefined
+                    ? linkFamilyThreadId(familyKey, manifest.source.threadId)
+                    : linkMoveThreadId(transferKey),
+                familyKey,
                 now: yield* nowIso,
               });
             }),
@@ -1142,8 +1328,14 @@ const make = Effect.gen(function* () {
    */
   const settleLanded = (row: LinkMoveRow) =>
     Effect.gen(function* () {
-      // A general chat's folder gets no setup script: it isn't a project's worktree.
-      if (row.worktreePath !== null && !isScratchMoveManifest(row.manifest)) {
+      // A general chat's folder gets no setup script: it isn't a project's
+      // worktree. Nor does a family member's in another's folder: that
+      // folder's own move ran it.
+      if (
+        row.worktreePath !== null &&
+        !isScratchMoveManifest(row.manifest) &&
+        row.manifest.family?.sharesCheckoutOf === undefined
+      ) {
         const land = yield* landing(row.manifest);
         if (land !== null) {
           yield* setupScripts
@@ -1245,6 +1437,68 @@ const make = Effect.gen(function* () {
     });
 
   const stop = (reason: string) => Effect.fail(new ImportStop({ reason }));
+
+  /** Whether a member's folder is made here: its owner's move applied its files, or landed. */
+  const folderMade = (owner: LinkMoveRow) =>
+    owner.status === "committed" || owner.stage === "applied" || owner.stage === "arrived";
+
+  /**
+   * Where a family member's import stands against its relatives (docs/design/
+   * fleet.md, Part 3f, review change 3). First folders: a member in another's
+   * folder waits only until that folder is made here, in no order among
+   * folders, so a parent working in its child's folder can't wait on itself.
+   * Then threads: a child commits only once its parent has. `stop` when the
+   * one it waits for was dropped; `wait` while it may still come.
+   */
+  const familyGate = (row: LinkMoveRow) =>
+    Effect.gen(function* () {
+      const family = row.manifest.family;
+      const key = row.familyKey;
+      if (family === undefined || key === null) return { kind: "ready" } as const;
+      const member = (sourceThreadId: string) =>
+        moves
+          .findFamilyMember(key, sourceThreadId)
+          .pipe(Effect.mapError(() => peerFailure(`${ownLabel()} couldn't read its moves.`)));
+      // A member in another's folder, at any stage before it lands: the
+      // folder's owner must still be coming, and own a folder of its own (a
+      // sharer can't be one's owner). One dropped meanwhile ends it, never
+      // leaves it pointing at a folder nobody moved.
+      if (family.sharesCheckoutOf !== undefined) {
+        const owner = yield* member(family.sharesCheckoutOf);
+        if (Option.isNone(owner)) {
+          if (row.stage === null) return { kind: "wait" } as const;
+          return { kind: "stop", reason: OWNER_DIDNT_MOVE } as const;
+        }
+        if (
+          owner.value.status === "aborted" ||
+          owner.value.manifest.family?.sharesCheckoutOf !== undefined
+        ) {
+          return { kind: "stop", reason: OWNER_DIDNT_MOVE } as const;
+        }
+        if (row.stage === null) {
+          return folderMade(owner.value)
+            ? ({ kind: "ready" } as const)
+            : ({ kind: "wait" } as const);
+        }
+      }
+      if (row.stage === "applied" && family.parentThreadId !== undefined) {
+        const parent = yield* member(family.parentThreadId);
+        if (Option.isNone(parent)) return { kind: "wait" } as const;
+        if (parent.value.status === "aborted") {
+          return { kind: "stop", reason: PARENT_DIDNT_MOVE } as const;
+        }
+        return parent.value.status === "committed"
+          ? ({ kind: "ready" } as const)
+          : ({ kind: "wait" } as const);
+      }
+      return { kind: "ready" } as const;
+    });
+
+  /**
+   * A member in another's folder skips the git stages: once that folder is
+   * made here it goes straight to its commit, where it takes the folder.
+   */
+  const sharerStage = (row: LinkMoveRow) => setStage(row, { stage: "applied" });
 
   const partBytes = (row: LinkMoveRow, part: PeerMovePart) =>
     Effect.tryPromise(async () => {
@@ -1910,8 +2164,134 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  /** The thread itself, and with it the commit. Waits for the engine's answer without letting go. */
-  const commitStage = (row: LinkMoveRow) =>
+  /**
+   * A family member as it lands here (docs/design/fleet.md, Part 3f, (g)),
+   * every id named from the family's key, which this computer derived from
+   * the link it came over: requests and reports between members, the folder
+   * it shares (its guest marker, from the family, never a path the other
+   * computer named), the parent it lands under, and the "Moved here" words
+   * for what stayed. Null for a thread that moves on its own.
+   */
+  const familyOf = (row: LinkMoveRow) => {
+    const family = row.manifest.family;
+    const key = row.familyKey;
+    if (family === undefined || key === null) return null;
+    const threadHere = (id: string) => linkFamilyThreadId(key, id);
+    const plural = (count: number) => (count === 1 ? "1 thread" : `${count} threads`);
+    const titles = (list: ReadonlyArray<{ readonly title: string }>) =>
+      list.map((entry) => entry.title).join(", ");
+    return {
+      fromThread: (origin: NonNullable<ThreadImportMessage["fromThread"]>) => ({
+        threadId: threadHere(origin.threadId),
+        requestId: ChildRequestId.make(derivedUuid("link-move-request", key, origin.requestId)),
+        kind: origin.kind,
+      }),
+      worktreeOrigin:
+        family.sharesCheckoutOf !== undefined
+          ? { kind: "thread" as const, threadId: threadHere(family.sharesCheckoutOf) }
+          : undefined,
+      /** The parent a child lands under, or why it lands as its own thread. */
+      lineage: (projectId: string) =>
+        Effect.gen(function* () {
+          if (family.parentThreadId === undefined) return null;
+          const parentId = threadHere(family.parentThreadId);
+          const found = yield* threadRows
+            .getById({ threadId: parentId })
+            .pipe(
+              Effect.mapError(
+                () => new ImportStop({ reason: `${ownLabel()} couldn't read its threads.` }),
+              ),
+            );
+          const parent = Option.getOrUndefined(found);
+          const own = (why: string): FamilyLanding => ({
+            left: `${why}, so this is its own thread.`,
+          });
+          if (parent === undefined || parent.deletedAt !== null) {
+            return own("The thread that started it isn't on this computer anymore");
+          }
+          if ((parent.move ?? null) !== null || (parent.pendingMove ?? null) !== null) {
+            return own("The thread that started it is moving on from this computer");
+          }
+          if (parent.projectId !== projectId) {
+            return own("The thread that started it is in another project here");
+          }
+          return {
+            lineage: {
+              parentThreadId: parentId,
+              parentTurnId:
+                family.parentTurnId !== undefined
+                  ? linkMoveTurnId(row, family.parentThreadId, family.parentTurnId)
+                  : null,
+            },
+          } satisfies FamilyLanding;
+        }),
+      /** The "Moved here" words for what of its family didn't come. */
+      left: (fromLabel: string, lineageLeft: string | null) => {
+        const words: string[] = [];
+        if (lineageLeft !== null) words.push(lineageLeft);
+        const stayed = family.stayed ?? [];
+        if (stayed.length > 0) {
+          words.push(
+            `${plural(stayed.length)} it started stayed on ${fromLabel}: ${titles(stayed)}.`,
+          );
+        }
+        const byComputer = new Map<string, Array<{ readonly title: string }>>();
+        for (const entry of family.remoteStayed ?? []) {
+          byComputer.set(entry.label, [...(byComputer.get(entry.label) ?? []), entry]);
+        }
+        for (const [label, list] of byComputer) {
+          words.push(
+            `${plural(list.length)} it started on ${label} stayed there: ${titles(list)}. It can't reach ${list.length === 1 ? "it" : "them"} from here.`,
+          );
+        }
+        const stopped = family.childRequestsStopped ?? 0;
+        if (stopped > 0) {
+          words.push(
+            `It was waiting on ${plural(stopped)} it started. ${stopped === 1 ? "It was" : "They were"} stopped for the move.`,
+          );
+        }
+        return words;
+      },
+    };
+  };
+
+  /**
+   * The thread itself, and with it the commit. Waits for the engine's answer
+   * without letting go. A family member in another's folder (docs/design/
+   * fleet.md, Part 3f, (g)) takes the folder that member's move made here,
+   * when that move is still coming. It holds only its own lock: no import
+   * ever waits for a second one, so none can wait on each other. The folder
+   * stays because the owner's clean-up leaves it while a member still coming
+   * shares it (cleanUp), and once this thread is in it.
+   */
+  const commitStage = (row: LinkMoveRow) => {
+    const ownerId = row.manifest.family?.sharesCheckoutOf;
+    const key = row.familyKey;
+    if (ownerId === undefined || key === null) return commitThread(row);
+    return Effect.gen(function* () {
+      const owner = yield* moves
+        .findFamilyMember(key, ownerId)
+        .pipe(Effect.mapError(() => peerFailure(`${ownLabel()} couldn't read its moves.`)));
+      if (
+        Option.isNone(owner) ||
+        owner.value.status === "aborted" ||
+        owner.value.manifest.family?.sharesCheckoutOf !== undefined ||
+        !folderMade(owner.value) ||
+        owner.value.worktreePath === null ||
+        owner.value.branch === null
+      ) {
+        return yield* stop(OWNER_DIDNT_MOVE);
+      }
+      return yield* commitThread({
+        ...row,
+        worktreePath: owner.value.worktreePath,
+        branch: owner.value.branch,
+      });
+    });
+  };
+
+  /** commitStage's work, for a row whose folder is known (its own, or the one it shares). */
+  const commitThread = (row: LinkMoveRow) =>
     Effect.gen(function* () {
       const land = yield* landing(row.manifest);
       if (land === null) return yield* stop(`${ownLabel()} doesn't have this project anymore.`);
@@ -1940,8 +2320,12 @@ const make = Effect.gen(function* () {
       );
       const attachments = yield* importAttachments(row);
       const key = row.transferKey;
+      // A family member's turns and messages are named from its family's key
+      // and its own thread there (linkMoveMessageId), so its relatives'
+      // records here name its turns alike and no two members share an id.
+      const family = familyOf(row);
       const messages = row.manifest.thread.messages.map((message): ThreadImportMessage => ({
-        messageId: MessageId.make(derivedUuid("link-move-message", key, message.messageId)),
+        messageId: linkMoveMessageId(row, message.messageId),
         role: message.role,
         text: message.text,
         ...(message.attachments !== undefined
@@ -1954,7 +2338,7 @@ const make = Effect.gen(function* () {
         turnId:
           message.turnId === null
             ? null
-            : TurnId.make(derivedUuid("link-move-turn", key, message.turnId)),
+            : linkMoveTurnId(row, row.manifest.source.threadId, message.turnId),
         ...(message.completesTurn !== undefined ? { completesTurn: message.completesTurn } : {}),
         ...(message.agentModels !== undefined ? { agentModels: message.agentModels } : {}),
         ...(message.sentFrom !== undefined ? { sentFrom: message.sentFrom } : {}),
@@ -1967,6 +2351,10 @@ const make = Effect.gen(function* () {
         ...(message.requestKind !== undefined ? { requestKind: message.requestKind } : {}),
         ...(message.requestOutcome !== undefined ? { requestOutcome: message.requestOutcome } : {}),
         ...(message.requestError !== undefined ? { requestError: message.requestError } : {}),
+        // Between members of its family only, named as they are here.
+        ...(message.fromThread !== undefined && family !== null
+          ? { fromThread: family.fromThread(message.fromThread) }
+          : {}),
         createdAt: message.createdAt,
       }));
       const device = yield* devices
@@ -2017,7 +2405,7 @@ const make = Effect.gen(function* () {
         resolved: roomResolved,
         carried: carriedRoom,
         hasDriver: (driver) => drivers.has(driver),
-        messageIdHere: (id) => MessageId.make(derivedUuid("link-move-message", key, id)),
+        messageIdHere: (id) => linkMoveMessageId(row, id),
       });
       // How far the thread's own agent's carried session got, in a room.
       const ownSeen = row.manifest.thread.room?.ownAgentSeenThroughMessageId;
@@ -2053,15 +2441,29 @@ const make = Effect.gen(function* () {
         now,
         room,
       });
-      // The "Moved here" line's room words first, then what the thread had going.
+      // A child lands under its parent here, when the parent landed and is
+      // still here (Part 3f, (g)); otherwise as its own thread, with why.
+      const lineage = family === null ? null : yield* family.lineage(land.project.id);
+      const familyLeft = family === null ? [] : family.left(fromLabel, lineage?.left ?? null);
+      // The "Moved here" line's room words first, then its family's, then
+      // what the thread had going.
       const arrival =
-        stateArrival === undefined && room.brought.length === 0 && room.left.length === 0
+        stateArrival === undefined &&
+        room.brought.length === 0 &&
+        room.left.length === 0 &&
+        familyLeft.length === 0
           ? undefined
           : {
               ...(stateArrival?.message !== undefined ? { message: stateArrival.message } : {}),
               brought: [...room.brought, ...(stateArrival?.brought ?? [])],
-              left: [...room.left, ...(stateArrival?.left ?? [])],
+              left: [...room.left, ...familyLeft, ...(stateArrival?.left ?? [])],
             };
+      // Every message id it brings is its own: one another thread here holds
+      // would be moved into this one (messages are kept by id alone). The
+      // decider checks the recent ones too; this reads them all.
+      if (yield* messageIdsTaken(row.threadId, [...roomMessages, ...notSent])) {
+        return yield* stop(`${ownLabel()} already has one of its messages in another thread.`);
+      }
       const dispatched = yield* engine
         .dispatch({
           type: "thread.import",
@@ -2081,13 +2483,18 @@ const make = Effect.gen(function* () {
             threadId: row.manifest.source.threadId,
             movedAt: now,
             ...(carried && ownSeen !== undefined
-              ? { seenThrough: MessageId.make(derivedUuid("link-move-message", key, ownSeen)) }
+              ? { seenThrough: linkMoveMessageId(row, ownSeen) }
               : {}),
             ...(pullRequestSwitches !== undefined ? { pullRequestSwitches } : {}),
+            ...(row.familyKey !== null ? { familyKey: row.familyKey } : {}),
           },
           // Queued messages for a room agent that didn't come: in the chat, never sent.
           messages: [...roomMessages, ...notSent],
           activities,
+          ...(lineage?.lineage !== undefined ? { lineage: lineage.lineage } : {}),
+          ...(family?.worktreeOrigin !== undefined
+            ? { worktreeOrigin: family.worktreeOrigin }
+            : {}),
           ...(carried ? { nativeSession: "carried" as const } : {}),
           ...(room.participants.length > 0 ? { participants: room.participants } : {}),
           ...(room.agentRole !== undefined ? { agentRole: room.agentRole } : {}),
@@ -2386,7 +2793,7 @@ const make = Effect.gen(function* () {
       }
 
       // (f) Plans, with this computer's ids.
-      const key2 = (id: string) => derivedUuid("link-move-turn", key, id);
+      const key2 = (id: string) => linkMoveTurnId(row, row.manifest.source.threadId, id);
       const proposedPlans: OrchestrationProposedPlan[] = (state.proposedPlans ?? []).map(
         (plan) => ({
           id: derivedUuid("link-move-plan", key, plan.id),
@@ -2561,16 +2968,34 @@ const make = Effect.gen(function* () {
    */
   const runImport = (linkDeviceId: string, transferId: string): Effect.Effect<void> => {
     const key = linkMoveKey(linkDeviceId, transferId);
-    if (importing.has(key)) return Effect.void;
+    // One that is ending (a family member that just let its slot go) runs
+    // once more after it ends, so a start asked meanwhile is never lost.
+    if (importing.has(key)) {
+      importAgain.add(key);
+      return Effect.void;
+    }
     importing.add(key);
     const steps = Effect.gen(function* () {
       for (;;) {
         const next = yield* stage(linkDeviceId, transferId, (row) =>
           Effect.gen(function* () {
+            // A family member waiting for a relative (Part 3f, (g)) lets its
+            // slot go; startImports picks it up again once it may go on.
+            const gate = yield* familyGate(row);
+            if (gate.kind === "stop") return yield* stop(gate.reason);
+            if (gate.kind === "wait") {
+              yield* setStage(row, { status: "waiting_for_family" });
+              return true;
+            }
             switch (row.stage) {
               case null:
-                // A general chat has a folder of its own, not a checkout.
-                yield* isScratchMoveManifest(row.manifest) ? folderStage(row) : fetchStage(row);
+                // A general chat has a folder of its own, not a checkout; a
+                // family member in another's folder takes that one.
+                yield* isScratchMoveManifest(row.manifest)
+                  ? folderStage(row)
+                  : row.manifest.family?.sharesCheckoutOf !== undefined
+                    ? sharerStage(row)
+                    : fetchStage(row);
                 return false;
               case "fetched":
                 yield* worktreeStage(row);
@@ -2606,7 +3031,14 @@ const make = Effect.gen(function* () {
       Effect.catchCause((cause) =>
         Effect.logWarning("link move import failed", { transferId, cause }),
       ),
-      Effect.ensuring(Effect.sync(() => importing.delete(key))),
+      Effect.ensuring(
+        Effect.suspend(() => {
+          importing.delete(key);
+          return importAgain.delete(key)
+            ? runImport(linkDeviceId, transferId).pipe(Effect.forkIn(scope), Effect.asVoid)
+            : Effect.void;
+        }),
+      ),
       // Its slot is free: an allowed move waiting for one goes next.
       Effect.ensuring(Effect.suspend(() => startImports)),
     );
@@ -2619,12 +3051,23 @@ const make = Effect.gen(function* () {
    * admission lock, as offers are, so the two never overrun the caps together.
    */
   const startImports: Effect.Effect<void> = Effect.gen(function* () {
+    const dropped: Array<{ readonly row: LinkMoveRow; readonly reason: string }> = [];
     const started = yield* lock("admission")(
       Effect.gen(function* () {
         const open = yield* moves.listOpen;
         const inFlight = open.filter((entry) => !holdsNoSlot(entry));
         const begun: Array<LinkMoveRow> = [];
-        for (const row of open.filter(waitingToImport)) {
+        // Family members whose relative is here now go on first (they are
+        // furthest along); one whose relative was dropped ends.
+        const ready: Array<LinkMoveRow> = [];
+        for (const row of open.filter((entry) => entry.status === "waiting_for_family")) {
+          const gate = yield* familyGate(row).pipe(
+            Effect.orElseSucceed(() => ({ kind: "wait" }) as const),
+          );
+          if (gate.kind === "stop") dropped.push({ row, reason: gate.reason });
+          else if (gate.kind === "ready") ready.push(row);
+        }
+        for (const row of [...ready, ...open.filter(waitingToImport)]) {
           const fromLink = inFlight.filter((entry) => entry.linkDeviceId === row.linkDeviceId);
           if (fromLink.length >= MAX_OPEN_MOVES_PER_LINK || inFlight.length >= MAX_OPEN_MOVES) {
             continue;
@@ -2652,6 +3095,16 @@ const make = Effect.gen(function* () {
     );
     for (const row of started) {
       yield* runImport(row.linkDeviceId, row.transferId).pipe(Effect.forkIn(scope));
+    }
+    for (const { row, reason } of dropped) {
+      yield* abortMove(row.linkDeviceId, row.transferId, reason).pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("link move waiting for its family couldn't be dropped", {
+            detail: error.message,
+          }),
+        ),
+        Effect.forkIn(scope),
+      );
     }
   });
 
@@ -2818,13 +3271,20 @@ const make = Effect.gen(function* () {
         } else {
           yield* runImport(row.linkDeviceId, row.transferId).pipe(Effect.forkIn(scope));
         }
-      } else if (!waitingToImport(row) && Date.parse(row.updatedAt) + LINK_MOVE_TTL_MS < now) {
+      } else if (
+        !waitingToImport(row) &&
+        Date.parse(row.updatedAt) +
+          (row.status === "waiting_for_family" ? LINK_MOVE_FAMILY_TTL_MS : LINK_MOVE_TTL_MS) <
+          now
+      ) {
         yield* abortMove(
           row.linkDeviceId,
           row.transferId,
           row.status === "awaiting_approval"
             ? `Nobody on ${ownLabel()} allowed the move in time.`
-            : "The move stopped arriving.",
+            : row.status === "waiting_for_family"
+              ? "The rest of its family never arrived."
+              : "The move stopped arriving.",
           row.status === "awaiting_approval" ? "expired" : undefined,
         );
       }

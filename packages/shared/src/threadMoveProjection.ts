@@ -108,6 +108,7 @@ function nextMove(
       ...(payload.interrupted !== undefined ? { interrupted: payload.interrupted } : {}),
       ...(payload.targetTakes !== undefined ? { targetTakes: payload.targetTakes } : {}),
       ...(payload.roomAgents !== undefined ? { roomAgents: payload.roomAgents } : {}),
+      ...(payload.family !== undefined ? { family: payload.family } : {}),
     };
   }
   if (!("transferId" in event.payload)) return move;

@@ -23,9 +23,12 @@ import {
   describeThreadMoveProgress,
   describeThreadMoveSession,
   formatThreadMoveChanges,
+  groupMoveFamilies,
   isThreadMoveOffered,
   isThreadMoveStalled,
   listMoveCandidates,
+  toggleMoveFamily,
+  withMoveFamilies,
   pickDefaultMoveAgent,
   pickDefaultMoveTarget,
   threadMoveAgentSelection,
@@ -472,5 +475,70 @@ describe("describeMoveBatchProgress", () => {
     ).toBe(
       "Moved 2 of 3 threads to Mac mini. Didn't move: Goal thread (Has a goal set. Clear it first).",
     );
+  });
+});
+
+describe("a family in the Move threads and quit flows (Part 3f, (g))", () => {
+  const parent = { threadId: "p", title: "Ship it", working: false };
+  const child = { threadId: "c1", title: "Fix tests", working: true, parentThreadId: "p" };
+  const other = { threadId: "c2", title: "Review", working: false, parentThreadId: "p" };
+  const alone = { threadId: "x", title: "Elsewhere", working: false };
+  const orphan = {
+    threadId: "o",
+    title: "Its parent isn't listed",
+    working: false,
+    parentThreadId: "gone",
+  };
+
+  it("lists each family together, its children under it", () => {
+    const rows = groupMoveFamilies([child, alone, parent, other, orphan]);
+    expect(rows.map((row) => [row.candidate.threadId, row.depth])).toEqual([
+      ["x", 0],
+      ["p", 0],
+      ["c1", 1],
+      ["c2", 1],
+      ["o", 0],
+    ]);
+  });
+
+  it("ticks a whole family from any member, and unticks one child or the whole family", () => {
+    const candidates = [parent, child, other, alone];
+    const canGo = (id: string) => id !== "c2";
+    const fromChild = toggleMoveFamily(new Set<string>(), candidates, "c1", true, canGo);
+    expect([...fromChild].toSorted()).toEqual(["c1", "p"]);
+    // A child unticked stays here; the parent unticked takes its family with it.
+    expect([...toggleMoveFamily(fromChild, candidates, "c1", false, canGo)]).toEqual(["p"]);
+    expect([...toggleMoveFamily(fromChild, candidates, "p", false, canGo)]).toEqual([]);
+  });
+
+  it("moves each working thread with its whole family when quitting", () => {
+    const threads = [
+      { id: "p", parentThreadId: null, attachedToParent: false, archivedAt: null },
+      { id: "c1", parentThreadId: "p", attachedToParent: true, archivedAt: null },
+      { id: "c2", parentThreadId: "p", attachedToParent: true, archivedAt: null },
+      {
+        id: "c3",
+        parentThreadId: "p",
+        attachedToParent: true,
+        archivedAt: "2026-11-17T09:00:00.000Z",
+      },
+      { id: "x", parentThreadId: null, attachedToParent: false, archivedAt: null },
+    ];
+    expect(withMoveFamilies(["c1", "x"], threads)).toEqual(["p", "c1", "c2", "x"]);
+  });
+
+  it("a child moving with its parent says so until the parent has moved", () => {
+    const move = {
+      transferId: ThreadMoveId.make("transfer-1"),
+      target: { environmentId: EnvironmentId.make("environment-mac"), label: "Mac mini" },
+      agent: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+      phase: "importing",
+      cancelRequested: false,
+      startedAt: "2026-11-17T10:00:00.000Z",
+    } satisfies OrchestrationThreadMove;
+    expect(describeThreadMoveProgress(move, { withParent: "Ship it" })).toBe(
+      "Moves to Mac mini with Ship it.",
+    );
+    expect(describeThreadMoveProgress(move, { withParent: null })).toBe("Setting up on Mac mini…");
   });
 });

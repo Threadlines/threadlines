@@ -30,13 +30,18 @@ import {
   ThreadTurnStartRequestedPayload,
 } from "./orchestration.ts";
 import {
+  ChildRequestId,
   EnvironmentId,
+  MessageId,
+  ThreadId,
   ThreadMoveBatchId,
+  ThreadMoveFamilyId,
   ThreadMoveId,
   ThreadMoveRequestId,
   ThreadParticipantId,
 } from "./baseSchemas.ts";
-import { PeerDescriptor, PeerMovePart } from "./peerRpc.ts";
+import { ThreadMoveQueueInput } from "./moves.ts";
+import { PeerDescriptor, PeerMoveGitManifest, PeerMovePart } from "./peerRpc.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 
 const decodeTurnDiffInput = Schema.decodeUnknownEffect(OrchestrationGetTurnDiffInput);
@@ -797,6 +802,114 @@ it("an app or computer from before step 4b still reads a room's move", () => {
     moveThreadState: true,
     moveRooms: true,
     moveOutsideWork: true,
+  });
+  assert.strictEqual(Schema.decodeUnknownSync(BasePeerDescriptor)(descriptor).moves, true);
+});
+
+// What an app or a computer from before families moved (docs/design/fleet.md,
+// Part 3f, (g)) decodes of a family's move, a thread that moved with its
+// family, and its manifest: the fields it knew, no more. A family is never
+// sent to such a computer (`moveFamilies`), and an app that sends no
+// `familySelection` gets the whole family.
+const BasePeerMoveGitManifest = Schema.Struct({
+  totalBytes: Schema.Number,
+  sha256: Schema.String,
+  parts: Schema.Array(BasePeerMovePart),
+  source: Schema.Struct({ threadId: Schema.String }),
+  git: Schema.Struct({ headSha: Schema.String, baseSha: Schema.NullOr(Schema.String) }),
+});
+const BaseThreadMoveQueueInput = Schema.Struct({
+  threadId: Schema.String,
+  targetEnvironmentId: Schema.String,
+  mode: Schema.Literals(["when-done", "stop-now"]),
+});
+
+it("an app or computer from before families moved still reads a family's move", () => {
+  const family = { id: ThreadMoveFamilyId.make("family-1"), parentThreadId: ThreadId.make("p") };
+  const target = { environmentId: EnvironmentId.make("environment-mac"), label: "Mac mini" };
+  const agent = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" };
+  const pending = Schema.encodeSync(ThreadPendingMove)({
+    requestId: ThreadMoveRequestId.make("request-1"),
+    target,
+    mode: "stop-now",
+    stage: "quiescing",
+    requestedAt: "2026-11-17T14:00:00.000Z",
+    requestedBy: { kind: "user" },
+    targetTakes: { threadState: true, families: true },
+    interrupted: { childRequestsStopped: 2 },
+    family,
+  });
+  assert.strictEqual(Schema.decodeUnknownSync(BaseThreadPendingMove)(pending).stage, "quiescing");
+  const move = Schema.encodeSync(OrchestrationThreadMove)({
+    transferId: ThreadMoveId.make("move-1"),
+    target,
+    agent,
+    phase: "importing",
+    cancelRequested: false,
+    startedAt: "2026-11-17T14:01:00.000Z",
+    family,
+  });
+  assert.strictEqual(
+    Schema.decodeUnknownSync(BaseOrchestrationThreadMove)(move).phase,
+    "importing",
+  );
+  const manifest = Schema.encodeSync(PeerMoveGitManifest)({
+    totalBytes: 0,
+    sha256: "x",
+    parts: [],
+    source: {
+      environmentId: EnvironmentId.make("environment-windows"),
+      environmentLabel: "Windows PC",
+      threadId: ThreadId.make("c"),
+    },
+    project: { canonicalKey: "example.com/repo", title: "Threadlines" },
+    git: { headSha: "h", branch: "main", baseSha: null },
+    thread: {
+      title: "Fix tests",
+      runtimeMode: "auto-accept-edits",
+      interactionMode: "default",
+      messages: [
+        {
+          messageId: MessageId.make("m-1"),
+          role: "user",
+          text: "Tests pass now.",
+          turnId: null,
+          fromThread: {
+            threadId: ThreadId.make("c"),
+            requestId: ChildRequestId.make("r-1"),
+            kind: "report",
+          },
+          createdAt: "2026-11-17T13:00:00.000Z",
+        },
+      ],
+      activities: [],
+    },
+    agent,
+    summary: { messageCount: 1, trackedFiles: 0, untrackedFiles: 0, unpushedCommits: 0 },
+    family: { ...family, sharesCheckoutOf: ThreadId.make("p"), stayed: [{ title: "Review" }] },
+  });
+  assert.strictEqual(Schema.decodeUnknownSync(BasePeerMoveGitManifest)(manifest).totalBytes, 0);
+  const queued = Schema.encodeSync(ThreadMoveQueueInput)({
+    threadId: ThreadId.make("p"),
+    targetEnvironmentId: EnvironmentId.make("environment-mac"),
+    mode: "when-done",
+    familySelection: "explicit",
+    children: [ThreadId.make("c")],
+  });
+  assert.strictEqual(Schema.decodeUnknownSync(BaseThreadMoveQueueInput)(queued).mode, "when-done");
+  const descriptor = Schema.encodeSync(PeerDescriptor)({
+    environmentId: EnvironmentId.make("environment-mac"),
+    label: "Mac mini",
+    platform: "darwin",
+    serverVersion: "1.0.0",
+    directRoutes: [],
+    access: "allowed",
+    maxRuntimeMode: "full-access",
+    agents: [],
+    defaultAgent: null,
+    projects: [],
+    moves: true,
+    moveFamilies: true,
   });
   assert.strictEqual(Schema.decodeUnknownSync(BasePeerDescriptor)(descriptor).moves, true);
 });
