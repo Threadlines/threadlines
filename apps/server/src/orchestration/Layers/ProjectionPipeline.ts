@@ -2156,6 +2156,18 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         yield* projectionThreadSessionRepository.setContinueAtReset(event.payload);
         return;
       }
+      // Stop names the turn it is for: no usage limit brings that turn back.
+      if (
+        (event.type === "thread.turn-interrupt-requested" ||
+          event.type === "thread.session-stop-requested") &&
+        event.payload.stopsTurnId !== undefined
+      ) {
+        yield* projectionThreadSessionRepository.setStopRequested({
+          threadId: event.payload.threadId,
+          turnId: event.payload.stopsTurnId,
+        });
+        return;
+      }
       if (event.type !== "thread.session-set") {
         return;
       }
@@ -2183,6 +2195,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         lastErrorDismissedAt: event.payload.session.lastErrorDismissedAt ?? null,
         lastErrorUsageLimit: event.payload.session.lastErrorUsageLimit ?? null,
         continueAtReset: event.payload.session.continueAtReset ?? null,
+        stopRequestedTurnId: event.payload.session.stopRequestedTurnId ?? null,
         updatedAt: event.payload.session.updatedAt,
       });
     });

@@ -113,7 +113,12 @@ import {
   settleParentRequestsForUnqueued,
   withinModeCeiling,
 } from "./childThreadDecisions.ts";
-import { childDeliveryForQuietCandidate } from "./childThreadDelivery.ts";
+import {
+  childDeliveryForQuietCandidate,
+  failedTurnMessage,
+  heldRequestEnded,
+  isHeldByContinueAtReset,
+} from "./childThreadDelivery.ts";
 import { turnLiftsMoveFence } from "./linkFence.ts";
 import { projectEvent } from "./projector.ts";
 import { checkoutSelectedEvents, leavesLentWorktree, movesCheckout } from "./threadCheckout.ts";
@@ -588,8 +593,36 @@ function refuseSkippedSetup(
  * it) is carried the same way. The wait to continue after it goes as soon as
  * a turn starts; only the decider arms it (`withArmedContinueAtReset`,
  * `thread.continue-at-reset.*`), so a writer's copy is ignored too.
+ *
+ * The turn the user asked to stop (`stopRequestedTurnId`, set by the Stop
+ * events) is kept until another turn starts, whatever the writer sent.
  */
 function withLastErrorState(
+  next: OrchestrationSession,
+  prior: OrchestrationSession | null | undefined,
+  at: string,
+  usageLimit?: OrchestrationSessionUsageLimit,
+): OrchestrationSession {
+  const stopped = carriedStopRequest(next, prior);
+  const withStop = (session: OrchestrationSession): OrchestrationSession =>
+    stopped === null ? session : { ...session, stopRequestedTurnId: stopped };
+  return withStop(withLastErrorStamps(next, prior, at, usageLimit));
+}
+
+/**
+ * The stopped turn a session update keeps: until a turn starts (the session
+ * is starting, or running another turn than the one stopped).
+ */
+function carriedStopRequest(
+  next: OrchestrationSession,
+  prior: OrchestrationSession | null | undefined,
+) {
+  const stopped = prior?.stopRequestedTurnId ?? null;
+  if (stopped === null || next.status === "starting") return null;
+  return next.activeTurnId !== null && next.activeTurnId !== stopped ? null : stopped;
+}
+
+function withLastErrorStamps(
   next: OrchestrationSession,
   prior: OrchestrationSession | null | undefined,
   at: string,
@@ -600,6 +633,7 @@ function withLastErrorState(
     lastErrorDismissedAt: _sentDismissedAt,
     lastErrorUsageLimit: _sentUsageLimit,
     continueAtReset: _sentContinueAtReset,
+    stopRequestedTurnId: _sentStopRequestedTurnId,
     ...session
   } = next;
   if (next.lastError === null) {
@@ -716,11 +750,16 @@ function continueAtResetWaiting(
  * on a failure: always when the stopped turn was itself a continue (the user
  * asked this thread to keep going), and with the setting on when the user
  * asked for it (typed it, moved it to another account, or it is a turn a
- * restart cut off that Threadlines continued). A turn a scheduled
- * run, another thread or a room agent started waits for the user: continuing
- * it would not finish the run or answer the request.
+ * restart cut off that Threadlines continued). With the setting on, also a
+ * turn answering its parent's request on this computer, whose request then
+ * waits for the continue, and a report turn in a thread no parent waits on
+ * (docs/design/lead-chat.md, "Usage limits"). A turn a scheduled run, a
+ * linked computer, an outside agent or a room agent started waits for the
+ * user: continuing it would not finish the run or answer the request.
+ * Never for a turn the user asked to stop.
  */
 function withArmedContinueAtReset(
+  readModel: OrchestrationReadModel,
   thread: OrchestrationThread,
   session: OrchestrationSession,
   prior: OrchestrationSession | null,
@@ -729,6 +768,8 @@ function withArmedContinueAtReset(
   const resetsAt = session.lastErrorUsageLimit?.resetsAt ?? null;
   // The user asked to move this thread: that wins over an automatic retry here.
   if ((thread.pendingMove ?? null) !== null) return session;
+  // The user stopped this turn: a limit landing after Stop never brings it back.
+  if ((session.stopRequestedTurnId ?? null) !== null) return session;
   if (
     resetsAt === null ||
     session.continueAtReset != null ||
@@ -749,8 +790,69 @@ function withArmedContinueAtReset(
   if (startedBy === undefined) return session;
   const continuing = startedBy.trigger === "usageLimitReset";
   const fromUser = !continuing && userAskedForTurn(startedBy);
-  if (!continuing && !(settingOn && fromUser)) return session;
+  // Read past messages still queued: an agent's is written when it queues.
+  const ran = failedTurnMessage({ ...thread, session }) ?? startedBy;
+  const forAnotherThread =
+    !continuing &&
+    ran.trigger === undefined &&
+    (answersHeldableRequest(readModel, thread, session, ran) ||
+      reportsToTopLevel(thread, session, ran));
+  if (!continuing && !(settingOn && (fromUser || forAnotherThread))) return session;
   return { ...session, continueAtReset: continueAtResetFor(resetsAt) };
+}
+
+/**
+ * The turn answers its parent's request on this computer, still `running`:
+ * the request can wait for the continue. Not a lead chat's pass (nothing is
+ * owed for one), a linked computer's request, a room agent's turn, or a
+ * child stopped on a Codex goal the limit paused (its continue sends no
+ * message to answer with).
+ */
+function answersHeldableRequest(
+  readModel: OrchestrationReadModel,
+  thread: OrchestrationThread,
+  session: OrchestrationSession,
+  startedBy: OrchestrationMessage,
+): boolean {
+  const origin = startedBy.fromThread;
+  if (
+    origin === undefined ||
+    origin.kind !== "request" ||
+    origin.environmentId !== undefined ||
+    origin.ceiling !== undefined ||
+    !isAttachedChild(thread) ||
+    thread.parentThreadId !== origin.threadId ||
+    (thread.remoteOrigin ?? null) !== null ||
+    sessionSlotParticipantId(session) !== null ||
+    thread.goal?.status === "usageLimited"
+  ) {
+    return false;
+  }
+  const parent = readModel.threads.find((entry) => entry.id === origin.threadId);
+  return (
+    parent?.childRequests.open.some(
+      (request) =>
+        request.requestId === origin.requestId &&
+        request.childThreadId === thread.id &&
+        request.remote === undefined &&
+        request.status === "running" &&
+        request.childMessageId === startedBy.id,
+    ) === true
+  );
+}
+
+/** A report from one of its threads, heard in a thread no parent waits on. */
+function reportsToTopLevel(
+  thread: OrchestrationThread,
+  session: OrchestrationSession,
+  startedBy: OrchestrationMessage,
+): boolean {
+  return (
+    startedBy.fromThread?.kind === "report" &&
+    !isAttachedChild(thread) &&
+    (thread.remoteOrigin ?? null) === null &&
+    sessionSlotParticipantId(session) === null
+  );
 }
 
 /**
@@ -1036,6 +1138,97 @@ function leadClearEvents(
       type: "project.meta-updated" as const,
       payload: { projectId: project.id, leadThreadId: null, updatedAt: occurredAt },
     }));
+}
+
+/** The parent's requests a child's wait to continue holds open (`isHeldByContinueAtReset`). */
+function heldRequestsOf(
+  readModel: OrchestrationReadModel,
+  child: OrchestrationThread,
+): {
+  readonly parent: OrchestrationThread;
+  readonly held: OrchestrationThread["childRequests"]["open"];
+} | null {
+  if (!isAttachedChild(child) || child.parentThreadId === null) return null;
+  const parent = readModel.threads.find((entry) => entry.id === child.parentThreadId);
+  if (parent === undefined) return null;
+  const held = parent.childRequests.open.filter(
+    (request) =>
+      request.childThreadId === child.id &&
+      request.remote === undefined &&
+      isHeldByContinueAtReset(child, request),
+  );
+  return held.length === 0 ? null : { parent, held };
+}
+
+/**
+ * A child's wait to continue after a usage limit ends without its continue
+ * (Stop, the switch turned off, the user or another message starting a turn,
+ * a new failure): the request it held settles in the same decision
+ * (docs/design/lead-chat.md, "Rulings after the third review", 6).
+ */
+const decideHeldRequestsEnd = Effect.fn("decideHeldRequestsEnd")(function* (input: {
+  readonly readModel: OrchestrationReadModel;
+  readonly child: OrchestrationThread;
+  readonly outcome: "failed" | "stopped";
+  readonly why: string;
+  readonly createdAt: string;
+}) {
+  const found = heldRequestsOf(input.readModel, input.child);
+  if (found === null) return [] as ReadonlyArray<PlannedOrchestrationEvent>;
+  return yield* decideCommandSequence({
+    readModel: input.readModel,
+    commands: found.held.map((request): OrchestrationCommand => ({
+      ...heldRequestEnded(input.child, request, input.outcome, input.why),
+      threadId: found.parent.id,
+      createdAt: input.createdAt,
+    })),
+  });
+});
+
+/**
+ * Stop on a thread waiting to continue after a usage limit: the wait ends and
+ * the request it held settles, in the Stop's own decision.
+ */
+const decideWaitEndOnStop = Effect.fn("decideWaitEndOnStop")(function* (
+  readModel: OrchestrationReadModel,
+  thread: OrchestrationThread,
+  commandId: OrchestrationCommand["commandId"],
+  createdAt: string,
+) {
+  const session = thread.session;
+  const lastErrorAt = session?.lastErrorAt ?? null;
+  if (session === null || (session.continueAtReset ?? null) === null || lastErrorAt === null) {
+    return [] as ReadonlyArray<PlannedOrchestrationEvent>;
+  }
+  const settled = yield* decideHeldRequestsEnd({
+    readModel,
+    child: thread,
+    outcome: "stopped",
+    why: "the user stopped it",
+    createdAt,
+  });
+  return [
+    {
+      ...withEventBase({
+        aggregateKind: "thread",
+        aggregateId: thread.id,
+        occurredAt: createdAt,
+        commandId,
+      }),
+      type: "thread.continue-at-reset-set" as const,
+      payload: { threadId: thread.id, lastErrorAt, continueAtReset: null, updatedAt: createdAt },
+    },
+    ...settled,
+  ];
+});
+
+/** The turn a Stop is for: the one running now, if any. */
+function turnBeingStopped(thread: OrchestrationThread): TurnId | undefined {
+  return (
+    thread.session?.activeTurnId ??
+    (thread.latestTurn?.state === "running" ? thread.latestTurn.turnId : undefined) ??
+    undefined
+  );
 }
 
 export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand")(function* ({
@@ -3520,6 +3713,20 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               },
             ]
           : [];
+      // A turn starting while the thread waited to continue after a usage
+      // limit ends that wait; the request it held won't get its continue.
+      // (The continue itself, which the fire starts, answers it instead.)
+      const waitEnded =
+        command.trigger !== "usageLimitReset" &&
+        (targetThread.session?.continueAtReset ?? null) !== null
+          ? yield* decideHeldRequestsEnd({
+              readModel,
+              child: targetThread,
+              outcome: "failed",
+              why: "another message started its turn before the reset.",
+              createdAt: command.createdAt,
+            })
+          : [];
       return [
         userMessageEvent,
         ...(titleSeedEvent ? [titleSeedEvent] : []),
@@ -3527,6 +3734,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         turnStartRequestedEvent,
         ...requestRunningEvents,
         ...passStartedEvents,
+        ...waitEnded,
         // The user wrote: agents may make requests again. (A queued message
         // sent later drops these; it counted when the user queued it.) An
         // agent's message, another thread's or an outside agent's, is not
@@ -3711,6 +3919,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           createdAt: command.createdAt,
         },
       };
+      // A request a wait to continue held stays open through a retry: the
+      // retry sends the very message it is bound to, so its turn answers it.
       // Retrying is the user acting: agents may make requests again.
       return [
         retrySessionEvent,
@@ -4273,16 +4483,26 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         ...childStopEvents(readModel, thread, command, command.createdAt),
         ...holdCommandOutputOnStop(thread, base, command.createdAt),
       ];
+      const stopsTurnId = command.turnId ?? turnBeingStopped(thread);
       const interruptEvent: PlannedOrchestrationEvent = {
         ...base(),
         type: "thread.turn-interrupt-requested",
         payload: {
           threadId: command.threadId,
           ...(command.turnId !== undefined ? { turnId: command.turnId } : {}),
+          ...(stopsTurnId !== undefined ? { stopsTurnId } : {}),
           createdAt: command.createdAt,
         },
       };
-      return chainStop.length > 0 ? [interruptEvent, ...chainStop] : interruptEvent;
+      const waitEnd = yield* decideWaitEndOnStop(
+        readModel,
+        thread,
+        command.commandId,
+        command.createdAt,
+      );
+      return chainStop.length > 0 || waitEnd.length > 0
+        ? [interruptEvent, ...chainStop, ...waitEnd]
+        : interruptEvent;
     }
 
     case "thread.realtime.start": {
@@ -4592,15 +4812,25 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         ...childStopEvents(readModel, thread, command, command.createdAt),
         ...holdCommandOutputOnStop(thread, base, command.createdAt),
       ];
+      const stopsTurnId = turnBeingStopped(thread);
       const stopEvent: PlannedOrchestrationEvent = {
         ...base(),
         type: "thread.session-stop-requested",
         payload: {
           threadId: command.threadId,
+          ...(stopsTurnId !== undefined ? { stopsTurnId } : {}),
           createdAt: command.createdAt,
         },
       };
-      return chainStop.length > 0 ? [stopEvent, ...chainStop] : stopEvent;
+      const waitEnd = yield* decideWaitEndOnStop(
+        readModel,
+        thread,
+        command.commandId,
+        command.createdAt,
+      );
+      return chainStop.length > 0 || waitEnd.length > 0
+        ? [stopEvent, ...chainStop, ...waitEnd]
+        : stopEvent;
     }
 
     case "thread.session.set": {
@@ -4626,6 +4856,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           session: withArmedContinueAtReset(
+            readModel,
             thread,
             withLastErrorState(
               command.session,
@@ -4661,11 +4892,25 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         (command.session.status === "stopped" || !checkoutDiffers);
       const stoppedCheckoutMove =
         command.session.status === "stopped" && checkoutDiffers && thread.effectiveCwd !== null;
+      // The update ended a wait to continue without its continue (a new
+      // failure, the session moving on): the request it held settles now.
+      const waitEnded =
+        (thread.session?.continueAtReset ?? null) !== null &&
+        (sessionSetEvent.payload.session.continueAtReset ?? null) === null
+          ? yield* decideHeldRequestsEnd({
+              readModel,
+              child: thread,
+              outcome: "failed",
+              why: command.session.lastError ?? "it moved on before the reset.",
+              createdAt: command.createdAt,
+            })
+          : [];
       if (!selectionSettled && !stoppedCheckoutMove) {
-        return sessionSetEvent;
+        return waitEnded.length === 0 ? sessionSetEvent : [sessionSetEvent, ...waitEnded];
       }
       return [
         sessionSetEvent,
+        ...waitEnded,
         {
           ...withEventBase({
             aggregateKind: "thread",
@@ -4751,7 +4996,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         continueAtReset =
           session.continueAtReset ?? continueAtResetFor(resetsAt, command.createdAt);
       }
-      return {
+      const setEvent: PlannedOrchestrationEvent = {
         ...withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
@@ -4766,6 +5011,18 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           updatedAt: command.createdAt,
         },
       };
+      // Turned off while it waited: the request it held won't be answered.
+      const ended =
+        continueAtReset === null && (session.continueAtReset ?? null) !== null
+          ? yield* decideHeldRequestsEnd({
+              readModel,
+              child: thread,
+              outcome: "failed",
+              why: "Continue at reset was turned off for it.",
+              createdAt: command.createdAt,
+            })
+          : [];
+      return ended.length === 0 ? setEvent : [setEvent, ...ended];
     }
 
     case "thread.continue-at-reset.postpone": {
@@ -4815,7 +5072,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: "Only a waiting continue message is left unsent.",
         });
       }
-      return {
+      const skipped: PlannedOrchestrationEvent = {
         ...withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
@@ -4829,6 +5086,34 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           skippedAt: command.createdAt,
         },
       };
+      // A request bound to that continue will never get its answer from it:
+      // the user took over before it could continue.
+      const parent =
+        isAttachedChild(thread) && thread.parentThreadId !== null
+          ? readModel.threads.find((entry) => entry.id === thread.parentThreadId)
+          : undefined;
+      const bound = (parent?.childRequests.open ?? []).filter(
+        (request) =>
+          request.childThreadId === thread.id &&
+          request.remote === undefined &&
+          request.status === "running" &&
+          request.childMessageId === command.messageId,
+      );
+      if (parent === undefined || bound.length === 0) return skipped;
+      const ended = yield* decideCommandSequence({
+        readModel,
+        commands: bound.map((request): OrchestrationCommand => ({
+          ...heldRequestEnded(
+            thread,
+            request,
+            "failed",
+            "the user took over before it could continue.",
+          ),
+          threadId: parent.id,
+          createdAt: command.createdAt,
+        })),
+      });
+      return [skipped, ...ended];
     }
 
     // One decision checks the wait and starts the turn, so a message the user
@@ -4906,7 +5191,40 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         commands: [continueCommand],
         readModel,
       });
-      return [cleared, ...continued];
+      // A Codex goal picks up by itself and sends no message to answer with:
+      // the request the wait held won't get an answer from it.
+      if (continueCommand.type !== "thread.turn.start") {
+        const ended = yield* decideHeldRequestsEnd({
+          readModel,
+          child: thread,
+          outcome: "failed",
+          why: "it went back to its goal, which answers no request.",
+          createdAt: command.createdAt,
+        });
+        return [cleared, ...continued, ...ended];
+      }
+      // The request this wait held is now answered by the continue's turn.
+      const held = heldRequestsOf(readModel, thread);
+      const rebound: PlannedOrchestrationEvent[] =
+        held === null
+          ? []
+          : held.held.map((request) => ({
+              ...withEventBase({
+                aggregateKind: "thread",
+                aggregateId: held.parent.id,
+                occurredAt: command.createdAt,
+                commandId: command.commandId,
+              }),
+              type: "thread.child-request-updated" as const,
+              payload: {
+                threadId: held.parent.id,
+                requestId: request.requestId,
+                status: "running" as const,
+                childMessageId: command.messageId,
+                updatedAt: command.createdAt,
+              },
+            }));
+      return [cleared, ...continued, ...rebound];
     }
 
     // One decision reads the thread as the restart left it and either

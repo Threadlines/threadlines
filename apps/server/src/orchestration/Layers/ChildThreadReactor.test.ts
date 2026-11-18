@@ -384,6 +384,140 @@ describe("ChildThreadReactor", () => {
     ),
   );
 
+  describe("a child errored on a usage limit (docs/design/lead-chat.md, ruling 3)", () => {
+    const erroredTurn = TurnId.make("child-turn-1");
+    const asked = {
+      id: CHILD_MESSAGE,
+      role: "user" as const,
+      text: "Write it.",
+      fromThread: { threadId: PARENT, requestId: REQUEST, kind: "request" as const },
+      turnId: null,
+      streaming: false,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const errored = (overrides: Partial<OrchestrationThread> = {}) =>
+      thread(CHILD, {
+        messages: [asked],
+        latestTurn: {
+          turnId: erroredTurn,
+          state: "running",
+          requestedAt: now,
+          startedAt: now,
+          completedAt: null,
+          assistantMessageId: null,
+        },
+        session: {
+          threadId: CHILD,
+          status: "error",
+          providerName: "codex",
+          runtimeMode: "auto-accept-edits",
+          activeTurnId: null,
+          lastError: "You've hit your usage limit",
+          updatedAt: now,
+        },
+        ...overrides,
+      });
+    const sessionChanged = (harness: Harness) =>
+      PubSub.publish(harness.events, {
+        type: "thread.session-set",
+        payload: { threadId: CHILD },
+      } as unknown as OrchestrationEvent);
+
+    it.effect("waits for a late turn end that arms the wait, and then holds the request", () =>
+      withReactor([parentWith([]), errored()], {}, (harness) =>
+        Effect.gen(function* () {
+          // The request opens after startup, so no restart pass settles it.
+          harness.threads.set(PARENT, parentWith([request()]));
+          yield* sessionChanged(harness);
+          yield* settle;
+          // Past today's 5 s: its turn hasn't ended, so nothing settles yet.
+          yield* TestClock.adjust(Duration.seconds(6));
+          yield* settle;
+          expect(settles(harness)).toEqual([]);
+          // The turn's end arrives with the reset: the wait is armed.
+          harness.threads.set(
+            CHILD,
+            errored({
+              latestTurn: {
+                turnId: erroredTurn,
+                state: "error",
+                requestedAt: now,
+                startedAt: now,
+                completedAt: now,
+                assistantMessageId: null,
+              },
+              session: {
+                threadId: CHILD,
+                status: "error",
+                providerName: "codex",
+                runtimeMode: "auto-accept-edits",
+                activeTurnId: null,
+                lastError: "You've hit your usage limit",
+                continueAtReset: { resetsAt: now, at: now },
+                updatedAt: now,
+              },
+            }),
+          );
+          yield* TestClock.adjust(Duration.seconds(15));
+          yield* settle;
+          expect(settles(harness)).toEqual([]);
+        }),
+      ),
+    );
+
+    it.effect("settles the request failed at the bound when the turn's end never comes", () =>
+      withReactor([parentWith([]), errored()], {}, (harness) =>
+        Effect.gen(function* () {
+          // The request opens after startup, so no restart pass settles it.
+          harness.threads.set(PARENT, parentWith([request()]));
+          yield* sessionChanged(harness);
+          yield* settle;
+          yield* TestClock.adjust(Duration.seconds(19));
+          yield* settle;
+          expect(settles(harness)).toEqual([]);
+          yield* TestClock.adjust(Duration.seconds(2));
+          yield* settle;
+          expect(settles(harness)).toMatchObject([{ outcome: "failed" }]);
+        }),
+      ),
+    );
+
+    it.effect("keeps a held request across a restart", () =>
+      withReactor(
+        [
+          parentWith([request()]),
+          errored({
+            latestTurn: {
+              turnId: erroredTurn,
+              state: "error",
+              requestedAt: now,
+              startedAt: now,
+              completedAt: now,
+              assistantMessageId: null,
+            },
+            session: {
+              threadId: CHILD,
+              status: "error",
+              providerName: "codex",
+              runtimeMode: "auto-accept-edits",
+              activeTurnId: null,
+              lastError: "You've hit your usage limit",
+              continueAtReset: { resetsAt: now, at: now },
+              updatedAt: now,
+            },
+          }),
+        ],
+        {},
+        (harness) =>
+          Effect.gen(function* () {
+            yield* settle;
+            expect(settles(harness)).toEqual([]);
+          }),
+      ),
+    );
+  });
+
   it.effect("starts a child with no more access than its parent has now", () =>
     withReactor(
       [

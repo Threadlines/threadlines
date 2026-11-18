@@ -22,6 +22,7 @@ import {
   GetProjectionThreadSessionInput,
   ProjectionThreadContinueAtReset,
   SetProjectionThreadSessionContinueAtResetInput,
+  SetProjectionThreadSessionStopRequestedInput,
 } from "../Services/ProjectionThreadSessions.ts";
 
 const ProjectionThreadSessionDbRow = ProjectionThreadSession.mapFields(
@@ -70,6 +71,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           last_error_dismissed_at,
           last_error_usage_limit,
           continue_at_reset,
+          stop_requested_turn_id,
           updated_at
         )
         VALUES (
@@ -106,6 +108,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           ${row.lastErrorDismissedAt ?? null},
           ${row.lastErrorUsageLimit == null ? null : JSON.stringify(row.lastErrorUsageLimit)},
           ${row.continueAtReset == null ? null : JSON.stringify(row.continueAtReset)},
+          ${row.stopRequestedTurnId ?? null},
           ${row.updatedAt}
         )
         ON CONFLICT (thread_id)
@@ -128,6 +131,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           last_error_dismissed_at = excluded.last_error_dismissed_at,
           last_error_usage_limit = excluded.last_error_usage_limit,
           continue_at_reset = excluded.continue_at_reset,
+          stop_requested_turn_id = excluded.stop_requested_turn_id,
           updated_at = excluded.updated_at
       `,
   });
@@ -157,6 +161,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           last_error_dismissed_at AS "lastErrorDismissedAt",
           last_error_usage_limit AS "lastErrorUsageLimit",
           continue_at_reset AS "continueAtReset",
+          stop_requested_turn_id AS "stopRequestedTurnId",
           updated_at AS "updatedAt"
         FROM projection_thread_sessions
         WHERE thread_id = ${threadId}
@@ -183,6 +188,16 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
         SET continue_at_reset = ${continueAtReset === null ? null : JSON.stringify(continueAtReset)}
         WHERE thread_id = ${threadId}
           AND last_error_at IS ${lastErrorAt}
+      `,
+  });
+
+  const setProjectionThreadSessionStopRequested = SqlSchema.void({
+    Request: SetProjectionThreadSessionStopRequestedInput,
+    execute: ({ threadId, turnId }) =>
+      sql`
+        UPDATE projection_thread_sessions
+        SET stop_requested_turn_id = ${turnId}
+        WHERE thread_id = ${threadId}
       `,
   });
 
@@ -239,6 +254,13 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
       ),
     );
 
+  const setStopRequested: ProjectionThreadSessionRepositoryShape["setStopRequested"] = (input) =>
+    setProjectionThreadSessionStopRequested(input).pipe(
+      Effect.mapError(
+        toPersistenceSqlError("ProjectionThreadSessionRepository.setStopRequested:query"),
+      ),
+    );
+
   const listContinueAtReset: ProjectionThreadSessionRepositoryShape["listContinueAtReset"] = () =>
     listProjectionThreadContinueAtReset(undefined).pipe(
       Effect.mapError(
@@ -258,6 +280,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
     getByThreadId,
     dismissError,
     setContinueAtReset,
+    setStopRequested,
     listContinueAtReset,
     deleteByThreadId,
   } satisfies ProjectionThreadSessionRepositoryShape;

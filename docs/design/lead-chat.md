@@ -1,6 +1,6 @@
 # Lead chat: one place to run a project
 
-Status: plan rev 4 (Nov 16 2026), being built in five pieces (see Build order). Rev 4 adds
+Status: plan rev 5 (Nov 17 2026), built in five pieces (see Build order). Rev 4 adds
 family tabs (piece 5), asked for by Will after seeing pieces 1 to 3; that section has not been reviewed. GPT-6.1 Sol reviewed rev 1 (13 findings)
 and the two redesigned parts of rev 2 (6 findings). Each was checked against the code
 and all hold; the answers are in "Changes from review" at the end. Rev 3's answers to
@@ -458,9 +458,63 @@ continue ends any other way.
 - On screen nothing new: the child shows "Continues at reset", the parent "Waiting · N
   threads".
 
-To check while building, not assumed: whether a scheduled run into an existing thread
-(`each_run: this_thread`) has any "finish the run" duty. If it has none, include those
-turns too, since an event-fed lead is the main unattended case.
+### Rulings after the third review (rev 5)
+
+Sol reviewed this section against the code after piece 2 and found four gaps; all four
+hold. These rulings override the bullets above where they differ.
+
+1. **Stop is written down.** Today nothing durable says "the user asked this turn to
+   stop" on an ordinary thread (`decideAgentChainStop` returns early without agent
+   records, and `queueHeldByStop` lives only in the reactor), so a usage-limit failure
+   that lands after Stop could arm the wait and bring the turn back. This hole exists
+   today for turns the user typed; this piece would widen it. Add one optional field
+   on the session, `stopRequestedTurnId`, set by the decisions for `thread.turn.interrupt`
+   and `thread.session.stop` (the turn active then), folded by the projector and the
+   web store, persisted with the session, and cleared when the next turn starts.
+   `withArmedContinueAtReset` never arms for that turn, whoever started it.
+2. **Stop ends a wait.** `thread.session.stop` and `thread.turn.interrupt` on a thread
+   that is waiting clear the wait and settle a held request, in the same decision.
+   (`thread_stop` from a parent goes through `thread.session.stop`, so a child the
+   parent stopped no longer continues at the reset by itself.)
+3. **The reset can arrive late, and the wait for it is bounded.** A provider can report
+   the session error first and the turn's end, with the reset time, up to 15 s later
+   (Codex refreshes usage first). The 5 s session-error settle in `ChildThreadReactor`
+   must not fail the request in that gap. While the errored child's answering turn has
+   not ended, that settle waits up to 20 s for the turn's end (one named constant,
+   tied in its comment to the 15 s refresh), then settles `failed` as today. Prefer
+   applying the longer wait only when the error is already recognised as a usage
+   limit, if the session carries that by then. No new stored state, and never an
+   unbounded hold.
+4. **Only a `running` request is held.** The hold and the arming for a request-started
+   turn apply only when the request is `running` and the failed turn is its own
+   answering turn. A request that is `awaiting_background` follows today's path exactly
+   (it settles with its candidate, and nothing is armed for it). Holding it would need
+   a backward status change and candidate handling for an answer that already exists.
+   A test pins today's behaviour for that case.
+5. **The reducer learns `childMessageId`** (`childRequestStateOn.updated` applies and
+   compares it), on the server and in the web store.
+6. **Where a held request settles `failed`:** the two Stop decisions (ruling 2), the
+   per-thread switch turned off, archive, and a session rewrite through
+   `withLastErrorState` (which covers a user turn starting). Skip does not clear a wait:
+   it marks an already-fired continue unsent, which "the continue never runs" covers.
+7. **Scheduled runs stay out.** A run into an existing thread has a finish duty.
+
+Checked while building: a scheduled run into an existing thread (`each_run: this_thread`)
+does have a "finish the run" duty, so those turns are not covered (ruling 7).
+
+Built (piece 4), where it differs from or adds to the rulings:
+
+- The Stop events carry the turn they are for (`stopsTurnId` on
+  `thread.turn-interrupt-requested` and `thread.session-stop-requested`); the projector
+  and the SQLite projection fold it into the session (migration 118). The web store does
+  not: nothing on screen reads it. A session update keeps it until a turn starts (the
+  session is starting, or running another turn).
+- A retry during the wait does not settle the held request: it sends the very message
+  the request is bound to, so its turn answers it.
+- Archive needed nothing new: archiving a child already cancels its parent's requests.
+- Not covered: a continue that fails before its turn starts and leaves the session
+  `ready` rather than `error` (no session-error settle runs then). Its request stays
+  open until the parent's Stop, wrap or archive.
 
 ## Every surface
 

@@ -18,6 +18,7 @@ import {
 } from "@threadlines/contracts";
 
 import { childReportMessageId, childReportText } from "./childThreadDecisions.ts";
+import { turnStartingMessage } from "./continueTurns.ts";
 
 /** What the delivery rules read of a request, wherever it is kept. */
 export type ChildDeliveryRequest = Pick<
@@ -157,6 +158,11 @@ export function childDeliveryForTurnEnd(input: {
     );
   }
   if (end.outcome === "failed") {
+    // A usage limit paused it: the request waits for the continue at the
+    // reset, which answers it (docs/design/lead-chat.md, "Usage limits").
+    if (isHeldByContinueAtReset(child, request)) {
+      return null;
+    }
     const error = end.error ?? "Its turn did not finish.";
     return settle(
       request,
@@ -172,6 +178,63 @@ export function childDeliveryForTurnEnd(input: {
     `The user stopped '${child.title}' before it finished.${partialAnswer(child, request)}`,
     end.turnId,
   );
+}
+
+/**
+ * Whether a parent's request is held open by the child's wait to continue
+ * after a usage limit (docs/design/lead-chat.md, "Usage limits"): the child
+ * waits to continue at the reset, and the request is `running` and answered
+ * by the turn that stopped on the limit. Only such a request is held: one
+ * waiting on background work (`awaiting_background`) follows its own path.
+ */
+export function isHeldByContinueAtReset(
+  child: OrchestrationThread,
+  request: ChildDeliveryRequest,
+): boolean {
+  const session = child.session;
+  return (
+    session !== null &&
+    (session.continueAtReset ?? null) !== null &&
+    request.status === "running" &&
+    request.childMessageId === failedTurnMessage(child)?.id
+  );
+}
+
+/**
+ * The message that started the child's last turn, not counting messages still
+ * waiting in its queue: an agent's message is written into the chat when it
+ * is queued, so the newest user message may not have run yet.
+ */
+export function failedTurnMessage(child: OrchestrationThread) {
+  const session = child.session;
+  if (session === null) return undefined;
+  const queued = new Set((child.queuedFollowUps ?? []).map((entry) => entry.messageId));
+  if (queued.size === 0) return turnStartingMessage(child, session);
+  return turnStartingMessage(
+    { ...child, messages: child.messages.filter((message) => !queued.has(message.id)) },
+    session,
+  );
+}
+
+/**
+ * A held request whose wait ended without its continue: it settles as it
+ * would have when its turn stopped, with why it did not go on.
+ */
+export function heldRequestEnded(
+  child: OrchestrationThread,
+  request: ChildDeliveryRequest,
+  outcome: "failed" | "stopped",
+  why: string,
+): Extract<ChildDelivery, { readonly type: "thread.child-request.settle" }> {
+  const text =
+    outcome === "stopped"
+      ? `The user stopped '${child.title}' while it waited for a usage limit to reset.`
+      : `'${child.title}' stopped on a usage limit and won't continue: ${why}`;
+  const delivery = settle(request, outcome, `${text}${partialAnswer(child, request)}`, null);
+  return {
+    ...(delivery as Extract<ChildDelivery, { readonly type: "thread.child-request.settle" }>),
+    ...(outcome === "failed" ? { error: why } : {}),
+  };
 }
 
 /**
