@@ -153,6 +153,7 @@ import {
 import {
   selectEnvironmentState,
   selectProjectsAcrossEnvironments,
+  selectSidebarThreadSummaryByRef,
   selectThreadDetailLoaded,
   selectThreadByRef,
   selectThreadExistsByRef,
@@ -161,6 +162,8 @@ import {
   useStore,
 } from "../store";
 import { readLeadProjectName } from "../leadChat";
+import { threadHasNewsForUser } from "./Sidebar.logic";
+import { readThreadScroll } from "../threadScrollMemory";
 import { FamilyTabs, useFamilyTabsShown } from "./chat/FamilyTabs";
 import { createProjectSelectorByRef, createThreadSelectorByRef } from "../storeSelectors";
 import { useUiStateStore } from "../uiStateStore";
@@ -1209,6 +1212,19 @@ export default function ChatView(props: ChatViewProps) {
     routeKind === "server"
       ? selectThreadSeenAt(store, routeThreadKey, serverThread?.lastSeenAt)
       : undefined,
+  );
+  // Something new to show in this thread, read before opening it marks it
+  // seen: then its chat opens at the end, not where it was left.
+  const activeThreadHasNews = useStore((store) => {
+    if (routeKind !== "server") return false;
+    const summary = selectSidebarThreadSummaryByRef(store, routeThreadRef);
+    return summary !== undefined && threadHasNewsForUser(summary, activeThreadSeenAt);
+  });
+  // Held stable: the timeline is memoized, and reads this only when it mounts.
+  const timelineScrollMemory = useMemo(
+    () =>
+      routeKind === "server" ? { threadKey: routeThreadKey, hasNews: activeThreadHasNews } : null,
+    [activeThreadHasNews, routeKind, routeThreadKey],
   );
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
@@ -4944,7 +4960,14 @@ export default function ChatView(props: ChatViewProps) {
     const isThreadEntry = layoutStickThreadIdRef.current !== activeThreadId;
     layoutStickThreadIdRef.current = activeThreadId;
     if (!activeThreadId) return;
-    if (isThreadEntry && timelineSearchTargetRef.current) return;
+    // Opening at a find target, or where the chat was left (the timeline read
+    // and kept or dropped that place as it rendered): not at the end.
+    if (
+      isThreadEntry &&
+      (timelineSearchTargetRef.current || readThreadScroll(routeThreadKey) !== null)
+    ) {
+      return;
+    }
     if (!isAtEndRef.current && !isLegendListVisiblyAtEnd(legendListRef.current)) {
       return;
     }
@@ -4978,6 +5001,7 @@ export default function ChatView(props: ChatViewProps) {
     infrastructureComposerNotices.length,
     providerSendPreflight,
     providerStatusNoticeVisible,
+    routeThreadKey,
     terminalState.terminalHeight,
     terminalState.terminalOpen,
     threadErrorNoticeVisible,
@@ -9020,6 +9044,7 @@ export default function ChatView(props: ChatViewProps) {
                   mcpAuthReconnectStatusByServerName={activeMcpAuthReconnectStatusByServerName}
                   onRunMcpAuthReconnect={runMcpAuthReconnect}
                   onIsAtEndChange={onIsAtEndChange}
+                  scrollMemory={timelineScrollMemory}
                   onVisibleTurnIdsChange={handleVisibleTurnIdsChange}
                   searchTarget={timelineSearchTarget}
                   planScrollTarget={planScrollTarget}

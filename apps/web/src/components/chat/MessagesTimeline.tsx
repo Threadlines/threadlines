@@ -156,6 +156,14 @@ import {
 } from "../../childThreads";
 import { selectEnvironmentState, useStore } from "../../store";
 import {
+  anchorFromListPlace,
+  forgetThreadScroll,
+  type InitialScroll,
+  initialScrollForThread,
+  readThreadScroll,
+  rememberThreadScroll,
+} from "../../threadScrollMemory";
+import {
   remoteChildStanding,
   remoteChildStatusText,
   resolveThreadStatusPill,
@@ -842,6 +850,13 @@ interface MessagesTimelineProps {
   mcpAuthReconnectStatusByServerName?: ReadonlyMap<string, McpAuthReconnectStatus>;
   onRunMcpAuthReconnect?: (action: McpAuthReconnectAction) => void;
   onIsAtEndChange: (isAtEnd: boolean) => void;
+  /**
+   * Remember where this chat was left and open it there next time
+   * (threadScrollMemory). `hasNews`: the thread has something new to show
+   * the user, so it opens at the end and its place is dropped. Absent: no
+   * memory (drafts).
+   */
+  scrollMemory?: { readonly threadKey: string; readonly hasNews: boolean } | null | undefined;
   /** The turns on screen and a few rows past either edge, reported as the
    *  reader scrolls; the chat fetches older turns' steps from it. */
   onVisibleTurnIdsChange?: ((turnIds: ReadonlyArray<TurnId>) => void) | undefined;
@@ -943,6 +958,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   mcpAuthReconnectStatusByServerName = EMPTY_MCP_AUTH_RECONNECT_STATUS,
   onRunMcpAuthReconnect: onRunMcpAuthReconnectProp,
   onIsAtEndChange,
+  scrollMemory = null,
   onVisibleTurnIdsChange,
   searchTarget = null,
   planScrollTarget = null,
@@ -1174,7 +1190,31 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         : -1,
     [rows, searchTarget],
   );
-  const initialAutoStickToBottom = searchTargetRowIndex < 0;
+  // Where this chat opens (threadScrollMemory), decided as it mounts, before
+  // opening it marks the thread seen. Something new to show drops the place.
+  const [opensAtRememberedPlace] = useState(() => {
+    if (scrollMemory === null) return false;
+    if (scrollMemory.hasNews) {
+      forgetThreadScroll(scrollMemory.threadKey);
+      return false;
+    }
+    return readThreadScroll(scrollMemory.threadKey) !== null;
+  });
+  // The remembered row, found once the rows are here; only the list's first
+  // mount opens there (a later remount is the end following itself).
+  const [rememberedScroll, setRememberedScroll] = useState<InitialScroll | null>(null);
+  if (opensAtRememberedPlace && rememberedScroll === null && rows.length > 0) {
+    setRememberedScroll(
+      initialScrollForThread({
+        threadKey: scrollMemory!.threadKey,
+        hasNews: false,
+        indexOfRowKey: (rowKey) => rows.findIndex((row) => row.id === rowKey),
+      }),
+    );
+  }
+  const initialAnchor =
+    searchTargetRowIndex < 0 && rememberedScroll?.kind === "anchor" ? rememberedScroll : null;
+  const initialAutoStickToBottom = searchTargetRowIndex < 0 && !opensAtRememberedPlace;
   const [autoStickToBottom, setAutoStickToBottom] = useState(initialAutoStickToBottom);
   const autoStickToBottomRef = useRef(initialAutoStickToBottom);
   const upwardScrollDetectorRef = useRef(createUpwardScrollDetector());
@@ -1183,6 +1223,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     null,
   );
   const [legendListEpoch, setLegendListEpoch] = useState(0);
+  // Where the list opens on this mount: a remembered row, or (null) the end
+  // or a find target. A rebuilt list (a later epoch) opens at the end.
+  const openingAnchor = legendListEpoch === 0 ? initialAnchor : null;
+  const opensAtAnchor = openingAnchor !== null;
   const lastHandledStickToBottomRequestKeyRef = useRef(stickToBottomRequestKey);
   const previousActiveTurnInProgressRef = useRef(activeTurnInProgress);
   const userScrollLockTimerRef = useRef<number | null>(null);
@@ -1225,6 +1269,51 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     }
     return estimateTimelineRowHeight(row, timelineWidthRef.current);
   }, []);
+
+  // The remembered row was gone: the chat opens at the end, following it.
+  useLayoutEffect(() => {
+    if (rememberedScroll?.kind === "end" && searchTargetRowIndex < 0) {
+      setAutoStickToBottomState(true);
+    }
+  }, [rememberedScroll, searchTargetRowIndex, setAutoStickToBottomState]);
+
+  // Where the chat was when it is left, read once from the list then: the
+  // anchor, or nothing at the end. Nothing is written while scrolling.
+  const scrollMemoryKey = scrollMemory?.threadKey ?? null;
+  useLayoutEffect(() => {
+    if (scrollMemoryKey === null) return;
+    return () => {
+      // Runs once, when the timeline is left. The list is read then, not
+      // when this ran: a pinned list is rebuilt when a turn settles, and an
+      // emptied chat has none. Layout cleanups run before the list leaves
+      // the page, so its rows are still drawn. The offset is read from the
+      // screen, not from the list's positions, which leave out its header
+      // and padding.
+      const list = listRef.current;
+      const state = list?.getState?.();
+      const node = list?.getScrollableNode?.();
+      if (!state || !(node instanceof HTMLElement)) {
+        forgetThreadScroll(scrollMemoryKey);
+        return;
+      }
+      const firstRowKey = (state.data[state.start] as MessagesTimelineRow | undefined)?.id;
+      const rowElement =
+        firstRowKey === undefined
+          ? null
+          : node.querySelector<HTMLElement>(`[data-timeline-row-id="${CSS.escape(firstRowKey)}"]`);
+      rememberThreadScroll(
+        scrollMemoryKey,
+        anchorFromListPlace({
+          isAtEnd: state.isAtEnd,
+          firstRowKey,
+          viewTopBelowRowTop:
+            rowElement === null
+              ? undefined
+              : node.getBoundingClientRect().top - rowElement.getBoundingClientRect().top,
+        }),
+      );
+    };
+  }, [listRef, scrollMemoryKey]);
 
   const assignLegendListRef = useCallback(
     (instance: LegendListRef | null) => {
@@ -1799,7 +1888,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   ]);
 
   useEffect(() => {
-    if (!legendListReady || !hasRows || searchTargetRowIndex >= 0) {
+    if (!legendListReady || !hasRows || searchTargetRowIndex >= 0 || opensAtAnchor) {
       return;
     }
 
@@ -1811,6 +1900,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     hasRows,
     legendListEpoch,
     legendListReady,
+    opensAtAnchor,
     routeThreadKey,
     searchTargetRowIndex,
     stickToBottomUnlessHeld,
@@ -2121,10 +2211,17 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                     renderItem={renderItem}
                     estimatedItemSize={90}
                     getEstimatedItemSize={getEstimatedItemSize}
-                    initialScrollAtEnd={searchTargetRowIndex < 0}
+                    initialScrollAtEnd={searchTargetRowIndex < 0 && !opensAtAnchor}
                     {...(searchTargetRowIndex >= 0
                       ? { initialScrollIndex: { index: searchTargetRowIndex, viewPosition: 0.35 } }
-                      : {})}
+                      : openingAnchor !== null
+                        ? {
+                            initialScrollIndex: {
+                              index: openingAnchor.index,
+                              viewOffset: -openingAnchor.offsetPx,
+                            },
+                          }
+                        : {})}
                     maintainScrollAtEnd={
                       searchTargetRowIndex < 0 &&
                       ((autoStickToBottom && !listHeld) || stickToBottomRequestPending)
