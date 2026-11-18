@@ -1167,6 +1167,13 @@ export type ThreadNativeSessionFellBackPayload = typeof ThreadNativeSessionFellB
 /** A thread that moved here from another computer, and where it came from. */
 export const ThreadMovedFrom = Schema.Struct({
   environmentId: EnvironmentId,
+  /**
+   * `environmentId` is the computer the link it came over was made for
+   * (pinned by the invite this server made), not only what the sending
+   * computer said. Absent: unconfirmed, so while it is fenced it moves
+   * nowhere (docs/design/fleet.md, Part 3f, (h)).
+   */
+  environmentPinned: Schema.optional(Schema.Literal(true)),
   label: TrimmedNonEmptyString,
   threadId: ThreadId,
   movedAt: IsoDateTime,
@@ -5622,9 +5629,22 @@ const ThreadImportCommand = Schema.Struct({
    * (docs/design/fleet.md, Part 3f, (h)): it lands as `parentThreadId`'s
    * child here, and that parent stops keeping it as a child on the computer
    * it came from. Only when the parent here already holds exactly this
-   * thread there (`movedFrom`) as its child.
+   * thread there (`movedFrom`) as its child, or (`completesMoveOf`) when the
+   * thread it moved over from is the parent's child here whose own move to
+   * that computer still waits for that computer's answer, and it is the
+   * very copy that move made there: its id is the one that move's transfer
+   * gives it there, from this computer's device on that computer
+   * (`deviceId`, linkMoveCopyThreadId). It came back before this computer
+   * heard its move had landed, so that move completes in the same decision.
    */
-  adopt: Schema.optional(Schema.Struct({ parentThreadId: ThreadId })),
+  adopt: Schema.optional(
+    Schema.Struct({
+      parentThreadId: ThreadId,
+      completesMoveOf: Schema.optional(
+        Schema.Struct({ threadId: ThreadId, deviceId: TrimmedNonEmptyString }),
+      ),
+    }),
+  ),
   /**
    * What the "Moved here" line says came along (`brought`) and didn't
    * (`left`), in plain words, and the message Threadlines writes for the

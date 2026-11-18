@@ -49,6 +49,7 @@ import { liveSideTurns } from "@threadlines/shared/sideTurns";
 import { isValidParticipantId } from "@threadlines/shared/threadParticipants";
 
 import { arrivalMessageText, resumedGoalMessageText } from "../moves/arrivalMessage.ts";
+import { linkMoveCopyThreadId } from "../moves/linkMoveIds.ts";
 import { decideAgentChainStop } from "./agentRequestDecisions.ts";
 import { derivedUuid } from "./childRequestIds.ts";
 import { cameHomeEvents, leftBehindEvents, movedAloneEvents } from "./childThreadDecisions.ts";
@@ -412,20 +413,32 @@ export function threadMoveRefusals(
       sendable: thread.queuedFollowUps ?? [],
     }),
   );
-  // Another thread at work in the same checkout could change the files while
-  // they are being packed. One frozen for its own move can't: its agent is
-  // stopped, and nothing it holds (a plan, a queue) runs while it moves.
-  const checkout = checkoutOf(readModel, thread);
-  const sharedCheckoutBusy = readModel.threads.some(
-    (candidate) =>
-      candidate.id !== thread.id &&
-      candidate.deletedAt === null &&
-      (candidate.move ?? null) === null &&
-      checkoutOf(readModel, candidate) === checkout &&
-      busyInFolder(candidate),
-  );
-  if (sharedCheckoutBusy) found.push(wait("shared_checkout"));
+  if (sharedCheckoutBusyThreads(readModel, thread).length > 0) found.push(wait("shared_checkout"));
   return found;
+}
+
+/**
+ * The other threads at work in `thread`'s checkout (the `shared_checkout`
+ * wait): they could change the files while they are being packed. One
+ * frozen for its own move can't: its agent is stopped, and nothing it holds
+ * (a plan, a queue) runs while it moves. The move queue looks again when
+ * any of them changes.
+ */
+export function sharedCheckoutBusyThreads(
+  readModel: ThreadMoveView,
+  thread: OrchestrationThread,
+): ReadonlyArray<ThreadId> {
+  const checkout = checkoutOf(readModel, thread);
+  return readModel.threads
+    .filter(
+      (candidate) =>
+        candidate.id !== thread.id &&
+        candidate.deletedAt === null &&
+        (candidate.move ?? null) === null &&
+        checkoutOf(readModel, candidate) === checkout &&
+        busyInFolder(candidate),
+    )
+    .map((candidate) => candidate.id);
 }
 
 /**
@@ -556,8 +569,10 @@ export function remoteOriginMoveRefusal(
  * Why a thread a move brought here, still behind the fence (`movedFrom.fenced`:
  * no person here has sent it a message yet), can't move to `target`, or null
  * (docs/design/fleet.md, Part 3f, (h)): it goes back to the computer it came
- * from, and nowhere else. Once a person here takes it over, the usual rules
- * hold. A null `target` asks about any computer: the dialog says per computer.
+ * from, and nowhere else. Over a link that never proved which computer that
+ * is (`environmentPinned`), where it came from is only the sender's word, so
+ * it goes nowhere. Once a person here takes it over, the usual rules hold. A
+ * null `target` asks about any computer: the dialog says per computer.
  */
 export function fencedMoveRefusal(
   thread: Pick<OrchestrationThread, "movedFrom">,
@@ -565,6 +580,9 @@ export function fencedMoveRefusal(
 ): string | null {
   const from = thread.movedFrom ?? null;
   if (from === null || from.fenced !== true || target === null) return null;
+  if (from.environmentPinned !== true) {
+    return `This thread moved here from ${from.label}, and this computer's link can't confirm which computer that is, so it stays here until you send it a message.`;
+  }
   return target.environmentId === from.environmentId ? null : fencedElsewhereWords(from.label);
 }
 
@@ -1472,6 +1490,27 @@ export function decideMoveComplete(
   const move = currentMove(thread, command.transferId);
   if (move === null) return refuse("This thread isn't moving.");
   if (move.movedAway !== undefined) return [];
+  return moveCompleteEvents(readModel, thread, move, command, baseFor);
+}
+
+/**
+ * decideMoveComplete's events for a move under way. Also what an import
+ * that proves a lone child's move landed records for it (`completesMoveOf`):
+ * the thread came back before this computer heard (`returned: "adopted"`).
+ * A lone child whose moved thread is already back here never becomes the
+ * parent's child on that computer, whichever came first.
+ */
+function moveCompleteEvents(
+  readModel: OrchestrationReadModel,
+  thread: OrchestrationThread,
+  move: OrchestrationThreadMove,
+  command: Pick<
+    CommandOf<"thread.move.complete">,
+    "transferId" | "movedThreadId" | "keptParent" | "createdAt"
+  >,
+  baseFor: EventBase,
+  returned?: "adopted",
+): PlannedEvent[] {
   const familyId = move.family?.id;
   const comesAlong = (child: OrchestrationThread) =>
     familyId !== undefined &&
@@ -1510,11 +1549,53 @@ export function decideMoveComplete(
             target: move.target,
             threadId: command.movedThreadId,
             keptParent: command.keptParent === true,
+            returned:
+              returned ??
+              (cameBackFrom(readModel, move.target.environmentId, command.movedThreadId)
+                ? "own"
+                : undefined),
           },
           command.createdAt,
         )
       : []),
   ];
+}
+
+/**
+ * Whether the thread `threadId` on `environmentId` has since moved here.
+ * One deleted since still came back: that computer's copy is read-only.
+ */
+const cameBackFrom = (
+  readModel: Pick<OrchestrationReadModel, "threads">,
+  environmentId: string,
+  threadId: string,
+) =>
+  readModel.threads.some(
+    (entry) =>
+      entry.movedFrom?.environmentId === environmentId && entry.movedFrom.threadId === threadId,
+  );
+
+/**
+ * Whether `thread` is `parentThreadId`'s child here moving on its own
+ * (docs/design/fleet.md, Part 3f, (h)) to `environmentId`, with that
+ * computer's answer still to come: the move a thread coming back from there
+ * can complete (`thread.import`'s `adopt.completesMoveOf`).
+ */
+export function awaitsLoneMoveAnswer(
+  thread: Pick<OrchestrationThread, "deletedAt" | "parentThreadId" | "attachedToParent" | "move">,
+  parentThreadId: ThreadId,
+  environmentId: string,
+): boolean {
+  const move = thread.move ?? null;
+  return (
+    thread.deletedAt === null &&
+    thread.parentThreadId === parentThreadId &&
+    thread.attachedToParent &&
+    move !== null &&
+    move.family === undefined &&
+    move.movedAway === undefined &&
+    move.target.environmentId === environmentId
+  );
 }
 
 /**
@@ -1762,6 +1843,25 @@ export function decideThreadImport(
           { environmentId: command.movedFrom.environmentId, threadId: command.movedFrom.threadId },
           command.createdAt,
         );
+  // Its arrival proves the move it left on landed there: that move completes
+  // now, unless its answer already did (the parent then held it, above).
+  const returned =
+    adoptedBy === undefined ? null : returnCompletes(readModel, command, adoptedBy.id);
+  const completed =
+    returned === null
+      ? []
+      : moveCompleteEvents(
+          readModel,
+          returned.thread,
+          returned.move,
+          {
+            transferId: returned.move.transferId,
+            movedThreadId: command.movedFrom.threadId,
+            createdAt: command.createdAt,
+          },
+          baseFor,
+          "adopted",
+        );
   return [
     created,
     ...room,
@@ -1770,6 +1870,7 @@ export function decideThreadImport(
     ...importedState(command, base),
     boundary,
     ...cameHome,
+    ...completed,
   ];
 }
 
@@ -1826,7 +1927,38 @@ function importedLinkLineageRefusal(
       entry.environmentId === command.movedFrom.environmentId &&
       entry.threadId === command.movedFrom.threadId,
   );
-  return held ? null : "The thread that started it doesn't hold this thread.";
+  if (held) return null;
+  // Back before this computer heard its move there landed. Had the answer
+  // landed first, the parent holds it (above).
+  return returnCompletes(readModel, command, parent.id) !== null
+    ? null
+    : "The thread that started it doesn't hold this thread.";
+}
+
+/**
+ * The move an import coming home completes (`adopt.completesMoveOf`), or
+ * null: the thread it moved over from is still `parentThreadId`'s child
+ * here, moving alone to exactly the computer it comes from with that
+ * computer's answer still to come, and the import is the very copy that
+ * move made there (its id is the one the transfer gives it there, from this
+ * computer's device on that computer). Anything else could put another
+ * thread under the parent, or end a move that never landed.
+ */
+function returnCompletes(
+  readModel: Pick<OrchestrationReadModel, "threads">,
+  command: CommandOf<"thread.import">,
+  parentThreadId: ThreadId,
+): { readonly thread: OrchestrationThread; readonly move: OrchestrationThreadMove } | null {
+  const completes = command.adopt?.completesMoveOf;
+  if (completes === undefined) return null;
+  const thread = readModel.threads.find((entry) => entry.id === completes.threadId);
+  const move = thread?.move ?? null;
+  return thread !== undefined &&
+    move !== null &&
+    awaitsLoneMoveAnswer(thread, parentThreadId, command.movedFrom.environmentId) &&
+    linkMoveCopyThreadId(completes.deviceId, move.transferId) === command.movedFrom.threadId
+    ? { thread, move }
+    : null;
 }
 
 /**

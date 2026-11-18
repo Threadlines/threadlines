@@ -59,6 +59,8 @@ import {
 import { RelayDeviceRepository } from "../relay/RelayDeviceRepository.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
+import { linkMoveCopyThreadId } from "../moves/linkMoveIds.ts";
+import { ComputerLinkRepository } from "./ComputerLinkRepository.ts";
 import { LinkMoveRepository, LinkMoveRepositoryLive } from "./LinkMoveRepository.ts";
 import {
   binaryPatchBytes,
@@ -176,6 +178,8 @@ interface CarryRecord {
   readonly shell?: () => OrchestrationThreadShell | undefined;
   /** The computer the link was made for, when its invite pinned it. */
   readonly pinnedEnvironmentId?: string;
+  /** This computer's device on that computer (its own link there), when it has one. */
+  readonly deviceThere?: string;
   /** The link's name for that computer here (its device row). */
   readonly linkLabel?: string;
   /** Threads already here, as their rows read. */
@@ -195,6 +199,14 @@ function testLayer(
     Layer.provideMerge(LinkMoveRepositoryLive),
     Layer.provideMerge(
       Layer.mergeAll(
+        Layer.mock(ComputerLinkRepository)({
+          getByEnvironment: () =>
+            Effect.succeed(
+              carry.deviceThere === undefined
+                ? Option.none()
+                : Option.some({ deviceId: carry.deviceThere } as never),
+            ),
+        }),
         Layer.mock(LinkRequests)({
           authority: () =>
             Effect.succeed(
@@ -2008,12 +2020,17 @@ describe("a thread moving across its link (Part 3f, (h))", () => {
     repos: ReturnType<typeof makeRepos>,
     dispatched: OrchestrationCommand[],
     lineage: MoveExportInput["linkLineage"],
-    carry: Partial<CarryRecord> & { readonly sourceEnvironmentId?: EnvironmentId } = {},
+    carry: Partial<CarryRecord> & {
+      readonly sourceEnvironmentId?: EnvironmentId;
+      /** The thread it is on the computer it leaves. */
+      readonly sourceThreadId?: ThreadId;
+    } = {},
   ) =>
     Effect.gen(function* () {
       const packed = yield* pack(repos, null, undefined, {
         linkLineage: lineage,
         sourceEnvironmentId: carry.sourceEnvironmentId,
+        ...(carry.sourceThreadId !== undefined ? { threadId: carry.sourceThreadId } : {}),
         // What the move says it is called never names anything here.
         sourceLabel: "Not Windows",
       });
@@ -2048,6 +2065,7 @@ describe("a thread moving across its link (Part 3f, (h))", () => {
         threadTitle: "Ship it",
       });
       assert.equal(imported.movedFrom.environmentId, WINDOWS);
+      assert.equal(imported.movedFrom.environmentPinned, true);
       assert.isUndefined(imported.lineage);
       assert.isUndefined(imported.adopt);
     });
@@ -2063,6 +2081,8 @@ describe("a thread moving across its link (Part 3f, (h))", () => {
       assert.equal(plain.status, "committed");
       assert.isUndefined(plain.keptParent);
       assert.isUndefined(importOf(first).remoteOrigin);
+      // Where it came from is only the move's word: its fence lets it go nowhere.
+      assert.isUndefined(importOf(first).movedFrom.environmentPinned);
       assert.include(
         importOf(first).arrival?.left ?? [],
         "This computer can't confirm its link to Windows PC, so this is its own thread and 'Ship it' there can't reach it.",
@@ -2075,6 +2095,9 @@ describe("a thread moving across its link (Part 3f, (h))", () => {
       assert.equal(lied.status, "committed");
       assert.isUndefined(lied.keptParent);
       assert.isUndefined(importOf(second).remoteOrigin);
+      // It came from the computer the link was made for, whatever the move says.
+      assert.equal(importOf(second).movedFrom.environmentId, WINDOWS);
+      assert.equal(importOf(second).movedFrom.environmentPinned, true);
     });
   });
 
@@ -2091,6 +2114,63 @@ describe("a thread moving across its link (Part 3f, (h))", () => {
       assert.isUndefined(imported.remoteOrigin);
     });
   });
+
+  it.live(
+    "comes home under its parent when its move here still waits for this computer's answer",
+    () => {
+      const LEFT = ThreadId.make("thread-left-here");
+      /** The parent's child here, frozen for its own move (alone) to `environmentId`. */
+      const leftHere = (environmentId: string, movedAway = false) => ({
+        threadId: LEFT,
+        projectId: ProjectId.make("project-b"),
+        deletedAt: null,
+        parentThreadId: PARENT_HERE,
+        attachedToParent: 1,
+        pendingMove: null,
+        move: {
+          transferId: "transfer-left",
+          target: { environmentId, label: "Windows PC" },
+          ...(movedAway
+            ? { movedAway: { threadId: "thread-a", movedAt: "2026-11-17T10:00:00.000Z" } }
+            : {}),
+        },
+      });
+      const back = { home: { parentThreadId: PARENT_HERE, fromThreadId: LEFT } };
+      // This computer's device on Windows PC, which named the copy that move made there.
+      const DEVICE_THERE = "device-mac-on-windows";
+      const copy = linkMoveCopyThreadId(DEVICE_THERE, "transfer-left");
+      const completes = {
+        parentThreadId: PARENT_HERE,
+        completesMoveOf: { threadId: LEFT, deviceId: DEVICE_THERE },
+      };
+      const cases = [
+        { left: leftHere(WINDOWS), source: copy, adopt: completes },
+        // Another thread there, naming the child here: never under the parent.
+        { left: leftHere(WINDOWS), source: ThreadId.make("thread-a"), adopt: undefined },
+        // No link of this computer's own there to name the copy by.
+        { left: leftHere(WINDOWS), source: copy, deviceThere: null, adopt: undefined },
+        // Moving to another computer, or already heard to have landed: its own thread.
+        { left: leftHere("environment-mac"), source: copy, adopt: undefined },
+        { left: leftHere(WINDOWS, true), source: copy, adopt: undefined },
+      ];
+      return Effect.forEach(cases, ({ left, source, adopt, ...rest }) => {
+        const repos = makeRepos();
+        const dispatched: OrchestrationCommand[] = [];
+        return moved(repos, dispatched, back, {
+          pinnedEnvironmentId: WINDOWS,
+          sourceThreadId: source,
+          ...("deviceThere" in rest ? {} : { deviceThere: DEVICE_THERE }),
+          // The parent holds nothing there yet: this computer hasn't heard.
+          threadsHere: [parentHere(WINDOWS, "thread-other"), left],
+        }).pipe(
+          Effect.map((state) => {
+            assert.equal(state.status, "committed");
+            assert.deepEqual(importOf(dispatched).adopt, adopt);
+          }),
+        );
+      });
+    },
+  );
 
   it.live("a home claim this computer's records don't back lands as its own thread", () => {
     const cases = [

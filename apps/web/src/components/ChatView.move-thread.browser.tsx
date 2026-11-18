@@ -1221,9 +1221,16 @@ describe("ChatView (full app): moving a thread to another computer", () => {
         }),
       );
 
-      // The whole family: the parent is queued, with every thread it started.
+      // The whole family: the parent is queued, with every thread it started,
+      // each with the agent that computer suggests, so there's no agent to pick.
       dialog = await openDialog();
+      await expect.element(dialog.getByTestId("thread-move-agent")).toBeInTheDocument();
       await dialog.getByTestId("thread-move-child-family").click();
+      await expect.element(dialog.getByTestId("thread-move-agent")).not.toBeInTheDocument();
+      await expect.element(dialog.getByTestId("thread-move-session")).not.toBeInTheDocument();
+      await expect
+        .element(dialog.getByTestId("thread-move-family-agents"))
+        .toHaveTextContent("Each thread uses the agent Mac mini suggests for it.");
       await dialog.getByTestId("thread-move-confirm").click();
       await expect.element(page.getByTestId("thread-move-dialog")).not.toBeInTheDocument();
       expect(queues.at(-1)).toEqual({

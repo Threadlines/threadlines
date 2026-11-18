@@ -111,6 +111,9 @@ import { generalChatThreadScratchCwd } from "../orchestration/generalChats.ts";
 import { clampLaunchToCeiling } from "../orchestration/childThreadDecisions.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ComputerLinkRepository } from "./ComputerLinkRepository.ts";
+import { linkMoveCopyThreadId, linkMoveKey, linkMoveThreadId } from "../moves/linkMoveIds.ts";
+import { awaitsLoneMoveAnswer } from "../orchestration/threadMoveDecisions.ts";
 import { ProjectionThreadRepository } from "../persistence/Services/ProjectionThreads.ts";
 import { discardSessionFiles, releaseSessionFiles } from "../provider/nativeSession.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
@@ -233,13 +236,7 @@ interface FamilyLanding {
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
-/** hash(link, transfer): every resource a move makes here is named from it. */
-export const linkMoveKey = (linkDeviceId: string, transferId: string) =>
-  createHash("sha256").update(`${linkDeviceId}\u0000${transferId}`).digest("hex");
-
-/** The thread a move becomes here. */
-export const linkMoveThreadId = (transferKey: string) =>
-  ThreadId.make(derivedUuid("link-move-thread", transferKey));
+export { linkMoveKey, linkMoveThreadId } from "../moves/linkMoveIds.ts";
 
 /**
  * hash(link, family id): a family's key here (docs/design/fleet.md, Part 3f,
@@ -599,6 +596,8 @@ const make = Effect.gen(function* () {
   const engine = yield* OrchestrationEngineService;
   const snapshots = yield* ProjectionSnapshotQuery;
   const threadRows = yield* ProjectionThreadRepository;
+  // This computer's own links to others: its device on each (a copy's id there).
+  const outboundLinks = yield* ComputerLinkRepository;
   const git = yield* GitVcsDriver;
   const config = yield* ServerConfig;
   const devices = yield* RelayDeviceRepository;
@@ -2322,7 +2321,11 @@ const make = Effect.gen(function* () {
    * - A thread coming home (`home`) lands under the parent here only when
    *   that parent holds exactly this thread, on exactly the computer this
    *   link was made for, as its child: a linked computer can never put a
-   *   thread under one of this computer's own.
+   *   thread under one of this computer's own. Or when it came back before
+   *   this computer heard its move there landed: the thread it moved over
+   *   from (`fromThreadId`) is still that parent's child here, moving alone
+   *   to exactly that computer, so it lands under the parent and that move
+   *   completes (`completesMoveOf`).
    *
    * Anything else lands as a thread of its own, with the "Moved here" words
    * saying why (`left`).
@@ -2357,7 +2360,7 @@ const make = Effect.gen(function* () {
           threadId: remoteParent.threadId,
           threadTitle: remoteParent.title,
         };
-        return { remoteOrigin, environmentId: home };
+        return { remoteOrigin };
       }
       const parentThreadId = lineage.home?.parentThreadId;
       if (parentThreadId === undefined) return {};
@@ -2365,25 +2368,68 @@ const make = Effect.gen(function* () {
         left: "The thread that started it isn't on this computer anymore, so this is its own thread.",
       };
       if (home === null) return own;
-      const found = yield* threadRows
-        .getById({ threadId: parentThreadId })
-        .pipe(
+      const read = (threadId: ThreadId) =>
+        threadRows.getById({ threadId }).pipe(
+          Effect.map(Option.getOrUndefined),
           Effect.mapError(
             () => new ImportStop({ reason: `${ownLabel()} couldn't read its threads.` }),
           ),
         );
-      const parent = Option.getOrUndefined(found);
-      const holds =
+      // The thread it moved over from first, then the parent: its move's
+      // answer lands on both in one decision, so a parent read after a
+      // move that still waited either still waits or already holds it.
+      const fromThreadId = lineage.home?.fromThreadId;
+      const left = fromThreadId === undefined ? undefined : yield* read(fromThreadId);
+      const awaiting =
+        left !== undefined &&
+        awaitsLoneMoveAnswer(
+          {
+            deletedAt: left.deletedAt,
+            parentThreadId: left.parentThreadId ?? null,
+            attachedToParent: (left.attachedToParent ?? 0) > 0,
+            move: left.move ?? null,
+          },
+          parentThreadId,
+          home,
+        );
+      const parent = yield* read(parentThreadId);
+      const canAdopt =
         parent !== undefined &&
         parent.deletedAt === null &&
         (parent.move ?? null) === null &&
         (parent.pendingMove ?? null) === null &&
         !((parent.parentThreadId ?? null) !== null && (parent.attachedToParent ?? 0) > 0) &&
-        parent.projectId === projectId &&
-        (parent.childRequests?.remoteChildren ?? []).some(
-          (entry) => entry.environmentId === home && entry.threadId === source.threadId,
-        );
-      return holds ? { adopt: { parentThreadId }, environmentId: home } : own;
+        parent.projectId === projectId;
+      if (!canAdopt) return own;
+      const holds = (parent.childRequests?.remoteChildren ?? []).some(
+        (entry) => entry.environmentId === home && entry.threadId === source.threadId,
+      );
+      if (holds) return { adopt: { parentThreadId } };
+      // Back before this computer heard its move there landed: the parent's
+      // child here whose own move to that computer still waits for the
+      // answer, and this is the copy that move made there (its id is the
+      // transfer's, from this computer's device there). Should the answer
+      // land before the import, the decider finds the parent holding it.
+      const leftMove = left?.move ?? null;
+      if (!awaiting || fromThreadId === undefined || leftMove === null) return own;
+      const there = Option.getOrUndefined(
+        yield* outboundLinks
+          .getByEnvironment(home)
+          .pipe(
+            Effect.mapError(
+              () => new ImportStop({ reason: `${ownLabel()} couldn't read its links.` }),
+            ),
+          ),
+      );
+      return there !== undefined &&
+        linkMoveCopyThreadId(there.deviceId, leftMove.transferId) === source.threadId
+        ? {
+            adopt: {
+              parentThreadId,
+              completesMoveOf: { threadId: fromThreadId, deviceId: there.deviceId },
+            },
+          }
+        : own;
     });
 
   /**
@@ -2662,7 +2708,14 @@ const make = Effect.gen(function* () {
           branch: scratch ? null : row.branch,
           worktreePath: scratch ? null : row.worktreePath,
           movedFrom: {
-            environmentId: across.environmentId ?? row.manifest.source.environmentId,
+            // The computer this link was made for, when its invite pinned
+            // it; else only what the move says (Part 3f, (h)).
+            ...(authority.pinnedEnvironmentId !== null
+              ? {
+                  environmentId: EnvironmentId.make(authority.pinnedEnvironmentId),
+                  environmentPinned: true as const,
+                }
+              : { environmentId: row.manifest.source.environmentId }),
             label: fromLabel,
             threadId: row.manifest.source.threadId,
             movedAt: now,

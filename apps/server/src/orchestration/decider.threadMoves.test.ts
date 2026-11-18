@@ -34,6 +34,7 @@ import {
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vite-plus/test";
 
+import { linkMoveCopyThreadId } from "../moves/linkMoveIds.ts";
 import { decideOrchestrationCommand } from "./decider.ts";
 import { createEmptyReadModel, projectEvent } from "./projector.ts";
 import { isLinkFenced } from "./linkFence.ts";
@@ -1773,7 +1774,7 @@ describe("a moved thread that moves on, or edits its goal before its agent knows
       interactionMode: "default",
       branch: "fix/flaky",
       worktreePath: "/worktrees/moved-3",
-      movedFrom: { ...MAC_MINI, threadId: THREAD, movedAt: now },
+      movedFrom: { ...MAC_MINI, environmentPinned: true, threadId: THREAD, movedAt: now },
       messages: [],
       activities: [],
       createdAt: now,
@@ -2822,7 +2823,9 @@ describe("across the link: a child alone, and a thread going home (Part 3f, (h))
   const CHILD = ThreadId.make("thread-lone-child");
   const CHILD_REQUEST = ThreadMoveRequestId.make("request-lone-child");
   const CHILD_TRANSFER = ThreadMoveId.make("transfer-lone-child");
-  const THERE = ThreadId.make("thread-there");
+  /** This computer's device on Mac mini: the copy its move makes there is named from it. */
+  const DEVICE_THERE = "device-here-on-mac-mini";
+  const THERE = linkMoveCopyThreadId(DEVICE_THERE, CHILD_TRANSFER);
   const TAKES: ThreadMoveTakes = { threadState: true, families: true, linkLineage: true };
   const OLD_TAKES: ThreadMoveTakes = { threadState: true, families: true };
   const THIRD = { environmentId: EnvironmentId.make("environment-third"), label: "Linux box" };
@@ -3014,6 +3017,23 @@ describe("across the link: a child alone, and a thread going home (Part 3f, (h))
       text: "All green",
       fromThread: { threadId: THERE, environmentId: MAC_MINI.environmentId, kind: "report" },
     });
+  });
+
+  it("a parent's message never lands on a child its own move is already stopping", async () => {
+    let model = await parentWorking(await withChild(await seeded()));
+    ({ model } = await apply(model, queueFor(CHILD)));
+    ({ model } = await apply(model, {
+      type: "thread.move.quiesce",
+      commandId: nextCommandId(),
+      threadId: CHILD,
+      requestId: CHILD_REQUEST,
+      createdAt: now,
+    }));
+    expect(threadOf(model, CHILD).pendingMove?.stage).toBe("quiescing");
+    // Its queue no longer drains: the move would wait on it, and the parent on the answer.
+    expect(
+      (await apply(model, sendTo(CHILD, ChildRequestId.make("r-stopping")))).refusal,
+    ).toContain("That thread is moving to Mac mini. Send it the message once it's there.");
   });
 
   it("a child that arrived as its own thread there leaves the family, and nothing records it there", async () => {
@@ -3264,6 +3284,37 @@ describe("across the link: a child alone, and a thread going home (Part 3f, (h))
         } as OrchestrationCommand)
       ).model;
 
+    it("takes no message from its parent there once its move home is stopping it", async () => {
+      let model = await startedThere();
+      const fromParent = (messageId: string): OrchestrationCommand => ({
+        type: "thread.remote-request.queue",
+        commandId: nextCommandId(),
+        threadId: CHILD,
+        messageId: MessageId.make(messageId),
+        text: "Run the tests again",
+        fromThread: {
+          threadId: ThreadId.make("thread-on-mac"),
+          requestId: ChildRequestId.make(`request-${messageId}`),
+          kind: "request",
+          environmentId: MAC_MINI.environmentId,
+        },
+        createdAt: now,
+      });
+      ({ model } = await apply(model, queueFor(CHILD)));
+      // While it waits, a message still drains.
+      expect((await apply(model, fromParent("m-waiting"))).refusal).toBeNull();
+      ({ model } = await apply(model, {
+        type: "thread.move.quiesce",
+        commandId: nextCommandId(),
+        threadId: CHILD,
+        requestId: CHILD_REQUEST,
+        createdAt: now,
+      }));
+      expect((await apply(model, fromParent("m-stopping"))).refusal).toContain(
+        "That thread is moving to Mac mini. Send it the message once it's there.",
+      );
+    });
+
     it("moves only back to that computer, over a link that proved it, never to a third", async () => {
       const model = await startedThere();
       expect((await apply(model, queueFor(CHILD, TAKES, THIRD))).refusal).toContain(
@@ -3309,7 +3360,7 @@ describe("across the link: a child alone, and a thread going home (Part 3f, (h))
         interactionMode: "default",
         branch: "fix/tests",
         worktreePath: `/worktrees/${ARRIVED}`,
-        movedFrom: { ...from, threadId: SOURCE, movedAt: now },
+        movedFrom: { ...from, environmentPinned: true, threadId: SOURCE, movedAt: now },
         messages: [],
         activities: [],
         createdAt: now,
@@ -3500,6 +3551,141 @@ describe("across the link: a child alone, and a thread going home (Part 3f, (h))
           (entry) => entry.kind === "blocked",
         ),
       ).toEqual([]);
+    });
+
+    it("over a link that never proved its computer, a fenced thread moves nowhere, not even back", async () => {
+      const { model } = await apply(await seeded(), {
+        ...importFrom(MAC_MINI),
+        movedFrom: { ...MAC_MINI, threadId: SOURCE, movedAt: now },
+      } as OrchestrationCommand);
+      const unconfirmed =
+        "This thread moved here from Mac mini, and this computer's link can't confirm which computer that is, so it stays here until you send it a message.";
+      expect((await apply(model, queueFor(ARRIVED, TAKES))).refusal).toContain(unconfirmed);
+      expect((await apply(model, queueFor(ARRIVED, TAKES, THIRD))).refusal).toContain(unconfirmed);
+      // A person here takes it over: then it may go.
+      const taken = (await apply(model, personSends(ARRIVED))).model;
+      expect((await apply(taken, queueFor(ARRIVED, TAKES, THIRD))).refusal).toBeNull();
+    });
+
+    describe("back before this computer heard its move there landed", () => {
+      /** The child's own move to Mac mini, still waiting for the answer; it became THERE. */
+      const backFromThere = (extra: Record<string, unknown> = {}) =>
+        ({
+          ...importFrom(MAC_MINI, extra),
+          movedFrom: { ...MAC_MINI, environmentPinned: true, threadId: THERE, movedAt: now },
+        }) as OrchestrationCommand;
+      const completesChild = {
+        adopt: {
+          parentThreadId: THREAD,
+          completesMoveOf: { threadId: CHILD, deviceId: DEVICE_THERE },
+        },
+      };
+
+      it("lands under its parent, and the move it left on completes then", async () => {
+        const moving = await movedAlone(await asked(await withChild(await seeded())));
+        let { model, refusal } = await apply(moving, backFromThere(completesChild));
+        expect(refusal).toBeNull();
+        expect(threadOf(model, ARRIVED)).toMatchObject({
+          parentThreadId: THREAD,
+          attachedToParent: true,
+        });
+        const left = threadOf(model, CHILD);
+        expect(left.move?.movedAway).toBeDefined();
+        expect(left.attachedToParent).toBe(false);
+        expect(left.activities.at(-1)?.summary).toBe(
+          "It moved to Mac mini and back, and is still a thread of 'Fix the flaky test' here.",
+        );
+        const parent = threadOf(model);
+        expect(parent.childRequests.remoteChildren ?? []).toEqual([]);
+        expect(parent.childRequests.open).toEqual([]);
+        expect(parent.childRequests.pendingNotes.at(-1)?.text).toContain(
+          "moved to Mac mini and back before it answered",
+        );
+        // The answer this computer was still waiting for comes late: nothing changes.
+        ({ model } = await apply(model, complete(true)));
+        expect(threadOf(model).childRequests.remoteChildren ?? []).toEqual([]);
+        expect(threadOf(model, ARRIVED).attachedToParent).toBe(true);
+      });
+
+      it("only for the parent's child moving alone to exactly that computer", async () => {
+        const moving = await movedAlone(await withChild(await seeded()));
+        // Over another computer's link.
+        expect(
+          (
+            await apply(moving, {
+              ...backFromThere(completesChild),
+              movedFrom: { ...THIRD, environmentPinned: true, threadId: THERE, movedAt: now },
+            } as OrchestrationCommand)
+          ).refusal,
+        ).toContain("doesn't hold this thread");
+        // Naming a thread that isn't moving there.
+        expect(
+          (await apply(await withChild(await seeded()), backFromThere(completesChild))).refusal,
+        ).toContain("doesn't hold this thread");
+        // Another thread there, naming the child here: not the copy its move made.
+        const unrelated = await apply(moving, {
+          ...backFromThere(completesChild),
+          movedFrom: {
+            ...MAC_MINI,
+            environmentPinned: true,
+            threadId: ThreadId.make("thread-unrelated-on-mac"),
+            movedAt: now,
+          },
+        } as OrchestrationCommand);
+        expect(unrelated.refusal).toContain("doesn't hold this thread");
+        // Nor named from another device there.
+        const otherDevice = await apply(
+          moving,
+          backFromThere({
+            adopt: {
+              parentThreadId: THREAD,
+              completesMoveOf: { threadId: CHILD, deviceId: "device-someone-else" },
+            },
+          }),
+        );
+        expect(otherDevice.refusal).toContain("doesn't hold this thread");
+        // The child here is untouched, still on its way.
+        expect(threadOf(moving, CHILD).move?.movedAway).toBeUndefined();
+      });
+
+      it("still lands under its parent when the answer beat it to the decision", async () => {
+        const moving = await movedAlone(await withChild(await seeded()));
+        // Read while the move still waited; the answer landed before the import did.
+        let { model } = await apply(moving, complete(true));
+        expect(threadOf(model).childRequests.remoteChildren).toHaveLength(1);
+        let refusal: string | null;
+        ({ model, refusal } = await apply(model, backFromThere(completesChild)));
+        expect(refusal).toBeNull();
+        expect(threadOf(model, ARRIVED)).toMatchObject({
+          parentThreadId: THREAD,
+          attachedToParent: true,
+        });
+        expect(threadOf(model).childRequests.remoteChildren ?? []).toEqual([]);
+        // The move it left on completed once, with that answer's words.
+        expect(threadOf(model, CHILD).activities.at(-1)?.summary).toBe(
+          "It's still a thread of 'Fix the flaky test', which reaches it on Mac mini.",
+        );
+      });
+
+      it("a late answer never makes a thread already back here the parent's child there", async () => {
+        const moving = await movedAlone(await withChild(await seeded()));
+        // An older computer there named no thread: it landed as its own thread.
+        let { model } = await apply(moving, backFromThere());
+        expect(threadOf(model, ARRIVED).parentThreadId).toBeNull();
+        // Deleted since: it still came back, and the copy there is read-only.
+        ({ model } = await apply(model, {
+          type: "thread.delete",
+          commandId: nextCommandId(),
+          threadId: ARRIVED,
+          createdAt: now,
+        } as OrchestrationCommand));
+        expect(threadOf(model, ARRIVED).deletedAt).not.toBeNull();
+        ({ model } = await apply(model, complete(true)));
+        expect(threadOf(model).childRequests.remoteChildren ?? []).toEqual([]);
+        expect(threadOf(model, CHILD).activities.at(-1)?.summary).toBe(
+          "It moved to Mac mini and back, as a thread of its own.",
+        );
+      });
     });
   });
 });

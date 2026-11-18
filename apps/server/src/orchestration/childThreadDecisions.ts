@@ -541,6 +541,23 @@ export function decideChildRespond(
   ];
 }
 
+/**
+ * Why a parent's message can't go to `child` now, or null: a child frozen
+ * for its move takes nothing here (docs/design/fleet.md, Part 3f, (h)), as a
+ * message written now would never reach it. Nor does one whose move is
+ * stopping it (`quiescing`): its queue no longer drains, so the move would
+ * wait on the message and the parent on its answer. For a parent here
+ * (`thread.child.send`) and on another computer (`thread.remote-request.queue`).
+ */
+export function movingChildRefusal(
+  child: Pick<OrchestrationThread, "move" | "pendingMove">,
+): string | null {
+  const move = child.move ?? (child.pendingMove?.stage === "quiescing" ? child.pendingMove : null);
+  return move === null
+    ? null
+    : `That thread is moving to ${move.target.label}. Send it the message once it's there.`;
+}
+
 /** A message from an agent to one of its children (`thread.child.send`). */
 export function decideChildSend(
   readModel: OrchestrationReadModel,
@@ -570,14 +587,8 @@ export function decideChildSend(
   if (refusal !== null || child === null) {
     return refuse(refusal?.detail ?? "That thread is gone.");
   }
-  // A child frozen for its move takes nothing here (docs/design/fleet.md,
-  // Part 3f, (h)): a message written now would never reach it.
-  const childMove = child.move ?? null;
-  if (childMove !== null) {
-    return refuse(
-      `That thread is moving to ${childMove.target.label}. Send it the message once it's there.`,
-    );
-  }
+  const moving = movingChildRefusal(child);
+  if (moving !== null) return refuse(moving);
   if (
     child.messages.some((message) => message.id === command.childMessageId) ||
     parent.childRequests.open.some((request) => request.requestId === command.requestId)
@@ -1280,6 +1291,8 @@ export function decideRemoteRequestQueue(
   if (thread.archivedAt !== null) {
     return refuse("That thread is archived.");
   }
+  const moving = movingChildRefusal(thread);
+  if (moving !== null) return refuse(moving);
   if (thread.messages.some((message) => message.id === command.messageId)) {
     return refuse("That message was already sent.");
   }
@@ -1398,7 +1411,9 @@ export const MovedAloneActivityKind = "thread.moved-alone";
  * settle as cancelled, with a note for its agent. When that computer kept it
  * the parent's child across the link (`keptParent`, its answer over the
  * link), the parent keeps it as a child there, as a thread it started there,
- * and reaches it over the link from now on.
+ * and reaches it over the link from now on. One that already came back here
+ * before this computer heard it landed (`returned`) is never kept there: it
+ * came back under the parent (`adopted`) or as a thread of its own (`own`).
  */
 export function movedAloneEvents(
   readModel: OrchestrationReadModel,
@@ -1408,16 +1423,26 @@ export function movedAloneEvents(
     readonly target: { readonly environmentId: EnvironmentId; readonly label: string };
     readonly threadId: ThreadId;
     readonly keptParent: boolean;
+    readonly returned?: "adopted" | "own" | undefined;
   },
   at: string,
 ): ReadonlyArray<PlannedEvent> {
   if (child.parentThreadId === null || !child.attachedToParent) return [];
   const parent = findThread(readModel, child.parentThreadId);
   const label = moved.target.label;
-  const kept = moved.keptParent && parent !== null && parent.deletedAt === null;
-  const words = kept
-    ? `It's still a thread of '${parent.title}', which reaches it on ${label}.`
-    : `It's its own thread on ${label}, so the thread that started it can't reach it there.`;
+  const kept =
+    moved.returned === undefined &&
+    moved.keptParent &&
+    parent !== null &&
+    parent.deletedAt === null;
+  const words =
+    moved.returned === "adopted" && parent !== null
+      ? `It moved to ${label} and back, and is still a thread of '${parent.title}' here.`
+      : moved.returned !== undefined
+        ? `It moved to ${label} and back, as a thread of its own.`
+        : kept
+          ? `It's still a thread of '${parent.title}', which reaches it on ${label}.`
+          : `It's its own thread on ${label}, so the thread that started it can't reach it there.`;
   return [
     {
       ...baseFor(child.id),
@@ -1455,9 +1480,13 @@ export function movedAloneEvents(
           "cancelled",
           at,
           (titles) =>
-            kept
-              ? `${quotedList(titles)} moved to ${label} before it answered. Send it the message again there.`
-              : `${quotedList(titles)} moved to ${label} as its own thread, so its answer won't come back to you.`,
+            moved.returned === "adopted"
+              ? `${quotedList(titles)} moved to ${label} and back before it answered. Send it the message again.`
+              : moved.returned !== undefined
+                ? `${quotedList(titles)} moved to ${label} and back as its own thread, so its answer won't come back to you.`
+                : kept
+                  ? `${quotedList(titles)} moved to ${label} before it answered. Send it the message again there.`
+                  : `${quotedList(titles)} moved to ${label} as its own thread, so its answer won't come back to you.`,
         )),
     ...(kept
       ? [

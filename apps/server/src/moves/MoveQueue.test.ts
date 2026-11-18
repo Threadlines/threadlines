@@ -1,5 +1,6 @@
 import {
   CommandId,
+  CommandRunId,
   EnvironmentId,
   MessageId,
   ProjectId,
@@ -78,6 +79,8 @@ async function harness(options?: { readonly model?: OrchestrationReadModel }) {
     carryChecks: 0,
     /** How long checking a child that moves with its parent takes (a target that answers slowly). */
     childCheckMs: 0,
+    /** Runs once after a look read the threads, before it gets them (something changed meanwhile). */
+    duringContextRead: null as null | (() => Effect.Effect<void, ThreadMoveError>),
   };
 
   const dispatch = (command: OrchestrationCommand): Effect.Effect<void, ThreadMoveError> =>
@@ -173,9 +176,17 @@ async function harness(options?: { readonly model?: OrchestrationReadModel }) {
       readThread: (threadId) =>
         Effect.sync(() => model.threads.find((entry) => entry.id === threadId) ?? null),
       readContext: (threadId) =>
-        Effect.sync(() => {
-          const thread = model.threads.find((entry) => entry.id === threadId);
-          return thread === undefined ? null : { thread, view: model };
+        Effect.gen(function* () {
+          const view = model;
+          const meanwhile = state.duringContextRead;
+          if (meanwhile !== null) {
+            state.duringContextRead = null;
+            yield* meanwhile().pipe(Effect.orDie);
+            // The reactor takes the event in before this look gets its read.
+            yield* Effect.sleep(Duration.millis(30));
+          }
+          const thread = view.threads.find((entry) => entry.id === threadId);
+          return thread === undefined ? null : { thread, view };
         }),
       pendingThreadIds: Effect.sync(() =>
         model.threads.filter((thread) => (thread.pendingMove ?? null) !== null).map((t) => t.id),
@@ -511,6 +522,125 @@ describe("MoveQueue", () => {
     expect(h.state.cancels).toBe(1);
     expect(h.thread().move?.cancelRequested).toBe(true);
     await h.close();
+  });
+});
+
+describe("MoveQueue, another thread working in the same folder", () => {
+  const OTHER = ThreadId.make("thread-same-folder");
+  const RUN = CommandRunId.make("run-in-folder");
+
+  /** A second thread in the moving thread's folder, with a command still running in its terminal. */
+  async function sharingWithRunningCommand() {
+    let model = await seeded();
+    const decided = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.create",
+          commandId: nextCommandId(),
+          threadId: OTHER,
+          projectId: PROJECT,
+          title: "Update the docs",
+          modelSelection: agent,
+          runtimeMode: "auto",
+          interactionMode: "default",
+          branch: "fix/flaky",
+          worktreePath: "/worktrees/fix-flaky",
+          createdAt: now,
+        } as OrchestrationCommand,
+        readModel: model,
+      }),
+    );
+    for (const [index, planned] of (Array.isArray(decided) ? decided : [decided]).entries()) {
+      model = await Effect.runPromise(
+        projectEvent(model, { ...planned, sequence: 100 + index } as OrchestrationEvent),
+      );
+    }
+    return {
+      ...model,
+      threads: model.threads.map((thread) =>
+        thread.id === OTHER
+          ? {
+              ...thread,
+              commandRuns: [
+                {
+                  runId: RUN,
+                  terminalId: "terminal-docs",
+                  mode: "run",
+                  dialect: "posix",
+                  command: "pnpm docs:build",
+                  source: { kind: "message", messageId: MessageId.make("m-docs") },
+                  turnId: TURN,
+                  participantId: null,
+                  cwd: "/worktrees/fix-flaky",
+                  autoSend: false,
+                  status: "running",
+                  startedAt: now,
+                  finishedAt: null,
+                  exitCode: null,
+                  error: null,
+                  hasOutput: false,
+                  heldReason: null,
+                  outputSentAt: null,
+                  outputMessageId: null,
+                  createdAt: now,
+                  updatedAt: now,
+                },
+              ],
+            }
+          : thread,
+      ),
+    } as OrchestrationReadModel;
+  }
+
+  it("moves once the other thread's command ends, even when nothing else happens there", async () => {
+    const h = await harness({ model: await sharingWithRunningCommand() });
+    await h.startReactor();
+    await h.queueMove();
+    await waitFor(
+      () => h.thread().pendingMove?.waitsFor?.some((w) => w.code === "shared_checkout") === true,
+      "the shared folder wait",
+    );
+    await settle();
+    expect(h.thread().move ?? null).toBeNull();
+
+    // Interrupted: no turn starts there, and no session changes, to wake the move.
+    await h.dispatch({
+      type: "thread.command-run.update",
+      commandId: nextCommandId(),
+      threadId: OTHER,
+      progress: { runId: RUN, status: "interrupted", finishedAt: now },
+      createdAt: now,
+    });
+    await waitFor(() => (h.thread().move ?? null) !== null, "the move to start");
+    await h.close();
+  });
+
+  it("after a restart, an end that lands while a look reads the folder still wakes the move", async () => {
+    const first = await harness({ model: await sharingWithRunningCommand() });
+    await first.startReactor();
+    await first.queueMove();
+    await waitFor(
+      () =>
+        first.thread().pendingMove?.waitsFor?.some((w) => w.code === "shared_checkout") === true,
+      "the shared folder wait",
+    );
+    const left = first.model();
+    await first.close();
+
+    // The wait is already on record, so the look that finds it again reports nothing new.
+    const restarted = await harness({ model: left });
+    // The command ends after the look read the threads, before it knows whom it waits on.
+    restarted.state.duringContextRead = () =>
+      restarted.dispatchEffect({
+        type: "thread.command-run.update",
+        commandId: nextCommandId(),
+        threadId: OTHER,
+        progress: { runId: RUN, status: "interrupted", finishedAt: now },
+        createdAt: now,
+      });
+    await restarted.startReactor();
+    await waitFor(() => (restarted.thread().move ?? null) !== null, "the move to start");
+    await restarted.close();
   });
 });
 
