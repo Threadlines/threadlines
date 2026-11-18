@@ -146,6 +146,17 @@ export function readLeadMenuState(
   };
 }
 
+/**
+ * What a lead chat does, in the words the app uses wherever it explains one
+ * (the crown's card on the family tabs and the header, the sidebar's thread
+ * card). Matches the app guide's lead chat topic.
+ */
+export const LEAD_CHAT_EXPLANATION =
+  "Drop work here. Its agent answers small things itself and starts threads for bigger ones, which report back here. It stays at the top of the sidebar and doesn't wrap up on its own.";
+
+/** The line under "Make this the lead chat" in a thread's menu. */
+export const LEAD_MENU_SUBLABEL = "Stays on top and hands out work to new threads";
+
 /** The menu words for a lead state. */
 export function leadMenuLabel(state: LeadMenuState): string {
   if (state.kind === "stop") return "Stop using as lead chat";

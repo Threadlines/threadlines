@@ -299,6 +299,8 @@ import type {
 export interface ContextMenuItem<T extends string = string> {
   id: T;
   label: string;
+  /** A short second line under the label (a native menu shows it on macOS only). */
+  sublabel?: string;
   destructive?: boolean;
   disabled?: boolean;
   /** Starts a new group: a divider above it (none at the top of the menu). */
@@ -309,6 +311,7 @@ export interface ContextMenuItem<T extends string = string> {
 export interface ContextMenuItemSchemaType {
   readonly id: string;
   readonly label: string;
+  readonly sublabel?: string;
   readonly destructive?: boolean;
   readonly disabled?: boolean;
   readonly separatorBefore?: boolean;
@@ -318,6 +321,7 @@ export interface ContextMenuItemSchemaType {
 export const ContextMenuItemSchema: Schema.Codec<ContextMenuItemSchemaType> = Schema.Struct({
   id: Schema.String,
   label: Schema.String,
+  sublabel: Schema.optionalKey(Schema.String),
   destructive: Schema.optionalKey(Schema.Boolean),
   disabled: Schema.optionalKey(Schema.Boolean),
   separatorBefore: Schema.optionalKey(Schema.Boolean),

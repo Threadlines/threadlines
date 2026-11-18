@@ -49,6 +49,9 @@ function normalizeContextMenuItems(source: readonly ContextMenuItem[]): ContextM
     const normalizedItem: ContextMenuItem = {
       id: sourceItem.id,
       label: sourceItem.label,
+      ...(typeof sourceItem.sublabel === "string" && sourceItem.sublabel.length > 0
+        ? { sublabel: sourceItem.sublabel }
+        : {}),
       destructive: sourceItem.destructive === true,
       disabled: sourceItem.disabled === true,
       ...(sourceItem.separatorBefore === true ? { separatorBefore: true } : {}),
@@ -102,6 +105,9 @@ export const layer = Layer.sync(ElectronMenu, () => {
       const itemOption: Electron.MenuItemConstructorOptions = {
         label: item.label,
         enabled: !item.disabled,
+        // Shown under the label on macOS 14.4 and later, and as the item's
+        // hover text on any Mac; other systems leave it out.
+        ...(item.sublabel !== undefined ? { sublabel: item.sublabel, toolTip: item.sublabel } : {}),
       };
       if (item.children && item.children.length > 0) {
         itemOption.submenu = buildTemplate(item.children, complete);

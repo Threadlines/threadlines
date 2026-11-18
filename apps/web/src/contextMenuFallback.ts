@@ -169,6 +169,21 @@ export function showContextMenuFallback<T extends string>(
         const label = document.createElement("span");
         label.className = "min-w-0 flex-1 truncate";
         label.textContent = item.label;
+        if (item.sublabel !== undefined) {
+          // A second, quieter line under the label.
+          label.className = "flex min-w-0 flex-1 flex-col";
+          label.textContent = "";
+          const text = document.createElement("span");
+          text.className = "truncate";
+          text.textContent = item.label;
+          const sublabel = document.createElement("span");
+          sublabel.className = `truncate text-muted-foreground ${coarse ? "text-xs" : "text-[10px]"}`;
+          sublabel.textContent = item.sublabel;
+          label.append(text, sublabel);
+          // Named by its label alone, as before; the second line describes it.
+          button.setAttribute("aria-label", item.label);
+          button.setAttribute("aria-description", item.sublabel);
+        }
         button.appendChild(label);
 
         if (hasChildren) {
