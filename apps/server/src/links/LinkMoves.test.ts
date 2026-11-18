@@ -71,6 +71,7 @@ import {
   MAX_STAGED_MOVES_PER_LINK,
   moveManifestRefusal,
   movePathRefusal,
+  sameProjectAs,
 } from "./LinkMoves.ts";
 import { LinkRequests, type PeerLink } from "./LinkRequests.ts";
 
@@ -1883,6 +1884,22 @@ describe("a family moving here (Part 3f, (g))", () => {
       assert.equal(childImport?.lineage?.parentThreadId, parentHere);
       assert.isTrue(fs.existsSync(path.join(folder, "c.txt")));
     }).pipe(Effect.provide(testLayer(repos, dispatched)));
+  });
+
+  it("shares a folder only between members that name the same project", () => {
+    const named = (canonicalKey: string, subdirectory?: string) =>
+      ({
+        project: {
+          canonicalKey,
+          title: "Repo",
+          ...(subdirectory !== undefined ? { subdirectory } : {}),
+        },
+      }) as unknown as PeerMoveManifest;
+    const generalChat = { project: { title: "General chats" } } as unknown as PeerMoveManifest;
+    assert.isTrue(sameProjectAs(named("example.com/repo"), named("example.com/repo", "")));
+    assert.isFalse(sameProjectAs(named("example.com/repo"), named("example.com/other")));
+    assert.isFalse(sameProjectAs(named("example.com/repo", "web"), named("example.com/repo")));
+    assert.isFalse(sameProjectAs(generalChat, named("example.com/repo")));
   });
 
   it("refuses a family member that names itself, or carries files into another's folder", () => {

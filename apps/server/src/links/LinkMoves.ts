@@ -288,6 +288,27 @@ const PARENT_DIDNT_MOVE = "Its parent thread didn't move.";
 /** The words a member's move ends with when the folder it works in didn't come. */
 const OWNER_DIDNT_MOVE = "The thread whose folder it works in didn't move.";
 
+/**
+ * A folder is shared only within one project: a member and the folder's
+ * owner must name the same project (its canonical key and subdirectory), or
+ * a peer could have this computer approve a thread in one project and run it
+ * in another's checkout (docs/design/fleet.md, Part 3f).
+ */
+const OTHER_PROJECTS_FOLDER = "The folder it works in belongs to another project.";
+/** A repository move's project; a General Chats move names none to share. */
+const movedProjectOf = (manifest: PeerMoveManifest) =>
+  "canonicalKey" in manifest.project ? manifest.project : null;
+export const sameProjectAs = (a: PeerMoveManifest, b: PeerMoveManifest) => {
+  const left = movedProjectOf(a);
+  const right = movedProjectOf(b);
+  return (
+    left !== null &&
+    right !== null &&
+    left.canonicalKey === right.canonicalKey &&
+    (left.subdirectory ?? "") === (right.subdirectory ?? "")
+  );
+};
+
 const isWindows = process.platform === "win32";
 const isCaseInsensitive = process.platform === "win32" || process.platform === "darwin";
 const foldCase = (path: string) => (isCaseInsensitive ? path.toLowerCase() : path);
@@ -1475,6 +1496,9 @@ const make = Effect.gen(function* () {
         ) {
           return { kind: "stop", reason: OWNER_DIDNT_MOVE } as const;
         }
+        if (!sameProjectAs(owner.value.manifest, row.manifest)) {
+          return { kind: "stop", reason: OTHER_PROJECTS_FOLDER } as const;
+        }
         if (row.stage === null) {
           return folderMade(owner.value)
             ? ({ kind: "ready" } as const)
@@ -2281,6 +2305,9 @@ const make = Effect.gen(function* () {
         owner.value.branch === null
       ) {
         return yield* stop(OWNER_DIDNT_MOVE);
+      }
+      if (!sameProjectAs(owner.value.manifest, row.manifest)) {
+        return yield* stop(OTHER_PROJECTS_FOLDER);
       }
       return yield* commitThread({
         ...row,
