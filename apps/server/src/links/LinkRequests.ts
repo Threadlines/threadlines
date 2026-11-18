@@ -81,7 +81,7 @@ import {
   childAgentRefusal,
   childReasoningRefusal,
 } from "../orchestration/childThreadAgents.ts";
-import { clampLaunchToCeiling } from "../orchestration/childThreadDecisions.ts";
+import { clampLaunchToCeiling, movingChildRefusal } from "../orchestration/childThreadDecisions.ts";
 import {
   type ChildDelivery,
   type ChildDeliveryRequest,
@@ -1075,6 +1075,12 @@ const make = Effect.gen(function* () {
         const reason = `That thread is gone from ${ownLabel()}.`;
         yield* settleOrFail(row, "failed", reason, { error: reason });
         return { status: "refused", reason } as const;
+      }
+      // Moving, or stopped for its move: it would never answer (decideRemoteRequestQueue).
+      const moving = movingChildRefusal(thread);
+      if (moving !== null) {
+        yield* settleOrFail(row, "failed", moving, { error: moving });
+        return { status: "refused", reason: moving } as const;
       }
       const sent = yield* dispatch(
         {

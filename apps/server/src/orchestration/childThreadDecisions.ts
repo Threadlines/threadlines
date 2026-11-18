@@ -541,6 +541,23 @@ export function decideChildRespond(
   ];
 }
 
+/**
+ * Why a parent's message can't go to `child` now, or null: a child frozen
+ * for its move takes nothing here (docs/design/fleet.md, Part 3f, (h)), as a
+ * message written now would never reach it. Nor does one whose move is
+ * stopping it (`quiescing`): its queue no longer drains, so the move would
+ * wait on the message and the parent on its answer. For a parent here
+ * (`thread.child.send`) and on another computer (`thread.remote-request.queue`).
+ */
+export function movingChildRefusal(
+  child: Pick<OrchestrationThread, "move" | "pendingMove">,
+): string | null {
+  const move = child.move ?? (child.pendingMove?.stage === "quiescing" ? child.pendingMove : null);
+  return move === null
+    ? null
+    : `That thread is moving to ${move.target.label}. Send it the message once it's there.`;
+}
+
 /** A message from an agent to one of its children (`thread.child.send`). */
 export function decideChildSend(
   readModel: OrchestrationReadModel,
@@ -570,17 +587,8 @@ export function decideChildSend(
   if (refusal !== null || child === null) {
     return refuse(refusal?.detail ?? "That thread is gone.");
   }
-  // A child frozen for its move takes nothing here (docs/design/fleet.md,
-  // Part 3f, (h)): a message written now would never reach it. Nor does one
-  // whose move is stopping it (`quiescing`): its queue no longer drains, so
-  // the move would wait on the message and the parent on its answer.
-  const childMove =
-    child.move ?? (child.pendingMove?.stage === "quiescing" ? child.pendingMove : null);
-  if (childMove !== null) {
-    return refuse(
-      `That thread is moving to ${childMove.target.label}. Send it the message once it's there.`,
-    );
-  }
+  const moving = movingChildRefusal(child);
+  if (moving !== null) return refuse(moving);
   if (
     child.messages.some((message) => message.id === command.childMessageId) ||
     parent.childRequests.open.some((request) => request.requestId === command.requestId)
@@ -1283,6 +1291,8 @@ export function decideRemoteRequestQueue(
   if (thread.archivedAt !== null) {
     return refuse("That thread is archived.");
   }
+  const moving = movingChildRefusal(thread);
+  if (moving !== null) return refuse(moving);
   if (thread.messages.some((message) => message.id === command.messageId)) {
     return refuse("That message was already sent.");
   }

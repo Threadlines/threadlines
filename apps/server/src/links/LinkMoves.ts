@@ -111,6 +111,8 @@ import { generalChatThreadScratchCwd } from "../orchestration/generalChats.ts";
 import { clampLaunchToCeiling } from "../orchestration/childThreadDecisions.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ComputerLinkRepository } from "./ComputerLinkRepository.ts";
+import { linkMoveCopyThreadId, linkMoveKey, linkMoveThreadId } from "../moves/linkMoveIds.ts";
 import { awaitsLoneMoveAnswer } from "../orchestration/threadMoveDecisions.ts";
 import { ProjectionThreadRepository } from "../persistence/Services/ProjectionThreads.ts";
 import { discardSessionFiles, releaseSessionFiles } from "../provider/nativeSession.ts";
@@ -234,13 +236,7 @@ interface FamilyLanding {
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
-/** hash(link, transfer): every resource a move makes here is named from it. */
-export const linkMoveKey = (linkDeviceId: string, transferId: string) =>
-  createHash("sha256").update(`${linkDeviceId}\u0000${transferId}`).digest("hex");
-
-/** The thread a move becomes here. */
-export const linkMoveThreadId = (transferKey: string) =>
-  ThreadId.make(derivedUuid("link-move-thread", transferKey));
+export { linkMoveKey, linkMoveThreadId } from "../moves/linkMoveIds.ts";
 
 /**
  * hash(link, family id): a family's key here (docs/design/fleet.md, Part 3f,
@@ -600,6 +596,8 @@ const make = Effect.gen(function* () {
   const engine = yield* OrchestrationEngineService;
   const snapshots = yield* ProjectionSnapshotQuery;
   const threadRows = yield* ProjectionThreadRepository;
+  // This computer's own links to others: its device on each (a copy's id there).
+  const outboundLinks = yield* ComputerLinkRepository;
   const git = yield* GitVcsDriver;
   const config = yield* ServerConfig;
   const devices = yield* RelayDeviceRepository;
@@ -2409,10 +2407,28 @@ const make = Effect.gen(function* () {
       if (holds) return { adopt: { parentThreadId } };
       // Back before this computer heard its move there landed: the parent's
       // child here whose own move to that computer still waits for the
-      // answer. Should the answer land before the import, the decider finds
-      // the parent holding it instead.
-      return awaiting && fromThreadId !== undefined
-        ? { adopt: { parentThreadId, completesMoveOf: fromThreadId } }
+      // answer, and this is the copy that move made there (its id is the
+      // transfer's, from this computer's device there). Should the answer
+      // land before the import, the decider finds the parent holding it.
+      const leftMove = left?.move ?? null;
+      if (!awaiting || fromThreadId === undefined || leftMove === null) return own;
+      const there = Option.getOrUndefined(
+        yield* outboundLinks
+          .getByEnvironment(home)
+          .pipe(
+            Effect.mapError(
+              () => new ImportStop({ reason: `${ownLabel()} couldn't read its links.` }),
+            ),
+          ),
+      );
+      return there !== undefined &&
+        linkMoveCopyThreadId(there.deviceId, leftMove.transferId) === source.threadId
+        ? {
+            adopt: {
+              parentThreadId,
+              completesMoveOf: { threadId: fromThreadId, deviceId: there.deviceId },
+            },
+          }
         : own;
     });
 
