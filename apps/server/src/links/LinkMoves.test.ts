@@ -2132,12 +2132,23 @@ describe("a thread moving across its link (Part 3f, (h))", () => {
         linkDeviceId = "device-windows",
         startedBy = "thread-a",
         archivedAt = null as string | null,
+        movedAway = false,
       },
     ) => ({
       threadId: ThreadId.make(threadId),
       title,
       deletedAt: null,
       archivedAt,
+      ...(movedAway
+        ? {
+            move: {
+              movedAway: {
+                threadId: ThreadId.make("thread-back-home"),
+                movedAt: "2026-11-17T10:00:00.000Z",
+              },
+            },
+          }
+        : {}),
       remoteOrigin: {
         linkDeviceId,
         environmentId: WINDOWS,
@@ -2152,10 +2163,12 @@ describe("a thread moving across its link (Part 3f, (h))", () => {
         pinnedEnvironmentId: WINDOWS,
         threadsHere: [
           startedHere("thread-child", "Fix tests", {}),
-          // Over another link, by another thread there, or archived: not this one's here.
+          // Over another link, by another thread there, archived, or moved
+          // away again: not this one's here.
           startedHere("thread-other-link", "Other link", { linkDeviceId: "device-mac" }),
           startedHere("thread-other-parent", "Other parent", { startedBy: "thread-b" }),
           startedHere("thread-archived", "Archived", { archivedAt: "2026-11-17T10:00:00.000Z" }),
+          startedHere("thread-moved-away", "Moved away", { movedAway: true }),
         ],
       });
       assert.equal(state.status, "committed");

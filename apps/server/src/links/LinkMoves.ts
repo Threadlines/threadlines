@@ -2273,7 +2273,13 @@ const make = Effect.gen(function* () {
           } satisfies FamilyLanding;
         }),
       /** The "Moved here" words for what of its family didn't come. */
-      left: (fromLabel: string, lineageLeft: string | null) => {
+      left: (
+        fromLabel: string,
+        lineageLeft: string | null,
+        // Named as already here instead (threadsStartedHere): an older
+        // computer still lists them as staying where they are.
+        alreadyHere: ReadonlySet<string>,
+      ) => {
         const words: string[] = [];
         if (lineageLeft !== null) words.push(lineageLeft);
         const stayed = family.stayed ?? [];
@@ -2283,7 +2289,9 @@ const make = Effect.gen(function* () {
           );
         }
         const byComputer = new Map<string, Array<{ readonly title: string }>>();
-        for (const entry of family.remoteStayed ?? []) {
+        for (const entry of (family.remoteStayed ?? []).filter(
+          (stayed) => !alreadyHere.has(stayed.title),
+        )) {
           byComputer.set(entry.label, [...(byComputer.get(entry.label) ?? []), entry]);
         }
         for (const [label, list] of byComputer) {
@@ -2379,34 +2387,42 @@ const make = Effect.gen(function* () {
     });
 
   /**
-   * The "Moved here" words for the threads its agent started on this computer
-   * while it was on the one it came from (docs/design/fleet.md, Part 3f, (g),
-   * "Also when the child's computer is the target"), or null for none. They
-   * stay that computer's children, apart from the thread that arrives, which
-   * can't reach them. Read from this computer's own records alone: threads
-   * started over this very link by the thread the move came from. A failed
-   * read leaves the words out rather than the move.
+   * The titles of the threads its agent started on this computer while it
+   * was on the one it came from (docs/design/fleet.md, Part 3f, (g), "Also
+   * when the child's computer is the target"). They stay that computer's
+   * children, apart from the thread that arrives, which can't reach them.
+   * Read from this computer's own records alone: threads started over this
+   * very link by the thread the move came from, still here (not archived,
+   * deleted or moved away). A failed read names none rather than failing the
+   * move.
    */
-  const startedHereWords = (row: LinkMoveRow) =>
+  const threadsStartedHere = (row: LinkMoveRow) =>
     Effect.gen(function* () {
       const ids = yield* threadRows.listIdsByRemoteLink({ linkDeviceId: row.linkDeviceId });
-      const found = yield* Effect.forEach(ids, (threadId) => threadRows.getById({ threadId }));
-      const titles = found.flatMap((entry) => {
+      const found = yield* Effect.forEach(ids, (threadId) => threadRows.getById({ threadId }), {
+        concurrency: 8,
+      });
+      return found.flatMap((entry): string[] => {
         const thread = Option.getOrUndefined(entry);
         return thread !== undefined &&
           thread.deletedAt === null &&
           thread.archivedAt === null &&
+          thread.move?.movedAway === undefined &&
           thread.remoteOrigin?.linkDeviceId === row.linkDeviceId &&
           thread.remoteOrigin.threadId === row.manifest.source.threadId
           ? [thread.title]
           : [];
       });
-      if (titles.length === 0) return null;
-      const [only] = titles;
-      return titles.length === 1 && only !== undefined
-        ? `Its thread '${only}' is already on this computer. It stays separate, so this thread can't reach it.`
-        : `${titles.length} threads it started are already on this computer: ${titles.slice(0, PEER_MOVE_FAMILY_MAX_STAYED).join(", ")}. They stay separate, so this thread can't reach them.`;
-    }).pipe(Effect.orElseSucceed(() => null));
+    }).pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []));
+
+  /** The "Moved here" words for threadsStartedHere, or null for none. */
+  const startedHereWords = (titles: ReadonlyArray<string>) => {
+    if (titles.length === 0) return null;
+    const [only] = titles;
+    return titles.length === 1 && only !== undefined
+      ? `Its thread '${only}' is already on this computer. It stays separate, so this thread can't reach it.`
+      : `${titles.length} threads it started are already on this computer: ${titles.slice(0, PEER_MOVE_FAMILY_MAX_STAYED).join(", ")}. They stay separate, so this thread can't reach them.`;
+  };
 
   /**
    * The thread itself, and with it the commit. Waits for the engine's answer
@@ -2600,7 +2616,9 @@ const make = Effect.gen(function* () {
       // A child lands under its parent here, when the parent landed and is
       // still here (Part 3f, (g)); otherwise as its own thread, with why.
       const lineage = family === null ? null : yield* family.lineage(land.project.id);
-      const familyLeft = family === null ? [] : family.left(fromLabel, lineage?.left ?? null);
+      const startedHere = yield* threadsStartedHere(row);
+      const familyLeft =
+        family === null ? [] : family.left(fromLabel, lineage?.left ?? null, new Set(startedHere));
       // Across the link its work came over (Part 3f, (h)): from this link alone.
       const across = yield* linkLanding(
         row,
@@ -2609,8 +2627,8 @@ const make = Effect.gen(function* () {
         fromLabel,
       );
       if (across.left !== undefined) familyLeft.push(across.left);
-      const startedHere = yield* startedHereWords(row);
-      if (startedHere !== null) familyLeft.push(startedHere);
+      const startedHereLine = startedHereWords(startedHere);
+      if (startedHereLine !== null) familyLeft.push(startedHereLine);
       // The "Moved here" line's room words first, then its family's, then
       // what the thread had going.
       const arrival =
