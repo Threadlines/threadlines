@@ -7,10 +7,12 @@
  * "Start in" says (`placeDraftFromSettings` when it is not known yet).
  */
 import {
+  DEFAULT_MODEL,
   type EnvironmentId,
   type ModelSelection,
+  ProviderDriverKind,
+  ProviderInstanceId,
   type NewThreadRoomAgent,
-  type ProviderInstanceId,
   type ScopedProjectRef,
   type ServerConfig,
   type ServerProvider,
@@ -39,9 +41,11 @@ import { randomUUID } from "./lib/utils";
 import { deriveLogicalProjectKeyFromSettings } from "./logicalProject";
 import { getClientSettings } from "./hooks/useSettings";
 import { selectProjectByRef, useStore } from "./store";
+import { resolveAppModelSelectionForInstance } from "./modelSelection";
 import {
   deriveDisplayProviderInstanceEntries,
   type ProviderInstanceEntry,
+  resolveComposerProviderSelection,
 } from "./providerInstances";
 import { roomModelName } from "./rooms";
 import { getServerConfig, onServerConfigUpdated, useServerConfig } from "./rpc/serverState";
@@ -196,6 +200,33 @@ function draftActiveSelection(draftId: DraftId): ModelSelection | null {
   return composerDraftActiveModelSelection(
     useComposerDraftStore.getState().getComposerDraft(draftId),
   );
+}
+
+/**
+ * The agent a new thread on this computer runs with when no default is chosen
+ * and nothing was picked yet: what a fresh draft's composer settles on. That
+ * is resolveComposerProviderSelection over the composer's own entry order
+ * (Codex when it is on, else the first agent that is) at that agent's default
+ * model; with no providers listed yet (still loading, or no config), the
+ * draft's offline fallback, Codex at DEFAULT_MODEL.
+ */
+export function fallbackNewThreadModelSelection(config: ComputerConfig | null): ModelSelection {
+  const offline = { instanceId: ProviderInstanceId.make("codex"), model: DEFAULT_MODEL };
+  const entries = config === null ? [] : deriveDisplayProviderInstanceEntries(config.providers);
+  if (config === null || entries.length === 0) return offline;
+  const { instanceId } = resolveComposerProviderSelection({
+    entries,
+    candidates: [],
+    lockedProvider: null,
+    fallbackDriverKind: ProviderDriverKind.make("codex"),
+  });
+  const model = resolveAppModelSelectionForInstance(
+    instanceId,
+    { ...config.settings, ...getClientSettings() },
+    config.providers,
+    null,
+  );
+  return { instanceId, model: model ?? DEFAULT_MODEL };
 }
 
 /** The model last picked on this device, if any. */
