@@ -59,7 +59,7 @@ These rules override anything in the sections below that disagrees with them.
 5. **The user and a child's answer.** A user steer into the answering turn, or into its continuation, becomes part of that turn by design, and the answer includes it. A _new_ user turn in the child while the request is `awaiting_background` settles the request with the candidate before that turn runs.
 6. **Room history and catch-up** name `fromThread` messages by origin ("Request from thread X", "Report from thread X") through one shared author renderer, instead of labelling them "User" (roomHistory.ts:91, roomCatchUp.ts:216). Cancellation marking (roomAgentRequests.ts:309) covers reports too.
 7. **`handed-back`** is stamped only when the settle actually emits a report. Suppressed, cancelled and stopped outcomes never set it.
-8. **Archive cascade membership** uses the shared live-work predicate (`isAutoArchiveProtectedThread` inputs in packages/shared/src/threadAutoArchive.ts, plus awaited background work, queued or pending starts, and open child requests). Live children are separated; the rest are archived.
+8. **Archive cascade membership** uses the shared live-work predicate (`isAutoArchiveProtectedThread` inputs in packages/shared/src/threadAutoArchive.ts, plus queued or pending starts, open child requests, and a command still going in the child's terminal: `childHasLiveWork` with `running`). Every background task counts, awaited or not: archiving stops the child's runtime and closes its terminals, which would kill a dev server or a running command. Live children are separated; the rest are archived.
 9. **`archivedWithParentAt`** is set only on children this cascade newly archives. Any independent archive or unarchive of the child clears it.
 10. **Revert** is refused in a parent while it has open child requests or queued reports. It's also refused in a child while a parent request is bound to it ("Finish or stop its threads first"), extending the room guard at decider.ts:2385.
 
@@ -352,7 +352,7 @@ Each of these settles open requests and also unqueues the matching queued report
 
 - **Delete the parent.** Decider cascade (`decideCommandSequence`, like `project.delete`). Attached children are separated, unless the command carries `withChildren: true`, in which case they're deleted. The confirm dialog gets "Also delete its N threads". Deleting a child settles its open requests `cancelled` and unqueues its reports.
 - **Archive the parent.** The cascade is decided on the server:
-  - attached children that are settled (no turn in flight, no open requests of their own, no pending approvals) are archived and stamped `archivedWithParentAt`;
+  - attached children that are settled (no turn in flight, no open requests of their own, no pending approvals, no background work, no command running in their terminal) are archived and stamped `archivedWithParentAt`;
   - live attached children are separated first.
 
   Cleanup (session stop and terminal close, today ws.ts:849-896 for the named thread only) runs for every thread the command archives. `ThreadAutoArchiveSweeper` skips parents with open child requests or live attached children, and otherwise uses the same cascade. Unarchive restores the parent plus the children stamped with its archive.

@@ -37,6 +37,7 @@ import {
   type ThreadNativeSessionFellBackPayload,
   type ThreadPendingMove,
 } from "@threadlines/contracts";
+import { hasLiveCommandRun } from "@threadlines/shared/commandRuns";
 import { threadPullRequestAutomationArmed } from "@threadlines/shared/linkedPullRequests";
 import {
   APPROVAL_ACTIVITY_KINDS,
@@ -51,6 +52,7 @@ import { arrivalMessageText, resumedGoalMessageText } from "../moves/arrivalMess
 import { decideAgentChainStop } from "./agentRequestDecisions.ts";
 import { derivedUuid } from "./childRequestIds.ts";
 import { cameHomeEvents, leftBehindEvents, movedAloneEvents } from "./childThreadDecisions.ts";
+import { hasBackgroundWork } from "./sessionBackgroundTasks.ts";
 import {
   drainsWhileMoveWaits,
   interruptedOf,
@@ -487,19 +489,8 @@ function workWaits(
       found.push(wait("background", FAMILY_WAIT_WORDS));
     }
   }
-  if (
-    (session?.pendingBackgroundTaskCount ?? 0) > 0 ||
-    (session?.awaitedBackgroundTaskCount ?? 0) > 0
-  ) {
-    found.push(wait("background"));
-  }
-  if (
-    (thread.commandRuns ?? []).some((run) =>
-      ["starting", "running", "waiting"].includes(run.status),
-    )
-  ) {
-    found.push(wait("command_run"));
-  }
+  if (hasBackgroundWork(session, "any")) found.push(wait("background"));
+  if (hasLiveCommandRun(thread.commandRuns)) found.push(wait("command_run"));
   if ((thread.workflowRuns ?? []).some((run) => run.status === "running")) {
     found.push(wait("workflow_run"));
   }

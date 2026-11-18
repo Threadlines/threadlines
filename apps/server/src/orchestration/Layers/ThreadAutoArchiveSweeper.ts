@@ -17,6 +17,7 @@ import * as Stream from "effect/Stream";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
+import { threadsArchivedWith } from "../archivedWithParent.ts";
 import {
   ThreadAutoArchiveSweeper,
   type ThreadAutoArchiveSweeperShape,
@@ -101,26 +102,42 @@ const makeThreadAutoArchiveSweeper = (options?: ThreadAutoArchiveSweeperLiveOpti
           commandId: CommandId.make(`thread-auto-archive:${thread.id}:${randomUUID()}`),
           threadId: thread.id,
         };
+        // Where the event log stood before the archive, so the children it
+        // took along can be read back from what it wrote.
+        const cursor = yield* projectionSnapshotQuery.getSnapshotSequence().pipe(
+          Effect.map(({ snapshotSequence }) => snapshotSequence),
+          Effect.catch(() => Effect.succeed(null)),
+        );
         const archived = yield* orchestrationEngine.dispatch(command).pipe(
-          Effect.as(true),
           Effect.catchCause((cause) =>
             Effect.logWarning("thread.auto-archive.dispatch-failed", {
               threadId: thread.id,
               cause,
-            }).pipe(Effect.as(false)),
+            }).pipe(Effect.as(null)),
           ),
         );
-        if (archived) {
+        if (archived !== null) {
           archivedCount += 1;
           // Archiving stops what the thread had running, as it does from the
-          // sidebar: its runtimes and its settled children's, which the
-          // archive took with it.
-          const family = [
-            thread.id,
-            ...snapshot.threads
-              .filter((entry) => entry.parentThreadId === thread.id && entry.attachedToParent)
-              .map((entry) => entry.id),
-          ];
+          // sidebar: its runtimes and those of the settled children the
+          // archive took with it. A child it separated keeps running.
+          const takenAlong =
+            cursor === null
+              ? []
+              : yield* threadsArchivedWith(orchestrationEngine, {
+                  commandId: command.commandId,
+                  threadId: thread.id,
+                  fromSequenceExclusive: cursor,
+                  throughSequence: archived.sequence,
+                }).pipe(
+                  Effect.catchCause((cause) =>
+                    Effect.logWarning("thread.auto-archive.archived-children-read-failed", {
+                      threadId: thread.id,
+                      cause,
+                    }).pipe(Effect.as([])),
+                  ),
+                );
+          const family = [thread.id, ...takenAlong];
           for (const threadId of family) {
             yield* orchestrationEngine
               .dispatch({

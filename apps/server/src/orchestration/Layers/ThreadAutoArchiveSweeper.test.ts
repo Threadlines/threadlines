@@ -1,5 +1,8 @@
 import {
+  type CommandId,
+  EventId,
   type OrchestrationCommand,
+  type OrchestrationEvent,
   type OrchestrationSession,
   type OrchestrationThreadShell,
   ProjectId,
@@ -156,9 +159,31 @@ describe("ThreadAutoArchiveSweeper", () => {
     readonly threads: readonly OrchestrationThreadShell[];
     readonly failingThreadIds?: ReadonlySet<ThreadId>;
     readonly settingsShape?: ServerSettingsShape;
+    /** The children each parent's archive takes along, as the decider would decide. */
+    readonly takesAlong?: Readonly<Record<string, readonly string[]>>;
   }) {
     const dispatched: Array<Extract<OrchestrationCommand, { type: "thread.archive" }>> = [];
     const stopped: string[] = [];
+    // What the archives wrote: each child taken along gets its own archived event.
+    const written: OrchestrationEvent[] = [];
+    const writeArchived = (commandId: CommandId, threadId: string) =>
+      written.push({
+        sequence: written.length + 2,
+        eventId: EventId.make(`event-${written.length}`),
+        type: "thread.archived",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make(threadId),
+        occurredAt: new Date(NOW_MS).toISOString(),
+        commandId,
+        causationEventId: null,
+        correlationId: null,
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make(threadId),
+          archivedAt: new Date(NOW_MS).toISOString(),
+          updatedAt: new Date(NOW_MS).toISOString(),
+        },
+      } as OrchestrationEvent);
     let onDispatch: (() => void) | null = null;
     // Bounded so a regression that never dispatches fails in seconds instead
     // of hanging until the suite-wide timeout.
@@ -171,7 +196,8 @@ describe("ThreadAutoArchiveSweeper", () => {
         };
       });
     const orchestrationEngine: OrchestrationEngineShape = {
-      readEvents: () => Stream.empty,
+      readEvents: (fromSequenceExclusive) =>
+        Stream.fromIterable(written.filter((event) => event.sequence > fromSequenceExclusive)),
       readThreadEvents: () => Effect.succeed([]),
       getCommandReceipt: () => Effect.succeed(Option.none()),
       dispatch: (command) => {
@@ -196,7 +222,13 @@ describe("ThreadAutoArchiveSweeper", () => {
                     detail: "test dispatch failure",
                   }),
                 )
-              : Effect.succeed({ sequence: dispatched.length }),
+              : Effect.sync(() => {
+                  writeArchived(command.commandId, command.threadId);
+                  for (const child of input.takesAlong?.[command.threadId] ?? []) {
+                    writeArchived(command.commandId, child);
+                  }
+                  return { sequence: written.length + 1 };
+                }),
           ),
         );
       },
@@ -257,9 +289,18 @@ describe("ThreadAutoArchiveSweeper", () => {
       threads: [
         idleParent,
         thread("idle-child", { parentThreadId: idleParent.id, attachedToParent: true }),
+        // Its archive separates this one (a command still running in its
+        // terminal), so it keeps running.
+        thread("separated-child", {
+          parentThreadId: idleParent.id,
+          attachedToParent: true,
+          updatedAt: daysAgo(1),
+          latestUserMessageAt: daysAgo(1),
+        }),
         busyParent,
         { ...busyChild, session: runningSession(busyChild.id) },
       ],
+      takesAlong: { [idleParent.id]: ["idle-child"] },
     });
 
     await runtime!.runPromise(sweeper.sweepNow());
@@ -268,6 +309,7 @@ describe("ThreadAutoArchiveSweeper", () => {
     );
     expect(dispatched.map((command) => command.threadId)).not.toContain(busyParent.id);
     expect(stopped).toEqual(expect.arrayContaining([idleParent.id, "idle-child"]));
+    expect(stopped).not.toContain("separated-child");
   });
 
   it("does not archive protected or recently active threads", async () => {

@@ -12,6 +12,7 @@
  * `baseFor`. The rules for who may ask live in `@threadlines/shared/childThreads`,
  * shared with the room MCP server.
  */
+import { hasLiveCommandRun } from "@threadlines/shared/commandRuns";
 import { hasLiveSideTurn } from "@threadlines/shared/sideTurns";
 import { exceedsRuntimeMode, saferRuntimeMode } from "@threadlines/shared/runtimeMode";
 import {
@@ -59,6 +60,7 @@ import { isProjectLeadThread } from "./commandInvariants.ts";
 
 import { checkoutSelectedEvents } from "./threadCheckout.ts";
 import { currentAgentModel, messageAgentModels } from "./messageAgentModels.ts";
+import { hasBackgroundWork } from "./sessionBackgroundTasks.ts";
 
 type PlannedEvent = Omit<OrchestrationEvent, "sequence">;
 /** Event fields for an event on `threadId`'s aggregate, from the command being decided. */
@@ -1601,9 +1603,21 @@ function separationEvents(
   ];
 }
 
-/** Whether a child has work going: a turn, a start, background work, or work it asked for. */
-export function childHasLiveWork(thread: OrchestrationThread): boolean {
+/**
+ * Whether a child has work going: a turn, a start, background work its agent
+ * waits on, or work it asked for. `running` also counts what keeps running
+ * without its agent and dies with its runtime or terminal: background work
+ * nobody waits on (a dev server) and a command still going in its terminal.
+ * Ask for it where the thread is about to be stopped and its terminals
+ * closed (archiving a parent's family). A thread's move waits on the same
+ * pieces (threadMoveDecisions.ts, workWaits).
+ */
+export function childHasLiveWork(
+  thread: OrchestrationThread,
+  options: { readonly running?: boolean } = {},
+): boolean {
   const session = thread.session;
+  const running = options.running === true;
   const latestTurnId = thread.latestTurn?.turnId ?? null;
   return (
     // Waiting on the user counts too: an approval, a question, a plan to act on.
@@ -1619,7 +1633,8 @@ export function childHasLiveWork(thread: OrchestrationThread): boolean {
     thread.latestTurn?.state === "running" ||
     session?.status === "running" ||
     session?.status === "starting" ||
-    (session?.awaitedBackgroundTaskCount ?? session?.pendingBackgroundTaskCount ?? 0) > 0 ||
+    hasBackgroundWork(session, running ? "any" : "awaited") ||
+    (running && hasLiveCommandRun(thread.commandRuns)) ||
     (thread.queuedFollowUps ?? []).length > 0 ||
     hasLiveSideTurn(thread) ||
     thread.childRequests.open.length > 0
@@ -1929,9 +1944,11 @@ export function childArchivePlan(
     (child) => child.archivedAt === null,
   );
   // A child its parent still has a request open for is at work for it, even
-  // one with nothing running yet because it is still being set up.
+  // one with nothing running yet because it is still being set up. Archiving
+  // stops a child's runtime and closes its terminals, so a dev server or a
+  // command still going in its terminal keeps it out too.
   const live = (child: OrchestrationThread) =>
-    childHasLiveWork(child) || requestsFor(parent, child.id).length > 0;
+    childHasLiveWork(child, { running: true }) || requestsFor(parent, child.id).length > 0;
   return {
     archive: children.filter((child) => !live(child)),
     separate: children.filter(live),
