@@ -76,6 +76,7 @@ import {
 import { closeConnectComputerDialog } from "./settings/connections/JoinComputerDialog";
 import { closeProjectSetupDialog } from "./ProjectSetupDialog";
 import { closeThreadMoveDialog } from "./ThreadMoveDialog";
+import { closeMoveThreadsDialog } from "./MoveThreadsDialog";
 import { useComposerDraftStore, DraftId } from "../composerDraftStore";
 import { connectEnvironmentBrowserHost } from "./browser/previewAutomationHost";
 import { closeThreadBrowser, useBrowserPageWatchers } from "./browser/BrowserHostLayer";
@@ -884,6 +885,14 @@ function toShellThread(thread: OrchestrationReadModel["threads"][number]) {
     doneOverride: thread.doneOverride,
     lastSeenAt: thread.lastSeenAt,
     session: thread.session,
+    // A child thread's family, as the server's shell stream carries it: the
+    // app knows a thread's parent from the first snapshot, not only once a
+    // later detail stream reports it.
+    parentThreadId: thread.parentThreadId,
+    parentTurnId: thread.parentTurnId,
+    attachedToParent: thread.attachedToParent,
+    handedBackAt: thread.handedBackAt,
+    handedBackTurnId: thread.handedBackTurnId,
     latestUserMessageAt:
       thread.messages.findLast((message) => message.role === "user")?.createdAt ?? null,
     hasPendingApprovals: false,
@@ -3431,6 +3440,7 @@ export function registerChatViewSuiteHooks(): void {
     __resetComputerLinksForTests();
     closeConnectComputerDialog();
     closeThreadMoveDialog();
+    closeMoveThreadsDialog();
     __resetThreadMovesForTests();
     __resetMoveBatchProgressForTests();
     closeProjectSetupDialog();
