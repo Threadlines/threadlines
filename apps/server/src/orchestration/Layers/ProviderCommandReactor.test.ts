@@ -4128,6 +4128,26 @@ describe("ProviderCommandReactor", () => {
         payload: { detail: expect.stringContaining("raised above what it may use") },
       });
       expect(harness.sendTurn).not.toHaveBeenCalled();
+      // Marked before the failure was said, so no history, and no wait the
+      // agent makes, takes it as sent.
+      const message = (await harness.readModel()).threads
+        .find((entry) => entry.id === threadId)
+        ?.messages.find((entry) => entry.id === asMessageId("message-raised-thread"));
+      expect(message?.notSent).toBe(true);
+    });
+
+    it("marks an agent's message never sent when its turn fails before the provider takes it", async () => {
+      const harness = await createHarness();
+      harness.sendTurn.mockImplementationOnce(() =>
+        Effect.die(new Error("the provider refused in test harness")),
+      );
+      await createOutsideThread(harness, "send-fails");
+      await outsideTurn(harness, "send-fails");
+      const message = async () =>
+        (await harness.readModel()).threads
+          .find((entry) => entry.id === ThreadId.make("send-fails"))
+          ?.messages.find((entry) => entry.id === asMessageId("message-send-fails"));
+      await waitFor(async () => (await message())?.notSent === true);
     });
 
     it("doesn't send a lead chat's pass the user raised above its ceiling after it was accepted", async () => {
@@ -4258,7 +4278,7 @@ describe("ProviderCommandReactor", () => {
       // A retry accepted just before the mark landed: the mark lands first here.
       await Effect.runPromise(
         harness.engine.dispatch({
-          type: "thread.lead-pass.not-run",
+          type: "thread.message.not-run",
           commandId: CommandId.make("cmd-mark-not-run"),
           threadId,
           messageId: asMessageId("pass-message"),

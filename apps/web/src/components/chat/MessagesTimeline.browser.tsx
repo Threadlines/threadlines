@@ -1455,7 +1455,7 @@ describe("MessagesTimeline", () => {
     }
   });
 
-  it("folds an outside agent's prompt under its name, never as the user's", async () => {
+  it("folds an outside agent's prompt under its name, never as the user's, and says when it never ran", async () => {
     const prompt = {
       id: MessageId.make("message-outside"),
       role: "user" as const,
@@ -1467,11 +1467,23 @@ describe("MessagesTimeline", () => {
       createdAt: MESSAGE_CREATED_AT,
       streaming: false,
     };
+    const refused = {
+      ...prompt,
+      id: MessageId.make("message-outside-refused"),
+      text: "Also bump the timeout.",
+      notSent: true as const,
+    };
     const screen = await renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         timelineEntries={[
           { id: prompt.id, kind: "message", createdAt: MESSAGE_CREATED_AT, message: prompt },
+          {
+            id: refused.id,
+            kind: "message",
+            createdAt: MESSAGE_CREATED_AT,
+            message: refused,
+          },
         ]}
       />,
     );
@@ -1480,12 +1492,19 @@ describe("MessagesTimeline", () => {
       await expect
         .element(page.getByRole("button", { name: "Fix the flaky upload test." }))
         .toHaveAttribute("aria-expanded", "false");
-      const row = document.querySelector("[data-outside-agent-message]");
-      expect(row?.querySelector("[data-outside-agent-message-author]")?.textContent).toBe(
+      const rows = [...document.querySelectorAll("[data-outside-agent-message]")];
+      expect(rows[0]?.querySelector("[data-outside-agent-message-author]")?.textContent).toBe(
         "Claude Code",
       );
       expect(document.body.textContent).not.toContain("one run in five");
       expect(document.querySelector("[data-user-message-body]")).toBeNull();
+      // Only the one whose turn never ran says so.
+      expect(
+        rows.map(
+          (row) =>
+            row.querySelector('[data-thread-message-outcome="not-sent"]')?.textContent ?? null,
+        ),
+      ).toEqual([null, "Not sent"]);
     } finally {
       await screen.unmount();
     }

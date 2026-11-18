@@ -422,7 +422,7 @@ describe("lead chat passes", () => {
     ).model;
     const stopped = (
       await run(ran, {
-        type: "thread.lead-pass.not-run",
+        type: "thread.message.not-run",
         commandId: CommandId.make("not-run-stopped"),
         threadId: OTHER,
         messageId: PASS_MESSAGE,
@@ -449,7 +449,7 @@ describe("lead chat passes", () => {
     ).model;
     // The provider layer's last check refused it: the thread's access went up.
     const refused = await run(ran, {
-      type: "thread.lead-pass.not-run",
+      type: "thread.message.not-run",
       commandId: CommandId.make("not-run"),
       threadId: OTHER,
       messageId: PASS_MESSAGE,
@@ -468,7 +468,7 @@ describe("lead chat passes", () => {
     expect(
       (
         await run(refused.model, {
-          type: "thread.lead-pass.not-run",
+          type: "thread.message.not-run",
           commandId: CommandId.make("not-run-again"),
           threadId: OTHER,
           messageId: PASS_MESSAGE,

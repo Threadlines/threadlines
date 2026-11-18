@@ -3269,34 +3269,46 @@ const make = Effect.gen(function* () {
         });
       }).pipe(Effect.ignoreCause({ log: true }));
 
-    // A lead chat's pass refused at the last check never reached the agent:
-    // the decider marks it so no history carries it, and the lead hears.
-    const markPassNotRun = (reason: "ceiling" | "stopped") =>
-      Effect.gen(function* () {
-        yield* orchestrationEngine.dispatch({
-          type: "thread.lead-pass.not-run",
-          commandId: serverCommandId("lead-pass-not-run"),
-          threadId: event.payload.threadId,
-          messageId: event.payload.messageId,
-          reason,
-          createdAt: yield* nowIso,
-        });
-      }).pipe(Effect.ignoreCause({ log: true }));
+    // A message no one can send again never reached the agent: a lead
+    // chat's pass, or an outside agent's message. The decider marks it so no
+    // history carries it (and a pass's lead hears); anything else it leaves.
+    const unsendable =
+      message.fromThread?.ceiling !== undefined || message.fromOutside !== undefined;
+    const markNotRun = (reason: "ceiling" | "stopped" | "failed") =>
+      unsendable
+        ? Effect.gen(function* () {
+            yield* orchestrationEngine.dispatch({
+              type: "thread.message.not-run",
+              commandId: serverCommandId("message-not-run"),
+              threadId: event.payload.threadId,
+              messageId: event.payload.messageId,
+              reason,
+              createdAt: yield* nowIso,
+            });
+          }).pipe(Effect.ignoreCause({ log: true }))
+        : Effect.void;
 
-    // What else a turn that could not start ends: its hand-off, its pass.
-    const afterFailedStart = (cause: Cause.Cause<unknown>) =>
-      Cause.hasInterruptsOnly(cause)
-        ? Effect.void
-        : Effect.andThen(
-            failHandOffForFailedStart(formatFailureDetail(cause)),
-            formatFailureDetail(cause).includes(PASS_ABOVE_CEILING_DETAIL)
-              ? markPassNotRun("ceiling")
-              : Effect.void,
-          );
+    // A turn that could not start: a message that never reached the agent
+    // is marked first, so whoever watches the thread stop working (an outside
+    // agent's thread_wait) already sees it unsent; then the failure is
+    // reported and its hand-off ends. `beforeSend`: it failed before the
+    // provider was given the turn, so its text went nowhere.
+    const reportFailedStart = (cause: Cause.Cause<unknown>, beforeSend: boolean) => {
+      if (Cause.hasInterruptsOnly(cause)) return handleTurnStartFailure(cause);
+      const detail = formatFailureDetail(cause);
+      const mark = detail.includes(PASS_ABOVE_CEILING_DETAIL)
+        ? markNotRun("ceiling")
+        : beforeSend
+          ? markNotRun("failed")
+          : Effect.void;
+      return mark.pipe(
+        Effect.andThen(handleTurnStartFailure(cause)),
+        Effect.andThen(failHandOffForFailedStart(detail)),
+      );
+    };
 
-    const recoverTurnStartFailure = (cause: Cause.Cause<unknown>) =>
-      handleTurnStartFailure(cause).pipe(
-        Effect.andThen(afterFailedStart(cause)),
+    const recoverTurnStartFailure = (cause: Cause.Cause<unknown>, beforeSend: boolean) =>
+      reportFailedStart(cause, beforeSend).pipe(
         Effect.catchCause((recoveryCause) =>
           Effect.logWarning("provider command reactor failed to recover turn start failure", {
             eventType: event.type,
@@ -3333,11 +3345,10 @@ const make = Effect.gen(function* () {
         threadId: event.payload.threadId,
         messageId: event.payload.messageId,
       });
+      // A pass or an outside agent's message never ran: marked (before the
+      // thread stops working, like a failed start), so no history carries it.
+      yield* markNotRun("stopped");
       yield* dropStart("Stopped before the turn started.");
-      // A lead chat's pass never ran: marked, so no later history carries it.
-      if (message.fromThread?.ceiling !== undefined) {
-        yield* markPassNotRun("stopped");
-      }
       return true;
     });
 
@@ -3532,12 +3543,7 @@ const make = Effect.gen(function* () {
             ),
         }),
         Effect.map(Option.some),
-        Effect.catchCause((cause) =>
-          handleTurnStartFailure(cause).pipe(
-            Effect.andThen(afterFailedStart(cause)),
-            Effect.as(Option.none()),
-          ),
-        ),
+        Effect.catchCause((cause) => reportFailedStart(cause, true).pipe(Effect.as(Option.none()))),
       );
 
       if (Option.isNone(sendTurnRequest)) {
@@ -3599,6 +3605,9 @@ const make = Effect.gen(function* () {
                 : {}),
             }
           : undefined;
+      // Whether the provider took the turn: a failure before that left the
+      // message's text with no agent; one after (bookkeeping) did not.
+      let providerTookTurn = false;
       yield* providerService
         .sendTurn({
           ...turnRequest,
@@ -3615,6 +3624,11 @@ const make = Effect.gen(function* () {
         })
         .pipe(
           // The provider has the history now, whatever the bookkeeping below does.
+          Effect.tap(() =>
+            Effect.sync(() => {
+              providerTookTurn = true;
+            }),
+          ),
           Effect.tap(() => historyDebtPaid),
           Effect.onError(() => historyDebtReturned),
           Effect.tap((turn) =>
@@ -3643,7 +3657,7 @@ const make = Effect.gen(function* () {
               ),
             }),
           ),
-          Effect.catchCause(recoverTurnStartFailure),
+          Effect.catchCause((cause) => recoverTurnStartFailure(cause, !providerTookTurn)),
           Effect.forkScoped,
         );
     });

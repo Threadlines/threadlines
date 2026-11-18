@@ -147,6 +147,7 @@ import { carriedBackgroundTasks } from "./sessionBackgroundTasks.ts";
 import { questionsClosedByUserMessage, unansweredResponseRefusal } from "./userInput.ts";
 import {
   isContinueTrigger,
+  latestTurnStartFor,
   RESTART_CONTINUE_MESSAGE,
   restartContinueVerdict,
   turnStartingMessage,
@@ -349,7 +350,7 @@ const personWrote = (command: {
  * is `notSent`, one line in the thread, and a note for the lead's next turn
  * when it is still there. `from` is where it was refused: taken off the
  * queue (the unqueue marks it), or after the queue let it go, right before
- * it reached the agent (`thread.lead-pass.not-run`).
+ * it reached the agent (`thread.message.not-run`).
  */
 function passCeilingCancelEvents(
   readModel: OrchestrationReadModel,
@@ -434,6 +435,25 @@ function passCeilingCancelEvents(
           },
         ]),
   ];
+}
+
+/**
+ * Marks an outside agent's message that never reached the agent `notSent`
+ * (docs/design/outside-agents.md): the event every client already reads as
+ * "never reached the agent" (`thread.continue-at-reset-skipped`, named for
+ * its first use). The failure or note beside it says why.
+ */
+function outsideNotSentEvent(
+  base: Omit<OrchestrationEvent, "sequence" | "type" | "payload">,
+  threadId: ThreadId,
+  messageId: MessageId,
+  createdAt: string,
+): PlannedOrchestrationEvent {
+  return {
+    ...base,
+    type: "thread.continue-at-reset-skipped",
+    payload: { threadId, messageId, skippedAt: createdAt },
+  };
 }
 
 type DecideOrchestrationCommandResult =
@@ -2600,12 +2620,37 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       );
     }
 
-    // Refused right before it reached the agent (the provider reactor's last
-    // check): marked, said once, and the lead hears on its next turn.
-    case "thread.lead-pass.not-run": {
+    // Never reached the agent after the queue let it go (the provider
+    // reactor's last check, Stop, or a start that failed): a message no one
+    // can send again is marked, so no history carries it.
+    case "thread.message.not-run": {
       const target = yield* requireThread({ readModel, command, threadId: command.threadId });
       const message = target.messages.find((entry) => entry.id === command.messageId);
-      if (message === undefined || message.fromThread?.ceiling === undefined || message.notSent) {
+      if (message === undefined || message.notSent === true) {
+        return [];
+      }
+      // An outside agent's message: the failure already said why in the
+      // thread, and its tools tell the agent it was not sent. The event is
+      // the one every client already reads as "never reached the agent".
+      if (message.fromOutside !== undefined) {
+        return [
+          outsideNotSentEvent(
+            withEventBase({
+              aggregateKind: "thread",
+              aggregateId: target.id,
+              occurredAt: command.createdAt,
+              commandId: command.commandId,
+            }),
+            target.id,
+            message.id,
+            command.createdAt,
+          ),
+        ];
+      }
+      // A lead chat's pass, refused at its ceiling or stopped: marked, said
+      // once, and the lead hears on its next turn. One that failed otherwise
+      // can be sent again by the user, so it stays as it is.
+      if (message.fromThread?.ceiling === undefined || command.reason === "failed") {
         return [];
       }
       return passCeilingCancelEvents(
@@ -5322,27 +5367,46 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         });
       }
       if (verdict.kind === "note") {
-        return {
-          ...withEventBase({
+        const base = () =>
+          withEventBase({
             aggregateKind: "thread",
             aggregateId: command.threadId,
             occurredAt: command.createdAt,
             commandId: command.commandId,
-          }),
-          type: "thread.activity-appended",
-          payload: {
-            threadId: command.threadId,
-            activity: {
-              id: command.activityId,
-              tone: "error",
-              kind: "provider.session.restart-interrupted",
-              summary: "Turn interrupted by a server restart",
-              payload: { detail: verdict.detail },
-              turnId: command.turnId,
-              createdAt: command.createdAt,
+          });
+        // An outside agent's message whose turn never reached the provider
+        // (it was still starting, and no provider turn began after it was
+        // written) never reached the agent either: marked, as
+        // `thread.message.not-run` marks one, since no one can send it again.
+        const lastStart =
+          command.turnId === null ? latestTurnStartFor(thread, command.participantId) : undefined;
+        const unsent =
+          lastStart !== undefined &&
+          (thread.latestTurn === null ||
+            Date.parse(thread.latestTurn.requestedAt) < Date.parse(lastStart.createdAt))
+            ? lastStart
+            : undefined;
+        return [
+          {
+            ...base(),
+            type: "thread.activity-appended",
+            payload: {
+              threadId: command.threadId,
+              activity: {
+                id: command.activityId,
+                tone: "error",
+                kind: "provider.session.restart-interrupted",
+                summary: "Turn interrupted by a server restart",
+                payload: { detail: verdict.detail },
+                turnId: command.turnId,
+                createdAt: command.createdAt,
+              },
             },
           },
-        };
+          ...(unsent?.fromOutside !== undefined && unsent.notSent !== true
+            ? [outsideNotSentEvent(base(), command.threadId, unsent.id, command.createdAt)]
+            : []),
+        ];
       }
       return yield* decideCommandSequence({
         commands: [
