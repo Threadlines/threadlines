@@ -28,6 +28,10 @@ import {
   type OutsideAgentReach,
   type OutsideAgentsSnapshot,
   ProjectId,
+  type ProjectBrief,
+  type ProjectBriefSetInput,
+  type ProjectBriefSetResult,
+  type ProjectContextSnapshot,
   ProviderDriverKind,
   ProviderInstanceId,
   type RelayAccessSnapshot,
@@ -454,6 +458,18 @@ const savedComputersHarness = vi.hoisted(() => {
   return harness;
 });
 
+/**
+ * Computers that keep project briefs, by environment: readEnvironmentConnection
+ * answers with one of these where it is set, so each computer has its own.
+ */
+const projectContextHarness = vi.hoisted(() => {
+  const harness = {
+    connections: new Map<string, unknown>(),
+    reset: () => harness.connections.clear(),
+  };
+  return harness;
+});
+
 const relayAccessHarness = vi.hoisted(() => {
   let snapshot: RelayAccessSnapshot | null = null;
   const listeners = new Set<(snapshot: RelayAccessSnapshot) => void>();
@@ -609,7 +625,8 @@ vi.mock("../../environments/runtime", () => {
     ensureEnvironmentConnectionBootstrapped: async () => undefined,
     getPrimaryEnvironmentConnection: () => primaryConnection,
     readBackendEnvironmentConnection: () => primaryConnection,
-    readEnvironmentConnection: () => primaryConnection,
+    readEnvironmentConnection: (environmentId: string) =>
+      projectContextHarness.connections.get(environmentId) ?? primaryConnection,
     readEnvironmentDescriptor: () => null,
     listEnvironmentConnections: () => [primaryConnection],
     reconnectSavedEnvironment: savedComputersHarness.reconnect,
@@ -4512,6 +4529,216 @@ describe("Agent Instructions", () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
     await expect.element(contents).toHaveValue("newer edit");
     await expect.element(page.getByRole("button", { name: "Save", exact: true })).toBeEnabled();
+  });
+});
+
+describe("Agent Instructions › Brief", () => {
+  const THIS_MAC = EnvironmentId.make("env-this-mac");
+  const STUDIO = EnvironmentId.make("env-studio");
+  const SHARED_PATH = "/repo/app";
+  const projectOn = (environmentId: EnvironmentId) => ProjectId.make(`project-${environmentId}`);
+
+  /** A computer with the project (the same repository on each), and the briefs it keeps. */
+  const seedComputer = (environmentId: EnvironmentId, brief: ProjectBrief | null) => {
+    useStore.getState().syncServerShellSnapshot(
+      {
+        snapshotSequence: 1,
+        projects: [
+          {
+            id: projectOn(environmentId),
+            kind: "workspace" as const,
+            title: "app",
+            workspaceRoot: SHARED_PATH,
+            repositoryIdentity: {
+              canonicalKey: "github.com/acme/app",
+              locator: {
+                source: "git-remote",
+                remoteName: "origin",
+                remoteUrl: "https://github.com/acme/app.git",
+              },
+            },
+            defaultModelSelection: null,
+            scripts: [],
+            createdAt: "2026-11-01T00:00:00.000Z",
+            updatedAt: "2026-11-01T00:00:00.000Z",
+          },
+        ],
+        threads: [],
+        updatedAt: "2026-11-01T00:00:00.000Z",
+      },
+      environmentId,
+    );
+    __setEnvironmentApiOverrideForTests(environmentId, {
+      providers: {
+        getInstructionFiles: async ({ cwd }: { cwd: string }) => ({
+          cwd,
+          generatedAt: "2026-11-01T00:00:00.000Z",
+          instructionFiles: [],
+        }),
+      },
+    } as unknown as EnvironmentApi);
+
+    // The computer's server: saves count revisions and refuse a stale one.
+    let snapshot: ProjectContextSnapshot = { briefs: brief === null ? [] : [brief] };
+    const listeners = new Set<(next: ProjectContextSnapshot) => void>();
+    const current = (projectId: ProjectId): ProjectBrief =>
+      snapshot.briefs.find((entry) => entry.projectId === projectId) ?? {
+        projectId,
+        text: "",
+        revision: 0,
+        updatedAt: null,
+      };
+    const computer = {
+      emit(next: ProjectContextSnapshot) {
+        snapshot = next;
+        for (const listener of listeners) listener(next);
+      },
+      textOf: (projectId: ProjectId) => current(projectId).text,
+      setBrief: vi.fn(async (input: ProjectBriefSetInput): Promise<ProjectBriefSetResult> => {
+        const brief = current(input.projectId);
+        if (brief.revision !== input.expectedRevision) return { outcome: "stale", brief };
+        const saved: ProjectBrief = {
+          projectId: input.projectId,
+          text: input.text,
+          revision: brief.revision + 1,
+          updatedAt: "2026-11-18T00:00:00.000Z",
+        };
+        computer.emit({
+          briefs: [
+            ...snapshot.briefs.filter((entry) => entry.projectId !== saved.projectId),
+            saved,
+          ],
+        });
+        return { outcome: "saved", brief: saved };
+      }),
+    };
+    projectContextHarness.connections.set(environmentId, {
+      client: {
+        projectContext: {
+          subscribe: (listener: (next: ProjectContextSnapshot) => void) => {
+            listeners.add(listener);
+            listener(snapshot);
+            return () => listeners.delete(listener);
+          },
+          setBrief: computer.setBrief,
+        },
+      },
+    });
+    return computer;
+  };
+
+  const brief = (environmentId: EnvironmentId, text: string, revision: number): ProjectBrief => ({
+    projectId: projectOn(environmentId),
+    text,
+    revision,
+    updatedAt: "2026-11-10T00:00:00.000Z",
+  });
+
+  const describeComputers = (keepsBriefs: boolean) => {
+    writePrimaryEnvironmentDescriptor({
+      environmentId: THIS_MAC,
+      label: "This Mac",
+      platform: { os: "darwin", arch: "arm64" },
+      serverVersion: "0.1.0",
+      capabilities: { repositoryIdentity: true, projectContext: keepsBriefs },
+    });
+    savedComputersHarness.registryById[STUDIO] = { environmentId: STUDIO, label: "Studio" };
+    savedComputersHarness.runtimeById[STUDIO] = {
+      connectionState: "connected",
+      descriptor: { label: "Studio", capabilities: { projectContext: true } },
+    };
+  };
+
+  const renderPage = () =>
+    renderWithTestRouter(
+      <TestAppProviders>
+        <AgentInstructionsSettingsPanel />
+      </TestAppProviders>,
+    );
+
+  afterEach(() => {
+    __resetEnvironmentApiOverridesForTests();
+    projectContextHarness.reset();
+    useStore.setState({ environmentStateById: {}, activeEnvironmentId: null });
+    delete savedComputersHarness.registryById[STUDIO];
+    delete savedComputersHarness.runtimeById[STUDIO];
+    resetPrimaryEnvironmentDescriptorForTests();
+  });
+
+  it("copies the brief to a computer that differs, then saves an edit on every computer", async () => {
+    describeComputers(true);
+    const mac = seedComputer(THIS_MAC, brief(THIS_MAC, "Branch from develop.", 2));
+    const studio = seedComputer(STUDIO, brief(STUDIO, "An older rule.", 5));
+
+    await renderPage();
+
+    const box = page.getByLabelText("Project brief");
+    await expect.element(box).toHaveValue("Branch from develop.");
+    await expect.element(page.getByText("Studio has a different brief.")).toBeVisible();
+
+    await page.getByRole("button", { name: "Use this brief on Studio too" }).click();
+    await vi.waitFor(() =>
+      expect(studio.setBrief).toHaveBeenCalledWith({
+        projectId: projectOn(STUDIO),
+        text: "Branch from develop.",
+        expectedRevision: 5,
+      }),
+    );
+    await expect.element(page.getByText("Saved on Studio.")).toBeVisible();
+    await expect.element(page.getByText("Studio has a different brief.")).not.toBeInTheDocument();
+
+    await box.fill("Branch from main.");
+    await page.getByRole("button", { name: "Save brief" }).click();
+    await expect.element(page.getByText("Saved on this device and Studio.")).toBeVisible();
+    expect(mac.setBrief).toHaveBeenCalledWith({
+      projectId: projectOn(THIS_MAC),
+      text: "Branch from main.",
+      expectedRevision: 2,
+    });
+    expect(studio.setBrief).toHaveBeenLastCalledWith({
+      projectId: projectOn(STUDIO),
+      text: "Branch from main.",
+      expectedRevision: 6,
+    });
+    expect(studio.textOf(projectOn(STUDIO))).toBe("Branch from main.");
+    await expect.element(box).toHaveValue("Branch from main.");
+  });
+
+  it("shows the newer brief when another device saved first, and doesn't overwrite it", async () => {
+    describeComputers(true);
+    const mac = seedComputer(THIS_MAC, brief(THIS_MAC, "Branch from develop.", 2));
+    const studio = seedComputer(STUDIO, brief(STUDIO, "Branch from develop.", 1));
+
+    await renderPage();
+
+    const box = page.getByLabelText("Project brief");
+    await expect.element(box).toHaveValue("Branch from develop.");
+    await box.fill("My edit.");
+    // Another device saves while this page holds an edit.
+    mac.emit({ briefs: [brief(THIS_MAC, "Their newer rule.", 3)] });
+    await page.getByRole("button", { name: "Save brief" }).click();
+
+    await expect
+      .element(page.getByText("Another device saved this brief first.", { exact: false }))
+      .toBeVisible();
+    await expect.element(box).toHaveValue("Their newer rule.");
+    expect(mac.textOf(projectOn(THIS_MAC))).toBe("Their newer rule.");
+    expect(studio.setBrief).not.toHaveBeenCalled();
+
+    // The user's text comes back, to save over the newer one on purpose.
+    await page.getByRole("button", { name: "Bring back my edit" }).click();
+    await expect.element(box).toHaveValue("My edit.");
+  });
+
+  it("is hidden when the project's computer keeps no briefs", async () => {
+    describeComputers(false);
+    seedComputer(THIS_MAC, null);
+    seedComputer(STUDIO, null);
+
+    await renderPage();
+
+    await expect.element(page.getByText("No files")).toBeVisible();
+    await expect.element(page.getByLabelText("Project brief")).not.toBeInTheDocument();
   });
 });
 

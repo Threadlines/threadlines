@@ -60,6 +60,7 @@ import {
   UsersRoundIcon,
   MonitorUpIcon,
   CrownIcon,
+  ScrollTextIcon,
   FolderSyncIcon,
   WaypointsIcon,
   CalendarClockIcon,
@@ -189,6 +190,11 @@ import { editorLabel } from "./EditorOpenOptions";
 import { openConnectComputerDialog } from "./settings/connections/JoinComputerDialog";
 import { openThreadMoveDialog } from "./ThreadMoveDialog";
 import { openProjectSetupDialog } from "./ProjectSetupDialog";
+import {
+  PROJECT_BRIEF_MENU_LABEL,
+  projectBriefLocation,
+  useProjectBriefSupport,
+} from "../projectBrief";
 import { openReportProblemDialog } from "./ReportProblemDialog";
 import { openWhatsNewDialog } from "./WhatsNewDialog";
 import { APP_VERSION } from "../branding";
@@ -793,6 +799,7 @@ export function OpenCommandPaletteDialog() {
         ) ?? null)
       : null;
   const currentProjectCwd = currentProject?.cwd ?? null;
+  const supportsProjectBrief = useProjectBriefSupport();
   // The project's worktrees made outside Threadlines, asked for while the
   // palette is open: the action below shows only when there is one to add.
   const currentProjectRef = useMemo(
@@ -1728,6 +1735,31 @@ export function OpenCommandPaletteDialog() {
           },
         });
       }
+    }
+
+    if (
+      currentProject?.kind === "workspace" &&
+      supportsProjectBrief(currentProject.environmentId)
+    ) {
+      const briefProject = currentProject;
+      actionItems.push({
+        kind: "action",
+        value: "action:project-brief",
+        searchTerms: [
+          "brief",
+          "project brief",
+          "notes",
+          "instructions",
+          "rules",
+          briefProject.name,
+        ],
+        title: PROJECT_BRIEF_MENU_LABEL,
+        description: briefProject.name,
+        icon: <ScrollTextIcon className={ITEM_ICON_CLASS} />,
+        run: async () => {
+          await navigate(projectBriefLocation(briefProject));
+        },
+      });
     }
 
     actionItems.push({
