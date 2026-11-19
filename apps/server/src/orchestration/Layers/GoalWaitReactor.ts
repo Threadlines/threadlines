@@ -53,6 +53,23 @@ const changesWait = (event: OrchestrationEvent): boolean =>
   event.aggregateKind === "thread" &&
   WAIT_EVENT_PREFIXES.some((prefix) => event.type.startsWith(prefix));
 
+/**
+ * The user acted on the goal: paused, resumed, edited or cleared it, or
+ * pressed Stop. The decider sees most of these itself; a thread whose only
+ * wait is a scheduled-task card it can't see, so this says so.
+ */
+const userActedOnGoal = (event: OrchestrationEvent): boolean =>
+  (event.type === "thread.goal-set-requested" && event.payload.origin !== "automatic") ||
+  event.type === "thread.goal-clear-requested" ||
+  event.type === "thread.turn-interrupt-requested" ||
+  event.type === "thread.session-stop-requested";
+
+/** What a look at a thread carries besides its state. */
+interface SyncFlags {
+  readonly userActed: boolean;
+  readonly retryResume: boolean;
+}
+
 export const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
@@ -83,7 +100,10 @@ export const make = Effect.gen(function* () {
     );
   };
 
-  const syncThread = Effect.fn("GoalWaitReactor.syncThread")(function* (threadId: ThreadId) {
+  const syncThread = Effect.fn("GoalWaitReactor.syncThread")(function* (
+    threadId: ThreadId,
+    flags: SyncFlags,
+  ) {
     const thread = yield* projectionSnapshotQuery.getThreadDetailById(threadId).pipe(
       Effect.map(Option.getOrUndefined),
       Effect.orElseSucceed(() => undefined),
@@ -96,6 +116,8 @@ export const make = Effect.gen(function* () {
       goal: thread.goal,
       waiting: goalWaitOf(thread, scheduleAnswerWaiting) !== null,
       turnStarting: turnAboutToStart(thread),
+      userActed: flags.userActed,
+      retryResume: flags.retryResume,
     });
     // Forgetting a mark sends the provider nothing; a pause or resume needs
     // a provider that has one.
@@ -106,6 +128,8 @@ export const make = Effect.gen(function* () {
         commandId: CommandId.make(`goal-wait-sync:${threadId}:${randomUUID()}`),
         threadId,
         scheduleAnswerWaiting,
+        ...(flags.userActed ? { userActed: true } : {}),
+        ...(flags.retryResume ? { retryResume: true } : {}),
         createdAt: yield* nowIso,
       })
       .pipe(
@@ -116,23 +140,36 @@ export const make = Effect.gen(function* () {
       );
   });
 
-  // A thread already queued is looked at once: it is read as it stands then.
-  const queued = new Set<ThreadId>();
+  // A thread already queued is looked at once, read as it stands then; the
+  // flags of every request for it in between add up.
+  const queued = new Map<ThreadId, SyncFlags>();
   const worker = yield* makeDrainableWorker((threadId: ThreadId) =>
-    Effect.sync(() => queued.delete(threadId)).pipe(Effect.andThen(syncThread(threadId))),
-  );
-  const enqueue = (threadId: ThreadId) =>
     Effect.suspend(() => {
-      if (queued.has(threadId)) return Effect.void;
-      queued.add(threadId);
-      return worker.enqueue(threadId);
+      const flags = queued.get(threadId) ?? { userActed: false, retryResume: false };
+      queued.delete(threadId);
+      return syncThread(threadId, flags);
+    }),
+  );
+  const enqueue = (threadId: ThreadId, flags: Partial<SyncFlags> = {}) =>
+    Effect.suspend(() => {
+      const pending = queued.get(threadId);
+      const next = {
+        userActed: (pending?.userActed ?? false) || flags.userActed === true,
+        retryResume: (pending?.retryResume ?? false) || flags.retryResume === true,
+      };
+      queued.set(threadId, next);
+      return pending === undefined ? worker.enqueue(threadId) : Effect.void;
     });
 
   const start: GoalWaitReactorShape["start"] = Effect.fn("start")(function* () {
     const events = yield* orchestrationEngine.subscribeDomainEvents;
     yield* Effect.forkScoped(
       Stream.runForEach(events, (event) =>
-        changesWait(event) ? enqueue(event.aggregateId as ThreadId) : Effect.void,
+        userActedOnGoal(event)
+          ? enqueue(event.aggregateId as ThreadId, { userActed: true })
+          : changesWait(event)
+            ? enqueue(event.aggregateId as ThreadId)
+            : Effect.void,
       ),
     );
     // A scheduled-task card shown or answered changes no thread event.
@@ -146,18 +183,19 @@ export const make = Effect.gen(function* () {
               (threadId) => current.has(threadId) !== previous.has(threadId),
             );
             previous = current;
-            yield* Effect.forEach(changed, enqueue, { discard: true });
+            yield* Effect.forEach(changed, (threadId) => enqueue(threadId), { discard: true });
           }),
         ),
       );
     }
-    // Cards answered or threads finished while the server was down.
+    // Cards answered or threads finished while the server was down, and a
+    // resume a restart cut off before the provider confirmed it.
     const snapshot = yield* projectionSnapshotQuery
       .getShellSnapshot()
       .pipe(Effect.orElseSucceed(() => ({ threads: [] as const })));
     yield* Effect.forEach(
       snapshot.threads.filter((thread) => thread.goal !== null),
-      (thread) => enqueue(thread.id),
+      (thread) => enqueue(thread.id, { retryResume: true }),
       { discard: true },
     );
   });

@@ -4397,6 +4397,10 @@ const ThreadGoalWaitSyncCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   scheduleAnswerWaiting: Schema.Boolean,
+  /** The user acted on the goal (pause, resume, edit, clear, Stop) since the last look. */
+  userActed: Schema.optional(Schema.Boolean),
+  /** Send a resume not yet confirmed again (after a restart). */
+  retryResume: Schema.optional(Schema.Boolean),
   createdAt: IsoDateTime,
 });
 

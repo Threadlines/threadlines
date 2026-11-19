@@ -34,9 +34,9 @@ value, which clients decode as a closed set):
 - `user`: the user paused, resumed, edited, cleared or stopped the goal during
   the wait (or while it was paused for one). Nothing automatic happens until
   that wait is over; then the mark goes and the goal stays as the user left it.
-  A goal whose only wait is a scheduled-task card, and that wasn't paused yet,
-  is the one case the user's action can't be told apart (the decider can't see
-  the scheduler's cards).
+  The decider marks it when it sees the user's command; a wait on a
+  scheduled-task card is the scheduler's, not the thread's, so the reactor
+  also reports each user action (`userActed` on the sync).
 
 A provider report keeps the mark only while it means something
 (`carriedGoalWaitMark`); a goal that completed, blocked or hit a limit loses
@@ -49,23 +49,32 @@ A provider report keeps the mark only while it means something
 - Waiting, the goal active and unmarked: pause it (`paused`), and send
   `thread/goal/set` paused with `origin: "automatic"`, which Codex keeps out of
   the model's history.
-- The wait is over and the goal is paused with `paused` or `resuming`: resume
-  it (`resuming`, `thread/goal/set` active, automatic). Not while a turn is
+- The wait is over and the goal is paused with `paused`: resume it
+  (`resuming`, `thread/goal/set` active, automatic). A resume not yet confirmed
+  is sent again only on the reactor's pass at startup (`retryResume`), never on
+  every look. Not while a turn is
   about to start (the session is starting one, or a message waits in the
   queue): resumed while idle, Codex starts a goal turn at once, and it would
   race the turn that ended the wait. A report from a thread it started is
   queued in the same decision that settles its request, so the resume lands
   once the report's own turn runs, and the goal carries on inside it.
 - The wait is over and the mark is `user`: drop it, send nothing.
-- Waiting again before a resume was confirmed: back to `paused`.
+- Waiting again before a resume was confirmed: back to `paused`, and the pause
+  is sent, so a resume still on its way doesn't win.
+
+The provider reactor sends an automatic pause or resume only while the goal
+still carries that intent when it gets to it (`paused` for a pause, `resuming`
+on a paused goal for a resume): a goal the user took over, or that the
+provider ended or blocked in between, is left alone.
 
 ## Who asks
 
 `GoalWaitReactor` watches the events that change a wait or the goal (cards and
 their runs, started threads, the queue, the session, the goal, reverts, agents
 leaving) and the scheduler's waiting cards, and sends the sync for a thread
-whose goal should change. At start it looks at every thread with a goal once,
-which also resends a resume a restart cut off. It skips a pause or resume for
+whose goal should change, saying when the user acted on the goal or pressed
+Stop. At start it looks at every thread with a goal once, which also resends a
+resume a restart cut off. It skips a pause or resume for
 a provider that can't pause a goal.
 
 ## Per provider

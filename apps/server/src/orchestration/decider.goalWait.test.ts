@@ -83,11 +83,15 @@ const reported = (status: OrchestrationThreadGoal["status"]): OrchestrationComma
   createdAt: at(1),
 });
 
-const sync = (scheduleAnswerWaiting = false): OrchestrationCommand => ({
+const sync = (
+  scheduleAnswerWaiting = false,
+  flags: { readonly userActed?: boolean; readonly retryResume?: boolean } = {},
+): OrchestrationCommand => ({
   type: "thread.goal.wait.sync",
   commandId: CommandId.make(`sync-${Math.random()}`),
   threadId: THREAD,
   scheduleAnswerWaiting,
+  ...flags,
   createdAt: at(2),
 });
 
@@ -342,15 +346,43 @@ describe("decider goal wait pause", () => {
     expect(goalRequest(paused.events)).toMatchObject({ status: "paused" });
   });
 
-  it("resumes after a restart, whether the wait ended or the resume went unconfirmed", async () => {
+  it("resumes after a restart, and sends an unconfirmed resume again only then", async () => {
     // The mark is part of the goal the projection keeps, so it is there
     // after a restart: only the answer is new.
     const answered = cardAnswered(await pausedForCard());
     const resumed = await run(answered, sync());
     expect(goalRequest(resumed.events)).toMatchObject({ status: "active" });
-    // The server stopped before the provider got the resume: it goes again.
-    expect(goalRequest((await run(resumed.model, sync())).events)).toMatchObject({
-      status: "active",
-    });
+    // Not confirmed yet: an ordinary look sends nothing more.
+    expect((await run(resumed.model, sync())).events).toEqual([]);
+    // The server restarted before the provider got it: it goes again.
+    expect(
+      goalRequest((await run(resumed.model, sync(false, { retryResume: true }))).events),
+    ).toMatchObject({ status: "active" });
+  });
+
+  it("pauses again, sent, when a new wait starts before a resume was confirmed", async () => {
+    const resumed = (await run(cardAnswered(await pausedForCard()), sync())).model;
+    // The card came back (an undo) while the resume was on its way.
+    const again = await run(withCard(resumed), sync());
+    expect(goalRequest(again.events)).toMatchObject({ status: "paused", origin: "automatic" });
+    expect(goalOf(again.model)?.waitPause).toBe("paused");
+    // The resume lands first, then the pause: it stays ours, and paused.
+    const active = (await run(again.model, reported("active"))).model;
+    expect(goalOf(active)?.waitPause).toBe("paused");
+  });
+
+  it("keeps the user's pause when the only wait is a scheduled-task card", async () => {
+    // The decider can't see the scheduler's card when the user pauses; the
+    // reactor says the user acted.
+    const userPaused = await run(await threadWithActiveGoal(), userGoal("paused"));
+    expect(goalOf(userPaused.model)?.waitPause).toBeUndefined();
+    const taken = await run(userPaused.model, sync(true, { userActed: true }));
+    expect(goalRequest(taken.events)).toBeUndefined();
+    expect(goalOf(taken.model)?.waitPause).toBe("user");
+    // Our own look while the provider still reports it active: no pause of ours.
+    expect((await run(taken.model, sync(true))).events).toEqual([]);
+    // The card answered: nothing resumes it.
+    const confirmed = (await run(taken.model, reported("paused"))).model;
+    expect(goalRequest((await run(confirmed, sync(false))).events)).toBeUndefined();
   });
 });

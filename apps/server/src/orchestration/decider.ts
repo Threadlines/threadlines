@@ -5642,6 +5642,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         goal: thread.goal,
         waiting: goalWaitOf(thread, command.scheduleAnswerWaiting) !== null,
         turnStarting: turnAboutToStart(thread),
+        userActed: command.userActed,
+        retryResume: command.retryResume,
       });
       if (step === null) {
         return [];

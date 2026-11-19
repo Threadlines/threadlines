@@ -95,40 +95,49 @@ export function turnAboutToStart(
  * What to do with the thread's goal now: the mark it should carry, and what
  * to send the provider, if anything. Null: leave it as it is.
  *
+ * - The user acted on the goal (`userActed`: a pause, resume, edit, clear or
+ *   Stop) while the thread waits or while it carries our mark: it is theirs
+ *   for this wait.
  * - Waiting, an active goal with no mark: pause it.
  * - The wait is over and we paused it: resume it, marked `resuming` until the
- *   provider confirms (and again after a restart that came in between). Not
- *   while a turn is about to start: resumed while idle, the provider starts a
- *   goal turn of its own, and it would race the turn that ended the wait (a
- *   report, a command's output). Resumed while that turn runs, the goal
- *   carries on after it.
+ *   provider confirms. A resume not yet confirmed is sent again only when
+ *   asked (`retryResume`: after a restart), never on every look. Not while a
+ *   turn is about to start: resumed while idle, the provider starts a goal
+ *   turn of its own, and it would race the turn that ended the wait (a report,
+ *   a command's output). Resumed while that turn runs, the goal carries on
+ *   after it.
  * - The wait is over and the user acted during it: forget the mark.
- * - Waiting again before the resume was confirmed: paused again, for this wait.
+ * - Waiting again before a resume was confirmed: pause it again, sent, so a
+ *   resume still on its way doesn't win.
  */
 export function goalWaitStep(input: {
   readonly goal: Pick<OrchestrationThreadGoal, "status" | "waitPause"> | null;
   readonly waiting: boolean;
   readonly turnStarting: boolean;
+  readonly userActed?: boolean | undefined;
+  readonly retryResume?: boolean | undefined;
 }): { readonly mark: GoalWaitMark | null; readonly send: "paused" | "active" | null } | null {
   const { goal } = input;
   if (goal === null) return null;
   const mark = goal.waitPause;
+  if (input.userActed === true && mark !== "user" && (input.waiting || mark !== undefined)) {
+    return { mark: "user", send: null };
+  }
   if (input.waiting) {
     if (mark === undefined) {
       return goal.status === "active" ? { mark: "paused", send: "paused" } : null;
     }
-    if (mark === "resuming") {
-      return { mark: "paused", send: goal.status === "paused" ? null : "paused" };
-    }
-    return null;
+    return mark === "resuming" ? { mark: "paused", send: "paused" } : null;
   }
   if (mark === "user") return { mark: null, send: null };
   if (mark === "paused" || mark === "resuming") {
     if (goal.status === "paused") {
-      return input.turnStarting ? null : { mark: "resuming", send: "active" };
+      if (input.turnStarting || (mark === "resuming" && input.retryResume !== true)) return null;
+      return { mark: "resuming", send: "active" };
     }
-    // Active and `paused`: our pause is on its way. Anything else is the
-    // provider's own ending, not ours to undo.
+    // Active with `paused`: our pause is on its way; with `resuming`: our
+    // resume, confirmed in the next report. Anything else is the provider's
+    // own ending, not ours to undo.
     return goal.status === "active" ? null : { mark: null, send: null };
   }
   return null;
