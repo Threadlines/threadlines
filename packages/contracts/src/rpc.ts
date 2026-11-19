@@ -70,6 +70,12 @@ import {
   ProjectContextError,
   ProjectContextSnapshot,
   ProjectContextSubscribeInput,
+  ProjectNote,
+  ProjectNoteApproveInput,
+  ProjectNoteReadInput,
+  ProjectNoteRemoveInput,
+  ProjectNoteSaveInput,
+  ProjectNoteSuggestionResolveInput,
 } from "./projectContext.ts";
 import {
   ThemeContent,
@@ -770,6 +776,11 @@ export const WS_METHODS = {
   // Scheduled tasks (docs/design/fleet.md, Part 6). Owner and client sessions alike.
   projectContextSubscribe: "projectContext.subscribe",
   projectContextSetBrief: "projectContext.setBrief",
+  projectContextReadNote: "projectContext.readNote",
+  projectContextSaveNote: "projectContext.saveNote",
+  projectContextRemoveNote: "projectContext.removeNote",
+  projectContextApproveNote: "projectContext.approveNote",
+  projectContextResolveSuggestion: "projectContext.resolveSuggestion",
   scheduledTasksSubscribe: "scheduledTasks.subscribe",
   scheduledTasksListRuns: "scheduledTasks.listRuns",
   scheduledTasksCreate: "scheduledTasks.create",
@@ -2177,7 +2188,6 @@ export const WsLinksRespondRequestRpc = Rpc.make(WS_METHODS.linksRespondRequest,
   error: ComputerLinkError,
 });
 
-/** This computer's scheduled tasks, each with its last run; again on every change. */
 /** Every project's brief on this computer, again whenever one changes. */
 export const WsProjectContextSubscribeRpc = Rpc.make(WS_METHODS.projectContextSubscribe, {
   payload: ProjectContextSubscribeInput,
@@ -2193,6 +2203,41 @@ export const WsProjectContextSetBriefRpc = Rpc.make(WS_METHODS.projectContextSet
   error: ProjectContextError,
 });
 
+/** A kept note with its text, for the page. */
+export const WsProjectContextReadNoteRpc = Rpc.make(WS_METHODS.projectContextReadNote, {
+  payload: ProjectNoteReadInput,
+  success: ProjectNote,
+  error: ProjectContextError,
+});
+
+/** The user writes or edits a note: kept, and shown to every thread. */
+export const WsProjectContextSaveNoteRpc = Rpc.make(WS_METHODS.projectContextSaveNote, {
+  payload: ProjectNoteSaveInput,
+  success: ProjectNote,
+  error: ProjectContextError,
+});
+
+export const WsProjectContextRemoveNoteRpc = Rpc.make(WS_METHODS.projectContextRemoveNote, {
+  payload: ProjectNoteRemoveInput,
+  error: ProjectContextError,
+});
+
+/** "Show to all threads". */
+export const WsProjectContextApproveNoteRpc = Rpc.make(WS_METHODS.projectContextApproveNote, {
+  payload: ProjectNoteApproveInput,
+  error: ProjectContextError,
+});
+
+/** Keep or discard one suggestion, by its id. */
+export const WsProjectContextResolveSuggestionRpc = Rpc.make(
+  WS_METHODS.projectContextResolveSuggestion,
+  {
+    payload: ProjectNoteSuggestionResolveInput,
+    error: ProjectContextError,
+  },
+);
+
+/** This computer's scheduled tasks, each with its last run; again on every change. */
 export const WsScheduledTasksSubscribeRpc = Rpc.make(WS_METHODS.scheduledTasksSubscribe, {
   payload: ScheduledTasksSubscribeInput,
   success: ScheduledTasksSnapshot,
@@ -3047,6 +3092,11 @@ export const WsCoreRpcGroup = RpcGroup.make(
   WsLinksRespondRequestRpc,
   WsProjectContextSubscribeRpc,
   WsProjectContextSetBriefRpc,
+  WsProjectContextReadNoteRpc,
+  WsProjectContextSaveNoteRpc,
+  WsProjectContextRemoveNoteRpc,
+  WsProjectContextApproveNoteRpc,
+  WsProjectContextResolveSuggestionRpc,
   WsScheduledTasksSubscribeRpc,
   WsScheduledTasksListRunsRpc,
   WsScheduledTasksCreateRpc,
