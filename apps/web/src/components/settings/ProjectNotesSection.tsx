@@ -435,6 +435,8 @@ function KeptNoteRow({
   const limited = !note.approved && note.writerCeiling !== null;
   const [approving, setApproving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** The version of the text the open note shows; null while it is closed or loading. */
+  const [shownVersion, setShownVersion] = useState<string | null>(null);
   const approve = async () => {
     setApproving(true);
     setError(null);
@@ -443,8 +445,9 @@ function KeptNoteRow({
         kind: "approve",
         projectId: note.projectId,
         noteId: note.id,
-        // The version this row shows: one its writer rewrote since is refused.
-        updatedAt: note.updatedAt,
+        // The version the user can see: the open note's text, else this row.
+        // One its writer rewrote since is refused, so it is read again first.
+        updatedAt: open && shownVersion !== null ? shownVersion : note.updatedAt,
       });
     } catch (cause) {
       setError(noteActionErrorText(cause));
@@ -481,6 +484,7 @@ function KeptNoteRow({
           note={note}
           limited={limited}
           onClose={onClose}
+          onShown={setShownVersion}
         />
       ) : null}
     </div>
@@ -497,11 +501,14 @@ function OpenNote({
   note,
   limited,
   onClose,
+  onShown,
 }: {
   environmentId: EnvironmentId;
   note: ProjectNoteListing;
   limited: boolean;
   onClose: () => void;
+  /** The version of the text now on screen, as read or saved here. */
+  onShown: (version: string) => void;
 }) {
   const [text, setText] = useState<string | null>(null);
   /** The version the form started from, or last saved here. */
@@ -517,7 +524,10 @@ function OpenNote({
     let cancelled = false;
     readProjectNote(environmentId, { projectId, noteId }).then(
       (read) => {
-        if (!cancelled) setText(read.text);
+        if (cancelled) return;
+        setText(read.text);
+        setOpenedAt(read.updatedAt);
+        onShown(read.updatedAt);
       },
       (cause: unknown) => {
         if (!cancelled) setLoadError(noteActionErrorText(cause));
@@ -526,7 +536,7 @@ function OpenNote({
     return () => {
       cancelled = true;
     };
-  }, [environmentId, noteId, projectId]);
+  }, [environmentId, noteId, projectId, onShown]);
 
   const remove = async () => {
     setRemoving(true);
@@ -565,6 +575,7 @@ function OpenNote({
           if (saved !== null) {
             setText(saved.text);
             setOpenedAt(saved.updatedAt);
+            onShown(saved.updatedAt);
           }
         }}
         extraAction={

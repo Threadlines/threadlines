@@ -4916,6 +4916,52 @@ describe("Agent Instructions › Brief", () => {
     await expect.element(text).toHaveValue("Web on 5733, server on 13773.");
   });
 
+  it("approves only the text an open note shows, not a rewrite that came in under it", async () => {
+    describeComputers(true);
+    const noteId = ProjectNoteId.make("note-rewritten");
+    const listed = {
+      id: noteId,
+      projectId: projectOn(THIS_MAC),
+      title: "Deploys",
+      summary: "How deploys go out.",
+      approved: false,
+      writerCeiling: {
+        runtimeMode: "approval-required" as const,
+        interactionMode: "default" as const,
+      },
+      author: agentAuthor,
+      createdAt: "2026-11-17T00:00:00.000Z",
+      updatedAt: "2026-11-17T00:00:00.000Z",
+    };
+    const mac = seedComputer(THIS_MAC, null, { notes: [listed] });
+    mac.readNote.mockImplementation(async () => ({ ...listed, text: "Deploy from main." }));
+    seedComputer(STUDIO, null);
+
+    await renderPage();
+
+    await page.getByRole("button", { name: "Deploys" }).click();
+    await expect.element(page.getByLabelText("Note text")).toHaveValue("Deploy from main.");
+    // Its writer rewrites it while the user has the old text open.
+    mac.emit({
+      briefs: [],
+      notes: [{ ...listed, updatedAt: "2026-11-18T09:00:00.000Z" }],
+      suggestions: [],
+    });
+    await expect
+      .element(page.getByText("This note changed since you opened it.", { exact: false }))
+      .toBeVisible();
+    await page.getByRole("button", { name: "Show to all threads" }).click();
+
+    await vi.waitFor(() =>
+      expect(mac.changeNote).toHaveBeenCalledWith({
+        kind: "approve",
+        projectId: projectOn(THIS_MAC),
+        noteId,
+        updatedAt: "2026-11-17T00:00:00.000Z",
+      }),
+    );
+  });
+
   it("shows a note kept without asking to all threads", async () => {
     describeComputers(true);
     const noteId = ProjectNoteId.make("note-limited");
