@@ -1,6 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import {
-  layerTest as SecretScrubberTest,
+  layer as SecretScrubberLive,
   makeSecretScrubber,
   SecretScrubber,
   type SecretScrubberShape,
@@ -317,7 +317,7 @@ describe("ProviderRuntimeIngestion", () => {
     const layer = ProviderRuntimeIngestionLive.pipe(
       Layer.provide(
         options?.secretScrubber === undefined
-          ? SecretScrubberTest
+          ? SecretScrubberLive
           : Layer.succeed(SecretScrubber, options.secretScrubber),
       ),
       Layer.provideMerge(

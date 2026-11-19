@@ -83,11 +83,11 @@ import {
   ThreadSessionAdmission,
   ThreadSessionAdmissionPermissive,
 } from "../Services/ThreadSessionAdmission.ts";
-import { layerTest as SecretScrubberTest } from "../../secrets/SecretScrubber.ts";
+import { layer as SecretScrubberLive } from "../../secrets/SecretScrubber.ts";
 
 /** The provider service with an empty registry of watched keys (SecretScrubber). */
 const makeProviderServiceWithScrubber = (...args: Parameters<typeof makeProviderServiceLive>) =>
-  makeProviderServiceLive(...args).pipe(Layer.provide(SecretScrubberTest));
+  makeProviderServiceLive(...args).pipe(Layer.provide(SecretScrubberLive));
 
 const defaultServerSettingsLayer = ServerSettingsService.layerTest();
 

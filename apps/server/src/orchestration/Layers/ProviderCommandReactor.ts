@@ -138,6 +138,7 @@ import type { ProviderServiceError, SteerRejection } from "../../provider/Errors
 import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
+import { SecretScrubber } from "../../secrets/SecretScrubber.ts";
 import { ThreadContextSeedBuilder } from "../../provider/contextSeed/ThreadContextSeedBuilder.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
@@ -594,6 +595,7 @@ function stalePendingRequestDetail(
 const make = Effect.gen(function* () {
   const handoverCaptureWait = yield* HandoverCaptureWait;
   const orchestrationEngine = yield* OrchestrationEngineService;
+  const secretScrubber = yield* SecretScrubber;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
   // Computer links, when this server has them: see RemoteRequestGate.
@@ -1038,7 +1040,15 @@ const make = Effect.gen(function* () {
     return null;
   };
 
-  const formatFailureDetail = (cause: Cause.Cause<unknown>): string => {
+  /**
+   * A failure as the user reads it. Saved keys are hidden: a provider's
+   * stderr (Pi, OpenCode, Muse) never passed the event hook, and this text is
+   * stored and can reach a phone alert (docs/design/secret-scrubbing.md).
+   */
+  const formatFailureDetail = (cause: Cause.Cause<unknown>): string =>
+    secretScrubber.scrubText(failureText(cause)).text;
+
+  const failureText = (cause: Cause.Cause<unknown>): string => {
     const failReason = cause.reasons.find(Cause.isFailReason);
     const providerError = isProviderAdapterRequestError(failReason?.error)
       ? failReason.error
@@ -6679,7 +6689,9 @@ const make = Effect.gen(function* () {
             threadId,
             sideTurnId: sideTurn.sideTurnId,
             outcome: "failed",
-            error: `The side answer could not start: ${Cause.squash(cause) instanceof Error ? (Cause.squash(cause) as Error).message : "unknown error"}`,
+            error: secretScrubber.scrubText(
+              `The side answer could not start: ${Cause.squash(cause) instanceof Error ? (Cause.squash(cause) as Error).message : "unknown error"}`,
+            ).text,
             createdAt: yield* nowIso,
           });
           return false;

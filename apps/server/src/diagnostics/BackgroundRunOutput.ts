@@ -66,9 +66,18 @@ export function announcedOutputFiles(
  *  platform supports it (not Windows). */
 const OPEN_NO_FOLLOW = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0);
 
-/** The end of a regular file as text, from a whole line on. Null for a
- *  symlink, or a path whose real location is not a `tasks/<id>.output` file. */
-async function readFileTail(file: string): Promise<string | null> {
+/** Hides saved keys in text, and says how far back to read to catch one whole. */
+export interface OutputScrubber {
+  readonly scrubText: (text: string) => { readonly text: string };
+  readonly longestFormBytes: () => number;
+}
+
+/**
+ * The end of a regular file as text, from a whole line on, with saved keys
+ * hidden. Null for a symlink, or a path whose real location is not a
+ * `tasks/<id>.output` file.
+ */
+async function readFileTail(file: string, scrubber: OutputScrubber): Promise<string | null> {
   const linkStats = await lstat(file);
   if (!linkStats.isFile()) return null;
   // A symlinked parent directory could still move the read elsewhere; the
@@ -85,12 +94,18 @@ async function readFileTail(file: string): Promise<string | null> {
     if (!stats.isFile() || stats.ino !== linkStats.ino || stats.dev !== linkStats.dev) {
       return null;
     }
-    const length = Math.min(stats.size, OUTPUT_TAIL_BYTES);
+    // Read further back by the longest key's length, hide keys, then keep
+    // the end: a key reaching into the end starts inside the read, so it is
+    // hidden whole rather than cut (docs/design/secret-scrubbing.md).
+    const length = Math.min(stats.size, OUTPUT_TAIL_BYTES + scrubber.longestFormBytes());
     const buffer = Buffer.alloc(length);
     const { bytesRead } = await handle.read(buffer, 0, length, stats.size - length);
-    const text = buffer.subarray(0, bytesRead).toString("utf8");
+    const read = scrubber.scrubText(buffer.subarray(0, bytesRead).toString("utf8")).text;
+    const text = read.length > OUTPUT_TAIL_BYTES ? read.slice(-OUTPUT_TAIL_BYTES) : read;
     // A read that starts mid-file starts mid-line; drop the partial line.
-    return length < stats.size ? text.slice(text.indexOf("\n") + 1) : text;
+    return length < stats.size || text.length < read.length
+      ? text.slice(text.indexOf("\n") + 1)
+      : text;
   } finally {
     await handle.close();
   }
@@ -98,6 +113,7 @@ async function readFileTail(file: string): Promise<string | null> {
 
 export function makeBackgroundRunOutputReader(
   projectionSnapshotQuery: Pick<ProjectionSnapshotQueryShape, "getThreadDetailById">,
+  scrubber: OutputScrubber,
   now: () => number = Date.now,
 ) {
   /** When each file was last confirmed, per thread. */
@@ -134,7 +150,7 @@ export function makeBackgroundRunOutputReader(
       Effect.orElseSucceed(() => false),
     );
     if (!announced) return UNREADABLE;
-    const tail = yield* Effect.tryPromise(() => readFileTail(file)).pipe(
+    const tail = yield* Effect.tryPromise(() => readFileTail(file, scrubber)).pipe(
       Effect.orElseSucceed(() => null),
     );
     return { tail } satisfies ServerReadBackgroundRunOutputResult;

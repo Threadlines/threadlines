@@ -190,6 +190,7 @@ import { ProjectSetupSource } from "./projectSetup/ProjectSetupSource.ts";
 import { ServerEnvironment } from "./environment/Services/ServerEnvironment.ts";
 import { ServerAuth } from "./auth/Services/ServerAuth.ts";
 import { makeBackgroundRunOutputReader } from "./diagnostics/BackgroundRunOutput.ts";
+import { SecretScrubber } from "./secrets/SecretScrubber.ts";
 import { makeWorkflowRunRequests } from "./orchestration/workflowRunRequests.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
@@ -875,6 +876,7 @@ const makeCoreRpcLayer = (
       const projectSetups = yield* ProjectSetups;
       const projectSetupSource = yield* ProjectSetupSource;
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+      const secretScrubber = yield* SecretScrubber;
       const agentPages = yield* AgentPages;
       const mcpApps = yield* McpApps;
       const commandRuns = yield* CommandRuns;
@@ -950,7 +952,10 @@ const makeCoreRpcLayer = (
         Effect.catch(() => Ref.get(sentFromRef)),
       );
       const processDiagnostics = yield* ProcessDiagnostics.ProcessDiagnostics;
-      const readBackgroundRunOutput = makeBackgroundRunOutputReader(projectionSnapshotQuery);
+      const readBackgroundRunOutput = makeBackgroundRunOutputReader(
+        projectionSnapshotQuery,
+        secretScrubber,
+      );
       const workflowRunRequests = makeWorkflowRunRequests({
         projectionSnapshotQuery,
         providerService,
@@ -1814,6 +1819,9 @@ const makeCoreRpcLayer = (
           observeRpcEffect(
             WS_METHODS.serverReadSubagentTranscript,
             providerService.readSubagentTranscript(input).pipe(
+              // Read straight from the provider's files: hide saved keys
+              // (docs/design/secret-scrubbing.md), as for the next three.
+              Effect.map(secretScrubber.scrubDeep),
               Effect.mapError(
                 (error) =>
                   new ProviderSubagentTranscriptError({
@@ -1865,6 +1873,7 @@ const makeCoreRpcLayer = (
           observeRpcEffect(
             WS_METHODS.serverListExternalProviderThreads,
             providerService.listExternalThreads(input).pipe(
+              Effect.map(secretScrubber.scrubDeep),
               Effect.mapError(
                 (error) =>
                   new ProviderExternalThreadError({
@@ -1885,6 +1894,7 @@ const makeCoreRpcLayer = (
               providerService,
               projectionSnapshotQuery,
               orchestrationEngine,
+              secretScrubber,
             }),
             { "rpc.aggregate": "server" },
           ),
@@ -2178,13 +2188,15 @@ const makeCoreRpcLayer = (
         [WS_METHODS.serverReadWorkflowRunFile]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverReadWorkflowRunFile,
-            workflowRunRequests.readRunFile(input),
+            workflowRunRequests.readRunFile(input).pipe(Effect.map(secretScrubber.scrubDeep)),
             { "rpc.aggregate": "server" },
           ),
         [WS_METHODS.serverReadWorkflowAgentTranscript]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverReadWorkflowAgentTranscript,
-            workflowRunRequests.readAgentTranscript(input),
+            workflowRunRequests
+              .readAgentTranscript(input)
+              .pipe(Effect.map(secretScrubber.scrubDeep)),
             { "rpc.aggregate": "server" },
           ),
         [WS_METHODS.serverSaveWorkflowCommand]: (input) =>

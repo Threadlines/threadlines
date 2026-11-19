@@ -41,6 +41,7 @@ import { ChildProcessSpawner } from "effect/process";
 
 import { writeFileStringAtomically } from "../../atomicWrite.ts";
 import { ServerConfig } from "../../config.ts";
+import { SecretScrubber } from "../../secrets/SecretScrubber.ts";
 import {
   ProcessSnapshot,
   readListeningPortRows,
@@ -1467,6 +1468,11 @@ const defaultProcessTreeControl: TerminalProcessTreeControl = {
 
 interface TerminalManagerOptions {
   logsDir: string;
+  /**
+   * Hides watched keys in a run's rendered output before it is cut to its
+   * tail, so a cut can't leave part of one (docs/design/secret-scrubbing.md).
+   */
+  scrubText?: (text: string) => string;
   historyLineLimit?: number;
   historyCharLimit?: number;
   persistDebounceMs?: number;
@@ -1622,8 +1628,10 @@ const makeTerminalManager = Effect.fn("makeTerminalManager")(function* () {
   const { terminalLogsDir } = yield* ServerConfig;
   const ptyAdapter = yield* PtyAdapter;
   const processSnapshot = yield* ProcessSnapshot;
+  const secretScrubber = yield* SecretScrubber;
   return yield* makeTerminalManagerWithOptions({
     logsDir: terminalLogsDir,
+    scrubText: (text) => secretScrubber.scrubText(text).text,
     ptyAdapter,
     processRowsReader: () => processSnapshot.readTree,
   });
@@ -1637,6 +1645,10 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
     const runFork = Effect.runForkWith(context);
 
     const logsDir = options.logsDir;
+    const scrubText = options.scrubText ?? ((text: string) => text);
+    /** A run's rendered output as it reaches the thread: keys hidden, then cut to its tail. */
+    const runOutputOf = (rendered: string, clipped: boolean) =>
+      clipCommandOutput(scrubText(rendered), clipped);
     const historyLineLimit = options.historyLineLimit ?? DEFAULT_HISTORY_LINE_LIMIT;
     const historyCharLimit = options.historyCharLimit ?? DEFAULT_HISTORY_CHAR_LIMIT;
     const persistDebounceMs = options.persistDebounceMs ?? DEFAULT_PERSIST_DEBOUNCE_MS;
@@ -2591,7 +2603,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           return;
         }
         const rendered = yield* Effect.promise(() => renderTerminalText(end.run.output, end.cols));
-        const output = clipCommandOutput(rendered, end.run.outputClipped);
+        const output = runOutputOf(rendered, end.run.outputClipped);
         yield* publishRunUpdate(
           end.kind === "finished"
             ? {
@@ -2625,7 +2637,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         const output =
           captured === null
             ? null
-            : clipCommandOutput(
+            : runOutputOf(
                 yield* Effect.promise(() => renderTerminalText(captured.raw, captured.cols)),
                 captured.clipped,
               );
@@ -4699,7 +4711,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         );
         if (found === null) return null;
         const text = yield* Effect.promise(() => renderTerminalText(found.raw, found.cols));
-        return clipCommandOutput(text, found.clipped);
+        return runOutputOf(text, found.clipped);
       });
 
     const close: TerminalManagerShape["close"] = (input) =>

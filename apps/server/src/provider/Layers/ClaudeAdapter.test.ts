@@ -2174,7 +2174,7 @@ describe("ClaudeAdapterLive", () => {
       harness.query.taskOutputs.set("task-run", "line 1\nline 2\n");
       assert.deepEqual(yield* read("tool-run"), {
         status: "running",
-        tail: "line 1\nline 2\n",
+        output: "line 1\nline 2\n",
         totalBytes: 14,
       });
 

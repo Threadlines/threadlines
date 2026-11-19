@@ -8,6 +8,12 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as TestClock from "effect/testing/TestClock";
 import { vi } from "vite-plus/test";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Layer from "effect/Layer";
+
+import { ServerConfig } from "../../config.ts";
+import { layer as SecretScrubberLayer, SecretScrubber } from "../../secrets/SecretScrubber.ts";
+import { ProviderEventLoggers, ProviderEventLoggersLive } from "./ProviderEventLoggers.ts";
 
 import {
   cleanupProviderEventLogDirectory,
@@ -151,6 +157,36 @@ describe("EventNdjsonLogger", () => {
         fs.rmSync(tempDir, { recursive: true, force: true });
       }
     }),
+  );
+
+  it.effect("hides saved keys in the native log, as written by the shared loggers", () =>
+    Effect.gen(function* () {
+      const scrubber = yield* SecretScrubber;
+      scrubber.watch("STRIPE_SECRET_KEY", "sk_test_51Hq9xYz");
+      const { native } = yield* ProviderEventLoggers;
+      const { providerEventLogPath } = yield* ServerConfig;
+      assert.notEqual(native, undefined);
+      if (!native) return;
+      yield* native.write(
+        { method: "item/completed", params: { output: "STRIPE_SECRET_KEY=sk_test_51Hq9xYz" } },
+        ThreadId.make("thread-1"),
+      );
+      yield* native.close();
+      const written = fs.readFileSync(
+        path.join(path.dirname(providerEventLogPath), "thread-1.log"),
+        "utf8",
+      );
+      assert.include(written, "STRIPE_SECRET_KEY=[STRIPE_SECRET_KEY hidden]");
+      assert.notInclude(written, "sk_test_51Hq9xYz");
+    }).pipe(
+      Effect.provide(
+        ProviderEventLoggersLive.pipe(
+          Layer.provideMerge(SecretScrubberLayer),
+          Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "tl-native-log-" })),
+          Layer.provideMerge(NodeServices.layer),
+        ),
+      ),
+    ),
   );
 
   it.effect("leaves stream fragments out unless the logger keeps them", () =>

@@ -4,8 +4,9 @@
  * hook uses. Values enter when the user presses Save (before the file is
  * written) and at startup, read back from their destinations; they stay
  * watched until the server stops, since a model can repeat a key after its
- * file is gone. Built before the provider layer, so no provider event
- * arrives before the read-back is done.
+ * file is gone. The registry (`layer`) sits under everything that shows or
+ * stores agent text; `loadSavedKeys` fills it inside the provider layer, so
+ * no provider event arrives before the read-back is done.
  */
 import * as NodeFs from "node:fs/promises";
 import * as NodePath from "node:path";
@@ -50,6 +51,11 @@ export interface SecretScrubberShape {
    * ingestion stores), not a snapshot still being written.
    */
   readonly scrubDeep: <A>(value: A) => A;
+  /**
+   * The longest form a watched value takes, in UTF-8 bytes: how much more to
+   * read before a file's end so a value reaching into it is hidden whole.
+   */
+  readonly longestFormBytes: () => number;
   /** The names of the watched values a JSON-like value holds, for callers that refuse instead. */
   readonly contains: (value: unknown) => ReadonlyArray<string>;
   /** A provider event in, the events to publish in order out: the event, then any notice. */
@@ -88,6 +94,7 @@ export function makeSecretScrubber(): SecretScrubberShape {
     scrubText: (text) => core.scrubText(text),
     scrubDeep: <A>(value: A) => core.scrubDeep(value, new Set()) as A,
     contains: core.contains,
+    longestFormBytes: () => core.longestFormBytes,
     scrubRuntimeEvent: runtime.scrubRuntimeEvent,
     restoreAnswer: runtime.restoreAnswer,
     holdPiece: core.holdPiece,
@@ -136,16 +143,18 @@ export const readBackSecret = (
     return text._tag === "Some" ? readEnvValue(text.value, request.name) : undefined;
   });
 
+/** The registry, empty until `loadSavedKeys` and Save fill it. One for the server. */
+export const layer = Layer.sync(SecretScrubber, makeSecretScrubber);
+
 /**
- * The registry, filled at startup from every live thread's saved keys before
- * the provider layer takes any event. A failed read is retried a few times
- * right away, then in the background until it works: a key left unwatched
- * is a key printed whole.
+ * Fills the registry at startup from every live thread's saved keys; the
+ * provider layer depends on it, so this runs before any provider event. A
+ * failed read is retried a few times right away, then in the background until
+ * it works: a key left unwatched is a key printed whole.
  */
-export const layer = Layer.effect(
-  SecretScrubber,
+export const loadSavedKeys = Layer.effectDiscard(
   Effect.gen(function* () {
-    const scrubber = makeSecretScrubber();
+    const scrubber = yield* SecretScrubber;
     const snapshots = yield* ProjectionSnapshotQuery;
     const config = yield* ServerConfig;
     const load = Effect.gen(function* () {
@@ -186,9 +195,5 @@ export const layer = Layer.effect(
         Effect.forkScoped,
       );
     }
-    return scrubber;
   }),
 );
-
-/** An empty registry, for tests that build the provider service without the server's layers. */
-export const layerTest = Layer.sync(SecretScrubber, makeSecretScrubber);

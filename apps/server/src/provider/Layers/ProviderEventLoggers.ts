@@ -36,6 +36,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import { ServerConfig } from "../../config.ts";
+import { SecretScrubber } from "../../secrets/SecretScrubber.ts";
 import {
   cleanupProviderEventLogDirectory,
   type EventNdjsonLogger,
@@ -97,9 +98,14 @@ export const ProviderEventLoggersLive = Layer.effect(
       Config.withDefault(false),
       Effect.orElseSucceed(() => false),
     );
+    // Raw provider messages, written before any event passes the hook in
+    // ProviderService: saved keys are hidden here, line by line. The
+    // canonical log only ever gets events the hook already scrubbed.
+    const secretScrubber = yield* SecretScrubber;
     const native = yield* makeEventNdjsonLogger(providerEventLogPath, {
       stream: "native",
       keepStreamFragments,
+      scrubLine: (line) => secretScrubber.scrubText(line).text,
     });
     const canonical = yield* makeEventNdjsonLogger(providerEventLogPath, {
       stream: "canonical",

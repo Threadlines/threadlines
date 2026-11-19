@@ -18,6 +18,11 @@ import * as PreviewAutomationBroker from "../preview/PreviewAutomationBroker.ts"
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
+import {
+  makeSecretScrubber,
+  SecretScrubber,
+  type SecretScrubberShape,
+} from "../secrets/SecretScrubber.ts";
 import { AgentSecretRequests } from "../secrets/AgentSecretRequests.ts";
 import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
@@ -193,6 +198,7 @@ const ROOM_THREAD = {
 const roomServerStubs = (
   settings?: Parameters<typeof ServerSettingsService.layerTest>[0],
   thread: object = ROOM_THREAD,
+  secretScrubber: SecretScrubberShape = makeSecretScrubber(),
 ) =>
   Layer.mergeAll(
     Layer.succeed(OrchestrationEngineService, {
@@ -210,6 +216,7 @@ const roomServerStubs = (
     Layer.succeed(ProviderService, { listSessions: () => Effect.succeed([]) } as never),
     Layer.succeed(GitVcsDriver, {} as never),
     Layer.succeed(AgentSecretRequests, { destinations: {} } as never),
+    Layer.succeed(SecretScrubber, secretScrubber),
     ServerSettingsService.layerTest(settings),
     PreviewAutomationBroker.layer,
   );
@@ -369,6 +376,45 @@ describe("MCP endpoints", () => {
           expect(JSON.stringify(result.peerStop)).not.toContain(limited);
           yield* mcpSessionRegistry.revoke(THREAD, agent.generation);
           yield* mcpSessionRegistry.revoke(participantSessionKey(THREAD, AGENT), peer.generation);
+        }),
+      ).pipe(onLoopback),
+    );
+  });
+
+  it("refuses a call that would carry a saved key to another agent or thread", async () => {
+    const secretScrubber = makeSecretScrubber();
+    secretScrubber.watch("STRIPE_SECRET_KEY", "sk_test_51Hq9xYz");
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const base = yield* serve(
+            McpRoomServer.layer.pipe(
+              Layer.provide(roomServerStubs(undefined, ROOM_THREAD, secretScrubber)),
+            ),
+          );
+          const agent = yield* mcpSessionRegistry.credentialFor({
+            sessionKey: THREAD,
+            browser: true,
+            room: true,
+          });
+          const result = yield* Effect.promise(async () => ({
+            send: await callTool(`${base}/mcp/room`, agent.token, "thread_send", {
+              threadId: "child-1",
+              message: "Use sk_test_51Hq9xYz for the webhook.",
+            }),
+            ask: await callTool(`${base}/mcp/room`, agent.token, "room_ask", {
+              agent: "Reviewer",
+              question: "Is sk_test_51Hq9xYz the live key?",
+            }),
+          }));
+          for (const call of [result.send, result.ask]) {
+            expect(call.structuredContent).toMatchObject({
+              outcome: "refused",
+              detail:
+                "Your call contains STRIPE_SECRET_KEY. Don't pass a key through this tool. The other agent can ask the user for it.",
+            });
+          }
+          yield* mcpSessionRegistry.revoke(THREAD, agent.generation);
         }),
       ).pipe(onLoopback),
     );

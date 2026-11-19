@@ -69,6 +69,7 @@ import { SettingsChangeToolkit } from "./settingsChangeTools.ts";
 import { makeSecretRequestToolHandler } from "./secretRequestToolHandlers.ts";
 import { SecretRequestToolkit } from "./secretRequestTools.ts";
 import { AgentSecretRequests } from "../secrets/AgentSecretRequests.ts";
+import { SecretScrubber } from "../secrets/SecretScrubber.ts";
 import { makeAlertAssistantsToolHandler } from "./alertAssistantsToolHandlers.ts";
 import { AlertAssistantsToolkit } from "./alertAssistantsTools.ts";
 import { AssistantAlerts } from "../assistants/AssistantAlerts.ts";
@@ -90,6 +91,10 @@ export const RoomEndpointToolkit = Toolkit.merge(
 );
 
 type RoomEndpointToolName = keyof typeof RoomEndpointToolkit.tools;
+
+/** Why a call that changes something was refused: it held a saved key's value. */
+export const secretInCallDetail = (name: string) =>
+  `Your call contains ${name}. Don't pass a key through this tool. The other agent can ask the user for it.`;
 
 /**
  * What each tool on this endpoint reaches, for outside work's limit: `own`,
@@ -191,6 +196,7 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
     const providerService = yield* ProviderService;
     const git = yield* GitVcsDriver;
     const settings = yield* ServerSettingsService;
+    const secretScrubber = yield* SecretScrubber;
     // Linked computers, when this server has them (docs/design/fleet.md).
     const linkClient = yield* Effect.serviceOption(ComputerLinkClient);
     const linkRepo = yield* Effect.serviceOption(ComputerLinkRepository);
@@ -451,15 +457,34 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
       _tool: ToolsReaching<"own">,
       run: (scope: McpInvocationScope) => Effect.Effect<A>,
     ) => Effect.flatMap(caller, run);
+    /**
+     * Refuses a call whose input holds a saved key's value: what these tools
+     * carry reaches another agent, a thread, a card or a task's history, none
+     * of which hides one (docs/design/secret-scrubbing.md).
+     */
+    const unlessWatched = <A, R = Refused>(
+      input: unknown,
+      run: () => Effect.Effect<A>,
+      refusedAs: (detail: string) => R = (detail) =>
+        ({ outcome: "refused", detail }) satisfies Refused as R,
+    ): Effect.Effect<A | R> => {
+      const [watched] = secretScrubber.contains(input);
+      return watched === undefined ? run() : Effect.succeed(refusedAs(secretInCallDetail(watched)));
+    };
     const changes = <A>(
       _tool: ToolsReaching<"changes">,
+      input: unknown,
       run: (scope: McpInvocationScope) => Effect.Effect<A>,
     ) =>
-      Effect.flatMap(caller, (scope): Effect.Effect<A | Refused> =>
-        scope.outsideLimit === undefined
-          ? run(scope)
-          : Effect.succeed({ outcome: "refused", detail: outsideLimitDetail(scope.outsideLimit) }),
-      );
+      Effect.flatMap(caller, (scope): Effect.Effect<A | Refused> => {
+        if (scope.outsideLimit !== undefined) {
+          return Effect.succeed({
+            outcome: "refused",
+            detail: outsideLimitDetail(scope.outsideLimit),
+          });
+        }
+        return unlessWatched(input, () => run(scope));
+      });
     const projectRead = <A>(
       _tool: ToolsReaching<"project">,
       run: (scope: McpInvocationScope) => Effect.Effect<A>,
@@ -479,12 +504,14 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
       room_agents: () => own("room_agents", handlers.room_agents),
       room_history: (input) => own("room_history", (scope) => handlers.room_history(scope, input)),
       room_diff: (input) => own("room_diff", (scope) => handlers.room_diff(scope, input)),
-      room_ask: (input) => changes("room_ask", (scope) => handlers.room_ask(scope, input)),
-      room_review: (input) => changes("room_review", (scope) => handlers.room_review(scope, input)),
+      room_ask: (input) => changes("room_ask", input, (scope) => handlers.room_ask(scope, input)),
+      room_review: (input) =>
+        changes("room_review", input, (scope) => handlers.room_review(scope, input)),
       room_hand_off: (input) =>
-        changes("room_hand_off", (scope) => handlers.room_hand_off(scope, input)),
+        changes("room_hand_off", input, (scope) => handlers.room_hand_off(scope, input)),
       room_available_agents: () => own("room_available_agents", handlers.room_available_agents),
-      room_invite: (input) => changes("room_invite", (scope) => handlers.room_invite(scope, input)),
+      room_invite: (input) =>
+        changes("room_invite", input, (scope) => handlers.room_invite(scope, input)),
       thread_agents: (input) =>
         projectRead(
           "thread_agents",
@@ -492,7 +519,7 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
           (detail) => ({ outcome: "refused", detail, agents: [], unavailable: [] }),
         ),
       thread_start: (input) =>
-        changes("thread_start", (scope) => threadHandlers.thread_start(scope, input)),
+        changes("thread_start", input, (scope) => threadHandlers.thread_start(scope, input)),
       thread_list: (input) =>
         projectRead(
           "thread_list",
@@ -506,11 +533,11 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
           (detail) => ({ outcome: "refused", detail, messages: [], next: null, more: false }),
         ),
       thread_send: (input) =>
-        changes("thread_send", (scope) => threadHandlers.thread_send(scope, input)),
+        changes("thread_send", input, (scope) => threadHandlers.thread_send(scope, input)),
       thread_stop: (input) =>
-        changes("thread_stop", (scope) => threadHandlers.thread_stop(scope, input)),
+        changes("thread_stop", input, (scope) => threadHandlers.thread_stop(scope, input)),
       thread_move: (input) =>
-        changes("thread_move", (scope) => threadHandlers.thread_move(scope, input)),
+        changes("thread_move", input, (scope) => threadHandlers.thread_move(scope, input)),
       schedule_list: (input) =>
         projectRead(
           "schedule_list",
@@ -518,15 +545,26 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
           (detail) => ({ outcome: "refused", detail, tasks: [] }),
         ),
       schedule_create: (input) =>
-        changes("schedule_create", (scope) => scheduleHandlers.schedule_create(scope, input)),
+        changes("schedule_create", input, (scope) =>
+          scheduleHandlers.schedule_create(scope, input),
+        ),
       schedule_update: (input) =>
-        changes("schedule_update", (scope) => scheduleHandlers.schedule_update(scope, input)),
+        changes("schedule_update", input, (scope) =>
+          scheduleHandlers.schedule_update(scope, input),
+        ),
       scheduled_run_finish: (input) =>
-        own("scheduled_run_finish", (scope) => scheduleHandlers.scheduled_run_finish(scope, input)),
+        own("scheduled_run_finish", (scope) =>
+          unlessWatched(
+            input,
+            () => scheduleHandlers.scheduled_run_finish(scope, input),
+            (detail) => ({ outcome: "not_allowed" as const, detail }),
+          ),
+        ),
       settings_change: (input) =>
-        changes("settings_change", (scope) => settingsChange(scope, input)),
-      secret_request: (input) => own("secret_request", (scope) => secretRequest(scope, input)),
-      alert_assistants: () => changes("alert_assistants", alertAssistants),
+        changes("settings_change", input, (scope) => settingsChange(scope, input)),
+      secret_request: (input) =>
+        own("secret_request", (scope) => unlessWatched(input, () => secretRequest(scope, input))),
+      alert_assistants: () => changes("alert_assistants", undefined, alertAssistants),
       // Listed only to runtimes granted it; a call from any other is refused
       // too (a review runtime reads the checkout and nothing else). Refused
       // while outside work limits the caller: it reads app-wide settings,

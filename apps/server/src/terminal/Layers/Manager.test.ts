@@ -38,6 +38,7 @@ import {
   type PtySpawnInput,
   PtySpawnError,
 } from "../Services/PTY.ts";
+import { makeSecretScrubber } from "../../secrets/SecretScrubber.ts";
 import { makeTerminalManagerWithOptions, type TerminalProcessTreeControl } from "./Manager.ts";
 import {
   SERVER_ADDED_VARIABLE,
@@ -212,6 +213,7 @@ const multiTerminalHistoryLogPath = (
   );
 
 interface CreateManagerOptions {
+  scrubText?: (text: string) => string;
   shellResolver?: () => string;
   platform?: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;
@@ -269,6 +271,7 @@ const createManager = (
         historyLineLimit,
         ptyAdapter,
         ...(options.shellResolver !== undefined ? { shellResolver: options.shellResolver } : {}),
+        ...(options.scrubText !== undefined ? { scrubText: options.scrubText } : {}),
         ...(options.platform !== undefined ? { platform: options.platform } : {}),
         ...(options.env !== undefined ? { env: options.env } : {}),
         ...(options.subprocessChecker !== undefined
@@ -2249,6 +2252,34 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
         type: "interrupted",
         output: "ready on :3000",
       });
+    }),
+  );
+
+  it.effect("hides a saved key in a run's output before cutting it to its end", () =>
+    Effect.gen(function* () {
+      // A key of many lines where the cut to the last 16,000 characters falls:
+      // cut first, the lines after the cut would reach the thread.
+      const key = Array.from({ length: 12 }, (_, line) => `${line}a1b2c3d4`.repeat(6)).join("\n");
+      const scrubber = makeSecretScrubber();
+      scrubber.watch("DEPLOY_KEY", key);
+      const { manager, ptyAdapter } = yield* createManager(50, {
+        platform: "darwin",
+        shellResolver: () => "/bin/zsh",
+        scrubText: (text) => scrubber.scrubText(text).text,
+      });
+      yield* manager.startCommandRun(commandRunInput({ command: "cat deploy.log" }));
+      const after = Array.from({ length: 245 }, () => "y".repeat(63)).join("\r\n");
+      ptyAdapter.processes[0]!.emitData(
+        `\u001b]6973;run-1;start\u0007${key.replaceAll("\n", "\r\n")}\r\n${after}\r\nDONE\r\n`,
+      );
+      yield* waitFor(
+        manager
+          .readCommandRunOutput("run-1")
+          .pipe(Effect.map((out) => out?.endsWith("DONE") === true)),
+      );
+      const output = (yield* manager.readCommandRunOutput("run-1")) ?? "";
+      expect(output).toContain("[DEPLOY_KEY hidden]");
+      expect(output).not.toContain("a1b2c3d4");
     }),
   );
 

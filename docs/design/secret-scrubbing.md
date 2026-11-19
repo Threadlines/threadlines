@@ -1,10 +1,10 @@
 # Hiding a printed key
 
-Status: plan rev 4 (Nov 19 2026). Step 2a (the scrubber and provider output) built; step 2b (the other doors) not built. Rev 4 moves stream holding from the provider hook into ingestion (see "Streams"). Debug logs: Will chose to keep them (whole values hidden, pieces may remain). Step 2 of
+Status: plan rev 4 (Nov 19 2026). Step 2a (the scrubber and provider output) and step 2b (the other doors) built. Rev 4 moves stream holding from the provider hook into ingestion (see "Streams"). Debug logs: Will chose to keep them (whole values hidden, pieces may remain). Step 2 of
 `secret-requests.md`, whose step 1 is on main (#1000). GPT-6.2 Astra
 reviewed rev 1 (fifteen findings) and the new parts of rev 2 (thirteen);
-"Review" at the end says what each changed. One choice is left for Will,
-under "The debug logs".
+"Review" at the end says what each changed. Will chose to keep the debug
+logs ("The debug logs").
 
 ## The problem
 
@@ -280,13 +280,19 @@ These calls are refused, not rewritten. A rewritten message would tell
 another agent something the caller did not say, and a refusal teaches the
 agent what to do instead.
 
-- The room endpoint's handlers are one object (`McpRoomServer.ts:185` to
-  `:548`). A wrapper around it checks every tool's input with `contains`
-  and answers a call that has a watched value with a tool error: "Your call
-  contains STRIPE_SECRET_KEY. Don't pass a key through this tool. The other
-  agent can ask the user for it."
-- `show_page` (`AgentPages.ts:396`, `publish`) refuses the same way, for
-  every string it is given: the title, the content and the icon.
+- The room endpoint's handlers are one object (`McpRoomServer.ts`). Every
+  tool that changes something goes through one wrapper (`changes`), which
+  checks the input with `contains` and refuses a call that has a watched
+  value: "Your call contains STRIPE_SECRET_KEY. Don't pass a key through
+  this tool. The other agent can ask the user for it." Two tools that only
+  touch the caller's own thread but store what they are given
+  (`secret_request`'s card and `scheduled_run_finish`'s summary) are
+  checked the same way. Reads (`room_history`, `thread_read`, the guide)
+  are not: they store nothing.
+- `show_page` (`AgentPages.ts`, `publish`) refuses a page whose title,
+  content or icon holds a watched value: "Your page contains
+  STRIPE_SECRET_KEY. Don't put a key on a page; name the file it is in
+  instead." Theme pages go through `publish` too.
 - A Claude artifact that Threadlines adopts as a page (`AgentPages.ts:557`)
   is not a call it can refuse. Its title and content are scrubbed.
 
@@ -300,8 +306,9 @@ there.
 Two of these readers return only the end of a longer text, so they scrub
 before they cut:
 
-- a running command's output (`ClaudeAdapter.ts:10605`): the adapter has
-  the whole of what Claude kept, so it scrubs that and then takes the
+- a running command's output (`ClaudeAdapter.ts`, `readCommandOutput`):
+  the adapter hands back the whole of what Claude kept (8 KiB at most), and
+  `ProviderService.readCommandOutput` scrubs it, then takes the
   4,096-character tail;
 - a background run's output file (`BackgroundRunOutput.ts:88`): it reads
   the wanted tail plus the length of the longest watched form in bytes,
@@ -345,11 +352,14 @@ Two files per thread under `<state>/logs/provider/`, kept 30 days:
   function, `write` in `EventNdjsonLogger.ts:680`, including the ACP
   protocol log (`AcpNativeLogging.ts:21`).
 
-`makeEventNdjsonLogger` gains an optional `scrub` function, applied to the
-record before it is serialized (`:681`). `ProviderEventLoggersLive`
-(`ProviderEventLoggers.ts:98`) passes `scrubDeep` for the native logger, and
-so do the three adapters that can build a logger of their own
-(`ClaudeAdapter.ts:4285`, `CodexAdapter.ts:3267`, `AcpAdapter.ts:564`).
+`makeEventNdjsonLogger` takes an optional `scrubLine`, applied to each
+record's JSON line before it is written. `ProviderEventLoggersLive` passes
+`scrubText` for the native logger. Scrubbing the line rather than the
+record also covers member names and anything with its own `toJSON`; a
+value's JSON-escaped form is one of the forms the scrubber looks for. The
+three adapters that can build a logger of their own (`ClaudeAdapter.ts`,
+`CodexAdapter.ts`, `AcpAdapter.ts`, from `nativeEventLogPath`) do so only
+in tests; the server always hands them the shared one.
 
 This hides a value that sits whole in one record. It does not hide a value
 spread over several records, and both logs can hold one that way. Since rev
@@ -377,8 +387,7 @@ goes stale with every provider release. There are two honest designs:
   cost is that provider problems on that computer can no longer be debugged
   from the logs, for good, since an env key stays watched across restarts.
 
-This is Will's call. The build takes one flag either way
-(`THREADLINES_QUIET_PROVIDER_LOGS`), off by default until he says.
+Will chose to keep the logs, so the quiet-logs flag was not built.
 
 ## Streams
 
@@ -588,15 +597,18 @@ Step 2b: the other doors.
   the two cuts of a run's output.
 - `apps/server/src/mcp/McpRoomServer.ts`: the input check.
 - `apps/server/src/pages/AgentPages.ts`: `publish` and adopt.
-- `apps/server/src/provider/Layers/ClaudeAdapter.ts` (the command output
-  tail), `apps/server/src/diagnostics/BackgroundRunOutput.ts`, and the four
+- `apps/server/src/provider/Layers/ClaudeAdapter.ts` and
+  `ProviderService.ts` (the command output tail),
+  `apps/server/src/diagnostics/BackgroundRunOutput.ts`, and the four
   `ws.ts` read handlers.
 - `apps/server/src/provider/ExternalThreadImport.ts`.
 - `apps/server/src/orchestration/Layers/ProviderCommandReactor.ts`:
   `formatFailureDetail` and the side-answer start error.
-- `apps/server/src/provider/Layers/EventNdjsonLogger.ts`,
-  `ProviderEventLoggers.ts` and the three adapters' own loggers: `scrub`,
-  and the quiet-logs flag.
+- `apps/server/src/provider/Layers/EventNdjsonLogger.ts` and
+  `ProviderEventLoggers.ts`: `scrubLine`.
+- `apps/server/src/secrets/SecretScrubber.ts` and `server.ts`: the registry
+  (`layer`) sits at the bottom of the runtime, under every door above;
+  `loadSavedKeys` fills it inside the provider layer.
 
 ## Testing
 

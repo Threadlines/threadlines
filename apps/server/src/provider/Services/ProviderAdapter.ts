@@ -27,7 +27,6 @@ import type {
   ProviderRealtimeOutputModality,
   ProviderSubagentInputRequest,
   ProviderSubagentInputResult,
-  ProviderCommandOutputResult,
   McpAppToolResult,
   ProviderSubagentTranscriptInput,
   ProviderSubagentTranscriptResult,
@@ -67,6 +66,11 @@ export type ProviderNativeThreadForkMode = "supported" | "unsupported";
 export type ProviderRealtimeVoiceMode = "supported" | "unsupported";
 
 /** Partial goal update: omitted fields keep their provider-side values. */
+/** A running command's output as an adapter reads it, before keys are hidden and it is cut. */
+export type ProviderAdapterCommandOutput =
+  | { readonly status: "running"; readonly output: string; readonly totalBytes: number }
+  | { readonly status: "pending" | "unavailable" };
+
 export interface ProviderSetThreadGoalInput {
   readonly threadId: ThreadId;
   readonly objective?: string;
@@ -448,14 +452,15 @@ export interface ProviderAdapterShape<TError> {
 
   /**
    * What a command the session is running now has printed so far, by the
-   * tool call that started it. Optional: drivers whose output already
+   * tool call that started it, whole: ProviderService hides saved keys in it
+   * before cutting it to its end. Optional: drivers whose output already
    * streams as `command_output` deltas omit it. Answers `unavailable` for a
    * tool call the session doesn't know, so another session can be asked.
    */
   readonly readCommandOutput?: (
     threadId: ThreadId,
     toolCallId: string,
-  ) => Effect.Effect<ProviderCommandOutputResult, TError>;
+  ) => Effect.Effect<ProviderAdapterCommandOutput, TError>;
 
   /**
    * MCP Apps (docs/mcp-apps.md), through the session's own MCP client and
