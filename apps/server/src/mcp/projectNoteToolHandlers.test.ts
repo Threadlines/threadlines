@@ -110,11 +110,15 @@ const caller = (thread: OrchestrationThread, side?: "ask"): McpInvocationScope =
 
 /**
  * The tools over the real ProjectContext. `runtimes` is the access each
- * thread's runtime actually runs with; a thread missing from it runs none.
+ * thread's runtime runs with, or the level it asks for and the one it really
+ * runs at; a thread missing from it runs none.
  */
 const harness = (
   threads: ReadonlyArray<OrchestrationThread>,
-  runtimes: ReadonlyMap<ThreadId, RuntimeMode>,
+  runtimes: ReadonlyMap<
+    ThreadId,
+    RuntimeMode | { readonly asked: RuntimeMode; readonly runs: RuntimeMode }
+  >,
   mode: () => ProjectNotesMode,
 ) =>
   Effect.map(ProjectContext, (context) =>
@@ -122,7 +126,11 @@ const harness = (
       readThread: (threadId) => Effect.succeed(threads.find((thread) => thread.id === threadId)),
       context,
       notesMode: Effect.sync(mode),
-      runtimeModeOf: (sessionKey) => Effect.succeed(runtimes.get(sessionKey)),
+      runtimeModeOf: (sessionKey) =>
+        Effect.sync(() => {
+          const runtime = runtimes.get(sessionKey);
+          return typeof runtime === "string" ? { asked: runtime, runs: runtime } : runtime;
+        }),
       modelNameOf: (selection) => Effect.succeed(selection.model),
     }),
   );
@@ -250,6 +258,41 @@ layer("project note tools", (it) => {
             ["Early", "auto"],
             ["Pass", "approval-required"],
           ],
+        );
+      }),
+  );
+
+  it.effect(
+    "an agent without its chat's level writes at the level it runs at, and reads as asked",
+    () =>
+      Effect.gen(function* () {
+        const projectId = ProjectId.make("project-tools-stepped-down");
+        // Pi has no Auto: a thread set to Auto runs at Auto-accept edits.
+        const pi = makeThread("stepped-pi", projectId, { runtimeMode: "auto" });
+        const atEdits = makeThread("stepped-edits", projectId, {
+          runtimeMode: "auto-accept-edits",
+        });
+        const tools = yield* harness(
+          [pi, atEdits],
+          new Map<ThreadId, RuntimeMode | { asked: RuntimeMode; runs: RuntimeMode }>([
+            [pi.id, { asked: "auto", runs: "auto-accept-edits" }],
+            [atEdits.id, "auto-accept-edits"],
+          ]),
+          () => "auto",
+        );
+
+        yield* tools.project_note_write(caller(pi), write("From Pi"));
+        yield* tools.project_note_write(caller(atEdits), write("From edits"));
+        const { notes } = yield* notesOf(projectId);
+        assert.strictEqual(
+          notes.find((note) => note.title === "From Pi")?.writerCeiling?.runtimeMode,
+          "auto-accept-edits",
+        );
+        // As a reader it counts as Auto, the level asked: more than the
+        // other writer's, so that writer's limited note stays out of reach.
+        assert.strictEqual(
+          (yield* tools.project_note_read(caller(pi), { title: "From edits" })).outcome,
+          "not_found",
         );
       }),
   );

@@ -35,8 +35,14 @@ export interface ProjectNoteToolDeps {
   readonly context: Pick<ProjectContextShape, "agentNotes" | "writeAgentNote"> | undefined;
   /** "Notes agents write", read at every call. */
   readonly notesMode: Effect.Effect<ProjectNotesMode>;
-  /** The access the runtime with this session key runs with; undefined when none runs. */
-  readonly runtimeModeOf: (sessionKey: ThreadId) => Effect.Effect<RuntimeMode | undefined>;
+  /**
+   * The runtime with this session key: the level its chat asks for, and the
+   * level it really runs at (an agent without the asked level runs at the
+   * next safer one). Undefined when none runs.
+   */
+  readonly runtimeModeOf: (
+    sessionKey: ThreadId,
+  ) => Effect.Effect<{ readonly asked: RuntimeMode; readonly runs: RuntimeMode } | undefined>;
   readonly modelNameOf: (selection: ModelSelection) => Effect.Effect<string>;
 }
 
@@ -65,9 +71,13 @@ const tooLong = (input: { title: string; summary: string; text: string }): strin
 };
 
 export function makeProjectNoteToolHandlers(deps: ProjectNoteToolDeps) {
-  /** The access a runtime is judged by: its own, or Full when it can't be told. */
+  /**
+   * The access a reader is judged by: the level its chat asks for, never less
+   * than it runs at, so a reader can only seem to hold more access than it
+   * has, and see fewer notes. Full when it can't be told.
+   */
   const readerMode = (scope: McpInvocationScope) =>
-    deps.runtimeModeOf(scope.sessionKey).pipe(Effect.map((mode) => mode ?? "full-access"));
+    deps.runtimeModeOf(scope.sessionKey).pipe(Effect.map((mode) => mode?.asked ?? "full-access"));
 
   const agentName = (
     thread: OrchestrationThread,
@@ -152,10 +162,12 @@ export function makeProjectNoteToolHandlers(deps: ProjectNoteToolDeps) {
         runtimeMode: thread.runtimeMode,
         interactionMode: thread.interactionMode,
       };
-      const runtimeMode = yield* deps.runtimeModeOf(scope.sessionKey);
-      if (runtimeMode !== undefined) {
+      // The writer's level it really runs at, never more than asked: its
+      // note's ceiling can only come out narrower than its access.
+      const runtime = yield* deps.runtimeModeOf(scope.sessionKey);
+      if (runtime !== undefined) {
         writerCeiling = narrowerModeCeiling(writerCeiling, {
-          runtimeMode,
+          runtimeMode: runtime.runs,
           interactionMode: writerCeiling.interactionMode,
         });
       }

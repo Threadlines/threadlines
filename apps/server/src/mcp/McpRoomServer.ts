@@ -465,8 +465,10 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
         Effect.map((current) => current.projectNotes),
         Effect.orElseSucceed(() => "off" as const),
       ),
-      // The level the runtime really runs at: an agent without the level
-      // its chat asks for (Pi has no Auto) runs at the next safer one.
+      // The level the runtime's chat asks for, and the one it really runs
+      // at: an agent without the asked level (Pi has no Auto) runs at the
+      // next safer one. A provider that can't be found reads as the three
+      // legacy levels, which only lowers `runs`.
       runtimeModeOf: (sessionKey) =>
         Effect.gen(function* () {
           const session = (yield* providerService.listSessions()).find(
@@ -476,12 +478,15 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
           const provider = (yield* providers.getProviders).find(
             (entry) => entry.instanceId === session.providerInstanceId,
           );
-          return runtimeModeOnAgent({
-            requested: session.runtimeMode,
-            providerModes: provider?.supportedRuntimeModes,
-            modelModes: provider?.models.find((model) => model.slug === session.model)
-              ?.supportedRuntimeModes,
-          });
+          return {
+            asked: session.runtimeMode,
+            runs: runtimeModeOnAgent({
+              requested: session.runtimeMode,
+              providerModes: provider?.supportedRuntimeModes,
+              modelModes: provider?.models.find((model) => model.slug === session.model)
+                ?.supportedRuntimeModes,
+            }),
+          };
         }).pipe(Effect.orElseSucceed(() => undefined)),
       modelNameOf: (selection) =>
         modelNameOf(selection).pipe(Effect.orElseSucceed(() => selection.model)),
