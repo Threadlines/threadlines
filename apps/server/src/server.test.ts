@@ -898,7 +898,9 @@ const buildAppUnderTest = (options?: {
           Layer.mock(ThreadMoves)({}),
           Layer.mock(MoveQueue)({}),
           Layer.mock(ProjectSetups)({}),
-          Layer.mock(ProjectContext)({ changes: Stream.make({ briefs: [], notes: [], suggestions: [] }) }),
+          Layer.mock(ProjectContext)({
+            changes: Stream.make({ briefs: [], notes: [], suggestions: [] }),
+          }),
           Layer.mock(ProjectSetupSource)({}),
           Layer.mock(OutsideAgentSignIn)({ bootId: "test-boot" }),
           Layer.mock(AssistantAlerts)({ targets: Stream.make([]) }),

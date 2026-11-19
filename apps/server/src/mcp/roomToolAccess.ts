@@ -50,12 +50,18 @@ export const SECRET_REQUEST_TOOL_NAME = "secret_request";
 /** Alerting the user's assistants when the turn ends, when asked to (alertAssistantsTools.ts). */
 export const ALERT_ASSISTANTS_TOOL_NAME = "alert_assistants";
 
+/** Reading a project note, and writing one (projectNoteTools.ts). */
+export const PROJECT_NOTE_READ_TOOL_NAME = "project_note_read";
+export const PROJECT_NOTE_WRITE_TOOL_NAME = "project_note_write";
+
 /** The app's own tools: every local thread's own runtime gets them, room tools or not. */
 export const APP_TOOL_NAMES = [
   GUIDE_TOOL_NAME,
   SETTINGS_CHANGE_TOOL_NAME,
   SECRET_REQUEST_TOOL_NAME,
   ALERT_ASSISTANTS_TOOL_NAME,
+  PROJECT_NOTE_READ_TOOL_NAME,
+  PROJECT_NOTE_WRITE_TOOL_NAME,
 ] as const;
 
 export const ROOM_TOOL_NAMES = [

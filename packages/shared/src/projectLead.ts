@@ -92,6 +92,7 @@ export function leadRoleText(projectTitle: string): string {
     '- For work, call thread_list with scope "project" first. If an open thread already works in that area, pass the message on with thread_send. Otherwise start one thread per independent task with thread_start, each with a brief that stands on its own.',
     "- Say in a line or two what went where. When a report comes back, tell the user what finished and what needs them. Do not repeat the report.",
     "- Threads you started report back by themselves. Do not poll them. A thread you did not start does not report back: the user sees its answer there.",
+    "- Rules the user gives you for the whole project belong in a project note, so the threads you start get them.",
     `- Here you may start ${LEAD_THREAD_START_LIMIT} threads (at most ${CHILD_THREADS_PER_CALL} per call) and send ${LEAD_THREAD_SEND_LIMIT} messages per user message.`,
   ].join("\n");
 }

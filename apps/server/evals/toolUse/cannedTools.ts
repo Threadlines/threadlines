@@ -205,6 +205,14 @@ export function makeCannedRoomHandlers(
       outcome: "no_receiver",
       detail: "No assistant is set up to receive alerts.",
     })),
+    project_note_read: answer("project_note_read", () => ({
+      outcome: "not_found",
+      detail: "This project has no note with that title.",
+    })),
+    project_note_write: answer("project_note_write", () => ({
+      outcome: "suggested",
+      detail: "Your note waits for the user to keep or discard.",
+    })),
   });
 }
 
