@@ -28,9 +28,16 @@ import {
   type OutsideAgentReach,
   type OutsideAgentsSnapshot,
   ProjectId,
+  ProjectNoteId,
+  ProjectNoteSuggestionId,
   type ProjectBrief,
   type ProjectBriefSetInput,
   type ProjectBriefSetResult,
+  type ProjectNote,
+  type ProjectNoteChange,
+  type ProjectNoteChangeResult,
+  type ProjectNoteListing,
+  type ProjectNoteSuggestion,
   type ProjectContextSnapshot,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -4538,8 +4545,15 @@ describe("Agent Instructions › Brief", () => {
   const SHARED_PATH = "/repo/app";
   const projectOn = (environmentId: EnvironmentId) => ProjectId.make(`project-${environmentId}`);
 
-  /** A computer with the project (the same repository on each), and the briefs it keeps. */
-  const seedComputer = (environmentId: EnvironmentId, brief: ProjectBrief | null) => {
+  /** A computer with the project (the same repository on each), and the briefs and notes it keeps. */
+  const seedComputer = (
+    environmentId: EnvironmentId,
+    brief: ProjectBrief | null,
+    held: {
+      readonly notes?: readonly ProjectNoteListing[];
+      readonly suggestions?: readonly ProjectNoteSuggestion[];
+    } = {},
+  ) => {
     useStore.getState().syncServerShellSnapshot(
       {
         snapshotSequence: 1,
@@ -4579,7 +4593,11 @@ describe("Agent Instructions › Brief", () => {
     } as unknown as EnvironmentApi);
 
     // The computer's server: saves count revisions and refuse a stale one.
-    let snapshot: ProjectContextSnapshot = { briefs: brief === null ? [] : [brief] };
+    let snapshot: ProjectContextSnapshot = {
+      briefs: brief === null ? [] : [brief],
+      notes: held.notes ?? [],
+      suggestions: held.suggestions ?? [],
+    };
     const listeners = new Set<(next: ProjectContextSnapshot) => void>();
     const current = (projectId: ProjectId): ProjectBrief =>
       snapshot.briefs.find((entry) => entry.projectId === projectId) ?? {
@@ -4604,12 +4622,59 @@ describe("Agent Instructions › Brief", () => {
           updatedAt: "2026-11-18T00:00:00.000Z",
         };
         computer.emit({
+          ...snapshot,
           briefs: [
             ...snapshot.briefs.filter((entry) => entry.projectId !== saved.projectId),
             saved,
           ],
         });
         return { outcome: "saved", brief: saved };
+      }),
+      readNote: vi.fn(async (): Promise<ProjectNote> => {
+        throw new Error("not used");
+      }),
+      // The computer's note changes, each as the server would answer it.
+      changeNote: vi.fn(async (change: ProjectNoteChange): Promise<ProjectNoteChangeResult> => {
+        switch (change.kind) {
+          case "save": {
+            const note = {
+              id: change.noteId ?? ProjectNoteId.make(`note-${snapshot.notes.length + 1}`),
+              projectId: change.projectId,
+              title: change.title,
+              summary: change.summary,
+              approved: true,
+              writerCeiling: null,
+              author: { kind: "user" as const },
+              createdAt: "2026-11-18T00:00:00.000Z",
+              updatedAt: "2026-11-18T00:00:00.000Z",
+            };
+            computer.emit({
+              ...snapshot,
+              notes: [...snapshot.notes.filter((entry) => entry.id !== note.id), note],
+            });
+            return { note: { ...note, text: change.text } };
+          }
+          case "approve":
+            computer.emit({
+              ...snapshot,
+              notes: snapshot.notes.map((note) =>
+                note.id === change.noteId ? { ...note, approved: true, writerCeiling: null } : note,
+              ),
+            });
+            return { note: null };
+          case "remove":
+            computer.emit({
+              ...snapshot,
+              notes: snapshot.notes.filter((note) => note.id !== change.noteId),
+            });
+            return { note: null };
+          case "resolveSuggestion":
+            computer.emit({
+              ...snapshot,
+              suggestions: snapshot.suggestions.filter((entry) => entry.id !== change.suggestionId),
+            });
+            return { note: null };
+        }
       }),
     };
     projectContextHarness.connections.set(environmentId, {
@@ -4621,6 +4686,8 @@ describe("Agent Instructions › Brief", () => {
             return () => listeners.delete(listener);
           },
           setBrief: computer.setBrief,
+          readNote: computer.readNote,
+          changeNote: computer.changeNote,
         },
       },
     });
@@ -4715,7 +4782,7 @@ describe("Agent Instructions › Brief", () => {
     await expect.element(box).toHaveValue("Branch from develop.");
     await box.fill("My edit.");
     // Another device saves while this page holds an edit.
-    mac.emit({ briefs: [brief(THIS_MAC, "Their newer rule.", 3)] });
+    mac.emit({ briefs: [brief(THIS_MAC, "Their newer rule.", 3)], notes: [], suggestions: [] });
     await page.getByRole("button", { name: "Save brief" }).click();
 
     await expect
@@ -4741,7 +4808,11 @@ describe("Agent Instructions › Brief", () => {
     await expect.element(box).toHaveValue("Branch from develop.");
     await box.fill("My edit.");
     // Someone saves on Studio directly while this page holds the edit.
-    studio.emit({ briefs: [brief(STUDIO, "Studio's newer rule.", 2)] });
+    studio.emit({
+      briefs: [brief(STUDIO, "Studio's newer rule.", 2)],
+      notes: [],
+      suggestions: [],
+    });
     await page.getByRole("button", { name: "Save brief" }).click();
 
     await expect
@@ -4756,6 +4827,204 @@ describe("Agent Instructions › Brief", () => {
       expectedRevision: 1,
     });
     expect(studio.textOf(projectOn(STUDIO))).toBe("Studio's newer rule.");
+  });
+
+  const agentAuthor = {
+    kind: "agent" as const,
+    threadId: ThreadId.make("thread-notes"),
+    participantId: null,
+    agentName: "Codex",
+  };
+  const suggestionOn = (id: string, title: string, createdAt: string): ProjectNoteSuggestion => ({
+    id: ProjectNoteSuggestionId.make(id),
+    projectId: projectOn(THIS_MAC),
+    title,
+    summary: `${title}, in one line.`,
+    text: `${title}, in full.`,
+    author: agentAuthor,
+    turnId: null,
+    createdAt,
+  });
+
+  it("keeps exactly the suggestion the user read", async () => {
+    describeComputers(true);
+    const mac = seedComputer(THIS_MAC, null, {
+      suggestions: [
+        suggestionOn("suggestion-old", "Test database", "2026-11-17T00:00:00.000Z"),
+        suggestionOn("suggestion-new", "Release branch", "2026-11-18T00:00:00.000Z"),
+      ],
+    });
+    seedComputer(STUDIO, null);
+
+    await renderPage();
+
+    await expect.element(page.getByText("Release branch", { exact: true })).toBeVisible();
+    // Its text is in the snapshot: opening the row shows it before Keep.
+    await page.getByRole("button", { name: /^Release branch/ }).click();
+    await expect.element(page.getByText("Release branch, in full.")).toBeVisible();
+    await page.getByRole("button", { name: "Keep Release branch" }).click();
+
+    await vi.waitFor(() =>
+      expect(mac.changeNote).toHaveBeenCalledWith({
+        kind: "resolveSuggestion",
+        projectId: projectOn(THIS_MAC),
+        suggestionId: ProjectNoteSuggestionId.make("suggestion-new"),
+        decision: "keep",
+      }),
+    );
+    expect(mac.changeNote).toHaveBeenCalledTimes(1);
+    await expect
+      .element(page.getByRole("button", { name: "Keep Release branch" }))
+      .not.toBeInTheDocument();
+    await expect.element(page.getByRole("button", { name: "Keep Test database" })).toBeVisible();
+  });
+
+  it("keeps an open note's draft when the note changes elsewhere", async () => {
+    describeComputers(true);
+    const noteId = ProjectNoteId.make("note-open");
+    const listed = {
+      id: noteId,
+      projectId: projectOn(THIS_MAC),
+      title: "Dev ports",
+      summary: "Which ports the dev servers use.",
+      approved: true,
+      writerCeiling: null,
+      author: { kind: "user" as const },
+      createdAt: "2026-11-17T00:00:00.000Z",
+      updatedAt: "2026-11-17T00:00:00.000Z",
+    };
+    const mac = seedComputer(THIS_MAC, null, { notes: [listed] });
+    mac.readNote.mockImplementation(async () => ({ ...listed, text: "Web on 5733." }));
+    seedComputer(STUDIO, null);
+
+    await renderPage();
+
+    await page.getByRole("button", { name: "Dev ports" }).click();
+    const text = page.getByLabelText("Note text");
+    await expect.element(text).toHaveValue("Web on 5733.");
+    await text.fill("Web on 5733, server on 13773.");
+    // An agent or another device rewrites it while the user types.
+    mac.emit({
+      briefs: [],
+      notes: [{ ...listed, updatedAt: "2026-11-18T09:00:00.000Z" }],
+      suggestions: [],
+    });
+
+    await expect
+      .element(page.getByText("This note changed since you opened it.", { exact: false }))
+      .toBeVisible();
+    await expect.element(text).toHaveValue("Web on 5733, server on 13773.");
+  });
+
+  it("approves only the text an open note shows, not a rewrite that came in under it", async () => {
+    describeComputers(true);
+    const noteId = ProjectNoteId.make("note-rewritten");
+    const listed = {
+      id: noteId,
+      projectId: projectOn(THIS_MAC),
+      title: "Deploys",
+      summary: "How deploys go out.",
+      approved: false,
+      writerCeiling: {
+        runtimeMode: "approval-required" as const,
+        interactionMode: "default" as const,
+      },
+      author: agentAuthor,
+      createdAt: "2026-11-17T00:00:00.000Z",
+      updatedAt: "2026-11-17T00:00:00.000Z",
+    };
+    const mac = seedComputer(THIS_MAC, null, { notes: [listed] });
+    mac.readNote.mockImplementation(async () => ({ ...listed, text: "Deploy from main." }));
+    seedComputer(STUDIO, null);
+
+    await renderPage();
+
+    await page.getByRole("button", { name: "Deploys" }).click();
+    await expect.element(page.getByLabelText("Note text")).toHaveValue("Deploy from main.");
+    // Its writer rewrites it while the user has the old text open.
+    mac.emit({
+      briefs: [],
+      notes: [{ ...listed, updatedAt: "2026-11-18T09:00:00.000Z" }],
+      suggestions: [],
+    });
+    await expect
+      .element(page.getByText("This note changed since you opened it.", { exact: false }))
+      .toBeVisible();
+    await page.getByRole("button", { name: "Show to all threads" }).click();
+
+    await vi.waitFor(() =>
+      expect(mac.changeNote).toHaveBeenCalledWith({
+        kind: "approve",
+        projectId: projectOn(THIS_MAC),
+        noteId,
+        updatedAt: "2026-11-17T00:00:00.000Z",
+      }),
+    );
+  });
+
+  it("shows a note kept without asking to all threads", async () => {
+    describeComputers(true);
+    const noteId = ProjectNoteId.make("note-limited");
+    const mac = seedComputer(THIS_MAC, null, {
+      notes: [
+        {
+          id: noteId,
+          projectId: projectOn(THIS_MAC),
+          title: "Flaky tests",
+          summary: "Which tests to re-run before calling them broken.",
+          approved: false,
+          writerCeiling: { runtimeMode: "approval-required", interactionMode: "default" },
+          author: agentAuthor,
+          createdAt: "2026-11-17T00:00:00.000Z",
+          updatedAt: "2026-11-17T00:00:00.000Z",
+        },
+      ],
+    });
+    seedComputer(STUDIO, null);
+
+    await renderPage();
+
+    const limited = page.getByText(
+      "Kept automatically. Threads with more access than its writer do not see it.",
+    );
+    await expect.element(limited).toBeVisible();
+    await page.getByRole("button", { name: "Show to all threads" }).click();
+
+    await vi.waitFor(() =>
+      expect(mac.changeNote).toHaveBeenCalledWith({
+        kind: "approve",
+        projectId: projectOn(THIS_MAC),
+        noteId,
+        updatedAt: "2026-11-17T00:00:00.000Z",
+      }),
+    );
+    await expect.element(limited).not.toBeInTheDocument();
+  });
+
+  it("adds the user's own note", async () => {
+    describeComputers(true);
+    const mac = seedComputer(THIS_MAC, null);
+    seedComputer(STUDIO, null);
+
+    await renderPage();
+
+    await page.getByRole("button", { name: "Add note" }).click();
+    await page.getByLabelText("Note title").fill("Ports");
+    await page.getByLabelText("Note one line").fill("Which ports the dev servers use.");
+    await page.getByLabelText("Note text").fill("Web on 5733, server on 3773.");
+    await page.getByRole("button", { name: "Save note" }).click();
+
+    await vi.waitFor(() =>
+      expect(mac.changeNote).toHaveBeenCalledWith({
+        kind: "save",
+        projectId: projectOn(THIS_MAC),
+        title: "Ports",
+        summary: "Which ports the dev servers use.",
+        text: "Web on 5733, server on 3773.",
+      }),
+    );
+    await expect.element(page.getByLabelText("Note title")).not.toBeInTheDocument();
+    await expect.element(page.getByText("Which ports the dev servers use.")).toBeVisible();
   });
 
   it("is hidden when the project's computer keeps no briefs", async () => {

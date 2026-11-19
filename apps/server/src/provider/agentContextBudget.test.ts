@@ -17,6 +17,7 @@ import { Tool } from "effect/ai";
 import { expect, it } from "vite-plus/test";
 
 import { AlertAssistantsToolkit } from "../mcp/alertAssistantsTools.ts";
+import { ProjectNoteToolkit } from "../mcp/projectNoteTools.ts";
 import { BrowserScreenshotToolkit, BrowserStandardToolkit } from "../mcp/browserTools.ts";
 import { AskUserToRunTool } from "../mcp/commandTools.ts";
 import { GuideToolkit } from "../mcp/guideTools.ts";
@@ -60,6 +61,7 @@ const threadTools: ReadonlyArray<Tool.Any> = [
     SettingsChangeToolkit,
     SecretRequestToolkit,
     AlertAssistantsToolkit,
+    ProjectNoteToolkit,
   ].flatMap((toolkit) => Object.values(toolkit.tools) as ReadonlyArray<Tool.Any>),
   ShowPageTool,
   PreviewPageTool,

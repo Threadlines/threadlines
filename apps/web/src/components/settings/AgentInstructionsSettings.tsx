@@ -43,6 +43,9 @@ import {
 } from "./ExtensionsSettings.logic";
 import { useScopeMachines } from "./useScopeMachines";
 import { ProjectBriefSection } from "./ProjectBriefSection";
+import { ProjectNotesSection, type ThreadTitleLookup } from "./ProjectNotesSection";
+import { usePrimaryEnvironmentDescriptor } from "../../environments/primary";
+import { useProjectBriefSupport } from "../../projectBrief";
 
 interface InstructionDraft {
   readonly contents: string;
@@ -260,6 +263,15 @@ export function AgentInstructionsSettingsPanel() {
     (environmentId: EnvironmentId) =>
       machines.find((machine) => machine.environmentId === environmentId)?.label ?? environmentId,
     [machines],
+  );
+  const keepsProjectContext = useProjectBriefSupport();
+  const primaryEnvironmentId = usePrimaryEnvironmentDescriptor()?.environmentId ?? null;
+  const threadTitle = useCallback<ThreadTitleLookup>(
+    (environmentId, threadId) =>
+      sidebarThreads.find(
+        (thread) => thread.environmentId === environmentId && thread.id === threadId,
+      )?.title ?? null,
+    [sidebarThreads],
   );
   // Instruction files live on the machine that owns the project, and the picker
   // spans machines, so the API is resolved from the project rather than from
@@ -548,7 +560,7 @@ export function AgentInstructionsSettingsPanel() {
           description={
             instructions?.generatedAt
               ? `Files loaded ${new Date(instructions.generatedAt).toLocaleString()}.`
-              : "Pick the project whose brief and instruction files you want to edit."
+              : "Pick the project whose brief, notes and instruction files you want to edit."
           }
           status={error}
           control={
@@ -619,6 +631,20 @@ export function AgentInstructionsSettingsPanel() {
           project={selectedProjectRecord}
           projects={projects}
           computerLabel={computerLabel}
+        />
+      ) : null}
+
+      {selectedProjectRecord !== null && selectedProject !== null ? (
+        <ProjectNotesSection
+          key={`notes:${selectedProject.key}`}
+          environmentId={selectedProjectRecord.environmentId}
+          projectId={selectedProjectRecord.id}
+          supported={keepsProjectContext(selectedProjectRecord.environmentId)}
+          threadTitle={threadTitle}
+          ownComputer={selectedProjectRecord.environmentId === primaryEnvironmentId}
+          ownComputerLabel={
+            primaryEnvironmentId === null ? "this device" : computerLabel(primaryEnvironmentId)
+          }
         />
       ) : null}
 

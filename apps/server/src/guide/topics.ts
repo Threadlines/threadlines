@@ -331,7 +331,7 @@ When a Claude or Codex usage limit stops a thread, the notice above the composer
   },
   {
     id: "project-brief",
-    title: "Project brief",
+    title: "Project brief and notes",
     keywords: [
       "brief",
       "project brief",
@@ -339,6 +339,10 @@ When a Claude or Codex usage limit stops a thread, the notice above the composer
       "standing instructions",
       "rules for every thread",
       "project memory",
+      "project notes",
+      "notes",
+      "suggested note",
+      "keep note",
     ],
     body: `A project's brief is text the user writes once. Every thread in the project gets it as the user's standing instructions, on any agent. It is set in {place:instructions.brief}: pick the project at the top, write it, Save. Up to 8,000 characters. Agents can't change it.
 
@@ -346,7 +350,11 @@ New threads get a change at once. A thread that is already open gets it the next
 
 Threadlines keeps it on each computer, not in the repository. Save stores it on every connected computer that has the project, and the line under the box says where it went. If the computers hold different briefs, the page shows the picked computer's and offers to copy it to the others. If another device saved first, Save says so and shows the newer text instead of overwriting it. Set up on another computer copies the brief with the project.
 
-The project menu's Project brief, the command palette and the lead chat's crown card open it too.`,
+Project notes are short notes for later threads in the project: a title, one line and a text. Every thread gets the list of titles and lines when its agent starts and can read a note's text. Notes are what other agents or the user left, not the user's instructions. They stay on the computer whose agents wrote them and are listed in {place:instructions.notes}, where the user can add, edit or remove one.
+
+{place:instructions.notesMode} decides what an agent's note becomes, for every project on that computer. Ask me first, the default: it is a suggestion, shown in the notes list and as a row in the thread that wrote it, with Keep and Discard. No agent sees a suggestion until the user keeps it, and it never marks the thread as needing the user or holds anything up. Keep without asking: it is kept at once, but only threads running with no more access than the agent that wrote it see it, until the user presses Show to all threads. Off: agents don't write notes, and kept notes still reach threads. Only the user can keep a note or change this setting.
+
+The project menu's Project brief and notes, the command palette and the lead chat's crown card (Brief and notes) open the page too.`,
   },
   {
     id: "browser-panel",

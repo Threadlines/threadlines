@@ -284,8 +284,10 @@ a project note, so the threads you start get them."
 - `projectContext.setBrief { projectId, text, expectedRevision }`: refused with the
   current text when the revision moved. The save to other computers sends each one the
   revision the client last saw from it.
-- `readNote`, `saveNote`, `removeNote`, `approveNote { noteId }`,
-  `resolveSuggestion { suggestionId, keep | discard }`.
+- `readNote { noteId }`, and `changeNote` with one of `save`, `remove`, `approve`
+  `{ noteId }` or `resolveSuggestion { suggestionId, keep | discard }`. One RPC for the
+  changes because the WebSocket RPC table is near the size where the type checker
+  gives up on it (four more RPCs turned the server's layer types into `any`).
 - These RPCs are the app's own. They are not on the outside agents' or the assistants'
   tool servers, so no agent can set the brief or keep a note.
 - Capability `projectContext` in `environment.ts`, so a client hides all of it on an

@@ -70,6 +70,10 @@ import {
   ProjectContextError,
   ProjectContextSnapshot,
   ProjectContextSubscribeInput,
+  ProjectNote,
+  ProjectNoteChange,
+  ProjectNoteChangeResult,
+  ProjectNoteReadInput,
 } from "./projectContext.ts";
 import {
   ThemeContent,
@@ -770,6 +774,8 @@ export const WS_METHODS = {
   // Scheduled tasks (docs/design/fleet.md, Part 6). Owner and client sessions alike.
   projectContextSubscribe: "projectContext.subscribe",
   projectContextSetBrief: "projectContext.setBrief",
+  projectContextReadNote: "projectContext.readNote",
+  projectContextChangeNote: "projectContext.changeNote",
   scheduledTasksSubscribe: "scheduledTasks.subscribe",
   scheduledTasksListRuns: "scheduledTasks.listRuns",
   scheduledTasksCreate: "scheduledTasks.create",
@@ -2177,7 +2183,6 @@ export const WsLinksRespondRequestRpc = Rpc.make(WS_METHODS.linksRespondRequest,
   error: ComputerLinkError,
 });
 
-/** This computer's scheduled tasks, each with its last run; again on every change. */
 /** Every project's brief on this computer, again whenever one changes. */
 export const WsProjectContextSubscribeRpc = Rpc.make(WS_METHODS.projectContextSubscribe, {
   payload: ProjectContextSubscribeInput,
@@ -2193,6 +2198,21 @@ export const WsProjectContextSetBriefRpc = Rpc.make(WS_METHODS.projectContextSet
   error: ProjectContextError,
 });
 
+/** A kept note with its text, for the page. */
+export const WsProjectContextReadNoteRpc = Rpc.make(WS_METHODS.projectContextReadNote, {
+  payload: ProjectNoteReadInput,
+  success: ProjectNote,
+  error: ProjectContextError,
+});
+
+/** The app's changes to notes and suggestions (ProjectNoteChange). */
+export const WsProjectContextChangeNoteRpc = Rpc.make(WS_METHODS.projectContextChangeNote, {
+  payload: ProjectNoteChange,
+  success: ProjectNoteChangeResult,
+  error: ProjectContextError,
+});
+
+/** This computer's scheduled tasks, each with its last run; again on every change. */
 export const WsScheduledTasksSubscribeRpc = Rpc.make(WS_METHODS.scheduledTasksSubscribe, {
   payload: ScheduledTasksSubscribeInput,
   success: ScheduledTasksSnapshot,
@@ -3047,6 +3067,8 @@ export const WsCoreRpcGroup = RpcGroup.make(
   WsLinksRespondRequestRpc,
   WsProjectContextSubscribeRpc,
   WsProjectContextSetBriefRpc,
+  WsProjectContextReadNoteRpc,
+  WsProjectContextChangeNoteRpc,
   WsScheduledTasksSubscribeRpc,
   WsScheduledTasksListRunsRpc,
   WsScheduledTasksCreateRpc,

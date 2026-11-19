@@ -10,7 +10,7 @@
  *
  * @module runtimeMode
  */
-import { RUNTIME_MODES, type RuntimeMode } from "@threadlines/contracts";
+import { LEGACY_RUNTIME_MODES, RUNTIME_MODES, type RuntimeMode } from "@threadlines/contracts";
 
 /** What each access level is called wherever the user sees or picks it. */
 export const RUNTIME_MODE_LABELS: Readonly<Record<RuntimeMode, string>> = {
@@ -35,6 +35,24 @@ export function effectiveRuntimeMode<Mode extends RuntimeMode>(
     if (match !== undefined) return match;
   }
   return "approval-required";
+}
+
+/**
+ * The level an agent runs at when its chat asks for `requested`: what its
+ * driver supports (`providerModes`, absent: the three legacy levels),
+ * narrowed by its model's own list (`modelModes`, absent: all of them).
+ */
+export function runtimeModeOnAgent(input: {
+  readonly requested: RuntimeMode;
+  readonly providerModes: ReadonlyArray<RuntimeMode> | undefined;
+  readonly modelModes: ReadonlyArray<RuntimeMode> | undefined;
+}): RuntimeMode {
+  const driver = input.providerModes ?? LEGACY_RUNTIME_MODES;
+  const supported =
+    input.modelModes === undefined
+      ? driver
+      : driver.filter((mode) => input.modelModes?.includes(mode) === true);
+  return effectiveRuntimeMode(input.requested, supported);
 }
 
 /** Whether `mode` lets an agent do more than `ceiling` does. */

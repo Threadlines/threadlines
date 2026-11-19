@@ -22,6 +22,8 @@ import { ProjectionThreadRepositoryLive } from "./persistence/Layers/ProjectionT
 import { ProjectionProjectRepositoryLive } from "./persistence/Layers/ProjectionProjects.ts";
 import { ProjectBriefRepositoryLive } from "./projectContext/ProjectBriefRepository.ts";
 import { ProjectContextLive } from "./projectContext/ProjectContext.ts";
+import { ProjectNoteRepositoryLive } from "./projectContext/ProjectNoteRepository.ts";
+import { ProjectNotesUndoLive } from "./projectContext/ProjectNotesUndo.ts";
 import { ProjectInstructionsLive } from "./projectContext/ProjectInstructionsLive.ts";
 import { ProjectionTurnRepositoryLive } from "./persistence/Layers/ProjectionTurns.ts";
 import { ComputerLinkClientLive } from "./links/ComputerLinkClient.ts";
@@ -365,10 +367,13 @@ const ScheduledTasksLayerLive = Layer.mergeAll(
 // Part 8): the reads for a copy of this computer's projects, and the jobs
 // that make copies here. Jobs a restart cut short are finished or undone
 // as the layer starts.
-// A project's brief (docs/design/project-brief-notes.md): the app's
-// `projectContext.*` RPCs, and the copy "Set up on another computer" carries.
-const ProjectContextLayerLive = ProjectContextLive.pipe(
-  Layer.provideMerge(ProjectBriefRepositoryLive),
+// A project's brief and notes (docs/design/project-brief-notes.md): the
+// app's `projectContext.*` RPCs, the project_note_* tools, and the copy "Set
+// up on another computer" carries. An undone turn's note suggestions go.
+const ProjectContextLayerLive = ProjectNotesUndoLive.pipe(
+  Layer.provide(ProjectionTurnRepositoryLive),
+  Layer.provideMerge(ProjectContextLive),
+  Layer.provideMerge(Layer.mergeAll(ProjectBriefRepositoryLive, ProjectNoteRepositoryLive)),
   Layer.provide(ProjectionProjectRepositoryLive),
 );
 
@@ -445,6 +450,7 @@ const ProviderLayerLive = ProviderServiceLive.pipe(
           ProjectionThreadRepositoryLive,
           ProjectionProjectRepositoryLive,
           ProjectBriefRepositoryLive,
+          ProjectNoteRepositoryLive,
         ),
       ),
     ),

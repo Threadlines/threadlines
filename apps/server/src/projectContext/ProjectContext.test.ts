@@ -1,11 +1,15 @@
 import {
   EnvironmentId,
   GENERAL_CHATS_PROJECT_ID,
+  type OrchestrationEvent,
   ProjectId,
+  type ProjectNotesMode,
   ProviderInstanceId,
+  type RuntimeMode,
   SideTurnId,
   ThreadId,
   ThreadParticipantId,
+  TurnId,
 } from "@threadlines/contracts";
 import {
   parseSessionKey,
@@ -15,26 +19,37 @@ import {
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 
+import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionProjectRepositoryLive } from "../persistence/Layers/ProjectionProjects.ts";
 import { ProjectionThreadRepositoryLive } from "../persistence/Layers/ProjectionThreads.ts";
+import { ProjectionTurnRepositoryLive } from "../persistence/Layers/ProjectionTurns.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import { ProjectionProjectRepository } from "../persistence/Services/ProjectionProjects.ts";
 import { ProjectionThreadRepository } from "../persistence/Services/ProjectionThreads.ts";
+import { ProjectionTurnRepository } from "../persistence/Services/ProjectionTurns.ts";
 import { ProjectInstructions } from "../provider/Services/ProjectInstructions.ts";
+import { ServerSettingsService } from "../serverSettings.ts";
 import { ProjectBriefRepositoryLive } from "./ProjectBriefRepository.ts";
 import { ProjectContext, ProjectContextLive } from "./ProjectContext.ts";
-import { ProjectInstructionsLive } from "./ProjectInstructionsLive.ts";
+import { ProjectNoteRepositoryLive } from "./ProjectNoteRepository.ts";
+import { makeProjectInstructions, ProjectInstructionsLive } from "./ProjectInstructionsLive.ts";
+import { makeProjectNotesUndo } from "./ProjectNotesUndo.ts";
 
-const layer = it.layer(
-  Layer.mergeAll(ProjectContextLive, ProjectInstructionsLive).pipe(
-    Layer.provideMerge(ProjectBriefRepositoryLive),
-    Layer.provideMerge(ProjectionProjectRepositoryLive),
-    Layer.provideMerge(ProjectionThreadRepositoryLive),
-    Layer.provideMerge(SqlitePersistenceMemory),
-  ),
+/** A fresh in-memory database each time it is built. */
+const testLayer = Layer.mergeAll(ProjectContextLive, ProjectInstructionsLive).pipe(
+  Layer.provideMerge(ProjectBriefRepositoryLive),
+  Layer.provideMerge(ProjectNoteRepositoryLive),
+  Layer.provideMerge(ProjectionProjectRepositoryLive),
+  Layer.provideMerge(ProjectionThreadRepositoryLive),
+  Layer.provideMerge(ProjectionTurnRepositoryLive),
+  Layer.provideMerge(SqlitePersistenceMemory),
 );
+
+const layer = it.layer(testLayer);
 
 const at = "2026-11-18T00:00:00.000Z";
 
@@ -88,6 +103,52 @@ const addThread = (
 const instructionsFor = (sessionKey: ThreadId) =>
   Effect.flatMap(ProjectInstructions, (lookup) =>
     lookup.forSession({ sessionKey, runtimeMode: "full-access" }),
+  );
+
+/** A session's text as it starts with `runtimeMode`, under "Notes agents write" = `projectNotes`. */
+const sessionText = (
+  sessionKey: ThreadId,
+  runtimeMode: RuntimeMode,
+  projectNotes: ProjectNotesMode,
+) =>
+  makeProjectInstructions.pipe(
+    Effect.flatMap((lookup) => lookup.forSession({ sessionKey, runtimeMode })),
+    Effect.provide(ServerSettingsService.layerTest({ projectNotes })),
+    Effect.map((text) => text ?? ""),
+  );
+
+/** An agent's project_note_write, as the tool hands it to the service. */
+const agentWrite = (input: {
+  readonly projectId: ProjectId;
+  readonly threadId: ThreadId;
+  readonly title: string;
+  readonly text?: string;
+  readonly mode: "ask" | "auto";
+  readonly ceiling?: RuntimeMode;
+  readonly turnId?: TurnId;
+}) =>
+  Effect.flatMap(ProjectContext, (context) =>
+    context.writeAgentNote({
+      projectId: input.projectId,
+      title: input.title,
+      summary: `About ${input.title}`,
+      text: input.text ?? `${input.title} text`,
+      author: { kind: "agent", threadId: input.threadId, participantId: null, agentName: "Codex" },
+      turnId: input.turnId ?? null,
+      writerCeiling: { runtimeMode: input.ceiling ?? "full-access", interactionMode: "default" },
+      mode: input.mode,
+    }),
+  );
+
+const snapshotNow = Effect.flatMap(ProjectContext, (context) =>
+  context.changes.pipe(Stream.runHead, Effect.map(Option.getOrThrow)),
+);
+
+const titlesFor = (projectId: ProjectId, runtimeMode: RuntimeMode) =>
+  Effect.flatMap(ProjectContext, (context) =>
+    Effect.map(context.agentNotes(projectId, runtimeMode), (notes) =>
+      notes.map((note) => note.title),
+    ),
   );
 
 layer("ProjectContext", (it) => {
@@ -212,5 +273,316 @@ layer("ProjectContext", (it) => {
       assert.strictEqual(parseSessionKey(side).kind, "side");
       assert.strictEqual(yield* instructionsFor(side), undefined);
     }),
+  );
+
+  it.effect("an agent's note under Ask waits for the user, and Keep keeps exactly that text", () =>
+    Effect.gen(function* () {
+      const context = yield* ProjectContext;
+      const projectId = ProjectId.make("project-ask");
+      const writer = ThreadId.make("thread-ask-writer");
+      const reader = ThreadId.make("thread-ask-reader");
+      yield* addProject(projectId, "Ask");
+      yield* addThread(reader, projectId);
+
+      const written = yield* agentWrite({
+        projectId,
+        threadId: writer,
+        title: "Release steps",
+        text: "Tag, then push.",
+        mode: "ask",
+      });
+      assert.strictEqual(written.outcome, "suggested");
+      assert.deepStrictEqual(yield* titlesFor(projectId, "approval-required"), []);
+      assert.deepStrictEqual(yield* titlesFor(projectId, "full-access"), []);
+      assert.notInclude(yield* sessionText(reader, "full-access", "ask"), "Release steps");
+
+      const first = (yield* snapshotNow).suggestions.find((entry) => entry.projectId === projectId);
+      const kept = yield* context.changeNote({
+        kind: "resolveSuggestion",
+        projectId,
+        suggestionId: first!.id,
+        decision: "keep",
+      });
+      assert.strictEqual(kept.note?.approved, true);
+      assert.deepStrictEqual(yield* titlesFor(projectId, "approval-required"), ["Release steps"]);
+      assert.include(
+        yield* sessionText(reader, "approval-required", "ask"),
+        "- Release steps: About Release steps",
+      );
+
+      // A later write of the same title, even under Auto, is a new suggestion.
+      const again = yield* agentWrite({
+        projectId,
+        threadId: writer,
+        title: "release steps",
+        text: "Push, then tag.",
+        mode: "auto",
+      });
+      assert.strictEqual(again.outcome, "suggested");
+      const waiting = (yield* snapshotNow).suggestions.filter(
+        (entry) => entry.projectId === projectId,
+      );
+      assert.strictEqual(waiting.length, 1);
+      assert.notStrictEqual(waiting[0]!.id, first!.id);
+      const noteId = kept.note!.id;
+      assert.strictEqual((yield* context.readNote({ projectId, noteId })).text, "Tag, then push.");
+
+      yield* context.changeNote({
+        kind: "resolveSuggestion",
+        projectId,
+        suggestionId: waiting[0]!.id,
+        decision: "keep",
+      });
+      assert.strictEqual((yield* context.readNote({ projectId, noteId })).text, "Push, then tag.");
+      assert.deepStrictEqual(yield* titlesFor(projectId, "full-access"), ["release steps"]);
+    }),
+  );
+
+  it.effect("a note kept without asking is listed only within its writer's access", () =>
+    Effect.gen(function* () {
+      const context = yield* ProjectContext;
+      const projectId = ProjectId.make("project-auto");
+      const reader = ThreadId.make("thread-auto-reader");
+      yield* addProject(projectId, "Auto");
+      yield* addThread(reader, projectId);
+
+      const written = yield* agentWrite({
+        projectId,
+        threadId: ThreadId.make("thread-auto-writer"),
+        title: "Ports",
+        mode: "auto",
+        ceiling: "auto-accept-edits",
+      });
+      assert.strictEqual(written.outcome, "kept_limited");
+      assert.deepStrictEqual(yield* titlesFor(projectId, "full-access"), []);
+      assert.deepStrictEqual(yield* titlesFor(projectId, "auto"), []);
+      assert.deepStrictEqual(yield* titlesFor(projectId, "auto-accept-edits"), ["Ports"]);
+      assert.deepStrictEqual(yield* titlesFor(projectId, "approval-required"), ["Ports"]);
+      assert.notInclude(yield* sessionText(reader, "full-access", "auto"), "Ports");
+      assert.include(yield* sessionText(reader, "auto-accept-edits", "auto"), "- Ports:");
+
+      const note = (yield* snapshotNow).notes.find((entry) => entry.projectId === projectId);
+      // Approval names the version the user saw: a rewrite since is refused.
+      const stale = yield* context
+        .changeNote({
+          kind: "approve",
+          projectId,
+          noteId: note!.id,
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        })
+        .pipe(Effect.flip);
+      assert.include(stale.detail, "changed since you opened it");
+      assert.deepStrictEqual(yield* titlesFor(projectId, "full-access"), []);
+      yield* context.changeNote({
+        kind: "approve",
+        projectId,
+        noteId: note!.id,
+        updatedAt: note!.updatedAt,
+      });
+      assert.deepStrictEqual(yield* titlesFor(projectId, "full-access"), ["Ports"]);
+      assert.include(yield* sessionText(reader, "full-access", "auto"), "- Ports:");
+    }),
+  );
+
+  it.effect(
+    "an agent's write over a kept title is a suggestion, unless it rewrites its own limited note",
+    () =>
+      Effect.gen(function* () {
+        const context = yield* ProjectContext;
+        const projectId = ProjectId.make("project-overwrite");
+        const own = ThreadId.make("thread-overwrite-own");
+        const other = ThreadId.make("thread-overwrite-other");
+        yield* addProject(projectId, "Overwrite");
+        const userNote = yield* context.changeNote({
+          kind: "save",
+          projectId,
+          title: "Deploy",
+          summary: "How we deploy",
+          text: "Only on Fridays.",
+        });
+
+        const overUser = yield* agentWrite({
+          projectId,
+          threadId: own,
+          title: "deploy",
+          text: "Any day.",
+          mode: "auto",
+        });
+        assert.strictEqual(overUser.outcome, "suggested");
+        assert.strictEqual(
+          (yield* context.readNote({ projectId, noteId: userNote.note!.id })).text,
+          "Only on Fridays.",
+        );
+
+        yield* agentWrite({ projectId, threadId: own, title: "Ports", text: "3000", mode: "auto" });
+        const limited = (yield* snapshotNow).notes.find(
+          (entry) => entry.projectId === projectId && entry.title === "Ports",
+        )!;
+        const overOther = yield* agentWrite({
+          projectId,
+          threadId: other,
+          title: "Ports",
+          text: "4000",
+          mode: "auto",
+        });
+        assert.strictEqual(overOther.outcome, "suggested");
+        assert.strictEqual(
+          (yield* context.readNote({ projectId, noteId: limited.id })).text,
+          "3000",
+        );
+
+        const rewrite = yield* agentWrite({
+          projectId,
+          threadId: own,
+          title: "Ports",
+          text: "5000",
+          mode: "auto",
+        });
+        assert.strictEqual(rewrite.outcome, "kept_limited");
+        const after = yield* context.readNote({ projectId, noteId: limited.id });
+        assert.strictEqual(after.text, "5000");
+        assert.strictEqual(after.approved, false);
+        assert.strictEqual(
+          (yield* snapshotNow).suggestions.filter((entry) => entry.projectId === projectId).length,
+          2,
+        );
+      }),
+  );
+
+  it.effect("a refusal at a limit names only the writer's own count", () =>
+    Effect.gen(function* () {
+      const projectId = ProjectId.make("project-limits");
+      const busy = ThreadId.make("thread-limits-busy");
+      for (let index = 0; index < 5; index++) {
+        const written = yield* agentWrite({
+          projectId,
+          threadId: busy,
+          title: `Busy ${index}`,
+          mode: "ask",
+        });
+        assert.strictEqual(written.outcome, "suggested");
+      }
+      const sixth = yield* agentWrite({ projectId, threadId: busy, title: "Busy 5", mode: "ask" });
+      assert.strictEqual(sixth.outcome, "refused");
+      assert.include(sixth.detail, "This thread has 5 notes waiting");
+      assert.notInclude(sixth.detail, "40");
+
+      // Other threads fill the project to 40.
+      for (let index = 0; index < 35; index++) {
+        const written = yield* agentWrite({
+          projectId,
+          threadId: ThreadId.make(`thread-limits-${Math.floor(index / 5)}`),
+          title: `Other ${index}`,
+          mode: "ask",
+        });
+        assert.strictEqual(written.outcome, "suggested");
+      }
+      const full = yield* agentWrite({
+        projectId,
+        threadId: ThreadId.make("thread-limits-late"),
+        title: "Late",
+        mode: "ask",
+      });
+      assert.strictEqual(full.outcome, "refused");
+      assert.notMatch(full.detail, /\d/);
+    }),
+  );
+
+  it.effect("with notes off a session still lists kept notes but is not told to write one", () =>
+    Effect.gen(function* () {
+      const context = yield* ProjectContext;
+      const projectId = ProjectId.make("project-off");
+      const threadId = ThreadId.make("thread-off");
+      yield* addProject(projectId, "Off");
+      yield* addThread(threadId, projectId);
+      yield* context.changeNote({
+        kind: "save",
+        projectId,
+        title: "Style",
+        summary: "Tabs, not spaces",
+        text: "Tabs.",
+      });
+
+      const off = yield* sessionText(threadId, "full-access", "off");
+      assert.include(off, "- Style: Tabs, not spaces");
+      assert.notInclude(off, "project_note_write");
+      assert.include(yield* sessionText(threadId, "full-access", "ask"), "project_note_write");
+    }),
+  );
+});
+
+// Its own database: the startup check reads every project's suggestions.
+it.layer(testLayer)("ProjectNotesUndo", (it) => {
+  it.effect("undone turns' suggestions go, on a revert and at startup", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const projectId = ProjectId.make("project-undo");
+        const reverted = ThreadId.make("thread-undo");
+        const restarted = ThreadId.make("thread-undo-restarted");
+        const [turn1, turn2] = [TurnId.make("turn-undo-1"), TurnId.make("turn-undo-2")];
+        const turns = yield* ProjectionTurnRepository;
+        for (const [turnId, count] of [
+          [turn1, 1],
+          [turn2, 2],
+        ] as const) {
+          yield* turns.upsertByTurnId({
+            threadId: reverted,
+            turnId,
+            pendingMessageId: null,
+            sourceProposedPlanThreadId: null,
+            sourceProposedPlanId: null,
+            assistantMessageId: null,
+            state: "completed",
+            requestedAt: at,
+            startedAt: at,
+            completedAt: at,
+            checkpointTurnCount: count,
+            checkpointRef: null,
+            checkpointStatus: null,
+            checkpointFiles: [],
+            checkpointThreadDiffStat: null,
+            checkpointCompletedAt: null,
+          });
+        }
+        const write = (threadId: ThreadId, title: string, turnId?: TurnId) =>
+          agentWrite({ projectId, threadId, title, mode: "ask", ...(turnId ? { turnId } : {}) });
+        yield* write(reverted, "First turn", turn1);
+        yield* write(reverted, "Second turn", turn2);
+        yield* write(reverted, "Outside a turn");
+        // The last process stopped before it dropped this one: its turn is gone.
+        yield* write(restarted, "Cut off", TurnId.make("turn-undo-gone"));
+
+        const events = yield* Queue.unbounded<OrchestrationEvent>();
+        const undo = yield* makeProjectNotesUndo.pipe(
+          Effect.provide(
+            Layer.mock(OrchestrationEngineService)({
+              streamDomainEvents: Stream.fromQueue(events),
+            }),
+          ),
+        );
+        const waiting = Effect.map(snapshotNow, (snapshot) =>
+          snapshot.suggestions.map((entry) => entry.title).toSorted(),
+        );
+        yield* undo.start();
+        assert.deepStrictEqual(yield* waiting, ["First turn", "Outside a turn", "Second turn"]);
+
+        yield* Queue.offer(events, {
+          type: "thread.reverted",
+          payload: { threadId: reverted, turnCount: 1 },
+        } as unknown as OrchestrationEvent);
+        const context = yield* ProjectContext;
+        const after = yield* context.changes.pipe(
+          Stream.filter((snapshot) => snapshot.suggestions.length === 2),
+          Stream.runHead,
+          Effect.timeout("2 seconds"),
+        );
+        assert.deepStrictEqual(
+          Option.getOrThrow(after)
+            .suggestions.map((entry) => entry.title)
+            .toSorted(),
+          ["First turn", "Outside a turn"],
+        );
+      }),
+    ),
   );
 });

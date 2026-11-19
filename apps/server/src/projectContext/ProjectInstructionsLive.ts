@@ -12,19 +12,32 @@ import {
   ProjectInstructions,
   type ProjectInstructionsShape,
 } from "../provider/Services/ProjectInstructions.ts";
+import { ServerSettingsService } from "../serverSettings.ts";
 import { ProjectBriefRepository } from "./ProjectBriefRepository.ts";
 import { projectInstructionsText } from "./projectInstructionsText.ts";
+import { ProjectNoteRepository } from "./ProjectNoteRepository.ts";
+import { projectNotesText, visibleNotes } from "./projectNotesAccess.ts";
 
 /**
- * Reads the thread, its project and the project's brief from the stored
- * projections each time a session starts: no copy to keep in step.
+ * Reads the thread, its project, the project's brief and its notes from the
+ * stored tables each time a session starts: no copy to keep in step. The
+ * note list is built for the access the session starts with.
  */
 export const makeProjectInstructions = Effect.gen(function* () {
   const threads = yield* ProjectionThreadRepository;
   const projects = yield* ProjectionProjectRepository;
   const briefs = yield* ProjectBriefRepository;
+  const notes = yield* ProjectNoteRepository;
+  const settings = yield* Effect.serviceOption(ServerSettingsService);
+  /** "Notes agents write"; off when it can't be read, so no agent is told to write. */
+  const notesMode = Option.isSome(settings)
+    ? settings.value.getSettings.pipe(
+        Effect.map((current) => current.projectNotes),
+        Effect.orElseSucceed(() => "off" as const),
+      )
+    : Effect.succeed("off" as const);
 
-  const forSession: ProjectInstructionsShape["forSession"] = ({ sessionKey }) =>
+  const forSession: ProjectInstructionsShape["forSession"] = ({ sessionKey, runtimeMode }) =>
     Effect.gen(function* () {
       const target = parseSessionKey(sessionKey);
       // A side answer is short, read-only and locked down.
@@ -40,7 +53,14 @@ export const makeProjectInstructions = Effect.gen(function* () {
       );
       if (project === undefined || project.deletedAt !== null) return undefined;
       const brief = Option.getOrUndefined(yield* briefs.get(thread.projectId));
-      return projectInstructionsText({ projectTitle: project.title, brief: brief?.text ?? "" });
+      const parts = [
+        projectInstructionsText({ projectTitle: project.title, brief: brief?.text ?? "" }),
+        projectNotesText({
+          notes: visibleNotes(yield* notes.listNotes(), thread.projectId, runtimeMode),
+          mode: yield* notesMode,
+        }),
+      ].filter((part): part is string => part !== undefined);
+      return parts.length === 0 ? undefined : parts.join("\n\n");
     }).pipe(
       Effect.catchCause((cause) =>
         Effect.logWarning("project instructions could not be read", {

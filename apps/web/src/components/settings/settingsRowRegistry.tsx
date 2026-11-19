@@ -15,6 +15,7 @@ import { ThemeSystemPairRow } from "../theme/ui/ThemeSystemPairRow";
 import { KeepAwakeForScheduledTasksRow, RunInBackgroundRow } from "./DesktopBackgroundRows";
 import { DownloadedModelsRow, HoldToRecordRow, SpeechModelRow } from "./DictationSettings";
 import type { SettingsRowPlaceId } from "./settingsPlaceAvailability";
+import { ProjectNotesModeRow } from "./ProjectNotesSection";
 import {
   AddProjectStartsInRow,
   AgentBrowserSitesRow,
@@ -158,6 +159,8 @@ export const SETTINGS_ROWS = {
   "threads.wrapUpChildren": live(WrapUpChildThreadsRow),
   "threads.confirmArchive": live(ConfirmArchiveRow),
   "threads.confirmDelete": live(ConfirmDeleteRow),
+  // Agent Instructions: one setting for every project on this computer.
+  "instructions.notesMode": live(() => <ProjectNotesModeRow />),
   // Archives: each row reads the page's archived and inactive thread lists.
   "archived.autoArchive": LINK,
   "archived.archiveNow": LINK,
