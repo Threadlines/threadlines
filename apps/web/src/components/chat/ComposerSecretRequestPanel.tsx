@@ -22,7 +22,7 @@ import { selectEnvironmentState, useStore } from "~/store";
 import { formatTimeWithDay } from "~/timestampFormat";
 import { useComputerLabel } from "../sidebar/linkedComputers";
 import { Button } from "../ui/button";
-import { Input } from "../ui/input";
+import { Input, MASKED_TEXT_FONT } from "../ui/input";
 import { Textarea } from "../ui/textarea";
 import { toastManager } from "../ui/toast";
 import { settingsChangeDeviceLabel } from "./settingsChangeCard.logic";
@@ -37,14 +37,6 @@ import {
   readSecretClaimId,
   type SecretAnswerResult,
 } from "./secretRequestClaims";
-
-/**
- * The masking dot sits at a different height in every font (SF Mono high,
- * the system font low), and themes can change the fonts. Masked text is
- * pinned to the app's bundled sans, whose dot is centered in the field;
- * shown text reads in mono.
- */
-const MASKED_FONT = "[font-family:'Schibsted_Grotesk_Variable',var(--font-sans)]";
 
 function showNotice(notice: SecretRequestNotice): void {
   toastManager.add({
@@ -264,7 +256,8 @@ export const ComposerSecretRequestPanel = memo(function ComposerSecretRequestPan
                 autoComplete="off"
                 // Masked like a password field until shown.
                 className={cn(
-                  shown ? "font-mono" : MASKED_FONT,
+                  // Shown text reads in mono; masked dots sit centered (see MASKED_TEXT_FONT).
+                  shown ? "font-mono" : MASKED_TEXT_FONT,
                   !shown && "[&_textarea]:[-webkit-text-security:disc]",
                 )}
                 onChange={(event) => onFieldChange(event.target.value)}
@@ -276,7 +269,7 @@ export const ComposerSecretRequestPanel = memo(function ComposerSecretRequestPan
                 size="sm"
                 type={shown ? "text" : "password"}
                 autoComplete="new-password"
-                className={shown ? "font-mono" : MASKED_FONT}
+                className="font-mono"
                 onChange={(event) => onFieldChange(event.target.value)}
                 onKeyDown={onFieldKeyDown}
                 onPaste={onFieldPaste}

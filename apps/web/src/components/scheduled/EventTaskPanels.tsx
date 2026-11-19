@@ -293,7 +293,7 @@ function SigningSecretRow({
               size="sm"
               type="password"
               autoComplete="off"
-              className="w-full min-w-0 font-mono sm:w-64"
+              className="w-full min-w-0 sm:w-64"
               value={typing}
               placeholder="The sender's secret"
               aria-label="Signing secret"
