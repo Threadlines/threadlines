@@ -40,6 +40,8 @@ export const ProjectSetupStoredRequest = Schema.Struct({
   destinationPath: TrimmedNonEmptyString,
   filePaths: Schema.Array(TrimmedNonEmptyString),
   expectedBytes: Schema.optional(Schema.Number),
+  /** The source's brief, saved here once the project is added (ProjectSetupStartInput.brief). */
+  brief: Schema.optional(Schema.String),
 });
 export type ProjectSetupStoredRequest = typeof ProjectSetupStoredRequest.Type;
 

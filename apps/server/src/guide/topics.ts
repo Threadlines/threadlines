@@ -346,7 +346,7 @@ New threads get a change at once. A thread that is already open gets it the next
 
 Threadlines keeps it on each computer, not in the repository. Save stores it on every connected computer that has the project, and the line under the box says where it went. If the computers hold different briefs, the page shows the picked computer's and offers to copy it to the others. If another device saved first, Save says so and shows the newer text instead of overwriting it. Set up on another computer copies the brief with the project.
 
-The project menu's Project brief and notes, the command palette and the lead chat's crown card open it too.`,
+The project menu's Project brief, the command palette and the lead chat's crown card open it too.`,
   },
   {
     id: "browser-panel",

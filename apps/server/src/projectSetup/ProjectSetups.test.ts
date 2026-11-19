@@ -26,6 +26,7 @@ import { OrchestrationEngineService } from "../orchestration/Services/Orchestrat
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import * as ProcessRunner from "../processRunner.ts";
+import { ProjectContext } from "../projectContext/ProjectContext.ts";
 import { RepositoryIdentityResolverLive } from "../project/Layers/RepositoryIdentityResolver.ts";
 import { overallClonePercent, parseCloneProgress } from "./cloneProgress.ts";
 import { ProjectSetupRepository, ProjectSetupRepositoryLive } from "./ProjectSetupRepository.ts";
@@ -91,6 +92,9 @@ function makeRepos() {
   return { root, origin, a, b };
 }
 
+/** Briefs the new computer's projects took from the copy. */
+const adoptedBriefs: Array<readonly [ProjectId, string]> = [];
+
 function testLayer(
   repos: ReturnType<typeof makeRepos>,
   dispatched: OrchestrationCommand[],
@@ -130,6 +134,13 @@ function testLayer(
             }),
         }),
         ServerEnvironment.layerTest({ label: "Test PC" }),
+        Layer.mock(ProjectContext)({
+          briefText: (projectId) => Effect.succeed(projectId === PROJECT_A ? "Use pnpm." : ""),
+          adoptBrief: (projectId, text) =>
+            Effect.sync(() => {
+              adoptedBriefs.push([projectId, text]);
+            }),
+        }),
       ),
     ),
     Layer.provideMerge(RepositoryIdentityResolverLive),
@@ -168,6 +179,7 @@ describe("ProjectSetups", () => {
         assert.equal(answer.repositoryKey, normalizeGitRemoteUrl(repos.origin));
         assert.equal(answer.primaryRemoteName, "origin");
         assert.isAbove(answer.sizeBytes ?? 0, 0);
+        assert.equal(answer.brief, "Use pnpm.");
         // Ignored files only, suggested ones first; no folder git ignores whole, no symlink.
         assert.deepEqual(
           answer.files.map((file) => [file.path, file.suggested]),
@@ -210,6 +222,7 @@ describe("ProjectSetups", () => {
           primaryRemoteName: answer.primaryRemoteName,
           protocol: "other",
           scripts: answer.scripts,
+          ...(answer.brief !== undefined ? { brief: answer.brief } : {}),
           destinationPath: destination,
           files,
         };
@@ -241,6 +254,7 @@ describe("ProjectSetups", () => {
         const meta = dispatched.find((command) => command.type === "project.meta.update");
         assert(meta?.type === "project.meta.update");
         assert.deepEqual(meta.scripts, SCRIPTS);
+        assert.deepEqual(adoptedBriefs, [[created[0].projectId, "Use pnpm."]]);
 
         // The same start again is the same job.
         assert.equal((yield* setups.start(input)).stage, "done");

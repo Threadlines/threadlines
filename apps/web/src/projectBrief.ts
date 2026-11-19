@@ -29,7 +29,7 @@ import {
 export const PROJECT_BRIEF_PLACE: PlaceId = "instructions.brief";
 
 /** What the project menu, the palette and the lead's card call the way in. */
-export const PROJECT_BRIEF_MENU_LABEL = "Project brief and notes";
+export const PROJECT_BRIEF_MENU_LABEL = "Project brief";
 
 /** From here up, the page shows how many characters the brief has. */
 export const PROJECT_BRIEF_COUNT_FROM = Math.round(PROJECT_BRIEF_MAX_CHARS * 0.9);

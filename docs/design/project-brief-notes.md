@@ -165,14 +165,14 @@ fixed order (oldest first), so the text changes only when a note does.
 
 ### Per provider
 
-| Provider   | Where it goes                                                                              | Survives a compaction    |
-| ---------- | ------------------------------------------------------------------------------------------ | ------------------------ |
-| Claude     | after Threadlines' own text in `systemPrompt.append`                                       | yes                      |
-| Codex      | the thread's own developer instructions, set when the thread is started, resumed or forked | yes                      |
-| OpenCode   | the `threadlines` instructions entry                                                       | yes                      |
-| Pi         | the instructions file passed at launch                                                     | yes                      |
-| Muse       | a preface on the first turn after a runtime start                                          | no, it is in the history |
-| ACP agents | ahead of the first prompt after a session start, in the generic core                       | no                       |
+| Provider   | Where it goes                                                                        | Survives a compaction    |
+| ---------- | ------------------------------------------------------------------------------------ | ------------------------ |
+| Claude     | after Threadlines' own text in `systemPrompt.append`                                 | yes                      |
+| Codex      | the thread's developer instructions at start and fork; a resume adds a changed brief | yes                      |
+| OpenCode   | the `threadlines` instructions entry                                                 | yes                      |
+| Pi         | the instructions file passed at launch                                               | yes                      |
+| Muse       | a preface on the first turn after a runtime start                                    | no, it is in the history |
+| ACP agents | ahead of the first prompt after a session start, in the generic core                 | no                       |
 
 - **One service builds the text, and `ProviderService` asks it.** The lookup sits where
   an adapter session is started, inside `ProviderService.startSession` and the recovery
@@ -182,10 +182,15 @@ fixed order (oldest first), so the text changes only when a note does.
 - **Codex.** `developer_instructions` in the collaboration mode goes out with
   `turn/start` only, and not at all without an interaction mode
   (`CodexSessionRuntime.ts` ~703), and a goal's cold start calls `thread/goal/set`
-  with no turn. So the text is set on the thread itself, at `thread/start`,
-  `thread/resume` and `thread/fork`. If the 0.169 bindings carry no such field,
-  `thread/inject_items` before the first turn or goal does it, as #992 does for the
-  lead's role.
+  with no turn. So the text is set on the thread itself, as `developerInstructions` at
+  `thread/start`, `thread/resume` and `thread/fork`, after the user's own
+  `developer_instructions` from `config/read` (the thread's value replaces the
+  config's; when the config can't be read the brief is left out). Codex writes those
+  instructions into the conversation only when it creates a thread: a resume takes
+  the new value as a setting (used when a compaction rebuilds the context) but the
+  model keeps seeing the old text. So a resume whose brief changed also adds it with
+  `thread/inject_items`, under the same hash rule as Muse and ACP below, as #992 does
+  for the lead's role. Checked live on Codex 0.170.
 - **Muse and ACP, where the text sits in the history.** Their existing first-turn
   paths skip a resumed or forked session (`MuseAdapter.ts` ~2345), which is exactly
   when an edit should arrive. So project text has its own pending state, set on every

@@ -67,6 +67,7 @@ import {
 import { ProviderService } from "../Services/ProviderService.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
 import { makeProviderServiceLive } from "./ProviderService.ts";
+import { ProjectInstructions } from "../Services/ProjectInstructions.ts";
 import { NoOpProviderEventLoggers, ProviderEventLoggers } from "./ProviderEventLoggers.ts";
 import { ProviderSessionDirectoryLive } from "./ProviderSessionDirectory.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -442,11 +443,17 @@ function makeProviderServiceLayer() {
     Layer.provide(SqlitePersistenceMemory),
   );
   const directoryLayer = ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer));
+  // The project's brief every session starts with; tests change it.
+  const project = { brief: undefined as string | undefined };
+  const projectInstructionsLayer = Layer.succeed(ProjectInstructions, {
+    forSession: () => Effect.sync(() => project.brief),
+  });
 
   const layer = it.layer(
     Layer.mergeAll(
       makeProviderServiceLive().pipe(
         Layer.provide(ThreadSessionAdmissionPermissive),
+        Layer.provide(projectInstructionsLayer),
         Layer.provide(providerAdapterLayer),
         Layer.provide(directoryLayer),
         Layer.provide(defaultServerSettingsLayer),
@@ -464,6 +471,7 @@ function makeProviderServiceLayer() {
     codex,
     claude,
     cursor,
+    project,
     layer,
   };
 }
@@ -2256,6 +2264,41 @@ routing.layer("ProviderServiceLive routing", (it) => {
         assert.equal(startPayload.threadId, initial.threadId);
       }
       assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
+    }),
+  );
+
+  it.effect("a session started again inside sendTurn gets the brief as it is now", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const threadId = asThreadId("thread-brief");
+      routing.project.brief = "Brief v1";
+      routing.codex.startSession.mockClear();
+
+      yield* provider.startSession(threadId, {
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project-brief",
+        runtimeMode: "full-access",
+        // Only the lookup decides it.
+        projectInstructions: "From the caller",
+      });
+      const started = routing.codex.startSession.mock.calls[0]?.[0] as
+        | { readonly projectInstructions?: string }
+        | undefined;
+      assert.equal(started?.projectInstructions, "Brief v1");
+
+      // The user edits the brief; the session stops and comes back on the next turn.
+      routing.project.brief = "Brief v2";
+      yield* routing.codex.stopAll();
+      routing.codex.startSession.mockClear();
+      yield* provider.sendTurn({ threadId, input: "go on", attachments: [] });
+
+      const recovered = routing.codex.startSession.mock.calls[0]?.[0] as
+        | { readonly projectInstructions?: string }
+        | undefined;
+      assert.equal(recovered?.projectInstructions, "Brief v2");
+      routing.project.brief = undefined;
     }),
   );
 
