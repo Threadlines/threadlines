@@ -400,7 +400,7 @@ const pack = (
   state?: PeerMoveThreadState,
   room?: Pick<
     MoveExportInput,
-    "room" | "outsideWork" | "family" | "linkLineage" | "startedThere"
+    "room" | "outsideWork" | "family" | "linkLineage" | "startedThere" | "startedElsewhere"
   > & {
     /** What the move says the computer it leaves calls itself. */
     readonly sourceEnvironmentId?: EnvironmentId | undefined;
@@ -424,6 +424,7 @@ const pack = (
       family: room?.family,
       linkLineage: room?.linkLineage,
       startedThere: room?.startedThere,
+      startedElsewhere: room?.startedElsewhere,
       attachmentsDir: path.join(repos.root, "attachments"),
       thread: room?.thread ?? movingThread(),
       room: room?.room,
@@ -2075,6 +2076,40 @@ describe("a thread moving across its link (Part 3f, (h))", () => {
         }),
       ),
     );
+
+  it.live(
+    "a parent moving without its family names the threads it started on other computers",
+    () => {
+      const repos = makeRepos();
+      const dispatched: OrchestrationCommand[] = [];
+      return Effect.gen(function* () {
+        const packed = yield* pack(repos, null, undefined, {
+          startedElsewhere: [
+            { label: "Linux box", title: "Fix tests" },
+            { label: "Linux box", title: "Docs" },
+            { label: "Office PC", title: "Review" },
+          ],
+        });
+        const state = yield* deliver(packed.manifest, packed.payload);
+        assert.equal(state.status, "committed");
+        assert.includeMembers(
+          [...(importOf(dispatched).arrival?.left ?? [])],
+          [
+            "2 threads it started on Linux box stayed there: Fix tests, Docs. It can't reach them from here.",
+            "1 thread it started on Office PC stayed there: Review. It can't reach it from here.",
+          ],
+        );
+      }).pipe(
+        Effect.provide(
+          testLayer(repos, dispatched, "allowed", () => false, [], {
+            home: os.tmpdir(),
+            adopted: [],
+            linkLabel: "Windows PC",
+          }),
+        ),
+      );
+    },
+  );
 
   it.live("a child alone stays its parent's child, its link taken from the link itself", () => {
     const repos = makeRepos();

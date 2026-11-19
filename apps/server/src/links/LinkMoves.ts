@@ -303,6 +303,29 @@ const OWNER_DIDNT_MOVE = "The thread whose folder it works in didn't move.";
  * in another's checkout (docs/design/fleet.md, Part 3f).
  */
 const OTHER_PROJECTS_FOLDER = "The folder it works in belongs to another project.";
+
+/**
+ * The "Moved here" words for the threads a parent's agent started on other
+ * computers, which stay there (docs/design/fleet.md, Part 3f, (g)): one line
+ * per computer. From a family's `remoteStayed` or a lone parent's
+ * `startedElsewhere`. Ones this computer names as already here
+ * (`alreadyHere`, by title) are left to that line: an older computer still
+ * lists them.
+ */
+export const startedElsewhereWords = (
+  list: ReadonlyArray<{ readonly label: string; readonly title: string }>,
+  alreadyHere: ReadonlySet<string>,
+): string[] => {
+  const byComputer = new Map<string, string[]>();
+  for (const entry of list) {
+    if (alreadyHere.has(entry.title)) continue;
+    byComputer.set(entry.label, [...(byComputer.get(entry.label) ?? []), entry.title]);
+  }
+  return [...byComputer].map(
+    ([label, titles]) =>
+      `${titles.length === 1 ? "1 thread" : `${titles.length} threads`} it started on ${label} stayed there: ${titles.join(", ")}. It can't reach ${titles.length === 1 ? "it" : "them"} from here.`,
+  );
+};
 /** A repository move's project; a General Chats move names none to share. */
 const movedProjectOf = (manifest: PeerMoveManifest) =>
   "canonicalKey" in manifest.project ? manifest.project : null;
@@ -376,6 +399,9 @@ export function moveManifestRefusal(manifest: PeerMoveManifest): string | null {
   }
   if ((manifest.startedThere ?? []).length > PEER_MOVE_MAX_STARTED_THERE) {
     return "it names too many threads it started here";
+  }
+  if ((manifest.startedElsewhere ?? []).length > PEER_MOVE_FAMILY_MAX_STAYED) {
+    return "it names too many threads it started elsewhere";
   }
   return (
     moveRoomRefusal(manifest) ??
@@ -2300,17 +2326,7 @@ const make = Effect.gen(function* () {
             `${plural(stayed.length)} it started stayed on ${fromLabel}: ${titles(stayed)}.`,
           );
         }
-        const byComputer = new Map<string, Array<{ readonly title: string }>>();
-        for (const entry of (family.remoteStayed ?? []).filter(
-          (stayed) => !alreadyHere.has(stayed.title),
-        )) {
-          byComputer.set(entry.label, [...(byComputer.get(entry.label) ?? []), entry]);
-        }
-        for (const [label, list] of byComputer) {
-          words.push(
-            `${plural(list.length)} it started on ${label} stayed there: ${titles(list)}. It can't reach ${list.length === 1 ? "it" : "them"} from here.`,
-          );
-        }
+        words.push(...startedElsewhereWords(family.remoteStayed ?? [], alreadyHere));
         const stopped = family.childRequestsStopped ?? 0;
         if (stopped > 0) {
           words.push(
@@ -2738,7 +2754,12 @@ const make = Effect.gen(function* () {
       const liveHere = startedHere.filter((thread) => thread.archivedAt === null);
       const familyLeft =
         family === null
-          ? []
+          ? // A parent moving without its family names the threads its
+            // agent started on other computers (`startedElsewhere`).
+            startedElsewhereWords(
+              row.manifest.startedElsewhere ?? [],
+              new Set(liveHere.map((entry) => entry.title)),
+            )
           : family.left(
               fromLabel,
               lineage?.left ?? null,

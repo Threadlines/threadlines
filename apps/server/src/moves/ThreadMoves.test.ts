@@ -33,7 +33,7 @@ import {
   sessionsThatFit,
 } from "./moveExport.ts";
 import { carryBringsWords, threadMoveCarry } from "../orchestration/threadMoveCarry.ts";
-import { linkLineageOf, startedThereOf } from "./familyMove.ts";
+import { linkLineageOf, startedElsewhereOf, startedThereOf } from "./familyMove.ts";
 import { seenThroughOf } from "./roomMove.ts";
 import { NATIVE_SESSION_MAX_BYTES, type NativeSessionExport } from "../provider/nativeSession.ts";
 
@@ -586,6 +586,10 @@ describe("what a thread carries, as the dialog says it (Part 3e)", () => {
     expect(startedThereOf(thread, MAC_MINI)).toEqual([
       { threadId: "thread-wrapped", override: wrapped },
       { threadId: "thread-plain" },
+    ]);
+    // The rest stay where they are, named for the arrival line.
+    expect(startedElsewhereOf(thread, MAC_MINI)).toEqual([
+      { label: "Mac mini", title: "thread-on-linux" },
     ]);
   });
 
