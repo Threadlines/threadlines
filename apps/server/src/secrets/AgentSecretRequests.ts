@@ -54,6 +54,7 @@ import { OrchestrationEngineService } from "../orchestration/Services/Orchestrat
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import type { ProjectionRepositoryError } from "../persistence/Errors.ts";
 import { ProcessRunner } from "../processRunner.ts";
+import { SecretScrubber } from "./SecretScrubber.ts";
 import { type SecretDestinations, makeSecretDestinations } from "./secretDestinations.ts";
 
 export interface AgentSecretRequestsShape {
@@ -149,7 +150,15 @@ const isPutAway = (thread: OrchestrationThread | undefined) =>
   thread.archivedAt !== null ||
   (thread.move ?? null) !== null;
 
-export const make = (reads: AgentSecretRequestsReads, destinations: SecretDestinations) =>
+export const make = (
+  reads: AgentSecretRequestsReads,
+  destinations: SecretDestinations,
+  /** The registry that hides a saved value if the agent prints it (SecretScrubber). */
+  watched: {
+    readonly watch: (name: string, value: string, requestId: string) => void;
+    readonly gone: (requestId: string) => void;
+  } = { watch: () => {}, gone: () => {} },
+) =>
   Effect.gen(function* () {
     const engine = yield* OrchestrationEngineService;
     const lock = yield* Semaphore.make(1);
@@ -248,6 +257,7 @@ export const make = (reads: AgentSecretRequestsReads, destinations: SecretDestin
     const removeNow = (threadId: ThreadId, requestId: SecretRequestId) =>
       Effect.gen(function* () {
         if (!(yield* destinations.removeCommandsFile(threadId, requestId))) return false;
+        watched.gone(requestId);
         return yield* recordRemoved(threadId, requestId);
       });
 
@@ -462,8 +472,17 @@ export const make = (reads: AgentSecretRequestsReads, destinations: SecretDestin
             : answerFor(after.request, input.claimId);
         }
 
-        const checked = checkSecretValue(request.use, Redacted.value(input.answer.value));
+        const typed = Redacted.value(input.answer.value);
+        const checked = checkSecretValue(request.use, typed);
         if (!checked.ok) return { outcome: "rejected", detail: checked.detail };
+        // Watched from before the file exists, as typed (not the env file's
+        // quoted spelling), and still after a failed write: the file can
+        // outlive it.
+        watched.watch(request.name, typed, request.requestId);
+        // A commands key lands with its line endings normalized: watch that too.
+        if (checked.written !== typed && request.use.kind === "commands") {
+          watched.watch(request.name, checked.written, request.requestId);
+        }
 
         // Only the committed claim authorizes a write: a request replaced
         // or cancelled since the read fails it, and nothing is written.
@@ -537,6 +556,7 @@ export const make = (reads: AgentSecretRequestsReads, destinations: SecretDestin
           const timer = timers.get(request.requestId);
           if (timer !== undefined) yield* Fiber.interrupt(timer);
           timers.delete(request.requestId);
+          watched.gone(request.requestId);
           if (recordRemovals) yield* recordRemoved(threadId, request.requestId);
         }
         // A deleted thread has no requests left to retry from: try the folder again.
@@ -624,6 +644,7 @@ export const layer = Layer.effect(
     const snapshots = yield* ProjectionSnapshotQuery;
     const config = yield* ServerConfig;
     const processes = yield* ProcessRunner;
+    const scrubber = yield* SecretScrubber;
     const destinations = makeSecretDestinations({
       agentSecretsDir: config.agentSecretsDir,
       runGit: (cwd, args) =>
@@ -666,6 +687,7 @@ export const layer = Layer.effect(
         all: snapshots.listSecretRequests(),
       },
       destinations,
+      scrubber,
     );
   }),
 );

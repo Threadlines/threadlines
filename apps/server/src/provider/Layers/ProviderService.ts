@@ -9,6 +9,7 @@
  *
  * @module ProviderServiceLive
  */
+import { SecretScrubber } from "../../secrets/SecretScrubber.ts";
 import {
   EventId,
   MessageId,
@@ -386,6 +387,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
 
   const registry = yield* ProviderAdapterRegistry;
   const directory = yield* ProviderSessionDirectory;
+  // Watched keys are hidden here, before anything stores, logs or sends an
+  // event (docs/design/secret-scrubbing.md, "Where it runs").
+  const secretScrubber = yield* SecretScrubber;
   const admission = yield* ThreadSessionAdmission;
   const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
@@ -675,7 +679,13 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         increment(providerRuntimeEventsTotal, {
           provider: canonicalEvent.provider,
           eventType: canonicalEvent.type,
-        }).pipe(Effect.andThen(publishRuntimeEvent(canonicalEvent))),
+        }).pipe(
+          Effect.andThen(
+            Effect.forEach(secretScrubber.scrubRuntimeEvent(canonicalEvent), publishRuntimeEvent, {
+              discard: true,
+            }),
+          ),
+        ),
       ),
     );
 
@@ -2537,7 +2547,11 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           "provider.thread_id": input.threadId,
           "provider.request_id": input.requestId,
         });
-        yield* routed.adapter.respondToRequest(routed.threadId, input.requestId, input.decision);
+        yield* routed.adapter.respondToRequest(
+          routed.threadId,
+          input.requestId,
+          secretScrubber.restoreAnswer(routed.threadId, input.requestId, input.decision),
+        );
         yield* analytics.record("provider.request.responded", {
           provider: routed.adapter.provider,
           decision: input.decision,
@@ -2576,13 +2590,15 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         "provider.thread_id": input.threadId,
         "provider.request_id": input.requestId,
       });
+      // A question shown with a key hidden is answered under its original text.
+      const answers = secretScrubber.restoreAnswer(routed.threadId, input.requestId, input.answers);
       yield* input.unanswered === undefined
-        ? routed.adapter.respondToUserInput(routed.threadId, input.requestId, input.answers)
+        ? routed.adapter.respondToUserInput(routed.threadId, input.requestId, answers)
         : routed.adapter.respondToUserInput(
             routed.threadId,
             input.requestId,
-            input.answers,
-            input.unanswered,
+            answers,
+            secretScrubber.restoreAnswer(routed.threadId, input.requestId, input.unanswered),
           );
     }).pipe(
       withMetrics({

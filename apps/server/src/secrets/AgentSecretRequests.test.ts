@@ -99,6 +99,7 @@ function run<A>(
     readonly archived?: boolean;
     readonly recoverySeesNothing?: boolean;
     readonly threadReadFails?: boolean;
+    readonly watched?: Array<readonly [string, string]>;
   },
 ) {
   let state = requests;
@@ -179,6 +180,12 @@ function run<A>(
         ),
       },
       makeSecretDestinations({ agentSecretsDir: NodePath.join(home, "agent-secrets"), runGit }),
+      {
+        watch: (name, value) => {
+          options?.watched?.push([name, value]);
+        },
+        gone: () => {},
+      },
     );
     return yield* body(service, () => state);
   });
@@ -211,6 +218,15 @@ describe("answering an agent's request for a key", () => {
       },
     });
     expect(JSON.stringify(commands)).not.toContain(CANARY);
+  });
+
+  it("watches the value as typed, not the env file's quoted spelling, from before the write", async () => {
+    const watched: Array<readonly [string, string]> = [];
+    await run([waiting(ENV)], (service) => service.respond(save("claim-a", "abc#123456")), {
+      watched,
+    });
+    expect(watched).toEqual([["STRIPE_SECRET_KEY", "abc#123456"]]);
+    expect(NodeFs.readFileSync(envFile(), "utf8")).toBe("STRIPE_SECRET_KEY='abc#123456'\n");
   });
 
   it("the first app to press Save wins; the second is told who answered and its value is dropped", async () => {
