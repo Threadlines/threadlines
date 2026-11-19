@@ -15,21 +15,18 @@ import type {
 } from "@threadlines/contracts";
 import { PROJECT_BRIEF_MAX_CHARS } from "@threadlines/contracts";
 import type { PlaceId } from "@threadlines/shared/appPlaces";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback } from "react";
 
 import { nextPlaceArrivalHash } from "./appPlaceLinks";
 import { usePrimaryEnvironmentDescriptor } from "./environments/primary";
-import {
-  readEnvironmentConnection,
-  subscribeEnvironmentConnections,
-  useSavedEnvironmentRuntimeStore,
-} from "./environments/runtime";
+import { readEnvironmentConnection, useSavedEnvironmentRuntimeStore } from "./environments/runtime";
+import { useProjectContextSnapshots } from "./projectContext";
 
 /** The place the brief's section is, which every way in opens. */
 export const PROJECT_BRIEF_PLACE: PlaceId = "instructions.brief";
 
 /** What the project menu, the palette and the lead's card call the way in. */
-export const PROJECT_BRIEF_MENU_LABEL = "Project brief";
+export const PROJECT_BRIEF_MENU_LABEL = "Project brief and notes";
 
 /** From here up, the page shows how many characters the brief has. */
 export const PROJECT_BRIEF_COUNT_FROM = Math.round(PROJECT_BRIEF_MAX_CHARS * 0.9);
@@ -85,49 +82,8 @@ export function briefIn(
   );
 }
 
-/**
- * Each listed computer's latest briefs, followed while mounted. A computer
- * whose connection is replaced (a reconnect) is followed again on the new
- * one; one that drops keeps its last snapshot until it comes back.
- */
-export function useProjectBriefSnapshots(
-  environmentIds: readonly EnvironmentId[],
-): Readonly<Record<string, ProjectContextSnapshot>> {
-  const [byEnvironment, setByEnvironment] = useState<Record<string, ProjectContextSnapshot>>({});
-  const environmentKey = environmentIds.join("\0");
-
-  useEffect(() => {
-    const ids = (environmentKey === "" ? [] : environmentKey.split("\0")) as EnvironmentId[];
-    const active = new Map<
-      EnvironmentId,
-      { readonly connection: object; readonly unsubscribe: () => void }
-    >();
-    const sync = () => {
-      for (const environmentId of ids) {
-        const connection = readEnvironmentConnection(environmentId);
-        const current = active.get(environmentId);
-        if (current?.connection === connection) continue;
-        current?.unsubscribe();
-        active.delete(environmentId);
-        if (!connection) continue;
-        active.set(environmentId, {
-          connection,
-          unsubscribe: connection.client.projectContext.subscribe((snapshot) =>
-            setByEnvironment((previous) => ({ ...previous, [environmentId]: snapshot })),
-          ),
-        });
-      }
-    };
-    sync();
-    const stopWatching = subscribeEnvironmentConnections(sync);
-    return () => {
-      stopWatching();
-      for (const entry of active.values()) entry.unsubscribe();
-    };
-  }, [environmentKey]);
-
-  return byEnvironment;
-}
+/** Each listed computer's latest briefs and notes, followed while mounted (projectContext.ts). */
+export const useProjectBriefSnapshots = useProjectContextSnapshots;
 
 /** One computer's copy of the project, as a save reaches it. */
 export interface BriefTarget {

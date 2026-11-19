@@ -88,7 +88,7 @@ export function LeadChatCard({
                   );
                 }}
               >
-                Project brief
+                Brief and notes
               </button>
             ) : null}
             <button

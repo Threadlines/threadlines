@@ -447,10 +447,15 @@ export interface WsRpcClient {
     readonly search: RpcUnaryMethod<typeof WS_METHODS.themeVsCodeSearch>;
     readonly read: RpcUnaryMethod<typeof WS_METHODS.themeVsCodeRead>;
   };
-  /** This computer's project briefs (docs/design/project-brief-notes.md), on servers reporting `projectContext`. */
+  /** This computer's project briefs and notes (docs/design/project-brief-notes.md), on servers reporting `projectContext`. */
   readonly projectContext: {
     readonly subscribe: RpcStreamMethod<typeof WS_METHODS.projectContextSubscribe>;
     readonly setBrief: RpcUnaryMethod<typeof WS_METHODS.projectContextSetBrief>;
+    readonly readNote: RpcUnaryMethod<typeof WS_METHODS.projectContextReadNote>;
+    readonly saveNote: RpcUnaryMethod<typeof WS_METHODS.projectContextSaveNote>;
+    readonly removeNote: RpcUnaryMethod<typeof WS_METHODS.projectContextRemoveNote>;
+    readonly approveNote: RpcUnaryMethod<typeof WS_METHODS.projectContextApproveNote>;
+    readonly resolveSuggestion: RpcUnaryMethod<typeof WS_METHODS.projectContextResolveSuggestion>;
   };
   /** This computer's scheduled tasks (docs/design/fleet.md, Part 6). */
   readonly scheduledTasks: {
@@ -1332,6 +1337,16 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         }),
       setBrief: (input) =>
         transport.request((client) => client[WS_METHODS.projectContextSetBrief](input)),
+      readNote: (input) =>
+        transport.request((client) => client[WS_METHODS.projectContextReadNote](input)),
+      saveNote: (input) =>
+        transport.request((client) => client[WS_METHODS.projectContextSaveNote](input)),
+      removeNote: (input) =>
+        transport.request((client) => client[WS_METHODS.projectContextRemoveNote](input)),
+      approveNote: (input) =>
+        transport.request((client) => client[WS_METHODS.projectContextApproveNote](input)),
+      resolveSuggestion: (input) =>
+        transport.request((client) => client[WS_METHODS.projectContextResolveSuggestion](input)),
     },
     scheduledTasks: {
       subscribe: (listener, options) =>

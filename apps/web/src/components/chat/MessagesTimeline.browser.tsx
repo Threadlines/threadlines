@@ -5,6 +5,9 @@ import {
   OutsideAgentConnectionId,
   EnvironmentId,
   MessageId,
+  ProjectId,
+  ProjectNoteSuggestionId,
+  type ProjectNoteSuggestion,
   SideTurnId,
   ThreadId,
   ThreadParticipantId,
@@ -669,6 +672,68 @@ describe("MessagesTimeline", () => {
       );
       await page.getByRole("button", { name: "Cancel" }).click();
       expect(cancelled).toEqual(["wake-1"]);
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("shows a suggested note under its turn's answer, and Keep resolves that one", async () => {
+    const suggestion: ProjectNoteSuggestion = {
+      id: ProjectNoteSuggestionId.make("suggestion-1"),
+      projectId: ProjectId.make("project-1"),
+      title: "Test database",
+      summary: "Tests need the local Postgres on port 5433.",
+      text: "Start it with docker compose up db before running the suite.",
+      author: {
+        kind: "agent",
+        threadId: ThreadId.make("thread-1"),
+        participantId: null,
+        agentName: "Codex",
+      },
+      turnId: TurnId.make("turn-1"),
+      createdAt: "2026-04-13T12:00:20.000Z",
+    };
+    const resolve = vi.fn(async () => undefined);
+    const timeline = (suggestions: ReadonlyArray<ProjectNoteSuggestion>) => (
+      <MessagesTimeline
+        {...buildProps()}
+        noteSuggestions={suggestions}
+        onResolveNoteSuggestion={resolve}
+        timelineEntries={[
+          {
+            id: "entry-answer",
+            kind: "message",
+            createdAt: "2026-04-13T12:00:10.000Z",
+            message: {
+              id: MessageId.make("answer-1"),
+              role: "assistant",
+              text: "The suite passes.",
+              turnId: TurnId.make("turn-1"),
+              createdAt: "2026-04-13T12:00:10.000Z",
+              completedAt: "2026-04-13T12:00:30.000Z",
+              streaming: false,
+            },
+          },
+        ]}
+      />
+    );
+    const screen = await renderTimeline(timeline([suggestion]));
+
+    try {
+      const row = () => document.querySelector("[data-note-suggestion-row='suggestion-1']");
+      await expect.element(page.getByText("Test database")).toBeVisible();
+      await expect
+        .element(page.getByText("Tests need the local Postgres on port 5433."))
+        .toBeVisible();
+      const answer = page.getByText("The suite passes.").element();
+      expect(answer.compareDocumentPosition(row()!) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+
+      await page.getByRole("button", { name: "Keep Test database" }).click();
+      expect(resolve).toHaveBeenCalledWith(suggestion, "keep");
+
+      // Kept: the computer's snapshot drops it, and nothing else shows.
+      await screen.rerender(timeline([]));
+      await expect.poll(() => row()).toBeNull();
     } finally {
       await screen.unmount();
     }
