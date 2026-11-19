@@ -33,8 +33,9 @@ import {
   type ProjectBrief,
   type ProjectBriefSetInput,
   type ProjectBriefSetResult,
+  type ProjectNoteChange,
+  type ProjectNoteChangeResult,
   type ProjectNoteListing,
-  type ProjectNoteSaveInput,
   type ProjectNoteSuggestion,
   type ProjectContextSnapshot,
   ProviderDriverKind,
@@ -4628,44 +4629,52 @@ describe("Agent Instructions › Brief", () => {
         });
         return { outcome: "saved", brief: saved };
       }),
-      saveNote: vi.fn(async (input: ProjectNoteSaveInput) => {
-        const note = {
-          id: input.noteId ?? ProjectNoteId.make(`note-${snapshot.notes.length + 1}`),
-          projectId: input.projectId,
-          title: input.title,
-          summary: input.summary,
-          approved: true,
-          writerCeiling: null,
-          author: { kind: "user" as const },
-          createdAt: "2026-11-18T00:00:00.000Z",
-          updatedAt: "2026-11-18T00:00:00.000Z",
-        };
-        computer.emit({
-          ...snapshot,
-          notes: [...snapshot.notes.filter((entry) => entry.id !== note.id), note],
-        });
-        return { ...note, text: input.text };
-      }),
       readNote: vi.fn(async () => {
         throw new Error("not used");
       }),
-      removeNote: vi.fn(async () => undefined),
-      approveNote: vi.fn(async ({ noteId }: { noteId: ProjectNoteListing["id"] }) => {
-        computer.emit({
-          ...snapshot,
-          notes: snapshot.notes.map((note) =>
-            note.id === noteId ? { ...note, approved: true, writerCeiling: null } : note,
-          ),
-        });
+      // The computer's note changes, each as the server would answer it.
+      changeNote: vi.fn(async (change: ProjectNoteChange): Promise<ProjectNoteChangeResult> => {
+        switch (change.kind) {
+          case "save": {
+            const note = {
+              id: change.noteId ?? ProjectNoteId.make(`note-${snapshot.notes.length + 1}`),
+              projectId: change.projectId,
+              title: change.title,
+              summary: change.summary,
+              approved: true,
+              writerCeiling: null,
+              author: { kind: "user" as const },
+              createdAt: "2026-11-18T00:00:00.000Z",
+              updatedAt: "2026-11-18T00:00:00.000Z",
+            };
+            computer.emit({
+              ...snapshot,
+              notes: [...snapshot.notes.filter((entry) => entry.id !== note.id), note],
+            });
+            return { note: { ...note, text: change.text } };
+          }
+          case "approve":
+            computer.emit({
+              ...snapshot,
+              notes: snapshot.notes.map((note) =>
+                note.id === change.noteId ? { ...note, approved: true, writerCeiling: null } : note,
+              ),
+            });
+            return { note: null };
+          case "remove":
+            computer.emit({
+              ...snapshot,
+              notes: snapshot.notes.filter((note) => note.id !== change.noteId),
+            });
+            return { note: null };
+          case "resolveSuggestion":
+            computer.emit({
+              ...snapshot,
+              suggestions: snapshot.suggestions.filter((entry) => entry.id !== change.suggestionId),
+            });
+            return { note: null };
+        }
       }),
-      resolveSuggestion: vi.fn(
-        async ({ suggestionId }: { suggestionId: ProjectNoteSuggestion["id"] }) => {
-          computer.emit({
-            ...snapshot,
-            suggestions: snapshot.suggestions.filter((entry) => entry.id !== suggestionId),
-          });
-        },
-      ),
     };
     projectContextHarness.connections.set(environmentId, {
       client: {
@@ -4676,11 +4685,8 @@ describe("Agent Instructions › Brief", () => {
             return () => listeners.delete(listener);
           },
           setBrief: computer.setBrief,
-          saveNote: computer.saveNote,
           readNote: computer.readNote,
-          removeNote: computer.removeNote,
-          approveNote: computer.approveNote,
-          resolveSuggestion: computer.resolveSuggestion,
+          changeNote: computer.changeNote,
         },
       },
     });
@@ -4858,13 +4864,14 @@ describe("Agent Instructions › Brief", () => {
     await page.getByRole("button", { name: "Keep Release branch" }).click();
 
     await vi.waitFor(() =>
-      expect(mac.resolveSuggestion).toHaveBeenCalledWith({
+      expect(mac.changeNote).toHaveBeenCalledWith({
+        kind: "resolveSuggestion",
         projectId: projectOn(THIS_MAC),
         suggestionId: ProjectNoteSuggestionId.make("suggestion-new"),
         decision: "keep",
       }),
     );
-    expect(mac.resolveSuggestion).toHaveBeenCalledTimes(1);
+    expect(mac.changeNote).toHaveBeenCalledTimes(1);
     await expect
       .element(page.getByRole("button", { name: "Keep Release branch" }))
       .not.toBeInTheDocument();
@@ -4900,7 +4907,11 @@ describe("Agent Instructions › Brief", () => {
     await page.getByRole("button", { name: "Show to all threads" }).click();
 
     await vi.waitFor(() =>
-      expect(mac.approveNote).toHaveBeenCalledWith({ projectId: projectOn(THIS_MAC), noteId }),
+      expect(mac.changeNote).toHaveBeenCalledWith({
+        kind: "approve",
+        projectId: projectOn(THIS_MAC),
+        noteId,
+      }),
     );
     await expect.element(limited).not.toBeInTheDocument();
   });
@@ -4919,7 +4930,8 @@ describe("Agent Instructions › Brief", () => {
     await page.getByRole("button", { name: "Save note" }).click();
 
     await vi.waitFor(() =>
-      expect(mac.saveNote).toHaveBeenCalledWith({
+      expect(mac.changeNote).toHaveBeenCalledWith({
+        kind: "save",
         projectId: projectOn(THIS_MAC),
         title: "Ports",
         summary: "Which ports the dev servers use.",

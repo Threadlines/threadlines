@@ -452,10 +452,7 @@ export interface WsRpcClient {
     readonly subscribe: RpcStreamMethod<typeof WS_METHODS.projectContextSubscribe>;
     readonly setBrief: RpcUnaryMethod<typeof WS_METHODS.projectContextSetBrief>;
     readonly readNote: RpcUnaryMethod<typeof WS_METHODS.projectContextReadNote>;
-    readonly saveNote: RpcUnaryMethod<typeof WS_METHODS.projectContextSaveNote>;
-    readonly removeNote: RpcUnaryMethod<typeof WS_METHODS.projectContextRemoveNote>;
-    readonly approveNote: RpcUnaryMethod<typeof WS_METHODS.projectContextApproveNote>;
-    readonly resolveSuggestion: RpcUnaryMethod<typeof WS_METHODS.projectContextResolveSuggestion>;
+    readonly changeNote: RpcUnaryMethod<typeof WS_METHODS.projectContextChangeNote>;
   };
   /** This computer's scheduled tasks (docs/design/fleet.md, Part 6). */
   readonly scheduledTasks: {
@@ -1339,14 +1336,8 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.request((client) => client[WS_METHODS.projectContextSetBrief](input)),
       readNote: (input) =>
         transport.request((client) => client[WS_METHODS.projectContextReadNote](input)),
-      saveNote: (input) =>
-        transport.request((client) => client[WS_METHODS.projectContextSaveNote](input)),
-      removeNote: (input) =>
-        transport.request((client) => client[WS_METHODS.projectContextRemoveNote](input)),
-      approveNote: (input) =>
-        transport.request((client) => client[WS_METHODS.projectContextApproveNote](input)),
-      resolveSuggestion: (input) =>
-        transport.request((client) => client[WS_METHODS.projectContextResolveSuggestion](input)),
+      changeNote: (input) =>
+        transport.request((client) => client[WS_METHODS.projectContextChangeNote](input)),
     },
     scheduledTasks: {
       subscribe: (listener, options) =>

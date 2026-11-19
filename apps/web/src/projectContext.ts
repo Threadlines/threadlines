@@ -14,12 +14,9 @@ import type {
   EnvironmentId,
   ProjectContextSnapshot,
   ProjectNote,
-  ProjectNoteApproveInput,
+  ProjectNoteChange,
   ProjectNoteReadInput,
-  ProjectNoteRemoveInput,
-  ProjectNoteSaveInput,
   ProjectNoteSuggestion,
-  ProjectNoteSuggestionResolveInput,
   ThreadId,
 } from "@threadlines/contracts";
 import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
@@ -173,30 +170,14 @@ export function readProjectNote(
   return projectContextClient(environmentId).readNote(input);
 }
 
-export function saveProjectNote(
+/**
+ * Saves, removes, approves ("Show to all threads") or resolves a suggestion
+ * on the note's computer. Answers with the note after a save or a kept
+ * suggestion, null otherwise.
+ */
+export async function changeProjectNote(
   environmentId: EnvironmentId,
-  input: ProjectNoteSaveInput,
-): Promise<ProjectNote> {
-  return projectContextClient(environmentId).saveNote(input);
-}
-
-export async function removeProjectNote(
-  environmentId: EnvironmentId,
-  input: ProjectNoteRemoveInput,
-): Promise<void> {
-  await projectContextClient(environmentId).removeNote(input);
-}
-
-export async function approveProjectNote(
-  environmentId: EnvironmentId,
-  input: ProjectNoteApproveInput,
-): Promise<void> {
-  await projectContextClient(environmentId).approveNote(input);
-}
-
-export async function resolveNoteSuggestion(
-  environmentId: EnvironmentId,
-  input: ProjectNoteSuggestionResolveInput,
-): Promise<void> {
-  await projectContextClient(environmentId).resolveSuggestion(input);
+  change: ProjectNoteChange,
+): Promise<ProjectNote | null> {
+  return (await projectContextClient(environmentId).changeNote(change)).note;
 }

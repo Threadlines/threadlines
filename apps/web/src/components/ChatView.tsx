@@ -308,7 +308,7 @@ import { type ComposerGoalSetInput, threadGoalControls } from "./chat/ComposerGo
 import { getComposerProviderState } from "./chat/composerProviderState";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { useProjectBriefSupport } from "../projectBrief";
-import { resolveNoteSuggestion, useThreadNoteSuggestions } from "../projectContext";
+import { changeProjectNote, useThreadNoteSuggestions } from "../projectContext";
 import {
   MessagesTimeline,
   type NoteSuggestionResolver,
@@ -4180,12 +4180,14 @@ export default function ChatView(props: ChatViewProps) {
     keepsProjectNotes,
   );
   const resolveThreadNoteSuggestion = useCallback<NoteSuggestionResolver>(
-    (suggestion, decision) =>
-      resolveNoteSuggestion(environmentId, {
+    async (suggestion, decision) => {
+      await changeProjectNote(environmentId, {
+        kind: "resolveSuggestion",
         projectId: suggestion.projectId,
         suggestionId: suggestion.id,
         decision,
-      }),
+      });
+    },
     [environmentId],
   );
 

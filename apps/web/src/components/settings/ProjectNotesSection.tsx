@@ -28,12 +28,9 @@ import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import { cn } from "../../lib/utils";
 import { computerInSentence } from "../../projectBrief";
 import {
-  approveProjectNote,
+  changeProjectNote,
   noteActionErrorText,
   readProjectNote,
-  removeProjectNote,
-  resolveNoteSuggestion,
-  saveProjectNote,
   useProjectContextSnapshots,
 } from "../../projectContext";
 import { buildThreadRouteParams } from "../../threadRoutes";
@@ -128,7 +125,7 @@ export function ProjectNotesSection({
             submitLabel="Save note"
             onCancel={() => setAdding(false)}
             onSubmit={async (fields) => {
-              await saveProjectNote(environmentId, { projectId, ...fields });
+              await changeProjectNote(environmentId, { kind: "save", projectId, ...fields });
               setAdding(false);
             }}
           />
@@ -355,7 +352,8 @@ function SuggestionRow({
     setError(null);
     try {
       // The row leaves when the snapshot drops the suggestion.
-      await resolveNoteSuggestion(environmentId, {
+      await changeProjectNote(environmentId, {
+        kind: "resolveSuggestion",
         projectId: suggestion.projectId,
         suggestionId: suggestion.id,
         decision,
@@ -441,7 +439,11 @@ function KeptNoteRow({
     setApproving(true);
     setError(null);
     try {
-      await approveProjectNote(environmentId, { projectId: note.projectId, noteId: note.id });
+      await changeProjectNote(environmentId, {
+        kind: "approve",
+        projectId: note.projectId,
+        noteId: note.id,
+      });
     } catch (cause) {
       setError(noteActionErrorText(cause));
     } finally {
@@ -525,7 +527,7 @@ function OpenNote({
     setRemoving(true);
     setRemoveError(null);
     try {
-      await removeProjectNote(environmentId, { projectId, noteId });
+      await changeProjectNote(environmentId, { kind: "remove", projectId, noteId });
       onClose();
     } catch (cause) {
       setRemoveError(noteActionErrorText(cause));
@@ -545,7 +547,7 @@ function OpenNote({
         {...(limited ? { hint: "Saving it shows it to all threads." } : {})}
         onCancel={onClose}
         onSubmit={async (fields) => {
-          await saveProjectNote(environmentId, { projectId, noteId, ...fields });
+          await changeProjectNote(environmentId, { kind: "save", projectId, noteId, ...fields });
         }}
         extraAction={
           <Button
