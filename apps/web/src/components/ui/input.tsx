@@ -5,6 +5,14 @@ import type * as React from "react";
 
 import { cn } from "~/lib/utils";
 
+/**
+ * The masking dot sits at a different height in every font (SF Mono high,
+ * the system font low), and themes can change the fonts. Masked text is
+ * pinned to the app's bundled sans, whose dot is centered in the field.
+ * Password inputs get it here; a masked textarea adds it itself.
+ */
+export const MASKED_TEXT_FONT = "[font-family:'Schibsted_Grotesk_Variable',var(--font-sans)]";
+
 type InputProps = Omit<InputPrimitive.Props & React.RefAttributes<HTMLInputElement>, "size"> & {
   size?: "sm" | "default" | "lg" | number;
   unstyled?: boolean;
@@ -24,6 +32,7 @@ function Input({
     size === "lg" && "h-9.5 leading-9.5 sm:h-8.5 sm:leading-8.5",
     props.type === "search" &&
       "[&::-webkit-search-cancel-button]:appearance-none [&::-webkit-search-decoration]:appearance-none [&::-webkit-search-results-button]:appearance-none [&::-webkit-search-results-decoration]:appearance-none",
+    props.type === "password" && MASKED_TEXT_FONT,
     props.type === "file" &&
       "text-muted-foreground file:me-3 file:bg-transparent file:font-medium file:text-foreground file:text-sm",
   );
