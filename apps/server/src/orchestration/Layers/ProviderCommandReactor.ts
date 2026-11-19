@@ -4206,6 +4206,20 @@ const make = Effect.gen(function* () {
     if (!thread) {
       return;
     }
+    // A pause or resume Threadlines made for a wait goes out only while the
+    // goal still carries it: the user took the goal over, or the provider
+    // ended or blocked it, since it was decided (docs/design/goal-wait-pause.md).
+    if (event.payload.origin === "automatic") {
+      const goal = thread.goal;
+      const stillOurs =
+        event.payload.status === "paused"
+          ? // Paused already: a resume of ours may still be on its way.
+            goal?.waitPause === "paused" && (goal.status === "active" || goal.status === "paused")
+          : goal?.waitPause === "resuming" && goal.status === "paused";
+      if (!stillOurs) {
+        return;
+      }
+    }
     // Goals live provider-side, so the thread needs a live session before the
     // goal RPC. Cold threads get their session started (or resumed) here. In a
     // room the goal belongs to the agent holding the session slot. The
@@ -4278,6 +4292,8 @@ const make = Effect.gen(function* () {
             threadId: goalHolderSessionKey,
             modelSelection: goalModelSelection,
             ...(context !== undefined ? { context } : {}),
+            // A pause or resume for a wait (thread.goal.wait.sync) is ours, not the user's.
+            ...(event.payload.origin !== undefined ? { origin: event.payload.origin } : {}),
             ...(event.payload.objective !== undefined
               ? { objective: event.payload.objective }
               : resumed !== null

@@ -89,6 +89,7 @@ import { ProviderRuntimeIngestionLive } from "./orchestration/Layers/ProviderRun
 import { RealtimeVoiceDevicesLive } from "./orchestration/Layers/RealtimeVoiceDevices.ts";
 import { ProviderCommandReactorLive } from "./orchestration/Layers/ProviderCommandReactor.ts";
 import { ChildThreadReactorLive } from "./orchestration/Layers/ChildThreadReactor.ts";
+import { GoalWaitReactorLive } from "./orchestration/Layers/GoalWaitReactor.ts";
 import { ThreadContextSeedBuilderLive } from "./provider/contextSeed/ThreadContextSeedBuilder.ts";
 import { CheckpointReactorLive } from "./orchestration/Layers/CheckpointReactor.ts";
 import { ThreadDeletionReactorLive } from "./orchestration/Layers/ThreadDeletionReactor.ts";
@@ -375,8 +376,12 @@ const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(OrchestrationReactorLive),
   Layer.provideMerge(ProviderRuntimeIngestionLive),
   Layer.provideMerge(ProviderCommandReactorLive),
-  // Both reactors above take these (optionally), so they come after them.
-  Layer.provideMerge(Layer.mergeAll(RemoteRequestTurnEndsLive, RemoteRequestGateLive)),
+  // Both reactors above take the remote request layers (optionally), so they
+  // come after them. The goal wait reactor (started by the orchestration
+  // reactor) reads the scheduler's waiting cards, so it comes before it.
+  Layer.provideMerge(
+    Layer.mergeAll(GoalWaitReactorLive, RemoteRequestTurnEndsLive, RemoteRequestGateLive),
+  ),
   // Ingestion reads who spoke; the WebSocket route notes it.
   Layer.provideMerge(RealtimeVoiceDevicesLive),
   Layer.provideMerge(ScheduledTasksLayerLive),

@@ -256,12 +256,14 @@ import {
 } from "../../lib/providerUsage";
 import { formatProviderSkillDisplayName } from "../../providerSkillPresentation";
 import { resolveFileAttachmentType } from "@threadlines/shared/fileAttachments";
+import { goalWaitPauseLabel } from "@threadlines/shared/goalWaitPause";
+import { scopeThreadRef } from "@threadlines/client-runtime";
 import { searchProviderSkills } from "../../providerSkillSearch";
 import { resolveComposerSkillReferences } from "../../providerSkillReferences";
 import { useIsPhoneViewport } from "../../hooks/useMediaQuery";
 import { ComposerDictationControl } from "./ComposerDictationControl";
 import { useDictation } from "../../dictation/useDictation";
-import { useStore } from "../../store";
+import { selectSidebarThreadSummaryByRef, useStore } from "../../store";
 import { readLeadProjectName } from "../../leadChat";
 
 const ATTACHMENT_SIZE_LIMIT_LABEL = `${Math.round(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES / (1024 * 1024))}MB`;
@@ -925,6 +927,20 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const workflowKeywordActive =
     selectedProvider === CLAUDE_AGENT_PROVIDER && containsWorkflowKeyword(prompt);
   const threadGoal = optimisticGoal ?? activeThread?.goal ?? null;
+  // A goal Threadlines paused while the thread waits says what for, in the
+  // words the sidebar's facts give (a card, or threads at work).
+  const goalWaitLabel = useStore((store) =>
+    (threadGoal?.waitPause === "paused" || threadGoal?.waitPause === "resuming") &&
+    threadGoal.status === "paused" &&
+    activeThread
+      ? goalWaitPauseLabel(
+          selectSidebarThreadSummaryByRef(
+            store,
+            scopeThreadRef(activeThread.environmentId, activeThread.id),
+          ) ?? {},
+        )
+      : null,
+  );
   const goalSupported =
     goalControls != null &&
     activeThreadId !== null &&
@@ -3875,6 +3891,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         <div className="mx-auto w-[calc(100%-5rem)] overflow-hidden rounded-t-3xl border border-b-0 border-border/55 bg-card/60">
           <ComposerGoalBar
             goal={threadGoal}
+            waitLabel={goalWaitLabel}
             controls={goalControls}
             editorOpen={isGoalEditorOpen}
             isDispatching={goalDispatching === true}
