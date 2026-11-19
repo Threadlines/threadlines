@@ -29,6 +29,7 @@ import {
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { isProcessRunning } from "../testAgentProcess.ts";
+import { PROJECT_BRIEF_CLEARED_NOTE } from "../projectBriefPreface.ts";
 import type { UsageLedgerEntry } from "../../usage/usageLedger.ts";
 import { type AcpAdapterShape, acpDiffFileChanges, makeAcpAdapter } from "./AcpAdapter.ts";
 import { discoverAcpModels } from "./AcpProvider.ts";
@@ -1792,6 +1793,129 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
 
       yield* adapter.stopSession(threadId);
     }),
+  );
+
+  it.effect(
+    "sends the project's brief again when the agent refused the prompt that carried it",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* CursorAdapter;
+        const serverSettings = yield* ServerSettingsService;
+        const threadId = ThreadId.make("cursor-project-brief-refused");
+        const tempDir = yield* Effect.promise(() => mkdtemp(path.join(os.tmpdir(), "cursor-acp-")));
+        const requestLogPath = path.join(tempDir, "requests.ndjson");
+        yield* Effect.promise(() => writeFile(requestLogPath, "", "utf8"));
+        const wrapperPath = yield* Effect.promise(() =>
+          makeProbeWrapper(requestLogPath, path.join(tempDir, "argv.txt"), {
+            T3_ACP_FAIL_FIRST_PROMPT: "1",
+          }),
+        );
+        yield* serverSettings.updateSettings({
+          providers: { cursor: { binaryPath: wrapperPath } },
+        });
+        const brief = "Use pnpm here.";
+        yield* adapter.startSession({
+          threadId,
+          provider: ProviderDriverKind.make("cursor"),
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+          projectInstructions: brief,
+        });
+        const turn = (text: string) =>
+          Effect.gen(function* () {
+            const ended = yield* adapter.streamEvents.pipe(
+              Stream.takeUntil((event) => event.type === "turn.completed"),
+              Stream.runDrain,
+              Effect.forkChild,
+            );
+            yield* adapter.sendTurn({ threadId, input: text, attachments: [] });
+            yield* Fiber.join(ended);
+          });
+        yield* turn("first try");
+        yield* turn("second try");
+        yield* adapter.stopSession(threadId);
+
+        const prompts = (yield* Effect.promise(() => readJsonLines(requestLogPath)))
+          .filter((entry) => entry.method === "session/prompt")
+          .map((entry) =>
+            (entry.params as { prompt: Array<{ text?: string }> }).prompt
+              .map((part) => part.text ?? "")
+              .join(""),
+          );
+        assert.deepEqual(prompts, [`${brief}\n\nfirst try`, `${brief}\n\nsecond try`]);
+      }),
+  );
+
+  it.effect(
+    "sends the project's brief ahead of a new session's first prompt, and on a resume only when it changed",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* CursorAdapter;
+        const serverSettings = yield* ServerSettingsService;
+        const threadId = ThreadId.make("cursor-project-brief");
+        const tempDir = yield* Effect.promise(() => mkdtemp(path.join(os.tmpdir(), "cursor-acp-")));
+        const requestLogPath = path.join(tempDir, "requests.ndjson");
+        yield* Effect.promise(() => writeFile(requestLogPath, "", "utf8"));
+        const wrapperPath = yield* Effect.promise(() =>
+          makeProbeWrapper(requestLogPath, path.join(tempDir, "argv.txt")),
+        );
+        yield* serverSettings.updateSettings({
+          providers: { cursor: { binaryPath: wrapperPath } },
+        });
+        const brief = "Use pnpm here. Never touch the generated folder.";
+
+        /** One runtime start and its first turn; returns what that prompt said and the cursor after it. */
+        const firstTurn = (input: {
+          readonly projectInstructions?: string;
+          readonly resumeCursor?: unknown;
+        }) =>
+          Effect.gen(function* () {
+            yield* adapter.startSession({
+              threadId,
+              provider: ProviderDriverKind.make("cursor"),
+              cwd: process.cwd(),
+              runtimeMode: "full-access",
+              modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+              ...input,
+            });
+            const completed = yield* adapter.streamEvents.pipe(
+              Stream.takeUntil((event) => event.type === "turn.completed"),
+              Stream.runDrain,
+              Effect.forkChild,
+            );
+            yield* adapter.sendTurn({ threadId, input: "hello mock", attachments: [] });
+            yield* Fiber.join(completed);
+            const cursor = (yield* adapter.listSessions()).find(
+              (session) => session.threadId === threadId,
+            )?.resumeCursor;
+            yield* adapter.stopSession(threadId);
+            const prompts = (yield* Effect.promise(() => readJsonLines(requestLogPath))).filter(
+              (entry) => entry.method === "session/prompt",
+            );
+            const parts = (prompts.at(-1)!.params as { prompt: Array<{ text?: string }> }).prompt;
+            return { text: parts.map((part) => part.text ?? "").join(""), cursor };
+          });
+
+        const fresh = yield* firstTurn({ projectInstructions: brief });
+        assert.equal(fresh.text, `${brief}\n\nhello mock`);
+
+        const same = yield* firstTurn({ projectInstructions: brief, resumeCursor: fresh.cursor });
+        assert.equal(same.text, "hello mock");
+
+        const changed = yield* firstTurn({
+          projectInstructions: `${brief} Tests run with vp.`,
+          resumeCursor: same.cursor,
+        });
+        assert.equal(changed.text, `${brief} Tests run with vp.\n\nhello mock`);
+
+        const cleared = yield* firstTurn({ resumeCursor: changed.cursor });
+        assert.equal(cleared.text, `${PROJECT_BRIEF_CLEARED_NOTE}\n\nhello mock`);
+
+        // The note is said once.
+        const after = yield* firstTurn({ resumeCursor: cleared.cursor });
+        assert.equal(after.text, "hello mock");
+      }),
   );
 
   it.effect(

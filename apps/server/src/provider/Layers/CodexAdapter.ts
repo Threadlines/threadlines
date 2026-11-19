@@ -3431,6 +3431,9 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
             ? { scheduleTools: true }
             : {}),
           ...(input.agentPages === true && sideAnswer === undefined ? { agentPages: true } : {}),
+          ...(input.projectInstructions !== undefined && sideAnswer === undefined
+            ? { projectInstructions: input.projectInstructions }
+            : {}),
           ...(input.commandRequests === true && sideAnswer === undefined
             ? { commandRequests: true }
             : {}),

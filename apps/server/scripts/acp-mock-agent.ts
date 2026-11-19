@@ -28,6 +28,8 @@ const failSetConfigOption = process.env.T3_ACP_FAIL_SET_CONFIG_OPTION === "1";
 const authRequiredOnSetConfigOption = process.env.T3_ACP_FAIL_SET_CONFIG_OPTION === "auth";
 const exitOnSetConfigOption = process.env.T3_ACP_EXIT_ON_SET_CONFIG_OPTION === "1";
 const promptResponseText = process.env.T3_ACP_PROMPT_RESPONSE_TEXT;
+/** Refuses the first prompt it gets, as an agent that errors before taking it does. */
+let failFirstPrompt = process.env.T3_ACP_FAIL_FIRST_PROMPT === "1";
 /** Ends every prompt with this stop reason and no reply, as a refusing model does. */
 const silentPromptStopReason = process.env.T3_ACP_SILENT_PROMPT_STOP_REASON;
 /** fx's retry notice, sent before that silent stop. */
@@ -408,6 +410,11 @@ const program = Effect.gen(function* () {
   yield* agent.handlePrompt((request) =>
     Effect.gen(function* () {
       const requestedSessionId = String(request.sessionId ?? sessionId);
+
+      if (failFirstPrompt) {
+        failFirstPrompt = false;
+        return yield* AcpError.AcpRequestError.invalidParams("The mock agent refused this prompt.");
+      }
 
       if (silentPromptStopReason) {
         if (silentPromptStatus) {

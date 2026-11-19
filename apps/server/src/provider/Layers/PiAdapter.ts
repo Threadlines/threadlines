@@ -1757,13 +1757,18 @@ export function makePiAdapter(options: PiAdapterOptions) {
           const managedWorktree = yield* isLinkedWorktreeCheckout(directory).pipe(
             Effect.provideService(FileSystem.FileSystem, fileSystem),
           );
-          const instructions = instructionsFor({
-            agentPageAssetsDir,
-            commandRequests,
-            scheduleTools: roomTools && input.scheduleTools === true,
-            roomEndpoint: roomGrant.attach,
-            managedWorktree,
-          });
+          // The project's brief goes last. The file is named by the hash of
+          // the whole text, so another project's brief is never reused.
+          const instructions = [
+            instructionsFor({
+              agentPageAssetsDir,
+              commandRequests,
+              scheduleTools: roomTools && input.scheduleTools === true,
+              roomEndpoint: roomGrant.attach,
+              managedWorktree,
+            }),
+            ...(input.projectInstructions !== undefined ? [input.projectInstructions] : []),
+          ].join("\n\n");
           const instructionsPath = NodePath.join(
             options.extensionDir,
             "instructions",

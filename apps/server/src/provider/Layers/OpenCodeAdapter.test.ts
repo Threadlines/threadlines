@@ -234,6 +234,24 @@ describe("OpenCodeAdapter", () => {
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
+  it.live("ends Threadlines' instructions entry with the project's brief", () =>
+    Effect.gen(function* () {
+      const { adapter, calls, threadId, cwd } = yield* harness;
+      const brief = "Use pnpm here. Never touch the generated folder.";
+      yield* adapter.startSession({
+        threadId,
+        cwd,
+        runtimeMode: "full-access",
+        projectInstructions: brief,
+      });
+      const put = calls.find((call) => call.method === "instructions.put")?.input as
+        | { readonly key: string; readonly value: string }
+        | undefined;
+      expect(put?.key).toBe("threadlines");
+      expect(put?.value.endsWith(`\n\n${brief}`)).toBe(true);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
   it.live("turns an execution nobody asked for into the agent's own turn", () =>
     Effect.gen(function* () {
       const { adapter, send, next, threadId, cwd } = yield* harness;

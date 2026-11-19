@@ -231,6 +231,14 @@ export const ProviderSessionStartInput = Schema.Struct({
   approvalPolicy: Schema.optional(ProviderApprovalPolicy),
   sandboxMode: Schema.optional(ProviderSandboxMode),
   runtimeMode: RuntimeMode,
+  /**
+   * The project's brief, as standing instructions for this session
+   * (docs/design/project-brief-notes.md). Filled by `ProviderService` at every
+   * start, recovery included, from the project as it is then; never by
+   * callers. Each driver puts it where its own standing instructions go.
+   * Absent: nothing to add (no brief, a fenced thread, a side runtime).
+   */
+  projectInstructions: Schema.optional(Schema.String),
 });
 export type ProviderSessionStartInput = typeof ProviderSessionStartInput.Type;
 

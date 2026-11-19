@@ -36,6 +36,7 @@ import {
   type TestAgentProcess,
 } from "../testAgentProcess.ts";
 import { steerRejectionOf } from "../Errors.ts";
+import { PROJECT_BRIEF_CLEARED_NOTE } from "../projectBriefPreface.ts";
 import {
   type MuseHost,
   MuseHostError,
@@ -919,6 +920,59 @@ describe("MuseAdapter", () => {
         "rate_limit",
       );
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect(
+    "sends the project's brief on a new conversation, and on a resume only when it changed",
+    () =>
+      Effect.gen(function* () {
+        const brief = "Use pnpm here. Never touch the generated folder.";
+        // Each start is a fresh adapter, as after a server restart.
+        const firstTurn = (input: {
+          readonly projectInstructions?: string;
+          readonly resumeCursor?: unknown;
+        }) =>
+          Effect.gen(function* () {
+            const { hosts, adapter, threadId } = yield* setup();
+            yield* adapter.startSession({
+              threadId,
+              cwd: workspace(),
+              runtimeMode: "approval-required",
+              ...input,
+            });
+            const turn = yield* adapter.sendTurn({
+              threadId,
+              messageId: MessageId.make("message-hi"),
+              input: "hi",
+            });
+            const turnStart = hosts.at(-1)!.calls.find((call) => call.method === "turn/start")!;
+            const texts = (turnStart.params.input as ReadonlyArray<{ text?: string }>).map(
+              (part) => part.text,
+            );
+            return { texts, cursor: turn.resumeCursor };
+          });
+
+        // After Threadlines' instructions, ahead of the user's words.
+        const fresh = yield* firstTurn({ projectInstructions: brief });
+        expect(fresh.texts).toHaveLength(3);
+        expect(fresh.texts.slice(1)).toEqual([brief, "hi"]);
+
+        const same = yield* firstTurn({ projectInstructions: brief, resumeCursor: fresh.cursor });
+        expect(same.texts).toEqual(["hi"]);
+
+        const changed = yield* firstTurn({
+          projectInstructions: `${brief} Tests run with vp.`,
+          resumeCursor: same.cursor,
+        });
+        expect(changed.texts).toEqual([`${brief} Tests run with vp.`, "hi"]);
+
+        const cleared = yield* firstTurn({ resumeCursor: changed.cursor });
+        expect(cleared.texts).toEqual([PROJECT_BRIEF_CLEARED_NOTE, "hi"]);
+
+        // The note is said once.
+        const after = yield* firstTurn({ resumeCursor: cleared.cursor });
+        expect(after.texts).toEqual(["hi"]);
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
   it.effect("refuses to run on an API key unless per-use billing is allowed", () =>

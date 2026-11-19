@@ -447,10 +447,10 @@ const PAGES = [
     id: "settings.instructions",
     kind: "page",
     title: "Agent Instructions",
-    about: "The instruction files agents read before they start work.",
+    about: "A project's brief and the instruction files agents read before they start work.",
     route: { to: "/settings/instructions" },
     target: "thread",
-    keywords: ["AGENTS.md", "CLAUDE.md", "rules"],
+    keywords: ["AGENTS.md", "CLAUDE.md", "rules", "brief"],
   },
   {
     id: "settings.sourceControl",
@@ -720,6 +720,16 @@ const SECTIONS = [
     parent: "settings.instructions",
     title: "Project",
     about: "Which project's instruction files to show.",
+  },
+  {
+    id: "instructions.brief",
+    kind: "section",
+    parent: "settings.instructions",
+    title: "Brief",
+    about:
+      "Text every thread in that project gets, on any agent. It stays on your computers and is not written to the repository.",
+    keywords: ["project brief", "project instructions", "standing instructions", "rules"],
+    widensAgents: true,
   },
   {
     id: "instructions.files",

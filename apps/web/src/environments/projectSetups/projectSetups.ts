@@ -430,6 +430,10 @@ export async function startProjectSetup(
     ...(plan.sourceInfo.sizeBytes !== undefined
       ? { expectedBytes: plan.sourceInfo.sizeBytes }
       : {}),
+    // The project's brief goes with it; the new copy keeps it once it is added.
+    ...(plan.sourceInfo.brief !== undefined && plan.sourceInfo.brief.length > 0
+      ? { brief: plan.sourceInfo.brief }
+      : {}),
   });
   upsertJob(plan.target.environmentId, job);
   return job;

@@ -69,6 +69,7 @@ import {
 import { type ProviderAdapterError, ProviderValidationError } from "../Errors.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import { ThreadSessionAdmission } from "../Services/ThreadSessionAdmission.ts";
+import { ProjectInstructions } from "../Services/ProjectInstructions.ts";
 import { ProviderAdapterRegistry } from "../Services/ProviderAdapterRegistry.ts";
 import { ProviderService, type ProviderServiceShape } from "../Services/ProviderService.ts";
 import {
@@ -391,6 +392,23 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   // event (docs/design/secret-scrubbing.md, "Where it runs").
   const secretScrubber = yield* SecretScrubber;
   const admission = yield* ThreadSessionAdmission;
+  const projectInstructions = yield* Effect.serviceOption(ProjectInstructions);
+  /**
+   * The project's text for a session about to start (docs/design/
+   * project-brief-notes.md, "Delivery"), read at every adapter start so a
+   * restarted session gets the brief as it is now. Whatever a caller passed
+   * is replaced: only this lookup decides it.
+   */
+  const withProjectInstructions = <T extends ProviderSessionStartInput>(input: T) =>
+    Effect.gen(function* () {
+      const { projectInstructions: _ignored, ...rest } = input;
+      if (Option.isNone(projectInstructions)) return rest;
+      const text = yield* projectInstructions.value.forSession({
+        sessionKey: input.threadId,
+        runtimeMode: input.runtimeMode,
+      });
+      return text === undefined ? rest : { ...rest, projectInstructions: text };
+    });
   const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
   const turnLatency = makeTurnLatencyTracker();
@@ -819,21 +837,23 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
 
         const startBeganAtMs = yield* Clock.currentTimeMillis;
         const startBeganNanos = yield* Clock.monotonicTimeNanos;
-        const resumed = yield* adapter.startSession({
-          threadId: input.binding.threadId,
-          provider: input.binding.provider,
-          providerInstanceId: bindingInstanceId,
-          ...(persistedCwd ? { cwd: persistedCwd } : {}),
-          ...(persistedModelSelection ? { modelSelection: persistedModelSelection } : {}),
-          ...(hasResumeCursor ? { resumeCursor: input.binding.resumeCursor } : {}),
-          ...(readPersistedRoomToolsRequest(input.binding.runtimePayload)
-            ? { roomTools: true }
-            : {}),
-          ...(readPersistedGuideToolsRequest(input.binding.runtimePayload)
-            ? { guideTools: true }
-            : {}),
-          runtimeMode: input.binding.runtimeMode ?? "full-access",
-        });
+        const resumed = yield* adapter.startSession(
+          yield* withProjectInstructions({
+            threadId: input.binding.threadId,
+            provider: input.binding.provider,
+            providerInstanceId: bindingInstanceId,
+            ...(persistedCwd ? { cwd: persistedCwd } : {}),
+            ...(persistedModelSelection ? { modelSelection: persistedModelSelection } : {}),
+            ...(hasResumeCursor ? { resumeCursor: input.binding.resumeCursor } : {}),
+            ...(readPersistedRoomToolsRequest(input.binding.runtimePayload)
+              ? { roomTools: true }
+              : {}),
+            ...(readPersistedGuideToolsRequest(input.binding.runtimePayload)
+              ? { guideTools: true }
+              : {}),
+            runtimeMode: input.binding.runtimeMode ?? "full-access",
+          }),
+        );
         if (resumed.provider !== adapter.provider) {
           return yield* toValidationError(
             input.operation,
@@ -1060,15 +1080,17 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       const adapter = yield* registry.getByInstance(resolvedInstanceId);
       const startBeganAtMs = yield* Clock.currentTimeMillis;
       const startBeganNanos = yield* Clock.monotonicTimeNanos;
-      const session = yield* adapter.startSession({
-        ...input,
-        providerInstanceId: resolvedInstanceId,
-        ...(effectiveCwd !== undefined ? { cwd: effectiveCwd } : {}),
-        ...(effectiveResumeCursor !== undefined ? { resumeCursor: effectiveResumeCursor } : {}),
-        // An early start reopens the conversation or fails: starting it fresh
-        // instead is left to the ordinary start, which tells the thread.
-        ...(early ? { resumePolicy: "required" as const } : {}),
-      });
+      const session = yield* adapter.startSession(
+        yield* withProjectInstructions({
+          ...input,
+          providerInstanceId: resolvedInstanceId,
+          ...(effectiveCwd !== undefined ? { cwd: effectiveCwd } : {}),
+          ...(effectiveResumeCursor !== undefined ? { resumeCursor: effectiveResumeCursor } : {}),
+          // An early start reopens the conversation or fails: starting it fresh
+          // instead is left to the ordinary start, which tells the thread.
+          ...(early ? { resumePolicy: "required" as const } : {}),
+        }),
+      );
 
       if (session.provider !== adapter.provider) {
         return yield* toValidationError(

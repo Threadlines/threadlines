@@ -7,6 +7,7 @@
  */
 import { scopedProjectKey, scopeProjectRef } from "@threadlines/client-runtime";
 import type { ScopedThreadRef } from "@threadlines/contracts";
+import { useNavigate } from "@tanstack/react-router";
 import * as Schema from "effect/Schema";
 import { CrownIcon, XIcon } from "lucide-react";
 import { type ReactElement, useCallback, useState } from "react";
@@ -14,7 +15,8 @@ import { type ReactElement, useCallback, useState } from "react";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { LEAD_CHAT_EXPLANATION, readLeadMenuState, setProjectLead } from "../../leadChat";
 import { useComputerConfig } from "../../newThreadDefaults";
-import { selectSidebarThreadSummaryByRef, useStore } from "../../store";
+import { projectBriefLocation, useProjectBriefSupport } from "../../projectBrief";
+import { selectProjectByRef, selectSidebarThreadSummaryByRef, useStore } from "../../store";
 import { Button } from "../ui/button";
 import { PreviewCard, PreviewCardPopup, PreviewCardTrigger } from "../ui/previewCard";
 
@@ -41,6 +43,15 @@ export function LeadChatCard({
   const [open, setOpen] = useState(false);
   const projectId = useThreadProject(threadRef);
   const showCard = useCallback(() => setOpen(true), []);
+  const navigate = useNavigate();
+  // The lead's project's brief, where its computer keeps one.
+  const projectCwd = useStore((state) =>
+    projectId === null
+      ? null
+      : (selectProjectByRef(state, scopeProjectRef(threadRef.environmentId, projectId))?.cwd ??
+        null),
+  );
+  const briefSupported = useProjectBriefSupport()(threadRef.environmentId);
   return (
     <PreviewCard open={open} onOpenChange={setOpen}>
       <PreviewCardTrigger
@@ -61,21 +72,41 @@ export function LeadChatCard({
         </div>
         <p className="mt-1 text-xs leading-normal text-muted-foreground">{LEAD_CHAT_EXPLANATION}</p>
         {projectId !== null ? (
-          <button
-            type="button"
-            data-testid="lead-chat-card-stop"
-            className="mt-2.5 rounded-sm text-xs text-muted-foreground transition-colors hover:text-foreground focus-ring"
-            onClick={() => {
-              setOpen(false);
-              void setProjectLead({
-                environmentId: threadRef.environmentId,
-                projectId,
-                threadId: null,
-              });
-            }}
-          >
-            Stop using as lead chat
-          </button>
+          <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1.5">
+            {projectCwd !== null && briefSupported ? (
+              <button
+                type="button"
+                data-testid="lead-chat-card-brief"
+                className="rounded-sm text-xs text-muted-foreground transition-colors hover:text-foreground focus-ring"
+                onClick={() => {
+                  setOpen(false);
+                  void navigate(
+                    projectBriefLocation({
+                      environmentId: threadRef.environmentId,
+                      cwd: projectCwd,
+                    }),
+                  );
+                }}
+              >
+                Project brief
+              </button>
+            ) : null}
+            <button
+              type="button"
+              data-testid="lead-chat-card-stop"
+              className="rounded-sm text-xs text-muted-foreground transition-colors hover:text-foreground focus-ring"
+              onClick={() => {
+                setOpen(false);
+                void setProjectLead({
+                  environmentId: threadRef.environmentId,
+                  projectId,
+                  threadId: null,
+                });
+              }}
+            >
+              Stop using as lead chat
+            </button>
+          </div>
         ) : null}
       </PreviewCardPopup>
     </PreviewCard>

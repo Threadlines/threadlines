@@ -330,6 +330,25 @@ When a Claude or Codex usage limit stops a thread, the notice above the composer
 {place:settings.instructions} shows the instruction files each provider reads in a project (like AGENTS.md or CLAUDE.md), to open or edit.`,
   },
   {
+    id: "project-brief",
+    title: "Project brief",
+    keywords: [
+      "brief",
+      "project brief",
+      "project instructions",
+      "standing instructions",
+      "rules for every thread",
+      "project memory",
+    ],
+    body: `A project's brief is text the user writes once. Every thread in the project gets it as the user's standing instructions, on any agent. It is set in {place:instructions.brief}: pick the project at the top, write it, Save. Up to 8,000 characters. Agents can't change it.
+
+New threads get a change at once. A thread that is already open gets it the next time its agent starts: after the app restarts, after a model switch, or after a stop. Threads behind the link fence, or started by an outside agent, don't get it.
+
+Threadlines keeps it on each computer, not in the repository. Save stores it on every connected computer that has the project, and the line under the box says where it went. If the computers hold different briefs, the page shows the picked computer's and offers to copy it to the others. If another device saved first, Save says so and shows the newer text instead of overwriting it. Set up on another computer copies the brief with the project.
+
+The project menu's Project brief, the command palette and the lead chat's crown card open it too.`,
+  },
+  {
     id: "browser-panel",
     title: "The browser panel",
     keywords: [
