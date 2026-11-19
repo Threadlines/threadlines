@@ -68,7 +68,10 @@ const OPEN_NO_FOLLOW = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0);
 
 /** Hides saved keys in text, and says how far back to read to catch one whole. */
 export interface OutputScrubber {
-  readonly scrubText: (text: string) => { readonly text: string };
+  readonly scrubText: (
+    text: string,
+    options?: { readonly cutTail?: boolean },
+  ) => { readonly text: string };
   readonly longestFormBytes: () => number;
 }
 
@@ -100,7 +103,10 @@ async function readFileTail(file: string, scrubber: OutputScrubber): Promise<str
     const length = Math.min(stats.size, OUTPUT_TAIL_BYTES + scrubber.longestFormBytes());
     const buffer = Buffer.alloc(length);
     const { bytesRead } = await handle.read(buffer, 0, length, stats.size - length);
-    const read = scrubber.scrubText(buffer.subarray(0, bytesRead).toString("utf8")).text;
+    // The file may still be written: a tail that could start a key goes too.
+    const read = scrubber.scrubText(buffer.subarray(0, bytesRead).toString("utf8"), {
+      cutTail: true,
+    }).text;
     const text = read.length > OUTPUT_TAIL_BYTES ? read.slice(-OUTPUT_TAIL_BYTES) : read;
     // A read that starts mid-file starts mid-line; drop the partial line.
     return length < stats.size || text.length < read.length

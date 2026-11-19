@@ -163,12 +163,18 @@ describe("EventNdjsonLogger", () => {
     Effect.gen(function* () {
       const scrubber = yield* SecretScrubber;
       scrubber.watch("STRIPE_SECRET_KEY", "sk_test_51Hq9xYz");
+      // A value that ends in a quote: matched against the raw line, it would
+      // take the closing quote of an innocent field that holds the rest.
+      scrubber.watch("QUOTED_KEY", 'abc1234"');
       const { native } = yield* ProviderEventLoggers;
       const { providerEventLogPath } = yield* ServerConfig;
       assert.notEqual(native, undefined);
       if (!native) return;
       yield* native.write(
-        { method: "item/completed", params: { output: "STRIPE_SECRET_KEY=sk_test_51Hq9xYz" } },
+        {
+          method: "item/completed",
+          params: { output: "STRIPE_SECRET_KEY=sk_test_51Hq9xYz", note: "abc1234" },
+        },
         ThreadId.make("thread-1"),
       );
       yield* native.close();
@@ -176,7 +182,13 @@ describe("EventNdjsonLogger", () => {
         path.join(path.dirname(providerEventLogPath), "thread-1.log"),
         "utf8",
       );
-      assert.include(written, "STRIPE_SECRET_KEY=[STRIPE_SECRET_KEY hidden]");
+      const payload = JSON.parse(parseLogLine(written.trim()).payload) as {
+        params: { output: string; note: string };
+      };
+      assert.deepEqual(payload.params, {
+        output: "STRIPE_SECRET_KEY=[STRIPE_SECRET_KEY hidden]",
+        note: "abc1234",
+      });
       assert.notInclude(written, "sk_test_51Hq9xYz");
     }).pipe(
       Effect.provide(

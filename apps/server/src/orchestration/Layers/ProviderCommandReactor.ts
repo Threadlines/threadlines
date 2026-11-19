@@ -971,7 +971,8 @@ const make = Effect.gen(function* () {
         kind: input.kind,
         summary: input.summary,
         payload: {
-          detail: input.detail,
+          // Some callers pass a cause as it is; a provider error can quote a key.
+          detail: secretScrubber.scrubText(input.detail).text,
           ...(input.requestId ? { requestId: input.requestId } : {}),
           ...(input.failedCommandId ? { commandId: input.failedCommandId } : {}),
         },
@@ -1073,7 +1074,11 @@ const make = Effect.gen(function* () {
       type: "thread.session.set",
       commandId: serverCommandId("provider-session-set"),
       threadId: input.threadId,
-      session: input.session,
+      // The stored error reaches the thread and phone alerts: no saved key in it.
+      session:
+        input.session.lastError === null || input.session.lastError === undefined
+          ? input.session
+          : { ...input.session, lastError: secretScrubber.scrubText(input.session.lastError).text },
       createdAt: input.createdAt,
     });
 

@@ -263,7 +263,9 @@ The terminal manager cuts a run's output to its last 16,000 characters
 before `CommandRuns` sees it (`terminal/Layers/Manager.ts:2594`, `:4702`),
 and a cut can fall inside a value. Both cuts scrub first, then cut. A run
 still going can also have printed only the start of a long value: the rule
-for text that stops in the middle of a value covers that.
+for text that stops in the middle of a value covers that (`cutTail` on
+every read of output that may still be printing: the terminal's live read,
+Claude's running command, a background run's file).
 
 The request is checked too. `request` (`:122`) refuses a command or a
 reason that contains a watched value: "This command contains
@@ -315,8 +317,10 @@ before they cut:
   scrubs, then keeps the tail. A value that overlaps the tail starts no
   further back than that, so it is always read whole.
 
-The others return whole strings, and their `ws.ts` handlers pass the result
-through `scrubDeep`:
+The others return whole strings. Their `ws.ts` handlers scrub the fields a
+person reads (`secrets/readBackScrubbing.ts`), never ids, cursors or status
+words, so a key that equals one can't break the reply or an import that
+sends the id back:
 
 - `serverReadSubagentTranscript` (`:1813`)
 - `serverListExternalProviderThreads` (`:1864`, titles and previews)
@@ -328,8 +332,9 @@ through `scrubDeep`:
 Importing a session made outside Threadlines reads the provider's own
 transcript and writes a thread from it: a title from the session's name or
 preview (`ExternalThreadImport.ts:73`), then its messages (`:93`, `:104`).
-`scrubDeep` runs once on the whole transcript, right after it is read and
-before anything is dispatched.
+Its name, preview and messages are scrubbed once, right after it is read and
+before anything is dispatched (`scrubExternalThreadSnapshot`); a failed
+attach's error is scrubbed before it is stored.
 
 ### 6. Provider failure text
 
@@ -339,7 +344,10 @@ Muse append the end of the process's stderr to a failure
 `session.lastError`, from where it can reach a phone alert
 (`pushAlertRules.ts:174`). That text is made in one function,
 `formatFailureDetail` (`ProviderCommandReactor.ts:1041`). `scrubText` runs
-on its result, and on the side-answer start error (`:6666`).
+on its result, on the side-answer start error, and at the two places the
+reactor stores such text, so callers that pass a cause as it is (a failed
+interrupt or approval answer) are covered too: the failure activity's
+detail and the session's `lastError`.
 
 ### 7. The debug logs
 
@@ -353,10 +361,10 @@ Two files per thread under `<state>/logs/provider/`, kept 30 days:
   protocol log (`AcpNativeLogging.ts:21`).
 
 `makeEventNdjsonLogger` takes an optional `scrubLine`, applied to each
-record's JSON line before it is written. `ProviderEventLoggersLive` passes
-`scrubText` for the native logger. Scrubbing the line rather than the
-record also covers member names and anything with its own `toJSON`; a
-value's JSON-escaped form is one of the forms the scrubber looks for. The
+record's JSON line before it is written. For the native logger,
+`ProviderEventLoggersLive` searches the line, and only a line with a match
+is parsed, scrubbed with `scrubDeep` and written again, so a value ending in
+a quote can't take the line's own quote and break it. The
 three adapters that can build a logger of their own (`ClaudeAdapter.ts`,
 `CodexAdapter.ts`, `AcpAdapter.ts`, from `nativeEventLogPath`) do so only
 in tests; the server always hands them the shared one.

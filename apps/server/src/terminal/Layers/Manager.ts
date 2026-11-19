@@ -1472,7 +1472,7 @@ interface TerminalManagerOptions {
    * Hides watched keys in a run's rendered output before it is cut to its
    * tail, so a cut can't leave part of one (docs/design/secret-scrubbing.md).
    */
-  scrubText?: (text: string) => string;
+  scrubText?: (text: string, options?: { readonly cutTail?: boolean }) => string;
   historyLineLimit?: number;
   historyCharLimit?: number;
   persistDebounceMs?: number;
@@ -1631,7 +1631,7 @@ const makeTerminalManager = Effect.fn("makeTerminalManager")(function* () {
   const secretScrubber = yield* SecretScrubber;
   return yield* makeTerminalManagerWithOptions({
     logsDir: terminalLogsDir,
-    scrubText: (text) => secretScrubber.scrubText(text).text,
+    scrubText: (text, options) => secretScrubber.scrubText(text, options).text,
     ptyAdapter,
     processRowsReader: () => processSnapshot.readTree,
   });
@@ -1646,9 +1646,13 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
 
     const logsDir = options.logsDir;
     const scrubText = options.scrubText ?? ((text: string) => text);
-    /** A run's rendered output as it reaches the thread: keys hidden, then cut to its tail. */
-    const runOutputOf = (rendered: string, clipped: boolean) =>
-      clipCommandOutput(scrubText(rendered), clipped);
+    /**
+     * A run's rendered output as it reaches the thread: keys hidden, then cut
+     * to its tail. `live`: read while it may still be printing, so a tail
+     * that could be the start of a key goes too.
+     */
+    const runOutputOf = (rendered: string, clipped: boolean, live = false) =>
+      clipCommandOutput(scrubText(rendered, { cutTail: live }), clipped);
     const historyLineLimit = options.historyLineLimit ?? DEFAULT_HISTORY_LINE_LIMIT;
     const historyCharLimit = options.historyCharLimit ?? DEFAULT_HISTORY_CHAR_LIMIT;
     const persistDebounceMs = options.persistDebounceMs ?? DEFAULT_PERSIST_DEBOUNCE_MS;
@@ -4711,7 +4715,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         );
         if (found === null) return null;
         const text = yield* Effect.promise(() => renderTerminalText(found.raw, found.cols));
-        return runOutputOf(text, found.clipped);
+        return runOutputOf(text, found.clipped, true);
       });
 
     const close: TerminalManagerShape["close"] = (input) =>

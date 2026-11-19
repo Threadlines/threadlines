@@ -213,7 +213,7 @@ const multiTerminalHistoryLogPath = (
   );
 
 interface CreateManagerOptions {
-  scrubText?: (text: string) => string;
+  scrubText?: (text: string, options?: { readonly cutTail?: boolean }) => string;
   shellResolver?: () => string;
   platform?: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;
@@ -2280,6 +2280,32 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
       const output = (yield* manager.readCommandRunOutput("run-1")) ?? "";
       expect(output).toContain("[DEPLOY_KEY hidden]");
       expect(output).not.toContain("a1b2c3d4");
+    }),
+  );
+
+  it.effect("leaves out the start of a long key a run is still printing", () =>
+    Effect.gen(function* () {
+      const key = `sk_live_${"9fK2".repeat(75)}`;
+      const scrubber = makeSecretScrubber();
+      scrubber.watch("STRIPE_SECRET_KEY", key);
+      const { manager, ptyAdapter } = yield* createManager(50, {
+        platform: "darwin",
+        shellResolver: () => "/bin/zsh",
+        scrubText: (text, options) => scrubber.scrubText(text, options).text,
+      });
+      yield* manager.startCommandRun(commandRunInput({ command: "cat .env" }));
+      // Paused halfway: too short to match a 300-character key yet.
+      ptyAdapter.processes[0]!.emitData(
+        `\u001b]6973;run-1;start\u0007loading\r\nKEY=${key.slice(0, 150)}`,
+      );
+      yield* waitFor(
+        manager
+          .readCommandRunOutput("run-1")
+          .pipe(Effect.map((out) => out?.startsWith("loading") === true)),
+      );
+      const output = (yield* manager.readCommandRunOutput("run-1")) ?? "";
+      expect(output).not.toContain("9fK2");
+      expect(output).toContain("KEY=");
     }),
   );
 

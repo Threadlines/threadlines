@@ -2939,7 +2939,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         // Hidden whole, then cut: a cut first could leave part of a key.
         return {
           status: "running",
-          tail: secretScrubber.scrubText(answer.output).text.slice(-COMMAND_OUTPUT_TAIL_CHARS),
+          tail: secretScrubber
+            .scrubText(answer.output, { cutTail: true })
+            .text.slice(-COMMAND_OUTPUT_TAIL_CHARS),
           totalBytes: answer.totalBytes,
         } as const;
       }

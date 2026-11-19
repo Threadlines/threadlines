@@ -36,7 +36,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import { ServerConfig } from "../../config.ts";
-import { SecretScrubber } from "../../secrets/SecretScrubber.ts";
+import { SecretScrubber, type SecretScrubberShape } from "../../secrets/SecretScrubber.ts";
 import {
   cleanupProviderEventLogDirectory,
   type EventNdjsonLogger,
@@ -72,6 +72,24 @@ export const NoOpProviderEventLoggers: ProviderEventLoggersShape = {
 };
 
 /**
+ * A record's JSON line with saved keys hidden. The text is only searched; a
+ * line with a match is parsed and its strings and member names scrubbed, so
+ * a value that ends in a quote can't eat the line's own quote and break it.
+ */
+function scrubJsonLine(
+  scrubber: Pick<SecretScrubberShape, "scrubText" | "scrubDeep">,
+  line: string,
+): string {
+  const found = scrubber.scrubText(line);
+  if (found.names.length === 0) return line;
+  try {
+    return JSON.stringify(scrubber.scrubDeep(JSON.parse(line) as unknown));
+  } catch {
+    return found.text;
+  }
+}
+
+/**
  * Live Layer that builds both loggers from `ServerConfig.providerEventLogPath`.
  * If the directory create fails for either stream, the corresponding field
  * is `undefined` and writes from that stream become no-ops downstream.
@@ -105,7 +123,7 @@ export const ProviderEventLoggersLive = Layer.effect(
     const native = yield* makeEventNdjsonLogger(providerEventLogPath, {
       stream: "native",
       keepStreamFragments,
-      scrubLine: (line) => secretScrubber.scrubText(line).text,
+      scrubLine: (line) => scrubJsonLine(secretScrubber, line),
     });
     const canonical = yield* makeEventNdjsonLogger(providerEventLogPath, {
       stream: "canonical",

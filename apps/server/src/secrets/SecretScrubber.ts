@@ -43,8 +43,12 @@ export interface SecretScrubberShape {
   readonly watch: (name: string, value: string, requestId?: string) => boolean;
   /** A request's file is gone: its value stays watched, and goes first past the limit. */
   readonly gone: (requestId: string) => void;
-  /** Hides watched values in a string. */
-  readonly scrubText: (text: string) => Scrubbed;
+  /**
+   * Hides watched values in a string. With `cutTail`, for a snapshot of
+   * output still being written: a string that stops partway into a value
+   * loses that tail, since it is too short to match yet.
+   */
+  readonly scrubText: (text: string, options?: { readonly cutTail?: boolean }) => Scrubbed;
   /**
    * Hides whole watched values in every string and member name; the same
    * value when nothing matched. Never cuts: for text already joined (what
@@ -91,7 +95,7 @@ export function makeSecretScrubber(): SecretScrubberShape {
   return {
     watch: core.watch,
     gone: core.gone,
-    scrubText: (text) => core.scrubText(text),
+    scrubText: (text, options) => core.scrubText(text, options),
     scrubDeep: <A>(value: A) => core.scrubDeep(value, new Set()) as A,
     contains: core.contains,
     longestFormBytes: () => core.longestFormBytes,

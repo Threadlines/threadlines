@@ -269,11 +269,9 @@ const make = Effect.gen(function* () {
           automatic,
           message: {
             messageId,
-            // A record kept from before a key was saved still holds it whole.
-            text: buildCommandOutputMessage({
-              run,
-              output: secretScrubber.scrubText(output).text,
-            }),
+            // The whole message, command and folder included: a card or a
+            // record made before a key was saved still holds it whole.
+            text: secretScrubber.scrubText(buildCommandOutputMessage({ run, output })).text,
           },
           createdAt: yield* nowIso,
         })
