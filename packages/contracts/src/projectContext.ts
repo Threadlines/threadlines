@@ -172,35 +172,40 @@ export const ProjectNoteReadInput = Schema.Struct({
 export type ProjectNoteReadInput = typeof ProjectNoteReadInput.Type;
 
 /**
- * The user writes a note, or edits one (`noteId`). Kept and approved: it is
- * shown to every thread. Titles are unique among a project's kept notes.
+ * The app's changes to a project's notes, one RPC (`projectContext.changeNote`):
+ * - `save`: the user writes a note, or edits one (`noteId`). Kept and
+ *   approved: every thread sees it. Titles are unique among a project's kept
+ *   notes.
+ * - `remove`: the note goes.
+ * - `approve`: "Show to all threads" for a note kept without asking.
+ * - `resolveSuggestion`: keep or discard one suggestion, by its id. Keep makes
+ *   it a kept, approved note, in place of a kept note with the same title.
  */
-export const ProjectNoteSaveInput = Schema.Struct({
-  projectId: ProjectId,
-  noteId: Schema.optional(ProjectNoteId),
-  title: ProjectNoteTitle,
-  summary: ProjectNoteSummary,
-  text: ProjectNoteText,
+export const ProjectNoteChange = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("save"),
+    projectId: ProjectId,
+    noteId: Schema.optional(ProjectNoteId),
+    title: ProjectNoteTitle,
+    summary: ProjectNoteSummary,
+    text: ProjectNoteText,
+  }),
+  Schema.Struct({ kind: Schema.Literal("remove"), projectId: ProjectId, noteId: ProjectNoteId }),
+  Schema.Struct({ kind: Schema.Literal("approve"), projectId: ProjectId, noteId: ProjectNoteId }),
+  Schema.Struct({
+    kind: Schema.Literal("resolveSuggestion"),
+    projectId: ProjectId,
+    suggestionId: ProjectNoteSuggestionId,
+    decision: Schema.Literals(["keep", "discard"]),
+  }),
+]);
+export type ProjectNoteChange = typeof ProjectNoteChange.Type;
+
+/** The note as it is after a save or a kept suggestion; null otherwise. */
+export const ProjectNoteChangeResult = Schema.Struct({
+  note: Schema.NullOr(ProjectNote),
 });
-export type ProjectNoteSaveInput = typeof ProjectNoteSaveInput.Type;
-
-export const ProjectNoteRemoveInput = ProjectNoteReadInput;
-export type ProjectNoteRemoveInput = typeof ProjectNoteRemoveInput.Type;
-
-/** "Show to all threads": a note kept without asking reaches every thread. */
-export const ProjectNoteApproveInput = ProjectNoteReadInput;
-export type ProjectNoteApproveInput = typeof ProjectNoteApproveInput.Type;
-
-/**
- * Keep or discard one suggestion. Keep makes it a kept, approved note, in
- * place of a kept note with the same title.
- */
-export const ProjectNoteSuggestionResolveInput = Schema.Struct({
-  projectId: ProjectId,
-  suggestionId: ProjectNoteSuggestionId,
-  decision: Schema.Literals(["keep", "discard"]),
-});
-export type ProjectNoteSuggestionResolveInput = typeof ProjectNoteSuggestionResolveInput.Type;
+export type ProjectNoteChangeResult = typeof ProjectNoteChangeResult.Type;
 
 export class ProjectContextError extends Schema.TaggedError<ProjectContextError>()(
   "ProjectContextError",

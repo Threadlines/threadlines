@@ -71,11 +71,9 @@ import {
   ProjectContextSnapshot,
   ProjectContextSubscribeInput,
   ProjectNote,
-  ProjectNoteApproveInput,
+  ProjectNoteChange,
+  ProjectNoteChangeResult,
   ProjectNoteReadInput,
-  ProjectNoteRemoveInput,
-  ProjectNoteSaveInput,
-  ProjectNoteSuggestionResolveInput,
 } from "./projectContext.ts";
 import {
   ThemeContent,
@@ -777,10 +775,7 @@ export const WS_METHODS = {
   projectContextSubscribe: "projectContext.subscribe",
   projectContextSetBrief: "projectContext.setBrief",
   projectContextReadNote: "projectContext.readNote",
-  projectContextSaveNote: "projectContext.saveNote",
-  projectContextRemoveNote: "projectContext.removeNote",
-  projectContextApproveNote: "projectContext.approveNote",
-  projectContextResolveSuggestion: "projectContext.resolveSuggestion",
+  projectContextChangeNote: "projectContext.changeNote",
   scheduledTasksSubscribe: "scheduledTasks.subscribe",
   scheduledTasksListRuns: "scheduledTasks.listRuns",
   scheduledTasksCreate: "scheduledTasks.create",
@@ -2210,32 +2205,12 @@ export const WsProjectContextReadNoteRpc = Rpc.make(WS_METHODS.projectContextRea
   error: ProjectContextError,
 });
 
-/** The user writes or edits a note: kept, and shown to every thread. */
-export const WsProjectContextSaveNoteRpc = Rpc.make(WS_METHODS.projectContextSaveNote, {
-  payload: ProjectNoteSaveInput,
-  success: ProjectNote,
+/** The app's changes to notes and suggestions (ProjectNoteChange). */
+export const WsProjectContextChangeNoteRpc = Rpc.make(WS_METHODS.projectContextChangeNote, {
+  payload: ProjectNoteChange,
+  success: ProjectNoteChangeResult,
   error: ProjectContextError,
 });
-
-export const WsProjectContextRemoveNoteRpc = Rpc.make(WS_METHODS.projectContextRemoveNote, {
-  payload: ProjectNoteRemoveInput,
-  error: ProjectContextError,
-});
-
-/** "Show to all threads". */
-export const WsProjectContextApproveNoteRpc = Rpc.make(WS_METHODS.projectContextApproveNote, {
-  payload: ProjectNoteApproveInput,
-  error: ProjectContextError,
-});
-
-/** Keep or discard one suggestion, by its id. */
-export const WsProjectContextResolveSuggestionRpc = Rpc.make(
-  WS_METHODS.projectContextResolveSuggestion,
-  {
-    payload: ProjectNoteSuggestionResolveInput,
-    error: ProjectContextError,
-  },
-);
 
 /** This computer's scheduled tasks, each with its last run; again on every change. */
 export const WsScheduledTasksSubscribeRpc = Rpc.make(WS_METHODS.scheduledTasksSubscribe, {
@@ -3093,10 +3068,7 @@ export const WsCoreRpcGroup = RpcGroup.make(
   WsProjectContextSubscribeRpc,
   WsProjectContextSetBriefRpc,
   WsProjectContextReadNoteRpc,
-  WsProjectContextSaveNoteRpc,
-  WsProjectContextRemoveNoteRpc,
-  WsProjectContextApproveNoteRpc,
-  WsProjectContextResolveSuggestionRpc,
+  WsProjectContextChangeNoteRpc,
   WsScheduledTasksSubscribeRpc,
   WsScheduledTasksListRunsRpc,
   WsScheduledTasksCreateRpc,

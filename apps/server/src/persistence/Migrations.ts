@@ -142,6 +142,7 @@ import Migration0119 from "./Migrations/119_LinkMoveFamilies.ts";
 import Migration0120 from "./Migrations/120_ThreadAdoptedFromLink.ts";
 import Migration0121 from "./Migrations/121_ProjectionThreadSecretRequests.ts";
 import Migration0122 from "./Migrations/122_ProjectBriefs.ts";
+import Migration0123 from "./Migrations/123_ProjectNotes.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -276,6 +277,7 @@ export const migrationEntries = [
   [120, "ThreadAdoptedFromLink", Migration0120],
   [121, "ProjectionThreadSecretRequests", Migration0121],
   [122, "ProjectBriefs", Migration0122],
+  [123, "ProjectNotes", Migration0123],
 ] as const;
 
 /** Highest id in the full registry, so the "n of total" count is the real total. */

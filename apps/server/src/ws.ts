@@ -3442,6 +3442,14 @@ const makeCoreRpcLayer = (
           observeRpcEffect(WS_METHODS.projectContextSetBrief, projectContext.setBrief(input), {
             "rpc.aggregate": "projectContext",
           }),
+        [WS_METHODS.projectContextReadNote]: (input) =>
+          observeRpcEffect(WS_METHODS.projectContextReadNote, projectContext.readNote(input), {
+            "rpc.aggregate": "projectContext",
+          }),
+        [WS_METHODS.projectContextChangeNote]: (input) =>
+          observeRpcEffect(WS_METHODS.projectContextChangeNote, projectContext.changeNote(input), {
+            "rpc.aggregate": "projectContext",
+          }),
         [WS_METHODS.scheduledTasksSubscribe]: (input) =>
           observeRpcStream(
             WS_METHODS.scheduledTasksSubscribe,

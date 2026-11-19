@@ -25,11 +25,13 @@ import { ProjectionThreadRepository } from "../persistence/Services/ProjectionTh
 import { ProjectInstructions } from "../provider/Services/ProjectInstructions.ts";
 import { ProjectBriefRepositoryLive } from "./ProjectBriefRepository.ts";
 import { ProjectContext, ProjectContextLive } from "./ProjectContext.ts";
+import { ProjectNoteRepositoryLive } from "./ProjectNoteRepository.ts";
 import { ProjectInstructionsLive } from "./ProjectInstructionsLive.ts";
 
 const layer = it.layer(
   Layer.mergeAll(ProjectContextLive, ProjectInstructionsLive).pipe(
     Layer.provideMerge(ProjectBriefRepositoryLive),
+    Layer.provideMerge(ProjectNoteRepositoryLive),
     Layer.provideMerge(ProjectionProjectRepositoryLive),
     Layer.provideMerge(ProjectionThreadRepositoryLive),
     Layer.provideMerge(SqlitePersistenceMemory),
