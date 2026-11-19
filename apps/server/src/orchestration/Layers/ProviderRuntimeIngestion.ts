@@ -1,4 +1,10 @@
 import { liveSideTurn } from "@threadlines/shared/sideTurns";
+import { SecretScrubber } from "../../secrets/SecretScrubber.ts";
+import {
+  type HeldText,
+  SECRET_HIDDEN_DETAIL,
+  SECRET_HIDDEN_WARNING_KIND,
+} from "../../secrets/secretScrubberCore.ts";
 import {
   type OrchestrationSessionUsageLimit,
   CHECKPOINT_FILES_ACTIVITY_ID_PREFIX,
@@ -149,6 +155,8 @@ interface BufferedActivityStream {
   readonly byteCount: number;
   readonly lineCount: number;
   readonly truncated: boolean;
+  /** A tail held back because it could start a watched key (SecretScrubber.holdPiece). */
+  readonly held?: HeldText | undefined;
 }
 
 interface PendingStreamingAssistantMessage {
@@ -904,6 +912,36 @@ function orchestrationSessionStatusFromRuntimeState(
 const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+  // Hiding a printed key (docs/design/secret-scrubbing.md, "Streams"): the
+  // provider hook hides whole values in each event; text ingestion appends
+  // piece by piece is held here, per buffer, so a key split across pieces is
+  // hidden where the pieces are joined. Whole snapshots get a whole-value check.
+  const secretScrubber = yield* SecretScrubber;
+  /**
+   * What each assistant message held back (a tail that could start a watched
+   * key), by thread and message: provider item ids, and so message ids, can
+   * repeat across threads. After a message completes its released tail stays,
+   * so a piece that reopens it can't complete the key; the oldest entries go
+   * past a cap.
+   */
+  const heldAssistantText = new Map<string, HeldText>();
+  const HELD_ASSISTANT_TEXT_CAP = 2_000;
+  const heldKey = (threadId: ThreadId, messageId: MessageId) => `${threadId}\u0000${messageId}`;
+  const setHeldAssistantText = (key: string, state: HeldText | undefined) => {
+    heldAssistantText.delete(key);
+    if (state === undefined) return;
+    heldAssistantText.set(key, state);
+    if (heldAssistantText.size > HELD_ASSISTANT_TEXT_CAP) {
+      const oldest = heldAssistantText.keys().next().value;
+      if (oldest !== undefined) heldAssistantText.delete(oldest);
+    }
+  };
+  /** Commands and thinking streams holding a tail, by stream key: their last piece, for the release. */
+  const heldActivityStreams = new Map<
+    string,
+    Extract<ProviderRuntimeEvent, { type: "content.delta" }>
+  >();
+
   const providerService = yield* ProviderService;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
   // Computer links, when this server has them: see RemoteRequestTurnEnds.
@@ -1390,7 +1428,115 @@ const make = Effect.gen(function* () {
       return answer;
     });
 
+  /**
+   * A row in the thread saying a watched key was hidden, once per name per
+   * turn (shared with the provider hook's notices). None for a side answer.
+   */
+  const noticeHiddenSecrets = (
+    event: ProviderRuntimeEvent,
+    threadId: ThreadId,
+    names: ReadonlyArray<string>,
+  ) =>
+    names.length === 0 || event.sideTurnId !== undefined
+      ? Effect.void
+      : Effect.forEach(
+          secretScrubber.takeNotices(threadId, event.turnId, names),
+          (name) =>
+            orchestrationEngine
+              .dispatch({
+                type: "thread.activity.append",
+                commandId: providerCommandId(event, `secret-hidden:${name}`),
+                threadId,
+                activity: {
+                  id: EventId.make(`secret-hidden:${event.eventId}:${name}`),
+                  tone: "warning",
+                  kind: "runtime.warning",
+                  summary: "Runtime warning",
+                  payload: {
+                    message: secretScrubber.noticeLine(name),
+                    provider: event.provider,
+                    detail: SECRET_HIDDEN_DETAIL,
+                    warningKind: SECRET_HIDDEN_WARNING_KIND,
+                  },
+                  turnId: toTurnId(event.turnId) ?? null,
+                  createdAt: event.createdAt,
+                },
+                createdAt: event.createdAt,
+              })
+              .pipe(
+                Effect.asVoid,
+                Effect.catch(() => Effect.void),
+              ),
+          { discard: true },
+        );
+
+  /** Hides whole watched values in an activity before it is stored. */
+  const scrubActivity = (event: ProviderRuntimeEvent, activity: OrchestrationThreadActivity) => {
+    const summary = secretScrubber.scrubText(activity.summary);
+    const payload = secretScrubber.scrubDeep(activity.payload);
+    const hidden =
+      summary.names.length > 0 || payload !== activity.payload
+        ? [...summary.names, ...secretScrubber.contains(activity.payload)]
+        : [];
+    return {
+      activity:
+        summary.text === activity.summary && payload === activity.payload
+          ? activity
+          : { ...activity, summary: summary.text, payload },
+      names: [...new Set(hidden)],
+      event,
+    };
+  };
+
+  /**
+   * Sends one piece of an assistant message's text. The piece is joined with
+   * what the message held back, whole watched values in it are hidden, and a
+   * tail that could start one is held back again until the next piece or the
+   * message completes (releaseHeldAssistantText). A piece held whole sends
+   * nothing.
+   */
   const dispatchAssistantDelta = (input: {
+    event: ProviderRuntimeEvent;
+    threadId: ThreadId;
+    messageId: MessageId;
+    delta: string;
+    turnId?: TurnId;
+    createdAt: string;
+    commandTag: string;
+  }) =>
+    Effect.gen(function* () {
+      const key = heldKey(input.threadId, input.messageId);
+      const held = secretScrubber.holdPiece(heldAssistantText.get(key), input.delta);
+      setHeldAssistantText(key, held.state);
+      yield* noticeHiddenSecrets(input.event, input.threadId, held.names);
+      if (held.out.length === 0) return;
+      yield* sendAssistantDelta({ ...input, delta: held.out });
+    });
+
+  /** What a message held back, sent as its last piece just before it completes. True when there was any. */
+  const releaseHeldAssistantText = (input: {
+    event: ProviderRuntimeEvent;
+    threadId: ThreadId;
+    messageId: MessageId;
+    turnId?: TurnId;
+    createdAt: string;
+    commandTag: string;
+  }) =>
+    Effect.gen(function* () {
+      const key = heldKey(input.threadId, input.messageId);
+      const held = heldAssistantText.get(key);
+      // Released into this message; what it held stays as already-sent text.
+      setHeldAssistantText(key, secretScrubber.afterRelease(held));
+      if (held === undefined || held.held.length === 0) return false;
+      yield* sendAssistantDelta({
+        ...input,
+        delta: held.held,
+        commandTag: `${input.commandTag}-held`,
+      });
+      return true;
+    });
+
+  const sendAssistantDelta = (input: {
     event: ProviderRuntimeEvent;
     threadId: ThreadId;
     messageId: MessageId;
@@ -1417,7 +1563,7 @@ const make = Effect.gen(function* () {
       ? dispatch
       : dispatch.pipe(
           Effect.asVoid,
-          Effect.catch(() => clearAssistantMessageState(input.messageId)),
+          Effect.catch(() => clearAssistantMessageState(input.threadId, input.messageId)),
         );
   };
 
@@ -1434,7 +1580,8 @@ const make = Effect.gen(function* () {
       event: input.event,
       childProviderThreadId: input.childProviderThreadId,
       parentProviderThreadId: input.parentProviderThreadId,
-      body: input.body,
+      // The child's answer so far, joined from its pieces: one whole-value check.
+      body: secretScrubber.scrubText(input.body).text,
       status: input.status,
       createdAt: input.createdAt,
     });
@@ -1790,6 +1937,9 @@ const make = Effect.gen(function* () {
 
   const appendBufferedActivityStream = (
     event: ProviderRuntimeEvent,
+    storedOn: ThreadId,
+    /** The item ended: what the stream held goes into its buffer, and a snapshot is taken. */
+    release = false,
   ): Effect.Effect<ProviderActivityStreamSnapshot | undefined> =>
     Effect.gen(function* () {
       if (event.type !== "content.delta") {
@@ -1804,12 +1954,24 @@ const make = Effect.gen(function* () {
       const previous = yield* Cache.getOption(bufferedActivityStreamByKey, streamKey).pipe(
         Effect.map(Option.getOrUndefined),
       );
-      const next = appendActivityStreamText(previous, event.payload.delta);
+      // Held before the buffer: its window can cut a key's front, and a
+      // snapshot of it is dispatched whole.
+      const held = release
+        ? { out: previous?.held?.held ?? "", state: undefined, names: [] }
+        : secretScrubber.holdPiece(previous?.held, event.payload.delta);
+      yield* noticeHiddenSecrets(event, storedOn, held.names);
+      if (held.state !== undefined && held.state.held.length > 0) {
+        heldActivityStreams.set(streamKey, event);
+      } else {
+        heldActivityStreams.delete(streamKey);
+      }
+      const next = { ...appendActivityStreamText(previous, held.out), held: held.state };
       yield* Cache.set(bufferedActivityStreamByKey, streamKey, next);
       const lastEmitted = yield* Cache.getOption(emittedActivityStreamCursorByKey, streamKey).pipe(
         Effect.map(Option.getOrUndefined),
       );
       if (
+        !(release && held.out.length > 0) &&
         !shouldEmitActivityStreamSnapshot({
           streamKind,
           lastEmitted,
@@ -1838,18 +2000,51 @@ const make = Effect.gen(function* () {
   const projectRuntimeActivities = (
     event: ProviderRuntimeEvent,
     thread: Pick<OrchestrationThread, "session" | "subagents">,
+    /** The thread the activities are stored on, for the notice. */
+    storedOn: ThreadId,
   ) =>
     Effect.gen(function* () {
-      const stream = yield* appendBufferedActivityStream(event);
-      const activities = projectRuntimeEventToActivities(event, { stream });
+      // An item that ends takes its streams' held tails into their output first.
+      const released: OrchestrationThreadActivity[] = [];
+      if (event.type === "item.completed" && event.itemId !== undefined) {
+        // A copy: the release below deletes from the map.
+        for (const [streamKey, last] of Array.from(heldActivityStreams)) {
+          if (last.threadId !== event.threadId || last.itemId !== event.itemId) continue;
+          heldActivityStreams.delete(streamKey);
+          const tail = {
+            ...last,
+            eventId: EventId.make(`${last.eventId}:held-tail`),
+            payload: { ...last.payload, delta: "" },
+          };
+          const snapshot = yield* appendBufferedActivityStream(tail, storedOn, true);
+          released.push(...projectRuntimeEventToActivities(tail, { stream: snapshot }));
+        }
+      }
+      const stream = yield* appendBufferedActivityStream(event, storedOn);
+      const projected = [...released, ...projectRuntimeEventToActivities(event, { stream })];
       const childProviderThreadId = childProviderThreadIdForEvent(event, thread);
-      return childProviderThreadId
-        ? activities.map((activity) => withSourceAgentThreadId(activity, childProviderThreadId))
-        : activities;
+      const activities = childProviderThreadId
+        ? projected.map((activity) => withSourceAgentThreadId(activity, childProviderThreadId))
+        : projected;
+      // Activities are stored whole; text joined into them (a list's lines,
+      // a stream's window) gets one more whole-value check.
+      const scrubbed = activities.map((activity) => scrubActivity(event, activity));
+      yield* noticeHiddenSecrets(
+        event,
+        storedOn,
+        scrubbed.flatMap((entry) => entry.names),
+      );
+      return scrubbed.map((entry) => entry.activity);
     });
 
-  const clearAssistantMessageState = (messageId: MessageId) =>
-    clearPendingStreamingAssistantMessage(messageId).pipe(
+  const clearAssistantMessageState = (threadId: ThreadId, messageId: MessageId) =>
+    Effect.sync(() => {
+      // Nothing held is sent from here; what was held counts as sent text, so
+      // a piece that reopens the message still can't complete a key.
+      const key = heldKey(threadId, messageId);
+      setHeldAssistantText(key, secretScrubber.afterRelease(heldAssistantText.get(key)));
+    }).pipe(
+      Effect.andThen(clearPendingStreamingAssistantMessage(messageId)),
       Effect.andThen(clearStreamingMarkdownState(messageId)),
       Effect.andThen(clearBufferedAssistantText(messageId)),
       Effect.andThen(Cache.invalidate(streamedAssistantMessageIds, messageId)),
@@ -1923,12 +2118,12 @@ const make = Effect.gen(function* () {
   }) =>
     Effect.gen(function* () {
       const bufferedText = yield* takeBufferedAssistantText(input.messageId);
-      const text =
-        bufferedText.length > 0
-          ? bufferedText
-          : (input.fallbackText?.trim().length ?? 0) > 0
-            ? input.fallbackText!
-            : "";
+      const usesFallback =
+        bufferedText.length === 0 && (input.fallbackText?.trim().length ?? 0) > 0;
+      const text = usesFallback ? input.fallbackText! : bufferedText;
+      // The fallback is the message's whole text: what the message held of
+      // earlier pieces is in it already, so it is not sent twice.
+      if (usesFallback) heldAssistantText.delete(heldKey(input.threadId, input.messageId));
       const hasRenderableText = hasRenderableAssistantText(text);
 
       if (hasRenderableText) {
@@ -1943,7 +2138,16 @@ const make = Effect.gen(function* () {
         });
       }
 
-      if (input.hasProjectedMessage || hasRenderableText) {
+      const releasedHeld = yield* releaseHeldAssistantText({
+        event: input.event,
+        threadId: input.threadId,
+        messageId: input.messageId,
+        ...(input.turnId ? { turnId: input.turnId } : {}),
+        createdAt: input.createdAt,
+        commandTag: input.finalDeltaCommandTag,
+      });
+
+      if (input.hasProjectedMessage || hasRenderableText || releasedHeld) {
         yield* orchestrationEngine.dispatch({
           type: "thread.message.assistant.complete",
           commandId: providerCommandId(input.event, input.commandTag),
@@ -1955,7 +2159,7 @@ const make = Effect.gen(function* () {
           createdAt: input.createdAt,
         });
       }
-      yield* clearAssistantMessageState(input.messageId);
+      yield* clearAssistantMessageState(input.threadId, input.messageId);
     });
 
   const finalizeActiveAssistantSegmentForTurn = (input: {
@@ -2017,7 +2221,13 @@ const make = Effect.gen(function* () {
     updatedAt: string;
   }) =>
     Effect.gen(function* () {
-      const planMarkdown = normalizeProposedPlanMarkdown(input.planMarkdown);
+      // The plan is joined from pieces and stored whole: one whole-value check.
+      const scrubbedPlan =
+        input.planMarkdown === undefined ? undefined : secretScrubber.scrubText(input.planMarkdown);
+      if (scrubbedPlan !== undefined) {
+        yield* noticeHiddenSecrets(input.event, input.threadId, scrubbedPlan.names);
+      }
+      const planMarkdown = normalizeProposedPlanMarkdown(scrubbedPlan?.text);
       if (!planMarkdown) {
         return;
       }
@@ -2114,9 +2324,11 @@ const make = Effect.gen(function* () {
 
             const messageIds = yield* Cache.getOption(turnMessageIdsByTurnKey, key);
             if (Option.isSome(messageIds)) {
-              yield* Effect.forEach(messageIds.value, clearAssistantMessageState, {
-                concurrency: 1,
-              }).pipe(Effect.asVoid);
+              yield* Effect.forEach(
+                messageIds.value,
+                (messageId) => clearAssistantMessageState(threadId, messageId),
+                { concurrency: 1 },
+              ).pipe(Effect.asVoid);
             }
 
             yield* Cache.invalidate(turnMessageIdsByTurnKey, key);
@@ -2275,7 +2487,7 @@ const make = Effect.gen(function* () {
     // late output is dropped, never written over the answer.
     if (liveSideTurn(thread, sideTurnId) === undefined) {
       sideAnswersWithText.delete(sideTurnId);
-      yield* clearAssistantMessageState(sideAnswerMessageId(sideTurnId));
+      yield* clearAssistantMessageState(thread.id, sideAnswerMessageId(sideTurnId));
       return;
     }
     const messageId = sideAnswerMessageId(sideTurnId);
@@ -2308,7 +2520,7 @@ const make = Effect.gen(function* () {
       event.type === "item.completed" ||
       event.type === "content.delta"
     ) {
-      const activities = yield* projectRuntimeActivities(event, thread);
+      const activities = yield* projectRuntimeActivities(event, thread, thread.id);
       yield* Effect.forEach(activities, (activity) =>
         orchestrationEngine.dispatch({
           type: "thread.activity.append",
@@ -2346,7 +2558,14 @@ const make = Effect.gen(function* () {
         createdAt: now,
         commandTag: "side-answer-flush",
       });
-      yield* clearAssistantMessageState(messageId);
+      yield* releaseHeldAssistantText({
+        event,
+        threadId: thread.id,
+        messageId,
+        createdAt: now,
+        commandTag: "side-answer-flush",
+      });
+      yield* clearAssistantMessageState(thread.id, messageId);
       yield* orchestrationEngine
         .dispatch({
           type: "thread.message.assistant.complete",
@@ -3574,15 +3793,14 @@ const make = Effect.gen(function* () {
               assistantDelta,
             );
             if (spillChunk.length > 0) {
-              yield* orchestrationEngine.dispatch({
-                type: "thread.message.assistant.delta",
-                commandId: providerCommandId(event, "assistant-delta-buffer-spill"),
+              yield* dispatchAssistantDelta({
+                event,
                 threadId: thread.id,
                 messageId: assistantMessageId,
-                participantId: event.participantId ?? null,
                 delta: spillChunk,
                 ...(turnId ? { turnId } : {}),
                 createdAt: now,
+                commandTag: "assistant-delta-buffer-spill",
               });
             }
           } else {
@@ -3965,6 +4183,19 @@ const make = Effect.gen(function* () {
       }
 
       if (event.type === "session.exited") {
+        // Held tails go into their messages before the session's state is cleared.
+        const prefix = `${thread.id}\u0000`;
+        // A copy: a release re-inserts its entry, which a live iteration would visit again.
+        for (const key of Array.from(heldAssistantText.keys())) {
+          if (!key.startsWith(prefix)) continue;
+          yield* releaseHeldAssistantText({
+            event,
+            threadId: thread.id,
+            messageId: MessageId.make(key.slice(prefix.length)),
+            createdAt: now,
+            commandTag: "session-exit",
+          });
+        }
         yield* clearTurnStateForSession(thread.id);
       }
 
@@ -4106,7 +4337,7 @@ const make = Effect.gen(function* () {
 
       yield* recordMcpAppCall(event, thread.id);
 
-      const activities = yield* projectRuntimeActivities(event, attributionThread);
+      const activities = yield* projectRuntimeActivities(event, attributionThread, thread.id);
       yield* Effect.forEach(activities, (activity) =>
         orchestrationEngine.dispatch({
           type: "thread.activity.append",

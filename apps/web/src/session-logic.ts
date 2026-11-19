@@ -4508,6 +4508,12 @@ function deriveRuntimeWarningDisplay(
     return { label: message };
   }
 
+  // A key hidden from the agent's output: the line, and the advice under it.
+  if (warningKind === "secret-hidden" && message) {
+    const rawDetail = extractRuntimeActivityDetail(activity, payload);
+    return rawDetail ? { label: message, detail: rawDetail } : { label: message };
+  }
+
   if (warningKind === "api-retry") {
     if (!codexStreamWarning) {
       const label = message ?? "Provider API retry";

@@ -8,6 +8,8 @@ import {
   checkSecretValue,
   envFilePathProblem,
   hasEdgeWhitespace,
+  isWatchableSecret,
+  readEnvValue,
   posixShellQuote,
   scanEnvFile,
   secretAnswerMessageId,
@@ -165,5 +167,27 @@ describe("secret answer messages", () => {
     expect(secretRequestIdOfAnswerMessage(secretAnswerMessageId("request-1"))).toBe("request-1");
     expect(secretRequestIdOfAnswerMessage("secret-answer:")).toBeNull();
     expect(secretRequestIdOfAnswerMessage("command-output:run-1")).toBeNull();
+  });
+});
+
+describe("hiding a printed key", () => {
+  it("reads an env value back the way it was written, or by hand", () => {
+    expect(readEnvValue("A=1\nKEY=sk_test_1\n", "KEY")).toBe("sk_test_1");
+    expect(readEnvValue("KEY='abc#123 x'\n", "KEY")).toBe("abc#123 x");
+    expect(readEnvValue('export KEY="sk_live_9" # prod\n', "KEY")).toBe("sk_live_9");
+    expect(readEnvValue("KEY=sk_test_1 # note\n", "KEY")).toBe("sk_test_1");
+    expect(readEnvValue('KEY="a\\nb"\n', "KEY")).toBeUndefined();
+    expect(readEnvValue("OTHER=1\n", "KEY")).toBeUndefined();
+  });
+
+  it("watches only values that can't blank ordinary words or form from a placeholder", () => {
+    expect(isWatchableSecret("KEY", "sk_test_51Hv")).toBe(true);
+    expect(isWatchableSecret("KEY", "short1")).toBe(false);
+    expect(isWatchableSecret("KEY", "localhost")).toBe(false);
+    expect(isWatchableSecret("KEY", "12345678")).toBe(false);
+    expect(isWatchableSecret("KEY", "]1234567x")).toBe(false);
+    expect(isWatchableSecret("KEY", "den]abc123")).toBe(false);
+    expect(isWatchableSecret("KEY", "abc123[KEY")).toBe(false);
+    expect(isWatchableSecret("STRIPE_KEY", "STRIPE_KEY h")).toBe(false);
   });
 });

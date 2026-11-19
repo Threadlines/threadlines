@@ -2,6 +2,8 @@
  * Runs a replay scenario on the integration harness, against a recorded
  * transcript (replay) or the real provider with a recorder attached (record).
  */
+import * as Stream from "effect/Stream";
+import type { SecretScrubberShape } from "../../src/secrets/SecretScrubber.ts";
 import {
   ClaudeSettings,
   CodexSettings,
@@ -114,6 +116,13 @@ export const runReplayScenario = (input: {
   readonly scenario: ReplayScenario;
   readonly mode: ProviderMode;
   readonly timeoutMs: number;
+  /** Keys to watch from the start (docs/design/secret-scrubbing.md); the scenario's own check is skipped, since hiding changes its text. */
+  readonly secretScrubber?: SecretScrubberShape;
+  /** Runs on every stored event and the final thread instead of the scenario's check. */
+  readonly inspect?: (stored: {
+    readonly events: ReadonlyArray<unknown>;
+    readonly thread: OrchestrationThread;
+  }) => void;
 }) =>
   Effect.gen(function* () {
     let cursor: ReplayCursor | null = null;
@@ -121,6 +130,7 @@ export const runReplayScenario = (input: {
     const harness = yield* makeOrchestrationIntegrationHarness({
       provider: ProviderDriverKind.make(input.provider),
       serverSettings: REPLAY_SERVER_SETTINGS,
+      ...(input.secretScrubber !== undefined ? { secretScrubber: input.secretScrubber } : {}),
       realAdapter: (paths) =>
         (input.provider === "codex" ? codexAdapter : claudeAdapter)(
           input.mode,
@@ -143,7 +153,12 @@ export const runReplayScenario = (input: {
       const thread = snapshot.threads.find((entry) => entry.id === THREAD_ID);
       if (thread === undefined)
         return yield* Effect.die(new Error("The scenario's thread is gone."));
-      input.scenario.check(thread, context);
+      if (input.inspect !== undefined) {
+        const events = yield* Stream.runCollect(harness.engine.readEvents(0)).pipe(Effect.orDie);
+        input.inspect({ events: [...events], thread });
+      } else {
+        input.scenario.check(thread, context);
+      }
       (cursor as ReplayCursor | null)?.assertComplete();
       return { thread, cursor, recorder } satisfies ScenarioOutcome;
     }).pipe(Effect.ensuring(harness.dispose));

@@ -88,6 +88,11 @@ import { VcsStatusBroadcaster } from "../src/vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../src/git/GitWorkflowService.ts";
 import * as VcsProcess from "../src/vcs/VcsProcess.ts";
 import { ThreadSessionAdmissionPermissive } from "../src/provider/Services/ThreadSessionAdmission.ts";
+import {
+  SecretScrubber,
+  type SecretScrubberShape,
+  makeSecretScrubber,
+} from "../src/secrets/SecretScrubber.ts";
 
 const decodeCodexSettings = Schema.decodeEffect(CodexSettings);
 
@@ -249,6 +254,8 @@ interface MakeOrchestrationIntegrationHarnessOptions {
     readonly workspaceDir: string;
   }) => RealProviderAdapter;
   readonly serverSettings?: Parameters<typeof ServerSettingsService.layerTest>[0];
+  /** One registry of watched keys shared by the provider hook and ingestion. Absent: an empty one. */
+  readonly secretScrubber?: SecretScrubberShape;
 }
 
 const realCodexAdapter: RealProviderAdapter = {
@@ -267,6 +274,12 @@ export const makeOrchestrationIntegrationHarness = (
     const fileSystem = yield* FileSystem.FileSystem;
 
     const provider = options?.provider ?? ProviderDriverKind.make("codex");
+    const secretScrubberLayer = Layer.succeed(
+      SecretScrubber,
+      options?.secretScrubber ?? makeSecretScrubber(),
+    );
+    const makeProviderServiceWithScrubber = () =>
+      makeProviderServiceLive().pipe(Layer.provide(secretScrubberLayer));
     const useRealAdapter = options?.realCodex === true || options?.realAdapter !== undefined;
     const adapterHarness = useRealAdapter
       ? null
@@ -315,14 +328,14 @@ export const makeOrchestrationIntegrationHarness = (
     );
     const providerEventLoggersLayer = Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers);
     const providerLayer = useRealAdapter
-      ? makeProviderServiceLive().pipe(
+      ? makeProviderServiceWithScrubber().pipe(
           Layer.provide(ThreadSessionAdmissionPermissive),
           Layer.provide(providerSessionDirectoryLayer),
           Layer.provide(realAdapterRegistry),
           Layer.provide(AnalyticsService.layerTest),
           Layer.provide(providerEventLoggersLayer),
         )
-      : makeProviderServiceLive().pipe(
+      : makeProviderServiceWithScrubber().pipe(
           Layer.provide(ThreadSessionAdmissionPermissive),
           Layer.provide(providerSessionDirectoryLayer),
           Layer.provide(fakeRegistry!),
@@ -343,6 +356,7 @@ export const makeOrchestrationIntegrationHarness = (
     );
     const serverSettingsLayer = ServerSettingsService.layerTest(options?.serverSettings);
     const runtimeIngestionLayer = ProviderRuntimeIngestionLive.pipe(
+      Layer.provide(secretScrubberLayer),
       // No provider publishes a page in these tests.
       Layer.provideMerge(Layer.mock(AgentPages)({ assetsDirOf: () => null })),
       Layer.provideMerge(Layer.mock(McpApps)({ recordCall: () => Effect.void })),

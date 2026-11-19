@@ -2924,6 +2924,28 @@ describe("deriveWorkLogEntries", () => {
     expect(entry?.detail).toBeUndefined();
   });
 
+  it("shows a key hidden from the agent's output as its line with the advice under it", () => {
+    const message = "Hid STRIPE_SECRET_KEY in the agent's output";
+    const [entry] = deriveWorkLogEntries(
+      [
+        makeActivity({
+          id: "secret-hidden",
+          kind: "runtime.warning",
+          summary: "Runtime warning",
+          tone: "warning",
+          payload: {
+            message,
+            warningKind: "secret-hidden",
+            detail: "The agent may have seen it. Replace the key if that matters.",
+          },
+        }),
+      ],
+      undefined,
+    );
+    expect(entry?.label).toBe(message);
+    expect(entry?.detail).toBe("The agent may have seen it. Replace the key if that matters.");
+  });
+
   it("collapses repeated api-retry warnings into one updating row", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

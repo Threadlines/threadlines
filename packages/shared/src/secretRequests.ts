@@ -279,6 +279,66 @@ export function writeEnvLine(
   return { ok: true, text: lines.join("\n") };
 }
 
+/**
+ * The value `name` holds in an env file's text, as Threadlines writes it or a
+ * person does by hand: bare (up to a ` #` comment), or in single or double
+ * quotes with no escapes. Undefined when the name isn't there or the line is
+ * in a form this doesn't read; the reverse of `writeEnvLine`.
+ */
+export function readEnvValue(text: string, name: string): string | undefined {
+  const scan = scanEnvFile(text, name, "env");
+  if (!scan.ok || scan.line === null) return undefined;
+  const line = (text.split("\n")[scan.line] ?? "").replace(/\r$/, "");
+  const rest = (ASSIGNMENT.exec(line)?.[4] ?? "").trimStart();
+  const quote = rest[0];
+  if (quote === "'" || quote === '"') {
+    const end = rest.indexOf(quote, 1);
+    if (end === -1) return undefined;
+    const inner = rest.slice(1, end);
+    return quote === '"' && inner.includes("\\") ? undefined : inner;
+  }
+  let end = rest.length;
+  for (let index = 1; index < rest.length; index += 1) {
+    if (rest[index] === "#" && (rest[index - 1] === " " || rest[index - 1] === "\t")) {
+      end = index;
+      break;
+    }
+  }
+  const bare = rest.slice(0, end).trim();
+  return bare.length === 0 || /\s/.test(bare) ? undefined : bare;
+}
+
+// ---------------------------------------------------------------------------
+// Hiding a printed key (docs/design/secret-scrubbing.md).
+
+/** The shortest value Threadlines watches for: shorter ones would blank ordinary text. */
+export const MIN_WATCHED_SECRET_LENGTH = 8;
+
+/** What a watched value is replaced with; the second distinct value under one name is numbered. */
+export const secretPlaceholder = (name: string, ordinal = 1): string =>
+  ordinal === 1 ? `[${name} hidden]` : `[${name} ${ordinal} hidden]`;
+
+const PLACEHOLDER_END = " hidden]";
+const PLACEHOLDER_NAME_TAIL = /^[A-Za-z0-9_ ]*$/;
+
+/**
+ * Whether hiding this value can't damage ordinary output or give itself
+ * away: long enough, not letters or digits alone, not inside its own
+ * placeholder, and unable to be formed by a placeholder and the text beside it.
+ */
+export function isWatchableSecret(name: string, value: string): boolean {
+  if (value.length < MIN_WATCHED_SECRET_LENGTH) return false;
+  if (/^[A-Za-z]+$/.test(value) || /^[0-9]+$/.test(value)) return false;
+  if (secretPlaceholder(name).includes(value) || secretPlaceholder(name, 2).includes(value)) {
+    return false;
+  }
+  for (let length = 1; length <= PLACEHOLDER_END.length; length += 1) {
+    if (value.startsWith(PLACEHOLDER_END.slice(-length))) return false;
+  }
+  const open = value.lastIndexOf("[");
+  return open === -1 || !PLACEHOLDER_NAME_TAIL.test(value.slice(open + 1));
+}
+
 // ---------------------------------------------------------------------------
 // Shell quoting.
 
