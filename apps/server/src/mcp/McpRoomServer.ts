@@ -23,6 +23,7 @@ import {
   agentThreadsShareWorktrees,
 } from "@threadlines/shared/serverSettings";
 import type { ModelSelection, ThreadId } from "@threadlines/contracts";
+import { runtimeModeOnAgent } from "@threadlines/shared/runtimeMode";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -464,13 +465,24 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
         Effect.map((current) => current.projectNotes),
         Effect.orElseSucceed(() => "off" as const),
       ),
+      // The level the runtime really runs at: an agent without the level
+      // its chat asks for (Pi has no Auto) runs at the next safer one.
       runtimeModeOf: (sessionKey) =>
-        providerService.listSessions().pipe(
-          Effect.map(
-            (sessions) => sessions.find((entry) => entry.threadId === sessionKey)?.runtimeMode,
-          ),
-          Effect.orElseSucceed(() => undefined),
-        ),
+        Effect.gen(function* () {
+          const session = (yield* providerService.listSessions()).find(
+            (entry) => entry.threadId === sessionKey,
+          );
+          if (session === undefined) return undefined;
+          const provider = (yield* providers.getProviders).find(
+            (entry) => entry.instanceId === session.providerInstanceId,
+          );
+          return runtimeModeOnAgent({
+            requested: session.runtimeMode,
+            providerModes: provider?.supportedRuntimeModes,
+            modelModes: provider?.models.find((model) => model.slug === session.model)
+              ?.supportedRuntimeModes,
+          });
+        }).pipe(Effect.orElseSucceed(() => undefined)),
       modelNameOf: (selection) =>
         modelNameOf(selection).pipe(Effect.orElseSucceed(() => selection.model)),
     });

@@ -329,11 +329,17 @@ export const makeProjectContext = Effect.gen(function* () {
       }),
     );
 
-  const approveNote = (input: ProjectNoteReadInput) =>
+  const approveNote = (input: Extract<ProjectNoteChange, { kind: "approve" }>) =>
     locked(
       Effect.gen(function* () {
         const note = yield* findNote(input.projectId, input.noteId);
         if (note.approved) return;
+        // Only the text the user saw: its writer may have rewritten it since.
+        if (note.updatedAt !== input.updatedAt) {
+          return yield* failWith(
+            "This note changed since you opened it. Read it again before showing it to all threads.",
+          );
+        }
         yield* putNote({
           ...note,
           approved: true,

@@ -33,6 +33,7 @@ import {
   type ProjectBrief,
   type ProjectBriefSetInput,
   type ProjectBriefSetResult,
+  type ProjectNote,
   type ProjectNoteChange,
   type ProjectNoteChangeResult,
   type ProjectNoteListing,
@@ -4629,7 +4630,7 @@ describe("Agent Instructions › Brief", () => {
         });
         return { outcome: "saved", brief: saved };
       }),
-      readNote: vi.fn(async () => {
+      readNote: vi.fn(async (): Promise<ProjectNote> => {
         throw new Error("not used");
       }),
       // The computer's note changes, each as the server would answer it.
@@ -4878,6 +4879,43 @@ describe("Agent Instructions › Brief", () => {
     await expect.element(page.getByRole("button", { name: "Keep Test database" })).toBeVisible();
   });
 
+  it("keeps an open note's draft when the note changes elsewhere", async () => {
+    describeComputers(true);
+    const noteId = ProjectNoteId.make("note-open");
+    const listed = {
+      id: noteId,
+      projectId: projectOn(THIS_MAC),
+      title: "Dev ports",
+      summary: "Which ports the dev servers use.",
+      approved: true,
+      writerCeiling: null,
+      author: { kind: "user" as const },
+      createdAt: "2026-11-17T00:00:00.000Z",
+      updatedAt: "2026-11-17T00:00:00.000Z",
+    };
+    const mac = seedComputer(THIS_MAC, null, { notes: [listed] });
+    mac.readNote.mockImplementation(async () => ({ ...listed, text: "Web on 5733." }));
+    seedComputer(STUDIO, null);
+
+    await renderPage();
+
+    await page.getByRole("button", { name: "Dev ports" }).click();
+    const text = page.getByLabelText("Note text");
+    await expect.element(text).toHaveValue("Web on 5733.");
+    await text.fill("Web on 5733, server on 13773.");
+    // An agent or another device rewrites it while the user types.
+    mac.emit({
+      briefs: [],
+      notes: [{ ...listed, updatedAt: "2026-11-18T09:00:00.000Z" }],
+      suggestions: [],
+    });
+
+    await expect
+      .element(page.getByText("This note changed since you opened it.", { exact: false }))
+      .toBeVisible();
+    await expect.element(text).toHaveValue("Web on 5733, server on 13773.");
+  });
+
   it("shows a note kept without asking to all threads", async () => {
     describeComputers(true);
     const noteId = ProjectNoteId.make("note-limited");
@@ -4911,6 +4949,7 @@ describe("Agent Instructions › Brief", () => {
         kind: "approve",
         projectId: projectOn(THIS_MAC),
         noteId,
+        updatedAt: "2026-11-17T00:00:00.000Z",
       }),
     );
     await expect.element(limited).not.toBeInTheDocument();

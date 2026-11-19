@@ -362,7 +362,23 @@ layer("ProjectContext", (it) => {
       assert.include(yield* sessionText(reader, "auto-accept-edits", "auto"), "- Ports:");
 
       const note = (yield* snapshotNow).notes.find((entry) => entry.projectId === projectId);
-      yield* context.changeNote({ kind: "approve", projectId, noteId: note!.id });
+      // Approval names the version the user saw: a rewrite since is refused.
+      const stale = yield* context
+        .changeNote({
+          kind: "approve",
+          projectId,
+          noteId: note!.id,
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        })
+        .pipe(Effect.flip);
+      assert.include(stale.detail, "changed since you opened it");
+      assert.deepStrictEqual(yield* titlesFor(projectId, "full-access"), []);
+      yield* context.changeNote({
+        kind: "approve",
+        projectId,
+        noteId: note!.id,
+        updatedAt: note!.updatedAt,
+      });
       assert.deepStrictEqual(yield* titlesFor(projectId, "full-access"), ["Ports"]);
       assert.include(yield* sessionText(reader, "full-access", "auto"), "- Ports:");
     }),

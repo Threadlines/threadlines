@@ -177,7 +177,8 @@ export type ProjectNoteReadInput = typeof ProjectNoteReadInput.Type;
  *   approved: every thread sees it. Titles are unique among a project's kept
  *   notes.
  * - `remove`: the note goes.
- * - `approve`: "Show to all threads" for a note kept without asking.
+ * - `approve`: "Show to all threads" for a note kept without asking, as the
+ *   user saw it: refused when its writer rewrote it since.
  * - `resolveSuggestion`: keep or discard one suggestion, by its id. Keep makes
  *   it a kept, approved note, in place of a kept note with the same title.
  */
@@ -191,7 +192,13 @@ export const ProjectNoteChange = Schema.Union([
     text: ProjectNoteText,
   }),
   Schema.Struct({ kind: Schema.Literal("remove"), projectId: ProjectId, noteId: ProjectNoteId }),
-  Schema.Struct({ kind: Schema.Literal("approve"), projectId: ProjectId, noteId: ProjectNoteId }),
+  Schema.Struct({
+    kind: Schema.Literal("approve"),
+    projectId: ProjectId,
+    noteId: ProjectNoteId,
+    /** The version the user saw (its `updatedAt`): a note rewritten since is refused. */
+    updatedAt: IsoDateTime,
+  }),
   Schema.Struct({
     kind: Schema.Literal("resolveSuggestion"),
     projectId: ProjectId,

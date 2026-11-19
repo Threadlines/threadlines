@@ -211,7 +211,12 @@ layer("project note tools", (it) => {
       assert.strictEqual(yield* readBy(unknown), "not_found");
 
       const { notes } = yield* notesOf(projectId);
-      yield* context.changeNote({ kind: "approve", projectId, noteId: notes[0]!.id });
+      yield* context.changeNote({
+        kind: "approve",
+        projectId,
+        noteId: notes[0]!.id,
+        updatedAt: notes[0]!.updatedAt,
+      });
       assert.strictEqual(yield* readBy(lowered), "found");
       assert.strictEqual(yield* readBy(unknown), "found");
     }),

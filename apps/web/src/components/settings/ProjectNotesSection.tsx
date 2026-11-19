@@ -443,6 +443,8 @@ function KeptNoteRow({
         kind: "approve",
         projectId: note.projectId,
         noteId: note.id,
+        // The version this row shows: one its writer rewrote since is refused.
+        updatedAt: note.updatedAt,
       });
     } catch (cause) {
       setError(noteActionErrorText(cause));
@@ -474,7 +476,7 @@ function KeptNoteRow({
       <RowError text={error} />
       {open ? (
         <OpenNote
-          key={note.updatedAt}
+          key={note.id}
           environmentId={environmentId}
           note={note}
           limited={limited}
@@ -487,8 +489,8 @@ function KeptNoteRow({
 
 /**
  * An open note: its text, read from its computer, to edit or remove. Mount
- * it keyed by the note's `updatedAt`, so a save here or elsewhere reads the
- * text again and starts the form from it.
+ * it keyed by the note's id: a change made elsewhere while it is open keeps
+ * the user's draft and says the note changed, rather than wiping the form.
  */
 function OpenNote({
   environmentId,
@@ -502,6 +504,9 @@ function OpenNote({
   onClose: () => void;
 }) {
   const [text, setText] = useState<string | null>(null);
+  /** The version the form started from, or last saved here. */
+  const [openedAt, setOpenedAt] = useState(note.updatedAt);
+  const changedElsewhere = note.updatedAt !== openedAt;
   const [loadError, setLoadError] = useState<string | null>(null);
   const [removing, setRemoving] = useState(false);
   const [removeError, setRemoveError] = useState<string | null>(null);
@@ -544,10 +549,23 @@ function OpenNote({
       <NoteForm
         initial={{ title: note.title, summary: note.summary, text }}
         submitLabel="Save"
-        {...(limited ? { hint: "Saving it shows it to all threads." } : {})}
+        {...(changedElsewhere
+          ? { hint: "This note changed since you opened it. Saving replaces the newer text." }
+          : limited
+            ? { hint: "Saving it shows it to all threads." }
+            : {})}
         onCancel={onClose}
         onSubmit={async (fields) => {
-          await changeProjectNote(environmentId, { kind: "save", projectId, noteId, ...fields });
+          const saved = await changeProjectNote(environmentId, {
+            kind: "save",
+            projectId,
+            noteId,
+            ...fields,
+          });
+          if (saved !== null) {
+            setText(saved.text);
+            setOpenedAt(saved.updatedAt);
+          }
         }}
         extraAction={
           <Button
