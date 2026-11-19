@@ -543,53 +543,9 @@ fails this test.
 
 The agent can still pull a saved value into view: `env`, `cat .env.local`,
 `curl -v` showing an Authorization header, or a file tool reading the env
-file. Today that text goes into activities, the provider logs and every
-connected app. Step 2 replaces a known value with `[NAME hidden]` before
-Threadlines stores or shows it, and tells the user.
-
-- Which values: one registry for the computer, not per thread, so a key one
-  thread saved is hidden when another thread prints it. It holds the
-  destination of every saved request still in a thread's state and reads the
-  value back from there (the `commands` file while it exists, the `NAME=`
-  line of the env file), cached by the file's time. Threadlines keeps no
-  extra copy to do this.
-- Fast path: with no saved request on the computer, one check per event.
-- Provider output: `ProviderService.publishRuntimeEvent`, before the
-  canonical log and delivery, on every string in the event's payload. The
-  registry is not keyed by thread, so the provider session key that events
-  still carry at that point (`ProviderService.ts:345`) does not matter.
-- The native log: the write in `EventNdjsonLogger`, matching the raw and the
-  JSON-escaped form in each record.
-- `ask_user_to_run` output: where the run's output is recorded
-  (`CommandRuns.ts`, the `dispatchProgress` calls that carry `output`),
-  before the event, the projection row and the message to the agent. Here
-  the model never sees the value.
-- Streams: a value can be split across two chunks. The scrubber holds back a
-  chunk's tail only while that tail is the start of a live value, and
-  releases it with the next chunk or when the item ends. Ordinary output is
-  never delayed.
-- The notice: a row on the thread, once per request per turn. For provider
-  output: "A command showed STRIPE_SECRET_KEY to the model. Threadlines hid
-  it here. Replace the key if that matters." For `ask_user_to_run` output:
-  "Threadlines hid STRIPE_SECRET_KEY in this command's output."
-
-What it does not cover, said in the guide topic:
-
-- the model's context and the provider's own transcript
-  (`~/.claude/projects/*.jsonl`, Codex rollouts), which a move carries;
-- the user's own terminal: its scrollback file and what another app
-  watching that terminal sees;
-- values under 8 characters;
-- an old value after the file changed, was removed or expired, and an env
-  key whose request has left the thread's state;
-- a value changed on the way out (base64, reversed, split by the command);
-- the native log when `THREADLINES_PROVIDER_LOG_STREAM_FRAGMENTS` is on,
-  where a value can be split across two records.
-
-This is cover for accidents with keys saved through a card, not a secret
-scanner. It touches the path every provider event takes, so it is its own PR
-with a throughput check: a thread streaming output with one live value,
-against the same thread with none.
+file. Step 2 replaces a known value with `[NAME hidden]` before Threadlines
+stores, logs or sends it, and tells the user. It has its own plan,
+`secret-scrubbing.md`, which replaces the sketch that stood here.
 
 ## Store cleanup
 
@@ -665,12 +621,8 @@ Step 1, one PR: the card, both uses, store cleanup.
   `environments/runtime/threadDetailSubscriptions.ts`, `rpc/wsRpcClient.ts`,
   the push alert text.
 
-Step 2, its own PR: hiding a printed key.
-
-- Server: `secrets/SecretScrubber.ts` (new),
-  `provider/Layers/ProviderService.ts`, `provider/Layers/EventNdjsonLogger.ts`,
-  `commandRuns/CommandRuns.ts`, the notice activity and its row in the web
-  timeline.
+Step 2, its own PR: hiding a printed key. Its files are listed in
+`secret-scrubbing.md`.
 
 ## Testing
 
@@ -706,10 +658,7 @@ Step 2, its own PR: hiding a printed key.
   from two windows at once. Check the agent asks on the card without being
   told to, and that Codex reads the `commands` file in both sandbox modes. A
   Windows run for the ACL and the PowerShell line.
-- Step 2: whole payloads; a value split across chunks; a value in
-  JSON-escaped log text; a key saved by one thread printed by another;
-  command-run output hidden in the event, the row and the message; both
-  notices; the throughput check.
+- Step 2: see `secret-scrubbing.md`.
 
 ## Later, not in this build
 

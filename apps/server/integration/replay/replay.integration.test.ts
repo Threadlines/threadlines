@@ -11,6 +11,7 @@ import { makeRecorder, privateDataIn } from "./recorder.ts";
 import { runReplayScenario } from "./runReplay.ts";
 import { FIXTURES_DIR, fixturePath, REPLAY_SCENARIOS } from "./scenarios.ts";
 import { readTranscript } from "./transcript.ts";
+import { makeSecretScrubber } from "../../src/secrets/SecretScrubber.ts";
 
 // A recording no scenario plays would rot unnoticed.
 const scenarioNames = new Set(REPLAY_SCENARIOS.map((scenario) => scenario.name));
@@ -39,6 +40,47 @@ describe("provider replays", () => {
         }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
       );
     }
+  }
+
+  // Hiding a printed key (docs/design/secret-scrubbing.md), end to end through
+  // the real Codex adapter and ingestion: a phrase the recording streams in
+  // pieces, and a child's answer that ingestion joins from pieces, are
+  // watched. No stored event and nothing in the final thread may hold them,
+  // and a notice says so.
+  for (const [scenarioName, watched] of [
+    ["command-approval", "run the command"],
+    ["subagent", "ANSWER: 42"],
+  ] as const) {
+    it.live(`hides a watched phrase split across stream pieces (${scenarioName}, codex)`, () =>
+      Effect.gen(function* () {
+        const scenario = REPLAY_SCENARIOS.find((entry) => entry.name === scenarioName)!;
+        const secretScrubber = makeSecretScrubber();
+        assert.isTrue(secretScrubber.watch("WATCHED_KEY", watched));
+        let checked = false;
+        yield* runReplayScenario({
+          provider: "codex",
+          scenario,
+          mode: { kind: "replay", transcript: readTranscript(fixturePath(scenarioName, "codex")) },
+          timeoutMs: 20_000,
+          secretScrubber,
+          inspect: ({ events, thread }) => {
+            checked = true;
+            for (const event of events) assert.notInclude(JSON.stringify(event), watched);
+            assert.notInclude(JSON.stringify(thread), watched);
+            assert.include(JSON.stringify(thread), "[WATCHED_KEY hidden]");
+            assert.isTrue(
+              thread.activities.some(
+                (activity) =>
+                  (activity.payload as { warningKind?: string } | null)?.warningKind ===
+                  "secret-hidden",
+              ),
+              "a notice says the key was hidden",
+            );
+          },
+        });
+        assert.isTrue(checked);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    );
   }
 
   // The repository is public: a hand-edited or older recording must not

@@ -560,7 +560,9 @@ Settings that give agents more reach ({place:threads.agentThreads}, {place:threa
     ],
     body: `When an agent needs an API key, token or password, it asks on a card above the message box instead of in chat. The card shows the name, the agent's reason, and, in Threadlines' own words, where the key goes: a NAME=value line in a git-ignored env file in the thread's folder (like .env.local), or a private file for the agent's commands that is removed after 24 hours. Save sends it to the thread's computer; Not now saves nothing. The agent hears the outcome, never the value.
 
-What this promises: Threadlines doesn't put the key in the chat, its stored events, logs or other apps. What it doesn't: the agent runs as you on that computer, so it can still read the file, and if it prints the key, the model sees it. A key pasted into chat is already in the conversation; replace it if that matters. Answering needs an encrypted connection to that computer. Archiving, moving or deleting the thread removes its private files, and a saved row for a private file has Remove now.`,
+What this promises: Threadlines doesn't put the key in the chat, its stored events, logs or other apps. What it doesn't: the agent runs as you on that computer, so it can still read the file, and if it prints the key, the model sees it. A key pasted into chat is already in the conversation; replace it if that matters. Answering needs an encrypted connection to that computer. Archiving, moving or deleting the thread removes its private files, and a saved row for a private file has Remove now.
+
+If the agent later prints a saved key, or a tool reads it, Threadlines replaces it with [NAME hidden] before it stores, logs or shows that text, and a row in the thread says so. The model may still have seen it, and the provider's own transcript keeps it; replace the key if that matters. Keys under 8 characters, or made only of letters or only of digits, aren't hidden. Your terminal, files in the project and voice audio aren't covered, and a key changed by hand in the env file is hidden from the next restart.`,
   },
   {
     id: "updates",

@@ -1,4 +1,10 @@
 // @effect-diagnostics nodeBuiltinImport:off
+import {
+  layerTest as SecretScrubberTest,
+  makeSecretScrubber,
+  SecretScrubber,
+  type SecretScrubberShape,
+} from "../../secrets/SecretScrubber.ts";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -287,6 +293,8 @@ describe("ProviderRuntimeIngestion", () => {
     serverSettings?: Partial<ServerSettings>;
     /** False: the project's folder has no git (a general chat's, say). */
     git?: boolean;
+    /** Watched keys (SecretScrubber). Absent: none. */
+    secretScrubber?: SecretScrubberShape;
   }) {
     const workspaceRoot = makeTempDir("t3-provider-project-");
     if (options?.git ?? true) {
@@ -307,6 +315,11 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provide(SqlitePersistenceMemory),
     );
     const layer = ProviderRuntimeIngestionLive.pipe(
+      Layer.provide(
+        options?.secretScrubber === undefined
+          ? SecretScrubberTest
+          : Layer.succeed(SecretScrubber, options.secretScrubber),
+      ),
       Layer.provideMerge(
         Layer.mock(AgentPages)({
           adopt: (input) =>
@@ -411,6 +424,310 @@ describe("ProviderRuntimeIngestion", () => {
       drain,
     };
   }
+
+  describe("hiding a key split across pieces, in what is stored", () => {
+    const KEY = "sk_test_51HvQq2abc";
+    const now = "2026-01-01T00:00:00.000Z";
+
+    it("holds a streamed reply's tail per message and releases it as the message completes", async () => {
+      const secretScrubber = makeSecretScrubber();
+      secretScrubber.watch("STRIPE_SECRET_KEY", KEY);
+      const harness = await createHarness({
+        serverSettings: { enableAssistantStreaming: true },
+        secretScrubber,
+      });
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-turn-start-secret"),
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId: asMessageId("message-secret"),
+            role: "user",
+            text: "print it",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: now,
+        }),
+      );
+      await harness.drain();
+      const emit = (id: string, event: Record<string, unknown>) =>
+        harness.emit({
+          eventId: asEventId(id),
+          provider: ProviderDriverKind.make("codex"),
+          createdAt: now,
+          threadId: asThreadId("thread-1"),
+          turnId: asTurnId("turn-secret"),
+          ...event,
+        } as never);
+      emit("evt-secret-started", { type: "turn.started" });
+      await waitForThread(
+        harness.readModel,
+        (thread) => thread.session?.activeTurnId === "turn-secret",
+      );
+      for (const [index, piece] of [
+        "Your key is s",
+        "k_test_5",
+        "1HvQq2abc. Done with the tests",
+      ].entries()) {
+        emit(`evt-secret-delta-${index}`, {
+          type: "content.delta",
+          itemId: asItemId("item-secret"),
+          payload: { streamKind: "assistant_text", delta: piece },
+        });
+      }
+      emit("evt-secret-completed", {
+        type: "item.completed",
+        itemId: asItemId("item-secret"),
+        payload: { itemType: "assistant_message", status: "completed" },
+      });
+      const thread = await waitForThread(harness.readModel, (entry) =>
+        entry.messages.some(
+          (message: ProviderRuntimeTestMessage) =>
+            message.id === "assistant:item-secret" && !message.streaming,
+        ),
+      );
+      const message = thread.messages.find(
+        (entry: ProviderRuntimeTestMessage) => entry.id === "assistant:item-secret",
+      );
+      expect(message?.text).toBe("Your key is [STRIPE_SECRET_KEY hidden]. Done with the tests");
+      expect(JSON.stringify(thread)).not.toContain(KEY);
+      expect(
+        thread.activities.some(
+          (activity) =>
+            (activity.payload as { warningKind?: string } | null)?.warningKind === "secret-hidden",
+        ),
+      ).toBe(true);
+    });
+
+    /** A harness watching `abcd1234`, with a running turn on thread-1. */
+    async function watchingHarness(streaming = true) {
+      const secretScrubber = makeSecretScrubber();
+      secretScrubber.watch("TOKEN", "abcd1234");
+      const harness = await createHarness({
+        serverSettings: { enableAssistantStreaming: streaming },
+        secretScrubber,
+      });
+      const emit = (id: string, event: Record<string, unknown>) =>
+        harness.emit({
+          eventId: asEventId(id),
+          provider: ProviderDriverKind.make("codex"),
+          createdAt: now,
+          threadId: asThreadId("thread-1"),
+          turnId: asTurnId("turn-held"),
+          ...event,
+        } as never);
+      return { harness, emit };
+    }
+    const messageText = (
+      thread: { messages: ReadonlyArray<ProviderRuntimeTestMessage> },
+      id: string,
+    ) => thread.messages.find((entry) => entry.id === id)?.text;
+
+    it("sends a completed reply's only text once, when the completion repeats it", async () => {
+      const { harness, emit } = await watchingHarness();
+      emit("evt-held-only-delta", {
+        type: "content.delta",
+        itemId: asItemId("item-held-only"),
+        payload: { streamKind: "assistant_text", delta: "abc" },
+      });
+      emit("evt-held-only-done", {
+        type: "item.completed",
+        itemId: asItemId("item-held-only"),
+        payload: { itemType: "assistant_message", status: "completed", detail: "abc" },
+      });
+      const thread = await waitForThread(harness.readModel, (entry) =>
+        entry.messages.some(
+          (message: ProviderRuntimeTestMessage) =>
+            message.id === "assistant:item-held-only" && !message.streaming,
+        ),
+      );
+      expect(messageText(thread, "assistant:item-held-only")).toBe("abc");
+    });
+
+    it("puts a reply's held tail into its message when the session ends", async () => {
+      const { harness, emit } = await watchingHarness();
+      emit("evt-exit-delta", {
+        type: "content.delta",
+        itemId: asItemId("item-exit"),
+        payload: { streamKind: "assistant_text", delta: "Result: abc" },
+      });
+      emit("evt-exit", { type: "session.exited", payload: { exitKind: "graceful" } });
+      const thread = await waitForThread(harness.readModel, (entry) =>
+        entry.messages.some(
+          (message: ProviderRuntimeTestMessage) =>
+            message.id === "assistant:item-exit" && message.text === "Result: abc",
+        ),
+      );
+      expect(messageText(thread, "assistant:item-exit")).toBe("Result: abc");
+    });
+
+    it("puts a command's held tail into its output when the command ends", async () => {
+      const { harness, emit } = await watchingHarness();
+      emit("evt-output-tail", {
+        type: "content.delta",
+        itemId: asItemId("item-output-tail"),
+        payload: { streamKind: "command_output", delta: "Result: abc" },
+      });
+      emit("evt-output-tail-done", {
+        type: "item.completed",
+        itemId: asItemId("item-output-tail"),
+        payload: { itemType: "command_execution", status: "completed" },
+      });
+      const thread = await waitForThread(harness.readModel, (entry) =>
+        entry.activities.some((activity) =>
+          JSON.stringify(activity.payload).includes("Result: abc"),
+        ),
+      );
+      expect(JSON.stringify(thread)).toContain("Result: abc");
+    });
+
+    it("hides a key a side answer only makes whole by joining two items", async () => {
+      const secretScrubber = makeSecretScrubber();
+      const pem = "ab12\n\ncd34";
+      secretScrubber.watch("PEM_KEY", pem);
+      const harness = await createHarness({ secretScrubber });
+      const threadId = asThreadId("thread-1");
+      const sideTurnId = SideTurnId.make("0d9e8f7a-6b5c-4d3e-8f1a-2b3c4d5e6f71");
+      const astraId = ThreadParticipantId.make("7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2e");
+      const dispatch = (command: Parameters<typeof harness.engine.dispatch>[0]) =>
+        Effect.runPromise(harness.engine.dispatch(command));
+      // A side answer needs a room with another agent at work.
+      await dispatch({
+        type: "thread.participant.add",
+        commandId: CommandId.make("cmd-secret-side-add-astra"),
+        threadId,
+        participant: {
+          id: astraId,
+          handle: "GPT-6 Astra",
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-astra" },
+        },
+        createdAt: now,
+      });
+      await dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-secret-side-astra-working"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          participantId: astraId,
+          activeTurnId: asTurnId("turn-astra-secret"),
+          updatedAt: now,
+          lastError: null,
+        },
+        createdAt: now,
+      });
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.side-turn.start",
+          commandId: CommandId.make("cmd-secret-side-ask"),
+          threadId,
+          sideTurnId,
+          participantId: null,
+          message: { messageId: asMessageId("secret-side-question"), role: "user", text: "why?" },
+          createdAt: now,
+        }),
+      );
+      const sideEvent = (id: string, event: Record<string, unknown>) =>
+        harness.emit({
+          eventId: asEventId(id),
+          provider: ProviderDriverKind.make("claudeAgent"),
+          threadId,
+          createdAt: now,
+          turnId: asTurnId("turn-secret-side"),
+          sideTurnId,
+          ...event,
+        } as never);
+      sideEvent("evt-secret-side-1", {
+        type: "content.delta",
+        itemId: "msg-1",
+        payload: { streamKind: "assistant_text", delta: "Key: ab12" },
+      });
+      sideEvent("evt-secret-side-2", {
+        type: "content.delta",
+        itemId: "msg-2",
+        payload: { streamKind: "assistant_text", delta: "cd34 is it." },
+      });
+      sideEvent("evt-secret-side-done", {
+        type: "turn.completed",
+        payload: { state: "completed" },
+      });
+      await harness.drain();
+      const settled = await waitForThread(
+        harness.readModel,
+        (thread) => (thread.sideTurn ?? null) === null,
+      );
+      const answer = settled.messages.find((message) => message.id === `side-answer:${sideTurnId}`);
+      expect(answer?.text).toBe("Key: [PEM_KEY hidden] is it.");
+      expect(JSON.stringify(settled)).not.toContain("ab12\\n\\ncd34");
+    });
+
+    it("holds command output before its buffer, so no snapshot holds the key", async () => {
+      const secretScrubber = makeSecretScrubber();
+      secretScrubber.watch("STRIPE_SECRET_KEY", KEY);
+      const harness = await createHarness({ secretScrubber });
+      const emit = (id: string, event: Record<string, unknown>) =>
+        harness.emit({
+          eventId: asEventId(id),
+          provider: ProviderDriverKind.make("codex"),
+          createdAt: now,
+          threadId: asThreadId("thread-1"),
+          turnId: asTurnId("turn-secret-output"),
+          ...event,
+        } as never);
+      const pieces = [
+        `env\n${"x".repeat(500)}\nSTRIPE=sk_te`,
+        "st_51HvQq2abc\n",
+        `${"y".repeat(2100)}\n`,
+      ];
+      pieces.forEach((piece, index) =>
+        emit(`evt-secret-output-${index}`, {
+          type: "content.delta",
+          itemId: asItemId("item-secret-output"),
+          payload: { streamKind: "command_output", delta: piece },
+        }),
+      );
+      await harness.drain();
+      const thread = await waitForThread(harness.readModel, (entry) =>
+        entry.activities.some((activity) => JSON.stringify(activity).includes("yyyy")),
+      );
+      expect(JSON.stringify(thread)).not.toContain(KEY);
+      expect(
+        thread.activities.some(
+          (activity) =>
+            (activity.payload as { warningKind?: string } | null)?.warningKind === "secret-hidden",
+        ),
+      ).toBe(true);
+    });
+  });
+
+  it("hides a watched key that only joining makes whole, in whatever it stores", async () => {
+    const secretScrubber = makeSecretScrubber();
+    expect(secretScrubber.watch("PEM_KEY", "ab12\ncd34-ef")).toBe(true);
+    const harness = await createHarness({ secretScrubber });
+
+    harness.emit({
+      type: "auth.status",
+      eventId: asEventId("evt-auth-joined"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      payload: { isAuthenticating: true, output: ["ab12", "cd34-ef"] },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some((activity) => activity.kind === "auth.status"),
+    );
+    const stored = JSON.stringify(thread);
+    expect(stored).not.toContain("ab12\ncd34-ef");
+    expect(stored).not.toContain("ab12\\ncd34-ef");
+    expect(stored).toContain("[PEM_KEY hidden]");
+  });
 
   it("drops realtime audio deltas before any orchestration event is persisted", async () => {
     const harness = await createHarness();

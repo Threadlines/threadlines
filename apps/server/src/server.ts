@@ -123,6 +123,7 @@ import { McpAppCallRepositoryLive } from "./persistence/Layers/McpAppCalls.ts";
 import * as CommandRuns from "./commandRuns/CommandRuns.ts";
 import * as AgentSettingsChanges from "./settingsChanges/AgentSettingsChanges.ts";
 import * as AgentSecretRequests from "./secrets/AgentSecretRequests.ts";
+import * as SecretScrubber from "./secrets/SecretScrubber.ts";
 import { PageFileSweepLive } from "./pages/PageFileSweep.ts";
 import * as PagePreview from "./pages/preview/PagePreview.ts";
 import { ThemeLibraryLive } from "./themes/ThemeLibrary.ts";
@@ -435,6 +436,9 @@ const ProviderSessionDirectoryLayerLive = ProviderSessionDirectoryLive.pipe(
 // `ProviderService` and the per-instance drivers read the same logger pair.
 const ProviderLayerLive = ProviderServiceLive.pipe(
   Layer.provide(ProviderAdapterRegistryLive),
+  // Watched keys, read back from their files before any provider event
+  // passes the hook in ProviderService (docs/design/secret-scrubbing.md).
+  Layer.provideMerge(SecretScrubber.layer),
   Layer.provideMerge(ProviderSessionDirectoryLayerLive),
   // The session fence reads the thread's row (docs/design/fleet.md, Part 3b).
   Layer.provide(ThreadSessionAdmissionLive.pipe(Layer.provide(ProjectionThreadRepositoryLive))),
