@@ -19,6 +19,10 @@ import { fixPath } from "./os-jank.ts";
 import { websocketRpcRouteLayer } from "./ws.ts";
 import { relayDirectRouteLayer } from "./relay/directRoute.ts";
 import { ProjectionThreadRepositoryLive } from "./persistence/Layers/ProjectionThreads.ts";
+import { ProjectionProjectRepositoryLive } from "./persistence/Layers/ProjectionProjects.ts";
+import { ProjectBriefRepositoryLive } from "./projectContext/ProjectBriefRepository.ts";
+import { ProjectContextLive } from "./projectContext/ProjectContext.ts";
+import { ProjectInstructionsLive } from "./projectContext/ProjectInstructionsLive.ts";
 import { ProjectionTurnRepositoryLive } from "./persistence/Layers/ProjectionTurns.ts";
 import { ComputerLinkClientLive } from "./links/ComputerLinkClient.ts";
 import { ComputerLinkRepositoryLive } from "./links/ComputerLinkRepository.ts";
@@ -360,8 +364,16 @@ const ScheduledTasksLayerLive = Layer.mergeAll(
 // Part 8): the reads for a copy of this computer's projects, and the jobs
 // that make copies here. Jobs a restart cut short are finished or undone
 // as the layer starts.
+// A project's brief (docs/design/project-brief-notes.md): the app's
+// `projectContext.*` RPCs, and the copy "Set up on another computer" carries.
+const ProjectContextLayerLive = ProjectContextLive.pipe(
+  Layer.provideMerge(ProjectBriefRepositoryLive),
+  Layer.provide(ProjectionProjectRepositoryLive),
+);
+
 const ProjectSetupsLayerLive = Layer.mergeAll(ProjectSetupsLive, ProjectSetupSourceLive).pipe(
   Layer.provideMerge(ProjectSetupRepositoryLive),
+  Layer.provideMerge(ProjectContextLayerLive),
   Layer.provide(ProcessRunnerLive),
 );
 
@@ -421,6 +433,18 @@ const ProviderLayerLive = ProviderServiceLive.pipe(
   Layer.provideMerge(ProviderSessionDirectoryLayerLive),
   // The session fence reads the thread's row (docs/design/fleet.md, Part 3b).
   Layer.provide(ThreadSessionAdmissionLive.pipe(Layer.provide(ProjectionThreadRepositoryLive))),
+  // Every session starts with its project's brief, read as it starts.
+  Layer.provide(
+    ProjectInstructionsLive.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          ProjectionThreadRepositoryLive,
+          ProjectionProjectRepositoryLive,
+          ProjectBriefRepositoryLive,
+        ),
+      ),
+    ),
+  ),
 );
 
 const PersistenceLayerLive = Layer.empty.pipe(Layer.provideMerge(SqlitePersistenceLayerLive));

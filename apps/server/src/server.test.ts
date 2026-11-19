@@ -113,6 +113,7 @@ import { LinkRequests, type LinkRequestsShape } from "./links/LinkRequests.ts";
 import { MoveQueue } from "./moves/MoveQueue.ts";
 import { ThreadMoves } from "./moves/ThreadMoves.ts";
 import { ProjectSetups } from "./projectSetup/ProjectSetups.ts";
+import { ProjectContext } from "./projectContext/ProjectContext.ts";
 import { ProjectSetupSource } from "./projectSetup/ProjectSetupSource.ts";
 import { resolveAttachmentRelativePath } from "./attachmentPaths.ts";
 import {
@@ -897,6 +898,7 @@ const buildAppUnderTest = (options?: {
           Layer.mock(ThreadMoves)({}),
           Layer.mock(MoveQueue)({}),
           Layer.mock(ProjectSetups)({}),
+          Layer.mock(ProjectContext)({ changes: Stream.make({ briefs: [] }) }),
           Layer.mock(ProjectSetupSource)({}),
           Layer.mock(OutsideAgentSignIn)({ bootId: "test-boot" }),
           Layer.mock(AssistantAlerts)({ targets: Stream.make([]) }),

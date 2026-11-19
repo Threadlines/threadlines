@@ -206,6 +206,13 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
    * the whole batch, so clients only show the checkboxes for this one.
    */
   childStartSelection: Schema.optionalKey(Schema.Boolean),
+  /**
+   * The server keeps a brief per project and gives it to every thread there
+   * (`projectContext.*`, docs/design/project-brief-notes.md). Older servers
+   * omit it: clients hide the brief, and a save to several computers skips
+   * one without it.
+   */
+  projectContext: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 

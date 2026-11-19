@@ -65,6 +65,13 @@ import {
   ScheduledTaskUpdateInput,
 } from "./scheduledTasks.ts";
 import {
+  ProjectBriefSetInput,
+  ProjectBriefSetResult,
+  ProjectContextError,
+  ProjectContextSnapshot,
+  ProjectContextSubscribeInput,
+} from "./projectContext.ts";
+import {
   ThemeContent,
   ThemeEntryIdInput,
   ThemeEntrySummary,
@@ -761,6 +768,8 @@ export const WS_METHODS = {
   linksRespondRequest: "links.respondRequest",
 
   // Scheduled tasks (docs/design/fleet.md, Part 6). Owner and client sessions alike.
+  projectContextSubscribe: "projectContext.subscribe",
+  projectContextSetBrief: "projectContext.setBrief",
   scheduledTasksSubscribe: "scheduledTasks.subscribe",
   scheduledTasksListRuns: "scheduledTasks.listRuns",
   scheduledTasksCreate: "scheduledTasks.create",
@@ -2169,6 +2178,21 @@ export const WsLinksRespondRequestRpc = Rpc.make(WS_METHODS.linksRespondRequest,
 });
 
 /** This computer's scheduled tasks, each with its last run; again on every change. */
+/** Every project's brief on this computer, again whenever one changes. */
+export const WsProjectContextSubscribeRpc = Rpc.make(WS_METHODS.projectContextSubscribe, {
+  payload: ProjectContextSubscribeInput,
+  success: ProjectContextSnapshot,
+  error: ProjectContextError,
+  stream: true,
+});
+
+/** Save a project's brief, refused as `stale` when another device saved since. */
+export const WsProjectContextSetBriefRpc = Rpc.make(WS_METHODS.projectContextSetBrief, {
+  payload: ProjectBriefSetInput,
+  success: ProjectBriefSetResult,
+  error: ProjectContextError,
+});
+
 export const WsScheduledTasksSubscribeRpc = Rpc.make(WS_METHODS.scheduledTasksSubscribe, {
   payload: ScheduledTasksSubscribeInput,
   success: ScheduledTasksSnapshot,
@@ -3021,6 +3045,8 @@ export const WsCoreRpcGroup = RpcGroup.make(
   WsLinksSetAccessRpc,
   WsLinksRemoveRpc,
   WsLinksRespondRequestRpc,
+  WsProjectContextSubscribeRpc,
+  WsProjectContextSetBriefRpc,
   WsScheduledTasksSubscribeRpc,
   WsScheduledTasksListRunsRpc,
   WsScheduledTasksCreateRpc,
