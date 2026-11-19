@@ -260,6 +260,8 @@ interface SessionContext {
   readonly agentPageAssetsDir: string | undefined;
   /** The session has `ask_user_to_run`. */
   readonly commandRequests: boolean;
+  /** The project's brief (ProviderSessionStartInput.projectInstructions), last in the instructions entry. */
+  readonly projectInstructions: string | undefined;
   readonly runtimeMode: RuntimeMode;
   agent: string;
   model: OpenCodeModelRef | undefined;
@@ -2050,6 +2052,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
           : []),
         FILE_LINK_INSTRUCTIONS,
         ...(managedWorktree ? [MANAGED_WORKTREE_INSTRUCTION] : []),
+        ...(ctx.projectInstructions !== undefined ? [ctx.projectInstructions] : []),
       ].join("\n\n");
 
     const resolveModel = (
@@ -2291,6 +2294,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
             scheduleTools: roomTools && input.scheduleTools === true,
             agentPageAssetsDir,
             commandRequests: input.commandRequests === true,
+            projectInstructions: input.projectInstructions,
             runtimeMode: input.runtimeMode,
             agent: BUILD_AGENT,
             model,

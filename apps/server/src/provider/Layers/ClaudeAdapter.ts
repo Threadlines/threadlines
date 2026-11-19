@@ -1056,6 +1056,20 @@ export function buildClaudeSystemPromptAppend(input: {
   ].join("\n\n");
 }
 
+/**
+ * The project's brief goes after Threadlines' own text (docs/design/
+ * project-brief-notes.md): the part every thread shares stays first, so
+ * Claude Code's cache of it is reused, and agentContextBudget.test.ts keeps
+ * measuring only that part.
+ */
+export const withClaudeProjectInstructions = (
+  append: string,
+  projectInstructions: string | undefined,
+): string =>
+  projectInstructions === undefined || projectInstructions.length === 0
+    ? append
+    : `${append}\n\n${projectInstructions}`;
+
 /** A locked-down side runtime's room endpoint and the room tools it may call. */
 export interface ClaudeSideRoomTools {
   readonly server: McpHttpServerConfig;
@@ -9679,23 +9693,26 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         systemPrompt: {
           type: "preset",
           preset: "claude_code",
-          append: buildClaudeSystemPromptAppend({
-            pageAssetsDir: agentPages ? pageAssets : undefined,
-            artifacts,
-            commandRequests: credential !== undefined && commandRequests,
-            room:
-              roomServer !== undefined
-                ? {
-                    tools: roomToolsFor(undefined, {
-                      scheduledRun: input.scheduledRunTools === true,
-                      guideOnly: roomGrant.guideOnly,
-                    }),
-                    schedules: input.scheduleTools === true,
-                  }
-                : undefined,
-            lockdown,
-            managedWorktree: runsInManagedWorktree,
-          }),
+          append: withClaudeProjectInstructions(
+            buildClaudeSystemPromptAppend({
+              pageAssetsDir: agentPages ? pageAssets : undefined,
+              artifacts,
+              commandRequests: credential !== undefined && commandRequests,
+              room:
+                roomServer !== undefined
+                  ? {
+                      tools: roomToolsFor(undefined, {
+                        scheduledRun: input.scheduledRunTools === true,
+                        guideOnly: roomGrant.guideOnly,
+                      }),
+                      schedules: input.scheduleTools === true,
+                    }
+                  : undefined,
+              lockdown,
+              managedWorktree: runsInManagedWorktree,
+            }),
+            lockdown ? undefined : input.projectInstructions,
+          ),
         },
         settingSources: [...CLAUDE_SETTING_SOURCES],
         // SDK 0.3.233 dropped the todo/task tools from the default tool

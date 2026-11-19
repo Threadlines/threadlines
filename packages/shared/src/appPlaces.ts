@@ -23,6 +23,7 @@ import type {
   LinkOpenTarget,
   ModelSelection,
   NewWorktreeBaseFrom,
+  ProjectNotesMode,
   PushAlertKinds,
   ServerSettings,
   ServerSettingsPatch,
@@ -384,6 +385,13 @@ export const AGENT_THREADS_LABELS: Readonly<Record<AgentThreadsMode, string>> = 
   auto: "Automatic",
 };
 
+/** "Notes agents write", as its menu words each choice. */
+export const PROJECT_NOTES_MODE_LABELS: Readonly<Record<ProjectNotesMode, string>> = {
+  off: "Off",
+  ask: "Ask me first",
+  auto: "Keep without asking",
+};
+
 /** What a computer link's access is called wherever the user sees or sets it (Fleet). */
 export const COMPUTER_LINK_ACCESS_LABELS: Readonly<Record<ComputerLinkAccess, string>> = {
   allowed: "Allowed",
@@ -447,10 +455,10 @@ const PAGES = [
     id: "settings.instructions",
     kind: "page",
     title: "Agent Instructions",
-    about: "The instruction files agents read before they start work.",
+    about: "A project's brief and the instruction files agents read before they start work.",
     route: { to: "/settings/instructions" },
     target: "thread",
-    keywords: ["AGENTS.md", "CLAUDE.md", "rules"],
+    keywords: ["AGENTS.md", "CLAUDE.md", "rules", "brief"],
   },
   {
     id: "settings.sourceControl",
@@ -720,6 +728,41 @@ const SECTIONS = [
     parent: "settings.instructions",
     title: "Project",
     about: "Which project's instruction files to show.",
+  },
+  {
+    id: "instructions.brief",
+    kind: "section",
+    parent: "settings.instructions",
+    title: "Brief",
+    about:
+      "Text every thread in that project gets, on any agent. It stays on your computers and is not written to the repository.",
+    keywords: ["project brief", "project instructions", "standing instructions", "rules"],
+    widensAgents: true,
+  },
+  {
+    id: "instructions.notes",
+    kind: "section",
+    parent: "settings.instructions",
+    title: "Notes",
+    about:
+      "Notes agents and the user leave for later threads in that project, on that computer: each with its title, one line and text, who wrote it and when. Suggested notes wait there for Keep or Discard.",
+    keywords: ["project notes", "suggested notes", "suggestions", "project memory", "remember"],
+    widensAgents: true,
+  },
+  {
+    id: "instructions.notesMode",
+    kind: "row",
+    parent: "instructions.notes",
+    title: "Notes agents write",
+    about:
+      "Whether agents may write project notes: Off, Ask me first (each note is a suggestion you keep or discard), or Keep without asking. One setting for every project on this computer.",
+    keywords: ["project notes", "agent notes", "suggestions", "auto keep"],
+    value: {
+      kind: "choice",
+      read: (settings) => settings.projectNotes,
+      options: PROJECT_NOTES_MODE_LABELS,
+    },
+    widensAgents: true,
   },
   {
     id: "instructions.files",

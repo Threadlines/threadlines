@@ -21,6 +21,8 @@ import { SIDEBAR_LIST_FIELD_CLASS } from "./sidebarListField";
 import { readLocalApi } from "../../localApi";
 import { readEnvironmentApi } from "../../environmentApi";
 import { readEnvironmentDescriptor } from "../../environments/runtime";
+import { readPrimaryEnvironmentDescriptor } from "../../environments/primary";
+import { PROJECT_BRIEF_MENU_LABEL, projectBriefLocation } from "../../projectBrief";
 import { readProjectSetupSourceAmong } from "../../environments/projectSetups/projectSetupTargets";
 import { useComposerDraftStore } from "../../composerDraftStore";
 import { selectSidebarThreadsForProjectRefs, useStore } from "../../store";
@@ -106,6 +108,7 @@ function formatProjectMemberActionLabel(
 }
 
 const SET_UP_ELSEWHERE_ITEM_ID = "set-up-elsewhere";
+const PROJECT_BRIEF_ITEM_ID = "project-brief";
 const MUTE_ALERTS_ITEM_ID = "mute-phone-alerts";
 const UNMUTE_ALERTS_ITEM_ID = "unmute-phone-alerts";
 
@@ -494,6 +497,27 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
             openProjectSetupDialog({ project: setupSource }),
           );
         }
+        // The brief opens on this app's own computer's copy when it keeps
+        // briefs, else on the first copy that does; saving reaches the rest.
+        const primaryId = readPrimaryEnvironmentDescriptor()?.environmentId;
+        const briefMember =
+          project.memberProjects
+            .filter(
+              (member) =>
+                readEnvironmentDescriptor(member.environmentId)?.capabilities.projectContext ===
+                true,
+            )
+            .toSorted(
+              (left, right) =>
+                Number(right.environmentId === primaryId) -
+                Number(left.environmentId === primaryId),
+            )[0] ?? null;
+        if (briefMember !== null) {
+          actionHandlers.set(PROJECT_BRIEF_ITEM_ID, async () => {
+            setMenuOpen(false);
+            await navigate(projectBriefLocation(briefMember));
+          });
+        }
         // Both show for copies that differ, so either way is one step from there.
         const members = project.memberProjects;
         const canMute = members.some((member) => member.phoneAlertsMuted !== true);
@@ -567,6 +591,9 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
             },
             buildTargetedItem("grouping", "Project grouping…"),
             buildTargetedItem("copy-path", "Copy Project Path"),
+            ...(briefMember !== null
+              ? [{ id: PROJECT_BRIEF_ITEM_ID, label: PROJECT_BRIEF_MENU_LABEL }]
+              : []),
             ...(setupSource !== null
               ? [{ id: SET_UP_ELSEWHERE_ITEM_ID, label: "Set up on another computer…" }]
               : []),

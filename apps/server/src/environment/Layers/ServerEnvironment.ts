@@ -119,6 +119,7 @@ export const makeServerEnvironment = Effect.fn("makeServerEnvironment")(function
       phoneAlertControls: true,
       projectLead: true,
       childStartSelection: true,
+      projectContext: true,
       deviceNames: true,
       draftGoalSetup: true,
       pullRequestSwitchesByNumber: true,

@@ -7,6 +7,7 @@ import {
   type OrchestrationAgentRequest,
   type OrchestrationAwaitedBackgroundTask,
   type OrchestrationCheckBack,
+  type ProjectNoteSuggestion,
   type ProviderDriverKind,
   PROVIDER_DISPLAY_NAMES,
   type RemoteChildThread,
@@ -115,6 +116,7 @@ import {
   LoaderIcon,
   LogInIcon,
   MonitorDownIcon,
+  NotebookPenIcon,
   RefreshCwIcon,
   ReplyIcon,
   PencilIcon,
@@ -326,6 +328,8 @@ interface TimelineRowSharedState {
   onStopSideAnswer?: ((sideTurnId: SideTurnId) => void) | undefined;
   /** Cancels an agent's check-backs (ChatView.cancelCheckBack). */
   onCancelCheckBack?: ((checkBack: OrchestrationCheckBack) => void) | undefined;
+  /** Keeps or discards a suggested note; rejects with what went wrong. */
+  onResolveNoteSuggestion?: NoteSuggestionResolver | undefined;
   /** Puts a message an MCP app asked to send into the composer. */
   onPutMcpAppMessage?: ((text: string) => void) | undefined;
   /** Opens or closes a side answer's one-line status to watch it written. */
@@ -763,6 +767,13 @@ function revealTimelineSearchMatch(
 // ---------------------------------------------------------------------------
 
 const EMPTY_SIDE_ANSWERS: ReadonlyArray<SideAnswerView> = [];
+const EMPTY_NOTE_SUGGESTIONS: ReadonlyArray<ProjectNoteSuggestion> = [];
+
+/** Keeps or discards one suggested note on the thread's computer. */
+export type NoteSuggestionResolver = (
+  suggestion: ProjectNoteSuggestion,
+  decision: "keep" | "discard",
+) => Promise<void>;
 const NO_EXPANDED_SIDE_ANSWERS: ReadonlySet<SideTurnId> = new Set();
 const NO_FIND_OPEN_REQUESTS: ReadonlyMap<string, number> = new Map();
 /** Keys that scroll the list when it has focus. */
@@ -802,6 +813,14 @@ interface MessagesTimelineProps {
   /** Times the thread's agents set themselves to come back (Thread.checkBacks). */
   checkBacks?: ReadonlyArray<OrchestrationCheckBack> | undefined;
   onCancelCheckBack?: ((checkBack: OrchestrationCheckBack) => void) | undefined;
+  /**
+   * Notes the thread's agents suggested, still waiting for the user, from the
+   * project context of the thread's computer (not the thread's own state).
+   * Each shows as a row after its turn's content. Stable while unchanged.
+   */
+  noteSuggestions?: ReadonlyArray<ProjectNoteSuggestion> | undefined;
+  /** Keeps or discards a suggested note; rejects with what went wrong. */
+  onResolveNoteSuggestion?: NoteSuggestionResolver | undefined;
   /** Puts a message an MCP app card asked to send into the composer. */
   onPutMcpAppMessage?: ((text: string) => void) | undefined;
   activeStatusLabel?: string | undefined;
@@ -921,6 +940,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   awaitedTasks = null,
   checkBacks,
   onCancelCheckBack: onCancelCheckBackProp,
+  noteSuggestions = EMPTY_NOTE_SUGGESTIONS,
+  onResolveNoteSuggestion: onResolveNoteSuggestionProp,
   onPutMcpAppMessage: onPutMcpAppMessageProp,
   activeStatusLabel,
   activeTurnInProgress,
@@ -976,6 +997,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   // the thread, and a new context value would redraw every row on screen.
   const {
     onCancelCheckBack,
+    onResolveNoteSuggestion,
     onPutMcpAppMessage,
     onStopSideAnswer,
     onOpenTurnDiff,
@@ -990,6 +1012,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     onOpenThread,
   } = useStableHandlers({
     onCancelCheckBack: onCancelCheckBackProp,
+    onResolveNoteSuggestion: onResolveNoteSuggestionProp,
     onPutMcpAppMessage: onPutMcpAppMessageProp,
     onStopSideAnswer: onStopSideAnswerProp,
     onOpenTurnDiff: onOpenTurnDiffProp,
@@ -1076,8 +1099,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       openAgentRequestByMessageId,
       workingParticipantId,
       roomAgentNames,
+      noteSuggestions,
     }),
     [
+      noteSuggestions,
       workingParticipantId,
       roomAgentNames,
       sideAnswers,
@@ -2099,6 +2124,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       workflowRunActions,
       onOpenThread,
       onCancelCheckBack,
+      onResolveNoteSuggestion,
       onPutMcpAppMessage,
       threadStartCallsByTurn,
       runMessage,
@@ -2144,6 +2170,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       workflowRunActions,
       onOpenThread,
       onCancelCheckBack,
+      onResolveNoteSuggestion,
       onPutMcpAppMessage,
       threadStartCallsByTurn,
       runMessage,
@@ -2471,6 +2498,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
       {row.kind === "mcp-app" ? <McpAppTimelineRow row={row} /> : null}
       {row.kind === "working" ? <WorkingTimelineRow row={row} /> : null}
       {row.kind === "check-back" ? <CheckBackTimelineRow row={row} /> : null}
+      {row.kind === "note-suggestion" ? <NoteSuggestionTimelineRow row={row} /> : null}
       {row.kind === "side-status" ? <SideStatusTimelineRow row={row} /> : null}
     </div>
   );
@@ -4451,6 +4479,99 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
  * check-back that agent set; one saved to the project outlives the runtime
  * and has no Cancel.
  */
+/**
+ * A note an agent suggested here: its title and one line, with Keep and
+ * Discard, plain until hover. The title opens its text, so the user reads
+ * what they keep. It leaves when the computer's snapshot drops it.
+ */
+function NoteSuggestionTimelineRow({
+  row,
+}: {
+  row: Extract<TimelineRow, { kind: "note-suggestion" }>;
+}) {
+  const { onResolveNoteSuggestion } = use(TimelineRowCtx);
+  const { suggestion } = row;
+  const [open, setOpen] = useState(false);
+  const [pending, setPending] = useState<"keep" | "discard" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const resolve = (decision: "keep" | "discard") => {
+    if (!onResolveNoteSuggestion || pending !== null) return;
+    setPending(decision);
+    setError(null);
+    onResolveNoteSuggestion(suggestion, decision).then(
+      () => setPending(null),
+      (cause: unknown) => {
+        setPending(null);
+        setError(
+          cause instanceof Error && cause.message.trim().length > 0
+            ? cause.message
+            : "That did not work. Try again.",
+        );
+      },
+    );
+  };
+  const action =
+    "shrink-0 rounded px-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-64";
+  return (
+    <div className="py-1" data-note-suggestion-row={suggestion.id}>
+      <div className="flex min-w-0 items-center gap-1.5 pl-1 text-xs leading-4">
+        <NotebookPenIcon aria-hidden className="size-3 shrink-0 text-muted-foreground" />
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={() => setOpen((current) => !current)}
+          className="flex min-w-0 items-center gap-1.5 rounded-sm text-left focus-ring"
+        >
+          <span className="shrink-0 text-muted-foreground">Suggested note</span>
+          <span className="min-w-0 truncate font-medium text-foreground">{suggestion.title}</span>
+          <ChevronRightIcon
+            aria-hidden
+            className={cn(
+              "size-3 shrink-0 text-muted-foreground transition-transform",
+              open && "rotate-90",
+            )}
+          />
+        </button>
+        {onResolveNoteSuggestion ? (
+          <span className="ms-1 flex shrink-0 items-center gap-0.5">
+            <button
+              type="button"
+              className={action}
+              aria-label={`Keep ${suggestion.title}`}
+              disabled={pending !== null}
+              onClick={() => resolve("keep")}
+            >
+              Keep
+            </button>
+            <button
+              type="button"
+              className={action}
+              aria-label={`Discard ${suggestion.title}`}
+              disabled={pending !== null}
+              onClick={() => resolve("discard")}
+            >
+              Discard
+            </button>
+          </span>
+        ) : null}
+      </div>
+      <p className="truncate pl-[22px] text-[11px] leading-4 text-muted-foreground">
+        {suggestion.summary}
+      </p>
+      {open ? (
+        <p className="mt-1 ml-[22px] max-h-60 overflow-y-auto text-xs leading-[18px] whitespace-pre-wrap text-foreground">
+          {suggestion.text}
+        </p>
+      ) : null}
+      {error !== null ? (
+        <p role="alert" className="pl-[22px] text-[11px] leading-4 text-destructive-foreground">
+          {error}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 function CheckBackTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "check-back" }> }) {
   const { roomAgents, onCancelCheckBack } = use(TimelineRowCtx);
   const nowMs = useRelativeTimeTick(30_000);

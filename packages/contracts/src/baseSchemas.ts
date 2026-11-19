@@ -136,3 +136,10 @@ export const ApprovalRequestId = makeEntityId("ApprovalRequestId");
 export type ApprovalRequestId = typeof ApprovalRequestId.Type;
 export const CheckpointRef = makeEntityId("CheckpointRef");
 export type CheckpointRef = typeof CheckpointRef.Type;
+
+/** A kept project note (projectContext.ts). */
+export const ProjectNoteId = makeEntityId("ProjectNoteId");
+export type ProjectNoteId = typeof ProjectNoteId.Type;
+/** An agent's project note waiting for the user (projectContext.ts). */
+export const ProjectNoteSuggestionId = makeEntityId("ProjectNoteSuggestionId");
+export type ProjectNoteSuggestionId = typeof ProjectNoteSuggestionId.Type;

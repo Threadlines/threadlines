@@ -22,6 +22,7 @@ import { buildGuideInstructions } from "../../mcp/guideTools.ts";
 import { buildScheduleInstructions } from "../../mcp/scheduleTools.ts";
 import { type CodexBorrowedSignIn, type CodexSideAnswerHomeError } from "../codexSideAnswerHome.ts";
 import { removeSideRuntimeHome } from "../sideRuntimeHome.ts";
+import { projectBriefPreface } from "../projectBriefPreface.ts";
 import {
   ApprovalRequestId,
   DEFAULT_MODEL,
@@ -54,6 +55,7 @@ import { isLinkedWorktreeCheckout } from "../../vcs/CheckoutPresence.ts";
 import { MANAGED_WORKTREE_INSTRUCTION } from "@threadlines/shared/contextSeed";
 import { normalizeModelSlug } from "@threadlines/shared/model";
 import { isProviderAuthErrorMessage } from "@threadlines/shared/providerAuth";
+import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
@@ -192,6 +194,8 @@ export const CodexResumeCursorSchema = Schema.Struct({
    * path, as a side answer's copy is.
    */
   rolloutPath: Schema.optional(Schema.String),
+  /** The hash of the project brief this conversation holds (projectBriefPreface). */
+  projectBriefHash: Schema.optional(Schema.String),
 });
 const CodexUserInputAnswerObject = Schema.Struct({
   answers: Schema.Array(Schema.String),
@@ -251,6 +255,12 @@ export interface CodexSessionRuntimeOptions {
   readonly agentPages?: boolean;
   /** Attach `ask_user_to_run` (ProviderSessionStartInput.commandRequests). Never for a side runtime. */
   readonly commandRequests?: boolean;
+  /**
+   * The project's brief (ProviderSessionStartInput.projectInstructions). The
+   * provider thread keeps it as its developer instructions, set at every
+   * start, resume and fork, after the user's own from Codex's config.
+   */
+  readonly projectInstructions?: string;
   readonly onRealtimeAudio?: (audio: ProviderRealtimeAudioChunk) => Effect.Effect<void>;
 }
 
@@ -579,6 +589,20 @@ function readResumeCursorThreadId(
   return isCodexResumeCursorSchema(resumeCursor) ? resumeCursor.threadId : undefined;
 }
 
+function readResumeCursorProjectBriefHash(resumeCursor: unknown): string | undefined {
+  return isCodexResumeCursorSchema(resumeCursor) ? resumeCursor.projectBriefHash : undefined;
+}
+
+/** The cursor as it was, the brief's hash left out (its other fields, a carried rollout's path, kept). */
+function withoutProjectBriefHash(
+  resumeCursor: unknown,
+  providerThreadId: string,
+): CodexResumeCursor {
+  if (!isCodexResumeCursorSchema(resumeCursor)) return { threadId: providerThreadId };
+  const { projectBriefHash: _held, ...rest } = resumeCursor;
+  return rest;
+}
+
 function readResumeCursorRolloutPath(
   resumeCursor: ProviderSession["resumeCursor"],
 ): string | undefined {
@@ -626,6 +650,8 @@ function buildThreadStartParams(input: {
   readonly model: string | undefined;
   readonly serviceTier: CodexServiceTier | undefined;
   readonly lockdown?: boolean;
+  /** The thread's developer instructions (codexThreadDeveloperInstructions). */
+  readonly developerInstructions: string | undefined;
 }): EffectCodexSchema.V2ThreadStartParams {
   const config: ReturnType<typeof runtimeModeToThreadConfig> = input.lockdown
     ? SIDE_ANSWER_THREAD_CONFIG
@@ -638,6 +664,9 @@ function buildThreadStartParams(input: {
     ...(config.approvalsReviewer ? { approvalsReviewer: config.approvalsReviewer } : {}),
     ...(input.model ? { model: input.model } : {}),
     ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
+    ...(input.developerInstructions !== undefined && input.lockdown !== true
+      ? { developerInstructions: input.developerInstructions }
+      : {}),
   };
 }
 
@@ -648,6 +677,7 @@ function buildThreadForkParams(input: {
   readonly runtimeMode: RuntimeMode;
   readonly model: string | undefined;
   readonly serviceTier: CodexServiceTier | undefined;
+  readonly developerInstructions: string | undefined;
 }): EffectCodexSchema.V2ThreadForkParams {
   const config = runtimeModeToThreadConfig(input.runtimeMode);
   return {
@@ -661,7 +691,30 @@ function buildThreadForkParams(input: {
     ...(config.approvalsReviewer ? { approvalsReviewer: config.approvalsReviewer } : {}),
     ...(input.model ? { model: input.model } : {}),
     ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
+    ...(input.developerInstructions !== undefined
+      ? { developerInstructions: input.developerInstructions }
+      : {}),
   };
+}
+
+/**
+ * What a provider thread opened for this session keeps as its developer
+ * instructions: the user's own from Codex's config, then the project's brief
+ * (docs/design/project-brief-notes.md). Set on the thread rather than per
+ * turn, because a goal's cold start runs with no `turn/start`. Codex replaces
+ * the config's value with the thread's, so the config's comes first; without
+ * it (it could not be read) the brief is left out rather than the user's
+ * own instructions dropped. Undefined: leave Codex's own.
+ */
+export function codexThreadDeveloperInstructions(input: {
+  readonly projectInstructions: string | undefined;
+  readonly config: Option.Option<string | null | undefined>;
+}): string | undefined {
+  const project = input.projectInstructions?.trim();
+  if (project === undefined || project.length === 0) return undefined;
+  if (Option.isNone(input.config)) return undefined;
+  const own = input.config.value?.trim();
+  return own === undefined || own.length === 0 ? project : `${own}\n\n${project}`;
 }
 
 function runtimeModeToTurnSandboxPolicy(
@@ -1008,6 +1061,8 @@ export const openCodexThread = (input: {
   readonly cwd: string;
   readonly requestedModel: string | undefined;
   readonly serviceTier: CodexServiceTier | undefined;
+  /** See codexThreadDeveloperInstructions. Never for a side answer. */
+  readonly developerInstructions?: string | undefined;
   readonly resumeThreadId: string | undefined;
   /** Where the rollout to resume is, when this home's Codex may not know it (a carried session). */
   readonly resumePath?: string | undefined;
@@ -1031,6 +1086,7 @@ export const openCodexThread = (input: {
     model: input.requestedModel,
     serviceTier: input.serviceTier,
     ...(input.lockdown !== undefined ? { lockdown: true } : {}),
+    developerInstructions: input.developerInstructions,
   });
 
   if (input.lockdown !== undefined) {
@@ -1068,6 +1124,7 @@ export const openCodexThread = (input: {
             runtimeMode: input.runtimeMode,
             model: input.requestedModel,
             serviceTier: input.serviceTier,
+            developerInstructions: input.developerInstructions,
           }),
         );
       const forkRequest =
@@ -1081,6 +1138,7 @@ export const openCodexThread = (input: {
                   runtimeMode: input.runtimeMode,
                   model: input.requestedModel,
                   serviceTier: input.serviceTier,
+                  developerInstructions: input.developerInstructions,
                 }),
                 beforeTurnId: forkFrom.beforeTurnId,
               })
@@ -1262,6 +1320,8 @@ export const rollbackCodexThread = (input: {
   readonly runtimeMode: RuntimeMode;
   readonly model: string | undefined;
   readonly serviceTier: CodexServiceTier | undefined;
+  /** See codexThreadDeveloperInstructions. */
+  readonly developerInstructions?: string | undefined;
 }): Effect.Effect<CodexThreadRollbackResult, CodexErrors.CodexAppServerError> =>
   Effect.gen(function* () {
     const { client, providerThreadId, numTurns } = input;
@@ -1281,6 +1341,7 @@ export const rollbackCodexThread = (input: {
                 runtimeMode: input.runtimeMode,
                 model: input.model,
                 serviceTier: input.serviceTier,
+                developerInstructions: input.developerInstructions,
               }),
             ),
           ),
@@ -1342,6 +1403,7 @@ export const rollbackCodexThread = (input: {
             runtimeMode: input.runtimeMode,
             model: input.model,
             serviceTier: input.serviceTier,
+            developerInstructions: input.developerInstructions,
           });
           yield* withCodexRequestTimeout(
             "reload a reverted Codex thread",
@@ -1392,6 +1454,7 @@ export const rollbackCodexThread = (input: {
           runtimeMode: input.runtimeMode,
           model: input.model,
           serviceTier: input.serviceTier,
+          developerInstructions: input.developerInstructions,
         }),
         ...(lastSurvivingTurn === undefined ? { beforeTurnId: firstUndoneTurn.id } : {}),
         deferGoalContinuation: true,
@@ -2356,7 +2419,7 @@ const makeCodexSessionRuntimeIn = (
             return Effect.void;
           }
           return updateSession(sessionRef, {
-            resumeCursor: { threadId: payload.thread.id },
+            resumeCursor: withProjectBriefHash({ threadId: payload.thread.id }),
             providerThreadId: payload.thread.id,
           });
         }),
@@ -2848,6 +2911,33 @@ const makeCodexSessionRuntimeIn = (
       Effect.forkIn(runtimeScope),
     );
 
+    /** What the session's provider threads keep (codexThreadDeveloperInstructions), set at start. */
+    let threadDeveloperInstructions: string | undefined;
+    /**
+     * The hash of the project brief the conversation holds, kept in every
+     * resume cursor this session writes. A thread Codex creates (start, fork,
+     * a rollback's copy) gets the brief in its opening context; a resumed one
+     * keeps the context it opened with, so a changed brief is added to it.
+     */
+    let projectBriefHashHeld: string | undefined;
+    const withProjectBriefHash = <C extends { readonly threadId: string }>(cursor: C) =>
+      projectBriefHashHeld !== undefined
+        ? { ...cursor, projectBriefHash: projectBriefHashHeld }
+        : cursor;
+    /** The user's own `developer_instructions` for this folder; none when Codex can't say. */
+    const readConfiguredDeveloperInstructions = withCodexRequestTimeout(
+      "read Codex's config",
+      client.request("config/read", { cwd: options.cwd }),
+    ).pipe(
+      Effect.map((response) => Option.some(response.config.developer_instructions)),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("codex config could not be read; the project brief is left out", {
+          threadId: options.threadId,
+          cause: Cause.pretty(cause),
+        }).pipe(Effect.as(Option.none<string | null | undefined>())),
+      ),
+    );
+
     const start = Effect.fn("CodexSessionRuntime.start")(function* () {
       yield* emitSessionEvent("session/connecting", "Starting Codex App Server session.");
       yield* withCodexRequestTimeout(
@@ -2881,6 +2971,13 @@ const makeCodexSessionRuntimeIn = (
       // The reactor owes a session that came up without its conversation the
       // thread's history (ProviderSession.resumeFailed).
       let resumeFailed = false;
+      threadDeveloperInstructions =
+        lockdown === undefined && options.projectInstructions !== undefined
+          ? codexThreadDeveloperInstructions({
+              projectInstructions: options.projectInstructions,
+              config: yield* readConfiguredDeveloperInstructions,
+            })
+          : undefined;
       const opened = yield* openCodexThread({
         client,
         threadId: options.threadId,
@@ -2888,6 +2985,7 @@ const makeCodexSessionRuntimeIn = (
         cwd: options.cwd,
         requestedModel,
         serviceTier: options.serviceTier,
+        developerInstructions: threadDeveloperInstructions,
         resumeThreadId,
         resumePath,
         resumeRequired: options.resumeRequired,
@@ -2909,6 +3007,45 @@ const makeCodexSessionRuntimeIn = (
       });
 
       const providerThreadId = opened.thread.id;
+      if (threadDeveloperInstructions !== undefined || options.projectInstructions === undefined) {
+        // Left alone when Codex's config could not be read: the brief was
+        // left out, so what the conversation holds is unknown.
+        const resumed = resumeThreadId !== undefined && providerThreadId === resumeThreadId;
+        const heldBefore = resumed
+          ? readResumeCursorProjectBriefHash(options.resumeCursor)
+          : undefined;
+        const preface = projectBriefPreface({
+          projectInstructions: options.projectInstructions,
+          sentHash: heldBefore,
+        });
+        projectBriefHashHeld = preface.hash;
+        if (resumed && preface.text !== undefined) {
+          const added = yield* withCodexRequestTimeout(
+            "add the project brief to a Codex thread",
+            client.raw.request("thread/inject_items", {
+              threadId: providerThreadId,
+              items: [
+                {
+                  type: "message",
+                  role: "developer",
+                  content: [{ type: "input_text", text: preface.text }],
+                },
+              ],
+            }),
+          ).pipe(
+            Effect.as(true),
+            Effect.catch((cause) =>
+              Effect.logWarning("codex project brief was not added", {
+                threadId: providerThreadId,
+                cause,
+              }).pipe(Effect.as(false)),
+            ),
+          );
+          if (!added) projectBriefHashHeld = heldBefore;
+        }
+      } else if (resumeThreadId !== undefined && providerThreadId === resumeThreadId) {
+        projectBriefHashHeld = readResumeCursorProjectBriefHash(options.resumeCursor);
+      }
       const session = {
         ...(yield* Ref.get(sessionRef)),
         status: "ready",
@@ -2916,10 +3053,11 @@ const makeCodexSessionRuntimeIn = (
         model: opened.model,
         // A rollout resumed by path keeps its path until this home's Codex
         // has surely indexed it: it is the same conversation.
-        resumeCursor:
+        resumeCursor: withProjectBriefHash(
           resumePath !== undefined && providerThreadId === resumeThreadId
             ? { threadId: providerThreadId, rolloutPath: resumePath }
             : { threadId: providerThreadId },
+        ),
         providerThreadId,
         ...(resumeFailed ? { resumeFailed: true } : {}),
         updatedAt: yield* nowIso,
@@ -3011,7 +3149,7 @@ const makeCodexSessionRuntimeIn = (
             threadId: options.threadId,
             turnId,
             ...(resumedProviderThreadId
-              ? { resumeCursor: { threadId: resumedProviderThreadId } }
+              ? { resumeCursor: withProjectBriefHash({ threadId: resumedProviderThreadId }) }
               : {}),
           } satisfies ProviderTurnStartResult;
         }),
@@ -3044,7 +3182,7 @@ const makeCodexSessionRuntimeIn = (
             reviewThreadId: response.reviewThreadId,
             delivery,
             ...(resumedProviderThreadId
-              ? { resumeCursor: { threadId: resumedProviderThreadId } }
+              ? { resumeCursor: withProjectBriefHash({ threadId: resumedProviderThreadId }) }
               : {}),
           } satisfies ProviderStartReviewResult;
         }),
@@ -3080,7 +3218,7 @@ const makeCodexSessionRuntimeIn = (
             threadId: options.threadId,
             turnId,
             ...(resumedProviderThreadId
-              ? { resumeCursor: { threadId: resumedProviderThreadId } }
+              ? { resumeCursor: withProjectBriefHash({ threadId: resumedProviderThreadId }) }
               : {}),
           } satisfies ProviderTurnStartResult;
         }),
@@ -3370,15 +3508,20 @@ const makeCodexSessionRuntimeIn = (
             runtimeMode: options.runtimeMode,
             model: normalizeCodexModelSlug(session.model),
             serviceTier: options.serviceTier,
+            developerInstructions: threadDeveloperInstructions,
           });
+          // A revert may take the brief a resume added along with the turns
+          // after it: the next resume adds it again (at worst one copy more).
+          projectBriefHashHeld = undefined;
           yield* updateSession(sessionRef, {
             status: "ready",
             activeTurnId: undefined,
+            resumeCursor:
+              replacementProviderThreadId !== undefined
+                ? withProjectBriefHash({ threadId: replacementProviderThreadId })
+                : withoutProjectBriefHash(session.resumeCursor, providerThreadId),
             ...(replacementProviderThreadId !== undefined
-              ? {
-                  resumeCursor: { threadId: replacementProviderThreadId },
-                  providerThreadId: replacementProviderThreadId,
-                }
+              ? { providerThreadId: replacementProviderThreadId }
               : {}),
           });
           if (replacementProviderThreadId !== undefined) {

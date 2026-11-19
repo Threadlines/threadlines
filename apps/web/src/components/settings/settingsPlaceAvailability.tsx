@@ -77,6 +77,8 @@ interface PlaceSignals {
   readonly outsideAgents: boolean;
   /** Other devices can reach this computer directly (the one-time link needs it). */
   readonly remotelyReachable: boolean;
+  /** This computer keeps project briefs and notes. */
+  readonly projectContext: boolean;
 }
 
 /**
@@ -120,6 +122,7 @@ const SHOWN_WHEN: Partial<Record<SettingsPlaceSearchId, (signals: PlaceSignals) 
   "connections.sameNetwork": (s) => !s.phone && s.owner,
   "connections.tailscale": (s) => !s.phone && s.owner,
   "connections.oneTimeLink": (s) => !s.phone && s.owner && s.remotelyReachable,
+  "instructions.notesMode": (s) => s.projectContext,
 };
 
 /**
@@ -139,6 +142,7 @@ const STATIC_SIGNALS: PlaceSignals = {
   owner: true,
   outsideAgents: true,
   remotelyReachable: true,
+  projectContext: true,
 };
 
 const PlaceSignalsContext = createContext<PlaceSignals | null>(null);
@@ -189,7 +193,9 @@ function usePlaceSignals(): PlaceSignals {
   const { role, authPolicy } = usePrimarySessionAccess(!phone);
   const searching = useSettingsSearchStore(selectSettingsSearchActive);
   const desktopReach = useDesktopReach(isElectron && !phone && role === "owner" && searching);
-  const outsideAgents = usePrimaryEnvironmentDescriptor()?.capabilities.outsideAgents === true;
+  const primaryCapabilities = usePrimaryEnvironmentDescriptor()?.capabilities;
+  const outsideAgents = primaryCapabilities?.outsideAgents === true;
+  const projectContext = primaryCapabilities?.projectContext === true;
   const alertsSupport = pushAlertsSupport();
   const alertsShown = alertsSupport !== "unsupported" && alertComputers > 0;
   const canSetBackground = background !== null && canSetDesktopBackgroundOptions();
@@ -210,6 +216,7 @@ function usePlaceSignals(): PlaceSignals {
       owner: role === "owner",
       outsideAgents,
       remotelyReachable: isElectron ? desktopReach : authPolicy === "remote-reachable",
+      projectContext,
     }),
     [
       alertsEnabled,
@@ -223,6 +230,7 @@ function usePlaceSignals(): PlaceSignals {
       dictation,
       outsideAgents,
       phone,
+      projectContext,
       role,
     ],
   );

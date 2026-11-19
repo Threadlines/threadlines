@@ -307,8 +307,11 @@ import { NO_COMPOSER_PULL_REQUESTS, type ComposerPullRequest } from "./chat/Comp
 import { type ComposerGoalSetInput, threadGoalControls } from "./chat/ComposerGoalBar";
 import { getComposerProviderState } from "./chat/composerProviderState";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
+import { useProjectBriefSupport } from "../projectBrief";
+import { changeProjectNote, useThreadNoteSuggestions } from "../projectContext";
 import {
   MessagesTimeline,
+  type NoteSuggestionResolver,
   type TimelineProposedPlanState,
   type TimelineTurnAgentsState,
 } from "./chat/MessagesTimeline";
@@ -4165,6 +4168,27 @@ export default function ChatView(props: ChatViewProps) {
       });
     },
     [activeThread?.session, activeThreadId, environmentId, setThreadError],
+  );
+
+  // Notes this thread's agents suggested, from its computer's project
+  // context. Shown as rows only: nothing that decides the thread needs the
+  // user reads them (docs/design/project-brief-notes.md).
+  const keepsProjectNotes = useProjectBriefSupport()(environmentId);
+  const noteSuggestions = useThreadNoteSuggestions(
+    environmentId,
+    isServerThread ? activeThreadId : null,
+    keepsProjectNotes,
+  );
+  const resolveThreadNoteSuggestion = useCallback<NoteSuggestionResolver>(
+    async (suggestion, decision) => {
+      await changeProjectNote(environmentId, {
+        kind: "resolveSuggestion",
+        projectId: suggestion.projectId,
+        suggestionId: suggestion.id,
+        decision,
+      });
+    },
+    [environmentId],
   );
 
   /** Stops one workflow run; the reactor finds the runtime that holds it. */
@@ -8998,6 +9022,8 @@ export default function ChatView(props: ChatViewProps) {
                   awaitedTasks={awaitedTasks}
                   checkBacks={activeThread.checkBacks}
                   onCancelCheckBack={cancelThreadCheckBack}
+                  noteSuggestions={noteSuggestions}
+                  onResolveNoteSuggestion={resolveThreadNoteSuggestion}
                   onPutMcpAppMessage={putMcpAppMessage}
                   activeStatusLabel={activeStatusLabel}
                   activeTurnInProgress={isWorking || !latestTurnSettled}

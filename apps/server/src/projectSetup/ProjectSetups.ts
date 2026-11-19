@@ -50,6 +50,7 @@ import { OrchestrationEngineService } from "../orchestration/Services/Orchestrat
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { expandHomePath } from "../pathExpansion.ts";
 import { ProcessRunner } from "../processRunner.ts";
+import { ProjectContext } from "../projectContext/ProjectContext.ts";
 import {
   parseRemoteFetchUrls,
   pickPrimaryRemote,
@@ -230,6 +231,7 @@ export const makeProjectSetups = Effect.gen(function* () {
   const processes = yield* ProcessRunner;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const environment = yield* ServerEnvironment;
+  const projectContext = yield* Effect.serviceOption(ProjectContext);
   const scope = yield* Effect.scope;
   // Read at each use: the computer can be renamed while this runs.
   const ownLabel = environment.currentLabel;
@@ -577,6 +579,10 @@ export const makeProjectSetups = Effect.gen(function* () {
           projectId: row.projectId,
           scripts: row.request.scripts,
         });
+      }
+      // Only into an empty brief, so a replay never overwrites one written since.
+      if (row.request.brief !== undefined && Option.isSome(projectContext)) {
+        yield* projectContext.value.adoptBrief(row.projectId, row.request.brief);
       }
     }).pipe(
       Effect.mapError(

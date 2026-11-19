@@ -447,6 +447,13 @@ export interface WsRpcClient {
     readonly search: RpcUnaryMethod<typeof WS_METHODS.themeVsCodeSearch>;
     readonly read: RpcUnaryMethod<typeof WS_METHODS.themeVsCodeRead>;
   };
+  /** This computer's project briefs and notes (docs/design/project-brief-notes.md), on servers reporting `projectContext`. */
+  readonly projectContext: {
+    readonly subscribe: RpcStreamMethod<typeof WS_METHODS.projectContextSubscribe>;
+    readonly setBrief: RpcUnaryMethod<typeof WS_METHODS.projectContextSetBrief>;
+    readonly readNote: RpcUnaryMethod<typeof WS_METHODS.projectContextReadNote>;
+    readonly changeNote: RpcUnaryMethod<typeof WS_METHODS.projectContextChangeNote>;
+  };
   /** This computer's scheduled tasks (docs/design/fleet.md, Part 6). */
   readonly scheduledTasks: {
     readonly subscribe: RpcStreamMethod<typeof WS_METHODS.scheduledTasksSubscribe>;
@@ -1318,6 +1325,19 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
     themeVsCode: {
       search: (input) => transport.request((client) => client[WS_METHODS.themeVsCodeSearch](input)),
       read: (input) => transport.request((client) => client[WS_METHODS.themeVsCodeRead](input)),
+    },
+    projectContext: {
+      subscribe: (listener, options) =>
+        transport.subscribe((client) => client[WS_METHODS.projectContextSubscribe]({}), listener, {
+          ...options,
+          tag: WS_METHODS.projectContextSubscribe,
+        }),
+      setBrief: (input) =>
+        transport.request((client) => client[WS_METHODS.projectContextSetBrief](input)),
+      readNote: (input) =>
+        transport.request((client) => client[WS_METHODS.projectContextReadNote](input)),
+      changeNote: (input) =>
+        transport.request((client) => client[WS_METHODS.projectContextChangeNote](input)),
     },
     scheduledTasks: {
       subscribe: (listener, options) =>

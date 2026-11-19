@@ -21,10 +21,12 @@ import { gitRemoteProtocol, stripGitRemoteCredentials } from "@threadlines/share
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 
 import { receivedPathRefusal } from "../fs/receivedFiles.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ProcessRunner } from "../processRunner.ts";
+import { ProjectContext } from "../projectContext/ProjectContext.ts";
 import {
   parseRemoteFetchUrls,
   pickPrimaryRemote,
@@ -71,6 +73,7 @@ export const makeProjectSetupSource = Effect.gen(function* () {
   const snapshots = yield* ProjectionSnapshotQuery;
   const identities = yield* RepositoryIdentityResolver;
   const processes = yield* ProcessRunner;
+  const projectContext = yield* Effect.serviceOption(ProjectContext);
 
   const git = (cwd: string, args: ReadonlyArray<string>, stdin?: string) =>
     processes
@@ -239,6 +242,10 @@ export const makeProjectSetupSource = Effect.gen(function* () {
       const home = NodeOs.homedir();
       const fromHome = NodePath.relative(home, root);
       const { files, truncated } = yield* listCandidates(root);
+      // The brief goes along, so threads on the new computer get it too.
+      const brief = Option.isSome(projectContext)
+        ? yield* projectContext.value.briefText(project.id)
+        : "";
       return {
         projectId: project.id,
         title: project.title,
@@ -247,6 +254,7 @@ export const makeProjectSetupSource = Effect.gen(function* () {
         remotes,
         primaryRemoteName: primary.remoteName,
         scripts: project.scripts,
+        ...(brief.length > 0 ? { brief } : {}),
         homeRelativePath:
           fromHome.length > 0 && !fromHome.startsWith("..") && !NodePath.isAbsolute(fromHome)
             ? fromHome.split(NodePath.sep).join("/")

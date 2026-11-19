@@ -16,6 +16,7 @@ import {
   ModelSelection,
   RoomAgentRole,
 } from "./orchestration.ts";
+import { ProjectNotesMode } from "./projectContext.ts";
 import { ProviderInstanceConfig, ProviderInstanceId } from "./providerInstance.ts";
 import { ThemeArtInThreads, ThemeGlassLevel, ThemeMotion } from "./themes.ts";
 import { ClaudeWorkflowSize } from "./workflow.ts";
@@ -1033,6 +1034,13 @@ export const ServerSettings = Schema.Struct({
    */
   agentThreads: AgentThreadsMode.pipe(Schema.withDecodingDefault(Effect.succeed("ask" as const))),
   /**
+   * Whether agents may write project notes, and what a note becomes
+   * (ProjectNotesMode, docs/design/project-brief-notes.md): off, a
+   * suggestion the user keeps, or kept at once for threads within its
+   * writer's access. Never chosen: `ask`. Read at every write.
+   */
+  projectNotes: ProjectNotesMode.pipe(Schema.withDecodingDefault(Effect.succeed("ask" as const))),
+  /**
    * Whether a thread an agent starts or messages may work in another
    * thread's worktree instead of one of its own (thread_start and thread_send
    * `checkout`, docs/design/child-threads.md, "Workspaces"). Read at every
@@ -1299,6 +1307,7 @@ export const ServerSettingsPatch = Schema.Struct({
   providerInstances: Schema.optionalKey(Schema.Record(ProviderInstanceId, ProviderInstanceConfig)),
   agentInvites: Schema.optionalKey(AgentInvitesMode),
   agentThreads: Schema.optionalKey(AgentThreadsMode),
+  projectNotes: Schema.optionalKey(ProjectNotesMode),
   agentThreadsShareWorktrees: Schema.optionalKey(Schema.Boolean),
   enableRooms: Schema.optionalKey(Schema.Boolean),
   enableAgentPages: Schema.optionalKey(Schema.Boolean),

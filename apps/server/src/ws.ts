@@ -178,6 +178,7 @@ import { RelayHost } from "./relay/RelayHost.ts";
 import { OtherComputers } from "./outsideAgents/OtherComputers.ts";
 import { OutsideAgentSignIn } from "./outsideAgents/OutsideAgentSignIn.ts";
 import { ComputerLinks } from "./links/ComputerLinks.ts";
+import { ProjectContext } from "./projectContext/ProjectContext.ts";
 import { ScheduledTasks, snapshotForClient } from "./scheduled/ScheduledTasks.ts";
 import { ThemeLibrary } from "./themes/ThemeLibrary.ts";
 import { ThemeShowcase } from "./themes/ThemeShowcase.ts";
@@ -878,6 +879,7 @@ const makeCoreRpcLayer = (
       const pushAlerts = yield* PushAlerts;
       const computerLinks = yield* ComputerLinks;
       const scheduledTasks = yield* ScheduledTasks;
+      const projectContext = yield* ProjectContext;
       const projectSetups = yield* ProjectSetups;
       const projectSetupSource = yield* ProjectSetupSource;
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
@@ -3449,6 +3451,24 @@ const makeCoreRpcLayer = (
         // devices, which can already start threads here.
         // A client that can't show event tasks (no "webhook" in `supports`)
         // never gets them.
+        // The app's own: no agent tool server offers these, so no agent can
+        // set a brief (docs/design/project-brief-notes.md).
+        [WS_METHODS.projectContextSubscribe]: () =>
+          observeRpcStream(WS_METHODS.projectContextSubscribe, projectContext.changes, {
+            "rpc.aggregate": "projectContext",
+          }),
+        [WS_METHODS.projectContextSetBrief]: (input) =>
+          observeRpcEffect(WS_METHODS.projectContextSetBrief, projectContext.setBrief(input), {
+            "rpc.aggregate": "projectContext",
+          }),
+        [WS_METHODS.projectContextReadNote]: (input) =>
+          observeRpcEffect(WS_METHODS.projectContextReadNote, projectContext.readNote(input), {
+            "rpc.aggregate": "projectContext",
+          }),
+        [WS_METHODS.projectContextChangeNote]: (input) =>
+          observeRpcEffect(WS_METHODS.projectContextChangeNote, projectContext.changeNote(input), {
+            "rpc.aggregate": "projectContext",
+          }),
         [WS_METHODS.scheduledTasksSubscribe]: (input) =>
           observeRpcStream(
             WS_METHODS.scheduledTasksSubscribe,

@@ -34,6 +34,7 @@ import { AssistantAlerts } from "./assistants/AssistantAlerts.ts";
 import { AssistantEvents } from "./assistants/AssistantEvents.ts";
 import { PushAlerts } from "./pushAlerts/PushAlerts.ts";
 import { ScheduledTasks } from "./scheduled/ScheduledTasks.ts";
+import { ProjectNotesUndo } from "./projectContext/ProjectNotesUndo.ts";
 import { ThreadAutoArchiveSweeper } from "./orchestration/Services/ThreadAutoArchiveSweeper.ts";
 import { ProjectMedia } from "./media/ProjectMedia.ts";
 import { ContinueAtResetSweeper } from "./orchestration/Services/ContinueAtResetSweeper.ts";
@@ -355,6 +356,7 @@ export const makeServerRuntimeStartup = Effect.gen(function* () {
   const computerLinkReactors = yield* Effect.serviceOption(ComputerLinkReactors);
   // Scheduled tasks, when this server has them (docs/design/fleet.md, Part 6).
   const scheduledTasks = yield* Effect.serviceOption(ScheduledTasks);
+  const projectNotesUndo = yield* Effect.serviceOption(ProjectNotesUndo);
   const pushAlerts = yield* Effect.serviceOption(PushAlerts);
   const assistantEvents = yield* Effect.serviceOption(AssistantEvents);
   const assistantAlerts = yield* Effect.serviceOption(AssistantAlerts);
@@ -428,6 +430,9 @@ export const makeServerRuntimeStartup = Effect.gen(function* () {
         // process left, so a run whose turn a restart cut off reads as such.
         if (Option.isSome(scheduledTasks)) {
           yield* scheduledTasks.value.start().pipe(Scope.provide(reactorScope));
+        }
+        if (Option.isSome(projectNotesUndo)) {
+          yield* projectNotesUndo.value.start().pipe(Scope.provide(reactorScope));
         }
         // After the scheduler, whose waiting changes it watches.
         if (Option.isSome(pushAlerts)) {

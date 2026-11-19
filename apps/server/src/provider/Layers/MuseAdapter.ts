@@ -49,6 +49,11 @@ import {
 import { withFailureCategory } from "../providerFailureCategory.ts";
 import { makeAgentProcessLedger } from "../agentProcessLedger.ts";
 import {
+  type ProjectBriefPreface,
+  projectBriefPreface,
+  readProjectBriefHash,
+} from "../projectBriefPreface.ts";
+import {
   MANAGED_WORKTREE_INSTRUCTION,
   renderThreadContextSeed,
   withContextSeedPreamble,
@@ -318,6 +323,10 @@ interface SessionContext {
   pendingSeed: string | undefined;
   /** Threadlines' instructions still have to reach this conversation. */
   instructionsPending: boolean;
+  /** The project's brief for the next turn, and the hash the conversation then holds (projectBriefPreface). */
+  projectBrief: ProjectBriefPreface;
+  /** The brief's hash this conversation holds, kept in the resume cursor. */
+  projectBriefHash: string | undefined;
   activeTurn: ActiveTurn | undefined;
   /** Our `turn/start`s Muse queued instead of starting. */
   readonly queued: Set<string>;
@@ -347,6 +356,16 @@ interface SessionContext {
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** The session's resume cursor: its Muse conversation, and the brief's hash it holds. */
+const museResumeCursor = (ctx: {
+  readonly museSessionId: string;
+  readonly projectBriefHash: string | undefined;
+}) => ({
+  schemaVersion: RESUME_SCHEMA_VERSION,
+  sessionId: ctx.museSessionId,
+  ...(ctx.projectBriefHash !== undefined ? { projectBriefHash: ctx.projectBriefHash } : {}),
+});
 
 export function parseMuseResumeCursor(raw: unknown): { readonly sessionId: string } | undefined {
   if (!isRecord(raw) || raw.schemaVersion !== RESUME_SCHEMA_VERSION) return undefined;
@@ -2249,6 +2268,8 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
             model: boundSelection?.model,
             pendingSeed: undefined,
             instructionsPending: true,
+            projectBrief: { text: undefined, hash: undefined },
+            projectBriefHash: undefined,
             activeTurn: undefined,
             queued: new Set(),
             joined: new Map(),
@@ -2345,9 +2366,21 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
             // A resumed or forked conversation already holds Threadlines' instructions.
             ctx.instructionsPending = false;
           }
+          // The brief is sent again whenever it changed, resumed or not: a
+          // fork's copy is taken not to hold this thread's.
+          // Only the thread's own conversation, reopened from its cursor, holds
+          // the brief the cursor names; a fork's copy is taken not to.
+          ctx.projectBriefHash =
+            resumed && ctx.museSessionId === resumeId
+              ? readProjectBriefHash(input.resumeCursor)
+              : undefined;
+          ctx.projectBrief = projectBriefPreface({
+            projectInstructions: input.projectInstructions,
+            sentHash: ctx.projectBriefHash,
+          });
           ctx.session = {
             ...ctx.session,
-            resumeCursor: { schemaVersion: RESUME_SCHEMA_VERSION, sessionId: ctx.museSessionId },
+            resumeCursor: museResumeCursor(ctx),
             providerThreadId: ctx.museSessionId,
             ...(ctx.model ? { model: ctx.model } : {}),
           };
@@ -2474,8 +2507,10 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
             const turnId = TurnId.make(host.host.mintCommandId());
             // The device note is a part of its own, so Muse shows only the
             // user's words as theirs (displayText).
+            const projectBrief = ctx.projectBrief;
             const preface = [
               ...(ctx.instructionsPending ? [instructionsFor(ctx)] : []),
+              ...(projectBrief.text !== undefined ? [projectBrief.text] : []),
               ...(plan ? [MUSE_PLAN_MODE_INSTRUCTION] : []),
               ...(input.deviceNote !== undefined ? [input.deviceNote] : []),
             ];
@@ -2509,6 +2544,11 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
               if (Option.isSome(ack) && ack.value.disposition === "queued") ctx.queued.add(turnId);
               ctx.instructionsPending = false;
               ctx.pendingSeed = undefined;
+              if (projectBrief.text !== undefined) {
+                ctx.projectBrief = { text: undefined, hash: projectBrief.hash };
+                ctx.projectBriefHash = projectBrief.hash;
+                ctx.session = { ...ctx.session, resumeCursor: museResumeCursor(ctx) };
+              }
             }
             return { threadId: input.threadId, turnId, resumeCursor: ctx.session.resumeCursor };
           }),

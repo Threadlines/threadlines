@@ -10439,6 +10439,51 @@ describe("ClaudeAdapterLive", () => {
   });
 
   it.effect(
+    "puts the project's brief after Threadlines' own text, and not in a side answer",
+    () => {
+      const sessionId = "0f0e0d0c-0b0a-4908-8706-050403020100";
+      const seeded = seedClaudeTranscript(sessionId);
+      const harness = makeHarness({ environment: seeded.environment });
+      const brief = "Use pnpm here. Never touch the generated folder.";
+      const appendOf = (options: { readonly systemPrompt?: unknown }) =>
+        (options.systemPrompt as { readonly append?: string } | undefined)?.append ?? "";
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: ThreadId.make("thread-claude-no-brief"),
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        });
+        const plain = appendOf(harness.getLastCreateQueryInput()!.options);
+        assert.notInclude(plain, brief);
+
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+          projectInstructions: brief,
+        });
+        assert.equal(appendOf(harness.getLastCreateQueryInput()!.options), `${plain}\n\n${brief}`);
+
+        yield* adapter.startSession({
+          threadId: RESUME_THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          cwd: process.cwd(),
+          lockdown: "side-answer",
+          forkFrom: { providerThreadId: sessionId },
+          runtimeMode: "full-access",
+          projectInstructions: brief,
+        });
+        assert.notInclude(appendOf(harness.getLastCreateQueryInput()!.options), brief);
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+        Effect.ensuring(Effect.sync(seeded.cleanup)),
+      );
+    },
+  );
+
+  it.effect(
     "attaches the room tools to a room's working agent, on a credential its stop revokes",
     () => {
       const harness = makeHarness();

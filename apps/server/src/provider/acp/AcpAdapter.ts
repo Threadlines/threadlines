@@ -28,6 +28,11 @@ import {
 import { withFailureCategory } from "../providerFailureCategory.ts";
 import { makeAgentProcessLedger } from "../agentProcessLedger.ts";
 import {
+  type ProjectBriefPreface,
+  projectBriefPreface,
+  readProjectBriefHash,
+} from "../projectBriefPreface.ts";
+import {
   isProviderPlanGateMessage,
   isProviderPlanGateReply,
 } from "@threadlines/shared/providerPlan";
@@ -227,6 +232,21 @@ interface AcpSessionContext {
   planMarkdown: string | undefined;
   /** Earlier conversation for an agent that starts without it, sent with the first turn. */
   pendingContextPreamble: string | undefined;
+  /** The project's brief for the next turn, and the hash the conversation then holds (projectBriefPreface). */
+  projectBrief: ProjectBriefPreface;
+  /** The brief's hash this conversation holds, kept in the resume cursor. */
+  projectBriefHash: string | undefined;
+  /**
+   * The turn whose prompt last carried the brief, and the hash held before
+   * it: a prompt the agent refused, or one a revert removed, queues it again.
+   */
+  projectBriefCarrier:
+    | {
+        readonly turnId: TurnId;
+        readonly preface: ProjectBriefPreface;
+        readonly hashBefore: string | undefined;
+      }
+    | undefined;
   /** Held while a turn starts, so concurrent sends queue instead of racing. */
   readonly turnStartLock: Semaphore.Semaphore;
   /** The active turn is one the agent started itself; settled when it ends. */
@@ -335,6 +355,7 @@ export function parseAcpResumeCursor(raw: unknown):
       sessionId: string;
       history: ReadonlyArray<AcpHistoryEntry>;
       newestPosition: number | undefined;
+      projectBriefHash: string | undefined;
     }
   | undefined {
   if (!isRecord(raw)) return undefined;
@@ -349,6 +370,7 @@ export function parseAcpResumeCursor(raw: unknown):
     history,
     newestPosition:
       typeof newest === "number" && Number.isInteger(newest) && newest >= 0 ? newest : undefined,
+    projectBriefHash: readProjectBriefHash(raw),
   };
 }
 
@@ -356,6 +378,7 @@ function makeAcpResumeCursor(
   sessionId: string,
   history: ReadonlyArray<AcpHistoryEntry>,
   newestPosition: number | undefined,
+  projectBriefHash: string | undefined,
 ) {
   return {
     schemaVersion: ACP_RESUME_VERSION,
@@ -364,6 +387,7 @@ function makeAcpResumeCursor(
       ? { history: history.slice(-ACP_HISTORY_CURSOR_LIMIT).map((entry) => ({ ...entry })) }
       : {}),
     ...(newestPosition !== undefined ? { newestPosition } : {}),
+    ...(projectBriefHash !== undefined ? { projectBriefHash } : {}),
   };
 }
 
@@ -592,13 +616,28 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
     const offerRuntimeEvent = (event: ProviderRuntimeEvent) =>
       PubSub.publish(runtimeEventPubSub, event).pipe(Effect.asVoid);
 
+    /** The prompt that carried the brief is gone: the conversation holds what it held before. */
+    const requeueProjectBrief = (ctx: AcpSessionContext) => {
+      const carrier = ctx.projectBriefCarrier;
+      if (carrier === undefined) return;
+      ctx.projectBriefCarrier = undefined;
+      ctx.projectBriefHash = carrier.hashBefore;
+      ctx.projectBrief = carrier.preface;
+      recordHistory(ctx);
+    };
+
     /** Saves the session's turn history in its resume cursor, and for forks of it. */
     const recordHistory = (ctx: AcpSessionContext) => {
       const sessionId = parseAcpResumeCursor(ctx.session.resumeCursor)?.sessionId;
       if (sessionId === undefined) return;
       ctx.session = {
         ...ctx.session,
-        resumeCursor: makeAcpResumeCursor(sessionId, ctx.history, ctx.newestPosition),
+        resumeCursor: makeAcpResumeCursor(
+          sessionId,
+          ctx.history,
+          ctx.newestPosition,
+          ctx.projectBriefHash,
+        ),
       };
       historyBySession.set(sessionId, {
         history: ctx.history.map((entry) => ({ ...entry })),
@@ -1686,6 +1725,17 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             started.resumeFailure === undefined;
           const history = keepsHistory ? resumed.history.map((entry) => ({ ...entry })) : [];
           const resumedNewestPosition = keepsHistory ? resumed.newestPosition : forkNewest;
+          // The brief is sent again whenever it changed. Only the thread's
+          // own resumed conversation is known to hold one; a side answer
+          // never gets it.
+          const projectBriefHash = keepsHistory ? resumed.projectBriefHash : undefined;
+          const projectBrief =
+            lockdown === undefined
+              ? projectBriefPreface({
+                  projectInstructions: input.projectInstructions,
+                  sentHash: projectBriefHash,
+                })
+              : { text: undefined, hash: projectBriefHash };
           const now = yield* nowIso;
           // ACP passes an HTTP server only to an agent that says it speaks
           // HTTP MCP (see supportedMcpServers); without that, it has no room
@@ -1701,7 +1751,12 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             cwd,
             model: boundModelSelection?.model,
             threadId: input.threadId,
-            resumeCursor: makeAcpResumeCursor(started.sessionId, history, resumedNewestPosition),
+            resumeCursor: makeAcpResumeCursor(
+              started.sessionId,
+              history,
+              resumedNewestPosition,
+              projectBriefHash,
+            ),
             ...(roomToolsRequested ? { roomTools: roomToolsAttached } : {}),
             ...(started.resumeFailure !== undefined ? { resumeFailed: true } : {}),
             createdAt: now,
@@ -1745,6 +1800,9 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
               input.contextSeed !== undefined && resumeSessionId === undefined
                 ? renderThreadContextSeed(input.contextSeed)
                 : undefined,
+            projectBrief,
+            projectBriefHash,
+            projectBriefCarrier: undefined,
             turnStartLock: yield* Semaphore.make(1),
             agentTurn: undefined,
             agentTurnLastActivityMs: 0,
@@ -2074,11 +2132,19 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         const planMode =
           input.interactionMode === "plan" && !lockedDown ? descriptor.planMode : undefined;
         const contextPreamble = ctx.pendingContextPreamble;
+        const projectBrief = ctx.projectBrief;
         const userText = input.input?.trim() ?? "";
-        const seededText =
+        const contextText =
           contextPreamble !== undefined
             ? withContextSeedPreamble(contextPreamble, userText)
             : userText;
+        // The project's brief leads, as a paragraph of its own.
+        const seededText =
+          projectBrief.text !== undefined
+            ? contextText.length > 0
+              ? `${projectBrief.text}\n\n${contextText}`
+              : projectBrief.text
+            : contextText;
         const promptParts = yield* promptContent(
           seededText.length > 0 || planMode
             ? planMode
@@ -2128,6 +2194,15 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         ctx.openPrompt = prompt;
         resetTurnState(ctx);
         ctx.pendingContextPreamble = undefined;
+        if (projectBrief.text !== undefined) {
+          ctx.projectBriefCarrier = {
+            turnId,
+            preface: projectBrief,
+            hashBefore: ctx.projectBriefHash,
+          };
+          ctx.projectBrief = { text: undefined, hash: projectBrief.hash };
+          ctx.projectBriefHash = projectBrief.hash;
+        }
         ctx.session = { ...ctx.session, activeTurnId: turnId, updatedAt: yield* nowIso };
         ctx.history.push({
           turnId,
@@ -2235,6 +2310,8 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           if (Cause.hasInterruptsOnly(exit.cause)) {
             return;
           }
+          // The agent may never have taken the prompt: the brief goes again.
+          if (ctx.projectBriefCarrier?.turnId === turnId) requeueProjectBrief(ctx);
           const failure = Cause.squash(exit.cause);
           yield* notifyAuthRequired(failure);
           const reportedOutcome =
@@ -2485,6 +2562,13 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           ctx.history.splice(index);
           // The agent now lists only the prompts before this one.
           ctx.newestPosition = position > 0 ? position - 1 : undefined;
+          const carrier = ctx.projectBriefCarrier;
+          if (
+            carrier !== undefined &&
+            !ctx.history.some((entry) => entry.turnId === carrier.turnId)
+          ) {
+            requeueProjectBrief(ctx);
+          }
           recordHistory(ctx);
         }
         return { threadId, turns: ctx.turns, conversationRolledBack: rewound };
