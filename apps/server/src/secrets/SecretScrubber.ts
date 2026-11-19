@@ -4,8 +4,9 @@
  * hook uses. Values enter when the user presses Save (before the file is
  * written) and at startup, read back from their destinations; they stay
  * watched until the server stops, since a model can repeat a key after its
- * file is gone. Built before the provider layer, so no provider event
- * arrives before the read-back is done.
+ * file is gone. The registry (`layer`) sits under everything that shows or
+ * stores agent text; `loadSavedKeys` fills it inside the provider layer, so
+ * no provider event arrives before the read-back is done.
  */
 import * as NodeFs from "node:fs/promises";
 import * as NodePath from "node:path";
@@ -42,14 +43,23 @@ export interface SecretScrubberShape {
   readonly watch: (name: string, value: string, requestId?: string) => boolean;
   /** A request's file is gone: its value stays watched, and goes first past the limit. */
   readonly gone: (requestId: string) => void;
-  /** Hides watched values in a string. */
-  readonly scrubText: (text: string) => Scrubbed;
+  /**
+   * Hides watched values in a string. With `cutTail`, for a snapshot of
+   * output still being written: a string that stops partway into a value
+   * loses that tail, since it is too short to match yet.
+   */
+  readonly scrubText: (text: string, options?: { readonly cutTail?: boolean }) => Scrubbed;
   /**
    * Hides whole watched values in every string and member name; the same
    * value when nothing matched. Never cuts: for text already joined (what
    * ingestion stores), not a snapshot still being written.
    */
   readonly scrubDeep: <A>(value: A) => A;
+  /**
+   * The longest form a watched value takes, in UTF-8 bytes: how much more to
+   * read before a file's end so a value reaching into it is hidden whole.
+   */
+  readonly longestFormBytes: () => number;
   /** The names of the watched values a JSON-like value holds, for callers that refuse instead. */
   readonly contains: (value: unknown) => ReadonlyArray<string>;
   /** A provider event in, the events to publish in order out: the event, then any notice. */
@@ -85,9 +95,10 @@ export function makeSecretScrubber(): SecretScrubberShape {
   return {
     watch: core.watch,
     gone: core.gone,
-    scrubText: (text) => core.scrubText(text),
+    scrubText: (text, options) => core.scrubText(text, options),
     scrubDeep: <A>(value: A) => core.scrubDeep(value, new Set()) as A,
     contains: core.contains,
+    longestFormBytes: () => core.longestFormBytes,
     scrubRuntimeEvent: runtime.scrubRuntimeEvent,
     restoreAnswer: runtime.restoreAnswer,
     holdPiece: core.holdPiece,
@@ -136,16 +147,18 @@ export const readBackSecret = (
     return text._tag === "Some" ? readEnvValue(text.value, request.name) : undefined;
   });
 
+/** The registry, empty until `loadSavedKeys` and Save fill it. One for the server. */
+export const layer = Layer.sync(SecretScrubber, makeSecretScrubber);
+
 /**
- * The registry, filled at startup from every live thread's saved keys before
- * the provider layer takes any event. A failed read is retried a few times
- * right away, then in the background until it works: a key left unwatched
- * is a key printed whole.
+ * Fills the registry at startup from every live thread's saved keys; the
+ * provider layer depends on it, so this runs before any provider event. A
+ * failed read is retried a few times right away, then in the background until
+ * it works: a key left unwatched is a key printed whole.
  */
-export const layer = Layer.effect(
-  SecretScrubber,
+export const loadSavedKeys = Layer.effectDiscard(
   Effect.gen(function* () {
-    const scrubber = makeSecretScrubber();
+    const scrubber = yield* SecretScrubber;
     const snapshots = yield* ProjectionSnapshotQuery;
     const config = yield* ServerConfig;
     const load = Effect.gen(function* () {
@@ -186,9 +199,5 @@ export const layer = Layer.effect(
         Effect.forkScoped,
       );
     }
-    return scrubber;
   }),
 );
-
-/** An empty registry, for tests that build the provider service without the server's layers. */
-export const layerTest = Layer.sync(SecretScrubber, makeSecretScrubber);

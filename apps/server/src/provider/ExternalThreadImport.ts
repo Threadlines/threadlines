@@ -15,6 +15,8 @@ import * as Schema from "effect/Schema";
 
 import type { OrchestrationEngineShape } from "../orchestration/Services/OrchestrationEngine.ts";
 import type { ProjectionSnapshotQueryShape } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { scrubExternalThreadSnapshot } from "../secrets/readBackScrubbing.ts";
+import type { SecretScrubberShape } from "../secrets/SecretScrubber.ts";
 import type { ProviderServiceShape } from "./Services/ProviderService.ts";
 
 interface ExternalThreadImportServices {
@@ -24,6 +26,7 @@ interface ExternalThreadImportServices {
   >;
   readonly projectionSnapshotQuery: Pick<ProjectionSnapshotQueryShape, "getProjectShellById">;
   readonly orchestrationEngine: Pick<OrchestrationEngineShape, "dispatch">;
+  readonly secretScrubber: Pick<SecretScrubberShape, "scrubText">;
 }
 
 const isProviderExternalThreadError = Schema.is(ProviderExternalThreadError);
@@ -64,11 +67,17 @@ export function importExternalProviderThread(
       });
     }
 
-    const snapshot = yield* services.providerService.readExternalThread({
-      providerInstanceId: input.providerInstanceId,
-      providerThreadId: input.providerThreadId,
-      expectedCwd: project.workspaceRoot,
-    });
+    // The provider's own transcript, never through the event hook: saved
+    // keys are hidden once, before any of it is stored
+    // (docs/design/secret-scrubbing.md).
+    const snapshot = scrubExternalThreadSnapshot(
+      services.secretScrubber,
+      yield* services.providerService.readExternalThread({
+        providerInstanceId: input.providerInstanceId,
+        providerThreadId: input.providerThreadId,
+        expectedCwd: project.workspaceRoot,
+      }),
+    );
 
     yield* services.orchestrationEngine.dispatch({
       type: "thread.create",
@@ -144,7 +153,9 @@ export function importExternalProviderThread(
             runtimeMode: input.runtimeMode,
             activeTurnId: null,
             pendingBackgroundTaskCount: 0,
-            lastError,
+            // A failed attach quotes the provider's error, stored like the transcript.
+            lastError:
+              lastError === null ? null : services.secretScrubber.scrubText(lastError).text,
             updatedAt,
           },
           createdAt: updatedAt,

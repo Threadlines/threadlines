@@ -2881,9 +2881,6 @@ const CLAUDE_STEER_TAKEN_TIMEOUT = Duration.seconds(2);
 /** How long a read of a running command's output may take; a slower one
  *  answers "nothing yet" and the client asks again. */
 const CLAUDE_COMMAND_OUTPUT_READ_TIMEOUT = Duration.seconds(3);
-/** The most of a running command's output a read hands back: its end, which
- *  holds the lines a client shows. Claude itself keeps the last 8 KiB. */
-const CLAUDE_COMMAND_OUTPUT_TAIL_CHARS = 4_096;
 /** How long reading the session's MCP tools may hold up a finished MCP tool
  *  call's step; a slower read leaves that step without its app. */
 const CLAUDE_MCP_TOOLS_READ_TIMEOUT = Duration.millis(1500);
@@ -10619,7 +10616,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     const { output, total_bytes: totalBytes } = read.value;
     return {
       status: "running",
-      tail: output.slice(-CLAUDE_COMMAND_OUTPUT_TAIL_CHARS),
+      output,
       totalBytes: Number.isSafeInteger(totalBytes) && totalBytes > 0 ? totalBytes : 0,
     } as const;
   });

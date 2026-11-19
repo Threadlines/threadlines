@@ -438,7 +438,8 @@ const ProviderLayerLive = ProviderServiceLive.pipe(
   Layer.provide(ProviderAdapterRegistryLive),
   // Watched keys, read back from their files before any provider event
   // passes the hook in ProviderService (docs/design/secret-scrubbing.md).
-  Layer.provideMerge(SecretScrubber.layer),
+  // The registry itself sits at the bottom of the runtime, for every door.
+  Layer.provide(SecretScrubber.loadSavedKeys),
   Layer.provideMerge(ProviderSessionDirectoryLayerLive),
   // The session fence reads the thread's row (docs/design/fleet.md, Part 3b).
   Layer.provide(ThreadSessionAdmissionLive.pipe(Layer.provide(ProjectionThreadRepositoryLive))),
@@ -707,7 +708,12 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   // `ProviderService` (canonical stream, written after event normalization).
   // Provided once at the runtime level so every consumer sees the same
   // logger instances.
-  Layer.provideMerge(ProviderEventLoggersLive),
+  //
+  // Under them, the watched keys (docs/design/secret-scrubbing.md): one
+  // registry under every place that shows, stores or logs agent text, the
+  // native log included. Filled by the provider layer's `loadSavedKeys` and
+  // by Save.
+  Layer.provideMerge(ProviderEventLoggersLive.pipe(Layer.provideMerge(SecretScrubber.layer))),
   Layer.provideMerge(ServerSettingsLive),
   Layer.provideMerge(WorkspaceLayerLive),
   Layer.provideMerge(ProjectFaviconResolverLive),

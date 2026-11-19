@@ -22,6 +22,11 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as TestClock from "effect/testing/TestClock";
 
+import {
+  makeSecretScrubber,
+  SecretScrubber,
+  type SecretScrubberShape,
+} from "../secrets/SecretScrubber.ts";
 import { ServerConfig } from "../config.ts";
 import type { McpInvocationScope } from "../mcp/McpSessionRegistry.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
@@ -111,6 +116,8 @@ const makeLayer = (options: {
   readonly previewed?: Array<string>;
   /** Each document measured for its height. */
   readonly measured?: Array<string>;
+  /** The watched keys; none by default. */
+  readonly secretScrubber?: SecretScrubberShape;
 }) =>
   AgentPagesLayer.pipe(
     Layer.provide(
@@ -143,6 +150,7 @@ const makeLayer = (options: {
             }),
         }),
         ServerSettingsService.layerTest({ enableAgentPages: options.enabled ?? true }),
+        Layer.succeed(SecretScrubber, options.secretScrubber ?? makeSecretScrubber()),
         Layer.mock(PagePreview.PagePreview)({
           measure: ({ document }) =>
             Effect.sync(() => {
@@ -207,6 +215,33 @@ it.layer(NodeServices.layer)("AgentPages.show", (it) => {
             threadWith({ participantId: null, activeTurnId: null }),
           ],
           dispatched,
+        }),
+      ),
+    );
+  });
+
+  it.effect("refuses a page that holds a saved key, and records nothing", () => {
+    const dispatched: Array<OrchestrationCommand> = [];
+    const secretScrubber = makeSecretScrubber();
+    secretScrubber.watch("STRIPE_SECRET_KEY", "sk_test_51Hq9xYz");
+    return Effect.gen(function* () {
+      const pages = yield* AgentPages;
+      const outcome = yield* pages.show(caller(), {
+        title: "Setup",
+        html: "<p>Your key: sk_test_51Hq9xYz</p>",
+      });
+      assert.deepStrictEqual(outcome, {
+        outcome: "refused",
+        detail:
+          "Your page contains STRIPE_SECRET_KEY. Don't put a key on a page; name the file it is in instead.",
+      });
+      assert.strictEqual(dispatched.length, 0);
+    }).pipe(
+      Effect.provide(
+        makeLayer({
+          thread: threadWith({ participantId: null, activeTurnId: TURN }),
+          dispatched,
+          secretScrubber,
         }),
       ),
     );
@@ -376,6 +411,42 @@ it.layer(NodeServices.layer)("AgentPages.adopt", (it) => {
       );
     },
   );
+
+  it.effect("hides a saved key in a page it adopts, since that call can't be refused", () => {
+    readCount = 0;
+    const dispatched: Array<OrchestrationCommand> = [];
+    const measured: Array<string> = [];
+    const secretScrubber = makeSecretScrubber();
+    secretScrubber.watch("STRIPE_SECRET_KEY", "sk_test_51Hq9xYz");
+    return Effect.gen(function* () {
+      const pages = yield* AgentPages;
+      const outcome = yield* pages.adopt({
+        threadId: THREAD,
+        turnId: TURN,
+        participantId: null,
+        path: publishedFile("keys.html", "<p>Your key: sk_test_51Hq9xYz</p>"),
+        title: "Key sk_test_51Hq9xYz",
+        shareUrl: LINK,
+      });
+      assert.strictEqual(outcome.outcome, "shown");
+      const command = dispatched[0];
+      assert.strictEqual(command?.type, "thread.page.publish");
+      if (command?.type === "thread.page.publish") {
+        assert.strictEqual(command.page.title, "Key [STRIPE_SECRET_KEY hidden]");
+      }
+      assert.ok(measured[0]?.includes("Your key: [STRIPE_SECRET_KEY hidden]"));
+      assert.ok(!measured.some((document) => document.includes("sk_test_51Hq9xYz")));
+    }).pipe(
+      Effect.provide(
+        makeLayer({
+          thread: threadWith({ participantId: null, activeTurnId: TURN }),
+          dispatched,
+          measured,
+          secretScrubber,
+        }),
+      ),
+    );
+  });
 
   it.effect("updates the page already showing a link that is published again", () => {
     const dispatched: Array<OrchestrationCommand> = [];

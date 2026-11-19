@@ -38,11 +38,11 @@ import {
   codexTurnTextFixture,
 } from "./fixtures/providerRuntime.ts";
 import { ThreadSessionAdmissionPermissive } from "../src/provider/Services/ThreadSessionAdmission.ts";
-import { layerTest as SecretScrubberTest } from "../src/secrets/SecretScrubber.ts";
+import { layer as SecretScrubberLive } from "../src/secrets/SecretScrubber.ts";
 
 /** The provider service with an empty registry of watched keys (SecretScrubber). */
 const makeProviderServiceWithScrubber = (...args: Parameters<typeof makeProviderServiceLive>) =>
-  makeProviderServiceLive(...args).pipe(Layer.provide(SecretScrubberTest));
+  makeProviderServiceLive(...args).pipe(Layer.provide(SecretScrubberLive));
 
 const codexInstanceId = ProviderInstanceId.make("codex");
 

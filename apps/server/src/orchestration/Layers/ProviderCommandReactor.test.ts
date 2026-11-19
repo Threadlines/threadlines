@@ -57,6 +57,11 @@ import * as Stream from "effect/Stream";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vite-plus/test";
 
 import { deriveServerPaths, ServerConfig } from "../../config.ts";
+import {
+  makeSecretScrubber,
+  SecretScrubber,
+  type SecretScrubberShape,
+} from "../../secrets/SecretScrubber.ts";
 import { TextGenerationError } from "@threadlines/contracts";
 import {
   ProviderAdapterRequestError,
@@ -214,6 +219,8 @@ describe("ProviderCommandReactor", () => {
      *  reactor starts. */
     readonly beforeStart?: (engine: OrchestrationEngineShape) => Effect.Effect<void, Error>;
     readonly serverSettings?: Parameters<typeof ServerSettingsService.layerTest>[0];
+    /** The watched keys; none by default. */
+    readonly secretScrubber?: SecretScrubberShape;
     /** Instances that are no longer configured (an account was removed). */
     readonly removedInstanceIds?: ReadonlyArray<string>;
     /** Computer links' check on a linked computer's queued messages. */
@@ -717,6 +724,9 @@ describe("ProviderCommandReactor", () => {
         }),
       ),
       Layer.provideMerge(ServerSettingsService.layerTest(input?.serverSettings)),
+      Layer.provideMerge(
+        Layer.succeed(SecretScrubber, input?.secretScrubber ?? makeSecretScrubber()),
+      ),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), baseDir)),
       Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(NodeServices.layer),
@@ -1328,6 +1338,34 @@ describe("ProviderCommandReactor", () => {
     expect(await launchingWrites(harness)).toHaveLength(1);
     expect((await projectedSession(harness))?.startup ?? null).toBeNull();
     expect(harness.sendTurn.mock.calls.length).toBe(0);
+  });
+
+  it("hides a saved key in a provider's failure text before storing it", async () => {
+    const secretScrubber = makeSecretScrubber();
+    secretScrubber.watch("STRIPE_SECRET_KEY", "sk_test_51Hq9xYz");
+    const harness = await createHarness({ secretScrubber });
+    harness.startSession.mockImplementationOnce(() =>
+      Effect.fail(
+        new ProviderAdapterRequestError({
+          provider: "codex",
+          method: "thread.turn.start",
+          detail: "spawn failed: invalid key sk_test_51Hq9xYz",
+        }),
+      ),
+    );
+    await startTurn(harness, "fails");
+
+    await waitFor(async () => {
+      const thread = (await harness.readModel()).threads.find(
+        (entry) => entry.id === ThreadId.make("thread-1"),
+      );
+      return thread?.session?.lastError?.includes("spawn failed") === true;
+    });
+    const thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    );
+    expect(thread?.session?.lastError).toContain("invalid key [STRIPE_SECRET_KEY hidden]");
+    expect(JSON.stringify(thread)).not.toContain("sk_test_51Hq9xYz");
   });
 
   it("shows a failed start again after the user closed the same failure", async () => {

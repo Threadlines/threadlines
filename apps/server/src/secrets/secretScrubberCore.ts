@@ -102,6 +102,7 @@ export function makeSecretScrubberCore() {
   /** First characters of every form's head: a cheap filter for held tails. */
   let firstCharacters = new Set<string>();
   let longestHead = 0;
+  let longestFormBytes = 0;
 
   const holdsWatched = (text: string) => forms.some((form) => text.includes(form.text));
 
@@ -109,6 +110,7 @@ export function makeSecretScrubberCore() {
     forms = entries.flatMap((entry) => entry.forms);
     firstCharacters = new Set(forms.map((form) => form.head[0] ?? ""));
     longestHead = Math.max(0, ...forms.map((form) => form.head.length));
+    longestFormBytes = Math.max(0, ...forms.map((form) => Buffer.byteLength(form.text, "utf8")));
     // A placeholder or notice must never spell out another watched key, as a
     // name chosen equal to one would.
     for (const entry of entries) {
@@ -394,6 +396,14 @@ export function makeSecretScrubberCore() {
     findMatches,
     replaceMatches,
     startingTail,
+    /**
+     * The longest form any watched value takes, in UTF-8 bytes: a reader that
+     * keeps a file's end reads this much more first, so a value reaching into
+     * the end starts inside what it read and is hidden whole.
+     */
+    get longestFormBytes() {
+      return longestFormBytes;
+    },
     get size() {
       return entries.length;
     },

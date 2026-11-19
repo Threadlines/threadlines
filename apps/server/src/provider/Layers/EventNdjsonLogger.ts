@@ -58,6 +58,13 @@ export interface EventNdjsonLogger {
 
 export interface EventNdjsonLoggerOptions {
   readonly stream: EventNdjsonStream;
+  /**
+   * Rewrites each record's JSON line before it is written: the native log
+   * hides saved keys this way (docs/design/secret-scrubbing.md). A value's
+   * JSON-escaped form is one the scrubber looks for, so a key inside a string
+   * is found whole.
+   */
+  readonly scrubLine?: (line: string) => string;
   /** Write records marked as stream fragments too, for debugging streaming. */
   readonly keepStreamFragments?: boolean;
   readonly maxBytes?: number;
@@ -678,10 +685,11 @@ export const makeEventNdjsonLogger = Effect.fnUntraced(function* (
 
   const write = Effect.fnUntraced(function* (event: unknown, threadId: ThreadId | null) {
     const threadSegment = resolveThreadSegment(threadId);
-    const message = yield* toLogMessage(event);
-    if (!message) {
+    const serialized = yield* toLogMessage(event);
+    if (!serialized) {
       return;
     }
+    const message = options.scrubLine === undefined ? serialized : options.scrubLine(serialized);
 
     const writer = yield* resolveThreadWriter(threadSegment);
     if (!writer) {

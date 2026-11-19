@@ -186,6 +186,7 @@ import { McpApps } from "./mcpApps/McpApps.ts";
 import { CommandRuns } from "./commandRuns/CommandRuns.ts";
 import { AgentSettingsChanges } from "./settingsChanges/AgentSettingsChanges.ts";
 import { AgentSecretRequests } from "./secrets/AgentSecretRequests.ts";
+import { layer as SecretScrubberLive } from "./secrets/SecretScrubber.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
 import * as VcsDriverRegistry from "./vcs/VcsDriverRegistry.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
@@ -797,6 +798,8 @@ const buildAppUnderTest = (options?: {
           Layer.mock(AgentSettingsChanges)({}),
           // So are agents' requests for keys (AgentSecretRequests.test.ts).
           Layer.mock(AgentSecretRequests)({ destinations: {} as never }),
+          // The watched keys' registry, empty: the routes' doors read it.
+          SecretScrubberLive,
           Layer.mock(CommandRuns)({
             request: () => Effect.succeed({ outcome: "off" as const, detail: "off in this test" }),
             start: () => Effect.fail(new CommandRunError({ message: "No runs in this test." })),

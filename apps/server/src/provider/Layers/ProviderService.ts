@@ -84,6 +84,9 @@ import { type EarlySessionEndReason, makeEarlySessionLedger } from "../earlySess
 
 /** An early start that takes longer than this is given up. */
 const EARLY_SESSION_START_TIMEOUT = Duration.seconds(60);
+/** The most of a running command's output a read hands back: its end, which
+ *  holds the lines a client shows. Claude itself keeps the last 8 KiB. */
+const COMMAND_OUTPUT_TAIL_CHARS = 4_096;
 /** How often unused early sessions are checked for expiry. */
 const EARLY_SESSION_SWEEP_INTERVAL = Duration.seconds(30);
 /** How long quiesceThread waits for a start or recovery of the thread already under way. */
@@ -2954,7 +2957,16 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         if (!routed.isActive || read === undefined) return undefined;
         return yield* read(routed.threadId, input.toolCallId);
       }).pipe(Effect.orElseSucceed(() => undefined));
-      if (answer?.status === "running") return answer;
+      if (answer?.status === "running") {
+        // Hidden whole, then cut: a cut first could leave part of a key.
+        return {
+          status: "running",
+          tail: secretScrubber
+            .scrubText(answer.output, { cutTail: true })
+            .text.slice(-COMMAND_OUTPUT_TAIL_CHARS),
+          totalBytes: answer.totalBytes,
+        } as const;
+      }
       if (answer?.status === "pending") pending = true;
     }
     return { status: pending ? "pending" : "unavailable" } as const;
