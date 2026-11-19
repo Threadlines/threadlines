@@ -502,6 +502,88 @@ describe("ProviderRuntimeIngestion", () => {
       ).toBe(true);
     });
 
+    /** A harness watching `abcd1234`, with a running turn on thread-1. */
+    async function watchingHarness(streaming = true) {
+      const secretScrubber = makeSecretScrubber();
+      secretScrubber.watch("TOKEN", "abcd1234");
+      const harness = await createHarness({
+        serverSettings: { enableAssistantStreaming: streaming },
+        secretScrubber,
+      });
+      const emit = (id: string, event: Record<string, unknown>) =>
+        harness.emit({
+          eventId: asEventId(id),
+          provider: ProviderDriverKind.make("codex"),
+          createdAt: now,
+          threadId: asThreadId("thread-1"),
+          turnId: asTurnId("turn-held"),
+          ...event,
+        } as never);
+      return { harness, emit };
+    }
+    const messageText = (
+      thread: { messages: ReadonlyArray<ProviderRuntimeTestMessage> },
+      id: string,
+    ) => thread.messages.find((entry) => entry.id === id)?.text;
+
+    it("sends a completed reply's only text once, when the completion repeats it", async () => {
+      const { harness, emit } = await watchingHarness();
+      emit("evt-held-only-delta", {
+        type: "content.delta",
+        itemId: asItemId("item-held-only"),
+        payload: { streamKind: "assistant_text", delta: "abc" },
+      });
+      emit("evt-held-only-done", {
+        type: "item.completed",
+        itemId: asItemId("item-held-only"),
+        payload: { itemType: "assistant_message", status: "completed", detail: "abc" },
+      });
+      const thread = await waitForThread(harness.readModel, (entry) =>
+        entry.messages.some(
+          (message: ProviderRuntimeTestMessage) =>
+            message.id === "assistant:item-held-only" && !message.streaming,
+        ),
+      );
+      expect(messageText(thread, "assistant:item-held-only")).toBe("abc");
+    });
+
+    it("puts a reply's held tail into its message when the session ends", async () => {
+      const { harness, emit } = await watchingHarness();
+      emit("evt-exit-delta", {
+        type: "content.delta",
+        itemId: asItemId("item-exit"),
+        payload: { streamKind: "assistant_text", delta: "Result: abc" },
+      });
+      emit("evt-exit", { type: "session.exited", payload: { exitKind: "graceful" } });
+      const thread = await waitForThread(harness.readModel, (entry) =>
+        entry.messages.some(
+          (message: ProviderRuntimeTestMessage) =>
+            message.id === "assistant:item-exit" && message.text === "Result: abc",
+        ),
+      );
+      expect(messageText(thread, "assistant:item-exit")).toBe("Result: abc");
+    });
+
+    it("puts a command's held tail into its output when the command ends", async () => {
+      const { harness, emit } = await watchingHarness();
+      emit("evt-output-tail", {
+        type: "content.delta",
+        itemId: asItemId("item-output-tail"),
+        payload: { streamKind: "command_output", delta: "Result: abc" },
+      });
+      emit("evt-output-tail-done", {
+        type: "item.completed",
+        itemId: asItemId("item-output-tail"),
+        payload: { itemType: "command_execution", status: "completed" },
+      });
+      const thread = await waitForThread(harness.readModel, (entry) =>
+        entry.activities.some((activity) =>
+          JSON.stringify(activity.payload).includes("Result: abc"),
+        ),
+      );
+      expect(JSON.stringify(thread)).toContain("Result: abc");
+    });
+
     it("hides a key a side answer only makes whole by joining two items", async () => {
       const secretScrubber = makeSecretScrubber();
       const pem = "ab12\n\ncd34";

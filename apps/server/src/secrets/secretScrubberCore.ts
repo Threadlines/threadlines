@@ -58,6 +58,8 @@ interface OpenMatch {
 export interface HeldText {
   readonly held: string;
   readonly open: OpenMatch | undefined;
+  /** Text already sent that a value could continue from: kept after a release. */
+  readonly sent?: string;
 }
 
 /** A piece after holding: what to send now, what the buffer holds next, the names it hid. */
@@ -313,8 +315,9 @@ export function makeSecretScrubberCore() {
    * is when the buffer closes.
    */
   const holdPiece = (state: HeldText | undefined, piece: string): HoldResult => {
-    if (forms.length === 0 && state === undefined)
+    if (forms.length === 0 && state === undefined) {
       return { out: piece, state: undefined, names: [] };
+    }
     let rest = piece;
     let open = state?.open;
     if (open !== undefined) {
@@ -333,23 +336,56 @@ export function makeSecretScrubberCore() {
           : undefined;
       rest = rest.slice(index);
     }
+    // Text already sent that a value may still continue from (a message
+    // reopened after its tail was released): matched against, never re-sent.
+    const sent = state?.sent ?? "";
     const joined = (state?.held ?? "") + rest;
-    const matches = findMatches(joined);
+    const full = sent + joined;
+    const matches = findMatches(full)
+      .filter((match) => match.end > sent.length)
+      .map((match) => ({
+        ...match,
+        start: Math.max(match.start, sent.length) - sent.length,
+        end: match.end - sent.length,
+      }));
     const last = matches.at(-1);
     if (last !== undefined) open = last.open;
-    const heldLength = open !== undefined ? 0 : startingTail(joined.slice(last?.end ?? 0), 1);
+    const lastEnd = sent.length + (last?.end ?? 0);
+    const tailLength = open !== undefined ? 0 : startingTail(full.slice(lastEnd), 1);
+    const tailStart = full.length - tailLength;
+    const heldFrom = Math.max(tailStart, sent.length);
+    const held = full.slice(heldFrom);
+    const stillSent =
+      tailLength > 0 && tailStart < sent.length ? full.slice(tailStart, sent.length) : "";
     return {
-      out: replaceMatches(joined, matches, joined.length - heldLength),
+      out: replaceMatches(joined, matches, joined.length - held.length),
       state:
-        heldLength === 0 && open === undefined
+        held.length === 0 && open === undefined && stillSent.length === 0
           ? undefined
-          : { held: joined.slice(joined.length - heldLength), open },
+          : { held, open, ...(stillSent.length > 0 ? { sent: stillSent } : {}) },
       names: namesOf(matches),
     };
   };
 
+  /**
+   * After a buffer released its held tail (its message completed), what to
+   * keep so a piece that reopens it can't complete a value the tail started.
+   */
+  const afterRelease = (state: HeldText | undefined): HeldText | undefined => {
+    const sent = (state?.sent ?? "") + (state?.held ?? "");
+    return sent.length === 0 ? undefined : { held: "", open: undefined, sent };
+  };
+
+  /** A notice's line, or a neutral one when the line itself would hold a watched value. */
+  const noticeLine = (name: string): string => {
+    const line = secretHiddenNotice(name);
+    return scrubText(line).text === line ? line : secretHiddenNotice(NEUTRAL_NAME);
+  };
+
   return {
     holdPiece,
+    afterRelease,
+    noticeLine,
     watch,
     gone,
     scrubText,
@@ -530,7 +566,7 @@ export function makeRuntimeEventScrubber(core: SecretScrubberCore, notices: Noti
           ...(event.turnId !== undefined ? { turnId: event.turnId } : {}),
           type: "runtime.warning",
           payload: {
-            message: secretHiddenNotice(name),
+            message: core.noticeLine(name),
             warningKind: SECRET_HIDDEN_WARNING_KIND,
             detail: SECRET_HIDDEN_DETAIL,
           },

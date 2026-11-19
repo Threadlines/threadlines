@@ -151,6 +151,23 @@ describe("holding a buffer's pieces (ingestion's holder)", () => {
     expect(through(scrubber, [...`>> ${pem} <<`])).toBe(">> [PEM hidden] <<");
   });
 
+  it("keeps a released tail so a piece that reopens the message can't complete the key", () => {
+    const scrubber = watching(["K", KEY]);
+    const first = scrubber.holdPiece(undefined, "pay sk_te");
+    expect(first.out).toBe("pay ");
+    // The message completes: its held tail is sent as it is.
+    expect(first.state?.held).toBe("sk_te");
+    const reopened = scrubber.holdPiece(scrubber.afterRelease(first.state), "st_51HvQq2abc done");
+    expect(reopened.out).toBe("[K hidden] done");
+    expect(reopened.names).toEqual(["K"]);
+  });
+
+  it("never lets a notice line spell out a watched value", () => {
+    const scrubber = watching(["TOKEN", KEY], ["OTHER", "Hid TOKEN"]);
+    expect(scrubber.noticeLine("TOKEN")).toBe("Hid a saved key in the agent's output");
+    expect(watching(["TOKEN", KEY]).noticeLine("TOKEN")).toBe("Hid TOKEN in the agent's output");
+  });
+
   it("holds nothing when nothing is watched", () => {
     const scrubber = makeSecretScrubber();
     expect(scrubber.holdPiece(undefined, "sk_te")).toEqual({

@@ -59,6 +59,10 @@ export interface SecretScrubberShape {
    * what to send now, what to hold next. See secretScrubberCore `holdPiece`.
    */
   readonly holdPiece: (state: HeldText | undefined, piece: string) => HoldResult;
+  /** What a buffer keeps after releasing its held tail, so a reopened buffer can't complete a value. */
+  readonly afterRelease: (state: HeldText | undefined) => HeldText | undefined;
+  /** The notice's line for a name; neutral when the line itself would hold a watched value. */
+  readonly noticeLine: (name: string) => string;
   /** The names not yet noticed in this thread's turn; they count as noticed from now. */
   readonly takeNotices: (
     threadId: string,
@@ -87,6 +91,8 @@ export function makeSecretScrubber(): SecretScrubberShape {
     scrubRuntimeEvent: runtime.scrubRuntimeEvent,
     restoreAnswer: runtime.restoreAnswer,
     holdPiece: core.holdPiece,
+    afterRelease: core.afterRelease,
+    noticeLine: core.noticeLine,
     takeNotices: (threadId, turnId, names) => notices.take(threadId, turnId, names),
   };
 }

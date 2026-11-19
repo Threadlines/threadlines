@@ -539,6 +539,10 @@ plain words.
     default.
 13. Two long texts that share their first 256 characters. If one is a
     watched value, the shared start of the other is hidden too.
+14. A side answer stopped or timed out from outside, mid-stream: up to the
+    last few characters it held back, because they could start a key, are
+    dropped. Ingestion never sees that stop, and the answer is closed by
+    then. The key is never shown; only those few ordinary characters go.
 
 ## Providers
 
