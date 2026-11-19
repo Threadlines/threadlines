@@ -71,7 +71,7 @@ describe("ComposerGoalBar", () => {
   it("says why Threadlines paused a goal while its thread waits, and still offers Resume", async () => {
     renderBar({
       driver: "codex",
-      goal: goal({ status: "paused", pausedForWait: true }),
+      goal: goal({ status: "paused", waitPause: "paused" }),
       waitLabel: goalWaitPauseLabel({ pendingChildApproval: true, awaitedChildThreadCount: 0 }),
     });
     await expect.element(page.getByText("Paused until you answer")).toBeVisible();

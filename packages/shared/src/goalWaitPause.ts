@@ -6,24 +6,43 @@
  * gets control back at once: threads to start, a scheduled task, a settings
  * change, an invite, a command for the user to run. Or it starts threads and
  * waits for their reports. The goal would otherwise keep running turns that
- * can only say "still pending". The server pauses it then, marking the goal
- * `pausedForWait` so that only its own pause is ever undone; the user's own
- * pause, resume or clear, and a goal that ends, take the mark away.
+ * can only say "still pending". The server pauses it then, and keeps a mark
+ * on the goal (`waitPause`) so that only its own pause is ever undone:
+ *
+ * - `paused`: paused for the wait (the provider may not have confirmed yet).
+ * - `resuming`: the wait ended and the resume went out; the mark goes when the
+ *   provider reports the goal active, so a restart in between sends it again.
+ * - `user`: the user paused, resumed, edited, cleared or stopped it during the
+ *   wait. Nothing automatic happens until that wait is over; then it goes.
  */
 import type { OrchestrationThread, OrchestrationThreadGoal } from "@threadlines/contracts";
 
 import { awaitedChildRequestCount, hasPendingChildApproval } from "./childThreads.ts";
-import { isCommandRunSettled } from "./commandRuns.ts";
+import { commandRunAwaitsAutoSend, isCommandRunSettled } from "./commandRuns.ts";
 import { awaitingInvite } from "./roomAgentRequests.ts";
 import { hasPendingSettingsChange } from "./settingsChangeState.ts";
 
 /** What the thread waits on: the user's answer on a card, or threads it started. */
 export type GoalWait = "user" | "threads";
 
+/** The mark a goal carries for a wait (OrchestrationThreadGoal.waitPause). */
+export type GoalWaitMark = NonNullable<OrchestrationThreadGoal["waitPause"]>;
+
 type GoalWaitFacts = Pick<
   OrchestrationThread,
   "childRequests" | "settingsRequests" | "agentRequests" | "commandRequests" | "commandRuns"
 >;
+
+/**
+ * A run whose output goes back to the agent by itself and hasn't yet: still
+ * running, or finished with its output on the way (the finish is recorded a
+ * moment before the output is sent). Held output waits for the user to send
+ * it, which no card asks for.
+ */
+const outputStillComing = (run: NonNullable<GoalWaitFacts["commandRuns"]>[number]): boolean =>
+  commandRunAwaitsAutoSend(run) &&
+  run.heldReason === null &&
+  (!isCommandRunSettled(run.status) || run.status === "finished");
 
 /**
  * A command card the user hasn't run or skipped, or one they ran whose output
@@ -36,9 +55,7 @@ function hasWaitingCommandCard(thread: GoalWaitFacts): boolean {
     const runs = allRuns.filter(
       (run) => run.source.kind === "request" && run.source.requestId === request.requestId,
     );
-    return (
-      runs.length === 0 || runs.some((run) => run.autoSend && !isCommandRunSettled(run.status))
-    );
+    return runs.length === 0 || runs.some(outputStillComing);
   });
 }
 
@@ -75,43 +92,67 @@ export function turnAboutToStart(
 }
 
 /**
- * What to do with the thread's goal now: pause an active goal while it waits,
- * resume one this paused once the wait is over, or nothing. A resume waits
- * while a turn is about to start (`turnAboutToStart`): resumed while idle,
- * the provider starts a goal turn of its own, and it would race the turn that
- * ended the wait (a report, the output of a command). Resumed while that turn
- * runs, the goal carries on after it.
+ * What to do with the thread's goal now: the mark it should carry, and what
+ * to send the provider, if anything. Null: leave it as it is.
+ *
+ * - Waiting, an active goal with no mark: pause it.
+ * - The wait is over and we paused it: resume it, marked `resuming` until the
+ *   provider confirms (and again after a restart that came in between). Not
+ *   while a turn is about to start: resumed while idle, the provider starts a
+ *   goal turn of its own, and it would race the turn that ended the wait (a
+ *   report, a command's output). Resumed while that turn runs, the goal
+ *   carries on after it.
+ * - The wait is over and the user acted during it: forget the mark.
+ * - Waiting again before the resume was confirmed: paused again, for this wait.
  */
 export function goalWaitStep(input: {
-  readonly goal: Pick<OrchestrationThreadGoal, "status" | "pausedForWait"> | null;
+  readonly goal: Pick<OrchestrationThreadGoal, "status" | "waitPause"> | null;
   readonly waiting: boolean;
   readonly turnStarting: boolean;
-}): "pause" | "resume" | null {
+}): { readonly mark: GoalWaitMark | null; readonly send: "paused" | "active" | null } | null {
   const { goal } = input;
   if (goal === null) return null;
+  const mark = goal.waitPause;
   if (input.waiting) {
-    return goal.status === "active" && goal.pausedForWait !== true ? "pause" : null;
+    if (mark === undefined) {
+      return goal.status === "active" ? { mark: "paused", send: "paused" } : null;
+    }
+    if (mark === "resuming") {
+      return { mark: "paused", send: goal.status === "paused" ? null : "paused" };
+    }
+    return null;
   }
-  return goal.pausedForWait === true && goal.status === "paused" && !input.turnStarting
-    ? "resume"
-    : null;
+  if (mark === "user") return { mark: null, send: null };
+  if (mark === "paused" || mark === "resuming") {
+    if (goal.status === "paused") {
+      return input.turnStarting ? null : { mark: "resuming", send: "active" };
+    }
+    // Active and `paused`: our pause is on its way. Anything else is the
+    // provider's own ending, not ours to undo.
+    return goal.status === "active" ? null : { mark: null, send: null };
+  }
+  return null;
 }
 
 /**
- * Whether the mark carries over to a goal the provider reported: only while
- * the goal is still active (our pause on its way) or paused. A goal that
- * completed, blocked or hit a limit is the provider's to report, not ours to
- * resume.
+ * The mark a goal the provider reported keeps: ours while the goal is still
+ * active (a pause on its way) or paused; `resuming` until the provider says it
+ * is active again; the user's until the goal is gone or complete.
  */
-export function keepsGoalWaitMark(
-  previous: Pick<OrchestrationThreadGoal, "pausedForWait"> | null,
+export function carriedGoalWaitMark(
+  previous: Pick<OrchestrationThreadGoal, "waitPause"> | null,
   next: Pick<OrchestrationThreadGoal, "status"> | null,
-): boolean {
-  return (
-    previous?.pausedForWait === true &&
-    next !== null &&
-    (next.status === "active" || next.status === "paused")
-  );
+): GoalWaitMark | undefined {
+  const mark = previous?.waitPause;
+  if (mark === undefined || next === null || next.status === "complete") return undefined;
+  switch (mark) {
+    case "paused":
+      return next.status === "active" || next.status === "paused" ? "paused" : undefined;
+    case "resuming":
+      return next.status === "paused" ? "resuming" : undefined;
+    case "user":
+      return "user";
+  }
 }
 
 /**

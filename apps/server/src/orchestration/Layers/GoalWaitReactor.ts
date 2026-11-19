@@ -42,6 +42,10 @@ const WAIT_EVENT_PREFIXES = [
   "thread.command-run-",
   "thread.follow-up-",
   "thread.session-set",
+  // A revert can take a waiting command card or its run away.
+  "thread.reverted",
+  // An agent leaving takes its invite and its requests with it.
+  "thread.participant-",
   "thread.goal-state-set",
 ] as const;
 
@@ -93,7 +97,9 @@ export const make = Effect.gen(function* () {
       waiting: goalWaitOf(thread, scheduleAnswerWaiting) !== null,
       turnStarting: turnAboutToStart(thread),
     });
-    if (step === null || !(yield* canPauseGoal(thread))) return;
+    // Forgetting a mark sends the provider nothing; a pause or resume needs
+    // a provider that has one.
+    if (step === null || (step.send !== null && !(yield* canPauseGoal(thread)))) return;
     yield* orchestrationEngine
       .dispatch({
         type: "thread.goal.wait.sync",

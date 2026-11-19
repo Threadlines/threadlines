@@ -146,9 +146,10 @@ import {
 import { carriedBackgroundTasks } from "./sessionBackgroundTasks.ts";
 import { questionsClosedByUserMessage, unansweredResponseRefusal } from "./userInput.ts";
 import {
+  carriedGoalWaitMark,
   goalWaitOf,
   goalWaitStep,
-  keepsGoalWaitMark,
+  type GoalWaitMark,
   turnAboutToStart,
 } from "@threadlines/shared/goalWaitPause";
 import {
@@ -442,20 +443,18 @@ function passCeilingCancelEvents(
   ];
 }
 
-/**
- * The goal without the mark of a pause Threadlines made for a wait, as one
- * event, when it has one: the user acted on the goal themselves.
- */
-function withoutGoalWaitMark(
+/** The goal with `mark` (or none), as `thread.goal-state-set`. */
+function goalWithWaitMark(
   thread: OrchestrationThread,
+  mark: GoalWaitMark | null,
   command: Pick<OrchestrationCommand, "commandId"> & {
     readonly threadId: ThreadId;
     readonly createdAt: string;
   },
 ): PlannedOrchestrationEvent[] {
-  const goal = thread.goal;
-  if (goal?.pausedForWait !== true) return [];
-  const { pausedForWait: _mark, ...unmarked } = goal;
+  const goal = thread.goal ?? null;
+  if (goal === null || (goal.waitPause ?? null) === mark) return [];
+  const { waitPause: _mark, ...unmarked } = goal;
   return [
     {
       ...withEventBase({
@@ -466,9 +465,32 @@ function withoutGoalWaitMark(
         metadata: {},
       }),
       type: "thread.goal-state-set",
-      payload: { threadId: command.threadId, goal: unmarked, updatedAt: command.createdAt },
+      payload: {
+        threadId: command.threadId,
+        goal: mark === null ? unmarked : { ...unmarked, waitPause: mark },
+        updatedAt: command.createdAt,
+      },
     },
   ];
+}
+
+/**
+ * The user paused, resumed, edited, cleared or stopped the goal: if it is
+ * paused for a wait, or the thread waits now, it is the user's for this wait,
+ * and nothing automatic undoes their choice (docs/design/goal-wait-pause.md).
+ * A scheduled-task card isn't on the thread; a goal waiting only on one and
+ * not yet paused is the one case this can't see.
+ */
+function goalTakenByUser(
+  thread: OrchestrationThread,
+  command: Pick<OrchestrationCommand, "commandId"> & {
+    readonly threadId: ThreadId;
+    readonly createdAt: string;
+  },
+): PlannedOrchestrationEvent[] {
+  if ((thread.goal ?? null) === null) return [];
+  const waits = thread.goal?.waitPause !== undefined || goalWaitOf(thread, false) !== null;
+  return waits ? goalWithWaitMark(thread, "user", command) : [];
 }
 
 /**
@@ -4656,6 +4678,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         ...decideAgentChainStop(thread, base, command.createdAt),
         ...childStopEvents(readModel, thread, command, command.createdAt),
         ...holdCommandOutputOnStop(thread, base, command.createdAt),
+        // Stop is the user's say: a goal paused for a wait stays as Stop
+        // leaves it, never resumed when the waits Stop ends are over.
+        ...goalTakenByUser(thread, command),
       ];
       const stopsTurnId = command.turnId ?? turnBeingStopped(thread);
       const interruptEvent: PlannedOrchestrationEvent = {
@@ -5002,6 +5027,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         ...decideAgentChainStop(thread, base, command.createdAt),
         ...childStopEvents(readModel, thread, command, command.createdAt),
         ...holdCommandOutputOnStop(thread, base, command.createdAt),
+        // Stop is the user's say: a goal paused for a wait stays as Stop
+        // leaves it, never resumed when the waits Stop ends are over.
+        ...goalTakenByUser(thread, command),
       ];
       const stopsTurnId = turnBeingStopped(thread);
       const stopEvent: PlannedOrchestrationEvent = {
@@ -5542,9 +5570,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // Resume on a moved thread whose agent hasn't been given the
       // conversation yet: no provider call, the goal waits for the message
       // that gives it (docs/design/fleet.md, Part 3e, (a)).
-      // The user's own pause, resume or edit stands: a pause Threadlines made
-      // for a wait is theirs now, never undone when the wait ends.
-      const unmarked = withoutGoalWaitMark(goalThread, command);
+      // The user's own pause, resume or edit stands: a goal Threadlines paused
+      // for a wait, or one whose thread waits now, is theirs for this wait.
+      const unmarked = goalTakenByUser(goalThread, command);
       const movedResume = decideMovedGoalResume(
         goalThread,
         command,
@@ -5584,7 +5612,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       });
       return [
         // Nothing resumes a goal the user cleared, whatever the provider says first.
-        ...withoutGoalWaitMark(clearedThread, command),
+        ...goalTakenByUser(clearedThread, command),
         {
           ...withEventBase({
             aggregateKind: "thread",
@@ -5610,44 +5638,36 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
-      const goal = thread.goal;
       const step = goalWaitStep({
-        goal,
+        goal: thread.goal,
         waiting: goalWaitOf(thread, command.scheduleAnswerWaiting) !== null,
         turnStarting: turnAboutToStart(thread),
       });
-      if (step === null || goal === null) {
+      if (step === null) {
         return [];
       }
-      const base = () =>
-        withEventBase({
-          aggregateKind: "thread",
-          aggregateId: command.threadId,
-          occurredAt: command.createdAt,
-          commandId: command.commandId,
-          metadata: {},
-        });
-      const { pausedForWait: _mark, ...unmarkedGoal } = goal;
       return [
-        {
-          ...base(),
-          type: "thread.goal-state-set",
-          payload: {
-            threadId: command.threadId,
-            goal: step === "pause" ? { ...goal, pausedForWait: true as const } : unmarkedGoal,
-            updatedAt: command.createdAt,
-          },
-        },
-        {
-          ...base(),
-          type: "thread.goal-set-requested",
-          payload: {
-            threadId: command.threadId,
-            status: step === "pause" ? ("paused" as const) : ("active" as const),
-            origin: "automatic" as const,
-            createdAt: command.createdAt,
-          },
-        },
+        ...goalWithWaitMark(thread, step.mark, command),
+        ...(step.send === null
+          ? []
+          : [
+              {
+                ...withEventBase({
+                  aggregateKind: "thread",
+                  aggregateId: command.threadId,
+                  occurredAt: command.createdAt,
+                  commandId: command.commandId,
+                  metadata: {},
+                }),
+                type: "thread.goal-set-requested" as const,
+                payload: {
+                  threadId: command.threadId,
+                  status: step.send,
+                  origin: "automatic" as const,
+                  createdAt: command.createdAt,
+                },
+              },
+            ]),
       ];
     }
 
@@ -5719,16 +5739,17 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
-      // A pause Threadlines made for a wait stays marked through the
-      // provider's reports while the goal is active or paused; a goal that
-      // ended or hit a limit is the provider's, and loses it.
-      const { pausedForWait: _reported, ...reported } = command.goal ?? {};
+      // A goal's wait mark lives through the provider's reports while it
+      // means something (carriedGoalWaitMark); the provider's own copy of the
+      // goal never carries one.
+      const { waitPause: _reported, ...reported } = command.goal ?? {};
+      const carried = carriedGoalWaitMark(goalThread.goal, command.goal);
       const goal =
         command.goal === null
           ? null
-          : keepsGoalWaitMark(goalThread.goal, command.goal)
-            ? { ...command.goal, pausedForWait: true as const }
-            : (reported as typeof command.goal);
+          : carried === undefined
+            ? (reported as typeof command.goal)
+            : { ...command.goal, waitPause: carried };
       return {
         ...withEventBase({
           aggregateKind: "thread",

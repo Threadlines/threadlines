@@ -14,40 +14,59 @@ sidebar reads:
 
 - **A card only the user can answer:** threads waiting for approval to start,
   a settings change, an invite, a command card not yet run or skipped (or run,
-  with its output still on its way), a scheduled-task card (the scheduler holds
-  those: `ScheduledTasks.waitingThreadIds`).
+  with its output still to go back: a run's finish is recorded a moment before
+  its output is sent), a scheduled-task card (the scheduler holds those:
+  `ScheduledTasks.waitingThreadIds`).
 - **Threads it started that still owe their reports** (`awaitedChildRequestCount`).
 
 A permission prompt or a question is not here: the turn that asked is still
 running, and nothing loops.
 
+## The mark
+
+The goal carries `waitPause` (an optional field, not a new `ThreadGoalStatus`
+value, which clients decode as a closed set):
+
+- `paused`: Threadlines paused it for the wait. The provider may not have
+  confirmed yet, so the mark stays while the goal reads active or paused.
+- `resuming`: the wait ended and the resume went out. It stays until the
+  provider reports the goal active, so a restart in between sends it again.
+- `user`: the user paused, resumed, edited, cleared or stopped the goal during
+  the wait (or while it was paused for one). Nothing automatic happens until
+  that wait is over; then the mark goes and the goal stays as the user left it.
+  A goal whose only wait is a scheduled-task card, and that wasn't paused yet,
+  is the one case the user's action can't be told apart (the decider can't see
+  the scheduler's cards).
+
+A provider report keeps the mark only while it means something
+(`carriedGoalWaitMark`); a goal that completed, blocked or hit a limit loses
+`paused`, and a completed or cleared one loses any mark.
+
 ## The rule
 
 `goalWaitStep`, applied by the decider on `thread.goal.wait.sync` (server only):
 
-- Waiting and the goal is active and not already paused by us: pause it. The
-  goal gets `pausedForWait: true` (an optional field, not a new
-  `ThreadGoalStatus` value, which clients decode as a closed set) and the
-  provider gets `thread/goal/set` paused with `origin: "automatic"`, which Codex
-  keeps out of the model's history.
-- Not waiting, the goal is paused and marked: resume it, and drop the mark.
-  Not while a turn is about to start (session `starting`): resumed while idle,
-  Codex starts a goal turn at once, and it would race the turn that ended the
-  wait (a report, a command's output). Resumed while that turn runs, the goal
-  carries on after it, so a report never gets a second turn beside it.
-- The user's own pause, resume, edit or clear drops the mark first, so their
-  choice stands. A provider report keeps the mark only while the goal is active
-  or paused; a goal that completed, blocked or hit a limit loses it.
-
-The mark lives in the goal the projections keep, so a restart with a card still
-waiting leaves the goal paused, and answering the card afterwards resumes it.
+- Waiting, the goal active and unmarked: pause it (`paused`), and send
+  `thread/goal/set` paused with `origin: "automatic"`, which Codex keeps out of
+  the model's history.
+- The wait is over and the goal is paused with `paused` or `resuming`: resume
+  it (`resuming`, `thread/goal/set` active, automatic). Not while a turn is
+  about to start (the session is starting one, or a message waits in the
+  queue): resumed while idle, Codex starts a goal turn at once, and it would
+  race the turn that ended the wait. A report from a thread it started is
+  queued in the same decision that settles its request, so the resume lands
+  once the report's own turn runs, and the goal carries on inside it.
+- The wait is over and the mark is `user`: drop it, send nothing.
+- Waiting again before a resume was confirmed: back to `paused`.
 
 ## Who asks
 
-`GoalWaitReactor` watches the events that change a wait or the goal (cards,
-started threads, the session, the goal) and the scheduler's waiting cards, and
-sends the sync for a thread whose goal should change. At start it looks at
-every thread with a goal once. It skips goals whose provider can't pause one.
+`GoalWaitReactor` watches the events that change a wait or the goal (cards and
+their runs, started threads, the queue, the session, the goal, reverts, agents
+leaving) and the scheduler's waiting cards, and sends the sync for a thread
+whose goal should change. At start it looks at every thread with a goal once,
+which also resends a resume a restart cut off. It skips a pause or resume for
+a provider that can't pause a goal.
 
 ## Per provider
 

@@ -2153,11 +2153,13 @@ export const OrchestrationThreadGoal = Schema.Struct({
   /** Claude: the evaluator's latest reason (not met yet, or why it is done). */
   lastCheck: Schema.optional(TrimmedNonEmptyString),
   /**
-   * Threadlines paused it while the thread waits on a card or on threads it
-   * started, and resumes it when that wait ends (docs/design/goal-wait-pause.md).
-   * The user's own pause, resume or clear, and a goal that ends, take it away.
+   * Threadlines pauses a goal while the thread waits on a card or on threads
+   * it started, and resumes it when that wait ends (docs/design/goal-wait-pause.md).
+   * `paused`: paused for the wait. `resuming`: the resume went out, not yet
+   * confirmed. `user`: the user acted on it during the wait, so nothing
+   * automatic happens until the wait is over.
    */
-  pausedForWait: Schema.optional(Schema.Literal(true)),
+  waitPause: Schema.optional(Schema.Literals(["paused", "resuming", "user"])),
 });
 export type OrchestrationThreadGoal = typeof OrchestrationThreadGoal.Type;
 

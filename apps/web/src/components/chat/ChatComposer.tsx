@@ -927,7 +927,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // A goal Threadlines paused while the thread waits says what for, in the
   // words the sidebar's facts give (a card, or threads at work).
   const goalWaitLabel = useStore((store) =>
-    threadGoal?.pausedForWait === true && threadGoal.status === "paused" && activeThread
+    (threadGoal?.waitPause === "paused" || threadGoal?.waitPause === "resuming") &&
+    threadGoal.status === "paused" &&
+    activeThread
       ? goalWaitPauseLabel(
           selectSidebarThreadSummaryByRef(
             store,
