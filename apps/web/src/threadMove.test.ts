@@ -541,6 +541,21 @@ describe("a family in the Move threads and quit flows (Part 3f, (g))", () => {
     ]);
   });
 
+  it("lists a family's children oldest first, whatever order they came in", () => {
+    const older = { ...other, createdAt: "2026-11-17T09:00:00.000Z" };
+    const newer = { ...child, createdAt: "2026-11-17T10:00:00.000Z" };
+    for (const listed of [
+      [parent, newer, older],
+      [parent, older, newer],
+    ]) {
+      expect(groupMoveFamilies(listed).map((row) => row.candidate.threadId)).toEqual([
+        "p",
+        "c2",
+        "c1",
+      ]);
+    }
+  });
+
   it("ticks a whole family from any member, and unticks one child or the whole family", () => {
     const candidates = [parent, child, other, alone];
     const canGo = (id: string) => id !== "c2";

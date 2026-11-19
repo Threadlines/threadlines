@@ -16,6 +16,7 @@ import {
   getThreadInFlightStatus,
   getThreadSortTimestamp,
   sortThreads,
+  compareFamilyChildren,
   toSortableTimestamp,
   type ThreadSortInput,
 } from "../lib/threadSort";
@@ -1832,12 +1833,7 @@ export function countThreadAttention(
 export function sortFamilyChildren<
   E extends { readonly thread: { readonly createdAt: string; readonly id: string } },
 >(children: readonly E[]): E[] {
-  return children.toSorted(
-    (left, right) =>
-      (toSortableTimestamp(left.thread.createdAt) ?? 0) -
-        (toSortableTimestamp(right.thread.createdAt) ?? 0) ||
-      left.thread.id.localeCompare(right.thread.id),
-  );
+  return children.toSorted((left, right) => compareFamilyChildren(left.thread, right.thread));
 }
 
 /**
