@@ -31,6 +31,7 @@ import {
 } from "@threadlines/contracts";
 
 import { formatDownloadProgress } from "./lib/formatBytes";
+import { compareFamilyChildren } from "./lib/threadSort";
 import type { ThreadMoveStatus } from "./types";
 
 /**
@@ -712,6 +713,8 @@ export interface MoveCandidate<TThreadId extends string = string> {
   readonly working: boolean;
   /** The thread that started it, while it is in that thread's family. */
   readonly parentThreadId?: TThreadId;
+  /** When it was made: a family's children are listed oldest first. */
+  readonly createdAt?: string;
 }
 
 /**
@@ -731,6 +734,7 @@ export function listMoveCandidates<
     readonly moveStatus?: ThreadMoveStatus | undefined;
     readonly parentThreadId?: string | null | undefined;
     readonly attachedToParent?: boolean | undefined;
+    readonly createdAt?: string | undefined;
   },
 >(
   entries: ReadonlyArray<{ readonly thread: TThread; readonly isDone: boolean }>,
@@ -749,6 +753,7 @@ export function listMoveCandidates<
             threadId: thread.id,
             title: thread.title,
             working: isWorking(thread),
+            ...(thread.createdAt !== undefined ? { createdAt: thread.createdAt } : {}),
             ...(thread.attachedToParent === true && typeof thread.parentThreadId === "string"
               ? { parentThreadId: thread.parentThreadId as TThread["id"] }
               : {}),
@@ -902,24 +907,34 @@ function familyRootOf<T extends { readonly threadId: string; readonly parentThre
 
 /**
  * The Move threads dialog's rows with each family together: a parent, then
- * the children listed with it, in the order given otherwise. A family moves
+ * its children listed with it, oldest first as the sidebar lists them
+ * (`compareFamilyChildren`), and the rest in the order given. A family moves
  * as one group (`depth` 1 marks a child under its parent).
  */
 export function groupMoveFamilies<
-  T extends { readonly threadId: string; readonly parentThreadId?: string },
+  T extends {
+    readonly threadId: string;
+    readonly parentThreadId?: string;
+    readonly createdAt?: string;
+  },
 >(candidates: ReadonlyArray<T>): Array<{ readonly candidate: T; readonly depth: 0 | 1 }> {
   const grouped: Array<{ readonly candidate: T; readonly depth: 0 | 1 }> = [];
   for (const candidate of candidates) {
     if (familyRootOf(candidates, candidate) !== candidate.threadId) continue;
     grouped.push({ candidate, depth: 0 });
-    for (const child of candidates) {
-      if (
-        child.threadId !== candidate.threadId &&
-        familyRootOf(candidates, child) === candidate.threadId
-      ) {
-        grouped.push({ candidate: child, depth: 1 });
-      }
-    }
+    const children = candidates
+      .filter(
+        (child) =>
+          child.threadId !== candidate.threadId &&
+          familyRootOf(candidates, child) === candidate.threadId,
+      )
+      .toSorted((left, right) =>
+        compareFamilyChildren(
+          { createdAt: left.createdAt, id: left.threadId },
+          { createdAt: right.createdAt, id: right.threadId },
+        ),
+      );
+    grouped.push(...children.map((child) => ({ candidate: child, depth: 1 as const })));
   }
   return grouped;
 }

@@ -2104,6 +2104,10 @@ describe("ChatView (full app): moving a thread to another computer", () => {
                 title: titles.get(thread.id)!,
                 parentThreadId: THREAD_ID,
                 attachedToParent: true,
+                // Review was started first, though this app hears of it second.
+                ...(thread.id === reviewId
+                  ? { createdAt: new Date(Date.parse(thread.createdAt) - 60_000).toISOString() }
+                  : {}),
               }
             : thread,
         ),
@@ -2149,12 +2153,12 @@ describe("ChatView (full app): moving a thread to another computer", () => {
       const rows = Array.from(
         document.querySelectorAll<HTMLElement>('[data-testid^="move-threads-row-"]'),
       ).map((row) => row.dataset.testid);
-      // The two children are listed in the order this app received them,
-      // which two streams race to set, so only their place under it is fixed.
-      expect(rows[0]).toBe(`move-threads-row-${THREAD_ID}`);
-      expect(rows.slice(1).toSorted()).toEqual([
-        `move-threads-row-${fixTestsId}`,
+      // Its children oldest first, as the sidebar lists them, whatever order
+      // this app received them in.
+      expect(rows).toEqual([
+        `move-threads-row-${THREAD_ID}`,
         `move-threads-row-${reviewId}`,
+        `move-threads-row-${fixTestsId}`,
       ]);
       for (const id of [THREAD_ID, fixTestsId, reviewId]) {
         await expect.element(dialog.getByTestId(`move-threads-tick-${id}`)).toBeChecked();
