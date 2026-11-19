@@ -4730,6 +4730,34 @@ describe("Agent Instructions › Brief", () => {
     await expect.element(box).toHaveValue("My edit.");
   });
 
+  it("leaves another computer's newer brief alone when it changed after the edit began", async () => {
+    describeComputers(true);
+    const mac = seedComputer(THIS_MAC, brief(THIS_MAC, "Branch from develop.", 2));
+    const studio = seedComputer(STUDIO, brief(STUDIO, "Branch from develop.", 1));
+
+    await renderPage();
+
+    const box = page.getByLabelText("Project brief");
+    await expect.element(box).toHaveValue("Branch from develop.");
+    await box.fill("My edit.");
+    // Someone saves on Studio directly while this page holds the edit.
+    studio.emit({ briefs: [brief(STUDIO, "Studio's newer rule.", 2)] });
+    await page.getByRole("button", { name: "Save brief" }).click();
+
+    await expect
+      .element(
+        page.getByText("Not saved on Studio. Its brief changed there first.", { exact: false }),
+      )
+      .toBeVisible();
+    expect(mac.textOf(projectOn(THIS_MAC))).toBe("My edit.");
+    expect(studio.setBrief).toHaveBeenLastCalledWith({
+      projectId: projectOn(STUDIO),
+      text: "My edit.",
+      expectedRevision: 1,
+    });
+    expect(studio.textOf(projectOn(STUDIO))).toBe("Studio's newer rule.");
+  });
+
   it("is hidden when the project's computer keeps no briefs", async () => {
     describeComputers(false);
     seedComputer(THIS_MAC, null);

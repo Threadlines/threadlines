@@ -9,15 +9,12 @@ import {
   type EnvironmentId,
   PROJECT_BRIEF_MAX_CHARS,
   type ProjectBrief,
+  type ProjectId,
 } from "@threadlines/contracts";
 import { LoaderIcon, SaveIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 
-import { useSettings } from "../../hooks/useSettings";
-import {
-  deriveLogicalProjectKeyFromSettings,
-  selectProjectGroupingSettings,
-} from "../../logicalProject";
+import { deriveLogicalProjectKey } from "../../logicalProject";
 import {
   briefIn,
   type BriefSaveOutcome,
@@ -36,11 +33,18 @@ import { SettingsSection } from "./settingsLayout";
 const BRIEF_ABOUT =
   "Every thread in this project gets this, on any agent. New threads get a change at once. Open threads get it the next time their agent starts. It stays on your computers and is not written to your repository.";
 
-/** The user's edit, and the revision on the picked computer it started from. */
+/**
+ * The user's edit, and the revision on each computer it started from (by
+ * targetKey): a save sends those, so a brief saved anywhere since the edit
+ * began is refused instead of overwritten.
+ */
 interface BriefDraft {
   readonly text: string;
-  readonly baseRevision: number;
+  readonly baseRevisions: Readonly<Record<string, number>>;
 }
+
+const targetKey = (target: { environmentId: EnvironmentId; projectId: ProjectId }) =>
+  `${target.environmentId}\n${target.projectId}`;
 
 /** What the line under the box says, until the next edit. */
 type BriefNotice =
@@ -67,17 +71,15 @@ export function ProjectBriefSection({
   /** A computer's name as the page shows it. */
   computerLabel: (environmentId: EnvironmentId) => string;
 }) {
-  const groupingSettings = useSettings(selectProjectGroupingSettings);
   const supports = useProjectBriefSupport();
 
-  // The picked copy first, then the project's copies on other computers (the
-  // ones the sidebar shows as the same project).
+  // The picked copy first, then the project's other copies: the same folder
+  // of the same repository, whatever the sidebar's grouping shows (grouping
+  // by repository would also join another project in that repository).
   const targets = useMemo((): readonly BriefTarget[] => {
-    const settings = {
-      sidebarProjectGroupingMode: groupingSettings.sidebarProjectGroupingMode,
-      sidebarProjectGroupingOverrides: groupingSettings.sidebarProjectGroupingOverrides,
-    };
-    const logicalKey = deriveLogicalProjectKeyFromSettings(project, settings);
+    const sameProjectKey = (copy: Project) =>
+      deriveLogicalProjectKey(copy, { groupingMode: "repository_path" });
+    const logicalKey = sameProjectKey(project);
     const toTarget = (copy: Project): BriefTarget => ({
       environmentId: copy.environmentId,
       projectId: copy.id,
@@ -88,19 +90,12 @@ export function ProjectBriefSection({
       .filter(
         (copy) =>
           !(copy.environmentId === project.environmentId && copy.id === project.id) &&
-          deriveLogicalProjectKeyFromSettings(copy, settings) === logicalKey,
+          sameProjectKey(copy) === logicalKey,
       )
       .map(toTarget)
       .toSorted((left, right) => left.label.localeCompare(right.label));
     return [toTarget(project), ...others];
-  }, [
-    computerLabel,
-    groupingSettings.sidebarProjectGroupingMode,
-    groupingSettings.sidebarProjectGroupingOverrides,
-    project,
-    projects,
-    supports,
-  ]);
+  }, [computerLabel, project, projects, supports]);
   const picked = targets[0]!;
   const followed = useMemo(
     () =>
@@ -121,7 +116,12 @@ export function ProjectBriefSection({
   const briefOn = (target: BriefTarget): ProjectBrief | null =>
     newer(
       briefIn(snapshots[target.environmentId], target.projectId),
-      answered[`${target.environmentId}\n${target.projectId}`] ?? null,
+      answered[targetKey(target)] ?? null,
+    );
+  /** Every computer's revision now, for a draft that starts here. */
+  const currentRevisions = (): Readonly<Record<string, number>> =>
+    Object.fromEntries(
+      targets.map((target) => [targetKey(target), briefOn(target)?.revision ?? 0]),
     );
   const pickedBrief = briefOn(picked);
   const text = draft?.text ?? pickedBrief?.text ?? "";
@@ -135,7 +135,7 @@ export function ProjectBriefSection({
       outcomes.forEach((outcome, index) => {
         if (outcome.kind !== "saved" && outcome.kind !== "stale") return;
         const target = sent[index]!;
-        next[`${target.environmentId}\n${target.projectId}`] = outcome.brief;
+        next[targetKey(target)] = outcome.brief;
       });
       return next;
     });
@@ -146,7 +146,7 @@ export function ProjectBriefSection({
     const sending = draft.text;
     setSaving(true);
     try {
-      const first = await saveBriefOn(picked, sending, draft.baseRevision);
+      const first = await saveBriefOn(picked, sending, draft.baseRevisions[targetKey(picked)] ?? 0);
       remember([first], [picked]);
       if (first.kind === "stale") {
         // Theirs stays; the box shows it, and the user's text can come back.
@@ -160,7 +160,11 @@ export function ProjectBriefSection({
       }
       const others = targets.slice(1);
       const rest = await Promise.all(
-        others.map((target) => saveBriefOn(target, sending, briefOn(target)?.revision ?? 0)),
+        // A computer whose brief had not arrived when the edit began counts
+        // as revision 0: one it holds since is refused, not overwritten.
+        others.map((target) =>
+          saveBriefOn(target, sending, draft.baseRevisions[targetKey(target)] ?? 0),
+        ),
       );
       remember(rest, others);
       setDraft(null);
@@ -205,7 +209,7 @@ export function ProjectBriefSection({
             const next = event.currentTarget.value;
             setDraft((current) => ({
               text: next,
-              baseRevision: current?.baseRevision ?? pickedBrief?.revision ?? 0,
+              baseRevisions: current?.baseRevisions ?? currentRevisions(),
             }));
             if (notice !== null) setNotice(null);
           }}
@@ -253,7 +257,7 @@ export function ProjectBriefSection({
               size="xs"
               variant="outline"
               onClick={() => {
-                setDraft({ text: notice.mine, baseRevision: pickedBrief?.revision ?? 0 });
+                setDraft({ text: notice.mine, baseRevisions: currentRevisions() });
                 setNotice(null);
               }}
             >

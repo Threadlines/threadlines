@@ -593,6 +593,16 @@ function readResumeCursorProjectBriefHash(resumeCursor: unknown): string | undef
   return isCodexResumeCursorSchema(resumeCursor) ? resumeCursor.projectBriefHash : undefined;
 }
 
+/** The cursor as it was, the brief's hash left out (its other fields, a carried rollout's path, kept). */
+function withoutProjectBriefHash(
+  resumeCursor: unknown,
+  providerThreadId: string,
+): CodexResumeCursor {
+  if (!isCodexResumeCursorSchema(resumeCursor)) return { threadId: providerThreadId };
+  const { projectBriefHash: _held, ...rest } = resumeCursor;
+  return rest;
+}
+
 function readResumeCursorRolloutPath(
   resumeCursor: ProviderSession["resumeCursor"],
 ): string | undefined {
@@ -3500,14 +3510,18 @@ const makeCodexSessionRuntimeIn = (
             serviceTier: options.serviceTier,
             developerInstructions: threadDeveloperInstructions,
           });
+          // A revert may take the brief a resume added along with the turns
+          // after it: the next resume adds it again (at worst one copy more).
+          projectBriefHashHeld = undefined;
           yield* updateSession(sessionRef, {
             status: "ready",
             activeTurnId: undefined,
+            resumeCursor:
+              replacementProviderThreadId !== undefined
+                ? withProjectBriefHash({ threadId: replacementProviderThreadId })
+                : withoutProjectBriefHash(session.resumeCursor, providerThreadId),
             ...(replacementProviderThreadId !== undefined
-              ? {
-                  resumeCursor: withProjectBriefHash({ threadId: replacementProviderThreadId }),
-                  providerThreadId: replacementProviderThreadId,
-                }
+              ? { providerThreadId: replacementProviderThreadId }
               : {}),
           });
           if (replacementProviderThreadId !== undefined) {

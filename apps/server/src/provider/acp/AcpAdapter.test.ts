@@ -1796,6 +1796,58 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
   );
 
   it.effect(
+    "sends the project's brief again when the agent refused the prompt that carried it",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* CursorAdapter;
+        const serverSettings = yield* ServerSettingsService;
+        const threadId = ThreadId.make("cursor-project-brief-refused");
+        const tempDir = yield* Effect.promise(() => mkdtemp(path.join(os.tmpdir(), "cursor-acp-")));
+        const requestLogPath = path.join(tempDir, "requests.ndjson");
+        yield* Effect.promise(() => writeFile(requestLogPath, "", "utf8"));
+        const wrapperPath = yield* Effect.promise(() =>
+          makeProbeWrapper(requestLogPath, path.join(tempDir, "argv.txt"), {
+            T3_ACP_FAIL_FIRST_PROMPT: "1",
+          }),
+        );
+        yield* serverSettings.updateSettings({
+          providers: { cursor: { binaryPath: wrapperPath } },
+        });
+        const brief = "Use pnpm here.";
+        yield* adapter.startSession({
+          threadId,
+          provider: ProviderDriverKind.make("cursor"),
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+          projectInstructions: brief,
+        });
+        const turn = (text: string) =>
+          Effect.gen(function* () {
+            const ended = yield* adapter.streamEvents.pipe(
+              Stream.takeUntil((event) => event.type === "turn.completed"),
+              Stream.runDrain,
+              Effect.forkChild,
+            );
+            yield* adapter.sendTurn({ threadId, input: text, attachments: [] });
+            yield* Fiber.join(ended);
+          });
+        yield* turn("first try");
+        yield* turn("second try");
+        yield* adapter.stopSession(threadId);
+
+        const prompts = (yield* Effect.promise(() => readJsonLines(requestLogPath)))
+          .filter((entry) => entry.method === "session/prompt")
+          .map((entry) =>
+            (entry.params as { prompt: Array<{ text?: string }> }).prompt
+              .map((part) => part.text ?? "")
+              .join(""),
+          );
+        assert.deepEqual(prompts, [`${brief}\n\nfirst try`, `${brief}\n\nsecond try`]);
+      }),
+  );
+
+  it.effect(
     "sends the project's brief ahead of a new session's first prompt, and on a resume only when it changed",
     () =>
       Effect.gen(function* () {
