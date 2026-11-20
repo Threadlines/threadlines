@@ -13,12 +13,16 @@ import { useComputerConfig, waitForComputerConfig } from "../newThreadDefaults";
  * not repeated. Null when the computer's settings never come or no branch
  * fits; a failed lookup rejects.
  */
+/** How long a send waits for a computer's settings (a remote one can be slow to connect). */
+const SEND_SETTINGS_WAIT_MS = 15_000;
+
 export async function fetchNewWorktreeBaseBranch(input: {
   readonly queryClient: QueryClient;
   readonly environmentId: EnvironmentId;
   readonly cwd: string;
 }): Promise<string | null> {
-  const base = (await waitForComputerConfig(input.environmentId))?.settings.newWorktreeBase;
+  const base = (await waitForComputerConfig(input.environmentId, SEND_SETTINGS_WAIT_MS))?.settings
+    .newWorktreeBase;
   if (base === undefined) {
     return null;
   }

@@ -1442,6 +1442,86 @@ describe("ChatView (full app): first sends and worktree setup", () => {
     }
   });
 
+  it("keeps a waiting New worktree send's branch picker off until it goes", async () => {
+    const snapshot = addThreadToSnapshot(createDraftOnlySnapshot(), THREAD_ID);
+    // The setting names `develop`, whose search is slow; the plain list is not.
+    let releaseSearch: () => void = () => {};
+    const searchReleased = new Promise<void>((resolve) => {
+      releaseSearch = resolve;
+    });
+    const refsPage = (refs: ReadonlyArray<Record<string, unknown>>) => ({
+      isRepo: true,
+      hasPrimaryRemote: true,
+      nextCursor: null,
+      totalCount: refs.length,
+      refs,
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads: snapshot.threads.map((thread) =>
+          thread.id === THREAD_ID ? Object.assign({}, thread, { session: null }) : thread,
+        ),
+      },
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          settings: {
+            ...nextFixture.serverConfig.settings,
+            newWorktreeBase: { from: "named", branch: "develop" },
+          },
+        };
+      },
+      resolveRpc: (body) => {
+        if (body._tag === WS_METHODS.vcsListRefs) {
+          return body.query === "develop"
+            ? searchReleased.then(() =>
+                refsPage([
+                  { name: "develop", current: false, isDefault: false, worktreePath: null },
+                ]),
+              )
+            : refsPage([
+                { name: "main", current: true, isDefault: true, worktreePath: null },
+                { name: "release/next", current: false, isDefault: false, worktreePath: null },
+              ]);
+        }
+        if (body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand) {
+          return { sequence: fixture.snapshot.snapshotSequence + 1 };
+        }
+        return undefined;
+      },
+    });
+
+    try {
+      (await waitForButtonByText("Current checkout")).click();
+      await clickSelectItemContainingText("New worktree");
+      useComposerDraftStore.getState().setPrompt(THREAD_REF, "Ship it");
+      await waitForLayout();
+      (await waitForSendButton()).click();
+      await waitForLayout();
+
+      // The send has its place while it waits for the setting's branch.
+      expect((await waitForButtonByText("From main")).disabled).toBe(true);
+      releaseSearch();
+
+      await vi.waitFor(
+        () => {
+          const turnStartRequest = wsRequests.find(
+            (request) =>
+              request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+              request.type === "thread.turn.start",
+          ) as { bootstrap?: { prepareWorktree?: { baseBranch?: string } } } | undefined;
+          expect(turnStartRequest?.bootstrap?.prepareWorktree?.baseBranch).toBe("develop");
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      releaseSearch();
+      await mounted.cleanup();
+    }
+  });
+
   it("clears pending worktree overrides when switching empty server threads", async () => {
     const secondThreadId = "thread-browser-test-second" as ThreadId;
     const snapshot = addThreadToSnapshot(createDraftOnlySnapshot(), THREAD_ID);

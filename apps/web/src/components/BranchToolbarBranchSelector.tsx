@@ -82,6 +82,8 @@ interface BranchToolbarBranchSelectorProps {
   threadId: ThreadId;
   draftId?: DraftId;
   envLocked: boolean;
+  /** The picker is off: a message or goal on its way has its branch. */
+  locked?: boolean;
   effectiveEnvModeOverride?: "local" | "worktree";
   activeThreadBranchOverride?: string | null;
   /** The override is the base the "New worktrees from" setting gave, not a pick. */
@@ -126,6 +128,7 @@ export function BranchToolbarBranchSelector({
   threadId,
   draftId,
   envLocked,
+  locked = false,
   effectiveEnvModeOverride,
   activeThreadBranchOverride,
   activeThreadBranchOverrideFromSetting,
@@ -670,7 +673,8 @@ export function BranchToolbarBranchSelector({
         }),
     selectedCheckoutMissing,
   );
-  const triggerDisabled = (isBranchesSearchPending && refs.length === 0) || isBranchActionPending;
+  const triggerDisabled =
+    locked || (isBranchesSearchPending && refs.length === 0) || isBranchActionPending;
 
   function renderPickerItem(itemValue: string, index: number) {
     if (checkoutPullRequestItemValue && itemValue === checkoutPullRequestItemValue) {

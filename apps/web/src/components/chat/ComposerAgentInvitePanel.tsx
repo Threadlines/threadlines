@@ -10,6 +10,13 @@ import { failureNotice, toastManager } from "../ui/toast";
 import { addComputerNotConnectedNotice } from "../computerConnectionNotices";
 
 /**
+ * Invites answered from this window. The panel stays up until the thread's
+ * update takes it away, and it can be left and opened again meanwhile; its
+ * buttons stay off for an answered invite either way.
+ */
+const answeredInviteIds = new Set<string>();
+
+/**
  * An agent asks to bring in another agent for a review
  * (docs/design/rooms-agent-invites.md). Docked above the message box like a
  * tool approval, but the box stays usable: the user can answer, or write
@@ -20,7 +27,7 @@ export const ComposerAgentInvitePanel = memo(function ComposerAgentInvitePanel(p
   invite: PendingRoomInvite;
 }) {
   const { invite } = props;
-  const [responding, setResponding] = useState(false);
+  const [responding, setResponding] = useState(() => answeredInviteIds.has(invite.requestId));
   const [showRequest, setShowRequest] = useState(false);
 
   const respond = async (choice: RoomAgentInviteChoice) => {
@@ -45,6 +52,7 @@ export const ComposerAgentInvitePanel = memo(function ComposerAgentInvitePanel(p
       // Answered: the buttons stay off until the thread's update takes the
       // panel away, which can land a moment after the reply. A second click
       // in that gap would be refused as an invite already answered.
+      answeredInviteIds.add(invite.requestId);
     } catch (error) {
       setResponding(false);
       toastManager.add(

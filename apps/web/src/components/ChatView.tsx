@@ -3494,7 +3494,7 @@ export default function ChatView(props: ChatViewProps) {
   // project in that environment while keeping the same logical project.
   const onEnvironmentChange = useCallback(
     (nextEnvironmentId: EnvironmentId) => {
-      if (envLocked || !draftId) return;
+      if (envLocked || isSendBusy || !draftId) return;
       const target = logicalProjectEnvironments.find(
         (env) => env.environmentId === nextEnvironmentId,
       );
@@ -3505,7 +3505,7 @@ export default function ChatView(props: ChatViewProps) {
       // The move drops the draft's agents: they were the old computer's.
       void applyMovedDraftDefaults(draftId, target.environmentId);
     },
-    [draftId, envLocked, logicalProjectEnvironments, setDraftThreadContext],
+    [draftId, envLocked, isSendBusy, logicalProjectEnvironments, setDraftThreadContext],
   );
 
   // A new thread can also go to a computer that hasn't got the project yet:
@@ -6739,6 +6739,8 @@ export default function ChatView(props: ChatViewProps) {
   };
 
   const [goalDispatchingThreadId, setGoalDispatchingThreadId] = useState<ThreadId | null>(null);
+  const placementBusy =
+    isSendBusy || (activeThread !== undefined && goalDispatchingThreadId === activeThread.id);
   // Bridges the gap between dispatching a goal and its authoritative state
   // arriving through the projection stream — without it the bar flickers out
   // while a brand-new thread materializes (and edits briefly show the stale
@@ -9316,7 +9318,11 @@ export default function ChatView(props: ChatViewProps) {
                         onActiveThreadBranchOverrideChange: onPendingServerThreadBaseChange,
                       }
                     : {})}
-                  envLocked={envLocked}
+                  // A message or goal on its way has its place: the computer,
+                  // workspace and branch stay put until it lands or fails
+                  // (a first send can wait seconds for its worktree's branch).
+                  envLocked={envLocked || placementBusy}
+                  branchLocked={placementBusy}
                   onComposerFocusRequest={scheduleComposerFocus}
                   {...(canCheckoutPullRequestIntoThread
                     ? { onCheckoutPullRequestRequest: openPullRequestDialog }
