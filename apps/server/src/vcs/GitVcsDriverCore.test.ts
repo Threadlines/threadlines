@@ -1264,6 +1264,49 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         }),
     );
 
+    it.effect("shows branches a background fetch brought in to the next fresh listing", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const remote = yield* makeTmpDir("git-vcs-driver-remote-");
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        yield* git(remote, ["init", "--bare"]);
+        yield* git(cwd, ["remote", "add", "origin", remote]);
+        yield* git(cwd, ["push", "-u", "origin", initialBranch]);
+        yield* pushRemoteBranchFromPeer({
+          remote,
+          baseBranch: initialBranch,
+          branch: "fetched-later",
+          subject: "remote branch",
+          fileName: "later.txt",
+        });
+
+        // A fresh listing starts the background fetch and is shared for a few
+        // seconds with the next fresh one. (It may already include the branch
+        // if the fetch beat its read.)
+        yield* driver.listRefs({ cwd, query: "fetched-later", refresh: true });
+        yield* waitForGitOutput(
+          cwd,
+          ["branch", "--remotes", "--list", "origin/fetched-later"],
+          (output) => output.trim().length > 0,
+        );
+
+        // The fetch has landed (the server notes it a moment after git does):
+        // the shared listing from before it isn't handed out again, which
+        // would otherwise last until its few seconds ran out.
+        const startedAtMs = Date.now();
+        let after = yield* driver.listRefs({ cwd, query: "fetched-later", refresh: true });
+        while (after.refs.length === 0 && Date.now() - startedAtMs < 5_000) {
+          yield* Effect.promise(() => sleepRealTime(50));
+          after = yield* driver.listRefs({ cwd, query: "fetched-later", refresh: true });
+        }
+        assert.deepStrictEqual(
+          after.refs.map((ref) => ref.name),
+          ["origin/fetched-later"],
+        );
+      }),
+    );
+
     it.effect("puts the branch named exactly what was searched for on the first page", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();

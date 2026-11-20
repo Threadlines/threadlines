@@ -1198,6 +1198,8 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   // the snapshot implementation's ordering in this service constructor.
   let invalidateListRefsSnapshotByCommonDir = (_gitCommonDir: string): Effect.Effect<void> =>
     Effect.void;
+  let markRemoteRefsFetchedByCommonDir = (_gitCommonDir: string): Effect.Effect<void> =>
+    Effect.void;
 
   const executeRaw: GitVcsDriver.GitVcsDriverShape["execute"] = Effect.fnUntraced(
     function* (input) {
@@ -1874,7 +1876,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           includeTags: cacheKey.includeTags,
         }),
       { discard: true, concurrency: "unbounded" },
-    ).pipe(Effect.ensuring(invalidateListRefsSnapshotByCommonDir(cacheKey.gitCommonDir)));
+    ).pipe(Effect.ensuring(markRemoteRefsFetchedByCommonDir(cacheKey.gitCommonDir)));
     return true as const;
   });
 
@@ -4985,10 +4987,29 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     }
   });
 
+  // A change made here (a branch made, switched or deleted): a listing read
+  // while it landed may predate it, so it reads again (resolveListRefsSnapshot).
   invalidateListRefsSnapshotByCommonDir = (gitCommonDir) =>
     Effect.sync(() => {
       bumpListRefsGeneration(gitCommonDir);
       bumpListRefsEpoch(gitCommonDir);
+    });
+  // The background fetch of remote branches finished. The next listing reads
+  // them, but one already reading keeps its answer, as if it had come a
+  // moment sooner: reading again doubled the wait (seconds on a busy repository)
+  // for every listing a fetch landed during, roughly every two minutes.
+  markRemoteRefsFetchedByCommonDir = (gitCommonDir) =>
+    Effect.suspend(() => {
+      bumpListRefsEpoch(gitCommonDir);
+      // Fresh reads are shared for a few seconds per generation; the one from
+      // before the fetch mustn't be handed out again.
+      return Cache.invalidate(
+        listRefsRefreshCache,
+        new ListRefsRefreshCacheKey({
+          gitCommonDir,
+          generation: currentListRefsGeneration(gitCommonDir),
+        }),
+      );
     });
   const invalidateListRefsSnapshot = (cwd: string): Effect.Effect<void> =>
     resolveGitCommonDir(cwd).pipe(
