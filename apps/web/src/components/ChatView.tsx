@@ -59,6 +59,7 @@ import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
 import { formatForkSourceExcerpt, truncate } from "@threadlines/shared/String";
 import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
 import { Debouncer } from "@tanstack/react-pacer";
+import { useQueryClient } from "@tanstack/react-query";
 import * as Option from "effect/Option";
 import {
   lazy,
@@ -76,6 +77,7 @@ import { useShallow } from "zustand/react/shallow";
 import { useGitStatus } from "~/lib/gitStatusState";
 import { shouldShowCheckoutPicker } from "~/lib/checkoutRecovery";
 import { useCheckoutRecovery } from "../hooks/useCheckoutRecovery";
+import { fetchNewWorktreeBaseBranch } from "../hooks/useNewWorktreeBaseBranch";
 import { buildCheckoutMissingNotice } from "./chat/checkoutMissingNotice";
 import { usePrimaryEnvironmentId } from "../environments/primary";
 import { readEnvironmentApi, useEnvironmentApiAvailable } from "../environmentApi";
@@ -1211,6 +1213,7 @@ export default function ChatView(props: ChatViewProps) {
     useMemo(() => createThreadSelectorByRef(routeThreadRef), [routeThreadRef]),
   );
   const setStoreThreadError = useStore((store) => store.setError);
+  const queryClient = useQueryClient();
   const activeThreadSeenAt = useUiStateStore((store) =>
     routeKind === "server"
       ? selectThreadSeenAt(store, routeThreadKey, serverThread?.lastSeenAt)
@@ -5916,14 +5919,23 @@ export default function ChatView(props: ChatViewProps) {
       envMode: sendEnvMode,
       worktreePath: activeThread.worktreePath,
     });
-    const baseBranchForWorktree = shouldCreateWorktree ? activeThreadBranch : null;
-
-    // In worktree mode, require an explicit base branch so we don't silently
-    // fall back to local execution when branch selection is missing.
-    if (shouldCreateWorktree && !activeThreadBranch) {
-      setThreadError(threadIdForSend, "Select a base branch before sending in New worktree mode.");
-      return;
-    }
+    // A new worktree's base is the branch picked below the composer, or the
+    // "New worktrees from" setting's branch, which the picker fills in once
+    // the branch list loads. A send before then waits for that list (seconds
+    // on a busy repository) instead of failing while the picker already
+    // names the branch.
+    let baseBranchForWorktree = shouldCreateWorktree ? activeThreadBranch : null;
+    const worktreeBaseLookup =
+      shouldCreateWorktree && !activeThreadBranch
+        ? fetchNewWorktreeBaseBranch({
+            queryClient,
+            environmentId,
+            cwd: activeProject.cwd,
+          })
+        : null;
+    // Awaited where the send needs it; until then a send that stops early
+    // leaves no unhandled failure behind.
+    worktreeBaseLookup?.catch(() => undefined);
 
     sendInFlightRef.current = true;
     // Sending again by hand retires an older failure's Retry.
@@ -5955,7 +5967,7 @@ export default function ChatView(props: ChatViewProps) {
       useLocalDispatchStore.getState().begin({
         threadRef: threadRefForSend,
         sendId: messageIdForSend,
-        snapshot: dispatchSnapshotForSend,
+        snapshot: { ...dispatchSnapshotForSend, worktreeBase: baseBranchForWorktree },
         firstSend: isLocalDraftThread
           ? { modelSelection: threadCreateModelSelection, participantId: roomRecipientId }
           : null,
@@ -6242,6 +6254,14 @@ export default function ChatView(props: ChatViewProps) {
       }
 
       const turnAttachments = await turnAttachmentsPromise;
+      if (worktreeBaseLookup !== null) {
+        baseBranchForWorktree = await worktreeBaseLookup;
+        if (baseBranchForWorktree === null) {
+          throw new Error(
+            "Couldn't find a branch to start the new worktree from. Pick one below the message box.",
+          );
+        }
+      }
       if (baseBranchForWorktree) {
         requestSetupTerminalReveal(scopedThreadKey(threadRefForSend), new Date().toISOString());
       }
@@ -6253,7 +6273,7 @@ export default function ChatView(props: ChatViewProps) {
               modelSelection: threadCreateModelSelection,
               runtimeMode,
               interactionMode,
-              branch: activeThreadBranch,
+              branch: baseBranchForWorktree ?? activeThreadBranch,
               worktreePath: activeThread.worktreePath,
               ...existingWorktreeCreateFields({
                 thread: activeThread,
@@ -6774,13 +6794,6 @@ export default function ChatView(props: ChatViewProps) {
         envMode: sendEnvMode,
         worktreePath: activeThread.worktreePath,
       });
-      if (goalNeedsWorktree && !activeThreadBranch) {
-        setThreadError(
-          threadId,
-          "Select a base branch before setting a goal in New worktree mode.",
-        );
-        return;
-      }
       // A first send (or another goal) already setting this thread up makes
       // it, or its worktree; the goal can go once that is done.
       const goalThreadKey = scopedThreadKey(scopeThreadRef(environmentId, threadId));
@@ -6833,6 +6846,20 @@ export default function ChatView(props: ChatViewProps) {
       setGoalDispatchingThreadId(threadId);
       const endGoalSetup = goalSetsThreadUp ? beginGoalThreadSetup(goalThreadKey) : () => {};
       try {
+        // Its worktree starts where a first send's would (see onSend).
+        const goalWorktreeBase = goalNeedsWorktree
+          ? (activeThreadBranch ??
+            (await fetchNewWorktreeBaseBranch({
+              queryClient,
+              environmentId,
+              cwd: activeProject.cwd,
+            })))
+          : null;
+        if (goalNeedsWorktree && goalWorktreeBase === null) {
+          throw new Error(
+            "Couldn't find a branch to start the new worktree from. Pick one below the message box.",
+          );
+        }
         // A goal on a draft makes its thread with it, so the session spins up
         // and the goal's work begins without waiting for a user message.
         const createThread =
@@ -6843,7 +6870,7 @@ export default function ChatView(props: ChatViewProps) {
                 modelSelection: goalModelSelection,
                 runtimeMode,
                 interactionMode: "default" as const,
-                branch: activeThreadBranch,
+                branch: goalWorktreeBase ?? activeThreadBranch,
                 worktreePath: activeThread.worktreePath,
                 ...existingWorktreeCreateFields({
                   thread: activeThread,
@@ -6870,8 +6897,8 @@ export default function ChatView(props: ChatViewProps) {
           ? buildThreadStartBootstrap({
               createThread,
               worktree:
-                goalNeedsWorktree && activeThreadBranch
-                  ? { projectCwd: activeProject.cwd, baseBranch: activeThreadBranch }
+                goalWorktreeBase !== null
+                  ? { projectCwd: activeProject.cwd, baseBranch: goalWorktreeBase }
                   : null,
             })
           : undefined;
@@ -6917,9 +6944,9 @@ export default function ChatView(props: ChatViewProps) {
       isSendBusy,
       isServerThread,
       persistThreadSettingsForNextTurn,
+      queryClient,
       runtimeMode,
       sendEnvMode,
-      setThreadError,
     ],
   );
 

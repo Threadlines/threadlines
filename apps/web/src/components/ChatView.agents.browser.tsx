@@ -837,6 +837,18 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
           ).toMatchObject({ requestId, choice: "review" }),
         { timeout: 8_000, interval: 16 },
       );
+      // The server took the answer, but the thread has not caught up yet, so
+      // the card is still there. Its buttons stay off: a second answer in
+      // that gap would be refused as an invite already answered.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(document.querySelector('[data-testid="agent-invite-panel"]')).toBe(panel);
+      expect(
+        [...panel.querySelectorAll<HTMLButtonElement>("button")]
+          .filter((button) =>
+            ["Not now", "Add to thread", "Review only"].includes(button.textContent ?? ""),
+          )
+          .map((button) => button.disabled),
+      ).toEqual([true, true, true]);
     } finally {
       await mounted.cleanup();
     }

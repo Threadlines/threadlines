@@ -42,15 +42,17 @@ export const ComposerAgentInvitePanel = memo(function ComposerAgentInvitePanel(p
         choice,
         createdAt: new Date().toISOString(),
       });
+      // Answered: the buttons stay off until the thread's update takes the
+      // panel away, which can land a moment after the reply. A second click
+      // in that gap would be refused as an invite already answered.
     } catch (error) {
+      setResponding(false);
       toastManager.add(
         failureNotice({
           title: `Couldn't bring in ${invite.toName}`,
           error,
         }),
       );
-    } finally {
-      setResponding(false);
     }
   };
 

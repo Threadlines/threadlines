@@ -1375,6 +1375,73 @@ describe("ChatView (full app): first sends and worktree setup", () => {
     }
   });
 
+  it("waits for a slow branch list instead of failing a New worktree send", async () => {
+    const snapshot = addThreadToSnapshot(createDraftOnlySnapshot(), THREAD_ID);
+    // The branch list on a busy repository can take seconds. It answers only
+    // once the message has been sent.
+    let releaseRefs: () => void = () => {};
+    const refsReleased = new Promise<void>((resolve) => {
+      releaseRefs = resolve;
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads: snapshot.threads.map((thread) =>
+          thread.id === THREAD_ID ? Object.assign({}, thread, { session: null }) : thread,
+        ),
+      },
+      resolveRpc: (body) => {
+        if (body._tag === WS_METHODS.vcsListRefs) {
+          return refsReleased.then(() => ({
+            isRepo: true,
+            hasPrimaryRemote: true,
+            nextCursor: null,
+            totalCount: 2,
+            refs: [
+              { name: "feature/current", current: true, isDefault: false, worktreePath: null },
+              { name: "main", current: false, isDefault: true, worktreePath: null },
+            ],
+          }));
+        }
+        if (body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand) {
+          return { sequence: fixture.snapshot.snapshotSequence + 1 };
+        }
+        return undefined;
+      },
+    });
+
+    const turnStart = () =>
+      wsRequests.find(
+        (request) =>
+          request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+          request.type === "thread.turn.start",
+      ) as { bootstrap?: { prepareWorktree?: { baseBranch?: string } } } | undefined;
+
+    try {
+      (await waitForButtonByText("Current checkout")).click();
+      await clickSelectItemContainingText("New worktree");
+      useComposerDraftStore.getState().setPrompt(THREAD_REF, "Ship it");
+      await waitForLayout();
+      (await waitForSendButton()).click();
+      await waitForLayout();
+
+      expect(document.body.textContent).not.toContain("Select a base branch");
+      expect(turnStart()).toBeUndefined();
+
+      releaseRefs();
+      // The "New worktrees from" setting's default: the default branch, not
+      // the branch the project's checkout is on.
+      await vi.waitFor(
+        () => expect(turnStart()?.bootstrap?.prepareWorktree?.baseBranch).toBe("main"),
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      releaseRefs();
+      await mounted.cleanup();
+    }
+  });
+
   it("clears pending worktree overrides when switching empty server threads", async () => {
     const secondThreadId = "thread-browser-test-second" as ThreadId;
     const snapshot = addThreadToSnapshot(createDraftOnlySnapshot(), THREAD_ID);
