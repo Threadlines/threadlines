@@ -185,6 +185,22 @@ async function openSelect(label: string) {
   trigger.click();
 }
 
+/** Picks an access level from the editor's access button, as on the composer. */
+async function pickAccess(mode: string) {
+  const trigger = await vi.waitFor(() => {
+    const element = document.querySelector<HTMLElement>('[aria-label^="Access level"]');
+    expect(element).not.toBeNull();
+    return element!;
+  });
+  trigger.click();
+  const option = await vi.waitFor(() => {
+    const element = document.querySelector<HTMLElement>(`[data-access-option="${mode}"]`);
+    expect(element).not.toBeNull();
+    return element!;
+  });
+  option.click();
+}
+
 const detailPath = `/scheduled?environment=environment-local&task=${TASK_ID}`;
 
 describe("ChatView (full app): event tasks", () => {
@@ -225,14 +241,14 @@ describe("ChatView (full app): event tasks", () => {
         page.getByTestId("scheduled-form-prompt"),
         "Read the issue and propose a fix.",
       );
-      await openSelect("Runs");
-      await clickSelectItemContainingText("When something happens");
+      await page.getByTestId("scheduled-schedule-button").click();
+      await page.getByTestId("scheduled-schedule-events").click();
 
       // The repository and the only sender come from the project and gh.
       await expect.element(page.getByTestId("scheduled-event-repository")).toHaveValue("acme/app");
       await expect.element(page.getByTestId("scheduled-event-person-badcuban")).toBeVisible();
       // A new event task asks before changes.
-      await expect.element(page.getByLabelText("Access")).toHaveTextContent("Supervised");
+      await expect.element(page.getByLabelText("Access level: Supervised")).toBeVisible();
       expect(byTestId("scheduled-form-time-zone")).toBeNull();
 
       await userEvent.fill(page.getByTestId("scheduled-event-label"), "agent");
@@ -253,15 +269,13 @@ describe("ChatView (full app): event tasks", () => {
       await vi.waitFor(() => expect(byTestId("scheduled-event-people")).toBeNull());
 
       // Full access with anyone is said before saving.
-      await openSelect("Access");
-      await clickSelectItemContainingText("Full access");
+      await pickAccess("full-access");
       await expect
         .element(
           page.getByText("Anyone who can comment on acme/app can start a run with full access."),
         )
         .toBeVisible();
-      await openSelect("Access");
-      await clickSelectItemContainingText("Supervised");
+      await pickAccess("approval-required");
 
       await page.getByTestId("scheduled-form-save").click();
       await vi.waitFor(() => expect(requestsOf(WS_METHODS.scheduledTasksCreate)).toHaveLength(1));
@@ -300,7 +314,10 @@ describe("ChatView (full app): event tasks", () => {
     });
     try {
       await sendTasks([]);
-      await openSelect("Runs");
+      await page.getByTestId("scheduled-schedule-button").click();
+      await expect.element(page.getByTestId("scheduled-schedule-cron")).toBeVisible();
+      expect(byTestId("scheduled-schedule-events")).toBeNull();
+      await openSelect("Repeat");
       await vi.waitFor(() =>
         expect(document.querySelectorAll('[data-slot="select-item"]').length).toBeGreaterThan(0),
       );
@@ -309,6 +326,80 @@ describe("ChatView (full app): event tasks", () => {
       );
       expect(items).toContain("Weekdays");
       expect(items).not.toContain("When something happens");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("creates a clock task from the editor's box, schedule popover and where-it-runs sentence", async () => {
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: snapshot(),
+      initialPath: "/scheduled?view=new",
+      configureFixture: (nextFixture) => {
+        withScheduledCapabilities(true)(nextFixture);
+        withCodexModels(nextFixture);
+      },
+      resolveRpc: (body) =>
+        body._tag === WS_METHODS.scheduledTasksCreate
+          ? { ...eventTask(), ...body, id: TASK_ID }
+          : undefined,
+    });
+    try {
+      await sendTasks([]);
+
+      // Saving empty says what's missing, and puts the cursor in the name.
+      await page.getByTestId("scheduled-form-save").click();
+      await vi.waitFor(() =>
+        expect(
+          [...document.querySelectorAll('[data-testid="scheduled-form-problems"] li')].map(
+            (item) => item.textContent,
+          ),
+        ).toEqual(["Give the task a name.", "Say what each run should do."]),
+      );
+      expect(document.activeElement).toBe(byTestId("scheduled-form-name"));
+      expect(requestsOf(WS_METHODS.scheduledTasksCreate)).toHaveLength(0);
+
+      await userEvent.fill(page.getByTestId("scheduled-form-name"), "Friday review");
+      await userEvent.fill(page.getByTestId("scheduled-form-prompt"), "Summarize the week.");
+
+      // Weekly on Friday, then a cron rule that starts from it.
+      await page.getByTestId("scheduled-schedule-button").click();
+      await openSelect("Repeat");
+      await clickSelectItemContainingText("Weekly");
+      await page.getByTestId("scheduled-form-day-5").click();
+      await vi.waitFor(() =>
+        expect(byTestId("scheduled-schedule-button")?.textContent).toContain("Fridays at 9:00"),
+      );
+      await page.getByTestId("scheduled-schedule-cron").click();
+      await expect.element(page.getByTestId("scheduled-form-cron")).toHaveValue("0 9 * * 5");
+
+      // The time zone is one step further in, and back.
+      await page.getByTestId("scheduled-schedule-time-zone").click();
+      await expect.element(page.getByTestId("scheduled-form-time-zone")).toBeVisible();
+      await page.getByTestId("scheduled-schedule-back").click();
+      await expect.element(page.getByTestId("scheduled-form-cron")).toBeVisible();
+      await userEvent.keyboard("{Escape}");
+      await vi.waitFor(() => expect(byTestId("scheduled-schedule-popover")).toBeNull());
+
+      // Each run in a new worktree, from the sentence under the box.
+      await page.getByTestId("scheduled-form-checkout").click();
+      await page.getByRole("menuitemradio", { name: /New worktree/ }).click();
+      await vi.waitFor(() =>
+        expect(byTestId("scheduled-form-where")?.textContent).toMatch(
+          /^Each run starts a new thread in a new worktree on /,
+        ),
+      );
+
+      await page.getByTestId("scheduled-form-save").click();
+      await vi.waitFor(() => expect(requestsOf(WS_METHODS.scheduledTasksCreate)).toHaveLength(1));
+      expect(requestsOf(WS_METHODS.scheduledTasksCreate)[0]).toMatchObject({
+        name: "Friday review",
+        prompt: "Summarize the week.",
+        checkout: "worktree",
+        cadence: { kind: "custom", cron: "0 9 * * 5" },
+        target: { kind: "new_thread" },
+      });
     } finally {
       await mounted.cleanup();
     }

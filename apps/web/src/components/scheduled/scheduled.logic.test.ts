@@ -11,6 +11,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   checkBackThreads,
+  customCadencePatch,
   DEFAULT_WEBHOOK_FORM,
   describeNextRun,
   describeScheduleCall,
@@ -23,6 +24,7 @@ import {
   formatWhen,
   githubEventFields,
   parseScheduleCallResult,
+  scheduleSummary,
   taskForm,
   webhookFormWithContext,
 } from "./scheduled.logic";
@@ -216,6 +218,30 @@ describe("the task form", () => {
       participantId: ThreadParticipantId.make("room-claude"),
     } as const;
     expect(formDraft(taskForm(task({ target: forAgent }), ENVIRONMENT))?.target).toEqual(forAgent);
+  });
+  it("starts a cron rule from the schedule picked so far, and keeps one the user wrote", () => {
+    const weekly = { ...form(), cadenceKind: "weekly" as const, weekday: 5 };
+    expect(customCadencePatch(weekly)).toEqual({ cadenceKind: "custom", cron: "0 9 * * 5" });
+    // A one-time date would repeat every year as a rule: the rule is left as it was.
+    expect(customCadencePatch({ ...form(), cadenceKind: "once" }).cron).toBe(form().cron);
+    expect(customCadencePatch({ ...weekly, cron: "*/15 * * * *", cronChosen: true }).cron).toBe(
+      "*/15 * * * *",
+    );
+    // A saved cron task opens with its rule as the user's own.
+    expect(
+      taskForm(task({ cadence: { kind: "custom", cron: "5 4 * * *" } }), ENVIRONMENT).cronChosen,
+    ).toBe(true);
+  });
+
+  it("words the schedule button as the task list does, or the kind while half set up", () => {
+    expect(scheduleSummary(form(), "UTC")).toMatch(/^Weekdays at 9:00/);
+    expect(scheduleSummary(form(), "Europe/Madrid")).toMatch(/ · UTC$/);
+    expect(scheduleSummary({ ...form(), cadenceKind: "custom", cron: " " }, "UTC")).toBe(
+      "Custom cron rule",
+    );
+    expect(scheduleSummary({ ...form(), cadenceKind: "webhook" }, "UTC")).toBe(
+      "When something happens",
+    );
   });
 });
 

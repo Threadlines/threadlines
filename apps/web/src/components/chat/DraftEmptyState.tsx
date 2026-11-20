@@ -35,8 +35,8 @@ import {
   MenuItem,
   MenuPopup,
   MenuSeparator,
-  MenuTrigger,
 } from "../ui/menu";
+import { InlinePickerTrigger } from "../ui/inline-picker";
 
 /**
  * How the new-thread screen is arranged. `hero` is the roomy layout: only the
@@ -227,30 +227,18 @@ export function DraftEmptyState({
       >
         What's next in{" "}
         <Menu>
-          <MenuTrigger
-            render={
-              <button
-                className="group inline-flex max-w-full min-w-0 cursor-pointer font-medium text-foreground"
-                type="button"
+          <InlinePickerTrigger>
+            {isGeneralChat ? (
+              <MessagesSquareIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
+            ) : currentProject ? (
+              <ProjectFavicon
+                cwd={currentProject.cwd}
+                environmentId={currentProject.environmentId}
+                name={currentProjectName ?? currentProject.name}
               />
-            }
-          >
-            {/* Chrome never paints text-decoration under a replaced element, so
-                the dotted rule is a border on a flex wrapper — that's what keeps
-                the icon inside the underline instead of beside it. */}
-            <span className="inline-flex max-w-full min-w-0 items-center gap-1 border-b border-dotted border-muted-foreground/50 pb-0.5 align-middle leading-none transition-colors group-hover:border-foreground group-data-popup-open:border-foreground">
-              {isGeneralChat ? (
-                <MessagesSquareIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
-              ) : currentProject ? (
-                <ProjectFavicon
-                  cwd={currentProject.cwd}
-                  environmentId={currentProject.environmentId}
-                  name={currentProjectName ?? currentProject.name}
-                />
-              ) : null}
-              <span className="min-w-0 truncate">{targetName}</span>
-            </span>
-          </MenuTrigger>
+            ) : null}
+            <span className="min-w-0 truncate">{targetName}</span>
+          </InlinePickerTrigger>
           <MenuPopup align="center">
             {generalChatsRef ? (
               <>
