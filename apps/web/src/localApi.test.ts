@@ -39,6 +39,19 @@ const gitStatusListeners = new Set<(event: VcsStatusResult) => void>();
 
 const rpcClientMock = {
   dispose: vi.fn(),
+  device: {
+    list: vi.fn(),
+    updateTool: vi.fn(),
+    open: vi.fn(),
+    close: vi.fn(),
+    shutdown: vi.fn(),
+    detail: vi.fn(),
+    action: vi.fn(),
+    subscribeState: vi.fn(() => () => undefined),
+    channelOpen: vi.fn(() => () => undefined),
+    channelSend: vi.fn(),
+    channelCredit: vi.fn(),
+  },
   terminal: {
     open: vi.fn(),
     write: vi.fn(),
