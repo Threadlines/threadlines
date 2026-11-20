@@ -110,6 +110,8 @@ import {
   GITHUB_HTML_REHYPE_PLUGINS,
   normalizeMarkdownLinkHrefKey,
   pullRequestLinkLabel,
+  collectWrittenFilePaths,
+  isFileNameMention,
   resolveMarkdownDocumentFileLinks,
   splitMarkdownBlocks,
   repairStreamingMarkdownTail,
@@ -164,6 +166,25 @@ interface ChatMarkdownProps {
   /** Overrides the block's classes (its color, for a quieter message). */
   className?: string | undefined;
 }
+
+/** One block of a message, with what the whole message tells every block. */
+interface ChatMarkdownBlockProps extends ChatMarkdownProps {
+  /** Files the whole message names by full path, see {@link collectWrittenFilePaths}. */
+  writtenFilePaths: readonly string[];
+}
+
+/**
+ * {@link collectWrittenFilePaths} for a whole message, as an array that keeps
+ * its identity while the paths stay the same: a streaming message rescans on
+ * every delta, but its settled blocks re-render only when a new path appears.
+ */
+function useWrittenFilePaths(text: string, cwd: string | undefined): readonly string[] {
+  // A path never holds a line break: every source of one stops at the line.
+  const key = useMemo(() => collectWrittenFilePaths(text, cwd).join("\n"), [cwd, text]);
+  return useMemo(() => (key === "" ? NO_WRITTEN_FILE_PATHS : key.split("\n")), [key]);
+}
+
+const NO_WRITTEN_FILE_PATHS: readonly string[] = [];
 
 const EMPTY_MARKDOWN_SKILLS: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">> = [];
 
@@ -247,6 +268,7 @@ interface MarkdownDocumentContextValue {
   readonly inlineContext: InlineMarkdownContext;
   readonly markdownFileLinkMetaByHref: ReadonlyMap<string, MarkdownFileLinkMeta>;
   readonly inlineCodeFileLinkMetaBySpan: ReadonlyMap<string, MarkdownFileLinkMeta>;
+  readonly inlineCodeSpansPlacedByDocument: ReadonlySet<string>;
   readonly fileLinkParentSuffixByPath: ReadonlyMap<string, string>;
   readonly fileLinkKindByPath: ReadonlyMap<string, MarkdownFileLinkKind>;
 }
@@ -272,6 +294,7 @@ const MarkdownDocumentContext = createContext<MarkdownDocumentContextValue>({
   inlineContext: { skills: EMPTY_MARKDOWN_SKILLS, threadRef: null },
   markdownFileLinkMetaByHref: new Map(),
   inlineCodeFileLinkMetaBySpan: new Map(),
+  inlineCodeSpansPlacedByDocument: new Set(),
   fileLinkParentSuffixByPath: new Map(),
   fileLinkKindByPath: new Map(),
 });
@@ -598,7 +621,9 @@ function placedFileLinkChip(
  * may start inside a subfolder (`shots/home.png`). The text may not say the
  * folder, so the picture is the file a click on the chip would open, placed by
  * the same lookup. With no such file, the path as written is the one place
- * left to look, which is where the chip already points.
+ * left to look, which is where the chip already points. A bare name is a
+ * mention: it stays the code it was until the lookup finds the picture, and
+ * stays text when it doesn't.
  */
 function MarkdownCitedImage({
   name,
@@ -611,6 +636,27 @@ function MarkdownCitedImage({
 }) {
   const { cwd, environmentId } = useContext(MarkdownDocumentContext);
   const place = useChatFileReferencePlace({ environmentId, cwd, reference });
+  if (chip.mention) {
+    if (place.status === "found" && cwd) {
+      return (
+        <MarkdownImageFigure
+          name={name}
+          // Labelled as written, as the mention was, so find in chat reads the
+          // same words whether or not the picture turned up.
+          chip={{ ...placedFileLinkChip(chip, place.file, cwd), mention: false }}
+        />
+      );
+    }
+    return (
+      <code>
+        <MarkdownFileLink
+          {...chip}
+          isMissing={place.status === "none"}
+          isAmbiguous={place.status === "ambiguous"}
+        />
+      </code>
+    );
+  }
   if (place.status === "loading") {
     return <MarkdownFileLink {...chip} />;
   }
@@ -632,7 +678,9 @@ function MarkdownCitedImage({
  * the lookup a click would, so the hover label can say where the file really
  * is, a file the project lacks dims before anyone clicks it, and the click or
  * right-click that follows opens the found file without searching again. One
- * look places every chip that cites the same file.
+ * look places every chip that cites the same file. A bare name is a mention:
+ * the lookup decides whether it opens anything, and one the project lacks
+ * settles into plain text.
  */
 function MarkdownCitedFileLink({
   reference,
@@ -852,7 +900,12 @@ function MarkdownCode({
   ...props
 }: MarkdownRendererProps<"code">) {
   const documentContext = useContext(MarkdownDocumentContext);
-  const { threadRef, searchHighlightQuery, inlineCodeFileLinkMetaBySpan } = documentContext;
+  const {
+    threadRef,
+    searchHighlightQuery,
+    inlineCodeFileLinkMetaBySpan,
+    inlineCodeSpansPlacedByDocument,
+  } = documentContext;
   const text = typeof children === "string" ? children : null;
   // Inline math (remark-math). Display math is a `pre`, which MarkdownPre draws.
   if (text !== null && className && MATH_CODE_CLASS_REGEX.test(className)) {
@@ -888,19 +941,40 @@ function MarkdownCode({
     ? inlineCodeFileLinkMetaBySpan.get(inlineFileReference)
     : undefined;
   if (inlineFileReference && inlineFileLinkMeta) {
+    // A name whose full path this message already wrote out is that file. It
+    // stays a chip even for an image: the full path is where its picture goes.
+    if (inlineCodeSpansPlacedByDocument.has(inlineFileReference)) {
+      return <MarkdownFileLink {...fileLinkChip(inlineFileLinkMeta, documentContext)} />;
+    }
     // An absolute path already says where the file is, so it opens like a
     // link. Anything else opens through the workspace lookup, since a path
     // may start inside a subfolder, and a bare name's hover shows the name as
     // written until a look places it: before that, its folder is only a guess.
     const isAbsolute = isAbsoluteInlineFilePath(inlineFileReference);
     const searchReference = isAbsolute ? null : parseChatFileReference(inlineFileReference);
-    const isBareName = searchReference !== null && !searchReference.path.includes("/");
+    // A bare name is a mention: the agent said what the file is called, not
+    // where it is, so it reads as the code it wrote until a lookup finds it.
+    const isMention = isFileNameMention(inlineFileReference, inlineCodeSpansPlacedByDocument);
     const chip: MarkdownFileLinkProps = {
       ...fileLinkChip(inlineFileLinkMeta, documentContext),
-      ...(isBareName ? { displayPath: inlineFileReference } : {}),
+      ...(isMention
+        ? { displayPath: inlineFileReference, label: inlineFileReference, mention: true }
+        : {}),
       ...(isAbsolute ? {} : { chatReference: inlineFileReference }),
     };
     if (!isImageFilePath(inlineFileLinkMeta.filePath)) {
+      if (isMention) {
+        return (
+          <code {...props}>
+            <MarkdownCitedFileLink
+              reference={inlineFileReference}
+              chip={chip}
+              cwd={documentContext.cwd}
+              environmentId={documentContext.environmentId}
+            />
+          </code>
+        );
+      }
       return searchReference !== null ? (
         <MarkdownCitedFileLink
           reference={inlineFileReference}
@@ -1102,6 +1176,13 @@ interface MarkdownFileLinkProps {
   /** The file was looked for and more than one file ends in the cited path. */
   isAmbiguous?: boolean | undefined;
   /**
+   * The agent named the file without saying where it is (`math.ts:12`), so it
+   * draws as the code it wrote rather than as a chip. Placed by a lookup, it
+   * opens like one and its hover shows where the file is; a name nothing
+   * places stays plain text.
+   */
+  mention?: boolean | undefined;
+  /**
    * Found in the project folder behind the thread's worktree, which lacks it:
    * the agent worked outside the thread's checkout.
    */
@@ -1154,10 +1235,10 @@ function FileLinkHoverNote({
   const computerLabel = useComputerLabel();
   let note: ReactNode = null;
   if (isMissing) {
-    note =
-      chatReference !== undefined
-        ? "Not in this project · right-click to copy the name"
-        : "Not found";
+    // Only the project was searched, so the note says what the search found,
+    // not where the file might be instead. (A bare name the project lacks is a
+    // mention and shows no label at all.)
+    note = chatReference !== undefined ? "No file at this path in the project" : "Not found";
   } else if (isAmbiguous) {
     note = "More than one file matches · ask the agent for the full path";
   } else if (isInProjectFolder) {
@@ -1220,6 +1301,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
   isMissing,
   isAmbiguous,
   isInProjectFolder,
+  mention,
 }: MarkdownFileLinkProps) {
   const entryLabel = kind === "directory" ? "folder" : "file";
 
@@ -1405,13 +1487,28 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
     ],
   );
 
+  // A name the project lacks is only words: no link, no label, nothing to press.
+  if (mention && isMissing) {
+    return <>{label}</>;
+  }
+  // A mention is placed once its reference is dropped (placedFileLinkChip). Until
+  // then its hover has nothing to say beyond the name already on screen, so the
+  // label opens with the pointer but draws only once the lookup answers.
+  const isPlacedMention = mention === true && chatReference === undefined;
+  const hasHoverLabel = !mention || isPlacedMention || isAmbiguous === true;
   return (
     <Tooltip>
       <TooltipTrigger
         render={
           <a
             href={href}
-            className={cn(MARKDOWN_FILE_LINK_CLASS_NAME, className)}
+            className={
+              mention
+                ? cn(isPlacedMention ? "cursor-pointer" : "cursor-text", className)
+                : cn(MARKDOWN_FILE_LINK_CLASS_NAME, className)
+            }
+            data-file-mention={mention ? "" : undefined}
+            data-placed={isPlacedMention ? "" : undefined}
             data-entry-kind={kind}
             data-workspace-scope={isInWorkspace ? "internal" : "external"}
             data-chat-file-reference={chatReference}
@@ -1431,34 +1528,42 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
             }}
             onContextMenu={handleContextMenu}
           >
-            <VscodeEntryIcon
-              pathValue={filePath}
-              kind={kind}
-              theme={theme}
-              className={cn(MARKDOWN_FILE_LINK_ICON_CLASS_NAME, "text-current")}
-            />
-            <span className={MARKDOWN_FILE_LINK_LABEL_CLASS_NAME}>{label}</span>
+            {mention ? (
+              label
+            ) : (
+              <>
+                <VscodeEntryIcon
+                  pathValue={filePath}
+                  kind={kind}
+                  theme={theme}
+                  className={cn(MARKDOWN_FILE_LINK_ICON_CLASS_NAME, "text-current")}
+                />
+                <span className={MARKDOWN_FILE_LINK_LABEL_CLASS_NAME}>{label}</span>
+              </>
+            )}
           </a>
         }
       />
-      <TooltipPopup
-        side="top"
-        className="max-w-[min(40rem,calc(100vw-2rem))] font-mono text-[11px] leading-tight"
-      >
-        <div className="markdown-file-link-tooltip-scroll overflow-x-auto whitespace-nowrap">
-          {displayPath}
-        </div>
-        <FileLinkHoverNote
-          kind={kind}
-          filePath={filePath}
-          isInWorkspace={isInWorkspace}
-          environmentId={environmentId}
-          chatReference={chatReference}
-          isMissing={isMissing}
-          isAmbiguous={isAmbiguous}
-          isInProjectFolder={isInProjectFolder}
-        />
-      </TooltipPopup>
+      {hasHoverLabel ? (
+        <TooltipPopup
+          side="top"
+          className="max-w-[min(40rem,calc(100vw-2rem))] font-mono text-[11px] leading-tight"
+        >
+          <div className="markdown-file-link-tooltip-scroll overflow-x-auto whitespace-nowrap">
+            {displayPath}
+          </div>
+          <FileLinkHoverNote
+            kind={kind}
+            filePath={filePath}
+            isInWorkspace={isInWorkspace}
+            environmentId={environmentId}
+            chatReference={chatReference}
+            isMissing={isMissing}
+            isAmbiguous={isAmbiguous}
+            isInProjectFolder={isInProjectFolder}
+          />
+        </TooltipPopup>
+      ) : null}
     </Tooltip>
   );
 }, areMarkdownFileLinkPropsEqual);
@@ -1484,7 +1589,8 @@ function areMarkdownFileLinkPropsEqual(
     previous.chatReference === next.chatReference &&
     previous.isMissing === next.isMissing &&
     previous.isAmbiguous === next.isAmbiguous &&
-    previous.isInProjectFolder === next.isInProjectFolder
+    previous.isInProjectFolder === next.isInProjectFolder &&
+    previous.mention === next.mention
   );
 }
 
@@ -1519,7 +1625,8 @@ function ChatMarkdownDocument({
   skills = EMPTY_MARKDOWN_SKILLS,
   searchHighlightQuery,
   html,
-}: ChatMarkdownProps) {
+  writtenFilePaths,
+}: ChatMarkdownBlockProps) {
   const { resolvedTheme } = useTheme();
   // Null unless both halves of the identity are here: a transcript rendered
   // outside a thread (a plan preview, a subagent excerpt without context) has
@@ -1537,11 +1644,12 @@ function ChatMarkdownDocument({
   const {
     markdownFileLinkMetaByHref,
     inlineCodeFileLinkMetaBySpan,
+    inlineCodeSpansPlacedByDocument,
     fileLinkMetaByKey,
     fileLinkParentSuffixByPath,
   } = useMemo(
-    () => resolveMarkdownDocumentFileLinks(text, cwd, { inlineCodeChips }),
-    [cwd, inlineCodeChips, text],
+    () => resolveMarkdownDocumentFileLinks(text, cwd, { inlineCodeChips, writtenFilePaths }),
+    [cwd, inlineCodeChips, text, writtenFilePaths],
   );
   const fileLinkKindByPath = useMarkdownFileLinkKinds(fileLinkMetaByKey, environmentId, cwd);
   const streamingText = isStreaming ? text : null;
@@ -1577,6 +1685,7 @@ function ChatMarkdownDocument({
       inlineContext,
       markdownFileLinkMetaByHref,
       inlineCodeFileLinkMetaBySpan,
+      inlineCodeSpansPlacedByDocument,
       fileLinkParentSuffixByPath,
       fileLinkKindByPath,
     }),
@@ -1587,6 +1696,7 @@ function ChatMarkdownDocument({
       fileLinkKindByPath,
       fileLinkParentSuffixByPath,
       inlineCodeFileLinkMetaBySpan,
+      inlineCodeSpansPlacedByDocument,
       inlineContext,
       isStreaming,
       markdownFileLinkMetaByHref,
@@ -1627,7 +1737,8 @@ const MarkdownBlock = memo(function MarkdownBlock({
   skills = EMPTY_MARKDOWN_SKILLS,
   searchHighlightQuery,
   html,
-}: ChatMarkdownProps) {
+  writtenFilePaths,
+}: ChatMarkdownBlockProps) {
   // Lets React drop intermediate parses when deltas outpace rendering
   // (older CPUs) instead of parsing every 50ms server flush. A settled block's
   // text never changes, so deferring it costs nothing.
@@ -1648,6 +1759,7 @@ const MarkdownBlock = memo(function MarkdownBlock({
       skills={skills}
       searchHighlightQuery={searchHighlightQuery}
       html={html}
+      writtenFilePaths={writtenFilePaths}
     />
   );
 });
@@ -1661,7 +1773,8 @@ function ChatMarkdownBody({
   skills = EMPTY_MARKDOWN_SKILLS,
   searchHighlightQuery,
   html,
-}: ChatMarkdownProps) {
+  writtenFilePaths,
+}: ChatMarkdownBlockProps) {
   // Blocks are the unit of rendering whether or not the message is streaming:
   // a streaming message re-parses only its growing tail, and when it stops
   // streaming nothing changes but the tail's `isStreaming` prop. Index keys are
@@ -1685,6 +1798,7 @@ function ChatMarkdownBody({
           skills={skills}
           searchHighlightQuery={searchHighlightQuery}
           html={html}
+          writtenFilePaths={writtenFilePaths}
         />
       ))}
     </>
@@ -1714,6 +1828,7 @@ function ChatMarkdown({
   const segments = canRenderVisualizations
     ? parseCodexInlineVisualizations(text, { isStreaming })
     : [{ type: "markdown" as const, key: "markdown:0", text }];
+  const writtenFilePaths = useWrittenFilePaths(text, cwd);
 
   return (
     <div
@@ -1748,6 +1863,7 @@ function ChatMarkdown({
             skills={skills}
             searchHighlightQuery={searchHighlightQuery}
             html={html}
+            writtenFilePaths={writtenFilePaths}
           />
         );
       })}

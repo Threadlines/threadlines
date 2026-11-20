@@ -1185,11 +1185,24 @@ label:has(> select#reasoning-effort) select {
   text-decoration: none;
 }
 
-/* A place chip (PlaceLink) likewise, and its page glyph takes the chip's text
-   color rather than the link blue: the chip, not the color, says it opens. */
+/* A place chip (PlaceLink) likewise; it wears the file chip's link blue. */
 .chat-markdown a.chat-markdown-place-link {
-  color: var(--foreground);
   text-decoration: none;
+}
+
+/* A file the agent only named (ChatMarkdown's mention) reads as the code it
+   wrote. Once a lookup finds the file, hover alone says it opens. */
+.chat-markdown a[data-file-mention],
+.chat-markdown a[data-file-mention]:hover {
+  color: inherit;
+  text-decoration: none;
+  opacity: 1;
+}
+
+.chat-markdown a[data-file-mention][data-placed]:hover {
+  color: var(--foreground);
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
 }
 
 .chat-markdown blockquote {
@@ -1296,15 +1309,19 @@ label:has(> select#reasoning-effort) select {
   clear: right;
 }
 
+/* A file or place in a reply is a link, so it wears link blue: a blue tint
+   behind blue text. That keeps it apart from inline code (a grey fill) and from
+   buttons (a solid face with an edge). The edge stays, transparent, so the
+   dashed states below keep the chip's size. */
 .chat-markdown-file-link {
   display: inline-flex;
   align-items: center;
   gap: 0.28rem;
-  border: 1px solid color-mix(in srgb, var(--border) 92%, transparent);
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--muted) 88%, var(--surface-solid));
+  background: color-mix(in srgb, var(--info-foreground) 14%, transparent);
   padding: 0.08rem 0.34rem;
-  color: var(--foreground);
+  color: var(--info-foreground);
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 0.75rem;
   line-height: 1.15;
@@ -1318,9 +1335,13 @@ label:has(> select#reasoning-effort) select {
 
 .chat-markdown-file-link:hover {
   opacity: 1;
-  color: var(--foreground);
-  border-color: color-mix(in srgb, var(--border) 65%, var(--foreground));
-  background: color-mix(in srgb, var(--muted) 72%, var(--surface-solid));
+  color: var(--info-foreground);
+  background: color-mix(in srgb, var(--info-foreground) 22%, transparent);
+}
+
+/* Beats the underline every link in a reply gets: the tint already says link. */
+.chat-markdown a.chat-markdown-file-link {
+  text-decoration: none;
 }
 
 .chat-markdown-file-link:focus-visible {
@@ -1333,15 +1354,20 @@ label:has(> select#reasoning-effort) select {
 }
 
 .chat-markdown-file-link-label {
-  color: color-mix(in srgb, var(--foreground) 88%, transparent);
+  color: inherit;
   line-height: 1.1;
 }
 
 /* A file that was looked for and is not there. It still names what the agent
-   meant, but as an outline, so it does not read as something that will open.
-   Hover still shifts it to the normal chip colors. */
+   meant, but as a grey outline without the link blue, so it does not read as
+   something that will open. Hover still shifts it to the normal chip colors. */
 .chat-markdown-file-link[data-missing] {
   border-style: dashed;
+  border-color: color-mix(in srgb, var(--border) 92%, transparent);
+}
+
+.chat-markdown-file-link[data-missing]:hover {
+  border-color: transparent;
 }
 
 .chat-markdown-file-link[data-missing]:not(:hover) {

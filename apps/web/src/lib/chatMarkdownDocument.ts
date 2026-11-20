@@ -16,6 +16,8 @@ import { type PlaceId, placePathLabel } from "@threadlines/shared/appPlaces";
 import { isPlaceLinkHref } from "../appPlaceLinks";
 import { parseChatFileReference } from "../fileViewerStore";
 import {
+  fileLinkMetaForPath,
+  findBareImagePaths,
   isAbsoluteInlineFilePath,
   localhostUrlFromText,
   type MarkdownFileLinkMeta,
@@ -350,6 +352,98 @@ export function chatMarkdownUrlTransform(href: string, cwd: string | undefined):
 }
 
 const EMPTY_FILE_LINK_META_MAP: ReadonlyMap<string, MarkdownFileLinkMeta> = new Map();
+const EMPTY_SPAN_SET: ReadonlySet<string> = new Set();
+const EMPTY_PATHS: readonly string[] = [];
+
+/**
+ * Every file a message names by a written-out path: a link with a folder in
+ * it, an inline code span that is an absolute path, an image path typed in
+ * prose. Fenced blocks are skipped, and so is a path inside a longer code span:
+ * a path in a command is not a citation. Read over the whole message, since
+ * chat draws each block on its own and a name often sits blocks below the path
+ * that placed it. Sorted, so equal answers compare equal.
+ */
+export function collectWrittenFilePaths(text: string, cwd: string | undefined): readonly string[] {
+  const paths = new Set<string>();
+  const add = (written: string) => {
+    const meta = resolveMarkdownFileLinkMeta(written, cwd);
+    if (meta) paths.add(meta.filePath);
+  };
+  const fence = createFenceTracker();
+  for (const line of text.split("\n")) {
+    if (fence.feed(line) !== "text") continue;
+    for (const href of extractMarkdownLinkHrefs(line)) {
+      if (href.includes("/") || href.includes("\\")) add(normalizeMarkdownLinkHrefKey(href));
+    }
+    for (const match of line.matchAll(INLINE_CODE_RUN_PATTERN)) {
+      const span = match[2]?.trim();
+      if (span && isAbsoluteInlineFilePath(span)) add(span);
+    }
+    const prose = line.replace(INLINE_CODE_RUN_PATTERN, (run) => " ".repeat(run.length));
+    for (const match of findBareImagePaths(prose)) add(match.text);
+  }
+  return paths.size === 0 ? EMPTY_PATHS : [...paths].toSorted();
+}
+
+/**
+ * Agents often write a file's full path once and then call it by name. A bare
+ * name in inline code (`home.png`, `math.ts:12`) that exactly one written-out
+ * path ends in is that file, at the line the name cites. Searching the
+ * workspace for the name instead would miss any file outside the project. A
+ * name two written paths end in is left to the search, and so is a partial
+ * path (`Model/Form.php`): agents are told to cite project files that way, so
+ * it means the project's copy even when another copy's full path is nearby.
+ */
+function placeShortReferencesByWrittenPaths(
+  inlineMetaBySpan: ReadonlyMap<string, MarkdownFileLinkMeta>,
+  writtenFilePaths: readonly string[],
+  cwd: string | undefined,
+): {
+  readonly metaBySpan: ReadonlyMap<string, MarkdownFileLinkMeta>;
+  readonly placedSpans: ReadonlySet<string>;
+} {
+  if (writtenFilePaths.length === 0) {
+    return { metaBySpan: inlineMetaBySpan, placedSpans: EMPTY_SPAN_SET };
+  }
+  const written = writtenFilePaths.map((filePath) => ({
+    filePath,
+    slashed: filePath.replaceAll("\\", "/"),
+  }));
+  let metaBySpan: Map<string, MarkdownFileLinkMeta> | null = null;
+  const placedSpans = new Set<string>();
+  for (const span of inlineMetaBySpan.keys()) {
+    if (isAbsoluteInlineFilePath(span)) continue;
+    const reference = parseChatFileReference(span);
+    if (!reference || reference.path.includes("/")) continue;
+    const suffix = `/${reference.path}`;
+    const matches = written.filter((path) => path.slashed.endsWith(suffix));
+    if (matches.length !== 1) continue;
+    const { filePath } = matches[0]!;
+    metaBySpan ??= new Map(inlineMetaBySpan);
+    metaBySpan.set(
+      span,
+      fileLinkMetaForPath(
+        reference.line !== undefined ? `${filePath}:${reference.line}` : filePath,
+        cwd,
+      ),
+    );
+    placedSpans.add(span);
+  }
+  return metaBySpan === null
+    ? { metaBySpan: inlineMetaBySpan, placedSpans: EMPTY_SPAN_SET }
+    : { metaBySpan, placedSpans };
+}
+
+/**
+ * Whether inline code names a file by its name alone (`math.ts:12`): no folder,
+ * and no full path for it anywhere in the message. Such a name is drawn as the
+ * code the agent wrote, not as a chip, since nothing says where the file is.
+ */
+export function isFileNameMention(span: string, placedByDocument: ReadonlySet<string>): boolean {
+  if (placedByDocument.has(span) || isAbsoluteInlineFilePath(span)) return false;
+  const reference = parseChatFileReference(span);
+  return reference !== null && !reference.path.includes("/");
+}
 
 /** Every file reference one document turns into a chip, and how each is labelled. */
 export interface MarkdownDocumentFileLinks {
@@ -357,6 +451,13 @@ export interface MarkdownDocumentFileLinks {
   readonly markdownFileLinkMetaByHref: ReadonlyMap<string, MarkdownFileLinkMeta>;
   /** Inline-code file references, keyed by the span as written. */
   readonly inlineCodeFileLinkMetaBySpan: ReadonlyMap<string, MarkdownFileLinkMeta>;
+  /**
+   * Bare file names in inline code (`home.png`, `math.ts:12`) the same
+   * message already placed by writing the file's full path. Their entry in
+   * {@link inlineCodeFileLinkMetaBySpan} is that file, so they open it directly
+   * instead of searching the workspace for the name.
+   */
+  readonly inlineCodeSpansPlacedByDocument: ReadonlySet<string>;
   /** Both of the above in one map (links win), for the file-kind lookup. */
   readonly fileLinkMetaByKey: ReadonlyMap<string, MarkdownFileLinkMeta>;
   /** The parent-folder suffix that tells a file from its namesakes. */
@@ -368,11 +469,17 @@ export interface MarkdownDocumentFileLinks {
  * references share it, so the same file cited both ways gets the same
  * parent-suffix disambiguation. `inlineCodeChips` off keeps inline code as
  * written (a highlighted search hit must not shorten into a chip).
+ * `writtenFilePaths` is {@link collectWrittenFilePaths} of the whole message
+ * this document is a block of; without it, only this document's own paths
+ * place its short references.
  */
 export function resolveMarkdownDocumentFileLinks(
   text: string,
   cwd: string | undefined,
-  options: { readonly inlineCodeChips: boolean },
+  options: {
+    readonly inlineCodeChips: boolean;
+    readonly writtenFilePaths?: readonly string[] | undefined;
+  },
 ): MarkdownDocumentFileLinks {
   const markdownFileLinkMetaByHref = new Map<string, MarkdownFileLinkMeta>();
   for (const href of extractMarkdownLinkHrefs(text)) {
@@ -383,9 +490,14 @@ export function resolveMarkdownDocumentFileLinks(
       markdownFileLinkMetaByHref.set(normalizedHref, meta);
     }
   }
-  const inlineCodeFileLinkMetaBySpan = options.inlineCodeChips
-    ? buildInlineCodeFileLinkMeta(text, cwd)
-    : EMPTY_FILE_LINK_META_MAP;
+  const { metaBySpan: inlineCodeFileLinkMetaBySpan, placedSpans: inlineCodeSpansPlacedByDocument } =
+    options.inlineCodeChips
+      ? placeShortReferencesByWrittenPaths(
+          buildInlineCodeFileLinkMeta(text, cwd),
+          options.writtenFilePaths ?? collectWrittenFilePaths(text, cwd),
+          cwd,
+        )
+      : { metaBySpan: EMPTY_FILE_LINK_META_MAP, placedSpans: EMPTY_SPAN_SET };
   let fileLinkMetaByKey: ReadonlyMap<string, MarkdownFileLinkMeta> = markdownFileLinkMetaByHref;
   if (inlineCodeFileLinkMetaBySpan.size > 0) {
     const merged = new Map(markdownFileLinkMetaByHref);
@@ -400,6 +512,7 @@ export function resolveMarkdownDocumentFileLinks(
   return {
     markdownFileLinkMetaByHref,
     inlineCodeFileLinkMetaBySpan,
+    inlineCodeSpansPlacedByDocument,
     fileLinkMetaByKey,
     fileLinkParentSuffixByPath,
   };

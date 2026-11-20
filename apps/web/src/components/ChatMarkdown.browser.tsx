@@ -393,7 +393,7 @@ describe("ChatMarkdown", () => {
     }
   });
 
-  it("looks a bare file name up when pointed at, and dims a name the project lacks", async () => {
+  it("looks a bare file name up when pointed at, and leaves a name the project lacks as text", async () => {
     const cwd = "/repo/project";
     setActiveFileViewerContext({
       environmentId: CHAT_MARKDOWN_ENVIRONMENT_ID,
@@ -423,7 +423,10 @@ describe("ChatMarkdown", () => {
       // A transcript full of names searches for none of them until one is
       // pointed at.
       expect(searchEntries).not.toHaveBeenCalled();
-      const found = page.getByRole("link", { name: "math.ts · L9" });
+      // A name reads as the code the agent wrote, not as a chip.
+      const found = page.getByRole("link", { name: "math.ts:9" });
+      expect(found.element().closest("code")).not.toBeNull();
+      expect(found.element().classList.contains("chat-markdown-file-link")).toBe(false);
       expect(await hoverLabelOf(found.element())).toBe("project/src/lib%20old/math.ts:9");
 
       // Placed, it opens the file the search found without searching again.
@@ -433,15 +436,52 @@ describe("ChatMarkdown", () => {
       });
       expect(searchEntries).toHaveBeenCalledTimes(1);
 
+      // A name the project lacks is only words: no link, nothing on hover.
       const missing = page.getByRole("link", { name: "ghost.ts" });
       await userEvent.unhover(found.element());
       await userEvent.hover(missing.element());
-      await expect.element(missing).toHaveAttribute("data-missing", "");
+      await expect.element(missing).not.toBeInTheDocument();
+      expect(page.getByText("ghost.ts").element().closest("code")).not.toBeNull();
+      expect(document.querySelector('[data-slot="tooltip-popup"]')).toBeNull();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("opens a bare name as the file the same message gave the full path of", async () => {
+    const cwd = "/repo/project";
+    setActiveFileViewerContext({
+      environmentId: CHAT_MARKDOWN_ENVIRONMENT_ID,
+      cwd,
+      threadRef: CHAT_MARKDOWN_THREAD_REF,
+    });
+    const searchEntries = vi.fn(async () => ({ entries: [], truncated: false }));
+    installReadFileEnvironment(
+      vi.fn() as unknown as EnvironmentApi["projects"]["readFile"],
+      searchEntries as unknown as EnvironmentApi["projects"]["searchEntries"],
+    );
+    await parkPointer();
+    const screen = await renderWithAppProviders(
+      <ChatMarkdown
+        text={"Saved the plan to `/Users/me/notes/plan.md`.\n\nThe steps start at `plan.md:8`."}
+        cwd={cwd}
+        environmentId={CHAT_MARKDOWN_ENVIRONMENT_ID}
+      />,
+    );
+
+    try {
+      const named = page.getByRole("link", { name: "plan.md · L8" });
+      expect(await hoverLabelOf(named.element())).toBe(
+        "/Users/me/notes/plan.md:8Outside this project · opens in the file viewer",
+      );
+      await named.click();
       await vi.waitFor(() => {
-        expect(document.querySelector('[data-slot="tooltip-popup"]')?.textContent).toBe(
-          "ghost.tsNot in this project · right-click to copy the name",
-        );
+        const state = useFileViewerStore.getState();
+        expect(state.activePath).toBe("/Users/me/notes/plan.md");
+        expect(state.revealLine).toBe(8);
       });
+      // The message said where the file is, so nothing searched the project.
+      expect(searchEntries).not.toHaveBeenCalled();
     } finally {
       await screen.unmount();
     }
@@ -1621,7 +1661,7 @@ describe("ChatMarkdown", () => {
     }
   });
 
-  it("keeps a sentence whole and dims its chips when the images it names are nowhere", async () => {
+  it("leaves image names as text when the images they name are nowhere", async () => {
     // The agent named its screenshots but not the folder outside the project
     // it saved them to: the search turns up only a lookalike, the root nothing.
     const searchEntries = vi.fn(async () => ({
@@ -1650,22 +1690,21 @@ describe("ChatMarkdown", () => {
     try {
       await vi.waitFor(
         () => {
-          expect(document.querySelectorAll("a.chat-markdown-file-link[data-missing]")).toHaveLength(
-            3,
-          );
+          expect(searchEntries).toHaveBeenCalledTimes(3);
+          expect(document.querySelectorAll(".chat-markdown a")).toHaveLength(0);
         },
         { timeout: 5_000 },
       );
-      expect(readFile.mock.calls.map(([input]) => input.relativePath).toSorted()).toEqual([
+      // Nothing places them, so nothing fetches a picture for a guessed path,
+      // and the names stay the code the agent wrote, on the sentence's one line.
+      expect(readFile).not.toHaveBeenCalled();
+      const names = [...document.querySelectorAll(".chat-markdown code")];
+      expect(names.map((name) => name.textContent)).toEqual([
         "1-left.png",
         "2-right.png",
         "3-bottom.png",
       ]);
-      // With no pictures to show, the chips stay on the sentence's one line.
-      const chipTops = [...document.querySelectorAll("a.chat-markdown-file-link")].map(
-        (chip) => chip.getBoundingClientRect().top,
-      );
-      expect(new Set(chipTops).size).toBe(1);
+      expect(new Set(names.map((name) => name.getBoundingClientRect().top)).size).toBe(1);
     } finally {
       await screen.unmount();
     }
