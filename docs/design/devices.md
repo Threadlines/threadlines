@@ -31,10 +31,53 @@ Out, on purpose:
 
 - Expo cloud simulators (billed per minute), Simlock pools (alpha service),
   SSH device hosts. Linking the Mac in Fleet covers the SSH case.
-- T3's 3D device models, iPhone Duo and foldable posture views. The screen sits
-  in a flat rounded frame drawn in CSS, which matches the design language and
-  drops about 6,000 lines and a three.js dependency.
+- T3's 3D device models. They are Apple's AR assets with no redistribution
+  license, so a public repo cannot ship them. Our frames are drawn in code
+  (see "Round 2").
 - WebRTC streaming (only Expo cloud needs it).
+
+### Round 2: matching and passing T3's panel
+
+Added after the first build, before merging (the developer asked for T3's
+polish or better, the newest models, and T3's extras):
+
+- **Model-accurate frames, drawn by us.** A shape profile per device family
+  (T3's `shapeProfile.ts` is the reference for screen sizes and corner radii;
+  the simulator's own reported screen size wins): the body outline, the screen
+  corner radius that matches the hardware, side buttons, and the Dynamic
+  Island, notch or punch hole drawn over the stream where the hardware has one.
+  SVG/CSS only, theme tokens only, flat (no shadows, no gloss). Unknown models
+  fall back to the plain rounded frame.
+- **iPhone Duo.** Both screens: the cover screen when closed, the inner screen
+  when open, both in the book and tent stances where the hardware shows both.
+  Hinge and stance controls beside the screen (closed, book, open, laptop,
+  tent, table mode where available), the same messages T3's `duoControl.ts`
+  sends. Touch and keys go to the screen in front. Uses serve-sim's
+  `/helper/<id>/panel/{1,3}/stream.avcc`, already on the allowlist.
+- **Android foldables.** Fold and unfold beside the screen through serve-emu's
+  `/api/fold` (already allowed); the screen follows the reported posture.
+- **Accessibility-frame overlay.** A toolbar toggle draws the element frames
+  from `/helper/<id>/ax` (iOS) or serve-emu's `/api/accessibility` (Android)
+  over the screen, with the element's label on hover. Read-only.
+- **Several devices open at once.** Each open device is a chip in a row at the
+  top of the Device tab (close, rename on double-click, "+" opens the picker).
+  Only the visible one streams; switching keeps the others running.
+- **Float the device over the chat.** A toolbar button moves the device into a
+  small window over the chat that keeps streaming and taking touch while the
+  right panel shows something else: drag by its handle, resize from an edge,
+  "Open in right panel" brings it back. One floating device per thread. An
+  agent's `device_open` floats it when the right panel is closed.
+- **Record a flow.** A record button: tap through the app, press stop, and the
+  composer gets an unsent draft with a numbered step log (taps named from the
+  accessibility tree, like `Tapped button "General"`, plus Home, rotate and
+  Tools actions), a few key screenshots and a video of the screen made in the
+  browser from the stream canvas. Capped at 3 minutes. Client only (T3's open
+  PR pingdotgg/t3code#38735 is the reference).
+- **Event log.** A section in the Tools drawer that lists serve-sim's recent
+  device events (`/vendor/serve-sim/api/event-log/events`, allowed), iOS only.
+
+No server or contract changes are planned; every route above is already on the
+channel allowlist.
 
 ## Architecture
 
