@@ -10,6 +10,10 @@
     "./device": {
       "types": "./src/device/index.ts",
       "import": "./src/device/index.ts"
+    },
+    "./deviceState": {
+      "types": "./src/state/deviceState.ts",
+      "import": "./src/state/deviceState.ts"
     }
   },
   "scripts": {

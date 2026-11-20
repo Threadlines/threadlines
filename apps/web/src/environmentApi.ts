@@ -41,6 +41,22 @@ export function createEnvironmentApi(rpcClient: WsRpcClient): EnvironmentApi {
       claim: (claim) => rpcClient.previewAutomation.claim(claim),
       active: (activity) => rpcClient.previewAutomation.active(activity),
     },
+    device: {
+      list: rpcClient.device.list,
+      updateTool: rpcClient.device.updateTool,
+      open: rpcClient.device.open,
+      close: rpcClient.device.close,
+      shutdown: rpcClient.device.shutdown,
+      detail: rpcClient.device.detail,
+      action: rpcClient.device.action,
+      subscribeState: (listener) => rpcClient.device.subscribeState(listener),
+      channel: {
+        open: (input, listener, onClosed) =>
+          rpcClient.device.channelOpen(input, listener, { onComplete: onClosed }),
+        send: rpcClient.device.channelSend,
+        credit: rpcClient.device.channelCredit,
+      },
+    },
     previewLoopback: {
       open: (input, listener, onClosed) =>
         rpcClient.previewLoopback.open(input, listener, { onComplete: onClosed }),
