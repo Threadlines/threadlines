@@ -1,9 +1,13 @@
 import type { DeviceSummary, EnvironmentId, ThreadId } from "@threadlines/contracts";
+import { scopeThreadRef } from "@threadlines/client-runtime";
 import { threadDeviceSessions } from "@threadlines/client-runtime/deviceState";
-import { CircleAlertIcon, XIcon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { CircleAlertIcon, DownloadIcon, PictureInPicture2Icon, XIcon } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
+import { useIsMobile } from "~/hooks/useMediaQuery";
 import { Button } from "../ui/button";
+import { DeviceChips } from "./DeviceChips";
+import { useFloatingDevice } from "./DeviceFloatingWindow";
 import { DeviceLoadingView } from "./DeviceLoadingView";
 import { DevicePicker } from "./DevicePicker";
 import { DeviceSetup } from "./DeviceSetup";
@@ -16,15 +20,24 @@ import {
   shutdownDevice,
   useDevicesSupported,
   useDeviceState,
-  useSelectedThreadDevice,
 } from "./deviceState";
+import { dismissKeptDeviceRecording, useKeptDeviceRecordings } from "./deviceRecordingHandoff";
+import {
+  dockDeviceFloat,
+  floatDevice,
+  orderDeviceChips,
+  removeDeviceChip,
+  renameDeviceChip,
+  useThreadDeviceViews,
+} from "./deviceViewStore";
 import { DeviceWorkspace } from "./DeviceWorkspace";
 
 /**
  * The Device tab (docs/design/devices.md): setup on first use, the device
- * picker, and the open device. Stays mounted while its tab is in the strip;
- * `visible` says whether it is the tab on screen, and only then does a
- * device stream.
+ * picker, and the thread's open devices as chips above the one shown. Stays
+ * mounted while its tab is in the strip; `visible` says whether it is the
+ * tab on screen, and only then does the shown device stream. Hidden chips
+ * hold no channel, and a device floating over the chat streams there instead.
  */
 export function DevicePanel(props: {
   readonly environmentId: EnvironmentId;
@@ -35,7 +48,16 @@ export function DevicePanel(props: {
   const { environmentId, threadId, threadKey, visible } = props;
   const supported = useDevicesSupported(environmentId);
   const state = useDeviceState(environmentId, supported);
-  const selectedId = useSelectedThreadDevice(threadKey);
+  const views = useThreadDeviceViews(threadKey);
+  const selectedId = views.selected;
+  const float = useFloatingDevice(threadKey);
+  // The phone layout has no room to float a device over the chat.
+  const phoneLayout = useIsMobile();
+  const kept = useKeptDeviceRecordings((recordings) => recordings[threadKey]);
+  const threadRef = useMemo(
+    () => scopeThreadRef(environmentId, threadId),
+    [environmentId, threadId],
+  );
   const [inSetup, setInSetup] = useState(false);
   const [pending, setPending] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -74,6 +96,19 @@ export function DevicePanel(props: {
   }
 
   const sessions = threadDeviceSessions(state, threadId);
+  const chips = orderDeviceChips(views, sessions).flatMap((session) => {
+    const device = state.devices.find((entry) => entry.id === session.deviceId);
+    return device
+      ? [
+          {
+            deviceId: device.id,
+            name: views.names[device.id] ?? device.name,
+            deviceName: device.name,
+            floating: float?.deviceId === device.id,
+          },
+        ]
+      : [];
+  });
   const activeSession = sessions.find((session) => session.deviceId === selectedId);
   const activeDevice = activeSession
     ? state.devices.find((device) => device.id === activeSession.deviceId)
@@ -100,12 +135,9 @@ export function DevicePanel(props: {
     }).finally(() => setPending(null));
   };
 
-  const close = (shutdown: boolean) => {
-    if (!activeSession) return;
-    selectThreadDevice(threadKey, null);
-    void run(() =>
-      closeDevice(environmentId, { threadId, deviceId: activeSession.deviceId, shutdown }),
-    );
+  const close = (deviceId: string, shutdown: boolean) => {
+    removeDeviceChip(threadKey, deviceId, sessions);
+    void run(() => closeDevice(environmentId, { threadId, deviceId, shutdown }));
   };
 
   const errorLine = error ? (
@@ -127,19 +159,60 @@ export function DevicePanel(props: {
     </div>
   ) : null;
 
+  const chipRow =
+    chips.length > 0 ? (
+      <DeviceChips
+        chips={chips}
+        selectedId={activeSession ? activeSession.deviceId : null}
+        onSelect={(deviceId) => selectThreadDevice(threadKey, deviceId)}
+        onRename={(deviceId, name) => renameDeviceChip(threadKey, deviceId, name)}
+        onClose={(deviceId) => close(deviceId, false)}
+      />
+    ) : null;
+
+  const keptLine = kept ? (
+    <div role="status" className="flex items-center gap-2 px-3 py-1.5 text-xs">
+      <p className="min-w-0 flex-1 text-muted-foreground">{kept.message}</p>
+      <Button size="xs" variant="outline" render={<a href={kept.url} download={kept.fileName} />}>
+        <DownloadIcon />
+        Download video
+      </Button>
+      <Button
+        size="icon-xs"
+        variant="ghost"
+        aria-label="Dismiss"
+        onClick={() => dismissKeptDeviceRecording(threadKey, kept.id)}
+      >
+        <XIcon />
+      </Button>
+    </div>
+  ) : null;
+
   if (activeDevice && activeSession) {
     return (
       <div className="flex min-h-0 flex-1 flex-col" data-testid="device-panel">
         {errorLine}
-        <DeviceWorkspace
-          key={`${environmentId}\u0000${activeDevice.id}`}
-          environmentId={environmentId}
-          device={activeDevice}
-          visible={visible}
-          onBack={() => selectThreadDevice(threadKey, null)}
-          onClose={() => close(false)}
-          onPowerOff={() => close(true)}
-        />
+        {keptLine}
+        {chipRow}
+        {float?.deviceId === activeDevice.id ? (
+          <FloatingPlaceholder
+            name={views.names[activeDevice.id] ?? activeDevice.name}
+            onDock={() => dockDeviceFloat(threadKey)}
+          />
+        ) : (
+          <DeviceWorkspace
+            key={`${environmentId}\u0000${activeDevice.id}`}
+            environmentId={environmentId}
+            device={activeDevice}
+            visible={visible}
+            threadRef={threadRef}
+            threadKey={threadKey}
+            onBack={() => selectThreadDevice(threadKey, null)}
+            onClose={() => close(activeDevice.id, false)}
+            onPowerOff={() => close(activeDevice.id, true)}
+            {...(phoneLayout ? {} : { onFloat: () => floatDevice(threadKey, activeDevice.id) })}
+          />
+        )}
       </div>
     );
   }
@@ -149,6 +222,8 @@ export function DevicePanel(props: {
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="device-panel">
       {errorLine}
+      {keptLine}
+      {chipRow}
       {pendingDevice ? (
         <DeviceLoadingView
           name={pendingDevice.name}
@@ -173,6 +248,22 @@ export function DevicePanel(props: {
           }}
         />
       )}
+    </div>
+  );
+}
+
+/** What the tab shows for a chip whose device floats over the chat. */
+function FloatingPlaceholder(props: { readonly name: string; readonly onDock: () => void }) {
+  return (
+    <div
+      data-testid="device-floating-placeholder"
+      className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-6 text-center"
+    >
+      <PictureInPicture2Icon aria-hidden="true" className="size-5 text-muted-foreground" />
+      <p className="text-[13px] text-muted-foreground">{props.name} is floating over the chat.</p>
+      <Button size="sm" variant="outline" onClick={props.onDock}>
+        Show it here
+      </Button>
     </div>
   );
 }

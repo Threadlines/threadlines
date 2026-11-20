@@ -40,6 +40,7 @@ import {
   useDevicesSupported,
   useDeviceState,
 } from "../components/device/deviceState";
+import { dockDeviceFloat, useDeviceFloat } from "../components/device/deviceViewStore";
 import { useAgentsPanelSource } from "../agentsPanelStore";
 import { preloadDiffPanel, schedulePreloadDiffPanel } from "../diffPanelPreload";
 import { useMediaQuery } from "../hooks/useMediaQuery";
@@ -157,6 +158,11 @@ const MediaPanel = lazy(() =>
 );
 const DevicePanel = lazy(() =>
   import("../components/device/DevicePanel").then((module) => ({ default: module.DevicePanel })),
+);
+const DeviceFloatingWindow = lazy(() =>
+  import("../components/device/DeviceFloatingWindow").then((module) => ({
+    default: module.DeviceFloatingWindow,
+  })),
 );
 const FileViewerOverlay = lazy(() => import("../components/file-viewer/FileViewerOverlay"));
 
@@ -651,6 +657,19 @@ function ChatThreadRouteView() {
       navigateToTab("device");
     });
   }, [currentThreadKey, deviceTabAvailable, navigateToTab, threadRef]);
+  // A device floating over the chat (docs/design/devices.md). "Open in right
+  // panel" docks it on its chip in the Device tab, the way an agent opens one.
+  const deviceFloat = useDeviceFloat(currentThreadKey);
+  const openFloatingDeviceInPanel = useCallback(
+    (deviceId: string) => {
+      if (currentThreadKey === null) return;
+      dockDeviceFloat(currentThreadKey);
+      selectThreadDevice(currentThreadKey, deviceId);
+      focusRightPanelTab(currentThreadKey, "device");
+      navigateToTab("device");
+    },
+    [currentThreadKey, navigateToTab],
+  );
   // A published source outlives the navigation for a frame or two, so the rail
   // only trusts one that names the thread it is rendering.
   const agentsSource =
@@ -1227,6 +1246,18 @@ function ChatThreadRouteView() {
     </ChatRightPanel>
   );
 
+  const deviceFloatingWindow =
+    deviceFloat && deviceTabAvailable && serverThread && currentThreadKey !== null ? (
+      <Suspense fallback={null}>
+        <DeviceFloatingWindow
+          environmentId={threadRef.environmentId}
+          threadId={threadRef.threadId}
+          threadKey={currentThreadKey}
+          onOpenInPanel={openFloatingDeviceInPanel}
+        />
+      </Suspense>
+    ) : null;
+
   if (!shouldUseDiffSheet) {
     return (
       <>
@@ -1246,6 +1277,7 @@ function ChatThreadRouteView() {
               />
             </PullRequestHoverCardProvider>
           </ThreadPullRequestLinkContext.Provider>
+          {deviceFloatingWindow}
         </SidebarInset>
         <ChatRightPanelInlineSidebar
           open={sidebarVisible}
@@ -1277,6 +1309,7 @@ function ChatThreadRouteView() {
             />
           </PullRequestHoverCardProvider>
         </ThreadPullRequestLinkContext.Provider>
+        {deviceFloatingWindow}
       </SidebarInset>
       <RightPanelSheet
         open={sidebarVisible}
