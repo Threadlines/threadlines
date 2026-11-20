@@ -44,12 +44,14 @@ import {
 import type { Project, SidebarThreadSummary } from "../types";
 import { leadThreadKeysOf } from "../leadChat";
 import { useUiStateStore } from "../uiStateStore";
-import { useRelativeTimeTick } from "./useRelativeTimeTick";
 import { useSettings } from "./useSettings";
+import { useSharedTimeTick } from "./useSharedTimeTick";
 import { useSidebarProjectSnapshots } from "./useSidebarProjectSnapshots";
 
 // The queued-turn grace window is measured in minutes, so a coarse clock is
 // enough to keep "can this be marked done" honest without re-rendering often.
+// It is shared: the sidebar, the family tabs and the rest file threads at the
+// same moment, so a child that leaves its family leaves everywhere at once.
 const INBOX_CLOCK_INTERVAL_MS = 30_000;
 
 /** One inbox row's thread, filed and labelled the way the sidebar draws it. */
@@ -144,7 +146,7 @@ export function useInboxThreads(): InboxThreads {
   const wrapUpOnPullRequestSettled = useSettings((s) => s.wrapUpThreadsOnPullRequestSettled);
   const wrapUpChildThreadsOnFinish = useSettings((s) => s.wrapUpChildThreadsOnFinish);
   const wrapUpIdleThreads = useSettings((s) => s.wrapUpIdleThreads);
-  const nowMs = useRelativeTimeTick(INBOX_CLOCK_INTERVAL_MS);
+  const nowMs = useSharedTimeTick(INBOX_CLOCK_INTERVAL_MS);
   const nowIso = useMemo(() => new Date(nowMs).toISOString(), [nowMs]);
 
   const physicalToLogicalKey = useMemo(
