@@ -65,8 +65,7 @@ polish or better, the newest models, and T3's extras):
 - **Float the device over the chat.** A toolbar button moves the device into a
   small window over the chat that keeps streaming and taking touch while the
   right panel shows something else: drag by its handle, resize from an edge,
-  "Open in right panel" brings it back. One floating device per thread. An
-  agent's `device_open` floats it when the right panel is closed.
+  "Open in right panel" brings it back. One floating device per thread.
 - **Record a flow.** A record button: tap through the app, press stop, and the
   composer gets an unsent draft with a numbered step log (taps named from the
   accessibility tree, like `Tapped button "General"`, plus Home, rotate and
@@ -76,8 +75,48 @@ polish or better, the newest models, and T3's extras):
 - **Event log.** A section in the Tools drawer that lists serve-sim's recent
   device events (`/vendor/serve-sim/api/event-log/events`, allowed), iOS only.
 
-No server or contract changes are planned; every route above is already on the
-channel allowlist.
+Settled by the plan review (Astra, 6 findings):
+
+- **Model identity.** Names lie (simulators get renamed) and screen sizes
+  overlap across models, so `DeviceSummary` gains an optional `model`: the
+  simulator's device type (`com.apple.CoreSimulator.SimDeviceType.iPhone-Duo`,
+  from `simctl list devices -j`) or the emulator's hardware profile. Frames map
+  from it, never from the name. Older servers omit it and get the plain frame.
+  This is the one contract and server change in Round 2 (additive).
+- **Duo input follows the active display.** The viewer keeps the helper's
+  reported `screenId` and hinge fields, hit-tests a touch against the panel it
+  landed on, and drops touches on the inactive surface, as T3 does. One input
+  socket stays admitted across a handoff; when the active display changes the
+  video reopens on the new panel. A helper that rejects fixed-panel video
+  (400/404/405/410) falls back to the ordinary single screen with the Duo
+  controls hidden, never a blank panel.
+- **Recording fits the composer or is kept.** Drafts allow 8 attachments of 10
+  MiB each. The recorder works to a byte budget (bitrate chosen so 3 minutes
+  stays under 10 MiB, stopped early if it would not), adds at most as many
+  screenshots as free slots allow, and skips screenshots when the thread's
+  model takes no images. The step log and attachments are appended to the
+  originating thread's existing draft; nothing already there is replaced. If
+  attaching or saving the draft fails, the recording stays available to
+  download from the Device tab with a one-line notice. Stop attaches; Discard
+  throws it away.
+- **One owner per recording.** A recording belongs to the device view it
+  started in. Switching device, floating, docking, hiding the tab or closing
+  the device stops it first and hands it off. Only visible views (the shown
+  chip and a float) hold channels; hidden chips release theirs, which keeps a
+  connection well under its 16 channels.
+- **Agent opens keep today's behavior.** `device_open` opens the Device tab on
+  that device for anyone viewing the thread; it never auto-floats.
+- **Touch and reverse actions.** Rename is also in each chip's menu. The AX
+  overlay has an inspect mode in which a tap shows the element's label instead
+  of reaching the device. The float has a close button (the device keeps
+  running; Power off stays separate). Everything new is hidden for servers
+  without the `devices` capability.
+- **Event log** reads `event-log/events?device=<id>` through the channel
+  incrementally (never `EventSource`) and cancels when the drawer closes.
+
+Every hub route Round 2 uses is already on the channel allowlist; the Duo's
+hinge, stance and table mode travel as tagged messages on the allowed iOS input
+socket.
 
 ## Architecture
 
