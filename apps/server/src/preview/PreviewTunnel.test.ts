@@ -3,7 +3,11 @@ import { PREVIEW_TUNNEL_WINDOW_BYTES, type PreviewTunnelEvent } from "@threadlin
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
+import { spawn } from "node:child_process";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import * as Net from "node:net";
+import { tmpdir } from "node:os";
+import * as Path from "node:path";
 
 import { loopbackAddresses, makePreviewTunnel } from "./PreviewTunnel.ts";
 
@@ -45,6 +49,67 @@ const pullEvents = <E>(stream: Stream.Stream<PreviewTunnelEvent, E>) =>
       return buffered.shift()!;
     });
   });
+
+/**
+ * A stand-in device hub: a real process run from the hub's entry-point path,
+ * listening on one port, with a child of its own (an emulator, say) listening
+ * on another. Both exit when their stdin closes, so neither outlives the test.
+ */
+const HUB_CHILD = `
+const server = require("node:net").createServer();
+server.listen(0, "127.0.0.1", () => process.stdout.write(server.address().port + "\\n"));
+process.stdin.on("end", () => process.exit(0));
+process.stdin.resume();
+`;
+const HUB_SCRIPT = `
+import { spawn } from "node:child_process";
+import * as Net from "node:net";
+const server = Net.createServer();
+await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+const child = spawn(process.execPath, ["-e", ${JSON.stringify(HUB_CHILD)}], {
+  stdio: ["pipe", "pipe", "inherit"],
+});
+let heard = "";
+child.stdout.on("data", (chunk) => {
+  heard += chunk;
+  if (heard.includes("\\n")) {
+    const ports = { hub: server.address().port, child: Number.parseInt(heard, 10) };
+    process.stdout.write(JSON.stringify(ports) + "\\n");
+  }
+});
+process.stdin.on("end", () => process.exit(0));
+process.stdin.resume();
+`;
+
+const startStandInHub = Effect.acquireRelease(
+  Effect.promise(async () => {
+    const root = await mkdtemp(Path.join(tmpdir(), "preview-tunnel-hub-"));
+    const entry = Path.join(root, "node_modules/expo-device-hub/dist/server/cli.mjs");
+    await mkdir(Path.dirname(entry), { recursive: true });
+    await writeFile(entry, HUB_SCRIPT);
+    const hub = spawn(process.execPath, [entry, "--port", "0"], {
+      stdio: ["pipe", "pipe", "inherit"],
+    });
+    const ports = await new Promise<{ hub: number; child: number }>((resolve, reject) => {
+      let heard = "";
+      hub.stdout.on("data", (chunk) => {
+        heard += chunk;
+        if (heard.includes("\n")) resolve(JSON.parse(heard));
+      });
+      hub.once("exit", (code) => reject(new Error(`The stand-in hub exited (${code}).`)));
+    });
+    return { root, hub, ports };
+  }),
+  ({ root, hub }) =>
+    Effect.promise(async () => {
+      // Its child exits on its own once the hub's end of the pipe closes.
+      hub.stdin.end();
+      if (hub.exitCode === null) {
+        await new Promise((resolve) => hub.once("exit", resolve));
+      }
+      await rm(root, { recursive: true, force: true });
+    }),
+);
 
 const decode = (event: PreviewTunnelEvent) =>
   event._tag === "data" ? Buffer.from(event.data, "base64").toString("utf8") : `<${event._tag}>`;
@@ -198,6 +263,40 @@ describe("PreviewTunnel", () => {
         assert.strictEqual(own.reason, "notLoopback");
       }),
     ),
+  );
+
+  it.live.skipIf(process.platform === "win32")(
+    "refuses a device tool's ports and its children's, and opens a dev server's",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { ports } = yield* startStandInHub;
+          const { port: devServer } = yield* listen(() => {});
+          const tunnels = yield* makePreviewTunnel({ ownPort: -1 });
+
+          for (const [tunnelId, port] of [
+            ["hub", ports.hub],
+            ["child", ports.child],
+          ] as const) {
+            const refused = yield* tunnels
+              .open(sessionId, { tunnelId, host: "localhost", port })
+              .pipe(Effect.flip);
+            assert.strictEqual(
+              refused.detail,
+              "That port belongs to device support and can't be previewed.",
+              tunnelId,
+            );
+          }
+
+          const events = yield* tunnels.open(sessionId, {
+            tunnelId: "dev",
+            host: "localhost",
+            port: devServer,
+          });
+          const next = yield* pullEvents(events);
+          assert.strictEqual((yield* next)._tag, "opened");
+        }),
+      ),
   );
 
   it.live("says plainly when nothing is listening", () =>
