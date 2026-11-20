@@ -1442,6 +1442,80 @@ describe("ChatView (full app): first sends and worktree setup", () => {
     }
   });
 
+  it("takes back a New worktree send whose branch isn't found, keeping what was typed since", async () => {
+    const snapshot = addThreadToSnapshot(createDraftOnlySnapshot(), THREAD_ID);
+    let releaseRefs: () => void = () => {};
+    const refsReleased = new Promise<void>((resolve) => {
+      releaseRefs = resolve;
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads: snapshot.threads.map((thread) =>
+          thread.id === THREAD_ID ? Object.assign({}, thread, { session: null }) : thread,
+        ),
+      },
+      resolveRpc: (body) => {
+        if (body._tag === WS_METHODS.vcsListRefs) {
+          // No branches at all: nothing for a new worktree to start from.
+          return refsReleased.then(() => ({
+            isRepo: true,
+            hasPrimaryRemote: true,
+            nextCursor: null,
+            totalCount: 0,
+            refs: [],
+          }));
+        }
+        if (body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand) {
+          return { sequence: fixture.snapshot.snapshotSequence + 1 };
+        }
+        return undefined;
+      },
+    });
+    const userMessages = () =>
+      [...document.querySelectorAll('[data-message-role="user"]')].map(
+        (row) => row.textContent ?? "",
+      );
+
+    try {
+      (await waitForButtonByText("Current checkout")).click();
+      await clickSelectItemContainingText("New worktree");
+      useComposerDraftStore.getState().setPrompt(THREAD_REF, "Ship it");
+      await waitForLayout();
+      (await waitForSendButton()).click();
+      await vi.waitFor(
+        () => expect(userMessages().some((text) => text.includes("Ship it"))).toBe(true),
+        {
+          timeout: 8_000,
+          interval: 16,
+        },
+      );
+      // The user starts the next message while the first one waits.
+      useComposerDraftStore.getState().setPrompt(THREAD_REF, "Next idea");
+      releaseRefs();
+
+      await vi.waitFor(
+        () =>
+          expect(useComposerDraftStore.getState().getComposerDraft(THREAD_REF)?.prompt).toBe(
+            "Ship it\n\nNext idea",
+          ),
+        { timeout: 8_000, interval: 16 },
+      );
+      expect(userMessages().some((text) => text.includes("Ship it"))).toBe(false);
+      expect(
+        wsRequests.some(
+          (request) =>
+            request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+            request.type === "thread.turn.start",
+        ),
+      ).toBe(false);
+    } finally {
+      releaseRefs();
+      await mounted.cleanup();
+    }
+  });
+
   it("keeps a waiting New worktree send's branch picker off until it goes", async () => {
     const snapshot = addThreadToSnapshot(createDraftOnlySnapshot(), THREAD_ID);
     // The setting names `develop`, whose search is slow; the plain list is not.

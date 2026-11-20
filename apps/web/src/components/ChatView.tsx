@@ -6344,8 +6344,7 @@ export default function ChatView(props: ChatViewProps) {
       }
       // Retry can only resend a message the composer got back, as it came back.
       let retryContents: string | null = null;
-      if (
-        !dispatchSucceeded &&
+      const composerEmpty =
         promptRef.current.length === 0 &&
         composerAttachmentsRef.current.length === 0 &&
         composerTerminalContextsRef.current.length === 0 &&
@@ -6353,41 +6352,69 @@ export default function ChatView(props: ChatViewProps) {
         composerFileSelectionContextsRef.current.length === 0 &&
         composerPickedElementContextsRef.current.length === 0 &&
         (useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.drawingContexts
-          .length ?? 0) === 0
-      ) {
+          .length ?? 0) === 0;
+      // A send that failed before anything went out (a new worktree's branch
+      // not found, an attachment that can't be read) never reached the
+      // server: it leaves the chat whatever the user wrote meanwhile, and
+      // goes back in the box ahead of that. One that failed in transit may
+      // have arrived, so it comes back only to an empty box.
+      if (!dispatchSucceeded && (composerEmpty || dispatchedSend === null)) {
         takeBackOutgoingMessage(optimisticMessage);
-        promptRef.current = promptForSend;
+        const writtenSince = promptRef.current;
+        const restoredPrompt =
+          writtenSince.length > 0 ? `${promptForSend}\n\n${writtenSince}` : promptForSend;
+        promptRef.current = restoredPrompt;
         const retryComposerAttachments = composerAttachmentsSnapshot.map(
           cloneComposerAttachmentForRetry,
         );
-        composerAttachmentsRef.current = retryComposerAttachments;
-        composerTerminalContextsRef.current = composerTerminalContextsSnapshot;
-        composerTranscriptHighlightContextsRef.current =
-          composerTranscriptHighlightContextsSnapshot;
-        composerFileSelectionContextsRef.current = composerFileSelectionContextsSnapshot;
-        setComposerDraftPrompt(composerDraftTarget, promptForSend);
+        composerAttachmentsRef.current = [
+          ...composerAttachmentsRef.current,
+          ...retryComposerAttachments,
+        ];
+        const terminalContexts = [
+          ...composerTerminalContextsSnapshot,
+          ...composerTerminalContextsRef.current,
+        ];
+        const transcriptHighlightContexts = [
+          ...composerTranscriptHighlightContextsSnapshot,
+          ...composerTranscriptHighlightContextsRef.current,
+        ];
+        const pickedElementContexts = [
+          ...composerPickedElementContextsSnapshot,
+          ...composerPickedElementContextsRef.current,
+        ];
+        composerTerminalContextsRef.current = terminalContexts;
+        composerTranscriptHighlightContextsRef.current = transcriptHighlightContexts;
+        // Added after what is there, as the store adds them below.
+        composerFileSelectionContextsRef.current = [
+          ...composerFileSelectionContextsRef.current,
+          ...composerFileSelectionContextsSnapshot,
+        ];
+        composerPickedElementContextsRef.current = pickedElementContexts;
+        setComposerDraftPrompt(composerDraftTarget, restoredPrompt);
         addComposerDraftAttachments(composerDraftTarget, retryComposerAttachments);
-        setComposerDraftTerminalContexts(composerDraftTarget, composerTerminalContextsSnapshot);
+        setComposerDraftTerminalContexts(composerDraftTarget, terminalContexts);
         setComposerDraftTranscriptHighlightContexts(
           composerDraftTarget,
-          composerTranscriptHighlightContextsSnapshot,
+          transcriptHighlightContexts,
         );
         for (const context of composerFileSelectionContextsSnapshot) {
           addComposerDraftFileSelectionContext(composerDraftTarget, context);
         }
-        composerPickedElementContextsRef.current = composerPickedElementContextsSnapshot;
         const draftStore = useComposerDraftStore.getState();
-        draftStore.setPickedElementContexts(
-          composerDraftTarget,
-          composerPickedElementContextsSnapshot,
-        );
-        draftStore.setDrawingContexts(composerDraftTarget, composerDrawingContextsSnapshot);
-        retryContents = composerContentsKey(
-          useComposerDraftStore.getState().getComposerDraft(composerDraftTarget),
-        );
+        draftStore.setPickedElementContexts(composerDraftTarget, pickedElementContexts);
+        draftStore.setDrawingContexts(composerDraftTarget, [
+          ...composerDrawingContextsSnapshot,
+          ...(draftStore.getComposerDraft(composerDraftTarget)?.drawingContexts ?? []),
+        ]);
+        if (composerEmpty) {
+          retryContents = composerContentsKey(
+            useComposerDraftStore.getState().getComposerDraft(composerDraftTarget),
+          );
+        }
         composerRef.current?.resetCursorState({
-          cursor: collapseExpandedComposerCursor(promptForSend, promptForSend.length),
-          prompt: promptForSend,
+          cursor: collapseExpandedComposerCursor(restoredPrompt, promptForSend.length),
+          prompt: restoredPrompt,
           detectTrigger: true,
         });
       }
