@@ -13,7 +13,7 @@ import { createModelCapabilities } from "@threadlines/shared/model";
 import { page, userEvent } from "vite-plus/test/browser";
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import { useComposerDraftStore } from "../composerDraftStore";
+import { COMPOSER_DRAFT_STORAGE_KEY, useComposerDraftStore } from "../composerDraftStore";
 import { useRoomRecipientStore } from "../rooms";
 import { isMacPlatform } from "../lib/utils";
 import { useTerminalStateStore } from "../terminalStateStore";
@@ -1981,6 +1981,51 @@ describe("ChatView (full app): composer", () => {
     } finally {
       await mounted.cleanup();
     }
+  });
+
+  it("still saves a file attached just before the user leaves the thread", async () => {
+    // Reading a file into a data URL takes a moment; hold this one's read open.
+    let releaseRead: () => void = () => {};
+    const readHeld = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
+    const realArrayBuffer = File.prototype.arrayBuffer;
+    const arrayBufferSpy = vi
+      .spyOn(File.prototype, "arrayBuffer")
+      .mockImplementation(async function (this: File) {
+        if (this.name === "left-behind.txt") await readHeld;
+        return realArrayBuffer.call(this);
+      });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-left-behind" as MessageId,
+        targetText: "left behind",
+      }),
+    });
+    try {
+      const input = await waitForElement(
+        () =>
+          document.querySelector<HTMLInputElement>('input[type="file"][multiple]:not([accept])'),
+        "The attach-files picker did not render.",
+      );
+      const transfer = new DataTransfer();
+      transfer.items.add(new File(["kept"], "left-behind.txt", { type: "text/plain" }));
+      input.files = transfer.files;
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+      await expect.element(page.getByTitle("left-behind.txt")).toBeInTheDocument();
+    } finally {
+      // Leaving the thread unmounts its composer while the file is still being read.
+      await mounted.cleanup();
+    }
+    releaseRead();
+    await vi.waitFor(
+      () => {
+        expect(localStorage.getItem(COMPOSER_DRAFT_STORAGE_KEY) ?? "").toContain("left-behind.txt");
+      },
+      { timeout: 5_000, interval: 50 },
+    );
+    arrayBufferSpy.mockRestore();
   });
 
   it("edits a user prompt from a stopped stale turn while preserving attachments and skills", async () => {

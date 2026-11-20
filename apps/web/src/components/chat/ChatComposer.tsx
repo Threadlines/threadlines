@@ -2714,16 +2714,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // ------------------------------------------------------------------
   // Image persist effect
   // ------------------------------------------------------------------
-  // Saves the attachments whenever they change; a stale run skips its write.
+  // Saves the attachments whenever they change. A run is never cancelled: when
+  // the user switches threads mid-read it still finishes for the thread it
+  // started in (its composer is gone, so nothing else would), and a run whose
+  // list a newer change replaced finds that out itself and writes nothing.
   useEffect(() => {
-    let cancelled = false;
-    void saveComposerDraftAttachments(composerDraftTarget, {
-      attachments: composerAttachments,
-      cancelled: () => cancelled,
-    });
-    return () => {
-      cancelled = true;
-    };
+    void saveComposerDraftAttachments(composerDraftTarget, { attachments: composerAttachments });
   }, [composerDraftTarget, composerAttachments]);
 
   // ------------------------------------------------------------------
