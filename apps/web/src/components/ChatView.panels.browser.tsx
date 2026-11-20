@@ -688,14 +688,34 @@ describe("ChatView (full app): right panel and header actions", () => {
       expect(railToggle.hasAttribute("data-pressed")).toBe(true);
 
       // A finger pushing the panel toward its edge closes it, as the toggle would.
-      const agentsPanel = await waitForElement(
-        () => document.querySelector("[data-agents-panel='tree']") as HTMLElement | null,
-        "The agents tab never opened.",
+      // The swipe goes to the panel as it is now: the tab reorder above can
+      // re-render it late on a busy machine, and a swipe on the element it
+      // replaced, or on a point something else still covers, reaches no drawer.
+      const swipeTarget = await vi.waitFor(
+        () => {
+          const panel = document.querySelector<HTMLElement>("[data-agents-panel='tree']");
+          expect(panel, "The agents tab never opened.").not.toBeNull();
+          const rect = panel!.getBoundingClientRect();
+          const underFinger = document.elementFromPoint(
+            rect.left + rect.width * 0.75,
+            rect.top + rect.height / 2,
+          );
+          expect(
+            underFinger !== null && panel!.contains(underFinger),
+            "Something other than the agents panel is under the finger.",
+          ).toBe(true);
+          // The finger lands on what is really there, not on the panel by reference.
+          return underFinger as HTMLElement;
+        },
+        { timeout: 8_000, interval: 16 },
       );
-      touchSwipe(agentsPanel, 260);
+      touchSwipe(swipeTarget, 260);
       await vi.waitFor(
         () => {
-          expect(railToggle.hasAttribute("data-pressed")).toBe(false);
+          expect(
+            railToggle.hasAttribute("data-pressed"),
+            `The swipe did not close the panel (swiped element still on the page: ${swipeTarget.isConnected}).`,
+          ).toBe(false);
         },
         { timeout: 8_000, interval: 16 },
       );
