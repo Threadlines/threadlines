@@ -9255,7 +9255,7 @@ export default function ChatView(props: ChatViewProps) {
         />
       ))}
       <TerminalStopConfirmDialog
-        kind={pendingTerminalAction?.kind ?? null}
+        action={pendingTerminalAction}
         host="thread"
         onConfirm={confirmPendingTerminalAction}
         onCancel={() => setPendingTerminalAction(null)}

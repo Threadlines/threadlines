@@ -45,6 +45,7 @@ import { ProjectFavicon } from "../ProjectFavicon";
 import { useComputerLabel } from "../sidebar/linkedComputers";
 import { ManagedTerminalDrawer } from "../terminal/ManagedTerminalDrawer";
 import {
+  type TerminalStopAction,
   TerminalStopConfirmDialog,
   terminalStopNeedsConfirm,
 } from "../terminal/TerminalStopConfirmDialog";
@@ -380,10 +381,7 @@ function ComputerTerminals({
   });
   const [focusRequestId, setFocusRequestId] = useState(0);
   const [findRequested, setFindRequested] = useState(false);
-  const [pendingStop, setPendingStop] = useState<{
-    readonly kind: "kill" | "restart";
-    readonly terminalId: string;
-  } | null>(null);
+  const [pendingStop, setPendingStop] = useState<TerminalStopAction | null>(null);
 
   // Tabs the server lists show, also on a device that never opened them.
   useEffect(() => {
@@ -502,7 +500,7 @@ function ComputerTerminals({
   const requestStop = useCallback(
     (kind: "kill" | "restart", terminalId: string, options?: { sessionExited?: boolean }) => {
       if (options?.sessionExited !== true && terminalStopNeedsConfirm(threadRef, terminalId)) {
-        setPendingStop({ kind, terminalId });
+        setPendingStop({ kind, threadRef, terminalId });
         return;
       }
       performStop(kind, terminalId);
@@ -636,7 +634,7 @@ function ComputerTerminals({
         />
       )}
       <TerminalStopConfirmDialog
-        kind={pendingStop?.kind ?? null}
+        action={pendingStop}
         host="page"
         onConfirm={() => {
           if (pendingStop) performStop(pendingStop.kind, pendingStop.terminalId);
