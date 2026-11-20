@@ -17,6 +17,7 @@ import type {
   ThreadId,
   TurnId,
 } from "@threadlines/contracts";
+import { publishComposerImageSupport } from "./composerImageSupport";
 import { type PromptRecall, recallablePrompts, stepPromptRecall } from "./composerPromptRecall";
 import { containsWorkflowKeyword } from "@threadlines/shared/workflowRuns";
 import { ComposerWorkflowKeywordHint } from "./ComposerWorkflowKeywordHint";
@@ -1023,6 +1024,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       ),
     [selectedProvider, selectedProviderModels, selectedModel],
   );
+  // A device recording asks before it attaches screenshots to this thread.
+  useEffect(() => {
+    publishComposerImageSupport(scopedThreadKey(routeThreadRef), selectedModelSupportsImages);
+  }, [routeThreadRef, selectedModelSupportsImages]);
 
   const composerProviderState = useMemo(
     () =>
