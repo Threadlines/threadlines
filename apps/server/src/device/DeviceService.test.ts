@@ -206,6 +206,38 @@ describe("DeviceService start", () => {
   );
 });
 
+describe("DeviceService first listing", () => {
+  it.live("never shows a ready hub with no devices while the first listing is on its way", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const base = yield* fs.makeTempDirectoryScoped({ prefix: "tl-device-first-" });
+      const layer = Layer.mergeAll(
+        fakeHost([]),
+        settingsLayer,
+        ServerConfig.layerTest(process.cwd(), base),
+      );
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const service = yield* DeviceService.make;
+          const seen: Array<{ status: string; devices: number }> = [];
+          yield* service.stream.pipe(
+            Stream.runForEach((state) =>
+              Effect.sync(() =>
+                seen.push({ status: state.hostStatus, devices: state.devices.length }),
+              ),
+            ),
+            Effect.forkScoped,
+          );
+          yield* service.list({ refresh: true });
+          yield* Effect.sleep("50 millis");
+          const firstReady = seen.find((state) => state.status === "ready");
+          expect(firstReady).toEqual({ status: "ready", devices: 1 });
+        }),
+      ).pipe(Effect.provide(layer));
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+});
+
 describe("extractPng", () => {
   it("finds one complete PNG and reads its size", () => {
     const ihdr = Buffer.alloc(25);

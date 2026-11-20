@@ -44,7 +44,14 @@ export function DevicePicker(props: {
     <div className="flex min-h-0 flex-1 flex-col" data-testid="device-picker">
       <div className="flex shrink-0 items-center gap-2 px-3 pt-2.5 pb-1.5">
         <span className="min-w-0 flex-1 truncate text-[12px] text-muted-foreground">
-          {state.devices.length === 1 ? "1 device" : `${state.devices.length} devices`}
+          {/* No count until there is a listing: "0 devices" while the hub starts reads as none. */}
+          {busy
+            ? "Starting device support…"
+            : state.devices.length === 0 && (props.refreshing || state.hostStatus === "idle")
+              ? "Looking for devices…"
+              : state.devices.length === 1
+                ? "1 device"
+                : `${state.devices.length} devices`}
         </span>
         <Button
           size="icon-xs"

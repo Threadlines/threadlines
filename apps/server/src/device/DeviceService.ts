@@ -308,7 +308,8 @@ export const make = Effect.gen(function* () {
         );
       const { hostStatus } = yield* currentState;
       if (hostStatus !== "ready") {
-        yield* setHostStatus("ready");
+        // The first listing and "ready" go out together; a failed listing still leaves the hub ready.
+        yield* refresh(ready, { markReady: true }).pipe(Effect.catch(() => setHostStatus("ready")));
         yield* publishSummary;
       }
       return ready;
@@ -336,13 +337,22 @@ export const make = Effect.gen(function* () {
     }).pipe(lifecycleLock.withPermit, Effect.withSpan("DeviceService.agentReadiness")),
   );
 
-  const refresh = Effect.fn("DeviceService.refresh")(function* (ready: DeviceHost.DeviceHostReady) {
+  /**
+   * Lists the devices and publishes them. With `markReady`, the hub's "ready"
+   * goes out in the same state as the listing, so a client never sees a ready
+   * hub with no devices while the first listing is still on its way.
+   */
+  const refresh = Effect.fn("DeviceService.refresh")(function* (
+    ready: DeviceHost.DeviceHostReady,
+    options?: { readonly markReady?: boolean },
+  ) {
     const { devices, detail, incompletePlatforms } = yield* ready.devices.list;
     if (!(yield* readDeviceSettings).enabled) return yield* currentState;
     return yield* publish((state) => {
       const { hostStatusDetail: _detail, ...rest } = state;
       return {
         ...rest,
+        ...(options?.markReady ? { hostStatus: "ready" as const } : {}),
         ...(detail ? { hostStatusDetail: detail } : {}),
         incompletePlatforms: [...incompletePlatforms],
         // A platform that could not be listed keeps its last known devices.
