@@ -91,13 +91,21 @@ const COMPOSER_PERSIST_DEBOUNCE_MS = 300;
  * store's own object identity (an untouched draft keeps its object). Another
  * tab's write changes storage under this tab; then each write keeps every
  * draft this tab did not change as storage has it, so one tab never writes
- * its stale copy of a draft another tab edited, sent or cleared.
+ * its stale copy of a draft another tab edited, sent or cleared. Two tabs
+ * changing the same draft is the one case left: the last write wins for it.
  */
 const changedSinceWrite = {
   drafts: new Set<string>(),
   draftThreads: new Set<string>(),
   projectDraftKeys: new Set<string>(),
   sticky: false,
+  /**
+   * Drafts this tab removed while they held nothing in its own copy: cleanup
+   * (a new thread replacing an empty draft), not a send or a clear. Another
+   * tab may have typed into one meanwhile, so the merge keeps a stored copy
+   * that has content rather than deleting it.
+   */
+  emptiedRemovals: new Set<string>(),
 };
 
 function resetChangedSinceWrite() {
@@ -105,6 +113,22 @@ function resetChangedSinceWrite() {
   changedSinceWrite.draftThreads.clear();
   changedSinceWrite.projectDraftKeys.clear();
   changedSinceWrite.sticky = false;
+  changedSinceWrite.emptiedRemovals.clear();
+}
+
+/** A saved draft the user put something into: text, files or context chips. */
+function persistedDraftHasUserContent(
+  draft: PersistedComposerThreadDraftState | undefined,
+): boolean {
+  return (
+    draft !== undefined &&
+    (draft.prompt.trim().length > 0 ||
+      draft.attachments.length > 0 ||
+      (draft.terminalContexts?.length ?? 0) > 0 ||
+      (draft.transcriptHighlightContexts?.length ?? 0) > 0 ||
+      (draft.fileSelectionContexts?.length ?? 0) > 0 ||
+      (draft.pickedElementContexts?.length ?? 0) > 0)
+  );
 }
 
 function noteChangedKeys(
@@ -121,17 +145,21 @@ function noteChangedKeys(
   }
 }
 
-/** `stored`'s entries, with this tab's changed keys taken from `next` (or removed). */
+/**
+ * `stored`'s entries, with this tab's changed keys taken from `next` (or
+ * removed). `keepStored` names removals to skip: the stored entry stays.
+ */
 function mergeChangedEntries<V>(
   stored: Readonly<Record<string, V>> | undefined,
   next: Readonly<Record<string, V>>,
   changed: ReadonlySet<string>,
+  keepStored: (key: string) => boolean = () => false,
 ): Record<string, V> {
   const merged: Record<string, V> = { ...stored };
   for (const key of changed) {
     const value = next[key];
-    if (value === undefined) delete merged[key];
-    else merged[key] = value;
+    if (value !== undefined) merged[key] = value;
+    else if (!keepStored(key)) delete merged[key];
   }
   return merged;
 }
@@ -146,6 +174,11 @@ function mergeComposerDraftsWithStored(
   }
   // The last-used model is one value: this tab's if it changed it, else storage's.
   const sticky = changedSinceWrite.sticky ? next.state : stored.state;
+  // A draft this tab cleaned up as empty, which another tab has since filled:
+  // keep it and its session, so the other tab's text stays a draft.
+  const keepFilledElsewhere = (key: string) =>
+    changedSinceWrite.emptiedRemovals.has(key) &&
+    persistedDraftHasUserContent(stored.state.draftsByThreadKey?.[key]);
   return {
     ...next,
     state: {
@@ -153,11 +186,13 @@ function mergeComposerDraftsWithStored(
         stored.state.draftsByThreadKey,
         next.state.draftsByThreadKey,
         changedSinceWrite.drafts,
+        keepFilledElsewhere,
       ),
       draftThreadsByThreadKey: mergeChangedEntries(
         stored.state.draftThreadsByThreadKey,
         next.state.draftThreadsByThreadKey,
         changedSinceWrite.draftThreads,
+        keepFilledElsewhere,
       ),
       logicalProjectDraftThreadKeyByLogicalProjectKey: mergeChangedEntries(
         stored.state.logicalProjectDraftThreadKeyByLogicalProjectKey,
@@ -2596,7 +2631,7 @@ function hydratePersistedComposerAttachment(attachment: PersistedComposerAttachm
   if (payload.length === 0) {
     // An empty file saves as `data:<type>;base64,` and comes back as one; anything
     // else without a payload is broken.
-    return commaIndex !== -1 && attachment.sizeBytes === 0
+    return commaIndex !== -1 && attachment.sizeBytes === 0 && header.startsWith("data:")
       ? new File([], attachment.name, { type: attachment.mimeType })
       : null;
   }
@@ -4263,6 +4298,26 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
 export const useComposerDraftStore = composerDraftStore;
 
 composerDraftStore.subscribe((state, previous) => {
+  if (state.draftsByThreadKey !== previous.draftsByThreadKey) {
+    for (const key of Object.keys(previous.draftsByThreadKey)) {
+      if (
+        !(key in state.draftsByThreadKey) &&
+        !composerDraftHasUserContent(previous.draftsByThreadKey[key])
+      ) {
+        changedSinceWrite.emptiedRemovals.add(key);
+      }
+    }
+  }
+  if (state.draftThreadsByThreadKey !== previous.draftThreadsByThreadKey) {
+    for (const key of Object.keys(previous.draftThreadsByThreadKey)) {
+      if (
+        !(key in state.draftThreadsByThreadKey) &&
+        !composerDraftHasUserContent(previous.draftsByThreadKey[key])
+      ) {
+        changedSinceWrite.emptiedRemovals.add(key);
+      }
+    }
+  }
   noteChangedKeys(changedSinceWrite.drafts, state.draftsByThreadKey, previous.draftsByThreadKey);
   noteChangedKeys(
     changedSinceWrite.draftThreads,
