@@ -1445,6 +1445,80 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
     }
   });
 
+  it("keeps short-titled tabs on the row where they fit, instead of behind +N", async () => {
+    const titles = ["UI", "DB", "QA", "CI", "Ops", "Docs", "Perf", "Auth"];
+    const children = titles.map((_, index) => `thread-short-${index}` as ThreadId);
+    const base = children.reduce(
+      (snapshot, child) => addThreadToSnapshot(snapshot, child),
+      createSnapshotForTargetUser({
+        targetMessageId: "msg-user-short-family" as MessageId,
+        targetText: "short family target",
+      }),
+    );
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...base,
+        projects: base.projects.map((project) => ({ ...project, leadThreadId: THREAD_ID })),
+        threads: base.threads.map((thread) => {
+          const index = children.indexOf(thread.id);
+          return index === -1
+            ? thread
+            : {
+                ...thread,
+                title: titles[index]!,
+                parentThreadId: THREAD_ID,
+                attachedToParent: true,
+                createdAt: isoAt(10 + index),
+              };
+        }),
+      },
+    });
+    const row = () => document.querySelector<HTMLElement>('[data-testid="family-tabs"]');
+    try {
+      await vi.waitFor(
+        () => expect(row()?.querySelectorAll('[role="tab"]')).toHaveLength(1 + titles.length),
+        { timeout: 10_000 },
+      );
+      // Nine tabs at the 96px floor would not fit; at their own widths they do, none cut.
+      const onRow = () => [
+        ...row()!.querySelectorAll<HTMLElement>(
+          '[role="tab"], [data-testid="family-tabs-overflow"]',
+        ),
+      ];
+      const unclipped = () =>
+        onRow().every((item) => {
+          const label = item.querySelector<HTMLElement>("span.truncate") ?? item;
+          return label.scrollWidth <= label.clientWidth;
+        });
+      const inside = () =>
+        onRow().every(
+          (item) =>
+            item.getBoundingClientRect().right <= row()!.getBoundingClientRect().right + 0.5,
+        );
+      expect(row()!.clientWidth).toBeLessThan((1 + titles.length) * 96);
+      expect(row()!.querySelector('[data-testid="family-tabs-overflow"]')).toBeNull();
+      expect(unclipped()).toBe(true);
+      expect(inside()).toBe(true);
+
+      // A larger browser font: the row measures what it draws, so what shows still fits whole.
+      document.documentElement.style.fontSize = "24px";
+      try {
+        await vi.waitFor(
+          () => expect(row()!.querySelector('[data-testid="family-tabs-overflow"]')).not.toBeNull(),
+          { timeout: 5_000 },
+        );
+        await nextFrames(3);
+        expect(unclipped()).toBe(true);
+        expect(inside()).toBe(true);
+      } finally {
+        document.documentElement.style.fontSize = "";
+      }
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("names the thread that started this one, in the header and on its request", async () => {
     const base = createSnapshotForTargetUser({
       targetMessageId: "msg-user-started-by" as MessageId,

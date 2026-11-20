@@ -28,6 +28,7 @@ import { buildThreadRouteParams } from "../../threadRoutes";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { LeadChatCard, LeadChatSuggestion } from "./LeadChatHints";
 import {
+  FAMILY_TAB_MIN_WIDTH_PX,
   type FamilyTab,
   type FamilyTabs as FamilyTabsModel,
   familyTabsOf,
@@ -50,8 +51,85 @@ export function useFamilyTabsShown(threadKey: string | null): boolean {
   );
 }
 
-/** What "+N" takes on the row, its own width. */
-const OVERFLOW_PX = 44;
+/** A tab's box, shared by the drawn tabs and their measured copies so the two match. */
+const TAB_BOX_CLASS = "flex h-6 items-center gap-1.5 rounded-md px-2 text-xs";
+/** The "+N" button's box, shared the same way. */
+const OVERFLOW_BOX_CLASS = "relative flex h-6 shrink-0 items-center rounded-md px-2 text-xs";
+
+/** What a tab shows as its title: the lead's is "Lead". */
+function tabText(tab: FamilyTab): string {
+  return tab.kind === "parent" && tab.lead ? "Lead" : tab.shortTitle;
+}
+
+/** The row as drawn: its width inside the padding, the gap between tabs, and each tab's own width. */
+interface RowMeasure {
+  readonly rowPx: number;
+  readonly gapPx: number;
+  /** Each tab at its title's full length, up to the 200px cap, by key. */
+  readonly tabPx: ReadonlyMap<string, number>;
+  /** "+N" with the most digits it can need. */
+  readonly overflowPx: number;
+}
+
+function sameRowMeasure(left: RowMeasure | null, right: RowMeasure): boolean {
+  return (
+    left !== null &&
+    left.rowPx === right.rowPx &&
+    left.gapPx === right.gapPx &&
+    left.overflowPx === right.overflowPx &&
+    left.tabPx.size === right.tabPx.size &&
+    [...right.tabPx].every(([key, px]) => left.tabPx.get(key) === px)
+  );
+}
+
+/**
+ * Reads the row and the hidden copies of its tabs (`measureRef`): what fits
+ * is decided before a tab is drawn, and one behind "+N" isn't drawn at all.
+ * The copies are the tabs' own markup and classes, so a larger browser font,
+ * a theme's font, or a font that loads late shows up as a resize the
+ * observer reports. Null until the row is on screen, and on a phone.
+ */
+function useRowMeasure(
+  rowRef: React.RefObject<HTMLDivElement | null>,
+  measureRef: React.RefObject<HTMLDivElement | null>,
+  enabled: boolean,
+  tabKeys: string,
+): RowMeasure | null {
+  const [measure, setMeasure] = useState<RowMeasure | null>(null);
+  useLayoutEffect(() => {
+    const row = rowRef.current;
+    const layer = measureRef.current;
+    if (!enabled || row === null || layer === null) return;
+    // The copies of these tabs, by key, and the copy of "+N".
+    const copies = tabKeys.split("\n").flatMap((key) => {
+      const copy = layer.querySelector<HTMLElement>(`[data-measure-key="${CSS.escape(key)}"]`);
+      return copy === null ? [] : [[key, copy] as const];
+    });
+    const overflowCopy = layer.querySelector<HTMLElement>("[data-measure-overflow]");
+    const read = () => {
+      const style = getComputedStyle(row);
+      const next: RowMeasure = {
+        rowPx:
+          row.getBoundingClientRect().width -
+          parseFloat(style.paddingLeft) -
+          parseFloat(style.paddingRight) -
+          parseFloat(style.borderLeftWidth) -
+          parseFloat(style.borderRightWidth),
+        gapPx: parseFloat(style.columnGap) || 0,
+        tabPx: new Map(copies.map(([key, copy]) => [key, copy.getBoundingClientRect().width])),
+        overflowPx: overflowCopy?.getBoundingClientRect().width ?? 0,
+      };
+      setMeasure((previous) => (sameRowMeasure(previous, next) ? previous : next));
+    };
+    read();
+    const observer = new ResizeObserver(read);
+    observer.observe(row);
+    for (const [, copy] of copies) observer.observe(copy);
+    if (overflowCopy !== null) observer.observe(overflowCopy);
+    return () => observer.disconnect();
+  }, [enabled, measureRef, rowRef, tabKeys]);
+  return enabled ? measure : null;
+}
 
 /**
  * The row for `threadRef`'s family, or nothing when it has none. While it
@@ -127,17 +205,13 @@ const FamilyTabRow = memo(function FamilyTabRow({
 }) {
   const isMobile = useIsMobile();
   const rowRef = useRef<HTMLDivElement | null>(null);
-  const [rowPx, setRowPx] = useState<number | null>(null);
-  useLayoutEffect(() => {
-    const row = rowRef.current;
-    if (row === null || isMobile) return;
-    setRowPx(row.clientWidth);
-    const observer = new ResizeObserver(([entry]) => {
-      if (entry) setRowPx(Math.round(entry.contentRect.width));
-    });
-    observer.observe(row);
-    return () => observer.disconnect();
-  }, [isMobile]);
+  const measureRef = useRef<HTMLDivElement | null>(null);
+  const measure = useRowMeasure(
+    rowRef,
+    measureRef,
+    !isMobile,
+    family.tabs.map((tab) => tab.key).join("\n"),
+  );
 
   // On a phone the row scrolls sideways instead, with the open tab in view.
   const openTabRef = useRef<HTMLButtonElement | null>(null);
@@ -149,13 +223,19 @@ const FamilyTabRow = memo(function FamilyTabRow({
   }, [openKey, isMobile]);
 
   const { shown, hidden } =
-    isMobile || rowPx === null
+    measure === null
       ? { shown: family.tabs, hidden: [] as readonly FamilyTab[] }
       : fitFamilyTabs({
           tabs: family.tabs,
           openKey: family.openKey,
-          rowPx,
-          overflowPx: OVERFLOW_PX,
+          rowPx: measure.rowPx,
+          overflowPx: measure.overflowPx,
+          gapPx: measure.gapPx,
+          // A short tab costs its own width; a long one the shared floor; the lead never shrinks.
+          floorPx: (tab) => {
+            const px = measure.tabPx.get(tab.key) ?? FAMILY_TAB_MIN_WIDTH_PX;
+            return tab.kind === "parent" && tab.lead ? px : Math.min(px, FAMILY_TAB_MIN_WIDTH_PX);
+          },
         });
 
   // The parent, open and not leading yet, may be offered as the lead (LeadChatSuggestion).
@@ -178,10 +258,32 @@ const FamilyTabRow = memo(function FamilyTabRow({
         data-testid="family-tabs"
         data-family-key={family.familyKey}
         className={cn(
-          "flex min-w-0 shrink-0 items-center gap-0.5 border-b border-border px-3 py-1 sm:px-5",
+          "relative flex min-w-0 shrink-0 items-center gap-0.5 border-b border-border px-3 py-1 sm:px-5",
           isMobile && "overflow-x-auto [scrollbar-width:none]",
         )}
       >
+        {isMobile ? null : (
+          // Every tab and "+N" at full width, unseen, for useRowMeasure.
+          <div
+            ref={measureRef}
+            aria-hidden="true"
+            inert
+            className="pointer-events-none invisible absolute top-0 left-0 flex h-0 w-max overflow-hidden"
+          >
+            {family.tabs.map((tab) => (
+              <span
+                key={tab.key}
+                data-measure-key={tab.key}
+                className={cn(TAB_BOX_CLASS, "max-w-50 shrink-0")}
+              >
+                <FamilyTabFace tab={tab} />
+              </span>
+            ))}
+            <span data-measure-overflow className={OVERFLOW_BOX_CLASS}>
+              +{family.tabs.length}
+            </span>
+          </div>
+        )}
         {shown.map((tab) => (
           <FamilyTabButton
             key={tab.key}
@@ -248,7 +350,8 @@ const FamilyTabButton = memo(function FamilyTabButton({
       data-family-tab-kind={tab.kind}
       disabled={tab.threadRef === null}
       className={cn(
-        "flex h-6 items-center gap-1.5 rounded-md px-2 text-xs transition-colors focus-ring",
+        TAB_BOX_CLASS,
+        "transition-colors focus-ring",
         // As wide as its title up to a 200px cap, packed to the left. When the
         // row is crowded, every tab starts from the same 200px basis, so the
         // longest titles give way first and all end up the same width (toward
@@ -267,6 +370,20 @@ const FamilyTabButton = memo(function FamilyTabButton({
       }}
       {...touchHold}
     >
+      <FamilyTabFace tab={tab} />
+    </button>
+  );
+  return isLeadTab && tab.threadRef !== null ? (
+    <LeadChatCard threadRef={tab.threadRef} renderTrigger={tabButton} />
+  ) : (
+    tabButton(null)
+  );
+});
+
+/** A tab's mark (the lead's crown, a child's status dot or check) and title. */
+function FamilyTabFace({ tab }: { tab: FamilyTab }) {
+  return (
+    <>
       {tab.kind === "parent" ? (
         tab.lead ? (
           <CrownIcon aria-hidden="true" className="size-3 shrink-0" />
@@ -282,15 +399,10 @@ const FamilyTabButton = memo(function FamilyTabButton({
           )}
         />
       )}
-      <span className="min-w-0 truncate">{isLeadTab ? "Lead" : tab.shortTitle}</span>
-    </button>
+      <span className="min-w-0 truncate">{tabText(tab)}</span>
+    </>
   );
-  return isLeadTab && tab.threadRef !== null ? (
-    <LeadChatCard threadRef={tab.threadRef} renderTrigger={tabButton} />
-  ) : (
-    tabButton(null)
-  );
-});
+}
 
 /** "+N": the tabs that don't fit, with their status; amber while one needs the user. */
 function FamilyTabOverflow({
@@ -306,7 +418,10 @@ function FamilyTabOverflow({
     <Menu>
       <MenuTrigger
         data-testid="family-tabs-overflow"
-        className="relative flex h-6 shrink-0 items-center rounded-md px-2 text-xs text-muted-foreground transition-colors hover:text-foreground focus-ring"
+        className={cn(
+          OVERFLOW_BOX_CLASS,
+          "text-muted-foreground transition-colors hover:text-foreground focus-ring",
+        )}
       >
         +{hidden.length}
         {needsYouDot !== null ? (
