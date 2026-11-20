@@ -38,6 +38,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
@@ -276,40 +277,64 @@ export const make = Effect.gen(function* () {
     }
   });
 
-  const readiness = Effect.gen(function* () {
-    yield* requireEnabled;
-    const ready = yield* host
-      .ensureReady((phase, detail) => setHostStatus(phase, detail).pipe(Effect.asVoid))
-      .pipe(
-        Effect.tapError((error) => setHostStatus("failed", error.message)),
-        Effect.mapError(hostUnavailable),
-      );
-    const { hostStatus } = yield* currentState;
-    if (hostStatus !== "ready") {
+  /**
+   * Runs `work` once in the service's own scope and lets any number of
+   * callers wait on it. A caller that goes away (a Device tab closed during
+   * the first install) stops waiting; the install and start carry on, so the
+   * hub never stays half-started with its status stuck on "installing".
+   */
+  const shared = <A>(work: Effect.Effect<A, DeviceError>) =>
+    Effect.gen(function* () {
+      const slot = yield* SynchronizedRef.make<Fiber.Fiber<A, DeviceError> | null>(null);
+      return SynchronizedRef.modifyEffect(slot, (running) =>
+        running !== null
+          ? Effect.succeed([running, running] as const)
+          : work.pipe(
+              Effect.ensuring(SynchronizedRef.set(slot, null)),
+              Effect.forkIn(scope),
+              Effect.map((fiber) => [fiber, fiber] as const),
+            ),
+      ).pipe(Effect.flatMap(Fiber.join));
+    });
+
+  const readiness = yield* shared(
+    Effect.gen(function* () {
+      yield* requireEnabled;
+      const ready = yield* host
+        .ensureReady((phase, detail) => setHostStatus(phase, detail).pipe(Effect.asVoid))
+        .pipe(
+          Effect.tapError((error) => setHostStatus("failed", error.message)),
+          Effect.mapError(hostUnavailable),
+        );
+      const { hostStatus } = yield* currentState;
+      if (hostStatus !== "ready") {
+        yield* setHostStatus("ready");
+        yield* publishSummary;
+      }
+      return ready;
+    }).pipe(lifecycleLock.withPermit, Effect.withSpan("DeviceService.readiness")),
+  );
+
+  const agentReadiness = yield* shared(
+    Effect.gen(function* () {
+      const deviceSettings = yield* readDeviceSettings;
+      if (!deviceSettings.enabled || !deviceSettings.agentAccessEnabled) {
+        return yield* new DeviceHostUnavailableError({
+          reason:
+            "Agents can't use devices on this computer. Ask the user to turn on Use devices and Agents can use devices in Settings → Devices.",
+        });
+      }
+      const ready = yield* host
+        .ensureAgentReady((phase, detail) => setHostStatus(phase, detail).pipe(Effect.asVoid))
+        .pipe(
+          Effect.tapError((error) => setHostStatus("failed", error.message)),
+          Effect.mapError(hostUnavailable),
+        );
       yield* setHostStatus("ready");
       yield* publishSummary;
-    }
-    return ready;
-  }).pipe(lifecycleLock.withPermit, Effect.withSpan("DeviceService.readiness"));
-
-  const agentReadiness = Effect.gen(function* () {
-    const deviceSettings = yield* readDeviceSettings;
-    if (!deviceSettings.enabled || !deviceSettings.agentAccessEnabled) {
-      return yield* new DeviceHostUnavailableError({
-        reason:
-          "Agents can't use devices on this computer. Ask the user to turn on Use devices and Agents can use devices in Settings → Devices.",
-      });
-    }
-    const ready = yield* host
-      .ensureAgentReady((phase, detail) => setHostStatus(phase, detail).pipe(Effect.asVoid))
-      .pipe(
-        Effect.tapError((error) => setHostStatus("failed", error.message)),
-        Effect.mapError(hostUnavailable),
-      );
-    yield* setHostStatus("ready");
-    yield* publishSummary;
-    return ready;
-  }).pipe(lifecycleLock.withPermit, Effect.withSpan("DeviceService.agentReadiness"));
+      return ready;
+    }).pipe(lifecycleLock.withPermit, Effect.withSpan("DeviceService.agentReadiness")),
+  );
 
   const refresh = Effect.fn("DeviceService.refresh")(function* (ready: DeviceHost.DeviceHostReady) {
     const { devices, detail, incompletePlatforms } = yield* ready.devices.list;
