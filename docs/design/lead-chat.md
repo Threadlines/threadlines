@@ -183,9 +183,10 @@ always one click away, and so is every thread it started.
   colour shift. Right-click or a long press opens the sidebar's thread menu. There is
   no close button: a tab is not an open file, and wrapping up stays in the menu.
 - **Too many to fit.** The longest titles give way first, so crowded tabs end up one
-  width; the lead's crown and "Lead" never shrink. Tabs shrink to a floor (about 96px), then the rest move behind
-  a "+N" menu at the end of the row, which lists them with their status. The open
-  thread's tab is always on the row. "+N" carries an amber dot when a hidden thread
+  width; the lead's crown and "Lead" never shrink. Tabs shrink to a floor (about 96px,
+  or a short title's own width, so short titles don't give way early), then the rest
+  move behind a "+N" menu at the end of the row, which lists them with their status.
+  The parent's tab and the open thread's tab are always on the row. "+N" carries an amber dot when a hidden thread
   needs the user. On a phone the row scrolls sideways instead and the open tab is
   scrolled into view.
 - **What it replaces.** While the row shows, the header drops the "Started by" chip
