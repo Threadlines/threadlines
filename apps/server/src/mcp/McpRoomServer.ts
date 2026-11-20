@@ -127,6 +127,8 @@ const ROOM_TOOL_REACH = {
   thread_read: "project",
   thread_send: "changes",
   thread_stop: "changes",
+  // Files away threads the caller started, from the user's active list.
+  thread_wrap: "changes",
   // Moves only the caller's own thread, but off this computer.
   thread_move: "changes",
   schedule_list: "project",
@@ -589,6 +591,8 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
         changes("thread_send", input, (scope) => threadHandlers.thread_send(scope, input)),
       thread_stop: (input) =>
         changes("thread_stop", input, (scope) => threadHandlers.thread_stop(scope, input)),
+      thread_wrap: (input) =>
+        changes("thread_wrap", input, (scope) => threadHandlers.thread_wrap(scope, input)),
       thread_move: (input) =>
         changes("thread_move", input, (scope) => threadHandlers.thread_move(scope, input)),
       schedule_list: (input) =>

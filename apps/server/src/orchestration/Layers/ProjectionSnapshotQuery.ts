@@ -3896,6 +3896,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             ...(input.includeArchived === true ? [] : [sql`archived_at IS NULL`]),
             ...(input.threadIds !== undefined ? [sql.in("thread_id", input.threadIds)] : []),
             ...(input.projectIds !== undefined ? [sql.in("project_id", input.projectIds)] : []),
+            ...(input.parentThreadId !== undefined
+              ? [sql`parent_thread_id = ${input.parentThreadId}`]
+              : []),
             ...(input.outsideConnectionId !== undefined
               ? [
                   sql`json_extract(outside_origin_json, '$.connectionId') = ${input.outsideConnectionId}`,

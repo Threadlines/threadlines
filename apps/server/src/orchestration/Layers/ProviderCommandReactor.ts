@@ -52,7 +52,12 @@ import {
 import { renderThreadContextSeed, withContextSeedPreamble } from "@threadlines/shared/contextSeed";
 import { LEAD_WITHOUT_TOOLS_TEXT, leadRoleText } from "@threadlines/shared/projectLead";
 import { agentInvitesMode, agentThreadsMode } from "@threadlines/shared/serverSettings";
-import { notesFor, remoteChildOf, withinModeCeiling } from "@threadlines/shared/childThreads";
+import {
+  isAttachedChild,
+  notesFor,
+  remoteChildOf,
+  withinModeCeiling,
+} from "@threadlines/shared/childThreads";
 import { settingsChangeNotesFor } from "@threadlines/shared/settingsChangeState";
 import { secretRequestNotesFor } from "@threadlines/shared/secretRequestState";
 import { secretRequestNote } from "@threadlines/shared/secretRequests";
@@ -161,6 +166,12 @@ import { checkpointHandover, HandoverCaptureWait } from "../checkpointHandover.t
 import { inviteAnswerRefusal } from "../agentInvites.ts";
 import { handOffReplyText } from "../agentRequestDecisions.ts";
 import { isCancelledReport } from "../childThreadDecisions.ts";
+import {
+  type LateReply,
+  lateRepliesText,
+  lateReplyOf,
+  lateReplyRecipient,
+} from "../childThreadDelivery.ts";
 import { NO_BACKGROUND_TASKS } from "../sessionBackgroundTasks.ts";
 import { isRestorePaid } from "../threadMoveDecisions.ts";
 import { isLinkFenced } from "../linkFence.ts";
@@ -2278,10 +2289,14 @@ const make = Effect.gen(function* () {
         ].join("\n"),
       );
     }
+    const lateReplies = yield* lateRepliesForAgent(thread, participantId);
+    if (lateReplies.length > 0) {
+      lines.push(lateRepliesText(lateReplies));
+    }
     return {
       text: lines.length > 0 ? lines.join("\n\n") : undefined,
       delivered: (createdAt: string) =>
-        notes.length === 0
+        notes.length === 0 && lateReplies.length === 0
           ? Effect.void
           : orchestrationEngine
               .dispatch({
@@ -2289,10 +2304,51 @@ const make = Effect.gen(function* () {
                 commandId: serverCommandId("child-notes-delivered"),
                 threadId: thread.id,
                 requestIds: notes.map((note) => note.requestId),
+                ...(lateReplies.length > 0
+                  ? {
+                      lateReplies: lateReplies.map(({ childThreadId, turnId }) => ({
+                        childThreadId,
+                        turnId,
+                      })),
+                    }
+                  : {}),
                 createdAt,
               })
               .pipe(Effect.catch(() => Effect.void)),
     };
+  });
+
+  /**
+   * Child threads: the late replies (lateReplyOf) of this thread's children
+   * that are for `participantId`, found from its children's rows (indexed by
+   * parent, so a thread with none reads nothing). A failed read tells of none
+   * this turn; they are told of at the next.
+   */
+  const lateRepliesForAgent = Effect.fnUntraced(function* (
+    thread: OrchestrationThread,
+    participantId: ThreadParticipantId | null,
+  ) {
+    if (thread.archivedAt !== null || isAttachedChild(thread)) return [];
+    const shells = yield* projectionSnapshotQuery
+      .listThreadShells({ parentThreadId: thread.id })
+      .pipe(Effect.orElseSucceed(() => []));
+    const candidates = shells.filter(
+      (shell) =>
+        shell.parentThreadId === thread.id &&
+        shell.attachedToParent &&
+        shell.handedBackTurnId !== null &&
+        shell.latestTurn !== null &&
+        shell.latestTurn.turnId !== shell.handedBackTurnId &&
+        shell.latestTurn.state === "completed" &&
+        lateReplyRecipient(thread, shell) === participantId,
+    );
+    const replies: LateReply[] = [];
+    for (const shell of candidates) {
+      const child = yield* resolveThread(shell.id).pipe(Effect.orElseSucceed(() => undefined));
+      const reply = child === undefined ? null : lateReplyOf(thread, child);
+      if (reply !== null) replies.push(reply);
+    }
+    return replies;
   });
 
   /**

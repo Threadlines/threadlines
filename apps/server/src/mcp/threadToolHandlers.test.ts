@@ -149,6 +149,8 @@ const makeThread = (patch: Partial<OrchestrationThread> = {}): OrchestrationThre
     attachedToParent: false,
     archivedAt: null,
     messages: [],
+    activities: [],
+    proposedPlans: [],
     queuedFollowUps: [],
     effectiveCwd: null,
     worktreePath: "/checkout",
@@ -1488,6 +1490,78 @@ describe("thread tools across linked computers", () => {
           (yield* lifted.handlers.thread_read(mainCaller(), { threadId: CHILD })).outcome,
         ).toBe("ok");
       }),
+  );
+});
+
+describe("thread_wrap", () => {
+  const remoteChild = (threadId: string, cachedStatus: string) => ({
+    environmentId: MAC_MINI,
+    label: "Mac mini",
+    threadId: ThreadId.make(threadId),
+    handle: "Codex",
+    title: "Write the changelog",
+    attachmentEpoch: 0,
+    cachedStatus,
+    updatedAt: AT,
+  });
+  const withRemoteChildren = (...children: ReadonlyArray<ReturnType<typeof remoteChild>>) =>
+    makeThread({ childRequests: { ...EMPTY_CHILD_REQUEST_STATE, remoteChildren: children } });
+
+  it.effect(
+    "wraps up finished threads it started, here as their parent and on a linked computer",
+    () =>
+      Effect.gen(function* () {
+        const tools = yield* makeTools({
+          caller: withRemoteChildren(remoteChild("remote-idle", "idle")),
+          others: [makeChild()],
+        });
+        const result = yield* tools.handlers.thread_wrap(mainCaller(), {
+          threadIds: [CHILD, "remote-idle"],
+        });
+        expect(result.outcome).toBe("ok");
+        expect(result.threads?.map((entry) => entry.outcome)).toEqual(["wrapped", "wrapped"]);
+        // The decider checks the parent again and marks it seen in the same step.
+        expect(ofType(tools.dispatched, "thread.done-override.set")).toEqual([
+          expect.objectContaining({ threadId: CHILD, state: "done", byParentAgent: PARENT }),
+        ]);
+        expect(ofType(tools.dispatched, "thread.remote-child.done-override.set")).toEqual([
+          expect.objectContaining({
+            threadId: PARENT,
+            environmentId: MAC_MINI,
+            childThreadId: "remote-idle",
+            state: "done",
+          }),
+        ]);
+      }),
+  );
+
+  it.effect("leaves a working thread as it is and refuses one it didn't start", () =>
+    Effect.gen(function* () {
+      const working = makeChild({
+        latestTurn: {
+          turnId: TurnId.make("child-turn"),
+          state: "running",
+          requestedAt: AT,
+          startedAt: AT,
+          completedAt: null,
+          assistantMessageId: null,
+        },
+      });
+      const tools = yield* makeTools({
+        caller: withRemoteChildren(remoteChild("remote-busy", "working")),
+        others: [working, makeThread({ id: STRANGER, title: "Someone else's" })],
+      });
+      const result = yield* tools.handlers.thread_wrap(mainCaller(), {
+        threadIds: [CHILD, "remote-busy", STRANGER],
+      });
+      expect(result.threads?.map((entry) => entry.outcome)).toEqual([
+        "working",
+        "working",
+        "not_yours",
+      ]);
+      expect(result.threads?.[0]?.detail).toContain("thread_stop");
+      expect(tools.dispatched).toEqual([]);
+    }),
   );
 });
 

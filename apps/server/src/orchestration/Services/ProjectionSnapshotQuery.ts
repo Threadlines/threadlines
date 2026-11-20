@@ -288,8 +288,9 @@ export interface ProjectionSnapshotQueryShape {
   >;
 
   /**
-   * Thread shells picked by id, by project or by the outside agent that
-   * started them (docs/design/outside-agents.md), built from those threads' rows
+   * Thread shells picked by id, by project, by the thread that started them
+   * (child threads, `parentThreadId`) or by the outside agent that started
+   * them (docs/design/outside-agents.md), built from those threads' rows
    * alone: no other thread, no repository identities and no diff rollups
    * (`cumulativeDiffStat` reads null). For callers that must not rebuild
    * the sidebar's whole snapshot to answer one question. Newest activity
@@ -298,6 +299,7 @@ export interface ProjectionSnapshotQueryShape {
   readonly listThreadShells: (input: {
     readonly threadIds?: ReadonlyArray<ThreadId>;
     readonly projectIds?: ReadonlyArray<ProjectId>;
+    readonly parentThreadId?: ThreadId;
     readonly outsideConnectionId?: OutsideAgentConnectionId;
     readonly includeArchived?: boolean;
   }) => Effect.Effect<ReadonlyArray<OrchestrationThreadShell>, ProjectionRepositoryError>;

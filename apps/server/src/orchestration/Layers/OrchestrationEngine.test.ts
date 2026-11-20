@@ -14,12 +14,13 @@ import {
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Metric from "effect/Metric";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import { PersistenceSqlError } from "../../persistence/Errors.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
@@ -711,6 +712,111 @@ describe("OrchestrationEngine", () => {
 
     expect(eventTypes).toEqual(["thread.created", "thread.meta-updated"]);
     await system.dispose();
+  });
+
+  it("logs a command that waited in line, with what the wait went to", async () => {
+    type StoredEvent =
+      ReturnType<OrchestrationEventStoreShape["append"]> extends Effect.Effect<infer A, any, any>
+        ? A
+        : never;
+    const events: StoredEvent[] = [];
+    let nextSequence = 1;
+    // The first thread's write is slow, so the command behind it waits.
+    const slowStore: OrchestrationEventStoreShape = {
+      append(event) {
+        const save = Effect.sync(() => {
+          const savedEvent = { ...event, sequence: nextSequence } as StoredEvent;
+          nextSequence += 1;
+          events.push(savedEvent);
+          return savedEvent;
+        });
+        return event.commandId === CommandId.make("cmd-slow-first")
+          ? Effect.sleep("1200 millis").pipe(Effect.andThen(save))
+          : save;
+      },
+      readFromSequence(sequenceExclusive) {
+        return Stream.fromIterable(events.filter((event) => event.sequence > sequenceExclusive));
+      },
+      readThreadEvents() {
+        return Effect.succeed([]);
+      },
+      readAll() {
+        return Stream.fromIterable(events);
+      },
+    };
+    const warnings: Array<ReadonlyArray<unknown>> = [];
+    const captureWarnings = Logger.make(({ message, logLevel }) => {
+      if (logLevel === "Warn") warnings.push(Array.isArray(message) ? message : [message]);
+    });
+    const runtime = ManagedRuntime.make(
+      OrchestrationEngineLive.pipe(
+        Layer.provide(OrchestrationProjectionSnapshotQueryLive),
+        Layer.provide(OrchestrationProjectionPipelineLive),
+        Layer.provide(Layer.succeed(OrchestrationEventStore, slowStore)),
+        Layer.provide(OrchestrationCommandReceiptRepositoryLive),
+        Layer.provide(RepositoryIdentityResolverLive),
+        Layer.provide(SqlitePersistenceMemory),
+        Layer.provideMerge(
+          ServerConfig.layerTest(process.cwd(), { prefix: "t3-orchestration-engine-test-" }),
+        ),
+        Layer.provideMerge(NodeServices.layer),
+        Layer.provideMerge(Logger.layer([captureWarnings], { mergeWithExisting: false })),
+      ),
+    );
+    const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
+    const createdAt = now();
+    const createThread = (commandId: string, threadId: string) =>
+      engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make(commandId),
+        threadId: ThreadId.make(threadId),
+        projectId: asProjectId("project-wait"),
+        title: threadId,
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+      });
+
+    await runtime.runPromise(
+      engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-project-wait-create"),
+        projectId: asProjectId("project-wait"),
+        title: "Wait Project",
+        workspaceRoot: "/tmp/project-wait",
+        defaultModelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        createdAt,
+      }),
+    );
+    await Promise.all([
+      runtime.runPromise(createThread("cmd-slow-first", "thread-slow-first")),
+      runtime.runPromise(createThread("cmd-waits-behind", "thread-waits-behind")),
+    ]);
+
+    // Written once its turn is over, just after its answer.
+    const waited = await vi.waitFor(() => {
+      const found = warnings.find(
+        (message) => message[0] === "orchestration command waited in line",
+      );
+      expect(found).toBeDefined();
+      return found;
+    });
+    expect(waited?.[1]).toMatchObject({
+      commandId: "cmd-waits-behind",
+      commandType: "thread.create",
+      commandsAhead: 1,
+    });
+    const detail = waited?.[1] as { waitMs: number; aheadWorkMs: number };
+    expect(detail.waitMs).toBeGreaterThanOrEqual(1_000);
+    // The wait went to the command ahead, not to a held main loop.
+    expect(detail.aheadWorkMs).toBeGreaterThanOrEqual(1_000);
+    await runtime.dispose();
   });
 
   it("records command ack duration using the first committed event type", async () => {

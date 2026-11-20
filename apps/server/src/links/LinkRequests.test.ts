@@ -680,6 +680,9 @@ it.layer(NodeServices.layer)("LinkRequests", (it) => {
         assert.equal(cancelled.status, "cancelled");
         assert.equal((yield* computer.request("request-1")).status, "cancelled");
         assert.isTrue(stopRequestedFor(yield* computer.events, threadId));
+        // The asker ended that turn, so nothing from it is owed back: it can
+        // wrap itself there.
+        assert.equal((yield* computer.thread(threadId))?.handedBackTurnId, "child-turn-1");
       }),
   );
 
