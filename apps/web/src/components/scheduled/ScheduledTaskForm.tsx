@@ -419,6 +419,7 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
             }),
         }
       : null;
+  const hasModelPicker = selection !== null && instanceEntries.length > 0;
   const shownTraits =
     traitsTarget !== null && shouldRenderTraitsControls(traitsTarget) ? traitsTarget : null;
   const accessControl: ComposerAccessControl = {
@@ -496,7 +497,7 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
         <div className="flex min-w-0 items-center gap-1.5 px-2.5 pb-2.5 sm:px-3 sm:pb-3">
           <div className="group/composer-left @container/composer-left -m-1 flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto p-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             <TooltipProvider delay={ROW_TOOLTIP_DELAY_MS}>
-              {selection !== null && instanceEntries.length > 0 ? (
+              {hasModelPicker ? (
                 <ProviderModelPicker
                   compact={isPhone}
                   activeInstanceId={selection.instanceId}
@@ -526,7 +527,9 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
                   No agent is ready on this computer.
                 </span>
               )}
-              {isPhone ? null : (
+              {/* On phones access lives in the model button's panel, as on the
+                  composer; with no model button it stays on the row. */}
+              {isPhone && hasModelPicker ? null : (
                 <ComposerRunControls
                   mode={null}
                   access={accessControl}
