@@ -240,7 +240,8 @@ export const make = Effect.gen(function* () {
         Stream.mapEffect((data) =>
           Effect.gen(function* () {
             yield* credited.await;
-            channel.unacknowledged += Math.floor((data.length * 3) / 4);
+            // Exact decoded size: the client credits decoded bytes, so an estimate would drift.
+            channel.unacknowledged += Buffer.byteLength(data, "base64");
             if (channel.unacknowledged >= DEVICE_CHANNEL_WINDOW_BYTES) Latch.closeUnsafe(credited);
             return { _tag: "data", data } as const;
           }),
