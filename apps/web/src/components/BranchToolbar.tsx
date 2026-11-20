@@ -64,6 +64,8 @@ interface BranchToolbarProps {
     options?: { readonly fromSetting?: boolean },
   ) => void;
   envLocked: boolean;
+  /** The branch can't be changed now (a message or goal is on its way). */
+  branchLocked?: boolean;
   onCheckoutPullRequestRequest?: (reference: string) => void;
   onComposerFocusRequest?: () => void;
   availableEnvironments?: readonly EnvironmentOption[];
@@ -268,6 +270,7 @@ export const BranchToolbar = memo(function BranchToolbar({
   activeThreadBranchOverrideFromSetting,
   onActiveThreadBranchOverrideChange,
   envLocked,
+  branchLocked = false,
   onCheckoutPullRequestRequest,
   onComposerFocusRequest,
   availableEnvironments,
@@ -448,6 +451,7 @@ export const BranchToolbar = memo(function BranchToolbar({
           threadId={threadId}
           {...(draftId ? { draftId } : {})}
           envLocked={envLocked}
+          locked={branchLocked}
           {...(effectiveEnvModeOverride ? { effectiveEnvModeOverride } : {})}
           {...(activeThreadBranchOverride !== undefined ? { activeThreadBranchOverride } : {})}
           {...(activeThreadBranchOverrideFromSetting
@@ -526,6 +530,7 @@ export const BranchToolbar = memo(function BranchToolbar({
         threadId={threadId}
         {...(draftId ? { draftId } : {})}
         envLocked={envLocked}
+        locked={branchLocked}
         {...(effectiveEnvModeOverride ? { effectiveEnvModeOverride } : {})}
         {...(activeThreadBranchOverride !== undefined ? { activeThreadBranchOverride } : {})}
         {...(activeThreadBranchOverrideFromSetting

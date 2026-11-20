@@ -28,6 +28,13 @@ export interface ProviderAccountUsageWindowPresentation {
   readonly reachedLimit: boolean;
   readonly warning: boolean;
   /**
+   * How much of the window has passed (0-100), where a usage bar draws its
+   * pace mark: usage left of the mark is on track to last until the reset.
+   * Unset when the provider doesn't say how long the window is or when it
+   * resets.
+   */
+  readonly elapsedPercent?: number;
+  /**
    * Set on a window that caps one model, not the whole account (Claude's
    * per-model weekly limits): the name the provider gives it ("Fable"), its
    * period ("Weekly"), and when it resets ("resets in 3d 16h").
@@ -225,6 +232,37 @@ function formatReadingAgeDetail(checkedAt: string | undefined, nowMs: number): s
     : `as of ${Math.floor(elapsedHours / 24)}d ago`;
 }
 
+/**
+ * How much of a usage window has passed, from its length and its reset time.
+ * Unset for a reading that can't be placed in its window: no length, no reset
+ * time, a reset already past, or one further off than the window is long.
+ */
+export function usageWindowElapsedPercent(
+  window: Pick<ServerProviderUsageWindow, "resetsAt" | "windowDurationMins">,
+  nowMs: number,
+): number | undefined {
+  const resetMs = normalizeResetTimestampMs(window.resetsAt);
+  const minutes = window.windowDurationMins;
+  if (resetMs === null || minutes === undefined || minutes <= 0) return undefined;
+  const durationMs = minutes * 60_000;
+  const remainingMs = resetMs - nowMs;
+  if (remainingMs <= 0 || remainingMs > durationMs) return undefined;
+  return Math.round((1 - remainingMs / durationMs) * 1000) / 10;
+}
+
+/**
+ * How far usage may run past the pace mark before the detail says so, in
+ * percentage points. Keeps a bar sitting on its mark, or one early in its
+ * window, from flagging every small burst.
+ */
+const AHEAD_OF_PACE_MARGIN_PERCENT = 5;
+
+/** "ahead of pace" when usage is on track to run out before the reset. */
+function formatPaceDetail(usedPercent: number, elapsedPercent: number | undefined): string | null {
+  if (elapsedPercent === undefined) return null;
+  return usedPercent - elapsedPercent >= AHEAD_OF_PACE_MARGIN_PERCENT ? "ahead of pace" : null;
+}
+
 function formatResetDetail(resetsAt: number | undefined, nowMs: number): string | null {
   const resetMs = normalizeResetTimestampMs(resetsAt);
   if (resetMs === null) return null;
@@ -395,8 +433,13 @@ function formatUsageWindowPresentation(
   const blockedByLimitDetail = windowReachedLimit
     ? null
     : formatBlockedByLimitDetail(blockingLimitLabels);
+  const elapsedPercent = usageWindowElapsedPercent(window, nowMs);
   const detailParts = [
     windowReachedLimit ? "limit reached" : `${usedPercent}% used`,
+    // Pace stops mattering once this limit or another one is the blocker.
+    windowReachedLimit || blockedByLimitDetail
+      ? null
+      : formatPaceDetail(usedPercent, elapsedPercent),
     blockedByLimitDetail,
     resetDetail,
     formatReadingAgeDetail(window.checkedAt, nowMs),
@@ -410,6 +453,7 @@ function formatUsageWindowPresentation(
     remainingPercent,
     reachedLimit: windowReachedLimit,
     warning: windowReachedLimit || usedPercent >= USAGE_WARNING_THRESHOLD_PERCENT,
+    ...(elapsedPercent !== undefined ? { elapsedPercent } : {}),
   };
 }
 
@@ -430,8 +474,10 @@ function formatScopedUsageWindowPresentation(
   const severityWarning = window.severity !== undefined && window.severity !== "normal";
   const resetDetail = formatResetDetail(window.resetsAt, nowMs);
   const durationLabel = formatUsageWindowDurationLabel(window, "");
+  const elapsedPercent = usageWindowElapsedPercent(window, nowMs);
   const detailParts = [
     reachedLimit ? "limit reached" : `${usedPercent}% used`,
+    reachedLimit ? null : formatPaceDetail(usedPercent, elapsedPercent),
     resetDetail,
     formatReadingAgeDetail(window.checkedAt, nowMs),
   ].filter((part): part is string => Boolean(part));
@@ -447,6 +493,7 @@ function formatScopedUsageWindowPresentation(
     remainingPercent,
     reachedLimit,
     warning: reachedLimit || severityWarning || usedPercent >= USAGE_WARNING_THRESHOLD_PERCENT,
+    ...(elapsedPercent !== undefined ? { elapsedPercent } : {}),
     scope: { name: window.scopeLabel, period: durationLabel || null, resetDetail },
   };
 }

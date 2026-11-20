@@ -1,5 +1,6 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
@@ -60,22 +61,35 @@ export const make = Effect.fn("makeVcsProjectConfig")(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
 
+  /**
+   * The nearest `vcs.json` at or above `cwd`. Every candidate up to the root
+   * is checked side by side (each check waits its turn on a busy server). The
+   * answer comes as soon as the nearest existing one is known, so a stalled
+   * check further up (an unreachable network mount) doesn't hold it.
+   */
   const findConfigPath = Effect.fn("VcsProjectConfig.findConfigPath")(function* (cwd: string) {
+    const candidates: Array<string> = [];
     let current = cwd;
     while (true) {
       for (const directoryName of PROJECT_VCS_CONFIG_DIR_NAMES) {
-        const candidate = path.join(current, directoryName, "vcs.json");
-        if (yield* fileSystem.exists(candidate).pipe(Effect.orElseSucceed(() => false))) {
-          return candidate;
-        }
+        candidates.push(path.join(current, directoryName, "vcs.json"));
       }
-
       const parent = path.dirname(current);
       if (parent === current) {
-        return null;
+        break;
       }
       current = parent;
     }
+    const checks = yield* Effect.forEach(candidates, (candidate) =>
+      Effect.forkChild(fileSystem.exists(candidate).pipe(Effect.orElseSucceed(() => false))),
+    );
+    for (const [index, check] of checks.entries()) {
+      if (yield* Fiber.join(check)) {
+        yield* Fiber.interruptAll(checks.slice(index + 1));
+        return candidates[index] ?? null;
+      }
+    }
+    return null;
   });
 
   const readConfiguredKind = Effect.fn("VcsProjectConfig.readConfiguredKind")(function* (

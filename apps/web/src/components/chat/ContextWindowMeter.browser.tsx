@@ -113,6 +113,36 @@ describe("ContextWindowMeter", () => {
     }
   });
 
+  it("marks the pace on a usage bar and opens the Usage page from its row", async () => {
+    const openUsage = vi.fn();
+    const screen = await render(
+      <ContextWindowMeter
+        usage={TEST_CONTEXT_WINDOW}
+        accountUsage={{
+          ...TEST_ACCOUNT_USAGE,
+          windows: TEST_ACCOUNT_USAGE.windows.map((window) =>
+            window.key === "secondary" ? { ...window, elapsedPercent: 14.3 } : window,
+          ),
+        }}
+        onOpenUsage={openUsage}
+      />,
+    );
+
+    try {
+      await page.getByRole("button", { name: /Context window/ }).click();
+      const paceMarks = document.querySelectorAll<HTMLElement>("[data-usage-pace-mark]");
+      // Only the window that knows its length gets a mark.
+      expect(paceMarks).toHaveLength(1);
+      expect(paceMarks[0]?.style.left).toBe("14.3%");
+
+      await page.getByRole("button", { name: /Weekly 36% used, 14% of the window passed/ }).click();
+      expect(openUsage).toHaveBeenCalledTimes(1);
+      await expect.element(page.getByText("Codex usage")).not.toBeInTheDocument();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("offers Sign in from the usage popout only when the provider is signed out", async () => {
     const signIn = vi.fn();
     const meter = (notice: NonNullable<ProviderAccountUsagePresentation["notice"]>) => (

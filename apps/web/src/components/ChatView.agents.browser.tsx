@@ -837,6 +837,18 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
           ).toMatchObject({ requestId, choice: "review" }),
         { timeout: 8_000, interval: 16 },
       );
+      // The server took the answer, but the thread has not caught up yet, so
+      // the card is still there. Its buttons stay off: a second answer in
+      // that gap would be refused as an invite already answered.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(document.querySelector('[data-testid="agent-invite-panel"]')).toBe(panel);
+      expect(
+        [...panel.querySelectorAll<HTMLButtonElement>("button")]
+          .filter((button) =>
+            ["Not now", "Add to thread", "Review only"].includes(button.textContent ?? ""),
+          )
+          .map((button) => button.disabled),
+      ).toEqual([true, true, true]);
     } finally {
       await mounted.cleanup();
     }
@@ -1344,6 +1356,164 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
         params: { environmentId: LOCAL_ENVIRONMENT_ID, threadId: loner },
       });
       await vi.waitFor(() => expect(row()).toBeNull(), { timeout: 10_000 });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps the lead's tab whole on a crowded row, drops a shared topic, and cuts long tabs to one width", async () => {
+    const titles = [
+      "Panel Jam animation timing review",
+      "Panel Jam: council round two",
+      "Review: last three commits on main",
+      "Pull Station restructure: start the split",
+      "Pull Station: Android toolchain setup",
+      "Pull Station: UI polish pass after review",
+    ];
+    const children = titles.map((_, index) => `thread-crowded-${index}` as ThreadId);
+    const base = children.reduce(
+      (snapshot, child) => addThreadToSnapshot(snapshot, child),
+      createSnapshotForTargetUser({
+        targetMessageId: "msg-user-crowded-family" as MessageId,
+        targetText: "crowded family target",
+      }),
+    );
+    const mounted = await mountChatView({
+      viewport: { ...DEFAULT_VIEWPORT, width: 1_280 },
+      snapshot: {
+        ...base,
+        projects: base.projects.map((project) => ({ ...project, leadThreadId: THREAD_ID })),
+        threads: base.threads.map((thread) => {
+          const index = children.indexOf(thread.id);
+          return index === -1
+            ? thread
+            : {
+                ...thread,
+                title: titles[index]!,
+                parentThreadId: THREAD_ID,
+                attachedToParent: true,
+                createdAt: isoAt(10 + index),
+              };
+        }),
+      },
+    });
+    const tabs = () => [
+      ...document.querySelectorAll<HTMLElement>('[data-testid="family-tabs"] [role="tab"]'),
+    ];
+    try {
+      await vi.waitFor(() => expect(tabs()).toHaveLength(1 + children.length), {
+        timeout: 10_000,
+      });
+      const [leadTab, ...childTabs] = tabs();
+      const labelOf = (tab: HTMLElement) => tab.querySelector<HTMLElement>("span.truncate")!;
+      // A topic two threads share is dropped from their tabs, and kept in the tooltip.
+      expect(childTabs.map((tab) => labelOf(tab).textContent)).toEqual([
+        "Animation timing review",
+        "Council round two",
+        "Review: last three commits on main",
+        "Restructure: start the split",
+        "Android toolchain setup",
+        "UI polish pass after review",
+      ]);
+      expect(childTabs.map((tab) => tab.title)).toEqual(titles);
+      // "Lead" is never cut...
+      expect(labelOf(leadTab!).textContent).toBe("Lead");
+      expect(labelOf(leadTab!).scrollWidth).toBeLessThanOrEqual(labelOf(leadTab!).clientWidth);
+      // ...and on a crowded row the cut tabs share one width, which no other tab passes.
+      const width = (tab: HTMLElement) => tab.getBoundingClientRect().width;
+      const cut = childTabs.filter((tab) => labelOf(tab).scrollWidth > labelOf(tab).clientWidth);
+      expect(cut.length).toBeGreaterThan(1);
+      const cutWidths = cut.map(width);
+      // Within a pixel: layout splits the row in fractions of one.
+      expect(Math.max(...cutWidths) - Math.min(...cutWidths)).toBeLessThan(1);
+      expect(childTabs.every((tab) => width(tab) < Math.max(...cutWidths) + 1)).toBe(true);
+
+      // The sidebar's rows under the lead say the same, with the full title for screen readers.
+      await page.getByTestId(`thread-family-${THREAD_ID}`).click();
+      const sidebarTitle = (child: ThreadId) =>
+        document.querySelector<HTMLElement>(`[data-testid="child-title-${child}"]`);
+      await vi.waitFor(() => expect(sidebarTitle(children[4]!)).not.toBeNull(), {
+        timeout: 10_000,
+      });
+      expect(sidebarTitle(children[4]!)!.querySelector(`[aria-hidden="true"]`)?.textContent).toBe(
+        "Android toolchain setup",
+      );
+      expect(sidebarTitle(children[4]!)!.querySelector(".sr-only")?.textContent).toBe(titles[4]);
+      expect(sidebarTitle(children[2]!)!.textContent).toBe(titles[2]);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps short-titled tabs on the row where they fit, instead of behind +N", async () => {
+    const titles = ["UI", "DB", "QA", "CI", "Ops", "Docs", "Perf", "Auth"];
+    const children = titles.map((_, index) => `thread-short-${index}` as ThreadId);
+    const base = children.reduce(
+      (snapshot, child) => addThreadToSnapshot(snapshot, child),
+      createSnapshotForTargetUser({
+        targetMessageId: "msg-user-short-family" as MessageId,
+        targetText: "short family target",
+      }),
+    );
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...base,
+        projects: base.projects.map((project) => ({ ...project, leadThreadId: THREAD_ID })),
+        threads: base.threads.map((thread) => {
+          const index = children.indexOf(thread.id);
+          return index === -1
+            ? thread
+            : {
+                ...thread,
+                title: titles[index]!,
+                parentThreadId: THREAD_ID,
+                attachedToParent: true,
+                createdAt: isoAt(10 + index),
+              };
+        }),
+      },
+    });
+    const row = () => document.querySelector<HTMLElement>('[data-testid="family-tabs"]');
+    try {
+      await vi.waitFor(
+        () => expect(row()?.querySelectorAll('[role="tab"]')).toHaveLength(1 + titles.length),
+        { timeout: 10_000 },
+      );
+      // Nine tabs at the 96px floor would not fit; at their own widths they do, none cut.
+      const onRow = () => [
+        ...row()!.querySelectorAll<HTMLElement>(
+          '[role="tab"], [data-testid="family-tabs-overflow"]',
+        ),
+      ];
+      const unclipped = () =>
+        onRow().every((item) => {
+          const label = item.querySelector<HTMLElement>("span.truncate") ?? item;
+          return label.scrollWidth <= label.clientWidth;
+        });
+      const inside = () =>
+        onRow().every(
+          (item) =>
+            item.getBoundingClientRect().right <= row()!.getBoundingClientRect().right + 0.5,
+        );
+      expect(row()!.clientWidth).toBeLessThan((1 + titles.length) * 96);
+      expect(row()!.querySelector('[data-testid="family-tabs-overflow"]')).toBeNull();
+      expect(unclipped()).toBe(true);
+      expect(inside()).toBe(true);
+
+      // A larger browser font: the row measures what it draws, so what shows still fits whole.
+      document.documentElement.style.fontSize = "24px";
+      try {
+        await vi.waitFor(
+          () => expect(row()!.querySelector('[data-testid="family-tabs-overflow"]')).not.toBeNull(),
+          { timeout: 5_000 },
+        );
+        await nextFrames(3);
+        expect(unclipped()).toBe(true);
+        expect(inside()).toBe(true);
+      } finally {
+        document.documentElement.style.fontSize = "";
+      }
     } finally {
       await mounted.cleanup();
     }

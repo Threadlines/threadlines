@@ -987,6 +987,8 @@ export interface UsagePlanLimitMeter {
   readonly usedPercent: number;
   readonly warning: boolean;
   readonly reachedLimit: boolean;
+  /** How much of the window has passed, for the pace mark; see the shared presentation. */
+  readonly elapsedPercent?: number;
 }
 
 export interface UsagePlanLimitRow {
@@ -1031,6 +1033,7 @@ export function buildUsagePlanLimitRows(
       usedPercent: window.usedPercent,
       warning: window.warning,
       reachedLimit: window.reachedLimit,
+      ...(window.elapsedPercent !== undefined ? { elapsedPercent: window.elapsedPercent } : {}),
     }));
     if (presentation.spendControl) {
       meters.push({

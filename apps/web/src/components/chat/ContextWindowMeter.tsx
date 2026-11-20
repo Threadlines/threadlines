@@ -1,5 +1,5 @@
 import { ChevronDownIcon } from "lucide-react";
-import { type ReactNode, useCallback, useLayoutEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { openExternalUrl } from "~/lib/externalLinks";
 import { cn } from "~/lib/utils";
@@ -15,6 +15,7 @@ import {
   usageMeterColor,
 } from "~/lib/providerUsage";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
+import { UsagePaceMark, usagePaceLabel } from "../usage/UsagePaceMark";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 function isDomNode(value: unknown): value is Node {
@@ -24,34 +25,59 @@ function isDomNode(value: unknown): value is Node {
 const contextWindowActionButtonClassName =
   "h-5 shrink-0 cursor-pointer rounded-sm border border-border/70 px-1.5 font-medium text-[10px] text-foreground leading-none transition-colors hover:border-border hover:bg-muted hover:text-foreground focus-visible:border-focus-ring focus-visible:bg-muted focus-visible:outline-none disabled:pointer-events-none disabled:cursor-default disabled:opacity-55";
 
+/**
+ * One account usage line: its label and detail over a bar, with the pace mark
+ * when the window's length is known. With `onOpen` the whole line is a button
+ * (the Usage page), plain until hover like the rest of a popover's rows.
+ */
 function AccountUsageBar(props: {
   usageLabel: string;
   rowLabel: string;
   detail: string;
   usedPercent: number;
   warning: boolean;
+  elapsedPercent?: number | undefined;
+  onOpen?: (() => void) | undefined;
 }) {
   const meterColor = usageMeterColor(props.usedPercent, props.warning);
-  return (
-    <div className="space-y-1">
-      <div className="flex min-w-0 items-baseline justify-between gap-3 text-xs">
+  const meterLabel = `${props.usageLabel} ${props.rowLabel} ${props.usedPercent}% used${usagePaceLabel(props.elapsedPercent)}`;
+  const content = (
+    <>
+      <span className="flex min-w-0 items-baseline justify-between gap-3 text-xs">
         <span className="shrink-0 font-medium text-foreground">{props.rowLabel}</span>
         <span className="min-w-0 text-right text-muted-foreground">{props.detail}</span>
-      </div>
-      <div
+      </span>
+      <span
         role="meter"
-        aria-label={`${props.usageLabel} ${props.rowLabel} ${props.usedPercent}% used`}
+        aria-label={meterLabel}
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={props.usedPercent}
-        className="h-1 overflow-hidden rounded-full bg-muted"
+        className="relative block h-1 rounded-full bg-muted"
       >
-        <div
-          className={cn("h-full rounded-full transition-[width]", !meterColor && "bg-primary")}
+        <span
+          className={cn(
+            "block h-full rounded-full transition-[width]",
+            !meterColor && "bg-primary",
+          )}
           style={{ width: `${props.usedPercent}%`, backgroundColor: meterColor }}
         />
-      </div>
-    </div>
+        {props.elapsedPercent !== undefined ? (
+          <UsagePaceMark elapsedPercent={props.elapsedPercent} />
+        ) : null}
+      </span>
+    </>
+  );
+  if (!props.onOpen) return <div className="flex flex-col gap-1">{content}</div>;
+  return (
+    <button
+      type="button"
+      aria-label={`${meterLabel}. Open usage`}
+      onClick={props.onOpen}
+      className="-mx-1.5 -my-1 flex w-[calc(100%+--spacing(3))] cursor-pointer flex-col gap-1 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:outline-none"
+    >
+      {content}
+    </button>
   );
 }
 
@@ -156,6 +182,8 @@ export function ContextWindowMeter(props: {
   contextWindowLabel?: string | null;
   onResetAccountUsage?: (() => void) | undefined;
   accountUsageResetInFlight?: boolean | undefined;
+  /** Opens the Usage page; makes each usage line in the popover a button. */
+  onOpenUsage?: (() => void) | undefined;
   onCompactContext?: (() => void) | undefined;
   contextCompactDisabled?: boolean | undefined;
   contextCompactInFlight?: boolean | undefined;
@@ -256,6 +284,17 @@ export function ContextWindowMeter(props: {
     };
   }, [isOpen, onOpenChange]);
   const isMeterActive = isOpen || isPinnedOpen;
+  const { onOpenUsage } = props;
+  const openUsage = useMemo(
+    () =>
+      onOpenUsage
+        ? () => {
+            onOpenChange(false);
+            onOpenUsage();
+          }
+        : undefined,
+    [onOpenChange, onOpenUsage],
+  );
 
   return (
     <Popover onOpenChange={onOpenChange} open={isOpen}>
@@ -531,6 +570,7 @@ export function ContextWindowMeter(props: {
                   detail={accountUsage.spendControl.detail}
                   usedPercent={accountUsage.spendControl.usedPercent}
                   warning={accountUsage.spendControl.warning}
+                  onOpen={openUsage}
                 />
               ) : null}
               {accountUsage.windows.map((window) => (
@@ -541,6 +581,8 @@ export function ContextWindowMeter(props: {
                   detail={window.detail}
                   usedPercent={window.usedPercent}
                   warning={window.warning}
+                  elapsedPercent={window.elapsedPercent}
+                  onOpen={openUsage}
                 />
               ))}
               {accountUsage.notice ? (
