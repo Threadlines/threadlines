@@ -1140,6 +1140,44 @@ describe("ChatView (full app): app shell", () => {
     }
   });
 
+  it("keeps a floating list showing when the app opens on the old General Chats address", async () => {
+    localStorage.setItem(
+      CLIENT_SETTINGS_STORAGE_KEY,
+      JSON.stringify({ ...DEFAULT_CLIENT_SETTINGS, generalChatsPlacement: "threads" }),
+    );
+    useUiStateStore.setState({ inboxGeneralChatsOpen: false });
+    const mounted = await mountChatView({
+      viewport: { ...DEFAULT_VIEWPORT, name: "list-floats-chats-launch", width: 800 },
+      initialPath: "/chats",
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-list-floats-chats-launch" as MessageId,
+        targetText: "list floats chats launch",
+      }),
+    });
+
+    try {
+      // Home, then on to where the launch lands: the list stays out through both.
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname !== "/chats" && pathname !== "/",
+        "The launch should land in work.",
+      );
+      const list = await waitForElement(
+        () =>
+          document.querySelector<HTMLElement>('[data-testid="app-panel"] > [data-slot="sidebar"]'),
+        "Unable to find the list beside the rail.",
+      );
+      await nextFrames(5);
+      expect(list.dataset.state).toBe("expanded");
+      await expect
+        .element(page.getByTestId("inbox-chats-toggle"))
+        .toHaveAttribute("aria-expanded", "true");
+    } finally {
+      localStorage.removeItem(CLIENT_SETTINGS_STORAGE_KEY);
+      await mounted.cleanup();
+    }
+  });
+
   it("folds the app's name away, then gives the thread's header its own row, as the title row runs out of room", async () => {
     const root = document.documentElement;
     root.classList.add("electron", "wco");

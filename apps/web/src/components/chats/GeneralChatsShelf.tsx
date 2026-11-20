@@ -35,10 +35,13 @@ import { useGeneralChatGroups, useGeneralChats } from "./useGeneralChats";
  * rail leaves that to the list beside it.
  */
 export function GeneralChatsShelf({
+  environmentId,
   maxHeight,
   shelfRef,
   onSwipe,
 }: {
+  /** The computer the Threads list is narrowed to, if any: the section follows it. */
+  readonly environmentId: string | null;
   /** The open section's cap, as a CSS length. */
   readonly maxHeight: string;
   readonly shelfRef: (element: HTMLElement | null) => void;
@@ -49,7 +52,7 @@ export function GeneralChatsShelf({
   const setOpen = useUiStateStore((state) => state.setInboxGeneralChatsOpen);
   const closeSheet = useCloseSidebarSheet();
   const seenSources = useThreadSeenSources();
-  const { chats, startChat } = useGeneralChats();
+  const { chats, startChat } = useGeneralChats({ environmentId });
   const groups = useGeneralChatGroups(chats);
   const routeThreadRef = useParams({
     strict: false,
@@ -140,7 +143,11 @@ export function GeneralChatsShelf({
               <MessageCirclePlusIcon className="size-3.5" />
             </TooltipTrigger>
             <TooltipPopup side="top">
-              {startChat === null ? "New chat · No computer is connected yet." : "New chat"}
+              {startChat === null
+                ? environmentId === null
+                  ? "New chat · No computer is connected yet."
+                  : "New chat · This computer can't start one yet."
+                : "New chat"}
             </TooltipPopup>
           </Tooltip>
         }

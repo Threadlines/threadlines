@@ -104,6 +104,7 @@ import {
 import { holdThreadDetailForOpen, prewarmHighlightedThread } from "../environments/runtime/service";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { useGeneralChats } from "./chats/useGeneralChats";
+import { requestGeneralChatsReveal } from "./chats/generalChatsPlacement";
 import { useInboxThreads } from "../hooks/useInboxThreads";
 import { useThreadMenu } from "../hooks/useThreadMenu";
 import {
@@ -1847,7 +1848,10 @@ export function OpenCommandPaletteDialog() {
     title: "Open general chats",
     icon: <MessagesSquareIcon className={ITEM_ICON_CLASS} />,
     run: async () => {
-      await navigate({ to: "/chats" });
+      // Where the chats are a section of Threads, the shell opens it there
+      // without a stop at the old page's address.
+      if (settings.generalChatsPlacement === "threads") requestGeneralChatsReveal();
+      else await navigate({ to: "/chats" });
     },
   });
 

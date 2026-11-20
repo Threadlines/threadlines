@@ -113,16 +113,22 @@ export interface NavigationDestination {
 }
 
 /**
- * The last thread view (a thread, a draft or home) the user was on, so the
- * Threads button brings them back to it from Fleet or Usage. Kept for the
- * life of the window: on a fresh launch Threads opens home, which restores
- * the last thread itself.
+ * The last thread views (a thread, a draft or home) the user was on, so the
+ * Threads button brings them back from Fleet or Usage: the last of any kind,
+ * a general chat included while the chats are a section of Threads, and the
+ * last outside a general chat, for when they have their own page (switching
+ * back must not leave Threads pointing at a chat). Kept for the life of the
+ * window: on a fresh launch Threads opens home, which restores the last
+ * thread itself.
  */
-let lastThreadsViewHref: string | null = null;
+let lastThreadsViewHref: { readonly any: string | null; readonly project: string | null } = {
+  any: null,
+  project: null,
+};
 
-/** Where the Threads button goes: the last thread view, else home. */
-export function threadsViewHref(): string {
-  return lastThreadsViewHref ?? "/";
+/** Where the Threads button goes: the last thread view it covers, else home. */
+export function threadsViewHref(generalChatsInThreads: boolean): string {
+  return (generalChatsInThreads ? lastThreadsViewHref.any : lastThreadsViewHref.project) ?? "/";
 }
 
 /**
@@ -225,7 +231,10 @@ export function useRememberThreadsView(): void {
     // general chat could become the Threads button's target, so only an
     // address that matches a known thread view is remembered.
     if (onThreadsView && openThread !== "unknown" && pathname === threadViewPath) {
-      lastThreadsViewHref = href;
+      lastThreadsViewHref = {
+        any: href,
+        project: openThread === "general-chat" ? lastThreadsViewHref.project : href,
+      };
     }
   }, [href, onThreadsView, openThread, pathname, threadViewPath]);
 }
@@ -463,14 +472,9 @@ export function useNavigationDestinations(options: { readonly listOpen: boolean 
       if (id === "threads" && selected === "threads") return;
       runNavigatedRef.current = true;
       switch (id) {
-        case "threads": {
-          if (lastThreadsViewHref !== null) {
-            void router.navigate({ href: lastThreadsViewHref });
-            return;
-          }
-          void navigate({ to: "/" });
+        case "threads":
+          void router.navigate({ href: threadsViewHref(generalChatsInThreads) });
           return;
-        }
         case "chats":
           void navigate({ to: "/chats" });
           return;
@@ -494,7 +498,7 @@ export function useNavigationDestinations(options: { readonly listOpen: boolean 
           return;
       }
     },
-    [isMobile, navigate, router, selected, toggleSidebar],
+    [generalChatsInThreads, isMobile, navigate, router, selected, toggleSidebar],
   );
 
   return { destinations, select };

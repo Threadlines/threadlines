@@ -16,6 +16,7 @@ import { useAppHistory } from "../appHistory";
 import { useCommandPaletteStore } from "../commandPaletteStore";
 import { isKnownEnvironment } from "../environments/runtime";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
+import { getClientSettings } from "../hooks/useSettings";
 import { resolveShortcutCommand } from "../keybindings";
 import { startNewThreadFromContext } from "../lib/chatThreadActions";
 import { isTerminalFocused } from "../lib/terminalFocus";
@@ -26,7 +27,8 @@ import { selectThreadTerminalState, useTerminalStateStore } from "../terminalSta
 import { buildThreadRouteParams } from "../threadRoutes";
 import { selectSidebarListShown, useUiStateStore } from "../uiStateStore";
 import ThreadSidebar from "./Sidebar";
-import { consumeSidebarListReveal } from "./chats/generalChatsPlacement";
+import { consumeSidebarListReveal, requestGeneralChatsReveal } from "./chats/generalChatsPlacement";
+import { GeneralChatsRevealer } from "./chats/GeneralChatsRevealer";
 import { AppTitleBar } from "./sidebar/AppTitleBar";
 import { TitleBarSlotContext } from "./sidebar/titleBarSlot";
 import { destinationHasList } from "./sidebar/destinationLists";
@@ -145,7 +147,9 @@ function AppShellCommands({ hasList }: { readonly hasList: boolean }) {
           void navigate({ to: "/terminals" });
           return;
         case "open-general-chats":
-          void navigate({ to: "/chats" });
+          // Read when the item fires; the menu subscription stays put.
+          if (getClientSettings().generalChatsPlacement === "threads") requestGeneralChatsReveal();
+          else void navigate({ to: "/chats" });
           return;
         case "open-usage":
           void navigate({ to: "/usage" });
@@ -301,8 +305,8 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
   const panelRef = useRef<HTMLDivElement>(null);
   useSidebarListFloats(panelRef, isMobile);
   // A floating list gets out of the way of whatever page opens next, unless
-  // the change was asked to show it (the old General Chats address, opening
-  // the chats' section in Threads).
+  // the change was asked to show it (opening the chats' section in Threads,
+  // GeneralChatsRevealer).
   const pathname = useLocation({ select: (location) => location.pathname });
   const shownPathname = useRef(pathname);
   useEffect(() => {
@@ -358,6 +362,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
       style={sidebarStyle}
     >
       <AppShellCommands hasList={hasList} />
+      <GeneralChatsRevealer />
       <AppTitleBar slotRef={setTitleBarSlot} />
       <div className="flex min-h-0 flex-1">
         <NavigationRail />

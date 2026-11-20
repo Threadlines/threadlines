@@ -1,3 +1,5 @@
+import { create } from "zustand";
+
 import { useSettings } from "../../hooks/useSettings";
 
 /**
@@ -11,32 +13,64 @@ export function useGeneralChatsInThreads(): boolean {
 }
 
 /**
- * A request, from the old General Chats address, that the list beside the
- * rail show across the redirect to Threads. The shell hides a floating list
- * whenever the page changes; while a request stands, the change to the
- * address it came from and the one it goes to show the list instead
- * (AppSidebarLayout). Any other change drops it.
+ * Requests to open General Chats while they are a section of Threads. The
+ * command palette and the desktop menu live outside the sidebar, and the old
+ * /chats address is a page of its own, so each asks here and the shell's
+ * GeneralChatsRevealer does the opening: the section unfolded, the list (or a
+ * phone's sheet) showing, and Threads on screen.
  */
-let listReveal: { readonly from: string; readonly to: string } | null = null;
+const useRevealRequests = create<{ readonly count: number }>(() => ({ count: 0 }));
+
+export function requestGeneralChatsReveal(): void {
+  useRevealRequests.setState((state) => ({ count: state.count + 1 }));
+}
+
+/** How many reveals have been asked for; a change is a new request. */
+export function useGeneralChatsRevealRequests(): number {
+  return useRevealRequests((state) => state.count);
+}
+
+export function readGeneralChatsRevealRequests(): number {
+  return useRevealRequests.getState().count;
+}
+
+/**
+ * A request that the list beside the rail stay showing across a reveal's
+ * page changes. The shell hides a floating list whenever the page changes;
+ * while a request stands, the change to the address it left and the one it
+ * goes to show the list instead (AppSidebarLayout). `thenAny` lets one more
+ * change through after that, for home on a launch, which goes on to the last
+ * thread. Any other change drops it.
+ */
+let listReveal: {
+  readonly from: string;
+  readonly to: string | null;
+  readonly thenAny: boolean;
+} | null = null;
 
 /** The path part of an in-app href. */
 function hrefPathname(href: string): string {
   return href.split(/[?#]/u, 1)[0] || "/";
 }
 
-export function requestSidebarListReveal(from: string, toHref: string): void {
-  listReveal = { from: hrefPathname(from), to: hrefPathname(toHref) };
+export function requestSidebarListReveal(
+  from: string,
+  toHref: string,
+  options: { readonly thenAny: boolean },
+): void {
+  listReveal = { from: hrefPathname(from), to: hrefPathname(toHref), thenAny: options.thenAny };
 }
 
-/**
- * Whether the page change to `pathname` should show the list rather than
- * hide a floating one. Reaching the redirect's target, or anywhere else,
- * ends the request.
- */
+/** Whether the page change to `pathname` should show the list rather than hide a floating one. */
 export function consumeSidebarListReveal(pathname: string): boolean {
-  if (listReveal === null) return false;
-  if (pathname === listReveal.from) return true;
-  const revealed = pathname === listReveal.to;
+  const request = listReveal;
+  if (request === null) return false;
+  if (pathname === request.from) return true;
+  if (request.to === null || pathname === request.to) {
+    listReveal =
+      request.to !== null && request.thenAny ? { from: pathname, to: null, thenAny: false } : null;
+    return true;
+  }
   listReveal = null;
-  return revealed;
+  return false;
 }

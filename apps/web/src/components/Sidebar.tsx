@@ -1508,8 +1508,13 @@ export default function Sidebar() {
   const orderedThreadKeys = useKept(orderedThreadKeysNow, shallow);
   // The general chats in the General Chats list's order. They never join the
   // inbox, so while one is open previous/next walk these instead: chat to
-  // chat, the way the list shows them.
-  const { chats: generalChats } = useGeneralChats();
+  // chat, the way the list shows them. Where the chats are an open section
+  // at the foot of this list, previous/next walk the whole list top to
+  // bottom, chats last, as it reads.
+  const { chats: generalChats } = useGeneralChats(
+    generalChatsInThreads ? { environmentId: scopedEnvironmentIdValue } : undefined,
+  );
+  const generalChatsSectionOpen = useUiStateStore((store) => store.inboxGeneralChatsOpen);
   const generalChatThreadKeys = useMemo(
     () =>
       generalChats.map((thread) =>
@@ -1517,10 +1522,16 @@ export default function Sidebar() {
       ),
     [generalChats],
   );
+  const listedTraversalKeys = useMemo(
+    () => [...orderedThreadKeys, ...generalChatThreadKeys],
+    [generalChatThreadKeys, orderedThreadKeys],
+  );
   const traversalThreadKeys =
-    routeThreadKey !== null && generalChatThreadKeys.includes(routeThreadKey)
-      ? generalChatThreadKeys
-      : orderedThreadKeys;
+    generalChatsInThreads && generalChatsSectionOpen
+      ? listedTraversalKeys
+      : routeThreadKey !== null && generalChatThreadKeys.includes(routeThreadKey)
+        ? generalChatThreadKeys
+        : orderedThreadKeys;
 
   const navigateToThread = useCallback(
     (threadRef: ScopedThreadRef) => {
@@ -2570,6 +2581,7 @@ export default function Sidebar() {
                   them here instead of on their own page. */}
                 {generalChatsInThreads ? (
                   <GeneralChatsShelf
+                    environmentId={scopedEnvironmentIdValue}
                     maxHeight={GENERAL_CHATS_SHELF_MAX_HEIGHT}
                     shelfRef={chatsShelfRef}
                     onSwipe={handleRowSwipe}

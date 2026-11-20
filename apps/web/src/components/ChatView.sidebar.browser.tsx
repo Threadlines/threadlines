@@ -1163,9 +1163,42 @@ describe("ChatView (full app): sidebar", () => {
               : thread,
         ),
       },
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          keybindings: [
+            {
+              command: "thread.next",
+              shortcut: {
+                key: "]",
+                metaKey: false,
+                ctrlKey: false,
+                shiftKey: true,
+                altKey: false,
+                modKey: true,
+              },
+              whenAst: { type: "not", node: { type: "identifier", name: "terminalFocus" } },
+            },
+          ],
+        };
+      },
     });
+    const useMetaForMod = isMacPlatform(navigator.platform);
+    const pressNext = () =>
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "}",
+          code: "BracketRight",
+          shiftKey: true,
+          metaKey: useMetaForMod,
+          ctrlKey: !useMetaForMod,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
 
     try {
+      const projectThreadPath = mounted.router.state.location.pathname;
       setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, workingChatId, "working");
       setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, askingChatId, "needs-you");
       // No General Chats button: Threads carries what the chats need.
@@ -1199,6 +1232,19 @@ describe("ChatView (full app): sidebar", () => {
       // Starting a chat needs no unfolding.
       await expect.element(page.getByTestId("inbox-chats-new-chat")).toBeVisible();
 
+      // The palette opens the section where the user is, adding no step to Back.
+      const historyLength = window.history.length;
+      await openCommandPaletteFromTrigger();
+      await page
+        .getByTestId("command-palette")
+        .getByText("Open general chats", { exact: true })
+        .click();
+      await expect.element(toggle).toHaveAttribute("aria-expanded", "true");
+      expect(mounted.router.state.location.pathname).toBe(projectThreadPath);
+      expect(window.history.length).toBe(historyLength);
+      await toggle.click();
+      await expect.element(toggle).toHaveAttribute("aria-expanded", "false");
+
       // The old page's address opens Threads with the section open.
       await mounted.router.navigate({ to: "/chats" });
       await waitForURL(
@@ -1208,6 +1254,15 @@ describe("ChatView (full app): sidebar", () => {
       );
       await expect.element(toggle).toHaveAttribute("aria-expanded", "true");
       await expect.element(threadsButton).toHaveAttribute("aria-current", "page");
+
+      // Next walks the list as it reads: from the last project thread into the chats.
+      pressNext();
+      await waitForURL(
+        mounted.router,
+        (pathname) =>
+          pathname.endsWith(`/${workingChatId}`) || pathname.endsWith(`/${askingChatId}`),
+        "Next should step from the project's thread into the open section.",
+      );
 
       await page.getByTestId("chats-list-row").filter({ hasText: "Draft reply" }).click();
       await waitForURL(
@@ -1229,6 +1284,13 @@ describe("ChatView (full app): sidebar", () => {
       await expect
         .element(page.getByTestId("chats-list-row").filter({ hasText: "Draft reply" }))
         .toHaveAttribute("aria-current", "page");
+      // Threads goes back to project work, not to the chat opened from it.
+      await threadsButton.click();
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname === projectThreadPath,
+        "Threads should return to the last project thread once the chats have their page.",
+      );
     } finally {
       localStorage.removeItem(CLIENT_SETTINGS_STORAGE_KEY);
       await mounted.cleanup();
