@@ -50,6 +50,8 @@ import {
   moveInInboxCustomOrder,
   trimInboxCustomOrder,
   orderInboxLiveRowsByGroup,
+  appendInboxGroupKeys,
+  inboxDrawnGroupOrder,
   countInboxPinDividers,
   moveInInboxGroupOrder,
   inboxCustomOrderPeers,
@@ -1822,6 +1824,48 @@ describe("the inbox's sorts", () => {
       "a2",
       "c1",
     ]);
+  });
+
+  it("keeps a custom-sorted group in place when its top row goes, and puts a new group last", () => {
+    const groupOf = (row: { key: string; group: string }) => row.group;
+    const groupsOn = (rows: readonly { key: string; group: string }[]) =>
+      groupInboxLiveRows(rows, groupOf).map((group) => group.key);
+    const draw = (
+      rows: readonly { key: string; group: string }[],
+      sort: "custom" | "recent",
+      draggedOrder: readonly string[],
+      seen: readonly string[],
+    ) =>
+      orderInboxLiveRowsByGroup(
+        rows,
+        groupOf,
+        inboxDrawnGroupOrder({ sort, draggedOrder, customSeenOrder: seen }),
+      ).map((row) => row.key);
+
+    const first = [
+      { key: "a1", group: "project:a" },
+      { key: "b1", group: "project:b" },
+      { key: "a2", group: "project:a" },
+    ];
+    const seen = appendInboxGroupKeys([], groupsOn(first));
+    expect(seen).toEqual(["project:a", "project:b"]);
+    // a1 is wrapped, and a thread in a new project shows up.
+    const later = [
+      { key: "b1", group: "project:b" },
+      { key: "a2", group: "project:a" },
+      { key: "c1", group: "project:c" },
+    ];
+    const seenLater = appendInboxGroupKeys(seen, groupsOn(later));
+    expect(appendInboxGroupKeys(seenLater, groupsOn(later))).toBe(seenLater);
+    // A saved list with a repeat still takes a new group.
+    expect(appendInboxGroupKeys(["project:a", "project:a"], ["project:b"])).toEqual([
+      "project:a",
+      "project:b",
+    ]);
+    expect(draw(later, "custom", [], seenLater)).toEqual(["a2", "b1", "c1"]);
+    // A dragged order still wins, and the other sorts follow each group's first row.
+    expect(draw(later, "custom", ["project:b"], seenLater)).toEqual(["b1", "a2", "c1"]);
+    expect(draw(later, "recent", [], seenLater)).toEqual(["b1", "a2", "c1"]);
   });
 
   it("counts one line for each group that has pinned and unpinned rows", () => {

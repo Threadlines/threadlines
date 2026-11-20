@@ -2682,6 +2682,42 @@ export function orderInboxLiveRowsByGroup<R>(
 }
 
 /**
+ * `order` with the keys it lacks added at the end, in the order given. The same
+ * array when nothing is new, so a caller can tell a change by identity.
+ */
+export function appendInboxGroupKeys(
+  order: readonly string[],
+  keys: readonly string[],
+): readonly string[] {
+  const placed = new Set(order);
+  let grew = false;
+  for (const key of keys) {
+    if (placed.has(key)) continue;
+    placed.add(key);
+    grew = true;
+  }
+  return grew ? [...placed] : order;
+}
+
+/**
+ * The group order the inbox draws. In the custom sort, a group the user never
+ * dragged keeps the place it held when the sort first showed it, so it stays
+ * put when its top row is wrapped, archived or moved. In the other sorts it
+ * follows its first row, as {@link orderInboxLiveRowsByGroup} does.
+ */
+export function inboxDrawnGroupOrder(input: {
+  readonly sort: InboxSort;
+  /** The order the user dragged the headers into. */
+  readonly draggedOrder: readonly string[];
+  /** Where the custom sort first showed each group. */
+  readonly customSeenOrder: readonly string[];
+}): readonly string[] {
+  return input.sort === "custom"
+    ? appendInboxGroupKeys(input.draggedOrder, input.customSeenOrder)
+    : input.draggedOrder;
+}
+
+/**
  * The saved group order with one header moved among the ones on screen. Every
  * group on screen gets a place, so moving one never makes another jump, and a
  * group a filter hides, or one of the other grouping's, keeps its own.
@@ -2693,9 +2729,12 @@ export function moveInInboxGroupOrder(input: {
   readonly groupKey: string;
   readonly toIndex: number;
 }): string[] {
-  const placed = new Set(input.groupOrder);
-  const order = [...placed, ...input.shownGroups.filter((key) => !placed.has(key))];
-  return tradeSavedPlaces(order, input.shownGroups, input.groupKey, input.toIndex);
+  return tradeSavedPlaces(
+    appendInboxGroupKeys(input.groupOrder, input.shownGroups),
+    input.shownGroups,
+    input.groupKey,
+    input.toIndex,
+  );
 }
 
 /**
