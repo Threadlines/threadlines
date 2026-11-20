@@ -18,6 +18,7 @@ import {
   providerRateLimitResetCreditExpirationUrgency,
   providerUsageNearLimitColor,
   usageMeterColor,
+  usageWindowElapsedPercent,
 } from "./providerUsage";
 
 describe("deriveProviderAccountUsagePresentation", () => {
@@ -63,6 +64,7 @@ describe("deriveProviderAccountUsagePresentation", () => {
           remainingPercent: 63,
           reachedLimit: false,
           warning: false,
+          elapsedPercent: 80,
         },
       ],
     });
@@ -110,15 +112,17 @@ describe("deriveProviderAccountUsagePresentation", () => {
           remainingPercent: 63,
           reachedLimit: false,
           warning: false,
+          elapsedPercent: 80,
         },
         {
           key: "secondary",
           label: "Weekly",
-          detail: "64% used · resets in 7d",
+          detail: "64% used · ahead of pace · resets in 7d",
           usedPercent: 64,
           remainingPercent: 36,
           reachedLimit: false,
           warning: false,
+          elapsedPercent: 0,
         },
       ],
     });
@@ -331,6 +335,7 @@ describe("deriveProviderAccountUsagePresentation", () => {
           remainingPercent: 63,
           reachedLimit: false,
           warning: false,
+          elapsedPercent: 80,
         },
       ],
     });
@@ -412,15 +417,17 @@ describe("deriveProviderAccountUsagePresentation", () => {
           remainingPercent: 69,
           reachedLimit: false,
           warning: false,
+          elapsedPercent: 49.3,
         },
         {
           key: "secondary",
           label: "Weekly",
-          detail: "69% used · resets in 7d",
+          detail: "69% used · ahead of pace · resets in 7d",
           usedPercent: 69,
           remainingPercent: 31,
           reachedLimit: false,
           warning: false,
+          elapsedPercent: 0,
         },
       ],
     });
@@ -470,25 +477,28 @@ describe("deriveProviderAccountUsagePresentation", () => {
         remainingPercent: 65,
         reachedLimit: false,
         warning: false,
+        elapsedPercent: 49.3,
       },
       {
         key: "secondary",
         label: "Weekly",
-        detail: "39% used · resets in 7d",
+        detail: "39% used · ahead of pace · resets in 7d",
         usedPercent: 39,
         remainingPercent: 61,
         reachedLimit: false,
         warning: false,
+        elapsedPercent: 0,
       },
       {
         key: "scoped-0",
         label: "Fable (weekly)",
         shortLabel: "Fable",
-        detail: "78% used · resets in 7d",
+        detail: "78% used · ahead of pace · resets in 7d",
         usedPercent: 78,
         remainingPercent: 22,
         reachedLimit: false,
         warning: true,
+        elapsedPercent: 0,
         scope: { name: "Fable", period: "Weekly", resetDetail: "resets in 7d" },
       },
     ]);
@@ -543,6 +553,7 @@ describe("deriveProviderAccountUsagePresentation", () => {
         remainingPercent: 0,
         reachedLimit: true,
         warning: true,
+        elapsedPercent: 0,
         scope: { name: "Fable", period: "Weekly", resetDetail: "resets in 7d" },
       },
     ]);
@@ -586,6 +597,7 @@ describe("deriveProviderAccountUsagePresentation", () => {
           remainingPercent: 0,
           reachedLimit: true,
           warning: true,
+          elapsedPercent: 33.3,
         },
         {
           key: "secondary",
@@ -595,6 +607,7 @@ describe("deriveProviderAccountUsagePresentation", () => {
           remainingPercent: 91,
           reachedLimit: false,
           warning: false,
+          elapsedPercent: 78.7,
         },
       ],
     });
@@ -643,6 +656,7 @@ describe("deriveProviderAccountUsagePresentation", () => {
           remainingPercent: 0,
           reachedLimit: true,
           warning: true,
+          elapsedPercent: 33.3,
         },
         {
           key: "secondary",
@@ -652,6 +666,7 @@ describe("deriveProviderAccountUsagePresentation", () => {
           remainingPercent: 36,
           reachedLimit: false,
           warning: false,
+          elapsedPercent: 78.7,
         },
       ],
     });
@@ -700,6 +715,7 @@ describe("deriveProviderAccountUsagePresentation", () => {
           remainingPercent: 58,
           reachedLimit: false,
           warning: false,
+          elapsedPercent: 33.3,
         },
         {
           key: "secondary",
@@ -709,6 +725,7 @@ describe("deriveProviderAccountUsagePresentation", () => {
           remainingPercent: 0,
           reachedLimit: true,
           warning: true,
+          elapsedPercent: 78.7,
         },
       ],
     });
@@ -752,6 +769,48 @@ describe("deriveProviderAccountUsagePresentation", () => {
       },
       windows: [],
     });
+  });
+});
+
+describe("usageWindowElapsedPercent", () => {
+  const nowMs = 1_800_000_000_000;
+
+  it("places a reading in its window, and leaves out readings it can't place", () => {
+    // Two days into a week: 2/7 of the window has passed.
+    const week = { windowDurationMins: 10_080, resetsAt: (nowMs + 5 * 86_400_000) / 1000 };
+    expect(usageWindowElapsedPercent(week, nowMs)).toBe(28.6);
+    // No window length, or a reset time already past or further off than the window.
+    expect(usageWindowElapsedPercent({ resetsAt: week.resetsAt }, nowMs)).toBeUndefined();
+    expect(usageWindowElapsedPercent({ ...week, resetsAt: nowMs / 1000 - 60 }, nowMs)).toBe(
+      undefined,
+    );
+    expect(
+      usageWindowElapsedPercent({ ...week, resetsAt: (nowMs + 8 * 86_400_000) / 1000 }, nowMs),
+    ).toBeUndefined();
+  });
+
+  it("says a limit is ahead of pace only once usage is clearly past the mark", () => {
+    const detailAt = (usedPercent: number) =>
+      deriveProviderAccountUsagePresentation(
+        {
+          source: "codex-rate-limits",
+          checkedAt: "2026-04-10T00:00:00.000Z",
+          limits: [
+            {
+              secondary: {
+                usedPercent,
+                remainingPercent: 100 - usedPercent,
+                resetsAt: (nowMs + 5 * 86_400_000) / 1000,
+                windowDurationMins: 10_080,
+              },
+            },
+          ],
+        },
+        nowMs,
+      )?.windows[0]?.detail;
+    // 28.6% of the week has passed.
+    expect(detailAt(30)).toBe("30% used · resets in 5d");
+    expect(detailAt(34)).toBe("34% used · ahead of pace · resets in 5d");
   });
 });
 
