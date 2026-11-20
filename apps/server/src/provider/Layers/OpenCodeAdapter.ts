@@ -74,11 +74,13 @@ import { ServerConfig } from "../../config.ts";
 import {
   mcpEndpointUrl,
   mcpCommandsEndpointUrl,
+  mcpDeviceEndpointUrl,
   mcpPagesEndpointUrl,
   mcpRoomEndpointUrl,
 } from "../../mcp/McpHttpServer.ts";
 import { buildAgentPageInstructions } from "../../mcp/pageTools.ts";
 import { buildCommandRequestInstructions } from "../../mcp/commandTools.ts";
+import { buildDeviceInstructions } from "../deviceInstructions.ts";
 import { buildGuideInstructions } from "../../mcp/guideTools.ts";
 import { roomEndpointGrant } from "../../mcp/roomToolAccess.ts";
 import { buildScheduleInstructions } from "../../mcp/scheduleTools.ts";
@@ -123,6 +125,7 @@ import {
   openCodeBrowserServerName,
   openCodeRoomServerName,
   openCodeCommandsServerName,
+  openCodeDeviceServerName,
   openCodePagesServerName,
   openCodeSessionGrantRules,
   openCodeSessionRules,
@@ -260,6 +263,8 @@ interface SessionContext {
   readonly agentPageAssetsDir: string | undefined;
   /** The session has `ask_user_to_run`. */
   readonly commandRequests: boolean;
+  /** The session has the device tools. */
+  readonly deviceTools: boolean;
   /** The project's brief (ProviderSessionStartInput.projectInstructions), last in the instructions entry. */
   readonly projectInstructions: string | undefined;
   readonly runtimeMode: RuntimeMode;
@@ -600,6 +605,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
           roomTools: ctx.roomEndpoint,
           agentPages: ctx.agentPageAssetsDir !== undefined,
           commandRequests: ctx.commandRequests,
+          deviceTools: ctx.deviceTools,
         });
       });
 
@@ -1993,6 +1999,14 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
                 },
               ]
             : []),
+          ...(ctx.deviceTools
+            ? [
+                {
+                  name: openCodeDeviceServerName(ctx.toolKey),
+                  url: mcpDeviceEndpointUrl(serverConfig.port),
+                },
+              ]
+            : []),
         ];
         for (const server of servers) {
           yield* runOpenCode("mcp.add", (signal) =>
@@ -2043,6 +2057,9 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
                 toolPrefix: `${openCodeCommandsServerName(ctx.toolKey)}_`,
               }),
             ]
+          : []),
+        ...(ctx.deviceTools
+          ? [buildDeviceInstructions(`${openCodeDeviceServerName(ctx.toolKey)}_`)]
           : []),
         ...(ctx.scheduleTools
           ? [buildScheduleInstructions({ toolPrefix: `${openCodeRoomServerName(ctx.toolKey)}_` })]
@@ -2294,6 +2311,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
             scheduleTools: roomTools && input.scheduleTools === true,
             agentPageAssetsDir,
             commandRequests: input.commandRequests === true,
+            deviceTools: input.deviceTools === true,
             projectInstructions: input.projectInstructions,
             runtimeMode: input.runtimeMode,
             agent: BUILD_AGENT,
@@ -2335,6 +2353,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
             room: roomGrant.attach,
             pages: agentPageAssetsDir !== undefined,
             commands: input.commandRequests === true,
+            device: input.deviceTools === true,
             scheduledRun: input.scheduledRunTools === true,
             guideOnly: roomGrant.guideOnly,
             // OpenCode registers tool servers per folder: every session in

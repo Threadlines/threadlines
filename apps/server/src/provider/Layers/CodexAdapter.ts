@@ -3437,6 +3437,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           ...(input.commandRequests === true && sideAnswer === undefined
             ? { commandRequests: true }
             : {}),
+          ...(input.deviceTools === true && sideAnswer === undefined ? { deviceTools: true } : {}),
           runtimeMode: input.runtimeMode,
           ...(input.modelSelection?.instanceId === boundInstanceId
             ? { model: input.modelSelection.model }

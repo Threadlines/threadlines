@@ -1722,6 +1722,14 @@ const make = Effect.gen(function* () {
         ? { artifacts: true }
         : {}),
       ...(toolSettings?.enableCommandRequests !== false ? { commandRequests: true } : {}),
+      // "Use devices" and "Agents can use devices", both off by default
+      // (docs/design/devices.md). Drivers leave them off a side runtime, and a
+      // fenced thread gets none: they act on this machine's simulators.
+      ...(!fencedOff &&
+      toolSettings?.enableDevices === true &&
+      toolSettings.agentDeviceAccess === true
+        ? { deviceTools: true }
+        : {}),
       runtimeMode: desiredRuntimeMode,
     });
 

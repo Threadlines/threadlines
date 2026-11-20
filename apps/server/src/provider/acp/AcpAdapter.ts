@@ -67,11 +67,13 @@ import {
   BROWSER_MCP_SERVER_NAME,
   mcpEndpointUrl,
   mcpCommandsEndpointUrl,
+  mcpDeviceEndpointUrl,
   mcpPagesEndpointUrl,
   mcpRoomEndpointUrl,
 } from "../../mcp/McpHttpServer.ts";
 import { PAGES_MCP_SERVER_NAME } from "../../mcp/pageTools.ts";
 import { COMMANDS_MCP_SERVER_NAME } from "../../mcp/commandTools.ts";
+import { DEVICE_MCP_SERVER_NAME } from "../../mcp/deviceTools.ts";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 import {
   ROOM_MCP_SERVER_NAME,
@@ -1269,6 +1271,8 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           const agentPagesRequested = input.agentPages === true && lockdown === undefined;
           // `ask_user_to_run` likewise: its description carries the rules.
           const commandRequestsRequested = input.commandRequests === true && lockdown === undefined;
+          // The device tools likewise.
+          const deviceToolsRequested = input.deviceTools === true && lockdown === undefined;
           const credential =
             reachesHost && (lockdown === undefined || roomGrant.attach)
               ? yield* mcpSessionRegistry.credentialFor({
@@ -1277,6 +1281,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                   room: roomGrant.attach,
                   pages: agentPagesRequested,
                   commands: commandRequestsRequested,
+                  device: deviceToolsRequested,
                   ...(sideKind !== undefined ? { sideKind } : {}),
                   scheduledRun: lockdown === undefined && input.scheduledRunTools === true,
                   guideOnly: roomGrant.guideOnly,
@@ -1331,6 +1336,16 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                           type: "http" as const,
                           name: COMMANDS_MCP_SERVER_NAME,
                           url: mcpCommandsEndpointUrl(serverConfig.port),
+                          headers: authorization,
+                        },
+                      ]
+                    : []),
+                  ...(deviceToolsRequested
+                    ? [
+                        {
+                          type: "http" as const,
+                          name: DEVICE_MCP_SERVER_NAME,
+                          url: mcpDeviceEndpointUrl(serverConfig.port),
                           headers: authorization,
                         },
                       ]
