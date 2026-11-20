@@ -10,7 +10,7 @@ import {
   EnvironmentId,
   ThreadId,
 } from "@threadlines/contracts";
-import { page } from "vite-plus/test/browser";
+import { page, userEvent } from "vite-plus/test/browser";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
@@ -20,8 +20,10 @@ import {
 } from "../../environmentApi";
 import { writePrimaryEnvironmentDescriptor } from "../../environments/primary/context";
 import { resetTestPage } from "../../lib/testPage.browser-harness";
+import { DeviceFloatingWindow } from "./DeviceFloatingWindow";
 import { DevicePanel } from "./DevicePanel";
-import { onAgentOpenedDevice, resetDeviceStateForTests } from "./deviceState";
+import { onAgentOpenedDevice, resetDeviceStateForTests, selectThreadDevice } from "./deviceState";
+import { readThreadDeviceViews } from "./deviceViewStore";
 
 const ENVIRONMENT_ID = EnvironmentId.make("environment-devices");
 const THREAD_ID = ThreadId.make("thread-devices");
@@ -204,18 +206,45 @@ const helperSends = (send: ReturnType<typeof vi.fn>) =>
     ];
   });
 
-function Host(props: { visible: boolean }) {
+function Host(props: { visible: boolean; onOpenInPanel?: (deviceId: string) => void }) {
   return (
-    <div style={{ width: 420, height: 720, display: "flex" }}>
-      <DevicePanel
-        environmentId={ENVIRONMENT_ID}
-        threadId={THREAD_ID}
-        threadKey={THREAD_KEY}
-        visible={props.visible}
-      />
+    <div style={{ display: "flex", gap: 0 }}>
+      {/* The chat column the float is measured against. */}
+      <div style={{ width: 600, height: 720, position: "relative" }}>
+        {props.onOpenInPanel ? (
+          <DeviceFloatingWindow
+            environmentId={ENVIRONMENT_ID}
+            threadId={THREAD_ID}
+            threadKey={THREAD_KEY}
+            onOpenInPanel={props.onOpenInPanel}
+          />
+        ) : null}
+      </div>
+      <div style={{ width: 420, height: 720, display: "flex" }}>
+        <DevicePanel
+          environmentId={ENVIRONMENT_ID}
+          threadId={THREAD_ID}
+          threadKey={THREAD_KEY}
+          visible={props.visible}
+        />
+      </div>
     </div>
   );
 }
+
+/** Both devices booted and open in the thread, the iPhone shown. */
+function twoOpenDevices() {
+  selectThreadDevice(THREAD_KEY, IPHONE.id);
+  return fakeComputer(
+    deviceState({
+      devices: [{ ...IPHONE, booted: true }, PIXEL],
+      sessions: [session(IPHONE.id, "ios", "user"), session(PIXEL.id, "android", "user")],
+    }),
+  );
+}
+
+const openChannels = (computer: ReturnType<typeof fakeComputer>) =>
+  computer.channels.filter((channel) => !channel.stopped).map((channel) => channel.input.path);
 
 describe("DevicePanel", () => {
   beforeEach(() => {
@@ -299,6 +328,127 @@ describe("DevicePanel", () => {
     await vi.waitFor(() =>
       expect(computer.channels.every((channel) => channel.stopped)).toBe(true),
     );
+  });
+
+  it("shows open devices as chips; only the shown one streams, and chips rename and close", async () => {
+    const computer = twoOpenDevices();
+    await render(<Host visible />);
+
+    const chips = page.getByRole("tablist", { name: "Open devices" });
+    await expect.element(chips.getByRole("tab", { name: "iPhone 17 Pro" })).toBeVisible();
+    await expect.element(chips.getByRole("tab", { name: "Pixel 9" })).toBeVisible();
+    await vi.waitFor(() =>
+      expect(openChannels(computer)).toContain("/vendor/serve-sim/helper/SIM-1/stream.mjpeg"),
+    );
+
+    // Switching releases the hidden device's channels and opens the shown one's.
+    await chips.getByRole("tab", { name: "Pixel 9" }).click();
+    await vi.waitFor(() => {
+      const open = openChannels(computer);
+      expect(open.some((path) => path.startsWith("/vendor/serve-sim/"))).toBe(false);
+      expect(open).toContain("/vendor/serve-emu/ws");
+    });
+
+    // Double-click renames; the name is kept for the thread.
+    await chips.getByRole("tab", { name: "Pixel 9" }).dblClick();
+    const field = page.getByRole("textbox", { name: "Rename Pixel 9" });
+    await field.fill("Checkout phone");
+    await userEvent.keyboard("{Enter}");
+    await expect.element(chips.getByRole("tab", { name: "Checkout phone" })).toBeVisible();
+    expect(readThreadDeviceViews(THREAD_KEY).names).toEqual({ [PIXEL.id]: "Checkout phone" });
+
+    // The chip's menu closes the device; the tab moves to the chip beside it.
+    await chips.getByRole("button", { name: "Checkout phone menu" }).click();
+    await page.getByRole("menuitem", { name: "Close device" }).click();
+    await vi.waitFor(() =>
+      expect(computer.device.close).toHaveBeenCalledWith({
+        threadId: THREAD_ID,
+        deviceId: PIXEL.id,
+        shutdown: false,
+      }),
+    );
+    expect(readThreadDeviceViews(THREAD_KEY).selected).toBe(IPHONE.id);
+  });
+
+  it("floats the device over the chat, kept inside the window, and docks it again", async () => {
+    const computer = twoOpenDevices();
+    const docked: string[] = [];
+    await render(<Host visible onOpenInPanel={(deviceId) => docked.push(deviceId)} />);
+
+    await page.getByRole("button", { name: "Float over the chat" }).click();
+    await expect.element(page.getByTestId("device-floating-placeholder")).toBeVisible();
+    const float = page.getByTestId("device-float");
+    await expect.element(float).toBeVisible();
+    // The float now holds the screen; the tab holds nothing for it.
+    await vi.waitFor(() =>
+      expect(
+        openChannels(computer).filter(
+          (path) => path === "/vendor/serve-sim/helper/SIM-1/stream.mjpeg",
+        ),
+      ).toHaveLength(1),
+    );
+
+    // Dragged far past the window's corner, it stops at the edge.
+    const corner = document.createElement("div");
+    corner.style.cssText = "position:fixed;left:0;top:0;width:2px;height:2px;";
+    document.body.append(corner);
+    await userEvent.dragAndDrop(
+      page.getByTestId("device-float-handle"),
+      page.elementLocator(corner),
+    );
+    corner.remove();
+    await vi.waitFor(() => {
+      const rect = float.element().getBoundingClientRect();
+      expect([rect.left, rect.top]).toEqual([8, 8]);
+    });
+
+    await float.getByRole("button", { name: "Open in right panel" }).click();
+    expect(docked).toEqual([IPHONE.id]);
+
+    // Close dismisses the float; the device stays open.
+    await float.getByRole("button", { name: "Close floating device" }).click();
+    await expect.element(page.getByTestId("device-float")).not.toBeInTheDocument();
+    await expect.element(page.getByRole("toolbar", { name: "Device controls" })).toBeVisible();
+    expect(computer.device.close).not.toHaveBeenCalled();
+  });
+
+  it("reads the iOS event log through the channel while Tools is open", async () => {
+    const computer = twoOpenDevices();
+    const mounted = await render(<Host visible />);
+
+    await page.getByRole("button", { name: "Tools" }).click();
+    await vi.waitFor(() =>
+      expect(computer.channel("/vendor/serve-sim/api/event-log/events")).toBeDefined(),
+    );
+    const log = computer.channel("/vendor/serve-sim/api/event-log/events")!;
+    expect(log.input).toMatchObject({ _tag: "http", query: { device: "SIM-1", limit: "100" } });
+    log.emit({ _tag: "opened", status: 200, contentType: "text/event-stream" });
+    const text = (value: string) => base64(new TextEncoder().encode(value));
+    log.emit({
+      _tag: "data",
+      data: text(
+        'data: {"events":[{"id":1,"timestamp":"2026-11-20T10:00:00Z","kind":"app","summary":"Launched Settings"}]}\n\n',
+      ),
+    });
+    log.emit({
+      _tag: "data",
+      data: text('data: {"event":{"id":2,"kind":"ui","summary":"Opened General"}}\n\n'),
+    });
+    const list = page.getByRole("list", { name: "Device events" });
+    await expect.element(list.getByText("Opened General")).toBeVisible();
+    await expect.element(list.getByText("Launched Settings")).toBeVisible();
+
+    await page.getByRole("button", { name: "Close tools" }).click();
+    await vi.waitFor(() => expect(log.stopped).toBe(true));
+
+    // Tools left open while another right-panel tab shows reads nothing.
+    await page.getByRole("button", { name: "Tools" }).click();
+    await vi.waitFor(() =>
+      expect(computer.channel("/vendor/serve-sim/api/event-log/events")).toBeDefined(),
+    );
+    const reopened = computer.channel("/vendor/serve-sim/api/event-log/events")!;
+    await mounted.rerender(<Host visible={false} />);
+    await vi.waitFor(() => expect(reopened.stopped).toBe(true));
   });
 
   it("reports a device an agent opened, but not one already open when the tab loaded", async () => {

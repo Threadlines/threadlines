@@ -17,6 +17,7 @@ import type {
   ThreadId,
   TurnId,
 } from "@threadlines/contracts";
+import { publishComposerImageSupport } from "./composerImageSupport";
 import { type PromptRecall, recallablePrompts, stepPromptRecall } from "./composerPromptRecall";
 import { containsWorkflowKeyword } from "@threadlines/shared/workflowRuns";
 import { ComposerWorkflowKeywordHint } from "./ComposerWorkflowKeywordHint";
@@ -75,6 +76,7 @@ import {
   type DraftId,
   type PersistedComposerAttachment,
   composerAttachmentDedupKey,
+  composerAttachmentFitsDraftStorage,
   hydrateAttachmentsFromPersisted,
   useComposerDraftStore,
   useComposerThreadDraft,
@@ -1023,6 +1025,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       ),
     [selectedProvider, selectedProviderModels, selectedModel],
   );
+  // A device recording asks before it attaches screenshots to this thread.
+  useEffect(() => {
+    publishComposerImageSupport(scopedThreadKey(routeThreadRef), selectedModelSupportsImages);
+  }, [routeThreadRef, selectedModelSupportsImages]);
 
   const composerProviderState = useMemo(
     () =>
@@ -2731,7 +2737,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         );
         const stagedAttachmentById = new Map<string, PersistedComposerAttachment>();
         await Promise.all(
-          composerAttachments.map(async (image) => {
+          // One too big to ever fit would fail the whole draft's save, prompt included.
+          composerAttachments.filter(composerAttachmentFitsDraftStorage).map(async (image) => {
             try {
               const dataUrl = await readFileAsDataUrl(image.file);
               stagedAttachmentById.set(image.id, {

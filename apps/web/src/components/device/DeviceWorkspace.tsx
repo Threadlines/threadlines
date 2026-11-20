@@ -1,5 +1,5 @@
 // @effect-diagnostics globalTimers:off - The download link's object URL is released on a plain timer.
-import type { DeviceSummary, EnvironmentId } from "@threadlines/contracts";
+import type { DeviceSummary, EnvironmentId, ScopedThreadRef } from "@threadlines/contracts";
 import { captureDeviceScreenshot } from "@threadlines/client-runtime/device";
 import {
   CameraIcon,
@@ -10,6 +10,7 @@ import {
   MousePointerClickIcon,
   ScanTextIcon,
   Layers2Icon,
+  PictureInPicture2Icon,
   PowerIcon,
   RotateCwIcon,
   SlidersHorizontalIcon,
@@ -23,10 +24,12 @@ import { useMediaQuery } from "~/hooks/useMediaQuery";
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
+import { DeviceRecordButton, DeviceRecordingStatus } from "./DeviceRecordingBar";
 import { deviceErrorText } from "./deviceState";
 import { DeviceStreamView } from "./DeviceStreamView";
 import { DeviceToolsPanel } from "./DeviceToolsPanel";
 import { useDeviceControls } from "./useDeviceControls";
+import { useDeviceRecording } from "./useDeviceRecording";
 import { useDeviceStream } from "./useDeviceStream";
 
 const DOWNLOAD_URL_LIFETIME_MS = 60_000;
@@ -43,6 +46,11 @@ export function DeviceWorkspace(props: {
   readonly onBack: () => void;
   readonly onClose: () => void;
   readonly onPowerOff: () => void;
+  /** The thread whose draft gets recordings, and its key. */
+  readonly threadRef: ScopedThreadRef;
+  readonly threadKey: string;
+  /** Floats the device over the chat; absent where floating is not offered (the phone layout). */
+  readonly onFloat?: () => void;
 }) {
   const { device, environmentId, visible } = props;
   const ios = device.platform === "ios";
@@ -58,6 +66,23 @@ export function DeviceWorkspace(props: {
   const [axInspect, setAxInspect] = useState(false);
   // Read while on screen, not only with Tools open: rotating Android goes through it too.
   const controls = useDeviceControls({ environmentId, device, visible });
+  const recording = useDeviceRecording({
+    threadKey: props.threadKey,
+    threadRef: props.threadRef,
+    device,
+    stream,
+    visible,
+    appId: controls.foregroundApp?.id ?? null,
+  });
+  // Tools actions that worked become steps of a running recording.
+  const recordedControls = {
+    ...controls,
+    act: (body: Parameters<typeof controls.act>[0]) => {
+      const done = controls.act(body);
+      recording.trackAction(body, done);
+      return done;
+    },
+  };
   const [screenshotPending, setScreenshotPending] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   // A capture always finishes, even if the panel hides meanwhile; the user asked for it.
@@ -154,7 +179,7 @@ export function DeviceWorkspace(props: {
               {(["portrait", "landscape_left"] as const).map((value) => (
                 <MenuItem
                   key={value}
-                  onClick={() => void controls.act({ type: "setOrientation", value })}
+                  onClick={() => void recordedControls.act({ type: "setOrientation", value })}
                 >
                   {value === "portrait" ? "Portrait" : "Landscape"}
                 </MenuItem>
@@ -178,6 +203,12 @@ export function DeviceWorkspace(props: {
         >
           <CameraIcon />
         </ToolbarButton>
+        <DeviceRecordButton recording={recording} disabled={state.status !== "streaming"} />
+        {props.onFloat ? (
+          <ToolbarButton label="Float over the chat" onClick={props.onFloat}>
+            <PictureInPicture2Icon />
+          </ToolbarButton>
+        ) : null}
         <ToolbarButton
           label={axOverlay ? "Hide accessibility frames" : "Show accessibility frames"}
           pressed={axOverlay}
@@ -224,6 +255,7 @@ export function DeviceWorkspace(props: {
           </MenuPopup>
         </Menu>
       </div>
+      <DeviceRecordingStatus recording={recording} />
       {notice || (controls.error && !toolsOpen) ? (
         <p
           role="alert"
@@ -279,7 +311,9 @@ export function DeviceWorkspace(props: {
         {toolsOpen ? (
           <DeviceToolsPanel
             device={device}
-            controls={controls}
+            controls={recordedControls}
+            // The event log reads only while the tab is on screen.
+            {...(visible ? { transport: stream.transport } : {})}
             onClose={() => setToolsOpen(false)}
             className={cn(
               // Beside the screen when the panel is wide, floating over it when not.
