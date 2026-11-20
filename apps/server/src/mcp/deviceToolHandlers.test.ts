@@ -4,7 +4,8 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import { DeviceService } from "../device/DeviceService.ts";
-import { type DeviceCaller, deviceList, pickDevice } from "./deviceToolHandlers.ts";
+import { deviceList, pickDevice } from "./deviceToolHandlers.ts";
+import type { McpInvocationScope } from "./McpSessionRegistry.ts";
 
 const device = (id: string, overrides: Partial<DeviceSummary>): DeviceSummary => ({
   id: id as DeviceId,
@@ -35,7 +36,7 @@ describe("device tools under outside work", () => {
     () =>
       Effect.gen(function* () {
         const thread = ThreadId.make("thread-outside");
-        const caller: DeviceCaller = {
+        const caller: McpInvocationScope = {
           threadId: thread,
           sessionKey: thread,
           participantId: null,
@@ -45,8 +46,9 @@ describe("device tools under outside work", () => {
           pages: true,
           commands: true,
           device: true,
+          roomTools: new Set(),
           outsideLimit: { names: ["Helper laptop"], projectIds: null },
-        } as DeviceCaller;
+        };
         const refused = yield* deviceList(caller, {}).pipe(Effect.flip);
         expect(refused.message).toContain("Devices are off for this agent while Helper laptop");
       }).pipe(

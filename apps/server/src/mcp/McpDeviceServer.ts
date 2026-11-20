@@ -22,13 +22,7 @@ import { McpProtocol, McpSchema, McpServer, Tool } from "effect/ai";
 import { HttpRouter, HttpServerRequest, type HttpServerResponse } from "effect/http";
 
 import { DeviceService } from "../device/DeviceService.ts";
-import {
-  type DeviceCaller,
-  deviceClose,
-  deviceList,
-  deviceOpen,
-  deviceScreenshot,
-} from "./deviceToolHandlers.ts";
+import { deviceClose, deviceList, deviceOpen, deviceScreenshot } from "./deviceToolHandlers.ts";
 import { makeOutsideToolLimits } from "./outsideToolLimit.ts";
 import {
   DEVICE_CLOSE_TOOL_NAME,
@@ -49,10 +43,10 @@ import {
   readBearerToken,
   unauthorizedMcpResponse,
 } from "./McpHttpServer.ts";
-import { mcpSessionRegistry } from "./McpSessionRegistry.ts";
+import { type McpInvocationScope, mcpSessionRegistry } from "./McpSessionRegistry.ts";
 
-/** Which runtime a device tool call came from, with any outside-work limit on it. */
-export class McpDeviceInvocation extends Context.Service<McpDeviceInvocation, DeviceCaller>()(
+/** Which runtime a device tool call came from, with the outside-work limit read for this request. */
+export class McpDeviceInvocation extends Context.Service<McpDeviceInvocation, McpInvocationScope>()(
   "@threadlines/server/mcp/McpDeviceInvocation",
 ) {}
 
@@ -163,7 +157,7 @@ const registerDeviceTools = Effect.fn("McpDeviceServer.registerDeviceTools")(fun
   const handlers: Record<
     string,
     (
-      caller: DeviceCaller,
+      caller: McpInvocationScope,
       payload: unknown,
     ) => Effect.Effect<McpSchema.CallToolResult, never, DeviceService>
   > = {
