@@ -31,7 +31,8 @@ export function DeviceRecordButton(props: {
       {recording ? (
         <SquareIcon className="fill-destructive text-destructive" />
       ) : (
-        <CircleIcon className="text-destructive" />
+        // Plain until it records: color here means a recording is running.
+        <CircleIcon />
       )}
     </Button>
   );

@@ -129,12 +129,8 @@ export function DeviceWorkspace(props: {
         <ToolbarButton label="All devices" onClick={props.onBack}>
           <ChevronLeftIcon />
         </ToolbarButton>
-        <div className="min-w-0 flex-1 px-1">
-          <p className="truncate text-[13px] leading-4 font-medium">{device.name}</p>
-          <p className="truncate font-mono text-[11px] leading-3.5 text-muted-foreground">
-            {device.version}
-          </p>
-        </div>
+        {/* The chip row above names the device; the toolbar keeps its room for controls. */}
+        <div className="min-w-0 flex-1" />
         <ToolbarButton label="Home" disabled={!inputReady} onClick={() => press("home")}>
           <HomeIcon />
         </ToolbarButton>
