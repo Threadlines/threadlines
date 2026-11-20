@@ -73,15 +73,26 @@ describe("resolveDraftEnvModeAfterBranchChange", () => {
 });
 
 describe("resolveBranchToolbarValue", () => {
-  it("defaults new-worktree mode to current git ref when no explicit base ref is set", () => {
+  it("shows the setting's base for a new worktree, not the checkout's branch", () => {
     expect(
       resolveBranchToolbarValue({
         envMode: "worktree",
         activeWorktreePath: null,
         activeThreadBranch: null,
-        currentGitBranch: "main",
+        currentGitBranch: "feature/current",
+        newWorktreeBase: "main",
       }),
     ).toBe("main");
+    // Not known yet: nothing, rather than the checkout's branch as a guess.
+    expect(
+      resolveBranchToolbarValue({
+        envMode: "worktree",
+        activeWorktreePath: null,
+        activeThreadBranch: null,
+        currentGitBranch: "feature/current",
+        newWorktreeBase: null,
+      }),
+    ).toBeNull();
   });
 
   it("keeps an explicitly selected worktree base ref", () => {
@@ -91,6 +102,7 @@ describe("resolveBranchToolbarValue", () => {
         activeWorktreePath: null,
         activeThreadBranch: "feature/base",
         currentGitBranch: "main",
+        newWorktreeBase: "develop",
       }),
     ).toBe("feature/base");
   });
@@ -102,6 +114,7 @@ describe("resolveBranchToolbarValue", () => {
         activeWorktreePath: null,
         activeThreadBranch: "feature/base",
         currentGitBranch: "main",
+        newWorktreeBase: null,
       }),
     ).toBe("main");
   });

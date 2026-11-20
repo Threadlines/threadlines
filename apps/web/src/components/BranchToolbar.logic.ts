@@ -158,15 +158,22 @@ export function resolveDraftEnvModeAfterBranchChange(input: {
   return "local";
 }
 
+/**
+ * The branch shown for a thread. A new worktree shows its base: the one
+ * picked, else the one the "New worktrees from" setting gives
+ * (`newWorktreeBase`), never the checkout's branch in its place, which the
+ * worktree won't start from unless the setting says so.
+ */
 export function resolveBranchToolbarValue(input: {
   envMode: EnvMode;
   activeWorktreePath: string | null;
   activeThreadBranch: string | null;
   currentGitBranch: string | null;
+  newWorktreeBase: string | null;
 }): string | null {
   const { envMode, activeWorktreePath, activeThreadBranch, currentGitBranch } = input;
   if (envMode === "worktree" && !activeWorktreePath) {
-    return activeThreadBranch ?? currentGitBranch;
+    return activeThreadBranch ?? input.newWorktreeBase;
   }
   return currentGitBranch ?? activeThreadBranch;
 }

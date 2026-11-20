@@ -312,12 +312,41 @@ export function BranchToolbarBranchSelector({
     [branchStatusQuery.data?.sourceControlProvider],
   );
   const SourceControlIcon = sourceControlPresentation.Icon;
+  // A new worktree starts from the computer's "New worktrees from" branch
+  // until the user picks another. A thread that already exists holds it
+  // beside its pending mode rather than recording it as the thread's branch:
+  // only a pick the user makes is recorded.
+  const needsWorktreeBase =
+    effectiveEnvMode === "worktree" &&
+    !activeWorktreePath &&
+    (!activeThreadBranch || activeThreadBranchFromSetting);
+  const newWorktreeBase = useNewWorktreeBaseBranch({
+    environmentId,
+    cwd: refsCwd,
+    currentGitBranch,
+    currentIsDefault: branchStatusQuery.data?.isDefaultRef === true,
+    canStartWorktree: !envLocked && !activeWorktreePath,
+    needed: needsWorktreeBase,
+  });
+  const newWorktreeBaseBranch = newWorktreeBase.branch;
   const canonicalActiveBranch = resolveBranchToolbarValue({
     envMode: effectiveEnvMode,
     activeWorktreePath,
     activeThreadBranch,
     currentGitBranch,
+    newWorktreeBase: needsWorktreeBase ? newWorktreeBase.expected : null,
   });
+  // The setting's branch is still being looked up and can't be named yet:
+  // the row says which kind it is rather than guessing a name, or "…" while
+  // even the setting hasn't arrived.
+  const pendingWorktreeBaseLabel =
+    needsWorktreeBase && newWorktreeBase.branch === undefined && newWorktreeBase.expected === null
+      ? newWorktreeBase.from === undefined
+        ? "…"
+        : newWorktreeBase.from === "current"
+          ? "current branch"
+          : "default branch"
+      : null;
   const branchNames = useMemo(() => refs.map((refName) => refName.name), [refs]);
   const branchByName = useMemo(
     () => new Map(refs.map((refName) => [refName.name, refName] as const)),
@@ -551,21 +580,6 @@ export function BranchToolbarBranchSelector({
     runSwitchRef(pending.refName, selectionTarget.checkoutCwd, selectionTarget.nextWorktreePath);
   };
 
-  // A new worktree starts from the computer's "New worktrees from" branch
-  // until the user picks another. A thread that already exists holds it
-  // beside its pending mode rather than recording it as the thread's branch:
-  // only a pick the user makes is recorded.
-  const needsWorktreeBase =
-    effectiveEnvMode === "worktree" &&
-    !activeWorktreePath &&
-    (!activeThreadBranch || activeThreadBranchFromSetting);
-  const newWorktreeBaseBranch = useNewWorktreeBaseBranch({
-    environmentId,
-    cwd: refsCwd,
-    currentGitBranch,
-    canStartWorktree: !envLocked && !activeWorktreePath,
-    needed: needsWorktreeBase,
-  });
   useEffect(() => {
     if (!needsWorktreeBase || !newWorktreeBaseBranch) {
       return;
@@ -665,11 +679,16 @@ export function BranchToolbarBranchSelector({
 
   const triggerLabel = annotateMissingCheckoutLabel(
     presentation === "sentence"
-      ? (resolvedActiveBranch ?? "pick a branch")
+      ? (resolvedActiveBranch ??
+          (pendingWorktreeBaseLabel === null
+            ? "pick a branch"
+            : pendingWorktreeBaseLabel === "…"
+              ? "…"
+              : `the ${pendingWorktreeBaseLabel}`))
       : getBranchTriggerLabel({
           activeWorktreePath,
           effectiveEnvMode,
-          resolvedActiveBranch,
+          resolvedActiveBranch: resolvedActiveBranch ?? pendingWorktreeBaseLabel,
         }),
     selectedCheckoutMissing,
   );
