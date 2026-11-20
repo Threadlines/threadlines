@@ -259,7 +259,7 @@ describe("createDeviceStreamClient", () => {
       close() {}
     }
     vi.stubGlobal("VideoDecoder", FakeDecoder);
-    vi.stubGlobal("EncodedVideoChunk", class {});
+    vi.stubGlobal("EncodedVideoChunk", function EncodedVideoChunk() {});
     const openBody = () =>
       new Response(
         new ReadableStream({ start: (controller) => controller.enqueue(new Uint8Array([0])) }),

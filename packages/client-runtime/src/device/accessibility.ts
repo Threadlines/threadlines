@@ -37,6 +37,7 @@ export function flattenIosAxTree(roots: ReadonlyArray<unknown>): ReadonlyArray<D
   const screenWidth = Math.max(1, numberOr(rootFrame?.width, 1));
   const screenHeight = Math.max(1, numberOr(rootFrame?.height, 1));
   const elements: DeviceAxElement[] = [];
+  const ids = new Set<string>();
   const visit = (node: unknown, path: string) => {
     if (elements.length >= AX_ELEMENT_LIMIT || !isRecord(node) || !isRecord(node.frame)) return;
     const frame = node.frame;
@@ -45,8 +46,13 @@ export function flattenIosAxTree(roots: ReadonlyArray<unknown>): ReadonlyArray<D
     const coversScreen =
       Math.abs(width - screenWidth) < 0.5 && Math.abs(height - screenHeight) < 0.5;
     if (!coversScreen && width > 0 && height > 0) {
+      // iOS can give a widget and its app's icon the same id.
+      const unique =
+        typeof node.AXUniqueId === "string" && node.AXUniqueId ? node.AXUniqueId : path;
+      const id = ids.has(unique) ? `${unique}@${path}` : unique;
+      ids.add(id);
       elements.push({
-        id: typeof node.AXUniqueId === "string" && node.AXUniqueId ? node.AXUniqueId : path,
+        id,
         label: typeof node.AXLabel === "string" ? node.AXLabel : "",
         role: typeof node.type === "string" ? node.type : "",
         x: numberOr(frame.x, 0) / screenWidth,
@@ -84,8 +90,8 @@ export function parseAndroidAxNodes(nodes: ReadonlyArray<unknown>): ReadonlyArra
     const className = typeof node.className === "string" ? node.className : "";
     return [
       {
-        id:
-          typeof node.id === "string" || typeof node.id === "number" ? String(node.id) : `${index}`,
+        // Node ids are not promised unique; the position in the list is.
+        id: `${index}:${typeof node.id === "string" || typeof node.id === "number" ? node.id : ""}`,
         label,
         role: className.split(".").at(-1) ?? "",
         x: left / screenWidth,

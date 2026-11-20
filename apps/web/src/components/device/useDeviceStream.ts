@@ -8,6 +8,9 @@ import {
   type DeviceStreamClient,
   type DeviceStreamStatus,
   type DeviceVideoMode,
+  type DuoControlState,
+  type DuoPanelId,
+  IDLE_DUO_CONTROL,
 } from "@threadlines/client-runtime/device";
 import { useEffect, useState, useSyncExternalStore } from "react";
 
@@ -19,6 +22,12 @@ export interface DeviceStreamState {
   readonly screen: DeviceScreenSize | null;
   readonly mode: DeviceVideoMode;
   readonly input: { readonly connected: boolean; readonly detail?: string };
+  /** iPhone Duo: the hinge command in flight and the last one's error. */
+  readonly duo: DuoControlState;
+  /** iPhone Duo: the display whose fixed feed is live, null on the ordinary stream. */
+  readonly duoPanel: DuoPanelId | null;
+  /** iPhone Duo: why the fixed feeds are not used this session. */
+  readonly duoUnavailable: string | null;
 }
 
 const CONNECTING: DeviceStreamState = {
@@ -27,12 +36,27 @@ const CONNECTING: DeviceStreamState = {
   screen: null,
   mode: "video",
   input: { connected: false },
+  duo: IDLE_DUO_CONTROL,
+  duoPanel: null,
+  duoUnavailable: null,
+};
+
+const streamCanvas = () => {
+  const canvas = document.createElement("canvas");
+  canvas.style.display = "block";
+  canvas.style.width = "100%";
+  canvas.style.height = "100%";
+  return canvas;
 };
 
 /** One device's stream for one view: its canvas, its client and what it last reported. */
 export interface DeviceStream {
   /** The stream draws here; the view mounts it. */
   readonly canvas: HTMLCanvasElement;
+  /** iPhone Duo: each display's own picture, kept while the other one is in front. */
+  readonly panelCanvases: { readonly cover: HTMLCanvasElement; readonly inner: HTMLCanvasElement };
+  /** iPhone Duo: draw from the displays' fixed feeds (true) or the one ordinary stream. */
+  readonly setDuoPanels: (on: boolean) => void;
   readonly client: DeviceStreamClient;
   readonly transport: DeviceHubTransport;
   readonly subscribe: (listener: () => void) => () => void;
@@ -49,10 +73,12 @@ export function createDeviceStream(input: {
   readonly deviceId: string;
   readonly transport?: DeviceHubTransport;
 }): DeviceStream {
-  const canvas = document.createElement("canvas");
-  canvas.style.display = "block";
-  canvas.style.width = "100%";
-  canvas.style.height = "100%";
+  const canvas = streamCanvas();
+  const panelCanvases = { cover: streamCanvas(), inner: streamCanvas() };
+  const panelSinks = {
+    cover: createCanvasFrameSink(panelCanvases.cover),
+    inner: createCanvasFrameSink(panelCanvases.inner),
+  };
   const transport =
     input.transport ?? createDeviceHubTransport(deviceChannelApi(input.environmentId));
   const listeners = new Set<() => void>();
@@ -70,10 +96,15 @@ export function createDeviceStream(input: {
       onInputConnected: (connected, detail) =>
         update({ input: detail === undefined ? { connected } : { connected, detail } }),
       onVideoMode: (mode) => update({ mode }),
+      onDuoControl: (duo) => update({ duo }),
+      onDuoPanel: (duoPanel) => update({ duoPanel }),
+      onDuoUnavailable: (duoUnavailable) => update({ duoUnavailable }),
     },
   );
   return {
     canvas,
+    panelCanvases,
+    setDuoPanels: (on) => client.setDuoPanels(on ? panelSinks : null),
     client,
     transport,
     subscribe: (listener) => {

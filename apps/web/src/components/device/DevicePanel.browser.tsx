@@ -35,6 +35,15 @@ const IPHONE = {
   booted: false,
   physical: false,
 } as const;
+const DUO = {
+  id: "DUO-1",
+  platform: "ios",
+  name: "Renamed phone",
+  version: "iOS 27.2",
+  booted: true,
+  physical: false,
+  model: "com.apple.CoreSimulator.SimDeviceType.iPhone-Duo",
+} as const;
 const PIXEL = {
   id: "emulator-5554",
   platform: "android",
@@ -154,10 +163,10 @@ function base64(bytes: Uint8Array) {
 }
 
 /** A JPEG of a plain screen, wrapped as serve-sim's AVCC "seed" envelope. */
-async function seedEnvelope(): Promise<Uint8Array> {
+async function seedEnvelope(width = 118, height = 256): Promise<Uint8Array> {
   const canvas = document.createElement("canvas");
-  canvas.width = 118;
-  canvas.height = 256;
+  canvas.width = width;
+  canvas.height = height;
   const context = canvas.getContext("2d")!;
   context.fillStyle = "#3b82f6";
   context.fillRect(0, 0, canvas.width, canvas.height);
@@ -171,6 +180,29 @@ async function seedEnvelope(): Promise<Uint8Array> {
   envelope.set(jpeg, 5);
   return envelope;
 }
+
+/** One tagged message from serve-sim's helper socket, as the channel carries it. */
+const helperMessage = (tag: number, payload?: unknown): DeviceChannelEvent => {
+  const json =
+    payload === undefined ? new Uint8Array() : new TextEncoder().encode(JSON.stringify(payload));
+  return {
+    _tag: "message",
+    binary: true,
+    final: true,
+    data: base64(new Uint8Array([tag, ...json])),
+  };
+};
+
+/** What the Device tab sent on the helper socket, decoded: tag and JSON. */
+const helperSends = (send: ReturnType<typeof vi.fn>) =>
+  send.mock.calls.flatMap(([input]) => {
+    const { binary, data } = input as { binary: boolean; data: string };
+    if (!binary) return [];
+    const bytes = Uint8Array.from(atob(data), (char) => char.charCodeAt(0));
+    return [
+      { tag: bytes[0], body: JSON.parse(new TextDecoder().decode(bytes.subarray(1)) || "null") },
+    ];
+  });
 
 function Host(props: { visible: boolean }) {
   return (
@@ -288,5 +320,111 @@ describe("DevicePanel", () => {
     );
     await vi.waitFor(() => expect(opened).toEqual([IPHONE.id]));
     stop();
+  });
+
+  it("shows an iPhone Duo's displays from their own feeds, takes stances, and keeps touches on the screen in front", async () => {
+    const computer = fakeComputer(deviceState({ devices: [DUO] }));
+    await render(<Host visible />);
+    await page.getByRole("button", { name: "Open Renamed phone" }).click();
+    computer.push(
+      deviceState({ devices: [DUO], sessions: [session(DUO.id, "ios", "user")], revision: 2 }),
+    );
+    await vi.waitFor(() =>
+      expect(computer.channel("/vendor/serve-sim/helper/DUO-1/stream.mjpeg")).toBeDefined(),
+    );
+    const prime = computer.channel("/vendor/serve-sim/helper/DUO-1/stream.mjpeg")!;
+    prime.emit({ _tag: "opened", status: 200, contentType: "multipart/x-mixed-replace" });
+    prime.emit({ _tag: "data", data: base64(new Uint8Array([45, 45])) });
+    await vi.waitFor(() => expect(computer.channel("/vendor/serve-sim/helper/ws")).toBeDefined());
+    const input = computer.channel("/vendor/serve-sim/helper/ws")!;
+    input.emit({ _tag: "opened" });
+    input.emit(helperMessage(0x83));
+    // Book: the inner display is in front, half open, so both displays show.
+    input.emit(
+      helperMessage(0x82, {
+        width: 2007,
+        height: 2853,
+        orientation: "landscape_left",
+        screenId: 3,
+        supportsHingeAngle: true,
+        hingeAngle: 90,
+        hingePose: "book",
+      }),
+    );
+    await vi.waitFor(() =>
+      expect(computer.channel("/vendor/serve-sim/helper/DUO-1/panel/3/stream.avcc")).toBeDefined(),
+    );
+    const inner = computer.channel("/vendor/serve-sim/helper/DUO-1/panel/3/stream.avcc")!;
+    inner.emit({ _tag: "opened", status: 200, contentType: "application/octet-stream" });
+    inner.emit({ _tag: "data", data: base64(await seedEnvelope(118, 168)) });
+
+    await expect.element(page.getByText("Connecting to the screen…")).not.toBeInTheDocument();
+    await expect.element(page.getByTestId("device-duo-inner")).toBeVisible();
+    await expect.element(page.getByTestId("device-duo-cover")).toBeVisible();
+    await expect
+      .element(page.getByRole("button", { name: "Book" }))
+      .toHaveAttribute("aria-pressed", "true");
+
+    // A tap on the inner screen reaches the device; one on the cover behind it does not.
+    const layer = page.getByTestId("device-touch-layer");
+    const box = (testId: string) =>
+      document.querySelector(`[data-testid=${testId}]`)!.getBoundingClientRect();
+    const layerBox = layer.element().getBoundingClientRect();
+    const at = (rect: DOMRect) => ({
+      x: rect.left + rect.width / 2 - layerBox.left,
+      y: rect.top + rect.height / 2 - layerBox.top,
+    });
+    await layer.click({ position: at(box("device-duo-cover")) });
+    await layer.click({ position: at(box("device-duo-inner")) });
+    await vi.waitFor(() =>
+      expect(helperSends(computer.device.channel.send).filter((sent) => sent.tag === 0x03)).toEqual(
+        [
+          { tag: 0x03, body: expect.objectContaining({ type: "begin" }) },
+          { tag: 0x03, body: expect.objectContaining({ type: "end" }) },
+        ],
+      ),
+    );
+
+    // A stance goes out as a hinge command on the same socket.
+    await page.getByRole("button", { name: "Closed" }).click();
+    await vi.waitFor(() =>
+      expect(helperSends(computer.device.channel.send).at(-1)).toEqual({
+        tag: 0x10,
+        body: { requestId: 1, command: { control: "pose", value: "closed" } },
+      }),
+    );
+    input.emit(helperMessage(0x90, { requestId: 1, ok: true }));
+
+    // The cover takes over; this helper has no fixed cover feed, so the ordinary stream is back.
+    input.emit(
+      helperMessage(0x82, {
+        width: 1398,
+        height: 2034,
+        orientation: "portrait",
+        screenId: 1,
+        supportsHingeAngle: true,
+        hingeAngle: 0,
+        hingePose: "closed",
+      }),
+    );
+    await vi.waitFor(() =>
+      expect(computer.channel("/vendor/serve-sim/helper/DUO-1/panel/1/stream.avcc")).toBeDefined(),
+    );
+    computer
+      .channel("/vendor/serve-sim/helper/DUO-1/panel/1/stream.avcc")!
+      .emit({ _tag: "opened", status: 404, contentType: "application/json" });
+    await vi.waitFor(() =>
+      expect(computer.channel("/vendor/serve-sim/helper/DUO-1/stream.avcc")).toBeDefined(),
+    );
+    await expect
+      .element(page.getByRole("toolbar", { name: "iPhone Duo stance" }))
+      .not.toBeInTheDocument();
+    expect(document.querySelector("[data-testid=device-frame]")?.getAttribute("data-frame")).toBe(
+      "plain",
+    );
+    // Input stayed on the one socket the helper admitted.
+    expect(
+      computer.channels.filter((channel) => channel.input.path === "/vendor/serve-sim/helper/ws"),
+    ).toHaveLength(1);
   });
 });

@@ -7,6 +7,8 @@ import {
   EllipsisIcon,
   HomeIcon,
   KeyboardIcon,
+  MousePointerClickIcon,
+  ScanTextIcon,
   Layers2Icon,
   PowerIcon,
   RotateCwIcon,
@@ -51,6 +53,9 @@ export function DeviceWorkspace(props: {
     active: visible,
   });
   const [toolsOpen, setToolsOpen] = useState(false);
+  // The accessibility overlay, and its inspect mode where a tap reads a label instead of touching.
+  const [axOverlay, setAxOverlay] = useState(false);
+  const [axInspect, setAxInspect] = useState(false);
   // Read while on screen, not only with Tools open: rotating Android goes through it too.
   const controls = useDeviceControls({ environmentId, device, visible });
   const [screenshotPending, setScreenshotPending] = useState(false);
@@ -174,6 +179,26 @@ export function DeviceWorkspace(props: {
           <CameraIcon />
         </ToolbarButton>
         <ToolbarButton
+          label={axOverlay ? "Hide accessibility frames" : "Show accessibility frames"}
+          pressed={axOverlay}
+          disabled={state.status !== "streaming"}
+          onClick={() => {
+            setAxOverlay((on) => !on);
+            setAxInspect(false);
+          }}
+        >
+          <ScanTextIcon />
+        </ToolbarButton>
+        {axOverlay ? (
+          <ToolbarButton
+            label={axInspect ? "Stop inspecting" : "Inspect: taps show labels"}
+            pressed={axInspect}
+            onClick={() => setAxInspect((on) => !on)}
+          >
+            <MousePointerClickIcon />
+          </ToolbarButton>
+        ) : null}
+        <ToolbarButton
           label="Tools"
           pressed={toolsOpen}
           onClick={() => setToolsOpen((open) => !open)}
@@ -244,6 +269,11 @@ export function DeviceWorkspace(props: {
             deviceDescription={device.version}
             stream={stream}
             state={state}
+            deviceId={device.id}
+            model={device.model}
+            physical={device.physical}
+            axOverlay={axOverlay}
+            axInspect={axInspect}
           />
         </div>
         {toolsOpen ? (
