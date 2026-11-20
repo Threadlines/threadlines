@@ -514,6 +514,30 @@ export function createDeviceStreamClient(
   let panelsRefused = false;
   let mainVideo = false;
   let pendingOrientation: number | null = null;
+  // iOS: the touch the helper holds down, in framebuffer coordinates. The helper
+  // sends every touch to whichever display is in front, so a Duo gesture must
+  // never outlive a handoff: its release would land on the other screen.
+  let heldTouch: { readonly x: number; readonly y: number } | null = null;
+  /** The rest of a gesture that was cut at a handoff is dropped, up to the next begin. */
+  let touchCut = false;
+  const sendIosTouch = (phase: "begin" | "move" | "end", point: { x: number; y: number }) => {
+    if (phase === "begin") touchCut = false;
+    else if (touchCut) return;
+    send(taggedJson(IOS_MSG_TOUCH, { type: phase, ...point }));
+    heldTouch = phase === "end" ? null : point;
+  };
+  /** Before a hinge command: lift a held touch on the display it is on. */
+  const releaseHeldTouch = () => {
+    const held = heldTouch;
+    if (!held) return;
+    send(taggedJson(IOS_MSG_TOUCH, { type: "end", ...held }));
+    heldTouch = null;
+    touchCut = true;
+  };
+  const forgetHeldTouch = () => {
+    heldTouch = null;
+    touchCut = false;
+  };
   const duoControl = createDuoControl({
     send: (request) => {
       if (
@@ -523,6 +547,8 @@ export function createDeviceStreamClient(
         !screen?.supportsHingeAngle
       )
         return false;
+      // The command can hand the input to the other display; the touch ends where it began first.
+      releaseHeldTouch();
       pendingOrientation = null;
       if (request.command.control === "orientation") {
         // The helper confirms an orientation with its next screen config, not a reply.
@@ -911,6 +937,8 @@ export function createDeviceStreamClient(
     socket = ws;
     iosInputAdmitted = false;
     iosInputUnavailable = false;
+    // The helper lets go of a closed socket's touches; this one starts with none held.
+    forgetHeldTouch();
     ws.addEventListener("message", (event) => {
       if (stopped || socket !== ws) return;
       if (!(event.data instanceof ArrayBuffer)) return;
@@ -937,7 +965,15 @@ export function createDeviceStreamClient(
           iosInputAdmitted && !iosInputUnavailable,
           iosInputUnavailable ? "Simulator input is unavailable." : undefined,
         );
+        const previousScreenId = screen?.screenId;
         screen = config.value;
+        // The helper handed the input to the other display on its own (another
+        // viewer, an agent): a held touch can no longer end where it began, so
+        // the rest of that gesture is dropped rather than sent to the new screen.
+        if (heldTouch && previousScreenId !== undefined && screen.screenId !== previousScreenId) {
+          heldTouch = null;
+          touchCut = true;
+        }
         events.onScreen(screen);
         if (pendingOrientation !== null) {
           const requestId = pendingOrientation;
@@ -952,6 +988,7 @@ export function createDeviceStreamClient(
       if (socket !== ws) return;
       socket = null;
       iosInputAdmitted = false;
+      forgetHeldTouch();
       duoControl.clear();
       if (stopped) return;
       events.onInputConnected(false, event.reason || `closed ${event.code}`);
@@ -1236,7 +1273,7 @@ export function createDeviceStreamClient(
     start,
     stop,
     sendRawTouch: (phase, x, y) => {
-      if (ios) send(taggedJson(IOS_MSG_TOUCH, { type: phase, x, y }));
+      if (ios) sendIosTouch(phase, { x, y });
     },
     controlDuo: (command) => {
       if (ios && panelId === undefined) duoControl.enqueue(command);
@@ -1248,7 +1285,7 @@ export function createDeviceStreamClient(
     },
     sendTouch: (phase, x, y) => {
       if (ios) {
-        send(taggedJson(IOS_MSG_TOUCH, { type: phase, ...rawPoint(x, y) }));
+        sendIosTouch(phase, rawPoint(x, y));
         return;
       }
       const action = phase === "begin" ? "down" : phase === "move" ? "move" : "up";

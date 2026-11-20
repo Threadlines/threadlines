@@ -211,14 +211,15 @@ export function DeviceStreamView(props: {
 
   const activePointer = useRef<ActivePointer | null>(null);
   const layerRef = useRef<HTMLDivElement>(null);
-  // A handoff to the other display ends a gesture there: its touches would land on the wrong screen.
+  // After a handoff the input is already on the other display: the stream
+  // client lifted or dropped the held touch, so the view just forgets the
+  // gesture. Sending its end now would release it on the wrong screen.
   const activeDuoPanel = drawing.kind === "duo" ? drawing.layout.active : null;
   useEffect(() => {
     const pointer = activePointer.current;
     if (pointer?.panel === undefined || pointer.panel === activeDuoPanel) return;
     activePointer.current = null;
-    client.sendRawTouch("end", pointer.x, pointer.y);
-  }, [activeDuoPanel, client]);
+  }, [activeDuoPanel]);
 
   /** 0..1 of the screen the user sees, for the plain and single frames and the overlay. */
   const screenPoint = (event: PointerEvent<HTMLElement>) => {

@@ -401,4 +401,76 @@ describe("createDeviceStreamClient", () => {
     expect(hub.sockets).toHaveLength(1);
     client.stop();
   });
+
+  it("never lets a held Duo touch end on the display that took over", async () => {
+    const openBody = () =>
+      new Response(
+        new ReadableStream({ start: (controller) => controller.enqueue(new Uint8Array([0])) }),
+      );
+    const hub = fakeTransport(openBody);
+    const client = createDeviceStreamClient(
+      { platform: "ios", deviceId: "DUO", transport: hub.transport },
+      { present: () => true },
+      events(),
+    );
+    client.start();
+    await vi.waitFor(() => expect(hub.sockets).toHaveLength(1));
+    const input = hub.sockets[0]!;
+    const config = (screenId: number) =>
+      input.dispatch("message", {
+        data: new Uint8Array([
+          0x82,
+          ...new TextEncoder().encode(
+            JSON.stringify({
+              width: screenId === 1 ? 1398 : 2007,
+              height: screenId === 1 ? 2034 : 2853,
+              orientation: "portrait",
+              screenId,
+              supportsHingeAngle: true,
+              hingeAngle: screenId === 1 ? 0 : 180,
+            }),
+          ),
+        ]).buffer,
+      });
+    const sent = () =>
+      (input.sent as Array<Uint8Array>).map((packet) => ({
+        tag: packet[0],
+        body: JSON.parse(new TextDecoder().decode(packet.subarray(1))),
+      }));
+    input.dispatch("message", { data: new Uint8Array([0x83]).buffer });
+    config(1);
+
+    // A stance from this view: the held touch ends on the cover before the command goes out.
+    client.sendRawTouch("begin", 0.3, 0.4);
+    client.controlDuo({ control: "pose", value: "open" });
+    client.sendRawTouch("move", 0.5, 0.5);
+    client.sendRawTouch("end", 0.5, 0.5);
+    expect(sent()).toEqual([
+      { tag: 0x03, body: { type: "begin", x: 0.3, y: 0.4 } },
+      { tag: 0x03, body: { type: "end", x: 0.3, y: 0.4 } },
+      { tag: 0x10, body: { requestId: 1, command: { control: "pose", value: "open" } } },
+    ]);
+    input.dispatch("message", {
+      data: new Uint8Array([0x90, ...new TextEncoder().encode('{"requestId":1,"ok":true}')]).buffer,
+    });
+    config(3);
+
+    // The helper hands the input over on its own: the rest of the gesture is dropped.
+    input.sent.length = 0;
+    client.sendRawTouch("begin", 0.6, 0.6);
+    config(1);
+    client.sendRawTouch("move", 0.7, 0.7);
+    client.sendRawTouch("end", 0.7, 0.7);
+    expect(sent()).toEqual([{ tag: 0x03, body: { type: "begin", x: 0.6, y: 0.6 } }]);
+
+    // The next gesture goes through as usual.
+    client.sendRawTouch("begin", 0.2, 0.2);
+    client.sendRawTouch("end", 0.2, 0.2);
+    expect(
+      sent()
+        .slice(1)
+        .map((packet) => packet.body.type),
+    ).toEqual(["begin", "end"]);
+    client.stop();
+  });
 });
