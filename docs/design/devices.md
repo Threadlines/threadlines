@@ -118,6 +118,48 @@ Every hub route Round 2 uses is already on the channel allowlist; the Duo's
 hinge, stance and table mode travel as tagged messages on the allowed iOS input
 socket.
 
+Settled while building frames, the Duo, folds and the overlay:
+
+- **Where the frame numbers come from.** Screen sizes and corner radii are
+  each simulator's own display description in Xcode
+  (`<device type>/Contents/Resources/capabilities.plist`: `width`, `height`,
+  `scale`, `cornerRadiusUL`…), bezels and button positions its device chrome
+  description (`/Library/Developer/DeviceKit/Chrome/<chrome>/…/chrome.json`).
+  Numbers only; no Apple artwork. The table (`deviceShapes.ts`) is keyed by
+  the device type id with memory suffixes dropped, so the 12 and 16 GB iPads
+  share a frame. The glass between band and screen is black in both themes
+  (it is the screen's own glass); the band and buttons are theme colors.
+- **Model on the server.** iOS: one `xcrun simctl list devices -j` per
+  listing that has a simulator it has not seen, cached by UDID for the life
+  of the server (a UDID's type never changes). Android emulators: the AVD's
+  `hw.device.name` (`pixel_fold`), read from its `.ini` each listing (a
+  serial is reused across AVDs). AVDs made without a hardware profile have
+  none, so a foldable is also recognized at run time by `/api/fold` reporting
+  `supported: true`. Physical phones: `getprop ro.product.model`, cached by
+  serial.
+- **Duo video, one feed at a time.** Only the display in front streams its
+  fixed feed; the other keeps its last picture, dimmed. A handoff stops one
+  feed and opens the other on the same admitted input socket. This avoids
+  T3's "inactive panel emits a black shutdown frame" problem without
+  decoding two streams. Refusals are 400, 404, 405, 410 and also 409: the
+  pinned serve-sim answers `409 panel_streams_unsupported` for a simulator
+  without panels. A refused or failed panel feed falls back to the ordinary
+  stream in the plain frame (not the cover's frame), Duo controls hidden,
+  until the next reconnect asks again.
+- **Which Duo displays show.** The cover alone at 0°, the inner screen alone
+  at 180°, both side by side at any angle between (book, laptop and tent),
+  the cover on the left where the hinge swings it. The whole drawing turns
+  with the display in front; touches on the dimmed one are dropped, and a
+  gesture in progress ends when the display in front changes.
+- **Duo stances** are serve-sim's own presets (`pose`: closed 0°, book and
+  laptop 90°, tent 80°, open 180°) rather than T3's angle buttons, plus
+  `table` where the helper reports `tableModeAvailable`.
+- **Overlay hover and inspect.** Frames are drawn over the screen as the
+  user sees it (not inside the turned drawing). Hover picks the smallest
+  element under the pointer; inspect mode (a second toolbar toggle that
+  appears with the overlay) shows the tapped element's label and sends no
+  touch. The tree is read every 2 s, one request at a time, while shown.
+
 ## Architecture
 
 ```
@@ -318,15 +360,16 @@ Owner and paired clients may both use devices (same rule as terminals).
   decoding skips unknown commands.
 - First open: setup steps (start the hub, platform check, agent access
   choice). Opening the tab alone downloads nothing.
-- Device picker, the screen in a flat frame sized to the device's aspect,
+- Device picker, the screen in a frame drawn for its model (the plain flat
+  frame for unknown models),
   a toolbar above it (plain until hover: back to the picker, Home, app
   switcher, or Back and Recents on Android, rotate, screenshot, Tools, and a
   menu with Close and Power off), Tools drawer (`DeviceToolsPanel`, beside
   the screen when the panel is wide, over it when not), loading and error
   states that say what is missing ("Android SDK Command-line Tools are missing
-  from …"). T3's accessibility-frame overlay and serve-sim event log are not
-  ported; the foreground app comes from `deviceDetail`, not serve-sim's
-  `/appstate` event stream.
+  from …"). The accessibility-frame overlay is a toolbar toggle (Round 2);
+  the foreground app comes from `deviceDetail`, not serve-sim's `/appstate`
+  event stream.
 - Only the visible device streams; switching tabs or threads stops the channel.
 - Settings → Devices section with the two switches and tool versions.
 

@@ -397,8 +397,11 @@ Words typed in the browser's address bar are searched for, with the search engin
       "app preview",
       "device_open",
       "agent-device",
+      "iphone duo",
+      "foldable",
+      "accessibility frames",
     ],
-    body: `The Device tab in the right panel shows a live iOS Simulator or Android Emulator running on the thread's computer. You tap, swipe and type on its screen as on a phone. The toolbar above it has Home, the app switcher, Back and Recents on Android, rotate, screenshot and power off. The Tools drawer sets appearance, text size, accessibility options, location and permissions, opens a URL, launches or quits an app, shakes the device, sends a test push, and on Android sets the network.
+    body: `The Device tab in the right panel shows a live iOS Simulator or Android Emulator running on the thread's computer. You tap, swipe and type on its screen as on a phone. The screen sits in a drawing of the device's model (an unknown model gets a plain frame). The toolbar above it has Home, the app switcher, Back and Recents on Android, rotate, screenshot, accessibility frames and power off. Accessibility frames outline each element on screen and show its label on hover; their Inspect button makes a tap show the label instead of touching the device. An iPhone Duo shows its stance buttons beside the screen (closed, book, open, laptop, tent, and table mode where offered), and an Android foldable shows fold and unfold. The Tools drawer sets appearance, text size, accessibility options, location and permissions, opens a URL, launches or quits an app, shakes the device, sends a test push, and on Android sets the network.
 
 Open it from the right panel's + menu or its launcher, or with Open device in the command palette. It shows in project threads, not General Chats.
 
