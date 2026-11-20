@@ -16,6 +16,7 @@ import {
   PlugIcon,
   Settings2Icon,
   SmartphoneIcon,
+  TabletSmartphoneIcon,
 } from "lucide-react";
 
 import { SourceControlIcon } from "../Icons";
@@ -99,6 +100,11 @@ export const SETTINGS_NAV_ITEMS: ReadonlyArray<SettingsNavItem> = [
   settingsNavItem("settings.connections", {
     to: CONNECTIONS_SETTINGS_SECTION_PATH,
     icon: SmartphoneIcon,
+    group: "computer",
+  }),
+  settingsNavItem("settings.devices", {
+    to: "/settings/devices",
+    icon: TabletSmartphoneIcon,
     group: "computer",
   }),
   settingsNavItem("settings.keybindings", {

@@ -477,6 +477,15 @@ const PAGES = [
     keywords: ["phone", "pair", "remote", "devices"],
   },
   {
+    id: "settings.devices",
+    kind: "page",
+    title: "Devices",
+    about:
+      "iOS Simulators and Android Emulators in the Device tab, and whether agents can use them.",
+    route: { to: "/settings/devices" },
+    keywords: ["simulator", "emulator", "iOS", "Android", "Xcode", "device tab", "agent-device"],
+  },
+  {
     id: "settings.keybindings",
     kind: "page",
     title: "Keybindings",
@@ -894,6 +903,24 @@ const SECTIONS = [
     about: "How other devices reach this computer: the same network, Tailscale, or a link.",
     keywords: ["tailscale", "lan", "network"],
     widensAgents: true,
+  },
+  // Devices
+  {
+    id: "devices.simulators",
+    kind: "section",
+    parent: "settings.devices",
+    title: "Simulators & emulators",
+    about:
+      "Whether the Device tab shows this computer's iOS Simulators and Android Emulators, and whether agents can use them.",
+  },
+  {
+    id: "devices.tools",
+    kind: "section",
+    parent: "settings.devices",
+    title: "Device tools",
+    about:
+      "The device hub and agent-device that Threadlines installs for devices: each one's version, and Update when a newer one is needed.",
+    keywords: ["expo-device-hub", "agent-device", "version", "update", "install"],
   },
   // Fleet: a computer's page (/fleet/<computer>)
   {
@@ -1904,6 +1931,28 @@ const ROWS = [
     about:
       "For devices that can reach this computer directly. The link works once and expires in 5 minutes.",
     keywords: ["link", "pairing link"],
+    widensAgents: true,
+  },
+  // Devices › Simulators & emulators
+  {
+    id: "devices.enable",
+    kind: "row",
+    parent: "devices.simulators",
+    title: "Use devices",
+    about:
+      "The Device tab shows the iOS Simulators and Android Emulators on this computer, and the device hub installs the first time the tab or an agent asks.",
+    keywords: ["simulator", "emulator", "iOS", "Android", "device tab", "turn on"],
+    ...editableServerSwitch("enableDevices"),
+  },
+  {
+    id: "devices.agentAccess",
+    kind: "row",
+    parent: "devices.simulators",
+    title: "Agents can use devices",
+    about:
+      "Agents get tools to open, see and tap devices here, in sessions started after you turn it on.",
+    keywords: ["device_open", "agent-device", "simulator", "emulator", "agent tools"],
+    value: onOff((settings) => settings.agentDeviceAccess),
     widensAgents: true,
   },
   // Fleet › This app

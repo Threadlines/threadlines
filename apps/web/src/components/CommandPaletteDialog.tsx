@@ -73,6 +73,7 @@ import {
   PinOffIcon,
   PlugIcon,
   CameraIcon,
+  SmartphoneIcon,
 } from "lucide-react";
 import {
   useCallback,
@@ -154,7 +155,11 @@ import {
 import { useGitStatus } from "../lib/gitStatusState";
 import { useScheduledTaskEnvironments } from "../lib/scheduledTasksState";
 import { resolveThreadPullRequest, threadViewBranch } from "./pull-requests/pullRequests.logic";
-import { focusRightPanelTab, pullRequestTabSearchParams } from "../rightPanelTabs";
+import {
+  focusRightPanelTab,
+  pullRequestTabSearchParams,
+  rightPanelTabSearchParams,
+} from "../rightPanelTabs";
 import { cn, isMacPlatform, newCommandId, newProjectId, newThreadId } from "../lib/utils";
 import {
   selectProjectsAcrossEnvironments,
@@ -201,6 +206,7 @@ import { APP_VERSION } from "../branding";
 import { useProjectSetupTargets } from "../environments/projectSetups/projectSetupTargets";
 import { useMoveThreadsOffered, useThreadMoveOffered } from "../environments/links/threadMoves";
 import { openMoveThreadsDialog } from "./MoveThreadsDialog";
+import { environmentSupportsDevices } from "./device/deviceState";
 import {
   startAssistantCode,
   useOutsideAgentsSnapshot,
@@ -2028,6 +2034,32 @@ export function OpenCommandPaletteDialog() {
           to: "/$environmentId/$threadId",
           params: buildThreadRouteParams(threadRef),
           search: (previous) => pullRequestTabSearchParams(previous, pullRequestNumber),
+        });
+      },
+    });
+  }
+
+  // A project thread on a computer whose server has devices: the same rule as
+  // the Device tab itself (availableRightPanelTabs).
+  if (
+    activeThread &&
+    activeThreadProject !== null &&
+    activeThreadProject.kind !== "general-chat" &&
+    environmentSupportsDevices(activeThread.environmentId)
+  ) {
+    const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
+    actionItems.push({
+      kind: "action",
+      value: "action:thread-device",
+      searchTerms: ["device", "simulator", "emulator", "ios", "android", "phone"],
+      title: "Open device",
+      icon: <SmartphoneIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        focusRightPanelTab(scopedThreadKey(threadRef), "device");
+        await navigate({
+          to: "/$environmentId/$threadId",
+          params: buildThreadRouteParams(threadRef),
+          search: (previous) => rightPanelTabSearchParams(previous, "device"),
         });
       },
     });
