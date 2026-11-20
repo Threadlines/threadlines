@@ -3419,10 +3419,12 @@ export const OrchestrationThreadShell = Schema.Struct({
    */
   attachedToParent: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /**
-   * The turn whose answer last went back to the parent, and when. The parent's
-   * agent read that answer, so that exact completion may be filed without the
-   * user opening it (the "wrap up finished child threads" setting). Like
-   * `doneOverride`, it does not move `updatedAt`.
+   * The turn whose answer last went back to the parent, and when: as a report,
+   * as a late reply its agent was told of at its next turn, or a turn the
+   * parent's agent cut off with thread_stop. The parent's agent has that
+   * turn, so that exact completion may be filed without the user opening it
+   * (the "wrap up finished child threads" setting). Like `doneOverride`, it
+   * does not move `updatedAt`.
    */
   handedBackAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   handedBackTurnId: Schema.NullOr(TurnId).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
@@ -3875,6 +3877,14 @@ const ThreadDoneOverrideSetCommand = Schema.Struct({
   fromLinkedComputer: Schema.optional(Schema.Boolean),
   /** See ThreadSessionStopCommand.byLink. */
   byLink: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * Server only (the agent of the thread named here wrapped up a thread it
+   * started, `thread_wrap`): a Wrap up only, refused unless the thread is
+   * still that thread's attached child with nothing running, waiting on the
+   * user or owed to it; and it marks the thread seen as of `at` unless it was
+   * seen later, in the same step. Clients can't send it (Normalizer.ts).
+   */
+  byParentAgent: Schema.optional(ThreadId),
 });
 
 /**
@@ -5526,12 +5536,19 @@ const ThreadChildRequestSettleCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
-/** Child threads: notes went out with an agent's turn. */
+/**
+ * Child threads: notes went out with an agent's turn, and with them the late
+ * replies of children that kept working after their answer (each child's
+ * newest turn then counts as handed back).
+ */
 const ThreadChildNotesDeliveredCommand = Schema.Struct({
   type: Schema.Literal("thread.child-notes.delivered"),
   commandId: CommandId,
   threadId: ThreadId,
   requestIds: Schema.Array(ChildRequestId),
+  lateReplies: Schema.optional(
+    Schema.Array(Schema.Struct({ childThreadId: ThreadId, turnId: TurnId })),
+  ),
   createdAt: IsoDateTime,
 });
 

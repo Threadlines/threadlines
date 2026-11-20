@@ -52,7 +52,9 @@ import {
   collectOpenPendingRequests,
   countPendingUserInputs,
 } from "@threadlines/shared/pendingRequests";
-import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
+import { awaitingInvite, isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
+import { hasPendingSecretRequest } from "@threadlines/shared/secretRequestState";
+import { hasPendingSettingsChange } from "@threadlines/shared/settingsChangeState";
 import { activeParticipants } from "@threadlines/shared/threadParticipants";
 
 import { handOffReplyText } from "./agentRequestDecisions.ts";
@@ -1337,27 +1339,60 @@ export function decideRemoteRequestQueue(
   ];
 }
 
-/** Notes went out with an agent's turn (`thread.child-notes.delivered`). */
+/**
+ * Notes went out with an agent's turn (`thread.child-notes.delivered`), and
+ * with them children's late replies (lateReplyOf): each child whose newest
+ * turn is still the one told of is recorded as handed back as of it, so it
+ * wraps itself. One that moved on since (a newer turn, or it left the family)
+ * is left as it is and is told of again when it qualifies.
+ */
 export function decideChildNotesDelivered(
+  readModel: OrchestrationReadModel,
   parent: OrchestrationThread,
   command: CommandOf<"thread.child-notes.delivered">,
   baseFor: ChildEventBase,
 ): ChildThreadDecision {
-  if (
-    !parent.childRequests.pendingNotes.some((note) => command.requestIds.includes(note.requestId))
-  ) {
+  const notesDelivered = parent.childRequests.pendingNotes.some((note) =>
+    command.requestIds.includes(note.requestId),
+  );
+  const handedBack = (command.lateReplies ?? []).flatMap((reply): ReadonlyArray<PlannedEvent> => {
+    const child = findThread(readModel, reply.childThreadId);
+    if (
+      child === null ||
+      child.parentThreadId !== parent.id ||
+      !child.attachedToParent ||
+      child.latestTurn?.turnId !== reply.turnId ||
+      child.latestTurn.state === "running" ||
+      child.handedBackTurnId === reply.turnId
+    ) {
+      return [];
+    }
+    return [
+      {
+        ...baseFor(child.id),
+        type: "thread.handed-back",
+        payload: { threadId: child.id, turnId: reply.turnId, handedBackAt: command.createdAt },
+      },
+    ];
+  });
+  if (!notesDelivered && handedBack.length === 0) {
     return refuse("Those notes were already delivered.");
   }
   return [
-    {
-      ...baseFor(parent.id),
-      type: "thread.child-notes-delivered",
-      payload: {
-        threadId: parent.id,
-        requestIds: command.requestIds,
-        createdAt: command.createdAt,
-      },
-    },
+    ...(notesDelivered
+      ? [
+          {
+            ...baseFor(parent.id),
+            type: "thread.child-notes-delivered" as const,
+            payload: {
+              threadId: parent.id,
+              requestIds: command.requestIds,
+              createdAt: command.createdAt,
+            },
+          },
+        ]
+      : []),
+    ...handedBack,
   ];
 }
 
@@ -1721,6 +1756,32 @@ export function childHasLiveWork(
 }
 
 /**
+ * The turn a parent's agent cut off with thread_stop is over as far as that
+ * parent is concerned: it chose to end it, so nothing from it is owed back.
+ * Recording it as handed back lets the child wrap itself once the interrupt
+ * lands, like one whose answer went back. Only a turn that is running is
+ * stamped: a finished turn the user started stays theirs to read, and a later
+ * turn (a new thread_send, the user writing) is newer than the stamp.
+ */
+export function stoppedTurnHandedBack(
+  baseFor: ChildEventBase,
+  child: OrchestrationThread,
+  createdAt: string,
+): ReadonlyArray<PlannedEvent> {
+  const turn = child.latestTurn;
+  if (turn === null || turn.state !== "running" || child.handedBackTurnId === turn.turnId) {
+    return [];
+  }
+  return [
+    {
+      ...baseFor(child.id),
+      type: "thread.handed-back",
+      payload: { threadId: child.id, turnId: turn.turnId, handedBackAt: createdAt },
+    },
+  ];
+}
+
+/**
  * Stop threads in a parent's family (`thread.children.stop`): the parent's
  * requests for them settle stopped, its agent hears of it at its next turn,
  * and each child's whole session is stopped (decided by the caller, which
@@ -1810,6 +1871,7 @@ export function decideChildrenStop(
             at: command.createdAt,
           },
         },
+        ...stoppedTurnHandedBack(baseFor, child, command.createdAt),
       ]),
       // A child on a linked computer: the same, kept on the parent, and its
       // computer is told to drop the requests and stop its session.
@@ -2033,6 +2095,78 @@ export function childArchivePlan(
     separate: children.filter(live),
   };
 }
+
+/**
+ * Why a parent's agent can't wrap up `child` (thread_wrap), or null. Only a
+ * thread `parent` started that is still attached to it, and only once nothing
+ * runs in it, waits on the user or is owed to `parent`, so a wrap never files
+ * away work still going. The decider applies it to a
+ * `thread.done-override.set` carrying `byParentAgent`; the handler reads it
+ * first for a precise outcome.
+ */
+export function agentWrapRefusal(
+  parent: Pick<OrchestrationThread, "id" | "childRequests"> | null,
+  child: OrchestrationThread,
+): { readonly kind: "not_yours" | "refused" | "working"; readonly detail: string } | null {
+  if (parent === null || child.parentThreadId !== parent.id) {
+    return {
+      kind: "not_yours",
+      detail: "That is not a thread you started. You can only wrap up your own threads.",
+    };
+  }
+  if (!child.attachedToParent) {
+    return {
+      kind: "not_yours",
+      detail: "The user made that thread its own, so it's theirs to wrap up.",
+    };
+  }
+  if (child.archivedAt !== null) {
+    return { kind: "refused", detail: "That thread is archived." };
+  }
+  if (
+    childHasLiveWork(child) ||
+    hasPendingSettingsChange(child.settingsRequests ?? []) ||
+    hasPendingSecretRequest(child.secretRequests ?? []) ||
+    awaitingInvite(child.agentRequests) !== undefined ||
+    parent.childRequests.open.some((request) => request.childThreadId === child.id)
+  ) {
+    return {
+      kind: "working",
+      detail: `'${child.title}' is still working or waiting for the user. Wait for its reply, or stop it with thread_stop first.`,
+    };
+  }
+  // The user has been talking to it since its work for the parent: an answer
+  // they may not have read is theirs, not the parent's agent's, to put away.
+  if (personWroteSince(child, child.handedBackAt ?? child.createdAt)) {
+    return {
+      kind: "refused",
+      detail: `The user has been writing to '${child.title}' since, so it's theirs to wrap up.`,
+    };
+  }
+  return null;
+}
+
+/**
+ * Whether a person sent this message from the app (they typed it, or their
+ * signed-in device sent it), never an agent, another thread, a scheduled run,
+ * an automatic fix or a continue after a usage limit.
+ */
+export const personWrote = (message: {
+  readonly composer?: unknown;
+  readonly sentFrom?: unknown;
+}): boolean => message.composer !== undefined || message.sentFrom !== undefined;
+
+/** Whether a person wrote to `thread` after `since` (personWrote). */
+export const personWroteSince = (
+  thread: Pick<OrchestrationThread, "messages">,
+  since: string,
+): boolean => {
+  const after = Date.parse(since);
+  return thread.messages.some(
+    (message) =>
+      message.role === "user" && personWrote(message) && Date.parse(message.createdAt) > after,
+  );
+};
 
 /** The children an unarchive of `parent` brings back: those its archive took along. */
 export const childrenArchivedWith = (

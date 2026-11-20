@@ -14,7 +14,7 @@ import {
 } from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { childDeliveryForTurnEnd } from "./childThreadDelivery.ts";
+import { childDeliveryForTurnEnd, lateReplyOf } from "./childThreadDelivery.ts";
 
 const now = "2026-10-04T10:00:00.000Z";
 const PARENT = ThreadId.make("parent");
@@ -120,5 +120,75 @@ describe("childDeliveryForTurnEnd", () => {
       awaitedBackgroundTaskCount: 0,
     });
     expect(userTurn).toBeNull();
+  });
+});
+
+describe("lateReplyOf", () => {
+  const handedBack = TurnId.make("turn-answer");
+  const later = TurnId.make("turn-check-back");
+  const child = (overrides: Partial<OrchestrationThread> = {}) =>
+    thread(CHILD, {
+      handedBackTurnId: handedBack,
+      handedBackAt: "2026-10-04T10:05:00.000Z",
+      latestTurn: {
+        turnId: later,
+        state: "completed",
+        requestedAt: "2026-10-04T10:10:00.000Z",
+        startedAt: "2026-10-04T10:10:00.000Z",
+        completedAt: "2026-10-04T10:12:00.000Z",
+        assistantMessageId: MessageId.make("late-answer"),
+      },
+      messages: [
+        {
+          id: MessageId.make("late-answer"),
+          role: "assistant",
+          text: "The reviewer found three bugs; all fixed in cf7b10d.",
+          turnId: later,
+          streaming: false,
+          createdAt: "2026-10-04T10:12:00.000Z",
+          updatedAt: "2026-10-04T10:12:00.000Z",
+        },
+      ],
+      ...overrides,
+    });
+  const parent = thread(PARENT);
+
+  it("tells the parent of a finished turn nobody asked for after the child's answer went back", () => {
+    expect(lateReplyOf(parent, child())).toEqual({
+      childThreadId: CHILD,
+      turnId: later,
+      title: "Write the changelog",
+      text: "The reviewer found three bugs; all fixed in cf7b10d.",
+    });
+    // Its answer is the newest turn: nothing more to tell.
+    expect(lateReplyOf(parent, child({ handedBackTurnId: later }))).toBeNull();
+  });
+
+  it("leaves work the user asked for, or a request still owes, to those", () => {
+    const automatic = {
+      id: MessageId.make("user-message"),
+      role: "user" as const,
+      text: "Also rename the button.",
+      turnId: later,
+      streaming: false,
+      createdAt: "2026-10-04T10:10:00.000Z",
+      updatedAt: "2026-10-04T10:10:00.000Z",
+    };
+    const told = child();
+    const typed = { ...automatic, composer: "typed" as const };
+    expect(lateReplyOf(parent, { ...told, messages: [typed, ...told.messages] })).toBeNull();
+    // A reviewer's reply, or an automatic fix the server wrote, is not the user's.
+    const reviewerReply = { ...automatic, fromAgent: { participantId: null } };
+    expect(
+      lateReplyOf(parent, { ...told, messages: [reviewerReply, ...told.messages] }),
+    ).not.toBeNull();
+    expect(
+      lateReplyOf(parent, { ...told, messages: [automatic, ...told.messages] }),
+    ).not.toBeNull();
+    const asking = thread(PARENT, {
+      childRequests: { ...EMPTY_CHILD_REQUEST_STATE, open: [request("a", {})] },
+    });
+    expect(lateReplyOf(asking, told)).toBeNull();
+    expect(lateReplyOf(parent, child({ attachedToParent: false }))).toBeNull();
   });
 });

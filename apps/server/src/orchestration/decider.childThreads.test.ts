@@ -860,6 +860,76 @@ describe("decider child threads", () => {
     expect(threadIn(stopped.model, CHILD).parentAttachmentEpoch).toBe(1);
   });
 
+  it("thread_stop counts the turn it cut off as handed back, so the child can wrap itself", async () => {
+    const family = await familyWithRunningChild();
+    const childTurn = TurnId.make("child-turn-1");
+    const withTurn = (state: "running" | "completed") => ({
+      ...family,
+      threads: family.threads.map((entry) =>
+        entry.id === CHILD
+          ? {
+              ...entry,
+              latestTurn: {
+                turnId: childTurn,
+                state,
+                requestedAt: at(3),
+                startedAt: at(3),
+                completedAt: state === "running" ? null : at(4),
+                assistantMessageId: null,
+              },
+            }
+          : entry,
+      ),
+    });
+    const stop = {
+      type: "thread.children.stop" as const,
+      commandId: CommandId.make("stop-children"),
+      threadId: PARENT,
+      childThreadIds: [CHILD],
+      createdAt: at(5),
+    };
+    const stopped = await run(withTurn("running"), stop);
+    expect(threadIn(stopped.model, CHILD).handedBackTurnId).toBe(childTurn);
+    // A turn that already finished (the user's, say) stays the user's to read.
+    const idle = await run(withTurn("completed"), stop);
+    expect(threadIn(idle.model, CHILD).handedBackTurnId).toBeNull();
+  });
+
+  it("records a child's late reply as handed back once its parent's agent was told, only while it is the newest turn", async () => {
+    const delivered = await run(await familyWithRunningChild(), settleAnswered());
+    const lateTurn = TurnId.make("child-turn-2");
+    const later = {
+      ...delivered.model,
+      threads: delivered.model.threads.map((entry) =>
+        entry.id === CHILD
+          ? {
+              ...entry,
+              latestTurn: {
+                turnId: lateTurn,
+                state: "completed" as const,
+                requestedAt: at(12),
+                startedAt: at(12),
+                completedAt: at(13),
+                assistantMessageId: null,
+              },
+            }
+          : entry,
+      ),
+    };
+    const told = (turnId: TurnId) => ({
+      type: "thread.child-notes.delivered" as const,
+      commandId: CommandId.make(`told-${turnId}`),
+      threadId: PARENT,
+      requestIds: [],
+      lateReplies: [{ childThreadId: CHILD, turnId }],
+      createdAt: at(14),
+    });
+    const recorded = await run(later, told(lateTurn));
+    expect(threadIn(recorded.model, CHILD).handedBackTurnId).toBe(lateTurn);
+    // Told of a turn that is no longer its newest: nothing to record.
+    expect(await refused(later, told(TurnId.make("child-turn-1")))).toBe(true);
+  });
+
   it("a separated child keeps the parent's message still queued for it, as its own work", async () => {
     const family = await familyWithRunningChild();
     const busyChild = (model: OrchestrationReadModel) => ({
@@ -1601,6 +1671,71 @@ describe("decider on a child's computer", () => {
       at: at(30),
     });
     expect((await run(reopened.model, wrap("done", 25, "late-linked-wrap"))).events).toEqual([]);
+  });
+});
+
+describe("decider: a parent's agent wraps up its thread (thread_wrap)", () => {
+  const finished = {
+    turnId: TurnId.make("child-turn"),
+    state: "completed" as const,
+    requestedAt: at(1),
+    startedAt: at(1),
+    completedAt: at(5),
+    assistantMessageId: null,
+  };
+  const family = (child: Partial<OrchestrationThread> = {}) =>
+    readModel([
+      thread(PARENT),
+      thread(CHILD, {
+        parentThreadId: PARENT,
+        attachedToParent: true,
+        latestTurn: finished,
+        ...child,
+      }),
+    ]);
+  const wrap = (byParentAgent: ThreadId) => ({
+    type: "thread.done-override.set" as const,
+    commandId: CommandId.make(`agent-wrap:${byParentAgent}`),
+    threadId: CHILD,
+    state: "done" as const,
+    at: at(20),
+    byParentAgent,
+  });
+
+  it("wraps a finished child up as seen, and refuses another thread's or a working one", async () => {
+    const wrapped = await run(family(), wrap(PARENT));
+    // Seen in the same step, so its unread answer doesn't keep it in view.
+    expect(threadIn(wrapped.model, CHILD)).toMatchObject({
+      doneOverride: { state: "done", at: at(20) },
+      lastSeenAt: at(20),
+    });
+    expect(await refused(family(), wrap(ThreadId.make("stranger")))).toBe(true);
+    expect(await refused(family({ attachedToParent: false }), wrap(PARENT))).toBe(true);
+    expect(
+      await refused(
+        family({ latestTurn: { ...finished, state: "running", completedAt: null } }),
+        wrap(PARENT),
+      ),
+    ).toBe(true);
+  });
+
+  it("leaves a child the user has been writing to for the user to wrap up", async () => {
+    const question = {
+      id: MessageId.make("user-question"),
+      role: "user" as const,
+      text: "Why did you pick that name?",
+      composer: "typed" as const,
+      turnId: TurnId.make("child-turn"),
+      streaming: false,
+      createdAt: at(4),
+      updatedAt: at(4),
+    };
+    const asked = family({ handedBackAt: at(3), messages: [question] });
+    expect(await refused(asked, wrap(PARENT))).toBe(true);
+    // Before its answer went back, it was the parent's work.
+    expect(await refused(family({ handedBackAt: at(5), messages: [question] }), wrap(PARENT))).toBe(
+      false,
+    );
   });
 });
 

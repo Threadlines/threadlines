@@ -93,8 +93,20 @@ Whether the thread's agent may bring in another model on its own is {place:threa
   {
     id: "agent-threads",
     title: "Threads agents start",
-    keywords: ["child thread", "subthread", "thread_start", "spawn", "parallel", "delegate"],
-    body: `An agent can start threads of its own to work in parallel, and message, read or stop them. Each started thread shows under its parent in the sidebar; its final reply comes back to the parent as a message, which wakes the parent's agent. The parent and the threads it started also show as a row of tabs under the chat header, on the parent and on each of its threads: a click opens that thread, with its own message box and draft. The row lists the threads the sidebar shows under the parent; one the user made its own, or whose parent is wrapped, has no row.
+    keywords: [
+      "child thread",
+      "subthread",
+      "thread_start",
+      "thread_wrap",
+      "spawn",
+      "parallel",
+      "delegate",
+    ],
+    body: `An agent can start threads of its own to work in parallel, and message, read, stop or wrap them up. Each started thread shows under its parent in the sidebar; its final reply comes back to the parent as a message, which wakes the parent's agent. The parent and the threads it started also show as a row of tabs under the chat header, on the parent and on each of its threads: a click opens that thread, with its own message box and draft. The row lists the threads the sidebar shows under the parent; one the user made its own, or whose parent is wrapped, has no row.
+
+Once a thread it started has finished, the agent can wrap it up itself (thread_wrap), so you don't have to. It moves to Wrapped as with your own Wrap up, and its answer counts as seen. You can reopen it, and it comes back by itself when it gets new work. A thread still working or waiting for you isn't wrapped up.
+
+A thread that keeps working after its answer went back (a check-back woke it, or a reviewer it asked replied) doesn't wake the parent. Its latest reply is passed to the parent's agent at that agent's next turn, and the thread then wraps up by itself. A thread the agent stops with thread_stop wraps up by itself too.
 
 {place:threads.agentThreads} decides this: Off, Ask me first (a card in the chat lists the threads and you decide), or Automatic. The same setting covers agents creating or changing scheduled tasks. An agent may start at most 5 threads and send 10 messages to them per message you send.
 

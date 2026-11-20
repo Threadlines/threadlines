@@ -177,6 +177,10 @@ export function makeCannedRoomHandlers(
       outcome: "stopped",
       threadId: input.threadId,
     })),
+    thread_wrap: answer("thread_wrap", (input) => ({
+      outcome: "ok",
+      threads: input.threadIds.map((threadId) => ({ threadId, outcome: "wrapped" as const })),
+    })),
     thread_move: answer("thread_move", () => ({
       outcome: "queued",
       detail:

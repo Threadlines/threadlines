@@ -1263,7 +1263,7 @@ const make = Effect.gen(function* () {
   const stopIfWorking = (deviceId: string, thread: OrchestrationThread, retry?: string) =>
     Effect.gen(function* () {
       if (!isWorking(thread)) return "not_running" as const;
-      return yield* engine
+      const stopped = yield* engine
         .dispatch({
           type: "thread.session.stop",
           commandId: CommandId.make(
@@ -1289,6 +1289,26 @@ const make = Effect.gen(function* () {
                 ),
           ),
         );
+      // The asking computer's agent ended the turn it cut off, so nothing
+      // from it is owed back: recorded as handed back, as a local stop does
+      // (stoppedTurnHandedBack), so the thread files itself there and here.
+      const turn = thread.latestTurn;
+      if (stopped === "stopped" && turn !== null && turn.state === "running") {
+        yield* dispatchUnlessRefused(
+          {
+            type: "thread.remote-handed-back.record",
+            commandId: CommandId.make(
+              `server:link-stop-handed-back:${deviceId}:${thread.id}:${turn.turnId}`,
+            ),
+            threadId: thread.id,
+            turnId: turn.turnId,
+            byLink: deviceId,
+            createdAt: yield* nowIso,
+          },
+          "record the stopped turn as handed back",
+        ).pipe(Effect.ignore);
+      }
+      return stopped;
     });
 
   /**
