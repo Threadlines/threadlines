@@ -1,7 +1,14 @@
 import type { DeviceSummary, EnvironmentId, ThreadId } from "@threadlines/contracts";
 import { threadDeviceSessions } from "@threadlines/client-runtime/deviceState";
 import { GripVerticalIcon, PanelRightIcon, XIcon } from "lucide-react";
-import { type PointerEvent, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import {
+  type PointerEvent,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { createPortal } from "react-dom";
 
 import { useIsMobile } from "~/hooks/useMediaQuery";
@@ -69,7 +76,11 @@ export function DeviceFloatingWindow(props: {
   const supported = useDevicesSupported(environmentId);
   const state = useDeviceState(environmentId, supported && float !== null);
   const views = useThreadDeviceViews(threadKey);
-  const anchor = useRef<HTMLSpanElement>(null);
+  // The chat column this renders in, known once mounted; the float's first spot comes from it.
+  const [column, setColumn] = useState<HTMLElement | null>(null);
+  const measureColumn = useCallback((node: HTMLSpanElement | null) => {
+    setColumn(node?.parentElement ?? null);
+  }, []);
 
   const session =
     float && state
@@ -85,8 +96,8 @@ export function DeviceFloatingWindow(props: {
 
   return (
     <>
-      <span ref={anchor} hidden />
-      {float && device
+      <span ref={measureColumn} hidden />
+      {float && device && column
         ? createPortal(
             <FloatingDevice
               key={`${environmentId}\u0000${device.id}`}
@@ -96,7 +107,7 @@ export function DeviceFloatingWindow(props: {
               name={views.names[device.id] ?? device.name}
               position={float.position}
               width={float.width}
-              anchor={anchor}
+              column={column}
               onOpenInPanel={() => props.onOpenInPanel(device.id)}
             />,
             document.body,
@@ -131,7 +142,7 @@ function FloatingDevice(props: {
   readonly name: string;
   readonly position: { readonly x: number; readonly y: number } | null;
   readonly width: number | null;
-  readonly anchor: React.RefObject<HTMLSpanElement | null>;
+  readonly column: HTMLElement;
   readonly onOpenInPanel: () => void;
 }) {
   const { device, threadKey } = props;
@@ -148,11 +159,12 @@ function FloatingDevice(props: {
   const aspect = deviceScreenAspect(device.platform, state.screen);
   // First placement: the top right of the chat column, under its header.
   const [initial] = useState(() => {
-    const column = props.anchor.current?.parentElement?.getBoundingClientRect();
+    const column = props.column.getBoundingClientRect();
     const width = props.width ?? DEVICE_FLOAT_DEFAULT_WIDTH;
-    return column
-      ? { x: column.right - width - 2 * DEVICE_FLOAT_MARGIN, y: column.top + DEFAULT_TOP_OFFSET }
-      : { x: window.innerWidth - width - 2 * DEVICE_FLOAT_MARGIN, y: DEFAULT_TOP_OFFSET };
+    return {
+      x: column.right - width - 2 * DEVICE_FLOAT_MARGIN,
+      y: column.top + DEFAULT_TOP_OFFSET,
+    };
   });
   // Held while a gesture runs, so the store only hears where it ends.
   const [live, setLive] = useState<DeviceFloatRect | null>(null);
