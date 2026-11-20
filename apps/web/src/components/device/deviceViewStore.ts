@@ -122,20 +122,23 @@ export function removeDeviceChip(
   if (readDeviceFloat(threadKey)?.deviceId === deviceId) dockDeviceFloat(threadKey);
 }
 
-/** A thread's open sessions in chip order: the remembered order, then newer ones by open time. */
+/**
+ * A thread's open sessions in chip order: by when they opened, except that
+ * the remembered ones keep their remembered order among the places they
+ * hold. A device remembered only because it was selected never jumps ahead
+ * of older ones the client had not seen yet.
+ */
 export function orderDeviceChips(
   views: ThreadDeviceViews,
   sessions: ReadonlyArray<DeviceSession>,
 ): ReadonlyArray<DeviceSession> {
+  const byOpening = sessions.toSorted((a, b) => a.openedAt.localeCompare(b.openedAt));
   const rank = new Map(views.order.map((id, index) => [id, index]));
-  return sessions.toSorted((a, b) => {
-    const left = rank.get(a.deviceId);
-    const right = rank.get(b.deviceId);
-    if (left !== undefined && right !== undefined) return left - right;
-    if (left !== undefined) return -1;
-    if (right !== undefined) return 1;
-    return a.openedAt.localeCompare(b.openedAt);
-  });
+  const remembered = byOpening
+    .filter((session) => rank.has(session.deviceId))
+    .toSorted((a, b) => rank.get(a.deviceId)! - rank.get(b.deviceId)!);
+  let next = 0;
+  return byOpening.map((session) => (rank.has(session.deviceId) ? remembered[next++]! : session));
 }
 
 // ── The floating device ────────────────────────────────────────────────

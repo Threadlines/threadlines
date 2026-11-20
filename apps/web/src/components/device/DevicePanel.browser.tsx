@@ -382,7 +382,7 @@ describe("DevicePanel", () => {
 
   it("reads the iOS event log through the channel while Tools is open", async () => {
     const computer = twoOpenDevices();
-    await render(<Host visible />);
+    const mounted = await render(<Host visible />);
 
     await page.getByRole("button", { name: "Tools" }).click();
     await vi.waitFor(() =>
@@ -408,6 +408,15 @@ describe("DevicePanel", () => {
 
     await page.getByRole("button", { name: "Close tools" }).click();
     await vi.waitFor(() => expect(log.stopped).toBe(true));
+
+    // Tools left open while another right-panel tab shows reads nothing.
+    await page.getByRole("button", { name: "Tools" }).click();
+    await vi.waitFor(() =>
+      expect(computer.channel("/vendor/serve-sim/api/event-log/events")).toBeDefined(),
+    );
+    const reopened = computer.channel("/vendor/serve-sim/api/event-log/events")!;
+    await mounted.rerender(<Host visible={false} />);
+    await vi.waitFor(() => expect(reopened.stopped).toBe(true));
   });
 
   it("reports a device an agent opened, but not one already open when the tab loaded", async () => {

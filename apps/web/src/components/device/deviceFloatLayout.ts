@@ -14,6 +14,8 @@ const FRAME_INSET = 7;
 export const DEVICE_FLOAT_MIN_WIDTH = 180;
 export const DEVICE_FLOAT_DEFAULT_WIDTH = 260;
 const MAX_WIDTH = 640;
+/** The narrowest a float gets, in a window too short for the usual minimum. */
+const SMALLEST_WIDTH = 96;
 /** The gap kept between the window and the edges of the app window. */
 export const DEVICE_FLOAT_MARGIN = 8;
 
@@ -44,15 +46,20 @@ function widthForHeight(height: number, aspect: number): number {
   return (height - DEVICE_FLOAT_HEADER_HEIGHT - insetY) * aspect + insetX;
 }
 
-/** The widest the window may be: within its cap, and short enough to fit the app window. */
+/**
+ * The widest the window may be: within its cap, and short enough to fit the
+ * app window. A short window takes the float below its usual minimum width,
+ * down to a floor that still shows a screen; only below that does it run out.
+ */
 function maxWidth(aspect: number, viewport: DeviceFloatViewport): number {
   const byWidth = viewport.width - 2 * DEVICE_FLOAT_MARGIN;
   const byHeight = widthForHeight(viewport.height - 2 * DEVICE_FLOAT_MARGIN, aspect);
-  return Math.max(DEVICE_FLOAT_MIN_WIDTH, Math.min(MAX_WIDTH, byWidth, byHeight));
+  return Math.max(SMALLEST_WIDTH, Math.min(MAX_WIDTH, byWidth, byHeight));
 }
 
 function clampWidth(width: number, aspect: number, viewport: DeviceFloatViewport): number {
-  return Math.round(Math.min(maxWidth(aspect, viewport), Math.max(DEVICE_FLOAT_MIN_WIDTH, width)));
+  const widest = maxWidth(aspect, viewport);
+  return Math.round(Math.min(widest, Math.max(Math.min(DEVICE_FLOAT_MIN_WIDTH, widest), width)));
 }
 
 const clamp = (value: number, low: number, high: number) =>
