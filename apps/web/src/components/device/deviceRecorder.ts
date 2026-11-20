@@ -29,12 +29,13 @@ const THINNED_FRAMES = 12;
  * The video's byte budget: one attachment, less room for the last chunk the
  * recorder flushes on stop and the container's own bytes.
  */
-export const DEVICE_RECORDING_VIDEO_MAX_BYTES = PROVIDER_SEND_TURN_MAX_FILE_BYTES - 1024 * 1024;
+export const DEVICE_RECORDING_VIDEO_MAX_BYTES = PROVIDER_SEND_TURN_MAX_FILE_BYTES - 512 * 1024;
 /**
- * Chosen so the longest recording fits the budget: 3 minutes at 400 kbit/s is
- * about 9 MB. A busy screen can still run over; then the recording stops early.
+ * Chosen so the longest recording fits the budget: the encoder runs about 6%
+ * over its target on a screen that never stops moving, so 3 minutes comes to
+ * about 8.6 MB. Should one still run over, the recording stops early.
  */
-export const DEVICE_RECORDING_VIDEO_BITS_PER_SECOND = 400_000;
+export const DEVICE_RECORDING_VIDEO_BITS_PER_SECOND = 360_000;
 const VIDEO_FRAME_RATE = 30;
 const VIDEO_MIME_TYPES = [
   "video/webm;codecs=vp9",
@@ -81,6 +82,8 @@ export function startDeviceRecorder(options: {
   readonly deviceId: string;
   readonly frames: boolean;
   readonly videoSource: HTMLCanvasElement;
+  /** Hears each frame drawn on `videoSource`. */
+  readonly observeFrames: (listener: () => void) => () => void;
   readonly onVideoFull: () => void;
 }): DeviceRecorder {
   const { transport, platform, deviceId } = options;
@@ -91,10 +94,8 @@ export function startDeviceRecorder(options: {
   const captures: DeviceRecorderCapture[] = [];
   let touching = false;
   let settleTimers: Array<ReturnType<typeof setTimeout>> = [];
-  let inFlight: Promise<void> | null = null;
-  let captureQueued = false;
   let stopped = false;
-  const video = startCanvasVideo(options.videoSource, options.onVideoFull);
+  const video = startCanvasVideo(options.videoSource, options.observeFrames, options.onVideoFull);
 
   const thinFrames = () => {
     const held = captures.flatMap((capture, index) => (capture.frame ? [index] : []));
@@ -105,31 +106,59 @@ export function startDeviceRecorder(options: {
     }
   };
 
-  const capture = (): Promise<void> => {
-    if (inFlight) {
-      captureQueued = true;
-      return inFlight;
-    }
-    const requestedAt = now();
-    inFlight = Promise.allSettled([
-      options.frames
-        ? captureDeviceScreenshot(transport, { platform, deviceId })
-        : Promise.resolve(null),
-      fetchDeviceAxTree(transport, { platform, deviceId }, abort.signal),
-    ]).then(([frame, tree]) => {
-      inFlight = null;
-      const elements: ReadonlyArray<DeviceAxElement> | null =
-        tree.status === "fulfilled" && tree.value.errors.length === 0 ? tree.value.elements : null;
-      const blob = frame.status === "fulfilled" ? frame.value : null;
-      captures.push({ requestedAt, frame: blob, hasFrame: blob !== null, elements });
-      thinFrames();
-      if (captureQueued && !stopped) {
-        captureQueued = false;
-        return capture();
+  /**
+   * One kind of capture, one at a time: a request while one runs is taken
+   * once it ends. Screenshots and trees run apart, because a tree can take
+   * seconds (longer while an app launches) and must not hold the screenshot
+   * that shows the step.
+   */
+  const captureLoop = (take: (requestedAt: number) => Promise<void>) => {
+    let inFlight: Promise<void> | null = null;
+    let queued = false;
+    const run = (): Promise<void> => {
+      if (inFlight) {
+        queued = true;
+        return inFlight;
       }
-    });
-    return inFlight;
+      inFlight = take(now()).then(() => {
+        inFlight = null;
+        if (queued && !stopped) {
+          queued = false;
+          return run();
+        }
+      });
+      return inFlight;
+    };
+    return {
+      run,
+      settled: () => {
+        queued = false;
+        return inFlight ?? Promise.resolve();
+      },
+    };
   };
+
+  const frames = captureLoop(async (requestedAt) => {
+    const frame = await captureDeviceScreenshot(transport, { platform, deviceId }).catch(
+      () => null,
+    );
+    captures.push({ requestedAt, frame, hasFrame: frame !== null, elements: null });
+    thinFrames();
+  });
+  const trees = captureLoop(async (requestedAt) => {
+    const tree = await fetchDeviceAxTree(transport, { platform, deviceId }, abort.signal).catch(
+      () => null,
+    );
+    const elements: ReadonlyArray<DeviceAxElement> | null =
+      tree !== null && tree.errors.length === 0 ? tree.elements : null;
+    if (elements) captures.push({ requestedAt, frame: null, hasFrame: false, elements });
+  });
+  const capture = () => {
+    if (options.frames) void frames.run();
+    void trees.run();
+  };
+  const lastFrameAt = () =>
+    captures.findLast((entry) => entry.hasFrame)?.requestedAt ?? Number.NEGATIVE_INFINITY;
 
   const clearSettle = () => {
     for (const timer of settleTimers) clearTimeout(timer);
@@ -139,12 +168,10 @@ export function startDeviceRecorder(options: {
   const settle = () => {
     clearSettle();
     if (touching || stopped) return;
-    settleTimers = [SETTLE_MS, SETTLED_AGAIN_MS].map((delay) =>
-      setTimeout(() => void capture(), delay),
-    );
+    settleTimers = [SETTLE_MS, SETTLED_AGAIN_MS].map((delay) => setTimeout(capture, delay));
   };
 
-  void capture();
+  capture();
 
   return {
     record: (input) => {
@@ -158,16 +185,15 @@ export function startDeviceRecorder(options: {
     },
     stop: async (endedEarly) => {
       stopped = true;
-      captureQueued = false;
       clearSettle();
       const durationMs = now();
       const videoResult = video.recorder ? video.recorder.stop() : Promise.resolve(null);
-      await inFlight;
-      // The screen after the last step, unless a capture already followed it.
-      const lastInput = inputs.at(-1)?.at ?? Number.NEGATIVE_INFINITY;
-      const lastCapture = captures.at(-1)?.requestedAt ?? Number.NEGATIVE_INFINITY;
-      if (lastInput >= lastCapture) await capture();
+      // Trees only name touches already made; the last one in flight is not waited for.
       abort.abort();
+      await Promise.all([frames.settled(), trees.settled()]);
+      // The screen after the last step, unless a screenshot already followed it.
+      const lastInput = inputs.at(-1)?.at ?? Number.NEGATIVE_INFINITY;
+      if (options.frames && lastInput >= lastFrameAt()) await frames.run();
       const recorded = await videoResult;
       return {
         durationMs,
@@ -186,9 +212,24 @@ export function startDeviceRecorder(options: {
   };
 }
 
-/** Records the stream canvas at a fixed bitrate, stopping at the byte budget. */
+/** Long enough for the capture to take a frame drawn just before stopping. */
+const LAST_FRAME_SETTLE_MS = 120;
+/**
+ * The video's longest edge. A simulator's full size (2532 px tall) makes the
+ * browser's encoder overshoot its bitrate several times on a moving screen;
+ * at this size it keeps close to it, and the screen stays legible.
+ */
+const VIDEO_MAX_EDGE = 1280;
+
+/**
+ * Records the stream at a fixed bitrate on a smaller canvas of its own, copied
+ * from the stream canvas each time that draws a frame (and once at the start
+ * and the end, so a still screen still opens and closes the video). Stops at
+ * the byte budget.
+ */
 function startCanvasVideo(
-  canvas: HTMLCanvasElement,
+  source: HTMLCanvasElement,
+  observeFrames: (listener: () => void) => () => void,
   onFull: () => void,
 ): {
   readonly recorder: {
@@ -196,11 +237,30 @@ function startCanvasVideo(
   } | null;
   readonly unavailable: string | null;
 } {
-  if (typeof MediaRecorder === "undefined" || typeof canvas.captureStream !== "function") {
+  const canvas = document.createElement("canvas");
+  const context = canvas.getContext("2d");
+  if (
+    typeof MediaRecorder === "undefined" ||
+    typeof canvas.captureStream !== "function" ||
+    !context
+  ) {
     return { recorder: null, unavailable: "this browser cannot record video" };
   }
   const mimeType = VIDEO_MIME_TYPES.find((type) => MediaRecorder.isTypeSupported(type));
   if (!mimeType) return { recorder: null, unavailable: "this browser records no known video type" };
+  const draw = () => {
+    if (source.width === 0 || source.height === 0) return;
+    const scale = Math.min(1, VIDEO_MAX_EDGE / Math.max(source.width, source.height));
+    // Encoders want even sizes.
+    const width = Math.max(2, Math.round((source.width * scale) / 2) * 2);
+    const height = Math.max(2, Math.round((source.height * scale) / 2) * 2);
+    if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width;
+      canvas.height = height;
+    }
+    context.drawImage(source, 0, 0, width, height);
+  };
+  draw();
   let stream: MediaStream;
   let recorder: MediaRecorder;
   try {
@@ -233,10 +293,17 @@ function startCanvasVideo(
   });
   // A chunk every second, so the budget is checked while recording.
   recorder.start(1_000);
+  const unobserve = observeFrames(draw);
+  draw();
   return {
     unavailable: null,
     recorder: {
       stop: async () => {
+        unobserve();
+        if (recorder.state === "recording") {
+          draw();
+          await new Promise((resolve) => setTimeout(resolve, LAST_FRAME_SETTLE_MS));
+        }
         if (recorder.state !== "inactive") recorder.stop();
         await finished;
         for (const track of stream.getTracks()) track.stop();

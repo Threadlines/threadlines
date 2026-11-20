@@ -45,6 +45,8 @@ export interface DeviceStream {
   readonly reconnect: () => void;
   /** Hears the input this view sends to the device (a recording listens here). */
   readonly observeInput: (listener: (input: DeviceInput) => void) => () => void;
+  /** Hears each frame drawn on the canvas (a recording copies it). */
+  readonly observeFrames: (listener: () => void) => () => void;
 }
 
 export function createDeviceStream(input: {
@@ -66,9 +68,12 @@ export function createDeviceStream(input: {
     for (const listener of listeners) listener();
   };
   const inputListeners = new Set<(input: DeviceInput) => void>();
+  const frameListeners = new Set<() => void>();
   const sentClient = createDeviceStreamClient(
     { platform: input.platform, deviceId: input.deviceId, transport },
-    createCanvasFrameSink(canvas),
+    createCanvasFrameSink(canvas, () => {
+      for (const listener of frameListeners) listener();
+    }),
     {
       onStatus: (status, detail) => update({ status, detail }),
       onScreen: (screen) => update({ screen }),
@@ -105,6 +110,12 @@ export function createDeviceStream(input: {
       inputListeners.add(listener);
       return () => {
         inputListeners.delete(listener);
+      };
+    },
+    observeFrames: (listener) => {
+      frameListeners.add(listener);
+      return () => {
+        frameListeners.delete(listener);
       };
     },
   };

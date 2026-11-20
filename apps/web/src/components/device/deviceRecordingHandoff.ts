@@ -222,8 +222,8 @@ export async function handOffDeviceRecording(input: {
       result.video.blob,
       videoName,
       freeSlots === 0
-        ? "The draft has no free attachment slot for the video."
-        : "The video could not be added to the draft.",
+        ? "No free slot in the draft for the video."
+        : "The video could not join the draft.",
     );
   } else if (result.video && video && videoAttached) {
     watchDraftSave(threadKey, threadRef, video.id, result.video.blob, videoName);
@@ -261,7 +261,7 @@ function watchDraftSave(
       threadKey,
       blob,
       fileName,
-      "The video is in the draft but too big to keep if the app reloads.",
+      "The draft cannot keep the video through a reload.",
     );
   });
   const timer = setTimeout(finish, SAVE_WATCH_MS);

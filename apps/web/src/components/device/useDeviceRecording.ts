@@ -108,6 +108,7 @@ export function useDeviceRecording(options: {
       deviceId: device.id,
       frames: composerAcceptsImages(options.threadKey),
       videoSource: stream.canvas,
+      observeFrames: stream.observeFrames,
       onVideoFull: () => end(true, "size"),
     });
     active.current = {

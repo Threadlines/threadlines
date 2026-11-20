@@ -136,7 +136,7 @@ describe("handOffDeviceRecording", () => {
     expect(draft()!.prompt).toContain('1. Tapped button "General"');
     expect(useKeptDeviceRecordings.getState()[threadKey]).toMatchObject({
       fileName: expect.stringMatching(/^device-recording-\d{6}\.webm$/),
-      message: "The draft has no free attachment slot for the video.",
+      message: "No free slot in the draft for the video.",
     });
   });
 });

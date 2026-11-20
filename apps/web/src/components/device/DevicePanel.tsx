@@ -171,11 +171,13 @@ export function DevicePanel(props: {
     ) : null;
 
   const keptLine = kept ? (
-    <div role="status" className="flex items-center gap-2 px-3 py-1.5 text-xs">
-      <p className="min-w-0 flex-1 text-muted-foreground">{kept.message}</p>
+    <div role="status" className="flex h-8 shrink-0 items-center gap-1.5 pr-1.5 pl-3 text-xs">
+      <p className="min-w-0 flex-1 truncate text-muted-foreground" title={kept.message}>
+        {kept.message}
+      </p>
       <Button size="xs" variant="outline" render={<a href={kept.url} download={kept.fileName} />}>
         <DownloadIcon />
-        Download video
+        Download
       </Button>
       <Button
         size="icon-xs"
