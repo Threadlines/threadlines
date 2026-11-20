@@ -63,7 +63,7 @@ import {
   type PickedElementContextDraft,
 } from "./lib/pickedElementContext";
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { persist, type StorageValue } from "zustand/middleware";
 import { useShallow } from "zustand/react/shallow";
 import {
   createDebouncedJSONStorage,
@@ -86,6 +86,94 @@ export type DraftId = typeof DraftId.Type;
 
 const COMPOSER_PERSIST_DEBOUNCE_MS = 300;
 
+/**
+ * What this tab changed since its last successful draft write, found by the
+ * store's own object identity (an untouched draft keeps its object). Another
+ * tab's write changes storage under this tab; then each write keeps every
+ * draft this tab did not change as storage has it, so one tab never writes
+ * its stale copy of a draft another tab edited, sent or cleared.
+ */
+const changedSinceWrite = {
+  drafts: new Set<string>(),
+  draftThreads: new Set<string>(),
+  projectDraftKeys: new Set<string>(),
+  sticky: false,
+};
+
+function resetChangedSinceWrite() {
+  changedSinceWrite.drafts.clear();
+  changedSinceWrite.draftThreads.clear();
+  changedSinceWrite.projectDraftKeys.clear();
+  changedSinceWrite.sticky = false;
+}
+
+function noteChangedKeys(
+  changed: Set<string>,
+  next: Readonly<Record<string, unknown>>,
+  previous: Readonly<Record<string, unknown>>,
+) {
+  if (next === previous) return;
+  for (const key of Object.keys(next)) {
+    if (next[key] !== previous[key]) changed.add(key);
+  }
+  for (const key of Object.keys(previous)) {
+    if (!(key in next)) changed.add(key);
+  }
+}
+
+/** `stored`'s entries, with this tab's changed keys taken from `next` (or removed). */
+function mergeChangedEntries<V>(
+  stored: Readonly<Record<string, V>> | undefined,
+  next: Readonly<Record<string, V>>,
+  changed: ReadonlySet<string>,
+): Record<string, V> {
+  const merged: Record<string, V> = { ...stored };
+  for (const key of changed) {
+    const value = next[key];
+    if (value === undefined) delete merged[key];
+    else merged[key] = value;
+  }
+  return merged;
+}
+
+function mergeComposerDraftsWithStored(
+  next: StorageValue<PersistedComposerDraftStoreState>,
+  stored: StorageValue<PersistedComposerDraftStoreState> | null,
+): StorageValue<PersistedComposerDraftStoreState> {
+  // Another version's shape can't be merged into; this tab's whole state wins, as before.
+  if (stored === null || stored.version !== next.version || typeof stored.state !== "object") {
+    return next;
+  }
+  // The last-used model is one value: this tab's if it changed it, else storage's.
+  const sticky = changedSinceWrite.sticky ? next.state : stored.state;
+  return {
+    ...next,
+    state: {
+      draftsByThreadKey: mergeChangedEntries(
+        stored.state.draftsByThreadKey,
+        next.state.draftsByThreadKey,
+        changedSinceWrite.drafts,
+      ),
+      draftThreadsByThreadKey: mergeChangedEntries(
+        stored.state.draftThreadsByThreadKey,
+        next.state.draftThreadsByThreadKey,
+        changedSinceWrite.draftThreads,
+      ),
+      logicalProjectDraftThreadKeyByLogicalProjectKey: mergeChangedEntries(
+        stored.state.logicalProjectDraftThreadKeyByLogicalProjectKey,
+        next.state.logicalProjectDraftThreadKeyByLogicalProjectKey,
+        changedSinceWrite.projectDraftKeys,
+      ),
+      ...(sticky.stickyModelSelectionByProvider !== undefined
+        ? { stickyModelSelectionByProvider: sticky.stickyModelSelectionByProvider }
+        : {}),
+      ...(sticky.stickyActiveProvider !== undefined
+        ? { stickyActiveProvider: sticky.stickyActiveProvider }
+        : {}),
+    },
+  };
+}
+
 // Every keystroke is a store update, so serializing waits for the debounce too.
 const composerDebouncedStorage = createDebouncedJSONStorage<PersistedComposerDraftStoreState>(
   withLegacyFallbackStorage(
@@ -94,6 +182,7 @@ const composerDebouncedStorage = createDebouncedJSONStorage<PersistedComposerDra
     LEGACY_COMPOSER_DRAFT_STORAGE_KEYS,
   ),
   COMPOSER_PERSIST_DEBOUNCE_MS,
+  { mergeWithStored: mergeComposerDraftsWithStored, onWritten: resetChangedSinceWrite },
 );
 
 // Flush pending composer draft writes before page unload to prevent data loss.
@@ -2505,7 +2594,11 @@ function hydratePersistedComposerAttachment(attachment: PersistedComposerAttachm
   const header = commaIndex === -1 ? attachment.dataUrl : attachment.dataUrl.slice(0, commaIndex);
   const payload = commaIndex === -1 ? "" : attachment.dataUrl.slice(commaIndex + 1);
   if (payload.length === 0) {
-    return null;
+    // An empty file saves as `data:<type>;base64,` and comes back as one; anything
+    // else without a payload is broken.
+    return commaIndex !== -1 && attachment.sizeBytes === 0
+      ? new File([], attachment.name, { type: attachment.mimeType })
+      : null;
   }
   try {
     const isBase64 = header.includes(";base64");
@@ -4135,6 +4228,8 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
       name: COMPOSER_DRAFT_STORAGE_KEY,
       version: COMPOSER_DRAFT_STORAGE_VERSION,
       storage: composerDebouncedStorage,
+      // Loading from storage is not a change of this tab's.
+      onRehydrateStorage: () => () => resetChangedSinceWrite(),
       migrate: migratePersistedComposerDraftStoreState,
       partialize: partializeComposerDraftStoreState,
       merge: (persistedState, currentState) => {
@@ -4166,6 +4261,26 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
 );
 
 export const useComposerDraftStore = composerDraftStore;
+
+composerDraftStore.subscribe((state, previous) => {
+  noteChangedKeys(changedSinceWrite.drafts, state.draftsByThreadKey, previous.draftsByThreadKey);
+  noteChangedKeys(
+    changedSinceWrite.draftThreads,
+    state.draftThreadsByThreadKey,
+    previous.draftThreadsByThreadKey,
+  );
+  noteChangedKeys(
+    changedSinceWrite.projectDraftKeys,
+    state.logicalProjectDraftThreadKeyByLogicalProjectKey,
+    previous.logicalProjectDraftThreadKeyByLogicalProjectKey,
+  );
+  if (
+    state.stickyModelSelectionByProvider !== previous.stickyModelSelectionByProvider ||
+    state.stickyActiveProvider !== previous.stickyActiveProvider
+  ) {
+    changedSinceWrite.sticky = true;
+  }
+});
 
 export function useComposerThreadDraft(threadRef: ComposerThreadTarget): ComposerThreadDraftState {
   return useComposerDraftStore((state) => {

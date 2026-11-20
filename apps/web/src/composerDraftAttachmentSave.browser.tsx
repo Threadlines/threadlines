@@ -113,3 +113,59 @@ describe("saveComposerDraftAttachments", () => {
     ).toEqual([]);
   });
 });
+
+describe("drafts kept across tabs and reloads", () => {
+  const otherThread = scopeThreadRef(EnvironmentId.make("env-save"), ThreadId.make("thread-other"));
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 500));
+  const storedDrafts = () =>
+    (
+      JSON.parse(localStorage.getItem(COMPOSER_DRAFT_STORAGE_KEY) ?? "{}") as {
+        state?: { draftsByThreadKey?: Record<string, { prompt: string }> };
+      }
+    ).state?.draftsByThreadKey ?? {};
+
+  afterEach(() => {
+    useComposerDraftStore.setState({ draftsByThreadKey: {}, draftThreadsByThreadKey: {} });
+    localStorage.removeItem(COMPOSER_DRAFT_STORAGE_KEY);
+  });
+
+  it("keeps a draft another tab changed when this tab saves a different one", async () => {
+    const store = useComposerDraftStore.getState();
+    store.setPrompt(threadRef, "first draft, from this tab");
+    store.setPrompt(otherThread, "second draft, from this tab");
+    await settle();
+
+    // Another tab edits the first draft and writes every draft it holds.
+    const raw = JSON.parse(localStorage.getItem(COMPOSER_DRAFT_STORAGE_KEY) ?? "{}") as {
+      state: { draftsByThreadKey: Record<string, { prompt: string }> };
+    };
+    raw.state.draftsByThreadKey[scopedThreadKey(threadRef)]!.prompt = "first draft, other tab";
+    localStorage.setItem(COMPOSER_DRAFT_STORAGE_KEY, JSON.stringify(raw));
+    window.dispatchEvent(new StorageEvent("storage", { key: COMPOSER_DRAFT_STORAGE_KEY }));
+
+    // This tab still holds its old copy of the first draft, and edits the second.
+    store.setPrompt(otherThread, "second draft, edited here");
+    await settle();
+
+    const drafts = storedDrafts();
+    expect(drafts[scopedThreadKey(threadRef)]?.prompt).toBe("first draft, other tab");
+    expect(drafts[scopedThreadKey(otherThread)]?.prompt).toBe("second draft, edited here");
+  });
+
+  it("brings an empty file back after a reload", async () => {
+    const store = useComposerDraftStore.getState();
+    const empty = file("empty", 0);
+    store.addAttachments(threadRef, [empty]);
+    await saveComposerDraftAttachments(threadRef);
+    await settle();
+
+    // A reload: the draft comes back from storage alone.
+    useComposerDraftStore.setState({ draftsByThreadKey: {} });
+    await useComposerDraftStore.persist.rehydrate();
+
+    const restored = useComposerDraftStore.getState().getComposerDraft(threadRef)?.attachments;
+    expect(restored?.map((attachment) => [attachment.id, attachment.sizeBytes])).toEqual([
+      ["empty", 0],
+    ]);
+  });
+});
