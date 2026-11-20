@@ -20,6 +20,7 @@ export const VISIBLE_SETTINGS_SECTION_PATHS = [
   "/settings/instructions",
   "/settings/source-control",
   "/settings/connections",
+  "/settings/devices",
   "/settings/keybindings",
 ] as const;
 

@@ -2,7 +2,7 @@
  * The right sidebar's tab model.
  *
  * The sidebar is one browser-style panel with a tab strip: Source, Diff,
- * Pull request, Agents, Media and Threads are surfaces you open into it, each
+ * Pull request, Agents, Media, Threads and Device are surfaces you open into it, each
  * at most once. Two things have to
  * agree about it — the route that renders the panel and the chat header that
  * toggles it — so the state lives here rather than in either of them.
@@ -10,7 +10,7 @@
  * Split of authority:
  *
  * - The URL owns the ACTIVE tab, mapped onto the params that already existed
- *   (`sourceControl=1`, `diff=1`, `agents=1`, `media=1`, `threads=1`). Deep links keep working and an
+ *   (`sourceControl=1`, `diff=1`, `agents=1`, `media=1`, `threads=1`, `device=1`). Deep links keep working and an
  *   explicit `0` still means closed.
  * - This module owns what the URL cannot say: which tabs are in the strip,
  *   whether the sidebar is showing at all (it can be open on the launcher with
@@ -35,7 +35,8 @@ export type RightPanelTab =
   | "pullRequest"
   | "agents"
   | "media"
-  | "threads";
+  | "threads"
+  | "device";
 
 /** Launcher order and `+` menu order. The strip itself is ordered by when each
  *  tab was opened, like a browser's, so this is only how the fixed menus list
@@ -47,6 +48,7 @@ export const RIGHT_PANEL_TAB_ORDER: ReadonlyArray<RightPanelTab> = [
   "agents",
   "media",
   "threads",
+  "device",
 ];
 
 export interface RightPanelSurface {
@@ -97,17 +99,27 @@ export const RIGHT_PANEL_SURFACES: Readonly<Record<RightPanelTab, RightPanelSurf
     label: "Threads",
     description: "This project's threads.",
   },
+  device: {
+    id: "device",
+    // A live iOS Simulator or Android Emulator on the thread's computer
+    // (docs/design/devices.md).
+    label: "Device",
+    description: "A simulator or emulator to tap and type on.",
+  },
 };
 
 /**
  * Which surfaces a thread has at all. General Chats have no repository, so
  * they offer Agents alone; drafts have no turn yet, so they offer the two git
- * surfaces and neither Agents nor Media (a turn is what makes media). Unavailable surfaces are absent everywhere — strip,
- * launcher, `+` menu — and a deep link to one is ignored.
+ * surfaces and neither Agents nor Media (a turn is what makes media). Device
+ * is for project threads on a computer whose server has devices (`devices`).
+ * Unavailable surfaces are absent everywhere — strip, launcher, `+` menu — and
+ * a deep link to one is ignored.
  */
 export function availableRightPanelTabs(input: {
   readonly isGeneralChat: boolean;
   readonly isDraft: boolean;
+  readonly devicesSupported?: boolean;
 }): ReadonlyArray<RightPanelTab> {
   if (input.isGeneralChat) {
     return input.isDraft ? [] : ["agents"];
@@ -115,7 +127,9 @@ export function availableRightPanelTabs(input: {
   if (input.isDraft) {
     return ["sourceControl", "diff"];
   }
-  return RIGHT_PANEL_TAB_ORDER;
+  return input.devicesSupported === true
+    ? RIGHT_PANEL_TAB_ORDER
+    : RIGHT_PANEL_TAB_ORDER.filter((tab) => tab !== "device");
 }
 
 /** What the Diff tab is pointed at, as the search params that express it. */
@@ -353,6 +367,9 @@ export function activeRightPanelTabFromSearch(search: DiffRouteSearch): RightPan
   if (search.threads === "1") {
     return "threads";
   }
+  if (search.device === "1") {
+    return "device";
+  }
   if (search.sourceControl === "1") {
     return "sourceControl";
   }
@@ -370,7 +387,8 @@ export function isRightPanelClosedInSearch(search: DiffRouteSearch): boolean {
     search.pullRequest === "0" ||
     search.agents === "0" ||
     search.media === "0" ||
-    search.threads === "0"
+    search.threads === "0" ||
+    search.device === "0"
   );
 }
 
@@ -407,6 +425,7 @@ export function rightPanelTabSearchParams<T extends Record<string, unknown>>(
     agents: tab === "agents" ? ("1" as const) : ("0" as const),
     media: tab === "media" ? ("1" as const) : ("0" as const),
     threads: tab === "threads" ? ("1" as const) : ("0" as const),
+    device: tab === "device" ? ("1" as const) : ("0" as const),
   };
 }
 

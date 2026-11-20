@@ -32,6 +32,7 @@ describe("SETTINGS_NAV_ITEMS", () => {
       "Agent Instructions",
       "| Source Control",
       "Connections",
+      "Devices",
       "Keybindings",
     ]);
   });

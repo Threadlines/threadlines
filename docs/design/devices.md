@@ -167,7 +167,12 @@ Flow control, so a suspended phone cannot pile up video in the server:
   http body it stops reading (the hub's socket backs up). For a ws upstream it
   pauses the socket; if 4 MiB more queue up anyway, the channel fails with
   `slow` and the client reopens.
-- The client credits a chunk once the decoder has taken it, not on arrival.
+- The client credits a chunk once the decoder has taken it, not on arrival:
+  an http chunk when a body read hands it over, a ws message when its
+  listeners return. Credits count decoded bytes (before base64; a text
+  message's UTF-8 bytes) and go out in batches of 64 KiB or after 40 ms.
+- A `message` event's `data` is base64 when `binary`, the text itself
+  otherwise, the same as `deviceChannelSend`.
 - Channels never resubscribe. On any failure or reconnect the client opens a
   fresh channel and a fresh decoder that waits for a keyframe, and drops input
   it had not sent. A pre-disconnect gesture never reaches the new session.
@@ -219,14 +224,27 @@ Owner and paired clients may both use devices (same rule as terminals).
 
 ### Web
 
-- Right-panel tab `device` (`rightPanelTabs.ts`), available for project
-  threads on every client. Keybinding `device.toggle`, command palette entry
-  "Open device".
+- Right-panel tab `device` (`rightPanelTabs.ts`, URL param `device=1`),
+  available for project threads on every client whose server reports the
+  `devices` capability (`ExecutionEnvironmentCapabilities.devices`; older
+  servers hide the tab, the palette entry and the Devices settings). Command
+  palette entry "Open device". No keybinding command: `KeybindingCommand` is
+  a closed set that older clients and servers decode strictly, and the server
+  writes every default into the user's keybindings file, so a new command
+  breaks an older client's whole config (the same reason the lead chat
+  dropped `navigate.leadChat`, #972). It can come back once keybinding
+  decoding skips unknown commands.
 - First open: setup steps (start the hub, platform check, agent access
   choice). Opening the tab alone downloads nothing.
 - Device picker, the screen in a flat frame sized to the device's aspect,
-  toolbar, Tools drawer (`DeviceToolsPanel`), loading and error states that say
-  what is missing ("Android SDK Command-line Tools are missing from …").
+  a toolbar above it (plain until hover: back to the picker, Home, app
+  switcher, or Back and Recents on Android, rotate, screenshot, Tools, and a
+  menu with Close and Power off), Tools drawer (`DeviceToolsPanel`, beside
+  the screen when the panel is wide, over it when not), loading and error
+  states that say what is missing ("Android SDK Command-line Tools are missing
+  from …"). T3's accessibility-frame overlay and serve-sim event log are not
+  ported; the foreground app comes from `deviceDetail`, not serve-sim's
+  `/appstate` event stream.
 - Only the visible device streams; switching tabs or threads stops the channel.
 - Settings → Devices section with the two switches and tool versions.
 
@@ -239,7 +257,8 @@ simulators keep running. Turning "Agents can use devices" off stops the daemon
 and makes the tools refuse at once; sessions started after do not get them.
 Turning it on fetches agent-device in the background (nothing starts until an
 agent asks), so the first `device_open` is quick.
-Both get app guide places (`devices.enable`, `devices.agentAccess`); agents may
+Both get app guide places (`devices.enable`, `devices.agentAccess`, on the
+`settings.devices` page, with the `device-tab` topic); agents may
 propose turning on "Use devices" through `settings_change` but agent access is
 user-only (`widensAgents`).
 
