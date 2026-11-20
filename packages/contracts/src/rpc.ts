@@ -196,6 +196,24 @@ import {
   PreviewTunnelWriteSchema,
 } from "./previewTunnel.ts";
 import {
+  DeviceActionInput,
+  DeviceChannelCredit,
+  DeviceChannelError,
+  DeviceChannelEvent,
+  DeviceChannelOpen,
+  DeviceChannelSend,
+  DeviceCloseInput,
+  DeviceDetail,
+  DeviceDetailInput,
+  DeviceError,
+  DeviceListInput,
+  DeviceOpenInput,
+  DeviceServiceState,
+  DeviceSession,
+  DeviceShutdownInput,
+  DeviceUpdateToolInput,
+} from "./device.ts";
+import {
   FilesystemBrowseInput,
   FilesystemBrowseResult,
   FilesystemBrowseError,
@@ -738,6 +756,17 @@ export const WS_METHODS = {
   previewTunnelWrite: "previewTunnelWrite",
   previewTunnelCredit: "previewTunnelCredit",
   previewLocalServers: "previewLocalServers",
+  deviceList: "device.list",
+  deviceUpdateTool: "device.updateTool",
+  deviceOpen: "device.open",
+  deviceClose: "device.close",
+  deviceShutdown: "device.shutdown",
+  deviceDetail: "device.detail",
+  deviceAction: "device.action",
+  subscribeDeviceState: "subscribeDeviceState",
+  deviceChannelOpen: "device.channelOpen",
+  deviceChannelSend: "device.channelSend",
+  deviceChannelCredit: "device.channelCredit",
   subscribeVcsStatus: "subscribeVcsStatus",
   subscribeTerminalEvents: "subscribeTerminalEvents",
   subscribeServerConfig: "subscribeServerConfig",
@@ -3115,10 +3144,108 @@ export const WsCoreRpcGroup = RpcGroup.make(
   WsOrchestrationSubscribeThreadRpc,
 );
 
+/** The devices on this server's machine, and a refreshed listing. Starts the hub when asked to refresh. */
+export const WsDeviceListRpc = Rpc.make(WS_METHODS.deviceList, {
+  payload: DeviceListInput,
+  success: DeviceServiceState,
+  error: DeviceError,
+});
+
+/** Install the pinned version of a device tool and restart it. */
+export const WsDeviceUpdateToolRpc = Rpc.make(WS_METHODS.deviceUpdateTool, {
+  payload: DeviceUpdateToolInput,
+  success: DeviceServiceState,
+  error: DeviceError,
+});
+
+/** A thread starts watching a device, booting it unless `boot` is false. */
+export const WsDeviceOpenRpc = Rpc.make(WS_METHODS.deviceOpen, {
+  payload: DeviceOpenInput,
+  success: DeviceSession,
+  error: DeviceError,
+});
+
+/** A thread stops holding a device (or all of them), optionally shutting it down. */
+export const WsDeviceCloseRpc = Rpc.make(WS_METHODS.deviceClose, {
+  payload: DeviceCloseInput,
+  error: DeviceError,
+});
+
+/** Power a device off, whoever holds it. */
+export const WsDeviceShutdownRpc = Rpc.make(WS_METHODS.deviceShutdown, {
+  payload: DeviceShutdownInput,
+  error: DeviceError,
+});
+
+/** The Tools drawer's values, read from the device. */
+export const WsDeviceDetailRpc = Rpc.make(WS_METHODS.deviceDetail, {
+  payload: DeviceDetailInput,
+  success: DeviceDetail,
+  error: DeviceError,
+});
+
+/** One Tools drawer control; answers with the values read back after it. */
+export const WsDeviceActionRpc = Rpc.make(WS_METHODS.deviceAction, {
+  payload: DeviceActionInput,
+  success: DeviceDetail,
+  error: DeviceError,
+});
+
+/** The device state now and after every change. */
+export const WsSubscribeDeviceStateRpc = Rpc.make(WS_METHODS.subscribeDeviceState, {
+  payload: Schema.Struct({}),
+  success: DeviceServiceState,
+  stream: true,
+});
+
+/**
+ * One request or socket to the device hub, for the Device tab's stream and
+ * input. Open while subscribed; never resubscribed (see device.ts).
+ */
+export const WsDeviceChannelOpenRpc = Rpc.make(WS_METHODS.deviceChannelOpen, {
+  payload: DeviceChannelOpen,
+  success: DeviceChannelEvent,
+  error: DeviceChannelError,
+  stream: true,
+});
+
+/** One ws message for an open channel, answered once written. */
+export const WsDeviceChannelSendRpc = Rpc.make(WS_METHODS.deviceChannelSend, {
+  payload: DeviceChannelSend,
+  success: Schema.Void,
+  error: DeviceChannelError,
+});
+
+/** The client took more of a channel's data. Fire and forget. */
+export const WsDeviceChannelCreditRpc = Rpc.make(WS_METHODS.deviceChannelCredit, {
+  payload: DeviceChannelCredit,
+  success: Schema.Void,
+});
+
+/**
+ * Devices (docs/design/devices.md). A group of its own, merged into
+ * WsRpcGroup, because the main group sits near TypeScript's cap on type work
+ * per statement.
+ */
+export const WsDeviceRpcGroup = RpcGroup.make(
+  WsDeviceListRpc,
+  WsDeviceUpdateToolRpc,
+  WsDeviceOpenRpc,
+  WsDeviceCloseRpc,
+  WsDeviceShutdownRpc,
+  WsDeviceDetailRpc,
+  WsDeviceActionRpc,
+  WsSubscribeDeviceStateRpc,
+  WsDeviceChannelOpenRpc,
+  WsDeviceChannelSendRpc,
+  WsDeviceChannelCreditRpc,
+);
+
 export const WsRpcGroup = WsCoreRpcGroup.merge(
   WsOutsideAgentsRpcGroup,
   WsThemesRpcGroup,
   WsThemeShowcaseRpcGroup,
   WsMovesRpcGroup,
   WsThemeVsCodeRpcGroup,
+  WsDeviceRpcGroup,
 );
