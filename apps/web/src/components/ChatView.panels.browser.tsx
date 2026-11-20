@@ -701,10 +701,11 @@ describe("ChatView (full app): right panel and header actions", () => {
             rect.top + rect.height / 2,
           );
           expect(
-            underFinger?.closest('[data-slot="drawer-popup"]'),
-            "Something other than the panel is under the finger.",
-          ).not.toBeNull();
-          return panel!;
+            underFinger !== null && panel!.contains(underFinger),
+            "Something other than the agents panel is under the finger.",
+          ).toBe(true);
+          // The finger lands on what is really there, not on the panel by reference.
+          return underFinger as HTMLElement;
         },
         { timeout: 8_000, interval: 16 },
       );
