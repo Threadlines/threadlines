@@ -20,6 +20,7 @@ import { type NormalizedWsRpcRequestBody } from "../../test/wsRpcHarness";
 import {
   PROJECT_ID,
   THREAD_ID,
+  THREAD_TITLE,
   NOW_ISO,
   rpcHarness,
   wsRequests,
@@ -332,6 +333,10 @@ describe("ChatView (full app): event tasks", () => {
   });
 
   it("creates a clock task from the editor's box, schedule popover and where-it-runs sentence", async () => {
+    let releaseCreate = () => {};
+    const createHeld = new Promise<void>((resolve) => {
+      releaseCreate = resolve;
+    });
     const mounted = await mountChatView({
       viewport: WIDE_FOOTER_VIEWPORT,
       snapshot: snapshot(),
@@ -340,9 +345,13 @@ describe("ChatView (full app): event tasks", () => {
         withScheduledCapabilities(true)(nextFixture);
         withCodexModels(nextFixture);
       },
+      // The create is held open until the test lets it finish.
       resolveRpc: (body) =>
         body._tag === WS_METHODS.scheduledTasksCreate
-          ? { ...eventTask(), ...body, id: TASK_ID }
+          ? Effect.promise(async () => {
+              await createHeld;
+              return { ...eventTask(), ...body, id: TASK_ID };
+            })
           : undefined,
     });
     try {
@@ -391,9 +400,10 @@ describe("ChatView (full app): event tasks", () => {
         ),
       );
 
-      // Cmd/Ctrl+Enter in the prompt saves, once however fast it's pressed.
+      // Cmd/Ctrl+Enter in the prompt saves, and pressing it again while the
+      // create is still out sends nothing more.
       const prompt = byTestId("scheduled-form-prompt")!;
-      for (let press = 0; press < 2; press += 1) {
+      const pressSave = () =>
         prompt.dispatchEvent(
           new KeyboardEvent("keydown", {
             key: "Enter",
@@ -402,16 +412,65 @@ describe("ChatView (full app): event tasks", () => {
             cancelable: true,
           }),
         );
-      }
+      pressSave();
       await vi.waitFor(() => expect(requestsOf(WS_METHODS.scheduledTasksCreate)).toHaveLength(1));
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      pressSave();
+      pressSave();
+      await new Promise((resolve) => setTimeout(resolve, 150));
       expect(requestsOf(WS_METHODS.scheduledTasksCreate)).toHaveLength(1);
+      releaseCreate();
       expect(requestsOf(WS_METHODS.scheduledTasksCreate)[0]).toMatchObject({
         name: "Friday review",
         prompt: "Summarize the week.",
         checkout: "worktree",
         cadence: { kind: "custom", cron: "0 9 * * 5" },
         target: { kind: "new_thread" },
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps a continued thread's access when switching to a new thread and back", async () => {
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: snapshot(),
+      initialPath: "/scheduled?view=new",
+      configureFixture: (nextFixture) => {
+        withScheduledCapabilities(true)(nextFixture);
+        withCodexModels(nextFixture);
+      },
+      resolveRpc: (body) =>
+        body._tag === WS_METHODS.scheduledTasksCreate
+          ? { ...eventTask(), ...body, id: TASK_ID }
+          : undefined,
+    });
+    const pickThread = async (name: string | RegExp) => {
+      await page.getByTestId("scheduled-form-target").click();
+      await page.getByRole("menuitemradio", { name }).click();
+    };
+    try {
+      await sendTasks([]);
+      await userEvent.fill(page.getByTestId("scheduled-form-name"), "Nightly follow-up");
+      await userEvent.fill(page.getByTestId("scheduled-form-prompt"), "Check on the build.");
+
+      // Continuing the thread starts from its access (full access), then the
+      // task sets its own.
+      await pickThread(THREAD_TITLE);
+      await expect.element(page.getByLabelText("Access level: Full access")).toBeVisible();
+      await pickAccess("approval-required");
+      await expect.element(page.getByLabelText("Access level: Supervised")).toBeVisible();
+
+      // Off to a new thread and back to the same one: the task's own access stays.
+      await pickThread(/A new thread/);
+      await pickThread(THREAD_TITLE);
+      await expect.element(page.getByLabelText("Access level: Supervised")).toBeVisible();
+
+      await page.getByTestId("scheduled-form-save").click();
+      await vi.waitFor(() => expect(requestsOf(WS_METHODS.scheduledTasksCreate)).toHaveLength(1));
+      expect(requestsOf(WS_METHODS.scheduledTasksCreate)[0]).toMatchObject({
+        runtimeMode: "approval-required",
+        target: { kind: "thread", threadId: THREAD_ID },
       });
     } finally {
       await mounted.cleanup();

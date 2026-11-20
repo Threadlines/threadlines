@@ -295,14 +295,18 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
     ];
   }, [computerTimeZone]);
 
-  const now = new Date(nowMs);
-  const problems: FormProblems = {
-    ...formProblems(form, now, editing?.task, goesTo?.left === true),
+  const problemsAt = (at: Date): FormProblems => ({
+    ...formProblems(form, at, editing?.task, goesTo?.left === true),
     // The computer stopped offering event tasks (an older Threadlines took its place).
     ...(isEvent && !eventTasks
       ? { schedule: "This computer doesn't run event tasks. Update Threadlines on it first." }
       : {}),
-  };
+  });
+  // Checked against this render's moment, as the form always was: a change
+  // re-checks at once, and the half-minute tick (nowMs) re-renders an idle
+  // form so a one-time run that passes meanwhile is said too.
+  const now = new Date();
+  const problems = problemsAt(now);
   const shownProblems: FormProblems = submitted
     ? problems
     : // An agent that left the continued thread is said at once.
@@ -366,11 +370,14 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
   const save = async () => {
     if (savingRef.current) return;
     setSubmitted(true);
+    // Checked against this moment: a one-time run that passed since the last
+    // render isn't sent.
+    const current = problemsAt(new Date());
     const draft = formDraft(form);
-    if (Object.keys(problems).length > 0 || draft === null || form.environmentId === null) {
+    if (Object.keys(current).length > 0 || draft === null || form.environmentId === null) {
       // Back to the first field that needs words.
-      if (problems.name !== undefined) nameRef.current?.focus();
-      else if (problems.prompt !== undefined) promptRef.current?.focus();
+      if (current.name !== undefined) nameRef.current?.focus();
+      else if (current.prompt !== undefined) promptRef.current?.focus();
       return;
     }
     const environment = environments.find((entry) => entry.environmentId === form.environmentId);
@@ -433,10 +440,10 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
   const hasModelPicker = selection !== null && instanceEntries.length > 0;
   const shownTraits =
     traitsTarget !== null && shouldRenderTraitsControls(traitsTarget) ? traitsTarget : null;
-  // The level the task saves, not the one its agent would run at today: a
-  // task runs later, unattended, at whatever its agent offers then.
+  // As on the composer: the level the agent runs at, which can differ from
+  // the one picked when the agent doesn't offer it.
   const accessControl: ComposerAccessControl = {
-    value: form.runtimeMode,
+    value: access?.shown ?? form.runtimeMode,
     options:
       access?.options ??
       RUNTIME_MODES.map((mode) => ({ mode, ...runtimeModeConfig[mode], disabled: false })),
@@ -494,7 +501,8 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
           ref={promptRef}
           className="field-sizing-content block max-h-[50vh] min-h-24 w-full resize-none bg-transparent px-4.5 py-1.5 text-[16px] leading-relaxed text-foreground outline-none placeholder:text-muted-foreground/60 sm:px-5 sm:text-[14px]"
           value={form.prompt}
-          placeholder="What should each run do? It starts with only these words, so say everything it needs."
+          placeholder="Review yesterday's commits on main and list anything risky."
+          aria-describedby="scheduled-form-prompt-hint"
           aria-label="Instructions"
           aria-invalid={shownProblems.prompt !== undefined ? true : undefined}
           data-testid="scheduled-form-prompt"
@@ -597,6 +605,12 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
           onCheckout={(checkout) => update({ checkout })}
           onComputer={chooseEnvironment}
         />
+        <p
+          id="scheduled-form-prompt-hint"
+          className="max-w-md text-center text-[12px] leading-4 text-muted-foreground"
+        >
+          Each run starts with only these words, so say everything it needs.
+        </p>
         {form.target === "thread" ? (
           <p className="max-w-md text-center text-[12px] leading-4 text-muted-foreground">
             Each run goes to that thread as a message, run with the agent and access above, never
