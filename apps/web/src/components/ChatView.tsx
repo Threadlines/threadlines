@@ -59,6 +59,7 @@ import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
 import { formatForkSourceExcerpt, truncate } from "@threadlines/shared/String";
 import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
 import { Debouncer } from "@tanstack/react-pacer";
+import { useQueryClient } from "@tanstack/react-query";
 import * as Option from "effect/Option";
 import {
   lazy,
@@ -76,6 +77,7 @@ import { useShallow } from "zustand/react/shallow";
 import { useGitStatus } from "~/lib/gitStatusState";
 import { shouldShowCheckoutPicker } from "~/lib/checkoutRecovery";
 import { useCheckoutRecovery } from "../hooks/useCheckoutRecovery";
+import { fetchNewWorktreeBaseBranch } from "../hooks/useNewWorktreeBaseBranch";
 import { buildCheckoutMissingNotice } from "./chat/checkoutMissingNotice";
 import { usePrimaryEnvironmentId } from "../environments/primary";
 import { readEnvironmentApi, useEnvironmentApiAvailable } from "../environmentApi";
@@ -1212,6 +1214,7 @@ export default function ChatView(props: ChatViewProps) {
     useMemo(() => createThreadSelectorByRef(routeThreadRef), [routeThreadRef]),
   );
   const setStoreThreadError = useStore((store) => store.setError);
+  const queryClient = useQueryClient();
   const activeThreadSeenAt = useUiStateStore((store) =>
     routeKind === "server"
       ? selectThreadSeenAt(store, routeThreadKey, serverThread?.lastSeenAt)
@@ -3494,7 +3497,7 @@ export default function ChatView(props: ChatViewProps) {
   // project in that environment while keeping the same logical project.
   const onEnvironmentChange = useCallback(
     (nextEnvironmentId: EnvironmentId) => {
-      if (envLocked || !draftId) return;
+      if (envLocked || isSendBusy || !draftId) return;
       const target = logicalProjectEnvironments.find(
         (env) => env.environmentId === nextEnvironmentId,
       );
@@ -3505,7 +3508,7 @@ export default function ChatView(props: ChatViewProps) {
       // The move drops the draft's agents: they were the old computer's.
       void applyMovedDraftDefaults(draftId, target.environmentId);
     },
-    [draftId, envLocked, logicalProjectEnvironments, setDraftThreadContext],
+    [draftId, envLocked, isSendBusy, logicalProjectEnvironments, setDraftThreadContext],
   );
 
   // A new thread can also go to a computer that hasn't got the project yet:
@@ -5919,14 +5922,23 @@ export default function ChatView(props: ChatViewProps) {
       envMode: sendEnvMode,
       worktreePath: activeThread.worktreePath,
     });
-    const baseBranchForWorktree = shouldCreateWorktree ? activeThreadBranch : null;
-
-    // In worktree mode, require an explicit base branch so we don't silently
-    // fall back to local execution when branch selection is missing.
-    if (shouldCreateWorktree && !activeThreadBranch) {
-      setThreadError(threadIdForSend, "Select a base branch before sending in New worktree mode.");
-      return;
-    }
+    // A new worktree's base is the branch picked below the composer, or the
+    // "New worktrees from" setting's branch, which the picker fills in once
+    // the branch list loads. A send before then waits for that list (seconds
+    // on a busy repository) instead of failing while the picker already
+    // names the branch.
+    let baseBranchForWorktree = shouldCreateWorktree ? activeThreadBranch : null;
+    const worktreeBaseLookup =
+      shouldCreateWorktree && !activeThreadBranch
+        ? fetchNewWorktreeBaseBranch({
+            queryClient,
+            environmentId,
+            cwd: activeProject.cwd,
+          })
+        : null;
+    // Awaited where the send needs it; until then a send that stops early
+    // leaves no unhandled failure behind.
+    worktreeBaseLookup?.catch(() => undefined);
 
     sendInFlightRef.current = true;
     // Sending again by hand retires an older failure's Retry.
@@ -5958,7 +5970,7 @@ export default function ChatView(props: ChatViewProps) {
       useLocalDispatchStore.getState().begin({
         threadRef: threadRefForSend,
         sendId: messageIdForSend,
-        snapshot: dispatchSnapshotForSend,
+        snapshot: { ...dispatchSnapshotForSend, worktreeBase: baseBranchForWorktree },
         firstSend: isLocalDraftThread
           ? { modelSelection: threadCreateModelSelection, participantId: roomRecipientId }
           : null,
@@ -6245,6 +6257,14 @@ export default function ChatView(props: ChatViewProps) {
       }
 
       const turnAttachments = await turnAttachmentsPromise;
+      if (worktreeBaseLookup !== null) {
+        baseBranchForWorktree = await worktreeBaseLookup;
+        if (baseBranchForWorktree === null) {
+          throw new Error(
+            "Couldn't find a branch to start the new worktree from. Pick one below the message box.",
+          );
+        }
+      }
       if (baseBranchForWorktree) {
         requestSetupTerminalReveal(scopedThreadKey(threadRefForSend), new Date().toISOString());
       }
@@ -6256,7 +6276,7 @@ export default function ChatView(props: ChatViewProps) {
               modelSelection: threadCreateModelSelection,
               runtimeMode,
               interactionMode,
-              branch: activeThreadBranch,
+              branch: baseBranchForWorktree ?? activeThreadBranch,
               worktreePath: activeThread.worktreePath,
               ...existingWorktreeCreateFields({
                 thread: activeThread,
@@ -6327,8 +6347,7 @@ export default function ChatView(props: ChatViewProps) {
       }
       // Retry can only resend a message the composer got back, as it came back.
       let retryContents: string | null = null;
-      if (
-        !dispatchSucceeded &&
+      const composerEmpty =
         promptRef.current.length === 0 &&
         composerAttachmentsRef.current.length === 0 &&
         composerTerminalContextsRef.current.length === 0 &&
@@ -6336,41 +6355,69 @@ export default function ChatView(props: ChatViewProps) {
         composerFileSelectionContextsRef.current.length === 0 &&
         composerPickedElementContextsRef.current.length === 0 &&
         (useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.drawingContexts
-          .length ?? 0) === 0
-      ) {
+          .length ?? 0) === 0;
+      // A send that failed before anything went out (a new worktree's branch
+      // not found, an attachment that can't be read) never reached the
+      // server: it leaves the chat whatever the user wrote meanwhile, and
+      // goes back in the box ahead of that. One that failed in transit may
+      // have arrived, so it comes back only to an empty box.
+      if (!dispatchSucceeded && (composerEmpty || dispatchedSend === null)) {
         takeBackOutgoingMessage(optimisticMessage);
-        promptRef.current = promptForSend;
+        const writtenSince = promptRef.current;
+        const restoredPrompt =
+          writtenSince.length > 0 ? `${promptForSend}\n\n${writtenSince}` : promptForSend;
+        promptRef.current = restoredPrompt;
         const retryComposerAttachments = composerAttachmentsSnapshot.map(
           cloneComposerAttachmentForRetry,
         );
-        composerAttachmentsRef.current = retryComposerAttachments;
-        composerTerminalContextsRef.current = composerTerminalContextsSnapshot;
-        composerTranscriptHighlightContextsRef.current =
-          composerTranscriptHighlightContextsSnapshot;
-        composerFileSelectionContextsRef.current = composerFileSelectionContextsSnapshot;
-        setComposerDraftPrompt(composerDraftTarget, promptForSend);
+        composerAttachmentsRef.current = [
+          ...composerAttachmentsRef.current,
+          ...retryComposerAttachments,
+        ];
+        const terminalContexts = [
+          ...composerTerminalContextsSnapshot,
+          ...composerTerminalContextsRef.current,
+        ];
+        const transcriptHighlightContexts = [
+          ...composerTranscriptHighlightContextsSnapshot,
+          ...composerTranscriptHighlightContextsRef.current,
+        ];
+        const pickedElementContexts = [
+          ...composerPickedElementContextsSnapshot,
+          ...composerPickedElementContextsRef.current,
+        ];
+        composerTerminalContextsRef.current = terminalContexts;
+        composerTranscriptHighlightContextsRef.current = transcriptHighlightContexts;
+        // Added after what is there, as the store adds them below.
+        composerFileSelectionContextsRef.current = [
+          ...composerFileSelectionContextsRef.current,
+          ...composerFileSelectionContextsSnapshot,
+        ];
+        composerPickedElementContextsRef.current = pickedElementContexts;
+        setComposerDraftPrompt(composerDraftTarget, restoredPrompt);
         addComposerDraftAttachments(composerDraftTarget, retryComposerAttachments);
-        setComposerDraftTerminalContexts(composerDraftTarget, composerTerminalContextsSnapshot);
+        setComposerDraftTerminalContexts(composerDraftTarget, terminalContexts);
         setComposerDraftTranscriptHighlightContexts(
           composerDraftTarget,
-          composerTranscriptHighlightContextsSnapshot,
+          transcriptHighlightContexts,
         );
         for (const context of composerFileSelectionContextsSnapshot) {
           addComposerDraftFileSelectionContext(composerDraftTarget, context);
         }
-        composerPickedElementContextsRef.current = composerPickedElementContextsSnapshot;
         const draftStore = useComposerDraftStore.getState();
-        draftStore.setPickedElementContexts(
-          composerDraftTarget,
-          composerPickedElementContextsSnapshot,
-        );
-        draftStore.setDrawingContexts(composerDraftTarget, composerDrawingContextsSnapshot);
-        retryContents = composerContentsKey(
-          useComposerDraftStore.getState().getComposerDraft(composerDraftTarget),
-        );
+        draftStore.setPickedElementContexts(composerDraftTarget, pickedElementContexts);
+        draftStore.setDrawingContexts(composerDraftTarget, [
+          ...composerDrawingContextsSnapshot,
+          ...(draftStore.getComposerDraft(composerDraftTarget)?.drawingContexts ?? []),
+        ]);
+        if (composerEmpty) {
+          retryContents = composerContentsKey(
+            useComposerDraftStore.getState().getComposerDraft(composerDraftTarget),
+          );
+        }
         composerRef.current?.resetCursorState({
-          cursor: collapseExpandedComposerCursor(promptForSend, promptForSend.length),
-          prompt: promptForSend,
+          cursor: collapseExpandedComposerCursor(restoredPrompt, promptForSend.length),
+          prompt: restoredPrompt,
           detectTrigger: true,
         });
       }
@@ -6722,6 +6769,8 @@ export default function ChatView(props: ChatViewProps) {
   };
 
   const [goalDispatchingThreadId, setGoalDispatchingThreadId] = useState<ThreadId | null>(null);
+  const placementBusy =
+    isSendBusy || (activeThread !== undefined && goalDispatchingThreadId === activeThread.id);
   // Bridges the gap between dispatching a goal and its authoritative state
   // arriving through the projection stream — without it the bar flickers out
   // while a brand-new thread materializes (and edits briefly show the stale
@@ -6777,13 +6826,6 @@ export default function ChatView(props: ChatViewProps) {
         envMode: sendEnvMode,
         worktreePath: activeThread.worktreePath,
       });
-      if (goalNeedsWorktree && !activeThreadBranch) {
-        setThreadError(
-          threadId,
-          "Select a base branch before setting a goal in New worktree mode.",
-        );
-        return;
-      }
       // A first send (or another goal) already setting this thread up makes
       // it, or its worktree; the goal can go once that is done.
       const goalThreadKey = scopedThreadKey(scopeThreadRef(environmentId, threadId));
@@ -6836,6 +6878,20 @@ export default function ChatView(props: ChatViewProps) {
       setGoalDispatchingThreadId(threadId);
       const endGoalSetup = goalSetsThreadUp ? beginGoalThreadSetup(goalThreadKey) : () => {};
       try {
+        // Its worktree starts where a first send's would (see onSend).
+        const goalWorktreeBase = goalNeedsWorktree
+          ? (activeThreadBranch ??
+            (await fetchNewWorktreeBaseBranch({
+              queryClient,
+              environmentId,
+              cwd: activeProject.cwd,
+            })))
+          : null;
+        if (goalNeedsWorktree && goalWorktreeBase === null) {
+          throw new Error(
+            "Couldn't find a branch to start the new worktree from. Pick one below the message box.",
+          );
+        }
         // A goal on a draft makes its thread with it, so the session spins up
         // and the goal's work begins without waiting for a user message.
         const createThread =
@@ -6846,7 +6902,7 @@ export default function ChatView(props: ChatViewProps) {
                 modelSelection: goalModelSelection,
                 runtimeMode,
                 interactionMode: "default" as const,
-                branch: activeThreadBranch,
+                branch: goalWorktreeBase ?? activeThreadBranch,
                 worktreePath: activeThread.worktreePath,
                 ...existingWorktreeCreateFields({
                   thread: activeThread,
@@ -6873,8 +6929,8 @@ export default function ChatView(props: ChatViewProps) {
           ? buildThreadStartBootstrap({
               createThread,
               worktree:
-                goalNeedsWorktree && activeThreadBranch
-                  ? { projectCwd: activeProject.cwd, baseBranch: activeThreadBranch }
+                goalWorktreeBase !== null
+                  ? { projectCwd: activeProject.cwd, baseBranch: goalWorktreeBase }
                   : null,
             })
           : undefined;
@@ -6920,9 +6976,9 @@ export default function ChatView(props: ChatViewProps) {
       isSendBusy,
       isServerThread,
       persistThreadSettingsForNextTurn,
+      queryClient,
       runtimeMode,
       sendEnvMode,
-      setThreadError,
     ],
   );
 
@@ -9292,7 +9348,11 @@ export default function ChatView(props: ChatViewProps) {
                         onActiveThreadBranchOverrideChange: onPendingServerThreadBaseChange,
                       }
                     : {})}
-                  envLocked={envLocked}
+                  // A message or goal on its way has its place: the computer,
+                  // workspace and branch stay put until it lands or fails
+                  // (a first send can wait seconds for its worktree's branch).
+                  envLocked={envLocked || placementBusy}
+                  branchLocked={placementBusy}
                   onComposerFocusRequest={scheduleComposerFocus}
                   {...(canCheckoutPullRequestIntoThread
                     ? { onCheckoutPullRequestRequest: openPullRequestDialog }

@@ -47,6 +47,7 @@ import {
   useState,
 } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
 import { useDebouncedValue } from "@tanstack/react-pacer";
 import { serializeComposerMentionPath } from "~/composerMentionPath";
 import type { FileSelectionContextDraft } from "~/lib/fileSelectionContext";
@@ -374,6 +375,8 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   contextCompactInFlight?: boolean | undefined;
   contextCompactDisabledReason?: string | null | undefined;
 }) {
+  const navigate = useNavigate();
+  const openUsage = useCallback(() => void navigate({ to: "/usage" }), [navigate]);
   return (
     <>
       <ContextWindowMeter
@@ -390,6 +393,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
         contextWindowLabel={props.contextWindowLabel}
         onResetAccountUsage={props.onResetAccountUsage}
         accountUsageResetInFlight={props.accountUsageResetInFlight}
+        onOpenUsage={openUsage}
         onCompactContext={props.onCompactContext}
         contextCompactDisabled={props.contextCompactDisabled}
         contextCompactInFlight={props.contextCompactInFlight}

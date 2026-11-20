@@ -14,6 +14,7 @@ import { Fragment, useMemo, useState, type ReactNode } from "react";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import { usageMeterColor } from "../../lib/providerUsage";
+import { UsagePaceMark } from "./UsagePaceMark";
 import { cn } from "../../lib/utils";
 import {
   deriveUsageWindow,
@@ -461,7 +462,7 @@ function UsagePlanLimits({
                         {meter.detail}
                       </span>
                     </span>
-                    <div className="h-[3px] w-full bg-border/40">
+                    <div className="relative h-[3px] w-full bg-border/40">
                       <div
                         className="h-full"
                         style={{
@@ -470,6 +471,9 @@ function UsagePlanLimits({
                             usageMeterColor(meter.usedPercent, meter.warning) ?? fill,
                         }}
                       />
+                      {meter.elapsedPercent !== undefined ? (
+                        <UsagePaceMark elapsedPercent={meter.elapsedPercent} className="h-2" />
+                      ) : null}
                     </div>
                   </div>
                 ))}

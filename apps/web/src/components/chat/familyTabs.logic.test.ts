@@ -116,6 +116,7 @@ describe("fitting the row", () => {
     threadRef: null,
     kind: "child",
     title: key,
+    shortTitle: key,
     lead: false,
     dotClass: null,
     statusWord: null,
@@ -125,18 +126,37 @@ describe("fitting the row", () => {
     inbox: null,
   });
   const tabs = ["a", "b", "c", "d", "e", "f"].map((key) => tab(key, key === "f"));
+  const fit = (openKey: string, rowPx: number, floors: Record<string, number> = {}, gapPx = 0) =>
+    fitFamilyTabs({
+      tabs,
+      openKey,
+      rowPx,
+      overflowPx: 40,
+      gapPx,
+      floorPx: (entry) => floors[entry.key] ?? 100,
+    });
+  const keys = (list: readonly FamilyTab[]) => list.map((entry) => entry.key);
 
-  it("keeps every tab while they fit at the floor, else moves the last behind +N", () => {
-    expect(fitFamilyTabs({ tabs, openKey: "a", rowPx: 600, overflowPx: 40 }).hidden).toEqual([]);
-    const tight = fitFamilyTabs({ tabs, openKey: "a", rowPx: 340, overflowPx: 40 });
-    expect(tight.shown.map((entry) => entry.key)).toEqual(["a", "b", "c"]);
-    expect(tight.hidden.map((entry) => entry.key)).toEqual(["d", "e", "f"]);
+  it("keeps every tab while they fit at their floors, else moves the last behind +N", () => {
+    expect(fit("a", 600).hidden).toEqual([]);
+    // Two pixels between tabs: six 100px tabs no longer fit in 600.
+    expect(keys(fit("a", 600, {}, 2).hidden)).toEqual(["f"]);
+    const tight = fit("a", 340);
+    expect(keys(tight.shown)).toEqual(["a", "b", "c"]);
+    expect(keys(tight.hidden)).toEqual(["d", "e", "f"]);
     expect(tight.hidden.some((entry) => entry.needsYou)).toBe(true);
   });
 
-  it("always keeps the open thread's tab on the row", () => {
-    const tight = fitFamilyTabs({ tabs, openKey: "e", rowPx: 340, overflowPx: 40 });
-    expect(tight.shown.map((entry) => entry.key)).toEqual(["a", "b", "e"]);
-    expect(tight.hidden.map((entry) => entry.key)).toEqual(["c", "d", "f"]);
+  it("charges a short title only its own width", () => {
+    const short = { a: 60, b: 30, c: 30, d: 30, e: 30, f: 30 };
+    expect(fit("a", 220, short).hidden).toEqual([]);
+  });
+
+  it("always keeps the parent's tab and the open thread's on the row", () => {
+    const tight = fit("e", 340);
+    expect(keys(tight.shown)).toEqual(["a", "b", "e"]);
+    expect(keys(tight.hidden)).toEqual(["c", "d", "f"]);
+    // Too narrow for both: neither gives way.
+    expect(keys(fit("e", 150).shown)).toEqual(["a", "e"]);
   });
 });

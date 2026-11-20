@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { repairStreamingMarkdownTail, splitMarkdownBlocks } from "./chatMarkdownDocument";
+import {
+  collectWrittenFilePaths,
+  repairStreamingMarkdownTail,
+  splitMarkdownBlocks,
+} from "./chatMarkdownDocument";
 import { fencedBlockIsClosed } from "./markdownFences";
 import {
   parseCodexInlineVisualizations,
@@ -100,6 +104,24 @@ describe("fencedBlockIsClosed", () => {
     expect(fencedBlockIsClosed("$$\nx^2")).toBe(false);
     expect(fencedBlockIsClosed("- ```sh\n  ls\n  ```")).toBe(true);
     expect(fencedBlockIsClosed("> ```\n> ls\n> ```")).toBe(true);
+  });
+});
+
+describe("collectWrittenFilePaths", () => {
+  it("takes paths the message cites, not paths in commands or examples", () => {
+    const text = [
+      "Saved [the plan](C:\\Users\\me\\notes\\plan.md) and `/Users/me/shots/home.png`.",
+      "The old one is at /tmp/shots/old.png.",
+      "Then run `rm /tmp/shots/stale.png` to clean up.",
+      "```md",
+      "[example](/tmp/example/plan.md)",
+      "```",
+    ].join("\n");
+    expect(collectWrittenFilePaths(text, "/repo/project")).toEqual([
+      "/Users/me/shots/home.png",
+      "/tmp/shots/old.png",
+      "C:\\Users\\me\\notes\\plan.md",
+    ]);
   });
 });
 

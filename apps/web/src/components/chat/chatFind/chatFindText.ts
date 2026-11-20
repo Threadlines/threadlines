@@ -25,7 +25,9 @@ import {
   buildFileLinkLabel,
   CHAT_MARKDOWN_REMARK_PLUGINS,
   chatMarkdownUrlTransform,
+  collectWrittenFilePaths,
   GITHUB_HTML_REHYPE_PLUGINS,
+  isFileNameMention,
   type MarkdownDocumentFileLinks,
   normalizeMarkdownLinkHrefKey,
   placeLinkLabel,
@@ -320,9 +322,13 @@ function walkInlineCode(element: HastElement, context: WalkContext) {
     walkChildren(element.children, { ...context, inlinePass: false });
     return;
   }
-  const meta = document.fileLinks.inlineCodeFileLinkMetaBySpan.get(only.value.trim());
-  if (meta) document.collector.add(context.block, fileChipLabel(meta, document), "chip");
-  else document.collector.add(context.block, only.value);
+  const span = only.value.trim();
+  const meta = document.fileLinks.inlineCodeFileLinkMetaBySpan.get(span);
+  // A bare file name draws as the code it is (ChatMarkdown's mention), unless
+  // a lookup finds a picture for it, which no text pass can know.
+  if (meta && !isFileNameMention(span, document.fileLinks.inlineCodeSpansPlacedByDocument)) {
+    document.collector.add(context.block, fileChipLabel(meta, document), "chip");
+  } else document.collector.add(context.block, only.value);
 }
 
 function walkElement(element: HastElement, context: WalkContext) {
@@ -374,6 +380,7 @@ function collectMarkdownDocument(
     readonly html: "github" | undefined;
     readonly collector: BlockCollector;
     readonly root: object;
+    readonly writtenFilePaths: readonly string[];
   },
 ) {
   // MarkdownBlock: math normalized, and a streaming tail drawn with its open
@@ -386,7 +393,10 @@ function collectMarkdownDocument(
     cwd: options.cwd,
     skills: options.skills,
     bareImagePaths: !options.isStreaming,
-    fileLinks: resolveMarkdownDocumentFileLinks(rendered, options.cwd, { inlineCodeChips: true }),
+    fileLinks: resolveMarkdownDocumentFileLinks(rendered, options.cwd, {
+      inlineCodeChips: true,
+      writtenFilePaths: options.writtenFilePaths,
+    }),
     collector: options.collector,
   };
   walkChildren(tree.children, { block: options.root, inlinePass: false, document });
@@ -403,6 +413,7 @@ export function markdownFirstLine(input: {
   readonly cwd: string | undefined;
   readonly skills: ReadonlyArray<InlineSkill>;
 }): string {
+  const writtenFilePaths = collectWrittenFilePaths(input.text, input.cwd);
   for (const document of splitMarkdownBlocks(input.text)) {
     const collector = new BlockCollector();
     collectMarkdownDocument(document, {
@@ -412,6 +423,7 @@ export function markdownFirstLine(input: {
       html: undefined,
       collector,
       root: {},
+      writtenFilePaths,
     });
     const [first] = collector.readable();
     const line = first
@@ -430,6 +442,8 @@ export function markdownFirstLine(input: {
 export function findableMarkdownBlocks(input: FindableMarkdownInput): string[] {
   const collector = new BlockCollector();
   const root = {};
+  // ChatMarkdown: a short name is placed by a path written anywhere in the message.
+  const writtenFilePaths = collectWrittenFilePaths(input.text, input.cwd);
   const segments = input.visualizations
     ? parseCodexInlineVisualizations(input.text, { isStreaming: input.isStreaming })
     : [{ type: "markdown" as const, key: "markdown:0", text: input.text }];
@@ -445,6 +459,7 @@ export function findableMarkdownBlocks(input: FindableMarkdownInput): string[] {
         html: input.html,
         collector,
         root,
+        writtenFilePaths,
       });
     });
   });

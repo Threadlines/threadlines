@@ -19,6 +19,7 @@ import {
   isNeedsUserStatus,
   liveFamilyOf,
 } from "../Sidebar.logic";
+import { shortFamilyTitles } from "../familyTitles.logic";
 
 /** One tab on the row. */
 export interface FamilyTab {
@@ -28,6 +29,11 @@ export interface FamilyTab {
   readonly threadRef: ScopedThreadRef | null;
   readonly kind: "parent" | "child";
   readonly title: string;
+  /**
+   * What the tab itself shows: the title, less a topic it shares with other
+   * threads on the row (`shortFamilyTitles`, the sidebar's rule too). The tooltip keeps the title.
+   */
+  readonly shortTitle: string;
   /** The parent is its project's lead chat: its tab is the flag and "Lead". */
   readonly lead: boolean;
   /** A child's status dot class and word; null for the parent or a quiet child. */
@@ -100,6 +106,7 @@ export function familyTabsOf<E extends FamilyTabEntry>(input: {
     threadRef: scopeThreadRef(child.thread.environmentId, child.thread.id),
     kind: "child",
     title: child.thread.title,
+    shortTitle: child.thread.title,
     lead: false,
     dotClass: child.isDone ? null : (child.status?.dotClass ?? null),
     statusWord: child.isDone ? null : inboxStatusWord(child.status),
@@ -113,6 +120,7 @@ export function familyTabsOf<E extends FamilyTabEntry>(input: {
     threadRef: null,
     kind: "child",
     title: child.title,
+    shortTitle: child.title,
     lead: false,
     dotClass: child.isDone ? null : (child.status?.dotClass ?? null),
     statusWord: child.isDone ? null : inboxStatusWord(child.status),
@@ -121,6 +129,8 @@ export function familyTabsOf<E extends FamilyTabEntry>(input: {
     computerLabel: child.computerLabel,
     inbox: null,
   });
+  const children = [...family.children.map(childTab), ...family.remoteChildren.map(remoteTab)];
+  const shortTitles = shortFamilyTitles(children.map((tab) => tab.title));
   return {
     familyKey: parent.threadKey,
     openKey: input.openKey,
@@ -130,6 +140,7 @@ export function familyTabsOf<E extends FamilyTabEntry>(input: {
         threadRef: scopeThreadRef(parent.thread.environmentId, parent.thread.id),
         kind: "parent",
         title: parent.thread.title,
+        shortTitle: parent.thread.title,
         lead: parent.isLead === true,
         dotClass: null,
         statusWord: null,
@@ -138,8 +149,7 @@ export function familyTabsOf<E extends FamilyTabEntry>(input: {
         computerLabel: null,
         inbox: { isDone: parent.isDone, canMarkDone: parent.canMarkDone === true },
       },
-      ...family.children.map(childTab),
-      ...family.remoteChildren.map(remoteTab),
+      ...children.map((tab, index) => ({ ...tab, shortTitle: shortTitles[index]! })),
     ],
   };
 }
@@ -157,6 +167,7 @@ export function sameFamilyTabs(left: FamilyTabs | null, right: FamilyTabs | null
       return (
         tab.key === other.key &&
         tab.title === other.title &&
+        tab.shortTitle === other.shortTitle &&
         tab.lead === other.lead &&
         tab.dotClass === other.dotClass &&
         tab.statusWord === other.statusWord &&
@@ -170,31 +181,44 @@ export function sameFamilyTabs(left: FamilyTabs | null, right: FamilyTabs | null
   );
 }
 
-/** The narrowest a tab gets before the rest move behind "+N". */
+/** The narrowest a tab with a long title gets before the rest move behind "+N". */
 export const FAMILY_TAB_MIN_WIDTH_PX = 96;
 
 /**
- * Which tabs fit the row, in order, and which go behind "+N". Tabs shrink to
- * `minTabPx`; past that, the last ones move behind the menu, which takes
- * `overflowPx` itself. The open thread's tab is always on the row: when it
- * would be hidden it takes the last place that fits.
+ * Which tabs fit the row, in order, and which go behind "+N". Each tab can
+ * shrink to its floor (`floorPx`: its own width when that is under
+ * {@link FAMILY_TAB_MIN_WIDTH_PX}, so a short title costs only what it takes;
+ * the lead's whole width, since it never shrinks), with `gapPx` between tabs.
+ * Past that, the tabs after the last one that fits move behind the menu,
+ * which takes `overflowPx` itself. The parent's tab and the open thread's are
+ * always on the row, even where the row is too narrow for both.
  */
 export function fitFamilyTabs(input: {
   readonly tabs: readonly FamilyTab[];
   readonly openKey: string;
   readonly rowPx: number;
-  readonly minTabPx?: number;
   readonly overflowPx: number;
+  readonly gapPx: number;
+  readonly floorPx: (tab: FamilyTab) => number;
 }): { readonly shown: readonly FamilyTab[]; readonly hidden: readonly FamilyTab[] } {
-  const minTabPx = input.minTabPx ?? FAMILY_TAB_MIN_WIDTH_PX;
   const all = input.tabs;
-  if (all.length * minTabPx <= input.rowPx) return { shown: all, hidden: [] };
-  const fit = Math.max(1, Math.floor((input.rowPx - input.overflowPx) / minTabPx));
-  let shown = all.slice(0, fit);
-  if (!shown.some((tab) => tab.key === input.openKey)) {
-    const open = all.find((tab) => tab.key === input.openKey);
-    if (open !== undefined) shown = [...shown.slice(0, Math.max(0, fit - 1)), open];
+  const widthOf = (tabs: readonly FamilyTab[]) =>
+    tabs.reduce((sum, tab) => sum + input.floorPx(tab), 0) +
+    input.gapPx * Math.max(0, tabs.length - 1);
+  if (widthOf(all) <= input.rowPx) return { shown: all, hidden: [] };
+  const kept = all.filter((tab, index) => index === 0 || tab.key === input.openKey);
+  const keys = new Set(kept.map((tab) => tab.key));
+  const budget = input.rowPx - input.overflowPx - input.gapPx;
+  let used = widthOf(kept);
+  for (const tab of all) {
+    if (keys.has(tab.key)) continue;
+    const cost = input.gapPx + input.floorPx(tab);
+    if (used + cost > budget) break;
+    keys.add(tab.key);
+    used += cost;
   }
-  const shownKeys = new Set(shown.map((tab) => tab.key));
-  return { shown, hidden: all.filter((tab) => !shownKeys.has(tab.key)) };
+  return {
+    shown: all.filter((tab) => keys.has(tab.key)),
+    hidden: all.filter((tab) => !keys.has(tab.key)),
+  };
 }

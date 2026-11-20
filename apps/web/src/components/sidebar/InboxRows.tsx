@@ -1367,6 +1367,8 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
 
 export interface InboxChildRowProps {
   thread: SidebarThreadSummary;
+  /** Its title without the topic its siblings share (`childShortTitles`); absent: the title. */
+  shortTitle?: string | undefined;
   status: ThreadStatusPill | null;
   /** Filed under Wrapped: a grey check, the time it was wrapped, and reopen on hover. */
   isDone: boolean;
@@ -1411,9 +1413,31 @@ export interface InboxChildRowProps {
  * thread from another computer shows, or with a computer glyph when it runs
  * here and its parent is the one elsewhere.
  */
+/**
+ * A started thread's title under its parent: the short one on screen when
+ * its siblings share a topic (`childShortTitles`), the full one for screen
+ * readers.
+ */
+function FamilyChildTitle({
+  title,
+  shortTitle,
+}: {
+  title: string;
+  shortTitle: string | undefined;
+}) {
+  if (shortTitle === undefined) return title;
+  return (
+    <>
+      <span aria-hidden="true">{shortTitle}</span>
+      <span className="sr-only">{title}</span>
+    </>
+  );
+}
+
 export const InboxChildRow = memo(function InboxChildRow(props: InboxChildRowProps) {
   const {
     thread,
+    shortTitle,
     status,
     isDone,
     doneAt,
@@ -1614,7 +1638,7 @@ export const InboxChildRow = memo(function InboxChildRow(props: InboxChildRowPro
                 )}
                 data-testid={`child-title-${thread.id}`}
               >
-                {thread.title}
+                <FamilyChildTitle title={thread.title} shortTitle={shortTitle} />
               </span>
             )}
             <span className={ROW_META_SLOT_CLASS_NAME}>
@@ -1704,9 +1728,12 @@ export const InboxChildRow = memo(function InboxChildRow(props: InboxChildRowPro
  */
 export const InboxRemoteChildRow = memo(function InboxRemoteChildRow({
   child,
+  shortTitle,
   onSetDone,
 }: {
   child: InboxRemoteChild;
+  /** See InboxChildRowProps.shortTitle. */
+  shortTitle?: string | undefined;
   /** Wraps it up or reopens it; absent: the row has no button. */
   onSetDone?: RemoteChildSetDone | undefined;
 }) {
@@ -1741,8 +1768,10 @@ export const InboxRemoteChildRow = memo(function InboxRemoteChildRow({
               "min-w-0 flex-1 truncate text-xs leading-4",
               child.isDone ? "text-muted-foreground/80" : "text-foreground/85",
             )}
+            // No hover card here: the full title shows on hover this way.
+            title={child.title}
           >
-            {child.title}
+            <FamilyChildTitle title={child.title} shortTitle={shortTitle} />
           </span>
           {showAction ? (
             <span className={ROW_META_SLOT_CLASS_NAME}>
