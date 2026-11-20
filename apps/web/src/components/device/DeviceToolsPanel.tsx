@@ -5,6 +5,7 @@ import type {
   DeviceSummary,
   DeviceTextSize,
 } from "@threadlines/contracts";
+import type { DeviceHubTransport } from "@threadlines/client-runtime/device";
 import { XIcon } from "lucide-react";
 import { type ReactNode, useState } from "react";
 
@@ -15,6 +16,7 @@ import { SegmentedControl, SegmentedControlItem } from "../ui/segmented-control"
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Spinner } from "../ui/spinner";
 import { Switch } from "../ui/switch";
+import { DeviceEventLog } from "./DeviceEventLog";
 import type { DeviceControls } from "./useDeviceControls";
 
 const TEXT_SIZES: ReadonlyArray<{ value: DeviceTextSize; label: string }> = [
@@ -81,6 +83,8 @@ export function DeviceToolsPanel(props: {
   readonly device: DeviceSummary;
   readonly onClose: () => void;
   readonly className?: string;
+  /** The device's hub transport, for the iOS event log. */
+  readonly transport?: DeviceHubTransport;
 }) {
   const { device, controls } = props;
   const { detail, pending, error, foregroundApp, disabled, act } = controls;
@@ -308,6 +312,12 @@ export function DeviceToolsPanel(props: {
                 Open an app first; the push goes to it.
               </p>
             ) : null}
+          </Section>
+        ) : null}
+
+        {ios && props.transport ? (
+          <Section title="Event log">
+            <DeviceEventLog key={device.id} transport={props.transport} deviceId={device.id} />
           </Section>
         ) : null}
       </div>
