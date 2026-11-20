@@ -18,6 +18,8 @@ import { deviceChannelApi } from "./deviceState";
 
 export interface DeviceStreamState {
   readonly status: DeviceStreamStatus;
+  /** Started and not stopped: the view is on screen. Polls beside the stream follow this. */
+  readonly active: boolean;
   readonly detail: string | undefined;
   readonly screen: DeviceScreenSize | null;
   readonly mode: DeviceVideoMode;
@@ -32,6 +34,7 @@ export interface DeviceStreamState {
 
 const CONNECTING: DeviceStreamState = {
   status: "connecting",
+  active: true,
   detail: undefined,
   screen: null,
   mode: "video",
@@ -118,7 +121,10 @@ export function createDeviceStream(input: {
       update(CONNECTING);
       client.start();
     },
-    stop: () => client.stop(),
+    stop: () => {
+      client.stop();
+      update({ active: false });
+    },
     reconnect: () => {
       client.stop();
       update(CONNECTING);

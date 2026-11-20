@@ -82,6 +82,8 @@ export function DeviceStreamView(props: {
   const { stream, state, platform } = props;
   const { client } = stream;
   const streaming = state.status === "streaming";
+  // Reads beside the stream (fold, accessibility) run only while it is on screen.
+  const live = streaming && state.active;
   const [host, setHost] = useState({ width: 0, height: 0 });
   const hostRef = (element: HTMLDivElement | null) => {
     if (!element) return;
@@ -108,7 +110,7 @@ export function DeviceStreamView(props: {
   const fold = useAndroidFold({
     transport: stream.transport,
     deviceId: props.deviceId ?? "",
-    active: platform === "android" && !props.physical && !!props.deviceId && streaming,
+    active: platform === "android" && !props.physical && !!props.deviceId && live,
     screenKey: state.screen ? `${state.screen.width}x${state.screen.height}` : null,
   });
 
@@ -136,7 +138,7 @@ export function DeviceStreamView(props: {
     transport: stream.transport,
     platform,
     deviceId: props.deviceId ?? "",
-    enabled: props.axOverlay === true && !!props.deviceId && streaming,
+    enabled: props.axOverlay === true && !!props.deviceId && live,
   });
   const [axFocus, setAxFocus] = useState<{
     readonly element: DeviceAxElement;
