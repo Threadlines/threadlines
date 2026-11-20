@@ -167,6 +167,23 @@ export const ThreadStopResult = Schema.Struct({
 });
 export type ThreadStopResult = typeof ThreadStopResult.Type;
 
+export const ThreadWrapResult = Schema.Struct({
+  outcome: Schema.Literals(["ok", "off", "not_allowed", "refused"]),
+  detail: Schema.optional(Schema.String),
+  /** With `ok`: one entry per thread named, in the order given. */
+  threads: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        threadId: Schema.String,
+        /** `working`: it is still at work or waiting for the user, so it stays. */
+        outcome: Schema.Literals(["wrapped", "working", "not_yours", "refused", "failed"]),
+        detail: Schema.optional(Schema.String),
+      }),
+    ),
+  ),
+});
+export type ThreadWrapResult = typeof ThreadWrapResult.Type;
+
 export const ThreadMoveResult = Schema.Struct({
   /** `queued`: it moves once this turn ends. */
   outcome: Schema.Literals(["queued", "off", "not_allowed", "refused"]),
@@ -359,6 +376,19 @@ export const ThreadStopTool = loadedOnDemand(
   ),
 );
 
+export const ThreadWrapTool = loadedOnDemand(
+  drivesThreads(
+    Tool.make("thread_wrap", {
+      description:
+        "Wrap up finished threads you started, so they leave the user's list of active threads; the user can reopen them. One still working or waiting for the user is left as it is. A wrapped thread comes back on its own if it gets new work. Only threads you started whose replies still come back to you.",
+      parameters: Schema.Struct({
+        threadIds: Schema.Array(ThreadIdParameter),
+      }),
+      success: ThreadWrapResult,
+    }).annotate(Tool.Title, "Wrap up threads"),
+  ),
+);
+
 export const ThreadMoveTool = loadedOnDemand(
   drivesThreads(
     Tool.make("thread_move", {
@@ -389,5 +419,6 @@ export const ThreadToolkit = Toolkit.make(
   ThreadReadTool,
   ThreadSendTool,
   ThreadStopTool,
+  ThreadWrapTool,
   ThreadMoveTool,
 );

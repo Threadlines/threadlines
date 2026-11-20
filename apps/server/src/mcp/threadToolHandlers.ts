@@ -69,6 +69,7 @@ import * as Schema from "effect/Schema";
 import { childRequestCommandId, derivedUuid } from "../orchestration/childRequestIds.ts";
 import { isLinkFenced, linkFenceRefusal } from "../orchestration/linkFence.ts";
 import {
+  agentWrapRefusal,
   checkoutMoveRefusal,
   childHasLiveWork,
   pendingChildRequest,
@@ -113,10 +114,13 @@ import type {
   ThreadStatusWord,
   ThreadStopResult,
   ThreadSummary,
+  ThreadWrapResult,
 } from "./threadTools.ts";
 
 /** `thread_list` with `scope: "project"` lists at most this many. */
 export const THREAD_LIST_PROJECT_LIMIT = 30;
+/** `thread_wrap` wraps up at most this many threads per call. */
+const THREAD_WRAP_PER_CALL = 20;
 const GIT_TIMEOUT_MS = 15_000;
 
 export interface ThreadToolDeps {
@@ -222,6 +226,8 @@ const GONE = "This thread is gone.";
 const REMOTE_ORIGIN_REFUSAL =
   "This thread was started by an agent on another computer, so it has no thread tools. Do the work here; your final reply goes back to it.";
 const NOT_FOUND = "No open thread with that id is in this project. thread_list shows them.";
+const WRAPPED_DETAIL =
+  "Wrapped up: it's off the user's list of active threads until it gets new work or the user reopens it.";
 /** A child its start is still setting up: its thread appears once its worktree is ready. */
 const STILL_SETTING_UP =
   "That thread is still being set up: its worktree is being made. Try again in a moment.";
@@ -2262,6 +2268,160 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
     });
 
   // ---------------------------------------------------------------------------
+  // thread_wrap (docs/design/child-threads.md, "Wrapped up by the parent's agent")
+  // ---------------------------------------------------------------------------
+
+  type WrapEntry = NonNullable<ThreadWrapResult["threads"]>[number];
+
+  /**
+   * Files away finished threads the caller started: the user's Wrap up, given
+   * by the parent's agent. A child here is wrapped with `byParentAgent`, so
+   * the decider checks the same rules again and marks it seen in the same
+   * step; a child on a linked computer is wrapped on the parent's record of
+   * it and sent on, as the user's Wrap up is.
+   */
+  const threadWrap = (
+    scope: McpInvocationScope,
+    input: { readonly threadIds: ReadonlyArray<string> },
+  ): Effect.Effect<ThreadWrapResult> =>
+    Effect.gen(function* () {
+      const gated = yield* gate(scope, "thread_wrap");
+      if ("refusal" in gated) {
+        return gated.refusal satisfies ThreadWrapResult;
+      }
+      const { thread } = gated;
+      if (isAttachedChild(thread)) {
+        return depthRefusal(thread, scope) satisfies ThreadWrapResult;
+      }
+      const ids = [
+        ...new Set(input.threadIds.map((id) => id.trim()).filter((id) => id.length > 0)),
+      ];
+      if (ids.length === 0) {
+        return {
+          outcome: "refused",
+          detail: "Name the threads to wrap up, by their ids from thread_list.",
+        } satisfies ThreadWrapResult;
+      }
+      if (ids.length > THREAD_WRAP_PER_CALL) {
+        return {
+          outcome: "refused",
+          detail: `Wrap up at most ${THREAD_WRAP_PER_CALL} threads per call.`,
+        } satisfies ThreadWrapResult;
+      }
+      const threads = yield* Effect.forEach(ids, (id) => wrapOne(scope, thread, ThreadId.make(id)));
+      return { outcome: "ok", threads } satisfies ThreadWrapResult;
+    });
+
+  const wrapOne = (
+    scope: McpInvocationScope,
+    parent: OrchestrationThread,
+    childId: ThreadId,
+  ): Effect.Effect<WrapEntry> =>
+    Effect.gen(function* () {
+      const remoteChild = remoteChildOf(parent.childRequests, childId);
+      if (remoteChild !== undefined) {
+        return yield* remoteWrap(scope, parent, remoteChild);
+      }
+      const child = yield* deps.readThread(childId);
+      if (child === undefined) {
+        return pendingChildRequest(parent, childId) !== undefined
+          ? {
+              threadId: childId,
+              outcome: "working",
+              detail: "That thread is still being set up, so it hasn't done its work yet.",
+            }
+          : { threadId: childId, outcome: "not_yours", detail: NOT_FOUND };
+      }
+      const refusal = agentWrapRefusal(parent, child);
+      if (refusal !== null) {
+        return { threadId: child.id, outcome: refusal.kind, detail: refusal.detail };
+      }
+      // Keyed on its newest turn and the word it holds, so a retry wraps it
+      // once and a wrap after new work, or after the user reopened it, is new.
+      const key = [
+        scope.threadId,
+        scope.participantId ?? "primary",
+        parent.session?.activeTurnId ?? NO_TURN,
+        "thread_wrap",
+        child.id,
+        child.latestTurn?.turnId ?? "no-turn",
+        child.doneOverride?.at ?? "no-word",
+      ].join("\u0000");
+      return yield* deps.requests.join(key, () =>
+        Effect.gen(function* () {
+          const rejected = yield* dispatch({
+            type: "thread.done-override.set",
+            commandId: CommandId.make(`server:child-wrap:${derivedUuid(key)}`),
+            threadId: child.id,
+            state: "done",
+            at: yield* nowIso,
+            byParentAgent: parent.id,
+          });
+          if (rejected !== undefined) {
+            return { threadId: child.id, ...rejected } satisfies WrapEntry;
+          }
+          return {
+            threadId: child.id,
+            outcome: "wrapped",
+            detail: WRAPPED_DETAIL,
+          } satisfies WrapEntry;
+        }),
+      );
+    });
+
+  const remoteWrap = (
+    scope: McpInvocationScope,
+    parent: OrchestrationThread,
+    child: RemoteChild,
+  ): Effect.Effect<WrapEntry> =>
+    Effect.gen(function* () {
+      // Its status as last heard: what this computer knows of it.
+      if (
+        child.cachedStatus === "working" ||
+        child.cachedStatus === "needs the user" ||
+        child.cachedStatus === "waiting" ||
+        parent.childRequests.open.some((request) => request.childThreadId === child.threadId)
+      ) {
+        return {
+          threadId: child.threadId,
+          outcome: "working",
+          detail: `'${child.title}' on ${child.label} is still working or waiting for the user, as last heard. Wait for its reply, or stop it with thread_stop first.`,
+        };
+      }
+      const key = [
+        scope.threadId,
+        scope.participantId ?? "primary",
+        parent.session?.activeTurnId ?? NO_TURN,
+        "thread_wrap",
+        child.threadId,
+        String(child.attachmentEpoch),
+        child.updatedAt,
+        child.override?.at ?? "no-word",
+      ].join("\u0000");
+      return yield* deps.requests.join(key, () =>
+        Effect.gen(function* () {
+          const rejected = yield* dispatch({
+            type: "thread.remote-child.done-override.set",
+            commandId: CommandId.make(`server:child-wrap:${derivedUuid(key)}`),
+            threadId: parent.id,
+            environmentId: child.environmentId,
+            childThreadId: child.threadId,
+            state: "done",
+            at: yield* nowIso,
+          });
+          if (rejected !== undefined) {
+            return { threadId: child.threadId, ...rejected } satisfies WrapEntry;
+          }
+          return {
+            threadId: child.threadId,
+            outcome: "wrapped",
+            detail: `${WRAPPED_DETAIL} ${child.label} is told.`,
+          } satisfies WrapEntry;
+        }),
+      );
+    });
+
+  // ---------------------------------------------------------------------------
   // thread_move (docs/design/fleet.md, Part 3b)
   // ---------------------------------------------------------------------------
 
@@ -2354,6 +2514,7 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
     thread_read: threadRead,
     thread_send: threadSend,
     thread_stop: threadStop,
+    thread_wrap: threadWrap,
     thread_move: threadMove,
   };
 }

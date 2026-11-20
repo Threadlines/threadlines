@@ -1,5 +1,5 @@
 {
-  "claudeSystemAppendBytes": 7234,
+  "claudeSystemAppendBytes": 7281,
   "upFrontTools": [
     "app_guide",
     "ask_user_to_run",
@@ -17,5 +17,5 @@
     "show_page"
   ],
   "upFrontToolDefinitionBytes": 18074,
-  "onDemandToolDefinitionBytes": 50203
+  "onDemandToolDefinitionBytes": 50760
 }

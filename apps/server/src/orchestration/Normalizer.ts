@@ -182,6 +182,13 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
       });
     }
 
+    // Nor speak for a parent's agent: its thread_wrap is checked as the agent's.
+    if (command.type === "thread.done-override.set" && command.byParentAgent !== undefined) {
+      return yield* new OrchestrationDispatchCommandError({
+        message: "Only a thread's parent agent can wrap it up as its parent.",
+      });
+    }
+
     // Child threads: starting what an agent asked for needs the setting still
     // on; the agents and the checkout are checked again as each one starts.
     if (command.type === "thread.child-request.respond" && command.choice === "start") {

@@ -88,7 +88,9 @@ import {
 import {
   type ChildEventBase,
   type ChildThreadDecision,
+  agentWrapRefusal,
   attachedChildrenOf,
+  personWrote,
   childArchivePlan,
   childDeletionEvents,
   childRevertRefusal,
@@ -357,16 +359,6 @@ function resetChildRequestsForUser(
         },
       ];
 }
-
-/**
- * Whether a person sent this message from the app (they typed it, or their
- * signed-in device sent it). Only that lifts a lead chat's pass block: a
- * scheduled run, an automatic fix or a continue resets the counts but keeps it.
- */
-const personWrote = (command: {
-  readonly composer?: unknown;
-  readonly sentFrom?: unknown;
-}): boolean => command.composer !== undefined || command.sentFrom !== undefined;
 
 /**
  * A pass whose ceiling is under the thread's access when its turn would
@@ -2270,6 +2262,26 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: NOT_THE_LINKS_THREAD,
         });
       }
+      // A parent's agent wraps up only a thread it started that has finished
+      // (thread_wrap); the same rules the tool read first, read again here.
+      const byParentAgent = command.byParentAgent;
+      if (byParentAgent !== undefined) {
+        const refusal =
+          command.state !== "done"
+            ? "An agent can only wrap a thread up, not reopen it."
+            : agentWrapRefusal(
+                readModel.threads.find(
+                  (entry) => entry.id === byParentAgent && entry.deletedAt === null,
+                ) ?? null,
+                thread,
+              )?.detail;
+        if (refusal !== undefined) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: refusal,
+          });
+        }
+      }
       const fromLinkedComputer = command.fromLinkedComputer === true;
       if (
         fromLinkedComputer &&
@@ -2309,9 +2321,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
       // A Wrap up from the parent's computer comes after the user read the
       // thread's answer there: the visit a thread gets before it is wrapped.
+      // A parent's agent read its answer when it came back, so its wrap is a
+      // visit too; otherwise the unseen answer would keep the thread in view.
       const marksSeen =
         command.whileQuietAfter !== undefined ||
-        (fromLinkedComputer &&
+        ((fromLinkedComputer || byParentAgent !== undefined) &&
           command.state === "done" &&
           !(thread.lastSeenAt !== null && Date.parse(thread.lastSeenAt) >= Date.parse(command.at)));
       const seenEvents: ReadonlyArray<PlannedOrchestrationEvent> = marksSeen
@@ -2806,7 +2820,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
                           ? decideRemoteRequestQueue(thread, command, baseFor)
                           : command.type === "thread.remote-handed-back.record"
                             ? decideRemoteHandedBackRecord(thread, command, baseFor)
-                            : decideChildNotesDelivered(thread, command, baseFor),
+                            : decideChildNotesDelivered(readModel, thread, command, baseFor),
       );
     }
 

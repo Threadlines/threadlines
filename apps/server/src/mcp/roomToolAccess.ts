@@ -19,8 +19,9 @@
 export const ROOM_MCP_SERVER_NAME = "threadlines_room";
 
 /**
- * Tools for starting, reading, messaging and stopping other threads, and
- * moving the caller's own thread to a linked computer (`thread_move`).
+ * Tools for starting, reading, messaging, stopping and wrapping up other
+ * threads, and moving the caller's own thread to a linked computer
+ * (`thread_move`).
  */
 export const THREAD_TOOL_NAMES = [
   "thread_agents",
@@ -29,6 +30,7 @@ export const THREAD_TOOL_NAMES = [
   "thread_read",
   "thread_send",
   "thread_stop",
+  "thread_wrap",
   "thread_move",
 ] as const;
 
