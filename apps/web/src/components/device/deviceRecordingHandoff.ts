@@ -16,12 +16,12 @@ import { create } from "zustand";
 
 import {
   type ComposerAttachment,
-  composerAttachmentFitsDraftStorage,
   type ComposerFileAttachment,
   type ComposerImageAttachment,
   useComposerDraftStore,
 } from "~/composerDraftStore";
 import { randomUUID } from "~/lib/utils";
+import { saveComposerDraftAttachments } from "~/composerDraftAttachmentSave";
 import { composerAcceptsImages } from "../chat/composerImageSupport";
 import type { DeviceRecorderResult } from "./deviceRecorder";
 import {
@@ -248,8 +248,7 @@ export async function handOffDeviceRecording(input: {
     notes,
   });
   const draft = useComposerDraftStore.getState();
-  const existing = draft.getComposerDraft(threadRef)?.prompt.trimEnd() ?? "";
-  draft.setPrompt(threadRef, existing ? `${existing}\n\n${text}` : text);
+  draft.setPrompt(threadRef, appendToPrompt(draft.getComposerDraft(threadRef)?.prompt ?? "", text));
 
   if (result.video && !videoAttached) {
     keepDeviceRecording(
@@ -262,12 +261,21 @@ export async function handOffDeviceRecording(input: {
           ? "No free slot in the draft for the video."
           : "The video could not join the draft.",
     );
-  } else if (video && videoAttached && attachable) {
-    if (!composerAttachmentFitsDraftStorage(video)) {
-      // The composer never saves one this size; say so now, whatever thread is on screen.
+  }
+  if (incoming.length > 0) {
+    // Saved here, not by the thread's composer, which is not on screen if the
+    // user left the thread while recording. Whatever is not saved by then
+    // would go with a reload; the video stays downloadable.
+    try {
+      await saveComposerDraftAttachments(threadRef);
+    } catch {
+      // Judged below from what the draft says.
+    }
+    const unsaved = new Set(
+      useComposerDraftStore.getState().getComposerDraft(threadRef)?.nonPersistedAttachmentIds ?? [],
+    );
+    if (video && videoAttached && attachable && unsaved.has(video.id)) {
       keepDeviceRecording(threadKey, attachable.blob, videoName, UNSAVED_VIDEO_MESSAGE);
-    } else {
-      watchDraftSave(threadKey, threadRef, video.id, attachable.blob, videoName);
     }
   }
   return { steps: recording.steps.length, frames: acceptedImages.length, video: videoAttached };
@@ -276,27 +284,11 @@ export async function handOffDeviceRecording(input: {
 const UNSAVED_VIDEO_MESSAGE = "The draft cannot keep the video through a reload.";
 
 /**
- * The draft saves its attachments in local storage when its thread's
- * composer is on screen; a full storage leaves the video unsaved and the
- * composer marks it so. Offer the download then, so a reload does not lose
- * the only copy. Watches until that happens or the video leaves the draft
- * (sent or removed), however long the user stays on another thread.
+ * The prompt with the step log after it, separated by a blank line. What was
+ * there stays exactly as it was, trailing spaces and line breaks included.
  */
-function watchDraftSave(
-  threadKey: string,
-  threadRef: ScopedThreadRef,
-  videoId: string,
-  blob: Blob,
-  fileName: string,
-) {
-  const unsubscribe = useComposerDraftStore.subscribe(() => {
-    const draft = useComposerDraftStore.getState().getComposerDraft(threadRef);
-    if (!draft?.attachments.some((attachment) => attachment.id === videoId)) {
-      unsubscribe();
-      return;
-    }
-    if (!draft.nonPersistedAttachmentIds.includes(videoId)) return;
-    unsubscribe();
-    keepDeviceRecording(threadKey, blob, fileName, UNSAVED_VIDEO_MESSAGE);
-  });
+export function appendToPrompt(existing: string, text: string): string {
+  if (existing.length === 0) return text;
+  const separator = existing.endsWith("\n\n") ? "" : existing.endsWith("\n") ? "\n" : "\n\n";
+  return `${existing}${separator}${text}`;
 }

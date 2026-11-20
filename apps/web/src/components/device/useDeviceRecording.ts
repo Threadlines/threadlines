@@ -72,10 +72,11 @@ export function useDeviceRecording(options: {
       return;
     }
     setStateIfMounted({ status: "saving" });
-    // Finishes even when the view is gone: the recording is the user's. A
-    // Tools action still running lands in the log before it closes.
-    void Promise.allSettled(recording.pendingActions)
-      .then(() => recording.recorder.stop(endedEarly))
+    // Finishes even when the view is gone: the recording is the user's.
+    // Capture stops now; a Tools action still running lands in the log
+    // before it closes.
+    void recording.recorder
+      .stop(endedEarly, Promise.allSettled(recording.pendingActions))
       .then((result) =>
         handOffDeviceRecording({
           threadKey: recording.threadKey,
@@ -110,7 +111,7 @@ export function useDeviceRecording(options: {
       platform: device.platform,
       deviceId: device.id,
       frames: composerAcceptsImages(options.threadKey),
-      videoSource: stream.canvas,
+      videoSource: activeVideoCanvas(stream),
       observeFrames: stream.observeFrames,
       onVideoFull: () => end(true, "size"),
     });
@@ -167,3 +168,13 @@ export function useDeviceRecording(options: {
 }
 
 export type DeviceRecording = ReturnType<typeof useDeviceRecording>;
+
+/** The canvas showing the device now: an iPhone Duo display's own while its fixed feed is live. */
+function activeVideoCanvas(stream: DeviceStream): HTMLCanvasElement {
+  const panel = stream.getState().duoPanel;
+  return panel === 1
+    ? stream.panelCanvases.cover
+    : panel === 3
+      ? stream.panelCanvases.inner
+      : stream.canvas;
+}

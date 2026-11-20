@@ -192,11 +192,24 @@ Settled by the build (chips, float, recording, event log):
   landscape iOS screen records sideways (the stream canvas holds the portrait
   framebuffer; the view turns it).
 - **Saving the draft.** Drafts are saved in local storage, which holds about
-  5.2 million characters per site, so an attachment over 3.5 MB can never be
-  saved, and before this change trying failed the whole draft save, prompt
-  included. The composer now leaves such an attachment unsaved (marked as
-  today) and saves the rest. A video that is unsaved this way triggers the
-  Device tab's download notice.
+  5.2 million characters per site. Attachments are saved by one function
+  (`composerDraftAttachmentSave.ts`) that the composer on screen and the
+  recording hand-off both call, so a recording that ends after the user left
+  its thread is saved too. An attachment already saved stays saved whatever
+  its size; a new one over 3.5 MB (more characters than storage holds) is not
+  tried, since trying fails the whole write. When a write fails anyway
+  (storage full), what storage still holds stays saved and only the new
+  attachments are marked unsaved; a recording's video then goes to the Device
+  tab's download notice. The step log is appended after the prompt with the
+  prompt left exactly as it was.
+- **Stopping.** Stop and both caps end capture at once (the video stops
+  itself at its byte budget too); a Tools action still running when Stop
+  comes is logged when it answers, before the recording closes.
+- **iPhone Duo.** The video copies whichever canvas drew the last frame: the
+  ordinary stream, or the cover or inner display's own while its fixed feed
+  is live. It keeps the size of its first picture and fits a differently
+  shaped one inside it. Duo taps (sent raw to the display) are heard like any
+  other touch and named from the tree.
 
 ## Architecture
 

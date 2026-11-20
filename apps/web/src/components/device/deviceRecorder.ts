@@ -68,7 +68,14 @@ export interface DeviceRecorderResult {
 
 export interface DeviceRecorder {
   readonly record: (input: DeviceInput) => void;
-  readonly stop: (endedEarly?: "time" | "size") => Promise<DeviceRecorderResult>;
+  /**
+   * Stops capturing at once. Steps still arrive until `pending` settles (a
+   * Tools action that was running), then the result is built.
+   */
+  readonly stop: (
+    endedEarly?: "time" | "size",
+    pending?: Promise<unknown>,
+  ) => Promise<DeviceRecorderResult>;
 }
 
 /**
@@ -84,8 +91,8 @@ export function startDeviceRecorder(options: {
   readonly deviceId: string;
   readonly frames: boolean;
   readonly videoSource: HTMLCanvasElement;
-  /** Hears each frame drawn on `videoSource`. */
-  readonly observeFrames: (listener: () => void) => () => void;
+  /** Hears each frame drawn, with the canvas it went to (the Duo display in front, say). */
+  readonly observeFrames: (listener: (drawn: HTMLCanvasElement) => void) => () => void;
   readonly onVideoFull: () => void;
 }): DeviceRecorder {
   const { transport, platform, deviceId } = options;
@@ -96,7 +103,10 @@ export function startDeviceRecorder(options: {
   const captures: DeviceRecorderCapture[] = [];
   let touching = false;
   let settleTimers: Array<ReturnType<typeof setTimeout>> = [];
+  /** Capture (screenshots, trees, video) has stopped. */
   let stopped = false;
+  /** Steps are still taken: until the pending actions of a stop settle. */
+  let logging = true;
   const video = startCanvasVideo(options.videoSource, options.observeFrames, options.onVideoFull);
 
   const thinFrames = () => {
@@ -177,7 +187,7 @@ export function startDeviceRecorder(options: {
 
   return {
     record: (input) => {
-      if (stopped) return;
+      if (!logging) return;
       inputs.push({ at: now(), input });
       if (input.type === "touch") {
         if (input.phase === "move") return;
@@ -185,14 +195,15 @@ export function startDeviceRecorder(options: {
       }
       settle();
     },
-    stop: async (endedEarly) => {
+    stop: async (endedEarly, pending) => {
       stopped = true;
       clearSettle();
       const durationMs = now();
       const videoResult = video.recorder ? video.recorder.stop() : Promise.resolve(null);
       // Trees only name touches already made; the last one in flight is not waited for.
       abort.abort();
-      await Promise.all([frames.settled(), trees.settled()]);
+      await Promise.all([frames.settled(), trees.settled(), pending?.catch(() => {})]);
+      logging = false;
       // The screen after the last step, unless a screenshot already followed it.
       const lastInput = inputs.at(-1)?.at ?? Number.NEGATIVE_INFINITY;
       if (options.frames && lastInput >= lastFrameAt()) await frames.run();
@@ -225,13 +236,15 @@ const VIDEO_MAX_EDGE = 1280;
 
 /**
  * Records the stream at a fixed bitrate on a smaller canvas of its own, copied
- * from the stream canvas each time that draws a frame (and once at the start
- * and the end, so a still screen still opens and closes the video). Stops at
- * the byte budget.
+ * from whichever canvas last drew a frame (the stream's, or the iPhone Duo
+ * display in front), and once at the start and the end, so a still screen
+ * still opens and closes the video. The video keeps the size of its first
+ * picture; a later one of another shape (the other Duo display, a rotation)
+ * is fitted inside it. Stops at the byte budget.
  */
 function startCanvasVideo(
-  source: HTMLCanvasElement,
-  observeFrames: (listener: () => void) => () => void,
+  initialSource: HTMLCanvasElement,
+  observeFrames: (listener: (drawn: HTMLCanvasElement) => void) => () => void,
   onFull: () => void,
 ): {
   readonly recorder: {
@@ -250,17 +263,30 @@ function startCanvasVideo(
   }
   const mimeType = VIDEO_MIME_TYPES.find((type) => MediaRecorder.isTypeSupported(type));
   if (!mimeType) return { recorder: null, unavailable: "this browser records no known video type" };
-  const draw = () => {
+  let source = initialSource;
+  let sized = false;
+  const draw = (drawn?: HTMLCanvasElement) => {
+    if (drawn) source = drawn;
     if (source.width === 0 || source.height === 0) return;
-    const scale = Math.min(1, VIDEO_MAX_EDGE / Math.max(source.width, source.height));
-    // Encoders want even sizes.
-    const width = Math.max(2, Math.round((source.width * scale) / 2) * 2);
-    const height = Math.max(2, Math.round((source.height * scale) / 2) * 2);
-    if (canvas.width !== width || canvas.height !== height) {
-      canvas.width = width;
-      canvas.height = height;
+    if (!sized) {
+      sized = true;
+      const scale = Math.min(1, VIDEO_MAX_EDGE / Math.max(source.width, source.height));
+      // Encoders want even sizes.
+      canvas.width = Math.max(2, Math.round((source.width * scale) / 2) * 2);
+      canvas.height = Math.max(2, Math.round((source.height * scale) / 2) * 2);
     }
-    context.drawImage(source, 0, 0, width, height);
+    const fit = Math.min(canvas.width / source.width, canvas.height / source.height);
+    const width = source.width * fit;
+    const height = source.height * fit;
+    context.fillStyle = "#000";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(
+      source,
+      (canvas.width - width) / 2,
+      (canvas.height - height) / 2,
+      width,
+      height,
+    );
   };
   draw();
   let stream: MediaStream;
@@ -287,6 +313,9 @@ function startCanvasVideo(
     bytes += event.data.size;
     if (bytes >= DEVICE_RECORDING_VIDEO_MAX_BYTES && !full) {
       full = true;
+      // The video ends here whatever its owner does next; the rest of the
+      // recording stops through `onFull`.
+      if (recorder.state === "recording") recorder.stop();
       onFull();
     }
   });
