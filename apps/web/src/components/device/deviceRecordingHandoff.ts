@@ -39,13 +39,14 @@ export interface DeviceRecordingHandoff {
   readonly steps: number;
   readonly frames: number;
   readonly video: boolean;
+  /** Recording attachments in the draft that the draft could not save (kept for download). */
+  readonly unsaved: number;
 }
 
-/** A recording the draft could not hold or save, offered as a download in the Device tab. */
+/** Files of a recording the draft could not hold or save, offered as a download in the Device tab. */
 export interface KeptDeviceRecording {
   readonly id: string;
-  readonly fileName: string;
-  readonly url: string;
+  readonly files: ReadonlyArray<{ readonly fileName: string; readonly url: string }>;
   readonly message: string;
 }
 
@@ -60,17 +61,15 @@ export function readKeptDeviceRecordings(threadKey: string): ReadonlyArray<KeptD
   return useKeptDeviceRecordings.getState()[threadKey] ?? NO_KEPT;
 }
 
-/** Keeps a recording's video for download from the thread's Device tab, beside any kept before. */
+/** Keeps a recording's files for download from the thread's Device tab, beside any kept before. */
 export function keepDeviceRecording(
   threadKey: string,
-  video: Blob,
-  fileName: string,
+  files: ReadonlyArray<{ readonly blob: Blob; readonly fileName: string }>,
   message: string,
 ) {
   const kept: KeptDeviceRecording = {
     id: randomUUID(),
-    fileName,
-    url: URL.createObjectURL(video),
+    files: files.map((file) => ({ fileName: file.fileName, url: URL.createObjectURL(file.blob) })),
     message,
   };
   useKeptDeviceRecordings.setState((state) => ({
@@ -82,7 +81,7 @@ export function dismissKeptDeviceRecording(threadKey: string, id: string) {
   const current = readKeptDeviceRecordings(threadKey);
   const kept = current.find((entry) => entry.id === id);
   if (!kept) return;
-  URL.revokeObjectURL(kept.url);
+  for (const file of kept.files) URL.revokeObjectURL(file.url);
   const rest = current.filter((entry) => entry.id !== id);
   useKeptDeviceRecordings.setState((state) => {
     const { [threadKey]: _dismissed, ...others } = state;
@@ -253,8 +252,7 @@ export async function handOffDeviceRecording(input: {
   if (result.video && !videoAttached) {
     keepDeviceRecording(
       threadKey,
-      result.video.blob,
-      videoName,
+      [{ blob: result.video.blob, fileName: videoName }],
       result.video.tooBig
         ? "The video ran past the 10 MB attachment limit."
         : current.free === 0
@@ -262,26 +260,58 @@ export async function handOffDeviceRecording(input: {
           : "The video could not join the draft.",
     );
   }
-  if (incoming.length > 0) {
+  let unsavedCount = 0;
+  const ours = incoming.filter((attachment) => accepted.has(attachment.id));
+  if (ours.length > 0) {
     // Saved here, not by the thread's composer, which is not on screen if the
-    // user left the thread while recording. Whatever is not saved by then
-    // would go with a reload; the video stays downloadable.
-    try {
-      await saveComposerDraftAttachments(threadRef);
-    } catch {
-      // Judged below from what the draft says.
+    // user left the thread while recording. A run that finds the draft
+    // changed under it writes nothing; then it runs again on the new list.
+    for (let attempt = 0; attempt < SAVE_ATTEMPTS; attempt++) {
+      try {
+        if ((await saveComposerDraftAttachments(threadRef)) === "saved") break;
+      } catch {
+        break;
+      }
     }
-    const unsaved = new Set(
-      useComposerDraftStore.getState().getComposerDraft(threadRef)?.nonPersistedAttachmentIds ?? [],
+    // Whatever of ours is still in the draft but unsaved would go with a
+    // reload: keep it for download and say so.
+    const now = useComposerDraftStore.getState().getComposerDraft(threadRef);
+    const unsaved = new Set(now?.nonPersistedAttachmentIds ?? []);
+    const present = new Set((now?.attachments ?? []).map((attachment) => attachment.id));
+    const lost = ours.filter(
+      (attachment) => present.has(attachment.id) && unsaved.has(attachment.id),
     );
-    if (video && videoAttached && attachable && unsaved.has(video.id)) {
-      keepDeviceRecording(threadKey, attachable.blob, videoName, UNSAVED_VIDEO_MESSAGE);
+    unsavedCount = lost.length;
+    if (lost.length > 0) {
+      keepDeviceRecording(
+        threadKey,
+        lost.map((attachment) => ({ blob: attachment.file, fileName: attachment.name })),
+        unsavedMessage(lost),
+      );
     }
   }
-  return { steps: recording.steps.length, frames: acceptedImages.length, video: videoAttached };
+  return {
+    steps: recording.steps.length,
+    frames: acceptedImages.length,
+    video: videoAttached,
+    unsaved: unsavedCount,
+  };
 }
 
-const UNSAVED_VIDEO_MESSAGE = "The draft cannot keep the video through a reload.";
+/** Enough tries to outlast a user editing the draft while the files are read. */
+const SAVE_ATTEMPTS = 5;
+
+function unsavedMessage(lost: ReadonlyArray<ComposerAttachment>): string {
+  const video = lost.some((attachment) => attachment.type === "file");
+  const screenshots = lost.filter((attachment) => attachment.type === "image").length;
+  const what = [
+    video ? "the video" : null,
+    screenshots === 0 ? null : screenshots === 1 ? "1 screenshot" : `${screenshots} screenshots`,
+  ]
+    .filter(Boolean)
+    .join(" and ");
+  return `The draft cannot keep ${what} through a reload.`;
+}
 
 /**
  * The prompt with the step log after it, separated by a blank line. What was

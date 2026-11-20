@@ -104,7 +104,7 @@ describe("handOffDeviceRecording", () => {
       context: "iPhone 17e (iOS 27.2)",
     });
 
-    expect(handoff).toEqual({ steps: 2, frames: 3, video: true });
+    expect(handoff).toEqual({ steps: 2, frames: 3, video: true, unsaved: 0 });
     const after = draft()!;
     expect(after.attachments.map((attachment) => attachment.type)).toEqual([
       "file",
@@ -134,7 +134,7 @@ describe("handOffDeviceRecording", () => {
       context: "iPhone 17e (iOS 27.2)",
     });
     // Eight slots: six taken, one for the video, one screenshot.
-    expect(handoff).toEqual({ steps: 2, frames: 1, video: true });
+    expect(handoff).toEqual({ steps: 2, frames: 1, video: true, unsaved: 0 });
     expect(draft()!.attachments).toHaveLength(8);
 
     useComposerDraftStore.setState({ draftsByThreadKey: {} });
@@ -145,7 +145,7 @@ describe("handOffDeviceRecording", () => {
       result: result(3),
       context: "Pixel 9",
     });
-    expect(textOnly).toEqual({ steps: 2, frames: 0, video: true });
+    expect(textOnly).toEqual({ steps: 2, frames: 0, video: true, unsaved: 0 });
     expect(draft()!.prompt).toContain("No screenshots: the selected model takes no images.");
   });
 
@@ -159,7 +159,7 @@ describe("handOffDeviceRecording", () => {
       result: result(2),
       context: "iPhone 17e (iOS 27.2)",
     });
-    expect(full).toEqual({ steps: 2, frames: 0, video: false });
+    expect(full).toEqual({ steps: 2, frames: 0, video: false, unsaved: 0 });
     expect(draft()!.attachments).toHaveLength(8);
     expect(draft()!.prompt).toContain('1. Tapped button "General"');
 
@@ -231,5 +231,61 @@ describe("handOffDeviceRecording", () => {
     expect(useKeptDeviceRecordings.getState()[threadKey]?.map((kept) => kept.message)).toEqual([
       "The draft cannot keep the video through a reload.",
     ]);
+  });
+
+  it("keeps unsaved screenshots for download when a recording without video does not fit", async () => {
+    // Screenshots worth saving: noise does not compress.
+    const noisy = document.createElement("canvas");
+    noisy.width = 600;
+    noisy.height = 1200;
+    const context = noisy.getContext("2d")!;
+    const pixels = context.createImageData(noisy.width, noisy.height);
+    for (let index = 0; index < pixels.data.length; index++) {
+      pixels.data[index] = index % 4 === 3 ? 255 : Math.floor(Math.random() * 256);
+    }
+    context.putImageData(pixels, 0, 0);
+    const frame = await new Promise<Blob>((resolve) =>
+      noisy.toBlob((blob) => resolve(blob!), "image/png"),
+    );
+    const base = result(2);
+    const recorded = {
+      ...base,
+      captures: base.captures.map((capture) => ({ ...capture, frame })),
+      video: null,
+      videoMissing: "this browser cannot record video",
+    };
+
+    // Leave room for the step log, not for the screenshots.
+    let room = 0;
+    for (let size = 6_000_000; size > 0; size -= 20_000) {
+      try {
+        localStorage.setItem("handoff-test-probe", "x".repeat(size));
+        room = size;
+        break;
+      } catch {
+        // Too big; try smaller.
+      }
+    }
+    localStorage.removeItem("handoff-test-probe");
+    localStorage.setItem("handoff-test-filler", "x".repeat(Math.max(0, room - 40_000)));
+    try {
+      const handoff = await handOffDeviceRecording({
+        threadKey,
+        threadRef,
+        result: recorded,
+        context: "iPhone 17e (iOS 27.2)",
+      });
+      expect(handoff.frames).toBe(2);
+      expect(handoff.unsaved).toBe(2);
+      const kept = useKeptDeviceRecordings.getState()[threadKey] ?? [];
+      expect(kept.map((entry) => entry.message)).toEqual([
+        "The draft cannot keep 2 screenshots through a reload.",
+      ]);
+      expect(kept[0]?.files.map((entry) => entry.fileName)).toEqual(
+        draft()!.attachments.map((attachment) => attachment.name),
+      );
+    } finally {
+      localStorage.removeItem("handoff-test-filler");
+    }
   });
 });

@@ -170,35 +170,51 @@ export function DevicePanel(props: {
       />
     ) : null;
 
-  // One line per video kept for download, each with its own name, oldest first.
-  const keptLine = kept?.map((entry) => (
-    <div
-      key={entry.id}
-      role="status"
-      className="flex h-8 shrink-0 items-center gap-1.5 pr-1.5 pl-3 text-xs"
-    >
-      <p className="min-w-0 flex-1 truncate text-muted-foreground" title={entry.message}>
-        {entry.message}
-      </p>
-      <Button
-        size="xs"
-        variant="outline"
-        tooltip={entry.fileName}
-        render={<a href={entry.url} download={entry.fileName} />}
+  // One line per recording kept for download, oldest first.
+  const keptLine = kept?.map((entry) => {
+    const only = entry.files.length === 1 ? entry.files[0] : undefined;
+    const label = only ? only.fileName : `${entry.files.length} files`;
+    return (
+      <div
+        key={entry.id}
+        role="status"
+        className="flex h-8 shrink-0 items-center gap-1.5 pr-1.5 pl-3 text-xs"
       >
-        <DownloadIcon />
-        Download
-      </Button>
-      <Button
-        size="icon-xs"
-        variant="ghost"
-        aria-label={`Dismiss ${entry.fileName}`}
-        onClick={() => dismissKeptDeviceRecording(threadKey, entry.id)}
-      >
-        <XIcon />
-      </Button>
-    </div>
-  ));
+        <p className="min-w-0 flex-1 truncate text-muted-foreground" title={entry.message}>
+          {entry.message}
+        </p>
+        {only ? (
+          <Button
+            size="xs"
+            variant="outline"
+            tooltip={only.fileName}
+            render={<a href={only.url} download={only.fileName} />}
+          >
+            <DownloadIcon />
+            Download
+          </Button>
+        ) : (
+          <Button
+            size="xs"
+            variant="outline"
+            tooltip={entry.files.map((file) => file.fileName).join(", ")}
+            onClick={() => downloadKeptFiles(entry.files)}
+          >
+            <DownloadIcon />
+            Download {entry.files.length}
+          </Button>
+        )}
+        <Button
+          size="icon-xs"
+          variant="ghost"
+          aria-label={`Dismiss ${label}`}
+          onClick={() => dismissKeptDeviceRecording(threadKey, entry.id)}
+        >
+          <XIcon />
+        </Button>
+      </div>
+    );
+  });
 
   if (activeDevice && activeSession) {
     return (
@@ -262,6 +278,20 @@ export function DevicePanel(props: {
       )}
     </div>
   );
+}
+
+/** Downloads each kept file, one link click apiece (no archive format is bundled). */
+function downloadKeptFiles(
+  files: ReadonlyArray<{ readonly fileName: string; readonly url: string }>,
+) {
+  for (const file of files) {
+    const link = document.createElement("a");
+    link.href = file.url;
+    link.download = file.fileName;
+    document.body.append(link);
+    link.click();
+    link.remove();
+  }
 }
 
 /** What the tab shows for a chip whose device floats over the chat. */

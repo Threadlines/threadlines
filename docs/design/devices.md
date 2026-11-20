@@ -199,9 +199,12 @@ Settled by the build (chips, float, recording, event log):
   its size; a new one over 3.5 MB (more characters than storage holds) is not
   tried, since trying fails the whole write. When a write fails anyway
   (storage full), what storage still holds stays saved and only the new
-  attachments are marked unsaved; a recording's video then goes to the Device
-  tab's download notice. The step log is appended after the prompt with the
-  prompt left exactly as it was.
+  attachments are marked unsaved; every recording file left unsaved (video or
+  screenshots) goes to the Device tab's download notice, and the toast says
+  the recording was not all saved. A save whose file reads finish after the
+  draft's attachments changed writes nothing (the newer list saves itself);
+  the hand-off then saves again on the current list. The step log is appended
+  after the prompt with the prompt left exactly as it was.
 - **Stopping.** Stop and both caps end capture at once (the video stops
   itself at its byte budget too); a Tools action still running when Stop
   comes is logged when it answers, before the recording closes.

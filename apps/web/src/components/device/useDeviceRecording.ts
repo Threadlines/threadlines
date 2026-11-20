@@ -86,14 +86,23 @@ export function useDeviceRecording(options: {
         }),
       )
       .then(
-        ({ steps, frames, video }) =>
-          toastManager.add({
-            type: "success",
-            title: "Recording added to the draft",
-            description: `${steps === 1 ? "1 step" : `${steps} steps`}${
-              frames > 0 ? `, ${frames === 1 ? "1 screenshot" : `${frames} screenshots`}` : ""
-            }${video ? " and a video" : ""}. Edit it, then send.`,
-          }),
+        ({ steps, frames, video, unsaved }) =>
+          toastManager.add(
+            unsaved > 0
+              ? {
+                  // The draft holds them now, but a reload would not: say so.
+                  type: "warning",
+                  title: "Recording added, not all of it saved",
+                  description: `${unsaved === 1 ? "1 file" : `${unsaved} files`} will not survive a reload. Download them from the Device tab.`,
+                }
+              : {
+                  type: "success",
+                  title: "Recording added to the draft",
+                  description: `${steps === 1 ? "1 step" : `${steps} steps`}${
+                    frames > 0 ? `, ${frames === 1 ? "1 screenshot" : `${frames} screenshots`}` : ""
+                  }${video ? " and a video" : ""}. Edit it, then send.`,
+                },
+          ),
         (cause: unknown) =>
           toastManager.add({
             type: "error",
