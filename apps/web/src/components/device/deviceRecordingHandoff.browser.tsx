@@ -1,8 +1,13 @@
 import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
 import { EnvironmentId, ThreadId } from "@threadlines/contracts";
-import { beforeEach, describe, expect, it } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 
-import { type ComposerAttachment, useComposerDraftStore } from "~/composerDraftStore";
+import { saveComposerDraftAttachments } from "~/composerDraftAttachmentSave";
+import {
+  COMPOSER_DRAFT_STORAGE_KEY,
+  type ComposerAttachment,
+  useComposerDraftStore,
+} from "~/composerDraftStore";
 import { publishComposerImageSupport } from "../chat/composerImageSupport";
 import type { DeviceRecorderResult } from "./deviceRecorder";
 import { handOffDeviceRecording, useKeptDeviceRecordings } from "./deviceRecordingHandoff";
@@ -46,8 +51,10 @@ function result(frames: number): DeviceRecorderResult {
   };
 }
 
-function existingFile(id: string): ComposerAttachment {
-  const file = new File([new Uint8Array([1, 2, id.length])], `${id}.txt`, { type: "text/plain" });
+function existingFile(id: string, bytes = 3): ComposerAttachment {
+  const file = new File([new Uint8Array(bytes).fill(id.length)], `${id}.txt`, {
+    type: "text/plain",
+  });
   return {
     type: "file",
     kind: "text",
@@ -61,11 +68,28 @@ function existingFile(id: string): ComposerAttachment {
 
 const draft = () => useComposerDraftStore.getState().getComposerDraft(threadRef);
 
+/** The attachment ids local storage holds for the thread's draft, after pending writes land. */
+async function savedIds(): Promise<ReadonlyArray<string>> {
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  const raw = localStorage.getItem(COMPOSER_DRAFT_STORAGE_KEY);
+  const stored = raw
+    ? (JSON.parse(raw) as {
+        state: { draftsByThreadKey: Record<string, { attachments?: Array<{ id: string }> }> };
+      })
+    : null;
+  return (stored?.state.draftsByThreadKey[threadKey]?.attachments ?? []).map((entry) => entry.id);
+}
+
 describe("handOffDeviceRecording", () => {
   beforeEach(() => {
     useComposerDraftStore.setState({ draftsByThreadKey: {}, draftThreadsByThreadKey: {} });
     useKeptDeviceRecordings.setState({}, true);
     publishComposerImageSupport(threadKey, true);
+  });
+
+  afterEach(() => {
+    useComposerDraftStore.setState({ draftsByThreadKey: {}, draftThreadsByThreadKey: {} });
+    localStorage.removeItem(COMPOSER_DRAFT_STORAGE_KEY);
   });
 
   it("appends the step log, video and screenshots to the draft, keeping what was there", async () => {
@@ -153,6 +177,59 @@ describe("handOffDeviceRecording", () => {
     expect(useKeptDeviceRecordings.getState()[threadKey]?.map((kept) => kept.message)).toEqual([
       "No free slot in the draft for the video.",
       "The video ran past the 10 MB attachment limit.",
+    ]);
+  });
+
+  it("saves what it added though the thread's composer is not on screen", async () => {
+    await handOffDeviceRecording({
+      threadKey,
+      threadRef,
+      result: result(2),
+      context: "iPhone 17e (iOS 27.2)",
+    });
+    const attachments = draft()!.attachments.map((attachment) => attachment.id);
+    expect(attachments).toHaveLength(3);
+    expect(draft()!.nonPersistedAttachmentIds).toEqual([]);
+    expect(await savedIds()).toEqual(attachments);
+    expect(useKeptDeviceRecordings.getState()[threadKey]).toBeUndefined();
+  });
+
+  it("leaves the prompt exactly as it was, ahead of the step log", async () => {
+    const prompt = "Look:  \n- a list item\t";
+    useComposerDraftStore.getState().setPrompt(threadRef, prompt);
+    await handOffDeviceRecording({
+      threadKey,
+      threadRef,
+      result: result(0),
+      context: "iPhone 17e (iOS 27.2)",
+    });
+    expect(draft()!.prompt.startsWith(`${prompt}\n\nRecorded on iPhone 17e`)).toBe(true);
+  });
+
+  it("never costs a saved attachment when the recording does not fit in storage", async () => {
+    // About 2.7 million characters saved, then a video of 3.3 million: together
+    // past the 5.2 million local storage holds.
+    useComposerDraftStore.getState().addAttachments(threadRef, [existingFile("saved", 2_000_000)]);
+    await saveComposerDraftAttachments(threadRef);
+    expect(await savedIds()).toEqual(["saved"]);
+
+    const big = result(0);
+    await handOffDeviceRecording({
+      threadKey,
+      threadRef,
+      result: {
+        ...big,
+        video: {
+          ...big.video!,
+          blob: new Blob([new Uint8Array(2_500_000)], { type: "video/webm" }),
+        },
+      },
+      context: "iPhone 17e (iOS 27.2)",
+    });
+    expect(await savedIds()).toEqual(["saved"]);
+    expect(draft()!.persistedAttachments.map((attachment) => attachment.id)).toEqual(["saved"]);
+    expect(useKeptDeviceRecordings.getState()[threadKey]?.map((kept) => kept.message)).toEqual([
+      "The draft cannot keep the video through a reload.",
     ]);
   });
 });
