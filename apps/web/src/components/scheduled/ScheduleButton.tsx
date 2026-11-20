@@ -143,6 +143,17 @@ export function ScheduleButton({
   const [open, setOpen] = useState(false);
   const [page, setPage] = useState<"main" | "timeZone">("main");
   const cronRef = useRef<HTMLInputElement>(null);
+  const pageRef = useRef<HTMLDivElement>(null);
+  // Moving between pages keeps the keyboard's place: the page's first
+  // control, and back on the main page the row that opened the other.
+  const showPage = (next: "main" | "timeZone") => {
+    setPage(next);
+    const target =
+      next === "timeZone" ? "scheduled-form-time-zone" : "scheduled-schedule-time-zone";
+    requestAnimationFrame(() =>
+      pageRef.current?.querySelector<HTMLElement>(`[data-testid="${target}"]`)?.focus(),
+    );
+  };
   const kind = form.cadenceKind;
   const isEvent = kind === "webhook";
   const clock = !isEvent && kind !== "manual";
@@ -178,7 +189,7 @@ export function ScheduleButton({
         }
       >
         <CalendarClockIcon aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
-        <span className="min-w-0 truncate">{scheduleSummary(form)}</span>
+        <span className="min-w-0 truncate">{scheduleSummary(form, undefined, hour12)}</span>
         <DropdownChevron solid={false} />
       </PopoverTrigger>
       <PopoverPopup
@@ -188,12 +199,12 @@ export function ScheduleButton({
         data-testid="scheduled-schedule-popover"
       >
         {page === "timeZone" ? (
-          <div className="flex flex-col gap-2.5">
+          <div ref={pageRef} className="flex flex-col gap-2.5">
             <button
               type="button"
               className="flex w-fit cursor-pointer items-center gap-1 rounded-md pe-1.5 text-[13px] font-medium text-foreground focus-ring"
               data-testid="scheduled-schedule-back"
-              onClick={() => setPage("main")}
+              onClick={() => showPage("main")}
             >
               <ChevronLeftIcon aria-hidden="true" className="size-4 text-muted-foreground" />
               Time zone
@@ -209,7 +220,7 @@ export function ScheduleButton({
             <p className="text-[12px] leading-4 text-muted-foreground">{ZONE_HINT}</p>
           </div>
         ) : (
-          <div className="flex flex-col gap-2.5">
+          <div ref={pageRef} className="flex flex-col gap-2.5">
             <PopoverRow label="Repeat">
               <Select
                 value={kind}
@@ -366,7 +377,7 @@ export function ScheduleButton({
                   value={zoneLabel}
                   opens
                   testId="scheduled-schedule-time-zone"
-                  onClick={() => setPage("timeZone")}
+                  onClick={() => showPage("timeZone")}
                 />
               ) : null}
               <MoreRow

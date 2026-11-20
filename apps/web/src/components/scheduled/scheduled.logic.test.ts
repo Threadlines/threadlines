@@ -236,6 +236,10 @@ describe("the task form", () => {
   it("words the schedule button as the task list does, or the kind while half set up", () => {
     expect(scheduleSummary(form(), "UTC")).toMatch(/^Weekdays at 9:00/);
     expect(scheduleSummary(form(), "Europe/Madrid")).toMatch(/ · UTC$/);
+    // Times follow the app's clock setting, not only the locale.
+    expect(scheduleSummary({ ...form(), time: { hour: 17, minute: 0 } }, "UTC", false)).toBe(
+      "Weekdays at 17:00",
+    );
     expect(scheduleSummary({ ...form(), cadenceKind: "custom", cron: " " }, "UTC")).toBe(
       "Custom cron rule",
     );

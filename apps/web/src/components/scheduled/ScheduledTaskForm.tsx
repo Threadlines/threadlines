@@ -340,6 +340,11 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
 
   const continueThread = (threadId: ThreadId) => {
     if (form.environmentId === null) return;
+    // Back to the thread it continued: its agent, model and access stay as set.
+    if (threadId === form.threadId) {
+      update({ target: "thread" });
+      return;
+    }
     // Another thread: its runs are for that thread's own agent, and start
     // from its model and access.
     const shell = selectEnvironmentState(useStore.getState(), form.environmentId).threadShellById[
@@ -355,7 +360,11 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
     });
   };
 
+  // One save at a time: the button is off while it runs, but the keyboard
+  // shortcut can submit again before it re-renders.
+  const savingRef = useRef(false);
   const save = async () => {
+    if (savingRef.current) return;
     setSubmitted(true);
     const draft = formDraft(form);
     if (Object.keys(problems).length > 0 || draft === null || form.environmentId === null) {
@@ -373,6 +382,7 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
       });
       return;
     }
+    savingRef.current = true;
     setSaving(true);
     try {
       if (editing) {
@@ -393,6 +403,7 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
         }),
       );
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
@@ -422,8 +433,10 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
   const hasModelPicker = selection !== null && instanceEntries.length > 0;
   const shownTraits =
     traitsTarget !== null && shouldRenderTraitsControls(traitsTarget) ? traitsTarget : null;
+  // The level the task saves, not the one its agent would run at today: a
+  // task runs later, unattended, at whatever its agent offers then.
   const accessControl: ComposerAccessControl = {
-    value: access?.shown ?? form.runtimeMode,
+    value: form.runtimeMode,
     options:
       access?.options ??
       RUNTIME_MODES.map((mode) => ({ mode, ...runtimeModeConfig[mode], disabled: false })),
@@ -558,10 +571,23 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
           checkout={form.checkout}
           showCheckout={!isGeneralChats}
           threads={projectThreads}
+          keptThread={
+            form.threadId === null
+              ? null
+              : {
+                  id: form.threadId,
+                  title:
+                    threads.find((thread) => thread.id === form.threadId)?.title ??
+                    "The thread it continued",
+                }
+          }
           agents={continuedAgents}
           environments={environments}
           environmentId={form.environmentId}
-          computerFixed={editing !== null || environments.length < 2}
+          // A draft on a computer that disconnected can still move to another.
+          computerFixed={
+            editing !== null || (environments.length < 2 && chosenEnvironment !== undefined)
+          }
           onNewThread={() => update({ target: "new_thread" })}
           onContinueThread={continueThread}
           onAgent={(agent) =>

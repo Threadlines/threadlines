@@ -391,8 +391,21 @@ describe("ChatView (full app): event tasks", () => {
         ),
       );
 
-      await page.getByTestId("scheduled-form-save").click();
+      // Cmd/Ctrl+Enter in the prompt saves, once however fast it's pressed.
+      const prompt = byTestId("scheduled-form-prompt")!;
+      for (let press = 0; press < 2; press += 1) {
+        prompt.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "Enter",
+            metaKey: true,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      }
       await vi.waitFor(() => expect(requestsOf(WS_METHODS.scheduledTasksCreate)).toHaveLength(1));
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(requestsOf(WS_METHODS.scheduledTasksCreate)).toHaveLength(1);
       expect(requestsOf(WS_METHODS.scheduledTasksCreate)[0]).toMatchObject({
         name: "Friday review",
         prompt: "Summarize the week.",

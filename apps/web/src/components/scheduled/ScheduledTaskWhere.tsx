@@ -138,6 +138,7 @@ export function TaskRunsSentence({
   checkout,
   showCheckout,
   threads,
+  keptThread,
   agents,
   environments,
   environmentId,
@@ -156,6 +157,12 @@ export function TaskRunsSentence({
   readonly showCheckout: boolean;
   /** The project's open threads, most recent first. */
   readonly threads: ReadonlyArray<SidebarThreadSummary>;
+  /**
+   * The thread the task continues, or last picked: listed even when it isn't
+   * among the recent open ones (older, or archived), so switching to a new
+   * thread and back can always return to it.
+   */
+  readonly keptThread: { readonly id: ThreadId; readonly title: string } | null;
   /** The continued thread's agents, where it has a room. */
   readonly agents: ReadonlyArray<ContinuedAgent>;
   readonly environments: ReadonlyArray<ScheduledTaskEnvironment>;
@@ -169,7 +176,15 @@ export function TaskRunsSentence({
   readonly onComputer: (environmentId: EnvironmentId) => void;
 }) {
   const continuing = target === "thread";
-  const thread = threads.find((entry) => entry.id === threadId);
+  const listedThreads = threads.slice(0, LISTED_THREADS).map((entry) => ({
+    id: entry.id,
+    title: entry.title,
+  }));
+  const shownThreads =
+    keptThread !== null && !listedThreads.some((entry) => entry.id === keptThread.id)
+      ? [keptThread, ...listedThreads]
+      : listedThreads;
+  const thread = shownThreads.find((entry) => entry.id === threadId);
   const goesTo = agents.find((agent) => agent.id === threadParticipantId);
   const computerLabel =
     environments.find((entry) => entry.environmentId === environmentId)?.label ?? null;
@@ -198,10 +213,10 @@ export function TaskRunsSentence({
           <MenuSeparator />
           <MenuGroup>
             <MenuGroupLabel>Continue a thread</MenuGroupLabel>
-            {threads.length === 0 ? (
+            {shownThreads.length === 0 ? (
               <MenuItem disabled>No open threads in this project</MenuItem>
             ) : (
-              threads.slice(0, LISTED_THREADS).map((entry) => (
+              shownThreads.map((entry) => (
                 <MenuRadioItem
                   key={entry.id}
                   value={entry.id}
@@ -282,7 +297,11 @@ export function TaskRunsSentence({
   );
 
   const computer = computerFixed ? (
-    <span className="text-foreground" data-testid="scheduled-form-computer">
+    <span
+      className="text-foreground"
+      title="It keeps the task and runs it."
+      data-testid="scheduled-form-computer"
+    >
       {computerLabel ?? "this computer"}
     </span>
   ) : (

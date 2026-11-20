@@ -107,12 +107,16 @@ export function taskRunStatus(
 /** The viewer's own zone. */
 export { viewerTimeZone } from "../../lib/timeZones";
 
-/** A wall time in the viewer's locale ("9:00", "9:00 AM"). */
-export function formatClock(clock: ScheduledTaskClock): string {
+/**
+ * A wall time in the viewer's locale ("9:00", "9:00 AM"); `hour12` follows
+ * the app's clock setting where the caller has it, else the locale decides.
+ */
+export function formatClock(clock: ScheduledTaskClock, hour12?: boolean): string {
   return new Intl.DateTimeFormat(undefined, {
     hour: "numeric",
     minute: "2-digit",
     timeZone: "UTC",
+    ...(hour12 !== undefined ? { hour12 } : {}),
   }).format(Date.UTC(2000, 0, 1, clock.hour, clock.minute));
 }
 
@@ -136,8 +140,13 @@ export function formatCadenceDay(date: string, nowMs: number = Date.now()): stri
 export function describeTaskSchedule(
   task: Pick<ScheduledTask, "cadence" | "timeZone">,
   viewerZone: string = viewerTimeZone(),
+  hour12?: boolean,
 ): string {
-  const words = describeCadence(task.cadence, formatClock, formatCadenceDay);
+  const words = describeCadence(
+    task.cadence,
+    (clock) => formatClock(clock, hour12),
+    formatCadenceDay,
+  );
   return task.cadence.kind === "manual" ||
     task.cadence.kind === "webhook" ||
     task.timeZone === viewerZone
@@ -931,13 +940,15 @@ export function customCadencePatch(
 
 /**
  * What the schedule button says: the schedule in a few words, as the task
- * list words it ("Weekdays at 9:00 AM", "Mondays at 9:00 AM · Europe/Madrid"),
+ * list words it ("Weekdays at 9:00 AM", "Mondays at 9:00 AM · Europe/Madrid")
+ * with times in the app's clock setting (`hour12`),
  * or the kind while it's only half set up (a cron rule not written yet, an
  * event task without its repository).
  */
 export function scheduleSummary(
   form: ScheduledTaskForm,
   viewerZone: string = viewerTimeZone(),
+  hour12?: boolean,
 ): string {
   if (form.cadenceKind === "custom" && form.cron.trim().length === 0) return "Custom cron rule";
   if (
@@ -947,7 +958,11 @@ export function scheduleSummary(
   ) {
     return CADENCE_KIND_LABELS.webhook;
   }
-  return describeTaskSchedule({ cadence: formCadence(form), timeZone: form.timeZone }, viewerZone);
+  return describeTaskSchedule(
+    { cadence: formCadence(form), timeZone: form.timeZone },
+    viewerZone,
+    hour12,
+  );
 }
 
 export type FormProblems = Partial<
