@@ -2416,8 +2416,14 @@ export default function Sidebar() {
                             </React.Fragment>
                           );
                         }
-                        const { entry, children, remoteChildren, openChild, startedBy } =
-                          shelfRow.row;
+                        const {
+                          entry,
+                          children,
+                          remoteChildren,
+                          openChild,
+                          childShortTitles,
+                          startedBy,
+                        } = shelfRow.row;
                         return (
                           <React.Fragment key={entry.threadKey}>
                             {dayGroup !== null ? <InboxWrappedDayLabel group={dayGroup} /> : null}
@@ -2450,6 +2456,7 @@ export default function Sidebar() {
                             {openChild ? (
                               <InboxChildRow
                                 thread={openChild.thread}
+                                shortTitle={childShortTitles.get(openChild.threadKey)}
                                 status={openChild.status}
                                 isDone
                                 doneAt={openChild.doneAt}
