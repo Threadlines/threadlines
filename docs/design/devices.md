@@ -61,15 +61,24 @@ SSH hosts removed:
   devices". Reuse our pinned-npm installer (`provider/acpRegistry/AcpRegistryInstaller.ts`,
   `npmPinnedFlags`) and managed Node where they fit instead of copying T3's
   `npm install --prefix`. Install scripts stay on: the hub's native addons
-  need them. Runs with the server's Node; never `npx`. Keeps the last two
-  versions (`deviceToolMaintenance.ts`).
+  need them. npm and both tools run on Threadlines' managed Node.js
+  (`<stateDir>/tools/node`, shared with community agents, leased while a tool
+  runs), never `npx` and never the server's own runtime, which is Electron in
+  the desktop app. Both tools load only N-API addons, so a later Node.js
+  release runs an earlier install. Keeps the pinned version and the last
+  other one, never one a running process was started from
+  (`pruneDeviceTool`, in place of T3's `deviceToolMaintenance.ts`).
 - `DeviceHost.ts`: the seam. One implementation, `LocalDeviceHost.ts`.
 - `LocalDeviceHost.ts`: platform checks (macOS + `xcrun` for iOS; full Android
   SDK for Android), spawns the hub as a supervised child on a reserved loopback
   port with `--host 127.0.0.1`, restarts it with backoff, records
   `{pid, port, entryPath}` in `<stateDir>/device/hub.json` so the next server
   stops a hub this one left behind (checked by pid AND command line, never by
-  name), and the same for the agent-device daemon.
+  name). The hub's own state file goes to `<stateDir>/device/hub-state`
+  (`EXPO_DEVICE_HUB_STATE_DIR`), not the shared temp folder. The daemon
+  records itself in `<stateDir>/device/agent-device/daemon.json`; a healthy
+  daemon on the pinned version is reused, one on another pin is stopped
+  through its own CLI and replaced.
 - `DeviceHubOperations.ts`: list, boot, shutdown, screenshot through the hub.
 - `DeviceService.ts`: state (`DeviceServiceState`), sessions per thread,
   open/close/shutdown, `revision` for subscribers, stop the hub and daemon on
@@ -81,7 +90,9 @@ SSH hosts removed:
   session of every claim whose thread was archived, deleted or moved while the
   server was down (sweep like `secrets/AgentSecretRequests.ts`), and keeps the
   rest. A reactor releases claims on `thread.archived`, `thread.move-started`
-  and `thread.deleted`. Closing never shuts a simulator down unless asked
+  and `thread.deleted`. Ending a session ends its agent-device session on the
+  daemon (`close` over the daemon's RPC, which quits the app it opened and
+  frees the device) and removes its launcher. Closing never shuts a simulator down unless asked
   (`shutdown: true` or the power button), the same as T3: a simulator the user
   booted is theirs. `bootedByThreadlines` is shown in the picker so the user
   can tell which ones Threadlines started.
@@ -116,9 +127,12 @@ unauthenticated `/api`; serve-emu's action routes have no auth. So:
    agent-device daemon, found through the listening-port scan
    (`preview/parseListeningPorts.ts`, `LocalServers.ts`) by pid tree and by
    command line, so it also covers another server's tools. Refusing by name is
-   fine here; killing by name is not. The builder checks whether serve-sim's
-   per-device helpers listen on ports of their own (they would carry touch
-   input without the hub's token) and makes sure this check covers them.
+   fine here; killing by name is not. Checked live with 0.22.1: serve-sim's
+   per-device helper runs inside the hub process and opens no port of its own;
+   an emulator the hub boots is its child, so the pid tree covers its ports.
+   The check runs where `pgrep`, `ps` and `lsof` exist (macOS, Linux); on
+   Windows and in the slim Docker image, where no simulator runs, it is
+   skipped (preview/deviceToolPorts.ts).
 4. Clients reach the hub only through the device channel below, which allows
    T3's stream and read paths and drops cookies and auth headers. **Not
    `/vendor/serve-sim/api` or `/vendor/serve-emu/api`**: serve-sim's body
@@ -175,10 +189,15 @@ Owner and paired clients may both use devices (same rule as terminals).
   their descriptions. `device_open` returns the quick start text and a bound
   launcher path; `device_screenshot` returns an image block.
 - Session flag `ProviderSessionStartInput.deviceTools`, set in
-  `ProviderCommandReactor` when `enableDevices && agentDeviceAccess`. Like the
-  other per-session flags, it applies to sessions started after the switch.
+  `ProviderCommandReactor` when `enableDevices && agentDeviceAccess`, never for
+  a fenced thread (one another computer's agent or an outside agent started:
+  device tools act on this machine). Like the other per-session flags, it
+  applies to sessions started after the switch. Each tool call also checks
+  that both settings are still on, so turning either off stops agents at
+  once, not only in later sessions.
 - **No PATH changes.** `device_open` writes a launcher bound to that thread's
   agent-device session at `<stateDir>/device/bin/<thread>/<device>/agent-device`
+  (a device id with characters unsafe in a path is encoded there)
   and returns its absolute path; the quick start tells the agent to use that
   exact path. This works the same in every provider, including OpenCode, whose
   one server per instance would never see a PATH change made for a later
@@ -193,8 +212,10 @@ Owner and paired clients may both use devices (same rule as terminals).
   use the device tools and `agent-device` for simulator UI work, `simctl`/`adb`
   stay fine for builds, installs and logs. Codex, Claude, OpenCode, Pi, Muse.
   ACP providers get it through tool descriptions only (their existing rule).
-- An agent's `device_open` publishes an activity the web uses to open the
-  Device tab on that device for anyone viewing the thread.
+- An agent's `device_open` records its session with `openedBy: "agent"`. The
+  web watches `subscribeDeviceState` and opens the Device tab on that device
+  for anyone viewing the thread when such a session appears; no orchestration
+  activity is written.
 
 ### Web
 
@@ -213,8 +234,11 @@ Owner and paired clients may both use devices (same rule as terminals).
 
 `ServerSettings.enableDevices` (default false) and
 `ServerSettings.agentDeviceAccess` (default false), plus patch fields. Turning
-"Use devices" off stops the hub and daemon; simulators keep running. Turning
-"Agents can use devices" off removes the tools from sessions started after.
+"Use devices" off ends every device session and stops the hub and daemon;
+simulators keep running. Turning "Agents can use devices" off stops the daemon
+and makes the tools refuse at once; sessions started after do not get them.
+Turning it on fetches agent-device in the background (nothing starts until an
+agent asks), so the first `device_open` is quick.
 Both get app guide places (`devices.enable`, `devices.agentAccess`); agents may
 propose turning on "Use devices" through `settings_change` but agent access is
 user-only (`widensAgents`).
