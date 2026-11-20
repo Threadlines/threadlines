@@ -453,7 +453,7 @@ interface ProjectDraftSession extends DraftSessionState {
  * Raw `ThreadId` is intentionally excluded so callers cannot drop environment
  * identity for real threads.
  */
-type ComposerThreadTarget = ScopedThreadRef | DraftId;
+export type ComposerThreadTarget = ScopedThreadRef | DraftId;
 
 /**
  * Persisted store for composer content plus draft-session metadata.
@@ -662,10 +662,11 @@ interface ComposerDraftStoreState {
   removeFileSelectionContext: (threadRef: ComposerThreadTarget, contextId: string) => void;
   clearFileSelectionContexts: (threadRef: ComposerThreadTarget) => void;
   clearPersistedAttachments: (threadRef: ComposerThreadTarget) => void;
+  /** Resolves once the write was checked and the draft says what was saved. */
   syncPersistedAttachments: (
     threadRef: ComposerThreadTarget,
     attachments: PersistedComposerAttachment[],
-  ) => void;
+  ) => Promise<void>;
   clearComposerContent: (threadRef: ComposerThreadTarget) => void;
   /**
    * Clears exactly what a stash takes: prompt, attachments and the four
@@ -788,6 +789,21 @@ function createEmptyThreadDraft(): ComposerThreadDraftState {
     runtimeMode: null,
     interactionMode: null,
   };
+}
+
+/**
+ * Drafts are saved in local storage, which holds about 5 million characters
+ * per site. An attachment whose data URL alone is longer (a third more than
+ * its bytes) can never be saved there, and trying makes the whole write fail,
+ * every draft's prompt with it. Such an attachment stays in memory only and
+ * is marked unsaved.
+ */
+export const COMPOSER_DRAFT_ATTACHMENT_MAX_SAVED_BYTES = 3_500_000;
+
+export function composerAttachmentFitsDraftStorage(
+  attachment: Pick<ComposerAttachment, "sizeBytes">,
+) {
+  return attachment.sizeBytes <= COMPOSER_DRAFT_ATTACHMENT_MAX_SAVED_BYTES;
 }
 
 /**
@@ -2443,9 +2459,16 @@ function verifyPersistedAttachments(
     replace?: false,
   ) => void,
 ): void {
-  let persistedIdSet = new Set<string>();
   try {
     composerDebouncedStorage.flush();
+  } catch {
+    // A write that failed (storage full) left storage as it was: what it
+    // still holds stays saved, and only the attachments new to this write go
+    // unsaved. Reading nothing here would drop every saved attachment from
+    // the next write too.
+  }
+  let persistedIdSet = new Set<string>();
+  try {
     persistedIdSet = new Set(readPersistedAttachmentIdsFromStorage(threadKey));
   } catch {
     persistedIdSet = new Set();
@@ -4072,7 +4095,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
         syncPersistedAttachments: (threadRef, attachments) => {
           const threadKey = resolveComposerDraftKey(get(), threadRef);
           if (!threadKey) {
-            return;
+            return Promise.resolve();
           }
           const attachmentIdSet = new Set(attachments.map((attachment) => attachment.id));
           set((state) => {
@@ -4096,7 +4119,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             }
             return { draftsByThreadKey: nextDraftsByThreadKey };
           });
-          Promise.resolve().then(() => {
+          return Promise.resolve().then(() => {
             verifyPersistedAttachments(threadKey, attachments, set);
           });
         },

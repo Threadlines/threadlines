@@ -213,6 +213,12 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
    * one without it.
    */
   projectContext: Schema.optionalKey(Schema.Boolean),
+  /**
+   * The Device tab and Settings → Devices (`device.*`, docs/design/devices.md).
+   * Older servers omit it; clients then hide the Device tab, its keybinding,
+   * its palette entry and the Devices settings for them.
+   */
+  devices: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 

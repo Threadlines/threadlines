@@ -1074,6 +1074,19 @@ export const ServerSettings = Schema.Struct({
    */
   enableClaudeArtifacts: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /**
+   * Devices: the Device tab shows iOS Simulators and Android Emulators on
+   * this computer (docs/design/devices.md). Turning it on installs and starts
+   * the device hub when the tab or an agent first asks; off stops the hub.
+   * Simulators keep running either way. Never chosen: off.
+   */
+  enableDevices: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /**
+   * Agents can use devices: sessions started while this and `enableDevices`
+   * are on get the `device_*` tools, and the agent-device command line is
+   * installed. Applies to sessions started after a change. Never chosen: off.
+   */
+  agentDeviceAccess: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /**
    * How many agents Claude aims for when it writes a workflow, for every
    * Claude account. Read when a Claude session starts and before each turn,
    * so a change applies from the next message without a restart.
@@ -1312,6 +1325,8 @@ export const ServerSettingsPatch = Schema.Struct({
   enableRooms: Schema.optionalKey(Schema.Boolean),
   enableAgentPages: Schema.optionalKey(Schema.Boolean),
   enableClaudeArtifacts: Schema.optionalKey(Schema.Boolean),
+  enableDevices: Schema.optionalKey(Schema.Boolean),
+  agentDeviceAccess: Schema.optionalKey(Schema.Boolean),
   claudeWorkflowSize: Schema.optionalKey(ClaudeWorkflowSize),
   claudeSuggestionsWhenUsageRunsFast: Schema.optionalKey(Schema.Boolean),
   codexSuggestions: Schema.optionalKey(Schema.Boolean),

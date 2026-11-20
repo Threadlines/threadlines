@@ -194,6 +194,7 @@ const mainCaller = (): McpInvocationScope => ({
   browser: true,
   pages: true,
   commands: false,
+  device: false,
   roomTools: new Set(roomToolsFor(undefined)),
 });
 

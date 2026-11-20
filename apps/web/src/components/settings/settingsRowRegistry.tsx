@@ -13,6 +13,7 @@ import {
 } from "../theme/ui/ThemeSettingsRows";
 import { ThemeSystemPairRow } from "../theme/ui/ThemeSystemPairRow";
 import { KeepAwakeForScheduledTasksRow, RunInBackgroundRow } from "./DesktopBackgroundRows";
+import { AgentDeviceAccessRow, UseDevicesRow } from "./DevicesSettings";
 import { DownloadedModelsRow, HoldToRecordRow, SpeechModelRow } from "./DictationSettings";
 import type { SettingsRowPlaceId } from "./settingsPlaceAvailability";
 import { ProjectNotesModeRow } from "./ProjectNotesSection";
@@ -184,4 +185,7 @@ export const SETTINGS_ROWS = {
   "connections.sameNetwork": LINK,
   "connections.tailscale": LINK,
   "connections.oneTimeLink": LINK,
+  // Devices
+  "devices.enable": live(UseDevicesRow),
+  "devices.agentAccess": live(AgentDeviceAccessRow),
 } as const satisfies { readonly [Id in SettingsRowPlaceId]: SettingsRowEntry };

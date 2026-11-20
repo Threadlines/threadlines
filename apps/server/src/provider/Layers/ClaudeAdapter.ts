@@ -159,6 +159,7 @@ import { ServerConfig } from "../../config.ts";
 import {
   BROWSER_MCP_SERVER_NAME,
   mcpCommandsEndpointUrl,
+  mcpDeviceEndpointUrl,
   mcpEndpointUrl,
   mcpPagesEndpointUrl,
   mcpRoomEndpointUrl,
@@ -168,6 +169,8 @@ import {
   CLAUDE_COMMAND_TOOL_IDS,
   COMMANDS_MCP_SERVER_NAME,
 } from "../../mcp/commandTools.ts";
+import { CLAUDE_DEVICE_TOOL_IDS, DEVICE_MCP_SERVER_NAME } from "../../mcp/deviceTools.ts";
+import { buildDeviceInstructions } from "../deviceInstructions.ts";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 import { outsideWorkLookup } from "../outsideWorkLookup.ts";
 import { ROOM_TOOL_CALL_TIMEOUT } from "../../mcp/roomToolTimeouts.ts";
@@ -1008,6 +1011,8 @@ export function buildClaudeSystemPromptAppend(input: {
   readonly pageAssetsDir: string | undefined;
   readonly artifacts: boolean;
   readonly commandRequests: boolean;
+  /** The device tools (ProviderSessionStartInput.deviceTools). */
+  readonly deviceTools: boolean;
   /** The room endpoint's tools this session may call, when it is attached. */
   readonly room:
     | { readonly tools: ReadonlyArray<RoomToolName>; readonly schedules: boolean }
@@ -1031,6 +1036,7 @@ export function buildClaudeSystemPromptAppend(input: {
       : []),
     ...(input.artifacts ? [CLAUDE_ARTIFACT_INSTRUCTIONS] : []),
     ...(input.commandRequests ? [buildCommandRequestInstructions({})] : []),
+    ...(input.deviceTools ? [buildDeviceInstructions()] : []),
     ...(input.room?.schedules === true
       ? [buildScheduleInstructions({ toolPrefix: roomPrefix, claude: true })]
       : []),
@@ -9613,6 +9619,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       );
       // `ask_user_to_run`: a command card the user runs from the chat.
       const commandRequests = input.commandRequests === true && !lockdown;
+      // The device tools: simulators and emulators on this computer.
+      const deviceTools = input.deviceTools === true && !lockdown;
       const credential =
         !lockdown || roomGrant.attach
           ? yield* mcpSessionRegistry.credentialFor({
@@ -9621,6 +9629,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
               room: roomGrant.attach,
               pages: agentPages,
               commands: commandRequests,
+              device: deviceTools,
               sideKind,
               scheduledRun: input.scheduledRunTools === true,
               guideOnly: roomGrant.guideOnly,
@@ -9687,6 +9696,19 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
                 },
               }
             : {}),
+          ...(credential !== undefined && deviceTools
+            ? {
+                [DEVICE_MCP_SERVER_NAME]: {
+                  type: "http" as const,
+                  url: mcpDeviceEndpointUrl(serverConfig.port),
+                  headers: { Authorization: `Bearer ${credential.token}` },
+                  // Like the others: Claude Code waits for the server before
+                  // the first turn, and each tool's own mark decides whether
+                  // it is in the prompt (toolLoading.ts).
+                  alwaysLoad: true,
+                },
+              }
+            : {}),
         },
         ...(apiModelId ? { model: apiModelId } : {}),
         pathToClaudeCodeExecutable: claudeBinaryPath,
@@ -9698,6 +9720,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
               pageAssetsDir: agentPages ? pageAssets : undefined,
               artifacts,
               commandRequests: credential !== undefined && commandRequests,
+              deviceTools: credential !== undefined && deviceTools,
               room:
                 roomServer !== undefined
                   ? {
@@ -9739,6 +9762,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           ...(credential !== undefined && agentPages ? CLAUDE_PAGE_TOOL_IDS : []),
           // Asking the user to run a command only shows a card; they decide.
           ...(credential !== undefined && commandRequests ? CLAUDE_COMMAND_TOOL_IDS : []),
+          // The user turned on "Agents can use devices"; driving one goes
+          // through the agent-device command, which asks like any command.
+          ...(credential !== undefined && deviceTools ? CLAUDE_DEVICE_TOOL_IDS : []),
         ],
         ...(effectiveEffort
           ? {

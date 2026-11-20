@@ -228,6 +228,13 @@ export const ProviderSessionStartInput = Schema.Struct({
    * docs/terminal-command-runs.md). Never for a locked-down side runtime.
    */
   commandRequests: Schema.optional(Schema.Boolean),
+  /**
+   * Attach the device tools endpoint (`threadlines_device`): `device_list`,
+   * `device_open`, `device_screenshot`, `device_close` (docs/design/devices.md).
+   * Set when "Use devices" and "Agents can use devices" are both on. Never for
+   * a locked-down side runtime.
+   */
+  deviceTools: Schema.optional(Schema.Boolean),
   approvalPolicy: Schema.optional(ProviderApprovalPolicy),
   sandboxMode: Schema.optional(ProviderSandboxMode),
   runtimeMode: RuntimeMode,

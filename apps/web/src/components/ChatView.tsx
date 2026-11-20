@@ -99,6 +99,7 @@ import {
   useRoomRecipientStore,
 } from "../rooms";
 import { ELECTRON_HEADER_HEIGHT_CLASS } from "../desktopChrome";
+import { useDevicesSupported } from "./device/deviceState";
 import { isElectron } from "../env";
 import { ensureLocalApi, readLocalApi } from "../localApi";
 import { parseDiffRouteSearch } from "../diffRouteSearch";
@@ -1606,13 +1607,15 @@ export default function ChatView(props: ChatViewProps) {
   // Which surfaces this thread's sidebar offers. Resolved from the same inputs
   // the route uses, so the header's entry points can never land on a tab the
   // strip would refuse to show.
+  const devicesSupported = useDevicesSupported(environmentId);
   const rightPanelAvailableTabs = useMemo(
     () =>
       availableRightPanelTabs({
         isGeneralChat: isGeneralChatThread,
         isDraft: routeKind === "draft" || !isServerThread,
+        devicesSupported,
       }),
-    [isGeneralChatThread, isServerThread, routeKind],
+    [devicesSupported, isGeneralChatThread, isServerThread, routeKind],
   );
   /**
    * A picked element becomes a context attached to the message, not text in it.

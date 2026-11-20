@@ -223,6 +223,22 @@ import type {
   PreviewAutomationResponse,
 } from "./previewAutomation.ts";
 import type {
+  DeviceActionInput,
+  DeviceChannelCredit,
+  DeviceChannelEvent,
+  DeviceChannelOpen,
+  DeviceChannelSend,
+  DeviceCloseInput,
+  DeviceDetail,
+  DeviceDetailInput,
+  DeviceListInput,
+  DeviceOpenInput,
+  DeviceServiceState,
+  DeviceSession,
+  DeviceShutdownInput,
+  DeviceUpdateToolInput,
+} from "./device.ts";
+import type {
   PreviewLocalServer,
   PreviewTunnelCredit,
   PreviewTunnelEvent,
@@ -1890,6 +1906,35 @@ export interface EnvironmentApi {
     claim: (claim: PreviewAutomationClaim) => Promise<void>;
     /** Only for servers that advertise `browserLoopbackTunnel`. */
     active: (activity: PreviewAutomationActivity) => Promise<void>;
+  };
+  /**
+   * Simulators and emulators on the environment's machine
+   * (docs/design/devices.md). Only for servers that advertise `devices`.
+   */
+  device: {
+    list: (input: DeviceListInput) => Promise<DeviceServiceState>;
+    updateTool: (input: DeviceUpdateToolInput) => Promise<DeviceServiceState>;
+    open: (input: DeviceOpenInput) => Promise<DeviceSession>;
+    close: (input: DeviceCloseInput) => Promise<void>;
+    shutdown: (input: DeviceShutdownInput) => Promise<void>;
+    detail: (input: DeviceDetailInput) => Promise<DeviceDetail>;
+    action: (input: DeviceActionInput) => Promise<DeviceDetail>;
+    /** The state now and after every change, followed again after a reconnect. */
+    subscribeState: (listener: (state: DeviceServiceState) => void) => () => void;
+    /**
+     * One request or socket to the device hub, open until the returned call.
+     * Never resubscribed: `onClosed` comes once when it ends any other way,
+     * with the failure when it failed.
+     */
+    channel: {
+      open: (
+        input: DeviceChannelOpen,
+        listener: (event: DeviceChannelEvent) => void,
+        onClosed: (failure?: unknown) => void,
+      ) => () => void;
+      send: (input: DeviceChannelSend) => Promise<void>;
+      credit: (input: DeviceChannelCredit) => Promise<void>;
+    };
   };
   /**
    * The browser's way to the environment's own `localhost` from another

@@ -402,6 +402,7 @@ export function createMockEnvironmentApi(input: {
     attachments: {} as EnvironmentApi["attachments"],
     previewAutomation: input.previewAutomation ?? ({} as EnvironmentApi["previewAutomation"]),
     previewLoopback: {} as EnvironmentApi["previewLoopback"],
+    device: {} as EnvironmentApi["device"],
     filesystem: {
       browse: input.browse,
     },

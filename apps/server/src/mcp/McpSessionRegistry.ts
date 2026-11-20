@@ -54,6 +54,8 @@ export interface McpInvocationScope {
   readonly pages: boolean;
   /** May ask the user to run commands at `/mcp/commands` (McpCommandsServer). */
   readonly commands: boolean;
+  /** May use the device tools at `/mcp/device` (McpDeviceServer). */
+  readonly device: boolean;
   /** Room tools this credential may call at `/mcp/room`. Empty: none. */
   readonly roomTools: ReadonlySet<RoomToolName>;
   /**
@@ -80,6 +82,8 @@ export interface McpCredentialRequest {
   readonly pages?: boolean | undefined;
   /** `ask_user_to_run`. Never granted to a side runtime, whatever is asked. */
   readonly commands?: boolean | undefined;
+  /** The device tools. Never granted to a side runtime, whatever is asked. */
+  readonly device?: boolean | undefined;
   /**
    * A side runtime's kind. A side key without one is treated as a review,
    * the narrowest.
@@ -156,6 +160,7 @@ export const makeMcpSessionRegistry = (): McpSessionRegistryShape => {
           browser: request.browser && sideKind === undefined,
           pages: request.pages === true && sideKind === undefined,
           commands: request.commands === true && sideKind === undefined,
+          device: request.device === true && sideKind === undefined,
           roomTools: new Set(
             request.room
               ? roomToolsFor(sideKind, {

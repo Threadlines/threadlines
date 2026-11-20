@@ -104,6 +104,7 @@ const caller = (thread: OrchestrationThread, side?: "ask"): McpInvocationScope =
   browser: true,
   pages: true,
   commands: false,
+  device: false,
   roomTools: new Set(roomToolsFor(side)),
   ...(side !== undefined ? { side: { sideTurnId: SideTurnId.make("side-1"), kind: side } } : {}),
 });

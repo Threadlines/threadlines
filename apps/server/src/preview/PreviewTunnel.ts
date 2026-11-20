@@ -8,7 +8,9 @@
  * in contracts) and this opens it on our own loopback and passes the bytes.
  *
  * Every part is about staying a pipe and nothing more: only loopback, so no
- * client gets a way into the network this machine sits on; bytes in the order
+ * client gets a way into the network this machine sits on; never a device
+ * tool's port, which takes actions from anyone on loopback (see
+ * `deviceToolPorts.ts`); bytes in the order
  * the page wrote them, however the calls carrying them were scheduled; and no
  * more in flight than the page is reading, so a stalled page holds the dev
  * server up instead of filling this process with its output.
@@ -34,6 +36,7 @@ import * as Stream from "effect/Stream";
 import * as Net from "node:net";
 
 import { ServerConfig } from "../config.ts";
+import { currentDeviceToolPorts } from "./deviceToolPorts.ts";
 
 /** Tunnels one session may hold open at once; a busy page uses a few dozen. */
 export const PREVIEW_TUNNEL_MAX_PER_SESSION = 256;
@@ -115,7 +118,8 @@ export interface PreviewTunnelShape {
   /**
    * Opens one connection and hands back what it sends. Scoped: the scope
    * closing -- the client unsubscribing, its socket dropping -- destroys it.
-   * Fails when the host is not loopback or nothing answers there.
+   * Fails when the host is not loopback, the port is a device tool's, or
+   * nothing answers there.
    */
   readonly open: (
     sessionId: string,
@@ -299,6 +303,19 @@ const makeTunnels = (options: { readonly ownPort: number }): PreviewTunnelShape 
         else openBySession.set(sessionId, remaining);
       }),
     );
+
+    // Asked afresh for every connection: a port that served a dev server a
+    // moment ago may be the device hub's now.
+    const devicePorts = yield* Effect.promise(() => currentDeviceToolPorts());
+    if (devicePorts === null || devicePorts.has(input.port)) {
+      return yield* new PreviewTunnelError({
+        reason: "notLoopback",
+        detail:
+          devicePorts === null
+            ? "Threadlines couldn't check what is listening on that port, so it didn't open it. Try again."
+            : "That port belongs to device support and can't be previewed.",
+      });
+    }
 
     let lastError: unknown = null;
     let socket: Net.Socket | null = null;

@@ -1,0 +1,347 @@
+// @effect-diagnostics globalTimers:off - The download link's object URL is released on a plain timer.
+import type { DeviceSummary, EnvironmentId, ScopedThreadRef } from "@threadlines/contracts";
+import { captureDeviceScreenshot } from "@threadlines/client-runtime/device";
+import {
+  CameraIcon,
+  ChevronLeftIcon,
+  EllipsisIcon,
+  HomeIcon,
+  KeyboardIcon,
+  MousePointerClickIcon,
+  ScanTextIcon,
+  Layers2Icon,
+  PictureInPicture2Icon,
+  PowerIcon,
+  RotateCwIcon,
+  SlidersHorizontalIcon,
+  SquareIcon,
+  Undo2Icon,
+  XIcon,
+} from "lucide-react";
+import { type ReactNode, useRef, useState } from "react";
+
+import { useMediaQuery } from "~/hooks/useMediaQuery";
+import { cn } from "~/lib/utils";
+import { Button } from "../ui/button";
+import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
+import { DeviceRecordButton, DeviceRecordingStatus } from "./DeviceRecordingBar";
+import { deviceErrorText } from "./deviceState";
+import { DeviceStreamView } from "./DeviceStreamView";
+import { DeviceToolsPanel } from "./DeviceToolsPanel";
+import { useDeviceControls } from "./useDeviceControls";
+import { useDeviceRecording } from "./useDeviceRecording";
+import { useDeviceStream } from "./useDeviceStream";
+
+const DOWNLOAD_URL_LIFETIME_MS = 60_000;
+
+/**
+ * One open device: a toolbar of its hardware buttons and actions, the live
+ * screen, and the Tools drawer. Mount it keyed by computer and device.
+ */
+export function DeviceWorkspace(props: {
+  readonly environmentId: EnvironmentId;
+  readonly device: DeviceSummary;
+  /** The tab is on screen; nothing streams while it is not. */
+  readonly visible: boolean;
+  readonly onBack: () => void;
+  readonly onClose: () => void;
+  readonly onPowerOff: () => void;
+  /** The thread whose draft gets recordings, and its key. */
+  readonly threadRef: ScopedThreadRef;
+  readonly threadKey: string;
+  /** Floats the device over the chat; absent where floating is not offered (the phone layout). */
+  readonly onFloat?: () => void;
+}) {
+  const { device, environmentId, visible } = props;
+  const ios = device.platform === "ios";
+  const { stream, state } = useDeviceStream({
+    environmentId,
+    platform: device.platform,
+    deviceId: device.id,
+    active: visible,
+  });
+  const [toolsOpen, setToolsOpen] = useState(false);
+  // The accessibility overlay, and its inspect mode where a tap reads a label instead of touching.
+  const [axOverlay, setAxOverlay] = useState(false);
+  const [axInspect, setAxInspect] = useState(false);
+  // Read while on screen, not only with Tools open: rotating Android goes through it too.
+  const controls = useDeviceControls({ environmentId, device, visible });
+  const recording = useDeviceRecording({
+    threadKey: props.threadKey,
+    threadRef: props.threadRef,
+    device,
+    stream,
+    visible,
+    appId: controls.foregroundApp?.id ?? null,
+  });
+  // Tools actions that worked become steps of a running recording.
+  const recordedControls = {
+    ...controls,
+    act: (body: Parameters<typeof controls.act>[0]) => {
+      const done = controls.act(body);
+      recording.trackAction(body, done);
+      return done;
+    },
+  };
+  const [screenshotPending, setScreenshotPending] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  // A capture always finishes, even if the panel hides meanwhile; the user asked for it.
+  const capturing = useRef(false);
+
+  const inputReady = state.input.connected;
+  // A touch screen has no hardware keys to send: the Keyboard button raises the
+  // on-screen keyboard over a hidden field whose typing goes to the device.
+  const touchScreen = useMediaQuery({ pointer: "coarse" });
+  const keyboardField = useRef<HTMLTextAreaElement>(null);
+  const press = (button: "home" | "back" | "recents" | "appSwitcher") =>
+    stream.client.pressButton(button);
+  const saveScreenshot = () => {
+    if (capturing.current) return;
+    capturing.current = true;
+    setScreenshotPending(true);
+    setNotice(null);
+    captureDeviceScreenshot(stream.transport, { platform: device.platform, deviceId: device.id })
+      .then((image) => {
+        const url = URL.createObjectURL(image);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = `${device.name.replace(/[^a-z0-9-]/gi, "-")}-${Date.now()}.png`;
+        document.body.append(link);
+        link.click();
+        link.remove();
+        // The browser reads the blob after the click returns.
+        window.setTimeout(() => URL.revokeObjectURL(url), DOWNLOAD_URL_LIFETIME_MS);
+      })
+      .catch((cause: unknown) => setNotice(deviceErrorText(cause)))
+      .finally(() => {
+        capturing.current = false;
+        setScreenshotPending(false);
+      });
+  };
+
+  return (
+    <div className="@container flex min-h-0 min-w-0 flex-1 flex-col" data-testid="device-workspace">
+      <div
+        role="toolbar"
+        aria-label="Device controls"
+        className="flex h-9 shrink-0 items-center gap-0.5 px-1.5"
+      >
+        <ToolbarButton label="All devices" onClick={props.onBack}>
+          <ChevronLeftIcon />
+        </ToolbarButton>
+        {/* The chip row above names the device; the toolbar keeps its room for controls. */}
+        <div className="min-w-0 flex-1" />
+        <ToolbarButton label="Home" disabled={!inputReady} onClick={() => press("home")}>
+          <HomeIcon />
+        </ToolbarButton>
+        {ios ? (
+          <ToolbarButton
+            label="App switcher"
+            disabled={!inputReady}
+            onClick={() => press("appSwitcher")}
+          >
+            <Layers2Icon />
+          </ToolbarButton>
+        ) : (
+          <>
+            <ToolbarButton label="Back" disabled={!inputReady} onClick={() => press("back")}>
+              <Undo2Icon />
+            </ToolbarButton>
+            <ToolbarButton label="Recents" disabled={!inputReady} onClick={() => press("recents")}>
+              <SquareIcon />
+            </ToolbarButton>
+          </>
+        )}
+        {ios ? (
+          <ToolbarButton label="Rotate" disabled={!inputReady} onClick={stream.client.rotate}>
+            <RotateCwIcon />
+          </ToolbarButton>
+        ) : (
+          <Menu>
+            <MenuTrigger
+              render={
+                <Button
+                  size="icon-xs"
+                  variant="ghost"
+                  aria-label="Rotate"
+                  tooltip="Rotate"
+                  disabled={controls.disabled}
+                />
+              }
+            >
+              <RotateCwIcon />
+            </MenuTrigger>
+            <MenuPopup align="end">
+              {(["portrait", "landscape_left"] as const).map((value) => (
+                <MenuItem
+                  key={value}
+                  onClick={() => void recordedControls.act({ type: "setOrientation", value })}
+                >
+                  {value === "portrait" ? "Portrait" : "Landscape"}
+                </MenuItem>
+              ))}
+            </MenuPopup>
+          </Menu>
+        )}
+        {touchScreen ? (
+          <ToolbarButton
+            label="Keyboard"
+            disabled={!inputReady}
+            onClick={() => keyboardField.current?.focus()}
+          >
+            <KeyboardIcon />
+          </ToolbarButton>
+        ) : null}
+        <ToolbarButton
+          label={screenshotPending ? "Saving screenshot…" : "Save screenshot"}
+          disabled={state.status !== "streaming" || screenshotPending}
+          onClick={saveScreenshot}
+        >
+          <CameraIcon />
+        </ToolbarButton>
+        <DeviceRecordButton recording={recording} disabled={state.status !== "streaming"} />
+        {props.onFloat ? (
+          <ToolbarButton label="Float over the chat" onClick={props.onFloat}>
+            <PictureInPicture2Icon />
+          </ToolbarButton>
+        ) : null}
+        <ToolbarButton
+          label={axOverlay ? "Hide accessibility frames" : "Show accessibility frames"}
+          pressed={axOverlay}
+          disabled={state.status !== "streaming"}
+          onClick={() => {
+            setAxOverlay((on) => !on);
+            setAxInspect(false);
+          }}
+        >
+          <ScanTextIcon />
+        </ToolbarButton>
+        {axOverlay ? (
+          <ToolbarButton
+            label={axInspect ? "Stop inspecting" : "Inspect: taps show labels"}
+            pressed={axInspect}
+            onClick={() => setAxInspect((on) => !on)}
+          >
+            <MousePointerClickIcon />
+          </ToolbarButton>
+        ) : null}
+        <ToolbarButton
+          label="Tools"
+          pressed={toolsOpen}
+          onClick={() => setToolsOpen((open) => !open)}
+        >
+          <SlidersHorizontalIcon />
+        </ToolbarButton>
+        <Menu>
+          <MenuTrigger
+            render={<Button size="icon-xs" variant="ghost" aria-label="More" tooltip="More" />}
+          >
+            <EllipsisIcon />
+          </MenuTrigger>
+          <MenuPopup align="end">
+            <MenuItem onClick={props.onClose}>
+              <XIcon />
+              Close device
+            </MenuItem>
+            <MenuSeparator />
+            <MenuItem variant="destructive" onClick={props.onPowerOff}>
+              <PowerIcon />
+              Power off
+            </MenuItem>
+          </MenuPopup>
+        </Menu>
+      </div>
+      <DeviceRecordingStatus recording={recording} />
+      {notice || (controls.error && !toolsOpen) ? (
+        <p
+          role="alert"
+          className="px-3 pb-1 text-xs whitespace-pre-line text-destructive-foreground"
+        >
+          {notice ?? controls.error}
+        </p>
+      ) : null}
+      {state.mode === "stills" ? (
+        <p className="px-3 pb-1 text-xs text-muted-foreground">
+          Showing still frames. The desktop app, https or the relay gives full video.
+        </p>
+      ) : null}
+      {touchScreen ? (
+        <textarea
+          ref={keyboardField}
+          aria-label={`Type on ${device.name}`}
+          className="sr-only"
+          autoCapitalize="off"
+          autoCorrect="off"
+          spellCheck={false}
+          onInput={(event) => {
+            const text = event.currentTarget.value;
+            event.currentTarget.value = "";
+            if (text) stream.client.sendText(text);
+          }}
+          onKeyDown={(event) => {
+            // Keys that type nothing into the field still reach the device.
+            if (event.key !== "Backspace" && event.key !== "Enter") return;
+            event.preventDefault();
+            // On-screen keyboards often leave `code` empty; both names are also codes.
+            const key = new KeyboardEvent("keydown", { key: event.key, code: event.key });
+            stream.client.sendKey(key, "down");
+            stream.client.sendKey(key, "up");
+          }}
+        />
+      ) : null}
+      <div className="relative flex min-h-0 flex-1">
+        <div className="flex min-h-0 min-w-0 flex-1 p-2">
+          <DeviceStreamView
+            platform={device.platform}
+            deviceName={device.name}
+            deviceDescription={device.version}
+            stream={stream}
+            state={state}
+            deviceId={device.id}
+            model={device.model}
+            physical={device.physical}
+            axOverlay={axOverlay}
+            axInspect={axInspect}
+          />
+        </div>
+        {toolsOpen ? (
+          <DeviceToolsPanel
+            device={device}
+            controls={recordedControls}
+            // The event log reads only while the tab is on screen.
+            {...(visible ? { transport: stream.transport } : {})}
+            onClose={() => setToolsOpen(false)}
+            className={cn(
+              // Beside the screen when the panel is wide, floating over it when not.
+              "absolute inset-y-0 right-0 z-20 w-full max-w-72 border-l border-border shadow-lg",
+              "@[560px]:static @[560px]:w-72 @[560px]:shrink-0 @[560px]:shadow-none",
+            )}
+          />
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function ToolbarButton(props: {
+  readonly label: string;
+  readonly disabled?: boolean;
+  readonly pressed?: boolean;
+  readonly onClick: () => void;
+  readonly children: ReactNode;
+}) {
+  return (
+    <Button
+      size="icon-xs"
+      variant="ghost"
+      aria-label={props.label}
+      tooltip={props.label}
+      aria-pressed={props.pressed}
+      data-pressed={props.pressed ? "" : undefined}
+      disabled={props.disabled}
+      onClick={props.onClick}
+    >
+      {props.children}
+    </Button>
+  );
+}

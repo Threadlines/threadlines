@@ -84,6 +84,7 @@ import { ServerConfig } from "../../config.ts";
 import {
   BROWSER_MCP_SERVER_NAME,
   mcpCommandsEndpointUrl,
+  mcpDeviceEndpointUrl,
   mcpEndpointUrl,
   mcpPagesEndpointUrl,
   mcpRoomEndpointUrl,
@@ -92,6 +93,8 @@ import {
   buildCommandRequestInstructions,
   COMMANDS_MCP_SERVER_NAME,
 } from "../../mcp/commandTools.ts";
+import { DEVICE_MCP_SERVER_NAME } from "../../mcp/deviceTools.ts";
+import { buildDeviceInstructions } from "../deviceInstructions.ts";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 import { buildAgentPageInstructions, PAGES_MCP_SERVER_NAME } from "../../mcp/pageTools.ts";
 import { buildGuideInstructions } from "../../mcp/guideTools.ts";
@@ -314,6 +317,7 @@ interface SessionContext {
   readonly scheduleTools: boolean;
   readonly agentPageAssetsDir: string | undefined;
   readonly commandRequests: boolean;
+  readonly deviceTools: boolean;
   readonly managedWorktree: boolean;
   readonly mcpToken: string;
   museSessionId: string;
@@ -1800,6 +1804,9 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
           ...(ctx.commandRequests
             ? { [COMMANDS_MCP_SERVER_NAME]: server(mcpCommandsEndpointUrl(serverConfig.port)) }
             : {}),
+          ...(ctx.deviceTools
+            ? { [DEVICE_MCP_SERVER_NAME]: server(mcpDeviceEndpointUrl(serverConfig.port)) }
+            : {}),
         },
       };
     };
@@ -1812,6 +1819,7 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
           : []),
         // Muse's own names for outside tools are not ours to guess; the bare name is unambiguous.
         ...(ctx.commandRequests ? [buildCommandRequestInstructions({ toolPrefix: "" })] : []),
+        ...(ctx.deviceTools ? [buildDeviceInstructions("")] : []),
         ...(ctx.scheduleTools ? [buildScheduleInstructions({ toolPrefix: "" })] : []),
         ...(ctx.roomEndpoint ? [buildGuideInstructions({ toolPrefix: "" })] : []),
         FILE_LINK_INSTRUCTIONS,
@@ -2212,6 +2220,7 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
           const roomTools = input.roomTools === true;
           const roomGrant = roomEndpointGrant(input, undefined);
           const commandRequests = input.commandRequests === true;
+          const deviceTools = input.deviceTools === true;
           const agentPageAssetsDir =
             input.agentPages === true
               ? yield* ensurePageAssetsDir(parseSessionKey(input.threadId).threadId).pipe(
@@ -2225,6 +2234,7 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
             room: roomGrant.attach,
             pages: agentPageAssetsDir !== undefined,
             commands: commandRequests,
+            device: deviceTools,
             scheduledRun: input.scheduledRunTools === true,
             guideOnly: roomGrant.guideOnly,
           });
@@ -2260,6 +2270,7 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
             scheduleTools: roomTools && input.scheduleTools === true,
             agentPageAssetsDir,
             commandRequests,
+            deviceTools,
             managedWorktree,
             mcpToken: credential.token,
             museSessionId: "",

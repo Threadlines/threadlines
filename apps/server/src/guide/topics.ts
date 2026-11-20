@@ -395,6 +395,33 @@ Show device toolbar, in the browser's options menu (⋮), sets the page's size: 
 Words typed in the browser's address bar are searched for, with the search engine set in {place:general.browserSearchEngine}. An address loads as it always did.`,
   },
   {
+    id: "device-tab",
+    title: "The Device tab",
+    keywords: [
+      "device",
+      "simulator",
+      "emulator",
+      "ios",
+      "android",
+      "iphone",
+      "xcode",
+      "android sdk",
+      "app preview",
+      "device_open",
+      "agent-device",
+      "iphone duo",
+      "foldable",
+      "accessibility frames",
+    ],
+    body: `The Device tab in the right panel shows a live iOS Simulator or Android Emulator running on the thread's computer. You tap, swipe and type on its screen as on a phone. The screen sits in a drawing of the device's model (an unknown model gets a plain frame). The toolbar above it has Home, the app switcher, Back and Recents on Android, rotate, screenshot, accessibility frames and power off. Accessibility frames outline each element on screen and show its label on hover; their Inspect button makes a tap show the label instead of touching the device. An iPhone Duo shows its stance buttons beside the screen (closed, book, open, laptop, tent, and table mode where offered), and an Android foldable shows fold and unfold. The Tools drawer sets appearance, text size, accessibility options, location and permissions, opens a URL, launches or quits an app, shakes the device, sends a test push, and on Android sets the network.
+
+Open it from the right panel's + menu or its launcher, or with Open device in the command palette. It shows in project threads, not General Chats.
+
+iOS needs a Mac with Xcode, and Android needs the Android SDK with the emulator. Opening the tab downloads nothing: {place:devices.enable} has to be on first, and then the device hub installs the first time the tab or an agent asks. {place:devices.tools} shows the installed versions and an Update button when a newer one is needed.
+
+Agents get device tools only while {place:devices.agentAccess} is on, and only in sessions started after it was turned on. An agent that opens a device brings up the Device tab for anyone watching the thread. Closing a device leaves the simulator running; power off shuts it down.`,
+  },
+  {
     id: "file-viewer",
     title: "The file viewer",
     keywords: [

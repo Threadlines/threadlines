@@ -102,6 +102,7 @@ const mainCaller = (
   browser: true,
   pages: true,
   commands: false,
+  device: false,
   roomTools: new Set(tools),
 });
 

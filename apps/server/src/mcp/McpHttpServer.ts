@@ -79,6 +79,15 @@ export function mcpCommandsEndpointUrl(port: number): string {
   return `http://127.0.0.1:${port}${MCP_COMMANDS_ROUTE_PATH}`;
 }
 
+/** The device tools' endpoint (McpDeviceServer, docs/design/devices.md): its
+ *  own server, so a provider lists them only for sessions with `deviceTools`. */
+export const MCP_DEVICE_ROUTE_PATH = "/mcp/device";
+
+/** The device tools' address, on loopback for the same reason. */
+export function mcpDeviceEndpointUrl(port: number): string {
+  return `http://127.0.0.1:${port}${MCP_DEVICE_ROUTE_PATH}`;
+}
+
 /**
  * The same endpoint, in the shape Codex takes it.
  *

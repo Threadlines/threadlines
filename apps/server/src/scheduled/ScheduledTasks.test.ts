@@ -1346,6 +1346,7 @@ it.layer(NodeServices.layer)("schedule tools", (it) => {
     browser: true,
     pages: false,
     commands: false,
+    device: false,
     roomTools: new Set(roomToolsFor(undefined, { scheduledRun })),
   });
 

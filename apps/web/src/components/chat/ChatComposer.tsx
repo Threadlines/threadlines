@@ -17,6 +17,8 @@ import type {
   ThreadId,
   TurnId,
 } from "@threadlines/contracts";
+import { saveComposerDraftAttachments } from "../../composerDraftAttachmentSave";
+import { publishComposerImageSupport } from "./composerImageSupport";
 import { type PromptRecall, recallablePrompts, stepPromptRecall } from "./composerPromptRecall";
 import { containsWorkflowKeyword } from "@threadlines/shared/workflowRuns";
 import { ComposerWorkflowKeywordHint } from "./ComposerWorkflowKeywordHint";
@@ -66,11 +68,7 @@ import {
   expandCollapsedComposerCursor,
   replaceTextRange,
 } from "../../composer-logic";
-import {
-  deriveComposerSendState,
-  desktopCapturedScreenshotToFile,
-  readFileAsDataUrl,
-} from "../ChatView.logic";
+import { deriveComposerSendState, desktopCapturedScreenshotToFile } from "../ChatView.logic";
 import {
   type ComposerAttachment,
   type DraftId,
@@ -868,13 +866,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const updateComposerDraftTranscriptHighlightContextNote = useComposerDraftStore(
     (store) => store.updateTranscriptHighlightContextNote,
   );
-  const clearComposerDraftPersistedAttachments = useComposerDraftStore(
-    (store) => store.clearPersistedAttachments,
-  );
-  const syncComposerDraftPersistedAttachments = useComposerDraftStore(
-    (store) => store.syncPersistedAttachments,
-  );
-  const getComposerDraft = useComposerDraftStore((store) => store.getComposerDraft);
   const clearStashableComposerContent = useComposerDraftStore(
     (store) => store.clearStashableComposerContent,
   );
@@ -1027,6 +1018,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       ),
     [selectedProvider, selectedProviderModels, selectedModel],
   );
+  // A device recording asks before it attaches screenshots to this thread.
+  useEffect(() => {
+    publishComposerImageSupport(scopedThreadKey(routeThreadRef), selectedModelSupportsImages);
+  }, [routeThreadRef, selectedModelSupportsImages]);
 
   const composerProviderState = useMemo(
     () =>
@@ -2719,67 +2714,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // ------------------------------------------------------------------
   // Image persist effect
   // ------------------------------------------------------------------
+  // Saves the attachments whenever they change; a stale run skips its write.
   useEffect(() => {
     let cancelled = false;
-    void (async () => {
-      if (composerAttachments.length === 0) {
-        clearComposerDraftPersistedAttachments(composerDraftTarget);
-        return;
-      }
-      const getPersistedAttachmentsForThread = () =>
-        getComposerDraft(composerDraftTarget)?.persistedAttachments ?? [];
-      try {
-        const currentPersistedAttachments = getPersistedAttachmentsForThread();
-        const existingPersistedById = new Map(
-          currentPersistedAttachments.map((attachment) => [attachment.id, attachment]),
-        );
-        const stagedAttachmentById = new Map<string, PersistedComposerAttachment>();
-        await Promise.all(
-          composerAttachments.map(async (image) => {
-            try {
-              const dataUrl = await readFileAsDataUrl(image.file);
-              stagedAttachmentById.set(image.id, {
-                id: image.id,
-                name: image.name,
-                mimeType: image.mimeType,
-                sizeBytes: image.sizeBytes,
-                dataUrl,
-              });
-            } catch {
-              const existingPersisted = existingPersistedById.get(image.id);
-              if (existingPersisted) {
-                stagedAttachmentById.set(image.id, existingPersisted);
-              }
-            }
-          }),
-        );
-        const serialized = Array.from(stagedAttachmentById.values());
-        if (cancelled) return;
-        syncComposerDraftPersistedAttachments(composerDraftTarget, serialized);
-      } catch {
-        const currentImageIds = new Set(composerAttachments.map((image) => image.id));
-        const fallbackPersistedAttachments = getPersistedAttachmentsForThread();
-        const fallbackPersistedIds = fallbackPersistedAttachments
-          .map((attachment) => attachment.id)
-          .filter((id) => currentImageIds.has(id));
-        const fallbackPersistedIdSet = new Set(fallbackPersistedIds);
-        const fallbackAttachments = fallbackPersistedAttachments.filter((attachment) =>
-          fallbackPersistedIdSet.has(attachment.id),
-        );
-        if (cancelled) return;
-        syncComposerDraftPersistedAttachments(composerDraftTarget, fallbackAttachments);
-      }
-    })();
+    void saveComposerDraftAttachments(composerDraftTarget, {
+      attachments: composerAttachments,
+      cancelled: () => cancelled,
+    });
     return () => {
       cancelled = true;
     };
-  }, [
-    composerDraftTarget,
-    clearComposerDraftPersistedAttachments,
-    composerAttachments,
-    getComposerDraft,
-    syncComposerDraftPersistedAttachments,
-  ]);
+  }, [composerDraftTarget, composerAttachments]);
 
   // ------------------------------------------------------------------
   // Callbacks: prompt change

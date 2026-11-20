@@ -79,6 +79,8 @@ interface PlaceSignals {
   readonly remotelyReachable: boolean;
   /** This computer keeps project briefs and notes. */
   readonly projectContext: boolean;
+  /** This computer's server has devices (capability `devices`). */
+  readonly devices: boolean;
 }
 
 /**
@@ -123,6 +125,12 @@ const SHOWN_WHEN: Partial<Record<SettingsPlaceSearchId, (signals: PlaceSignals) 
   "connections.tailscale": (s) => !s.phone && s.owner,
   "connections.oneTimeLink": (s) => !s.phone && s.owner && s.remotelyReachable,
   "instructions.notesMode": (s) => s.projectContext,
+  // The phone app has no Devices page; a server without devices draws only a note there.
+  "settings.devices": (s) => !s.phone && s.devices,
+  "devices.simulators": (s) => !s.phone && s.devices,
+  "devices.enable": (s) => !s.phone && s.devices,
+  "devices.agentAccess": (s) => !s.phone && s.devices,
+  "devices.tools": (s) => !s.phone && s.devices,
 };
 
 /**
@@ -143,6 +151,7 @@ const STATIC_SIGNALS: PlaceSignals = {
   outsideAgents: true,
   remotelyReachable: true,
   projectContext: true,
+  devices: true,
 };
 
 const PlaceSignalsContext = createContext<PlaceSignals | null>(null);
@@ -196,6 +205,7 @@ function usePlaceSignals(): PlaceSignals {
   const primaryCapabilities = usePrimaryEnvironmentDescriptor()?.capabilities;
   const outsideAgents = primaryCapabilities?.outsideAgents === true;
   const projectContext = primaryCapabilities?.projectContext === true;
+  const devices = primaryCapabilities?.devices === true;
   const alertsSupport = pushAlertsSupport();
   const alertsShown = alertsSupport !== "unsupported" && alertComputers > 0;
   const canSetBackground = background !== null && canSetDesktopBackgroundOptions();
@@ -217,6 +227,7 @@ function usePlaceSignals(): PlaceSignals {
       outsideAgents,
       remotelyReachable: isElectron ? desktopReach : authPolicy === "remote-reachable",
       projectContext,
+      devices,
     }),
     [
       alertsEnabled,
@@ -227,6 +238,7 @@ function usePlaceSignals(): PlaceSignals {
       background,
       canSetBackground,
       desktopReach,
+      devices,
       dictation,
       outsideAgents,
       phone,

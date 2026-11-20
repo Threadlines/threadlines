@@ -2,6 +2,7 @@ import { parseSessionKey } from "@threadlines/shared/threadParticipants";
 import {
   BROWSER_MCP_SERVER_NAME,
   mcpCommandsEndpointUrl,
+  mcpDeviceEndpointUrl,
   mcpEndpointUrl,
   mcpPagesEndpointUrl,
   mcpRoomEndpointUrl,
@@ -10,6 +11,8 @@ import {
   buildCommandRequestInstructions,
   COMMANDS_MCP_SERVER_NAME,
 } from "../../mcp/commandTools.ts";
+import { DEVICE_MCP_SERVER_NAME } from "../../mcp/deviceTools.ts";
+import { buildDeviceInstructions } from "../deviceInstructions.ts";
 import {
   buildAgentPageInstructions,
   CODEX_PAGE_RIVAL,
@@ -255,6 +258,8 @@ export interface CodexSessionRuntimeOptions {
   readonly agentPages?: boolean;
   /** Attach `ask_user_to_run` (ProviderSessionStartInput.commandRequests). Never for a side runtime. */
   readonly commandRequests?: boolean;
+  /** Attach the device tools (ProviderSessionStartInput.deviceTools). Never for a side runtime. */
+  readonly deviceTools?: boolean;
   /**
    * The project's brief (ProviderSessionStartInput.projectInstructions). The
    * provider thread keeps it as its developer instructions, set at every
@@ -748,6 +753,8 @@ function buildCodexCollaborationMode(input: {
   readonly agentPageAssetsDir?: string;
   /** The session has `ask_user_to_run`. */
   readonly commandRequests?: boolean;
+  /** The session has the device tools. */
+  readonly deviceTools?: boolean;
   /** The thread's own runtime has the room tools, schedule tools among them. */
   readonly scheduleTools?: boolean;
   /** The thread's own runtime has the room endpoint, so the app guide. */
@@ -779,6 +786,7 @@ function buildCodexCollaborationMode(input: {
             ]
           : []),
         ...(input.commandRequests ? [buildCommandRequestInstructions({})] : []),
+        ...(input.deviceTools ? [buildDeviceInstructions()] : []),
         ...(input.scheduleTools
           ? [buildScheduleInstructions({ toolPrefix: `mcp__${ROOM_MCP_SERVER_NAME}__` })]
           : []),
@@ -809,6 +817,8 @@ export function buildTurnStartParams(input: {
   readonly agentPageAssetsDir?: string;
   /** The session has `ask_user_to_run`. */
   readonly commandRequests?: boolean;
+  /** The session has the device tools. */
+  readonly deviceTools?: boolean;
   /** The thread's own runtime has the room tools, schedule tools among them. */
   readonly scheduleTools?: boolean;
   /** The thread's own runtime has the room endpoint, so the app guide. */
@@ -845,6 +855,7 @@ export function buildTurnStartParams(input: {
       ? { agentPageAssetsDir: input.agentPageAssetsDir }
       : {}),
     ...(input.commandRequests ? { commandRequests: true } : {}),
+    ...(input.deviceTools ? { deviceTools: true } : {}),
     ...(input.scheduleTools && !input.lockdown ? { scheduleTools: true } : {}),
     ...(input.guide && !input.lockdown ? { guide: true } : {}),
   });
@@ -2104,6 +2115,7 @@ const makeCodexSessionRuntimeIn = (
     const roomGrant = roomEndpointGrant(options, lockdown?.kind);
     const agentPages = options.agentPages === true && lockdown === undefined;
     const commandRequests = options.commandRequests === true && lockdown === undefined;
+    const deviceTools = options.deviceTools === true && lockdown === undefined;
     const credential =
       lockdown === undefined || roomGrant.attach
         ? yield* mcpSessionRegistry.credentialFor({
@@ -2112,6 +2124,7 @@ const makeCodexSessionRuntimeIn = (
             room: roomGrant.attach,
             pages: agentPages,
             commands: commandRequests,
+            device: deviceTools,
             ...(lockdown !== undefined ? { sideKind: lockdown.kind } : {}),
             scheduledRun: options.scheduledRunTools === true,
             guideOnly: roomGrant.guideOnly,
@@ -2159,6 +2172,14 @@ const makeCodexSessionRuntimeIn = (
                   commands: {
                     url: mcpCommandsEndpointUrl(options.serverPort),
                     serverName: COMMANDS_MCP_SERVER_NAME,
+                  },
+                }
+              : {}),
+            ...(deviceTools
+              ? {
+                  device: {
+                    url: mcpDeviceEndpointUrl(options.serverPort),
+                    serverName: DEVICE_MCP_SERVER_NAME,
                   },
                 }
               : {}),
@@ -3123,6 +3144,7 @@ const makeCodexSessionRuntimeIn = (
             ...((yield* runsInManagedWorktree) ? { managedWorktree: true } : {}),
             ...(agentPageAssetsDir !== undefined ? { agentPageAssetsDir } : {}),
             ...(commandRequests ? { commandRequests: true } : {}),
+            ...(deviceTools ? { deviceTools: true } : {}),
             ...(roomTools && options.scheduleTools === true && lockdown === undefined
               ? { scheduleTools: true }
               : {}),

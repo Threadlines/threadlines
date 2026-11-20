@@ -89,7 +89,7 @@ it("what a Claude thread is sent on every request matches the committed budget",
   const onDemand = threadTools.filter((tool) => !isLoadedUpFront(tool));
   const measured = {
     // Every optional section on, as in a thread with pages, artifacts,
-    // command requests, schedules and the room tools, in a
+    // command requests, devices, schedules and the room tools, in a
     // Threadlines-managed worktree.
     claudeSystemAppendBytes: utf8Bytes(
       onLinux(() =>
@@ -97,6 +97,7 @@ it("what a Claude thread is sent on every request matches the committed budget",
           pageAssetsDir: "/tmp/threadlines-page-assets/thread",
           artifacts: true,
           commandRequests: true,
+          deviceTools: true,
           room: { tools: roomToolsFor(undefined), schedules: true },
           lockdown: false,
           managedWorktree: true,

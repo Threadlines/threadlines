@@ -447,6 +447,20 @@ export interface WsRpcClient {
     readonly search: RpcUnaryMethod<typeof WS_METHODS.themeVsCodeSearch>;
     readonly read: RpcUnaryMethod<typeof WS_METHODS.themeVsCodeRead>;
   };
+  /** Simulators and emulators (docs/design/devices.md), on servers reporting `devices`. */
+  readonly device: {
+    readonly list: RpcUnaryMethod<typeof WS_METHODS.deviceList>;
+    readonly updateTool: RpcUnaryMethod<typeof WS_METHODS.deviceUpdateTool>;
+    readonly open: RpcUnaryMethod<typeof WS_METHODS.deviceOpen>;
+    readonly close: RpcUnaryMethod<typeof WS_METHODS.deviceClose>;
+    readonly shutdown: RpcUnaryMethod<typeof WS_METHODS.deviceShutdown>;
+    readonly detail: RpcUnaryMethod<typeof WS_METHODS.deviceDetail>;
+    readonly action: RpcUnaryMethod<typeof WS_METHODS.deviceAction>;
+    readonly subscribeState: RpcStreamMethod<typeof WS_METHODS.subscribeDeviceState>;
+    readonly channelOpen: RpcInputStreamMethod<typeof WS_METHODS.deviceChannelOpen>;
+    readonly channelSend: RpcUnaryMethod<typeof WS_METHODS.deviceChannelSend>;
+    readonly channelCredit: RpcUnaryMethod<typeof WS_METHODS.deviceChannelCredit>;
+  };
   /** This computer's project briefs and notes (docs/design/project-brief-notes.md), on servers reporting `projectContext`. */
   readonly projectContext: {
     readonly subscribe: RpcStreamMethod<typeof WS_METHODS.projectContextSubscribe>;
@@ -1325,6 +1339,34 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
     themeVsCode: {
       search: (input) => transport.request((client) => client[WS_METHODS.themeVsCodeSearch](input)),
       read: (input) => transport.request((client) => client[WS_METHODS.themeVsCodeRead](input)),
+    },
+    device: {
+      list: (input) => transport.request((client) => client[WS_METHODS.deviceList](input)),
+      updateTool: (input) =>
+        transport.request((client) => client[WS_METHODS.deviceUpdateTool](input)),
+      open: (input) => transport.request((client) => client[WS_METHODS.deviceOpen](input)),
+      close: (input) => transport.request((client) => client[WS_METHODS.deviceClose](input)),
+      shutdown: (input) => transport.request((client) => client[WS_METHODS.deviceShutdown](input)),
+      detail: (input) => transport.request((client) => client[WS_METHODS.deviceDetail](input)),
+      action: (input) => transport.request((client) => client[WS_METHODS.deviceAction](input)),
+      subscribeState: (listener, options) =>
+        transport.subscribe((client) => client[WS_METHODS.subscribeDeviceState]({}), listener, {
+          ...options,
+          tag: WS_METHODS.subscribeDeviceState,
+        }),
+      // A channel carries one request or socket to the hub and cannot pick up
+      // where it left off: when the connection drops it ends, and the Device
+      // tab opens a fresh one with a decoder waiting for a keyframe.
+      channelOpen: (input, listener, options) =>
+        transport.subscribe((client) => client[WS_METHODS.deviceChannelOpen](input), listener, {
+          tag: WS_METHODS.deviceChannelOpen,
+          resubscribe: false,
+          ...(options?.onComplete ? { onComplete: options.onComplete } : {}),
+        }),
+      channelSend: (input) =>
+        transport.request((client) => client[WS_METHODS.deviceChannelSend](input)),
+      channelCredit: (input) =>
+        transport.request((client) => client[WS_METHODS.deviceChannelCredit](input)),
     },
     projectContext: {
       subscribe: (listener, options) =>
