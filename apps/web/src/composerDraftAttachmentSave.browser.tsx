@@ -85,4 +85,31 @@ describe("saveComposerDraftAttachments", () => {
       useComposerDraftStore.getState().getComposerDraft(threadRef)?.nonPersistedAttachmentIds,
     ).toEqual(["huge"]);
   });
+
+  it("never writes a list older than the draft's own when the draft changed during its reads", async () => {
+    let release: () => void = () => {};
+    const slow = file("recording", 1_000);
+    const realRead = slow.file.arrayBuffer.bind(slow.file);
+    Object.defineProperty(slow.file, "arrayBuffer", {
+      value: () =>
+        new Promise<ArrayBuffer>((resolve) => {
+          release = () => void realRead().then(resolve);
+        }),
+    });
+    const store = useComposerDraftStore.getState();
+    store.addAttachments(threadRef, [slow]);
+    const first = saveComposerDraftAttachments(threadRef);
+
+    // While it reads: the user removes it and pastes another file, which saves.
+    store.removeAttachment(threadRef, "recording");
+    store.addAttachments(threadRef, [file("pasted", 1_000)]);
+    expect(await saveComposerDraftAttachments(threadRef)).toBe("saved");
+
+    release();
+    expect(await first).toBe("stale");
+    expect(await savedIds()).toEqual(["pasted"]);
+    expect(
+      useComposerDraftStore.getState().getComposerDraft(threadRef)?.nonPersistedAttachmentIds,
+    ).toEqual([]);
+  });
 });

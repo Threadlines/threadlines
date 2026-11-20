@@ -31,6 +31,11 @@ async function dataUrlOf(file: File): Promise<string> {
  * data it was saved with. A new one is tried only if it could ever fit
  * (`composerAttachmentFitsDraftStorage`); a bigger one would only fail the
  * write. `cancelled` lets a caller whose run went stale skip the write.
+ *
+ * Reading files takes a while. If the draft's attachments changed meanwhile
+ * (one removed, another pasted), this run's list is old: it writes nothing
+ * and answers "stale", since the change that made the newer list saves it.
+ * A caller that must know the outcome runs it again.
  */
 export async function saveComposerDraftAttachments(
   target: ComposerThreadTarget,
@@ -39,14 +44,15 @@ export async function saveComposerDraftAttachments(
     readonly attachments?: ReadonlyArray<ComposerAttachment>;
     readonly cancelled?: () => boolean;
   } = {},
-): Promise<void> {
+): Promise<"saved" | "stale"> {
   const store = useComposerDraftStore.getState();
   const draft = store.getComposerDraft(target);
   const attachments = options.attachments ?? draft?.attachments ?? [];
   if (!draft || attachments.length === 0) {
     store.clearPersistedAttachments(target);
-    return;
+    return "saved";
   }
+  const listed = attachments.map((attachment) => attachment.id).join("\u0000");
   const unsaved = new Set(draft.nonPersistedAttachmentIds);
   const saved = new Map(
     draft.persistedAttachments
@@ -73,6 +79,11 @@ export async function saveComposerDraftAttachments(
       // Unreadable now: left unsaved.
     }
   }
-  if (options.cancelled?.()) return;
+  if (options.cancelled?.()) return "stale";
+  const now = useComposerDraftStore.getState().getComposerDraft(target);
+  if ((now?.attachments ?? []).map((attachment) => attachment.id).join("\u0000") !== listed) {
+    return "stale";
+  }
   await useComposerDraftStore.getState().syncPersistedAttachments(target, staged);
+  return "saved";
 }
