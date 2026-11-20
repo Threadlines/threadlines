@@ -48,4 +48,15 @@ describe("Duo layout", () => {
       expect(unturnPoint(turned.x, turned.y, 200, 100, turn)).toEqual({ x: 30, y: 70 });
     }
   });
+
+  it("keeps the plain frame for an Android emulator without a hardware profile, unless it folds", () => {
+    const emulator = { platform: "android", physical: false } as const;
+    expect(deviceShape(emulator, { portraitAspect: 0.45 })).toBeNull();
+    expect(
+      deviceShape({ ...emulator, model: "medium_phone" }, { portraitAspect: 0.45 }),
+    ).not.toBeNull();
+    expect(deviceShape(emulator, { foldable: true, portraitAspect: 0.83 })).toMatchObject({
+      body: { crease: "vertical" },
+    });
+  });
 });

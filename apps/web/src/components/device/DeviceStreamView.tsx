@@ -271,13 +271,18 @@ export function DeviceStreamView(props: {
     const pointer = activePointer.current;
     if (axShown && !props.axInspect && pointer === null) {
       const element = axElementUnder(event);
-      setAxFocus((current) =>
-        current?.tapped ? current : element ? { element, tapped: false } : null,
-      );
+      setAxFocus(element ? { element, tapped: false } : null);
     }
     if (pointer?.id !== event.pointerId) return;
     if (pointer.panel !== undefined && drawing.kind === "duo") {
       const point = duoPoint(event);
+      // A drag that reaches the other display ends where it left this one: it never continues there.
+      const over = duoTouchPoint(drawing.layout, point.x, point.y);
+      if (over && over.panel !== pointer.panel) {
+        activePointer.current = null;
+        client.sendRawTouch("end", pointer.x, pointer.y);
+        return;
+      }
       const raw = duoPanelPoint(drawing.layout, pointer.panel, point.x, point.y);
       if (!raw) return;
       pointer.x = raw.x;
@@ -310,7 +315,11 @@ export function DeviceStreamView(props: {
 
   const loadingRect = drawing.kind === "duo" ? drawing.fit.box : drawing.screenRect;
   const ax = axShown && drawing.screenRect ? drawing.screenRect : null;
-  const label = axShown ? axFocus?.element : null;
+  // A tapped label belongs to inspect mode; the element is looked up again in each fresh read.
+  const label =
+    axShown && axFocus && (!axFocus.tapped || props.axInspect)
+      ? (accessibility.elements.find((element) => element.id === axFocus.element.id) ?? null)
+      : null;
 
   const loading = !streaming ? (
     <div className="absolute z-10 overflow-hidden rounded-md" style={rectStyle(loadingRect)}>
@@ -476,7 +485,9 @@ export function DeviceStreamView(props: {
           style={rectStyle(layerRect)}
           onPointerDown={begin}
           onPointerMove={move}
-          onPointerLeave={() => setAxFocus((current) => (current?.tapped ? current : null))}
+          onPointerLeave={() =>
+            setAxFocus((current) => (current?.tapped && props.axInspect ? current : null))
+          }
           onPointerUp={end}
           onPointerCancel={end}
           onLostPointerCapture={end}

@@ -134,8 +134,10 @@ Settled while building frames, the Duo, folds and the overlay:
   of the server (a UDID's type never changes). Android emulators: the AVD's
   `hw.device.name` (`pixel_fold`), read from its `.ini` each listing (a
   serial is reused across AVDs). AVDs made without a hardware profile have
-  none, so a foldable is also recognized at run time by `/api/fold` reporting
-  `supported: true`. Physical phones: `getprop ro.product.model`, cached by
+  none and keep the plain frame, except that a foldable is also recognized at
+  run time by `/api/fold` reporting `supported: true`. The cache outlives hub
+  restarts (`LocalDeviceHost` keeps it), so refreshing the picker does not
+  ask again. Physical phones: `getprop ro.product.model`, cached by
   serial.
 - **Duo video, one feed at a time.** Only the display in front streams its
   fixed feed; the other keeps its last picture, dimmed. A handoff stops one
@@ -149,8 +151,11 @@ Settled while building frames, the Duo, folds and the overlay:
 - **Which Duo displays show.** The cover alone at 0°, the inner screen alone
   at 180°, both side by side at any angle between (book, laptop and tent),
   the cover on the left where the hinge swings it. The whole drawing turns
-  with the display in front; touches on the dimmed one are dropped, and a
-  gesture in progress ends when the display in front changes.
+  with the display in front; touches on the dimmed one are dropped, a drag
+  that reaches it ends where it left the screen in front, and a gesture in
+  progress ends when the display in front changes. Switching to a panel feed
+  hands the first-frame watch to that feed, so a feed that never paints
+  falls back instead of closing the session and its input socket.
 - **Duo stances** are serve-sim's own presets (`pose`: closed 0°, book and
   laptop 90°, tent 80°, open 180°) rather than T3's angle buttons, plus
   `table` where the helper reports `tableModeAvailable`.

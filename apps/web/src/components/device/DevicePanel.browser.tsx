@@ -10,7 +10,7 @@ import {
   EnvironmentId,
   ThreadId,
 } from "@threadlines/contracts";
-import { page } from "vite-plus/test/browser";
+import { page, userEvent } from "vite-plus/test/browser";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
@@ -384,6 +384,27 @@ describe("DevicePanel", () => {
         ],
       ),
     );
+
+    // A drag from the inner screen onto the cover ends at the edge it left: nothing moves on the cover.
+    const touchesBefore = helperSends(computer.device.channel.send).filter(
+      (sent) => sent.tag === 0x03,
+    ).length;
+    await userEvent.dragAndDrop(layer, layer, {
+      sourcePosition: at(box("device-duo-inner")),
+      targetPosition: at(box("device-duo-cover")),
+    });
+    await vi.waitFor(() => {
+      const touches = helperSends(computer.device.channel.send)
+        .filter((sent) => sent.tag === 0x03)
+        .slice(touchesBefore);
+      expect(touches[0]?.body.type).toBe("begin");
+      expect(touches.at(-1)?.body.type).toBe("end");
+      expect(touches.filter((sent) => sent.body.type === "end")).toHaveLength(1);
+      // The end lands on the inner screen's own framebuffer, not clamped onto the cover's side.
+      const end = touches.at(-1)!.body as { x: number; y: number };
+      expect(end.x).toBeGreaterThan(0);
+      expect(end.y).toBeLessThan(1);
+    });
 
     // A stance goes out as a hinge command on the same socket.
     await page.getByRole("button", { name: "Closed" }).click();

@@ -252,8 +252,9 @@ const IOS_SHAPES: ReadonlyArray<readonly [RegExp, DeviceShape]> = [
  * The outline for a device, or null for the plain rounded frame (an unknown
  * model, an older server that sends none, a physical phone).
  *
- * Android has no reliable model list, so every emulator gets the generic
- * phone, or the tablet when the screen is near square. A foldable (its
+ * Android has no reliable model list, so an emulator with a hardware profile
+ * gets the generic phone, or the tablet when the screen is near square; one
+ * without a profile keeps the plain frame. A foldable (its
  * profile says so, `pixel_fold`, or the emulator reports a hinge) is the
  * phone while folded and the wide unfolded body once its screen is: the
  * frame follows the posture through the screen's own shape.
@@ -274,6 +275,9 @@ export function deviceShape(
   }
   if (device.physical) return null;
   const foldable = options.foldable === true || /fold/i.test(device.model ?? "");
+  // No hardware profile (an older server, or an AVD made without one): the plain frame,
+  // unless the emulator itself says it folds.
+  if (!device.model && !foldable) return null;
   const wide = (options.portraitAspect ?? 0) > 0.66;
   if (foldable) return { kind: "single", body: wide ? ANDROID_FOLDABLE : ANDROID_PHONE };
   if (wide || /tablet/i.test(device.model ?? "")) return { kind: "single", body: ANDROID_TABLET };
