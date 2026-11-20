@@ -160,8 +160,7 @@ export const makeDeviceModelCache = (): DeviceModelCache => ({
   phoneModels: new Map(),
 });
 
-/** Device operations for a host that runs expo-device-hub at `origin`. */
-export const makeDeviceHubOperations = (options: {
+export interface DeviceHubOperationsOptions {
   readonly origin: string;
   /** The hub's session token (`--require-token`), sent as a bearer on every request. */
   readonly token: string;
@@ -171,20 +170,36 @@ export const makeDeviceHubOperations = (options: {
   readonly platformAvailable: (platform: DevicePlatform) => Effect.Effect<boolean>;
   /** A folder in the server's state dir for files a command must write (screenshots). */
   readonly scratchDir: string;
+  /** Kept by the host across hub starts, so a refresh does not ask simctl or adb again. */
+  readonly modelCache: DeviceModelCache;
   /**
    * Where the AVDs live (`ANDROID_AVD_HOME`, else `~/.android/avd`), and a
    * reader for their `.ini` files: an emulator's hardware profile becomes its
    * `model`. Without them Android devices list without one.
    */
-  /** Kept by the host across hub restarts, so a refresh does not ask simctl or adb again. */
-  readonly modelCache?: DeviceModelCache;
   readonly androidAvds?: {
     readonly home: string;
     readonly readTextFile: (path: string) => Effect.Effect<string | undefined>;
   };
-}): DeviceOperations => {
+}
+
+/**
+ * How a host makes device operations for each hub start: made once per host,
+ * it keeps the model cache for the host's whole life, so asking again for an
+ * already running hub (every picker refresh) does not run simctl or adb again.
+ */
+export const makeHostDeviceOperations = (
+  options: Omit<DeviceHubOperationsOptions, "origin" | "token" | "modelCache">,
+) => {
+  const modelCache = makeDeviceModelCache();
+  return (hub: { readonly origin: string; readonly token: string }) =>
+    makeDeviceHubOperations({ ...options, ...hub, modelCache });
+};
+
+/** Device operations for one running hub. Hosts make them through `makeHostDeviceOperations`. */
+export const makeDeviceHubOperations = (options: DeviceHubOperationsOptions): DeviceOperations => {
   const { origin, run } = options;
-  const { simulatorTypes, phoneModels } = options.modelCache ?? makeDeviceModelCache();
+  const { simulatorTypes, phoneModels } = options.modelCache;
   const httpClient = options.http.pipe(
     HttpClient.mapRequest(HttpClientRequest.bearerToken(options.token)),
     HttpClient.withScope,
