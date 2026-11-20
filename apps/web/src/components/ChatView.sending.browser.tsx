@@ -1421,6 +1421,10 @@ describe("ChatView (full app): first sends and worktree setup", () => {
     try {
       (await waitForButtonByText("Current checkout")).click();
       await clickSelectItemContainingText("New worktree");
+      // Until the list says which branch is the default, the row says that
+      // much, not the branch the checkout happens to be on.
+      await waitForButtonByText("From default branch");
+      expect(findButtonByText("From feature/current")).toBeFalsy();
       useComposerDraftStore.getState().setPrompt(THREAD_REF, "Ship it");
       await waitForLayout();
       (await waitForSendButton()).click();
@@ -1575,8 +1579,9 @@ describe("ChatView (full app): first sends and worktree setup", () => {
       (await waitForSendButton()).click();
       await waitForLayout();
 
-      // The send has its place while it waits for the setting's branch.
-      expect((await waitForButtonByText("From main")).disabled).toBe(true);
+      // The send has its place while it waits for the setting's branch, which
+      // the row already names (not the checkout's branch, main).
+      expect((await waitForButtonByText("From develop")).disabled).toBe(true);
       releaseSearch();
 
       await vi.waitFor(

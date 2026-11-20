@@ -2,6 +2,7 @@ import type { VcsStatusRemoteResult, VcsStatusResult } from "@threadlines/contra
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  predictNewWorktreeBaseBranch,
   applyGitStatusStreamEvent,
   buildSshRemoteUrl,
   buildTemporaryWorktreeBranchName,
@@ -370,6 +371,25 @@ describe("worktreeFolderNameForBranch", () => {
   it("flattens real branch names into one folder", () => {
     expect(worktreeFolderNameForBranch("fix/login-timeout")).toBe("fix-login-timeout");
     expect(worktreeFolderNameForBranch("main")).toBe("main");
+  });
+});
+
+describe("predictNewWorktreeBaseBranch", () => {
+  const predict = (
+    base: Parameters<typeof predictNewWorktreeBaseBranch>[0]["base"],
+    currentIsDefault: boolean,
+  ) => predictNewWorktreeBaseBranch({ base, currentGitBranch: "feature/x", currentIsDefault });
+
+  it("names the branch the setting will give when it is known without the branch list", () => {
+    expect(predict({ from: "current", branch: "" }, false)).toBe("feature/x");
+    expect(predict({ from: "named", branch: "develop" }, false)).toBe("develop");
+    expect(predict({ from: "default", branch: "" }, true)).toBe("feature/x");
+  });
+
+  it("names nothing when only the branch list can say", () => {
+    // The default branch, while the checkout is on another one.
+    expect(predict({ from: "default", branch: "" }, false)).toBeNull();
+    expect(predict(undefined, true)).toBeNull();
   });
 });
 
