@@ -348,4 +348,57 @@ describe("createDeviceStreamClient", () => {
     expect(hub.sockets).toHaveLength(1);
     client.stop();
   });
+
+  it("falls back from a Duo panel feed that never paints without dropping the input socket", async () => {
+    vi.useFakeTimers();
+    class FakeDecoder {
+      static isConfigSupported = async () => ({ supported: true });
+      state = "unconfigured";
+      decodeQueueSize = 0;
+      configure() {}
+      close() {}
+    }
+    vi.stubGlobal("VideoDecoder", FakeDecoder);
+    vi.stubGlobal("EncodedVideoChunk", function EncodedVideoChunk() {});
+    // The priming request answers; every video body opens and stays silent.
+    const hub = fakeTransport((path) =>
+      path.endsWith("stream.mjpeg")
+        ? new Response(new Uint8Array([45, 45]))
+        : new Response(new ReadableStream()),
+    );
+    const watch = { ...events(), onDuoUnavailable: vi.fn() };
+    const client = createDeviceStreamClient(
+      { platform: "ios", deviceId: "DUO", transport: hub.transport },
+      { present: () => true },
+      watch,
+    );
+    client.start();
+    await vi.advanceTimersByTimeAsync(2_500);
+    const input = hub.sockets[0]!;
+    input.dispatch("message", { data: new Uint8Array([0x83]).buffer });
+    input.dispatch("message", {
+      data: new Uint8Array([
+        0x82,
+        ...new TextEncoder().encode(
+          JSON.stringify({
+            width: 2007,
+            height: 2853,
+            orientation: "landscape_left",
+            screenId: 3,
+            supportsHingeAngle: true,
+            hingeAngle: 180,
+          }),
+        ),
+      ]).buffer,
+    });
+    const sink = { present: () => true };
+    client.setDuoPanels({ cover: sink, inner: sink });
+    // Past the session's own first-frame deadline: only the panel feed gives up.
+    await vi.advanceTimersByTimeAsync(16_000);
+    expect(watch.onDuoUnavailable).toHaveBeenCalled();
+    expect(watch.onStatus).not.toHaveBeenCalledWith("error", expect.anything());
+    expect(input.socket.readyState).toBe(1);
+    expect(hub.sockets).toHaveLength(1);
+    client.stop();
+  });
 });

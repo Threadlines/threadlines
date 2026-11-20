@@ -1106,12 +1106,19 @@ export function createDeviceStreamClient(
     const sinks = panelSinks;
     if (!sinks || !screen?.supportsHingeAngle || panelsRefused || !useWebCodecs) {
       stopPanelFeed();
-      if (!mainVideo) startMainVideo();
+      if (!mainVideo) {
+        // Back from a panel feed before any picture: watch the ordinary stream's first frame again.
+        if (!firstFrame && frameTimer === null) connecting();
+        startMainVideo();
+      }
       return;
     }
     if (panelFeed?.panel === panel) return;
     if (mainVideo) stopMainVideo();
     stopPanelFeed();
+    // The panel feed has its own first-frame watchdog, and its failure falls back here.
+    // This one would stop the whole session, input socket included.
+    clearFrameTimer();
     const output = panel === 1 ? sinks.cover : sinks.inner;
     const client = createDeviceStreamClient(
       { platform, deviceId, transport, panelId: panel },
