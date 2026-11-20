@@ -5,7 +5,7 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
 
-import { makeDeviceHubOperations } from "./DeviceHubOperations.ts";
+import { makeDeviceHubOperations, makeDeviceModelCache } from "./DeviceHubOperations.ts";
 
 /** A stand-in hub answering the two listings with fixed JSON. */
 const startFakeHub = (routes: Record<string, unknown>) =>
@@ -113,39 +113,44 @@ describe("DeviceHubOperations list", () => {
           "/elsewhere/fold_test.avd/config.ini":
             "hw.lcd.width = 2208\nhw.device.name = pixel_fold\n",
         };
-        const operations = makeDeviceHubOperations({
-          origin: hub.origin,
-          token: "t",
-          http: yield* HttpClient.HttpClient,
-          run: (command, args) => {
-            commands.push([command, ...args].join(" "));
-            if (command === "xcrun") {
-              return Effect.succeed({
-                code: 0,
-                stdout: JSON.stringify({
-                  devices: {
-                    "com.apple.CoreSimulator.SimRuntime.iOS-27-2": [
-                      {
-                        udid: "AAAA-1",
-                        deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-Duo",
-                      },
-                    ],
-                  },
-                }),
-                stderr: "",
-              });
-            }
-            if (command === "adb")
-              return Effect.succeed({ code: 0, stdout: "Pixel 8\n", stderr: "" });
-            return Effect.succeed({ code: 0, stdout: "", stderr: "" });
-          },
-          platformAvailable: () => Effect.succeed(true),
-          scratchDir: "/nonexistent",
-          androidAvds: { home: "/avd", readTextFile: (path) => Effect.succeed(files[path]) },
-        });
+        const http = yield* HttpClient.HttpClient;
+        const modelCache = makeDeviceModelCache();
+        // The host makes fresh operations each time the hub is ready; the cache outlives them.
+        const operations = () =>
+          makeDeviceHubOperations({
+            origin: hub.origin,
+            token: "t",
+            http,
+            modelCache,
+            run: (command, args) => {
+              commands.push([command, ...args].join(" "));
+              if (command === "xcrun") {
+                return Effect.succeed({
+                  code: 0,
+                  stdout: JSON.stringify({
+                    devices: {
+                      "com.apple.CoreSimulator.SimRuntime.iOS-27-2": [
+                        {
+                          udid: "AAAA-1",
+                          deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-Duo",
+                        },
+                      ],
+                    },
+                  }),
+                  stderr: "",
+                });
+              }
+              if (command === "adb")
+                return Effect.succeed({ code: 0, stdout: "Pixel 8\n", stderr: "" });
+              return Effect.succeed({ code: 0, stdout: "", stderr: "" });
+            },
+            platformAvailable: () => Effect.succeed(true),
+            scratchDir: "/nonexistent",
+            androidAvds: { home: "/avd", readTextFile: (path) => Effect.succeed(files[path]) },
+          });
 
-        const first = yield* operations.list;
-        const second = yield* operations.list;
+        const first = yield* operations().list;
+        const second = yield* operations().list;
 
         for (const listed of [first, second]) {
           expect(listed.devices.map((device) => [device.id, device.model])).toEqual([

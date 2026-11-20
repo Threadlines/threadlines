@@ -43,7 +43,7 @@ import { ProcessRunner } from "../processRunner.ts";
 import { releaseAgentDeviceSession } from "./AgentDeviceTarget.ts";
 import { setOwnDeviceToolPort } from "../preview/deviceToolPorts.ts";
 import * as DeviceHost from "./DeviceHost.ts";
-import { makeDeviceHubOperations } from "./DeviceHubOperations.ts";
+import { makeDeviceHubOperations, makeDeviceModelCache } from "./DeviceHubOperations.ts";
 import {
   AGENT_DEVICE_VERSION,
   agentDeviceStateDir,
@@ -786,6 +786,8 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
       Effect.catch((cause) => Effect.succeed({ stdout: "", stderr: String(cause), code: 127 })),
     );
 
+  // Outlives each hub start, so refreshing the picker does not run simctl or adb again.
+  const modelCache = makeDeviceModelCache();
   const toReady = (running: RunningHost): DeviceHost.DeviceHostReady => ({
     hub: { origin: running.hub.origin, token: running.hub.token },
     devices: makeDeviceHubOperations({
@@ -796,6 +798,7 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
       platformAvailable: (platform) =>
         platformAvailability(platform).pipe(Effect.map((availability) => availability.available)),
       scratchDir: path.join(deviceStateDir(path, stateDir), "tmp"),
+      modelCache,
       androidAvds: {
         home: androidAvdHome(environment, path),
         readTextFile: (file) =>

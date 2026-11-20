@@ -145,6 +145,21 @@ const errorHead = (error: string) => {
 const vendorPrefix = (platform: DevicePlatform) =>
   platform === "ios" ? "/vendor/serve-sim" : "/vendor/serve-emu";
 
+/**
+ * What a device is never changes: a simulator's device type by UDID and a
+ * phone's model by serial. An emulator's profile is read again each listing
+ * (one small file), since a serial is reused across AVDs.
+ */
+export interface DeviceModelCache {
+  readonly simulatorTypes: Map<string, string | null>;
+  readonly phoneModels: Map<string, string | null>;
+}
+
+export const makeDeviceModelCache = (): DeviceModelCache => ({
+  simulatorTypes: new Map(),
+  phoneModels: new Map(),
+});
+
 /** Device operations for a host that runs expo-device-hub at `origin`. */
 export const makeDeviceHubOperations = (options: {
   readonly origin: string;
@@ -161,16 +176,15 @@ export const makeDeviceHubOperations = (options: {
    * reader for their `.ini` files: an emulator's hardware profile becomes its
    * `model`. Without them Android devices list without one.
    */
+  /** Kept by the host across hub restarts, so a refresh does not ask simctl or adb again. */
+  readonly modelCache?: DeviceModelCache;
   readonly androidAvds?: {
     readonly home: string;
     readonly readTextFile: (path: string) => Effect.Effect<string | undefined>;
   };
 }): DeviceOperations => {
   const { origin, run } = options;
-  // A simulator's device type and a phone's model never change; an emulator's
-  // profile is read again each listing (one small file), since a serial is reused.
-  const simulatorTypes = new Map<string, string | null>();
-  const phoneModels = new Map<string, string | null>();
+  const { simulatorTypes, phoneModels } = options.modelCache ?? makeDeviceModelCache();
   const httpClient = options.http.pipe(
     HttpClient.mapRequest(HttpClientRequest.bearerToken(options.token)),
     HttpClient.withScope,
