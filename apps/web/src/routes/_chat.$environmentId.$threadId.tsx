@@ -34,6 +34,12 @@ import {
   type ThreadPullRequestLinks,
 } from "../components/chat/ThreadPullRequestLinkContext";
 import { ChatRightPanel } from "../components/ChatRightPanel";
+import {
+  onAgentOpenedDevice,
+  selectThreadDevice,
+  useDevicesSupported,
+  useDeviceState,
+} from "../components/device/deviceState";
 import { useAgentsPanelSource } from "../agentsPanelStore";
 import { preloadDiffPanel, schedulePreloadDiffPanel } from "../diffPanelPreload";
 import { useMediaQuery } from "../hooks/useMediaQuery";
@@ -148,6 +154,9 @@ interface ThreadPullRequestTarget {
 const DiffPanel = lazy(() => import("../components/DiffPanel"));
 const MediaPanel = lazy(() =>
   import("../components/media/MediaPanel").then((module) => ({ default: module.MediaPanel })),
+);
+const DevicePanel = lazy(() =>
+  import("../components/device/DevicePanel").then((module) => ({ default: module.DevicePanel })),
 );
 const FileViewerOverlay = lazy(() => import("../components/file-viewer/FileViewerOverlay"));
 
@@ -362,14 +371,16 @@ function ChatThreadRouteView() {
     [navigate, threadRef],
   );
 
+  const devicesSupported = useDevicesSupported(threadRef?.environmentId ?? null);
   const availableTabs = useMemo(
     () =>
       availableRightPanelTabs({
         isGeneralChat: isGeneralChatThread,
         // A thread the server has not accepted yet has no turn, so no agents.
         isDraft: !serverThread,
+        devicesSupported,
       }),
-    [isGeneralChatThread, serverThread],
+    [devicesSupported, isGeneralChatThread, serverThread],
   );
 
   // The thread's pull request, for the Pull request tab and the launcher row
@@ -623,6 +634,23 @@ function ChatThreadRouteView() {
   const agentsOpen = activeTab === "agents";
   const mediaOpen = activeTab === "media";
   const threadsOpen = activeTab === "threads";
+  const deviceOpen = activeTab === "device";
+  // An agent opening a device brings the Device tab up on it for whoever is
+  // watching the thread (docs/design/devices.md). The device state is
+  // followed while a thread whose computer has devices is on screen.
+  const deviceTabAvailable = availableTabs.includes("device");
+  useDeviceState(threadRef?.environmentId ?? null, deviceTabAvailable);
+  useEffect(() => {
+    if (!threadRef || !deviceTabAvailable || currentThreadKey === null) return;
+    return onAgentOpenedDevice((environmentId, session) => {
+      if (environmentId !== threadRef.environmentId || session.threadId !== threadRef.threadId) {
+        return;
+      }
+      selectThreadDevice(currentThreadKey, session.deviceId);
+      focusRightPanelTab(currentThreadKey, "device");
+      navigateToTab("device");
+    });
+  }, [currentThreadKey, deviceTabAvailable, navigateToTab, threadRef]);
   // A published source outlives the navigation for a frame or two, so the rail
   // only trusts one that names the thread it is rendering.
   const agentsSource =
@@ -1096,6 +1124,20 @@ function ChatThreadRouteView() {
             projectId={serverThread.projectId}
             onOpenThread={openThreadFromBoard}
           />
+        </div>
+      ) : null}
+      {openTabs.includes("device") && serverThread && currentThreadKey !== null ? (
+        <div className={cn("h-full w-full min-w-0 flex-col", deviceOpen ? "flex" : "hidden")}>
+          <Suspense
+            fallback={<p className="px-3 py-3 text-xs text-muted-foreground">Loading devices…</p>}
+          >
+            <DevicePanel
+              environmentId={threadRef.environmentId}
+              threadId={threadRef.threadId}
+              threadKey={currentThreadKey}
+              visible={deviceOpen}
+            />
+          </Suspense>
         </div>
       ) : null}
       {openTabs.includes("sourceControl") ? (
