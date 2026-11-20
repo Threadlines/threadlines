@@ -9,6 +9,7 @@ import {
   type ScopedThreadRef,
   type ServerConfig,
   type TerminalStreamEvent,
+  TERMINALS_PAGE_THREAD_ID,
   ThreadId,
 } from "@threadlines/contracts";
 import {
@@ -25,6 +26,7 @@ import { Throttler } from "@tanstack/react-pacer";
 import {
   createKnownEnvironment,
   getKnownEnvironmentWsBaseUrl,
+  parseScopedThreadKey,
   scopedThreadKey,
   scopeProjectRef,
   scopeThreadRef,
@@ -1234,13 +1236,21 @@ function reconcileSnapshotDerivedState() {
       archivedAt: thread.archivedAt,
     })),
     draftThreadKeys: useComposerDraftStore.getState().listDraftThreadKeys(),
+    // Every computer's Terminals page keeps its layout, also one whose
+    // threads haven't loaded yet (the saved list loads after the first
+    // snapshot can arrive); removing the computer drops it.
+    environmentIds: Object.keys(useTerminalStateStore.getState().terminalStateByThreadKey)
+      .map((key) => parseScopedThreadKey(key))
+      .filter((ref) => ref?.threadId === TERMINALS_PAGE_THREAD_ID)
+      .map((ref) => ref!.environmentId),
   });
   useTerminalStateStore.getState().removeOrphanedTerminalStates(activeThreadKeys);
   forgetThreadScrollExcept(activeThreadKeys);
 }
 
 /**
- * Whether a terminal event is for a thread this client shows. Before the
+ * Whether a terminal event is for a thread this client shows, or for the
+ * Terminals page, which no thread backs. Before the
  * environment's threads have loaded nothing is known yet, and what a server
  * sends on connect (every thread's tabs and what runs in them) must not be
  * lost; threads that turn out archived or gone are cleaned up when the
@@ -1250,7 +1260,9 @@ export function shouldApplyTerminalEvent(input: {
   serverThreadArchivedAt: string | null | undefined;
   hasDraftThread: boolean;
   threadsLoaded?: boolean;
+  terminalsPage?: boolean;
 }): boolean {
+  if (input.terminalsPage === true) return true;
   if (input.serverThreadArchivedAt !== undefined) {
     return input.serverThreadArchivedAt === null;
   }
@@ -1524,6 +1536,7 @@ function createEnvironmentConnectionHandlers() {
           hasDraftThread,
           threadsLoaded:
             useStore.getState().environmentStateById[environmentId]?.bootstrapComplete === true,
+          terminalsPage: event.threadId === TERMINALS_PAGE_THREAD_ID,
         })
       ) {
         return;
@@ -2307,6 +2320,10 @@ export async function removeSavedEnvironment(environmentId: EnvironmentId): Prom
   useSavedEnvironmentRegistryStore.getState().remove(environmentId);
   useSavedEnvironmentRuntimeStore.getState().clear(environmentId);
   useStore.getState().removeEnvironmentState(environmentId);
+  // Its Terminals page's layout (its threads' terminals go with the cleanup).
+  useTerminalStateStore
+    .getState()
+    .removeTerminalState(scopeThreadRef(environmentId, ThreadId.make(TERMINALS_PAGE_THREAD_ID)));
   await removeSavedEnvironmentBearerToken(environmentId);
 }
 

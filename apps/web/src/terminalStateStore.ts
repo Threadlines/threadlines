@@ -999,12 +999,23 @@ export const useTerminalStateStore = create<TerminalStateStoreState>()(
             const key = terminalKey(threadRef, terminalId);
             const threadKey = terminalThreadKey(threadRef);
             const pending = state.pendingTerminalIdsByThreadKey[threadKey];
+            const listed = state.terminalTabsByThreadKey[threadKey];
             return {
               terminalStateByThreadKey: updateTerminalStateByThreadKey(
                 state.terminalStateByThreadKey,
                 threadRef,
                 (current) => closeThreadTerminal(current, terminalId),
               ),
+              // Gone from the server's list too, ahead of the server saying so:
+              // until then the old list would bring the tab, or its id, back.
+              ...(listed?.some((tab) => tab.terminalId === terminalId)
+                ? {
+                    terminalTabsByThreadKey: {
+                      ...state.terminalTabsByThreadKey,
+                      [threadKey]: listed.filter((tab) => tab.terminalId !== terminalId),
+                    },
+                  }
+                : {}),
               ...(pending?.[terminalId] !== undefined
                 ? {
                     pendingTerminalIdsByThreadKey: {

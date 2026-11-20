@@ -1,10 +1,11 @@
 import {
+  parseScopedThreadKey,
   scopedProjectKey,
   scopedThreadKey,
   scopeProjectRef,
   scopeThreadRef,
 } from "@threadlines/client-runtime";
-import type { KeybindingCommand } from "@threadlines/contracts";
+import { type KeybindingCommand, TERMINALS_PAGE_THREAD_ID } from "@threadlines/contracts";
 import { formatTokensCompact } from "@threadlines/shared/usageFormat";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation, useNavigate, useParams, useRouter } from "@tanstack/react-router";
@@ -71,6 +72,7 @@ import {
 export const NAVIGATION_RAIL_WIDTH_PX = 48;
 
 const DESTINATION_SHORTCUTS: Partial<Record<NavigationDestinationId, KeybindingCommand>> = {
+  terminals: "navigate.terminals",
   fleet: "navigate.fleet",
   scheduled: "navigate.scheduled",
 };
@@ -342,6 +344,16 @@ export function useNavigationDestinations(options: { readonly listOpen: boolean 
   );
   const shortcutContext = useRouteShortcutContext();
   const { isMobile, toggleSidebar } = useSidebar();
+  // Commands running in the Terminals page's tabs, on every computer.
+  const terminalsRunning = useTerminalStateStore((state) => {
+    let count = 0;
+    for (const [threadKey, terminal] of Object.entries(state.terminalStateByThreadKey)) {
+      if (parseScopedThreadKey(threadKey)?.threadId === TERMINALS_PAGE_THREAD_ID) {
+        count += terminal.runningTerminalIds.length;
+      }
+    }
+    return count;
+  });
 
   const destinations = useMemo(() => {
     const platform = typeof navigator === "undefined" ? "" : navigator.platform;
@@ -383,15 +395,19 @@ export function useNavigationDestinations(options: { readonly listOpen: boolean 
                   describeWorking(counts?.working ?? 0),
                   id === "chats" && attention.chatsUnread ? "unread" : null,
                 )
-              : id === "fleet"
-                ? describeWorking(workingEverywhere)
-                : id === "scheduled"
-                  ? scheduledSummary
-                  : id === "pull-requests"
-                    ? describeNeedsYou(pullRequestsNeedingYou)
-                    : id === "usage" && usageTokens !== null
-                      ? `${formatTokensCompact(usageTokens)} today`
-                      : null,
+              : id === "terminals"
+                ? terminalsRunning > 0
+                  ? `${terminalsRunning} running`
+                  : null
+                : id === "fleet"
+                  ? describeWorking(workingEverywhere)
+                  : id === "scheduled"
+                    ? scheduledSummary
+                    : id === "pull-requests"
+                      ? describeNeedsYou(pullRequestsNeedingYou)
+                      : id === "usage" && usageTokens !== null
+                        ? `${formatTokensCompact(usageTokens)} today`
+                        : null,
         },
       ];
     });
@@ -406,6 +422,7 @@ export function useNavigationDestinations(options: { readonly listOpen: boolean 
     scheduledSummary,
     selected,
     shortcutContext,
+    terminalsRunning,
     usageTokens,
   ]);
 
@@ -435,6 +452,9 @@ export function useNavigationDestinations(options: { readonly listOpen: boolean 
         }
         case "chats":
           void navigate({ to: "/chats" });
+          return;
+        case "terminals":
+          void navigate({ to: "/terminals" });
           return;
         case "pull-requests":
           void navigate({ to: "/pull-requests", search: { state: "open" } });

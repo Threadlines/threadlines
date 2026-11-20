@@ -6,6 +6,7 @@ import {
   type OrchestrationEvent,
   type OrchestrationReadModel,
   type ScheduledTaskId,
+  TERMINALS_PAGE_THREAD_ID,
   type ThreadId,
   WS_METHODS,
 } from "@threadlines/contracts";
@@ -26,6 +27,7 @@ import {
   THREAD_ID,
   THREAD_TITLE,
   PROJECT_ID,
+  SECOND_PROJECT_ID,
   LOCAL_ENVIRONMENT_ID,
   THREAD_REF,
   PROJECT_LOGICAL_KEY,
@@ -557,6 +559,109 @@ describe("ChatView (full app): app shell", () => {
       // A click of its own, on the page now open, hides the list.
       clickRail("rail-chats", 1);
       await listOpen(false);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("opens terminals in two projects side by side and leaves them running while browsing", async () => {
+    const base = createSnapshotForTargetUser({
+      targetMessageId: MessageId.make("terminals-page"),
+      targetText: "Start the web and API servers.",
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...base,
+        projects: [
+          ...base.projects,
+          {
+            ...base.projects[0]!,
+            id: SECOND_PROJECT_ID,
+            title: "Backend",
+            workspaceRoot: "/repo/backend",
+          },
+        ],
+      },
+    });
+    const opened = () =>
+      wsRequests.filter(
+        (request) =>
+          request._tag === WS_METHODS.terminalOpen && request.threadId === TERMINALS_PAGE_THREAD_ID,
+      );
+    const panes = () => document.querySelectorAll(".thread-terminal-drawer .xterm").length;
+
+    try {
+      await page.getByTestId("rail-terminals").click();
+      await waitForURL(mounted.router, (pathname) => pathname === "/terminals", "Terminals.");
+      // Visiting starts no shell; the first tab is asked for.
+      expect(opened()).toEqual([]);
+      await page.getByRole("button", { name: "New terminal", exact: true }).click();
+      await vi.waitFor(() =>
+        expect(opened()).toEqual([expect.objectContaining({ cwd: "/repo/project" })]),
+      );
+      await page.getByRole("button", { name: /^Project for new terminals/ }).click();
+      await page.getByRole("menuitem", { name: /Backend/ }).click();
+      await page.getByRole("button", { name: /^Split terminal/ }).click();
+      await vi.waitFor(() => {
+        expect(opened()).toContainEqual(expect.objectContaining({ cwd: "/repo/backend" }));
+        expect(panes()).toBe(2);
+      });
+      // Each tab names its folder.
+      await expect
+        .element(page.getByRole("tab", { name: /^Backend\s+Terminal 2/ }))
+        .toBeInTheDocument();
+
+      await page.getByTestId("rail-threads").click();
+      await waitForURL(mounted.router, (pathname) => pathname !== "/terminals", "Threads.");
+      await page.getByTestId("rail-terminals").click();
+      await vi.waitFor(() => expect(panes()).toBe(2));
+      expect(wsRequests.some((request) => request._tag === WS_METHODS.terminalClose)).toBe(false);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("killing the Terminals page's last tab leaves it empty, without a new shell", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: MessageId.make("terminals-page-kill"),
+        targetText: "One terminal.",
+      }),
+    });
+    const pageRef = scopeThreadRef(LOCAL_ENVIRONMENT_ID, TERMINALS_PAGE_THREAD_ID as ThreadId);
+    const opened = () =>
+      wsRequests.filter(
+        (request) =>
+          request._tag === WS_METHODS.terminalOpen && request.threadId === TERMINALS_PAGE_THREAD_ID,
+      );
+
+    try {
+      await page.getByTestId("rail-terminals").click();
+      await page.getByRole("button", { name: "New terminal", exact: true }).click();
+      await vi.waitFor(() => expect(opened()).toHaveLength(1));
+      const terminalId = String(opened()[0]!.terminalId);
+      // The server lists the tab, and still does for a moment after the kill.
+      useTerminalStateStore.getState().applyTerminalTabs(pageRef, [
+        {
+          terminalId,
+          number: 1,
+          cwd: "/repo/project",
+          status: "running",
+          exitCode: null,
+          exitSignal: null,
+          createdAt: NOW_ISO,
+        },
+      ]);
+      await page.getByRole("button", { name: /^Kill .*Terminal 1/ }).click();
+      await expect
+        .element(page.getByRole("button", { name: "New terminal", exact: true }))
+        .toBeInTheDocument();
+      await vi.waitFor(() =>
+        expect(wsRequests.some((request) => request._tag === WS_METHODS.terminalClose)).toBe(true),
+      );
+      expect(opened()).toHaveLength(1);
     } finally {
       await mounted.cleanup();
     }

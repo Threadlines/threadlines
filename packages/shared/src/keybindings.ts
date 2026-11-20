@@ -37,6 +37,7 @@ export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
   { key: "mod+b", command: "sidebar.toggle", when: "!terminalFocus" },
   { key: "mod+shift+f", command: "navigate.fleet", when: "!terminalFocus" },
   { key: "mod+shift+s", command: "navigate.scheduled", when: "!terminalFocus" },
+  { key: "mod+shift+j", command: "navigate.terminals", when: "!terminalFocus" },
   // Ctrl+[ is Escape to a shell, so these stay out of a focused terminal.
   { key: "mod+[", command: "navigate.back", when: "!terminalFocus" },
   { key: "mod+]", command: "navigate.forward", when: "!terminalFocus" },

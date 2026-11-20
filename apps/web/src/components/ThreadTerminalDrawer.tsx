@@ -21,6 +21,7 @@ import type { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import type { Terminal } from "@xterm/xterm";
 import {
+  type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
@@ -36,6 +37,7 @@ import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "~/compone
 import { Tooltip, TooltipPopup, TooltipTrigger, TooltipWrapper } from "~/components/ui/tooltip";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { useMediaQuery } from "~/hooks/useMediaQuery";
+import { cn } from "~/lib/utils";
 import { type TerminalContextSelection } from "~/lib/terminalContext";
 import { isElectron } from "../env";
 import { openInPreferredEditor } from "../editorPreferences";
@@ -101,6 +103,8 @@ const NARROW_VIEWPORT_WIDTH = 640;
 const NARROW_MIN_DRAWER_HEIGHT_RATIO = 0.4;
 const MULTI_CLICK_SELECTION_ACTION_DELAY_MS = 260;
 const TERMINAL_SELECTION_ACTION_POPOVER_WIDTH_PX = 148;
+/** The popover with Copy alone (no chat to add the selection to). */
+const TERMINAL_SELECTION_COPY_POPOVER_WIDTH_PX = 36;
 const TERMINAL_SELECTION_ACTION_POPOVER_HEIGHT_PX = 34;
 const TERMINAL_SELECTION_ACTION_POPOVER_MARGIN_PX = 8;
 /** How far one arrow key moves the drawer's edge. */
@@ -363,14 +367,22 @@ function TerminalSelectionActionPopover({
   onDismiss,
 }: {
   action: TerminalSelectionActionState;
-  onAddToChat: (selection: TerminalContextSelection) => void;
+  /** Absent where there is no chat (the Terminals page): Copy only. */
+  onAddToChat: ((selection: TerminalContextSelection) => void) | null;
   onDismiss: (options?: { clearTerminalSelection?: boolean }) => void;
 }) {
   const { copyToClipboard, isCopied } = useCopyToClipboard<void>({
     timeout: 1000,
     onCopy: () => onDismiss({ clearTerminalSelection: true }),
   });
-  const position = resolveTerminalSelectionActionPopoverPosition({ position: action.position });
+  const width =
+    onAddToChat === null
+      ? TERMINAL_SELECTION_COPY_POPOVER_WIDTH_PX
+      : TERMINAL_SELECTION_ACTION_POPOVER_WIDTH_PX;
+  const position = resolveTerminalSelectionActionPopoverPosition({
+    position: action.position,
+    width,
+  });
 
   return (
     <div
@@ -379,7 +391,7 @@ function TerminalSelectionActionPopover({
       style={{
         left: position.left,
         top: position.top,
-        width: TERMINAL_SELECTION_ACTION_POPOVER_WIDTH_PX,
+        width,
       }}
       onMouseDown={(event) => {
         event.preventDefault();
@@ -406,16 +418,18 @@ function TerminalSelectionActionPopover({
         </TooltipTrigger>
         <TooltipPopup side="top">Copy selected terminal text</TooltipPopup>
       </Tooltip>
-      <Button
-        type="button"
-        variant="ghost"
-        size="xs"
-        onClick={() => onAddToChat(action.selection)}
-        className="h-6 flex-1 px-2 text-xs"
-      >
-        <Plus className="size-3" />
-        Add to chat
-      </Button>
+      {onAddToChat !== null ? (
+        <Button
+          type="button"
+          variant="ghost"
+          size="xs"
+          onClick={() => onAddToChat(action.selection)}
+          className="h-6 flex-1 px-2 text-xs"
+        >
+          <Plus className="size-3" />
+          Add to chat
+        </Button>
+      ) : null}
     </div>
   );
 }
@@ -425,8 +439,13 @@ interface TerminalViewportProps {
   threadId: ThreadId;
   terminalId: string;
   terminalLabel: string;
-  /** The thread's folder: where a tab that has no shell yet starts one. */
+  /** Where a tab that has no shell yet starts one: the thread's folder, or the page's pick. */
   cwd: string;
+  /**
+   * Whether the drawer follows a thread's folder, so a shell started
+   * elsewhere offers "Restart here". The Terminals page has no such folder.
+   */
+  followsFolder: boolean;
   /** Where this tab's shell last started, when the server keeps tab lists. */
   launchCwd: string | null;
   /** The command a restart stopped in this tab, offered to run again. */
@@ -442,7 +461,8 @@ interface TerminalViewportProps {
   onGone: () => void;
   onRestart: () => void;
   onClose: () => void;
-  onAddTerminalContext: (selection: TerminalContextSelection) => void;
+  /** Null where there is no chat to add a selection to. */
+  onAddTerminalContext: ((selection: TerminalContextSelection) => void) | null;
   focusRequestId: number;
   autoFocus: boolean;
   findOpen: boolean;
@@ -460,6 +480,7 @@ export function TerminalViewport({
   terminalId,
   terminalLabel,
   cwd,
+  followsFolder,
   launchCwd,
   interruptedCommand,
   portInUse,
@@ -516,7 +537,7 @@ export function TerminalViewport({
   const handleGone = useEffectEvent(() => onGone());
   const handleFindOpen = useEffectEvent(() => onFindOpen());
   const handleAddTerminalContext = useEffectEvent((selection: TerminalContextSelection) => {
-    onAddTerminalContext(selection);
+    onAddTerminalContext?.(selection);
   });
   const readTerminalLabel = useEffectEvent(() => terminalLabel);
   const readAutoFocus = useEffectEvent(() => autoFocus);
@@ -1285,6 +1306,7 @@ export function TerminalViewport({
 
   const ended = session !== null && (session.status === "exited" || session.status === "error");
   const movedFrom =
+    followsFolder &&
     session !== null &&
     !ended &&
     trimTrailingSeparators(session.cwd) !== trimTrailingSeparators(cwd)
@@ -1382,7 +1404,7 @@ export function TerminalViewport({
       {selectionAction ? (
         <TerminalSelectionActionPopover
           action={selectionAction}
-          onAddToChat={addSelectionActionToChat}
+          onAddToChat={onAddTerminalContext === null ? null : addSelectionActionToChat}
           onDismiss={dismissSelectionAction}
         />
       ) : null}
@@ -1404,9 +1426,21 @@ function fitIfShown(fitAddon: FitAddon, box: HTMLElement | null): boolean {
   return true;
 }
 
+/** Where a tab the server doesn't list yet starts its shell, and with what environment. */
+export interface TerminalLaunch {
+  readonly cwd: string;
+  readonly runtimeEnv: Record<string, string>;
+}
+
 interface ThreadTerminalDrawerProps {
   threadRef: ScopedThreadRef;
   threadId: ThreadId;
+  /**
+   * `drawer`: under a thread's chat, with a height edge and a hide button,
+   * following the thread's folder. `page`: the Terminals page, filling its
+   * parent; each tab names its folder and none follows another.
+   */
+  layout?: "drawer" | "page";
   cwd: string;
   worktreePath?: string | null;
   runtimeEnv?: Record<string, string>;
@@ -1430,7 +1464,12 @@ interface ThreadTerminalDrawerProps {
   screenReaderMode: boolean;
   onSplitTerminal: () => void;
   onNewTerminal: () => void;
-  onHideTerminal: () => void;
+  /** Absent on the Terminals page, which has nothing to hide into. */
+  onHideTerminal?: (() => void) | undefined;
+  /** Where a tab the server doesn't list yet starts, when not at `cwd`. */
+  launchFor?: ((terminalId: string) => TerminalLaunch | null) | undefined;
+  /** The folder a tab names before "Terminal N" (the Terminals page). */
+  folderLabelFor?: ((terminalId: string, cwd: string | null) => string | null) | undefined;
   splitShortcutLabel?: string | undefined;
   newShortcutLabel?: string | undefined;
   closeShortcutLabel?: string | undefined;
@@ -1443,7 +1482,8 @@ interface ThreadTerminalDrawerProps {
   onRestartTerminal: (terminalId: string) => void;
   onClearTerminal: (terminalId: string) => void;
   onHeightChange: (height: number) => void;
-  onAddTerminalContext: (selection: TerminalContextSelection) => void;
+  /** Null where there is no chat to add a selection to. */
+  onAddTerminalContext: ((selection: TerminalContextSelection) => void) | null;
   keybindings: ResolvedKeybindingsConfig;
 }
 
@@ -1481,6 +1521,7 @@ function HeaderIconButton({
 export default function ThreadTerminalDrawer({
   threadRef,
   threadId,
+  layout = "drawer",
   cwd,
   worktreePath,
   runtimeEnv,
@@ -1502,6 +1543,8 @@ export default function ThreadTerminalDrawer({
   onSplitTerminal,
   onNewTerminal,
   onHideTerminal,
+  launchFor,
+  folderLabelFor,
   splitShortcutLabel,
   newShortcutLabel,
   closeShortcutLabel,
@@ -1629,18 +1672,22 @@ export default function ThreadTerminalDrawer({
       group.terminalIds.map((terminalId): TerminalStripTab => {
         const tab = tabById.get(terminalId);
         const ended = tab !== undefined && (tab.status === "exited" || tab.status === "error");
+        const tabCwd = tab?.cwd ?? launchFor?.(terminalId)?.cwd ?? null;
         return {
           terminalId,
           label: labelById.get(terminalId) ?? "Terminal",
+          folder: folderLabelFor?.(terminalId, tabCwd) ?? null,
           running: running.has(terminalId),
           command: running.has(terminalId) ? (commandByTerminalId.get(terminalId) ?? null) : null,
           exit: ended ? { code: tab.exitCode, signal: tab.exitSignal } : null,
-          cwd: tab?.cwd ?? null,
+          cwd: tabCwd,
         };
       }),
     );
   }, [
     commandByTerminalId,
+    folderLabelFor,
+    launchFor,
     normalizedTerminalIds,
     resolvedTerminalGroups,
     runningTerminalIds,
@@ -1790,20 +1837,24 @@ export default function ThreadTerminalDrawer({
     };
   }, [syncHeight]);
 
+  const isPage = layout === "page";
   const renderViewport = (terminalId: string, autoFocus: boolean) => {
     const tab = tabById.get(terminalId);
+    const launch = launchFor?.(terminalId) ?? null;
+    const viewportEnv = launch?.runtimeEnv ?? runtimeEnv;
     return (
       <TerminalViewport
         threadRef={threadRef}
         threadId={threadId}
         terminalId={terminalId}
         terminalLabel={labelById.get(terminalId) ?? "Terminal"}
-        cwd={cwd}
+        cwd={launch?.cwd ?? cwd}
+        followsFolder={!isPage}
         launchCwd={tab?.cwd ?? null}
         interruptedCommand={tab?.interruptedCommand ?? null}
         portInUse={tab?.portInUse ?? null}
         {...(worktreePath !== undefined ? { worktreePath } : {})}
-        {...(runtimeEnv ? { runtimeEnv } : {})}
+        {...(viewportEnv ? { runtimeEnv: viewportEnv } : {})}
         stream={stream}
         onSessionExited={() => onCloseTerminal(terminalId, { sessionExited: true })}
         onGone={() => onForgetTerminal(terminalId)}
@@ -1825,26 +1876,34 @@ export default function ThreadTerminalDrawer({
 
   return (
     <aside
-      className="thread-terminal-drawer relative flex min-w-0 shrink-0 flex-col overflow-hidden border-t border-border bg-background"
-      style={{ height: `${drawerHeight}px`, minHeight: `${MIN_DRAWER_HEIGHT}px` }}
+      className={cn(
+        "thread-terminal-drawer relative flex min-w-0 flex-col overflow-hidden bg-background",
+        isPage ? "min-h-0 flex-1" : "shrink-0 border-t border-border",
+      )}
+      data-terminal-layout={layout}
+      style={
+        isPage ? undefined : { height: `${drawerHeight}px`, minHeight: `${MIN_DRAWER_HEIGHT}px` }
+      }
     >
-      <div
-        role="separator"
-        aria-orientation="horizontal"
-        aria-label="Terminal height"
-        aria-valuemin={minDrawerHeight()}
-        aria-valuemax={maxDrawerHeight()}
-        aria-valuenow={drawerHeight}
-        tabIndex={0}
-        className="group/terminal-edge absolute inset-x-0 top-0 z-20 h-1.5 cursor-row-resize outline-none"
-        onPointerDown={handleResizePointerDown}
-        onPointerMove={handleResizePointerMove}
-        onPointerUp={handleResizePointerEnd}
-        onPointerCancel={handleResizePointerEnd}
-        onKeyDown={handleResizeKeyDown}
-      >
-        <div className="h-px w-full bg-transparent transition-colors group-hover/terminal-edge:bg-ring group-focus-visible/terminal-edge:bg-ring" />
-      </div>
+      {isPage ? null : (
+        <div
+          role="separator"
+          aria-orientation="horizontal"
+          aria-label="Terminal height"
+          aria-valuemin={minDrawerHeight()}
+          aria-valuemax={maxDrawerHeight()}
+          aria-valuenow={drawerHeight}
+          tabIndex={0}
+          className="group/terminal-edge absolute inset-x-0 top-0 z-20 h-1.5 cursor-row-resize outline-none"
+          onPointerDown={handleResizePointerDown}
+          onPointerMove={handleResizePointerMove}
+          onPointerUp={handleResizePointerEnd}
+          onPointerCancel={handleResizePointerEnd}
+          onKeyDown={handleResizeKeyDown}
+        >
+          <div className="h-px w-full bg-transparent transition-colors group-hover/terminal-edge:bg-ring group-focus-visible/terminal-edge:bg-ring" />
+        </div>
+      )}
 
       <div className="flex h-8 shrink-0 items-stretch gap-1 window-gutters bg-rail pt-1 [--side-gutter:--spacing(1.5)]">
         <TerminalTabStrip
@@ -1897,25 +1956,43 @@ export default function ThreadTerminalDrawer({
               </MenuItem>
             </MenuPopup>
           </Menu>
-          <span aria-hidden="true" className="mx-0.5 h-4 w-px bg-border" />
-          <HeaderIconButton label={hideTerminalActionLabel} onClick={onHideTerminal}>
-            <ChevronDown className="size-3.5" aria-hidden="true" />
-          </HeaderIconButton>
+          {onHideTerminal && !isPage ? (
+            <>
+              <span aria-hidden="true" className="mx-0.5 h-4 w-px bg-border" />
+              <HeaderIconButton label={hideTerminalActionLabel} onClick={onHideTerminal}>
+                <ChevronDown className="size-3.5" aria-hidden="true" />
+              </HeaderIconButton>
+            </>
+          ) : null}
         </div>
       </div>
 
       <div className="min-h-0 w-full flex-1">
         {isSplitView ? (
           <div
-            className="grid h-full w-full min-w-0 gap-0 overflow-hidden"
-            style={{
-              gridTemplateColumns: `repeat(${visibleTerminalIds.length}, minmax(0, 1fr))`,
-            }}
+            className={cn(
+              "grid h-full w-full min-w-0 gap-0 overflow-hidden",
+              // A phone stacks the page's panes: side by side, each would be
+              // a few columns wide.
+              isPage
+                ? "grid-rows-(--terminal-split) desktop:grid-cols-(--terminal-split) desktop:grid-rows-none"
+                : "grid-cols-(--terminal-split)",
+            )}
+            style={
+              {
+                "--terminal-split": `repeat(${visibleTerminalIds.length}, minmax(0, 1fr))`,
+              } as CSSProperties
+            }
           >
             {visibleTerminalIds.map((terminalId) => (
               <div
                 key={terminalId}
-                className="min-h-0 min-w-0 border-l border-border first:border-l-0"
+                className={cn(
+                  "min-h-0 min-w-0 border-border",
+                  isPage
+                    ? "border-t first:border-t-0 desktop:border-t-0 desktop:border-l desktop:first:border-l-0"
+                    : "border-l first:border-l-0",
+                )}
                 onMouseDown={() => {
                   if (terminalId !== resolvedActiveTerminalId) {
                     onActiveTerminalChange(terminalId);

@@ -61,17 +61,7 @@ import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
 import { Debouncer } from "@tanstack/react-pacer";
 import { useQueryClient } from "@tanstack/react-query";
 import * as Option from "effect/Option";
-import {
-  lazy,
-  memo,
-  Suspense,
-  useCallback,
-  useEffect,
-  useEffectEvent,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { memo, useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useShallow } from "zustand/react/shallow";
 import { useGitStatus } from "~/lib/gitStatusState";
@@ -296,13 +286,20 @@ import {
   selectTerminalActivityStartedAt,
   selectTerminalTabs,
   noteTerminalMadeOnServer,
-  terminalKey,
-  terminalLineRecentlyEntered,
   terminalTabNumbers,
   selectThreadTerminalState,
   useTerminalStateStore,
 } from "../terminalStateStore";
-import { dropTerminalBuffer, useTerminalThreadStream } from "../terminalStreams";
+import { dropTerminalBuffer } from "../terminalStreams";
+import { killTerminalTab } from "./terminal/terminalTabActions";
+import {
+  TerminalStopConfirmDialog,
+  terminalStopNeedsConfirm,
+} from "./terminal/TerminalStopConfirmDialog";
+import {
+  ManagedTerminalDrawer,
+  type ManagedTerminalDrawerProps,
+} from "./terminal/ManagedTerminalDrawer";
 import { type TerminalCommandKind, useTerminalCommandsStore } from "../terminalCommands";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
 import { McpAppSidePanel } from "./chat/McpAppCard";
@@ -414,7 +411,6 @@ import {
   revokeBlobPreviewUrl,
   revokeUserMessagePreviewUrls,
   shouldRefreshThreadDetailAfterEventLoopStall,
-  shouldConfirmTerminalKill,
   shouldOfferFailedTurnRetry,
   shouldWriteThreadErrorToCurrentServerThread,
   THREAD_DETAIL_STALL_PROBE_INTERVAL_MS,
@@ -501,10 +497,6 @@ import {
   type ProviderInstanceEntry,
   resolveComposerProviderSelection,
 } from "../providerInstances";
-
-// Lazy so @xterm/xterm (and the drawer's terminal machinery) stays out of
-// the entry chunk; the drawer only mounts once a terminal is opened.
-const ThreadTerminalDrawer = lazy(() => import("./ThreadTerminalDrawer"));
 
 const ATTACHMENT_ONLY_BOOTSTRAP_PROMPT =
   "[User attached one or more files without additional text. Respond using the conversation context and the attached file(s).]";
@@ -961,19 +953,16 @@ function sameItems<T>(left: ReadonlyArray<T>, right: ReadonlyArray<T>): boolean 
   return left.length === right.length && left.every((item, index) => item === right[index]);
 }
 
-interface PersistentThreadTerminalDrawerProps {
-  threadRef: { environmentId: EnvironmentId; threadId: ThreadId };
-  threadId: ThreadId;
-  visible: boolean;
-  focusRequestId: number;
-  findRequested: boolean;
-  onFindRequestHandled: () => void;
-  splitShortcutLabel: string | undefined;
-  newShortcutLabel: string | undefined;
-  closeShortcutLabel: string | undefined;
-  hideShortcutLabel: string | undefined;
-  findShortcutLabel: string | undefined;
-  keybindings: ResolvedKeybindingsConfig;
+interface PersistentThreadTerminalDrawerProps extends Omit<
+  ManagedTerminalDrawerProps,
+  | "layout"
+  | "cwd"
+  | "worktreePath"
+  | "runtimeEnv"
+  | "onCloseTerminal"
+  | "onRestartTerminal"
+  | "onAddTerminalContext"
+> {
   onAddTerminalContext: (selection: TerminalContextSelection) => void;
   onCloseTerminal: (
     threadRef: { environmentId: EnvironmentId; threadId: ThreadId },
@@ -986,29 +975,15 @@ interface PersistentThreadTerminalDrawerProps {
     threadId: ThreadId,
     terminalId: string,
   ) => void;
-  onHideTerminal: () => void;
 }
 
-const EMPTY_TERMINAL_COMMANDS: ReadonlyMap<string, string> = new Map();
-
+/** A thread's terminal drawer: new tabs start in the thread's folder now. */
 const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDrawer({
-  threadRef,
-  threadId,
-  visible,
-  focusRequestId,
-  findRequested,
-  onFindRequestHandled,
-  splitShortcutLabel,
-  newShortcutLabel,
-  closeShortcutLabel,
-  hideShortcutLabel,
-  findShortcutLabel,
-  keybindings,
-  onAddTerminalContext,
   onCloseTerminal,
   onRestartTerminal,
-  onHideTerminal,
+  ...props
 }: PersistentThreadTerminalDrawerProps) {
+  const { threadRef } = props;
   const serverThread = useStore(useMemo(() => createThreadSelectorByRef(threadRef), [threadRef]));
   const draftThread = useComposerDraftStore((store) => store.getDraftThreadByRef(threadRef));
   const projectRef = serverThread
@@ -1017,23 +992,6 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
       ? scopeProjectRef(draftThread.environmentId, draftThread.projectId)
       : null;
   const project = useStore(useMemo(() => createProjectSelectorByRef(projectRef), [projectRef]));
-  const terminalState = useTerminalStateStore((state) =>
-    selectThreadTerminalState(state.terminalStateByThreadKey, threadRef),
-  );
-  const terminalTabs = useTerminalStateStore((state) =>
-    selectTerminalTabs(state.terminalTabsByThreadKey, threadRef),
-  );
-  const terminalActivityCommandByKey = useTerminalStateStore(
-    (state) => state.terminalActivityCommandByKey,
-  );
-  const storeSetTerminalHeight = useTerminalStateStore((state) => state.setTerminalHeight);
-  const storeSplitTerminal = useTerminalStateStore((state) => state.splitTerminal);
-  const storeNewTerminal = useTerminalStateStore((state) => state.newTerminal);
-  const storeSetActiveTerminal = useTerminalStateStore((state) => state.setActiveTerminal);
-  const storeCloseTerminal = useTerminalStateStore((state) => state.closeTerminal);
-  const terminalFontSize = useSettings((settings) => settings.terminalFontSize);
-  const terminalScreenReaderMode = useSettings((settings) => settings.terminalScreenReaderMode);
-  const [localFocusRequestId, setLocalFocusRequestId] = useState(0);
   const worktreePath = serverThread?.worktreePath ?? draftThread?.worktreePath ?? null;
   const threadEffectiveCwd = serverThread?.effectiveCwd ?? null;
   // Where a new tab starts: the thread's folder now. A tab that exists stays
@@ -1059,137 +1017,31 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
         : {},
     [project, worktreePath],
   );
-  const drawerShown = Boolean(project && terminalState.terminalOpen && cwd);
-  // This thread's output comes only while its drawer is mounted.
-  const stream = useTerminalThreadStream(threadRef.environmentId, threadId, drawerShown);
-  const commandByTerminalId = useMemo(() => {
-    if (Object.keys(terminalActivityCommandByKey).length === 0) return EMPTY_TERMINAL_COMMANDS;
-    const commands = new Map<string, string>();
-    for (const terminalId of terminalState.terminalIds) {
-      const command = terminalActivityCommandByKey[terminalKey(threadRef, terminalId)];
-      if (command) commands.set(terminalId, command);
-    }
-    return commands;
-  }, [terminalActivityCommandByKey, terminalState.terminalIds, threadRef]);
-
-  const bumpFocusRequestId = useCallback(() => {
-    if (!visible) {
-      return;
-    }
-    setLocalFocusRequestId((value) => value + 1);
-  }, [visible]);
-
-  const setTerminalHeight = useCallback(
-    (height: number) => {
-      storeSetTerminalHeight(threadRef, height);
-    },
-    [storeSetTerminalHeight, threadRef],
-  );
-
-  const splitTerminal = useCallback(() => {
-    storeSplitTerminal(threadRef, `terminal-${randomUUID()}`);
-    bumpFocusRequestId();
-  }, [bumpFocusRequestId, storeSplitTerminal, threadRef]);
-
-  const createNewTerminal = useCallback(() => {
-    storeNewTerminal(threadRef, `terminal-${randomUUID()}`);
-    bumpFocusRequestId();
-  }, [bumpFocusRequestId, storeNewTerminal, threadRef]);
-
-  const activateTerminal = useCallback(
-    (terminalId: string) => {
-      storeSetActiveTerminal(threadRef, terminalId);
-      bumpFocusRequestId();
-    },
-    [bumpFocusRequestId, storeSetActiveTerminal, threadRef],
-  );
-
   const closeTerminal = useCallback(
-    (terminalId: string, options?: { sessionExited?: boolean }) => {
-      onCloseTerminal(threadRef, threadId, terminalId, options);
-      bumpFocusRequestId();
-    },
-    [bumpFocusRequestId, onCloseTerminal, threadId, threadRef],
+    (targetThreadRef: ScopedThreadRef, terminalId: string, options?: { sessionExited?: boolean }) =>
+      onCloseTerminal(targetThreadRef, targetThreadRef.threadId, terminalId, options),
+    [onCloseTerminal],
   );
-
-  const forgetTerminal = useCallback(
-    (terminalId: string) => {
-      storeCloseTerminal(threadRef, terminalId);
-      dropTerminalBuffer(threadRef.environmentId, threadId, terminalId);
-    },
-    [storeCloseTerminal, threadId, threadRef],
-  );
-
   const restartTerminal = useCallback(
-    (terminalId: string) => onRestartTerminal(threadRef, threadId, terminalId),
-    [onRestartTerminal, threadId, threadRef],
+    (targetThreadRef: ScopedThreadRef, terminalId: string) =>
+      onRestartTerminal(targetThreadRef, targetThreadRef.threadId, terminalId),
+    [onRestartTerminal],
   );
 
-  const clearTerminal = useCallback(
-    (terminalId: string) => {
-      const api = readEnvironmentApi(threadRef.environmentId);
-      void api?.terminal.clear({ threadId, terminalId }).catch(() => undefined);
-    },
-    [threadId, threadRef],
-  );
-
-  const handleAddTerminalContext = useCallback(
-    (selection: TerminalContextSelection) => {
-      if (!visible) {
-        return;
-      }
-      onAddTerminalContext(selection);
-    },
-    [onAddTerminalContext, visible],
-  );
-
-  if (!project || !terminalState.terminalOpen || !cwd) {
+  if (!project || !cwd) {
     return null;
   }
 
   return (
-    <div className={visible ? undefined : "hidden"}>
-      <Suspense fallback={null}>
-        <ThreadTerminalDrawer
-          threadRef={threadRef}
-          threadId={threadId}
-          cwd={cwd}
-          worktreePath={worktreePath}
-          runtimeEnv={runtimeEnv}
-          visible={visible}
-          height={terminalState.terminalHeight}
-          terminalIds={terminalState.terminalIds}
-          activeTerminalId={terminalState.activeTerminalId}
-          terminalGroups={terminalState.terminalGroups}
-          activeTerminalGroupId={terminalState.activeTerminalGroupId}
-          tabs={terminalTabs}
-          runningTerminalIds={terminalState.runningTerminalIds}
-          commandByTerminalId={commandByTerminalId}
-          stream={stream}
-          focusRequestId={focusRequestId + localFocusRequestId + (visible ? 1 : 0)}
-          findRequested={findRequested}
-          onFindRequestHandled={onFindRequestHandled}
-          fontSize={terminalFontSize}
-          screenReaderMode={terminalScreenReaderMode}
-          onSplitTerminal={splitTerminal}
-          onNewTerminal={createNewTerminal}
-          onHideTerminal={onHideTerminal}
-          splitShortcutLabel={visible ? splitShortcutLabel : undefined}
-          newShortcutLabel={visible ? newShortcutLabel : undefined}
-          closeShortcutLabel={visible ? closeShortcutLabel : undefined}
-          hideShortcutLabel={visible ? hideShortcutLabel : undefined}
-          findShortcutLabel={visible ? findShortcutLabel : undefined}
-          keybindings={keybindings}
-          onActiveTerminalChange={activateTerminal}
-          onCloseTerminal={closeTerminal}
-          onForgetTerminal={forgetTerminal}
-          onRestartTerminal={restartTerminal}
-          onClearTerminal={clearTerminal}
-          onHeightChange={setTerminalHeight}
-          onAddTerminalContext={handleAddTerminalContext}
-        />
-      </Suspense>
-    </div>
+    <ManagedTerminalDrawer
+      {...props}
+      layout="drawer"
+      cwd={cwd}
+      worktreePath={worktreePath}
+      runtimeEnv={runtimeEnv}
+      onCloseTerminal={closeTerminal}
+      onRestartTerminal={restartTerminal}
+    />
   );
 });
 
@@ -1431,7 +1283,6 @@ export default function ChatView(props: ChatViewProps) {
   const storeSplitTerminal = useTerminalStateStore((s) => s.splitTerminal);
   const storeNewTerminal = useTerminalStateStore((s) => s.newTerminal);
   const storeSetActiveTerminal = useTerminalStateStore((s) => s.setActiveTerminal);
-  const storeCloseTerminal = useTerminalStateStore((s) => s.closeTerminal);
   const removeComposerDraftTerminalContextsForTerminal = useComposerDraftStore(
     (store) => store.removeTerminalContextsForTerminal,
   );
@@ -3697,39 +3548,11 @@ export default function ChatView(props: ChatViewProps) {
       targetThreadId: ThreadId,
       terminalId: string,
     ) => {
-      const api = readEnvironmentApi(targetThreadRef.environmentId);
-      if (!api) return;
-      const targetTerminalState = selectThreadTerminalState(
-        useTerminalStateStore.getState().terminalStateByThreadKey,
-        targetThreadRef,
-      );
-      const isFinalTerminal = targetTerminalState.terminalIds.length <= 1;
-      const fallbackExitWrite = () =>
-        api.terminal
-          .write({ threadId: targetThreadId, terminalId, data: "exit\n" })
-          .catch(() => undefined);
-      if ("close" in api.terminal && typeof api.terminal.close === "function") {
-        void (async () => {
-          if (isFinalTerminal) {
-            await api.terminal
-              .clear({ threadId: targetThreadId, terminalId })
-              .catch(() => undefined);
-          }
-          await api.terminal.close({
-            threadId: targetThreadId,
-            terminalId,
-            deleteHistory: true,
-          });
-        })().catch(() => fallbackExitWrite());
-      } else {
-        void fallbackExitWrite();
-      }
-      storeCloseTerminal(targetThreadRef, terminalId);
-      dropTerminalBuffer(targetThreadRef.environmentId, targetThreadId, terminalId);
+      if (!killTerminalTab(targetThreadRef, terminalId)) return;
       removeComposerDraftTerminalContextsForTerminal(targetThreadRef, terminalId);
       setTerminalFocusRequestId((value) => value + 1);
     },
-    [removeComposerDraftTerminalContextsForTerminal, storeCloseTerminal],
+    [removeComposerDraftTerminalContextsForTerminal],
   );
   // A new shell in the thread's folder now, below the old one's output.
   const performRestartTerminal = useCallback(
@@ -3776,31 +3599,13 @@ export default function ChatView(props: ChatViewProps) {
     threadId: ThreadId;
     terminalId: string;
   } | null>(null);
-  /** Whether stopping this tab's shell would stop something. */
-  const isTerminalBusy = useCallback(
-    (targetThreadRef: { environmentId: EnvironmentId; threadId: ThreadId }, terminalId: string) => {
-      const store = useTerminalStateStore.getState();
-      return shouldConfirmTerminalKill({
-        runningTerminalIds: selectThreadTerminalState(
-          store.terminalStateByThreadKey,
-          targetThreadRef,
-        ).runningTerminalIds,
-        terminalId,
-        commandPending:
-          store.terminalCommandPendingByKey[terminalKey(targetThreadRef, terminalId)] === true ||
-          terminalLineRecentlyEntered(targetThreadRef, terminalId),
-        sessionExited: false,
-      });
-    },
-    [],
-  );
   const requestRestartTerminal = useCallback(
     (
       targetThreadRef: { environmentId: EnvironmentId; threadId: ThreadId },
       targetThreadId: ThreadId,
       terminalId: string,
     ) => {
-      if (isTerminalBusy(targetThreadRef, terminalId)) {
+      if (terminalStopNeedsConfirm(targetThreadRef, terminalId)) {
         setPendingTerminalAction({
           kind: "restart",
           threadRef: targetThreadRef,
@@ -3811,7 +3616,7 @@ export default function ChatView(props: ChatViewProps) {
       }
       performRestartTerminal(targetThreadRef, targetThreadId, terminalId);
     },
-    [isTerminalBusy, performRestartTerminal],
+    [performRestartTerminal],
   );
   const requestCloseTerminal = useCallback(
     (
@@ -3820,7 +3625,10 @@ export default function ChatView(props: ChatViewProps) {
       terminalId: string,
       options?: { sessionExited?: boolean },
     ) => {
-      if (options?.sessionExited !== true && isTerminalBusy(targetThreadRef, terminalId)) {
+      if (
+        options?.sessionExited !== true &&
+        terminalStopNeedsConfirm(targetThreadRef, terminalId)
+      ) {
         setPendingTerminalAction({
           kind: "kill",
           threadRef: targetThreadRef,
@@ -3831,7 +3639,7 @@ export default function ChatView(props: ChatViewProps) {
       }
       performCloseTerminal(targetThreadRef, targetThreadId, terminalId);
     },
-    [isTerminalBusy, performCloseTerminal],
+    [performCloseTerminal],
   );
   // A tool call the thread already tracks as an agent is not a separate
   // background run. History is consulted alongside the live turn so a promoted
@@ -9430,7 +9238,6 @@ export default function ChatView(props: ChatViewProps) {
         <PersistentThreadTerminalDrawer
           key={mountedThreadKey}
           threadRef={mountedThreadRef}
-          threadId={mountedThreadRef.threadId}
           visible={mountedThreadKey === activeThreadKey && terminalState.terminalOpen}
           focusRequestId={mountedThreadKey === activeThreadKey ? terminalFocusRequestId : 0}
           findRequested={mountedThreadKey === activeThreadKey && terminalFindRequested}
@@ -9447,31 +9254,12 @@ export default function ChatView(props: ChatViewProps) {
           onHideTerminal={toggleTerminalVisibility}
         />
       ))}
-      <AlertDialog
-        open={pendingTerminalAction !== null}
-        onOpenChange={(open) => {
-          if (!open) setPendingTerminalAction(null);
-        }}
-      >
-        <AlertDialogPopup>
-          <AlertDialogHeader>
-            <AlertDialogTitle>
-              {pendingTerminalAction?.kind === "restart" ? "Restart terminal?" : "Kill terminal?"}
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              {pendingTerminalAction?.kind === "restart"
-                ? "Something is still running in this terminal. Restarting stops it and starts a new shell in the thread's folder, below what it printed."
-                : "A process is still running in this terminal. Killing the terminal stops the process and discards the terminal history. To keep it running, hide the terminal instead."}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
-            <Button variant="destructive" onClick={confirmPendingTerminalAction}>
-              {pendingTerminalAction?.kind === "restart" ? "Restart terminal" : "Kill terminal"}
-            </Button>
-          </AlertDialogFooter>
-        </AlertDialogPopup>
-      </AlertDialog>
+      <TerminalStopConfirmDialog
+        kind={pendingTerminalAction?.kind ?? null}
+        host="thread"
+        onConfirm={confirmPendingTerminalAction}
+        onCancel={() => setPendingTerminalAction(null)}
+      />
       {previewedFile && <FilePreviewDialog request={previewedFile} onClose={closePreviewedFile} />}
     </div>
   );

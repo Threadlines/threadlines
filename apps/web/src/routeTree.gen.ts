@@ -19,6 +19,7 @@ import { Route as ChatChatsRouteImport } from './routes/_chat.chats'
 import { Route as ChatFleetRouteImport } from './routes/_chat.fleet'
 import { Route as ChatPullRequestsRouteImport } from './routes/_chat.pull-requests'
 import { Route as ChatScheduledRouteImport } from './routes/_chat.scheduled'
+import { Route as ChatTerminalsRouteImport } from './routes/_chat.terminals'
 import { Route as ChatUsageRouteImport } from './routes/_chat.usage'
 import { Route as SettingsIndexRouteImport } from './routes/settings.index'
 import { Route as SettingsAppearanceRouteImport } from './routes/settings.appearance'
@@ -86,6 +87,11 @@ const ChatPullRequestsRoute = ChatPullRequestsRouteImport.update({
 const ChatScheduledRoute = ChatScheduledRouteImport.update({
   id: '/scheduled',
   path: '/scheduled',
+  getParentRoute: () => ChatRoute,
+} as any)
+const ChatTerminalsRoute = ChatTerminalsRouteImport.update({
+  id: '/terminals',
+  path: '/terminals',
   getParentRoute: () => ChatRoute,
 } as any)
 const ChatUsageRoute = ChatUsageRouteImport.update({
@@ -195,6 +201,7 @@ export interface FileRoutesByFullPath {
   '/fleet': typeof ChatFleetRouteWithChildren
   '/pull-requests': typeof ChatPullRequestsRoute
   '/scheduled': typeof ChatScheduledRoute
+  '/terminals': typeof ChatTerminalsRoute
   '/usage': typeof ChatUsageRoute
   '/settings/appearance': typeof SettingsAppearanceRoute
   '/settings/archived': typeof SettingsArchivedRoute
@@ -222,6 +229,7 @@ export interface FileRoutesByTo {
   '/chats': typeof ChatChatsRoute
   '/pull-requests': typeof ChatPullRequestsRoute
   '/scheduled': typeof ChatScheduledRoute
+  '/terminals': typeof ChatTerminalsRoute
   '/usage': typeof ChatUsageRoute
   '/settings/appearance': typeof SettingsAppearanceRoute
   '/settings/archived': typeof SettingsArchivedRoute
@@ -254,6 +262,7 @@ export interface FileRoutesById {
   '/_chat/fleet': typeof ChatFleetRouteWithChildren
   '/_chat/pull-requests': typeof ChatPullRequestsRoute
   '/_chat/scheduled': typeof ChatScheduledRoute
+  '/_chat/terminals': typeof ChatTerminalsRoute
   '/_chat/usage': typeof ChatUsageRoute
   '/settings/appearance': typeof SettingsAppearanceRoute
   '/settings/archived': typeof SettingsArchivedRoute
@@ -287,6 +296,7 @@ export interface FileRouteTypes {
     | '/fleet'
     | '/pull-requests'
     | '/scheduled'
+    | '/terminals'
     | '/usage'
     | '/settings/appearance'
     | '/settings/archived'
@@ -314,6 +324,7 @@ export interface FileRouteTypes {
     | '/chats'
     | '/pull-requests'
     | '/scheduled'
+    | '/terminals'
     | '/usage'
     | '/settings/appearance'
     | '/settings/archived'
@@ -345,6 +356,7 @@ export interface FileRouteTypes {
     | '/_chat/fleet'
     | '/_chat/pull-requests'
     | '/_chat/scheduled'
+    | '/_chat/terminals'
     | '/_chat/usage'
     | '/settings/appearance'
     | '/settings/archived'
@@ -445,6 +457,13 @@ declare module '@tanstack/react-router' {
       path: '/scheduled'
       fullPath: '/scheduled'
       preLoaderRoute: typeof ChatScheduledRouteImport
+      parentRoute: typeof ChatRoute
+    }
+    '/_chat/terminals': {
+      id: '/_chat/terminals'
+      path: '/terminals'
+      fullPath: '/terminals'
+      preLoaderRoute: typeof ChatTerminalsRouteImport
       parentRoute: typeof ChatRoute
     }
     '/_chat/usage': {
@@ -604,6 +623,7 @@ interface ChatRouteChildren {
   ChatFleetRoute: typeof ChatFleetRouteWithChildren
   ChatPullRequestsRoute: typeof ChatPullRequestsRoute
   ChatScheduledRoute: typeof ChatScheduledRoute
+  ChatTerminalsRoute: typeof ChatTerminalsRoute
   ChatUsageRoute: typeof ChatUsageRoute
   ChatIndexRoute: typeof ChatIndexRoute
   ChatEnvironmentIdThreadIdRoute: typeof ChatEnvironmentIdThreadIdRoute
@@ -615,6 +635,7 @@ const ChatRouteChildren: ChatRouteChildren = {
   ChatFleetRoute: ChatFleetRouteWithChildren,
   ChatPullRequestsRoute: ChatPullRequestsRoute,
   ChatScheduledRoute: ChatScheduledRoute,
+  ChatTerminalsRoute: ChatTerminalsRoute,
   ChatUsageRoute: ChatUsageRoute,
   ChatIndexRoute: ChatIndexRoute,
   ChatEnvironmentIdThreadIdRoute: ChatEnvironmentIdThreadIdRoute,

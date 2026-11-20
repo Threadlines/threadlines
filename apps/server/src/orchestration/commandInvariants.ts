@@ -1,10 +1,11 @@
-import type {
-  OrchestrationCommand,
-  OrchestrationProject,
-  OrchestrationReadModel,
-  OrchestrationThread,
-  ProjectId,
-  ThreadId,
+import {
+  type OrchestrationCommand,
+  type OrchestrationProject,
+  type OrchestrationReadModel,
+  type OrchestrationThread,
+  type ProjectId,
+  TERMINALS_PAGE_THREAD_ID,
+  type ThreadId,
 } from "@threadlines/contracts";
 import { projectLeadThreadId } from "@threadlines/shared/projectLead";
 import * as Effect from "effect/Effect";
@@ -206,6 +207,13 @@ export function requireThreadAbsent(input: {
   readonly command: OrchestrationCommand;
   readonly threadId: ThreadId;
 }): Effect.Effect<void, OrchestrationCommandInvariantError> {
+  // The Terminals page keeps its tabs under this id; a thread with it would
+  // share them.
+  if (input.threadId === TERMINALS_PAGE_THREAD_ID) {
+    return Effect.fail(
+      invariantError(input.command.type, `Thread id '${input.threadId}' is reserved.`),
+    );
+  }
   if (!findThreadById(input.readModel, input.threadId)) {
     return Effect.void;
   }

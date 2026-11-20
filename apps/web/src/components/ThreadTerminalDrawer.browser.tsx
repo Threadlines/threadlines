@@ -386,6 +386,7 @@ type ViewportOverrides = Partial<
   Pick<
     Parameters<typeof TerminalViewport>[0],
     | "cwd"
+    | "followsFolder"
     | "launchCwd"
     | "interruptedCommand"
     | "portInUse"
@@ -413,6 +414,7 @@ function ViewportUnderTest(
       terminalId="default"
       terminalLabel="Terminal"
       cwd={props.cwd ?? "/repo/project"}
+      followsFolder={props.followsFolder ?? true}
       launchCwd={props.launchCwd ?? null}
       interruptedCommand={props.interruptedCommand ?? null}
       portInUse={props.portInUse ?? null}
@@ -1154,6 +1156,26 @@ describe("TerminalViewport", () => {
     }
   });
 
+  it("never asks a Terminals page tab to move: no folder follows it there", async () => {
+    const environment = createEnvironmentApi({ cwd: "/repo/web" });
+    const threadRef = scopeThreadRef("environment-a" as never, THREAD_ID);
+    environmentApiById.set("environment-a", environment);
+    const mounted = await mountTerminalViewport({
+      threadRef,
+      // The page's pick for new tabs is another project now.
+      cwd: "/repo/api",
+      followsFolder: false,
+    });
+
+    try {
+      await vi.waitFor(() => expect(environment.terminal.open).toHaveBeenCalled());
+      await expect.element(page.getByText("Started in", { exact: false })).not.toBeInTheDocument();
+      expect(page.getByRole("button", { name: "Restart here" }).elements()).toHaveLength(0);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("offers to run again what a restart stopped, or to forget it", async () => {
     const environment = createEnvironmentApi();
     const threadRef = scopeThreadRef("environment-a" as never, THREAD_ID);
@@ -1383,6 +1405,7 @@ describe("TerminalTabStrip", () => {
       command: null,
       exit: null,
       cwd: null,
+      folder: null,
     });
     const screen = await render(
       <TerminalTabStrip

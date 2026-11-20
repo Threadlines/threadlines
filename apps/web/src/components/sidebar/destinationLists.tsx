@@ -50,6 +50,7 @@ export interface DestinationList {
 export const DESTINATION_LISTS: Record<NavigationDestinationId, DestinationList | null> = {
   threads: { body: "inbox" },
   chats: { body: GeneralChatsList.Component, inPhoneSheet: true },
+  terminals: null,
   "pull-requests": null,
   fleet: { body: FleetComputersList.Component, inPhoneSheet: true },
   scheduled: { body: ScheduledTasksList.Component, inPhoneSheet: true },

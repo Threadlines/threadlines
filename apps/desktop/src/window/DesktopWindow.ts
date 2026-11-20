@@ -97,6 +97,7 @@ export const OPEN_SCREEN_CLIP_MENU_ACTION = "open-screen-clip";
 /** Renderer actions the Go menu and the tray send; the app shell navigates on them. */
 export const OPEN_FLEET_MENU_ACTION = "open-fleet";
 export const OPEN_SCHEDULED_MENU_ACTION = "open-scheduled";
+export const OPEN_TERMINALS_MENU_ACTION = "open-terminals";
 export const OPEN_GENERAL_CHATS_MENU_ACTION = "open-general-chats";
 export const OPEN_USAGE_MENU_ACTION = "open-usage";
 /** Opens one thread: the tray's thread rows and links to a thread send it. */

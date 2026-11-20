@@ -536,6 +536,15 @@ const PAGES = [
     route: { to: "/chats" },
   },
   {
+    id: "terminals",
+    kind: "page",
+    title: "Terminals",
+    about:
+      "Terminal tabs and split panes tied to no chat, each starting in the project you pick, one set per computer.",
+    route: { to: "/terminals" },
+    keywords: ["terminal", "shell", "split terminal", "dev server", "console"],
+  },
+  {
     id: "pullRequests",
     kind: "page",
     title: "Pull Requests",

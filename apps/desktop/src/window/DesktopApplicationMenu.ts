@@ -21,6 +21,7 @@ type GoMenuAction =
   | typeof DesktopWindow.OPEN_FLEET_MENU_ACTION
   | typeof DesktopWindow.OPEN_SCHEDULED_MENU_ACTION
   | typeof DesktopWindow.OPEN_GENERAL_CHATS_MENU_ACTION
+  | typeof DesktopWindow.OPEN_TERMINALS_MENU_ACTION
   | typeof DesktopWindow.OPEN_USAGE_MENU_ACTION;
 
 export const GITHUB_REPOSITORY_URL = "https://github.com/Threadlines/threadlines";
@@ -287,6 +288,7 @@ const make = Effect.gen(function* () {
           { label: "Forward", click: goTo(DesktopWindow.NAVIGATE_FORWARD_MENU_ACTION) },
           { type: "separator" },
           { label: "General Chats", click: goTo(DesktopWindow.OPEN_GENERAL_CHATS_MENU_ACTION) },
+          { label: "Terminals", click: goTo(DesktopWindow.OPEN_TERMINALS_MENU_ACTION) },
           { label: "Fleet", click: goTo(DesktopWindow.OPEN_FLEET_MENU_ACTION) },
           { label: "Scheduled", click: goTo(DesktopWindow.OPEN_SCHEDULED_MENU_ACTION) },
           { label: "Usage", click: goTo(DesktopWindow.OPEN_USAGE_MENU_ACTION) },

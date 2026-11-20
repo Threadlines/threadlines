@@ -12,6 +12,7 @@ describe("resolveSelectedDestination", () => {
     expect(selected("/draft/draft-1")).toBe("threads");
     expect(selected("/environment-local/thread-1", true)).toBe("chats");
     expect(selected("/chats")).toBe("chats");
+    expect(selected("/terminals")).toBe("terminals");
     expect(selected("/pull-requests")).toBe("pull-requests");
     expect(selected("/fleet")).toBe("fleet");
     expect(selected("/scheduled")).toBe("scheduled");
