@@ -50,6 +50,17 @@ const HubDeviceList = Schema.Struct({
     Schema.Array(Schema.Struct({ message: Schema.String, error: Schema.optional(Schema.String) })),
   ),
 });
+/** serve-sim's grid inventory, which, unlike `/api/devices`, includes simulators never booted. */
+const IosGridDeviceList = Schema.Struct({
+  devices: Schema.Array(
+    Schema.Struct({
+      device: Schema.String,
+      name: Schema.String,
+      runtime: Schema.String,
+      state: Schema.String,
+    }),
+  ),
+});
 const HubActionResult = Schema.Struct({
   ok: Schema.Boolean,
   id: Schema.optional(Schema.String),
@@ -238,6 +249,35 @@ export const makeDeviceHubOperations = (options: {
         const head = errorHead(error.error ?? "");
         return boundDiagnostics(head ? `${error.message} ${head}` : error.message);
       }) ?? [];
+    // The hub's device list leaves out simulators that were never booted (they
+    // carry no usage timestamps); serve-sim's grid lists them. Ported from T3
+    // Code's fix (pingdotgg/t3code#28915).
+    if (yield* options.platformAvailable("ios")) {
+      const grid = yield* hubJson(
+        HttpClientRequest.get(`${origin}${vendorPrefix("ios")}/grid/api`),
+        IosGridDeviceList,
+        "list",
+      ).pipe(Effect.result);
+      if (grid._tag === "Failure") {
+        details.push("Could not list all iOS simulators. Recently used ones are listed.");
+      } else {
+        for (const device of grid.success.devices) {
+          const known = devices.some(
+            (listed) =>
+              listed.platform === "ios" && listed.id.toUpperCase() === device.device.toUpperCase(),
+          );
+          if (known || !/^iOS-\d+(?:-\d+)*$/.test(device.runtime)) continue;
+          devices.push({
+            id: device.device,
+            name: device.name,
+            version: device.runtime.replace("iOS-", "iOS ").replaceAll("-", "."),
+            platform: "ios",
+            booted: device.state === "Booted",
+            physical: false,
+          });
+        }
+      }
+    }
     if (androidAvailable) {
       if (hubList.errors?.some((error) => error.message.startsWith(AVDMANAGER_LIST_FAILED))) {
         const adbDevices = yield* listAdbDevices;
