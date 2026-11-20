@@ -584,6 +584,11 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
       // One tab stop for the group; the arrow keys move along it and pick.
       expect(pill(astraId)?.tabIndex).toBe(0);
       expect(pill("primary")?.tabIndex).toBe(-1);
+      // The picker focuses its search box once more a frame and a tick after it
+      // (re)renders; on a busy machine that lands late. Let those pass first,
+      // or they pull focus off the pill before the arrow key.
+      await nextFrames(2);
+      await new Promise((resolve) => setTimeout(resolve, 0));
       pill(astraId)!.focus();
       await userEvent.keyboard("{ArrowLeft}");
       await vi.waitFor(() => {
