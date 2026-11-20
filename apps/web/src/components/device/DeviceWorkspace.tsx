@@ -72,11 +72,11 @@ export function DeviceWorkspace(props: {
   // Tools actions that worked become steps of a running recording.
   const recordedControls = {
     ...controls,
-    act: (body: Parameters<typeof controls.act>[0]) =>
-      controls.act(body).then((succeeded) => {
-        if (succeeded) recording.noteAction(body);
-        return succeeded;
-      }),
+    act: (body: Parameters<typeof controls.act>[0]) => {
+      const done = controls.act(body);
+      recording.trackAction(body, done);
+      return done;
+    },
   };
   const [screenshotPending, setScreenshotPending] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -282,7 +282,8 @@ export function DeviceWorkspace(props: {
           <DeviceToolsPanel
             device={device}
             controls={recordedControls}
-            transport={stream.transport}
+            // The event log reads only while the tab is on screen.
+            {...(visible ? { transport: stream.transport } : {})}
             onClose={() => setToolsOpen(false)}
             className={cn(
               // Beside the screen when the panel is wide, floating over it when not.

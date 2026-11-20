@@ -36,7 +36,11 @@ function result(frames: number): DeviceRecorderResult {
       hasFrame: true,
       elements: [general],
     })),
-    video: { blob: new Blob([new Uint8Array(64)], { type: "video/webm" }), mimeType: "video/webm" },
+    video: {
+      blob: new Blob([new Uint8Array(64)], { type: "video/webm" }),
+      mimeType: "video/webm",
+      tooBig: false,
+    },
     videoMissing: null,
     endedEarly: null,
   };
@@ -121,22 +125,34 @@ describe("handOffDeviceRecording", () => {
     expect(draft()!.prompt).toContain("No screenshots: the selected model takes no images.");
   });
 
-  it("keeps the video for download when the draft has no slot left", async () => {
+  it("keeps every video it could not attach for download, and one past the limit too", async () => {
     useComposerDraftStore
       .getState()
       .addAttachments(threadRef, ["a", "b", "c", "d", "e", "f", "g", "h"].map(existingFile));
-    const handoff = await handOffDeviceRecording({
+    const full = await handOffDeviceRecording({
       threadKey,
       threadRef,
       result: result(2),
       context: "iPhone 17e (iOS 27.2)",
     });
-    expect(handoff).toEqual({ steps: 2, frames: 0, video: false });
+    expect(full).toEqual({ steps: 2, frames: 0, video: false });
     expect(draft()!.attachments).toHaveLength(8);
     expect(draft()!.prompt).toContain('1. Tapped button "General"');
-    expect(useKeptDeviceRecordings.getState()[threadKey]).toMatchObject({
-      fileName: expect.stringMatching(/^device-recording-\d{6}\.webm$/),
-      message: "No free slot in the draft for the video.",
+
+    // A second one before the first was downloaded keeps both.
+    useComposerDraftStore.setState({ draftsByThreadKey: {} });
+    const tooBig = result(0);
+    await handOffDeviceRecording({
+      threadKey,
+      threadRef,
+      result: { ...tooBig, video: { ...tooBig.video!, tooBig: true } },
+      context: "iPhone 17e (iOS 27.2)",
     });
+    expect(draft()!.attachments).toHaveLength(0);
+    expect(draft()!.prompt).toContain("No video: it ran past the 10 MB attachment limit.");
+    expect(useKeptDeviceRecordings.getState()[threadKey]?.map((kept) => kept.message)).toEqual([
+      "No free slot in the draft for the video.",
+      "The video ran past the 10 MB attachment limit.",
+    ]);
   });
 });

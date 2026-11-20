@@ -1,4 +1,3 @@
-// @effect-diagnostics globalTimers:off - Browser code: a short watch on the draft's save, no Effect runtime.
 /**
  * Puts a finished device recording into its thread's draft, unsent
  * (docs/design/devices.md, "Record a flow"): the step log is appended to the
@@ -17,6 +16,7 @@ import { create } from "zustand";
 
 import {
   type ComposerAttachment,
+  composerAttachmentFitsDraftStorage,
   type ComposerFileAttachment,
   type ComposerImageAttachment,
   useComposerDraftStore,
@@ -34,8 +34,6 @@ import {
 /** Longest edge of an attached screenshot: legible, and a fraction of the PNG's bytes. */
 const FRAME_MAX_EDGE = 1600;
 const FRAME_JPEG_QUALITY = 0.85;
-/** How long to watch for the draft failing to save the attachments. */
-const SAVE_WATCH_MS = 10_000;
 
 export interface DeviceRecordingHandoff {
   readonly steps: number;
@@ -51,30 +49,45 @@ export interface KeptDeviceRecording {
   readonly message: string;
 }
 
-export const useKeptDeviceRecordings = create<Readonly<Record<string, KeptDeviceRecording>>>(
-  () => ({}),
-);
+const NO_KEPT: ReadonlyArray<KeptDeviceRecording> = [];
 
-/** Keeps a recording's video for download from the thread's Device tab, replacing an older one. */
+/** Videos kept for download, by thread key, oldest first. */
+export const useKeptDeviceRecordings = create<
+  Readonly<Record<string, ReadonlyArray<KeptDeviceRecording>>>
+>(() => ({}));
+
+export function readKeptDeviceRecordings(threadKey: string): ReadonlyArray<KeptDeviceRecording> {
+  return useKeptDeviceRecordings.getState()[threadKey] ?? NO_KEPT;
+}
+
+/** Keeps a recording's video for download from the thread's Device tab, beside any kept before. */
 export function keepDeviceRecording(
   threadKey: string,
   video: Blob,
   fileName: string,
   message: string,
 ) {
-  const previous = useKeptDeviceRecordings.getState()[threadKey];
-  if (previous) URL.revokeObjectURL(previous.url);
-  useKeptDeviceRecordings.setState({
-    [threadKey]: { id: randomUUID(), fileName, url: URL.createObjectURL(video), message },
-  });
+  const kept: KeptDeviceRecording = {
+    id: randomUUID(),
+    fileName,
+    url: URL.createObjectURL(video),
+    message,
+  };
+  useKeptDeviceRecordings.setState((state) => ({
+    [threadKey]: [...(state[threadKey] ?? NO_KEPT), kept],
+  }));
 }
 
 export function dismissKeptDeviceRecording(threadKey: string, id: string) {
-  const kept = useKeptDeviceRecordings.getState()[threadKey];
-  if (!kept || kept.id !== id) return;
+  const current = readKeptDeviceRecordings(threadKey);
+  const kept = current.find((entry) => entry.id === id);
+  if (!kept) return;
   URL.revokeObjectURL(kept.url);
-  const { [threadKey]: _dismissed, ...rest } = useKeptDeviceRecordings.getState();
-  useKeptDeviceRecordings.setState(rest, true);
+  const rest = current.filter((entry) => entry.id !== id);
+  useKeptDeviceRecordings.setState((state) => {
+    const { [threadKey]: _dismissed, ...others } = state;
+    return rest.length > 0 ? { ...others, [threadKey]: rest } : others;
+  }, true);
 }
 
 /** A screenshot made small enough to attach and keep: JPEG, longest edge capped. */
@@ -119,23 +132,34 @@ export async function handOffDeviceRecording(input: {
   readonly context: string;
 }): Promise<DeviceRecordingHandoff> {
   const { result, threadRef, threadKey } = input;
-  const store = useComposerDraftStore.getState();
-  const taken = store.getComposerDraft(threadRef)?.attachments.length ?? 0;
-  const freeSlots = Math.max(0, PROVIDER_SEND_TURN_MAX_ATTACHMENTS - taken);
-  const videoFits = result.video !== null && freeSlots > 0;
-  const frameSlots = composerAcceptsImages(threadKey) ? freeSlots - (videoFits ? 1 : 0) : 0;
-  const recording = limitRecordingFrames(
+  // A video the last chunks pushed past the limit can only be downloaded.
+  const attachable = result.video && !result.video.tooBig ? result.video : null;
+  const room = () => {
+    const taken =
+      useComposerDraftStore.getState().getComposerDraft(threadRef)?.attachments.length ?? 0;
+    const free = Math.max(0, PROVIDER_SEND_TURN_MAX_ATTACHMENTS - taken);
+    const videoFits = attachable !== null && free > 0;
+    const images = composerAcceptsImages(threadKey);
+    return {
+      free,
+      videoFits,
+      images,
+      frames: images ? Math.max(0, free - (videoFits ? 1 : 0)) : 0,
+    };
+  };
+  const planned = room();
+  const built = limitRecordingFrames(
     buildDeviceRecording(result.inputs, result.captures),
-    Math.max(0, frameSlots),
+    planned.frames,
   );
   const suffix = stamp(new Date());
 
-  const frameIndices = [
+  const frameIndices = (recording: typeof built) => [
     ...(recording.initialFrame === null ? [] : [recording.initialFrame]),
     ...recording.steps.flatMap((step) => (step.frame === null ? [] : [step.frame])),
   ];
   const images = new Map<number, ComposerImageAttachment>();
-  for (const [order, index] of frameIndices.entries()) {
+  for (const [order, index] of frameIndices(built).entries()) {
     const blob = result.captures[index]?.frame;
     if (!blob) continue;
     const file = await prepareFrame(
@@ -153,24 +177,34 @@ export async function handOffDeviceRecording(input: {
       file,
     });
   }
+  // Converting screenshots takes a moment, in which the user may attach a
+  // file or pick another model: count the room again before attaching.
+  const current = room();
+  const recording = limitRecordingFrames(built, current.frames);
+  const keptFrames = new Set(frameIndices(recording));
+  for (const [index, image] of images) {
+    if (keptFrames.has(index)) continue;
+    URL.revokeObjectURL(image.previewUrl);
+    images.delete(index);
+  }
   const videoName = `device-recording-${suffix}.${result.video?.mimeType === "video/mp4" ? "mp4" : "webm"}`;
   const video: ComposerFileAttachment | null =
-    result.video && videoFits
+    attachable && current.videoFits
       ? {
           type: "file",
           kind: "other",
           id: randomUUID(),
           name: videoName,
-          mimeType: result.video.mimeType,
-          sizeBytes: result.video.blob.size,
-          file: new File([result.video.blob], videoName, { type: result.video.mimeType }),
+          mimeType: attachable.mimeType,
+          sizeBytes: attachable.blob.size,
+          file: new File([attachable.blob], videoName, { type: attachable.mimeType }),
         }
       : null;
 
   const incoming: ComposerAttachment[] = [...(video ? [video] : []), ...images.values()];
   let accepted = new Set<string>();
   try {
-    if (incoming.length > 0) store.addAttachments(threadRef, incoming);
+    if (incoming.length > 0) useComposerDraftStore.getState().addAttachments(threadRef, incoming);
     accepted = new Set(
       (useComposerDraftStore.getState().getComposerDraft(threadRef)?.attachments ?? []).map(
         (attachment) => attachment.id,
@@ -187,13 +221,14 @@ export async function handOffDeviceRecording(input: {
 
   const notes: string[] = [];
   if (videoAttached) notes.push(`Video: ${videoName}`);
+  else if (result.video?.tooBig) notes.push("No video: it ran past the 10 MB attachment limit.");
   else if (result.video) notes.push("No video: it could not be attached to this message.");
   else if (result.videoMissing) notes.push(`No video: ${result.videoMissing}.`);
   if (result.endedEarly === "time") notes.push("The recording stopped at its 3 minute limit.");
   if (result.endedEarly === "size") {
     notes.push("The recording stopped early: the video reached the 10 MB attachment limit.");
   }
-  if (!composerAcceptsImages(threadKey) && result.captures.some((capture) => capture.hasFrame)) {
+  if (!current.images && result.captures.some((capture) => capture.hasFrame)) {
     notes.push("No screenshots: the selected model takes no images.");
   }
   const text = formatDeviceRecordingPrompt({
@@ -221,20 +256,31 @@ export async function handOffDeviceRecording(input: {
       threadKey,
       result.video.blob,
       videoName,
-      freeSlots === 0
-        ? "No free slot in the draft for the video."
-        : "The video could not join the draft.",
+      result.video.tooBig
+        ? "The video ran past the 10 MB attachment limit."
+        : current.free === 0
+          ? "No free slot in the draft for the video."
+          : "The video could not join the draft.",
     );
-  } else if (result.video && video && videoAttached) {
-    watchDraftSave(threadKey, threadRef, video.id, result.video.blob, videoName);
+  } else if (video && videoAttached && attachable) {
+    if (!composerAttachmentFitsDraftStorage(video)) {
+      // The composer never saves one this size; say so now, whatever thread is on screen.
+      keepDeviceRecording(threadKey, attachable.blob, videoName, UNSAVED_VIDEO_MESSAGE);
+    } else {
+      watchDraftSave(threadKey, threadRef, video.id, attachable.blob, videoName);
+    }
   }
   return { steps: recording.steps.length, frames: acceptedImages.length, video: videoAttached };
 }
 
+const UNSAVED_VIDEO_MESSAGE = "The draft cannot keep the video through a reload.";
+
 /**
- * The draft saves its attachments in local storage; a video is often too big
- * for it, and the composer then marks it unsaved. Offer the download then, so
- * a reload does not lose the only copy.
+ * The draft saves its attachments in local storage when its thread's
+ * composer is on screen; a full storage leaves the video unsaved and the
+ * composer marks it so. Offer the download then, so a reload does not lose
+ * the only copy. Watches until that happens or the video leaves the draft
+ * (sent or removed), however long the user stays on another thread.
  */
 function watchDraftSave(
   threadKey: string,
@@ -243,26 +289,14 @@ function watchDraftSave(
   blob: Blob,
   fileName: string,
 ) {
-  const check = () =>
-    useComposerDraftStore
-      .getState()
-      .getComposerDraft(threadRef)
-      ?.nonPersistedAttachmentIds.includes(videoId) === true;
-  let done = false;
-  const finish = () => {
-    done = true;
-    unsubscribe();
-    clearTimeout(timer);
-  };
   const unsubscribe = useComposerDraftStore.subscribe(() => {
-    if (done || !check()) return;
-    finish();
-    keepDeviceRecording(
-      threadKey,
-      blob,
-      fileName,
-      "The draft cannot keep the video through a reload.",
-    );
+    const draft = useComposerDraftStore.getState().getComposerDraft(threadRef);
+    if (!draft?.attachments.some((attachment) => attachment.id === videoId)) {
+      unsubscribe();
+      return;
+    }
+    if (!draft.nonPersistedAttachmentIds.includes(videoId)) return;
+    unsubscribe();
+    keepDeviceRecording(threadKey, blob, fileName, UNSAVED_VIDEO_MESSAGE);
   });
-  const timer = setTimeout(finish, SAVE_WATCH_MS);
 }

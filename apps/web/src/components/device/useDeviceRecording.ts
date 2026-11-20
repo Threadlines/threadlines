@@ -25,6 +25,8 @@ interface ActiveRecording {
   readonly context: string;
   readonly unobserve: () => void;
   readonly limitTimer: ReturnType<typeof setTimeout>;
+  /** Tools actions started during the recording that have not answered yet. */
+  readonly pendingActions: Set<Promise<void>>;
 }
 
 /**
@@ -70,9 +72,10 @@ export function useDeviceRecording(options: {
       return;
     }
     setStateIfMounted({ status: "saving" });
-    // Finishes even when the view is gone: the recording is the user's.
-    void recording.recorder
-      .stop(endedEarly)
+    // Finishes even when the view is gone: the recording is the user's. A
+    // Tools action still running lands in the log before it closes.
+    void Promise.allSettled(recording.pendingActions)
+      .then(() => recording.recorder.stop(endedEarly))
       .then((result) =>
         handOffDeviceRecording({
           threadKey: recording.threadKey,
@@ -120,6 +123,7 @@ export function useDeviceRecording(options: {
         .join(" "),
       unobserve: stream.observeInput(recorder.record),
       limitTimer: setTimeout(() => end(true, "time"), DEVICE_RECORDING_MAX_MS),
+      pendingActions: new Set(),
     };
     setState({ status: "recording", startedAt: Date.now() });
   };
@@ -136,12 +140,28 @@ export function useDeviceRecording(options: {
     start,
     stop: () => end(true),
     discard: () => end(false),
-    /** Logs a Tools action, which does not go through the stream. */
-    noteAction: (action: DeviceActionBody) => {
-      active.current?.recorder.record({
-        type: "action",
-        description: describeDeviceAction(action),
-      });
+    /**
+     * Logs a Tools action, which does not go through the stream, once it
+     * worked. It belongs to the recording running when it started, which
+     * waits for it before closing; one started before the recording is not
+     * logged.
+     */
+    trackAction: (action: DeviceActionBody, done: Promise<boolean>) => {
+      const recording = active.current;
+      if (!recording) return;
+      const logged = done.then(
+        (succeeded) => {
+          if (succeeded) {
+            recording.recorder.record({
+              type: "action",
+              description: describeDeviceAction(action),
+            });
+          }
+        },
+        () => {},
+      );
+      recording.pendingActions.add(logged);
+      void logged.finally(() => recording.pendingActions.delete(logged));
     },
   };
 }

@@ -51,6 +51,8 @@ export interface DeviceRecorderCapture extends DeviceRecordingCapture {
 export interface DeviceRecorderVideo {
   readonly blob: Blob;
   readonly mimeType: string;
+  /** Past the attachment limit (the last chunks ran over): download only. */
+  readonly tooBig: boolean;
 }
 
 export interface DeviceRecorderResult {
@@ -310,9 +312,7 @@ function startCanvasVideo(
         if (failed || bytes === 0) return { missing: "the browser could not record the screen" };
         const type = mimeType.split(";", 1)[0]!;
         const blob = new Blob(chunks, { type });
-        return blob.size > PROVIDER_SEND_TURN_MAX_FILE_BYTES
-          ? { missing: "the video ran past the 10 MB attachment limit" }
-          : { blob, mimeType: type };
+        return { blob, mimeType: type, tooBig: blob.size > PROVIDER_SEND_TURN_MAX_FILE_BYTES };
       },
     },
   };

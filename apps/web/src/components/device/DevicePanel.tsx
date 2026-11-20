@@ -170,25 +170,35 @@ export function DevicePanel(props: {
       />
     ) : null;
 
-  const keptLine = kept ? (
-    <div role="status" className="flex h-8 shrink-0 items-center gap-1.5 pr-1.5 pl-3 text-xs">
-      <p className="min-w-0 flex-1 truncate text-muted-foreground" title={kept.message}>
-        {kept.message}
+  // One line per video kept for download, each with its own name, oldest first.
+  const keptLine = kept?.map((entry) => (
+    <div
+      key={entry.id}
+      role="status"
+      className="flex h-8 shrink-0 items-center gap-1.5 pr-1.5 pl-3 text-xs"
+    >
+      <p className="min-w-0 flex-1 truncate text-muted-foreground" title={entry.message}>
+        {entry.message}
       </p>
-      <Button size="xs" variant="outline" render={<a href={kept.url} download={kept.fileName} />}>
+      <Button
+        size="xs"
+        variant="outline"
+        tooltip={entry.fileName}
+        render={<a href={entry.url} download={entry.fileName} />}
+      >
         <DownloadIcon />
         Download
       </Button>
       <Button
         size="icon-xs"
         variant="ghost"
-        aria-label="Dismiss"
-        onClick={() => dismissKeptDeviceRecording(threadKey, kept.id)}
+        aria-label={`Dismiss ${entry.fileName}`}
+        onClick={() => dismissKeptDeviceRecording(threadKey, entry.id)}
       >
         <XIcon />
       </Button>
     </div>
-  ) : null;
+  ));
 
   if (activeDevice && activeSession) {
     return (
