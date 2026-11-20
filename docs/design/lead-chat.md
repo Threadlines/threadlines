@@ -173,10 +173,17 @@ always one click away, and so is every thread it started.
   today's "Started by" chip.
 - **A tab.** The parent's tab is its title; a lead's is the crown and "Lead". A child's
   is its status dot (the family child rows' colours and words; a check once wrapped
-  and still in the family) and its title. The open one has a quiet fill. Hover is a
+  and still in the family) and its title. When two or more children's titles start with the same topic
+  (the words before a separator in one of them, such as "Pull Station:"), their tabs
+  drop it and show the rest; the tooltip and the "+N" menu keep the full title. A
+  one-word topic ("Fix:") counts only where the separator follows it, and a tab keeps
+  its full title when the rest would read the same as another tab's. The sidebar's rows
+  under the parent use the same rule over the same members, so a row and its tab
+  always read the same. The open one has a quiet fill. Hover is a
   colour shift. Right-click or a long press opens the sidebar's thread menu. There is
   no close button: a tab is not an open file, and wrapping up stays in the menu.
-- **Too many to fit.** Tabs shrink to a floor (about 96px), then the rest move behind
+- **Too many to fit.** The longest titles give way first, so crowded tabs end up one
+  width; the lead's crown and "Lead" never shrink. Tabs shrink to a floor (about 96px), then the rest move behind
   a "+N" menu at the end of the row, which lists them with their status. The open
   thread's tab is always on the row. "+N" carries an amber dot when a hidden thread
   needs the user. On a phone the row scrolls sideways instead and the open tab is

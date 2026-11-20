@@ -1937,10 +1937,15 @@ describe("child thread families", () => {
       deliveredAt?: string;
       seenAt?: string;
       wrappedByUser?: boolean;
+      title?: string;
     } = {},
   ): Entry => ({
     threadKey: id,
-    thread: { id: ThreadId.make(id), createdAt: options.createdAt ?? "2026-10-01T00:00:00.000Z" },
+    thread: {
+      id: ThreadId.make(id),
+      createdAt: options.createdAt ?? "2026-10-01T00:00:00.000Z",
+      title: options.title ?? id,
+    },
     status: options.status ?? null,
     isDone: options.done ?? false,
     settledAt: options.settledAt ?? options.createdAt ?? "2026-10-01T00:00:00.000Z",
@@ -1968,6 +1973,22 @@ describe("child thread families", () => {
       sortLive: (heads) => [...heads],
       sortDone: (heads) => [...heads],
     });
+
+  it("shortens a family's titles over every child, drawn or folded, as the tabs do", () => {
+    const entries = [
+      entry("lead"),
+      entry("android", { parent: "lead", title: "Pull Station: Android toolchain" }),
+      entry("polish", { parent: "lead", title: "Pull Station: UI polish pass" }),
+      entry("notes", { parent: "lead", title: "Write release notes" }),
+    ];
+    // Folded, no child is drawn, but the labels stay what they are when open.
+    const [folded] = sections(entries).live;
+    expect(folded!.shownChildren).toEqual([]);
+    expect(Object.fromEntries(folded!.childShortTitles)).toEqual({
+      android: "Android toolchain",
+      polish: "UI polish pass",
+    });
+  });
 
   it("takes one seat per family and lists exactly the rows it draws", () => {
     // Children never stand as live rows of their own while their parent is
@@ -2310,6 +2331,7 @@ describe("families across computers", () => {
     thread: {
       id: ThreadId.make(id),
       createdAt: "2026-10-21T09:00:00.000Z",
+      title: id,
       environmentId,
       parentThreadId: options.childOf === undefined ? null : ThreadId.make(options.childOf),
       attachedToParent: options.childOf !== undefined,

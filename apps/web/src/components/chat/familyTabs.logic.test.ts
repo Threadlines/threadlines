@@ -116,6 +116,7 @@ describe("fitting the row", () => {
     threadRef: null,
     kind: "child",
     title: key,
+    shortTitle: key,
     lead: false,
     dotClass: null,
     statusWord: null,

@@ -19,6 +19,7 @@ import {
   isNeedsUserStatus,
   liveFamilyOf,
 } from "../Sidebar.logic";
+import { shortFamilyTitles } from "../familyTitles.logic";
 
 /** One tab on the row. */
 export interface FamilyTab {
@@ -28,6 +29,11 @@ export interface FamilyTab {
   readonly threadRef: ScopedThreadRef | null;
   readonly kind: "parent" | "child";
   readonly title: string;
+  /**
+   * What the tab itself shows: the title, less a topic it shares with other
+   * threads on the row (`shortFamilyTitles`, the sidebar's rule too). The tooltip keeps the title.
+   */
+  readonly shortTitle: string;
   /** The parent is its project's lead chat: its tab is the flag and "Lead". */
   readonly lead: boolean;
   /** A child's status dot class and word; null for the parent or a quiet child. */
@@ -100,6 +106,7 @@ export function familyTabsOf<E extends FamilyTabEntry>(input: {
     threadRef: scopeThreadRef(child.thread.environmentId, child.thread.id),
     kind: "child",
     title: child.thread.title,
+    shortTitle: child.thread.title,
     lead: false,
     dotClass: child.isDone ? null : (child.status?.dotClass ?? null),
     statusWord: child.isDone ? null : inboxStatusWord(child.status),
@@ -113,6 +120,7 @@ export function familyTabsOf<E extends FamilyTabEntry>(input: {
     threadRef: null,
     kind: "child",
     title: child.title,
+    shortTitle: child.title,
     lead: false,
     dotClass: child.isDone ? null : (child.status?.dotClass ?? null),
     statusWord: child.isDone ? null : inboxStatusWord(child.status),
@@ -121,6 +129,8 @@ export function familyTabsOf<E extends FamilyTabEntry>(input: {
     computerLabel: child.computerLabel,
     inbox: null,
   });
+  const children = [...family.children.map(childTab), ...family.remoteChildren.map(remoteTab)];
+  const shortTitles = shortFamilyTitles(children.map((tab) => tab.title));
   return {
     familyKey: parent.threadKey,
     openKey: input.openKey,
@@ -130,6 +140,7 @@ export function familyTabsOf<E extends FamilyTabEntry>(input: {
         threadRef: scopeThreadRef(parent.thread.environmentId, parent.thread.id),
         kind: "parent",
         title: parent.thread.title,
+        shortTitle: parent.thread.title,
         lead: parent.isLead === true,
         dotClass: null,
         statusWord: null,
@@ -138,8 +149,7 @@ export function familyTabsOf<E extends FamilyTabEntry>(input: {
         computerLabel: null,
         inbox: { isDone: parent.isDone, canMarkDone: parent.canMarkDone === true },
       },
-      ...family.children.map(childTab),
-      ...family.remoteChildren.map(remoteTab),
+      ...children.map((tab, index) => ({ ...tab, shortTitle: shortTitles[index]! })),
     ],
   };
 }
@@ -157,6 +167,7 @@ export function sameFamilyTabs(left: FamilyTabs | null, right: FamilyTabs | null
       return (
         tab.key === other.key &&
         tab.title === other.title &&
+        tab.shortTitle === other.shortTitle &&
         tab.lead === other.lead &&
         tab.dotClass === other.dotClass &&
         tab.statusWord === other.statusWord &&

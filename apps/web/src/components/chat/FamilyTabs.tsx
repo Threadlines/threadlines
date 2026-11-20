@@ -230,12 +230,12 @@ const FamilyTabButton = memo(function FamilyTabButton({
     [openMenu],
   );
   const touchHold = useTouchHoldMenu<HTMLButtonElement>({ open: openMenu, onContextMenu });
-  const label =
-    tab.kind === "parent" && tab.lead
-      ? `Lead: ${tab.title}`
-      : tab.statusWord !== null
-        ? `${tab.title}, ${tab.statusWord}`
-        : tab.title;
+  const isLeadTab = tab.kind === "parent" && tab.lead;
+  const label = isLeadTab
+    ? `Lead: ${tab.title}`
+    : tab.statusWord !== null
+      ? `${tab.title}, ${tab.statusWord}`
+      : tab.title;
   const tabButton = (showLeadCard: (() => void) | null) => (
     <button
       ref={buttonRef}
@@ -249,9 +249,13 @@ const FamilyTabButton = memo(function FamilyTabButton({
       disabled={tab.threadRef === null}
       className={cn(
         "flex h-6 items-center gap-1.5 rounded-md px-2 text-xs transition-colors focus-ring",
-        // As wide as its title up to a cap, packed to the left like the right
-        // panel's strip; tabs only shrink (toward the fit's floor) when crowded.
-        fill ? "min-w-0 max-w-50 shrink" : "shrink-0",
+        // As wide as its title up to a 200px cap, packed to the left. When the
+        // row is crowded, every tab starts from the same 200px basis, so the
+        // longest titles give way first and all end up the same width (toward
+        // the fit's floor). Sizing from the title instead would squeeze each
+        // tab by its full title length and crush the short ones. The lead's
+        // crown and "Lead" never shrink: cut, they say nothing.
+        !fill || isLeadTab ? "shrink-0" : "min-w-0 max-w-max grow-0 shrink basis-50",
         active
           ? "bg-accent text-foreground"
           : "text-muted-foreground hover:text-foreground disabled:hover:text-muted-foreground",
@@ -278,12 +282,10 @@ const FamilyTabButton = memo(function FamilyTabButton({
           )}
         />
       )}
-      <span className="min-w-0 truncate">
-        {tab.kind === "parent" && tab.lead ? "Lead" : tab.title}
-      </span>
+      <span className="min-w-0 truncate">{isLeadTab ? "Lead" : tab.shortTitle}</span>
     </button>
   );
-  return tab.kind === "parent" && tab.lead && tab.threadRef !== null ? (
+  return isLeadTab && tab.threadRef !== null ? (
     <LeadChatCard threadRef={tab.threadRef} renderTrigger={tabButton} />
   ) : (
     tabButton(null)
