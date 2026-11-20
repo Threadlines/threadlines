@@ -52,6 +52,12 @@ describe("DeviceHubOperations list", () => {
           devices: [
             { device: "aaaa-1", name: "iPhone 17", runtime: "iOS-27-2", state: "Booted" },
             { device: "BBBB-2", name: "iPhone 17e", runtime: "iOS-27-2", state: "Shutdown" },
+            {
+              device: "DDDD-4",
+              name: "iPhone Duo",
+              runtime: "iOS-27-2-iPhone19-4",
+              state: "Shutdown",
+            },
             { device: "CCCC-3", name: "Apple Watch", runtime: "watchOS-12-0", state: "Shutdown" },
           ],
         },
@@ -71,6 +77,8 @@ describe("DeviceHubOperations list", () => {
       expect(listed.devices.map((device) => [device.id, device.version, device.booted])).toEqual([
         ["AAAA-1", "iOS 27.2", true],
         ["BBBB-2", "iOS 27.2", false],
+        // A runtime made for one model (the iPhone Duo's) is still iOS 27.2.
+        ["DDDD-4", "iOS 27.2", false],
       ]);
     }).pipe(Effect.scoped, Effect.provide(FetchHttpClient.layer)),
   );

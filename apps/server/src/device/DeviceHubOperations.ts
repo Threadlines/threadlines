@@ -55,6 +55,9 @@ const HubDeviceList = Schema.Struct({
     Schema.Array(Schema.Struct({ message: Schema.String, error: Schema.optional(Schema.String) })),
   ),
 });
+/** An iOS simulator runtime's name: its version, then a model for a device-specific build. */
+const IOS_RUNTIME = /^iOS-(\d+(?:-\d+)*)(?:-[A-Za-z][A-Za-z0-9-]*)?$/;
+
 /** serve-sim's grid inventory, which, unlike `/api/devices`, includes simulators never booted. */
 const IosGridDeviceList = Schema.Struct({
   devices: Schema.Array(
@@ -423,11 +426,14 @@ export const makeDeviceHubOperations = (options: DeviceHubOperationsOptions): De
             (listed) =>
               listed.platform === "ios" && listed.id.toUpperCase() === device.device.toUpperCase(),
           );
-          if (known || !/^iOS-\d+(?:-\d+)*$/.test(device.runtime)) continue;
+          // `iOS-27-2`, or a runtime made for one model, such as the iPhone
+          // Duo's `iOS-27-2-iPhone19-4`.
+          const iosVersion = IOS_RUNTIME.exec(device.runtime)?.[1];
+          if (known || iosVersion === undefined) continue;
           devices.push({
             id: device.device,
             name: device.name,
-            version: device.runtime.replace("iOS-", "iOS ").replaceAll("-", "."),
+            version: `iOS ${iosVersion.replaceAll("-", ".")}`,
             platform: "ios",
             booted: device.state === "Booted",
             physical: false,
