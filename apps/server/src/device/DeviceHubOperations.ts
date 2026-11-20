@@ -30,6 +30,8 @@ const SIMULATOR_LIST_FAILED =
 // expo-device-hub 0.22.1 returns no Android devices when avdmanager fails, before it runs adb.
 const AVDMANAGER_LIST_FAILED = "[android-utils] Failed to run `avdmanager list avd`";
 const GETPROP_LINE = /^\[([^\]]+)\]: \[(.*)\]$/;
+// An AVD name as `emulator -list-avds` prints it; anything else is never joined into a path.
+const AVD_NAME = /^[A-Za-z0-9._-]+$/;
 const runsOnXcode26Runtime = (version: string) => Number(/^iOS (\d+)/.exec(version)?.[1]) <= 26;
 // simctl needs a real file (it writes "-" or /dev/stdout as a file of that
 // name), so the PNG passes through one in Threadlines' own state folder ($2),
@@ -74,6 +76,45 @@ const HubActionResult = Schema.Struct({
   ),
 });
 
+const SimctlDevices = Schema.Struct({
+  devices: Schema.Record(
+    Schema.String,
+    Schema.Array(
+      Schema.Struct({ udid: Schema.String, deviceTypeIdentifier: Schema.optional(Schema.String) }),
+    ),
+  ),
+});
+const decodeSimctlDevices = Schema.decodeUnknownOption(Schema.fromJsonString(SimctlDevices));
+
+/**
+ * Each simulator's device type (`com.apple.CoreSimulator.SimDeviceType.iPhone-Duo`)
+ * by upper-case UDID, from `xcrun simctl list devices -j`. Empty when the
+ * output is not that listing.
+ */
+export const parseSimctlDeviceTypes = (stdout: string): ReadonlyMap<string, string> => {
+  const parsed = decodeSimctlDevices(stdout);
+  const types = new Map<string, string>();
+  if (Option.isNone(parsed)) return types;
+  for (const devices of Object.values(parsed.value.devices)) {
+    for (const device of devices) {
+      const type = device.deviceTypeIdentifier?.trim();
+      if (type) types.set(device.udid.toUpperCase(), type);
+    }
+  }
+  return types;
+};
+
+/** One `key = value` (or `key=value`) from an AVD's `.ini` or `config.ini`. */
+export const readIniValue = (text: string, key: string): string | undefined => {
+  for (const line of text.split(/\r?\n/)) {
+    const separator = line.indexOf("=");
+    if (separator === -1 || line.slice(0, separator).trim() !== key) continue;
+    const value = line.slice(separator + 1).trim();
+    return value === "" ? undefined : value;
+  }
+  return undefined;
+};
+
 /** A failure's class and first line, never a stack: this text reaches the browser. */
 const briefCause = (cause: unknown): string | undefined => {
   if (typeof cause !== "object" || cause === null) return undefined;
@@ -115,8 +156,21 @@ export const makeDeviceHubOperations = (options: {
   readonly platformAvailable: (platform: DevicePlatform) => Effect.Effect<boolean>;
   /** A folder in the server's state dir for files a command must write (screenshots). */
   readonly scratchDir: string;
+  /**
+   * Where the AVDs live (`ANDROID_AVD_HOME`, else `~/.android/avd`), and a
+   * reader for their `.ini` files: an emulator's hardware profile becomes its
+   * `model`. Without them Android devices list without one.
+   */
+  readonly androidAvds?: {
+    readonly home: string;
+    readonly readTextFile: (path: string) => Effect.Effect<string | undefined>;
+  };
 }): DeviceOperations => {
   const { origin, run } = options;
+  // A simulator's device type and a phone's model never change; an emulator's
+  // profile is read again each listing (one small file), since a serial is reused.
+  const simulatorTypes = new Map<string, string | null>();
+  const phoneModels = new Map<string, string | null>();
   const httpClient = options.http.pipe(
     HttpClient.mapRequest(HttpClientRequest.bearerToken(options.token)),
     HttpClient.withScope,
@@ -208,6 +262,75 @@ export const makeDeviceHubOperations = (options: {
           physical: !emulator,
         } satisfies HostDevice;
       }),
+    );
+  });
+
+  /** Asks simctl once for every simulator whose type is not known yet. */
+  const simulatorModels = Effect.fn("DeviceHubOperations.simulatorModels")(function* (
+    udids: ReadonlyArray<string>,
+  ) {
+    if (udids.some((udid) => !simulatorTypes.has(udid.toUpperCase()))) {
+      const listed = yield* run("xcrun", ["simctl", "list", "devices", "-j"], {
+        timeoutMs: 30_000,
+        maxOutputBytes: 16 * 1024 * 1024,
+      });
+      if (listed.code === 0) {
+        const types = parseSimctlDeviceTypes(listed.stdout);
+        for (const [udid, type] of types) simulatorTypes.set(udid, type);
+        // simctl answered without these: they are not simulators it knows, so don't ask again.
+        for (const udid of udids) {
+          if (!simulatorTypes.has(udid.toUpperCase())) simulatorTypes.set(udid.toUpperCase(), null);
+        }
+      }
+    }
+  });
+
+  /** An emulator's hardware profile (`hw.device.name`), through its AVD's `.ini`. */
+  const emulatorModel = (avdName: string) => {
+    const avds = options.androidAvds;
+    if (!avds || !AVD_NAME.test(avdName)) return Effect.succeed(undefined);
+    return Effect.gen(function* () {
+      const pointer = yield* avds.readTextFile(`${avds.home}/${avdName}.ini`);
+      const folder = (pointer && readIniValue(pointer, "path")) ?? `${avds.home}/${avdName}.avd`;
+      const config = yield* avds.readTextFile(`${folder}/config.ini`);
+      return config ? readIniValue(config, "hw.device.name") : undefined;
+    });
+  };
+
+  const phoneModel = Effect.fn("DeviceHubOperations.phoneModel")(function* (serial: string) {
+    const known = phoneModels.get(serial);
+    if (known !== undefined) return known ?? undefined;
+    const read = yield* run("adb", ["-s", serial, "shell", "getprop", "ro.product.model"]);
+    if (read.code !== 0) return undefined;
+    const model = read.stdout.trim() || null;
+    phoneModels.set(serial, model);
+    return model ?? undefined;
+  });
+
+  /** Fills in `model` where it can be told; a lookup that fails leaves it out. */
+  const withModels = Effect.fn("DeviceHubOperations.withModels")(function* (
+    devices: ReadonlyArray<HostDevice>,
+  ) {
+    const simulators = devices.filter((device) => device.platform === "ios" && !device.physical);
+    if (simulators.length > 0) yield* simulatorModels(simulators.map((device) => device.id));
+    return yield* Effect.forEach(
+      devices,
+      (device) =>
+        Effect.gen(function* () {
+          if (device.model) return device;
+          const model =
+            device.platform === "ios"
+              ? device.physical
+                ? undefined
+                : (simulatorTypes.get(device.id.toUpperCase()) ?? undefined)
+              : device.physical
+                ? device.booted
+                  ? yield* phoneModel(device.id)
+                  : undefined
+                : yield* emulatorModel(device.name);
+          return model ? { ...device, model } : device;
+        }),
+      { concurrency: 4 },
     );
   });
 
@@ -315,11 +438,12 @@ export const makeDeviceHubOperations = (options: {
         }
       }
     }
+    const modelled = yield* withModels(devices);
     const simulatorsUnlisted =
       hubList.simulators.length === 0 &&
       (hubList.errors ?? []).some((error) => SIMULATOR_LIST_FAILED.test(error.message));
     return {
-      devices,
+      devices: modelled,
       detail: details.join("\n") || undefined,
       incompletePlatforms: simulatorsUnlisted ? (["ios"] as const) : [],
     };

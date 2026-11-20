@@ -69,4 +69,94 @@ describe("DeviceHubOperations list", () => {
       ]);
     }).pipe(Effect.scoped, Effect.provide(FetchHttpClient.layer)),
   );
+
+  it.effect(
+    "names each device's hardware: simctl once per new simulator, AVD profile, phone model",
+    () =>
+      Effect.gen(function* () {
+        const hub = yield* startFakeHub({
+          "/api/devices": {
+            simulators: [
+              {
+                id: "aaaa-1",
+                name: "My renamed phone",
+                version: "iOS 27.2",
+                platform: "ios",
+                booted: true,
+                physical: false,
+              },
+            ],
+            emulators: [
+              {
+                id: "emulator-5554",
+                name: "fold_test",
+                version: "Android 16.0",
+                platform: "android",
+                booted: true,
+                physical: false,
+              },
+              {
+                id: "R5CT1234",
+                name: "Pixel 8",
+                version: "Android 16.0",
+                platform: "android",
+                booted: true,
+                physical: true,
+              },
+            ],
+          },
+          "/vendor/serve-sim/grid/api": { devices: [] },
+        });
+        const commands: Array<string> = [];
+        const files: Record<string, string> = {
+          "/avd/fold_test.ini": "avd.ini.encoding=UTF-8\npath=/elsewhere/fold_test.avd\n",
+          "/elsewhere/fold_test.avd/config.ini":
+            "hw.lcd.width = 2208\nhw.device.name = pixel_fold\n",
+        };
+        const operations = makeDeviceHubOperations({
+          origin: hub.origin,
+          token: "t",
+          http: yield* HttpClient.HttpClient,
+          run: (command, args) => {
+            commands.push([command, ...args].join(" "));
+            if (command === "xcrun") {
+              return Effect.succeed({
+                code: 0,
+                stdout: JSON.stringify({
+                  devices: {
+                    "com.apple.CoreSimulator.SimRuntime.iOS-27-2": [
+                      {
+                        udid: "AAAA-1",
+                        deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-Duo",
+                      },
+                    ],
+                  },
+                }),
+                stderr: "",
+              });
+            }
+            if (command === "adb")
+              return Effect.succeed({ code: 0, stdout: "Pixel 8\n", stderr: "" });
+            return Effect.succeed({ code: 0, stdout: "", stderr: "" });
+          },
+          platformAvailable: () => Effect.succeed(true),
+          scratchDir: "/nonexistent",
+          androidAvds: { home: "/avd", readTextFile: (path) => Effect.succeed(files[path]) },
+        });
+
+        const first = yield* operations.list;
+        const second = yield* operations.list;
+
+        for (const listed of [first, second]) {
+          expect(listed.devices.map((device) => [device.id, device.model])).toEqual([
+            ["aaaa-1", "com.apple.CoreSimulator.SimDeviceType.iPhone-Duo"],
+            ["emulator-5554", "pixel_fold"],
+            ["R5CT1234", "Pixel 8"],
+          ]);
+        }
+        // Device types and phone models are asked for once, not on every listing.
+        expect(commands.filter((command) => command.startsWith("xcrun"))).toHaveLength(1);
+        expect(commands.filter((command) => command.includes("getprop"))).toHaveLength(1);
+      }).pipe(Effect.scoped, Effect.provide(FetchHttpClient.layer)),
+  );
 });

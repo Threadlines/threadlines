@@ -15,6 +15,8 @@
  * spawn is the CLI's, not the daemon's) and stopped through the CLI's own stop
  * command with our isolated state folder.
  */
+import * as OS from "node:os";
+
 import type { DevicePlatform, DevicePlatformAvailability } from "@threadlines/contracts";
 import { isCommandAvailable } from "@threadlines/shared/shell";
 import * as NetService from "@threadlines/shared/Net";
@@ -253,6 +255,11 @@ const isProcessAlive = (pid: number) =>
       return false;
     }
   });
+
+/** Where the emulator keeps AVDs: `ANDROID_AVD_HOME`, `ANDROID_USER_HOME/avd`, or `~/.android/avd`. */
+const androidAvdHome = (environment: NodeJS.ProcessEnv, path: Path.Path) =>
+  environment.ANDROID_AVD_HOME?.trim() ||
+  path.join(environment.ANDROID_USER_HOME?.trim() || path.join(OS.homedir(), ".android"), "avd");
 
 const hostError =
   (step: string, detail?: string) =>
@@ -789,6 +796,14 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
       platformAvailable: (platform) =>
         platformAvailability(platform).pipe(Effect.map((availability) => availability.available)),
       scratchDir: path.join(deviceStateDir(path, stateDir), "tmp"),
+      androidAvds: {
+        home: androidAvdHome(environment, path),
+        readTextFile: (file) =>
+          fs.readFileString(file).pipe(
+            Effect.map((text) => (text.length > 256 * 1024 ? undefined : text)),
+            Effect.orElseSucceed(() => undefined),
+          ),
+      },
     }),
     nodePath: running.hub.nodePath,
     run,

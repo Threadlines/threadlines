@@ -24,6 +24,14 @@ export const DeviceSummary = Schema.Struct({
   version: Schema.String,
   booted: Schema.Boolean,
   physical: Schema.Boolean,
+  /**
+   * The hardware the device is, for drawing its frame: an iOS simulator's
+   * device type (`com.apple.CoreSimulator.SimDeviceType.iPhone-Duo`), an
+   * emulator's hardware profile (`pixel_fold`), or a phone's
+   * `ro.product.model`. Names can be changed, so frames follow this instead.
+   * Absent from older servers and when the server could not tell.
+   */
+  model: Schema.optional(TrimmedNonEmptyString),
 });
 export type DeviceSummary = typeof DeviceSummary.Type;
 
