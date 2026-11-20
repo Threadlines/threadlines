@@ -2,7 +2,7 @@
 /**
  * One device's live screen and input (docs/design/devices.md, "Transport").
  *
- * Ported from T3 Code's stream client (MIT, see NOTICE) with the 3D, Duo and
+ * Ported from T3 Code's stream client (MIT, see NOTICE) with the 3D and
  * WebRTC paths removed, and every byte carried by a `DeviceHubTransport`
  * instead of hub URLs:
  *
@@ -13,6 +13,12 @@
  *   WebCodecs the socket carries input only, and the screen is the
  *   screenshot route read about four times a second.
  *
+ * - iPhone Duo: hinge and stance commands ride the iOS input socket as tagged
+ *   messages, and with `setDuoPanels` the video comes from the fixed feed of
+ *   the display in front (`/helper/<id>/panel/{1,3}/stream.avcc`), reopened
+ *   on the other panel when the helper hands the display over. A helper that
+ *   refuses fixed feeds falls back to the ordinary stream.
+ *
  * Each retry opens a fresh request or socket and a fresh decoder that waits
  * for a keyframe; input that had not gone out is dropped, never replayed.
  */
@@ -20,6 +26,12 @@ import type { DevicePlatform } from "@threadlines/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import {
+  createDuoControl,
+  type DuoCommand,
+  type DuoControlState,
+  type DuoPanelId,
+} from "./duoControl.ts";
 import { createCanvasFrameSink, type DeviceFrameSink } from "./frame.ts";
 import {
   DEVICE_SOCKET_OPEN,
@@ -45,6 +57,17 @@ export interface DeviceScreenSize {
   readonly width: number;
   readonly height: number;
   readonly orientation: DeviceOrientationName;
+  /** iPhone Duo: the display in front, 1 the cover and 3 the inner screen. */
+  readonly screenId?: number;
+  /** The simulator has a hinge (iPhone Duo) and takes hinge commands. */
+  readonly supportsHingeAngle?: boolean;
+  readonly supportsPhysicalOrientation?: boolean;
+  /** 0 closed to 180 open. */
+  readonly hingeAngle?: number;
+  readonly hingePose?: "closed" | "book" | "open" | "laptop" | "tent" | null;
+  readonly tableMode?: boolean;
+  /** Table mode can be turned on in the current stance. */
+  readonly tableModeAvailable?: boolean;
 }
 
 const screenConfigSchema = Schema.Struct({
@@ -57,20 +80,52 @@ const screenConfigSchema = Schema.Struct({
     "landscape_right",
   ]),
   inputUnavailable: Schema.optionalKey(Schema.Boolean),
+  screenId: Schema.optionalKey(Schema.Number),
+  supportsHingeAngle: Schema.optionalKey(Schema.Boolean),
+  supportsPhysicalOrientation: Schema.optionalKey(Schema.Boolean),
+  hingeAngle: Schema.optionalKey(
+    Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 180 })),
+  ),
+  hingePose: Schema.optionalKey(
+    Schema.NullOr(Schema.Literals(["closed", "book", "open", "laptop", "tent"])),
+  ),
+  tableMode: Schema.optionalKey(Schema.Boolean),
+  tableModeAvailable: Schema.optionalKey(Schema.Boolean),
 });
 const decodeScreenConfig = Schema.decodeUnknownOption(screenConfigSchema);
+const decodeControlReply = Schema.decodeUnknownOption(
+  Schema.Struct({
+    requestId: Schema.Int,
+    ok: Schema.Boolean,
+    error: Schema.optionalKey(Schema.String),
+  }),
+);
+
+/** Where a Duo's two fixed feeds draw: the cover's and the inner screen's own canvases. */
+export interface DuoPanelSinks {
+  readonly cover: DeviceFrameSink;
+  readonly inner: DeviceFrameSink;
+}
 
 export interface DeviceStreamEvents {
   readonly onStatus: (status: DeviceStreamStatus, detail?: string) => void;
   readonly onScreen: (screen: DeviceScreenSize) => void;
   readonly onInputConnected: (connected: boolean, detail?: string) => void;
   readonly onVideoMode?: (mode: DeviceVideoMode) => void;
+  /** iPhone Duo: the hinge command queue changed. */
+  readonly onDuoControl?: (state: DuoControlState) => void;
+  /** iPhone Duo: the fixed feeds are refused, so the ordinary stream is back. */
+  readonly onDuoUnavailable?: (detail: string) => void;
+  /** iPhone Duo: the display a panel feed draws changed (which feed is live). */
+  readonly onDuoPanel?: (panel: DuoPanelId | null) => void;
 }
 
 export interface DeviceStreamTarget {
   readonly platform: DevicePlatform;
   readonly deviceId: string;
   readonly transport: DeviceHubTransport;
+  /** A Duo display's fixed feed: video only, no input socket. */
+  readonly panelId?: DuoPanelId;
 }
 
 export type DeviceHardwareButton = "home" | "back" | "recents" | "power" | "appSwitcher";
@@ -96,8 +151,16 @@ const IOS_MSG_TOUCH = 0x03;
 const IOS_MSG_BUTTON = 0x04;
 const IOS_MSG_KEY = 0x06;
 const IOS_MSG_ORIENTATION = 0x07;
+const IOS_MSG_DUO_CONTROL = 0x10;
 const IOS_TAG_SCREEN_CONFIG = 0x82;
 const IOS_TAG_INPUT_ADMITTED = 0x83;
+const IOS_TAG_DUO_CONTROL_REPLY = 0x90;
+/**
+ * Statuses a helper answers a fixed Duo feed with when it has none: no such
+ * route (400, 404, 405, 410), or a simulator without panels (409,
+ * `panel_streams_unsupported`).
+ */
+const DUO_PANEL_REFUSED = new Set([400, 404, 405, 409, 410]);
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -242,6 +305,15 @@ export interface DeviceStreamClient {
   readonly stop: () => void;
   /** Normalized 0..1 coordinates in the displayed frame. */
   readonly sendTouch: (phase: "begin" | "move" | "end", x: number, y: number) => void;
+  /** iOS: 0..1 in the display's own framebuffer, as the helper takes it (the Duo view maps its panels). */
+  readonly sendRawTouch: (phase: "begin" | "move" | "end", x: number, y: number) => void;
+  /** iPhone Duo: a hinge, stance, table mode or orientation command. */
+  readonly controlDuo: (command: DuoCommand) => void;
+  /**
+   * iPhone Duo: draw each display into its own sink from its fixed feed
+   * while the helper offers them, or back to the one canvas with null.
+   */
+  readonly setDuoPanels: (panels: DuoPanelSinks | null) => void;
   readonly sendKey: (event: KeyboardEvent, phase: "down" | "up") => void;
   /**
    * Types text. Android takes it as text; iOS input is HID key codes, so each
@@ -394,6 +466,8 @@ const IOS_ORIENTATIONS: ReadonlyArray<DeviceOrientationName> = [
 export const deviceHubPaths = {
   iosVideo: (device: string) => `/vendor/serve-sim/helper/${device}/stream.avcc`,
   iosMjpeg: (device: string) => `/vendor/serve-sim/helper/${device}/stream.mjpeg`,
+  iosPanelVideo: (device: string, panel: DuoPanelId) =>
+    `/vendor/serve-sim/helper/${device}/panel/${panel}/stream.avcc`,
   iosInput: (device: string) => `/vendor/serve-sim/helper/ws?device=${device}`,
   androidSocket: (device: string, inputOnly: boolean) =>
     `/vendor/serve-emu/ws?device=${device}&${inputOnly ? "video=0" : "frame-meta=1"}`,
@@ -409,6 +483,7 @@ export function createDeviceStreamClient(
   const { platform, deviceId, transport } = target;
   const sink = "present" in output ? output : createCanvasFrameSink(output);
   const ios = platform === "ios";
+  const panelId = ios ? target.panelId : undefined;
   const device = encodeURIComponent(deviceId);
   const useWebCodecs = isWebCodecsSupported();
 
@@ -433,6 +508,34 @@ export function createDeviceStreamClient(
   let frameTimer: ReturnType<typeof setTimeout> | null = null;
   let videoReadTimer: ReturnType<typeof setTimeout> | null = null;
   let videoGeneration = 0;
+  // iPhone Duo: where the panels draw, the feed running now, and whether the helper refused them.
+  let panelSinks: DuoPanelSinks | null = null;
+  let panelFeed: { readonly panel: DuoPanelId; readonly client: DeviceStreamClient } | null = null;
+  let panelsRefused = false;
+  let mainVideo = false;
+  let pendingOrientation: number | null = null;
+  const duoControl = createDuoControl({
+    send: (request) => {
+      if (
+        !iosInputAdmitted ||
+        iosInputUnavailable ||
+        socket?.readyState !== DEVICE_SOCKET_OPEN ||
+        !screen?.supportsHingeAngle
+      )
+        return false;
+      pendingOrientation = null;
+      if (request.command.control === "orientation") {
+        // The helper confirms an orientation with its next screen config, not a reply.
+        pendingOrientation = request.requestId;
+        socket.send(taggedJson(IOS_MSG_ORIENTATION, { orientation: request.command.value }));
+      } else socket.send(taggedJson(IOS_MSG_DUO_CONTROL, request));
+      return true;
+    },
+    onChange: (state) => {
+      if (!state.pending) pendingOrientation = null;
+      events.onDuoControl?.(state);
+    },
+  });
 
   const setStatus = (status: DeviceStreamStatus, detail?: string) => {
     if (!stopped) events.onStatus(status, detail);
@@ -624,6 +727,11 @@ export function createDeviceStreamClient(
         await response.body?.cancel().catch(() => {});
         return;
       }
+      if (panelId !== undefined && DUO_PANEL_REFUSED.has(response.status)) {
+        await response.body?.cancel().catch(() => {});
+        fail(`This simulator's helper has no fixed Duo display feeds (${response.status}).`);
+        return;
+      }
       if (!response.ok || !response.body) throw new Error(`Device stream ${response.status}`);
       const reader = response.body.getReader();
       for (;;) {
@@ -670,7 +778,9 @@ export function createDeviceStreamClient(
       videoGeneration === feedGeneration &&
       controller === videoController;
     const retryDetail = await readBody(
-      deviceHubPaths.iosVideo(device),
+      panelId === undefined
+        ? deviceHubPaths.iosVideo(device)
+        : deviceHubPaths.iosPanelVideo(device, panelId),
       videoController,
       isCurrent,
       async (bytes) => {
@@ -758,6 +868,8 @@ export function createDeviceStreamClient(
   };
 
   const fallBackToMjpeg = () => {
+    // A Duo panel has no MJPEG feed; its owner goes back to the ordinary stream.
+    if (panelId !== undefined) return fail("This browser cannot decode the Duo display's video.");
     if (stopped || mode === "mjpeg") return;
     setMode("mjpeg");
     controller?.abort();
@@ -809,6 +921,13 @@ export function createDeviceStreamClient(
         events.onInputConnected(!iosInputUnavailable);
         return;
       }
+      if (bytes[0] === IOS_TAG_DUO_CONTROL_REPLY) {
+        try {
+          const reply = decodeControlReply(JSON.parse(decoder.decode(bytes.subarray(1))));
+          if (Option.isSome(reply)) duoControl.receive(reply.value);
+        } catch {}
+        return;
+      }
       if (bytes[0] !== IOS_TAG_SCREEN_CONFIG) return;
       try {
         const config = decodeScreenConfig(JSON.parse(decoder.decode(bytes.subarray(1))));
@@ -818,18 +937,22 @@ export function createDeviceStreamClient(
           iosInputAdmitted && !iosInputUnavailable,
           iosInputUnavailable ? "Simulator input is unavailable." : undefined,
         );
-        screen = {
-          width: config.value.width,
-          height: config.value.height,
-          orientation: config.value.orientation,
-        };
+        screen = config.value;
         events.onScreen(screen);
+        if (pendingOrientation !== null) {
+          const requestId = pendingOrientation;
+          pendingOrientation = null;
+          duoControl.receive({ requestId, ok: true });
+        }
+        // A handoff moves the video to the panel now in front; input stays on this socket.
+        chooseVideoSource();
       } catch {}
     });
     ws.addEventListener("close", (event) => {
       if (socket !== ws) return;
       socket = null;
       iosInputAdmitted = false;
+      duoControl.clear();
       if (stopped) return;
       events.onInputConnected(false, event.reason || `closed ${event.code}`);
       scheduleRetry("input", () => void connectIosInput());
@@ -945,6 +1068,78 @@ export function createDeviceStreamClient(
     });
   };
 
+  /** The ordinary iOS video, AVCC or MJPEG, whichever this browser plays. */
+  const startMainVideo = () => {
+    mainVideo = true;
+    if (mode === "mjpeg") void readIosMjpeg();
+    else void readIosVideo();
+  };
+
+  const stopMainVideo = () => {
+    mainVideo = false;
+    videoGeneration++;
+    controller?.abort();
+    controller = null;
+    closeDecoder();
+    const retry = retryTimers.get("video");
+    if (retry) clearTimeout(retry);
+    retryTimers.delete("video");
+    if (videoReadTimer !== null) clearTimeout(videoReadTimer);
+    videoReadTimer = null;
+  };
+
+  const stopPanelFeed = () => {
+    const feed = panelFeed;
+    panelFeed = null;
+    feed?.client.stop();
+    if (feed) events.onDuoPanel?.(null);
+  };
+
+  /**
+   * iPhone Duo: the fixed feed of the display in front while panels are
+   * wanted and offered, the ordinary stream otherwise. The panel that went
+   * out of front keeps its last picture in its own sink.
+   */
+  const chooseVideoSource = () => {
+    if (stopped || !ios || panelId !== undefined) return;
+    const panel: DuoPanelId = screen?.screenId === 1 ? 1 : 3;
+    const sinks = panelSinks;
+    if (!sinks || !screen?.supportsHingeAngle || panelsRefused || !useWebCodecs) {
+      stopPanelFeed();
+      if (!mainVideo) startMainVideo();
+      return;
+    }
+    if (panelFeed?.panel === panel) return;
+    if (mainVideo) stopMainVideo();
+    stopPanelFeed();
+    const output = panel === 1 ? sinks.cover : sinks.inner;
+    const client = createDeviceStreamClient(
+      { platform, deviceId, transport, panelId: panel },
+      {
+        present: (source, width, height) => {
+          if (panelFeed?.client !== client) return true;
+          if (!output.present(source, width, height)) return false;
+          frameReceived();
+          return true;
+        },
+      },
+      {
+        onStatus: (status, detail) => {
+          if (status !== "error" || panelFeed?.client !== client) return;
+          panelsRefused = true;
+          stopPanelFeed();
+          events.onDuoUnavailable?.(detail ?? "The Duo display feeds stopped.");
+          chooseVideoSource();
+        },
+        onScreen: () => {},
+        onInputConnected: () => {},
+      },
+    );
+    panelFeed = { panel, client };
+    events.onDuoPanel?.(panel);
+    client.start();
+  };
+
   const start = () => {
     if (!stopped) return;
     stopped = false;
@@ -953,8 +1148,13 @@ export function createDeviceStreamClient(
     iosInputAdmitted = false;
     iosInputUnavailable = false;
     connecting();
-    if (ios) {
+    if (ios && panelId !== undefined) {
+      // A Duo display's fixed feed: its owner holds the input socket.
+      setMode("video");
+      void readIosVideo();
+    } else if (ios) {
       void connectIosInput();
+      mainVideo = true;
       if (useWebCodecs) {
         setMode("video");
         void readIosVideo();
@@ -977,6 +1177,12 @@ export function createDeviceStreamClient(
     stopped = true;
     generation++;
     videoGeneration++;
+    mainVideo = false;
+    pendingOrientation = null;
+    duoControl.clear();
+    stopPanelFeed();
+    // A refusal belongs to the helper this session reached; the next start asks again.
+    panelsRefused = false;
     clearFrameTimer();
     if (videoReadTimer !== null) clearTimeout(videoReadTimer);
     videoReadTimer = null;
@@ -1022,6 +1228,17 @@ export function createDeviceStreamClient(
   return {
     start,
     stop,
+    sendRawTouch: (phase, x, y) => {
+      if (ios) send(taggedJson(IOS_MSG_TOUCH, { type: phase, x, y }));
+    },
+    controlDuo: (command) => {
+      if (ios && panelId === undefined) duoControl.enqueue(command);
+    },
+    setDuoPanels: (panels) => {
+      if (!ios || panelId !== undefined || panelSinks === panels) return;
+      panelSinks = panels;
+      chooseVideoSource();
+    },
     sendTouch: (phase, x, y) => {
       if (ios) {
         send(taggedJson(IOS_MSG_TOUCH, { type: phase, ...rawPoint(x, y) }));
@@ -1095,7 +1312,9 @@ export function createDeviceStreamClient(
       const current = screen?.orientation ?? "portrait";
       const next =
         IOS_ORIENTATIONS[(IOS_ORIENTATIONS.indexOf(current) + 1) % IOS_ORIENTATIONS.length]!;
-      send(taggedJson(IOS_MSG_ORIENTATION, { orientation: next }));
+      // A Duo takes orientation in turn with its hinge commands.
+      if (screen?.supportsHingeAngle) duoControl.enqueue({ control: "orientation", value: next });
+      else send(taggedJson(IOS_MSG_ORIENTATION, { orientation: next }));
     },
   };
 }

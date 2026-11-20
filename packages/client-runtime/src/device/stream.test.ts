@@ -248,4 +248,104 @@ describe("createDeviceStreamClient", () => {
     await vi.advanceTimersByTimeAsync(STILL_FRAME_INTERVAL_MS * 4);
     expect(hub.requests.length).toBe(after);
   });
+
+  it("moves a Duo's video to the panel in front, and back to the ordinary stream when a panel is refused", async () => {
+    // The panel feeds need WebCodecs; a decoder that is never configured is enough here.
+    class FakeDecoder {
+      static isConfigSupported = async () => ({ supported: true });
+      state = "unconfigured";
+      decodeQueueSize = 0;
+      configure() {}
+      close() {}
+    }
+    vi.stubGlobal("VideoDecoder", FakeDecoder);
+    vi.stubGlobal("EncodedVideoChunk", class {});
+    const openBody = () =>
+      new Response(
+        new ReadableStream({ start: (controller) => controller.enqueue(new Uint8Array([0])) }),
+      );
+    const hub = fakeTransport((path) =>
+      path.endsWith("/panel/1/stream.avcc") ? new Response(null, { status: 404 }) : openBody(),
+    );
+    const watch = {
+      ...events(),
+      onDuoControl: vi.fn(),
+      onDuoUnavailable: vi.fn(),
+      onDuoPanel: vi.fn(),
+    };
+    const client = createDeviceStreamClient(
+      { platform: "ios", deviceId: "DUO", transport: hub.transport },
+      { present: () => true },
+      watch,
+    );
+    client.start();
+    await vi.waitFor(() => expect(hub.sockets).toHaveLength(1));
+    const input = hub.sockets[0]!;
+    const config = (fields: Record<string, unknown>) =>
+      input.dispatch("message", {
+        data: new Uint8Array([0x82, ...new TextEncoder().encode(JSON.stringify(fields))]).buffer,
+      });
+    input.dispatch("message", { data: new Uint8Array([0x83]).buffer });
+    config({
+      width: 2007,
+      height: 2853,
+      orientation: "landscape_left",
+      screenId: 3,
+      supportsHingeAngle: true,
+      hingeAngle: 180,
+    });
+    const sink = { present: () => true };
+    client.setDuoPanels({ cover: sink, inner: sink });
+    await vi.waitFor(() =>
+      expect(hub.requests.map((request) => request.path)).toContain(
+        "/vendor/serve-sim/helper/DUO/panel/3/stream.avcc",
+      ),
+    );
+    expect(watch.onDuoPanel).toHaveBeenLastCalledWith(3);
+
+    // Hinge commands go out tagged on the input socket and wait for their reply.
+    client.controlDuo({ control: "pose", value: "closed" });
+    const command = input.sent.at(-1) as Uint8Array;
+    expect(command[0]).toBe(0x10);
+    expect(JSON.parse(new TextDecoder().decode(command.subarray(1)))).toEqual({
+      requestId: 1,
+      command: { control: "pose", value: "closed" },
+    });
+    expect(watch.onDuoControl).toHaveBeenLastCalledWith({
+      pending: true,
+      requested: { control: "pose", value: "closed" },
+      error: null,
+    });
+    input.dispatch("message", {
+      data: new Uint8Array([
+        0x90,
+        ...new TextEncoder().encode(JSON.stringify({ requestId: 1, ok: true })),
+      ]).buffer,
+    });
+    expect(watch.onDuoControl).toHaveBeenLastCalledWith({
+      pending: false,
+      requested: null,
+      error: null,
+    });
+
+    // The cover takes over; its feed is refused, so the ordinary stream comes back.
+    const mainRequests = () =>
+      hub.requests.filter((request) => request.path === "/vendor/serve-sim/helper/DUO/stream.avcc")
+        .length;
+    const before = mainRequests();
+    config({
+      width: 1398,
+      height: 2034,
+      orientation: "portrait",
+      screenId: 1,
+      supportsHingeAngle: true,
+      hingeAngle: 0,
+    });
+    await vi.waitFor(() => expect(watch.onDuoUnavailable).toHaveBeenCalled());
+    await vi.waitFor(() => expect(mainRequests()).toBe(before + 1));
+    expect(watch.onDuoPanel).toHaveBeenLastCalledWith(null);
+    // Input stayed on the one admitted socket throughout.
+    expect(hub.sockets).toHaveLength(1);
+    client.stop();
+  });
 });
