@@ -76,6 +76,7 @@ import {
   type DraftId,
   type PersistedComposerAttachment,
   composerAttachmentDedupKey,
+  composerAttachmentFitsDraftStorage,
   hydrateAttachmentsFromPersisted,
   useComposerDraftStore,
   useComposerThreadDraft,
@@ -2736,7 +2737,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         );
         const stagedAttachmentById = new Map<string, PersistedComposerAttachment>();
         await Promise.all(
-          composerAttachments.map(async (image) => {
+          // One too big to ever fit would fail the whole draft's save, prompt included.
+          composerAttachments.filter(composerAttachmentFitsDraftStorage).map(async (image) => {
             try {
               const dataUrl = await readFileAsDataUrl(image.file);
               stagedAttachmentById.set(image.id, {
