@@ -112,6 +112,8 @@ const LEFTOVER_WORKTREE_REMOVE_DELAY = Duration.millis(250);
 const WORKTREE_REMOVE_TIMEOUT_MS = 5 * 60_000;
 /** Checkouts inspected at once while listing worktree statuses. */
 const WORKTREE_STATUS_CONCURRENCY = 4;
+/** Folder checks for `git worktree list` entries; each is one cheap stat. */
+const WORKTREE_EXISTS_CONCURRENCY = 64;
 /**
  * Shipping verdicts kept per (base commit, branch commit) pair. Commit ids pin
  * both histories, so a verdict never goes stale; the cap only bounds memory.
@@ -859,7 +861,8 @@ interface WorktreeRegistration {
  */
 function parseWorktreeRegistrations(stdout: string): ReadonlyArray<WorktreeRegistration> {
   const registrations: WorktreeRegistration[] = [];
-  for (const block of stdout.split("\n\n")) {
+  // Entries are separated by a blank line; CRLF output would hide that.
+  for (const block of stdout.replaceAll("\r\n", "\n").split("\n\n")) {
     const lines = block.split("\n");
     const header = lines.find((line) => line.startsWith("worktree "));
     if (header === undefined) {
@@ -4172,44 +4175,39 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
    * hand, so callers that resolve a path (branch pickers, cwd inference) would
    * otherwise point at nothing.
    */
+  /**
+   * The checkouts `git worktree list --porcelain` reports whose folder still
+   * exists. The folders are checked side by side: a repository with ~90
+   * worktrees took seconds checking them one after another on a busy server,
+   * and every branch list waits on this.
+   */
   const parseWorktreeList = Effect.fn("parseWorktreeList")(function* (
     result: GitVcsDriver.ExecuteGitResult,
   ) {
     if (result.exitCode !== 0) {
       return [] as ReadonlyArray<GitVcsDriver.GitWorktreeEntry>;
     }
-    const entries: Array<GitVcsDriver.GitWorktreeEntry> = [];
-    let currentPath: string | null = null;
-    for (const line of result.stdout.split("\n")) {
-      if (line.startsWith("worktree ")) {
-        const candidatePath = line.slice("worktree ".length);
-        const exists = yield* fileSystem.stat(candidatePath).pipe(
-          Effect.map(() => true),
+    const registrations = parseWorktreeRegistrations(result.stdout);
+    const present = yield* Effect.forEach(
+      registrations,
+      (registration) =>
+        fileSystem.stat(registration.path).pipe(
+          Effect.as(true),
           Effect.catch(() => Effect.succeed(false)),
-        );
-        currentPath = exists ? candidatePath : null;
-        if (currentPath) {
-          entries.push({ path: currentPath, branch: null });
-        }
-      } else if (line.startsWith("branch refs/heads/") && currentPath) {
-        const branch = line.slice("branch refs/heads/".length);
-        const pending = entries.at(-1);
-        if (pending && pending.path === currentPath) {
-          entries[entries.length - 1] = { ...pending, branch };
-        }
-      } else if ((line === "locked" || line.startsWith("locked ")) && currentPath) {
-        const pending = entries.at(-1);
-        if (pending && pending.path === currentPath) {
-          entries[entries.length - 1] = {
-            ...pending,
-            lockReason: line.slice("locked".length).trim(),
-          };
-        }
-      } else if (line === "") {
-        currentPath = null;
-      }
-    }
-    return entries as ReadonlyArray<GitVcsDriver.GitWorktreeEntry>;
+        ),
+      { concurrency: WORKTREE_EXISTS_CONCURRENCY },
+    );
+    return registrations.flatMap((registration, index): Array<GitVcsDriver.GitWorktreeEntry> =>
+      present[index]
+        ? [
+            {
+              path: registration.path,
+              branch: registration.branch,
+              ...(registration.lockReason === null ? {} : { lockReason: registration.lockReason }),
+            },
+          ]
+        : [],
+    );
   });
 
   const listWorktrees: GitVcsDriver.GitVcsDriverShape["listWorktrees"] = Effect.fn("listWorktrees")(
