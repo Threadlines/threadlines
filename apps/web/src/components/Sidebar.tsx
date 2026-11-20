@@ -2153,7 +2153,13 @@ export default function Sidebar() {
                             ) : null}
                             {section.rows.map(
                               (
-                                { entry, shownChildren, shownRemoteChildren, wrappedParent },
+                                {
+                                  entry,
+                                  shownChildren,
+                                  shownRemoteChildren,
+                                  childShortTitles,
+                                  wrappedParent,
+                                },
                                 rowIndex,
                               ) => (
                                 <React.Fragment key={entry.threadKey}>
@@ -2218,6 +2224,7 @@ export default function Sidebar() {
                                       <InboxChildRow
                                         key={child.threadKey}
                                         thread={child.thread}
+                                        shortTitle={childShortTitles.get(child.threadKey)}
                                         status={child.status}
                                         isDone={child.isDone}
                                         doneAt={child.doneAt}
@@ -2257,6 +2264,7 @@ export default function Sidebar() {
                                       <InboxRemoteChildRow
                                         key={child.threadKey}
                                         child={child}
+                                        shortTitle={childShortTitles.get(child.threadKey)}
                                         onSetDone={setRemoteChildDone}
                                       />
                                     ))}

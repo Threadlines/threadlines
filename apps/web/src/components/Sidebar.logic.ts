@@ -24,6 +24,7 @@ import type { SidebarThreadSummary, Thread } from "../types";
 import { isLatestTurnSettled, isWaitingOnBackgroundTasks } from "../session-logic";
 import { startOfLocalDayMs } from "../timestampFormat";
 import { nextCheckBack } from "./chat/checkBacks";
+import { shortFamilyTitles } from "./familyTitles.logic";
 import { isHandedBackCompletion } from "@threadlines/shared/childThreads";
 import {
   hasUnseenCompletion as hasUnseenCompletionSince,
@@ -1606,7 +1607,7 @@ export interface InboxFamilyExit extends InboxFamilyStatus {
 /** What the family rules read about each inbox thread. */
 export interface InboxFamilyEntry extends InboxFamilyExit {
   readonly threadKey: string;
-  readonly thread: Pick<SidebarThreadSummary, "id" | "createdAt">;
+  readonly thread: Pick<SidebarThreadSummary, "id" | "createdAt" | "title">;
   readonly seenAt: string | undefined;
   readonly wrappedByUser: boolean;
 }
@@ -1701,6 +1702,12 @@ export interface InboxLiveRow<E extends InboxFamilyEntry> {
   readonly remoteChildren: readonly InboxRemoteChild[];
   /** The ones drawn: all while open, else only those that need the user. */
   readonly shownRemoteChildren: readonly InboxRemoteChild[];
+  /**
+   * What a child's row shows where its title shares a topic with its
+   * siblings' (`shortFamilyTitles`, as the family tabs do), by thread key.
+   * A child missing here shows its title.
+   */
+  readonly childShortTitles: ReadonlyMap<string, string>;
   /** A live child whose parent is wrapped stands on its own, naming the parent. */
   readonly wrappedParent: E | null;
   /**
@@ -1735,6 +1742,25 @@ export interface InboxDoneRow<E extends InboxFamilyEntry> {
    * parent.
    */
   readonly startedBy: E | null;
+}
+
+const NO_SHORT_TITLES: ReadonlyMap<string, string> = new Map();
+
+/** A family's shortened child titles by thread key, over every member, drawn or folded. */
+function childShortTitlesOf(
+  children: readonly InboxFamilyEntry[],
+  remoteChildren: readonly InboxRemoteChild[],
+): ReadonlyMap<string, string> {
+  const members = [
+    ...children.map((child) => ({ key: child.threadKey, title: child.thread.title })),
+    ...remoteChildren.map((child) => ({ key: child.threadKey, title: child.title })),
+  ];
+  if (members.length < 2) return NO_SHORT_TITLES;
+  const short = shortFamilyTitles(members.map((member) => member.title));
+  const changed = members.flatMap((member, index) =>
+    short[index] === member.title ? [] : [[member.key, short[index]!] as const],
+  );
+  return changed.length === 0 ? NO_SHORT_TITLES : new Map(changed);
 }
 
 const NEEDS_YOU_NOW: ReadonlySet<ThreadStatusPill["label"]> = new Set([
@@ -1995,6 +2021,7 @@ export function buildInboxSections<E extends InboxFamilyEntry>(input: {
       shownChildren,
       remoteChildren,
       shownRemoteChildren,
+      childShortTitles: childShortTitlesOf(children, remoteChildren),
       wrappedParent,
       scopedOutParent,
     };

@@ -1361,6 +1361,90 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
     }
   });
 
+  it("keeps the lead's tab whole on a crowded row, drops a shared topic, and cuts long tabs to one width", async () => {
+    const titles = [
+      "Panel Jam animation timing review",
+      "Panel Jam: council round two",
+      "Review: last three commits on main",
+      "Pull Station restructure: start the split",
+      "Pull Station: Android toolchain setup",
+      "Pull Station: UI polish pass after review",
+    ];
+    const children = titles.map((_, index) => `thread-crowded-${index}` as ThreadId);
+    const base = children.reduce(
+      (snapshot, child) => addThreadToSnapshot(snapshot, child),
+      createSnapshotForTargetUser({
+        targetMessageId: "msg-user-crowded-family" as MessageId,
+        targetText: "crowded family target",
+      }),
+    );
+    const mounted = await mountChatView({
+      viewport: { ...DEFAULT_VIEWPORT, width: 1_280 },
+      snapshot: {
+        ...base,
+        projects: base.projects.map((project) => ({ ...project, leadThreadId: THREAD_ID })),
+        threads: base.threads.map((thread) => {
+          const index = children.indexOf(thread.id);
+          return index === -1
+            ? thread
+            : {
+                ...thread,
+                title: titles[index]!,
+                parentThreadId: THREAD_ID,
+                attachedToParent: true,
+                createdAt: isoAt(10 + index),
+              };
+        }),
+      },
+    });
+    const tabs = () => [
+      ...document.querySelectorAll<HTMLElement>('[data-testid="family-tabs"] [role="tab"]'),
+    ];
+    try {
+      await vi.waitFor(() => expect(tabs()).toHaveLength(1 + children.length), {
+        timeout: 10_000,
+      });
+      const [leadTab, ...childTabs] = tabs();
+      const labelOf = (tab: HTMLElement) => tab.querySelector<HTMLElement>("span.truncate")!;
+      // A topic two threads share is dropped from their tabs, and kept in the tooltip.
+      expect(childTabs.map((tab) => labelOf(tab).textContent)).toEqual([
+        "Animation timing review",
+        "Council round two",
+        "Review: last three commits on main",
+        "Restructure: start the split",
+        "Android toolchain setup",
+        "UI polish pass after review",
+      ]);
+      expect(childTabs.map((tab) => tab.title)).toEqual(titles);
+      // "Lead" is never cut...
+      expect(labelOf(leadTab!).textContent).toBe("Lead");
+      expect(labelOf(leadTab!).scrollWidth).toBeLessThanOrEqual(labelOf(leadTab!).clientWidth);
+      // ...and on a crowded row the cut tabs share one width, which no other tab passes.
+      const width = (tab: HTMLElement) => tab.getBoundingClientRect().width;
+      const cut = childTabs.filter((tab) => labelOf(tab).scrollWidth > labelOf(tab).clientWidth);
+      expect(cut.length).toBeGreaterThan(1);
+      const cutWidths = cut.map(width);
+      // Within a pixel: layout splits the row in fractions of one.
+      expect(Math.max(...cutWidths) - Math.min(...cutWidths)).toBeLessThan(1);
+      expect(childTabs.every((tab) => width(tab) < Math.max(...cutWidths) + 1)).toBe(true);
+
+      // The sidebar's rows under the lead say the same, with the full title for screen readers.
+      await page.getByTestId(`thread-family-${THREAD_ID}`).click();
+      const sidebarTitle = (child: ThreadId) =>
+        document.querySelector<HTMLElement>(`[data-testid="child-title-${child}"]`);
+      await vi.waitFor(() => expect(sidebarTitle(children[4]!)).not.toBeNull(), {
+        timeout: 10_000,
+      });
+      expect(sidebarTitle(children[4]!)!.querySelector(`[aria-hidden="true"]`)?.textContent).toBe(
+        "Android toolchain setup",
+      );
+      expect(sidebarTitle(children[4]!)!.querySelector(".sr-only")?.textContent).toBe(titles[4]);
+      expect(sidebarTitle(children[2]!)!.textContent).toBe(titles[2]);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("names the thread that started this one, in the header and on its request", async () => {
     const base = createSnapshotForTargetUser({
       targetMessageId: "msg-user-started-by" as MessageId,
