@@ -1736,6 +1736,8 @@ export interface InboxDoneRow<E extends InboxFamilyEntry> {
   readonly remoteChildren: readonly InboxRemoteChild[];
   /** A wrapped child of this wrapped parent that is open in the chat. */
   readonly openChild: E | null;
+  /** What its children's rows show, as on a live row (InboxLiveRow.childShortTitles). */
+  readonly childShortTitles: ReadonlyMap<string, string>;
   /**
    * The thread that started it, when it stands here apart from that thread's
    * family: it left a live parent's family, or the machine filter hides the
@@ -2031,10 +2033,12 @@ export function buildInboxSections<E extends InboxFamilyEntry>(input: {
       liveParentByKey.get(entry.threadKey) ?? scopedOutParentByKey.get(entry.threadKey) ?? null;
     const standsApart = startedBy !== null;
     const children = standsApart ? [] : (childrenByParentKey.get(entry.threadKey) ?? []);
+    const remoteChildren = standsApart ? [] : remoteChildrenOf(entry);
     return {
       entry,
       children,
-      remoteChildren: standsApart ? [] : remoteChildrenOf(entry),
+      remoteChildren,
+      childShortTitles: childShortTitlesOf(children, remoteChildren),
       openChild:
         children.find((child) => child.isDone && child.threadKey === input.activeThreadKey) ?? null,
       startedBy,

@@ -1988,6 +1988,12 @@ describe("child thread families", () => {
       android: "Android toolchain",
       polish: "UI polish pass",
     });
+
+    // Wrapped with its family: the child open in the chat, drawn under it, reads the same.
+    const wrapped = entries.map((candidate) => ({ ...candidate, isDone: true }));
+    const [done] = sections(wrapped, { active: "android" }).done;
+    expect(done!.openChild?.threadKey).toBe("android");
+    expect(done!.childShortTitles.get("android")).toBe("Android toolchain");
   });
 
   it("takes one seat per family and lists exactly the rows it draws", () => {
