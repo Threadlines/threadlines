@@ -122,7 +122,17 @@ interface AndroidSdk {
   readonly emulator: boolean;
   readonly avdmanager: boolean;
   readonly legacyAvdmanager: boolean;
+  /**
+   * A Java the SDK's command-line tools can run on (avdmanager is Java), or
+   * null. Without one, emulators that are already running can be watched, but
+   * the hub cannot list stopped ones or start them.
+   */
+  readonly javaHome: string | null;
 }
+
+/** What starting an Android emulator needs when no Java is found. */
+export const ANDROID_JAVA_NOTE =
+  "Running emulators work. Starting one needs Java, which Android Studio includes. Install Android Studio or a JDK, then restart Threadlines.";
 
 /** Where the Android SDK is, the way Android Studio and the hub look for it. */
 export const findAndroidSdk = Effect.fn("LocalDeviceHost.findAndroidSdk")(function* (
@@ -139,6 +149,36 @@ export const findAndroidSdk = Effect.fn("LocalDeviceHost.findAndroidSdk")(functi
   const exists = (file: string) => fs.exists(file).pipe(Effect.orElseSucceed(() => false));
   const adbBinary = windows ? "adb.exe" : "adb";
   const avdmanagerBinary = windows ? "avdmanager.bat" : "avdmanager";
+  // The Java avdmanager runs on: JAVA_HOME, Android Studio's own, or an installed JDK.
+  // The macOS /usr/bin/java is a stub that asks to install Java, so it never counts.
+  const javaBinary = windows ? "java.exe" : "java";
+  const hasJava = (javaHome: string) => exists(path.join(javaHome, "bin", javaBinary));
+  const listDirectory = (directory: string) =>
+    fs.readDirectory(directory).pipe(Effect.orElseSucceed((): Array<string> => []));
+  const findJavaHome = Effect.gen(function* () {
+    const programFiles = environment.ProgramFiles ?? "C:\\Program Files";
+    const fixed = [
+      environment.JAVA_HOME?.trim(),
+      "/Applications/Android Studio.app/Contents/jbr/Contents/Home",
+      path.join(home, "Applications", "Android Studio.app", "Contents", "jbr", "Contents", "Home"),
+      path.join(programFiles, "Android", "Android Studio", "jbr"),
+      "/opt/android-studio/jbr",
+      path.join(home, "android-studio", "jbr"),
+    ].filter((candidate): candidate is string => !!candidate);
+    for (const candidate of fixed) {
+      if (yield* hasJava(candidate)) return candidate;
+    }
+    for (const parent of ["/Library/Java/JavaVirtualMachines", "/usr/lib/jvm"]) {
+      for (const entry of (yield* listDirectory(parent)).toSorted().toReversed()) {
+        const candidate =
+          parent === "/usr/lib/jvm"
+            ? path.join(parent, entry)
+            : path.join(parent, entry, "Contents", "Home");
+        if (yield* hasJava(candidate)) return candidate;
+      }
+    }
+    return null;
+  });
   const inspect = Effect.fnUntraced(function* (root: string) {
     const adb = yield* exists(path.join(root, "platform-tools", adbBinary));
     const emulator = yield* exists(
@@ -149,7 +189,8 @@ export const findAndroidSdk = Effect.fn("LocalDeviceHost.findAndroidSdk")(functi
     );
     const legacyAvdmanager =
       !avdmanager && (yield* exists(path.join(root, "tools", "bin", avdmanagerBinary)));
-    return { root, adb, emulator, avdmanager, legacyAvdmanager } satisfies AndroidSdk;
+    const javaHome = adb || emulator ? yield* findJavaHome : null;
+    return { root, adb, emulator, avdmanager, legacyAvdmanager, javaHome } satisfies AndroidSdk;
   });
   const candidates = [
     ...explicit,
@@ -179,6 +220,7 @@ export const findAndroidSdk = Effect.fn("LocalDeviceHost.findAndroidSdk")(functi
     emulator: false,
     avdmanager: false,
     legacyAvdmanager: false,
+    javaHome: null,
   } satisfies AndroidSdk;
 });
 
@@ -211,15 +253,18 @@ export const platformReason = (
 /** The environment device tools run in: the SDK's tools first on PATH. */
 const deviceHostEnvironment = (
   environment: NodeJS.ProcessEnv,
-  sdkRoot: string | null,
+  sdk: Pick<AndroidSdk, "root" | "javaHome">,
   hostPlatform: NodeJS.Platform,
   path: Path.Path,
 ): NodeJS.ProcessEnv => {
   const { NODE_OPTIONS: _nodeOptions, ...rest } = environment;
+  const sdkRoot = sdk.root;
   return sdkRoot
     ? {
         ...rest,
         ANDROID_HOME: sdkRoot,
+        // Android Studio users often have its Java and no JAVA_HOME; avdmanager needs one.
+        ...(sdk.javaHome ? { JAVA_HOME: sdk.javaHome } : {}),
         PATH: [
           path.join(sdkRoot, "platform-tools"),
           path.join(sdkRoot, "emulator"),
@@ -286,7 +331,7 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
   // Resolved per use: an SDK installed after the server started is found without a restart.
   const currentSdk = findAndroidSdk(environment, hostPlatform).pipe(services, withPath);
   const currentHostEnvironment = currentSdk.pipe(
-    Effect.map((sdk) => deviceHostEnvironment(environment, sdk.root, hostPlatform, path)),
+    Effect.map((sdk) => deviceHostEnvironment(environment, sdk, hostPlatform, path)),
   );
   const startLock = yield* Semaphore.make(1);
   const runningRef = yield* Ref.make<RunningHost | null>(null);
@@ -300,7 +345,11 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
     const sdk = yield* currentSdk;
     const hasXcrun = platform === "ios" && hostPlatform === "darwin" && isCommandAvailable("xcrun");
     const reason = platformReason(platform, hostPlatform, sdk, hasXcrun);
-    return reason === null ? { platform, available: true } : { platform, available: false, reason };
+    if (reason !== null) return { platform, available: false, reason };
+    // Available, with a note: running emulators work without Java, starting one does not.
+    return platform === "android" && sdk.javaHome === null
+      ? { platform, available: true, reason: ANDROID_JAVA_NOTE }
+      : { platform, available: true };
   });
 
   const readDaemonFile = fs
@@ -769,7 +818,7 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
                 )
               : command,
           args,
-          env: deviceHostEnvironment(environment, sdk.root, hostPlatform, path),
+          env: deviceHostEnvironment(environment, sdk, hostPlatform, path),
           timeout: Duration.millis(options?.timeoutMs ?? 20_000),
           timeoutBehavior: "timedOutResult",
           ...(options?.stdin === undefined ? {} : { stdin: options.stdin }),
