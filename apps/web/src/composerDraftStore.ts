@@ -791,6 +791,21 @@ function createEmptyThreadDraft(): ComposerThreadDraftState {
 }
 
 /**
+ * Drafts are saved in local storage, which holds about 5 million characters
+ * per site. An attachment whose data URL alone is longer (a third more than
+ * its bytes) can never be saved there, and trying makes the whole write fail,
+ * every draft's prompt with it. Such an attachment stays in memory only and
+ * is marked unsaved.
+ */
+export const COMPOSER_DRAFT_ATTACHMENT_MAX_SAVED_BYTES = 3_500_000;
+
+export function composerAttachmentFitsDraftStorage(
+  attachment: Pick<ComposerAttachment, "sizeBytes">,
+) {
+  return attachment.sizeBytes <= COMPOSER_DRAFT_ATTACHMENT_MAX_SAVED_BYTES;
+}
+
+/**
  * Identity used to decide whether two attachments are "the same file" when
  * one of them was rebuilt from storage. Exported so the prompt stash counts
  * capacity against the same key the store will dedupe on, instead of burning

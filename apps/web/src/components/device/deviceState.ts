@@ -33,6 +33,11 @@ import {
   subscribeEnvironmentConnections,
   useSavedEnvironmentRuntimeStore,
 } from "../../environments/runtime";
+import {
+  resetDeviceViewsForTests,
+  selectDeviceChip,
+  useThreadDeviceViews,
+} from "./deviceViewStore";
 
 /** Whether a computer's server has devices (capability `devices`), as it last said. */
 export function environmentSupportsDevices(environmentId: EnvironmentId): boolean {
@@ -178,36 +183,13 @@ export function onAgentOpenedDevice(
 
 // ── The device each thread's tab shows ─────────────────────────────────
 
-let selected: Readonly<Record<string, string>> = {};
-const selectionListeners = new Set<() => void>();
-
 /** Points a thread's Device tab at a device, or back at the picker (null). */
 export function selectThreadDevice(threadKey: string, deviceId: string | null) {
-  if ((selected[threadKey] ?? null) === deviceId) return;
-  if (deviceId === null) {
-    const { [threadKey]: _dropped, ...rest } = selected;
-    selected = rest;
-  } else {
-    selected = { ...selected, [threadKey]: deviceId };
-  }
-  for (const listener of selectionListeners) listener();
+  selectDeviceChip(threadKey, deviceId);
 }
 
 export function useSelectedThreadDevice(threadKey: string | null): string | null {
-  const read = useCallback(
-    () => (threadKey === null ? null : (selected[threadKey] ?? null)),
-    [threadKey],
-  );
-  return useSyncExternalStore(
-    (listener) => {
-      selectionListeners.add(listener);
-      return () => {
-        selectionListeners.delete(listener);
-      };
-    },
-    read,
-    read,
-  );
+  return useThreadDeviceViews(threadKey).selected;
 }
 
 // ── Calls ──────────────────────────────────────────────────────────────
@@ -305,7 +287,6 @@ export function resetDeviceStateForTests() {
   stopWatchingConnections?.();
   stopWatchingConnections = null;
   states = {};
-  selected = {};
+  resetDeviceViewsForTests();
   emit();
-  for (const listener of selectionListeners) listener();
 }

@@ -14,6 +14,8 @@ import {
 } from "@threadlines/client-runtime/device";
 import { useEffect, useState, useSyncExternalStore } from "react";
 
+import { observeDeviceStreamInput } from "./deviceInputObserver";
+import type { DeviceInput } from "./deviceRecording.logic";
 import { deviceChannelApi } from "./deviceState";
 
 export interface DeviceStreamState {
@@ -68,6 +70,10 @@ export interface DeviceStream {
   readonly stop: () => void;
   /** Drops the channels and opens fresh ones, with a decoder waiting for a keyframe. */
   readonly reconnect: () => void;
+  /** Hears the input this view sends to the device (a recording listens here). */
+  readonly observeInput: (listener: (input: DeviceInput) => void) => () => void;
+  /** Hears each frame drawn on the canvas (a recording copies it). */
+  readonly observeFrames: (listener: () => void) => () => void;
 }
 
 export function createDeviceStream(input: {
@@ -90,9 +96,13 @@ export function createDeviceStream(input: {
     state = { ...state, ...patch };
     for (const listener of listeners) listener();
   };
-  const client = createDeviceStreamClient(
+  const inputListeners = new Set<(input: DeviceInput) => void>();
+  const frameListeners = new Set<() => void>();
+  const sentClient = createDeviceStreamClient(
     { platform: input.platform, deviceId: input.deviceId, transport },
-    createCanvasFrameSink(canvas),
+    createCanvasFrameSink(canvas, () => {
+      for (const listener of frameListeners) listener();
+    }),
     {
       onStatus: (status, detail) => update({ status, detail }),
       onScreen: (screen) => update({ screen }),
@@ -104,6 +114,9 @@ export function createDeviceStream(input: {
       onDuoUnavailable: (duoUnavailable) => update({ duoUnavailable }),
     },
   );
+  const client = observeDeviceStreamInput(sentClient, input.platform, (sent) => {
+    for (const listener of inputListeners) listener(sent);
+  });
   return {
     canvas,
     panelCanvases,
@@ -129,6 +142,18 @@ export function createDeviceStream(input: {
       client.stop();
       update(CONNECTING);
       client.start();
+    },
+    observeInput: (listener) => {
+      inputListeners.add(listener);
+      return () => {
+        inputListeners.delete(listener);
+      };
+    },
+    observeFrames: (listener) => {
+      frameListeners.add(listener);
+      return () => {
+        frameListeners.delete(listener);
+      };
     },
   };
 }

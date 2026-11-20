@@ -25,6 +25,7 @@ const unused = Effect.die("not used in this test");
 const fakeHost = (
   released: Array<string>,
   bootGate?: { readonly started: Deferred.Deferred<void>; readonly gate: Deferred.Deferred<void> },
+  readyGate?: { readonly started: Deferred.Deferred<void>; readonly gate: Deferred.Deferred<void> },
 ) => {
   const device: { current: DeviceSummary } = {
     current: {
@@ -70,7 +71,15 @@ const fakeHost = (
       toolInspectionError: undefined,
     }),
     platformAvailability: (platform) => Effect.succeed({ platform, available: true }),
-    ensureReady: () => Effect.succeed(ready),
+    ensureReady: (onPhase) =>
+      readyGate
+        ? Effect.gen(function* () {
+            yield* onPhase("installing", "Installing the device hub…");
+            yield* Deferred.succeed(readyGate.started, undefined);
+            yield* Deferred.await(readyGate.gate);
+            return ready;
+          })
+        : Effect.succeed(ready),
     current: Effect.succeed(ready),
     releaseAgentSession: (session) => Effect.sync(() => released.push(session) > 0),
     stop: Effect.void,
@@ -159,6 +168,40 @@ describe("DeviceService release during an open", () => {
       ).pipe(Effect.provide(layer));
       const claims = yield* fs.readFileString(claimsPath).pipe(Effect.orElseSucceed(() => ""));
       expect(claims).not.toContain("SIM-1");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+});
+
+describe("DeviceService start", () => {
+  it.live("keeps installing when the client that asked goes away, and ends ready", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const base = yield* fs.makeTempDirectoryScoped({ prefix: "tl-device-start-" });
+      const readyGate = {
+        started: yield* Deferred.make<void>(),
+        gate: yield* Deferred.make<void>(),
+      };
+      const layer = Layer.mergeAll(
+        fakeHost([], undefined, readyGate),
+        settingsLayer,
+        ServerConfig.layerTest(process.cwd(), base),
+      );
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const service = yield* DeviceService.make;
+          // The Device tab asks, then closes while the hub is still installing.
+          const asking = yield* service.list({ refresh: true }).pipe(Effect.forkScoped);
+          yield* Deferred.await(readyGate.started);
+          yield* Fiber.interrupt(asking);
+          expect((yield* service.state).hostStatus).toBe("installing");
+          yield* Deferred.succeed(readyGate.gate, undefined);
+          yield* Effect.promise(() =>
+            expect
+              .poll(() => Effect.runPromise(service.state.pipe(Effect.map((s) => s.hostStatus))))
+              .toBe("ready"),
+          );
+        }),
+      ).pipe(Effect.provide(layer));
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 });

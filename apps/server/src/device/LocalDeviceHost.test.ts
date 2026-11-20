@@ -1,6 +1,15 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 
-import { hubArguments, parseHubStartupLine, platformReason } from "./LocalDeviceHost.ts";
+import {
+  findAndroidSdk,
+  hubArguments,
+  parseHubStartupLine,
+  platformReason,
+} from "./LocalDeviceHost.ts";
 
 describe("parseHubStartupLine", () => {
   // expo-device-hub 0.22.1 with --require-token prints exactly this (cli.mjs `startupMessage`).
@@ -39,6 +48,7 @@ describe("platformReason", () => {
     emulator: true,
     avdmanager: true,
     legacyAvdmanager: false,
+    javaHome: "/jdk",
   };
 
   it("names what is missing in words the user can act on", () => {
@@ -60,4 +70,27 @@ describe("platformReason", () => {
     expect(platformReason("ios", "darwin", sdk, true)).toBeNull();
     expect(platformReason("android", "darwin", sdk, true)).toBeNull();
   });
+});
+
+describe("findAndroidSdk", () => {
+  it.live("finds the Java the SDK tools need through JAVA_HOME", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const base = yield* fs.makeTempDirectoryScoped({ prefix: "tl-android-sdk-" });
+      const sdkRoot = path.join(base, "sdk");
+      const javaHome = path.join(base, "jdk");
+      yield* fs.makeDirectory(path.join(sdkRoot, "platform-tools"), { recursive: true });
+      yield* fs.writeFileString(path.join(sdkRoot, "platform-tools", "adb"), "");
+      yield* fs.makeDirectory(path.join(javaHome, "bin"), { recursive: true });
+      yield* fs.writeFileString(path.join(javaHome, "bin", "java"), "");
+
+      const sdk = yield* findAndroidSdk(
+        { ANDROID_HOME: sdkRoot, JAVA_HOME: javaHome, HOME: base, PATH: "" },
+        "darwin",
+      );
+      expect(sdk.root).toBe(sdkRoot);
+      expect(sdk.javaHome).toBe(javaHome);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
 });

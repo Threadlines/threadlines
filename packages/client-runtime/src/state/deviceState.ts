@@ -87,10 +87,13 @@ export function devicePlatformStatus(
   }
   return {
     ready: true,
+    // A working platform can still carry a note (Android without Java can show
+    // running emulators but not start one).
     message:
-      platform === "ios"
+      availability.reason ??
+      (platform === "ios"
         ? "Xcode and the iOS Simulator are installed."
-        : "The Android SDK and Emulator are installed.",
+        : "The Android SDK and Emulator are installed."),
   };
 }
 

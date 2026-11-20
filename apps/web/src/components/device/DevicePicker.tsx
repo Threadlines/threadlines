@@ -29,7 +29,10 @@ export function DevicePicker(props: {
 }) {
   const { state } = props;
   const groups = groupDevicesByPlatform(state.devices);
-  const unavailable = state.platforms.filter((platform) => !platform.available);
+  // Platforms that cannot run, and working ones with a note (Android without Java).
+  const unavailable = state.platforms.filter(
+    (platform) => !platform.available || platform.reason !== undefined,
+  );
   const busy = isDeviceHostBusy(state);
   const booting = state.bootingDevices;
   const heldIds = new Set(props.sessions.map((session) => session.deviceId));
