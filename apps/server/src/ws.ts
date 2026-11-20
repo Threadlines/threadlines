@@ -70,6 +70,7 @@ import {
   WsMovesRpcGroup,
   WsThemeShowcaseRpcGroup,
   WsThemeVsCodeRpcGroup,
+  WsDeviceRpcGroup,
   WsThemesRpcGroup,
   WsOwnerRequiredError,
   OutsideAgentError,
@@ -119,6 +120,8 @@ import {
 import { LocalServers } from "./preview/LocalServers.ts";
 import { PreviewAutomationBroker } from "./preview/PreviewAutomationBroker.ts";
 import { PreviewTunnel } from "./preview/PreviewTunnel.ts";
+import { DeviceChannels } from "./device/DeviceChannels.ts";
+import { DeviceService } from "./device/DeviceService.ts";
 import { ProjectFaviconResolver } from "./project/Services/ProjectFaviconResolver.ts";
 import { PullRequestService } from "./pullRequest/PullRequestService.ts";
 import { PullRequestObservations } from "./pullRequest/PullRequestObservations.ts";
@@ -833,6 +836,51 @@ const ThemeVsCodeRpcLayer = WsThemeVsCodeRpcGroup.toLayer(
   }),
 );
 
+/**
+ * Devices (docs/design/devices.md): its own RPC group and layer
+ * (WsDeviceRpcGroup), merged in makeWsRpcLayer. Open to every paired device,
+ * as terminals are. Channels belong to this connection (`viewerId`) and close
+ * with it.
+ */
+const makeDeviceRpcLayer = (viewerId: string) =>
+  WsDeviceRpcGroup.toLayer(
+    Effect.gen(function* () {
+      const devices = yield* DeviceService;
+      const channels = yield* DeviceChannels;
+      const aggregate = { "rpc.aggregate": "devices" } as const;
+      return WsDeviceRpcGroup.of({
+        [WS_METHODS.deviceList]: (input) =>
+          observeRpcEffect(WS_METHODS.deviceList, devices.list(input), aggregate),
+        [WS_METHODS.deviceUpdateTool]: (input) =>
+          observeRpcEffect(WS_METHODS.deviceUpdateTool, devices.updateTool(input.tool), aggregate),
+        [WS_METHODS.deviceOpen]: (input) =>
+          observeRpcEffect(WS_METHODS.deviceOpen, devices.open(input, "user"), aggregate),
+        [WS_METHODS.deviceClose]: (input) =>
+          observeRpcEffect(WS_METHODS.deviceClose, devices.close(input), aggregate),
+        [WS_METHODS.deviceShutdown]: (input) =>
+          observeRpcEffect(WS_METHODS.deviceShutdown, devices.shutdown(input), aggregate),
+        [WS_METHODS.deviceDetail]: (input) =>
+          observeRpcEffect(WS_METHODS.deviceDetail, devices.detail(input), aggregate),
+        [WS_METHODS.deviceAction]: (input) =>
+          observeRpcEffect(WS_METHODS.deviceAction, devices.action(input), aggregate),
+        [WS_METHODS.subscribeDeviceState]: (_input) =>
+          observeRpcStream(WS_METHODS.subscribeDeviceState, devices.stream, aggregate),
+        [WS_METHODS.deviceChannelOpen]: (input) =>
+          // Scoped to the subscription: the client letting go, or its socket
+          // dropping, closes the request or socket to the hub too.
+          observeRpcStreamEffect(
+            WS_METHODS.deviceChannelOpen,
+            channels.open(viewerId, input),
+            aggregate,
+          ),
+        // A channel's messages and credits are its traffic itself: left out of
+        // the RPC metrics and traces they would drown.
+        [WS_METHODS.deviceChannelSend]: (input) => channels.send(viewerId, input),
+        [WS_METHODS.deviceChannelCredit]: (input) => channels.credit(viewerId, input),
+      });
+    }),
+  );
+
 /** Every RPC the WebSocket serves, for one connection. */
 const makeWsRpcLayer = (
   currentSession: {
@@ -852,6 +900,7 @@ const makeWsRpcLayer = (
     ThemeShowcaseRpcLayer,
     MovesRpcLayer,
     ThemeVsCodeRpcLayer,
+    makeDeviceRpcLayer(viewerId),
   );
 
 const makeCoreRpcLayer = (
@@ -3675,6 +3724,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
     const threadBootstrap = yield* ThreadBootstrap;
     const terminalManager = yield* TerminalManager;
     const pushAlerts = yield* PushAlerts;
+    const deviceChannels = yield* DeviceChannels;
     return HttpRouter.add(
       "GET",
       "/ws",
@@ -3770,6 +3820,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
               .pipe(
                 Effect.andThen(terminalManager.releaseViewer(viewerId)),
                 Effect.andThen(pushAlerts.releaseViewer(viewerId)),
+                Effect.andThen(deviceChannels.releaseConnection(viewerId)),
               ),
         );
       }).pipe(Effect.scoped, Effect.catchTag("AuthError", respondToAuthError)),

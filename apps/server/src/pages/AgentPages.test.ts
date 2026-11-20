@@ -53,6 +53,7 @@ const caller = (overrides: Partial<McpInvocationScope> = {}): McpInvocationScope
   browser: true,
   pages: true,
   commands: false,
+  device: false,
   roomTools: new Set(),
   ...overrides,
 });

@@ -184,6 +184,8 @@ import * as PreviewTunnel from "./preview/PreviewTunnel.ts";
 import { AgentPages } from "./pages/AgentPages.ts";
 import { McpApps } from "./mcpApps/McpApps.ts";
 import { CommandRuns } from "./commandRuns/CommandRuns.ts";
+import { DeviceChannels } from "./device/DeviceChannels.ts";
+import { DeviceService } from "./device/DeviceService.ts";
 import { AgentSettingsChanges } from "./settingsChanges/AgentSettingsChanges.ts";
 import { AgentSecretRequests } from "./secrets/AgentSecretRequests.ts";
 import { layer as SecretScrubberLive } from "./secrets/SecretScrubber.ts";
@@ -798,6 +800,9 @@ const buildAppUnderTest = (options?: {
           Layer.mock(AgentSettingsChanges)({}),
           // So are agents' requests for keys (AgentSecretRequests.test.ts).
           Layer.mock(AgentSecretRequests)({ destinations: {} as never }),
+          // Devices are tested on their own (device/*.test.ts); the routes only need them built.
+          Layer.mock(DeviceService)({}),
+          Layer.mock(DeviceChannels)({ releaseConnection: () => Effect.void }),
           // The watched keys' registry, empty: the routes' doors read it.
           SecretScrubberLive,
           Layer.mock(CommandRuns)({

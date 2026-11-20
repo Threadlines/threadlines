@@ -107,6 +107,10 @@ import * as McpHttpServer from "./mcp/McpHttpServer.ts";
 import * as McpRoomServer from "./mcp/McpRoomServer.ts";
 import * as McpPagesServer from "./mcp/McpPagesServer.ts";
 import * as McpCommandsServer from "./mcp/McpCommandsServer.ts";
+import * as McpDeviceServer from "./mcp/McpDeviceServer.ts";
+import * as DeviceChannels from "./device/DeviceChannels.ts";
+import * as DeviceService from "./device/DeviceService.ts";
+import * as DeviceThreadReactor from "./device/DeviceThreadReactor.ts";
 import * as McpConnectServer from "./outsideAgents/McpConnectServer.ts";
 import { AssistantMcpServerLive } from "./assistants/AssistantMcpServer.ts";
 import { OtherComputersLive } from "./outsideAgents/OtherComputers.ts";
@@ -632,6 +636,14 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
       // Answers to agents' requests for keys; it settles at startup what a
       // previous run left mid-save and sets saved files' expiry timers.
       AgentSecretRequests.layer.pipe(Layer.provide(ProcessRunnerLive)),
+      // Simulators and emulators (docs/design/devices.md): the service, the
+      // Device tab's channels to the hub, and the reactor that lets a thread
+      // put away let go of its devices (and sweeps claims at startup).
+      DeviceThreadReactor.layer.pipe(
+        Layer.provideMerge(DeviceChannels.layer),
+        Layer.provideMerge(DeviceService.layer),
+        Layer.provide(ProcessRunnerLive),
+      ),
       // The calls' table also serves thread deletion's cleanup.
       McpApps.layer.pipe(Layer.provideMerge(McpAppCallRepositoryLive)),
       // Outside agents' starts and sends by request id (`/mcp/connect`);
@@ -773,6 +785,7 @@ export const makeRoutesLayer = Layer.mergeAll(
   McpRoomServer.layer,
   McpPagesServer.layer,
   McpCommandsServer.layer,
+  McpDeviceServer.layer,
   // Outside agents' tools (docs/design/outside-agents.md).
   McpConnectServer.layer,
   // The same tools for assistants, over the relay (docs/design/assistants.md).

@@ -263,7 +263,7 @@ const SHIM_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
  *   configuration, say).
  * - `update-notifier`: npm's last lines are about this install.
  */
-const npmPinnedFlags = (ignoreScripts: boolean) => [
+export const npmPinnedFlags = (ignoreScripts: boolean) => [
   "--global=false",
   "--package-lock=true",
   "--no-audit",
