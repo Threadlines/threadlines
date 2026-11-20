@@ -46,6 +46,7 @@ import {
   LaptopIcon,
   LinkIcon,
   MessageSquareIcon,
+  MessageCirclePlusIcon,
   MessagesSquareIcon,
   PanelLeftCloseIcon,
   PanelLeftIcon,
@@ -102,6 +103,7 @@ import {
 } from "../environments/runtime";
 import { holdThreadDetailForOpen, prewarmHighlightedThread } from "../environments/runtime/service";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
+import { useGeneralChats } from "./chats/useGeneralChats";
 import { useInboxThreads } from "../hooks/useInboxThreads";
 import { useThreadMenu } from "../hooks/useThreadMenu";
 import {
@@ -583,6 +585,7 @@ export function OpenCommandPaletteDialog() {
   );
   const projects = useStore(useShallow(selectProjectsAcrossEnvironments));
   const threads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
+  const { startChat: startGeneralChat } = useGeneralChats();
   const keybindings = useServerKeybindings();
   const isHomeRoute = useLocation({ select: (location) => location.pathname === "/" });
   const onTerminalsPage = useLocation({
@@ -1820,6 +1823,19 @@ export function OpenCommandPaletteDialog() {
       icon: <HomeIcon className={ITEM_ICON_CLASS} />,
       run: async () => {
         await navigate({ to: "/" });
+      },
+    });
+  }
+
+  if (startGeneralChat !== null) {
+    actionItems.push({
+      kind: "action",
+      value: "action:new-general-chat",
+      searchTerms: ["new chat", "general chat", "chat", "conversation", "no project"],
+      title: "New general chat",
+      icon: <MessageCirclePlusIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        startGeneralChat();
       },
     });
   }

@@ -12,6 +12,7 @@ import { DEFAULT_UNIFIED_SETTINGS } from "@threadlines/contracts/settings";
 import {
   AGENT_INVITES_LABELS,
   AGENT_THREADS_LABELS,
+  GENERAL_CHATS_PLACEMENT_LABELS,
   NEW_WORKTREE_BASE_LABELS,
   THREAD_ENV_MODE_LABELS,
 } from "@threadlines/shared/appPlaces";
@@ -61,7 +62,7 @@ const PAIRED_COMPUTER_NOTE = "Applies to your paired computer.";
 /**
  * Settings › Threads: how a new thread starts (its agent, the agents beside
  * it, where it works, whether its agent can start threads of its own), Rooms, the model that writes titles, and what happens
- * when a thread is done. The phone shows the same page; the computer's
+ * when a thread is done, and where General Chats sit in the sidebar. The phone shows the same page; the computer's
  * settings there are the paired computer's.
  */
 export function ThreadsSettingsPanel({ surface = "full" }: { surface?: "full" | "phone" }) {
@@ -103,6 +104,10 @@ export function ThreadsSettingsPanel({ surface = "full" }: { surface?: "full" | 
         <WrapUpChildThreadsRow />
         <ConfirmArchiveRow />
         <ConfirmDeleteRow />
+      </SettingsSection>
+
+      <SettingsSection place="threads.sidebar">
+        <GeneralChatsPlacementRow />
       </SettingsSection>
     </SettingsPageContainer>
   );
@@ -1254,6 +1259,52 @@ export function ConfirmDeleteRow() {
           onCheckedChange={(checked) => updateSettings({ confirmThreadDelete: Boolean(checked) })}
           aria-label="Confirm thread deletion"
         />
+      }
+    />
+  );
+}
+
+/** Where General Chats live on this device: their own page, or a section in Threads. */
+export function GeneralChatsPlacementRow() {
+  const placement = useSettings((settings) => settings.generalChatsPlacement);
+  const { updateSettings } = useUpdateSettings();
+  return (
+    <SettingsRow
+      id="general-chats-placement"
+      place="threads.generalChats"
+      resetAction={
+        placement !== DEFAULT_UNIFIED_SETTINGS.generalChatsPlacement ? (
+          <SettingResetButton
+            label="general chats"
+            onClick={() =>
+              updateSettings({
+                generalChatsPlacement: DEFAULT_UNIFIED_SETTINGS.generalChatsPlacement,
+              })
+            }
+          />
+        ) : null
+      }
+      control={
+        <Select
+          value={placement}
+          onValueChange={(value) => {
+            if (value === "page" || value === "threads") {
+              updateSettings({ generalChatsPlacement: value });
+            }
+          }}
+        >
+          <SelectTrigger
+            className="w-full sm:w-44"
+            aria-label="General chats"
+            data-testid="general-chats-placement"
+          >
+            <SelectValue>{GENERAL_CHATS_PLACEMENT_LABELS[placement]}</SelectValue>
+          </SelectTrigger>
+          <SelectPopup align="end" alignItemWithTrigger={false}>
+            <SelectItem value="page">{GENERAL_CHATS_PLACEMENT_LABELS.page}</SelectItem>
+            <SelectItem value="threads">{GENERAL_CHATS_PLACEMENT_LABELS.threads}</SelectItem>
+          </SelectPopup>
+        </Select>
       }
     />
   );

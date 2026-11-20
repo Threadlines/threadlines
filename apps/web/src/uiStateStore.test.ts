@@ -35,6 +35,7 @@ function makeUiState(overrides: Partial<UiState> = {}): UiState {
     inboxEnvironmentScopeId: null,
     collapsedInboxGroups: {},
     inboxWrappedOpen: false,
+    inboxGeneralChatsOpen: true,
     sidebarListOpen: true,
     sidebarListFloats: false,
     sidebarFloatingListOpen: false,
@@ -613,19 +614,22 @@ describe("uiStateStore persistence round-trip", () => {
     expect(readPersistedState().inboxEnvironmentScopeId).toBe(null);
   });
 
-  it("remembers a hidden thread list, folded inbox groups and an open Wrapped shelf across a restart", () => {
-    // A fresh install shows the list, with Wrapped closed.
+  it("remembers a hidden thread list, folded inbox groups and shelves across a restart", () => {
+    // A fresh install shows the list, with Wrapped closed and General chats open.
     window.localStorage.removeItem(PERSISTED_STATE_KEY);
     expect(readPersistedState().sidebarListOpen).toBe(true);
     expect(readPersistedState().inboxWrappedOpen).toBe(false);
+    expect(readPersistedState().inboxGeneralChatsOpen).toBe(true);
 
     persistState(
       makeUiState({
         sidebarListOpen: false,
         collapsedInboxGroups: { "computer:env-macbook": true },
         inboxWrappedOpen: true,
+        inboxGeneralChatsOpen: false,
       }),
     );
+    expect(readPersistedState().inboxGeneralChatsOpen).toBe(false);
     expect(readPersistedState().sidebarListOpen).toBe(false);
     expect(readPersistedState().collapsedInboxGroups).toEqual({ "computer:env-macbook": true });
     expect(readPersistedState().inboxWrappedOpen).toBe(true);

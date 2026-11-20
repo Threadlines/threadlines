@@ -15,6 +15,9 @@ import * as Effect from "effect/Effect";
 import { page, userEvent } from "vite-plus/test/browser";
 import { describe, expect, it, vi } from "vite-plus/test";
 
+import { DEFAULT_CLIENT_SETTINGS } from "@threadlines/contracts/settings";
+
+import { CLIENT_SETTINGS_STORAGE_KEY } from "../clientPersistenceStorage";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { isMacPlatform } from "../lib/utils";
 import { useOptimisticThreadMessagesStore } from "../optimisticThreadMessages";
@@ -1091,6 +1094,52 @@ describe("ChatView (full app): app shell", () => {
     }
   });
 
+  it("shows a floating list with the chats' section open when the old General Chats address leads to Threads", async () => {
+    localStorage.setItem(
+      CLIENT_SETTINGS_STORAGE_KEY,
+      JSON.stringify({ ...DEFAULT_CLIENT_SETTINGS, generalChatsPlacement: "threads" }),
+    );
+    useUiStateStore.setState({ inboxGeneralChatsOpen: false });
+    const mounted = await mountChatView({
+      viewport: { ...DEFAULT_VIEWPORT, name: "list-floats-chats", width: 800 },
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-list-floats-chats" as MessageId,
+        targetText: "list floats chats",
+      }),
+    });
+
+    try {
+      const list = await waitForElement(
+        () =>
+          document.querySelector<HTMLElement>('[data-testid="app-panel"] > [data-slot="sidebar"]'),
+        "Unable to find the list beside the rail.",
+      );
+      await vi.waitFor(() => expect(list.dataset.state).toBe("collapsed"));
+      const threadPath = mounted.router.state.location.pathname;
+      // From another page, as the command palette or the desktop menu would go.
+      await mounted.router.navigate({ to: "/fleet" });
+      await waitForURL(mounted.router, (pathname) => pathname === "/fleet", "Fleet should open.");
+      await mounted.router.navigate({ to: "/chats" });
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname === threadPath,
+        "The old General Chats address should go where the Threads button does.",
+      );
+      // Both page changes (to the old address, then on to Threads) leave it showing.
+      await nextFrames(5);
+      expect(list.dataset.state).toBe("expanded");
+      await expect
+        .element(page.getByTestId("inbox-chats-toggle"))
+        .toHaveAttribute("aria-expanded", "true");
+      // The next page change puts the floating list away as usual.
+      await mounted.router.navigate({ to: "/fleet" });
+      await vi.waitFor(() => expect(list.dataset.state).toBe("collapsed"));
+    } finally {
+      localStorage.removeItem(CLIENT_SETTINGS_STORAGE_KEY);
+      await mounted.cleanup();
+    }
+  });
+
   it("folds the app's name away, then gives the thread's header its own row, as the title row runs out of room", async () => {
     const root = document.documentElement;
     root.classList.add("electron", "wco");
@@ -1791,6 +1840,76 @@ describe("ChatView (full app): app shell", () => {
       );
       await expect.element(page.getByTestId("sidebar-destination-row")).not.toBeInTheDocument();
     } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("on a phone with the chats in Threads, opens the sheet on them from the old page's address", async () => {
+    const chatId = "thread-phone-chat-section" as ThreadId;
+    const base = addThreadToSnapshot(
+      createSnapshotForTargetUser({
+        targetMessageId: "msg-user-phone-chat-section" as MessageId,
+        targetText: "phone chat section",
+      }),
+      chatId,
+    );
+    localStorage.setItem(
+      CLIENT_SETTINGS_STORAGE_KEY,
+      JSON.stringify({ ...DEFAULT_CLIENT_SETTINGS, generalChatsPlacement: "threads" }),
+    );
+    useUiStateStore.setState({ inboxGeneralChatsOpen: false });
+    const mounted = await mountChatView({
+      viewport: PHONE_VIEWPORT,
+      snapshot: {
+        ...base,
+        projects: [
+          ...base.projects,
+          {
+            id: GENERAL_CHATS_PROJECT_ID,
+            kind: "general-chat" as const,
+            title: "General Chats",
+            workspaceRoot: "/repo/general-chats",
+            defaultModelSelection: null,
+            scripts: [],
+            createdAt: NOW_ISO,
+            updatedAt: NOW_ISO,
+            deletedAt: null,
+          },
+        ],
+        threads: base.threads.map((thread) =>
+          thread.id === chatId
+            ? { ...thread, projectId: GENERAL_CHATS_PROJECT_ID, title: "Pocket question" }
+            : thread,
+        ),
+      },
+    });
+
+    try {
+      await mounted.router.navigate({ to: "/chats" });
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname !== "/chats",
+        "The old General Chats address should open Threads.",
+      );
+      // The sheet opens on the thread list, with no Chats icon and the section open.
+      await expect
+        .element(page.getByTestId("sidebar-destination-row"))
+        .toMatchTextContent(/Threads.*Settings/);
+      expect(document.querySelector('[data-testid="rail-chats"]')).toBeNull();
+      await expect
+        .element(page.getByTestId("inbox-chats-toggle"))
+        .toHaveAttribute("aria-expanded", "true");
+      await expect.element(page.getByTestId(`thread-row-${THREAD_ID}`)).toBeVisible();
+
+      await page.getByTestId("chats-list-row").filter({ hasText: "Pocket question" }).click();
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname.endsWith(`/${chatId}`),
+        "A chat in the sheet should open that chat.",
+      );
+      await expect.element(page.getByTestId("sidebar-destination-row")).not.toBeInTheDocument();
+    } finally {
+      localStorage.removeItem(CLIENT_SETTINGS_STORAGE_KEY);
       await mounted.cleanup();
     }
   });

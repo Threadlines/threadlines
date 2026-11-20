@@ -62,6 +62,14 @@ export type InboxSort = typeof InboxSort.Type;
 export const DEFAULT_INBOX_SORT: InboxSort = "recent";
 export const MIN_SIDEBAR_THREAD_PREVIEW_COUNT = 1;
 export const MAX_SIDEBAR_THREAD_PREVIEW_COUNT = 15;
+/**
+ * Where General Chats live: their own page in the rail ("page"), or a section
+ * at the foot of the Threads list ("threads").
+ */
+export const GeneralChatsPlacement = Schema.Literals(["page", "threads"]);
+export type GeneralChatsPlacement = typeof GeneralChatsPlacement.Type;
+export const DEFAULT_GENERAL_CHATS_PLACEMENT: GeneralChatsPlacement = "page";
+
 export const SidebarThreadPreviewCount = Schema.Int.check(
   Schema.isBetween({
     minimum: MIN_SIDEBAR_THREAD_PREVIEW_COUNT,
@@ -278,6 +286,11 @@ export const ClientSettingsSchema = Schema.Struct({
   ),
   sidebarGrouping: SidebarGrouping.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_GROUPING)),
+  ),
+  // Per device: a phone may want the chats in its one list, a wide screen
+  // their own page.
+  generalChatsPlacement: GeneralChatsPlacement.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_GENERAL_CHATS_PLACEMENT)),
   ),
   inboxSort: InboxSort.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_INBOX_SORT))),
   // The inbox's custom order, as scoped thread keys. Kept on this device: the
@@ -1407,6 +1420,7 @@ export const ClientSettingsPatch = Schema.Struct({
   ),
   suppressCrossProviderSwitchWarning: Schema.optionalKey(Schema.Boolean),
   sidebarGrouping: Schema.optionalKey(SidebarGrouping),
+  generalChatsPlacement: Schema.optionalKey(GeneralChatsPlacement),
   inboxSort: Schema.optionalKey(InboxSort),
   inboxCustomOrder: Schema.optionalKey(Schema.Array(Schema.String)),
   inboxGroupOrder: Schema.optionalKey(Schema.Array(Schema.String)),

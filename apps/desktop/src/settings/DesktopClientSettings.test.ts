@@ -45,6 +45,7 @@ const clientSettings: ClientSettings = {
   providerModelPreferences: {},
   suppressCrossProviderSwitchWarning: false,
   sidebarGrouping: "none",
+  generalChatsPlacement: "page",
   inboxSort: "recent",
   inboxCustomOrder: [],
   inboxGroupOrder: [],

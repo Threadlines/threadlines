@@ -14,6 +14,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useShallow } from "zustand/react/shallow";
 
 import { useHandleNewThread } from "../../hooks/useHandleNewThread";
+import { useGeneralChatsInThreads } from "../chats/generalChatsPlacement";
 import { startNewThreadFromContext } from "../../lib/chatThreadActions";
 import {
   PULL_REQUEST_COUNT_REFETCH_INTERVAL_MS,
@@ -93,8 +94,9 @@ export interface NavigationDestination {
   /** Threads waiting on the user: an amber count on the icon. */
   readonly needsYou: number;
   /**
-   * General chats only: a result nobody has looked at yet (a finished turn, a
-   * ready plan). A blue dot beside the count, unless `ownListShowing`.
+   * General chats only (on Threads while they are a section of it): a result
+   * nobody has looked at yet (a finished turn, a ready plan). A blue dot
+   * beside the count, unless `ownListShowing`.
    */
   readonly unread: boolean;
   /** Threads at work: a blue dot and count under the icon, unless `ownListShowing`. */
@@ -117,6 +119,11 @@ export interface NavigationDestination {
  * the last thread itself.
  */
 let lastThreadsViewHref: string | null = null;
+
+/** Where the Threads button goes: the last thread view, else home. */
+export function threadsViewHref(): string {
+  return lastThreadsViewHref ?? "/";
+}
 
 /**
  * What the main view has open: no thread (home, a page), a thread or draft
@@ -163,7 +170,8 @@ function useOpenThreadKind(): OpenThreadKind {
 export function useSelectedDestination(): NavigationDestinationId {
   const pathname = useLocation({ select: (location) => location.pathname });
   const openThreadIsGeneralChat = useOpenThreadKind() === "general-chat";
-  return resolveSelectedDestination({ pathname, openThreadIsGeneralChat });
+  const generalChatsInThreads = useGeneralChatsInThreads();
+  return resolveSelectedDestination({ pathname, openThreadIsGeneralChat, generalChatsInThreads });
 }
 
 /**
@@ -312,7 +320,8 @@ function joinDetails(...parts: Array<string | null>): string | null {
  * Every destination with what the rail says about it, and what choosing one
  * does. `listOpen` is whether the list beside the rail is showing: the Threads
  * and General Chats icons carry their work unless that list is their own,
- * which says it otherwise.
+ * which says it otherwise. While the chats are a section of Threads, General
+ * Chats has no button and Threads carries the chats' work too.
  *
  * `select` takes the click's place in a run of quick clicks (its `detail`: 1
  * for a single click, 2 for a double-click's second, 0 from a key). Choosing
@@ -354,19 +363,30 @@ export function useNavigationDestinations(options: { readonly listOpen: boolean 
     }
     return count;
   });
+  const generalChatsInThreads = useGeneralChatsInThreads();
 
   const destinations = useMemo(() => {
     const platform = typeof navigator === "undefined" ? "" : navigator.platform;
     const shortcutOptions = { platform, context: shortcutContext };
     const workingEverywhere = attention.threads.working + attention.chats.working;
+    // The Threads button's counts, and whose unread results it marks.
+    const threadsCounts = generalChatsInThreads
+      ? {
+          needsYou: attention.threads.needsYou + attention.chats.needsYou,
+          working: workingEverywhere,
+        }
+      : attention.threads;
+    const unreadOn = generalChatsInThreads ? "threads" : "chats";
     const shownList = options.listOpen ? resolveShownDestinationList(selected, isMobile) : null;
     return NAVIGATION_DESTINATION_ORDER.flatMap((id): NavigationDestination[] => {
       // A destination that would only ever say "unsupported" is not offered.
       if (id === "pull-requests" && !hasPullRequests) return [];
       // Hidden until a connected computer's server runs scheduled tasks.
       if (id === "scheduled" && !hasScheduledTasks) return [];
+      // The chats are a section of Threads on this device.
+      if (id === "chats" && generalChatsInThreads) return [];
       const command = DESTINATION_SHORTCUTS[id];
-      const counts = id === "threads" ? attention.threads : id === "chats" ? attention.chats : null;
+      const counts = id === "threads" ? threadsCounts : id === "chats" ? attention.chats : null;
       return [
         {
           id,
@@ -377,7 +397,7 @@ export function useNavigationDestinations(options: { readonly listOpen: boolean 
           listOpen:
             selected === id && !isMobile && destinationHasList(id) ? options.listOpen : undefined,
           needsYou: id === "pull-requests" ? pullRequestsNeedingYou : (counts?.needsYou ?? 0),
-          unread: id === "chats" && attention.chatsUnread,
+          unread: id === unreadOn && attention.chatsUnread,
           working: counts?.working ?? 0,
           ownListShowing: shownList !== null && shownList === DESTINATION_LISTS[id],
           shortcutLabel: command
@@ -393,7 +413,7 @@ export function useNavigationDestinations(options: { readonly listOpen: boolean 
               ? joinDetails(
                   describeNeedsYou(counts?.needsYou ?? 0),
                   describeWorking(counts?.working ?? 0),
-                  id === "chats" && attention.chatsUnread ? "unread" : null,
+                  id === unreadOn && attention.chatsUnread ? "unread" : null,
                 )
               : id === "terminals"
                 ? terminalsRunning > 0
@@ -413,6 +433,7 @@ export function useNavigationDestinations(options: { readonly listOpen: boolean 
     });
   }, [
     attention,
+    generalChatsInThreads,
     hasPullRequests,
     hasScheduledTasks,
     isMobile,

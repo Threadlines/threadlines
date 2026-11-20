@@ -1116,6 +1116,125 @@ describe("ChatView (full app): sidebar", () => {
     }
   });
 
+  it("lists general chats in a section of Threads when set to, opens it from the old page's address, and switching back restores the page", async () => {
+    const workingChatId = "thread-general-chat-section-working" as ThreadId;
+    const askingChatId = "thread-general-chat-section-asking" as ThreadId;
+    const withChats = addThreadToSnapshot(
+      addThreadToSnapshot(
+        createSnapshotForTargetUser({
+          targetMessageId: "msg-user-general-chat-section" as MessageId,
+          targetText: "general chat section target",
+        }),
+        workingChatId,
+      ),
+      askingChatId,
+    );
+    localStorage.setItem(
+      CLIENT_SETTINGS_STORAGE_KEY,
+      JSON.stringify({ ...DEFAULT_CLIENT_SETTINGS, generalChatsPlacement: "threads" }),
+    );
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...withChats,
+        projects: [
+          ...withChats.projects,
+          {
+            id: GENERAL_CHATS_PROJECT_ID,
+            kind: "general-chat" as const,
+            title: "General Chats",
+            workspaceRoot: "/repo/general-chats",
+            defaultModelSelection: null,
+            scripts: [],
+            createdAt: NOW_ISO,
+            updatedAt: NOW_ISO,
+            deletedAt: null,
+          },
+        ],
+        threads: withChats.threads.map((thread) =>
+          thread.id === workingChatId
+            ? {
+                ...thread,
+                projectId: GENERAL_CHATS_PROJECT_ID,
+                title: "Best way to store passkeys",
+              }
+            : thread.id === askingChatId
+              ? { ...thread, projectId: GENERAL_CHATS_PROJECT_ID, title: "Draft reply" }
+              : thread,
+        ),
+      },
+    });
+
+    try {
+      setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, workingChatId, "working");
+      setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, askingChatId, "needs-you");
+      // No General Chats button: Threads carries what the chats need.
+      const threadsButton = page.getByTestId("rail-threads");
+      await expect
+        .element(threadsButton.getByTestId("rail-needs-you-badge"))
+        .toMatchTextContent("1");
+      expect(document.querySelector('[data-testid="rail-chats"]')).toBeNull();
+
+      // The chats sit open at the foot of the thread list, beside the project's threads.
+      const toggle = page.getByTestId("inbox-chats-toggle");
+      await expect.element(toggle).toHaveAttribute("aria-expanded", "true");
+      await expect.element(page.getByTestId(`thread-row-${THREAD_ID}`)).toBeVisible();
+      await expect
+        .element(
+          page
+            .getByTestId("chats-list-row")
+            .filter({ hasText: "Best way to store passkeys" })
+            .getByTestId("chats-list-row-status"),
+        )
+        .toMatchTextContent(/^working/);
+      await expect.element(page.getByTestId("inbox-chats-new-chat")).toBeVisible();
+
+      // Folded, the header says what the hidden chats are doing.
+      await toggle.click();
+      await expect.element(toggle).toHaveAttribute("aria-expanded", "false");
+      expect(document.querySelector('[data-testid="chats-list-row"]')).toBeNull();
+      await expect
+        .element(page.getByTestId("inbox-chats-folded"))
+        .toMatchTextContent(/1 needs you.*1 working/);
+      // Starting a chat needs no unfolding.
+      await expect.element(page.getByTestId("inbox-chats-new-chat")).toBeVisible();
+
+      // The old page's address opens Threads with the section open.
+      await mounted.router.navigate({ to: "/chats" });
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname !== "/chats",
+        "The old General Chats address should open Threads.",
+      );
+      await expect.element(toggle).toHaveAttribute("aria-expanded", "true");
+      await expect.element(threadsButton).toHaveAttribute("aria-current", "page");
+
+      await page.getByTestId("chats-list-row").filter({ hasText: "Draft reply" }).click();
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname.endsWith(`/${askingChatId}`),
+        "A chat row should open its chat.",
+      );
+      // A chat is part of Threads here.
+      await expect.element(threadsButton).toHaveAttribute("aria-current", "page");
+      await expect
+        .element(page.getByTestId("chats-list-row").filter({ hasText: "Draft reply" }))
+        .toHaveAttribute("aria-current", "page");
+
+      // Back to its own page: the button returns, selected for the open chat,
+      // and the section leaves the thread list.
+      updateSettings({ generalChatsPlacement: "page" });
+      await expect.element(page.getByTestId("rail-chats")).toHaveAttribute("aria-current", "page");
+      await expect.element(page.getByTestId("inbox-chats-shelf")).not.toBeInTheDocument();
+      await expect
+        .element(page.getByTestId("chats-list-row").filter({ hasText: "Draft reply" }))
+        .toHaveAttribute("aria-current", "page");
+    } finally {
+      localStorage.removeItem(CLIENT_SETTINGS_STORAGE_KEY);
+      await mounted.cleanup();
+    }
+  });
+
   it("swipes a general chat: left archives it with an undo, right pins it, and a working chat keeps it", async () => {
     const idleChatId = "thread-general-chat-swipe-idle" as ThreadId;
     const workingChatId = "thread-general-chat-swipe-working" as ThreadId;

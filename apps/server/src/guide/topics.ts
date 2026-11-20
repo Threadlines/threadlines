@@ -42,6 +42,7 @@ export const GUIDE_TOPICS: ReadonlyArray<GuideTopic> = [
       "wrap",
       "archive",
       "restart",
+      "general chats",
     ],
     body: `A thread is one conversation with an agent in a project. Threads are listed in the sidebar; one that needs you, finished or failed says so there. In a narrow window the sidebar floats over the thread instead of sitting beside it: the sidebar button at the top left, or Cmd+B (Ctrl+B on Windows and Linux), opens it, and picking a thread or clicking the thread puts it away. A thread you scrolled up in opens where you left it when you come back, until Threadlines reloads; one that finished, failed or needs you since then opens at the end.
 
@@ -62,6 +63,8 @@ A goal (type /goal and what to reach in the message box) keeps the agent working
 When Claude or Codex asks multiple-choice questions, a card takes the place of the message box. Besides answering, you can Skip a question, close the card with its X (the agent goes on without answers), or choose Reply in chat: the message box comes back, and the next message you send, text only, is your answer. The agent is told exactly which you did. Questions from other agents, such as a yes/no confirmation, still need an answer or Stop.
 
 When a thread is done it wraps up and moves to the Wrapped shelf at the bottom of the sidebar; {place:threads.whenDone} says when that happens on its own. An agent coming back later (a check-back) doesn't keep a thread out of Wrapped: the thread returns to the list when the agent does. Old threads can be archived for you: {place:archived.cleanup}.
+
+General Chats are chats with an agent that aren't tied to a project. By default they have their own page in the left bar, with a New chat button over the list. With {place:threads.generalChats} set to Section in Threads, that button leaves the left bar and the chats sit in a General chats section at the bottom of the thread list, under Wrapped: its header opens and closes it and has its own New chat button, and the Threads button counts what the chats need and are doing. Old General Chats links then open Threads with the section open. Each device keeps its own choice.
 
 When Threadlines quits, updates or crashes while an agent works on something the user asked for, the agent picks it back up when Threadlines starts again: the chat gets a message marked "Sent after a restart" telling the agent to check before repeating anything. A turn waiting on an approval or a question, or one another thread, a scheduled task or an outside agent started, stops with a note instead, as does a turn restarts cut off three times in five minutes. {place:threads.continueAfterRestart} turns this off.`,
   },

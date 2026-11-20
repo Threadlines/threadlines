@@ -20,6 +20,7 @@ import type {
   ClientSettingsPatch,
   ComputerLinkAccess,
   BrowserSearchEngine,
+  GeneralChatsPlacement,
   LinkOpenTarget,
   ModelSelection,
   NewWorktreeBaseFrom,
@@ -356,6 +357,12 @@ export const TIMESTAMP_FORMAT_LABELS: Readonly<Record<TimestampFormat, string>> 
   "24-hour": "24-hour",
 };
 
+/** "General chats", as its menu words each choice. */
+export const GENERAL_CHATS_PLACEMENT_LABELS: Readonly<Record<GeneralChatsPlacement, string>> = {
+  page: "Own page",
+  threads: "Section in Threads",
+};
+
 /** "Theme", as its menu words each choice. */
 export const THEME_LABELS = { system: "System", light: "Light", dark: "Dark" } as const;
 
@@ -532,7 +539,8 @@ const PAGES = [
     id: "generalChats",
     kind: "page",
     title: "General Chats",
-    about: "Chats with an agent that aren't tied to a project.",
+    about:
+      "Chats with an agent that aren't tied to a project. Their own page, or a section at the bottom of Threads, as Settings › Threads › General chats picks.",
     route: { to: "/chats" },
   },
   {
@@ -657,6 +665,14 @@ const SECTIONS = [
     parent: "settings.threads",
     title: "When a thread is done",
     about: "When threads wrap up on their own, and whether archive and delete ask first.",
+    scope: "device",
+  },
+  {
+    id: "threads.sidebar",
+    kind: "section",
+    parent: "settings.threads",
+    title: "Sidebar",
+    about: "How this device's thread list is laid out.",
     scope: "device",
   },
   // Archives
@@ -1719,6 +1735,24 @@ const ROWS = [
     title: "Confirm delete",
     about: "Ask before deleting a thread and its history.",
     scope: "device",
+  },
+  // Threads › Sidebar
+  {
+    id: "threads.generalChats",
+    kind: "row",
+    parent: "threads.sidebar",
+    title: "General chats",
+    about:
+      "Own page puts General Chats in the left bar. Section in Threads lists them at the bottom of the thread list instead.",
+    keywords: ["general chats", "chats", "rail", "left bar", "section", "shelf"],
+    scope: "device",
+    edit: {
+      lands: "device",
+      control: { kind: "choice", options: GENERAL_CHATS_PLACEMENT_LABELS },
+      leaves: ["generalChatsPlacement"],
+      read: (settings) => settings.generalChatsPlacement,
+      patch: (value) => ({ generalChatsPlacement: value as GeneralChatsPlacement }),
+    },
   },
   // Archives › Thread cleanup
   {

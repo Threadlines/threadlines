@@ -26,6 +26,7 @@ import { selectThreadTerminalState, useTerminalStateStore } from "../terminalSta
 import { buildThreadRouteParams } from "../threadRoutes";
 import { selectSidebarListShown, useUiStateStore } from "../uiStateStore";
 import ThreadSidebar from "./Sidebar";
+import { consumeSidebarListReveal } from "./chats/generalChatsPlacement";
 import { AppTitleBar } from "./sidebar/AppTitleBar";
 import { TitleBarSlotContext } from "./sidebar/titleBarSlot";
 import { destinationHasList } from "./sidebar/destinationLists";
@@ -299,14 +300,17 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
   const isMobile = useIsMobile();
   const panelRef = useRef<HTMLDivElement>(null);
   useSidebarListFloats(panelRef, isMobile);
-  // A floating list gets out of the way of whatever page opens next.
+  // A floating list gets out of the way of whatever page opens next, unless
+  // the change was asked to show it (the old General Chats address, opening
+  // the chats' section in Threads).
   const pathname = useLocation({ select: (location) => location.pathname });
   const shownPathname = useRef(pathname);
   useEffect(() => {
     if (shownPathname.current === pathname) return;
     shownPathname.current = pathname;
     const state = useUiStateStore.getState();
-    if (state.sidebarListFloats) state.setSidebarListShown(false);
+    if (consumeSidebarListReveal(pathname)) state.setSidebarListShown(true);
+    else if (state.sidebarListFloats) state.setSidebarListShown(false);
   }, [pathname]);
   usePageCrossFade(panelRef, selectedDestination);
   // Dialogs and other window-wide layers center over the page beside the list.
