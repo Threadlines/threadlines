@@ -141,6 +141,21 @@ describe("fetch", () => {
 });
 
 describe("socket", () => {
+  it("closes rather than holding message parts that never end", () => {
+    const fake = fakeChannelApi();
+    const socket = fake.transport.socket("/vendor/serve-emu/ws?device=emu-1");
+    const closed = vi.fn();
+    socket.addEventListener("close", closed);
+    fake.channels[0]!.emit({ _tag: "opened" });
+    const part = bytesToBase64(new Uint8Array(4 * 1024 * 1024));
+    for (let index = 0; index < 5; index++) {
+      fake.channels[0]!.emit({ _tag: "message", binary: true, final: false, data: part });
+    }
+    expect(socket.readyState).toBe(DEVICE_SOCKET_CLOSED);
+    expect(closed).toHaveBeenCalledWith(expect.objectContaining({ code: 1009 }));
+    expect(fake.channels[0]!.stopped).toBe(true);
+  });
+
   it("opens on `opened`, reassembles message parts, and credits after the handler ran", async () => {
     const fake = fakeChannelApi();
     const socket = fake.transport.socket("/vendor/serve-emu/ws?device=emu-1&frame-meta=1");

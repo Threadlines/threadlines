@@ -20,6 +20,15 @@ import * as Effect from "effect/Effect";
 
 import { DeviceService, type DeviceScreenshot } from "../device/DeviceService.ts";
 import type { McpInvocationScope } from "./McpSessionRegistry.ts";
+import { outsideDeviceDetail, type OutsideToolLimit } from "./outsideToolLimit.ts";
+
+/**
+ * Who called a device tool: the credential's scope, and the outside-work limit
+ * on its session, read afresh for every request (as the browser tools do).
+ */
+export type DeviceCaller = McpInvocationScope & {
+  readonly outsideLimit?: OutsideToolLimit | undefined;
+};
 
 const shellWord = (value: string) =>
   /^[a-zA-Z0-9_./:-]+$/.test(value) ? value : "'" + value.replaceAll("'", "'\"'\"'") + "'";
@@ -58,9 +67,15 @@ const NO_ACCESS =
   "Agents can't use devices on this computer right now. Ask the user to turn on Use devices and Agents can use devices in Settings → Devices; it applies to agent sessions started after that, such as in a new thread.";
 
 /** The caller may use the device tools: its credential has the grant and the settings still allow it. */
-const requireAccess = (caller: McpInvocationScope) =>
+const requireAccess = (caller: DeviceCaller) =>
   Effect.gen(function* () {
     if (!caller.device) return yield* new DeviceToolUnavailableError({ reason: NO_ACCESS });
+    // Work from an outside connection must not reach this machine's devices.
+    if (caller.outsideLimit !== undefined) {
+      return yield* new DeviceToolUnavailableError({
+        reason: outsideDeviceDetail(caller.outsideLimit),
+      });
+    }
     const state = yield* (yield* DeviceService).state;
     if (!state.enabled || !state.agentAccessEnabled) {
       return yield* new DeviceToolUnavailableError({ reason: NO_ACCESS });
@@ -127,7 +142,7 @@ export const pickDevice = (
 const toolError = (error: DeviceError | DeviceToolUnavailableError) => error;
 
 export const deviceList = (
-  caller: McpInvocationScope,
+  caller: DeviceCaller,
   input: { readonly refresh?: boolean | undefined },
 ) =>
   Effect.gen(function* () {
@@ -145,7 +160,7 @@ export const deviceList = (
     } satisfies DeviceToolListResult;
   }).pipe(Effect.mapError(toolError));
 
-export const deviceOpen = (caller: McpInvocationScope, input: DeviceToolOpenInput) =>
+export const deviceOpen = (caller: DeviceCaller, input: DeviceToolOpenInput) =>
   Effect.gen(function* () {
     yield* requireAccess(caller);
     const devices = yield* DeviceService;
@@ -183,7 +198,7 @@ const sessionFor = (threadId: ThreadId, deviceId: DeviceId | undefined) =>
   });
 
 export const deviceScreenshot = (
-  caller: McpInvocationScope,
+  caller: DeviceCaller,
   input: DeviceToolTargetInput,
 ): Effect.Effect<DeviceScreenshot, DeviceError | DeviceToolUnavailableError, DeviceService> =>
   Effect.gen(function* () {
@@ -192,7 +207,7 @@ export const deviceScreenshot = (
     return yield* (yield* DeviceService).screenshot(session.deviceId);
   }).pipe(Effect.mapError(toolError));
 
-export const deviceClose = (caller: McpInvocationScope, input: DeviceToolCloseInput) =>
+export const deviceClose = (caller: DeviceCaller, input: DeviceToolCloseInput) =>
   Effect.gen(function* () {
     yield* requireAccess(caller);
     const devices = yield* DeviceService;

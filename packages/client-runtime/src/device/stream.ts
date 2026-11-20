@@ -26,6 +26,7 @@ import {
   type DeviceHubSocket,
   type DeviceHubTransport,
 } from "./hubTransport.ts";
+import { DEVICE_MAX_FRAME_BYTES, DeviceFrameTooLargeError } from "./frameLimit.ts";
 import { MultipartJpegParser } from "./mjpeg.ts";
 import { extractPng } from "./png.ts";
 
@@ -197,6 +198,10 @@ export class AvccDemuxer {
   private length = 0;
 
   push(bytes: Uint8Array): AvccChunk[] {
+    // One frame at the limit plus the chunk that completes it; more is never a valid stream.
+    if (this.length + bytes.length > 2 * DEVICE_MAX_FRAME_BYTES) {
+      throw new DeviceFrameTooLargeError("video buffer", this.length + bytes.length);
+    }
     if (this.length + bytes.length > this.buffer.length) {
       let capacity = this.buffer.length;
       while (capacity < this.length + bytes.length) capacity *= 2;
@@ -212,6 +217,9 @@ export class AvccDemuxer {
     while (this.length - offset >= 4) {
       const view = new DataView(this.buffer.buffer, this.buffer.byteOffset + offset, 4);
       const frameLength = view.getUint32(0, false);
+      if (frameLength > DEVICE_MAX_FRAME_BYTES) {
+        throw new DeviceFrameTooLargeError("video frame", frameLength);
+      }
       if (this.length - offset - 4 < frameLength) break;
       if (frameLength >= 1) {
         const type = AVCC_TAGS[this.buffer[offset + 4]!];

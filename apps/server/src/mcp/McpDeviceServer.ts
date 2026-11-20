@@ -22,7 +22,14 @@ import { McpProtocol, McpSchema, McpServer, Tool } from "effect/ai";
 import { HttpRouter, HttpServerRequest, type HttpServerResponse } from "effect/http";
 
 import { DeviceService } from "../device/DeviceService.ts";
-import { deviceClose, deviceList, deviceOpen, deviceScreenshot } from "./deviceToolHandlers.ts";
+import {
+  type DeviceCaller,
+  deviceClose,
+  deviceList,
+  deviceOpen,
+  deviceScreenshot,
+} from "./deviceToolHandlers.ts";
+import { makeOutsideToolLimits } from "./outsideToolLimit.ts";
 import {
   DEVICE_CLOSE_TOOL_NAME,
   DEVICE_LIST_TOOL_NAME,
@@ -42,15 +49,16 @@ import {
   readBearerToken,
   unauthorizedMcpResponse,
 } from "./McpHttpServer.ts";
-import { type McpInvocationScope, mcpSessionRegistry } from "./McpSessionRegistry.ts";
+import { mcpSessionRegistry } from "./McpSessionRegistry.ts";
 
-/** Which runtime a device tool call came from: the full credential scope. */
-export class McpDeviceInvocation extends Context.Service<McpDeviceInvocation, McpInvocationScope>()(
+/** Which runtime a device tool call came from, with any outside-work limit on it. */
+export class McpDeviceInvocation extends Context.Service<McpDeviceInvocation, DeviceCaller>()(
   "@threadlines/server/mcp/McpDeviceInvocation",
 ) {}
 
-const authenticate = Effect.succeed(
-  Effect.fn("McpDeviceServer.authenticate")(function* (
+const authenticate = Effect.gen(function* () {
+  const limits = yield* makeOutsideToolLimits;
+  return Effect.fn("McpDeviceServer.authenticate")(function* (
     handler: Effect.Effect<
       HttpServerResponse.HttpServerResponse,
       Types.unhandled,
@@ -62,12 +70,17 @@ const authenticate = Effect.succeed(
     if (scope === null || !scope.device) {
       return unauthorizedMcpResponse;
     }
+    // Read on every request: outside work can arrive in a session that started without it.
+    const outsideLimit = yield* limits.forScope(scope);
     return yield* handler.pipe(
-      Effect.provideService(McpDeviceInvocation, scope),
+      Effect.provideService(McpDeviceInvocation, {
+        ...scope,
+        ...(outsideLimit !== null ? { outsideLimit } : {}),
+      }),
       Effect.map(normalizeMcpHttpResponse),
     );
-  }),
-);
+  });
+});
 
 const AuthenticationLive = HttpRouter.middleware<{
   provides: McpDeviceInvocation;
@@ -150,7 +163,7 @@ const registerDeviceTools = Effect.fn("McpDeviceServer.registerDeviceTools")(fun
   const handlers: Record<
     string,
     (
-      caller: McpInvocationScope,
+      caller: DeviceCaller,
       payload: unknown,
     ) => Effect.Effect<McpSchema.CallToolResult, never, DeviceService>
   > = {

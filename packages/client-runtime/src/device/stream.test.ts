@@ -6,6 +6,7 @@ import {
   type DeviceHubSocket,
   type DeviceHubTransport,
 } from "./hubTransport.ts";
+import { DEVICE_MAX_FRAME_BYTES, DeviceFrameTooLargeError } from "./frameLimit.ts";
 import { MultipartJpegParser } from "./mjpeg.ts";
 import {
   AvccDemuxer,
@@ -93,6 +94,13 @@ describe("AvccDemuxer", () => {
     expect(avcCodecString(chunks[0]!.payload)).toBe("avc1.64001f");
     expect(chunks[1]!.payload).toEqual(new Uint8Array([9]));
   });
+
+  it("refuses a frame declared larger than the viewer accepts instead of buffering it", () => {
+    const demuxer = new AvccDemuxer();
+    const header = new Uint8Array(4);
+    new DataView(header.buffer).setUint32(0, DEVICE_MAX_FRAME_BYTES + 1);
+    expect(() => demuxer.push(header)).toThrow(DeviceFrameTooLargeError);
+  });
 });
 
 describe("parseSemuPacket", () => {
@@ -128,6 +136,14 @@ describe("MultipartJpegParser", () => {
     const parser = new MultipartJpegParser();
     const frames = [...parser.push(stream.subarray(0, 30)), ...parser.push(stream.subarray(30))];
     expect(frames).toEqual([jpeg(1), jpeg(2)]);
+  });
+
+  it("refuses a part whose Content-Length is past the limit", () => {
+    const parser = new MultipartJpegParser();
+    const head = new TextEncoder().encode(
+      `--frame\r\nContent-Length: ${DEVICE_MAX_FRAME_BYTES + 1}\r\n\r\n`,
+    );
+    expect(() => parser.push(head)).toThrow(DeviceFrameTooLargeError);
   });
 });
 

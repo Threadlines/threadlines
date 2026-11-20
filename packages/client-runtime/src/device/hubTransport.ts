@@ -22,6 +22,7 @@ import type {
 } from "@threadlines/contracts";
 
 import { base64ToBytes, bytesToBase64 } from "./base64.ts";
+import { DEVICE_MAX_FRAME_BYTES, DeviceFrameTooLargeError } from "./frameLimit.ts";
 
 /** The three device channel RPCs, as the environment API exposes them. */
 export interface DeviceChannelApi {
@@ -442,6 +443,14 @@ export function createDeviceHubTransport(
               } else {
                 textParts.push(event.data);
                 partBytes += textEncoder.encode(event.data).byteLength;
+              }
+              if (partBytes > DEVICE_MAX_FRAME_BYTES) {
+                // Parts that never end are a broken or hostile hub; stop holding them.
+                const error = new DeviceFrameTooLargeError("message", partBytes);
+                binaryParts = [];
+                textParts = [];
+                closeWith({ code: 1009, reason: error.message, wasClean: false }, error);
+                return;
               }
               if (!event.final) return;
               const data = event.binary ? joinParts(binaryParts) : textParts.join("");

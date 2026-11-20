@@ -4,6 +4,8 @@
  * decode H.264. A part's `Content-Length` says where it ends; a part without
  * one ends at the JPEG end-of-image marker.
  */
+import { DEVICE_MAX_FRAME_BYTES, DeviceFrameTooLargeError } from "./frameLimit.ts";
+
 const HEADER_END = [13, 10, 13, 10];
 const MAX_HEADER_BYTES = 8 * 1024;
 const latin1 = new TextDecoder("latin1");
@@ -25,6 +27,10 @@ export class MultipartJpegParser {
   private expected: number | null | undefined = undefined;
 
   push(bytes: Uint8Array): Uint8Array[] {
+    // A part at the limit plus the chunk that completes it; more is never a valid stream.
+    if (this.length + bytes.length > 2 * DEVICE_MAX_FRAME_BYTES) {
+      throw new DeviceFrameTooLargeError("still frame", this.length + bytes.length);
+    }
     if (this.length + bytes.length > this.buffer.length) {
       let capacity = this.buffer.length;
       while (capacity < this.length + bytes.length) capacity *= 2;
@@ -49,6 +55,9 @@ export class MultipartJpegParser {
         const headers = latin1.decode(view.subarray(offset, end));
         const length = /content-length:\s*(\d+)/i.exec(headers)?.[1];
         this.expected = length === undefined ? null : Number(length);
+        if (this.expected !== null && this.expected > DEVICE_MAX_FRAME_BYTES) {
+          throw new DeviceFrameTooLargeError("still frame", this.expected);
+        }
         offset = end + HEADER_END.length;
         continue;
       }

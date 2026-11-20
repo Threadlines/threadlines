@@ -51,6 +51,9 @@ export const outsideLimitDetail = (limit: OutsideToolLimit) =>
 export const outsideBrowserDetail = (limit: OutsideToolLimit) =>
   `The browser panel is off for this agent while ${namesText(limit.names)}'s work limits its session. It's back once the agent starts fresh.`;
 
+export const outsideDeviceDetail = (limit: OutsideToolLimit) =>
+  `Devices are off for this agent while ${namesText(limit.names)}'s work limits its session. They're back once the agent starts fresh.`;
+
 /** Whether a read of `projectId` stays inside the limit. */
 export const limitReaches = (limit: OutsideToolLimit, projectId: ProjectId) =>
   limit.projectIds === null || limit.projectIds.has(projectId);
