@@ -20,6 +20,12 @@ export function observeDeviceStreamInput(
       onInput({ type: "touch", phase, x, y });
       client.sendTouch(phase, x, y);
     },
+    // iPhone Duo touches go to the display's own framebuffer, which is also
+    // what its accessibility tree measures, so they are heard the same way.
+    sendRawTouch: (phase, x, y) => {
+      onInput({ type: "touch", phase, x, y });
+      client.sendRawTouch(phase, x, y);
+    },
     sendKey: (event, phase) => {
       if (phase === "down") {
         onInput(

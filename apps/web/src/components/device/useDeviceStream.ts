@@ -72,8 +72,11 @@ export interface DeviceStream {
   readonly reconnect: () => void;
   /** Hears the input this view sends to the device (a recording listens here). */
   readonly observeInput: (listener: (input: DeviceInput) => void) => () => void;
-  /** Hears each frame drawn on the canvas (a recording copies it). */
-  readonly observeFrames: (listener: () => void) => () => void;
+  /**
+   * Hears each frame drawn, with the canvas it went to: the stream canvas, or
+   * an iPhone Duo display's own (a recording copies it).
+   */
+  readonly observeFrames: (listener: (drawn: HTMLCanvasElement) => void) => () => void;
 }
 
 export function createDeviceStream(input: {
@@ -84,9 +87,13 @@ export function createDeviceStream(input: {
 }): DeviceStream {
   const canvas = streamCanvas();
   const panelCanvases = { cover: streamCanvas(), inner: streamCanvas() };
+  const frameListeners = new Set<(drawn: HTMLCanvasElement) => void>();
+  const notifyFrame = (drawn: HTMLCanvasElement) => () => {
+    for (const listener of frameListeners) listener(drawn);
+  };
   const panelSinks = {
-    cover: createCanvasFrameSink(panelCanvases.cover),
-    inner: createCanvasFrameSink(panelCanvases.inner),
+    cover: createCanvasFrameSink(panelCanvases.cover, notifyFrame(panelCanvases.cover)),
+    inner: createCanvasFrameSink(panelCanvases.inner, notifyFrame(panelCanvases.inner)),
   };
   const transport =
     input.transport ?? createDeviceHubTransport(deviceChannelApi(input.environmentId));
@@ -97,12 +104,9 @@ export function createDeviceStream(input: {
     for (const listener of listeners) listener();
   };
   const inputListeners = new Set<(input: DeviceInput) => void>();
-  const frameListeners = new Set<() => void>();
   const sentClient = createDeviceStreamClient(
     { platform: input.platform, deviceId: input.deviceId, transport },
-    createCanvasFrameSink(canvas, () => {
-      for (const listener of frameListeners) listener();
-    }),
+    createCanvasFrameSink(canvas, notifyFrame(canvas)),
     {
       onStatus: (status, detail) => update({ status, detail }),
       onScreen: (screen) => update({ screen }),
