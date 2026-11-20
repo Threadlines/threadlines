@@ -213,7 +213,9 @@ export const make = Effect.gen(function* () {
     session;
 
   const initialSummary = yield* host.summary;
-  const statePubSub = yield* PubSub.unbounded<DeviceServiceState>();
+  // Every state is a whole snapshot, so a subscriber that stops reading needs
+  // only the newest: older ones slide out instead of piling up in memory.
+  const statePubSub = yield* PubSub.sliding<DeviceServiceState>(2);
   const stateRef = yield* SynchronizedRef.make<DeviceServiceState>({
     enabled: initialSettings.enabled,
     agentAccessEnabled: initialSettings.agentAccessEnabled,
@@ -384,11 +386,23 @@ process.exitCode = result.error ? 1 : (result.status ?? 1);`,
   });
 
   /** Records the claim, then publishes the session: a claim is on disk before anyone sees it open. */
-  const recordSession = (session: DeviceSession) =>
+  /**
+   * How many times each thread has been released (archived, moved, deleted).
+   * An open notes the count when it starts and records nothing if it changed,
+   * so a thread put away while its device was still booting keeps no claim.
+   */
+  const releaseCounts = new Map<ThreadId, number>();
+
+  const recordSession = (session: DeviceSession, releasesAtStart: number) =>
     Effect.gen(function* () {
       if (!(yield* readDeviceSettings).enabled) {
         return yield* new DeviceHostUnavailableError({
           reason: "Devices were turned off while the device was opening.",
+        });
+      }
+      if ((releaseCounts.get(session.threadId) ?? 0) !== releasesAtStart) {
+        return yield* new DeviceHostUnavailableError({
+          reason: "The thread was put away while the device was opening.",
         });
       }
       const agentSession = agentDeviceSession(session.threadId, session.deviceId);
@@ -405,6 +419,7 @@ process.exitCode = result.error ? 1 : (result.status ?? 1);`,
 
   const open: DeviceServiceShape["open"] = (input, openedBy = "user") =>
     Effect.gen(function* () {
+      const releasesAtStart = releaseCounts.get(input.threadId) ?? 0;
       yield* ensurePlatform(input.platform);
       const ready = yield* readiness;
       let state = yield* refresh(ready);
@@ -451,7 +466,7 @@ process.exitCode = result.error ? 1 : (result.status ?? 1);`,
         bootedByThreadlines: bootedNow || earlier !== undefined,
         openedBy,
       };
-      yield* recordSession(session);
+      yield* recordSession(session, releasesAtStart);
       return session;
     }).pipe(Effect.withSpan("DeviceService.open"));
 
@@ -471,15 +486,20 @@ process.exitCode = result.error ? 1 : (result.status ?? 1);`,
    * agent opened and frees the device for others), then the claims, then the
    * state and launchers.
    */
-  const endSessions = (ending: ReadonlyArray<DeviceSession>) =>
+  const endSessions = (requested: ReadonlyArray<DeviceSession>) =>
     Effect.gen(function* () {
+      let ending = requested;
       if (ending.length === 0) return;
-      yield* Effect.forEach(
+      const released = yield* Effect.forEach(
         ending,
         (session) =>
           host.releaseAgentSession(agentDeviceSession(session.threadId, session.deviceId)),
-        { concurrency: 4, discard: true },
+        { concurrency: 4 },
       );
+      // A session whose close the daemon did not confirm stays claimed and open,
+      // so closing again (or the next startup's sweep) retries it.
+      ending = ending.filter((_, index) => released[index]);
+      if (ending.length === 0) return;
       for (const session of ending) {
         claims.delete(agentDeviceSession(session.threadId, session.deviceId));
       }
@@ -658,7 +678,8 @@ process.exitCode = result.error ? 1 : (result.status ?? 1);`,
     );
 
   const releaseThread: DeviceServiceShape["releaseThread"] = (threadId) =>
-    sessionsForThread(threadId).pipe(
+    Effect.sync(() => releaseCounts.set(threadId, (releaseCounts.get(threadId) ?? 0) + 1)).pipe(
+      Effect.andThen(sessionsForThread(threadId)),
       Effect.flatMap((sessions) => lifecycleLock.withPermit(endSessions(sessions))),
       Effect.catchCause((cause) =>
         Effect.logWarning("Could not release a thread's devices", { threadId, cause }),
@@ -700,16 +721,6 @@ process.exitCode = result.error ? 1 : (result.status ?? 1);`,
       ) {
         return;
       }
-      if (!next.enabled) {
-        yield* lifecycleLock.withPermit(
-          Effect.gen(function* () {
-            yield* endSessions(previous.sessions);
-            yield* host.stop;
-          }),
-        );
-      } else if (!next.agentAccessEnabled && previous.agentAccessEnabled) {
-        yield* host.stopAgent;
-      }
       yield* publish((state) => {
         const { hostStatusDetail: _detail, ...rest } = state;
         return {
@@ -729,6 +740,19 @@ process.exitCode = result.error ? 1 : (result.status ?? 1);`,
           bootingDevices: next.enabled ? state.bootingDevices : [],
         };
       });
+      // Published first, then stopped: the agent tools check this state on every
+      // call, so they refuse from the moment the switch turns off, not after the
+      // daemon or hub has finished stopping.
+      if (!next.enabled) {
+        yield* lifecycleLock.withPermit(
+          Effect.gen(function* () {
+            yield* endSessions(previous.sessions);
+            yield* host.stop;
+          }),
+        );
+      } else if (!next.agentAccessEnabled && previous.agentAccessEnabled) {
+        yield* host.stopAgent;
+      }
       // Agent access turned on: fetch agent-device now, in the background, so the
       // first device_open is quick. Nothing starts until an agent asks.
       if (next.enabled && next.agentAccessEnabled && !previous.agentAccessEnabled) {

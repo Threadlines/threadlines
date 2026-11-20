@@ -140,9 +140,12 @@ export class DeviceHost extends Context.Service<
     /**
      * Ends an agent-device session on whatever daemon runs for this state
      * folder, this server's or one an earlier run left. Never starts one.
-     * Best effort: a daemon that is gone took its sessions with it.
+     * True when the session is gone (closed now, already released, or no
+     * daemon runs: a daemon that is gone took its sessions with it); false when
+     * a live daemon did not confirm the close, so the caller keeps its claim
+     * and can try again.
      */
-    readonly releaseAgentSession: (session: string) => Effect.Effect<void>;
+    readonly releaseAgentSession: (session: string) => Effect.Effect<boolean>;
     /** Stops the agent-device daemon through its own CLI. */
     readonly stopAgent: Effect.Effect<void>;
     /** Stops the hub and the daemon. Simulators and emulators keep running; the user owns those. */

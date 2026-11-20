@@ -168,6 +168,23 @@ describe("createDeviceStreamClient", () => {
       type: "down",
       usage: 0x04,
     });
+
+    // Text from a phone's on-screen keyboard becomes key presses, with shift where needed.
+    input.sent.length = 0;
+    client.sendText("A!é");
+    const strokes = (input.sent as Array<Uint8Array>).map((sent) =>
+      JSON.parse(new TextDecoder().decode(sent.subarray(1))),
+    );
+    expect(strokes).toEqual([
+      { type: "down", usage: 0xe1 },
+      { type: "down", usage: 0x04 },
+      { type: "up", usage: 0x04 },
+      { type: "up", usage: 0xe1 },
+      { type: "down", usage: 0xe1 },
+      { type: "down", usage: 0x1e },
+      { type: "up", usage: 0x1e },
+      { type: "up", usage: 0xe1 },
+    ]);
     client.stop();
   });
 

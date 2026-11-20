@@ -31,7 +31,10 @@ const SIMULATOR_LIST_FAILED =
 const AVDMANAGER_LIST_FAILED = "[android-utils] Failed to run `avdmanager list avd`";
 const GETPROP_LINE = /^\[([^\]]+)\]: \[(.*)\]$/;
 const runsOnXcode26Runtime = (version: string) => Number(/^iOS (\d+)/.exec(version)?.[1]) <= 26;
-const DEFAULT_DISPLAY_SCREENSHOT = `f=$(mktemp -t threadlines-screenshot) || exit 1
+// simctl needs a real file (it writes "-" or /dev/stdout as a file of that
+// name), so the PNG passes through one in Threadlines' own state folder ($2),
+// removed on exit, never the user's temp folder.
+const DEFAULT_DISPLAY_SCREENSHOT = `mkdir -p "$2" && f=$(mktemp "$2/screenshot.XXXXXX") || exit 1
 trap 'rm -f "$f"' 0
 xcrun simctl io "$1" screenshot --type=png "$f" >/dev/null && base64 -i "$f"`;
 
@@ -110,6 +113,8 @@ export const makeDeviceHubOperations = (options: {
   readonly run: DeviceHostReady["run"];
   /** Android gates listing AVDs, which the hub does not report until they boot. */
   readonly platformAvailable: (platform: DevicePlatform) => Effect.Effect<boolean>;
+  /** A folder in the server's state dir for files a command must write (screenshots). */
+  readonly scratchDir: string;
 }): DeviceOperations => {
   const { origin, run } = options;
   const httpClient = options.http.pipe(
@@ -394,10 +399,14 @@ export const makeDeviceHubOperations = (options: {
 
   const defaultDisplayScreenshot = Effect.fn("DeviceHubOperations.defaultDisplayScreenshot")(
     function* (udid: string) {
-      const capture = yield* run("sh", ["-c", DEFAULT_DISPLAY_SCREENSHOT, "sh", udid], {
-        timeoutMs: Duration.toMillis(SCREENSHOT_TIMEOUT),
-        maxOutputBytes: 64 * 1024 * 1024,
-      });
+      const capture = yield* run(
+        "sh",
+        ["-c", DEFAULT_DISPLAY_SCREENSHOT, "sh", udid, options.scratchDir],
+        {
+          timeoutMs: Duration.toMillis(SCREENSHOT_TIMEOUT),
+          maxOutputBytes: 64 * 1024 * 1024,
+        },
+      );
       if (capture.code !== 0) {
         return yield* new DeviceOperationError({
           operation: "screenshot",

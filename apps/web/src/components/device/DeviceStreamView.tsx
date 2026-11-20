@@ -15,7 +15,7 @@ const FRAME_INSET = BEZEL + 1;
 /**
  * The device's screen in a flat rounded frame sized to its aspect. Pointer
  * input becomes touches, keys go to the device while the screen has focus,
- * and paste types the clipboard (Android). The frame keeps the last picture
+ * and paste types the clipboard. The frame keeps the last picture
  * while a dropped stream reconnects.
  */
 export function DeviceStreamView(props: {

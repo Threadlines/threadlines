@@ -297,7 +297,12 @@ export const bindAgentDeviceLauncher = Effect.fn("AgentDeviceShim.bind")(functio
   });
 });
 
-/** Removes every launcher whose `<thread>/<device>` key is not in `live`. Best effort. */
+/**
+ * Removes every launcher whose `<thread>/<device>` key is not in `live`. Best
+ * effort. A thread entry that is not a real directory (a symlink planted in
+ * the state dir) is removed as itself and never followed, so pruning cannot
+ * reach outside `device/bin`.
+ */
 export const pruneAgentDeviceLaunchers = Effect.fn("AgentDeviceShim.prune")(function* (input: {
   readonly stateDir: string;
   readonly live: ReadonlySet<string>;
@@ -308,6 +313,12 @@ export const pruneAgentDeviceLaunchers = Effect.fn("AgentDeviceShim.prune")(func
   const threads = yield* fs.readDirectory(root).pipe(Effect.orElseSucceed(() => []));
   for (const thread of threads) {
     const threadDir = path.join(root, thread);
+    const info = yield* fs.lstat(threadDir).pipe(Effect.option);
+    if (info._tag === "None") continue;
+    if (info.value.type !== "Directory") {
+      yield* fs.remove(threadDir, { force: true }).pipe(Effect.ignore);
+      continue;
+    }
     const devices = yield* fs.readDirectory(threadDir).pipe(Effect.orElseSucceed(() => []));
     const stale = devices.filter((device) => !input.live.has(`${thread}/${device}`));
     yield* Effect.forEach(

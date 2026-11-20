@@ -1,7 +1,9 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import { type DeviceSummary, ThreadId } from "@threadlines/contracts";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
@@ -16,8 +18,14 @@ import * as DeviceService from "./DeviceService.ts";
 const threadId = ThreadId.make("thread-devices");
 const unused = Effect.die("not used in this test");
 
-/** A host whose one simulator boots when asked, recording the agent sessions it ends. */
-const fakeHost = (released: Array<string>) => {
+/**
+ * A host whose one simulator boots when asked, recording the agent sessions it
+ * ends. With `bootGate`, booting signals `started` and waits for the gate.
+ */
+const fakeHost = (
+  released: Array<string>,
+  bootGate?: { readonly started: Deferred.Deferred<void>; readonly gate: Deferred.Deferred<void> },
+) => {
   const device: { current: DeviceSummary } = {
     current: {
       id: "SIM-1",
@@ -38,7 +46,11 @@ const fakeHost = (released: Array<string>) => {
         incompletePlatforms: [],
       })),
       boot: (target) =>
-        Effect.sync(() => {
+        Effect.gen(function* () {
+          if (bootGate) {
+            yield* Deferred.succeed(bootGate.started, undefined);
+            yield* Deferred.await(bootGate.gate);
+          }
           device.current = { ...device.current, booted: true };
           return target.id;
         }),
@@ -60,7 +72,7 @@ const fakeHost = (released: Array<string>) => {
     platformAvailability: (platform) => Effect.succeed({ platform, available: true }),
     ensureReady: () => Effect.succeed(ready),
     current: Effect.succeed(ready),
-    releaseAgentSession: (session) => Effect.sync(() => void released.push(session)),
+    releaseAgentSession: (session) => Effect.sync(() => released.push(session) > 0),
     stop: Effect.void,
     stopAgent: Effect.void,
   });
@@ -110,6 +122,43 @@ describe("DeviceService claims", () => {
       ).pipe(Effect.provide(layer));
       expect(released).toEqual([agentDeviceSession(threadId, "SIM-1")]);
       expect(yield* fs.readFileString(claimsPath)).not.toContain("SIM-1");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+});
+
+describe("DeviceService release during an open", () => {
+  it.live("a thread put away while its device boots keeps no claim", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const base = yield* fs.makeTempDirectoryScoped({ prefix: "tl-device-release-" });
+      const bootGate = {
+        started: yield* Deferred.make<void>(),
+        gate: yield* Deferred.make<void>(),
+      };
+      const layer = Layer.mergeAll(
+        fakeHost([], bootGate),
+        settingsLayer,
+        ServerConfig.layerTest(process.cwd(), base),
+      );
+      const claimsPath = path.join(base, "userdata", "device", "claims.json");
+
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const service = yield* DeviceService.make;
+          const opening = yield* service
+            .open({ threadId, deviceId: "SIM-1", platform: "ios" }, "agent")
+            .pipe(Effect.forkScoped);
+          yield* Deferred.await(bootGate.started);
+          yield* service.releaseThread(threadId);
+          yield* Deferred.succeed(bootGate.gate, undefined);
+          const result = yield* Fiber.join(opening).pipe(Effect.flip);
+          expect(result._tag).toBe("DeviceHostUnavailableError");
+          expect((yield* service.state).sessions).toEqual([]);
+        }),
+      ).pipe(Effect.provide(layer));
+      const claims = yield* fs.readFileString(claimsPath).pipe(Effect.orElseSucceed(() => ""));
+      expect(claims).not.toContain("SIM-1");
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 });

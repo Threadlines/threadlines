@@ -9,6 +9,7 @@ import * as Net from "node:net";
 import { tmpdir } from "node:os";
 import * as Path from "node:path";
 
+import { setOwnDeviceToolPort } from "./deviceToolPorts.ts";
 import { loopbackAddresses, makePreviewTunnel } from "./PreviewTunnel.ts";
 
 const sessionId = "session-a";
@@ -297,6 +298,31 @@ describe("PreviewTunnel", () => {
           assert.strictEqual((yield* next)._tag, "opened");
         }),
       ),
+  );
+
+  it.live("refuses the ports this server's own device tools hold, where no scan finds them", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        // A plain listener: nothing about its process marks it as a device tool.
+        const { port } = yield* listen(() => {});
+        const tunnels = yield* makePreviewTunnel({ ownPort: -1 });
+        setOwnDeviceToolPort("hub", port);
+        yield* Effect.addFinalizer(() => Effect.sync(() => setOwnDeviceToolPort("hub", null)));
+        const refused = yield* tunnels
+          .open(sessionId, { tunnelId: "own-hub", host: "localhost", port })
+          .pipe(Effect.flip);
+        assert.strictEqual(
+          refused.detail,
+          "That port belongs to device support and can't be previewed.",
+        );
+        // A replaced hub stopping late does not forget its successor's port.
+        setOwnDeviceToolPort("hub", null, port + 1);
+        const still = yield* tunnels
+          .open(sessionId, { tunnelId: "own-hub-2", host: "localhost", port })
+          .pipe(Effect.flip);
+        assert.strictEqual(still.reason, "notLoopback");
+      }),
+    ),
   );
 
   it.live("says plainly when nothing is listening", () =>

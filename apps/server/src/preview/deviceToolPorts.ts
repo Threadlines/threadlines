@@ -125,8 +125,35 @@ function freshScans<A>(scan: () => Promise<A>): () => Promise<A> {
 }
 
 /**
- * The ports device tools listen on right now, from a scan begun after the
- * call. Never cached: a port that was a dev server's a moment ago may be the
- * hub's now. Null when that can't be known, which callers treat as a refusal.
+ * Ports this process's own device tools listen on, by tool, as the device host
+ * starts and stops them. Refused on every platform, including where the scan
+ * above cannot run (Windows, a machine without `pgrep`).
  */
-export const currentDeviceToolPorts = freshScans(scanDeviceToolPorts);
+const ownToolPorts = new Map<string, number>();
+
+/**
+ * The device host records the port one of its tools listens on, or with null
+ * forgets it. `onlyIf` forgets only while that port is still the recorded one,
+ * so a replaced hub stopping after its successor started leaves the new port.
+ */
+export function setOwnDeviceToolPort(
+  tool: "hub" | "agent",
+  port: number | null,
+  onlyIf?: number,
+): void {
+  if (port !== null) ownToolPorts.set(tool, port);
+  else if (onlyIf === undefined || ownToolPorts.get(tool) === onlyIf) ownToolPorts.delete(tool);
+}
+
+const scanOnce = freshScans(scanDeviceToolPorts);
+
+/**
+ * The ports device tools listen on right now: this server's own, plus a scan
+ * begun after the call. Never cached: a port that was a dev server's a moment
+ * ago may be the hub's now. Null when the scan can't tell, which callers treat
+ * as a refusal.
+ */
+export const currentDeviceToolPorts = async (): Promise<ReadonlySet<number> | null> => {
+  const scanned = await scanOnce();
+  return scanned === null ? null : new Set([...scanned, ...ownToolPorts.values()]);
+};

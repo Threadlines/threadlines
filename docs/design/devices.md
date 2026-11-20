@@ -262,6 +262,33 @@ Both get app guide places (`devices.enable`, `devices.agentAccess`, on the
 propose turning on "Use devices" through `settings_change` but agent access is
 user-only (`widensAgents`).
 
+### Settled by the live test and the diff review
+
+- The hub's device list leaves out simulators never booted; serve-sim's grid
+  inventory adds them (T3's fix, pingdotgg/t3code#28915).
+- iOS's app in front comes from the device's serve-sim helper
+  (`/helper/<udid>/foreground`), asked every two seconds while Tools is open;
+  `simctl` cannot report it and serve-sim's `/appstate` stream refuses a
+  device it has not been told to watch.
+- The preview tunnel also refuses the ports this server's own hub and daemon
+  hold, recorded as the host starts and stops them, so the refusal holds on
+  Windows and without `pgrep`, where the process scan cannot run.
+- `device_open` never picks a physical phone by default; an agent gets one only
+  by naming its id.
+- A session whose close the daemon did not confirm stays claimed and open, so
+  a second close or the next startup sweep retries it. An open that finishes
+  after its thread was put away records nothing (a release count per thread).
+- Turning a switch off publishes the new state before stopping anything, so
+  the agent tools refuse from that moment.
+- The state stream slides: a subscriber that stops reading keeps only the
+  newest two snapshots.
+- The iOS screenshot fallback writes through a temp file in
+  `<stateDir>/device/tmp` (simctl writes `-` and `/dev/stdout` as files of that
+  name), never the user's temp folder.
+- Touch screens get a Keyboard button: it focuses a hidden field whose typing
+  goes to the device. iOS takes keys, so text becomes US-layout key presses;
+  characters no key types are skipped.
+
 ## Contracts
 
 `packages/contracts/src/device.ts`: T3's device schemas without host configs

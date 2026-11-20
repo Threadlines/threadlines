@@ -58,6 +58,7 @@ describe("DeviceHubOperations list", () => {
         http: yield* HttpClient.HttpClient,
         run: () => Effect.succeed({ code: 0, stdout: "", stderr: "" }),
         platformAvailable: (platform) => Effect.succeed(platform === "ios"),
+        scratchDir: "/nonexistent",
       });
 
       const listed = yield* operations.list;

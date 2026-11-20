@@ -333,7 +333,10 @@ export const make = Effect.gen(function* () {
       socket.terminate();
     };
     socket.on("error", (error) => fail(failure("broken", error.message)));
-    yield* register(connectionId, input.channelId, channel, () => socket.terminate());
+    // A refused open (a duplicate id, or the connection's limit) must not leave the socket up.
+    yield* register(connectionId, input.channelId, channel, () => socket.terminate()).pipe(
+      Effect.onError(() => Effect.sync(() => socket.terminate())),
+    );
 
     socket.on("message", (data: Buffer | ArrayBuffer | Array<Buffer>, isBinary: boolean) => {
       const bytes = Array.isArray(data) ? Buffer.concat(data) : Buffer.from(data as Buffer);

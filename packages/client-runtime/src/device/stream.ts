@@ -235,7 +235,10 @@ export interface DeviceStreamClient {
   /** Normalized 0..1 coordinates in the displayed frame. */
   readonly sendTouch: (phase: "begin" | "move" | "end", x: number, y: number) => void;
   readonly sendKey: (event: KeyboardEvent, phase: "down" | "up") => void;
-  /** Android only: iOS input is HID key codes, which cannot carry arbitrary text. */
+  /**
+   * Types text. Android takes it as text; iOS input is HID key codes, so each
+   * character a US keyboard has becomes key presses and the rest are skipped.
+   */
   readonly sendText: (text: string) => void;
   readonly pressButton: (button: DeviceHardwareButton) => void;
   /** iOS only; Android rotates through the Tools drawer. */
@@ -296,6 +299,65 @@ function hidUsageForCode(code: string): number | null {
   if (/^Digit[1-9]$/.test(code)) return 0x1e + (code.charCodeAt(5) - 49);
   if (code === "Digit0") return 0x27;
   return HID_USAGE_BY_CODE[code] ?? null;
+}
+
+/** US-layout punctuation: the key's code, and whether it needs shift. */
+const US_PUNCTUATION: Readonly<Record<string, readonly [string, boolean]>> = {
+  " ": ["Space", false],
+  "\n": ["Enter", false],
+  "\t": ["Tab", false],
+  "-": ["Minus", false],
+  _: ["Minus", true],
+  "=": ["Equal", false],
+  "+": ["Equal", true],
+  "[": ["BracketLeft", false],
+  "{": ["BracketLeft", true],
+  "]": ["BracketRight", false],
+  "}": ["BracketRight", true],
+  "\\": ["Backslash", false],
+  "|": ["Backslash", true],
+  ";": ["Semicolon", false],
+  ":": ["Semicolon", true],
+  "'": ["Quote", false],
+  '"': ["Quote", true],
+  "`": ["Backquote", false],
+  "~": ["Backquote", true],
+  ",": ["Comma", false],
+  "<": ["Comma", true],
+  ".": ["Period", false],
+  ">": ["Period", true],
+  "/": ["Slash", false],
+  "?": ["Slash", true],
+  "!": ["Digit1", true],
+  "@": ["Digit2", true],
+  "#": ["Digit3", true],
+  $: ["Digit4", true],
+  "%": ["Digit5", true],
+  "^": ["Digit6", true],
+  "&": ["Digit7", true],
+  "*": ["Digit8", true],
+  "(": ["Digit9", true],
+  ")": ["Digit0", true],
+};
+
+/**
+ * The key presses that type `character` on a US keyboard, as HID usages and
+ * shift, or null for a character no key types (the iOS input socket takes
+ * keys, not text).
+ */
+export function iosKeystrokeForCharacter(
+  character: string,
+): { readonly usage: number; readonly shift: boolean } | null {
+  if (/^[a-z]$/.test(character)) {
+    return { usage: hidUsageForCode(`Key${character.toUpperCase()}`)!, shift: false };
+  }
+  if (/^[A-Z]$/.test(character)) return { usage: hidUsageForCode(`Key${character}`)!, shift: true };
+  if (/^[0-9]$/.test(character))
+    return { usage: hidUsageForCode(`Digit${character}`)!, shift: false };
+  const punctuation = US_PUNCTUATION[character];
+  if (!punctuation) return null;
+  const usage = hidUsageForCode(punctuation[0]);
+  return usage === null ? null : { usage, shift: punctuation[1] };
 }
 
 const ANDROID_KEYCODE_BY_KEY: Readonly<Record<string, number>> = {
@@ -975,7 +1037,19 @@ export function createDeviceStreamClient(
       }
     },
     sendText: (text) => {
-      if (ios) return;
+      if (ios) {
+        // Typed as key presses: a phone's on-screen keyboard gives text, not keys.
+        const shift = HID_USAGE_BY_CODE.ShiftLeft!;
+        for (const character of text) {
+          const stroke = iosKeystrokeForCharacter(character);
+          if (!stroke) continue;
+          if (stroke.shift) send(taggedJson(IOS_MSG_KEY, { type: "down", usage: shift }));
+          send(taggedJson(IOS_MSG_KEY, { type: "down", usage: stroke.usage }));
+          send(taggedJson(IOS_MSG_KEY, { type: "up", usage: stroke.usage }));
+          if (stroke.shift) send(taggedJson(IOS_MSG_KEY, { type: "up", usage: shift }));
+        }
+        return;
+      }
       let chunk = "";
       let chunkBytes = 0;
       let sentChunks = 0;

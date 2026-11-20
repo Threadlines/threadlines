@@ -6,6 +6,7 @@ import {
   ChevronLeftIcon,
   EllipsisIcon,
   HomeIcon,
+  KeyboardIcon,
   Layers2Icon,
   PowerIcon,
   RotateCwIcon,
@@ -16,6 +17,7 @@ import {
 } from "lucide-react";
 import { type ReactNode, useRef, useState } from "react";
 
+import { useMediaQuery } from "~/hooks/useMediaQuery";
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
@@ -57,6 +59,10 @@ export function DeviceWorkspace(props: {
   const capturing = useRef(false);
 
   const inputReady = state.input.connected;
+  // A touch screen has no hardware keys to send: the Keyboard button raises the
+  // on-screen keyboard over a hidden field whose typing goes to the device.
+  const touchScreen = useMediaQuery({ pointer: "coarse" });
+  const keyboardField = useRef<HTMLTextAreaElement>(null);
   const press = (button: "home" | "back" | "recents" | "appSwitcher") =>
     stream.client.pressButton(button);
   const saveScreenshot = () => {
@@ -151,6 +157,15 @@ export function DeviceWorkspace(props: {
             </MenuPopup>
           </Menu>
         )}
+        {touchScreen ? (
+          <ToolbarButton
+            label="Keyboard"
+            disabled={!inputReady}
+            onClick={() => keyboardField.current?.focus()}
+          >
+            <KeyboardIcon />
+          </ToolbarButton>
+        ) : null}
         <ToolbarButton
           label={screenshotPending ? "Saving screenshot…" : "Save screenshot"}
           disabled={state.status !== "streaming" || screenshotPending}
@@ -196,6 +211,30 @@ export function DeviceWorkspace(props: {
         <p className="px-3 pb-1 text-xs text-muted-foreground">
           Showing still frames. The desktop app, https or the relay gives full video.
         </p>
+      ) : null}
+      {touchScreen ? (
+        <textarea
+          ref={keyboardField}
+          aria-label={`Type on ${device.name}`}
+          className="sr-only"
+          autoCapitalize="off"
+          autoCorrect="off"
+          spellCheck={false}
+          onInput={(event) => {
+            const text = event.currentTarget.value;
+            event.currentTarget.value = "";
+            if (text) stream.client.sendText(text);
+          }}
+          onKeyDown={(event) => {
+            // Keys that type nothing into the field still reach the device.
+            if (event.key !== "Backspace" && event.key !== "Enter") return;
+            event.preventDefault();
+            // On-screen keyboards often leave `code` empty; both names are also codes.
+            const key = new KeyboardEvent("keydown", { key: event.key, code: event.key });
+            stream.client.sendKey(key, "down");
+            stream.client.sendKey(key, "up");
+          }}
+        />
       ) : null}
       <div className="relative flex min-h-0 flex-1">
         <div className="flex min-h-0 min-w-0 flex-1 p-2">

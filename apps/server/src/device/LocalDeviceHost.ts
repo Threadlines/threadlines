@@ -39,6 +39,7 @@ import { writeFileStringAtomically } from "../atomicWrite.ts";
 import { ServerConfig } from "../config.ts";
 import { ProcessRunner } from "../processRunner.ts";
 import { releaseAgentDeviceSession } from "./AgentDeviceTarget.ts";
+import { setOwnDeviceToolPort } from "../preview/deviceToolPorts.ts";
 import * as DeviceHost from "./DeviceHost.ts";
 import { makeDeviceHubOperations } from "./DeviceHubOperations.ts";
 import {
@@ -470,6 +471,12 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
         nodePath: node.node,
       };
       yield* recordHub(hub, hubTool);
+      // The preview tunnel refuses this port while the hub has it, on every platform.
+      setOwnDeviceToolPort("hub", announced.value.port);
+      yield* Scope.addFinalizer(
+        scope,
+        Effect.sync(() => setOwnDeviceToolPort("hub", null, announced.value.port)),
+      );
       yield* Effect.logInfo("Device hub started", {
         pid: Number(child.pid),
         port: announced.value.port,
@@ -581,11 +588,11 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
       .pipe(Effect.ignore);
     const toEndpoint = (
       file: typeof AgentDeviceDaemonFile.Type,
-    ): DeviceHost.AgentDeviceEndpoint => ({
-      baseUrl: `http://127.0.0.1:${file.httpPort}`,
-      token: file.token,
-      entryPath,
-    });
+    ): DeviceHost.AgentDeviceEndpoint => {
+      // The preview tunnel refuses the daemon's port too (forgotten when it is stopped).
+      setOwnDeviceToolPort("agent", file.httpPort);
+      return { baseUrl: `http://127.0.0.1:${file.httpPort}`, token: file.token, entryPath };
+    };
     const existing = yield* readDaemonFile;
     if (Option.isSome(existing) && existing.value.version !== AGENT_DEVICE_VERSION) {
       // An earlier server's daemon on another pin: stop it with its own CLI and start ours.
@@ -650,6 +657,7 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
   // The daemon may predate this process (an earlier server was killed, possibly on an
   // older pin), so it is stopped with the CLI of its recorded version when that is installed.
   const stopAgentDeviceDaemon = Effect.gen(function* () {
+    setOwnDeviceToolPort("agent", null);
     if (!(yield* fs.exists(daemonFilePath).pipe(Effect.orElseSucceed(() => false)))) return;
     const recorded = yield* readDaemonFile;
     if (
@@ -780,6 +788,7 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
       run,
       platformAvailable: (platform) =>
         platformAvailability(platform).pipe(Effect.map((availability) => availability.available)),
+      scratchDir: path.join(deviceStateDir(path, stateDir), "tmp"),
     }),
     nodePath: running.hub.nodePath,
     run,
@@ -834,11 +843,14 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
               : null,
           ),
         ));
-      if (!endpoint) return;
+      if (!endpoint) return true;
       yield* releaseAgentDeviceSession(httpClient, endpoint)(session);
+      return true;
     }).pipe(
       Effect.catch((cause) =>
-        Effect.logWarning("Could not end the agent-device session", { session, cause }),
+        Effect.logWarning("Could not end the agent-device session", { session, cause }).pipe(
+          Effect.as(false),
+        ),
       ),
     );
 

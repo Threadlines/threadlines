@@ -68,7 +68,11 @@ const requireAccess = (caller: McpInvocationScope) =>
     return state;
   });
 
-/** The device an agent means: the one it named, else the booted or first one of its platform. */
+/**
+ * The device an agent means: the one it named, else the booted or first
+ * simulator or emulator of its platform. A physical phone is never picked by
+ * default; an agent gets one only by naming its id.
+ */
 export const pickDevice = (
   state: Pick<DeviceServiceState, "devices" | "hostStatus" | "hostStatusDetail">,
   input: {
@@ -92,7 +96,8 @@ export const pickDevice = (
     );
   }
   const candidates = state.devices.filter(
-    (device) => input.platform === undefined || device.platform === input.platform,
+    (device) =>
+      !device.physical && (input.platform === undefined || device.platform === input.platform),
   );
   if (candidates.length === 0) {
     return Effect.fail(
