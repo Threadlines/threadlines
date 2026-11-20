@@ -136,7 +136,6 @@ export function DevicePanel(props: {
           environmentId={environmentId}
           device={activeDevice}
           visible={visible}
-          bootedByThreadlines={activeSession.bootedByThreadlines}
           onBack={() => selectThreadDevice(threadKey, null)}
           onClose={() => close(false)}
           onPowerOff={() => close(true)}

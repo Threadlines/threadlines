@@ -36,7 +36,6 @@ export function DeviceWorkspace(props: {
   readonly device: DeviceSummary;
   /** The tab is on screen; nothing streams while it is not. */
   readonly visible: boolean;
-  readonly bootedByThreadlines: boolean;
   readonly onBack: () => void;
   readonly onClose: () => void;
   readonly onPowerOff: () => void;
@@ -98,7 +97,6 @@ export function DeviceWorkspace(props: {
           <p className="truncate text-[13px] leading-4 font-medium">{device.name}</p>
           <p className="truncate font-mono text-[11px] leading-3.5 text-muted-foreground">
             {device.version}
-            {props.bootedByThreadlines ? " · started by Threadlines" : ""}
           </p>
         </div>
         <ToolbarButton label="Home" disabled={!inputReady} onClick={() => press("home")}>

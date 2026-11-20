@@ -1,12 +1,22 @@
 import type {
   DeviceActionInput,
   DeviceDetail,
+  DeviceForegroundApp,
   DeviceSummary,
   EnvironmentId,
 } from "@threadlines/contracts";
+import {
+  createDeviceHubTransport,
+  subscribeDeviceForeground,
+} from "@threadlines/client-runtime/device";
 import { useEffect, useRef, useState } from "react";
 
-import { deviceErrorText, readDeviceDetail, runDeviceAction } from "./deviceState";
+import {
+  deviceChannelApi,
+  deviceErrorText,
+  readDeviceDetail,
+  runDeviceAction,
+} from "./deviceState";
 
 type ActionBody = DeviceActionInput extends infer A
   ? A extends { readonly type: string }
@@ -18,7 +28,8 @@ type ActionBody = DeviceActionInput extends infer A
  * The Tools drawer's values and actions for one device. Reads the values when
  * it becomes visible; every action answers with the values read back, so the
  * drawer only ever shows what the device says. Actions run one at a time.
- * Mount it keyed by device.
+ * On iOS the app in front comes from the device's serve-sim helper, asked
+ * every two seconds while the drawer is open (`simctl` cannot report it). Mount it keyed by device.
  */
 export function useDeviceControls(input: {
   readonly environmentId: EnvironmentId;
@@ -32,6 +43,20 @@ export function useDeviceControls(input: {
   // Hiding does not cancel a command on the device, so actions stay one at a
   // time until each settles rather than letting a reopened drawer race it.
   const busy = useRef(false);
+  // undefined: no live reading (Android, or the stream failed); then the detail's answer stands.
+  const [liveForeground, setLiveForeground] = useState<DeviceForegroundApp | null | undefined>(
+    undefined,
+  );
+
+  useEffect(() => {
+    if (!visible || device.platform !== "ios") return;
+    const transport = createDeviceHubTransport(deviceChannelApi(environmentId));
+    const stop = subscribeDeviceForeground(transport, device.id, setLiveForeground);
+    return () => {
+      stop();
+      setLiveForeground(undefined);
+    };
+  }, [device.id, device.platform, environmentId, visible]);
 
   useEffect(() => {
     if (!visible) return;
@@ -76,7 +101,7 @@ export function useDeviceControls(input: {
     error,
     act,
     disabled: pending || detail === null || !visible,
-    foregroundApp: detail?.foregroundApp ?? null,
+    foregroundApp: liveForeground === undefined ? (detail?.foregroundApp ?? null) : liveForeground,
   };
 }
 
