@@ -118,6 +118,39 @@ Every hub route Round 2 uses is already on the channel allowlist; the Duo's
 hinge, stance and table mode travel as tagged messages on the allowed iOS input
 socket.
 
+Settled by the build (chips, float, recording, event log):
+
+- **Chips.** Chip order is the order devices were opened in the thread; there
+  is no drag to reorder. Order, names and the shown chip are kept per thread in
+  local storage (`deviceViewStore.ts`), like the browser panel's tabs; a
+  closed device's name is kept for the next time it opens. The float is not
+  kept: reopening the app never starts a stream on its own.
+- **Float.** It sits over the chat in a layer of its own, first placed at the
+  top right of the chat column, and stays inside the app window (8 px margin)
+  through drags, resizes and window resizes. Its height follows its width and
+  the screen's shape, so every resize is a width change (180 to 640 px). The
+  Device tab shows "floating over the chat" for that chip instead of a second
+  stream. The phone layout has no float: the button is hidden and a float set
+  on a wider window is shown docked there.
+- **Recording.** Recording lives in the Device tab's view only; the float has
+  no record button (floating stops a recording and hands it off). Screenshots
+  and accessibility trees are taken apart, because a tree can take 1.5 to 2.5
+  s (longer while an app launches) and must not hold back the screenshot of a
+  step. Screenshots go in as JPEG, longest edge 1600 px. The video is drawn
+  onto a canvas of its own (longest edge 1280 px), copied from the stream
+  canvas on each frame and once at the start and end, at 360 kbit/s: at the
+  simulator's full size the browser's encoder ran several times over any
+  bitrate. Measured: 3:00 of a screen scrolling non-stop came to 7.4 MB. The
+  byte guard stops the recording at 9.5 MiB if a video still runs over. A
+  landscape iOS screen records sideways (the stream canvas holds the portrait
+  framebuffer; the view turns it).
+- **Saving the draft.** Drafts are saved in local storage, which holds about
+  5.2 million characters per site, so an attachment over 3.5 MB can never be
+  saved, and before this change trying failed the whole draft save, prompt
+  included. The composer now leaves such an attachment unsaved (marked as
+  today) and saves the rest. A video that is unsaved this way triggers the
+  Device tab's download notice.
+
 ## Architecture
 
 ```
@@ -324,9 +357,9 @@ Owner and paired clients may both use devices (same rule as terminals).
   menu with Close and Power off), Tools drawer (`DeviceToolsPanel`, beside
   the screen when the panel is wide, over it when not), loading and error
   states that say what is missing ("Android SDK Command-line Tools are missing
-  from …"). T3's accessibility-frame overlay and serve-sim event log are not
-  ported; the foreground app comes from `deviceDetail`, not serve-sim's
-  `/appstate` event stream.
+  from …"). The foreground app comes from `deviceDetail`, not serve-sim's
+  `/appstate` event stream. Round 2 adds the chips, the float, recording and
+  the event log (see "Round 2").
 - Only the visible device streams; switching tabs or threads stops the channel.
 - Settings → Devices section with the two switches and tool versions.
 
