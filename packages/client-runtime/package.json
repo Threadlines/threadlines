@@ -6,6 +6,10 @@
     ".": {
       "types": "./src/index.ts",
       "import": "./src/index.ts"
+    },
+    "./device": {
+      "types": "./src/device/index.ts",
+      "import": "./src/device/index.ts"
     }
   },
   "scripts": {
