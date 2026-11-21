@@ -57,6 +57,40 @@ const makeRepositoryIdentityResolverTestLayer = (options: {
     }),
   ).pipe(Layer.provide(ProcessRunner.layer));
 
+/**
+ * A resolver whose git runs are recorded in `runs`, oldest first, so a test
+ * can count how many processes a sequence of resolves started.
+ */
+const makeCountingResolverLayer = (
+  runs: Array<ReadonlyArray<string>>,
+  options: {
+    readonly positiveCacheTtl?: Duration.Input;
+    readonly negativeCacheTtl?: Duration.Input;
+    readonly rootRecheckInterval?: Duration.Input;
+  } = {},
+) =>
+  Layer.effect(
+    RepositoryIdentityResolver,
+    makeRepositoryIdentityResolver({ cacheCapacity: 16, ...options }),
+  ).pipe(
+    Layer.provide(
+      Layer.effect(
+        ProcessRunner.ProcessRunner,
+        Effect.map(ProcessRunner.make(), (real) =>
+          ProcessRunner.ProcessRunner.of({
+            run: (input) => {
+              runs.push(input.args);
+              return real.run(input);
+            },
+          }),
+        ),
+      ),
+    ),
+  );
+
+const countGit = (runs: ReadonlyArray<ReadonlyArray<string>>, subcommand: "rev-parse" | "remote") =>
+  runs.filter((args) => args.includes(subcommand)).length;
+
 it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
   it.effect("normalizes equivalent GitHub remotes into a stable repository identity", () =>
     Effect.gen(function* () {
@@ -247,4 +281,175 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
       ),
     ),
   );
+
+  it.effect("asks git for a folder's root once, however often and concurrently it resolves", () => {
+    const runs: Array<ReadonlyArray<string>> = [];
+    return Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const repoRoot = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-repository-identity-repeat-test-",
+      });
+      const nestedWorkspace = path.join(repoRoot, "packages", "web");
+      yield* fileSystem.makeDirectory(nestedWorkspace, { recursive: true });
+      yield* git(repoRoot, ["init"]);
+      yield* git(repoRoot, ["remote", "add", "origin", "git@github.com:T3Tools/t3code.git"]);
+
+      const resolver = yield* RepositoryIdentityResolver;
+      const identities = yield* Effect.all(
+        [repoRoot, repoRoot, nestedWorkspace, nestedWorkspace, repoRoot, nestedWorkspace].map(
+          (cwd) => resolver.resolve(cwd),
+        ),
+        { concurrency: "unbounded" },
+      );
+      for (const _sweep of [1, 2, 3]) {
+        identities.push(
+          yield* resolver.resolve(repoRoot),
+          yield* resolver.resolve(nestedWorkspace),
+        );
+      }
+
+      expect(identities.map((identity) => identity?.canonicalKey)).toEqual(
+        identities.map(() => "github.com/t3tools/t3code"),
+      );
+      expect(countGit(runs, "rev-parse")).toBe(2);
+      expect(countGit(runs, "remote")).toBe(1);
+
+      // A remembered root is still re-asked once the recheck interval passes.
+      yield* TestClock.adjust(Duration.minutes(5));
+      yield* resolver.resolve(repoRoot);
+      expect(countGit(runs, "rev-parse")).toBe(3);
+    }).pipe(
+      Effect.provide(
+        Layer.merge(
+          TestClock.layer(),
+          makeCountingResolverLayer(runs, {
+            positiveCacheTtl: Duration.minutes(10),
+            rootRecheckInterval: Duration.minutes(5),
+          }),
+        ),
+      ),
+    );
+  });
+
+  it.effect("finds a repository created inside a remembered root on the next resolve", () => {
+    const runs: Array<ReadonlyArray<string>> = [];
+    return Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const repoRoot = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-repository-identity-nested-repo-test-",
+      });
+      const nestedWorkspace = path.join(repoRoot, "vendor", "lib");
+      yield* fileSystem.makeDirectory(nestedWorkspace, { recursive: true });
+      yield* git(repoRoot, ["init"]);
+      yield* git(repoRoot, ["remote", "add", "origin", "git@github.com:T3Tools/t3code.git"]);
+
+      const resolver = yield* RepositoryIdentityResolver;
+      expect((yield* resolver.resolve(nestedWorkspace))?.canonicalKey).toBe(
+        "github.com/t3tools/t3code",
+      );
+
+      yield* git(nestedWorkspace, ["init"]);
+      yield* git(nestedWorkspace, ["remote", "add", "origin", "git@github.com:T3Tools/lib.git"]);
+
+      const nestedIdentity = yield* resolver.resolve(nestedWorkspace);
+      expect(nestedIdentity?.canonicalKey).toBe("github.com/t3tools/lib");
+      expectSameDirectory(nestedIdentity?.rootPath ?? "", nestedWorkspace);
+      expect(countGit(runs, "rev-parse")).toBe(2);
+    }).pipe(Effect.provide(Layer.merge(TestClock.layer(), makeCountingResolverLayer(runs))));
+  });
+
+  it.effect("finds a bare repository created inside a remembered root on the next resolve", () => {
+    const runs: Array<ReadonlyArray<string>> = [];
+    return Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const repoRoot = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-repository-identity-nested-bare-test-",
+      });
+      const nestedWorkspace = path.join(repoRoot, "vendor");
+      yield* fileSystem.makeDirectory(nestedWorkspace);
+      yield* git(repoRoot, ["init"]);
+      yield* git(repoRoot, ["remote", "add", "origin", "git@github.com:T3Tools/t3code.git"]);
+
+      const resolver = yield* RepositoryIdentityResolver;
+      expect((yield* resolver.resolve(nestedWorkspace))?.canonicalKey).toBe(
+        "github.com/t3tools/t3code",
+      );
+
+      yield* git(nestedWorkspace, ["init", "--bare"]);
+      yield* git(nestedWorkspace, ["remote", "add", "origin", "git@github.com:T3Tools/lib.git"]);
+
+      expect((yield* resolver.resolve(nestedWorkspace))?.canonicalKey).toBe(
+        "github.com/t3tools/lib",
+      );
+    }).pipe(Effect.provide(Layer.merge(TestClock.layer(), makeCountingResolverLayer(runs))));
+  });
+
+  it.effect("asks git again once a folder that had no repository gets one", () => {
+    const runs: Array<ReadonlyArray<string>> = [];
+    return Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const cwd = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-repository-identity-git-init-test-",
+      });
+
+      const resolver = yield* RepositoryIdentityResolver;
+      expect(yield* resolver.resolve(cwd)).toBeNull();
+      expect(yield* resolver.resolve(cwd)).toBeNull();
+      expect(countGit(runs, "rev-parse")).toBe(1);
+
+      yield* git(cwd, ["init"]);
+      yield* git(cwd, ["remote", "add", "origin", "git@github.com:T3Tools/t3code.git"]);
+      yield* resolver.resolve(cwd);
+      expect(countGit(runs, "rev-parse")).toBe(2);
+
+      // Where git spells the new root the same as the folder, the cached
+      // "no identity" answer holds until the negative TTL, as before.
+      yield* TestClock.adjust(Duration.millis(120));
+      expect((yield* resolver.resolve(cwd))?.canonicalKey).toBe("github.com/t3tools/t3code");
+      expect(countGit(runs, "rev-parse")).toBe(2);
+    }).pipe(
+      Effect.provide(
+        Layer.merge(
+          TestClock.layer(),
+          makeCountingResolverLayer(runs, { negativeCacheTtl: Duration.millis(100) }),
+        ),
+      ),
+    );
+  });
+
+  it.effect("picks up a folder re-created as another repository once the identity TTL ends", () => {
+    const runs: Array<ReadonlyArray<string>> = [];
+    return Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const cwd = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-repository-identity-recreated-test-",
+      });
+      yield* git(cwd, ["init"]);
+      yield* git(cwd, ["remote", "add", "origin", "git@github.com:T3Tools/t3code.git"]);
+
+      const resolver = yield* RepositoryIdentityResolver;
+      expect((yield* resolver.resolve(cwd))?.canonicalKey).toBe("github.com/t3tools/t3code");
+
+      yield* fileSystem.remove(cwd, { recursive: true });
+      yield* fileSystem.makeDirectory(cwd);
+      yield* git(cwd, ["init"]);
+      yield* git(cwd, ["remote", "add", "origin", "git@github.com:T3Tools/other.git"]);
+
+      expect((yield* resolver.resolve(cwd))?.canonicalKey).toBe("github.com/t3tools/t3code");
+      yield* TestClock.adjust(Duration.millis(120));
+      expect((yield* resolver.resolve(cwd))?.canonicalKey).toBe("github.com/t3tools/other");
+      // The root never changed, so git was asked for it only once.
+      expect(countGit(runs, "rev-parse")).toBe(1);
+    }).pipe(
+      Effect.provide(
+        Layer.merge(
+          TestClock.layer(),
+          makeCountingResolverLayer(runs, { positiveCacheTtl: Duration.millis(100) }),
+        ),
+      ),
+    );
+  });
 });
