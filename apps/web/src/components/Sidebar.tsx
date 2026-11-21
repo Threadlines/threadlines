@@ -170,7 +170,7 @@ import { resolveShownDestinationList } from "./sidebar/destinationLists";
 import { useListNewThreadStore } from "./sidebar/listNewThreadStore";
 import { useGeneralChats } from "./chats/useGeneralChats";
 import { useGeneralChatsInThreads } from "./chats/generalChatsPlacement";
-import { GeneralChatsShelf } from "./chats/GeneralChatsShelf";
+import { lazyWithPreload } from "../lib/lazyWithPreload";
 import { AttentionCounts } from "./sidebar/AttentionCounts";
 import { ProjectFavicon } from "./ProjectFavicon";
 import { isRoom } from "../rooms";
@@ -421,6 +421,14 @@ function InboxWrappedShelf({
     </div>
   );
 }
+
+/**
+ * The General chats section, a chunk of its own: only a device that lists
+ * the chats in Threads fetches it.
+ */
+const GeneralChatsShelf = lazyWithPreload(() =>
+  import("./chats/GeneralChatsShelf").then((module) => module.GeneralChatsShelf),
+);
 
 /**
  * The open General chats section's cap: about a third of the column, so the
@@ -2580,12 +2588,15 @@ export default function Sidebar() {
                 {/* General chats park under Wrapped on a device that lists
                   them here instead of on their own page. */}
                 {generalChatsInThreads ? (
-                  <GeneralChatsShelf
-                    environmentId={scopedEnvironmentIdValue}
-                    maxHeight={GENERAL_CHATS_SHELF_MAX_HEIGHT}
-                    shelfRef={chatsShelfRef}
-                    onSwipe={handleRowSwipe}
-                  />
+                  <Suspense fallback={null}>
+                    <GeneralChatsShelf.Component
+                      environmentId={scopedEnvironmentIdValue}
+                      maxHeight={GENERAL_CHATS_SHELF_MAX_HEIGHT}
+                      shelfRef={chatsShelfRef}
+                      onSwipe={handleRowSwipe}
+                      closeSheet={closeSheet}
+                    />
+                  </Suspense>
                 ) : null}
               </div>
             </ThreadHoverCardProvider>

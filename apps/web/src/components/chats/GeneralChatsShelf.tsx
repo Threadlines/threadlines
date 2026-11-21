@@ -18,7 +18,6 @@ import {
 import { AttentionCounts } from "../sidebar/AttentionCounts";
 import { InboxShelfHeader } from "../sidebar/InboxShelfHeader";
 import { ScrollArea } from "../ui/scroll-area";
-import { useCloseSidebarSheet } from "../ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { GeneralChatRows } from "./GeneralChatRows";
 import { useGeneralChatGroups, useGeneralChats } from "./useGeneralChats";
@@ -39,6 +38,7 @@ export function GeneralChatsShelf({
   maxHeight,
   shelfRef,
   onSwipe,
+  closeSheet,
 }: {
   /** The computer the Threads list is narrowed to, if any: the section follows it. */
   readonly environmentId: string | null;
@@ -47,10 +47,15 @@ export function GeneralChatsShelf({
   readonly shelfRef: (element: HTMLElement | null) => void;
   /** The inbox's swipe handler, so its one Undo bar covers chats too. */
   readonly onSwipe: ThreadRowSwipeHandler;
+  /**
+   * Puts a phone's sheet away before a row or New chat opens a chat. Passed
+   * in: this file is a chunk of its own, and importing the sidebar's context
+   * here would split it out of the startup bundle.
+   */
+  readonly closeSheet: () => void;
 }) {
   const open = useUiStateStore((state) => state.inboxGeneralChatsOpen);
   const setOpen = useUiStateStore((state) => state.setInboxGeneralChatsOpen);
-  const closeSheet = useCloseSidebarSheet();
   const seenSources = useThreadSeenSources();
   const { chats, startChat } = useGeneralChats({ environmentId });
   const groups = useGeneralChatGroups(chats);

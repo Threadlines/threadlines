@@ -17,21 +17,24 @@ export function useGeneralChatsInThreads(): boolean {
  * command palette and the desktop menu live outside the sidebar, and the old
  * /chats address is a page of its own, so each asks here and the shell's
  * GeneralChatsRevealer does the opening: the section unfolded, the list (or a
- * phone's sheet) showing, and Threads on screen.
+ * phone's sheet) showing, and Threads on screen. The revealer's code loads
+ * only on a device that lists the chats in Threads, so a request waits here
+ * until it has.
  */
-const useRevealRequests = create<{ readonly count: number }>(() => ({ count: 0 }));
+const useRevealRequests = create<{ readonly pending: number }>(() => ({ pending: 0 }));
 
 export function requestGeneralChatsReveal(): void {
-  useRevealRequests.setState((state) => ({ count: state.count + 1 }));
+  useRevealRequests.setState((state) => ({ pending: state.pending + 1 }));
 }
 
-/** How many reveals have been asked for; a change is a new request. */
-export function useGeneralChatsRevealRequests(): number {
-  return useRevealRequests((state) => state.count);
+/** How many reveals wait to be done. */
+export function usePendingGeneralChatsReveals(): number {
+  return useRevealRequests((state) => state.pending);
 }
 
-export function readGeneralChatsRevealRequests(): number {
-  return useRevealRequests.getState().count;
+/** Marks every waiting reveal done. */
+export function clearPendingGeneralChatsReveals(): void {
+  useRevealRequests.setState({ pending: 0 });
 }
 
 /**

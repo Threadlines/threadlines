@@ -27,7 +27,11 @@ import { selectThreadTerminalState, useTerminalStateStore } from "../terminalSta
 import { buildThreadRouteParams } from "../threadRoutes";
 import { selectSidebarListShown, useUiStateStore } from "../uiStateStore";
 import ThreadSidebar from "./Sidebar";
-import { consumeSidebarListReveal, requestGeneralChatsReveal } from "./chats/generalChatsPlacement";
+import {
+  consumeSidebarListReveal,
+  requestGeneralChatsReveal,
+  useGeneralChatsInThreads,
+} from "./chats/generalChatsPlacement";
 import { GeneralChatsRevealer } from "./chats/GeneralChatsRevealer";
 import { AppTitleBar } from "./sidebar/AppTitleBar";
 import { TitleBarSlotContext } from "./sidebar/titleBarSlot";
@@ -300,6 +304,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
   const listFloats = useUiStateStore((store) => store.sidebarListFloats);
   const setSidebarListShown = useUiStateStore((store) => store.setSidebarListShown);
   const selectedDestination = useSelectedDestination();
+  const generalChatsInThreads = useGeneralChatsInThreads();
   const hasList = destinationHasList(selectedDestination);
   const isMobile = useIsMobile();
   const panelRef = useRef<HTMLDivElement>(null);
@@ -362,7 +367,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
       style={sidebarStyle}
     >
       <AppShellCommands hasList={hasList} />
-      <GeneralChatsRevealer />
+      {generalChatsInThreads ? <GeneralChatsRevealer /> : null}
       <AppTitleBar slotRef={setTitleBarSlot} />
       <div className="flex min-h-0 flex-1">
         <NavigationRail />

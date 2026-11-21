@@ -1,14 +1,14 @@
 import { useRouter } from "@tanstack/react-router";
-import { useEffect, useEffectEvent, useState } from "react";
+import { useEffect, useEffectEvent } from "react";
 
 import { isLaunchVisitConsumed } from "../../launchVisit";
 import { useUiStateStore } from "../../uiStateStore";
 import { threadsViewHref, useSelectedDestination } from "../sidebar/NavigationRail";
 import { useSidebar } from "../ui/sidebar";
 import {
-  readGeneralChatsRevealRequests,
+  clearPendingGeneralChatsReveals,
   requestSidebarListReveal,
-  useGeneralChatsRevealRequests,
+  usePendingGeneralChatsReveals,
 } from "./generalChatsPlacement";
 
 /**
@@ -17,15 +17,15 @@ import {
  * shows (a phone opens its sheet), and the page becomes Threads, where the
  * Threads button goes, unless a Threads view is already on screen. From the
  * old /chats address that last step replaces it, so Back skips it. Mounted
- * once, inside the shell's sidebar.
+ * once, inside the shell's sidebar, and only while the chats are a section
+ * of Threads.
  */
 export function GeneralChatsRevealer() {
   const router = useRouter();
   const { isMobile, setOpenMobile } = useSidebar();
-  const requests = useGeneralChatsRevealRequests();
-  // Requests made before this mounted (the /chats page asks as it mounts,
-  // beside the shell) count; none from an earlier shell would.
-  const [requestsAtMount] = useState(readGeneralChatsRevealRequests);
+  // Requests made before this loaded (the /chats page asks as it mounts)
+  // wait for it.
+  const pending = usePendingGeneralChatsReveals();
   const selected = useSelectedDestination();
 
   const reveal = useEffectEvent(() => {
@@ -47,8 +47,10 @@ export function GeneralChatsRevealer() {
   });
 
   useEffect(() => {
-    if (requests !== requestsAtMount) reveal();
-  }, [requests, requestsAtMount]);
+    if (pending === 0) return;
+    clearPendingGeneralChatsReveals();
+    reveal();
+  }, [pending]);
 
   return null;
 }
