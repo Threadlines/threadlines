@@ -33,7 +33,7 @@ const RECEIPT_TTL = Duration.days(7);
  * ran back to back and froze the server for the whole prune (3 to 20
  * seconds). A cold cache still makes single batches slower.
  */
-const DELETE_BATCH_SIZE = 25;
+export const DELETE_BATCH_SIZE = 25;
 /** Diff blobs can each run to megabytes, so fewer go per batch. */
 const DIFF_BLOB_DELETE_BATCH_SIZE = 20;
 
@@ -253,8 +253,8 @@ const makeStorageMaintenance = Effect.gen(function* () {
     }
 
     // No explicit WAL checkpoint: batches this small keep the WAL near
-    // SQLite's 1,000-page autocheckpoint, so a prune of any size leaves it
-    // about as large as everyday writes do. A TRUNCATE checkpoint here was
+    // SQLite's 1,000-page autocheckpoint, and `journal_size_limit` (Sqlite.ts)
+    // trims a WAL that a long reader let grow. A TRUNCATE checkpoint here was
     // one more synchronous call, and one that waits out busy readers.
     const anythingDeleted =
       deletedReceipts + deletedThreadEvents + deletedActivityEvents + deletedDiffBlobs > 0;

@@ -7,7 +7,7 @@ import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { StorageMaintenance } from "../Services/StorageMaintenance.ts";
-import { StorageMaintenanceLive } from "./StorageMaintenance.ts";
+import { DELETE_BATCH_SIZE, StorageMaintenanceLive } from "./StorageMaintenance.ts";
 import { SqlitePersistenceMemory } from "./Sqlite.ts";
 
 const layer = it.layer(StorageMaintenanceLive.pipe(Layer.provideMerge(SqlitePersistenceMemory)));
@@ -214,9 +214,9 @@ layer("StorageMaintenance", (it) => {
       const sql = yield* SqlClient.SqlClient;
       const storageMaintenance = yield* StorageMaintenance;
 
-      // Enough excess activity for several batches.
+      // Several full batches and a last partial one.
       const base = 80_000;
-      const excess = 200;
+      const excess = DELETE_BATCH_SIZE * 8 + 1;
       for (let index = 0; index < MAX_THREAD_ACTIVITIES + excess; index += 1) {
         yield* insertEvent(sql, {
           sequence: base + index,
@@ -247,8 +247,9 @@ layer("StorageMaintenance", (it) => {
       );
 
       assert.equal(report.deletedActivityEvents, excess);
+      // One turn after every delete transaction, the partial last one too.
       // All in one hold, the loop would not turn at all.
-      assert.isAtLeast(turns, 4);
+      assert.isAtLeast(turns, Math.ceil(excess / DELETE_BATCH_SIZE));
     }),
   );
 
