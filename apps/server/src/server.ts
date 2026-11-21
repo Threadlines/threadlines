@@ -195,6 +195,7 @@ import { formatHostForUrl, isWildcardHost } from "./startupAccess.ts";
 import { ServerAuthLive } from "./auth/Layers/ServerAuth.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
+import * as ThreadCpuUsage from "./diagnostics/ThreadCpuUsage.ts";
 import * as StallMonitor from "./observability/StallMonitor.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import { OrchestrationLayerLive } from "./orchestration/runtimeLayer.ts";
@@ -609,8 +610,11 @@ const ProviderRuntimeLayerLive = Layer.mergeAll(
 const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   // Core Services. ThreadBootstrap sets threads up: the reactor starts child
   // threads with it, and the WebSocket routes run first-send bootstraps
-  // through the same instance.
-  Layer.provideMerge(Layer.mergeAll(CheckpointingLayerLive, ThreadBootstrapLive)),
+  // through the same instance. CPU by thread (Settings > Diagnostics) needs
+  // the providers' and the terminals' processes, so it sits above both.
+  Layer.provideMerge(
+    Layer.mergeAll(CheckpointingLayerLive, ThreadBootstrapLive, ThreadCpuUsage.layer),
+  ),
   Layer.provideMerge(
     Layer.mergeAll(SourceControlProviderRegistryLayerLive, PullRequestServiceLayerLive),
   ),

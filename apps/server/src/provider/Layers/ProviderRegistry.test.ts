@@ -3299,6 +3299,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
             retire: Effect.die("A turned-off OpenCode must not retire its server"),
             withServer: () => Effect.die("A turned-off OpenCode must not use its server"),
             signals: Stream.empty,
+            running: Effect.succeed(undefined),
           };
           const check = (settings: Partial<OpenCodeSettings>) =>
             checkOpenCodeProviderStatus({
@@ -3341,6 +3342,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
               retire: Effect.die("A broken OpenCode must not retire its server"),
               withServer: () => Effect.die("A broken OpenCode must not use its server"),
               signals: Stream.empty,
+              running: Effect.succeed(undefined),
             },
             cwd: process.cwd(),
             environment: { PATH: "" },

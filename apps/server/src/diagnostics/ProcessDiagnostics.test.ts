@@ -46,8 +46,9 @@ describe("ProcessDiagnostics", () => {
     Effect.sync(() => {
       const rows = ProcessDiagnostics.parsePosixProcessRows(
         [
-          "  10     1    10 Ss      0.0   1024   01:02.03 /usr/bin/node server.js",
-          "  11    10    10 S+     12.5  20480      00:04 codex app-server --config /tmp/one two",
+          // macOS prints CPU time as minutes and seconds, Linux as [days-]hours:minutes:seconds.
+          "  10     1    10 Ss      0.0   1024   01:02.03 398:51.57 /usr/bin/node server.js",
+          "  11    10    10 S+     12.5  20480      00:04 1-02:03:04 codex app-server --config /tmp/one two",
         ].join("\n"),
       );
 
@@ -61,6 +62,7 @@ describe("ProcessDiagnostics", () => {
           rssBytes: 1024 * 1024,
           elapsed: "01:02.03",
           command: "/usr/bin/node server.js",
+          cpuTimeMs: (398 * 60 + 51.57) * 1000,
         },
         {
           pid: 11,
@@ -71,6 +73,7 @@ describe("ProcessDiagnostics", () => {
           rssBytes: 20480 * 1024,
           elapsed: "00:04",
           command: "codex app-server --config /tmp/one two",
+          cpuTimeMs: (((24 + 2) * 60 + 3) * 60 + 4) * 1000,
         },
       ]);
     }),
@@ -130,7 +133,7 @@ describe("ProcessDiagnostics", () => {
             cpuPercent: 9,
             rssBytes: 9_000,
             elapsed: "00:00",
-            command: "ps -axo pid=,ppid=,pgid=,stat=,pcpu=,rss=,etime=,command=",
+            command: "ps -axo pid=,ppid=,pgid=,stat=,pcpu=,rss=,etime=,time=,command=",
           },
         ],
       });
@@ -222,8 +225,8 @@ describe("ProcessDiagnostics", () => {
           return Effect.succeed(
             mockHandle({
               stdout: [
-                ` ${process.pid}     1 ${process.pid} Ss 0.0 1024 01:02.03 t3 server`,
-                ` 4242 ${process.pid} ${process.pid} S  1.5 2048 00:04 agent`,
+                ` ${process.pid}     1 ${process.pid} Ss 0.0 1024 01:02.03 0:01.50 t3 server`,
+                ` 4242 ${process.pid} ${process.pid} S  1.5 2048 00:04 0:00.06 agent`,
               ].join("\n"),
             }),
           );
@@ -254,7 +257,7 @@ describe("ProcessDiagnostics", () => {
         expect(commands).toEqual([
           {
             command: "ps",
-            args: ["-axo", "pid=,ppid=,pgid=,stat=,pcpu=,rss=,etime=,command="],
+            args: ["-axo", "pid=,ppid=,pgid=,stat=,pcpu=,rss=,etime=,time=,command="],
           },
         ]);
       }
@@ -837,8 +840,8 @@ describe("ProcessDiagnostics", () => {
           Effect.succeed(
             mockHandle({
               stdout: [
-                ` ${process.pid}     1 ${process.pid} Ss 0.0 1024 01:02.03 t3 server`,
-                ` 4242 ${process.pid} ${process.pid} R  1.5 2048 00:00 ps -axo pid=,ppid=,pgid=,stat=,pcpu=,rss=,etime=,command=`,
+                ` ${process.pid}     1 ${process.pid} Ss 0.0 1024 01:02.03 0:01.50 t3 server`,
+                ` 4242 ${process.pid} ${process.pid} R  1.5 2048 00:00 0:00.01 ps -axo pid=,ppid=,pgid=,stat=,pcpu=,rss=,etime=,time=,command=`,
               ].join("\n"),
             }),
           ),

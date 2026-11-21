@@ -113,6 +113,7 @@ const harnessWith = (overrides: Record<string, (input: any) => unknown> = {}) =>
         version: "2.0.22",
         external: false,
         exited: Effect.never,
+        pid: null,
       },
       streamReady: Effect.void,
     };
@@ -122,6 +123,7 @@ const harnessWith = (overrides: Record<string, (input: any) => unknown> = {}) =>
       retire: Effect.void,
       withServer: (use) => Effect.scoped(use(active)),
       signals: Stream.fromPubSub(signals),
+      running: Effect.succeed(active.server),
     };
     const adapter = yield* makeOpenCodeAdapter({
       instanceId: INSTANCE_ID,

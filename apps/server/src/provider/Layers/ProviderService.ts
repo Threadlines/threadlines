@@ -3381,6 +3381,20 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     agentSession,
     sendSubagentInput,
     deleteThread,
+    listAgentProcesses: getAdapterEntries.pipe(
+      Effect.flatMap((entries) =>
+        Effect.forEach(entries, ([, adapter]) =>
+          // One driver that can't answer leaves only its own processes out.
+          Effect.suspend(() => adapter.listProcesses?.() ?? Effect.succeed([])).pipe(
+            Effect.catchCause(() => Effect.succeed([])),
+            Effect.map((owners) =>
+              owners.map((owner) => ({ ...owner, provider: adapter.provider })),
+            ),
+          ),
+        ),
+      ),
+      Effect.map((lists) => lists.flat()),
+    ),
     // Each access creates a fresh PubSub subscription so that multiple
     // consumers (ProviderRuntimeIngestion, CheckpointReactor, etc.) each
     // independently receive all runtime events.

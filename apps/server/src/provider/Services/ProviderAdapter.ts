@@ -538,10 +538,34 @@ export interface ProviderAdapterShape<TError> {
   readonly noteBeforeStop?: (sessionKey: ThreadId) => Effect.Effect<void>;
 
   /**
+   * The agent processes this adapter runs right now, and whose they are, for
+   * the CPU-by-thread view in Settings > Diagnostics. Read from what the
+   * driver already tracks; never starts anything. Absent: the driver can't
+   * say, so its processes count as Threadlines' own.
+   */
+  readonly listProcesses?: () => Effect.Effect<ReadonlyArray<ProviderProcessOwner>>;
+
+  /**
    * Canonical runtime event stream emitted by this adapter.
    */
   readonly streamEvents: Stream.Stream<ProviderRuntimeEvent>;
 }
+
+/**
+ * One process a driver runs (ProviderAdapterShape.listProcesses): a thread's
+ * agent, or one serving every thread of the provider (OpenCode's server).
+ */
+export type ProviderProcessOwner =
+  | {
+      readonly kind: "thread";
+      readonly threadId: ThreadId;
+      readonly pid: number;
+      /** It leads a process group of its own (POSIX), so the whole group is its. */
+      readonly ownGroup: boolean;
+      /** False once the process itself exited while its group lives on. */
+      readonly alive: boolean;
+    }
+  | { readonly kind: "shared"; readonly pid: number };
 
 /** One session a driver ran, as the session directory keeps it (confirmThreadStopped). */
 export interface ProviderStoppedSessionHint {

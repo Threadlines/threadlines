@@ -619,6 +619,16 @@ What this promises: Threadlines doesn't put the key in the chat, its stored even
 If the agent later prints a saved key, or a tool reads it, Threadlines replaces it with [NAME hidden] before it stores, logs or shows that text, and a row in the thread says so. An agent's message to another agent or thread, a page, or a command it asks you to run is refused while it holds one. The model may still have seen it, and the provider's own transcript keeps it; replace the key if that matters. Keys under 8 characters, or made only of letters or only of digits, aren't hidden. Your terminal, files in the project and voice audio aren't covered, and a key changed by hand in the env file is hidden from the next restart.`,
   },
   {
+    id: "cpu-by-thread",
+    title: "Which thread is using the CPU",
+    keywords: ["cpu", "battery", "drain", "slow", "fan", "hot", "processes", "energy", "usage"],
+    body: `{place:diagnostics.cpuByThread} lists, busiest first, where this computer's CPU goes: one row per thread, one for Threadlines itself, and one for a provider whose single process serves all its threads. Its first line says how many of the computer's cores are busy in total.
+
+A thread's row counts its agents, what they started (test runs, browsers, builds, also ones left running after their parent ended) and its terminals. Rows are sorted by the average over the last minute, and CPU reads the way Activity Monitor shows it: 100% is one full core. Clicking a thread's name opens it; the arrow shows its busiest processes.
+
+It measures only while the section is on screen, so it can't show what ran before it was opened. OpenCode runs one shared process for every thread, so its work shows as one OpenCode row, not per thread. On Windows, a process that left its agent's process tree isn't found.`,
+  },
+  {
     id: "updates",
     title: "Updates and release tracks",
     keywords: ["update", "version", "nightly", "stable", "release", "what's new", "bug", "report"],

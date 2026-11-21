@@ -2647,6 +2647,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
       stopAll,
       noteBeforeStop: processes.beforeStop,
       confirmThreadStopped: processes.confirm,
+      listProcesses: processes.owners,
       streamEvents: Stream.fromPubSub(runtimeEventPubSub),
     } satisfies AcpAdapterShape;
   });

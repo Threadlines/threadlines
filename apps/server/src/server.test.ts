@@ -202,6 +202,7 @@ import { ServerAuthLive } from "./auth/Layers/ServerAuth.ts";
 import { SessionCredentialService } from "./auth/Services/SessionCredentialService.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
+import * as ThreadCpuUsage from "./diagnostics/ThreadCpuUsage.ts";
 import * as StallMonitor from "./observability/StallMonitor.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as Data from "effect/Data";
@@ -961,6 +962,16 @@ const buildAppUnderTest = (options?: {
       Layer.provide(
         Layer.mergeAll(
           Layer.mock(StallMonitor.StallMonitor)({ stalls: Stream.empty }),
+          Layer.mock(ThreadCpuUsage.ThreadCpuUsage)({
+            read: Effect.succeed({
+              readAt: TEST_EPOCH,
+              windowMs: 60_000,
+              coreCount: 1,
+              machineCpuPercent: null,
+              groups: [],
+              error: Option.none(),
+            }),
+          }),
           Layer.mock(ProcessResourceMonitor.ProcessResourceMonitor)({
             readCurrent: Effect.succeed({
               serverPid: process.pid,

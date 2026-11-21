@@ -51,6 +51,7 @@ import type {
   WorkflowSaveCommandResult,
   RuntimeTaskId,
   RuntimeMode,
+  ProviderDriverKind,
 } from "@threadlines/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
@@ -67,6 +68,7 @@ import type {
   ProviderAdapterShape,
   ProviderStopConfirmation,
 } from "./ProviderAdapter.ts";
+import type { ProviderProcessOwner } from "./ProviderAdapter.ts";
 import type { ProviderInstanceRoutingInfo } from "./ProviderAdapterRegistry.ts";
 
 /**
@@ -455,12 +457,24 @@ export interface ProviderServiceShape {
   }) => Effect.Effect<void, ProviderServiceError>;
 
   /**
+   * Every agent process the drivers run now, and whose it is, with the
+   * driver that runs it (ProviderAdapterShape.listProcesses). A driver that
+   * can't say contributes nothing.
+   */
+  readonly listAgentProcesses: Effect.Effect<ReadonlyArray<ProviderListedProcess>>;
+
+  /**
    * Canonical provider runtime event stream.
    *
    * Fan-out is owned by ProviderService (not by a standalone event-bus service).
    */
   readonly streamEvents: Stream.Stream<ProviderRuntimeEvent>;
 }
+
+/** One process from {@link ProviderServiceShape.listAgentProcesses}. */
+export type ProviderListedProcess = ProviderProcessOwner & {
+  readonly provider: ProviderDriverKind;
+};
 
 /**
  * ProviderService - Service tag for provider orchestration.

@@ -805,6 +805,62 @@ export const ServerProcessResourceHistoryResult = Schema.Struct({
 });
 export type ServerProcessResourceHistoryResult = typeof ServerProcessResourceHistoryResult.Type;
 
+/** One process inside a {@link ServerThreadCpuUsageGroup}, from the latest read. */
+export const ServerThreadCpuUsageProcess = Schema.Struct({
+  pid: PositiveInt,
+  command: TrimmedNonEmptyString,
+  /** Percent of one core, as Activity Monitor shows it. */
+  cpuPercent: Schema.Number,
+  rssBytes: NonNegativeInt,
+});
+export type ServerThreadCpuUsageProcess = typeof ServerThreadCpuUsageProcess.Type;
+
+const ServerThreadCpuUsageNumbers = {
+  /** Percent of one core in the latest read; 0 once all its processes ended. */
+  cpuPercent: Schema.Number,
+  /** Percent of one core averaged over every read in the window. */
+  avgCpuPercent: Schema.Number,
+  rssBytes: NonNegativeInt,
+  processCount: NonNegativeInt,
+  /** Its busiest processes in the latest read it had any, busiest first. */
+  topProcesses: Schema.Array(ServerThreadCpuUsageProcess),
+};
+
+/**
+ * Where a share of the machine's CPU goes: a thread's agents and terminals,
+ * Threadlines itself, or a provider process that serves several threads.
+ */
+export const ServerThreadCpuUsageGroup = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("thread"),
+    threadId: ThreadId,
+    ...ServerThreadCpuUsageNumbers,
+  }),
+  Schema.Struct({ kind: Schema.Literal("threadlines"), ...ServerThreadCpuUsageNumbers }),
+  Schema.Struct({
+    kind: Schema.Literal("shared"),
+    provider: ProviderDriverKind,
+    ...ServerThreadCpuUsageNumbers,
+  }),
+]);
+export type ServerThreadCpuUsageGroup = typeof ServerThreadCpuUsageGroup.Type;
+
+export const ServerThreadCpuUsageResult = Schema.Struct({
+  readAt: Schema.DateTimeUtc,
+  /** How far back `avgCpuPercent` reaches. */
+  windowMs: NonNegativeInt,
+  coreCount: PositiveInt,
+  /** The whole machine's use, in percent of one core; null before two reads. */
+  machineCpuPercent: Schema.NullOr(Schema.Number),
+  groups: Schema.Array(ServerThreadCpuUsageGroup),
+  error: Schema.Option(
+    Schema.Struct({
+      message: TrimmedNonEmptyString,
+    }),
+  ),
+});
+export type ServerThreadCpuUsageResult = typeof ServerThreadCpuUsageResult.Type;
+
 export const ServerSignalProcessInput = Schema.Struct({
   pid: PositiveInt,
   signal: ServerProcessSignal,

@@ -81,6 +81,8 @@ export interface OpenCodeServerManagerShape {
   ) => Effect.Effect<A, E | OpenCodeError, Exclude<R, Scope.Scope>>;
   /** Every signal from every generation, for as long as the manager lives. */
   readonly signals: Stream.Stream<OpenCodeServerSignal>;
+  /** The server running now, if any. Never starts one. */
+  readonly running: Effect.Effect<OpenCodeServer | undefined>;
 }
 
 export interface OpenCodeServerManagerOptions {
@@ -371,5 +373,6 @@ export const makeOpenCodeServerManager = (
       retire,
       withServer,
       signals: Stream.fromPubSub(signals),
+      running: Ref.get(currentRef).pipe(Effect.map((current) => current?.active.server)),
     } satisfies OpenCodeServerManagerShape;
   });

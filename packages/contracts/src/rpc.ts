@@ -512,6 +512,7 @@ import {
   ServerProcessDiagnosticsResult,
   ServerProcessResourceHistoryInput,
   ServerProcessResourceHistoryResult,
+  ServerThreadCpuUsageResult,
   ServerSignalProcessInput,
   ServerSignalProcessResult,
   ServerResolveBackgroundRunsInput,
@@ -703,6 +704,7 @@ export const WS_METHODS = {
   serverGetTraceDiagnostics: "server.getTraceDiagnostics",
   serverGetProcessDiagnostics: "server.getProcessDiagnostics",
   serverGetProcessResourceHistory: "server.getProcessResourceHistory",
+  serverGetThreadCpuUsage: "server.getThreadCpuUsage",
   serverSignalProcess: "server.signalProcess",
   serverResolveBackgroundRuns: "server.resolveBackgroundRuns",
   serverStopBackgroundRun: "server.stopBackgroundRun",
@@ -1093,6 +1095,11 @@ export const WsServerGetProcessResourceHistoryRpc = Rpc.make(
     success: ServerProcessResourceHistoryResult,
   },
 );
+
+export const WsServerGetThreadCpuUsageRpc = Rpc.make(WS_METHODS.serverGetThreadCpuUsage, {
+  payload: Schema.Struct({}),
+  success: ServerThreadCpuUsageResult,
+});
 
 export const WsServerSignalProcessRpc = Rpc.make(WS_METHODS.serverSignalProcess, {
   payload: ServerSignalProcessInput,
@@ -2941,6 +2948,7 @@ export const WsCoreRpcGroup = RpcGroup.make(
   WsServerGetTraceDiagnosticsRpc,
   WsServerGetProcessDiagnosticsRpc,
   WsServerGetProcessResourceHistoryRpc,
+  WsServerGetThreadCpuUsageRpc,
   WsServerSignalProcessRpc,
   WsServerResolveBackgroundRunsRpc,
   WsServerStopBackgroundRunRpc,

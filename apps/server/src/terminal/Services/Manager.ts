@@ -276,6 +276,14 @@ export interface TerminalManagerShape {
    */
   readonly readCommandRunOutput: (runId: string) => Effect.Effect<string | null>;
 
+  /**
+   * The shell process of every running terminal, by thread, for the
+   * CPU-by-thread view in Settings > Diagnostics. Reads memory only.
+   */
+  readonly listShells: Effect.Effect<
+    ReadonlyArray<{ readonly threadId: string; readonly pid: number }>
+  >;
+
   /** Subscribe to run updates. Returns an unsubscribe function. */
   readonly subscribeCommandRuns: (
     listener: (update: TerminalCommandRunUpdate) => Effect.Effect<void>,

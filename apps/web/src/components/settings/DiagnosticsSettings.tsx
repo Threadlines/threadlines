@@ -42,6 +42,7 @@ import { Skeleton } from "../ui/skeleton";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { failureNotice, toastManager } from "../ui/toast";
 import { SettingsPageContainer, SettingsPageHeader, SettingsSection } from "./settingsLayout";
+import { ThreadCpuUsageSection } from "./ThreadCpuUsageSection";
 
 const NUMBER_FORMAT = new Intl.NumberFormat();
 
@@ -1151,6 +1152,7 @@ export function DiagnosticsSettingsPanel() {
           Loading diagnostics
         </span>
       ) : null}
+      <ThreadCpuUsageSection />
       <SettingsSection
         title="Live processes"
         headerAction={

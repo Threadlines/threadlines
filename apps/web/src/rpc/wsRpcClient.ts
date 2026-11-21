@@ -325,6 +325,7 @@ export interface WsRpcClient {
     readonly getProcessResourceHistory: RpcUnaryMethod<
       typeof WS_METHODS.serverGetProcessResourceHistory
     >;
+    readonly getThreadCpuUsage: RpcUnaryNoArgMethod<typeof WS_METHODS.serverGetThreadCpuUsage>;
     readonly signalProcess: RpcUnaryMethod<typeof WS_METHODS.serverSignalProcess>;
     readonly resolveBackgroundRuns: RpcUnaryMethod<typeof WS_METHODS.serverResolveBackgroundRuns>;
     readonly readBackgroundRunOutput: RpcUnaryMethod<
@@ -1088,6 +1089,10 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
           client[WS_METHODS.serverGetProcessResourceHistory](input).pipe(
             Effect.withTracerEnabled(false),
           ),
+        ),
+      getThreadCpuUsage: () =>
+        transport.request((client) =>
+          client[WS_METHODS.serverGetThreadCpuUsage]({}).pipe(Effect.withTracerEnabled(false)),
         ),
       signalProcess: (input) =>
         transport.request((client) =>

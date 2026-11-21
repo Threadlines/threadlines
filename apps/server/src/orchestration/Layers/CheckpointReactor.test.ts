@@ -179,6 +179,7 @@ function createProviderServiceHarness(
     agentSession: () => Effect.succeed(null),
     sendSubagentInput: () => unsupported(),
     deleteThread: () => unsupported(),
+    listAgentProcesses: Effect.succeed([]),
     get streamEvents() {
       return Stream.fromPubSub(runtimeEventPubSub);
     },

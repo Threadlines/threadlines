@@ -49,6 +49,7 @@ import {
   RelayRequestId,
   type ServerConfig,
   type ServerProcessResourceHistoryResult,
+  type ServerThreadCpuUsageResult,
   type ServerProvider,
   type ServerProviderCommunity,
   type SourceControlDiscoveryResult,
@@ -60,7 +61,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 import { page, userEvent } from "vite-plus/test/browser";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 import { useState, type ReactNode } from "react";
 import {
@@ -112,6 +113,7 @@ import {
   openConnectComputerDialog,
 } from "./connections/JoinComputerDialog";
 import { DiagnosticsSettingsPanel } from "./DiagnosticsSettings";
+import { ThreadCpuUsageSection } from "./ThreadCpuUsageSection";
 import { AppearanceSettingsPanel } from "./AppearanceSettings";
 import { GeneralSettingsPanel, ProviderSettingsPanel } from "./SettingsPanels";
 import { usePlaceArrival } from "../../hooks/usePlaceArrival";
@@ -2612,6 +2614,7 @@ describe("GeneralSettingsPanel observability", () => {
         getProcessResourceHistory: vi
           .fn()
           .mockResolvedValue(createEmptyProcessResourceHistoryResult()),
+        getThreadCpuUsage: vi.fn().mockReturnValue(new Promise<never>(() => {})),
         getTraceDiagnostics: vi.fn().mockResolvedValue({
           traceFilePath: "/repo/project/.threadlines/traces.jsonl",
           scannedFilePaths: ["/repo/project/.threadlines/traces.jsonl"],
@@ -2650,6 +2653,76 @@ describe("GeneralSettingsPanel observability", () => {
     expect(openInEditor).toHaveBeenCalledWith("/repo/project/.threadlines/logs", "cursor");
   });
 
+  it("orders CPU by thread by the last minute's average, not by each refresh", async () => {
+    const focus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    onTestFinished(() => focus.mockRestore());
+    const read = (
+      groups: ReadonlyArray<{
+        readonly id: "threadlines" | "opencode" | "thread";
+        readonly avg: number;
+        readonly now: number;
+      }>,
+    ): ServerThreadCpuUsageResult => ({
+      readAt: makeUtc("2036-04-07T00:00:00.000Z"),
+      windowMs: 60_000,
+      coreCount: 18,
+      machineCpuPercent: 940,
+      groups: groups.map(({ id, avg, now }) => {
+        const numbers = {
+          cpuPercent: now,
+          avgCpuPercent: avg,
+          rssBytes: 64 * 1024 * 1024,
+          processCount: 2,
+          topProcesses: [
+            { pid: 42, command: "/usr/local/bin/node vitest run", cpuPercent: now, rssBytes: 1024 },
+          ],
+        };
+        return id === "thread"
+          ? { kind: "thread", threadId: ThreadId.make("thread-gone"), ...numbers }
+          : id === "opencode"
+            ? { kind: "shared", provider: ProviderDriverKind.make("opencode"), ...numbers }
+            : { kind: "threadlines", ...numbers };
+      }),
+      error: Option.none(),
+    });
+    const getThreadCpuUsage = vi
+      .fn()
+      .mockResolvedValueOnce(
+        read([
+          { id: "threadlines", avg: 50, now: 10 },
+          { id: "thread", avg: 300, now: 5 },
+          { id: "opencode", avg: 120, now: 400 },
+        ]),
+      )
+      .mockResolvedValue(
+        read([
+          { id: "threadlines", avg: 60, now: 900 },
+          { id: "thread", avg: 290, now: 0 },
+          { id: "opencode", avg: 130, now: 20 },
+        ]),
+      );
+    window.nativeApi = { server: { getThreadCpuUsage } } as unknown as LocalApi;
+
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
+        <ThreadCpuUsageSection refreshMs={20} />
+      </TestAppProviders>,
+    );
+
+    const order = async () =>
+      (await page.getByTestId("thread-cpu-row").all()).map((row) =>
+        row.element().getAttribute("data-group"),
+      );
+    await expect.element(page.getByText("9.4 of 18 cores busy", { exact: false })).toBeVisible();
+    await expect.element(page.getByText("OpenCode", { exact: true })).toBeVisible();
+    await expect.element(page.getByText("A thread not listed here")).toBeVisible();
+    expect(await order()).toEqual(["thread:thread-gone", "shared:opencode", "threadlines"]);
+
+    await vi.waitFor(() => expect(getThreadCpuUsage.mock.calls.length).toBeGreaterThanOrEqual(2));
+    await expect.element(page.getByText("900%", { exact: true })).toBeVisible();
+    expect(await order()).toEqual(["thread:thread-gone", "shared:opencode", "threadlines"]);
+  });
+
   it("uses native-layout skeletons while diagnostics are initially loading", async () => {
     const pendingDiagnostics = new Promise<never>(() => {});
     window.nativeApi = {
@@ -2661,6 +2734,7 @@ describe("GeneralSettingsPanel observability", () => {
       server: {
         getProcessDiagnostics: vi.fn().mockReturnValue(pendingDiagnostics),
         getProcessResourceHistory: vi.fn().mockReturnValue(pendingDiagnostics),
+        getThreadCpuUsage: vi.fn().mockReturnValue(pendingDiagnostics),
         getTraceDiagnostics: vi.fn().mockReturnValue(pendingDiagnostics),
       },
     } as unknown as LocalApi;

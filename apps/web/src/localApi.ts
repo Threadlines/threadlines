@@ -173,6 +173,7 @@ function createBrowserLocalApi(resolveRpcClient?: () => WsRpcClient | null): Loc
       getProcessDiagnostics: () => withServer((server) => server.getProcessDiagnostics()),
       getProcessResourceHistory: (input) =>
         withServer((server) => server.getProcessResourceHistory(input)),
+      getThreadCpuUsage: () => withServer((server) => server.getThreadCpuUsage()),
       signalProcess: (input) => withServer((server) => server.signalProcess(input)),
       resolveBackgroundRuns: (input) => withServer((server) => server.resolveBackgroundRuns(input)),
       stopBackgroundRun: (input) => withServer((server) => server.stopBackgroundRun(input)),
