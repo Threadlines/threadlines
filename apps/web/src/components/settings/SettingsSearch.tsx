@@ -4,7 +4,8 @@ import { useNavigate } from "@tanstack/react-router";
 import { ChevronRightIcon } from "lucide-react";
 import { createContext, type ReactNode, useCallback, useContext, useMemo } from "react";
 
-import { nextPlaceArrivalHash, placeScope, resolvePlaceLink } from "../../appPlaceLinks";
+import { placeScope, resolvePlaceLink } from "../../appPlaceLinks";
+import { nextPlaceArrivalHash } from "../../placeArrival";
 import { PLACE_COPIES_ATTRIBUTE } from "../../hooks/usePlaceArrival";
 import { usePrimaryEnvironmentId } from "../../environments/primary/context";
 import { isElectron } from "../../env";

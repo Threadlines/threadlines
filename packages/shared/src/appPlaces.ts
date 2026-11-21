@@ -13,6 +13,7 @@
  * not listed one by one: their section is the place, and its `about` says what
  * each row holds.
  */
+import { PLACE_HREF_SCHEME } from "./placeHref.ts";
 import type {
   AgentInvitesMode,
   AgentThreadsMode,
@@ -2094,7 +2095,7 @@ export function placeRoute(id: PlaceId): AppPlaceRoute {
 }
 
 /** The link scheme for places in chat markdown (the desktop app owns `threadlines://`). */
-export const PLACE_HREF_SCHEME = "threadlines-place:";
+export { PLACE_HREF_SCHEME };
 
 export const placeHref = (id: PlaceId): string => `${PLACE_HREF_SCHEME}${id}`;
 

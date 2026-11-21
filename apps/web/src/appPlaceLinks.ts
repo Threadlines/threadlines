@@ -1,14 +1,14 @@
 /**
  * Place links in the chat (docs/design/app-guide.md, "Place links in the chat"):
- * what a `threadlines-place:<id>` link does when clicked, and the `#place=`
- * hash that tells the page it opens which place to highlight. Pure, so the
- * chip (components/chat/PlaceLink.tsx) and the arrival hook
- * (hooks/usePlaceArrival.ts) read the same answers.
+ * what a `threadlines-place:<id>` link does when clicked, and which place a
+ * page's `#place=` hash asks to highlight (placeArrival.ts makes the hash).
+ * Pure, so the chip (components/chat/PlaceLink.tsx) and the arrival hook
+ * (hooks/usePlaceArrival.ts) read the same answers. It reads the place
+ * catalog, so keep it out of code that loads at startup.
  */
 import type { EnvironmentId } from "@threadlines/contracts";
 import {
   currentPlaceId,
-  PLACE_HREF_SCHEME,
   type PlaceId,
   placeChain,
   placeIdFromHref,
@@ -31,9 +31,6 @@ export type PlaceLinkTarget =
       readonly environmentId: EnvironmentId;
     }
   | { readonly kind: "desktopOnly"; readonly placeId: PlaceId };
-
-/** Whether an href is a place link at all, known to this build or not. */
-export const isPlaceLinkHref = (href: string): boolean => href.startsWith(PLACE_HREF_SCHEME);
 
 /** Where a place's value lives: its own scope, else the nearest holder's, else the computer. */
 export function placeScope(placeId: PlaceId) {
@@ -108,25 +105,6 @@ export function resolvePlaceLink(input: {
     threadEnvironmentId !== primaryEnvironmentId
     ? { kind: "elsewhere", placeId, environmentId: threadEnvironmentId }
     : here;
-}
-
-/**
- * The hash a place link opens its page with. `click` changes on every click, so
- * clicking the same link again highlights the place again.
- */
-export const placeArrivalHash = (placeId: PlaceId, click: number): string =>
-  new URLSearchParams({ place: placeId, n: String(click) }).toString();
-
-let placeArrivals = 0;
-
-/**
- * The hash for opening a place now: each opening gets its own number, so
- * opening the same place again (a chip, a settings search result) highlights
- * it again.
- */
-export function nextPlaceArrivalHash(placeId: PlaceId): string {
-  placeArrivals += 1;
-  return placeArrivalHash(placeId, placeArrivals);
 }
 
 /** The place a route hash (without its `#`) asks to highlight, or null. */

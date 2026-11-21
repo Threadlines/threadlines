@@ -89,7 +89,7 @@ import {
 } from "./pull-requests/PullRequestHoverCard";
 import { pullRequestBadgeTone } from "./pull-requests/pullRequests.logic";
 import { parsePullRequestUrl } from "@threadlines/shared/sourceControl";
-import { isPlaceLinkHref } from "../appPlaceLinks";
+import { isPlaceLinkHref } from "@threadlines/shared/placeHref";
 import { isBrowserPanelHref } from "./browser/openInBrowserPanel";
 import {
   type MarkdownFileLinkKind,

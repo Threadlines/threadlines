@@ -37,7 +37,7 @@ import {
   isProviderPlanGateReply,
 } from "@threadlines/shared/providerPlan";
 import { renderThreadContextSeed, withContextSeedPreamble } from "@threadlines/shared/contextSeed";
-import { countTextReplacementStats } from "@threadlines/shared/diffStats";
+import { countTextReplacementStats } from "@threadlines/shared/textReplacementStats";
 import { randomUUIDv4 } from "@threadlines/shared/uuid";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";

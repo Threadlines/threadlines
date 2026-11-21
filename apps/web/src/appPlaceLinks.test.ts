@@ -2,7 +2,8 @@ import { EnvironmentId } from "@threadlines/contracts";
 import { placeHref } from "@threadlines/shared/appPlaces";
 import { describe, expect, it } from "vite-plus/test";
 
-import { placeArrivalHash, placeIdFromArrivalHash, resolvePlaceLink } from "./appPlaceLinks";
+import { placeIdFromArrivalHash, resolvePlaceLink } from "./appPlaceLinks";
+import { placeArrivalHash } from "./placeArrival";
 
 const THIS_MAC = EnvironmentId.make("environment-this-mac");
 const WINDOWS_PC = EnvironmentId.make("environment-windows-pc");

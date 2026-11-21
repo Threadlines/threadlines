@@ -17,7 +17,7 @@ import { PROJECT_BRIEF_MAX_CHARS } from "@threadlines/contracts";
 import type { PlaceId } from "@threadlines/shared/appPlaces";
 import { useCallback } from "react";
 
-import { nextPlaceArrivalHash } from "./appPlaceLinks";
+import { nextPlaceArrivalHash } from "./placeArrival";
 import { usePrimaryEnvironmentDescriptor } from "./environments/primary";
 import { readEnvironmentConnection, useSavedEnvironmentRuntimeStore } from "./environments/runtime";
 import { useProjectContextSnapshots } from "./projectContext";
