@@ -1856,7 +1856,14 @@ describe("ChatView (full app): app shell", () => {
       // A finger can't hover for the tooltip: each icon says its name.
       await expect
         .element(page.getByTestId("sidebar-destination-row"))
-        .toMatchTextContent(/Threads.*Chats.*Settings/);
+        .toMatchTextContent(/Threads.*Chats.*Shells.*Settings/);
+      // Every destination fits the phone's width, Settings last.
+      const row = document.querySelector<HTMLElement>('[data-testid="sidebar-destination-row"]')!;
+      expect(row.scrollWidth).toBeLessThanOrEqual(row.clientWidth);
+      const settingsButton = row.querySelector<HTMLElement>('[data-testid="rail-settings"]')!;
+      expect(settingsButton.getBoundingClientRect().right).toBeLessThanOrEqual(
+        row.getBoundingClientRect().right,
+      );
       // The page shows a thumb's width beside the sheet: a strip to tap it shut.
       const sheet = document.querySelector<HTMLElement>(
         '[data-slot="sidebar"][data-mobile="true"]',
