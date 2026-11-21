@@ -3,7 +3,9 @@
  * it is back (`subscribeServerStalls`).
  *
  * A timer samples the clocks every half second. When the next sample comes
- * five seconds or more late, the server couldn't answer for that long:
+ * two seconds or more late, the server couldn't answer for that long. Every
+ * such freeze goes to the log; clients hear only of those of five seconds or
+ * more, about where their heartbeat gives up. A freeze is classified as:
  *
  * - its event loop was occupied the whole time: Threadlines was busy with its
  *   own work when its database calls or its CPU time cover the gap (the
@@ -35,8 +37,12 @@
  * Only the latest freeze is kept, and only reported for ten minutes after it
  * ended. Sampling reads clocks and counters only; the load average is read
  * once a gap is found (`os.cpus()` is too slow on some Linux machines to read
- * twice a second).
+ * twice a second). When the cause lies outside Threadlines (`overloaded`,
+ * `unknown`), the log line also names the busiest programs on the computer,
+ * read with `ps` after the freeze: program names and CPU shares only, never
+ * their arguments, and only into the local log.
  */
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
 import { performance } from "node:perf_hooks";
@@ -55,7 +61,9 @@ import { readDatabaseCallMs } from "./databaseCallTime.ts";
 
 /** How often the clocks are read. */
 export const STALL_SAMPLE_INTERVAL_MS = 500;
-/** A gap this long is a freeze: about where a client's heartbeat gives up. */
+/** A gap this long is a freeze, and goes to the log. */
+export const STALL_LOG_MIN_MS = 2_000;
+/** A freeze this long is reported to clients: about where their heartbeat gives up. */
 export const STALL_MIN_MS = 5_000;
 /** Past this, only Threadlines' own CPU time makes a gap a freeze (see the module comment). */
 export const STALL_UNEXPLAINED_MAX_MS = 2 * 60_000;
@@ -105,9 +113,10 @@ export function classifyStall(
 ): ClassifiedStall | null {
   const wallGap = next.wallMs - previous.wallMs;
   const monoGap = next.monoMs - previous.monoMs;
-  if (monoGap < STALL_MIN_MS) return null;
-  // The wall clock ran well ahead: asleep (Linux) or the clock was set.
-  if (wallGap - monoGap >= STALL_MIN_MS) return null;
+  if (monoGap < STALL_LOG_MIN_MS) return null;
+  // The wall clock ran ahead by as much as a freeze: asleep (Linux) or the
+  // clock was set, and the gap can't be read as a freeze.
+  if (wallGap - monoGap >= STALL_LOG_MIN_MS) return null;
 
   const durationMs = Math.round(monoGap);
   const occupied = next.loopActiveMs - previous.loopActiveMs >= OCCUPIED_SHARE * monoGap;
@@ -165,6 +174,67 @@ function readMachineLoad(): MachineLoad {
     reported: process.platform !== "win32",
   };
 }
+
+/** How many of the busiest programs a freeze's log line names. */
+const TOP_PROCESS_COUNT = 5;
+/** How long reading the process table may take before the line is logged without it. */
+const TOP_PROCESS_TIMEOUT_MS = 1_500;
+
+/**
+ * The busiest programs in `ps -A -o pcpu=,comm=` output, as "name 12.3%".
+ * `comm` never holds arguments, and of a full path (as macOS gives it) only
+ * the last part is kept: a path can name the user or a project.
+ */
+export function parseTopProcesses(output: string, limit = TOP_PROCESS_COUNT): string[] {
+  const processes: { readonly name: string; readonly cpu: number }[] = [];
+  for (const line of output.split("\n")) {
+    const match = /^\s*(\d+(?:\.\d+)?)\s+(.+?)\s*$/.exec(line);
+    if (!match) continue;
+    const command = match[2]!;
+    // A Linux `comm` can hold a slash of its own ("kworker/u8:2"); only a
+    // path, absolute or relative, is cut down to its last part.
+    const isPath = command.startsWith("/") || command.startsWith(".");
+    const name = isPath ? (command.split("/").at(-1) ?? "") : command;
+    if (name.length === 0) continue;
+    processes.push({ name, cpu: Number(match[1]) });
+  }
+  return processes
+    .toSorted((left, right) => right.cpu - left.cpu)
+    .slice(0, limit)
+    .map((entry) => `${entry.name} ${entry.cpu.toFixed(1)}%`);
+}
+
+/**
+ * The busiest programs right now, or none on Windows or when `ps` can't
+ * start, fails, or is slow. Gives up after the timeout even when the child
+ * won't exit, and kills it on the way out.
+ */
+const readTopProcesses: Effect.Effect<ReadonlyArray<string>> =
+  process.platform === "win32"
+    ? Effect.succeed([])
+    : Effect.callback<ReadonlyArray<string>>((resume) => {
+        try {
+          const child = execFile(
+            "ps",
+            ["-A", "-o", "pcpu=,comm="],
+            {
+              timeout: TOP_PROCESS_TIMEOUT_MS,
+              killSignal: "SIGKILL",
+              maxBuffer: 4 * 1024 * 1024,
+              // A decimal point, not a locale's comma.
+              env: { ...process.env, LC_ALL: "C" },
+            },
+            (error, stdout) => resume(Effect.succeed(error ? [] : parseTopProcesses(stdout))),
+          );
+          return Effect.sync(() => child.kill("SIGKILL"));
+        } catch {
+          resume(Effect.succeed([]));
+          return;
+        }
+      }).pipe(
+        Effect.timeoutOption(Duration.millis(TOP_PROCESS_TIMEOUT_MS + 500)),
+        Effect.map(Option.getOrElse((): ReadonlyArray<string> => [])),
+      );
 
 export interface RecordedStall extends ClassifiedStall {
   readonly id: string;
@@ -229,6 +299,33 @@ const make = Effect.gen(function* () {
       : Effect.void,
   );
 
+  const logStall = (stall: RecordedStall, topProcesses: ReadonlyArray<string>) =>
+    Effect.logWarning("server froze", {
+      cause: stall.cause,
+      durationMs: stall.durationMs,
+      ...(stall.databaseMs !== undefined ? { databaseMs: stall.databaseMs } : {}),
+      ...(stall.load ? { load: stall.load } : {}),
+      ...(topProcesses.length > 0 ? { topProcesses } : {}),
+    });
+
+  // When something outside Threadlines froze it, the log names the busiest
+  // programs. The process table is read in its own fiber, so the sampling
+  // and what clients are told never wait on it.
+  const record = (stall: RecordedStall) =>
+    Effect.gen(function* () {
+      if (stall.cause === "overloaded" || stall.cause === "unknown") {
+        yield* Effect.forkIn(
+          Effect.flatMap(readTopProcesses, (top) => logStall(stall, top)),
+          scope,
+        );
+      } else {
+        yield* logStall(stall, []);
+      }
+      if (stall.durationMs >= STALL_MIN_MS) {
+        yield* SubscriptionRef.set(latest, Option.some(stall));
+      }
+    });
+
   const watch = Effect.sync(() => {
     const next = readSample();
     const stall = classifyStall(previous, next, readMachineLoad);
@@ -242,18 +339,7 @@ const make = Effect.gen(function* () {
       endedAtWallMs: next.wallMs,
     });
   }).pipe(
-    Effect.flatMap((recorded) =>
-      Option.isSome(recorded)
-        ? Effect.logWarning("server froze", {
-            cause: recorded.value.cause,
-            durationMs: recorded.value.durationMs,
-            ...(recorded.value.databaseMs !== undefined
-              ? { databaseMs: recorded.value.databaseMs }
-              : {}),
-            ...(recorded.value.load ? { load: recorded.value.load } : {}),
-          }).pipe(Effect.andThen(SubscriptionRef.set(latest, recorded)))
-        : expireOld,
-    ),
+    Effect.flatMap((recorded) => (Option.isSome(recorded) ? record(recorded.value) : expireOld)),
     Effect.repeat(Schedule.spaced(Duration.millis(STALL_SAMPLE_INTERVAL_MS))),
   );
 

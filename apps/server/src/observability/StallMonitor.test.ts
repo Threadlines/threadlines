@@ -3,6 +3,7 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   classifyStall,
   type MachineLoad,
+  parseTopProcesses,
   reportableStall,
   STALL_REPORT_WINDOW_MS,
   type StallSample,
@@ -80,6 +81,11 @@ describe("classifyStall", () => {
       durationMs: 9_000,
       load: { average1m: 219.4, cpuCount: 18 },
     });
+    // From two seconds on, a freeze is caught (for the log; clients hear of it from five).
+    expect(classifyStall(START, after(2_500, { loop: 0.98, cpu: 0.95 }), idleMachine)).toEqual({
+      cause: "busy",
+      durationMs: 2_500,
+    });
     // Occupied without the CPU to show for it, on a quiet computer: a slow disk, say.
     expect(classifyStall(START, after(6_000, { loop: 0.9, cpu: 0.1 }), idleMachine)).toEqual({
       cause: "unknown",
@@ -89,6 +95,9 @@ describe("classifyStall", () => {
 
   it("says nothing when the server could answer, or when it slept", () => {
     expect(classifyStall(START, after(500, { loop: 0.2, cpu: 0.1 }), idleMachine)).toBeNull();
+    expect(classifyStall(START, after(1_900, { loop: 1, cpu: 1 }), idleMachine)).toBeNull();
+    // A short Linux sleep, or the clock set forward a few seconds, mid-freeze.
+    expect(classifyStall(START, after(3_000, { loop: 1, cpu: 1 }, 2_500), idleMachine)).toBeNull();
     // The wall clock ran on while the monotonic one stood still: a Linux sleep,
     // or the clock being set. No freeze.
     expect(
@@ -140,5 +149,34 @@ describe("reportableStall", () => {
   it("ages a freeze by the wall clock too, so a sleep since doesn't make it fresh", () => {
     // Asked right after an hour of Linux sleep: the monotonic clock barely moved.
     expect(reportableStall(recorded, { monoMs: 2_000, wallMs: 5_000_000 + 3_600_000 })).toBeNull();
+  });
+});
+
+describe("parseTopProcesses", () => {
+  it("names the busiest programs without their paths", () => {
+    const macOs = [
+      " 12.0 /usr/libexec/logd",
+      " 85.0 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome Helper (Renderer)",
+      "  0.0 /Users/someone/secret-project/bin/tool",
+      " 72.4 /Users/someone/Library/App.app/App",
+      "  3.1 kernel_task",
+      " 40.5 /usr/bin/node",
+      "  9.9 /sbin/launchd",
+      "",
+    ].join("\n");
+    expect(parseTopProcesses(macOs)).toEqual([
+      "Google Chrome Helper (Renderer) 85.0%",
+      "App 72.4%",
+      "node 40.5%",
+      "logd 12.0%",
+      "launchd 9.9%",
+    ]);
+    // Linux gives the kernel's short name, which can hold a slash of its own.
+    expect(parseTopProcesses("  1.5 kworker/u8:2\n 30.0 node\ngarbage line\n")).toEqual([
+      "node 30.0%",
+      "kworker/u8:2 1.5%",
+    ]);
+    // A process can name itself with a relative path.
+    expect(parseTopProcesses(" 91.0 ./private/tool\n")).toEqual(["tool 91.0%"]);
   });
 });

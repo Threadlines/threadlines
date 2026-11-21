@@ -51,6 +51,11 @@ const setup = (readAhead?: Effect.Effect<void>) =>
       // pages the next one needed: repeated thread loads on payload-heavy chats
       // took about twice as long.
       yield* sql`PRAGMA cache_size = -32768;`;
+      // The WAL file never shrinks on its own: a reader that holds a snapshot
+      // while many commits land (a long read, a storage prune) grows it to
+      // hundreds of megabytes and it stays that size. With a limit, SQLite
+      // trims it back once a checkpoint lets the WAL start over.
+      yield* sql`PRAGMA journal_size_limit = 33554432;`;
       yield* runMigrations({ readAhead });
       yield* Effect.addFinalizer(() => Effect.ignore(sql`PRAGMA optimize;`));
     }),

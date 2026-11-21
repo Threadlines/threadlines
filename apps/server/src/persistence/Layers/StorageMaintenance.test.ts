@@ -7,7 +7,7 @@ import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { StorageMaintenance } from "../Services/StorageMaintenance.ts";
-import { StorageMaintenanceLive } from "./StorageMaintenance.ts";
+import { DELETE_BATCH_SIZE, StorageMaintenanceLive } from "./StorageMaintenance.ts";
 import { SqlitePersistenceMemory } from "./Sqlite.ts";
 
 const layer = it.layer(StorageMaintenanceLive.pipe(Layer.provideMerge(SqlitePersistenceMemory)));
@@ -206,6 +206,50 @@ layer("StorageMaintenance", (it) => {
       assert.equal(remainingActivities[0]?.oldest, base + excess);
       // Non-activity events for the thread are untouched.
       assert.equal(yield* countEvents(sql, "thread-busy"), MAX_THREAD_ACTIVITIES + 1);
+    }),
+  );
+
+  it.effect("lets the event loop turn between delete batches", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const storageMaintenance = yield* StorageMaintenance;
+
+      // Several full batches and a last partial one.
+      const base = 80_000;
+      const excess = DELETE_BATCH_SIZE * 8 + 1;
+      for (let index = 0; index < MAX_THREAD_ACTIVITIES + excess; index += 1) {
+        yield* insertEvent(sql, {
+          sequence: base + index,
+          streamId: "thread-long",
+          eventType: "thread.activity-appended",
+        });
+      }
+      yield* setProjectorCheckpoint(sql, base + MAX_THREAD_ACTIVITIES + excess);
+
+      // Counts turns of the event loop while the prune runs: a callback that
+      // queues itself again runs once per turn, and only when nothing holds
+      // the loop.
+      let running = true;
+      let turns = 0;
+      const countTurn = () => {
+        if (!running) return;
+        turns += 1;
+        setImmediate(countTurn);
+      };
+      setImmediate(countTurn);
+
+      const report = yield* storageMaintenance.runOnce.pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            running = false;
+          }),
+        ),
+      );
+
+      assert.equal(report.deletedActivityEvents, excess);
+      // One turn after every delete transaction, the partial last one too.
+      // All in one hold, the loop would not turn at all.
+      assert.isAtLeast(turns, Math.ceil(excess / DELETE_BATCH_SIZE));
     }),
   );
 
