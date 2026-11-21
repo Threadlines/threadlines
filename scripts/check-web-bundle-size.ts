@@ -61,6 +61,12 @@ const DEFAULT_ENTRY_GZIP_BUDGET_BYTES = 255_000;
 // catalog loads with Settings, not at startup (about 14 KB), and the
 // Antigravity icon's PNG became a file of its own while the editor and
 // Jujutsu icons moved to ToolIcons.tsx (about 17 KB).
+// Measured 894,411 B here (2026-11-20), down from 912,236 B: the project
+// menu's brief link had pulled the place catalog back into startup through
+// appPlaceLinks.ts (its arrival hash now comes from placeArrival.ts, and the
+// chat's place-link check from @threadlines/shared/placeHref), about 13.5 KB;
+// and the `diff` library left diffStats.ts for textReplacementStats.ts, which
+// only the server loads, about 4.3 KB.
 const DEFAULT_STARTUP_GZIP_BUDGET_BYTES = 915_000;
 
 const entryBudgetBytes = Number(

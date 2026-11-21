@@ -13,7 +13,7 @@ import remarkMath from "remark-math";
 
 import { type PlaceId, placePathLabel } from "@threadlines/shared/appPlaces";
 
-import { isPlaceLinkHref } from "../appPlaceLinks";
+import { isPlaceLinkHref } from "@threadlines/shared/placeHref";
 import { parseChatFileReference } from "../fileViewerStore";
 import {
   fileLinkMetaForPath,

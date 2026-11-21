@@ -287,6 +287,10 @@
       "types": "./src/diffStats.ts",
       "import": "./src/diffStats.ts"
     },
+    "./textReplacementStats": {
+      "types": "./src/textReplacementStats.ts",
+      "import": "./src/textReplacementStats.ts"
+    },
     "./contextSeed": {
       "types": "./src/contextSeed.ts",
       "import": "./src/contextSeed.ts"
@@ -446,6 +450,10 @@
     "./appPlaces": {
       "types": "./src/appPlaces.ts",
       "import": "./src/appPlaces.ts"
+    },
+    "./placeHref": {
+      "types": "./src/placeHref.ts",
+      "import": "./src/placeHref.ts"
     },
     "./placeSearch": {
       "types": "./src/placeSearch.ts",

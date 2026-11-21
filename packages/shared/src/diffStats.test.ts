@@ -1,10 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import {
-  countStructuredPatchStats,
-  countTextReplacementStats,
-  countUnifiedDiffStats,
-} from "./diffStats.ts";
+import { countStructuredPatchStats, countUnifiedDiffStats } from "./diffStats.ts";
+import { countTextReplacementStats } from "./textReplacementStats.ts";
 
 describe("countUnifiedDiffStats", () => {
   it("counts added and removed lines, skipping file headers", () => {
