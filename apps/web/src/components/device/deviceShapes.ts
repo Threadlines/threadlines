@@ -25,7 +25,13 @@ export type DeviceCutout =
       readonly top: number;
     }
   | { readonly kind: "notch"; readonly width: number; readonly height: number }
-  | { readonly kind: "punch"; readonly diameter: number; readonly top: number };
+  | {
+      readonly kind: "punch";
+      readonly diameter: number;
+      readonly top: number;
+      /** The hole's center from the screen's left edge; centered when left out. */
+      readonly centerX?: number;
+    };
 
 export interface DeviceBody {
   /** The screen, upright. The simulator's reported aspect replaces `height` when it differs. */
@@ -142,7 +148,10 @@ const DUO_COVER: DeviceBody = {
     { edge: "top", offset: 316, length: 66 },
     { edge: "right", offset: 202, length: 113 },
   ],
-  cutout: ISLAND,
+  // A round camera hole near the top right, as the simulator draws it into the
+  // cover's framebuffer (measured on iOS 27.2 24B91016s: 111 px across, centered
+  // at 1254 × 143 px of 1398 × 2034, at 3x), not the iPhones' island.
+  cutout: { kind: "punch", diameter: 37, top: 29.2, centerX: 418 },
 };
 const DUO_INNER: DeviceBody = {
   screen: { width: 951, height: 669 },

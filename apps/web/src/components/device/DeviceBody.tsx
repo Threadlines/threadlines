@@ -1,5 +1,6 @@
 import type { CSSProperties, ReactNode } from "react";
 
+import { cn } from "~/lib/utils";
 import { type BodyBox, DEVICE_BUTTON_DEPTH, type QuarterTurn } from "./deviceFrameLayout";
 import type { DeviceBody } from "./deviceShapes";
 
@@ -175,11 +176,18 @@ export function DeviceBodyView(props: {
         ) : cutout?.kind === "punch" ? (
           <span
             aria-hidden
-            className="pointer-events-none absolute left-1/2 -translate-x-1/2 rounded-full bg-black"
+            data-testid="device-punch"
+            className={cn(
+              "pointer-events-none absolute rounded-full bg-black",
+              cutout.centerX === undefined && "left-1/2 -translate-x-1/2",
+            )}
             style={{
               top: cutout.top * scale,
               width: cutout.diameter * scale,
               height: cutout.diameter * scale,
+              ...(cutout.centerX === undefined
+                ? {}
+                : { left: (cutout.centerX - cutout.diameter / 2) * scale }),
             }}
           />
         ) : null}
