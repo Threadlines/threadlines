@@ -209,6 +209,49 @@ layer("StorageMaintenance", (it) => {
     }),
   );
 
+  it.effect("lets the event loop turn between delete batches", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const storageMaintenance = yield* StorageMaintenance;
+
+      // Enough excess activity for several batches.
+      const base = 80_000;
+      const excess = 200;
+      for (let index = 0; index < MAX_THREAD_ACTIVITIES + excess; index += 1) {
+        yield* insertEvent(sql, {
+          sequence: base + index,
+          streamId: "thread-long",
+          eventType: "thread.activity-appended",
+        });
+      }
+      yield* setProjectorCheckpoint(sql, base + MAX_THREAD_ACTIVITIES + excess);
+
+      // Counts turns of the event loop while the prune runs: a callback that
+      // queues itself again runs once per turn, and only when nothing holds
+      // the loop.
+      let running = true;
+      let turns = 0;
+      const countTurn = () => {
+        if (!running) return;
+        turns += 1;
+        setImmediate(countTurn);
+      };
+      setImmediate(countTurn);
+
+      const report = yield* storageMaintenance.runOnce.pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            running = false;
+          }),
+        ),
+      );
+
+      assert.equal(report.deletedActivityEvents, excess);
+      // All in one hold, the loop would not turn at all.
+      assert.isAtLeast(turns, 4);
+    }),
+  );
+
   it.effect("caps activity pruning at the projector checkpoint", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
