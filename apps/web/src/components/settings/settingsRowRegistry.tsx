@@ -64,6 +64,7 @@ import {
   ContinueAfterUsageLimitsRow,
   ContinueAfterRestartRow,
   DefaultThreadEnvModeRow,
+  GeneralChatsPlacementRow,
   NewThreadAgentRow,
   NewThreadRoomRow,
   NewWorktreeBaseRow,
@@ -160,6 +161,7 @@ export const SETTINGS_ROWS = {
   "threads.wrapUpChildren": live(WrapUpChildThreadsRow),
   "threads.confirmArchive": live(ConfirmArchiveRow),
   "threads.confirmDelete": live(ConfirmDeleteRow),
+  "threads.generalChats": live(GeneralChatsPlacementRow),
   // Agent Instructions: one setting for every project on this computer.
   "instructions.notesMode": live(() => <ProjectNotesModeRow />),
   // Archives: each row reads the page's archived and inactive thread lists.

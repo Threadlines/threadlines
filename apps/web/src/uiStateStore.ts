@@ -43,6 +43,8 @@ export interface PersistedUiState {
   collapsedInboxGroups?: Record<string, boolean>;
   /** See `UiInboxState.inboxWrappedOpen`. */
   inboxWrappedOpen?: boolean;
+  /** See `UiInboxState.inboxGeneralChatsOpen`. */
+  inboxGeneralChatsOpen?: boolean;
   /** See `UiLayoutState.sidebarListOpen`. */
   sidebarListOpen?: boolean;
 }
@@ -140,6 +142,12 @@ export interface UiInboxState {
    * threads still going. Kept on this device, like the folds above.
    */
   inboxWrappedOpen: boolean;
+  /**
+   * Whether the General chats section at the foot of the inbox is open, on a
+   * device that lists the chats there. Open is the default: the chats are
+   * live conversations, not history. Kept on this device, like the folds above.
+   */
+  inboxGeneralChatsOpen: boolean;
 }
 
 export interface UiLayoutState {
@@ -199,6 +207,7 @@ const initialState: UiState = {
   inboxEnvironmentScopeId: null,
   collapsedInboxGroups: {},
   inboxWrappedOpen: false,
+  inboxGeneralChatsOpen: true,
   sidebarListOpen: true,
   sidebarListFloats: false,
   sidebarFloatingListOpen: false,
@@ -259,6 +268,7 @@ export function readPersistedState(): UiState {
       childThreadFamilyOpenById: sanitizePersistedBooleanRecord(parsed.childThreadFamilyOpenById),
       collapsedInboxGroups: sanitizePersistedBooleanRecord(parsed.collapsedInboxGroups),
       inboxWrappedOpen: parsed.inboxWrappedOpen === true,
+      inboxGeneralChatsOpen: parsed.inboxGeneralChatsOpen !== false,
       sidebarListOpen: parsed.sidebarListOpen !== false,
     };
   } catch {
@@ -496,6 +506,7 @@ export function persistState(state: UiState): void {
         childThreadFamilyOpenById: state.childThreadFamilyOpenById,
         collapsedInboxGroups: state.collapsedInboxGroups,
         inboxWrappedOpen: state.inboxWrappedOpen,
+        inboxGeneralChatsOpen: state.inboxGeneralChatsOpen,
         sidebarListOpen: state.sidebarListOpen,
       } satisfies PersistedUiState),
     );
@@ -1165,6 +1176,7 @@ interface UiStateStore extends UiState {
   setChildThreadFamilyOpen: (parentThreadKey: string, open: boolean) => void;
   setInboxGroupCollapsed: (groupKey: string, collapsed: boolean) => void;
   setInboxWrappedOpen: (open: boolean) => void;
+  setInboxGeneralChatsOpen: (open: boolean) => void;
   /** Shows or hides the list as it is now: beside the page, or floating over it. */
   setSidebarListShown: (open: boolean) => void;
   toggleSidebarListShown: () => void;
@@ -1217,6 +1229,10 @@ export const useUiStateStore = create<UiStateStore>((set) => ({
   setInboxWrappedOpen: (open) =>
     set((state) =>
       state.inboxWrappedOpen === open ? state : { ...state, inboxWrappedOpen: open },
+    ),
+  setInboxGeneralChatsOpen: (open) =>
+    set((state) =>
+      state.inboxGeneralChatsOpen === open ? state : { ...state, inboxGeneralChatsOpen: open },
     ),
   setSidebarListShown: (open) => set((state) => setSidebarListShown(state, open)),
   toggleSidebarListShown: () =>

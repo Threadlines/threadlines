@@ -43,10 +43,12 @@ function resolveChatGroup(activityAt: string, nowMs: number): ChatGroupId {
 
 /**
  * Every connected computer's general chats, newest first, and a way to start
- * one. The General Chats list beside the rail, the phone's chats page and
- * previous/next read the same order.
+ * one. The General Chats list beside the rail, the phone's chats page, the
+ * General chats section of Threads and previous/next read the same order.
+ * `environmentId` narrows both to one computer, as the Threads list's
+ * computer filter does: only its chats, and new ones start there.
  */
-export function useGeneralChats(): {
+export function useGeneralChats(options?: { readonly environmentId: string | null }): {
   readonly chats: readonly SidebarThreadSummary[];
   /**
    * Null while no computer has a General Chats project to start one in.
@@ -61,15 +63,21 @@ export function useGeneralChats(): {
   const activeEnvironmentId = useStore((state) => state.activeEnvironmentId);
   const primaryEnvironmentId = usePrimaryEnvironmentId();
 
-  const generalChatsProjectRef = useMemo(
-    () =>
-      resolveGeneralChatsProjectRef({
-        generalChatsProject,
-        activeEnvironmentId,
-        primaryEnvironmentId,
-      }),
-    [activeEnvironmentId, generalChatsProject, primaryEnvironmentId],
-  );
+  const onlyEnvironmentId = options?.environmentId ?? null;
+  const generalChatsProjectRef = useMemo(() => {
+    if (onlyEnvironmentId !== null) {
+      const project = projects.find(
+        (candidate) =>
+          candidate.kind === "general-chat" && candidate.environmentId === onlyEnvironmentId,
+      );
+      return project ? scopeProjectRef(project.environmentId, project.id) : null;
+    }
+    return resolveGeneralChatsProjectRef({
+      generalChatsProject,
+      activeEnvironmentId,
+      primaryEnvironmentId,
+    });
+  }, [activeEnvironmentId, generalChatsProject, onlyEnvironmentId, primaryEnvironmentId, projects]);
 
   const chats = useMemo(() => {
     const generalChatProjectKeys = new Set(
@@ -81,12 +89,13 @@ export function useGeneralChats(): {
       threads.filter(
         (thread) =>
           thread.archivedAt === null &&
+          (onlyEnvironmentId === null || thread.environmentId === onlyEnvironmentId) &&
           generalChatProjectKeys.has(
             scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
           ),
       ),
     );
-  }, [projects, threads]);
+  }, [onlyEnvironmentId, projects, threads]);
 
   const startChatInProject = useCallback(
     (initialPrompt?: string) => {

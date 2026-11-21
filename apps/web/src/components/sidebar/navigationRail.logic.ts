@@ -81,20 +81,24 @@ function isUnder(pathname: string, base: string): boolean {
 
 /**
  * The destination the rail shows selected: Threads for home, a thread or a
- * draft. A general chat open in the main view selects General Chats instead:
- * it lives there, not in the inbox.
+ * draft. A general chat open in the main view selects General Chats instead,
+ * where it lives, unless this device lists the chats in a section of Threads
+ * (`generalChatsInThreads`): then the chat, and the old General Chats page's
+ * address, are Threads too.
  */
 export function resolveSelectedDestination(input: {
   readonly pathname: string;
   readonly openThreadIsGeneralChat: boolean;
+  readonly generalChatsInThreads: boolean;
 }): NavigationDestinationId {
   const { pathname } = input;
+  const chats = input.generalChatsInThreads ? "threads" : "chats";
   if (isUnder(pathname, "/settings")) return "settings";
-  if (isUnder(pathname, "/chats")) return "chats";
+  if (isUnder(pathname, "/chats")) return chats;
   if (isUnder(pathname, "/terminals")) return "terminals";
   if (isUnder(pathname, "/pull-requests")) return "pull-requests";
   if (isUnder(pathname, "/fleet")) return "fleet";
   if (isUnder(pathname, "/scheduled")) return "scheduled";
   if (isUnder(pathname, "/usage")) return "usage";
-  return input.openThreadIsGeneralChat ? "chats" : "threads";
+  return input.openThreadIsGeneralChat ? chats : "threads";
 }

@@ -20,7 +20,8 @@ export interface InboxColumnMeasures {
   readonly liveContentHeight: number | null;
   /**
    * The column's height for live rows: under the scope menu, drafts and
-   * link requests, above the fold line and the Wrapped shelf's header.
+   * link requests, above the fold line, the Wrapped shelf's header and the
+   * General chats section.
    * Measured as if the shelf were closed even while it is open, so opening
    * it scrolls the list instead of folding rows away. Null while no live
    * list is drawn.
@@ -41,6 +42,12 @@ export interface InboxColumnMeasures {
   readonly groupHeaderPx: number | null;
   /** The tallest drawn Wrapped row; null while the shelf draws none. */
   readonly doneRowPx: number | null;
+  /**
+   * The General chats section's height, open or closed; 0 without it. It sits
+   * at the column's foot under Wrapped, so the live list and the open Wrapped
+   * shelf share what it leaves.
+   */
+  readonly chatsShelfPx: number;
 }
 
 export interface InboxColumnLayout extends InboxColumnMeasures {
@@ -58,6 +65,8 @@ export interface InboxColumnLayout extends InboxColumnMeasures {
    * `data-inbox-shelf-header` header and `data-inbox-done-row` rows.
    */
   readonly shelfRef: (element: HTMLElement | null) => void;
+  /** Ref for the General chats section, absent unless the chats are listed in Threads. */
+  readonly chatsShelfRef: (element: HTMLElement | null) => void;
 }
 
 const UNMEASURED: InboxColumnMeasures = {
@@ -69,6 +78,7 @@ const UNMEASURED: InboxColumnMeasures = {
   remoteChildRowPx: null,
   groupHeaderPx: null,
   doneRowPx: null,
+  chatsShelfPx: 0,
 };
 
 function measuresEqual(left: InboxColumnMeasures, right: InboxColumnMeasures): boolean {
@@ -80,7 +90,8 @@ function measuresEqual(left: InboxColumnMeasures, right: InboxColumnMeasures): b
     left.localChildRowPx === right.localChildRowPx &&
     left.remoteChildRowPx === right.remoteChildRowPx &&
     left.groupHeaderPx === right.groupHeaderPx &&
-    left.doneRowPx === right.doneRowPx
+    left.doneRowPx === right.doneRowPx &&
+    left.chatsShelfPx === right.chatsShelfPx
   );
 }
 
@@ -104,6 +115,7 @@ export function useInboxColumnLayout(): InboxColumnLayout {
   const [column, columnRef] = useState<HTMLElement | null>(null);
   const [liveContent, liveContentRef] = useState<HTMLElement | null>(null);
   const [shelf, shelfRef] = useState<HTMLElement | null>(null);
+  const [chatsShelf, chatsShelfRef] = useState<HTMLElement | null>(null);
   // The last height seen of each kind of row: a kind with nothing drawn
   // keeps its height, so the fold never depends on what it shows.
   const seenRef = useRef({
@@ -117,6 +129,7 @@ export function useInboxColumnLayout(): InboxColumnLayout {
   useLayoutEffect(() => {
     if (column === null || liveContent === null) return;
     const measure = () => {
+      const chatsShelfPx = chatsShelf?.offsetHeight ?? 0;
       const list = liveContent.querySelector<HTMLElement>("[data-inbox-live-list]");
       const seen = seenRef.current;
       let liveRoomPx: number | null = null;
@@ -136,7 +149,12 @@ export function useInboxColumnLayout(): InboxColumnLayout {
         const shelfHeaderPx =
           shelf?.querySelector<HTMLElement>("[data-inbox-shelf-header]")?.offsetHeight ?? 0;
         liveRoomPx =
-          column.clientHeight - shelfHeaderPx - listTop - INBOX_FOLD_LINE_PX - bottomPadding;
+          column.clientHeight -
+          chatsShelfPx -
+          shelfHeaderPx -
+          listTop -
+          INBOX_FOLD_LINE_PX -
+          bottomPadding;
       }
       let doneRowPx: number | null = null;
       for (const row of shelf?.querySelectorAll<HTMLElement>("[data-inbox-done-row]") ?? []) {
@@ -147,6 +165,7 @@ export function useInboxColumnLayout(): InboxColumnLayout {
         liveRoomPx,
         ...seen,
         doneRowPx,
+        chatsShelfPx,
       };
       setMeasures((current) => (measuresEqual(current, next) ? current : next));
     };
@@ -157,8 +176,9 @@ export function useInboxColumnLayout(): InboxColumnLayout {
     observer.observe(column);
     observer.observe(liveContent);
     if (shelf !== null) observer.observe(shelf);
+    if (chatsShelf !== null) observer.observe(chatsShelf);
     return () => observer.disconnect();
-  }, [column, liveContent, shelf]);
+  }, [chatsShelf, column, liveContent, shelf]);
 
-  return { ...measures, columnRef, liveContentRef, shelfRef };
+  return { ...measures, columnRef, liveContentRef, shelfRef, chatsShelfRef };
 }

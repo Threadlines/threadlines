@@ -506,6 +506,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.wrapUpIdleThreads !== DEFAULT_UNIFIED_SETTINGS.wrapUpIdleThreads
         ? ["Wrap up idle threads"]
         : []),
+      ...(settings.generalChatsPlacement !== DEFAULT_UNIFIED_SETTINGS.generalChatsPlacement
+        ? [placeById("threads.generalChats").title]
+        : []),
       ...(settings.wrapUpThreadsOnPullRequestSettled !==
       DEFAULT_UNIFIED_SETTINGS.wrapUpThreadsOnPullRequestSettled
         ? ["Wrap up merged threads"]
@@ -577,6 +580,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.confirmThreadArchive,
       settings.confirmThreadDelete,
       settings.wrapUpIdleThreads,
+      settings.generalChatsPlacement,
       settings.wrapUpThreadsOnPullRequestSettled,
       settings.newThreadModelSelection,
       settings.newThreadRoomAgents,
@@ -654,6 +658,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       confirmThreadArchive: DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive,
       confirmThreadDelete: DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete,
       wrapUpIdleThreads: DEFAULT_UNIFIED_SETTINGS.wrapUpIdleThreads,
+      generalChatsPlacement: DEFAULT_UNIFIED_SETTINGS.generalChatsPlacement,
       wrapUpThreadsOnPullRequestSettled: DEFAULT_UNIFIED_SETTINGS.wrapUpThreadsOnPullRequestSettled,
       newThreadModelSelection: DEFAULT_UNIFIED_SETTINGS.newThreadModelSelection,
       newThreadRoomAgents: DEFAULT_UNIFIED_SETTINGS.newThreadRoomAgents,

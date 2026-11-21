@@ -165,9 +165,12 @@ import { ThreadHoverCardProvider } from "./sidebar/ThreadHoverCard";
 import { resolveThreadActionProjectRef, startNewGeneralChatThread } from "../lib/chatThreadActions";
 import { SidebarDestinationRow, useSelectedDestination } from "./sidebar/NavigationRail";
 import { AppWordmark } from "./sidebar/AppWordmark";
+import { InboxShelfHeader } from "./sidebar/InboxShelfHeader";
 import { resolveShownDestinationList } from "./sidebar/destinationLists";
 import { useListNewThreadStore } from "./sidebar/listNewThreadStore";
 import { useGeneralChats } from "./chats/useGeneralChats";
+import { useGeneralChatsInThreads } from "./chats/generalChatsPlacement";
+import { lazyWithPreload } from "../lib/lazyWithPreload";
 import { AttentionCounts } from "./sidebar/AttentionCounts";
 import { ProjectFavicon } from "./ProjectFavicon";
 import { isRoom } from "../rooms";
@@ -343,7 +346,8 @@ function inboxLiveGroupKey(
  * chat): a section's name, its count, how many wrapped today, then a hairline
  * running out to the chevron. The whole line is the control. Open, it rises
  * with its own scroll: as tall as its rows, and no taller than leaves the
- * live list room for all of its rows or half the column, whichever is more.
+ * live list room for all of its rows or half the column, whichever is more
+ * (the column less the General chats section under it, when that is there).
  * The live list above keeps its place and scrolls in what is left.
  */
 function InboxWrappedShelf({
@@ -351,6 +355,7 @@ function InboxWrappedShelf({
   count,
   todayCount,
   liveContentHeight,
+  chatsShelfPx,
   shelfRef,
   onToggle,
   foldLine,
@@ -361,6 +366,8 @@ function InboxWrappedShelf({
   todayCount: number;
   /** See InboxColumnLayout.liveContentHeight. */
   liveContentHeight: number | null;
+  /** See InboxColumnLayout.chatsShelfPx: the room under the shelf it doesn't share. */
+  chatsShelfPx: number;
   shelfRef: (element: HTMLElement | null) => void;
   onToggle: () => void;
   /** The "Show N more…" line under the rows; open only. */
@@ -378,43 +385,31 @@ function InboxWrappedShelf({
           ? {
               maxHeight:
                 liveContentHeight === null
-                  ? "50%"
-                  : `max(50%, calc(100% - ${liveContentHeight}px))`,
+                  ? `calc((100% - ${chatsShelfPx}px) / 2)`
+                  : `max(calc((100% - ${chatsShelfPx}px) / 2), calc(100% - ${chatsShelfPx + liveContentHeight}px))`,
             }
           : undefined
       }
     >
-      <button
-        type="button"
-        data-thread-selection-safe
-        data-inbox-shelf-header
-        data-testid="inbox-done-toggle"
-        aria-expanded={open}
-        className="group/section-header flex w-full shrink-0 cursor-pointer items-center gap-2 px-3 py-2 text-left select-none focus-ring"
-        onClick={onToggle}
-      >
-        <span className="shrink-0 text-[11px] font-medium text-muted-foreground transition-colors group-hover/section-header:text-foreground">
-          Wrapped ({count})
-        </span>
-        {/* Closed, the shelf still says what is fresh in it, by the same
-          time its rows show: some threads wrap up on their own. */}
-        {!open && todayCount > 0 ? (
-          <span
-            data-testid="inbox-done-today"
-            className="shrink-0 text-[11px] text-muted-foreground tabular-nums"
-          >
-            · {todayCount} today
-          </span>
-        ) : null}
-        <span aria-hidden="true" className="h-px min-w-3 flex-1 bg-sidebar-border" />
-        <ChevronDownIcon
-          aria-hidden="true"
-          className={cn(
-            "size-3.5 shrink-0 text-muted-foreground/50 transition-transform duration-150 group-hover/section-header:text-foreground",
-            !open && "rotate-180",
-          )}
-        />
-      </button>
+      <InboxShelfHeader
+        label={`Wrapped (${count})`}
+        open={open}
+        onToggle={onToggle}
+        testId="inbox-done-toggle"
+        measured
+        detail={
+          // Closed, the shelf still says what is fresh in it, by the same
+          // time its rows show: some threads wrap up on their own.
+          !open && todayCount > 0 ? (
+            <span
+              data-testid="inbox-done-today"
+              className="shrink-0 text-[11px] text-muted-foreground tabular-nums"
+            >
+              · {todayCount} today
+            </span>
+          ) : null
+        }
+      />
       {open ? (
         <ScrollArea hideScrollbars className="h-auto min-h-0 flex-initial">
           {children}
@@ -426,6 +421,20 @@ function InboxWrappedShelf({
     </div>
   );
 }
+
+/**
+ * The General chats section, a chunk of its own: only a device that lists
+ * the chats in Threads fetches it.
+ */
+const GeneralChatsShelf = lazyWithPreload(() =>
+  import("./chats/GeneralChatsShelf").then((module) => module.GeneralChatsShelf),
+);
+
+/**
+ * The open General chats section's cap: about a third of the column, so the
+ * live list keeps most of it even with Wrapped open too.
+ */
+const GENERAL_CHATS_SHELF_MAX_HEIGHT = "35%";
 
 /** A day's label over the first of its rows in the open Wrapped shelf. */
 function InboxWrappedDayLabel({ group }: { group: WrappedDayGroup }) {
@@ -673,10 +682,13 @@ export default function Sidebar() {
     remoteChildRowPx,
     groupHeaderPx,
     doneRowPx,
+    chatsShelfPx,
     columnRef: inboxColumnRef,
     liveContentRef: inboxLiveContentRef,
     shelfRef: wrappedShelfRef,
+    chatsShelfRef,
   } = useInboxColumnLayout();
+  const generalChatsInThreads = useGeneralChatsInThreads();
   const todayStartMs = useLocalDayStartMs();
   const renamingCommittedRef = useRef(false);
   const renamingInputRef = useRef<HTMLInputElement | null>(null);
@@ -1504,8 +1516,13 @@ export default function Sidebar() {
   const orderedThreadKeys = useKept(orderedThreadKeysNow, shallow);
   // The general chats in the General Chats list's order. They never join the
   // inbox, so while one is open previous/next walk these instead: chat to
-  // chat, the way the list shows them.
-  const { chats: generalChats } = useGeneralChats();
+  // chat, the way the list shows them. Where the chats are an open section
+  // at the foot of this list, previous/next walk the whole list top to
+  // bottom, chats last, as it reads.
+  const { chats: generalChats } = useGeneralChats(
+    generalChatsInThreads ? { environmentId: scopedEnvironmentIdValue } : undefined,
+  );
+  const generalChatsSectionOpen = useUiStateStore((store) => store.inboxGeneralChatsOpen);
   const generalChatThreadKeys = useMemo(
     () =>
       generalChats.map((thread) =>
@@ -1513,10 +1530,16 @@ export default function Sidebar() {
       ),
     [generalChats],
   );
+  const listedTraversalKeys = useMemo(
+    () => [...orderedThreadKeys, ...generalChatThreadKeys],
+    [generalChatThreadKeys, orderedThreadKeys],
+  );
   const traversalThreadKeys =
-    routeThreadKey !== null && generalChatThreadKeys.includes(routeThreadKey)
-      ? generalChatThreadKeys
-      : orderedThreadKeys;
+    generalChatsInThreads && generalChatsSectionOpen
+      ? listedTraversalKeys
+      : routeThreadKey !== null && generalChatThreadKeys.includes(routeThreadKey)
+        ? generalChatThreadKeys
+        : orderedThreadKeys;
 
   const navigateToThread = useCallback(
     (threadRef: ScopedThreadRef) => {
@@ -2046,7 +2069,8 @@ export default function Sidebar() {
       {isMobile ? <SidebarDestinationRow /> : null}
 
       {PageListBody !== null ? (
-        // A page with a list of its own (General chats, Computers, Settings)
+        // A page with a list of its own (General chats unless they are a
+        // section of Threads, Computers, Settings)
         // on a wide screen; on a phone, only one whose list is in the sheet.
         <>
           {/* Holds the list's place while its code loads, so the footer stays put. */}
@@ -2396,7 +2420,7 @@ export default function Sidebar() {
                       </div>
                     ) : null}
                   </SidebarContent>
-                  {wrappedRows.length > 0 ? (
+                  {wrappedRows.length > 0 || generalChatsInThreads ? (
                     <span
                       aria-hidden="true"
                       className="glass-fade pointer-events-none absolute inset-x-0 bottom-0 z-20 h-3 bg-linear-to-t from-sidebar to-transparent"
@@ -2416,6 +2440,7 @@ export default function Sidebar() {
                     count={wrappedRows.length}
                     todayCount={wrappedTodayCount}
                     liveContentHeight={liveContentHeight}
+                    chatsShelfPx={chatsShelfPx}
                     shelfRef={wrappedShelfRef}
                     onToggle={toggleWrappedOpen}
                     foldLine={
@@ -2559,6 +2584,19 @@ export default function Sidebar() {
                       })}
                     </ul>
                   </InboxWrappedShelf>
+                ) : null}
+                {/* General chats park under Wrapped on a device that lists
+                  them here instead of on their own page. */}
+                {generalChatsInThreads ? (
+                  <Suspense fallback={null}>
+                    <GeneralChatsShelf.Component
+                      environmentId={scopedEnvironmentIdValue}
+                      maxHeight={GENERAL_CHATS_SHELF_MAX_HEIGHT}
+                      shelfRef={chatsShelfRef}
+                      onSwipe={handleRowSwipe}
+                      closeSheet={closeSheet}
+                    />
+                  </Suspense>
                 ) : null}
               </div>
             </ThreadHoverCardProvider>

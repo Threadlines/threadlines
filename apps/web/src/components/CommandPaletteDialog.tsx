@@ -46,6 +46,7 @@ import {
   LaptopIcon,
   LinkIcon,
   MessageSquareIcon,
+  MessageCirclePlusIcon,
   MessagesSquareIcon,
   PanelLeftCloseIcon,
   PanelLeftIcon,
@@ -102,6 +103,8 @@ import {
 } from "../environments/runtime";
 import { holdThreadDetailForOpen, prewarmHighlightedThread } from "../environments/runtime/service";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
+import { useGeneralChats } from "./chats/useGeneralChats";
+import { requestGeneralChatsReveal } from "./chats/generalChatsPlacement";
 import { useInboxThreads } from "../hooks/useInboxThreads";
 import { useThreadMenu } from "../hooks/useThreadMenu";
 import {
@@ -583,6 +586,7 @@ export function OpenCommandPaletteDialog() {
   );
   const projects = useStore(useShallow(selectProjectsAcrossEnvironments));
   const threads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
+  const { startChat: startGeneralChat } = useGeneralChats();
   const keybindings = useServerKeybindings();
   const isHomeRoute = useLocation({ select: (location) => location.pathname === "/" });
   const onTerminalsPage = useLocation({
@@ -1824,6 +1828,19 @@ export function OpenCommandPaletteDialog() {
     });
   }
 
+  if (startGeneralChat !== null) {
+    actionItems.push({
+      kind: "action",
+      value: "action:new-general-chat",
+      searchTerms: ["new chat", "general chat", "chat", "conversation", "no project"],
+      title: "New general chat",
+      icon: <MessageCirclePlusIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        startGeneralChat();
+      },
+    });
+  }
+
   actionItems.push({
     kind: "action",
     value: "action:general-chats",
@@ -1831,7 +1848,10 @@ export function OpenCommandPaletteDialog() {
     title: "Open general chats",
     icon: <MessagesSquareIcon className={ITEM_ICON_CLASS} />,
     run: async () => {
-      await navigate({ to: "/chats" });
+      // Where the chats are a section of Threads, the shell opens it there
+      // without a stop at the old page's address.
+      if (settings.generalChatsPlacement === "threads") requestGeneralChatsReveal();
+      else await navigate({ to: "/chats" });
     },
   });
 
