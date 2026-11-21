@@ -191,8 +191,10 @@ export function parseTopProcesses(output: string, limit = TOP_PROCESS_COUNT): st
     const match = /^\s*(\d+(?:\.\d+)?)\s+(.+?)\s*$/.exec(line);
     if (!match) continue;
     const command = match[2]!;
-    // A Linux `comm` can hold a slash of its own ("kworker/u8:2").
-    const name = command.startsWith("/") ? (command.split("/").at(-1) ?? "") : command;
+    // A Linux `comm` can hold a slash of its own ("kworker/u8:2"); only a
+    // path, absolute or relative, is cut down to its last part.
+    const isPath = command.startsWith("/") || command.startsWith(".");
+    const name = isPath ? (command.split("/").at(-1) ?? "") : command;
     if (name.length === 0) continue;
     processes.push({ name, cpu: Number(match[1]) });
   }
@@ -202,24 +204,37 @@ export function parseTopProcesses(output: string, limit = TOP_PROCESS_COUNT): st
     .map((entry) => `${entry.name} ${entry.cpu.toFixed(1)}%`);
 }
 
-/** The busiest programs right now, or none on Windows or when `ps` fails or is slow. */
+/**
+ * The busiest programs right now, or none on Windows or when `ps` can't
+ * start, fails, or is slow. Gives up after the timeout even when the child
+ * won't exit, and kills it on the way out.
+ */
 const readTopProcesses: Effect.Effect<ReadonlyArray<string>> =
   process.platform === "win32"
     ? Effect.succeed([])
     : Effect.callback<ReadonlyArray<string>>((resume) => {
-        const child = execFile(
-          "ps",
-          ["-A", "-o", "pcpu=,comm="],
-          {
-            timeout: TOP_PROCESS_TIMEOUT_MS,
-            maxBuffer: 4 * 1024 * 1024,
-            // A decimal point, not a locale's comma.
-            env: { ...process.env, LC_ALL: "C" },
-          },
-          (error, stdout) => resume(Effect.succeed(error ? [] : parseTopProcesses(stdout))),
-        );
-        return Effect.sync(() => child.kill());
-      });
+        try {
+          const child = execFile(
+            "ps",
+            ["-A", "-o", "pcpu=,comm="],
+            {
+              timeout: TOP_PROCESS_TIMEOUT_MS,
+              killSignal: "SIGKILL",
+              maxBuffer: 4 * 1024 * 1024,
+              // A decimal point, not a locale's comma.
+              env: { ...process.env, LC_ALL: "C" },
+            },
+            (error, stdout) => resume(Effect.succeed(error ? [] : parseTopProcesses(stdout))),
+          );
+          return Effect.sync(() => child.kill("SIGKILL"));
+        } catch {
+          resume(Effect.succeed([]));
+          return;
+        }
+      }).pipe(
+        Effect.timeoutOption(Duration.millis(TOP_PROCESS_TIMEOUT_MS + 500)),
+        Effect.map(Option.getOrElse((): ReadonlyArray<string> => [])),
+      );
 
 export interface RecordedStall extends ClassifiedStall {
   readonly id: string;

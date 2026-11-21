@@ -176,5 +176,7 @@ describe("parseTopProcesses", () => {
       "node 30.0%",
       "kworker/u8:2 1.5%",
     ]);
+    // A process can name itself with a relative path.
+    expect(parseTopProcesses(" 91.0 ./private/tool\n")).toEqual(["tool 91.0%"]);
   });
 });
