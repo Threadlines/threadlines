@@ -534,6 +534,7 @@ describe("wsApi", () => {
       inboxSort: "recent" as const,
       inboxCustomOrder: [],
       inboxGroupOrder: [],
+      inboxCustomGroupOrder: [],
       sidebarProjectGroupingMode: "repository_path" as const,
       sidebarProjectGroupingOverrides: {
         "environment-local:/tmp/project": "separate" as const,
@@ -941,6 +942,7 @@ describe("wsApi", () => {
       inboxSort: "recent" as const,
       inboxCustomOrder: [],
       inboxGroupOrder: [],
+      inboxCustomGroupOrder: [],
       sidebarProjectGroupingMode: "repository_path" as const,
       sidebarProjectGroupingOverrides: {
         "environment-local:/tmp/project": "separate" as const,

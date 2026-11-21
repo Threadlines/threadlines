@@ -103,6 +103,8 @@ import {
   countInboxPinDividers,
   moveInInboxGroupOrder,
   orderInboxLiveRowsByGroup,
+  appendInboxGroupKeys,
+  inboxDrawnGroupOrder,
   inboxCustomOrderPeers,
   moveInInboxCustomOrder,
   trimInboxCustomOrder,
@@ -175,7 +177,7 @@ import { SidebarVersionTag } from "./sidebar/SidebarVersionTag";
 import { readEnvironmentApi } from "../environmentApi";
 import { useRoomsEnabled } from "~/hooks/useRoomsEnabled";
 import { NO_REMOTE_CHILDREN, useRemoteFamilyChildren } from "../hooks/useRemoteFamilyChildren";
-import { useSettings, useUpdateSettings } from "~/hooks/useSettings";
+import { useClientSettingsHydrated, useSettings, useUpdateSettings } from "~/hooks/useSettings";
 import { useServerKeybindings } from "../rpc/serverState";
 
 import {
@@ -613,6 +615,8 @@ export default function Sidebar() {
   const inboxSort = useSettings((s) => s.inboxSort);
   const inboxCustomOrder = useSettings((s) => s.inboxCustomOrder);
   const inboxGroupOrder = useSettings((s) => s.inboxGroupOrder);
+  const savedCustomSeenGroups = useSettings((s) => s.inboxCustomGroupOrder);
+  const settingsHydrated = useClientSettingsHydrated();
   // A family's children on computers this app can't see, as the family tabs read them too.
   const remoteFamilyChildren = useRemoteFamilyChildren(nowIso);
   const { updateSettings } = useUpdateSettings();
@@ -928,8 +932,53 @@ export default function Sidebar() {
     sidebarGroupingSetting === "computer" && environmentScopeOptions.length <= 1
       ? "none"
       : sidebarGroupingSetting;
+  // The custom sort remembers where it first showed each group, so a group
+  // keeps its place when its top row goes; a group new to it goes last.
+  const customSeenGroups = useMemo(
+    () =>
+      inboxSort !== "custom" || sidebarGrouping === "none"
+        ? savedCustomSeenGroups
+        : appendInboxGroupKeys(
+            savedCustomSeenGroups,
+            groupInboxLiveRows(liveEntriesBySort, (row) =>
+              inboxLiveGroupKey(sidebarGrouping, row),
+            ).map((group) => group.key),
+          ),
+    [inboxSort, liveEntriesBySort, savedCustomSeenGroups, sidebarGrouping],
+  );
+  // Saved once the computer's threads have loaded, so a half-loaded list doesn't
+  // fix the first places. The last attempt is kept so a failed save isn't
+  // retried on every render.
+  const customSeenGroupsSaveAttempt = useRef<readonly string[] | null>(null);
+  useEffect(() => {
+    if (
+      !settingsHydrated ||
+      !bootstrapComplete ||
+      customSeenGroups === savedCustomSeenGroups ||
+      customSeenGroups === customSeenGroupsSaveAttempt.current
+    ) {
+      return;
+    }
+    customSeenGroupsSaveAttempt.current = customSeenGroups;
+    updateSettings({ inboxCustomGroupOrder: customSeenGroups });
+  }, [
+    bootstrapComplete,
+    customSeenGroups,
+    savedCustomSeenGroups,
+    settingsHydrated,
+    updateSettings,
+  ]);
   // Groups the user dragged keep that order; the fold and the jump labels read
   // the rows in it.
+  const drawnGroupOrder = useMemo(
+    () =>
+      inboxDrawnGroupOrder({
+        sort: inboxSort,
+        draggedOrder: inboxGroupOrder,
+        customSeenOrder: customSeenGroups,
+      }),
+    [customSeenGroups, inboxGroupOrder, inboxSort],
+  );
   const liveEntries = useMemo(
     () =>
       sidebarGrouping === "none"
@@ -937,9 +986,9 @@ export default function Sidebar() {
         : orderInboxLiveRowsByGroup(
             liveEntriesBySort,
             (row) => inboxLiveGroupKey(sidebarGrouping, row),
-            inboxGroupOrder,
+            drawnGroupOrder,
           ),
-    [inboxGroupOrder, liveEntriesBySort, sidebarGrouping],
+    [drawnGroupOrder, liveEntriesBySort, sidebarGrouping],
   );
   // What a closed Wrapped shelf keeps under its header: the thread open in
   // the chat, and the wrapped thread it sits under. The live list's fill
@@ -1301,7 +1350,11 @@ export default function Sidebar() {
       "Reset your custom order?\n\nThreads go back to most recent first. You can't undo this.",
     );
     if (confirmed) {
-      updateSettings({ inboxCustomOrder: seedInboxCustomOrder(inboxThreads, "recent") });
+      // Groups take their places afresh from the reset rows.
+      updateSettings({
+        inboxCustomOrder: seedInboxCustomOrder(inboxThreads, "recent"),
+        inboxCustomGroupOrder: [],
+      });
     }
   }, [inboxThreads, updateSettings]);
   // The scope menu is memoized; these change with the inbox's threads, which
@@ -1318,6 +1371,7 @@ export default function Sidebar() {
     liveEntries,
     inboxCustomOrder,
     inboxGroupOrder,
+    customSeenGroups,
     inboxThreads,
     sidebarThreads,
     sidebarGrouping,
@@ -1375,7 +1429,12 @@ export default function Sidebar() {
         describeInboxGroupMenu({
           canMoveUp: index > 0,
           canMoveDown: index < before.shownGroups.length - 1,
-          hasSavedOrder: before.inboxGroupOrder.some((key) => key.startsWith(kind)),
+          // In the custom sort, remembered places count too: resetting takes
+          // them afresh from where each group's first row stands now.
+          hasSavedOrder: [
+            ...before.inboxGroupOrder,
+            ...(inboxSortRef.current === "custom" ? before.customSeenGroups : []),
+          ].some((key) => key.startsWith(kind)),
         }),
         position,
       );
@@ -1383,8 +1442,11 @@ export default function Sidebar() {
       const source = inboxMoveSourceRef.current;
       const current = source.shownGroups.indexOf(groupKey);
       if (clicked === "reset") {
+        // The custom sort's remembered places go too, so it takes them afresh
+        // from where each group's first row stands now.
         updateSettings({
           inboxGroupOrder: source.inboxGroupOrder.filter((key) => !key.startsWith(kind)),
+          inboxCustomGroupOrder: source.customSeenGroups.filter((key) => !key.startsWith(kind)),
         });
       } else if (clicked === "move-up" || clicked === "move-down") {
         const toIndex = current + (clicked === "move-up" ? -1 : 1);

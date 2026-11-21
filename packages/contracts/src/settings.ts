@@ -288,6 +288,12 @@ export const ClientSettingsSchema = Schema.Struct({
   // The order the user dragged the inbox's project and computer headers into,
   // as group keys. Empty: each group sits where its first row would.
   inboxGroupOrder: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  // Where each group stood when the custom sort first showed it, as group keys.
+  // The custom sort places groups the user never dragged by this, so a group
+  // stays put when its top row goes away; the other sorts ignore it.
+  inboxCustomGroupOrder: Schema.Array(Schema.String).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
   sidebarProjectGroupingMode: SidebarProjectGroupingMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_PROJECT_GROUPING_MODE)),
   ),
@@ -1404,6 +1410,7 @@ export const ClientSettingsPatch = Schema.Struct({
   inboxSort: Schema.optionalKey(InboxSort),
   inboxCustomOrder: Schema.optionalKey(Schema.Array(Schema.String)),
   inboxGroupOrder: Schema.optionalKey(Schema.Array(Schema.String)),
+  inboxCustomGroupOrder: Schema.optionalKey(Schema.Array(Schema.String)),
   sidebarProjectGroupingMode: Schema.optionalKey(SidebarProjectGroupingMode),
   sidebarProjectGroupingOverrides: Schema.optionalKey(
     Schema.Record(TrimmedNonEmptyString, SidebarProjectGroupingMode),
