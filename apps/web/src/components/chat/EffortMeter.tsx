@@ -4,7 +4,13 @@ import { cn } from "~/lib/utils";
 export interface EffortMeterOption {
   readonly id: string;
   readonly label: string;
+  /** The model's own level when none is picked: a dot under its segment says so. */
+  readonly isDefault?: boolean | undefined;
 }
+
+/** Whether a level is marked as the default: one named "Default" already says so. */
+const marksDefault = (option: EffortMeterOption) =>
+  option.isDefault === true && option.label.trim().toLowerCase() !== "default";
 
 /** Stagger between segments as a level charges up (or drains), per segment. */
 const CHARGE_STEP_MS = 55;
@@ -149,7 +155,8 @@ function RollingLevelName(props: { text: string; preview: boolean; up: boolean }
  *
  * Every effect moves or fades the segments only, runs once per change, and
  * stays still under reduced motion. Keyboard: a radio group, where the arrow
- * keys step the level and focus follows it.
+ * keys step the level and focus follows it. A small dot under a segment
+ * marks the model's default level.
  */
 export const EffortMeter = memo(function EffortMeter(props: {
   options: ReadonlyArray<EffortMeterOption>;
@@ -271,7 +278,8 @@ export const EffortMeter = memo(function EffortMeter(props: {
               type="button"
               role="radio"
               aria-checked={index === selectedIndex}
-              aria-label={option.label}
+              aria-label={marksDefault(option) ? `${option.label}, default` : option.label}
+              title={marksDefault(option) ? `${option.label} (default)` : undefined}
               tabIndex={leaving ? -1 : index === (selectedIndex < 0 ? 0 : selectedIndex) ? 0 : -1}
               disabled={disabled || leaving}
               data-effort-level={option.id}
@@ -285,6 +293,9 @@ export const EffortMeter = memo(function EffortMeter(props: {
                   "pointer-events-none animate-[effort-segment-out_300ms_ease_forwards] motion-reduce:animate-none",
                 entering && "animate-[effort-segment-in_300ms_ease] motion-reduce:animate-none",
                 index === hoverIndex && !leaving && "scale-y-[1.35]",
+                // The default level's dot, under its segment.
+                marksDefault(option) &&
+                  "after:absolute after:top-[calc(100%+3px)] after:left-1/2 after:size-[3px] after:-translate-x-1/2 after:rounded-full after:bg-muted-foreground",
               )}
               onPointerEnter={() => {
                 if (!leaving && !disabled) setHoverId(option.id);

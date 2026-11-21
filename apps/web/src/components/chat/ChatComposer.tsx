@@ -29,11 +29,7 @@ import {
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
 } from "@threadlines/contracts";
-import {
-  createModelSelection,
-  getProviderOptionCurrentLabel,
-  normalizeModelSlug,
-} from "@threadlines/shared/model";
+import { createModelSelection, normalizeModelSlug } from "@threadlines/shared/model";
 import {
   memo,
   type ReactNode,
@@ -113,7 +109,8 @@ import {
   ComposerPromptEditor,
 } from "../ComposerPromptEditor";
 import { type ComposerPromptSuggestionDisplay } from "./ComposerPromptSuggestion";
-import { type ModelPickerTriggerSummary, ProviderModelPicker } from "./ProviderModelPicker";
+import { COMPOSER_SURFACE_CLASS_NAME } from "./composerSurface";
+import { ProviderModelPicker } from "./ProviderModelPicker";
 import { ModelPickerSettings, type ModelPickerTraitsTarget } from "./ModelPickerSettings";
 import {
   ComposerRunControls,
@@ -214,12 +211,7 @@ import { getPickerModelName } from "./providerIconUtils";
 import { awaitingInvite } from "@threadlines/shared/roomAgentRequests";
 import { shownSettingsChange } from "@threadlines/shared/settingsChangeState";
 import { activeParticipants, hasAgentRecords } from "@threadlines/shared/threadParticipants";
-import {
-  getTraitsSectionVisibility,
-  getTraitSwitchControls,
-  isFastModeControl,
-  shouldRenderTraitsControls,
-} from "./traitControls";
+import { modelPickerTriggerSummary, shouldRenderTraitsControls } from "./traitControls";
 import {
   canRequestProviderRateLimitResetCredit,
   useProviderRateLimitResetCredit,
@@ -1787,26 +1779,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const runControlsOnRow = !isMobileViewport;
 
   // What the settings button says besides the model: the effort and Fast Mode.
-  const settingsTraits = settingsTraitsTarget
-    ? getTraitsSectionVisibility({
-        provider: settingsTraitsTarget.provider,
-        models: settingsTraitsTarget.models,
-        model: settingsTraitsTarget.model,
-        modelOptions: settingsTraitsTarget.modelOptions,
-      })
-    : null;
-  const settingsTriggerSummary: ModelPickerTriggerSummary = {
-    effort: settingsTraits?.reasoningDescriptor
-      ? (getProviderOptionCurrentLabel(settingsTraits.reasoningDescriptor) ?? null)
-      : null,
-    ultracode: settingsTraits?.ultracodeEnabled ?? false,
-    fastMode: settingsTraits
-      ? getTraitSwitchControls(settingsTraits.descriptors).some(
-          (control) => isFastModeControl(control) && control.checked,
-        )
-      : false,
-    working: settingsTraitsWorking,
-  };
+  const settingsTriggerSummary = modelPickerTriggerSummary(
+    settingsTraitsTarget,
+    settingsTraitsWorking,
+  );
 
   // Build/Plan and access, on the row's own buttons or in the panel. The
   // panel's rows keep focus there, so several settings can change in one
@@ -3876,10 +3852,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           ref={composerSurfaceRef}
           data-chat-composer-mobile-collapsed={isComposerCollapsedMobile ? "true" : "false"}
           className={cn(
-            // The one raised box on the canvas: card fill and a border. In light
-            // mode a white box on the near-white canvas also needs the soft drop
-            // to read; in dark the lighter fill does that on its own.
-            "rounded-4xl border bg-card not-dark:elevate-raised transition-colors duration-200 has-focus-visible:border-focus-ring/45",
+            COMPOSER_SURFACE_CLASS_NAME,
             !isComposerCollapsedMobile &&
               hasComposerDockContent({ pullRequests, notices: dockedNotices }) &&
               "rounded-t-none",

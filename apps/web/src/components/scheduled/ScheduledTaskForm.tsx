@@ -3,30 +3,30 @@ import {
   RUNTIME_MODES,
   type EnvironmentId,
   type ModelSelection,
-  type ProjectId,
-  type RuntimeMode,
   type ServerProvider,
   type ThreadId,
 } from "@threadlines/contracts";
+import { createModelSelection } from "@threadlines/shared/model";
 import {
   PROVIDER_NOT_READY_FIX,
   providerAgentName,
   providerNotReady,
   providerNotReadySentence,
 } from "@threadlines/shared/providerAuth";
-import { roomAgentKey } from "@threadlines/shared/threadParticipants";
-import { MessagesSquareIcon } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { readEnvironmentConnection } from "../../environments/runtime";
 import { useEnvironmentProviders } from "../../hooks/useEnvironmentProviders";
+import { useIsPhoneViewport } from "../../hooks/useMediaQuery";
+import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import { useSettings } from "../../hooks/useSettings";
 import {
   useScheduledTaskEnvironments,
   useScheduledTasksStore,
 } from "../../lib/scheduledTasksState";
 import { cn } from "../../lib/utils";
+import { getCustomModelOptionsByInstance } from "../../modelSelection";
 import { uses12HourClock } from "../../timestampFormat";
 import {
   deriveProviderInstanceEntries,
@@ -39,42 +39,36 @@ import {
   selectSidebarThreadsAcrossEnvironments,
   useStore,
 } from "../../store";
-import type { Project } from "../../types";
-import { ProjectFavicon } from "../ProjectFavicon";
-import { SETTINGS_GROUP_ROW_CLASS, SettingsSection } from "../settings/settingsLayout";
-import { ModelSelectionControl } from "../settings/TextGenerationModelControl";
+import { type ComposerAccessControl, ComposerRunControls } from "../chat/ComposerRunControls";
+import { COMPOSER_SURFACE_CLASS_NAME } from "../chat/composerSurface";
+import { ModelPickerSettings, type ModelPickerTraitsTarget } from "../chat/ModelPickerSettings";
+import { ProviderModelPicker } from "../chat/ProviderModelPicker";
+import { modelPickerTriggerSummary, shouldRenderTraitsControls } from "../chat/traitControls";
+import { SettingsSection } from "../settings/settingsLayout";
 import { Button } from "../ui/button";
-import { Input } from "../ui/input";
-import { SegmentedControl, SegmentedControlItem } from "../ui/segmented-control";
-import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
-import { DatePicker } from "../ui/date-picker";
 import { Switch } from "../ui/switch";
-import { Textarea } from "../ui/textarea";
-import { TimePicker } from "../ui/time-picker";
-import { TimeZonePicker } from "../ui/time-zone-picker";
 import { failureNotice, toastManager } from "../ui/toast";
+import { TooltipProvider } from "../ui/tooltip";
 import { addComputerNotConnectedNotice } from "../computerConnectionNotices";
 import {
-  CADENCE_KIND_LABELS,
-  type CadenceKind,
-  cadenceKindsFor,
   EVENT_TASK_RUNTIME_MODE,
   emptyTaskForm,
   eventTaskAccessWarning,
+  type FormProblems,
   formatWhen,
   formDraft,
   formProblems,
   previewRuns,
   type ScheduledTaskForm as FormState,
   taskForm,
-  todayIn,
   viewerTimeZone,
-  WEEKDAY_LABELS,
   type WebhookForm,
   webhookFormWithContext,
 } from "./scheduled.logic";
+import { ScheduleButton } from "./ScheduleButton";
 import { ScheduledEventFields } from "./ScheduledEventFields";
 import { FieldRow } from "./ScheduledFormRow";
+import { TaskProjectHeading, TaskRunsSentence } from "./ScheduledTaskWhere";
 import {
   type LocatedTask,
   taskRef,
@@ -83,29 +77,22 @@ import {
   useScheduledNavigation,
 } from "./useScheduledPage";
 
-const HOURLY_MINUTES = Array.from({ length: 12 }, (_, index) => index * 5);
+/** Hover labels on the model and access buttons wait a moment, as on the composer's row. */
+const ROW_TOOLTIP_DELAY_MS = 250;
+
+/** The order problems are listed in under the editor, top of the editor first. */
+const PROBLEM_ORDER = [
+  "name",
+  "prompt",
+  "agent",
+  "schedule",
+  "project",
+  "thread",
+  "goesTo",
+  "computer",
+] as const satisfies ReadonlyArray<keyof FormProblems>;
 
 const lowerFirst = (text: string) => text.charAt(0).toLowerCase() + text.slice(1);
-
-/** A project as the app's other project pickers show it: its logo (General Chats its own glyph) and name. */
-function ProjectLabel({ project }: { readonly project: Project }) {
-  return (
-    <span className="flex min-w-0 items-center gap-2">
-      {project.kind === "general-chat" ? (
-        <MessagesSquareIcon className="size-3.5 shrink-0 text-muted-foreground" />
-      ) : (
-        <ProjectFavicon
-          cwd={project.cwd}
-          environmentId={project.environmentId}
-          name={project.name}
-        />
-      )}
-      <span className="truncate">
-        {project.kind === "general-chat" ? "General Chats" : project.name}
-      </span>
-    </span>
-  );
-}
 
 /** The model a new task starts with on a computer: its new-thread default, else its first agent. */
 function defaultModelFor(
@@ -124,10 +111,12 @@ function defaultModelFor(
 }
 
 /**
- * The form for a new task or an edited one (docs/design/fleet.md, Part 6):
- * name and instructions; the computer that keeps and runs it, its project
- * and where each run works; the agent, model and access; the schedule; and
- * whether each run starts a new thread or continues one.
+ * The editor for a new task or an edited one (docs/design/fleet.md, Part 6),
+ * laid out like the new-thread screen: "New task in [project]", then the
+ * composer's box with the task's name and its schedule button on top, the
+ * prompt, and the model and access buttons beside Create task. A sentence
+ * under the box says where each run goes (a new thread or one to continue,
+ * which checkout, which computer); an event task's settings follow it.
  */
 export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask | null }) {
   const navigation = useScheduledNavigation();
@@ -136,6 +125,10 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
   const settings = useSettings();
   const projects = useStore(useShallow(selectProjectsAcrossEnvironments));
   const threads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
+  const isPhone = useIsPhoneViewport();
+  const nowMs = useRelativeTimeTick(30_000);
+  const nameRef = useRef<HTMLInputElement>(null);
+  const promptRef = useRef<HTMLTextAreaElement>(null);
 
   const [draftForm, setForm] = useState<FormState>(() => {
     if (editing) return taskForm(editing.task, editing.environment.environmentId);
@@ -161,7 +154,7 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
     });
   });
   const computerZones = useScheduledTasksStore((state) => state.byEnvironment);
-  // A computer, project or agent the page didn't have yet when the form
+  // A computer, project or agent the page didn't have yet when the editor
   // opened (right after a reload) is filled in once it arrives; a choice the
   // user made is never replaced. Until the user picks a time zone, a new task
   // is in the chosen computer's own: it runs there, by that computer's clock.
@@ -285,8 +278,7 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
       : `${providerNotReadySentence(
           agentNotReady,
           providerAgentName(chosenProvider, form.modelSelection.instanceId),
-          environments.find((entry) => entry.environmentId === form.environmentId)?.label ??
-            "this computer",
+          chosenEnvironment?.label ?? "this computer",
         )} Its runs will fail until you ${lowerFirst(PROVIDER_NOT_READY_FIX[agentNotReady])}.`;
 
   // The zones the picker leads with: where the task runs, where you are, UTC.
@@ -303,16 +295,30 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
     ];
   }, [computerTimeZone]);
 
-  const now = new Date();
-  const problems = {
-    ...formProblems(form, now, editing?.task, goesTo?.left === true),
+  const problemsAt = (at: Date): FormProblems => ({
+    ...formProblems(form, at, editing?.task, goesTo?.left === true),
     // The computer stopped offering event tasks (an older Threadlines took its place).
     ...(isEvent && !eventTasks
       ? { schedule: "This computer doesn't run event tasks. Update Threadlines on it first." }
       : {}),
-  };
-  const shownProblems = submitted ? problems : {};
-  const upcoming = form.cadenceKind === "manual" || isEvent ? [] : previewRuns(form, now, 3);
+  });
+  // Checked against this render's moment, as the form always was: a change
+  // re-checks at once, and the half-minute tick (nowMs) re-renders an idle
+  // form so a one-time run that passes meanwhile is said too.
+  const now = new Date();
+  const problems = problemsAt(now);
+  const shownProblems: FormProblems = submitted
+    ? problems
+    : // An agent that left the continued thread is said at once.
+      goesTo?.left === true && problems.goesTo !== undefined
+      ? { goesTo: problems.goesTo }
+      : {};
+  // An event task's schedule problem is said with its settings, below.
+  const listedProblems = PROBLEM_ORDER.filter(
+    (key) => shownProblems[key] !== undefined && !(key === "schedule" && isEvent),
+  ).map((key) => shownProblems[key]!);
+  const nextRun =
+    form.cadenceKind === "manual" || isEvent ? undefined : previewRuns(form, now, 1)[0];
   const accessWarning = eventTaskAccessWarning(form);
 
   const chooseEnvironment = (environmentId: EnvironmentId) => {
@@ -336,10 +342,44 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
     });
   };
 
+  const continueThread = (threadId: ThreadId) => {
+    if (form.environmentId === null) return;
+    // Back to the thread it continued: its agent, model and access stay as set.
+    if (threadId === form.threadId) {
+      update({ target: "thread" });
+      return;
+    }
+    // Another thread: its runs are for that thread's own agent, and start
+    // from its model and access.
+    const shell = selectEnvironmentState(useStore.getState(), form.environmentId).threadShellById[
+      threadId
+    ];
+    update({
+      target: "thread",
+      threadId,
+      threadParticipantId: null,
+      ...(shell !== undefined
+        ? { modelSelection: shell.modelSelection, runtimeMode: shell.runtimeMode }
+        : {}),
+    });
+  };
+
+  // One save at a time: the button is off while it runs, but the keyboard
+  // shortcut can submit again before it re-renders.
+  const savingRef = useRef(false);
   const save = async () => {
+    if (savingRef.current) return;
     setSubmitted(true);
+    // Checked against this moment: a one-time run that passed since the last
+    // render isn't sent.
+    const current = problemsAt(new Date());
     const draft = formDraft(form);
-    if (Object.keys(problems).length > 0 || draft === null || form.environmentId === null) return;
+    if (Object.keys(current).length > 0 || draft === null || form.environmentId === null) {
+      // Back to the first field that needs words.
+      if (current.name !== undefined) nameRef.current?.focus();
+      else if (current.prompt !== undefined) promptRef.current?.focus();
+      return;
+    }
     const environment = environments.find((entry) => entry.environmentId === form.environmentId);
     const connection = readEnvironmentConnection(form.environmentId);
     if (!connection || !environment) {
@@ -349,6 +389,7 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
       });
       return;
     }
+    savingRef.current = true;
     setSaving(true);
     try {
       if (editing) {
@@ -369,6 +410,7 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
         }),
       );
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
@@ -378,463 +420,261 @@ export function ScheduledTaskForm({ editing }: { readonly editing: LocatedTask |
     else navigation.showAll({ replace: true });
   };
 
-  const timeField = (
-    <TimePicker
-      size="sm"
-      className="w-32 min-w-0"
-      aria-label="Time"
-      value={form.time}
-      hour12={uses12HourClock(settings.timestampFormat)}
-      onChange={(time) => update({ time })}
-      data-testid="scheduled-form-time"
-    />
-  );
+  // The model button and its panel, as the composer has them: effort and the
+  // model's other options in the panel, and on phones the access level too.
+  const selection = form.modelSelection;
+  const traitsTarget: ModelPickerTraitsTarget | null =
+    selection !== null && selectedEntry !== undefined
+      ? {
+          provider: selectedEntry.driverKind,
+          instanceId: selection.instanceId,
+          models: selectedEntry.models,
+          model: selection.model,
+          modelOptions: selection.options,
+          onModelOptionsChange: (options) =>
+            update({
+              modelSelection: createModelSelection(selection.instanceId, selection.model, options),
+            }),
+        }
+      : null;
+  const hasModelPicker = selection !== null && instanceEntries.length > 0;
+  const shownTraits =
+    traitsTarget !== null && shouldRenderTraitsControls(traitsTarget) ? traitsTarget : null;
+  // As on the composer: the level the agent runs at, which can differ from
+  // the one picked when the agent doesn't offer it.
+  const accessControl: ComposerAccessControl = {
+    value: access?.shown ?? form.runtimeMode,
+    options:
+      access?.options ??
+      RUNTIME_MODES.map((mode) => ({ mode, ...runtimeModeConfig[mode], disabled: false })),
+    onChange: (mode) => update({ runtimeMode: mode, runtimeModeChosen: true }),
+    planning: false,
+  };
 
   return (
     <form
-      className="flex flex-col gap-7"
+      className="flex flex-col items-center gap-3 pt-2 sm:pt-6"
       data-testid="scheduled-task-form"
       onSubmit={(event) => {
         event.preventDefault();
         void save();
       }}
     >
-      <header className="space-y-1 px-1">
-        <h1 className="text-[22px] leading-7 font-semibold tracking-[-0.015em] text-foreground">
-          {editing ? `Edit ${editing.task.name}` : "New task"}
-        </h1>
-        <p className="text-[13px] leading-[18px] text-muted-foreground">
-          {isEvent
-            ? "It runs when an event arrives, while Threadlines is running on its computer. Events wait up to a day while it's off."
-            : "It runs while Threadlines is running on its computer. A time missed while the computer was off or asleep gets one catch-up run."}
-        </p>
-      </header>
+      <TaskProjectHeading
+        editing={editing !== null}
+        projects={environmentProjects}
+        selected={selectedProject}
+        onSelect={(project) =>
+          update({
+            projectId: project.id,
+            threadId: null,
+            threadParticipantId: null,
+            ...(project.kind === "general-chat" ? { checkout: "local" as const } : {}),
+          })
+        }
+      />
 
-      <SettingsSection title="Task">
-        <FieldRow label="Name" problem={shownProblems.name} stacked>
-          <Input
-            size="sm"
+      <div className={cn(COMPOSER_SURFACE_CLASS_NAME, "mt-2 w-full border-border")}>
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 px-2.5 pt-2.5 sm:px-3 sm:pt-3">
+          <input
+            ref={nameRef}
+            className="h-8 min-w-[10rem] flex-1 rounded-md bg-transparent px-2 text-[16px] font-semibold text-foreground outline-none placeholder:font-medium placeholder:text-muted-foreground/60 focus-visible:bg-accent/40 sm:text-[14px]"
             value={form.name}
-            placeholder="Morning review"
+            placeholder="Task name"
             aria-label="Name"
+            aria-invalid={shownProblems.name !== undefined ? true : undefined}
             data-testid="scheduled-form-name"
             onChange={(event) => update({ name: event.target.value })}
           />
-        </FieldRow>
-        <FieldRow
-          label="Instructions"
-          hint="Each run starts with only these words, so say everything it needs."
-          problem={shownProblems.prompt}
-          stacked
-        >
-          <Textarea
-            size="sm"
-            value={form.prompt}
-            placeholder="Review yesterday's commits on main and list anything risky."
-            aria-label="Instructions"
-            data-testid="scheduled-form-prompt"
-            onChange={(event) => update({ prompt: event.target.value })}
+          <ScheduleButton
+            form={form}
+            onChange={update}
+            eventsOffered={eventTasks || isEvent}
+            problem={isEvent ? undefined : shownProblems.schedule}
+            computerTimeZone={computerTimeZone}
+            timeZoneSuggestions={timeZoneSuggestions}
+            hour12={uses12HourClock(settings.timestampFormat)}
+            nowMs={nowMs}
           />
-        </FieldRow>
-      </SettingsSection>
-
-      <SettingsSection title="Where it runs">
-        <FieldRow
-          label="Computer"
-          hint="It keeps the task and runs it."
-          problem={shownProblems.computer}
-        >
-          <Select
-            value={form.environmentId ?? ""}
-            disabled={editing !== null}
-            onValueChange={(value) => {
-              if (value) chooseEnvironment(value as EnvironmentId);
-            }}
-          >
-            <SelectTrigger size="sm" className="w-full sm:w-52" aria-label="Computer">
-              <SelectValue>
-                {environments.find((entry) => entry.environmentId === form.environmentId)?.label ??
-                  "Choose a computer"}
-              </SelectValue>
-            </SelectTrigger>
-            <SelectPopup align="end" alignItemWithTrigger={false}>
-              {environments.map((environment) => (
-                <SelectItem key={environment.environmentId} value={environment.environmentId}>
-                  {environment.label}
-                </SelectItem>
-              ))}
-            </SelectPopup>
-          </Select>
-        </FieldRow>
-        <FieldRow label="Project" problem={shownProblems.project}>
-          <Select
-            value={form.projectId ?? ""}
-            onValueChange={(value) => {
-              if (!value) return;
-              const project = environmentProjects.find((entry) => entry.id === value);
-              update({
-                projectId: value as ProjectId,
-                threadId: null,
-                threadParticipantId: null,
-                ...(project?.kind === "general-chat" ? { checkout: "local" as const } : {}),
-              });
-            }}
-          >
-            <SelectTrigger size="sm" className="w-full sm:w-52" aria-label="Project">
-              <SelectValue>
-                {selectedProject ? <ProjectLabel project={selectedProject} /> : "Choose a project"}
-              </SelectValue>
-            </SelectTrigger>
-            <SelectPopup align="end" alignItemWithTrigger={false}>
-              {environmentProjects.map((project) => (
-                <SelectItem key={project.id} value={project.id}>
-                  <ProjectLabel project={project} />
-                </SelectItem>
-              ))}
-            </SelectPopup>
-          </Select>
-        </FieldRow>
-        <FieldRow
-          label={isEvent ? "Each event" : "Each run"}
-          hint={
-            form.target === "thread"
-              ? "Goes to that thread as a message, run with the agent and access below, never more access than the thread has then."
-              : undefined
-          }
-          problem={shownProblems.thread}
-        >
-          <SegmentedControl
-            value={form.target}
-            onValueChange={(value) => update({ target: value })}
-            aria-label={isEvent ? "Each event" : "Each run"}
-          >
-            <SegmentedControlItem value="new_thread">New thread</SegmentedControlItem>
-            <SegmentedControlItem value="thread">Continue a thread</SegmentedControlItem>
-          </SegmentedControl>
-          {form.target === "thread" ? (
-            <Select
-              value={form.threadId ?? ""}
-              onValueChange={(value) => {
-                if (!value || form.environmentId === null) return;
-                // Another thread: its runs are for that thread's own agent, and
-                // start from its model and access.
-                const shell = selectEnvironmentState(useStore.getState(), form.environmentId)
-                  .threadShellById[value as ThreadId];
-                update({
-                  threadId: value as ThreadId,
-                  threadParticipantId: null,
-                  ...(shell !== undefined
-                    ? { modelSelection: shell.modelSelection, runtimeMode: shell.runtimeMode }
-                    : {}),
-                });
-              }}
-            >
-              <SelectTrigger size="sm" className="w-full sm:w-52" aria-label="Thread">
-                <SelectValue>
-                  {projectThreads.find((thread) => thread.id === form.threadId)?.title ??
-                    "Choose a thread"}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                {projectThreads.length === 0 ? (
-                  <SelectItem value="" disabled>
-                    No open threads in this project
-                  </SelectItem>
-                ) : (
-                  projectThreads.slice(0, 50).map((thread) => (
-                    <SelectItem key={thread.id} value={thread.id}>
-                      {thread.title}
-                    </SelectItem>
-                  ))
-                )}
-              </SelectPopup>
-            </Select>
-          ) : null}
-        </FieldRow>
-        {isEvent && form.webhook.source === "github" && form.target === "new_thread" ? (
-          <FieldRow
-            label="Same issue, same thread"
-            hint="Later events about an issue or pull request continue its thread."
-          >
-            <Switch
-              checked={form.webhook.onePerSubject}
-              aria-label="Same issue, same thread"
-              data-testid="scheduled-event-one-per-subject"
-              onCheckedChange={(checked) => updateWebhook({ onePerSubject: Boolean(checked) })}
-            />
-          </FieldRow>
-        ) : null}
-        {form.target === "thread" && continuedAgents.length > 0 ? (
-          <FieldRow
-            label="Goes to"
-            hint="Which agent in that thread gets each run."
-            problem={shownProblems.goesTo ?? (goesTo?.left === true ? problems.goesTo : undefined)}
-          >
-            <Select
-              value={roomAgentKey(form.threadParticipantId)}
-              onValueChange={(value) => {
-                const agent = continuedAgents.find((entry) => roomAgentKey(entry.id) === value);
-                if (agent === undefined || agent.left) return;
-                // Its runs start from that agent's model.
-                update({ threadParticipantId: agent.id, modelSelection: agent.modelSelection });
-              }}
-            >
-              <SelectTrigger size="sm" className="w-full sm:w-52" aria-label="Goes to">
-                <SelectValue>
-                  {goesTo === undefined
-                    ? "Choose an agent"
-                    : goesTo.left
-                      ? `${goesTo.name} (left)`
-                      : goesTo.name}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                {continuedAgents.map((agent) => (
-                  <SelectItem
-                    key={roomAgentKey(agent.id)}
-                    value={roomAgentKey(agent.id)}
-                    disabled={agent.left}
-                  >
-                    {agent.left ? `${agent.name} (left the thread)` : agent.name}
-                  </SelectItem>
-                ))}
-              </SelectPopup>
-            </Select>
-          </FieldRow>
-        ) : null}
-        {form.target === "new_thread" && !isGeneralChats ? (
-          <FieldRow
-            label="Runs in"
-            hint={
-              form.checkout === "worktree"
-                ? "A new git worktree for each run, so runs never touch your checkout."
-                : "The project folder as it is, your uncommitted changes included."
+        </div>
+        <textarea
+          ref={promptRef}
+          className="field-sizing-content block max-h-[50vh] min-h-24 w-full resize-none bg-transparent px-4.5 py-1.5 text-[16px] leading-relaxed text-foreground outline-none placeholder:text-muted-foreground/60 sm:px-5 sm:text-[14px]"
+          value={form.prompt}
+          placeholder="Review yesterday's commits on main and list anything risky."
+          aria-describedby="scheduled-form-prompt-hint"
+          aria-label="Instructions"
+          aria-invalid={shownProblems.prompt !== undefined ? true : undefined}
+          data-testid="scheduled-form-prompt"
+          onChange={(event) => update({ prompt: event.target.value })}
+          onKeyDown={(event) => {
+            // As the composer sends: Cmd or Ctrl with Enter saves.
+            if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+              event.preventDefault();
+              event.currentTarget.form?.requestSubmit();
             }
-          >
-            <SegmentedControl
-              value={form.checkout}
-              onValueChange={(value) => update({ checkout: value })}
-              aria-label="Runs in"
-            >
-              <SegmentedControlItem value="local">Local checkout</SegmentedControlItem>
-              <SegmentedControlItem value="worktree">New worktree</SegmentedControlItem>
-            </SegmentedControl>
-          </FieldRow>
-        ) : null}
-      </SettingsSection>
+          }}
+        />
+        <div className="flex min-w-0 items-center gap-1.5 px-2.5 pb-2.5 sm:px-3 sm:pb-3">
+          <div className="group/composer-left @container/composer-left -m-1 flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto p-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            <TooltipProvider delay={ROW_TOOLTIP_DELAY_MS}>
+              {hasModelPicker ? (
+                <ProviderModelPicker
+                  compact={isPhone}
+                  activeInstanceId={selection.instanceId}
+                  model={selection.model}
+                  lockedProvider={null}
+                  instanceEntries={instanceEntries}
+                  modelOptionsByInstance={getCustomModelOptionsByInstance(
+                    settings,
+                    providers,
+                    selection.instanceId,
+                    selection.model,
+                  )}
+                  summary={modelPickerTriggerSummary(shownTraits, false)}
+                  settings={
+                    <ModelPickerSettings
+                      traits={shownTraits}
+                      mode={null}
+                      access={isPhone ? accessControl : null}
+                    />
+                  }
+                  onInstanceModelChange={(instanceId, model) =>
+                    update({ modelSelection: createModelSelection(instanceId, model) })
+                  }
+                />
+              ) : (
+                <span className="px-2 text-[12.5px] text-muted-foreground">
+                  No agent is ready on this computer.
+                </span>
+              )}
+              {/* On phones access lives in the model button's panel, as on the
+                  composer; with no model button it stays on the row. */}
+              {isPhone && hasModelPicker ? null : (
+                <ComposerRunControls
+                  mode={null}
+                  access={accessControl}
+                  focusComposer={() => promptRef.current?.focus()}
+                />
+              )}
+            </TooltipProvider>
+          </div>
+          <div className="ml-auto flex shrink-0 items-center gap-1">
+            <Button type="button" size="sm" variant="ghost" onClick={cancel}>
+              Cancel
+            </Button>
+            <Button type="submit" size="sm" disabled={saving} data-testid="scheduled-form-save">
+              {editing ? "Save" : "Create task"}
+            </Button>
+          </div>
+        </div>
+      </div>
 
-      <SettingsSection title="Agent">
-        <FieldRow label="Model" problem={shownProblems.agent} warning={agentWarning}>
-          {form.modelSelection && instanceEntries.length > 0 ? (
-            <ModelSelectionControl
-              selection={form.modelSelection}
-              settings={settings}
-              serverProviders={providers}
-              instanceEntries={instanceEntries}
-              onSelectionChange={(selection) => update({ modelSelection: selection })}
-            />
-          ) : (
-            <span className="text-[12.5px] text-muted-foreground">
-              No agent is ready on this computer.
-            </span>
-          )}
-        </FieldRow>
-        <FieldRow
-          label="Access"
-          hint={
-            access?.options.find((option) => option.mode === access.shown)?.description ??
-            "What the agent may do without asking."
+      <div className="flex w-full flex-col items-center gap-1 px-2">
+        <TaskRunsSentence
+          isEvent={isEvent}
+          target={form.target}
+          threadId={form.threadId}
+          threadParticipantId={form.threadParticipantId}
+          checkout={form.checkout}
+          showCheckout={!isGeneralChats}
+          threads={projectThreads}
+          keptThread={
+            form.threadId === null
+              ? null
+              : {
+                  id: form.threadId,
+                  title:
+                    threads.find((thread) => thread.id === form.threadId)?.title ??
+                    "The thread it continued",
+                }
           }
-          warning={accessWarning}
+          agents={continuedAgents}
+          environments={environments}
+          environmentId={form.environmentId}
+          // A draft on a computer that disconnected can still move to another.
+          computerFixed={
+            editing !== null || (environments.length < 2 && chosenEnvironment !== undefined)
+          }
+          onNewThread={() => update({ target: "new_thread" })}
+          onContinueThread={continueThread}
+          onAgent={(agent) =>
+            // Its runs start from that agent's model.
+            update({ threadParticipantId: agent.id, modelSelection: agent.modelSelection })
+          }
+          onCheckout={(checkout) => update({ checkout })}
+          onComputer={chooseEnvironment}
+        />
+        <p
+          id="scheduled-form-prompt-hint"
+          className="max-w-md text-center text-[12px] leading-4 text-muted-foreground"
         >
-          <Select
-            value={form.runtimeMode}
-            onValueChange={(value) => {
-              if (value) update({ runtimeMode: value as RuntimeMode, runtimeModeChosen: true });
-            }}
-          >
-            <SelectTrigger size="sm" className="w-full sm:w-44" aria-label="Access">
-              <SelectValue>
-                {access?.options.find((option) => option.mode === form.runtimeMode)?.label ??
-                  runtimeModeConfig[form.runtimeMode].label}
-              </SelectValue>
-            </SelectTrigger>
-            <SelectPopup align="end" alignItemWithTrigger={false}>
-              {(
-                access?.options ??
-                RUNTIME_MODES.map((mode) => ({
-                  mode,
-                  label: runtimeModeConfig[mode].label,
-                  disabled: false,
-                }))
-              ).map((option) => (
-                <SelectItem
-                  key={option.mode}
-                  value={option.mode}
-                  disabled={option.disabled === true}
-                >
-                  {option.label}
-                </SelectItem>
-              ))}
-            </SelectPopup>
-          </Select>
-        </FieldRow>
-      </SettingsSection>
-
-      <SettingsSection title="Schedule">
-        <FieldRow
-          label="Runs"
-          problem={form.cadenceKind === "custom" || isEvent ? undefined : shownProblems.schedule}
-        >
-          <Select
-            value={form.cadenceKind}
-            onValueChange={(value) => {
-              if (value) update({ cadenceKind: value as CadenceKind });
-            }}
-          >
-            <SelectTrigger
-              size="sm"
-              className={cn("w-full", isEvent ? "sm:w-56" : "sm:w-36")}
-              aria-label="Runs"
-              data-testid="scheduled-form-runs"
-            >
-              <SelectValue>{CADENCE_KIND_LABELS[form.cadenceKind]}</SelectValue>
-            </SelectTrigger>
-            <SelectPopup align="end" alignItemWithTrigger={false}>
-              {cadenceKindsFor(eventTasks || isEvent).map((kind) => (
-                <SelectItem key={kind} value={kind}>
-                  {CADENCE_KIND_LABELS[kind]}
-                </SelectItem>
-              ))}
-            </SelectPopup>
-          </Select>
-          {form.cadenceKind === "hourly" ? (
-            <Select
-              value={String(form.minute)}
-              onValueChange={(value) => {
-                if (value !== null) update({ minute: Number(value) });
-              }}
-            >
-              <SelectTrigger size="sm" className="w-28" aria-label="Minute past the hour">
-                <SelectValue>{`at :${String(form.minute).padStart(2, "0")}`}</SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                {[...new Set([...HOURLY_MINUTES, form.minute])]
-                  .toSorted((a, b) => a - b)
-                  .map((minute) => (
-                    <SelectItem key={minute} value={String(minute)}>
-                      {`at :${String(minute).padStart(2, "0")}`}
-                    </SelectItem>
-                  ))}
-              </SelectPopup>
-            </Select>
-          ) : null}
-          {form.cadenceKind === "weekly" ? (
-            <Select
-              value={String(form.weekday)}
-              onValueChange={(value) => {
-                if (value !== null) update({ weekday: Number(value) });
-              }}
-            >
-              <SelectTrigger size="sm" className="w-32" aria-label="Day">
-                <SelectValue>{WEEKDAY_LABELS[form.weekday]}</SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                {WEEKDAY_LABELS.map((label, index) => (
-                  <SelectItem key={label} value={String(index)}>
-                    {label}
-                  </SelectItem>
-                ))}
-              </SelectPopup>
-            </Select>
-          ) : null}
-          {form.cadenceKind === "once" ? (
-            <DatePicker
-              size="sm"
-              className="w-44 min-w-0"
-              aria-label="Date"
-              value={form.date}
-              // Days are the task's own: today and earlier are as its zone sees them.
-              today={todayIn(form.timeZone)}
-              min={todayIn(form.timeZone)}
-              onChange={(date) => update({ date })}
-              data-testid="scheduled-form-date"
-            />
-          ) : null}
-          {form.cadenceKind === "daily" ||
-          form.cadenceKind === "weekdays" ||
-          form.cadenceKind === "weekly" ||
-          form.cadenceKind === "once"
-            ? timeField
-            : null}
-        </FieldRow>
-        {form.cadenceKind === "custom" ? (
-          <FieldRow
-            label="Cron expression"
-            hint="Five fields: minute, hour, day of month, month, day of week. Every 15 minutes is */15 * * * *."
-            problem={shownProblems.schedule}
-            stacked
-          >
-            <Input
-              size="sm"
-              className="font-mono"
-              value={form.cron}
-              aria-label="Cron expression"
-              data-testid="scheduled-form-cron"
-              onChange={(event) => update({ cron: event.target.value })}
-            />
-          </FieldRow>
+          Each run starts with only these words, so say everything it needs.
+        </p>
+        {form.target === "thread" ? (
+          <p className="max-w-md text-center text-[12px] leading-4 text-muted-foreground">
+            Each run goes to that thread as a message, run with the agent and access above, never
+            more access than the thread has then.
+          </p>
         ) : null}
-        {isEvent ? (
+        {nextRun !== undefined ? (
+          <p
+            className="font-mono text-[11px] text-muted-foreground"
+            data-testid="scheduled-form-next-run"
+          >
+            Next: {formatWhen(nextRun.toISOString(), nowMs)}
+          </p>
+        ) : form.cadenceKind === "manual" ? (
+          <p className="font-mono text-[11px] text-muted-foreground">
+            Runs only when you press Run now
+          </p>
+        ) : null}
+        {[agentWarning, accessWarning].map((warning) =>
+          warning === null ? null : (
+            <p key={warning} className="text-center text-[12px] text-warning-foreground">
+              {warning}
+            </p>
+          ),
+        )}
+        {listedProblems.length > 0 ? (
+          <ul className="flex flex-col items-center gap-0.5" data-testid="scheduled-form-problems">
+            {listedProblems.map((problem) => (
+              <li key={problem} className="text-center text-[12px] text-destructive-foreground">
+                {problem}
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </div>
+
+      {isEvent ? (
+        <SettingsSection
+          className="mt-4 w-full"
+          title="When it runs"
+          description="It runs when an event arrives, while Threadlines is running on its computer. Events wait up to a day while it's off."
+          data-testid="scheduled-event-section"
+        >
+          {form.webhook.source === "github" && form.target === "new_thread" ? (
+            <FieldRow
+              label="Same issue, same thread"
+              hint="Later events about an issue or pull request continue its thread."
+            >
+              <Switch
+                checked={form.webhook.onePerSubject}
+                aria-label="Same issue, same thread"
+                data-testid="scheduled-event-one-per-subject"
+                onCheckedChange={(checked) => updateWebhook({ onePerSubject: Boolean(checked) })}
+              />
+            </FieldRow>
+          ) : null}
           <ScheduledEventFields
             webhook={form.webhook}
             onChange={updateWebhook}
             context={gitHubContext}
             problem={shownProblems.schedule}
           />
-        ) : null}
-        {form.cadenceKind !== "manual" && !isEvent ? (
-          <FieldRow
-            label="Time zone"
-            hint="Times use this zone wherever you are. When clocks skip ahead, a skipped time runs right after. When they fall back, a set time runs once and hourly tasks still run every hour."
-          >
-            <TimeZonePicker
-              value={form.timeZone}
-              onChange={(timeZone) => update({ timeZone, timeZoneChosen: true })}
-              suggestions={timeZoneSuggestions}
-              className="w-full sm:w-52"
-              aria-label="Time zone"
-              data-testid="scheduled-form-time-zone"
-            />
-          </FieldRow>
-        ) : null}
-        {upcoming.length > 0 ? (
-          <div
-            className={cn(SETTINGS_GROUP_ROW_CLASS, "px-3.5 py-2.5")}
-            data-testid="scheduled-form-preview"
-          >
-            <p className="text-[12.5px] leading-[18px] text-muted-foreground">
-              {form.cadenceKind === "once" ? "Your time:" : "Next runs, your time:"}{" "}
-              {upcoming.map((slot) => formatWhen(slot.toISOString(), now.getTime())).join(", ")}
-            </p>
-          </div>
-        ) : form.cadenceKind === "manual" ? (
-          <div className={cn(SETTINGS_GROUP_ROW_CLASS, "px-3.5 py-2.5")}>
-            <p className="text-[12.5px] leading-[18px] text-muted-foreground">
-              It runs only when you press Run now.
-            </p>
-          </div>
-        ) : null}
-      </SettingsSection>
-
-      <div className="flex items-center justify-end gap-2 px-1">
-        <Button type="button" size="sm" variant="outline" onClick={cancel}>
-          Cancel
-        </Button>
-        <Button type="submit" size="sm" disabled={saving} data-testid="scheduled-form-save">
-          {editing ? "Save" : "Create task"}
-        </Button>
-      </div>
+        </SettingsSection>
+      ) : null}
     </form>
   );
 }
