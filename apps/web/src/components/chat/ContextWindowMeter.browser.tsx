@@ -137,7 +137,12 @@ describe("ContextWindowMeter", () => {
 
       await page.getByRole("button", { name: /Weekly 36% used, 14% of the window passed/ }).click();
       expect(openUsage).toHaveBeenCalledTimes(1);
-      await expect.element(page.getByText("Codex usage")).not.toBeInTheDocument();
+      // The row closes the popover. Checked on the meter's own state: the popup
+      // leaves the page only after its fade-out, which needs frames a busy CI
+      // tab may not draw for many seconds.
+      await expect
+        .element(page.getByRole("button", { name: /Context window/ }))
+        .toHaveAttribute("aria-expanded", "false");
     } finally {
       await screen.unmount();
     }
