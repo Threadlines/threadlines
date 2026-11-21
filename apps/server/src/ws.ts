@@ -203,6 +203,7 @@ import { SecretScrubber } from "./secrets/SecretScrubber.ts";
 import { makeWorkflowRunRequests } from "./orchestration/workflowRunRequests.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
+import { ThreadCpuUsage } from "./diagnostics/ThreadCpuUsage.ts";
 import * as StallMonitor from "./observability/StallMonitor.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as SourceControlDiscoveryLayer from "./sourceControl/SourceControlDiscovery.ts";
@@ -1017,6 +1018,7 @@ const makeCoreRpcLayer = (
         providerService,
       });
       const processResourceMonitor = yield* ProcessResourceMonitor.ProcessResourceMonitor;
+      const threadCpuUsage = yield* ThreadCpuUsage;
       const stallMonitor = yield* StallMonitor.StallMonitor;
 
       const loadAuthAccessSnapshot = () =>
@@ -2196,6 +2198,10 @@ const makeCoreRpcLayer = (
               "rpc.aggregate": "server",
             },
           ),
+        [WS_METHODS.serverGetThreadCpuUsage]: (_input) =>
+          observeRpcEffect(WS_METHODS.serverGetThreadCpuUsage, threadCpuUsage.read, {
+            "rpc.aggregate": "server",
+          }),
         [WS_METHODS.serverSignalProcess]: (input) =>
           observeRpcEffect(WS_METHODS.serverSignalProcess, processDiagnostics.signal(input), {
             "rpc.aggregate": "server",

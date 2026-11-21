@@ -26,7 +26,7 @@ import * as Option from "effect/Option";
 
 import type * as Scope from "effect/Scope";
 
-import type { ProviderStopConfirmation } from "./Services/ProviderAdapter.ts";
+import type { ProviderProcessOwner, ProviderStopConfirmation } from "./Services/ProviderAdapter.ts";
 
 /** An agent process a driver started. */
 export interface TrackedAgentProcess {
@@ -123,6 +123,11 @@ export interface AgentProcessLedger {
   readonly beforeStop: (sessionKey: ThreadId) => Effect.Effect<void>;
   /** Everything tracked for `threadId`'s session keys is gone, or why that can't be said. */
   readonly confirm: (threadId: ThreadId) => Effect.Effect<ProviderStopConfirmation>;
+  /**
+   * Every process tracked now, by thread (ProviderAdapterShape.listProcesses).
+   * One whose own process exited stays listed while its group may live on.
+   */
+  readonly owners: () => Effect.Effect<ReadonlyArray<ProviderProcessOwner>>;
 }
 
 export interface AgentProcessLedgerOptions {
@@ -288,5 +293,16 @@ export const makeAgentProcessLedger = (
           : ({ confirmed: false, reason: all.join("; ") } as const);
       });
 
-    return { track, beforeStop, confirm } satisfies AgentProcessLedger;
+    const owners: AgentProcessLedger["owners"] = () =>
+      Effect.sync(() =>
+        [...entries].map((entry): ProviderProcessOwner => ({
+          kind: "thread",
+          threadId: parseSessionKey(entry.sessionKey).threadId,
+          pid: entry.pid,
+          ownGroup: posix && entry.ownGroup,
+          alive: !entry.leaderGone,
+        })),
+      );
+
+    return { track, beforeStop, confirm, owners } satisfies AgentProcessLedger;
   });

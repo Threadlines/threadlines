@@ -505,7 +505,7 @@ const PAGES = [
     id: "settings.diagnostics",
     kind: "page",
     title: "Diagnostics",
-    about: "Slow requests, live processes and recent failures on this computer.",
+    about: "CPU by thread, slow requests, live processes and recent failures on this computer.",
     route: { to: "/settings/diagnostics" },
   },
   {
@@ -566,6 +566,16 @@ const PAGES = [
 // ----- sections --------------------------------------------------------------------
 
 const SECTIONS = [
+  // Diagnostics
+  {
+    id: "diagnostics.cpuByThread",
+    kind: "section",
+    parent: "settings.diagnostics",
+    title: "CPU by thread",
+    about:
+      "Which threads' agents and terminals are using this computer's CPU now and over the last minute, next to Threadlines itself.",
+    keywords: ["cpu", "battery", "slow", "fan", "hot", "processes", "usage", "energy"],
+  },
   // General
   {
     id: "general.alerts",

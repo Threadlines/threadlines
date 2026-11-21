@@ -30,10 +30,21 @@ export interface ProcessRow {
   readonly rssBytes: number;
   readonly elapsed: string;
   readonly command: string;
+  /**
+   * All the CPU time the process has used since it started (POSIX `ps time`).
+   * Two reads of it give what the process used in between, which `cpuPercent`
+   * can't: on Linux that is an average over the process's whole life.
+   * Absent on Windows, where `cpuPercent` already comes from such a pair.
+   */
+  readonly cpuTimeMs?: number | undefined;
 }
 
 const PROCESS_QUERY_TIMEOUT_MS = 15_000;
-const POSIX_PROCESS_QUERY_COMMAND = "pid=,ppid=,pgid=,stat=,pcpu=,rss=,etime=,command=";
+const POSIX_PROCESS_QUERY_COMMAND = "pid=,ppid=,pgid=,stat=,pcpu=,rss=,etime=,time=,command=";
+/** Our own `ps` as it shows up in the process list it prints. */
+const POSIX_PROCESS_QUERY_PATTERN = new RegExp(
+  `(?:^|[/\\\\])ps\\s+-axo\\s+${POSIX_PROCESS_QUERY_COMMAND}`,
+);
 const PROCESS_QUERY_MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
 const PROCESS_SNAPSHOT_TTL_MS = 2_000;
 const PROCESS_SNAPSHOT_INITIAL_FAILURE_BACKOFF_MS = 2_000;
@@ -106,10 +117,22 @@ function parseNumber(value: string): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+/**
+ * `ps time` in milliseconds: `398:51.57` (macOS, minutes and seconds) or
+ * `[1-]02:03:04` (Linux, whole seconds). Null when it reads as neither.
+ */
+export function parsePosixCpuTime(value: string): number | null {
+  const match = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+(?:\.\d+)?)$/.exec(value);
+  if (!match) return null;
+  const [, days = "0", hours = "0", minutes = "0", seconds = "0"] = match;
+  const total = ((Number(days) * 24 + Number(hours)) * 60 + Number(minutes)) * 60 + Number(seconds);
+  return Number.isFinite(total) ? Math.round(total * 1000) : null;
+}
+
 export function parsePosixProcessRows(output: string): ReadonlyArray<ProcessRow> {
   const rows: ProcessRow[] = [];
   const rowPattern =
-    /^\s*(\d+)\s+(\d+)\s+(-?\d+)\s+(\S+)\s+([+-]?(?:\d+\.?\d*|\.\d+))\s+(\d+)\s+(\S+)\s+(.+)$/;
+    /^\s*(\d+)\s+(\d+)\s+(-?\d+)\s+(\S+)\s+([+-]?(?:\d+\.?\d*|\.\d+))\s+(\d+)\s+(\S+)\s+(\S+)\s+(.+)$/;
 
   for (const line of output.split(/\r?\n/)) {
     if (line.trim().length === 0) continue;
@@ -124,7 +147,8 @@ export function parsePosixProcessRows(output: string): ReadonlyArray<ProcessRow>
     const cpuText = match[5];
     const rssText = match[6];
     const elapsed = match[7];
-    const command = match[8];
+    const cpuTimeText = match[8];
+    const command = match[9];
     if (
       pidText === undefined ||
       ppidText === undefined ||
@@ -133,6 +157,7 @@ export function parsePosixProcessRows(output: string): ReadonlyArray<ProcessRow>
       cpuText === undefined ||
       rssText === undefined ||
       elapsed === undefined ||
+      cpuTimeText === undefined ||
       command === undefined
     ) {
       continue;
@@ -165,6 +190,7 @@ export function parsePosixProcessRows(output: string): ReadonlyArray<ProcessRow>
       rssBytes: rssKiB * 1024,
       elapsed,
       command,
+      cpuTimeMs: parsePosixCpuTime(cpuTimeText) ?? undefined,
     });
   }
 
@@ -426,7 +452,7 @@ export function isDiagnosticsQueryProcess(row: ProcessRow, serverPid: number): b
 
   const command = row.command.trim();
   return (
-    /(?:^|[/\\])ps\s+-axo\s+pid=,ppid=,pgid=,stat=,pcpu=,rss=,etime=,command=/.test(command) ||
+    POSIX_PROCESS_QUERY_PATTERN.test(command) ||
     (/\bpowershell(?:\.exe)?\b/i.test(command) &&
       /\bGet-CimInstance\s+Win32_Process\b/i.test(command))
   );

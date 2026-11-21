@@ -4841,6 +4841,15 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
       resolvePortInUse,
       startCommandRun,
       readCommandRunOutput,
+      listShells: readManagerState.pipe(
+        Effect.map((state) =>
+          [...state.sessions.values()].flatMap((session) =>
+            session.status === "running" && session.pid !== null
+              ? [{ threadId: session.threadId, pid: session.pid }]
+              : [],
+          ),
+        ),
+      ),
       subscribeCommandRuns: (listener) =>
         Effect.sync(() => {
           commandRunListeners.add(listener);

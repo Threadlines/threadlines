@@ -274,6 +274,7 @@ describe("ProviderSessionReaper", () => {
       agentSession: () => Effect.succeed(null),
       sendSubagentInput: () => unsupported(),
       deleteThread: () => unsupported(),
+      listAgentProcesses: Effect.succeed([]),
       streamEvents: Stream.empty,
     };
 

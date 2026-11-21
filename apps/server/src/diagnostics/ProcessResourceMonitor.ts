@@ -50,11 +50,32 @@ interface MonitorState {
   readonly samplerRunning: boolean;
 }
 
+/** One look at the process table, as the sampler took it. */
+export interface ProcessTableRead {
+  readonly rows: ReadonlyArray<ProcessRow>;
+  readonly serverPid: number;
+  readonly sampledAtMs: number;
+}
+
 export interface ProcessResourceMonitorShape {
   readonly readCurrent: Effect.Effect<ServerProcessDiagnosticsResult>;
   readonly readHistory: (
     input: ServerProcessResourceHistoryInput,
   ) => Effect.Effect<ServerProcessResourceHistoryResult>;
+  /**
+   * Keeps the sampler running for its active window, as `readHistory` does,
+   * and takes a read at once when the latest is older than one interval.
+   * Fails only when no read has ever succeeded.
+   */
+  readonly requestSamples: Effect.Effect<void, string>;
+  /**
+   * Hands every read the sampler takes to `observer`, until the caller's
+   * scope closes. Runs only while something keeps the sampler going, so an
+   * observer adds no reads of its own.
+   */
+  readonly observeReads: (
+    observer: (read: ProcessTableRead) => Effect.Effect<void>,
+  ) => Effect.Effect<void, never, Scope.Scope>;
 }
 
 export class ProcessResourceMonitor extends Context.Service<
@@ -314,10 +335,17 @@ export const make = Effect.fn("makeProcessResourceMonitor")(function* () {
     samplerRunning: false,
   });
 
+  const observers = new Set<(read: ProcessTableRead) => Effect.Effect<void>>();
+
   const sampleOnce = Effect.gen(function* () {
     const sampledAt = yield* DateTime.now;
     const sampledAtMs = DateTime.toEpochMillis(sampledAt);
     const rows = yield* processSnapshot.readTree.pipe(Effect.withTracerEnabled(false));
+    for (const observer of observers) {
+      yield* Effect.suspend(() => observer({ rows, serverPid: process.pid, sampledAtMs })).pipe(
+        Effect.catchCause(() => Effect.void),
+      );
+    }
     const samples = collectMonitoredSamples({
       rows,
       serverPid: process.pid,
@@ -420,7 +448,26 @@ export const make = Effect.fn("makeProcessResourceMonitor")(function* () {
     });
   });
 
-  return ProcessResourceMonitor.of({ readCurrent, readHistory });
+  const requestSamples: ProcessResourceMonitorShape["requestSamples"] = Effect.gen(function* () {
+    yield* ensureSamplerRunning;
+    const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
+    const latest = (yield* Ref.get(state)).latestSampledAt;
+    if (latest === null || nowMs - DateTime.toEpochMillis(latest) >= SAMPLE_INTERVAL_MS) {
+      yield* sampleOnce;
+    }
+    const current = yield* Ref.get(state);
+    if (current.latestRows === null) {
+      return yield* Effect.fail(current.lastError ?? "The process list couldn't be read.");
+    }
+  });
+
+  const observeReads: ProcessResourceMonitorShape["observeReads"] = (observer) =>
+    Effect.acquireRelease(
+      Effect.sync(() => observers.add(observer)),
+      () => Effect.sync(() => observers.delete(observer)),
+    ).pipe(Effect.asVoid);
+
+  return ProcessResourceMonitor.of({ readCurrent, readHistory, requestSamples, observeReads });
 });
 
 export const layer = Layer.effect(ProcessResourceMonitor, make());

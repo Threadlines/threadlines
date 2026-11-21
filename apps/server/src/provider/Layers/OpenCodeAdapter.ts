@@ -3372,6 +3372,13 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
       readSubagentTranscript,
       stopAll,
       confirmThreadStopped,
+      // One server runs every thread's agent, so its work can't be split.
+      listProcesses: () =>
+        manager.running.pipe(
+          Effect.map((server) =>
+            server?.pid ? [{ kind: "shared" as const, pid: server.pid }] : [],
+          ),
+        ),
       streamEvents: Stream.fromPubSub(runtimeEvents),
     } satisfies OpenCodeAdapterShape;
   });

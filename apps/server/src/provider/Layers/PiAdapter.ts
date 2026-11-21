@@ -2439,6 +2439,7 @@ export function makePiAdapter(options: PiAdapterOptions) {
         importPiNativeSession({ ...input, agentDir: instanceAgentDir() }),
       noteBeforeStop: processes.beforeStop,
       confirmThreadStopped: processes.confirm,
+      listProcesses: processes.owners,
       streamEvents: Stream.fromPubSub(runtimeEvents),
     } satisfies PiAdapterShape;
   });

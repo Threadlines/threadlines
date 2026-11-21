@@ -11106,6 +11106,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         configDir: resolveClaudeConfigDir(claudeEnvironment, path),
       }),
     noteBeforeStop: processes.beforeStop,
+    listProcesses: processes.owners,
     confirmThreadStopped: (threadId) =>
       [...unreportedProcesses].some((key) => parseSessionKey(key).threadId === threadId)
         ? Effect.succeed({

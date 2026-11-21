@@ -167,6 +167,7 @@ import type {
   ServerProcessDiagnosticsResult,
   ServerProcessResourceHistoryInput,
   ServerProcessResourceHistoryResult,
+  ServerThreadCpuUsageResult,
   ServerProviderDataSharingSetInput,
   ServerProviderDataSharingSetResult,
   ServerProviderRateLimitResetCreditConsumeInput,
@@ -1809,6 +1810,8 @@ export interface LocalApi {
     getProcessResourceHistory: (
       input: ServerProcessResourceHistoryInput,
     ) => Promise<ServerProcessResourceHistoryResult>;
+    /** CPU by thread over the last minute; keeps the server's sampler going. */
+    getThreadCpuUsage: () => Promise<ServerThreadCpuUsageResult>;
     signalProcess: (input: ServerSignalProcessInput) => Promise<ServerSignalProcessResult>;
     resolveBackgroundRuns: (
       input: ServerResolveBackgroundRunsInput,

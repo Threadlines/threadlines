@@ -2946,6 +2946,7 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
       stopAll,
       noteBeforeStop: processes.beforeStop,
       confirmThreadStopped: processes.confirm,
+      listProcesses: processes.owners,
       streamEvents: Stream.fromPubSub(runtimeEvents),
     } satisfies MuseAdapterShape;
   });

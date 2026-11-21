@@ -4679,6 +4679,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       }),
     noteBeforeStop: processes.beforeStop,
     confirmThreadStopped: processes.confirm,
+    listProcesses: processes.owners,
     get streamEvents() {
       return Stream.fromQueue(runtimeEventQueue);
     },
