@@ -6,10 +6,12 @@ import {
   type OrchestrationEvent,
   type OrchestrationReadModel,
   type ScheduledTaskId,
+  TERMINALS_PAGE_THREAD_ID,
   type ThreadId,
   WS_METHODS,
 } from "@threadlines/contracts";
 import { scopeThreadRef } from "@threadlines/client-runtime";
+import * as Effect from "effect/Effect";
 import { page, userEvent } from "vite-plus/test/browser";
 import { describe, expect, it, vi } from "vite-plus/test";
 
@@ -26,6 +28,7 @@ import {
   THREAD_ID,
   THREAD_TITLE,
   PROJECT_ID,
+  SECOND_PROJECT_ID,
   LOCAL_ENVIRONMENT_ID,
   THREAD_REF,
   PROJECT_LOGICAL_KEY,
@@ -557,6 +560,197 @@ describe("ChatView (full app): app shell", () => {
       // A click of its own, on the page now open, hides the list.
       clickRail("rail-chats", 1);
       await listOpen(false);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("opens terminals in two projects side by side and leaves them running while browsing", async () => {
+    const base = createSnapshotForTargetUser({
+      targetMessageId: MessageId.make("terminals-page"),
+      targetText: "Start the web and API servers.",
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...base,
+        projects: [
+          ...base.projects,
+          {
+            ...base.projects[0]!,
+            id: SECOND_PROJECT_ID,
+            title: "Backend",
+            workspaceRoot: "/repo/backend",
+          },
+        ],
+      },
+    });
+    const opened = () =>
+      wsRequests.filter(
+        (request) =>
+          request._tag === WS_METHODS.terminalOpen && request.threadId === TERMINALS_PAGE_THREAD_ID,
+      );
+    const panes = () => document.querySelectorAll(".thread-terminal-drawer .xterm").length;
+
+    try {
+      await page.getByTestId("rail-terminals").click();
+      await waitForURL(mounted.router, (pathname) => pathname === "/terminals", "Terminals.");
+      // Visiting starts no shell; the first tab is asked for.
+      expect(opened()).toEqual([]);
+      await page.getByRole("button", { name: "New terminal", exact: true }).click();
+      // A tab opens once its stream is ready, which takes a moment under load.
+      await vi.waitFor(
+        () => expect(opened()).toEqual([expect.objectContaining({ cwd: "/repo/project" })]),
+        { timeout: 5000 },
+      );
+      await page.getByRole("button", { name: /^Project for new terminals/ }).click();
+      await page.getByRole("menuitem", { name: /Backend/ }).click();
+      await page.getByRole("button", { name: /^Split terminal/ }).click();
+      await vi.waitFor(
+        () => {
+          expect(opened()).toContainEqual(expect.objectContaining({ cwd: "/repo/backend" }));
+          expect(panes()).toBe(2);
+        },
+        { timeout: 5000 },
+      );
+      // Each tab names its folder.
+      await expect
+        .element(page.getByRole("tab", { name: /^Backend\s+Terminal 2/ }))
+        .toBeInTheDocument();
+
+      await page.getByTestId("rail-threads").click();
+      await waitForURL(mounted.router, (pathname) => pathname !== "/terminals", "Threads.");
+      await page.getByTestId("rail-terminals").click();
+      await vi.waitFor(() => expect(panes()).toBe(2), { timeout: 5000 });
+      expect(wsRequests.some((request) => request._tag === WS_METHODS.terminalClose)).toBe(false);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("killing the Terminals page's last tab leaves it empty, without a new shell", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: MessageId.make("terminals-page-kill"),
+        targetText: "One terminal.",
+      }),
+    });
+    const pageRef = scopeThreadRef(LOCAL_ENVIRONMENT_ID, TERMINALS_PAGE_THREAD_ID as ThreadId);
+    const opened = () =>
+      wsRequests.filter(
+        (request) =>
+          request._tag === WS_METHODS.terminalOpen && request.threadId === TERMINALS_PAGE_THREAD_ID,
+      );
+
+    try {
+      await page.getByTestId("rail-terminals").click();
+      await page.getByRole("button", { name: "New terminal", exact: true }).click();
+      await vi.waitFor(() => expect(opened()).toHaveLength(1), { timeout: 5000 });
+      const terminalId = String(opened()[0]!.terminalId);
+      // The server lists the tab, and still does for a moment after the kill.
+      useTerminalStateStore.getState().applyTerminalTabs(pageRef, [
+        {
+          terminalId,
+          number: 1,
+          cwd: "/repo/project",
+          status: "running",
+          exitCode: null,
+          exitSignal: null,
+          createdAt: NOW_ISO,
+        },
+      ]);
+      await page.getByRole("button", { name: /^Kill .*Terminal 1/ }).click();
+      await expect
+        .element(page.getByRole("button", { name: "New terminal", exact: true }))
+        .toBeInTheDocument();
+      await vi.waitFor(() =>
+        expect(wsRequests.some((request) => request._tag === WS_METHODS.terminalClose)).toBe(true),
+      );
+      expect(opened()).toHaveLength(1);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  /** Opens the Terminals page's first tab and has the server list it; its id. */
+  async function openListedTerminalsPageTab(): Promise<string> {
+    const opened = () =>
+      wsRequests.filter(
+        (request) =>
+          request._tag === WS_METHODS.terminalOpen && request.threadId === TERMINALS_PAGE_THREAD_ID,
+      );
+    await page.getByTestId("rail-terminals").click();
+    await page.getByRole("button", { name: "New terminal", exact: true }).click();
+    await vi.waitFor(() => expect(opened().length).toBeGreaterThan(0), { timeout: 5000 });
+    const terminalId = String(opened()[0]!.terminalId);
+    useTerminalStateStore
+      .getState()
+      .applyTerminalTabs(
+        scopeThreadRef(LOCAL_ENVIRONMENT_ID, TERMINALS_PAGE_THREAD_ID as ThreadId),
+        [
+          {
+            terminalId,
+            number: 1,
+            cwd: "/repo/project",
+            status: "running",
+            exitCode: null,
+            exitSignal: null,
+            createdAt: NOW_ISO,
+          },
+        ],
+      );
+    return terminalId;
+  }
+
+  it("keeps a tab whose kill failed, and says so: its shell still runs", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: MessageId.make("terminals-page-kill-fails"),
+        targetText: "A kill that fails.",
+      }),
+      resolveRpc: (body) =>
+        body._tag === WS_METHODS.terminalClose || body._tag === WS_METHODS.terminalWrite
+          ? // The harness answers a failed RPC with a plain Error, as the socket does.
+            // @effect-diagnostics-next-line globalErrorInEffectFailure:off
+            Effect.fail(new Error("The server refused."))
+          : undefined,
+    });
+
+    try {
+      await openListedTerminalsPageTab();
+      await page.getByRole("button", { name: /^Kill .*Terminal 1/ }).click();
+      await expect.element(page.getByText("Couldn't kill the terminal")).toBeInTheDocument();
+      await expect.element(page.getByRole("tab", { name: /Terminal 1/ })).toBeInTheDocument();
+      // Nothing typed "exit" into whatever runs in the shell.
+      expect(wsRequests.some((request) => request._tag === WS_METHODS.terminalWrite)).toBe(false);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("drops a Restart question once its tab is killed on another device", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: MessageId.make("terminals-page-restart-gone"),
+        targetText: "A restart for a tab that's gone.",
+      }),
+    });
+    const pageRef = scopeThreadRef(LOCAL_ENVIRONMENT_ID, TERMINALS_PAGE_THREAD_ID as ThreadId);
+
+    try {
+      const terminalId = await openListedTerminalsPageTab();
+      // Busy, so Restart asks first.
+      useTerminalStateStore.getState().setTerminalActivity(pageRef, terminalId, true);
+      await page.getByRole("button", { name: "More terminal actions" }).click();
+      await page.getByRole("menuitem", { name: "Restart terminal" }).click();
+      await expect.element(page.getByText("Restart terminal?")).toBeInTheDocument();
+      // Another device killed it: the server's list no longer has it.
+      useTerminalStateStore.getState().applyTerminalTabs(pageRef, []);
+      await expect.element(page.getByText("Restart terminal?")).not.toBeInTheDocument();
+      expect(wsRequests.some((request) => request._tag === WS_METHODS.terminalRestart)).toBe(false);
     } finally {
       await mounted.cleanup();
     }

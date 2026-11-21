@@ -585,6 +585,9 @@ export function OpenCommandPaletteDialog() {
   const threads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
   const keybindings = useServerKeybindings();
   const isHomeRoute = useLocation({ select: (location) => location.pathname === "/" });
+  const onTerminalsPage = useLocation({
+    select: (location) => location.pathname === "/terminals",
+  });
   const isMobile = useIsMobile();
   const sidebarListOpen = useUiStateStore(selectSidebarListShown);
   const [viewStack, setViewStack] = useState<CommandPaletteView[]>([]);
@@ -1832,6 +1835,21 @@ export function OpenCommandPaletteDialog() {
     },
   });
 
+  if (!onTerminalsPage) {
+    actionItems.push({
+      kind: "action",
+      value: "action:terminals",
+      searchTerms: ["terminals", "terminal", "shell", "shells", "split terminal", "dev server"],
+      title: "Open Terminals",
+      description: "Terminal tabs for any project, outside a chat",
+      icon: <TerminalSquareIcon className={ITEM_ICON_CLASS} />,
+      shortcutCommand: "navigate.terminals",
+      run: async () => {
+        await navigate({ to: "/terminals" });
+      },
+    });
+  }
+
   actionItems.push({
     kind: "action",
     value: "action:fleet",
@@ -2105,9 +2123,9 @@ export function OpenCommandPaletteDialog() {
     });
   }
 
-  // The terminal's actions, for the thread on screen (its drawer does them,
-  // with the same confirmations as its own buttons).
-  if (activeThread || activeDraftThread) {
+  // The terminal's actions, for the thread on screen or the Terminals page
+  // (its drawer does them, with the same confirmations as its own buttons).
+  if (activeThread || activeDraftThread || onTerminalsPage) {
     const terminalActions: ReadonlyArray<{
       readonly kind: TerminalCommandKind;
       readonly title: string;
@@ -2116,18 +2134,30 @@ export function OpenCommandPaletteDialog() {
       readonly icon: ReactNode;
       readonly shortcutCommand?: KeybindingCommand;
     }> = [
-      {
-        kind: "toggle",
-        title: "Toggle terminal",
-        description: "Show or hide this thread's terminal",
-        searchTerms: ["terminal", "toggle terminal", "show terminal", "hide terminal", "shell"],
-        icon: <TerminalSquareIcon className={ITEM_ICON_CLASS} />,
-        shortcutCommand: "terminal.toggle",
-      },
+      ...(onTerminalsPage
+        ? []
+        : [
+            {
+              kind: "toggle",
+              title: "Toggle terminal",
+              description: "Show or hide this thread's terminal",
+              searchTerms: [
+                "terminal",
+                "toggle terminal",
+                "show terminal",
+                "hide terminal",
+                "shell",
+              ],
+              icon: <TerminalSquareIcon className={ITEM_ICON_CLASS} />,
+              shortcutCommand: "terminal.toggle",
+            } as const,
+          ]),
       {
         kind: "new",
         title: "New terminal tab",
-        description: "Open another terminal for this thread",
+        description: onTerminalsPage
+          ? "Open a terminal in the project picked for new tabs"
+          : "Open another terminal for this thread",
         searchTerms: ["new terminal", "terminal tab", "open terminal", "shell"],
         icon: <PlusIcon className={ITEM_ICON_CLASS} />,
         shortcutCommand: "terminal.new",
@@ -2151,7 +2181,9 @@ export function OpenCommandPaletteDialog() {
       {
         kind: "restart",
         title: "Restart terminal",
-        description: "A new shell in the thread's folder, below the old output",
+        description: onTerminalsPage
+          ? "A new shell in the same folder, below the old output"
+          : "A new shell in the thread's folder, below the old output",
         searchTerms: ["restart terminal", "reset terminal", "new shell", "terminal"],
         icon: <RotateCcwIcon className={ITEM_ICON_CLASS} />,
       },

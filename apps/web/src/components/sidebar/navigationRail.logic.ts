@@ -10,12 +10,14 @@ import {
   type LucideIcon,
   MessagesSquareIcon,
   SettingsIcon,
+  SquareTerminalIcon,
   WaypointsIcon,
 } from "lucide-react";
 
 export type NavigationDestinationId =
   | "threads"
   | "chats"
+  | "terminals"
   | "pull-requests"
   | "fleet"
   | "scheduled"
@@ -26,6 +28,7 @@ export type NavigationDestinationId =
 export const NAVIGATION_DESTINATION_LABELS: Record<NavigationDestinationId, string> = {
   threads: "Threads",
   chats: "General Chats",
+  terminals: "Terminals",
   "pull-requests": "Pull Requests",
   fleet: "Fleet",
   scheduled: "Scheduled",
@@ -37,6 +40,7 @@ export const NAVIGATION_DESTINATION_LABELS: Record<NavigationDestinationId, stri
 export const NAVIGATION_DESTINATION_ICONS: Record<NavigationDestinationId, LucideIcon> = {
   threads: InboxIcon,
   chats: MessagesSquareIcon,
+  terminals: SquareTerminalIcon,
   "pull-requests": GitPullRequestIcon,
   fleet: WaypointsIcon,
   scheduled: CalendarClockIcon,
@@ -46,11 +50,12 @@ export const NAVIGATION_DESTINATION_ICONS: Record<NavigationDestinationId, Lucid
 
 /**
  * Each destination's name under its icon on a phone, which can't hover for
- * the tooltip: short enough for all seven to share the sheet's row.
+ * the tooltip: short enough for all of them to share the sheet's row.
  */
 export const NAVIGATION_DESTINATION_SHORT_LABELS: Record<NavigationDestinationId, string> = {
   threads: "Threads",
   chats: "Chats",
+  terminals: "Shells",
   "pull-requests": "PRs",
   fleet: "Fleet",
   scheduled: "Scheduled",
@@ -62,6 +67,7 @@ export const NAVIGATION_DESTINATION_SHORT_LABELS: Record<NavigationDestinationId
 export const NAVIGATION_DESTINATION_ORDER: readonly NavigationDestinationId[] = [
   "threads",
   "chats",
+  "terminals",
   "pull-requests",
   "fleet",
   "scheduled",
@@ -85,6 +91,7 @@ export function resolveSelectedDestination(input: {
   const { pathname } = input;
   if (isUnder(pathname, "/settings")) return "settings";
   if (isUnder(pathname, "/chats")) return "chats";
+  if (isUnder(pathname, "/terminals")) return "terminals";
   if (isUnder(pathname, "/pull-requests")) return "pull-requests";
   if (isUnder(pathname, "/fleet")) return "fleet";
   if (isUnder(pathname, "/scheduled")) return "scheduled";

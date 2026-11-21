@@ -397,6 +397,16 @@ Show device toolbar, in the browser's options menu (⋮), sets the page's size: 
 Words typed in the browser's address bar are searched for, with the search engine set in {place:general.browserSearchEngine}. An address loads as it always did.`,
   },
   {
+    id: "terminals",
+    title: "Terminals",
+    keywords: ["terminal", "shell", "split", "dev server", "tabs", "command line", "console"],
+    body: `Each thread has a terminal drawer under the chat (Cmd+J, Ctrl+J on Windows and Linux): its tabs start in the thread's folder and belong to that thread.
+
+{place:terminals} (the rail button, or Cmd+Shift+J) holds terminals tied to no chat, for running a web server and an API side by side. "New tabs in" at the top picks the project the next tab or split starts in; each tab names its folder, and picking another project leaves open tabs where they are. Nothing there starts an agent or a chat.
+
+Every computer has its own set: the menu groups projects under each computer's name, and picking one on another computer shows that computer's tabs. Shells run on that computer and keep running while you look at threads; quitting or restarting Threadlines there stops them, and a command that was running is offered again. Killing a tab stops its shell and drops its output. A computer that's offline shows its tabs again once it's back.`,
+  },
+  {
     id: "device-tab",
     title: "The Device tab",
     keywords: [

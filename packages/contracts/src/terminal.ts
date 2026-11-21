@@ -3,6 +3,12 @@ import * as Schema from "effect/Schema";
 import { TrimmedNonEmptyString } from "./baseSchemas.ts";
 
 export const DEFAULT_TERMINAL_ID = "default";
+/**
+ * The terminal thread id a computer's Terminals page keeps its tabs under
+ * (docs/terminal.md, "The Terminals page"). No thread has it: real thread ids
+ * are UUIDs, and the server refuses to create a thread with this one.
+ */
+export const TERMINALS_PAGE_THREAD_ID = "terminals-page";
 /** At most this many tabs are offered for a command to go into (`TerminalReuseIds`). */
 export const MAX_TERMINAL_REUSE_IDS = 64;
 

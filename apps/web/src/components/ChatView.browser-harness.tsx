@@ -2372,6 +2372,10 @@ function resolveWsRpc(body: NormalizedWsRpcRequestBody): unknown {
   if (tag === WS_METHODS.shellOpenInEditor) {
     return null;
   }
+  // They answer nothing, as the server does; a kill that fails keeps its tab.
+  if (tag === WS_METHODS.terminalClose || tag === WS_METHODS.terminalClear) {
+    return null;
+  }
   if (tag === WS_METHODS.terminalOpen) {
     // A script names tabs it may go into; here the first is always free.
     const reuseTerminalIds = Array.isArray(body.reuseTerminalIds) ? body.reuseTerminalIds : [];

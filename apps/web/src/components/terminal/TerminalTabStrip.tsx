@@ -10,6 +10,8 @@ export interface TerminalStripTab {
   readonly terminalId: string;
   /** "Terminal 2": the number stays while the tab exists. */
   readonly label: string;
+  /** The folder it names first, on the Terminals page ("api"). */
+  readonly folder: string | null;
   readonly running: boolean;
   /** What runs in it, when that is known. */
   readonly command: string | null;
@@ -104,8 +106,9 @@ function TerminalTabButton({
   onSelect: (terminalId: string) => void;
   onClose: (terminalId: string) => void;
 }) {
+  const name = tab.folder ? `${tab.folder} · ${tab.label}` : tab.label;
   const tooltipLines = [
-    tab.command ? `${tab.label}: ${tab.command}` : tab.label,
+    tab.command ? `${name}: ${tab.command}` : name,
     tab.cwd ? `Started in ${tab.cwd}` : null,
     tab.exit ? `Its shell ${describeTerminalExit(tab.exit)}` : null,
   ].filter((line): line is string => line !== null);
@@ -152,6 +155,14 @@ function TerminalTabButton({
               className="size-1.5 shrink-0 rounded-full bg-success"
             />
           ) : null}
+          {tab.folder ? (
+            <>
+              <span className="max-w-32 shrink-0 truncate text-muted-foreground">{tab.folder}</span>
+              <span aria-hidden="true" className="shrink-0 text-muted-foreground">
+                ·
+              </span>
+            </>
+          ) : null}
           <span className="shrink-0 whitespace-nowrap">{tab.label}</span>
           {tab.command ? (
             <span className="min-w-0 truncate font-mono text-[11px] text-muted-foreground">
@@ -166,7 +177,7 @@ function TerminalTabButton({
         </button>
         <button
           type="button"
-          aria-label={`Kill ${tab.label}`}
+          aria-label={`Kill ${name}`}
           className={cn(
             "absolute top-1/2 right-1 inline-flex size-4 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-[opacity,background-color,color] hover:bg-foreground/10 hover:text-foreground focus-ring pointer-coarse:size-6",
             "can-hover:opacity-0 group-hover/terminal-tab:opacity-100 focus-visible:opacity-100",

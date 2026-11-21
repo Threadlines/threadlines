@@ -10,6 +10,7 @@ import {
   ProviderInstanceId,
   EMPTY_AGENT_REQUEST_STATE,
   EMPTY_CHILD_REQUEST_STATE,
+  TERMINALS_PAGE_THREAD_ID,
 } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 
@@ -227,6 +228,32 @@ describe("commandInvariants", () => {
         }),
       ),
     ).rejects.toThrow("already exists");
+
+    // The Terminals page's tabs live under this id; no thread may take it.
+    await expect(
+      Effect.runPromise(
+        requireThreadAbsent({
+          readModel,
+          command: {
+            type: "thread.create",
+            commandId: CommandId.make("cmd-4"),
+            threadId: ThreadId.make(TERMINALS_PAGE_THREAD_ID),
+            projectId: ProjectId.make("project-a"),
+            title: "reserved",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: "gpt-5-codex",
+            },
+            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            runtimeMode: "full-access",
+            branch: null,
+            worktreePath: null,
+            createdAt: now,
+          },
+          threadId: ThreadId.make(TERMINALS_PAGE_THREAD_ID),
+        }),
+      ),
+    ).rejects.toThrow("is reserved");
   });
 
   it("requires non-negative integers", async () => {

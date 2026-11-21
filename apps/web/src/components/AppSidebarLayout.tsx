@@ -111,6 +111,11 @@ function AppShellCommands({ hasList }: { readonly hasList: boolean }) {
         event.stopPropagation();
         void navigate({ to: "/scheduled" });
       }
+      if (command === "navigate.terminals") {
+        event.preventDefault();
+        event.stopPropagation();
+        void navigate({ to: "/terminals" });
+      }
     };
     window.addEventListener("keydown", onWindowKeyDown);
     return () => {
@@ -134,6 +139,9 @@ function AppShellCommands({ hasList }: { readonly hasList: boolean }) {
           return;
         case "open-scheduled":
           void navigate({ to: "/scheduled" });
+          return;
+        case "open-terminals":
+          void navigate({ to: "/terminals" });
           return;
         case "open-general-chats":
           void navigate({ to: "/chats" });

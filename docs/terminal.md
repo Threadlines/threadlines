@@ -1,6 +1,7 @@
 # The terminal in a thread
 
-Each thread has a terminal drawer under the chat. Its shells run on the
+Each thread has a terminal drawer under the chat, and the Terminals page has
+tabs tied to no chat (see "The Terminals page"). Their shells run on the
 server (`apps/server/src/terminal/`), and every device connected to that server
 sees the same tabs. Suggested commands that run in it are described in
 `terminal-command-runs.md`.
@@ -147,6 +148,41 @@ redraws without ever printing a newline can't grow it forever. It is saved at
 most every 750 ms per tab while output flows, and right away on close, exit,
 restart and when the server shuts down. Every save carries a version, so a late save never overwrites
 newer history or brings back a deleted file.
+
+## The Terminals page
+
+The Terminals button in the rail (Cmd/Ctrl+Shift+J, the command palette, the
+desktop app's Go menu) opens a full-width page of tabs and split panes that
+belong to no chat (`components/terminals/TerminalsPage.tsx`). It is the same
+drawer (`terminal/ManagedTerminalDrawer.tsx`) laid out to fill the page: no
+height edge, no hide button, and on a phone split panes stack.
+
+Each computer keeps its page's tabs on its own server, under one reserved
+terminal thread id, `terminals-page` (`TERMINALS_PAGE_THREAD_ID`). Real thread
+ids are UUIDs, and the server refuses to create a thread with that id
+(`requireThreadAbsent`), so nothing else can share the tabs. The server treats
+it like any thread: its tab list and history are saved, it comes back after a
+restart with "Run again", and only killing a tab (or its shell exiting
+cleanly) removes one; deleting or archiving a thread never touches it. A
+device keeps the page's layout (splits, the active tab) for every computer
+until that computer is removed.
+
+"New tabs in" in the title row picks the project the next tab or split starts
+in. Its menu groups projects under each computer's name; picking one on
+another computer shows that computer's tabs. The folder is fixed when the tab
+is asked for, so changing the pick afterwards moves nothing, and no tab offers
+"Restart here". Each tab names its folder: the project whose folder it started
+in, or the folder's own name once that project is removed (the shell keeps
+running). A computer whose last project is gone stays in the menu while it
+has tabs, and new tabs there start in the active tab's folder. Restart, and a
+shell the server starts again after a restart, use the tab's own folder and
+that folder's environment, never the pick's. The first tab gets an id of its
+own, not the drawer's shared placeholder, so two devices never end up in one
+shell. Visiting the
+page starts no shell; with no tabs it offers New terminal. A computer that is
+offline shows a note instead, and its tabs come back when it does. Quitting
+Threadlines on a computer stops its page's shells too, and the quit question
+counts them.
 
 ## The drawer
 
