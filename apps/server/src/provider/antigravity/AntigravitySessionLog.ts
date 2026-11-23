@@ -26,6 +26,7 @@ import { DatabaseSync } from "node:sqlite";
 
 import * as Effect from "effect/Effect";
 
+import { openRegularFile } from "./AntigravityFileReads.ts";
 import { ANTIGRAVITY_APP_DATA_DIR } from "./AntigravityRelease.ts";
 
 /** CORTEX_STEP_TYPE_ERROR_MESSAGE. */
@@ -57,8 +58,18 @@ export async function antigravityProfileEntry(
   segments: ReadonlyArray<string>,
   kind: "file" | "directory",
 ): Promise<{ readonly path: string; readonly size: number } | undefined> {
+  const found = await profileEntry(profileDir, segments, kind);
+  return typeof found === "string" ? undefined : found;
+}
+
+/** The entry, or whether it is missing or not what the layout says (a link, another type). */
+async function profileEntry(
+  profileDir: string,
+  segments: ReadonlyArray<string>,
+  kind: "file" | "directory",
+): Promise<{ readonly path: string; readonly size: number } | "missing" | "refused"> {
   const root = await NodeFSP.realpath(profileDir).catch(() => undefined);
-  if (root === undefined) return undefined;
+  if (root === undefined) return "missing";
   let current = root;
   let size = 0;
   const path = [ANTIGRAVITY_APP_DATA_DIR, ...segments];
@@ -66,24 +77,86 @@ export async function antigravityProfileEntry(
     current = NodePath.join(current, segment);
     const info = await NodeFSP.lstat(current).catch(() => undefined);
     const last = index === path.length - 1;
-    if (info === undefined || info.isSymbolicLink()) return undefined;
-    if (last && kind === "file" ? !info.isFile() : !info.isDirectory()) return undefined;
+    if (info === undefined) return "missing";
+    if (info.isSymbolicLink()) return "refused";
+    if (last && kind === "file" ? !info.isFile() : !info.isDirectory()) return "refused";
     size = info.size;
   }
   return { path: current, size };
 }
 
+/** A file of the CLI's, open, and proven to be the one at its place in the profile. */
+export interface AntigravityProfileFile {
+  readonly path: string;
+  readonly handle: NodeFSP.FileHandle;
+  readonly size: number;
+  /** Whether the file at `path` is still the one this holds (nothing swapped since). */
+  readonly stillHeld: () => Promise<boolean>;
+}
+
 /**
- * The session's log file when it is a plain file in the profile (no link at
- * any step of the path), or `undefined` when there is none yet.
+ * Opens a file of the CLI's data in the profile (`antigravity-acp/...`). The
+ * path is checked step by step first (no links, the expected types), then
+ * opened without following a link or blocking, and then checked again from
+ * the handle: the path must still resolve to itself inside the profile, and
+ * the file held must be the one at that path now. A directory on the way
+ * that was swapped for a link between the check and the open would
+ * otherwise hand over a file from anywhere. `missing` when there is no such
+ * file; `refused` for anything else that isn't it. Close the handle.
  */
-async function sessionLogFile(profileDir: string, sessionId: string): Promise<string | undefined> {
-  const entry = await antigravityProfileEntry(
-    profileDir,
-    ["conversations", `${sessionId}.db`],
-    "file",
-  );
-  return entry?.path;
+export async function openAntigravityProfileFile(
+  profileDir: string,
+  segments: ReadonlyArray<string>,
+  /** Runs between the path check and the open: tests swap a folder here. */
+  beforeOpen?: () => Promise<void>,
+): Promise<AntigravityProfileFile | "missing" | "refused"> {
+  const entry = await profileEntry(profileDir, segments, "file");
+  if (typeof entry === "string") return entry;
+  await beforeOpen?.();
+  const opened = await openRegularFile(entry.path, { followLink: false });
+  if (opened === undefined) return "refused";
+  const held = await opened.handle.stat().catch(() => undefined);
+  const stillHeld = async () => {
+    const [real, now] = await Promise.all([
+      NodeFSP.realpath(entry.path).catch(() => undefined),
+      NodeFSP.lstat(entry.path).catch(() => undefined),
+    ]);
+    // `entry.path` is built on the profile's real path, so resolving to
+    // itself means it is inside the profile with no link anywhere on it.
+    return (
+      held !== undefined &&
+      real === entry.path &&
+      now !== undefined &&
+      now.dev === held.dev &&
+      now.ino === held.ino
+    );
+  };
+  if (!(await stillHeld())) {
+    await opened.handle.close();
+    return "refused";
+  }
+  return { path: entry.path, handle: opened.handle, size: opened.size, stillHeld };
+}
+
+/**
+ * Reads the session's log, holding the file open meanwhile and confirming
+ * afterwards that SQLite read the file that was checked (it opens the path
+ * itself). `missing` when there is no log yet, `refused` when the file
+ * can't be trusted; `read` gets `undefined` for a log with no steps yet.
+ */
+async function withSessionLog<A>(
+  profileDir: string,
+  sessionId: string,
+  read: (database: DatabaseSync) => A,
+): Promise<{ readonly value: A | undefined } | "missing" | "refused"> {
+  const file = await openAntigravityProfileFile(profileDir, ["conversations", `${sessionId}.db`]);
+  if (typeof file === "string") return file;
+  try {
+    const value = readLog(file.path, read);
+    return (await file.stillHeld()) ? { value } : "refused";
+  } finally {
+    await file.handle.close();
+  }
 }
 
 function readLog<A>(file: string, read: (database: DatabaseSync) => A): A | undefined {
@@ -108,22 +181,19 @@ function readLog<A>(file: string, read: (database: DatabaseSync) => A): A | unde
 export const antigravityLogPosition = (profileDir: string, sessionId: string) =>
   Effect.tryPromise(async () => {
     if (!SESSION_ID.test(sessionId)) return undefined;
-    const file = await sessionLogFile(profileDir, sessionId);
-    if (file === undefined) return -1;
-    const index = readLog(file, (database) => {
+    const index = await withSessionLog(profileDir, sessionId, (database) => {
       const value = database.prepare("SELECT max(idx) AS idx FROM steps").get()?.idx;
       return typeof value === "number" ? value : -1;
     });
-    return index ?? -1;
+    if (index === "missing") return -1;
+    return index === "refused" ? undefined : (index.value ?? -1);
   }).pipe(Effect.orElseSucceed(() => undefined));
 
 /** How the steps after `afterIndex` ended; `undefined` when the log can't be read. */
 export const antigravityTurnSteps = (profileDir: string, sessionId: string, afterIndex: number) =>
   Effect.tryPromise(async (): Promise<AntigravityTurnSteps | undefined> => {
     if (!SESSION_ID.test(sessionId)) return undefined;
-    const file = await sessionLogFile(profileDir, sessionId);
-    if (file === undefined) return undefined;
-    return readLog(file, (database) => {
+    const steps = await withSessionLog(profileDir, sessionId, (database) => {
       const last = database
         .prepare(
           `SELECT step_type AS type, substr(step_payload, 1, ?) AS payload
@@ -146,4 +216,5 @@ export const antigravityTurnSteps = (profileDir: string, sessionId: string, afte
           : undefined;
       return { errorText, reachedModel };
     });
+    return typeof steps === "string" ? undefined : steps.value;
   }).pipe(Effect.orElseSucceed(() => undefined));

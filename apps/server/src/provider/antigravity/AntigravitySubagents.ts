@@ -61,7 +61,7 @@ export function antigravitySubagents(profileDir: string): AcpSubagents {
               ...(child.report !== undefined ? { report: child.report } : {}),
             });
           }
-          return states;
+          return { byLaunch: states, complete: reading.unreadable === 0 };
         }),
       ),
     transcript: ({ sessionId, launchCallId }) =>

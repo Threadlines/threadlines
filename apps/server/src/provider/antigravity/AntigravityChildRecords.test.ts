@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as os from "node:os";
 import * as path from "node:path";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises";
 
 import { it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -13,6 +13,7 @@ import {
   antigravityChildTranscript,
   readAntigravityChildren,
 } from "./AntigravityChildRecords.ts";
+import { openAntigravityProfileFile } from "./AntigravitySessionLog.ts";
 
 const PARENT = "7d40e54d-5977-4239-940b-246cdd81a12b";
 
@@ -133,14 +134,6 @@ describe("readAntigravityChildren", () => {
         });
         yield* Effect.promise(() => records.child("child-a", "call_a"));
         expect((yield* readAntigravityChildren(records.profile, PARENT)).available).toBe(true);
-        // A message that isn't JSON could be the report that matters.
-        yield* Effect.promise(() =>
-          records.write([PARENT, ".system_generated", "messages", "broken.json"], "{not json"),
-        );
-        expect(yield* readAntigravityChildren(records.profile, PARENT)).toEqual({
-          available: false,
-          reason: "unreadable",
-        });
       }),
     ),
   );
@@ -177,6 +170,93 @@ describe("readAntigravityChildren", () => {
         });
         expect((yield* readAntigravityChildren(records.profile, PARENT)).available).toBe(false);
         yield* Effect.promise(() => rm(elsewhere, { recursive: true, force: true }));
+      }),
+    ),
+  );
+
+  it.live("skips a message it can't read instead of giving up on the session", () =>
+    withProfile((records) =>
+      Effect.gen(function* () {
+        yield* Effect.promise(async () => {
+          await records.child("child-a", "call_a");
+          await records.child("child-b", "call_b");
+          await records.report("child-b", "Done.");
+          // A report the CLI is still writing.
+          await records.write([PARENT, ".system_generated", "messages", "partial.json"], '{"sen');
+        });
+        const reading = yield* readAntigravityChildren(records.profile, PARENT);
+        expect(summary(reading)).toEqual({
+          running: ["child-a:call_a"],
+          reported: ["child-b:call_b"],
+          killed: [],
+        });
+        expect(reading.available && reading.unreadable).toBe(1);
+      }),
+    ),
+  );
+
+  it.live("counts every entry of a folder toward its limit, read one at a time", () =>
+    withProfile((records) =>
+      Effect.gen(function* () {
+        yield* Effect.promise(async () => {
+          await records.child("child-a", "call_a");
+          const inbox = path.join(records.brain, PARENT, ".system_generated", "messages");
+          await mkdir(inbox, { recursive: true });
+          for (let index = 0; index < 300; index += 1) {
+            await writeFile(path.join(inbox, `${index}.tmp`), "");
+          }
+        });
+        expect(yield* readAntigravityChildren(records.profile, PARENT)).toEqual({
+          available: false,
+          reason: "unreadable",
+        });
+      }),
+    ),
+  );
+});
+
+describe("openAntigravityProfileFile", () => {
+  it.live("refuses a file reached through a folder swapped for a link after the check", () =>
+    withProfile((records) =>
+      Effect.gen(function* () {
+        const elsewhere = yield* Effect.promise(() =>
+          mkdtemp(path.join(os.tmpdir(), "agy-child-elsewhere-")),
+        );
+        const logs = path.join(records.brain, "child-a", ".system_generated", "logs");
+        yield* Effect.promise(async () => {
+          await records.write(
+            ["child-a", ".system_generated", "logs", "transcript.jsonl"],
+            "ours\n",
+          );
+          await mkdir(path.join(elsewhere, "logs"), { recursive: true });
+          await writeFile(path.join(elsewhere, "logs", "transcript.jsonl"), "theirs\n");
+        });
+        const segments = ["brain", "child-a", ".system_generated", "logs", "transcript.jsonl"];
+        // The path checks out, then a folder on it becomes a link out of the profile.
+        const swapped = yield* Effect.promise(() =>
+          openAntigravityProfileFile(records.profile, segments, async () => {
+            await rename(logs, `${logs}.moved`);
+            await symlink(path.join(elsewhere, "logs"), logs);
+          }),
+        );
+        expect(swapped).toBe("refused");
+        // Put back, the same file opens, and is told apart once swapped again.
+        const opened = yield* Effect.promise(async () => {
+          await rm(logs);
+          await rename(`${logs}.moved`, logs);
+          return openAntigravityProfileFile(records.profile, segments);
+        });
+        if (typeof opened === "string") throw new Error(`expected a file, got ${opened}`);
+        expect(yield* Effect.promise(() => opened.stillHeld())).toBe(true);
+        yield* Effect.promise(async () => {
+          await rename(logs, `${logs}.moved`);
+          await symlink(path.join(elsewhere, "logs"), logs);
+        });
+        expect(yield* Effect.promise(() => opened.stillHeld())).toBe(false);
+        yield* Effect.promise(async () => {
+          await opened.handle.close();
+          await rm(elsewhere, { recursive: true, force: true });
+        });
       }),
     ),
   );

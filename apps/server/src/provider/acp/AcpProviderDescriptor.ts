@@ -257,12 +257,20 @@ export interface AcpSubagents {
   readonly launches: (toolCall: AcpToolCallState) => ReadonlyArray<AcpSubagentLaunch> | undefined;
   /**
    * The state of each launching call's child, by call id. A call the records
-   * don't tie to its child is left out; `undefined` when they can't be read.
+   * don't tie to its child is left out; `complete` is false when some record
+   * didn't read, so a child left out may only be unreadable. `undefined`
+   * when the records can't be read at all.
    */
   readonly states: (input: {
     readonly sessionId: string;
     readonly launchCallIds: ReadonlyArray<string>;
-  }) => Effect.Effect<ReadonlyMap<string, AcpSubagentState> | undefined>;
+  }) => Effect.Effect<
+    | {
+        readonly byLaunch: ReadonlyMap<string, AcpSubagentState>;
+        readonly complete: boolean;
+      }
+    | undefined
+  >;
   /**
    * The child a launching call started and its steps, or `undefined` when
    * the records don't say which child it started.

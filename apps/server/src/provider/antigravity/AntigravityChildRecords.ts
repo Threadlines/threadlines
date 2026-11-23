@@ -35,8 +35,7 @@ import * as NodeFSP from "node:fs/promises";
 import type { ProviderSubagentTranscriptEntry } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 
-import { openRegularFile, readRegularFile } from "./AntigravityFileReads.ts";
-import { antigravityProfileEntry } from "./AntigravitySessionLog.ts";
+import { antigravityProfileEntry, openAntigravityProfileFile } from "./AntigravitySessionLog.ts";
 import { boundAntigravityText } from "./AntigravityToolCalls.ts";
 
 /** Ids as the CLI names conversations: nothing that walks a path. */
@@ -109,20 +108,60 @@ interface ReadBudget {
   bytes: number;
 }
 
+/** The bytes of a file held open, at most `maxBytes`; `undefined` past that. */
+async function readHeld(
+  handle: NodeFSP.FileHandle,
+  maxBytes: number,
+  from = 0,
+): Promise<Buffer | undefined> {
+  // One byte past the cap: a file that grew since it was checked is refused.
+  const buffer = Buffer.alloc(maxBytes + 1);
+  let total = 0;
+  while (total < buffer.length) {
+    const { bytesRead } = await handle.read(buffer, total, buffer.length - total, from + total);
+    if (bytesRead === 0) break;
+    total += bytesRead;
+  }
+  return total > maxBytes ? undefined : buffer.subarray(0, total);
+}
+
 /**
- * A small JSON record of the CLI's, or `undefined` when it is missing,
- * linked, too big, past the read's budget, or unreadable.
+ * A small JSON record of the CLI's, or `undefined` when it is missing, not
+ * the file at its place in the profile, too big, past the read's budget, or
+ * not JSON. Every byte read is charged to the budget.
  */
 async function readRecord(profileDir: string, segments: ReadonlyArray<string>, budget: ReadBudget) {
-  const entry = await antigravityProfileEntry(profileDir, segments, "file");
-  if (entry === undefined || entry.size > MAX_RECORD_BYTES || entry.size > budget.bytes)
+  const file = await openAntigravityProfileFile(profileDir, segments);
+  if (typeof file === "string") return undefined;
+  try {
+    const maxBytes = Math.min(MAX_RECORD_BYTES, budget.bytes);
+    if (file.size > maxBytes) return undefined;
+    const bytes = await readHeld(file.handle, maxBytes);
+    if (bytes === undefined) return undefined;
+    budget.bytes -= bytes.length;
+    return parseJson(bytes.toString("utf8"));
+  } finally {
+    await file.handle.close();
+  }
+}
+
+/**
+ * A folder's file names, read one entry at a time: `undefined` past `limit`
+ * entries (of any kind), so a huge folder costs no more than the limit.
+ */
+async function listNames(path: string, limit: number): Promise<Array<string> | undefined> {
+  const dir = await NodeFSP.opendir(path, { bufferSize: 32 }).catch(() => undefined);
+  if (dir === undefined) return undefined;
+  const names: Array<string> = [];
+  try {
+    for await (const entry of dir) {
+      if (names.length >= limit) return undefined;
+      names.push(entry.name);
+    }
+  } catch {
     return undefined;
-  budget.bytes -= entry.size;
-  const bytes = await readRegularFile(entry.path, {
-    maxBytes: Math.min(MAX_RECORD_BYTES, entry.size + budget.bytes),
-    followLink: false,
-  }).catch(() => undefined);
-  return bytes === undefined ? undefined : parseJson(bytes.toString("utf8"));
+  }
+  return names;
 }
 
 const generated = (conversationId: string, ...rest: ReadonlyArray<string>) => [
@@ -133,24 +172,30 @@ const generated = (conversationId: string, ...rest: ReadonlyArray<string>) => [
 ];
 
 /**
- * A conversation's inbox: every message, or `undefined` when it can't all be
- * read (one unread message could be the one that matters). No inbox is empty.
+ * A conversation's inbox: the messages that read, and how many didn't (one
+ * the CLI is still writing reads as broken JSON). `undefined` when the inbox
+ * itself can't be listed, or holds more than the limit. No inbox is empty.
  */
 async function readInbox(
   profileDir: string,
   conversationId: string,
   budget: ReadBudget,
-): Promise<ReadonlyArray<unknown> | undefined> {
+): Promise<{ readonly messages: ReadonlyArray<unknown>; readonly unreadable: number } | undefined> {
   const segments = generated(conversationId, "messages");
   const inbox = await antigravityProfileEntry(profileDir, segments, "directory");
-  if (inbox === undefined) return [];
-  const names = await NodeFSP.readdir(inbox.path).catch(() => undefined);
+  if (inbox === undefined) return { messages: [], unreadable: 0 };
+  // `read.json` (read receipts) and the odd stray file count toward the limit too.
+  const names = await listNames(inbox.path, MAX_INBOX_MESSAGES + 1);
   if (names === undefined) return undefined;
-  const messages = names.filter((name) => name.endsWith(".json") && name !== "read.json");
-  if (messages.length > MAX_INBOX_MESSAGES) return undefined;
-  const read: Array<unknown> = [];
-  for (const name of messages) read.push(await readRecord(profileDir, [...segments, name], budget));
-  return read.every(isRecord) ? read : undefined;
+  const messages: Array<unknown> = [];
+  let unreadable = 0;
+  for (const name of names) {
+    if (!name.endsWith(".json") || name === "read.json") continue;
+    const message = await readRecord(profileDir, [...segments, name], budget);
+    if (isRecord(message)) messages.push(message);
+    else unreadable += 1;
+  }
+  return { messages, unreadable };
 }
 
 /** The parent's launching call in a child's inbox message, when it is one. */
@@ -179,6 +224,7 @@ function launchCall(message: unknown, parentId: string) {
  * - `available: true`: every child the session started, sorted by state.
  *   A child reported once its report is in the parent's inbox (it may
  *   still be answering a follow-up), and was killed when its entry says so.
+ *   A child whose entry doesn't read is `running`, with nothing else known.
  */
 export type AntigravityChildrenReading =
   | { readonly available: false; readonly reason: "no-records" | "unreadable" }
@@ -187,6 +233,12 @@ export type AntigravityChildrenReading =
       readonly running: ReadonlyArray<AntigravityChild>;
       readonly reported: ReadonlyArray<AntigravityChild>;
       readonly killed: ReadonlyArray<AntigravityChild>;
+      /**
+       * Messages and entries that didn't read (one the CLI is still writing,
+       * say). A report among them leaves its child `running` until a later
+       * reading sees it; nothing is ever marked done for want of a record.
+       */
+      readonly unreadable: number;
     };
 
 const UNREADABLE = { available: false, reason: "unreadable" } as const;
@@ -196,7 +248,7 @@ async function readChildren(
   profileDir: string,
   parentId: string,
 ): Promise<
-  | { readonly children: ReadonlyArray<AntigravityChild> }
+  | { readonly children: ReadonlyArray<AntigravityChild>; readonly unreadable: number }
   | { readonly reason: "no-records" | "unreadable" }
 > {
   if (!NATIVE_ID.test(parentId)) return { reason: "unreadable" };
@@ -206,15 +258,15 @@ async function readChildren(
     "directory",
   );
   if (folder === undefined) return { reason: "no-records" };
-  const names = await NodeFSP.readdir(folder.path).catch(() => undefined);
+  const names = await listNames(folder.path, MAX_CHILDREN + 1);
   if (names === undefined) return { reason: "unreadable" };
   const childIds = names.flatMap((name) =>
     name.endsWith(".json") && NATIVE_ID.test(name.slice(0, -5)) ? [name.slice(0, -5)] : [],
   );
-  if (childIds.length > MAX_CHILDREN) return { reason: "unreadable" };
   const budget: ReadBudget = { bytes: MAX_READ_BYTES };
   const parentInbox = await readInbox(profileDir, parentId, budget);
   if (parentInbox === undefined) return { reason: "unreadable" };
+  let unreadable = parentInbox.unreadable;
   const children: Array<AntigravityChild> = [];
   for (const childId of childIds) {
     const record = await readRecord(
@@ -222,12 +274,23 @@ async function readChildren(
       generated(parentId, "subagents", `${childId}.json`),
       budget,
     );
-    if (!isRecord(record)) return { reason: "unreadable" };
     const recordedId = stringField(record, "conversationId");
-    if (recordedId !== undefined && recordedId !== childId) return { reason: "unreadable" };
     const inbox = await readInbox(profileDir, childId, budget);
-    if (inbox === undefined) return { reason: "unreadable" };
-    const launches = inbox.flatMap((message) => {
+    // An entry that doesn't read (or names another child) proves nothing:
+    // the child counts as running, tied to no launch.
+    if (!isRecord(record) || (recordedId !== undefined && recordedId !== childId) || !inbox) {
+      unreadable += 1;
+      children.push({
+        conversationId: childId,
+        launchCallId: undefined,
+        launch: { role: "", prompt: "" },
+        state: "working",
+        report: undefined,
+      });
+      continue;
+    }
+    unreadable += inbox.unreadable;
+    const launches = inbox.messages.flatMap((message) => {
       const call = launchCall(message, parentId);
       return call === undefined ? [] : [{ call, content: stringField(message, "content") }];
     });
@@ -235,7 +298,7 @@ async function readChildren(
     const launch = launches.length === 1 ? launches[0] : undefined;
     const [fromArgs] = antigravityChildLaunches(launch?.call.args) ?? [];
     const descriptor = record.subagentDescriptor;
-    const reports = parentInbox.flatMap((message) =>
+    const reports = parentInbox.messages.flatMap((message) =>
       stringField(message, "sender") === childId ? [stringField(message, "content") ?? ""] : [],
     );
     children.push({
@@ -262,6 +325,7 @@ async function readChildren(
     }
   }
   return {
+    unreadable,
     children: children.map((child) =>
       child.launchCallId !== undefined && claims.get(child.launchCallId) !== 1
         ? { ...child, launchCallId: undefined }
@@ -286,6 +350,7 @@ export const readAntigravityChildren = (profileDir: string, sessionId: string) =
       running: inState("working"),
       reported: inState("reported"),
       killed: inState("killed"),
+      unreadable: read.unreadable,
     };
   }).pipe(Effect.orElseSucceed((): AntigravityChildrenReading => UNREADABLE));
 
@@ -407,19 +472,17 @@ export function antigravityTranscriptEntries(
 
 /** The end of a child's transcript, parsed; `undefined` when it has none. */
 async function readTranscriptTail(profileDir: string, childId: string) {
-  const entry = await antigravityProfileEntry(
+  const file = await openAntigravityProfileFile(
     profileDir,
     generated(childId, "logs", "transcript.jsonl"),
-    "file",
   );
-  if (entry === undefined) return undefined;
-  const opened = await openRegularFile(entry.path, { followLink: false });
-  if (opened === undefined) return undefined;
-  const { handle, size } = opened;
+  if (typeof file === "string") return undefined;
+  const { handle, size } = file;
   try {
     const start = Math.max(0, size - TRANSCRIPT_TAIL_BYTES);
     // One byte more says whether the window starts on a line boundary.
     const readFrom = Math.max(0, start - 1);
+    // A bounded window; a file still growing is read as far as it was checked.
     const buffer = Buffer.alloc(size - readFrom);
     const { bytesRead } = await handle.read(buffer, 0, buffer.length, readFrom);
     const bytes = buffer.subarray(0, bytesRead);
