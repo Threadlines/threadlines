@@ -1400,6 +1400,99 @@ describe("ProviderCommandReactor", () => {
     expect(childThread?.childRequests.owedReports).toBeUndefined();
   });
 
+  it("puts a report whose start failed back at the front, and sends it before the next one (rule A)", async () => {
+    const harness = await createHarness();
+    const dispatch = (command: OrchestrationCommand) =>
+      Effect.runPromise(harness.engine.dispatch(command));
+    const parent = ThreadId.make("parent-report-fails");
+    const child = ThreadId.make("child-report-fails");
+    await dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("cmd-parent-report-fails-create"),
+      threadId: parent,
+      projectId: asProjectId("project-1"),
+      title: "Ship the release",
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "approval-required",
+      branch: null,
+      worktreePath: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    await dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("cmd-child-report-fails-create"),
+      threadId: child,
+      projectId: asProjectId("project-1"),
+      title: "Watch CI",
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "approval-required",
+      branch: null,
+      worktreePath: null,
+      parentThreadId: parent,
+      attachedToParent: true,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    const report = async (turn: string) => {
+      await dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make(`cmd-child-${turn}`),
+        threadId: child,
+        turnStartedBy: { provider: true },
+        session: {
+          threadId: child,
+          status: "running",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId(turn),
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:01.000Z",
+        },
+        createdAt: "2026-01-01T00:00:01.000Z",
+      });
+      await dispatch({
+        type: "thread.child-report.settle",
+        commandId: CommandId.make(`cmd-settle-${turn}`),
+        threadId: child,
+        owed: { turnId: asTurnId(turn) },
+        turnId: asTurnId(turn),
+        text: `CI checked (${turn}).`,
+        createdAt: "2026-01-01T00:00:02.000Z",
+      });
+      return MessageId.make(`child-report:report:${child}:${turn}`);
+    };
+    harness.startSession.mockImplementationOnce(() =>
+      Effect.fail(
+        new ProviderAdapterRequestError({
+          provider: "codex",
+          method: "thread.turn.start",
+          detail: "spawn failed in test harness",
+        }),
+      ),
+    );
+    const first = await report("check-a");
+    const parentThread = async () =>
+      (await harness.readModel()).threads.find((entry) => entry.id === parent);
+    // Its start fails: it is back at the front, not marked not run.
+    await waitFor(async () =>
+      ((await parentThread())?.queuedFollowUps ?? []).some(
+        (entry) => entry.messageId === first && entry.putBack === true,
+      ),
+    );
+    expect(
+      (await parentThread())?.messages.find((message) => message.id === first)?.notSent,
+    ).toBeUndefined();
+    expect(harness.sendTurn).not.toHaveBeenCalled();
+    // The next report queued in the idle thread sends the one that waited first.
+    await report("check-b");
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
+      threadId: parent,
+      messageId: first,
+    });
+  });
+
   it("hides a saved key in a provider's failure text before storing it", async () => {
     const secretScrubber = makeSecretScrubber();
     secretScrubber.watch("STRIPE_SECRET_KEY", "sk_test_51Hq9xYz");
@@ -3515,6 +3608,155 @@ describe("ProviderCommandReactor", () => {
           `hand-off-reply:${neverStarted}-request`,
       ),
     ).toBe(false);
+  });
+
+  it("after a restart, puts a report cut before its start back at the front and sends it first, with no restart note (findings 3, 5)", async () => {
+    const now = "2026-01-01T00:00:00.000Z";
+    const projectId = asProjectId("project-restart-report");
+    const parent = ThreadId.make("thread-restart-report-parent");
+    const user = ThreadId.make("thread-restart-user-cut");
+    const child = ThreadId.make("thread-restart-report-child");
+    const reportOf = (turn: string) => MessageId.make(`child-report:report:${child}:${turn}`);
+    const harness = await createHarness({
+      beforeStart: (engine) =>
+        Effect.gen(function* () {
+          yield* engine.dispatch({
+            type: "project.create",
+            commandId: CommandId.make("cmd-project-restart-report"),
+            projectId,
+            title: "Restart Report",
+            workspaceRoot: PROJECT_ROOT,
+            defaultModelSelection: null,
+            createdAt: now,
+          });
+          for (const [threadId, extra] of [
+            [parent, {}],
+            [user, {}],
+            [child, { parentThreadId: parent, attachedToParent: true }],
+          ] as const) {
+            yield* engine.dispatch({
+              type: "thread.create",
+              commandId: CommandId.make(`cmd-create-${threadId}`),
+              threadId,
+              projectId,
+              title: threadId === child ? "Watch CI" : "Thread",
+              modelSelection: {
+                instanceId: ProviderInstanceId.make("codex"),
+                model: "gpt-5-codex",
+              },
+              interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+              runtimeMode: "full-access",
+              branch: null,
+              worktreePath: null,
+              ...extra,
+              createdAt: now,
+            });
+          }
+          // The child reports twice (two check-backs): A, then B.
+          for (const turn of ["check-a", "check-b"]) {
+            yield* engine.dispatch({
+              type: "thread.session.set",
+              commandId: CommandId.make(`cmd-child-${turn}`),
+              threadId: child,
+              turnStartedBy: { provider: true },
+              session: {
+                threadId: child,
+                status: "running",
+                providerName: "codex",
+                runtimeMode: "full-access",
+                activeTurnId: asTurnId(turn),
+                lastError: null,
+                updatedAt: now,
+              },
+              createdAt: now,
+            });
+            yield* engine.dispatch({
+              type: "thread.child-report.settle",
+              commandId: CommandId.make(`cmd-settle-${turn}`),
+              threadId: child,
+              owed: { turnId: asTurnId(turn) },
+              turnId: asTurnId(turn),
+              text: `CI checked (${turn}).`,
+              createdAt: now,
+            });
+          }
+          // A is taken off the queue to start the parent's turn; the process stops.
+          yield* engine.dispatch({
+            type: "thread.follow-up.send-queued",
+            commandId: CommandId.make("cmd-send-report-a"),
+            threadId: parent,
+            messageId: reportOf("check-a"),
+            createdAt: now,
+          });
+          // A person's message in another thread, cut before its start too.
+          yield* engine.dispatch({
+            type: "thread.turn.start",
+            commandId: CommandId.make("cmd-user-cut"),
+            threadId: user,
+            message: {
+              messageId: asMessageId("user-cut-message"),
+              role: "user",
+              text: "Rename the button.",
+              attachments: [],
+            },
+            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            runtimeMode: "full-access",
+            composer: "typed",
+            createdAt: now,
+          });
+        }),
+    });
+    const readThread = async (threadId: ThreadId) =>
+      (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    // A is back at the front, ahead of B, and the thread has no restart note.
+    await waitFor(async () => ((await readThread(parent))?.queuedFollowUps ?? []).length === 2);
+    expect((await readThread(parent))?.queuedFollowUps?.map((entry) => entry.messageId)).toEqual([
+      reportOf("check-a"),
+      reportOf("check-b"),
+    ]);
+    // The child reactor's startup sends the first queued report, the queue's own send.
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.follow-up.send-queued",
+        commandId: CommandId.make("cmd-send-after-restart"),
+        threadId: parent,
+        messageId: reportOf("check-a"),
+        createdAt: now,
+      }),
+    );
+    await waitFor(() =>
+      harness.sendTurn.mock.calls.some(
+        ([request]) => (request as { threadId?: string }).threadId === parent,
+      ),
+    );
+    await harness.drain();
+    const sentToParent = () =>
+      harness.sendTurn.mock.calls
+        .map(([request]) => request as { threadId: string; messageId?: string })
+        .filter((request) => request.threadId === parent)
+        .map((request) => request.messageId);
+    expect(sentToParent()).toEqual([reportOf("check-a")]);
+    // B came after A: in a thread with no parent it goes into A's running
+    // turn, as reports do there, never ahead of it.
+    await waitFor(
+      async () =>
+        (await readThread(parent))?.messages.some(
+          (message) => message.id === reportOf("check-b") && message.turnId !== null,
+        ) === true,
+    );
+    expect(sentToParent()).toEqual([reportOf("check-a")]);
+    expect(
+      (await readThread(parent))?.activities.some(
+        (entry) => entry.kind === "provider.session.restart-interrupted",
+      ),
+    ).toBe(false);
+    // Left alone: a person's start the restart cut gets today's note.
+    await waitFor(
+      async () =>
+        (await readThread(user))?.activities.some(
+          (entry) => entry.kind === "provider.session.restart-interrupted",
+        ) === true,
+    );
   });
 
   it("does not start an agent whose session was stopped while its turn waited to take over", async () => {

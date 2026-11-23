@@ -258,27 +258,6 @@ describe("childReportForTurnEnd", () => {
     );
   });
 
-  it("gives a resend's new entry for the same message a settle of its own (finding 6)", () => {
-    const messageId = MessageId.make("scheduled");
-    const entry = (createdAt: string) => ({
-      messageId,
-      deliveryEpoch: 0,
-      attachmentEpoch: 0,
-      createdAt,
-    });
-    const settleFor = (createdAt: string, ended: string) =>
-      childReportForTurnEnd({
-        child: thread(CHILD, {
-          childRequests: { ...EMPTY_CHILD_REQUEST_STATE, owedReports: [entry(createdAt)] },
-        }),
-        end: { turnId: TurnId.make(ended), outcome: "failed", error: "Rejected" },
-        pendingMessageId: messageId,
-      });
-    const first = settleFor("2026-10-04T10:00:00.000Z", "turn-first");
-    const resent = settleFor("2026-10-04T10:01:00.000Z", "turn-resent");
-    expect(first?.commandId).not.toBe(resent?.commandId);
-  });
-
   it("settles a request's turn as the request, never also as a report", () => {
     const requested = request("c", { status: "running" });
     const child = thread(CHILD, {

@@ -51,7 +51,6 @@ import {
   type TurnStartedBy,
 } from "@threadlines/contracts";
 import { renderThreadContextSeed, withContextSeedPreamble } from "@threadlines/shared/contextSeed";
-import { firstArrived } from "@threadlines/shared/queuedFollowUps";
 import { LEAD_WITHOUT_TOOLS_TEXT, leadRoleText } from "@threadlines/shared/projectLead";
 import { agentInvitesMode, agentThreadsMode } from "@threadlines/shared/serverSettings";
 import {
@@ -1207,6 +1206,46 @@ const make = Effect.gen(function* () {
       active,
       createdAt,
     });
+
+  /**
+   * A child's report whose turn start died before the provider took it (a
+   * restart, a failed start) goes back to the front of the queue, or is
+   * marked not run when it can no longer be delivered
+   * (`thread.turn-start.take-back`, docs/design/agent-autonomy-no-limits.md,
+   * "Restart and turn binding", rule A). True when it is back on the queue.
+   * Anything that isn't a report is left alone.
+   */
+  const takeBackReportStart = (
+    threadId: ThreadId,
+    messageId: MessageId,
+    why: "restart" | "failed-start",
+  ) =>
+    Effect.gen(function* () {
+      const thread = yield* resolveThread(threadId);
+      const message = thread?.messages.find((entry) => entry.id === messageId);
+      if (message?.fromThread?.kind !== "report") return false;
+      const taken = yield* orchestrationEngine
+        .dispatch({
+          type: "thread.turn-start.take-back",
+          commandId: serverCommandId(`turn-start-take-back-${why}`),
+          threadId,
+          messageId,
+          createdAt: yield* nowIso,
+        })
+        .pipe(
+          Effect.as(true),
+          Effect.catch((error) =>
+            Effect.logInfo("provider command reactor could not take a report's start back", {
+              threadId,
+              messageId,
+              detail: String(error),
+            }).pipe(Effect.as(false)),
+          ),
+        );
+      if (!taken) return false;
+      const latest = yield* resolveThread(threadId);
+      return (latest?.queuedFollowUps ?? []).some((queued) => queued.messageId === messageId);
+    }).pipe(Effect.orElseSucceed(() => false));
 
   const markProviderTurnAccepted = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
@@ -3466,8 +3505,15 @@ const make = Effect.gen(function* () {
         Effect.andThen(handleTurnStartFailure(cause)),
         Effect.andThen(failHandOffForFailedStart(detail)),
         // Only a turn the provider never took: one it took ends (and settles
-        // what it owes) by its own turn end, whatever failed after.
-        Effect.andThen(beforeSend ? settleChildWorkForUnstartedTurn(detail) : Effect.void),
+        // what it owes) by its own turn end, whatever failed after. A child's
+        // report goes back to the front of the queue instead.
+        Effect.andThen(
+          !beforeSend
+            ? Effect.void
+            : message.fromThread?.kind === "report"
+              ? takeBackReportStart(event.payload.threadId, event.payload.messageId, "failed-start")
+              : settleChildWorkForUnstartedTurn(detail),
+        ),
       );
     };
 
@@ -6077,6 +6123,12 @@ const make = Effect.gen(function* () {
     if (event.payload.imported === true) {
       return;
     }
+    // A report put back after its start died waits for the next thing that
+    // moves the queue (a restart's send, a new message, a turn's end): sent
+    // on by itself, a start that keeps failing would never stop.
+    if (event.payload.followUp.putBack === true) {
+      return;
+    }
     // A message the user sent after Stop means they are moving on. One an
     // agent queued (in this thread, or from another thread) never does.
     const fromUser = !isAgentOrigin(event.payload.followUp);
@@ -6122,7 +6174,8 @@ const make = Effect.gen(function* () {
     const next =
       fromUser || waitsForMove
         ? event.payload.followUp
-        : (firstArrived(thread.queuedFollowUps ?? [], isAgentOrigin) ?? event.payload.followUp);
+        : ((thread.queuedFollowUps ?? []).find((entry) => isAgentOrigin(entry)) ??
+          event.payload.followUp);
     if (yield* releaseSlotForQueuedAgent(thread, next)) {
       releasedMessageByThread.set(thread.id, next.messageId);
       return;
@@ -7320,39 +7373,17 @@ const make = Effect.gen(function* () {
     }).pipe(Effect.ignoreCause({ log: true }));
 
   /**
-   * A restart cut off a turn the provider never took, and its message was a
-   * child's report taken off the queue to start it: the report goes back on
-   * the queue as it was (`thread.follow-up.restore`), found by the exact
-   * message the turn was started for, so the parent's agent still hears it.
-   * The decider leaves it off if its delivery was cancelled meanwhile.
+   * A restart cut off a turn the provider never took: if the start the
+   * thread was waiting on (its pending start, the exact message) was a
+   * child's report, it is taken back. True when the report went back on the
+   * queue, which then sends it.
    */
-  const restoreReportCutBeforeStart = (threadId: ThreadId) =>
+  const takeBackReportCutByRestart = (threadId: ThreadId) =>
     Effect.gen(function* () {
       const pending = yield* projectionTurnRepository.getPendingTurnStartByThreadId({ threadId });
-      if (Option.isNone(pending)) return;
-      const thread = yield* resolveThread(threadId);
-      const message = thread?.messages.find((entry) => entry.id === pending.value.messageId);
-      if (message?.fromThread?.kind !== "report") return;
-      yield* orchestrationEngine
-        .dispatch({
-          type: "thread.follow-up.restore",
-          commandId: CommandId.make(
-            `server:report-restore:${threadId}:${message.id}:${pending.value.requestedAt}`,
-          ),
-          threadId,
-          messageId: message.id,
-          createdAt: yield* nowIso,
-        })
-        .pipe(
-          Effect.catch((error) =>
-            Effect.logInfo("provider command reactor did not put a cut-off report back", {
-              threadId,
-              messageId: message.id,
-              detail: String(error),
-            }),
-          ),
-        );
-    }).pipe(Effect.ignoreCause({ log: true }));
+      if (Option.isNone(pending)) return false;
+      return yield* takeBackReportStart(threadId, pending.value.messageId, "restart");
+    }).pipe(Effect.orElseSucceed(() => false));
 
   const settleSessionsFromPreviousProcess = Effect.fn("settleSessionsFromPreviousProcess")(
     function* () {
@@ -7442,8 +7473,10 @@ const make = Effect.gen(function* () {
           createdAt,
         });
         yield* takeBackOutsideQueued(thread.id, createdAt);
-        if (session.activeTurnId === null) {
-          yield* restoreReportCutBeforeStart(thread.id);
+        // A child's report cut before its start goes back on the queue and is
+        // sent from there: no restart note and no continue for it.
+        if (session.activeTurnId === null && (yield* takeBackReportCutByRestart(thread.id))) {
+          continue;
         }
         // Read now: startup expires the questions the previous process left.
         const activities = (yield* resolveThread(thread.id))?.activities ?? [];

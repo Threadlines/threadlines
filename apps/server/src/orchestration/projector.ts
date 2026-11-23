@@ -1825,12 +1825,15 @@ export function projectEvent(
         };
 
         const owedReport = payload.owedReport;
-        const withOwed =
-          owedReport === undefined
-            ? nextBase
-            : updateChildRequests(nextBase, payload.threadId, (state) =>
-                childRequestStateOn.owedAdded(state, owedReport),
-              );
+        const binds = payload.owedReportBinds;
+        const activeTurnId = payload.session.activeTurnId;
+        const withOwed = updateChildRequests(nextBase, payload.threadId, (state) => {
+          const added =
+            owedReport === undefined ? state : childRequestStateOn.owedAdded(state, owedReport);
+          return binds === undefined || activeTurnId === null
+            ? added
+            : childRequestStateOn.owedBound(added, binds, activeTurnId);
+        });
         return {
           ...withOwed,
           threads: updateThread(withOwed.threads, payload.threadId, {

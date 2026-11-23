@@ -24,7 +24,6 @@ import * as Stream from "effect/Stream";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
-import { firstArrived } from "@threadlines/shared/queuedFollowUps";
 import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
 import {
   childHasLiveWork,
@@ -81,7 +80,10 @@ type ReactorEvent = Extract<
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
-/** The newest turn a message started, asked for no earlier than `since`. */
+/**
+ * The newest turn a message started: only for a request from before it kept
+ * its turn (`answeringTurnId`), never the first listed.
+ */
 const newestTurnFor = <
   Turn extends {
     readonly turnId: TurnId | null;
@@ -91,13 +93,9 @@ const newestTurnFor = <
 >(
   turns: ReadonlyArray<Turn>,
   messageId: MessageId,
-  since = "",
 ): Turn | undefined =>
   turns
-    .filter(
-      (turn) =>
-        turn.turnId !== null && turn.pendingMessageId === messageId && turn.requestedAt >= since,
-    )
+    .filter((turn) => turn.turnId !== null && turn.pendingMessageId === messageId)
     .toSorted((left, right) => left.requestedAt.localeCompare(right.requestedAt))
     .at(-1);
 
@@ -392,12 +390,15 @@ export const makeChildThreadReactor = Effect.gen(function* () {
           : yield* turns
               .listByThreadId({ threadId: child.id })
               .pipe(Effect.orElseSucceed(() => [] as const));
-      // A retry or a resend runs the same message again: its newest turn is
-      // the one the request is on.
+      // The turn the request recorded when it started (a retry or resend
+      // overwrites it); a request from before that goes by its message's
+      // newest turn.
       const requestTurnId = (request: OrchestrationChildRequest) =>
         request.status === "awaiting_background"
           ? (request.candidateTurnId ?? null)
-          : (newestTurnFor(childTurns, request.childMessageId)?.turnId ?? null);
+          : (request.answeringTurnId ??
+            newestTurnFor(childTurns, request.childMessageId)?.turnId ??
+            null);
       for (const request of parent.childRequests.open) {
         if (
           request.childThreadId !== childId ||
@@ -556,12 +557,12 @@ export const makeChildThreadReactor = Effect.gen(function* () {
           .listByThreadId({ threadId: child.id })
           .pipe(Effect.orElseSucceed(() => [] as const));
         for (const entry of owed) {
-          // A message run again (a resend) has a turn per run: only one
-          // asked for since this entry was made is its turn.
+          // An entry is settled against the turn that claimed it, by id; one
+          // no turn claimed never started and goes with nothing said.
           const turn =
             "turnId" in entry
               ? childTurns.find((candidate) => candidate.turnId === entry.turnId)
-              : newestTurnFor(childTurns, entry.messageId, entry.createdAt);
+              : undefined;
           const delivery = childReportAfterRestart(child, entry, turn);
           yield* dispatch(
             { ...delivery, threadId: child.id, createdAt: yield* nowIso },
@@ -582,8 +583,8 @@ export const makeChildThreadReactor = Effect.gen(function* () {
     const shell = yield* snapshots.getShellSnapshot().pipe(Effect.orElseSucceed(() => undefined));
     return (shell?.threads ?? []).flatMap((summary) => {
       const queued = summary.queuedFollowUps ?? [];
-      // The one that arrived first: one put back after a restart keeps its time.
-      const report = firstArrived(queued, (entry) => entry.fromThread?.kind === "report");
+      // The first in line: one put back after its start died is at the front.
+      const report = queued.find((entry) => entry.fromThread?.kind === "report");
       const status = summary.session?.status;
       return report === undefined ||
         familyWorkStopped(summary) ||

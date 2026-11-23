@@ -1496,13 +1496,24 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             latestTurnId: nextLatestTurnId,
-            // See the in-memory projector: a provider-started turn's report.
-            ...(event.payload.owedReport !== undefined
+            // See the in-memory projector: a provider-started turn's report,
+            // and the turn claiming its message's report.
+            ...(event.payload.owedReport !== undefined ||
+            (event.payload.owedReportBinds !== undefined &&
+              event.payload.session.activeTurnId !== null)
               ? {
-                  childRequests: childRequestStateOn.owedAdded(
-                    existingRow.value.childRequests ?? EMPTY_CHILD_REQUEST_STATE,
-                    event.payload.owedReport,
-                  ),
+                  childRequests: ((state) => {
+                    const owedReport = event.payload.owedReport;
+                    const binds = event.payload.owedReportBinds;
+                    const activeTurnId = event.payload.session.activeTurnId;
+                    const added =
+                      owedReport === undefined
+                        ? state
+                        : childRequestStateOn.owedAdded(state, owedReport);
+                    return binds === undefined || activeTurnId === null
+                      ? added
+                      : childRequestStateOn.owedBound(added, binds, activeTurnId);
+                  })(existingRow.value.childRequests ?? EMPTY_CHILD_REQUEST_STATE),
                 }
               : {}),
             updatedAt: event.occurredAt,
@@ -2318,6 +2329,22 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     const applyThreadTurnsProjection: ProjectorDefinition["apply"] = Effect.fn(
       "applyThreadTurnsProjection",
     )(function* (event, _attachmentSideEffects) {
+      // A start whose message went back on the queue, or was marked not run,
+      // is gone: its row must never bind to a later turn.
+      const startTakenBack =
+        event.type === "thread.continue-at-reset-skipped"
+          ? { threadId: event.payload.threadId, messageId: event.payload.messageId }
+          : event.type === "thread.follow-up-queued" && event.payload.followUp.putBack === true
+            ? { threadId: event.payload.threadId, messageId: event.payload.followUp.messageId }
+            : null;
+      if (startTakenBack !== null) {
+        const { threadId } = startTakenBack;
+        const pending = yield* projectionTurnRepository.getPendingTurnStartByThreadId({ threadId });
+        if (Option.isSome(pending) && pending.value.messageId === startTakenBack.messageId) {
+          yield* projectionTurnRepository.deletePendingTurnStartByThreadId({ threadId });
+        }
+        return;
+      }
       switch (event.type) {
         case "thread.turn-start-requested": {
           yield* projectionTurnRepository.replacePendingTurnStart({

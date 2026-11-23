@@ -592,6 +592,7 @@ export const childRequestStateOn = {
       readonly candidateTurnId?: TurnId | undefined;
       readonly remote?: RemoteChildRequest | undefined;
       readonly childMessageId?: MessageId | undefined;
+      readonly answeringTurnId?: TurnId | undefined;
     },
   ): OrchestrationChildRequestState => {
     const changes = (entry: OrchestrationChildRequest) =>
@@ -599,6 +600,8 @@ export const childRequestStateOn = {
       (entry.status !== update.status ||
         entry.candidateTurnId !== update.candidateTurnId ||
         (update.childMessageId !== undefined && entry.childMessageId !== update.childMessageId) ||
+        (update.answeringTurnId !== undefined &&
+          entry.answeringTurnId !== update.answeringTurnId) ||
         (update.remote !== undefined && !sameRemoteRequest(entry.remote, update.remote)));
     return state.open.some(changes)
       ? {
@@ -615,6 +618,9 @@ export const childRequestStateOn = {
               ...(update.remote !== undefined ? { remote: update.remote } : {}),
               ...(update.childMessageId !== undefined
                 ? { childMessageId: update.childMessageId }
+                : {}),
+              ...(update.answeringTurnId !== undefined
+                ? { answeringTurnId: update.answeringTurnId }
                 : {}),
             };
           }),
@@ -757,15 +763,41 @@ export const childRequestStateOn = {
       }
     }
   },
-  /** A turn starts that owes the parent a report (docs/design/agent-autonomy-no-limits.md, rule 3). */
+  /**
+   * A turn starts that owes the parent a report (docs/design/agent-autonomy-
+   * no-limits.md, rule 3). A message has at most one start no turn has
+   * claimed: a new start for it replaces that entry where it stands.
+   */
   owedAdded: (
     state: OrchestrationChildRequestState,
     entry: OwedChildReport,
   ): OrchestrationChildRequestState => {
     const owed = state.owedReports ?? [];
-    return owed.some((listed) => isOwedReport(listed, entry))
-      ? state
-      : { ...state, owedReports: [...owed, entry] };
+    const at = owed.findIndex((listed) => isOwedReport(listed, entry));
+    if (at < 0) return { ...state, owedReports: [...owed, entry] };
+    if (sameOwedReport(owed[at]!, entry)) return state;
+    return { ...state, owedReports: owed.map((listed, index) => (index === at ? entry : listed)) };
+  },
+  /**
+   * The turn that took a message claims its owed entry: from now on the
+   * entry is keyed by that turn ("Restart and turn binding", rule B).
+   */
+  owedBound: (
+    state: OrchestrationChildRequestState,
+    messageId: MessageId,
+    turnId: TurnId,
+  ): OrchestrationChildRequestState => {
+    const owed = state.owedReports ?? [];
+    const at = owed.findIndex((listed) => isOwedReport(listed, { messageId }));
+    if (at < 0) return state;
+    const { deliveryEpoch, attachmentEpoch, createdAt } = owed[at]!;
+    const bound = { turnId, deliveryEpoch, attachmentEpoch, createdAt };
+    return {
+      ...state,
+      owedReports: owed
+        .filter((listed, index) => index === at || !isOwedReport(listed, { turnId }))
+        .map((listed) => (isOwedReport(listed, { messageId }) ? bound : listed)),
+    };
   },
   /** An owed report was settled, delivered or dropped. */
   owedRemoved: (
@@ -793,6 +825,12 @@ export function isOwedReport(entry: OwedReportKey, key: OwedReportKey): boolean 
     ? "messageId" in entry && entry.messageId === key.messageId
     : "turnId" in entry && entry.turnId === key.turnId;
 }
+
+const sameOwedReport = (left: OwedChildReport, right: OwedChildReport) =>
+  isOwedReport(left, right) &&
+  left.deliveryEpoch === right.deliveryEpoch &&
+  left.attachmentEpoch === right.attachmentEpoch &&
+  left.createdAt === right.createdAt;
 
 /** An owed report's key alone, as events name it. */
 export const owedReportKeyOf = (entry: OwedReportKey): OwedReportKey =>

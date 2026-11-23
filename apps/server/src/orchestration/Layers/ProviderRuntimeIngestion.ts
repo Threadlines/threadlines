@@ -2853,9 +2853,9 @@ const make = Effect.gen(function* () {
    * for an earlier turn will never be settled by one (a lost turn end). It is
    * settled now, as a turn that ended without being stopped (docs/design/
    * agent-autonomy-no-limits.md, rule 3). The starting turn's own entry is
-   * kept, and so is the entry of a message still waiting to start or already
-   * bound to this turn. Only this handler sweeps: a writer outside it could
-   * run ahead of a turn end it hasn't taken yet.
+   * kept, and so is the entry of a message still waiting to start (its turn
+   * claims it when it starts). Only this handler sweeps: a writer outside it
+   * could run ahead of a turn end it hasn't taken yet.
    */
   const sweepOwedReports = Effect.fn("sweepOwedReports")(function* (input: {
     readonly threadId: ThreadId;
@@ -2866,17 +2866,9 @@ const make = Effect.gen(function* () {
     const child = yield* resolveThreadDetail(input.threadId);
     if (child === undefined || child === null) return;
     if ((child.childRequests.owedReports ?? []).length === 0) return;
-    const boundTurn = yield* projectionTurnRepository
-      .getByTurnId({ threadId: input.threadId, turnId: input.turnId })
-      .pipe(
-        Effect.map(Option.getOrUndefined),
-        Effect.orElseSucceed(() => undefined),
-      );
     const stale = staleOwedReports(child, {
       turnId: input.turnId,
-      messageIds: [input.pendingMessageId, boundTurn?.pendingMessageId ?? null].filter(
-        (messageId): messageId is MessageId => messageId !== null,
-      ),
+      messageIds: input.pendingMessageId === null ? [] : [input.pendingMessageId],
     });
     for (const delivery of stale) {
       yield* orchestrationEngine

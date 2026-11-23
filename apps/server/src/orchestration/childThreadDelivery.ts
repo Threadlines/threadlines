@@ -29,7 +29,24 @@ import { turnStartingMessage } from "./continueTurns.ts";
 export type ChildDeliveryRequest = Pick<
   OrchestrationChildRequest,
   "requestId" | "status" | "childMessageId" | "candidateTurnId"
->;
+> &
+  Partial<Pick<OrchestrationChildRequest, "answeringTurnId">>;
+
+/**
+ * Whether a running request is answered by the ended turn: the turn it
+ * recorded when it started ("Restart and turn binding", rule B). A request
+ * from before that was kept (and a linked computer's ledger, which keeps
+ * none) goes by the message that started the ended turn.
+ */
+const answersRequest = (
+  request: ChildDeliveryRequest,
+  turnId: TurnId,
+  pendingMessageId: MessageId | null,
+) =>
+  request.status === "running" &&
+  (request.answeringTurnId !== undefined
+    ? request.answeringTurnId === turnId
+    : pendingMessageId !== null && request.childMessageId === pendingMessageId);
 
 /** How a child's turn ended. */
 export interface ChildTurnEnd {
@@ -143,12 +160,7 @@ export function childDeliveryForTurnEnd(input: {
 }): ChildDelivery | null {
   const { owned, child, end } = input;
   const request =
-    owned.find(
-      (entry) =>
-        input.pendingMessageId !== null &&
-        entry.status === "running" &&
-        entry.childMessageId === input.pendingMessageId,
-    ) ??
+    owned.find((entry) => answersRequest(entry, end.turnId, input.pendingMessageId)) ??
     (input.continuesWaitingAnswer === true && input.pendingMessageId === null
       ? owned.find(
           (entry) =>
@@ -231,17 +243,17 @@ const reportSettleCommandId = (child: Pick<OrchestrationThread, "id">, entry: Ow
     `server:child-report:${child.id}:${"messageId" in entry ? `message:${entry.messageId}` : `turn:${entry.turnId}`}:${entry.createdAt}:settle`,
   );
 
-/** The owed entry a turn settles: keyed by the turn, or by the message that started it. */
+/**
+ * The owed entry a turn settles: the one keyed by that turn. A message's
+ * entry is keyed by the turn that took it from the moment it started
+ * ("Restart and turn binding", rule B), so no turn is ever matched by its
+ * message.
+ */
 export function owedEntryForTurn(
   child: Pick<OrchestrationThread, "childRequests">,
   turnId: TurnId,
-  pendingMessageId: MessageId | null,
 ): OwedChildReport | undefined {
-  return (child.childRequests.owedReports ?? []).find(
-    (entry) =>
-      isOwedReport(entry, { turnId }) ||
-      (pendingMessageId !== null && isOwedReport(entry, { messageId: pendingMessageId })),
-  );
+  return (child.childRequests.owedReports ?? []).find((entry) => isOwedReport(entry, { turnId }));
 }
 
 /**
@@ -276,7 +288,7 @@ export function childReportForTurnEnd(input: {
   readonly pendingMessageId: MessageId | null;
 }): ChildReportDelivery | null {
   const { child, end } = input;
-  const entry = owedEntryForTurn(child, end.turnId, input.pendingMessageId);
+  const entry = owedEntryForTurn(child, end.turnId);
   if (entry === undefined) return null;
   const owed = owedReportKeyOf(entry);
   const text =
@@ -349,23 +361,27 @@ export function staleOwedReports(
 }
 
 /**
- * An owed turn a restart cut off or left unreported (rule 14): a completed
- * turn is delivered, a failed one delivers its failure, and one the restart
- * cut off (or that never started) says so.
+ * An owed entry a restart left unsettled (rule 14). One bound to a turn is
+ * settled against that turn alone: a completed turn is delivered, a failed
+ * one delivers its failure, and one the restart cut off says so. One no turn
+ * claimed never started: it goes with nothing said (its message's start was
+ * put back or marked not run, "Restart and turn binding", rule A).
  */
 export function childReportAfterRestart(
   child: OrchestrationThread,
   entry: OwedChildReport,
-  turn: { readonly turnId: TurnId | null; readonly state: string } | undefined,
+  turn: { readonly state: string } | undefined,
 ): ChildReportDelivery {
   const owed = owedReportKeyOf(entry);
-  const turnId = turn?.turnId ?? ("turnId" in entry ? entry.turnId : null);
+  const turnId = "turnId" in entry ? entry.turnId : null;
   const text =
-    turn?.state === "completed" && turnId !== null
-      ? reportReplyText(child, turnId)
-      : turn?.state === "error"
-        ? reportFailureText(child, child.session?.lastError ?? "Its turn did not finish.")
-        : `'${child.title}' was interrupted by a Threadlines restart. Send it a message with thread_send to continue.`;
+    turnId === null
+      ? undefined
+      : turn?.state === "completed"
+        ? reportReplyText(child, turnId)
+        : turn?.state === "error"
+          ? reportFailureText(child, child.session?.lastError ?? "Its turn did not finish.")
+          : `'${child.title}' was interrupted by a Threadlines restart. Send it a message with thread_send to continue.`;
   return {
     type: "thread.child-report.settle",
     commandId: reportSettleCommandId(child, entry),
@@ -494,11 +510,22 @@ export function finishedTurnAfterRestart(
 ): TurnId | null {
   const candidateEnded =
     childTurns.find((entry) => entry.turnId === request.candidateTurnId)?.completedAt ?? "";
+  // The turn the request recorded; a request from before that was kept goes
+  // by the newest turn its message started, never the first listed.
+  const answering =
+    request.answeringTurnId !== undefined
+      ? childTurns.find((turn) => turn.turnId === request.answeringTurnId)
+      : childTurns
+          .filter(
+            (turn) => turn.turnId !== null && turn.pendingMessageId === request.childMessageId,
+          )
+          .toSorted((left, right) => left.requestedAt.localeCompare(right.requestedAt))
+          .at(-1);
   const finishedTurn =
     request.status === "running"
-      ? childTurns.find(
-          (turn) => turn.pendingMessageId === request.childMessageId && turn.state === "completed",
-        )
+      ? answering?.state === "completed"
+        ? answering
+        : undefined
       : request.status === "awaiting_background" && options.continuesWaitingAnswer === true
         ? childTurns
             .filter(

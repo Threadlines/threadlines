@@ -132,6 +132,13 @@ function withReactor<A, E>(
   options: {
     readonly setupFails?: boolean;
     readonly completedTurnFor?: MessageId;
+    /** The child's turn rows, in the repository's order; overrides `completedTurnFor`. */
+    readonly turns?: ReadonlyArray<{
+      readonly turnId: TurnId;
+      readonly pendingMessageId: MessageId | null;
+      readonly state: string;
+      readonly requestedAt: string;
+    }>;
     /** "Threads can share a checkout" (default off, as the setting is). */
     readonly shareWorktrees?: boolean;
   },
@@ -199,17 +206,19 @@ function withReactor<A, E>(
       Layer.succeed(ProjectionTurnRepository, {
         listByThreadId: () =>
           Effect.succeed(
-            options.completedTurnFor === undefined
-              ? []
-              : [
-                  {
-                    threadId: CHILD,
-                    turnId: TurnId.make("child-turn-1"),
-                    pendingMessageId: options.completedTurnFor,
-                    state: "completed",
-                    requestedAt: now,
-                  },
-                ],
+            options.turns !== undefined
+              ? options.turns.map((turn) => ({ threadId: CHILD, ...turn }))
+              : options.completedTurnFor === undefined
+                ? []
+                : [
+                    {
+                      threadId: CHILD,
+                      turnId: TurnId.make("child-turn-1"),
+                      pendingMessageId: options.completedTurnFor,
+                      state: "completed",
+                      requestedAt: now,
+                    },
+                  ],
           ),
       } as unknown as ProjectionTurnRepositoryShape),
       ServerSettingsService.layerTest(
@@ -308,7 +317,12 @@ describe("ChildThreadReactor", () => {
             ...EMPTY_CHILD_REQUEST_STATE,
             owedReports: [
               // Its turn completed before the crash: delivered.
-              { messageId: CHILD_MESSAGE, deliveryEpoch: 0, attachmentEpoch: 0, createdAt: now },
+              {
+                turnId: TurnId.make("child-turn-1"),
+                deliveryEpoch: 0,
+                attachmentEpoch: 0,
+                createdAt: now,
+              },
               // A check-back the restart cut off.
               {
                 turnId: TurnId.make("child-turn-2"),
@@ -340,7 +354,7 @@ describe("ChildThreadReactor", () => {
           expect(reports).toMatchObject([
             {
               threadId: CHILD,
-              owed: { messageId: CHILD_MESSAGE },
+              owed: { turnId: TurnId.make("child-turn-1") },
               turnId: TurnId.make("child-turn-1"),
               text: "Release notes checked again: nothing new.",
             },
@@ -355,7 +369,7 @@ describe("ChildThreadReactor", () => {
   );
 
   it.effect(
-    "after a restart, never takes an earlier run of the same message for a resend's entry (finding 6)",
+    "after a restart, settles nothing against a message's earlier run for a resend no turn claimed (finding 6)",
     () =>
       withReactor(
         [
@@ -363,7 +377,7 @@ describe("ChildThreadReactor", () => {
           thread(CHILD, {
             childRequests: {
               ...EMPTY_CHILD_REQUEST_STATE,
-              // Made when the message was sent again, after its first run ended.
+              // The resend's start, cut before any turn took it.
               owedReports: [
                 {
                   messageId: CHILD_MESSAGE,
@@ -375,17 +389,16 @@ describe("ChildThreadReactor", () => {
             },
           }),
         ],
+        // The message's first run finished and was reported long ago.
         { completedTurnFor: CHILD_MESSAGE },
         (harness) =>
           Effect.sync(() => {
-            expect(
-              harness.dispatched.filter((command) => command.type === "thread.child-report.settle"),
-            ).toMatchObject([
-              {
-                turnId: null,
-                text: "'Write the changelog' was interrupted by a Threadlines restart. Send it a message with thread_send to continue.",
-              },
-            ]);
+            const settles = harness.dispatched.filter(
+              (command) => command.type === "thread.child-report.settle",
+            );
+            expect(settles).toHaveLength(1);
+            expect(settles[0]).toMatchObject({ owed: { messageId: CHILD_MESSAGE }, turnId: null });
+            expect(settles[0]).not.toHaveProperty("text");
           }),
       ),
   );
@@ -540,6 +553,66 @@ describe("ChildThreadReactor", () => {
           yield* settle;
           expect(settles(harness)).toMatchObject([{ outcome: "answered" }]);
         }),
+      );
+    },
+  );
+
+  it.effect(
+    "says the user stopped a retry when Stop named the retry's turn, whatever order the turns are listed in (finding 6)",
+    () => {
+      const stoppedChild = thread(CHILD, {
+        session: {
+          threadId: CHILD,
+          status: "stopped",
+          providerName: "claudeAgent",
+          runtimeMode: "auto-accept-edits",
+          activeTurnId: null,
+          lastError: null,
+          stopRequestedTurnId: TurnId.make("retry-turn"),
+          updatedAt: now,
+        },
+      });
+      return withReactor(
+        [parentWith([]), stoppedChild],
+        {
+          // The first run (stopped on a usage limit) is listed first.
+          turns: [
+            {
+              turnId: TurnId.make("first-turn"),
+              pendingMessageId: CHILD_MESSAGE,
+              state: "error",
+              requestedAt: "2026-10-04T09:00:00.000Z",
+            },
+            {
+              turnId: TurnId.make("retry-turn"),
+              pendingMessageId: CHILD_MESSAGE,
+              state: "interrupted",
+              requestedAt: "2026-10-04T09:30:00.000Z",
+            },
+          ],
+        },
+        (harness) =>
+          Effect.gen(function* () {
+            harness.threads.set(
+              PARENT,
+              parentWith([
+                request({ status: "running", answeringTurnId: TurnId.make("retry-turn") }),
+              ]),
+            );
+            yield* PubSub.publish(harness.events, {
+              type: "thread.session-set",
+              payload: { threadId: CHILD },
+            } as unknown as OrchestrationEvent);
+            yield* settle;
+            yield* TestClock.adjust(Duration.seconds(6));
+            yield* settle;
+            expect(settles(harness)).toMatchObject([
+              {
+                outcome: "stopped",
+                reply: { text: "The user stopped 'Write the changelog' before it finished." },
+              },
+            ]);
+          }),
       );
     },
   );
@@ -795,53 +868,5 @@ describe("ChildThreadReactor", () => {
           ).toEqual(["child-report:request-1"]);
         }),
     ),
-  );
-
-  it.effect(
-    "after a restart, sends first the report that arrived first, one put back after the cut included (finding 5)",
-    () => {
-      const report = (id: string, createdAt: string) => ({
-        messageId: MessageId.make(id),
-        text: "done",
-        attachments: [],
-        fromThread: {
-          threadId: CHILD,
-          requestId: ChildRequestId.make(id),
-          kind: "report" as const,
-        },
-        runtimeMode: "auto-accept-edits" as const,
-        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-        createdAt,
-      });
-      return withReactor(
-        [
-          thread(PARENT, {
-            session: {
-              threadId: PARENT,
-              status: "interrupted",
-              providerName: "claudeAgent",
-              runtimeMode: "auto-accept-edits",
-              activeTurnId: null,
-              lastError: null,
-              updatedAt: now,
-            },
-            // A was put back after B: it keeps the time it first arrived.
-            queuedFollowUps: [
-              report("report-b", "2026-10-04T10:00:02.000Z"),
-              report("report-a", "2026-10-04T10:00:01.000Z"),
-            ],
-          }),
-        ],
-        {},
-        (harness) =>
-          Effect.sync(() => {
-            expect(
-              harness.dispatched
-                .filter((command) => command.type === "thread.follow-up.send-queued")
-                .map((command) => (command as { messageId: string }).messageId),
-            ).toEqual(["report-a"]);
-          }),
-      );
-    },
   );
 });

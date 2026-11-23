@@ -2555,6 +2555,13 @@ export const OrchestrationQueuedFollowUp = Schema.Struct({
   /** See OrchestrationMessage.afterMove: kept so the message is written with it when sent. */
   afterMove: Schema.optional(Schema.Literal(true)),
   /**
+   * A child's report whose turn start died before the provider took it, put
+   * back (`thread.turn-start.take-back`): it goes ahead of every other
+   * message an agent queued, behind an earlier one put back. The user's own
+   * queued messages keep their place. Absent: queued in the usual order.
+   */
+  putBack: Schema.optional(Schema.Literal(true)),
+  /**
    * Carried from another computer by a move (docs/design/fleet.md, Part 3e):
    * written by the user there, not here, so sending it doesn't lift the
    * thread's fence (ThreadMovedFrom.fenced).
@@ -3021,6 +3028,14 @@ export const OrchestrationChildRequest = Schema.Struct({
   launch: Schema.optional(ChildThreadLaunch),
   /** `awaiting_background`: the finished turn whose last answer stands so far. */
   candidateTurnId: Schema.optional(TurnId),
+  /**
+   * The child's turn that took `childMessageId`, recorded when the turn
+   * starts; a retry, resend or continue that runs the message again
+   * overwrites it. Every reader matches the request's turn by this
+   * (docs/design/agent-autonomy-no-limits.md, "Restart and turn binding",
+   * rule B). Absent: not started yet, or a request from before it was kept.
+   */
+  answeringTurnId: Schema.optional(TurnId),
   /** The child is on a linked computer: see RemoteChildRequest. */
   remote: Schema.optional(RemoteChildRequest),
   /**
@@ -5673,13 +5688,14 @@ const ThreadChildRequestSettleCommand = Schema.Struct({
 });
 
 /**
- * Child threads, server only: a child's report taken off its parent's queue
- * to start a turn that a restart cut off before the provider took it goes
- * back on the queue, as it was, so the parent's agent still hears it. Never
- * a report whose delivery was cancelled since, and never the user writing.
+ * Child threads, server only: a child's report whose turn start died before
+ * the provider took it (a restart, a failed start) goes back to the front of
+ * the queue, or, when it can no longer be delivered, is marked not run
+ * (docs/design/agent-autonomy-no-limits.md, "Restart and turn binding",
+ * rule A). Never a turn start, and never the user writing.
  */
-const ThreadFollowUpRestoreCommand = Schema.Struct({
-  type: Schema.Literal("thread.follow-up.restore"),
+const ThreadTurnStartTakeBackCommand = Schema.Struct({
+  type: Schema.Literal("thread.turn-start.take-back"),
   commandId: CommandId,
   threadId: ThreadId,
   messageId: MessageId,
@@ -6230,7 +6246,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadChildRequestUpdateCommand,
   ThreadChildRequestSettleCommand,
   ThreadChildReportSettleCommand,
-  ThreadFollowUpRestoreCommand,
+  ThreadTurnStartTakeBackCommand,
   ThreadChildNotesDeliveredCommand,
   ThreadRemoteChildUpdateCommand,
   ThreadRemoteCancelsDeliveredCommand,
@@ -6676,6 +6692,8 @@ export const ThreadChildRequestUpdatedPayload = Schema.Struct({
    * (docs/design/lead-chat.md, "Usage limits"). Absent: unchanged.
    */
   childMessageId: Schema.optional(MessageId),
+  /** See OrchestrationChildRequest.answeringTurnId. Absent: unchanged. */
+  answeringTurnId: Schema.optional(TurnId),
   updatedAt: IsoDateTime,
 });
 
@@ -7234,6 +7252,13 @@ export const ThreadSessionSetPayload = Schema.Struct({
   owedReport: Schema.optional(OwedChildReport),
   /** See TurnStartedBy. */
   turnStartedBy: Schema.optional(TurnStartedBy),
+  /**
+   * The message this turn took owed the parent a report: its entry, keyed by
+   * the message until now, is keyed by the session's active turn from here
+   * on (docs/design/agent-autonomy-no-limits.md, "Restart and turn binding",
+   * rule B).
+   */
+  owedReportBinds: Schema.optional(MessageId),
 });
 
 /** The user closed this error's notice; see `OrchestrationSession.lastErrorDismissedAt`. */
