@@ -94,11 +94,14 @@ const KNOWN_SAFE_MODELS = new Set([
 
 const SAFE_PUBLIC_MODEL_PATTERNS = [
   // `gpt-4o` and its kin end their version in an "o"; no other letter.
-  /^gpt-\d+o?(?:[.-][a-z0-9]+)*(?:-codex(?:-[a-z0-9]+)?)?$/,
-  /^claude-(?:fable|haiku|opus|sonnet)-\d+(?:-\d+)*(?:-\d{8})?$/,
-  /^gemini-\d+(?:\.\d+)?(?:-[a-z0-9]+)*$/,
-  /^composer-\d+(?:\.\d+)?$/,
-  /^grok-\d+(?:\.\d+)?(?:-[a-z]+)*$/,
+  /^gpt-\d{1,2}o?(?:\.\d{1,2})?(?:-(?:mini|nano|pro|turbo|preview|latest|chat|codex|spark|astra|sol|luna|terra|max|high|low|medium|fast))+(?:-20[2-3]\d-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01]))?$/,
+  /^gpt-\d{1,2}o?(?:\.\d{1,2})?(?:-20[2-3]\d-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01]))?$/,
+  /^o\d{1,2}(?:-(?:mini|pro|preview|high|low|medium))?(?:-20[2-3]\d-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01]))?$/,
+  /^claude-(?:fable|mythos|haiku|opus|sonnet)-\d{1,2}(?:-\d{1,2})?(?:-20[2-3]\d(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01]))?$/,
+  /^gemini-\d{1,2}(?:\.\d{1,2})?-(?:pro|flash|ultra|lite|argon|carbon|hydrogen|neon|sonar|exp|preview)(?:-(?:pro|flash|lite|sonar|exp|preview|latest|thinking|customtools|high|low|medium|minimal))*(?:-(?:0\d{2}|(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])))?$/,
+  /^muse-(?:spark|wonder|ember|glimmer)(?:-\d{1,2}(?:\.\d{1,2})?|-\d{1,3}b)?(?:-(?:open|contributor))?$/,
+  /^composer-\d{1,2}(?:\.\d{1,2})?$/,
+  /^grok-(?:code|\d{1,2}(?:\.\d{1,2})?)(?:-(?:fast|mini|pro|build|beta|latest|reasoning|code))*(?:-\d{1,2})?$/,
   /^(?:auto|default)$/,
 ];
 
@@ -136,41 +139,57 @@ const PUBLIC_MODEL_PROVIDER_PREFIXES: ReadonlySet<string> = new Set([
  * in KNOWN_SAFE_MODELS need no check.
  */
 const PUBLIC_MODEL_WORDS: ReadonlySet<string> = new Set([
+  "argon",
   "astra",
   "beta",
   // Grok Build's own models: `grok-4.7-build-fast`.
   "build",
+  "carbon",
   "chat",
   "claude",
   "code",
   "codex",
   "composer",
+  "contributor",
   "customtools",
+  "ember",
   "exp",
   "fable",
   "fast",
   "flash",
   "gemini",
+  "glimmer",
   "gpt",
   "grok",
   "haiku",
+  "high",
+  "hydrogen",
   "latest",
   "lite",
+  "low",
   "luna",
   "max",
+  "medium",
   "mini",
+  "minimal",
+  "muse",
+  "mythos",
   "nano",
+  "neon",
+  "open",
   "opus",
   "preview",
   "pro",
   "reasoning",
   "sol",
+  "sonar",
   "sonnet",
   "spark",
   "terra",
   "thinking",
   "turbo",
   "ultra",
+  "wonder",
 ]);
 
 function normalizeModelString(model: string | null | undefined): string | undefined {
@@ -219,7 +238,12 @@ function publicModelName(model: string): string | undefined {
   return KNOWN_SAFE_MODELS.has(name) ||
     name
       .split(/[-.]/)
-      .every((word) => /^(?:\d{1,4}[a-z]?|20\d{6})$/.test(word) || PUBLIC_MODEL_WORDS.has(word))
+      .every(
+        (word) =>
+          /^(?:o\d{1,2}|\d{1,2}[a-z]?|0\d{2}|\d{1,3}b|20[2-3]\d|20[2-3]\d(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01]))$/.test(
+            word,
+          ) || PUBLIC_MODEL_WORDS.has(word),
+      )
     ? name
     : undefined;
 }
@@ -295,10 +319,14 @@ const isAcpRegistryAgentId = Schema.is(AcpRegistryAgentId);
 export function analyticsAgentProperties(input: {
   readonly provider: string;
   readonly communityAgentId?: string | undefined;
+  readonly prefix?: string | undefined;
 }): Record<string, string> {
+  const keyPrefix = input.prefix ?? "";
+  const providerKey = keyPrefix ? `${keyPrefix}Provider` : "provider";
+  const communityKey = keyPrefix ? `${keyPrefix}CommunityAgentId` : "communityAgentId";
   return input.communityAgentId !== undefined && isAcpRegistryAgentId(input.communityAgentId)
-    ? { provider: input.provider, communityAgentId: input.communityAgentId }
-    : { provider: input.provider };
+    ? { [providerKey]: input.provider, [communityKey]: input.communityAgentId }
+    : { [providerKey]: input.provider };
 }
 
 /**
@@ -649,10 +677,22 @@ export function providerReadinessProperties(
  * colors, art or fonts.
  */
 export function themeAnalyticsProperties(manifest: ThemeManifest) {
+  const origin =
+    manifest.createdBy?.vscode !== undefined || manifest.credits?.vscode !== undefined
+      ? "vscode"
+      : (manifest.createdBy?.kind ?? "unknown");
   return {
-    origin: manifest.createdBy?.kind ?? "unknown",
+    origin,
     base: manifest.base,
     art: manifest.backdrop?.mode ?? "none",
     customFonts: manifest.fonts?.ui !== undefined || manifest.fonts?.mono !== undefined,
   };
+}
+
+export type AnalyticsStallDurationBucket = "2-5s" | "5-15s" | "15s+";
+
+export function stallDurationBucket(durationMs: number): AnalyticsStallDurationBucket {
+  if (durationMs >= 15_000) return "15s+";
+  if (durationMs >= 5_000) return "5-15s";
+  return "2-5s";
 }

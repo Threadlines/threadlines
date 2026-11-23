@@ -76,6 +76,7 @@ import {
   SERVER_SIGNING_SECRET_NAME,
 } from "../auth/Layers/SessionCredentialService.ts";
 import { ServerSecretStore } from "../auth/Services/ServerSecretStore.ts";
+import { AnalyticsService } from "../telemetry/Services/AnalyticsService.ts";
 import { makeKeyedLock } from "../links/keyedLock.ts";
 import {
   assistantOfRow,
@@ -213,6 +214,7 @@ const frameBytes = (frame: unknown) => Buffer.byteLength(JSON.stringify(frame), 
 export const makeAssistants = Effect.gen(function* () {
   const relay = yield* AssistantRelay;
   const repository = yield* OutsideAgentConnectionRepository;
+  const analytics = yield* Effect.serviceOption(AnalyticsService);
   const reviewComputer = yield* Config.Boolean(ASSISTANT_REVIEW_COMPUTER_ENV).pipe(
     Config.withDefault(false),
     Effect.orElseSucceed(() => false),
@@ -778,11 +780,12 @@ export const makeAssistants = Effect.gen(function* () {
         identity: identityOf(entry.signIn),
         clientName: entry.name,
       };
+      const assistant = assistantOfRow(shown);
       return {
         connectionId,
         name: connectionNameOf(shown),
         givenName: connectionNameOf(shown) === entry.name ? null : entry.name,
-        assistant: assistantOfRow(shown),
+        assistant,
         kind: "assistant",
         signIn: "oauth",
         identity: shown.identity,
@@ -884,8 +887,16 @@ export const makeAssistants = Effect.gen(function* () {
       );
       yield* notify;
       yield* recountConnections;
+      const connection = connectionOfRow(row);
+      if (Option.isSome(analytics)) {
+        yield* analytics.value.record("assistant.connected", {
+          assistant: connection.assistant ?? "other",
+          signIn: "key",
+          access: row.access,
+        });
+      }
       return {
-        connection: connectionOfRow(row),
+        connection,
         key: formatAssistantCredential({ kind: "key", route, secret }),
         address: door.address,
       };
@@ -989,6 +1000,13 @@ export const makeAssistants = Effect.gen(function* () {
       yield* notify;
       // The one it replaced is revoked at the relay.
       yield* connectionsChanged;
+      if (Option.isSome(analytics)) {
+        yield* analytics.value.record("assistant.connected", {
+          assistant: assistantOfRow(row) ?? "other",
+          signIn: "oauth",
+          access: row.access,
+        });
+      }
       return tokensFor(row, issued.route, 0, now);
     });
 

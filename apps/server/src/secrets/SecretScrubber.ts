@@ -25,6 +25,7 @@ import * as Schedule from "effect/Schedule";
 
 import { ServerConfig } from "../config.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { makeDailyAnalyticsCounter } from "../telemetry/DailyCounter.ts";
 import { threadKeyOf } from "./secretDestinations.ts";
 import {
   type HeldText,
@@ -87,21 +88,41 @@ export class SecretScrubber extends Context.Service<SecretScrubber, SecretScrubb
   "threadlines/secrets/SecretScrubber",
 ) {}
 
+export type SecretScrubSurface = "runtime" | "text" | "deep";
+
 /** A scrubber over a fresh registry, for tests and for the layer. */
-export function makeSecretScrubber(): SecretScrubberShape {
+export function makeSecretScrubber(options?: {
+  readonly onScrub?: (surface: SecretScrubSurface, count: number) => void;
+}): SecretScrubberShape {
   const core = makeSecretScrubberCore();
   const notices = makeNoticeMemory();
-  const runtime = makeRuntimeEventScrubber(core, notices);
+  const onScrub = options?.onScrub;
+  const runtime = makeRuntimeEventScrubber(core, notices, {
+    ...(onScrub !== undefined ? { onMatched: (count) => onScrub("runtime", count) } : {}),
+  });
   return {
     watch: core.watch,
     gone: core.gone,
-    scrubText: (text, options) => core.scrubText(text, options),
-    scrubDeep: <A>(value: A) => core.scrubDeep(value, new Set()) as A,
+    scrubText: (text, scrubOptions) => {
+      const result = core.scrubText(text, scrubOptions);
+      if (result.names.length > 0) onScrub?.("text", result.names.length);
+      return result;
+    },
+    scrubDeep: <A>(value: A) => {
+      const names = new Set<string>();
+      const result = core.scrubDeep(value, names) as A;
+      if (names.size > 0) onScrub?.("deep", names.size);
+      return result;
+    },
     contains: core.contains,
     longestFormBytes: () => core.longestFormBytes,
     scrubRuntimeEvent: runtime.scrubRuntimeEvent,
     restoreAnswer: runtime.restoreAnswer,
-    holdPiece: core.holdPiece,
+    holdPiece: (state, piece) => {
+      const result = core.holdPiece(state, piece);
+      if (result.names.length > 0) onScrub?.("runtime", result.names.length);
+      return result;
+    },
     afterRelease: core.afterRelease,
     noticeLine: core.noticeLine,
     takeNotices: (threadId, turnId, names) => notices.take(threadId, turnId, names),
@@ -148,7 +169,20 @@ export const readBackSecret = (
   });
 
 /** The registry, empty until `loadSavedKeys` and Save fill it. One for the server. */
-export const layer = Layer.sync(SecretScrubber, makeSecretScrubber);
+export const layer = Layer.effect(
+  SecretScrubber,
+  Effect.gen(function* () {
+    const scrubCounter = yield* makeDailyAnalyticsCounter<{
+      readonly surface: SecretScrubSurface;
+    }>({
+      event: "secret.scrubbed",
+      keyOf: ({ surface }) => surface,
+    });
+    return makeSecretScrubber({
+      onScrub: (surface, count) => scrubCounter.increment({ surface }, count),
+    });
+  }),
+);
 
 /**
  * Fills the registry at startup from every live thread's saved keys; the

@@ -22,6 +22,7 @@ import { McpProtocol, McpSchema, McpServer, Tool } from "effect/ai";
 import { HttpRouter, HttpServerRequest, type HttpServerResponse } from "effect/http";
 
 import { DeviceService } from "../device/DeviceService.ts";
+import { makeDailyAnalyticsCounter } from "../telemetry/DailyCounter.ts";
 import { deviceClose, deviceList, deviceOpen, deviceScreenshot } from "./deviceToolHandlers.ts";
 import { makeOutsideToolLimits } from "./outsideToolLimit.ts";
 import {
@@ -209,6 +210,14 @@ const registerDeviceTools = Effect.fn("McpDeviceServer.registerDeviceTools")(fun
       ),
   };
 
+  const toolCallCounter = yield* makeDailyAnalyticsCounter<{
+    readonly tool: string;
+    readonly outcome: "ok" | "error";
+  }>({
+    event: "device.tool_calls",
+    keyOf: ({ tool, outcome }) => `${tool}\u0000${outcome}`,
+  });
+
   for (const tool of DEVICE_TOOLS) {
     const handle = handlers[tool.name]!;
     yield* server.addTool({
@@ -216,7 +225,17 @@ const registerDeviceTools = Effect.fn("McpDeviceServer.registerDeviceTools")(fun
       annotations: tool.annotations,
       handle: (payload) =>
         Effect.withFiber((fiber) =>
-          handle(callerOf(fiber), payload).pipe(Effect.provideService(DeviceService, devices)),
+          handle(callerOf(fiber), payload).pipe(
+            Effect.provideService(DeviceService, devices),
+            Effect.tap((result) =>
+              Effect.sync(() => {
+                toolCallCounter.increment({
+                  tool: tool.name,
+                  outcome: result.isError === true ? "error" : "ok",
+                });
+              }),
+            ),
+          ),
         ),
     });
   }

@@ -1,4 +1,5 @@
 import {
+  ACP_REGISTRY_DRIVER_KIND,
   defaultInstanceIdForDriver,
   ProviderDriverKind,
   ServerProviderUpdateError,
@@ -27,7 +28,10 @@ import * as Schema from "effect/Schema";
 import { HttpClient } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
+import { ProviderInstanceRegistry } from "./Services/ProviderInstanceRegistry.ts";
 import { ProviderRegistry } from "./Services/ProviderRegistry.ts";
+import { analyticsAgentProperties } from "../telemetry/AnalyticsProperties.ts";
+import { AnalyticsService } from "../telemetry/Services/AnalyticsService.ts";
 import { makeProviderMaintenanceCommandCoordinator } from "./providerMaintenanceCommandCoordinator.ts";
 import { enrichProviderSnapshotWithVersionAdvisory } from "./providerMaintenance.ts";
 import type {
@@ -572,6 +576,8 @@ function logUnsuccessfulMaintenance(input: {
 export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
   const scope = yield* Effect.scope;
   const providerRegistry = yield* ProviderRegistry;
+  const instanceRegistry = yield* Effect.serviceOption(ProviderInstanceRegistry);
+  const analytics = yield* Effect.serviceOption(AnalyticsService);
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const httpClient = yield* HttpClient.HttpClient;
   const runMaintenanceCommand = (
@@ -768,6 +774,26 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
         reason: copy.unsupported,
       });
     }
+    // Derive telemetry identity from the live registry instance so a caller-supplied
+    // `target.provider` slug or unverified local community id can never reach PostHog.
+    const resolvedInstance = (yield* providerRegistry.getProviders).find(
+      (candidate) => candidate.instanceId === instanceId,
+    );
+    const liveInstances = Option.isSome(instanceRegistry)
+      ? yield* instanceRegistry.value.listInstances
+      : [];
+    const verifiedCommunityAgentId = liveInstances.find(
+      (candidate) => candidate.instanceId === instanceId,
+    )?.communityAgentId;
+    const telemetryProvider = resolvedInstance
+      ? resolvedInstance.driver
+      : provider === ACP_REGISTRY_DRIVER_KIND || Object.hasOwn(PROVIDER_DISPLAY_NAMES, provider)
+        ? provider
+        : "unknown";
+    const telemetryAgentProps = analyticsAgentProperties({
+      provider: telemetryProvider,
+      communityAgentId: verifiedCommunityAgentId,
+    });
 
     const setUpdateState = (state: ServerProviderUpdateState | null) =>
       providerRegistry.setProviderMaintenanceActionState({
@@ -786,14 +812,31 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
 
     const runProviderUpdate = Effect.fn("ProviderMaintenanceRunner.runProviderUpdate")(
       function* () {
-        const finish = (state: ServerProviderUpdateState) =>
-          (state.status === "succeeded"
-            ? Effect.void
-            : logUnsuccessfulMaintenance({ provider, instanceId, action, state })
+        const finish = (state: ServerProviderUpdateState) => {
+          const startedMs = state.startedAt ? Date.parse(state.startedAt) : Number.NaN;
+          const finishedMs = state.finishedAt ? Date.parse(state.finishedAt) : Number.NaN;
+          const durationMs =
+            Number.isFinite(startedMs) && Number.isFinite(finishedMs)
+              ? Math.max(0, finishedMs - startedMs)
+              : undefined;
+          const recordOutcome = Option.isSome(analytics)
+            ? analytics.value.record("provider.runtime.maintained", {
+                ...telemetryAgentProps,
+                action,
+                status: state.status,
+                ...(durationMs !== undefined ? { durationMs } : {}),
+              })
+            : Effect.void;
+          return (
+            state.status === "succeeded"
+              ? Effect.void
+              : logUnsuccessfulMaintenance({ provider, instanceId, action, state })
           ).pipe(
+            Effect.andThen(recordOutcome),
             Effect.andThen(setUpdateState(state)),
             Effect.map((providers) => ({ providers })),
           );
+        };
         const startedAtRef = yield* Ref.make<string | null>(null);
 
         const runCommandAndVerify = Effect.fn("ProviderMaintenanceRunner.runCommandAndVerify")(

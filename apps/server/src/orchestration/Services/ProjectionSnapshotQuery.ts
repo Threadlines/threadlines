@@ -38,6 +38,9 @@ import type { ProjectionRepositoryError } from "../../persistence/Errors.ts";
 export interface ProjectionSnapshotCounts {
   readonly projectCount: number;
   readonly threadCount: number;
+  readonly leadChatCount?: number;
+  readonly projectsWithBriefCount?: number;
+  readonly projectNoteCount?: number;
 }
 
 export interface ProjectionSnapshotSequence {

@@ -33,6 +33,7 @@ import {
   type DeviceSummary,
   type ThreadId,
 } from "@threadlines/contracts";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -51,6 +52,7 @@ import * as SynchronizedRef from "effect/SynchronizedRef";
 import { writeFileStringAtomically } from "../atomicWrite.ts";
 import { ServerConfig } from "../config.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
+import { AnalyticsService } from "../telemetry/Services/AnalyticsService.ts";
 import {
   agentDeviceLauncherKey,
   bindAgentDeviceLauncher,
@@ -169,6 +171,7 @@ export const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const scope = yield* Scope.Scope;
+  const analytics = yield* Effect.serviceOption(AnalyticsService);
   const stateDir = config.stateDir;
   const claimsPath = path.join(deviceStateDir(path, stateDir), "claims.json");
   const services = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
@@ -454,55 +457,82 @@ process.exitCode = result.error ? 1 : (result.status ?? 1);`,
 
   const open: DeviceServiceShape["open"] = (input, openedBy = "user") =>
     Effect.gen(function* () {
-      const releasesAtStart = releaseCounts.get(input.threadId) ?? 0;
-      yield* ensurePlatform(input.platform);
-      const ready = yield* readiness;
-      let state = yield* refresh(ready);
-      let device = findDevice(state, input.deviceId);
-      if (!device) return yield* new DeviceNotFoundError({ deviceId: input.deviceId });
-      if (device.platform === "android" && !device.physical) yield* requireAndroidVideo(ready);
-      let bootedNow = false;
-      if (!device.booted && input.boot !== false) {
-        const booting = { ...device, threadId: input.threadId };
-        yield* publish((current) => ({
-          ...current,
-          bootingDevices: [
-            ...current.bootingDevices.filter((entry) => entry.id !== booting.id),
-            booting,
-          ],
-        }));
-        const bootedId = yield* ready.devices.boot(device).pipe(
-          Effect.ensuring(
-            publish((current) => ({
-              ...current,
-              bootingDevices: current.bootingDevices.filter((entry) => entry.id !== booting.id),
-            })),
-          ),
-        );
-        bootedNow = true;
-        state = yield* refresh(ready);
-        // Retained entries predate the boot, so only a complete listing confirms the booted device.
-        device = state.incompletePlatforms.includes(device.platform)
-          ? undefined
-          : (findDevice(state, bootedId) ?? findDevice(state, device.id));
-        if (!device) return yield* new DeviceNotFoundError({ deviceId: input.deviceId });
-      } else if (device.booted) {
-        yield* ready.devices.attach(device);
-      }
-      const opened = device;
-      const earlier = (yield* currentState).sessions.find(
-        (session) => session.deviceId === opened.id && session.bootedByThreadlines,
+      const startedNanos = yield* Clock.monotonicTimeNanos;
+      const elapsedMs = Clock.monotonicTimeNanos.pipe(
+        Effect.map((now) => Math.max(0, Math.round(Number(now - startedNanos) / 1_000_000))),
       );
-      const session: DeviceSession = {
-        threadId: input.threadId,
-        deviceId: opened.id,
-        platform: opened.platform,
-        openedAt: DateTime.formatIso(yield* DateTime.now),
-        bootedByThreadlines: bootedNow || earlier !== undefined,
-        openedBy,
-      };
-      yield* recordSession(session, releasesAtStart);
-      return session;
+      const recordAnalytics = (event: string, properties: Readonly<Record<string, unknown>>) =>
+        Option.isSome(analytics) ? analytics.value.record(event, properties) : Effect.void;
+
+      return yield* Effect.gen(function* () {
+        const releasesAtStart = releaseCounts.get(input.threadId) ?? 0;
+        yield* ensurePlatform(input.platform);
+        const ready = yield* readiness;
+        let state = yield* refresh(ready);
+        let device = findDevice(state, input.deviceId);
+        if (!device) return yield* new DeviceNotFoundError({ deviceId: input.deviceId });
+        if (device.platform === "android" && !device.physical) yield* requireAndroidVideo(ready);
+        let bootedNow = false;
+        if (!device.booted && input.boot !== false) {
+          const booting = { ...device, threadId: input.threadId };
+          yield* publish((current) => ({
+            ...current,
+            bootingDevices: [
+              ...current.bootingDevices.filter((entry) => entry.id !== booting.id),
+              booting,
+            ],
+          }));
+          const bootedId = yield* ready.devices.boot(device).pipe(
+            Effect.ensuring(
+              publish((current) => ({
+                ...current,
+                bootingDevices: current.bootingDevices.filter((entry) => entry.id !== booting.id),
+              })),
+            ),
+          );
+          bootedNow = true;
+          state = yield* refresh(ready);
+          // Retained entries predate the boot, so only a complete listing confirms the booted device.
+          device = state.incompletePlatforms.includes(device.platform)
+            ? undefined
+            : (findDevice(state, bootedId) ?? findDevice(state, device.id));
+          if (!device) return yield* new DeviceNotFoundError({ deviceId: input.deviceId });
+        } else if (device.booted) {
+          yield* ready.devices.attach(device);
+        }
+        const opened = device;
+        const earlier = (yield* currentState).sessions.find(
+          (session) => session.deviceId === opened.id && session.bootedByThreadlines,
+        );
+        const session: DeviceSession = {
+          threadId: input.threadId,
+          deviceId: opened.id,
+          platform: opened.platform,
+          openedAt: DateTime.formatIso(yield* DateTime.now),
+          bootedByThreadlines: bootedNow || earlier !== undefined,
+          openedBy,
+        };
+        yield* recordSession(session, releasesAtStart);
+        yield* recordAnalytics("device.session.opened", {
+          devicePlatform: opened.platform,
+          openedBy,
+          bootedNow,
+          physical: opened.physical,
+          durationMs: yield* elapsedMs,
+        });
+        return session;
+      }).pipe(
+        Effect.tapError((error) =>
+          Effect.flatMap(elapsedMs, (durationMs) =>
+            recordAnalytics("device.session.open_failed", {
+              devicePlatform: input.platform,
+              openedBy,
+              errorKind: error._tag,
+              durationMs,
+            }),
+          ),
+        ),
+      );
     }).pipe(Effect.withSpan("DeviceService.open"));
 
   /** Removes launchers whose session is gone. Under the launcher lock, so binding never races it. */

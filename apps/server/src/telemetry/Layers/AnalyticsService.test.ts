@@ -10,6 +10,7 @@ import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 
 import { ServerConfig } from "../../config.ts";
+import { ServerSettingsLive, ServerSettingsService } from "../../serverSettings.ts";
 import { getTelemetryIdentifier } from "../Identify.ts";
 import { AnalyticsService } from "../Services/AnalyticsService.ts";
 import { AnalyticsServiceLayerLive, makeAnalyticsServiceLayer } from "./AnalyticsService.ts";
@@ -303,6 +304,187 @@ it.layer(NodeServices.layer)("AnalyticsService test", (it) => {
       );
       assert.equal(batchRequests.length, 1);
       assert.equal(batchRequests[0]?.body.batch[0]?.event, "test.flush.settings_enabled");
+    }),
+  );
+
+  it.effect("reads usageAnalyticsEnabled from ServerSettingsService when provided", () =>
+    Effect.gen(function* () {
+      const capturedRequests: Array<RecordedBatchRequest> = [];
+      const serverConfigLayer = ServerConfig.layerTest(process.cwd(), {
+        prefix: "threadlines-telemetry-settings-service-",
+      });
+
+      const settingsLayer = ServerSettingsService.layerTest({ usageAnalyticsEnabled: false });
+      const telemetryLayer = notTheTempDir.pipe(
+        Layer.provideMerge(settingsLayer),
+        Layer.provideMerge(serverConfigLayer),
+      );
+      const configLayer = ConfigProvider.layer(
+        ConfigProvider.fromUnknown({
+          THREADLINES_POSTHOG_KEY: "phc_test_key",
+          THREADLINES_POSTHOG_HOST: ".",
+          THREADLINES_TELEMETRY_FLUSH_BATCH_SIZE: 1,
+        }),
+      );
+      const batchServerLayer = makeBatchServerLayer(capturedRequests);
+      const runtimeLayer = telemetryLayer.pipe(
+        Layer.provide(configLayer),
+        Layer.provideMerge(NodeHttpServer.layerTest),
+      );
+
+      yield* Effect.gen(function* () {
+        yield* Layer.launch(batchServerLayer).pipe(Effect.forkScoped);
+        const analytics = yield* AnalyticsService;
+
+        yield* analytics.record("test.flush.service_disabled", { index: 0 });
+        yield* analytics.flush;
+      }).pipe(Effect.provide(runtimeLayer));
+
+      assert.equal(capturedRequests.length, 0);
+    }),
+  );
+
+  it.effect("fails closed when settings.json is unreadable or corrupt", () =>
+    Effect.gen(function* () {
+      const capturedRequests: Array<RecordedBatchRequest> = [];
+      const serverConfigLayer = ServerConfig.layerTest(process.cwd(), {
+        prefix: "threadlines-telemetry-corrupt-settings-",
+      });
+
+      const telemetryLayer = notTheTempDir.pipe(Layer.provideMerge(serverConfigLayer));
+      const configLayer = ConfigProvider.layer(
+        ConfigProvider.fromUnknown({
+          THREADLINES_POSTHOG_KEY: "phc_test_key",
+          THREADLINES_POSTHOG_HOST: ".",
+          THREADLINES_TELEMETRY_FLUSH_BATCH_SIZE: 1,
+        }),
+      );
+      const batchServerLayer = makeBatchServerLayer(capturedRequests);
+      const runtimeLayer = telemetryLayer.pipe(
+        Layer.provide(configLayer),
+        Layer.provideMerge(NodeHttpServer.layerTest),
+      );
+
+      yield* Effect.gen(function* () {
+        yield* Layer.launch(batchServerLayer).pipe(Effect.forkScoped);
+        const fileSystem = yield* FileSystem.FileSystem;
+        const serverConfig = yield* ServerConfig;
+        yield* fileSystem.writeFileString(serverConfig.settingsPath, "{ invalid json");
+        const analytics = yield* AnalyticsService;
+
+        yield* analytics.record("test.flush.corrupt_settings", { index: 0 });
+        yield* analytics.flush;
+      }).pipe(Effect.provide(runtimeLayer));
+
+      assert.equal(capturedRequests.length, 0);
+    }),
+  );
+
+  it.effect("fails closed when settings.json is malformed behind live ServerSettingsLive", () =>
+    Effect.gen(function* () {
+      const capturedRequests: Array<RecordedBatchRequest> = [];
+      const serverConfigLayer = ServerConfig.layerTest(process.cwd(), {
+        prefix: "threadlines-telemetry-corrupt-live-settings-",
+      });
+      const configLayer = ConfigProvider.layer(
+        ConfigProvider.fromUnknown({
+          THREADLINES_POSTHOG_KEY: "phc_test_key",
+          THREADLINES_POSTHOG_HOST: ".",
+          THREADLINES_TELEMETRY_FLUSH_BATCH_SIZE: 1,
+        }),
+      );
+      const batchServerLayer = makeBatchServerLayer(capturedRequests);
+
+      yield* Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const serverConfig = yield* ServerConfig;
+        yield* fileSystem.writeFileString(serverConfig.settingsPath, "{ invalid json");
+
+        const sharedServerConfig = Layer.succeed(ServerConfig, serverConfig);
+        const runtimeLayer = notTheTempDir.pipe(
+          Layer.provide(ServerSettingsLive),
+          Layer.provideMerge(sharedServerConfig),
+          Layer.provide(configLayer),
+          Layer.provideMerge(NodeHttpServer.layerTest),
+        );
+
+        yield* Effect.gen(function* () {
+          yield* Layer.launch(batchServerLayer).pipe(Effect.forkScoped);
+          const analytics = yield* AnalyticsService;
+
+          yield* analytics.record("test.flush.corrupt_live_settings", { index: 0 });
+          yield* analytics.flush;
+        }).pipe(Effect.provide(runtimeLayer));
+      }).pipe(Effect.provide(serverConfigLayer));
+
+      assert.equal(capturedRequests.length, 0);
+    }),
+  );
+
+  it.effect("caps re-queued events at maxBufferedEvents when a flush fails", () =>
+    Effect.gen(function* () {
+      let failRequests = true;
+      const capturedRequests: Array<RecordedBatchRequest> = [];
+      const flakyServerLayer = HttpServer.serve(
+        Effect.gen(function* () {
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          if (request.method !== "POST") {
+            return HttpServerResponse.empty({ status: 404 });
+          }
+          if (failRequests) {
+            return HttpServerResponse.empty({ status: 503 });
+          }
+          const payload = yield* request.json.pipe(
+            Effect.map((body) => body as RecordedBatchRequest["body"]),
+            Effect.catch(() => Effect.succeed(null)),
+          );
+          capturedRequests.push({ path: request.url, body: payload });
+          return HttpServerResponse.jsonUnsafe({});
+        }),
+      );
+
+      const serverConfigLayer = ServerConfig.layerTest(process.cwd(), {
+        prefix: "threadlines-telemetry-backoff-",
+      });
+      const telemetryLayer = AnalyticsServiceLayerLive.pipe(Layer.provideMerge(serverConfigLayer));
+      const configLayer = ConfigProvider.layer(
+        ConfigProvider.fromUnknown({
+          THREADLINES_TELEMETRY_ENABLED: true,
+          THREADLINES_POSTHOG_KEY: "phc_test_key",
+          THREADLINES_POSTHOG_HOST: ".",
+          THREADLINES_TELEMETRY_FLUSH_BATCH_SIZE: 2,
+          THREADLINES_TELEMETRY_MAX_BUFFERED_EVENTS: 3,
+        }),
+      );
+      const runtimeLayer = telemetryLayer.pipe(
+        Layer.provide(configLayer),
+        Layer.provideMerge(NodeHttpServer.layerTest),
+      );
+
+      yield* Effect.gen(function* () {
+        yield* Layer.launch(flakyServerLayer).pipe(Effect.forkScoped);
+        const analytics = yield* AnalyticsService;
+
+        for (let index = 0; index < 3; index += 1) {
+          yield* analytics.record("test.flush.retry", { index });
+        }
+        // Fails and re-queues events 0..1 ahead of event 2 (still capped at 3).
+        yield* analytics.flush;
+        // Recording 2 more while still offline drops the oldest (0, 1), keeping 2, 3, 4.
+        yield* analytics.record("test.flush.retry", { index: 3 });
+        yield* analytics.record("test.flush.retry", { index: 4 });
+
+        failRequests = false;
+        yield* analytics.flush;
+      }).pipe(Effect.provide(runtimeLayer));
+
+      const deliveredIndexes = capturedRequests.flatMap((request) =>
+        (request.body?.batch ?? [])
+          .filter((event) => event.event === "test.flush.retry")
+          .map((event) => event.properties?.index)
+          .filter((index): index is number => typeof index === "number"),
+      );
+      assert.deepEqual(deliveredIndexes, [2, 3, 4]);
     }),
   );
 });

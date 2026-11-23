@@ -997,6 +997,9 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         assert.deepEqual(counts, {
           projectCount: 2,
           threadCount: 3,
+          leadChatCount: 0,
+          projectsWithBriefCount: 0,
+          projectNoteCount: 0,
         });
 
         const project = yield* snapshotQuery.getActiveProjectByWorkspaceRoot("/tmp/workspace");

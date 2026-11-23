@@ -17,10 +17,8 @@
  * `tools/list` shows what the connection's live grant allows, read again at
  * every listing; every handler checks the grant again anyway.
  */
-import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import type * as Types from "effect/Types";
 import { McpProtocol, McpServer } from "effect/ai";
 import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
@@ -30,7 +28,7 @@ import {
   normalizeMcpHttpResponse,
   readBearerToken,
 } from "../mcp/McpHttpServer.ts";
-import { AnalyticsService } from "../telemetry/Services/AnalyticsService.ts";
+import { makeDailyAnalyticsCounter } from "../telemetry/DailyCounter.ts";
 import { makeConnectToolDeps } from "./connectToolDeps.ts";
 import { makeConnectToolHandlers } from "./connectToolHandlers.ts";
 import { ConnectToolkit, listedToolsFor, McpConnectInvocation } from "./connectTools.ts";
@@ -109,28 +107,21 @@ const AuthenticationLive = HttpRouter.middleware<{
  * per tool and outcome. Never a thread's content or an agent's name.
  */
 const makeToolCallCounts = Effect.gen(function* () {
-  const analytics = yield* Effect.serviceOption(AnalyticsService);
-  const counts = new Map<string, { tool: string; outcome: string; count: number }>();
-  const report = Effect.suspend(() => {
-    const entries = [...counts.values()];
-    counts.clear();
-    return Option.isNone(analytics)
-      ? Effect.void
-      : Effect.forEach(entries, (entry) => analytics.value.record(TOOL_CALLS_EVENT, entry), {
-          discard: true,
-        });
+  const counter = yield* makeDailyAnalyticsCounter<{
+    readonly tool: string;
+    readonly outcome: string;
+    readonly door: "local";
+  }>({
+    event: TOOL_CALLS_EVENT,
+    keyOf: ({ tool, outcome }) => `${tool}\u0000${outcome}`,
   });
-  yield* report.pipe(Effect.delay(Duration.days(1)), Effect.forever, Effect.forkScoped);
-  yield* Effect.addFinalizer(() => report);
   return <A extends { readonly outcome: string }, R>(
     tool: string,
     call: Effect.Effect<A, never, R>,
   ) =>
     Effect.tap(call, (result) =>
       Effect.sync(() => {
-        const key = `${tool}\u0000${result.outcome}`;
-        const entry = counts.get(key) ?? { tool, outcome: result.outcome, count: 0 };
-        counts.set(key, { ...entry, count: entry.count + 1 });
+        counter.increment({ tool, outcome: result.outcome, door: "local" });
       }),
     );
 });

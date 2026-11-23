@@ -13,7 +13,10 @@ Threadlines sends product and reliability events such as:
 - app/server startup heartbeat;
 - in the desktop app, how long its background service took to answer after
   the app started it, in milliseconds, how many tries that took, and whether
-  it was slow enough to show the "still starting" notice;
+  it was slow enough to show the "still starting" notice; and if the
+  background service fails to start, the failure kind, attempts, exit code,
+  reason, and the last 2,000 characters of startup output (with your home
+  folder path and common credential shapes scrubbed out first);
 - whether each coding agent (Codex, Claude, and the other supported agents) is
   turned on, installed, and signed in (yes, no, or unknown), and whether its
   startup check timed out. Community agents are answered together, as whether
@@ -21,13 +24,47 @@ Threadlines sends product and reliability events such as:
   finish and again when an answer changes;
 - when a community agent (one from the open ACP registry) is installed or
   removed, with its public registry id and version;
+- when an agent runtime is installed, updated, or repaired from Settings, with
+  the resolved agent kind (and public registry id for community agents),
+  action, outcome status, and duration in milliseconds (never command output);
 - when an agent outside Threadlines (one you approve under Settings,
-  Connections, Agents) connects: which kind it is (`claude-code`, `codex`,
-  `gemini-cli`, `cursor`, `threadlines-command` or `other`, never the name it
-  gave) and whether it may only see threads or also start them;
+  Connections, Agents) or an always-on assistant connects (or an assistant key
+  is created): which known kind it is (`claude-code`, `codex`, `gemini-cli`,
+  `cursor`, `threadlines-command`, `grok-bot`, `chatgpt`, `claude`, `muse`, or
+  `other`, never the name it gave), how it signed in, and whether it may only
+  see threads or also start them;
 - provider session start, stop, and recovery, with how long the agent took to
-  start in milliseconds;
-- turn sent, steered, interrupted, and compact-requested events;
+  start in milliseconds and whether resuming the prior conversation failed and
+  had to fall back to history re-seeding;
+- turn sent (including whether it ran in the main lane, as a room side answer,
+  or as an independent room review), steered, interrupted, native code review
+  started, and compact-requested events;
+- room side-answer settlements (outcome and whether they hit the 30-minute
+  limit) and multi-agent council review starts (number of reviewers);
+- automatic recovery and wait events: how many interrupted turns were picked up
+  after a restart (and whether restart continuation is on), when a paused
+  usage-limit turn continues automatically (and whether it reset early), and
+  when a thread goal pauses or resumes for a wait;
+- thread goal events when a goal is set (with its status), cleared, or paused
+  on stop, never the goal's text;
+- thread moves between linked computers when a move finishes or aborts:
+  outcome, abort code if aborted, whether it was a room, family, batch, or
+  queued move, whether live work was interrupted, whether a parent link or
+  child threads were kept/adopted, and duration in milliseconds (never computer
+  names, thread titles, or paths);
+- device simulator sessions when opened or when opening fails: platform (`ios`
+  or `android`), whether a person or agent opened it, whether Threadlines
+  booted it, whether it is a physical device, error kind on failure, and
+  duration in milliseconds; plus once a day, how many agent device tool calls
+  succeeded or failed, by tool;
+- secret requests when settled (outcome and destination kind, never key names,
+  paths, or values); plus once a day, how many watched-key redactions the
+  secret scrubber performed in agent output (counted per distinct watched key
+  per scrubbed event or text), by surface (never which key);
+- once a day, how many server freezes (2 seconds or longer) occurred, by cause
+  (`busy`, `overloaded`, or `unknown`), duration bucket (`2-5s`, `5-15s`, or
+  `15s+`), and whether database calls held the loop (never running program
+  names or paths);
 - who a sent message came from, as one of a few kinds: a person using
   Threadlines, another agent in the same room, another thread's agent, an
   agent outside Threadlines, a scheduled or event task, or Threadlines on its
@@ -56,9 +93,9 @@ Threadlines sends product and reliability events such as:
   you name yourself in Pi is not on it. Any other model name is reported
   only as `custom`;
 - for a community agent added from the ACP registry, its public registry id
-  (such as `pi-acp`) on session start, message, first-output, interrupt,
-  model reroute, and failure events, so reports can tell community agents
-  apart;
+  (such as `pi-acp`) on provider session, turn, fork, rollback, request,
+  model reroute, deletion, and failure events, so reports can tell community
+  agents apart;
 - provider session start kind, such as fresh starts, resumes, same-provider
   restarts, and provider switches;
 - model reroute events with sanitized from/to model values and a categorized reason;
@@ -66,21 +103,21 @@ Threadlines sends product and reliability events such as:
   reasons, such as a usage limit, a full context window or a refused request.
   The category comes from the agent's own error code when it gives one, and
   otherwise from the error's wording. Only the category is sent;
-- explicit thread fork events with sanitized source/target model values and
-  context counts;
+- explicit thread fork events with source/target agent kinds (never custom
+  account names), sanitized source/target model values, and context counts;
 - provider approval/request responses;
-- once a day, how many calls agents running outside Threadlines (connected
-  under Settings → Connections → Agents) made to each of their tools, by the
-  tool and how it answered (started, busy, refused and so on). Never the
-  agent's name, a project or a thread's content;
+- once a day, how many calls agents running outside Threadlines (local or
+  always-on assistants over the relay) made to each of their tools, by the
+  tool, door (`local` or `assistant`), and how it answered (started, busy,
+  refused and so on). Never the agent's name, a project or a thread's content;
 - thread rollback and delete events;
 - themes: when an agent shows one in a chat (and whether it's a new version of
   one it showed before); when one is kept in this computer's theme library,
   and whether the same theme was already kept there (a Duplicate) or this
   was a new version updating a copy kept before; and when
   one is deleted from it. Each says where the theme came from (made by an
-  agent, imported from a file, a copy of a starter, made by hand, or unknown
-  for a theme file that doesn't say), whether
+  agent, brought in from VS Code / Open VSX, imported from a file, a copy of a
+  starter, made by hand, or unknown for a theme file that doesn't say), whether
   it's light or dark, the kind of live art it has (grid, pixels or canvas) or
   none, and whether it sets its own fonts. Never a theme's name, prompt,
   colors, art, fonts or the thread it came from. A theme another computer
@@ -91,23 +128,33 @@ Threadlines sends product and reliability events such as:
   theme details as above plus its license and whether the prompt went with
   it, and when someone takes a share back (nothing about the theme). Never
   the theme's name, credit, GitHub account or pull request;
-- basic counts such as project count, thread count, how many themes are kept
-  in the theme library, attachment count, and active session count.
+- basic counts and feature flags on startup such as project count, thread
+  count, lead chat count, projects with a brief, project notes, extra accounts,
+  linked computers, enabled scheduled/event tasks, connected outside agents and
+  assistants, how many themes are kept in the theme library, and whether
+  devices and restart continuation are enabled.
 
 Each event includes basic environment properties such as operating system, CPU
-architecture, Threadlines version, and whether the runtime is the desktop app or
-CLI/web server.
+architecture, Threadlines version, whether the runtime is the desktop app or
+CLI/web server, and the WSL distribution name (`WSL_DISTRO_NAME`) when running
+under WSL.
 
 ## What We Do Not Collect
 
 Threadlines does not send:
 
 - prompts or agent responses;
-- code, diffs, file contents, file paths, or repository names;
+- code, diffs, file contents, repository names, or project file paths (the
+  desktop startup failure report above scrubs your home folder path, though
+  system or non-home paths printed during a fatal server crash may still
+  appear);
 - terminal input or terminal output;
 - raw custom/private model names;
-- raw provider error messages or stack traces;
-- provider API keys, auth tokens, secrets, or environment variable values;
+- raw provider error messages or stack traces (except the scrubbed startup
+  failure report above when the desktop app's background service cannot boot);
+- provider API keys, auth tokens, secrets, or arbitrary environment variable
+  values (the desktop startup failure report scrubs common credential shapes,
+  and `WSL_DISTRO_NAME` is sent when running under WSL);
 - Codex, Claude, GitHub, or other third-party account identifiers, including
   the account name or email shown next to a signed-in agent.
 

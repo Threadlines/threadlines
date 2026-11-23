@@ -55,6 +55,7 @@ import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSna
 import type { ProjectionRepositoryError } from "../persistence/Errors.ts";
 import { ProcessRunner } from "../processRunner.ts";
 import { SecretScrubber } from "./SecretScrubber.ts";
+import { AnalyticsService } from "../telemetry/Services/AnalyticsService.ts";
 import { type SecretDestinations, makeSecretDestinations } from "./secretDestinations.ts";
 
 export interface AgentSecretRequestsShape {
@@ -161,6 +162,7 @@ export const make = (
 ) =>
   Effect.gen(function* () {
     const engine = yield* OrchestrationEngineService;
+    const analytics = yield* Effect.serviceOption(AnalyticsService);
     const lock = yield* Semaphore.make(1);
     const scope = yield* Effect.scope;
     const recovered = yield* Deferred.make<void>();
@@ -218,6 +220,12 @@ export const make = (
             : {}),
           createdAt: yield* nowIso,
         });
+        if (Option.isSome(analytics)) {
+          yield* analytics.value.record("secret_request.settled", {
+            outcome: fields.ending,
+            destinationKind: request.use.kind,
+          });
+        }
         return true;
       }).pipe(
         Effect.catch((error) =>
