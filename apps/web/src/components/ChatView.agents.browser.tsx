@@ -568,6 +568,41 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
       picker.click();
       await waitForElement(() => pill(astraId), "Unable to find astra's pill.");
 
+      // Pointing at a pill swaps its icon for ⋯ without resizing it: a pill
+      // that grew could wrap onto the next line, out from under the pointer,
+      // and flicker between the two. (offsetWidth: the picker's opening
+      // animation scales bounding boxes.)
+      const options = () =>
+        pill(astraId)!.querySelector<HTMLButtonElement>('button[aria-label$=" options"]')!;
+      const widthBefore = pill(astraId)!.offsetWidth;
+      // At rest no pill shows its ⋯, the picked one included.
+      for (const button of document.querySelectorAll(
+        '[data-room-agents-bar] button[aria-label$=" options"]',
+      )) {
+        expect(getComputedStyle(button).visibility).toBe("hidden");
+      }
+      await userEvent.hover(pill(astraId)!);
+      await vi.waitFor(() => expect(getComputedStyle(options()).visibility).toBe("visible"));
+      expect(pill(astraId)!.offsetWidth).toBe(widthBefore);
+
+      // Its menu renames without closing the picker or changing who is picked.
+      options().click();
+      const menuItem = (text: string) =>
+        [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
+          (item) => item.textContent === text,
+        ) ?? null;
+      (await waitForElement(() => menuItem("Rename…"), "The pill's menu should open.")).click();
+      const nameBox = await waitForElement(
+        () => pill(astraId)!.querySelector<HTMLInputElement>("input"),
+        "Rename should open the pill's name box.",
+      );
+      await vi.waitFor(() => expect(document.activeElement).toBe(nameBox));
+      expect(document.querySelector("[data-model-picker-variant]")).not.toBeNull();
+      expect(pill("primary")?.getAttribute("aria-checked")).toBe("true");
+      expect(pill(astraId)?.getAttribute("aria-checked")).toBe("false");
+      await userEvent.keyboard("{Escape}");
+      await vi.waitFor(() => expect(pill(astraId)!.querySelector("input")).toBeNull());
+
       // "+" starts adding; picking an agent instead means not a new one after
       // all, and the list below is that agent's again.
       document
@@ -597,6 +632,28 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
       });
       // Still open: picking an agent doesn't close the picker.
       expect(document.querySelector("[data-model-picker-variant]")).not.toBeNull();
+
+      // A right-click opens the same menu, which removes the agent.
+      pill(astraId)!.dispatchEvent(
+        new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 }),
+      );
+      (
+        await waitForElement(
+          () => menuItem("Remove from thread"),
+          "Right-click should open the menu.",
+        )
+      ).click();
+      await vi.waitFor(() =>
+        expect(
+          wsRequests.find(
+            (request) =>
+              request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+              (request as { type?: string }).type === "thread.participant.remove",
+          ),
+        ).toMatchObject({ participantId: astraId }),
+      );
+      expect(document.querySelector("[data-model-picker-variant]")).not.toBeNull();
+      expect(pill("primary")?.getAttribute("aria-checked")).toBe("true");
     } finally {
       useRoomRecipientStore.getState().choose(THREAD_REF, null);
       await mounted.cleanup();
