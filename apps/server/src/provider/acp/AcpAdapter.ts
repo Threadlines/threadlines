@@ -3377,7 +3377,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
      */
     const forgetByNewSession = (ctx: AcpSessionContext) =>
       Effect.gen(function* () {
-        lostSessions.add(ctx.acpSessionId);
+        yield* markSessionLost(ctx.acpSessionId);
         const working = () =>
           ctx.activeTurnId !== undefined || ctx.workAfterPrompt.size > 0 || ctx.subagentsOut > 0;
         if (working()) {
