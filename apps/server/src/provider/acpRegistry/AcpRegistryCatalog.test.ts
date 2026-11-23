@@ -369,25 +369,17 @@ describe("reduceAcpRegistryIndex", () => {
 
   it("hides built-in and quarantined agents without counting them as unsupported", () => {
     const ids = (quarantined: ReadonlyArray<string>) => {
-      const { entries, unsupportedCount, builtIn } = reduce(REGISTRY.agents, { quarantined });
-      return {
-        listed: entries.map(({ agent }) => agent.agentId),
-        unsupportedCount,
-        builtIn: builtIn.map((recipe) => `${recipe.agentId}@${recipe.version}`),
-      };
+      const { entries, unsupportedCount } = reduce(REGISTRY.agents, { quarantined });
+      return { listed: entries.map(({ agent }) => agent.agentId), unsupportedCount };
     };
-    // Nothing quarantined: crow-cli shows, and fast-agent (Python only) is
-    // counted. claude-acp is kept apart, for its own driver to read.
+    // Nothing quarantined: crow-cli shows, and fast-agent (Python only) is counted.
     assert.deepStrictEqual(ids([]), {
       listed: ["auggie", "cortex-code", "crow-cli", "goose", "kilo", "sigit"],
       unsupportedCount: 1,
-      builtIn: ["claude-acp@0.86.0"],
     });
-    // A quarantined release of a built-in agent is not offered to its driver either.
-    assert.deepStrictEqual(ids(["crow-cli", "fast-agent", "goose", "claude-acp"]), {
+    assert.deepStrictEqual(ids(["crow-cli", "fast-agent", "goose"]), {
       listed: ["auggie", "cortex-code", "kilo", "sigit"],
       unsupportedCount: 0,
-      builtIn: [],
     });
   });
 
@@ -404,7 +396,6 @@ describe("reduceAcpRegistryIndex", () => {
       stale: false,
       quarantineKnown: true,
       unsupportedCount: reduced.unsupportedCount,
-      builtIn: reduced.builtIn,
     });
     assert.deepStrictEqual(
       offered.agents.map((agent) => agent.agentId),

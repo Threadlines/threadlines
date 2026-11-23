@@ -171,12 +171,6 @@ export interface AcpRegistryCatalogSnapshot {
   readonly quarantineKnown: boolean;
   /** Agents left out because they have no build for this computer. */
   readonly unsupportedCount: number;
-  /**
-   * Recipes for this computer of agents Threadlines supports itself
-   * (`ACP_REGISTRY_BUILT_IN_AGENT_IDS`), never listed: their drivers read
-   * them to learn of new releases. Quarantined agents are left out here too.
-   */
-  readonly builtIn: ReadonlyArray<AcpRegistryRecipe>;
 }
 
 export interface AcpRegistryCatalogShape {
@@ -220,8 +214,6 @@ export interface AcpRegistryReduction {
   readonly entries: ReadonlyArray<AcpRegistryReducedEntry>;
   /** Well-formed agents with no build for this computer. */
   readonly unsupportedCount: number;
-  /** See `AcpRegistryCatalogSnapshot.builtIn`. */
-  readonly builtIn: ReadonlyArray<AcpRegistryRecipe>;
   /** Entries left out for breaking a rule, and which. For the log. */
   readonly dropped: ReadonlyArray<{ readonly agentId: string | null; readonly reason: string }>;
 }
@@ -512,8 +504,7 @@ const agentsOfIndex = (index: unknown): ReadonlyArray<unknown> | undefined =>
  * install. Pure: no icons, no network.
  *
  * - Agents Threadlines supports itself and quarantined agents are hidden,
- *   and are neither listed nor counted. The recipes of the first kind are
- *   kept apart in `builtIn`, for their drivers.
+ *   and are neither listed nor counted.
  * - An agent takes its `binary` build for this computer when it has one,
  *   else its npm package. One with neither is counted in `unsupportedCount`.
  * - An agent that breaks a bound is dropped, never cut to fit, except free
@@ -529,7 +520,6 @@ export function reduceAcpRegistryIndex(input: {
   const agents = agentsOfIndex(input.index) ?? [];
   const platformKey = acpRegistryPlatformKey(input.platform, input.arch);
   const entries: Array<AcpRegistryReducedEntry> = [];
-  const builtIn: Array<AcpRegistryRecipe> = [];
   const dropped: Array<{ readonly agentId: string | null; readonly reason: string }> = [];
   const seen = new Set<string>();
   let unsupportedCount = 0;
@@ -546,7 +536,7 @@ export function reduceAcpRegistryIndex(input: {
       continue;
     }
     const agentId = raw.id;
-    if (input.quarantined.has(agentId)) continue;
+    if (ACP_REGISTRY_BUILT_IN_AGENT_IDS.has(agentId) || input.quarantined.has(agentId)) continue;
     if (seen.has(agentId)) {
       dropped.push({ agentId, reason: "an earlier entry has the same id" });
       continue;
@@ -554,9 +544,7 @@ export function reduceAcpRegistryIndex(input: {
     seen.add(agentId);
     const reduced = reduceAgent(raw, agentId, platformKey);
     if (Result.isFailure(reduced)) dropped.push({ agentId, reason: reduced.failure });
-    else if (ACP_REGISTRY_BUILT_IN_AGENT_IDS.has(agentId)) {
-      if (reduced.success !== undefined) builtIn.push(reduced.success.recipe);
-    } else if (reduced.success === undefined) unsupportedCount += 1;
+    else if (reduced.success === undefined) unsupportedCount += 1;
     else entries.push(reduced.success);
   }
 
@@ -569,7 +557,6 @@ export function reduceAcpRegistryIndex(input: {
       return left.agent.agentId < right.agent.agentId ? -1 : 1;
     }),
     unsupportedCount,
-    builtIn,
     dropped,
   };
 }
@@ -772,28 +759,6 @@ function svgText(bytes: Uint8Array): string | undefined {
 }
 
 /** Builds the catalog for one cache folder. Cheap; holds no resources. */
-/** Where the registry's lists and icons are kept under a state folder. */
-export const acpRegistryCacheDir = (stateDir: string) =>
-  NodePath.join(stateDir, "caches", "acp-registry");
-
-const sharedCatalogs = new Map<string, AcpRegistryCatalogShape>();
-
-/**
- * The catalog for a cache folder, one per folder in this process: community
- * agents and built-in drivers that read it share its reads, memory and files.
- */
-export function sharedAcpRegistryCatalog(
-  options: Omit<AcpRegistryCatalogOptions, "fetch">,
-): AcpRegistryCatalogShape {
-  const key = [options.cacheDir, options.platform, options.arch].join("\u0000");
-  let catalog = sharedCatalogs.get(key);
-  if (!catalog) {
-    catalog = makeAcpRegistryCatalog(options);
-    sharedCatalogs.set(key, catalog);
-  }
-  return catalog;
-}
-
 export function makeAcpRegistryCatalog(
   options: AcpRegistryCatalogOptions,
 ): AcpRegistryCatalogShape {
@@ -919,7 +884,6 @@ export function makeAcpRegistryCatalog(
         stale: input.stale,
         quarantineKnown: input.quarantine !== undefined,
         unsupportedCount: reduction.unsupportedCount,
-        builtIn: reduction.builtIn,
       };
     });
 

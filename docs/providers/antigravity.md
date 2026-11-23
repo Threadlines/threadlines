@@ -1,24 +1,61 @@
 # Antigravity
 
-Antigravity is Google's coding agent. Threadlines downloads and checks Google's own Antigravity
-server for you (`Install` on the Antigravity row in `Settings -> Providers`), so there is nothing to
-install by hand.
+Antigravity is Google's coding agent. Threadlines runs Google's Antigravity CLI (`agy`) in its ACP
+mode (`agy acp`), and downloads and checks the CLI for you (`Install` on the Antigravity row in
+`Settings -> Providers`), so there is nothing to install by hand. Each Antigravity account in
+Threadlines has its own profile, separate from your own `~/.gemini`.
+
+Threadlines needs Antigravity 1.5.14 or newer, for the managed copy and for one you point it at
+(`Binary path`). That version is the first that delivers what the agent does after a turn ends,
+honors attached file contents, and closes a Windows flaw where a network path in a file mention
+could send your Windows credentials to another computer. An older custom `agy` is refused with a
+message saying so; run `agy update`, or clear the path to use the copy Threadlines installs.
 
 ## Updates
 
-Threadlines checks Google's listing in the ACP registry for a newer Antigravity at most once an hour.
-When there is one, the Antigravity row shows `Update`; nothing installs until you click it. New
-Gemini models arrive this way, since each Antigravity version lists its own models.
+Threadlines asks Google's CLI update feed for a newer Antigravity at most once an hour. When there is
+one, the Antigravity row shows `Update`; nothing installs until you click it. New models arrive this
+way, since each Antigravity version lists its own.
 
-Threadlines only offers a release that comes from Google's own download folder under the usual
-name, with a checksum, launched the usual way. It reads the file sizes from the zip's index before
-downloading, checks the download against the listed checksum and those sizes, and starts the new
-copy once to make sure it's Antigravity at that version before switching to it. If the registry
-can't be read, the version built into Threadlines is offered instead, and an installed copy is
-never replaced by an older one.
+Threadlines only offers a release from Google's own download folder under the name Google uses for
+your computer's build, with a plain version and a sha512. It checks the download against that hash
+and a size cap (the feed lists no sizes), unpacks only the one `antigravity` file (refusing links,
+extra files and anything outside its folder), and starts the new copy once to make sure it's
+Antigravity at that version before switching to it. The installed file is read-only, and the CLI's
+own self-update is turned off, so only Threadlines changes it. If the feed can't be read, the
+version built into Threadlines is offered instead, and an installed copy is never replaced by an
+older one. Linux computers that use musl (Alpine) get Google's musl build.
 
 A weekly GitHub check (`.github/workflows/upstream-drift.yml`) opens an issue when Google's version
-is ahead of the built-in one, or when Google's listing changes so Threadlines would refuse it.
+is ahead of the built-in one, or when Google's feed changes so Threadlines would refuse it.
+
+### Moving From Google's Old Antigravity Server
+
+Before 1.5.14, Threadlines ran Google's older `agy_acp_server` package. If you had it installed, the
+Antigravity row says `Antigravity now runs on Google's Antigravity CLI. Update it to keep using it.`
+with `Update`. The old copy stays until no chat uses it, then Threadlines deletes it.
+
+A `Binary path` that points at the old server (`agy_acp_server`) can't be updated. The row says to
+point it at Google's `agy`, or to clear it so Threadlines uses its own copy.
+
+The CLI keeps its sign-in in a different file, so a Google account or Gemini Enterprise sign-in made
+with the old server needs one more sign-in; the row says `Sign in again`. Threads from before the
+move continue: when the CLI can't reopen an old conversation, Threadlines starts a new one with the
+thread's earlier turns as context.
+
+## Models and Access Levels
+
+The model picker lists the models your account has, Claude and GPT models included where your plan
+has them. The reasoning level is its own choice next to the model.
+
+| Access level      | What Antigravity runs                                                          |
+| ----------------- | ------------------------------------------------------------------------------ |
+| Supervised        | `default`: asks before edits and commands                                      |
+| Auto-accept edits | `accept-edits`                                                                 |
+| Auto              | The CLI's own `auto` where your session offers it, otherwise `accept-edits`    |
+| Full access       | `default`, and Threadlines approves each request; questions still wait for you |
+
+Plan mode sends the task as `/plan`, and the plan shows on the plan card for review.
 
 ## Sign-In Methods
 
@@ -39,6 +76,21 @@ Picking another method shows its fields and a `Switch` button. Switching saves t
 starts what the method needs: a Google sign-in for Gemini Enterprise, a key check for a Gemini API
 key, a check of the project and Google Cloud sign-in for Vertex AI. Switching back to Google account
 keeps its earlier sign-in, so it needs no new one.
+
+### Signing In With Google
+
+`Sign in with Google` (and Gemini Enterprise's sign-in) opens Google's sign-in page on the device you
+started from: this computer, another one, or your phone. After you approve, Google shows an
+Antigravity page with a code. Paste that code (or the page's whole address) into the box Threadlines
+shows, and Threadlines hands it to Antigravity on the computer that runs Threadlines. Sign-in then
+opens a session to make sure it works.
+
+The sign-in is kept in that Antigravity account's own profile, not in your computer's keychain, so
+each Threadlines account has its own, and your own `agy` in a terminal keeps its sign-in.
+
+If sign-in fails, the message says why: Antigravity didn't start, it couldn't reach Google (broken
+IPv6 is a common cause), Google refused the code, the account needs an eligible plan, or Google
+wants you to verify the account first (with a link to Google's page).
 
 Running chats stop when you switch, as with any change to a provider's settings.
 
@@ -89,5 +141,6 @@ Google account and another a Gemini API key.
 
 ## Signing Out
 
-Google account and Gemini Enterprise have `Sign out` on the Account tab. Key methods have
-`Remove key` instead.
+Google account and Gemini Enterprise have `Sign out` on the Account tab. It removes the sign-in from
+that Antigravity account's profile and nothing else, so your own `agy` stays signed in. Key methods
+have `Remove key` instead.

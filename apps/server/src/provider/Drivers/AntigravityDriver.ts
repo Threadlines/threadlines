@@ -23,10 +23,6 @@ import {
   validateAntigravityRuntime,
 } from "../acp/AntigravityAcpSupport.ts";
 import { type AcpProviderDriverEnv, makeAcpProviderDriver } from "../acp/AcpProviderDriver.ts";
-import {
-  acpRegistryCacheDir,
-  sharedAcpRegistryCatalog,
-} from "../acpRegistry/AcpRegistryCatalog.ts";
 import { antigravityReleaseFor } from "../antigravity/AntigravityRelease.ts";
 import {
   type AntigravityReleaseSource,
@@ -58,6 +54,15 @@ import * as Schema from "effect/Schema";
 
 export type AntigravityDriverEnv = AcpProviderDriverEnv;
 
+/** Linux's C library: Alpine and other musl systems get Google's musl build. */
+function hostLibc(): "glibc" | "musl" {
+  if (process.platform !== "linux") return "glibc";
+  const report = process.report?.getReport() as
+    | { readonly header?: { readonly glibcVersionRuntime?: unknown } }
+    | undefined;
+  return typeof report?.header?.glibcVersionRuntime === "string" ? "glibc" : "musl";
+}
+
 const decodeAntigravitySettings = Schema.decodeSync(AntigravitySettings);
 const decodeAntigravitySettingsOption = Schema.decodeUnknownOption(AntigravitySettings);
 /**
@@ -74,16 +79,7 @@ const releaseSourceFor = (
 ): AntigravityReleaseSource => {
   let source = releaseSourcesByStateDir.get(stateDir);
   if (!source) {
-    source = makeAntigravityReleaseSource({
-      builtIn,
-      assetKey: builtIn.assetKey,
-      platform: process.platform,
-      catalog: sharedAcpRegistryCatalog({
-        cacheDir: acpRegistryCacheDir(stateDir),
-        platform: process.platform,
-        arch: process.arch,
-      }),
-    });
+    source = makeAntigravityReleaseSource({ builtIn, assetKey: builtIn.assetKey });
     releaseSourcesByStateDir.set(stateDir, source);
   }
   return source;
@@ -101,7 +97,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
     Effect.gen(function* () {
       const serverConfig = yield* ServerConfig;
       const paths = antigravityInstancePaths(serverConfig.stateDir, input.instanceId);
-      const platformRelease = antigravityReleaseFor(process.platform, process.arch);
+      const platformRelease = antigravityReleaseFor(process.platform, process.arch, hostLibc());
       const runtimeRoot = platformRelease
         ? join(serverConfig.stateDir, "tools", "agy", platformRelease.assetKey)
         : undefined;

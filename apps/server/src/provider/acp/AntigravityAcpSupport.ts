@@ -3,16 +3,22 @@
  * ACP driver, built per provider instance (each instance has its own
  * profile and shares the managed runtime).
  *
- * Antigravity runs as Google's own ACP server (`agy_acp_server`), which
- * Threadlines downloads and verifies itself (`antigravity/AntigravityRuntime`).
- * What differs from other ACP agents, from a recorded 1.3.0 session:
+ * Antigravity runs as Google's Antigravity CLI in ACP mode (`agy acp`),
+ * which Threadlines downloads and verifies itself
+ * (`antigravity/AntigravityRuntime`), or a custom `agy` the user names.
+ * Either must be at least `ANTIGRAVITY_MIN_VERSION`. What differs from other
+ * ACP agents:
  *
- * - Sign-in prints a Google URL on stderr and listens on a 127.0.0.1 port
- *   for the redirect; outside a sign-in flow that line means "sign in again".
- * - Modes `default` / `auto_edit` / `yolo` map onto the runtime modes.
+ * - Sign-in happens outside ACP (`antigravity/AntigravityAuth`); a session
+ *   without one is refused, and the status says so.
+ * - Modes `default` / `accept-edits` / `auto` (where the session offers it)
+ *   map onto the runtime modes; full access runs in `default` and
+ *   Threadlines answers each request.
  * - Questions arrive as permission requests (`interaction_*` ids).
- * - Model names carry the effort ("Gemini 3.8 Flash (High)"); Threadlines
- *   lists each family once with a Reasoning option.
+ * - The reasoning level is its own `thought_level` option, listed for the
+ *   selected model only, so each model's levels are remembered as they are
+ *   seen. Older agents folded it into the model name ("Gemini 3.8 Flash
+ *   (High)"); that is still read as a fallback.
  * - `/plan <task>` writes a plan file into the profile and stops for review:
  *   that is plan mode.
  * - Edits carry exact ACP `diff` content, and the agent writes the files
@@ -24,7 +30,7 @@ import { spawn as spawnChild } from "node:child_process";
 import { existsSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve as resolvePath, sep } from "node:path";
+import { join, resolve as resolvePath, sep } from "node:path";
 import { createInterface } from "node:readline";
 
 import {
@@ -48,21 +54,23 @@ import * as EffectAcpErrors from "effect-acp/errors";
 import type * as EffectAcpSchema from "effect-acp/schema";
 
 import {
+  ANTIGRAVITY_MIN_VERSION,
   antigravityLaunchArgs,
   type AntigravityPlatformRelease,
 } from "../antigravity/AntigravityRelease.ts";
-import type {
-  AntigravityReleaseOffer,
-  AntigravityReleaseSource,
-} from "../antigravity/AntigravityReleaseSource.ts";
+import type { AntigravityReleaseSource } from "../antigravity/AntigravityReleaseSource.ts";
 import {
   acquireAntigravityTempDir,
   recordAntigravityAgent,
   antigravityEnvironment,
+  type AntigravityCatalogCache,
   type AntigravityInstancePaths,
   type AntigravityModelChoice,
+  type AntigravityThoughtLevels,
   prepareAntigravityProfile,
+  readAntigravityAgentRefusal,
   readAntigravityCatalog,
+  writeAntigravityAgentRefusal,
   writeAntigravityCatalog,
 } from "../antigravity/AntigravityProfile.ts";
 import { holdLaunchGate, type LaunchGate } from "../managedRuntime/LaunchGate.ts";
@@ -75,12 +83,16 @@ import {
   readAntigravitySignInCheck,
   resolveAntigravityAdc,
 } from "../antigravity/AntigravitySignInMethod.ts";
-import type { AntigravityRuntime } from "../antigravity/AntigravityRuntime.ts";
+import type {
+  AntigravityInstalledRuntime,
+  AntigravityRuntime,
+} from "../antigravity/AntigravityRuntime.ts";
 import { detectionAt } from "../providerDetection.ts";
 import type {
   ProviderMaintenanceCapabilities,
   ProviderMaintenanceCommandAction,
 } from "../providerMaintenance.ts";
+import { THREADLINES_ACP_CLIENT_INFO } from "./acpClientInfo.ts";
 import type { AcpProviderDescriptor, AcpProviderProbeOutcome } from "./AcpProviderDescriptor.ts";
 import {
   flattenSessionConfigSelectOptions,
@@ -100,29 +112,81 @@ const VALIDATE_TIMEOUT_MS = 90_000;
 export const ANTIGRAVITY_PRESENTATION = {
   displayName: DISPLAY_NAME,
   showInteractionModeToggle: true,
+  // Auto runs the CLI's own `auto` where the session offers it, else
+  // Auto-accept edits (`antigravityAgentMode`).
+  supportedRuntimeModes: ["approval-required", "auto-accept-edits", "auto", "full-access"],
 } as const;
 
 /**
- * The agent's own mode for a thread's access level. Antigravity has no Auto,
- * so Auto runs at the next safer level, Auto-accept edits
- * (`effectiveRuntimeMode`, the rule the composer shows).
+ * The agent's own mode for a thread's access level. Auto is the CLI's own
+ * `auto` where the session offers it, else Auto-accept edits. Full access has
+ * no CLI mode (the CLI refuses `yolo`): it runs in `default`, and Threadlines
+ * answers each request itself, as the ACP core does for full access.
  */
 export function antigravityAgentMode(
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode | undefined,
-): "default" | "auto_edit" | "yolo" {
+  availableModeIds: ReadonlyArray<string>,
+): "default" | "accept-edits" | "auto" {
   // `/plan` only writes a plan; nothing else should run unasked.
   if (interactionMode === "plan") return "default";
   switch (runtimeMode) {
     case "full-access":
-      return "yolo";
-    case "auto":
-    case "auto-accept-edits":
-      return "auto_edit";
     case "approval-required":
       return "default";
+    case "auto":
+      return availableModeIds.includes("auto") ? "auto" : "accept-edits";
+    case "auto-accept-edits":
+      return "accept-edits";
   }
 }
+
+/**
+ * Whether `version` is at least the minimum, by its numbers: `1.5.9+local`
+ * is 1.5.9, and a prerelease of the minimum (`1.5.14-rc.1`) is below it.
+ * Undefined when it isn't a version.
+ */
+export function meetsAntigravityMinimum(version: string): boolean | undefined {
+  const parse = (value: string) => {
+    const match = /^v?(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/u.exec(
+      value.trim(),
+    );
+    return match
+      ? { core: [Number(match[1]), Number(match[2]), Number(match[3])], prerelease: !!match[4] }
+      : undefined;
+  };
+  const got = parse(version);
+  const floor = parse(ANTIGRAVITY_MIN_VERSION)!;
+  if (!got) return undefined;
+  for (let index = 0; index < 3; index += 1) {
+    const difference = got.core[index]! - floor.core[index]!;
+    if (difference !== 0) return difference > 0;
+  }
+  return !got.prerelease;
+}
+
+/** Why an agent can't run sessions, by its `initialize` answer; undefined when it can. */
+export function antigravityAgentProblem(
+  response: Pick<EffectAcpSchema.InitializeResponse, "agentInfo">,
+): string | undefined {
+  const version = response.agentInfo?.version?.trim() ?? "";
+  const meets = meetsAntigravityMinimum(version);
+  if (meets === undefined) {
+    return `This Antigravity doesn't say its version. Threadlines needs Google's Antigravity CLI ${ANTIGRAVITY_MIN_VERSION} or newer.`;
+  }
+  return meets
+    ? undefined
+    : `This Antigravity is ${version}. Threadlines needs ${ANTIGRAVITY_MIN_VERSION} or newer: update Google's Antigravity CLI (\`agy update\`), or clear the custom path to use the copy Threadlines installs.`;
+}
+
+/** A path to Google's old ACP server, which the CLI replaced. */
+export const isLegacyAntigravityServerPath = (path: string) =>
+  /^(agy_acp_server|localharness_external)(\.(par|exe))?$/iu.test(
+    path.trim().split(/[\\/]/u).at(-1) ?? "",
+  );
+
+const LEGACY_PATH_MESSAGE =
+  "This path is Google's old Antigravity server, which no longer works. Point it at Google's Antigravity CLI (`agy`), or clear it to use the copy Threadlines installs.";
 
 // ── Sign-in URL ──────────────────────────────────────────────────────
 
@@ -236,6 +300,96 @@ export function antigravityModelsFromChoices(
 const modelChoices = (configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption>) =>
   flattenSessionConfigSelectOptions(findModelConfigOption(configOptions));
 
+/** The session's `thought_level` option: the selected model's reasoning levels. */
+export function antigravityThoughtLevels(
+  configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption>,
+): AntigravityThoughtLevels | undefined {
+  const option = configOptions.find(
+    (candidate) => candidate.category === "thought_level" && candidate.type === "select",
+  );
+  const options = flattenSessionConfigSelectOptions(option);
+  if (!option || options.length === 0) return undefined;
+  const currentValue = selectConfigOptionCurrentValue(option);
+  return {
+    configId: option.id,
+    name: option.name.trim() || "Reasoning",
+    options,
+    ...(currentValue ? { currentValue } : {}),
+  };
+}
+
+function thoughtLevelCapabilities(levels: AntigravityThoughtLevels | null): ModelCapabilities {
+  if (!levels || levels.options.length < 2)
+    return createModelCapabilities({ optionDescriptors: [] });
+  const preferred = levels.currentValue ?? levels.options[0]!.value;
+  return createModelCapabilities({
+    optionDescriptors: [
+      {
+        // The session option's own id: the generic mapping sends a selection back to it.
+        id: levels.configId,
+        label: levels.name,
+        type: "select",
+        options: levels.options.map((option) =>
+          option.value === preferred
+            ? { id: option.value, label: option.name || option.value, isDefault: true as const }
+            : { id: option.value, label: option.name || option.value },
+        ),
+        currentValue: preferred,
+      },
+    ],
+  });
+}
+
+/**
+ * The picker's models from a saved list. With reasoning levels as their own
+ * option, each model shows the levels seen for it, or the current model's
+ * until it has been seen; without them (older agents), models fold by name.
+ */
+export function antigravityModelsFromCatalog(
+  catalog: Pick<AntigravityCatalogCache, "choices" | "currentValue" | "thoughtLevels">,
+): ReadonlyArray<ServerProviderModel> {
+  const levels = catalog.thoughtLevels ?? {};
+  if (Object.keys(levels).length === 0) return antigravityModelsFromChoices(catalog.choices);
+  const shared = (catalog.currentValue ? levels[catalog.currentValue] : undefined) ?? null;
+  return catalog.choices.map((choice) => ({
+    slug: choice.value,
+    name: choice.name || choice.value,
+    isCustom: false,
+    capabilities: thoughtLevelCapabilities(
+      choice.value in levels ? (levels[choice.value] ?? null) : shared,
+    ),
+  }));
+}
+
+/**
+ * The saved list after a session reported `configOptions`: its models, and
+ * the reasoning levels of the one selected, kept with what earlier sessions
+ * saw of the others.
+ */
+export function nextAntigravityCatalog(
+  previous: AntigravityCatalogCache | undefined,
+  configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption>,
+): Pick<AntigravityCatalogCache, "choices" | "currentValue" | "thoughtLevels"> | undefined {
+  const choices: ReadonlyArray<AntigravityModelChoice> = modelChoices(configOptions);
+  if (choices.length === 0) return undefined;
+  const currentValue = selectConfigOptionCurrentValue(findModelConfigOption(configOptions));
+  const listed = new Set(choices.map((choice) => choice.value));
+  const thoughtLevels: Record<string, AntigravityThoughtLevels | null> = {};
+  for (const [model, levels] of Object.entries(previous?.thoughtLevels ?? {})) {
+    if (listed.has(model)) thoughtLevels[model] = levels;
+  }
+  const current = antigravityThoughtLevels(configOptions);
+  // A model whose levels aren't an option of their own (older agents) records nothing.
+  if (currentValue && (current || Object.keys(thoughtLevels).length > 0)) {
+    thoughtLevels[currentValue] = current ?? null;
+  }
+  return {
+    choices,
+    ...(currentValue ? { currentValue } : {}),
+    ...(Object.keys(thoughtLevels).length > 0 ? { thoughtLevels } : {}),
+  };
+}
+
 /**
  * The agent's model id for a family slug and the selected effort; agent ids
  * (custom models) pass through.
@@ -347,27 +501,30 @@ const brainDir = (profileDir: string) => join(profileDir, "antigravity-acp", "br
 // ── Install check ────────────────────────────────────────────────────
 
 /**
- * Proves an unpacked runtime is Google's Antigravity ACP server: one
- * `initialize` in a throwaway profile, then the process is stopped and
- * reaped before returning (Windows cannot move a dir with a running exe).
+ * Proves an unpacked executable is Google's Antigravity CLI at the release's
+ * version: one `agy acp` `initialize` in a throwaway profile, then the
+ * process is stopped and reaped before returning (Windows cannot move a dir
+ * with a running exe).
  */
 export const validateAntigravityRuntime = (
-  paths: { readonly executable: string; readonly harness: string },
+  paths: { readonly executable: string },
   release: AntigravityPlatformRelease,
 ) =>
   Effect.tryPromise({
     try: async () => {
       const scratch = await fs.mkdtemp(join(tmpdir(), "agy-check-"));
       try {
+        const profileDir = join(scratch, "profile");
+        await fs.mkdir(profileDir, { mode: 0o700 });
         const env = antigravityEnvironment({
           base: process.env,
-          profileDir: join(scratch, "profile"),
+          profileDir,
           tempDir: scratch,
           platform: process.platform,
         });
-        const child = spawnChild(paths.executable, [...antigravityLaunchArgs(process.platform)], {
+        const child = spawnChild(paths.executable, [...antigravityLaunchArgs(profileDir)], {
           cwd: scratch,
-          env: { ...withUsualCommandLookup(env), ANTIGRAVITY_HARNESS_PATH: paths.harness },
+          env: withUsualCommandLookup(env),
           stdio: ["pipe", "pipe", "ignore"],
           windowsHide: true,
         });
@@ -408,19 +565,17 @@ export const validateAntigravityRuntime = (
                 params: {
                   protocolVersion: 1,
                   clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } },
-                  clientInfo: { name: "threadlines", version: "0.0.0" },
+                  clientInfo: THREADLINES_ACP_CLIENT_INFO,
                 },
               })}\n`,
             );
           });
           const problems = [
-            response.agentInfo?.name !== "antigravity-acp" &&
-              "it is not the Antigravity ACP server",
+            !/antigravity/iu.test(response.agentInfo?.name ?? "") &&
+              "it is not Google's Antigravity",
             response.agentInfo?.version !== release.version &&
               `it reports version ${response.agentInfo?.version ?? "unknown"}, not ${release.version}`,
             !response.agentCapabilities?.sessionCapabilities?.resume && "it cannot resume sessions",
-            !response.authMethods?.some((method) => method.id === "oauth-personal") &&
-              "it offers no Google sign-in",
           ].filter((problem): problem is string => typeof problem === "string");
           if (problems.length > 0) {
             throw new Error(`The downloaded Antigravity failed its check: ${problems.join("; ")}.`);
@@ -452,9 +607,6 @@ export const validateAntigravityRuntime = (
 
 // ── Descriptor ───────────────────────────────────────────────────────
 
-const HARNESS_NAME = (platform: NodeJS.Platform) =>
-  platform === "win32" ? "localharness_external.exe" : "localharness_external";
-
 const MANUAL_ONLY: ProviderMaintenanceCapabilities = {
   provider: ANTIGRAVITY_DRIVER_KIND,
   packageName: null,
@@ -463,6 +615,14 @@ const MANUAL_ONLY: ProviderMaintenanceCapabilities = {
   manualUpdateCommand: null,
   advisoryMessage: null,
 };
+
+const NOT_INSTALLED_MESSAGE = "Antigravity is not installed. Install it to use it in Threadlines.";
+const UPDATE_NEEDED_MESSAGE =
+  "Antigravity now runs on Google's Antigravity CLI. Update it to keep using it.";
+
+/** Whether an installed copy can run sessions: Google's CLI at the minimum version or newer. */
+const runsSessions = (installed: AntigravityInstalledRuntime) =>
+  installed.kind === "cli" && meetsAntigravityMinimum(installed.version) === true;
 
 export interface AntigravityDescriptorInput {
   readonly paths: AntigravityInstancePaths;
@@ -482,39 +642,59 @@ export function makeAntigravityDescriptor(
   const { paths, runtime, releases, gate, signIn } = input;
   const platform = process.platform;
   const fingerprint = antigravityCredentialFingerprint(signIn);
+  const isGoogleAccount = signIn.method === "oauth-personal";
 
   const runtimeAction = (
     runtime: AntigravityRuntime,
     verb: "Install" | "Update",
-    offer: AntigravityReleaseOffer,
+    offer: AntigravityPlatformRelease,
   ): ProviderMaintenanceCommandAction => ({
     command: `${verb} Antigravity ${offer.version} (Threadlines downloads and checks it)`,
     executable: "threadlines",
     args: [],
     lockKey: "antigravity-runtime",
     // Actions run one at a time (`lockKey`), so a button shown before
-    // another install finished can't put an older version back.
+    // another install finished can't put an older version back. An install
+    // from before the CLI is always replaced.
     run: Effect.gen(function* () {
       const installed = yield* runtime.installed;
-      if (installed && compareSemverVersions(installed.version, offer.version) >= 0) {
+      if (
+        installed?.kind === "cli" &&
+        compareSemverVersions(installed.version, offer.version) >= 0
+      ) {
         return { output: `Antigravity ${installed.version} is already installed.` };
       }
-      yield* runtime.install(yield* offer.release);
+      yield* runtime.install(offer);
       return { output: `Antigravity ${offer.version} is installed.` };
     }).pipe(Effect.mapError((error) => ({ message: error.message }))),
   });
 
   /**
-   * The managed runtime version the next agent runs, or undefined for a
-   * custom binary. Tags the saved model list (`readAntigravityCatalog`).
+   * What the next agent is, to tag the saved model list
+   * (`readAntigravityCatalog`) and a refusal: the managed version, or for a
+   * custom binary its path, size and change time, so replacing the file
+   * lists models afresh.
    */
-  const managedAgentVersion = (settings: AntigravitySettings) =>
-    settings.binaryPath.trim() || !runtime
-      ? Effect.succeed(undefined)
-      : runtime.installed.pipe(Effect.map((installed) => installed?.version));
+  const agentTag = (settings: AntigravitySettings) => {
+    const custom = settings.binaryPath.trim();
+    if (custom) {
+      return Effect.promise(() =>
+        fs.stat(custom).then(
+          (stat) => `custom:${resolvePath(custom)}:${stat.size}:${Math.trunc(stat.mtimeMs)}`,
+          () => undefined,
+        ),
+      );
+    }
+    return runtime
+      ? runtime.installed.pipe(Effect.map((installed) => installed?.version))
+      : Effect.succeed(undefined);
+  };
+
+  const readCatalog = (agentVersion: string | undefined) =>
+    readAntigravityCatalog(paths.profileDir, { fingerprint, isGoogleAccount, agentVersion });
 
   const spawnFailure = (cause: unknown) =>
-    new EffectAcpErrors.AcpSpawnError({ command: "agy_acp_server", cause });
+    new EffectAcpErrors.AcpSpawnError({ command: "agy acp", cause });
 
   return {
     driverKind: ANTIGRAVITY_DRIVER_KIND,
@@ -530,7 +710,8 @@ export function makeAntigravityDescriptor(
         if (!installed)
           return { ...MANUAL_ONLY, install: runtimeAction(runtime, "Install", offer) };
         // Never back: a newer copy stays when only an older release is offered.
-        return compareSemverVersions(installed.version, offer.version) < 0
+        return installed.kind === "legacy" ||
+          compareSemverVersions(installed.version, offer.version) < 0
           ? { ...MANUAL_ONLY, update: runtimeAction(runtime, "Update", offer) }
           : MANUAL_ONLY;
       }),
@@ -547,10 +728,11 @@ export function makeAntigravityDescriptor(
         }
         const custom = settings.binaryPath.trim();
         let executable: string;
-        let harness: string;
         if (custom) {
+          if (isLegacyAntigravityServerPath(custom)) {
+            return yield* spawnFailure(new Error(LEGACY_PATH_MESSAGE));
+          }
           executable = custom;
-          harness = join(dirname(custom), HARNESS_NAME(platform));
         } else {
           if (!runtime) {
             return yield* spawnFailure(
@@ -558,8 +740,10 @@ export function makeAntigravityDescriptor(
             );
           }
           const leased = yield* runtime.acquire.pipe(Effect.mapError(spawnFailure));
+          if (!runsSessions(leased)) {
+            return yield* spawnFailure(new Error(UPDATE_NEEDED_MESSAGE));
+          }
           executable = leased.executable;
-          harness = leased.harness;
         }
         yield* prepareAntigravityProfile(paths.profileDir);
         const tempDir = yield* acquireAntigravityTempDir(paths.tempRoot).pipe(
@@ -567,31 +751,41 @@ export function makeAntigravityDescriptor(
         );
         return {
           command: executable,
-          args: [...antigravityLaunchArgs(platform)],
+          args: [...antigravityLaunchArgs(paths.profileDir)],
           cwd,
-          env: {
-            ...antigravityEnvironment({
-              base: environment ?? process.env,
-              profileDir: paths.profileDir,
-              tempDir,
-              platform,
-              credentials: antigravityCredentialEnvironment(signIn, environment ?? process.env),
-            }),
-            ANTIGRAVITY_HARNESS_PATH: harness,
-          },
+          env: antigravityEnvironment({
+            base: environment ?? process.env,
+            profileDir: paths.profileDir,
+            tempDir,
+            platform,
+            credentials: antigravityCredentialEnvironment(signIn, environment ?? process.env),
+          }),
           inheritEnv: false,
           shell: false,
           onSpawned: (pid: number) => recordAntigravityAgent(tempDir, pid),
         };
       }),
+    // A custom `agy` too old to run is refused before a session opens, and
+    // the row says so until that file changes.
+    verifyAgent: (settings, response) =>
+      Effect.gen(function* () {
+        const problem = antigravityAgentProblem(response);
+        if (settings.binaryPath.trim()) {
+          const tag = yield* agentTag(settings);
+          if (tag) yield* writeAntigravityAgentRefusal(paths.profileDir, { tag, problem });
+        }
+        if (problem) {
+          return yield* Effect.fail(EffectAcpErrors.AcpRequestError.invalidParams(problem));
+        }
+      }),
     signInUrlFromStderr: parseAntigravitySignInUrl,
     // Key methods sign in from the environment with no browser; Google
-    // accounts use the saved sign-in (a missing one prints a sign-in URL).
+    // accounts use the profile's saved sign-in.
     ...(signIn.method === "gemini-api-key" || signIn.method === "agent-platform"
       ? { authMethodId: signIn.method }
       : {}),
-    agentModeFor: ({ runtimeMode, interactionMode }) =>
-      antigravityAgentMode(runtimeMode, interactionMode),
+    agentModeFor: ({ runtimeMode, interactionMode, availableModeIds }) =>
+      antigravityAgentMode(runtimeMode, interactionMode, availableModeIds),
     classifyPermissionRequest: antigravityQuestion,
     permissionOptionWarning: antigravityOptionWarning,
     cancellationNotice: "The request was cancelled by the client.",
@@ -630,18 +824,16 @@ export function makeAntigravityDescriptor(
     isolateTextGeneration: true,
     onSessionConfigOptions: (settings, configOptions) =>
       Effect.gen(function* () {
-        const choices = modelChoices(configOptions);
-        if (choices.length === 0) return;
-        const currentValue = selectConfigOptionCurrentValue(findModelConfigOption(configOptions));
-        const agentVersion = yield* managedAgentVersion(settings);
+        const agentVersion = yield* agentTag(settings);
+        const next = nextAntigravityCatalog(yield* readCatalog(agentVersion), configOptions);
+        if (!next) return;
         yield* writeAntigravityCatalog(paths.profileDir, {
-          choices,
-          ...(currentValue ? { currentValue } : {}),
+          ...next,
           fingerprint,
           ...(agentVersion ? { agentVersion } : {}),
         });
       }),
-    notInstalledMessage: "Antigravity is not installed. Install it to use it in Threadlines.",
+    notInstalledMessage: NOT_INSTALLED_MESSAGE,
     // The same test the probe makes: a custom binary only has to exist; the
     // managed runtime is found when a complete copy is on disk. Both read the
     // filesystem only.
@@ -664,27 +856,61 @@ export function makeAntigravityDescriptor(
             message: `Google does not publish Antigravity for this computer (${platform}, ${process.arch}).`,
           } satisfies AcpProviderProbeOutcome;
         }
-        const installed = custom ? existsSync(custom) : (yield* runtime!.installed) !== undefined;
-        const version = custom ? null : ((yield* runtime!.installed)?.version ?? null);
-        if (!installed) {
+        if (custom && isLegacyAntigravityServerPath(custom)) {
+          return {
+            installed: true,
+            version: null,
+            status: "error",
+            auth: { status: "unknown" },
+            message: LEGACY_PATH_MESSAGE,
+            skipModelDiscovery: true,
+          } satisfies AcpProviderProbeOutcome;
+        }
+        const managed = custom ? undefined : yield* runtime!.installed;
+        if (custom ? !existsSync(custom) : managed === undefined) {
           return {
             installed: false,
             version: null,
             status: "error",
             auth: { status: "unknown" },
-            message: custom
-              ? `Antigravity was not found at ${custom}.`
-              : "Antigravity is not installed. Install it to use it in Threadlines.",
+            message: custom ? `Antigravity was not found at ${custom}.` : NOT_INSTALLED_MESSAGE,
           } satisfies AcpProviderProbeOutcome;
         }
+        const version = managed?.version ?? null;
+        const tag = yield* agentTag(settings);
         const latest = custom ? {} : { latestVersion: (yield* releases!.newest).version };
+        const refusal =
+          custom && tag ? yield* readAntigravityAgentRefusal(paths.profileDir, tag) : undefined;
+        if (refusal) {
+          return {
+            installed: true,
+            version: null,
+            status: "error",
+            auth: { status: "unknown" },
+            message: refusal,
+            skipModelDiscovery: true,
+          } satisfies AcpProviderProbeOutcome;
+        }
+        if (managed && !runsSessions(managed)) {
+          return {
+            installed: true,
+            version,
+            status: "error",
+            auth: { status: "unknown" },
+            message: UPDATE_NEEDED_MESSAGE,
+            skipModelDiscovery: true,
+            ...latest,
+          } satisfies AcpProviderProbeOutcome;
+        }
         const usesGoogleSignIn =
           signIn.method === "oauth-personal" || signIn.method === "oauth-business";
+        const google = usesGoogleSignIn
+          ? yield* readAntigravityGoogleSignIn(paths.profileDir)
+          : undefined;
         const signInStatus = antigravitySignInStatus({
           config: signIn,
-          signedIn: usesGoogleSignIn
-            ? (yield* readAntigravityGoogleSignIn(paths.profileDir)) === signIn.method
-            : false,
+          signedIn: google?.method === signIn.method,
+          legacySignIn: google?.legacyOnly === true,
           check: yield* readAntigravitySignInCheck(paths.profileDir, fingerprint),
           adc:
             signIn.method === "agent-platform" && !signIn.key
@@ -700,25 +926,26 @@ export function makeAntigravityDescriptor(
             ...latest,
           } satisfies AcpProviderProbeOutcome;
         }
-        const catalog = yield* readAntigravityCatalog(paths.profileDir, {
-          fingerprint,
-          isGoogleAccount: signIn.method === "oauth-personal",
-          agentVersion: version ?? undefined,
-        });
+        const catalog = yield* readCatalog(tag);
         return {
           installed: true,
           version,
           ...signInStatus,
           ...latest,
-          ...(catalog ? { models: antigravityModelsFromChoices(catalog.choices) } : {}),
+          ...(catalog ? { models: antigravityModelsFromCatalog(catalog) } : {}),
         } satisfies AcpProviderProbeOutcome;
       }),
     modelDiscoveryTimeoutMs: ANTIGRAVITY_DISCOVERY_TIMEOUT_MS,
+    // Discovery mirrors the selected model's options (its reasoning levels)
+    // onto every model; the next status check reads each model's own from
+    // the saved list. Older agents name the level in the model: fold those.
     enrichDiscoveredModels: (models) =>
       Effect.succeed(
-        antigravityModelsFromChoices(
-          models.map((model) => ({ value: model.slug, name: model.name })),
-        ),
+        models.some((model) => EFFORT_NAME.test(model.name.trim()))
+          ? antigravityModelsFromChoices(
+              models.map((model) => ({ value: model.slug, name: model.name })),
+            )
+          : models,
       ),
     modelCapabilitiesVaryByModel: false,
     resolveModelId: resolveAntigravityModelId,

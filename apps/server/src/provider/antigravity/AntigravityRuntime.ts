@@ -1,59 +1,62 @@
-// @effect-diagnostics nodeBuiltinImport:off - streams the download and zip entries to disk
+// @effect-diagnostics nodeBuiltinImport:off - moves the download and its unpacked file on disk
 /**
- * AntigravityRuntime — Threadlines' own copy of the Antigravity ACP server.
+ * AntigravityRuntime — Threadlines' own copy of Google's Antigravity CLI.
  * It downloads a release, verifies and unpacks it, and keeps it in a
  * `ManagedRuntimeStore`, which activates it, leases it to running processes
  * and prunes versions nobody uses (the layout and its invariants are
  * described there).
  *
- * A version's folder holds the release's two files next to the store's
- * marker, which also records their names and sizes.
+ * A version's folder holds one executable next to the store's marker, which
+ * records its name and size. The executable is made read-only (on macOS and
+ * Linux), so the CLI can't update itself in place; the folder stays
+ * writable, since the store keeps its leases there.
+ *
+ * Installs from before the move to the CLI (Google's `agy_acp_server` and
+ * its harness) are still recognized, as `legacy`: they show as installed so
+ * the row offers Update, keep their leases while an old process runs, and
+ * are pruned once the CLI is active and nothing runs on them. They never
+ * start a session.
  *
  * @module provider/antigravity/AntigravityRuntime
  */
-import { createWriteStream } from "node:fs";
 import * as NodeFS from "node:fs/promises";
 import * as NodePath from "node:path";
-import { PassThrough, Readable } from "node:stream";
-import { pipeline } from "node:stream/promises";
 
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
-import yauzl from "yauzl";
 
+import { ArchiveError, extractArchive } from "../managedRuntime/ArchiveExtractor.ts";
+import { makeHttpsFetch } from "../managedRuntime/HttpsFetch.ts";
 import {
   abortable,
   type ManagedInstallProgress,
   MANAGED_RELEASE_ID_PATTERN,
   managedFsTry,
   managedIoError,
-  ManagedRuntimeError,
+  type ManagedRuntimeError,
   managedRuntimeError,
   type ManagedVersion,
   makeManagedRuntimeStore,
   statIfExists,
 } from "../managedRuntime/ManagedRuntimeStore.ts";
-import { makeHttpsFetch } from "../managedRuntime/HttpsFetch.ts";
 import { type DownloadFetch, downloadVerified } from "../managedRuntime/VerifiedDownload.ts";
 import {
   ANTIGRAVITY_DOWNLOAD_HOST,
-  type AntigravityListedRelease,
   type AntigravityPlatformRelease,
-  type AntigravityReleaseAsset,
-  type AntigravityReleaseFile,
   antigravityReleaseId,
 } from "./AntigravityRelease.ts";
 
 export interface AntigravityRuntimePaths {
   readonly executable: string;
-  readonly harness: string;
 }
 
 export interface AntigravityInstalledRuntime extends AntigravityRuntimePaths {
   readonly releaseId: string;
   readonly version: string;
+  /** `legacy`: Google's old ACP server, installed before the move to the CLI. It never runs. */
+  readonly kind: "cli" | "legacy";
 }
 
 export type AntigravityInstallProgress = ManagedInstallProgress;
@@ -62,7 +65,7 @@ export type AntigravityInstallProgress = ManagedInstallProgress;
 export type AntigravityFetch = DownloadFetch;
 
 /**
- * Downloads from Google's download host only, on every redirect hop too, so
+ * Downloads from Google's storage host only, on every redirect hop too, so
  * a release can't be fetched from anywhere else whatever the server answers.
  */
 export const makeAntigravityDownloadFetch = (): AntigravityFetch =>
@@ -72,15 +75,17 @@ export interface AntigravityRuntimeOptions<ValidateError = never> {
   /** Directory the runtime owns, e.g. `<baseDir>/tools/agy/<assetKey>`. */
   readonly root: string;
   /**
-   * Proves unpacked files are `release` and work (the ACP `initialize`
-   * handshake). It must stop every process it starts before it returns:
-   * Windows cannot move a directory holding a running program.
+   * Proves an unpacked executable is `release` and works (the ACP
+   * `initialize` handshake). It must stop every process it starts before it
+   * returns: Windows cannot move a directory holding a running program.
    */
   readonly validate: (
     paths: AntigravityRuntimePaths,
     release: AntigravityPlatformRelease,
   ) => Effect.Effect<void, ValidateError>;
   readonly fetch?: AntigravityFetch;
+  /** Test seam: the system the files are made read-only for. */
+  readonly platform?: NodeJS.Platform;
   /** Test seam: runs in `acquire` after the active version is resolved, before its lease is written. */
   readonly beforeLeaseWritten?: (versionDir: string) => Effect.Effect<void>;
 }
@@ -99,7 +104,8 @@ export interface AntigravityRuntime {
   ) => Effect.Effect<{ readonly releaseId: string; readonly version: string }, ManagedRuntimeError>;
   /**
    * Leases the active version until the scope closes, so prune and remove
-   * leave it alone. Launch from the returned paths.
+   * leave it alone. Launch from the returned path. A legacy install is
+   * refused (`notInstalled`): it needs the update first.
    */
   readonly acquire: Effect.Effect<AntigravityInstalledRuntime, ManagedRuntimeError, Scope.Scope>;
   /**
@@ -112,26 +118,63 @@ export interface AntigravityRuntime {
 }
 
 const LABEL = "Antigravity";
-const ARCHIVE_FILE = "a.zip";
+const ARCHIVE_FILE = "a.download";
+const UNPACK_SCRATCH = "x";
+/**
+ * Caps for a release the feed lists without sizes, far above any real build
+ * (1.5.14: the largest download is 239 MB, the largest executable 273 MB).
+ */
+export const MAX_ANTIGRAVITY_DOWNLOAD_BYTES = 768 * 1024 ** 2;
+export const MAX_ANTIGRAVITY_EXECUTABLE_BYTES = 1024 ** 3;
+/**
+ * What the free-space check budgets for such a release: half again the
+ * largest 1.5.14 build. The caps above still stop anything bigger, and a disk
+ * that fills anyway fails the install cleanly.
+ */
+const ESTIMATED_DOWNLOAD_BYTES = 360 * 1024 ** 2;
+const ESTIMATED_EXECUTABLE_BYTES = 420 * 1024 ** 2;
 
 const ReleaseId = Schema.String.check(Schema.isPattern(MANAGED_RELEASE_ID_PATTERN));
 /** A flat file name: no separators, not `.` or `..`. */
 const FlatFileName = Schema.String.check(Schema.isPattern(/^(?!\.\.?$)[\w.-]+$/u));
 const ReleaseFileSchema = Schema.Struct({ name: FlatFileName, bytes: Schema.Int });
-const InstallMarker = Schema.Struct({
+const CliMarker = Schema.Struct({
+  releaseId: ReleaseId,
+  version: Schema.String,
+  kind: Schema.Literal("cli"),
+  executable: ReleaseFileSchema,
+});
+/** What an install of the old ACP server wrote. Read, never written. */
+const LegacyMarker = Schema.Struct({
   releaseId: ReleaseId,
   version: Schema.String,
   executable: ReleaseFileSchema,
   harness: ReleaseFileSchema,
 });
-type InstallMarker = typeof InstallMarker.Type;
-const InstallMarkerJson = Schema.fromJsonString(InstallMarker);
-const decodeInstallMarker = Schema.decodeUnknownOption(InstallMarkerJson);
-const encodeInstallMarker = Schema.encodeSync(InstallMarkerJson);
+type CliMarker = typeof CliMarker.Type;
+type InstallMarker = CliMarker | (typeof LegacyMarker.Type & { readonly kind: "legacy" });
+const decodeCliMarker = Schema.decodeUnknownOption(Schema.fromJsonString(CliMarker));
+const decodeLegacyMarker = Schema.decodeUnknownOption(Schema.fromJsonString(LegacyMarker));
+const encodeCliMarker = Schema.encodeSync(Schema.fromJsonString(CliMarker));
+const encodeLegacyMarker = Schema.encodeSync(Schema.fromJsonString(LegacyMarker));
+
+const decodeInstallMarker = (raw: string): InstallMarker | undefined => {
+  const cli = decodeCliMarker(raw);
+  if (Option.isSome(cli)) return cli.value;
+  const legacy = decodeLegacyMarker(raw);
+  return Option.isSome(legacy) ? { ...legacy.value, kind: "legacy" } : undefined;
+};
+
+const encodeInstallMarker = (marker: InstallMarker): string => {
+  if (marker.kind === "cli") return encodeCliMarker(marker);
+  const { kind: _kind, ...legacy } = marker;
+  return encodeLegacyMarker(legacy);
+};
 
 const MESSAGES = {
   archive: "The Antigravity download wasn't in the expected format, so nothing was installed.",
   validate: "Antigravity was downloaded but didn't start correctly.",
+  legacy: "This Antigravity predates Google's CLI. Update it in Settings to keep using it.",
 } as const;
 
 const runtimeError = managedRuntimeError;
@@ -143,308 +186,84 @@ export const unsupportedAntigravityPlatform = (platform: NodeJS.Platform, arch: 
 const ioError = (action: string, cause: unknown) => managedIoError(LABEL, action, cause);
 const fsTry = <A>(action: string, run: () => Promise<A>) => managedFsTry(LABEL, action, run);
 
-const pathsOf = (version: ManagedVersion<InstallMarker>): AntigravityRuntimePaths => ({
-  executable: NodePath.join(version.dir, version.marker.executable.name),
-  harness: NodePath.join(version.dir, version.marker.harness.name),
-});
-
 const installedRuntimeOf = (
   version: ManagedVersion<InstallMarker>,
 ): AntigravityInstalledRuntime => ({
   releaseId: version.releaseId,
   version: version.version,
-  ...pathsOf(version),
+  executable: NodePath.join(version.dir, version.marker.executable.name),
+  kind: version.marker.kind,
 });
 
-/** Both files are there with the sizes the marker recorded. */
+const fileIntact = async (path: string, bytes: number) => {
+  const stat = await statIfExists(path);
+  return stat?.isFile() === true && stat.size === bytes;
+};
+
+/** The files the marker names are there with the sizes it recorded. */
 async function filesIntact(versionDir: string, marker: InstallMarker): Promise<boolean> {
-  const [executableStat, harnessStat] = await Promise.all([
-    statIfExists(NodePath.join(versionDir, marker.executable.name)),
-    statIfExists(NodePath.join(versionDir, marker.harness.name)),
-  ]);
-  return (
-    executableStat?.isFile() === true &&
-    executableStat.size === marker.executable.bytes &&
-    harnessStat?.isFile() === true &&
-    harnessStat.size === marker.harness.bytes
-  );
-}
-
-const S_IFMT = 0o170000;
-const S_IFREG = 0o100000;
-const DOS_DIRECTORY_ATTRIBUTE = 0x10;
-const UNIX_HOSTS = new Set([3, 19]);
-
-/** Why a zip entry is not the expected regular file, or undefined when it is. */
-function entryProblem(
-  entry: yauzl.Entry,
-  file: AntigravityReleaseFile | undefined,
-): string | undefined {
-  if (!file) return `unexpected entry "${entry.fileName}"`;
-  if (entry.isEncrypted()) return `${file.name} is encrypted`;
-  if (entry.compressionMethod !== 0 && entry.compressionMethod !== 8) {
-    return `${file.name} uses compression method ${entry.compressionMethod}`;
+  const checks = [
+    fileIntact(NodePath.join(versionDir, marker.executable.name), marker.executable.bytes),
+  ];
+  if (marker.kind === "legacy") {
+    checks.push(fileIntact(NodePath.join(versionDir, marker.harness.name), marker.harness.bytes));
   }
-  const unixMode = entry.externalFileAttributes >>> 16;
-  const notRegular =
-    (entry.externalFileAttributes & DOS_DIRECTORY_ATTRIBUTE) !== 0 ||
-    (UNIX_HOSTS.has(entry.versionMadeBy >>> 8) &&
-      unixMode !== 0 &&
-      (unixMode & S_IFMT) !== S_IFREG);
-  if (notRegular) return `${file.name} is not a regular file`;
-  if (entry.uncompressedSize !== file.bytes) {
-    return `${file.name} is ${entry.uncompressedSize} bytes, expected ${file.bytes}`;
-  }
-  return undefined;
+  return (await Promise.all(checks)).every(Boolean);
 }
 
 /**
- * Unpacks the two expected files into `outDir`. The archive must hold exactly
- * those entries, by exact name, so nothing can land outside `outDir`.
+ * Unpacks the tarball's one executable to `target`. The archive must hold
+ * exactly one entry, a regular file named `name` within the size limit;
+ * the shared extractor refuses links and paths that leave its folder.
  */
-async function extractArchive(input: {
+async function unpackTarball(input: {
   readonly archivePath: string;
-  readonly outDir: string;
-  readonly asset: AntigravityReleaseAsset;
+  readonly scratchDir: string;
+  readonly name: string;
+  readonly expectedBytes: number | undefined;
+  readonly target: string;
   readonly signal: AbortSignal;
-}): Promise<void> {
+}): Promise<number> {
   const malformed = (detail: string, cause?: unknown) =>
     runtimeError("archive", MESSAGES.archive, cause === undefined ? { detail } : { detail, cause });
-  const expected = new Map(
-    [input.asset.executable, input.asset.harness].map((file) => [file.name, file] as const),
-  );
-  let zip: yauzl.ZipFile;
+  await NodeFS.mkdir(input.scratchDir, { mode: 0o700 });
   try {
-    zip = await yauzl.openPromise(input.archivePath, {
-      autoClose: false,
-      lazyEntries: true,
-      strictFileNames: true,
-      validateEntrySizes: true,
+    await extractArchive({
+      archivePath: input.archivePath,
+      kind: "tar.gz",
+      outDir: input.scratchDir,
+      signal: input.signal,
+      limits: { maxBytes: input.expectedBytes ?? MAX_ANTIGRAVITY_EXECUTABLE_BYTES, maxEntries: 1 },
     });
   } catch (cause) {
-    throw malformed("not a readable zip", cause);
+    if (cause instanceof ArchiveError) throw malformed(cause.message, cause);
+    throw cause;
   }
-  try {
-    if (zip.entryCount !== expected.size) {
-      throw malformed(`${zip.entryCount} entries, expected ${expected.size}`);
-    }
-    const entries = new Map<string, yauzl.Entry>();
-    try {
-      for await (const entry of zip.eachEntry()) {
-        const problem = entries.has(entry.fileName)
-          ? `duplicate entry "${entry.fileName}"`
-          : entryProblem(entry, expected.get(entry.fileName));
-        if (problem) throw malformed(problem);
-        entries.set(entry.fileName, entry);
-      }
-    } catch (cause) {
-      if (cause instanceof ManagedRuntimeError) throw cause;
-      throw malformed("unreadable entry list", cause);
-    }
-    for (const file of expected.values()) {
-      const entry = entries.get(file.name);
-      if (!entry) throw malformed(`missing ${file.name}`);
-      const target = NodePath.join(input.outDir, file.name);
-      const source = await zip.openReadStreamPromise(entry).catch((cause: unknown) => {
-        throw malformed(`unreadable ${file.name}`, cause);
-      });
-      await pipeline(
-        source,
-        async function* (chunks: AsyncIterable<Buffer>) {
-          try {
-            for await (const chunk of chunks) yield chunk;
-          } catch (cause) {
-            throw malformed(`corrupt ${file.name}`, cause);
-          }
-        },
-        createWriteStream(target, { flags: "wx", mode: 0o700 }),
-        { signal: input.signal },
-      );
-      if (process.platform !== "win32") await NodeFS.chmod(target, 0o755);
-      const written = await NodeFS.stat(target);
-      if (written.size !== file.bytes) {
-        throw malformed(`${file.name} unpacked to ${written.size} bytes, expected ${file.bytes}`);
-      }
-    }
-  } finally {
-    zip.close();
+  const entries = await NodeFS.readdir(input.scratchDir);
+  if (entries.length !== 1 || entries[0] !== input.name) {
+    throw malformed(`holds ${entries.join(", ") || "nothing"}, expected ${input.name}`);
   }
+  const unpacked = NodePath.join(input.scratchDir, input.name);
+  const stat = await NodeFS.lstat(unpacked);
+  if (!stat.isFile()) throw malformed(`${input.name} is not a regular file`);
+  if (stat.size === 0) throw malformed(`${input.name} is empty`);
+  if (input.expectedBytes !== undefined && stat.size !== input.expectedBytes) {
+    throw malformed(`${input.name} is ${stat.size} bytes, expected ${input.expectedBytes}`);
+  }
+  await NodeFS.rename(unpacked, input.target);
+  return stat.size;
 }
-
-// ── A listed release's sizes ─────────────────────────────────────────
-
-/** Far above any real build (the largest 1.5.2 zip is 274 MB). */
-const MAX_LISTED_ARCHIVE_BYTES = 2 * 1024 ** 3;
-const MAX_LISTED_FILE_BYTES = 4 * 1024 ** 3;
-const LISTED_INDEX_TIMEOUT_MS = 60_000;
-
-/**
- * Bytes `start` to `end` (exclusive) of `url`, and the file's total size when
- * the server names it. Reads no more than asked for, whatever the server sends.
- */
-async function readRange(
-  fetchRange: AntigravityFetch,
-  url: string,
-  start: number,
-  end: number,
-  signal: AbortSignal,
-): Promise<{ readonly bytes: Uint8Array; readonly total: number | undefined }> {
-  const response = await fetchRange(url, {
-    headers: { range: `bytes=${start}-${end - 1}`, "accept-encoding": "identity" },
-    redirect: "follow",
-    signal,
-  });
-  if (response.status !== 206 || response.body === null) {
-    await response.body?.cancel().catch(() => undefined);
-    throw new Error(`${url} answered a range request with ${response.status}`);
-  }
-  const wanted = end - start;
-  const bytes = new Uint8Array(wanted);
-  let received = 0;
-  const reader = response.body.getReader();
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (received + value.byteLength > wanted) {
-        throw new Error(`asked ${url} for ${wanted} bytes, got more`);
-      }
-      bytes.set(value, received);
-      received += value.byteLength;
-    }
-  } finally {
-    await reader.cancel().catch(() => undefined);
-  }
-  if (received !== wanted) throw new Error(`asked ${url} for ${wanted} bytes, got ${received}`);
-  const total = /\/(\d+)$/u.exec(response.headers.get("content-range") ?? "")?.[1];
-  return { bytes, total: total === undefined ? undefined : Number(total) };
-}
-
-/** Reads byte ranges of a zip on a server, so its index can be read without the download. */
-class RangeReader extends yauzl.RandomAccessReader {
-  private readonly url: string;
-  private readonly fetchRange: AntigravityFetch;
-  private readonly signal: AbortSignal;
-
-  constructor(url: string, fetchRange: AntigravityFetch, signal: AbortSignal) {
-    super();
-    this.url = url;
-    this.fetchRange = fetchRange;
-    this.signal = signal;
-  }
-
-  override _readStreamForRange(start: number, end: number): Readable {
-    const out = new PassThrough();
-    if (end <= start) {
-      out.end();
-      return out;
-    }
-    readRange(this.fetchRange, this.url, start, end, this.signal).then(
-      (range) => out.end(range.bytes),
-      (cause: unknown) => out.destroy(cause instanceof Error ? cause : new Error(String(cause))),
-    );
-    return out;
-  }
-}
-
-/**
- * A listed release with its sizes, so its install is checked exactly like
- * the built-in release's: the zip's length from Google's server, and each
- * file's from the zip's own index, read with a few small range requests
- * rather than the whole download. What the sizes come from is checked again
- * by the install: the zip must hash to the sha256 the registry lists and
- * unpack to these sizes.
- */
-export const resolveAntigravityListedRelease = (input: {
-  readonly listed: AntigravityListedRelease;
-  /** The two file names the zip must hold (`AntigravityReleaseAsset`). */
-  readonly executableName: string;
-  readonly harnessName: string;
-  readonly fetch?: AntigravityFetch;
-}): Effect.Effect<AntigravityPlatformRelease, ManagedRuntimeError> => {
-  const fetchRange: AntigravityFetch = input.fetch ?? makeAntigravityDownloadFetch();
-  const { listed } = input;
-  const unreachable = runtimeError(
-    "download",
-    `Couldn't reach Google to download Antigravity ${listed.version}. Check your internet connection and try again.`,
-  );
-  const malformed = (detail: string) =>
-    runtimeError("archive", MESSAGES.archive, { detail: `${listed.url}: ${detail}` });
-  return abortable(
-    async (signal) => {
-      const timeout = AbortSignal.timeout(LISTED_INDEX_TIMEOUT_MS);
-      const both = AbortSignal.any([signal, timeout]);
-      // The first byte, for the zip's size (`Content-Range: bytes 0-0/<size>`).
-      const first = await readRange(fetchRange, listed.url, 0, 1, both).catch((cause: unknown) => {
-        throw runtimeError("download", unreachable.message, { cause });
-      });
-      const archiveBytes = first.total ?? Number.NaN;
-      if (!Number.isSafeInteger(archiveBytes) || archiveBytes <= 0) {
-        throw malformed("the server gave no size");
-      }
-      if (archiveBytes > MAX_LISTED_ARCHIVE_BYTES) throw malformed(`${archiveBytes} bytes`);
-      const reader = new RangeReader(listed.url, fetchRange, both);
-      let zip: yauzl.ZipFile;
-      try {
-        zip = await yauzl.fromRandomAccessReaderPromise(reader, archiveBytes, {
-          autoClose: false,
-          lazyEntries: true,
-          strictFileNames: true,
-          validateEntrySizes: true,
-        });
-      } catch (cause) {
-        throw runtimeError("archive", MESSAGES.archive, {
-          detail: `${listed.url}: unreadable index`,
-          cause,
-        });
-      }
-      try {
-        const sizes = new Map<string, number>();
-        for await (const entry of zip.eachEntry()) {
-          if (sizes.has(entry.fileName)) throw malformed(`duplicate entry "${entry.fileName}"`);
-          sizes.set(entry.fileName, entry.uncompressedSize);
-        }
-        const names = [input.executableName, input.harnessName];
-        if (sizes.size !== 2 || names.some((name) => !sizes.has(name))) {
-          throw malformed(`holds ${[...sizes.keys()].join(", ")}, expected ${names.join(", ")}`);
-        }
-        const fileOf = (name: string) => {
-          const bytes = sizes.get(name)!;
-          if (bytes <= 0 || bytes > MAX_LISTED_FILE_BYTES)
-            throw malformed(`${name} is ${bytes} bytes`);
-          return { name, bytes };
-        };
-        return {
-          version: listed.version,
-          asset: {
-            url: listed.url,
-            sha256: listed.sha256,
-            archiveBytes,
-            executable: fileOf(input.executableName),
-            harness: fileOf(input.harnessName),
-          },
-        };
-      } finally {
-        zip.close();
-        reader.close(() => undefined);
-      }
-    },
-    (cause) => runtimeError("download", unreachable.message, { cause }),
-  );
-};
 
 /** Builds the runtime for one root. Cheap; holds no resources. */
 export function makeAntigravityRuntime<ValidateError = never>(
   options: AntigravityRuntimeOptions<ValidateError>,
 ): AntigravityRuntime {
   const fetchArchive: AntigravityFetch = options.fetch ?? makeAntigravityDownloadFetch();
+  const platform = options.platform ?? process.platform;
   const store = makeManagedRuntimeStore<InstallMarker>({
     root: options.root,
     label: LABEL,
-    marker: {
-      decode: (raw) => Option.getOrUndefined(decodeInstallMarker(raw)),
-      encode: encodeInstallMarker,
-    },
+    marker: { decode: decodeInstallMarker, encode: encodeInstallMarker },
     intact: filesIntact,
     ...(options.beforeLeaseWritten ? { beforeLeaseWritten: options.beforeLeaseWritten } : {}),
   });
@@ -459,48 +278,86 @@ export function makeAntigravityRuntime<ValidateError = never>(
       ),
     );
 
-  /** Downloads the zip into the staging folder and unpacks its two files. */
+  /** Downloads into the staging folder and puts the executable in place. */
   const build =
     (release: AntigravityPlatformRelease, report: (progress: AntigravityInstallProgress) => void) =>
     (staging: { readonly dir: string; readonly unpackDir: string }) =>
       Effect.gen(function* () {
         const { asset } = release;
         const archivePath = NodePath.join(staging.dir, ARCHIVE_FILE);
+        const totalBytes = asset.archiveBytes;
 
-        report({ phase: "downloading", receivedBytes: 0, totalBytes: asset.archiveBytes });
-        let reportedPercent = 0;
-        yield* abortable(
+        report({ phase: "downloading", receivedBytes: 0, ...(totalBytes ? { totalBytes } : {}) });
+        let reported = 0;
+        const receivedBytes = yield* abortable(
           (signal) =>
             downloadVerified({
               fetch: fetchArchive,
               label: LABEL,
               url: asset.url,
-              sha256: asset.sha256,
-              bytes: asset.archiveBytes,
+              sha512: asset.sha512,
+              ...(asset.archiveBytes !== undefined
+                ? { bytes: asset.archiveBytes }
+                : { maxBytes: MAX_ANTIGRAVITY_DOWNLOAD_BYTES }),
               destination: archivePath,
               signal,
-              onReceived: (receivedBytes) => {
-                const percent = Math.floor((receivedBytes * 100) / asset.archiveBytes);
-                if (percent === reportedPercent) return;
-                reportedPercent = percent;
-                report({ phase: "downloading", receivedBytes, totalBytes: asset.archiveBytes });
+              onReceived: (received) => {
+                // A percent when the size is known, else every 4 MB.
+                const step = totalBytes
+                  ? Math.floor((received * 100) / totalBytes)
+                  : Math.floor(received / (4 * 1024 ** 2));
+                if (step === reported) return;
+                reported = step;
+                report({
+                  phase: "downloading",
+                  receivedBytes: received,
+                  ...(totalBytes ? { totalBytes } : {}),
+                });
               },
             }),
           (cause) => ioError("save the Antigravity download", cause),
         );
 
         report({ phase: "extracting" });
-        yield* abortable(
-          (signal) => extractArchive({ archivePath, outDir: staging.unpackDir, asset, signal }),
-          (cause) => ioError("save Antigravity's files", cause),
-        );
-        yield* fsTry("save Antigravity's files", () => NodeFS.rm(archivePath, { force: true }));
+        const target = NodePath.join(staging.unpackDir, asset.executable.name);
+        const executableBytes =
+          asset.format === "exe"
+            ? yield* fsTry("save Antigravity's files", async () => {
+                await NodeFS.rename(archivePath, target);
+                return receivedBytes;
+              })
+            : yield* abortable(
+                (signal) =>
+                  unpackTarball({
+                    archivePath,
+                    scratchDir: NodePath.join(staging.dir, UNPACK_SCRATCH),
+                    name: asset.executable.name,
+                    expectedBytes: asset.executable.bytes,
+                    target,
+                    signal,
+                  }),
+                (cause) => ioError("save Antigravity's files", cause),
+              );
+        if (asset.format === "exe" && asset.executable.bytes !== undefined) {
+          // The download's size was checked already; this names it as the executable's.
+          if (executableBytes !== asset.executable.bytes) {
+            return yield* runtimeError("archive", MESSAGES.archive, {
+              detail: `${asset.executable.name} is ${executableBytes} bytes, expected ${asset.executable.bytes}`,
+            });
+          }
+        }
+        yield* fsTry("save Antigravity's files", async () => {
+          await NodeFS.rm(archivePath, { force: true });
+          // Read-only, so the CLI can't replace itself. Windows keeps the
+          // default: a read-only file there can't be deleted by a prune.
+          if (platform !== "win32") await NodeFS.chmod(target, 0o555);
+        });
         return {
           releaseId: antigravityReleaseId(asset),
           version: release.version,
-          executable: { name: asset.executable.name, bytes: asset.executable.bytes },
-          harness: { name: asset.harness.name, bytes: asset.harness.bytes },
-        };
+          kind: "cli" as const,
+          executable: { name: asset.executable.name, bytes: executableBytes },
+        } satisfies CliMarker;
       });
 
   const install: AntigravityRuntime["install"] = (release, onProgress) => {
@@ -512,12 +369,18 @@ export function makeAntigravityRuntime<ValidateError = never>(
         // Progress reporting never fails an install.
       }
     };
+    const downloadBytes = asset.archiveBytes ?? ESTIMATED_DOWNLOAD_BYTES;
+    // A tarball sits beside what it unpacks to; the Windows download is the executable.
+    const neededBytes =
+      asset.format === "exe"
+        ? downloadBytes
+        : downloadBytes + (asset.executable.bytes ?? ESTIMATED_EXECUTABLE_BYTES);
     return store.install({
       releaseId: antigravityReleaseId(asset),
       version: release.version,
-      neededBytes: asset.archiveBytes + asset.executable.bytes + asset.harness.bytes,
+      neededBytes,
       build: build(release, report),
-      validate: (version) => validatePaths(pathsOf(version), release),
+      validate: (version) => validatePaths(installedRuntimeOf(version), release),
       onPhase: (phase) => report({ phase }),
     });
   };
@@ -527,7 +390,13 @@ export function makeAntigravityRuntime<ValidateError = never>(
       Effect.map((version) => (version ? installedRuntimeOf(version) : undefined)),
     ),
     install,
-    acquire: store.acquire.pipe(Effect.map(installedRuntimeOf)),
+    acquire: store.acquire.pipe(
+      Effect.flatMap((version) =>
+        version.marker.kind === "legacy"
+          ? Effect.fail(runtimeError("notInstalled", MESSAGES.legacy))
+          : Effect.succeed(installedRuntimeOf(version)),
+      ),
+    ),
     prune: store.prune,
     remove: store.remove,
   };

@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off - the registry's cache folder
 /**
  * AcpRegistryAgents — what a client can do with community agents: read the
  * list, add one, update one, remove one.
@@ -13,6 +14,7 @@
  *
  * @module provider/acpRegistry/AcpRegistryAgents
  */
+import * as NodePath from "node:path";
 
 import {
   ACP_REGISTRY_DRIVER_KIND,
@@ -63,8 +65,7 @@ import {
   type AcpRegistryCatalogEntry,
   type AcpRegistryCatalogShape,
   type AcpRegistryCatalogSnapshot,
-  acpRegistryCacheDir,
-  sharedAcpRegistryCatalog,
+  makeAcpRegistryCatalog,
   toAcpRegistryCatalog,
 } from "./AcpRegistryCatalog.ts";
 import { acpRegistryNodes } from "./AcpRegistryNodes.ts";
@@ -136,8 +137,8 @@ export const makeAcpRegistryAgents = Effect.fn("makeAcpRegistryAgents")(function
 
   const catalog =
     options?.catalog ??
-    sharedAcpRegistryCatalog({
-      cacheDir: acpRegistryCacheDir(serverConfig.stateDir),
+    makeAcpRegistryCatalog({
+      cacheDir: NodePath.join(serverConfig.stateDir, "caches", "acp-registry"),
       platform: process.platform,
       arch: process.arch,
     });
