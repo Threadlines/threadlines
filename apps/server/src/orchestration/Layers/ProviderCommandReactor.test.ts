@@ -3300,11 +3300,19 @@ describe("ProviderCommandReactor", () => {
     ) =>
       Effect.gen(function* () {
         const id = (name: string) => `${threadId}-${name}`;
-        const sessionSet = (name: string, session: Partial<OrchestrationSession>) =>
+        const sessionSet = (
+          name: string,
+          session: Partial<OrchestrationSession>,
+          startedBy?: string,
+        ) =>
           engine.dispatch({
             type: "thread.session.set",
             commandId: CommandId.make(id(`session-${name}`)),
             threadId,
+            // A turn's start names its message, as the reactor does.
+            ...(startedBy !== undefined
+              ? { turnStartedBy: { messageId: asMessageId(startedBy) } }
+              : {}),
             session: {
               threadId,
               status: "ready",
@@ -3387,10 +3395,11 @@ describe("ProviderCommandReactor", () => {
           runtimeMode: "full-access",
           createdAt: now,
         });
-        yield* sessionSet("caller-running", {
-          status: "running",
-          activeTurnId: asTurnId("turn-caller"),
-        });
+        yield* sessionSet(
+          "caller-running",
+          { status: "running", activeTurnId: asTurnId("turn-caller") },
+          id("work"),
+        );
         yield* engine.dispatch({
           type: "thread.follow-up.submit",
           commandId: CommandId.make(id("user-for-astra")),
@@ -3430,20 +3439,28 @@ describe("ProviderCommandReactor", () => {
         });
         // Astra works the user's message first, then the hand-off starts.
         yield* sendQueued(id("user-for-astra"));
-        yield* sessionSet("astra-user-running", {
-          status: "running",
-          activeTurnId: asTurnId("turn-astra-user"),
-          participantId: astraId,
-        });
+        yield* sessionSet(
+          "astra-user-running",
+          {
+            status: "running",
+            activeTurnId: asTurnId("turn-astra-user"),
+            participantId: astraId,
+          },
+          id("user-for-astra"),
+        );
         yield* answer("turn-astra-user", astraId, "the logs look fine");
         yield* sessionSet("astra-user-ready", { participantId: astraId });
         yield* sendQueued(id("hand-off"));
         if (ownTurnFinished) {
-          yield* sessionSet("astra-hand-off-running", {
-            status: "running",
-            activeTurnId: asTurnId("turn-astra-hand-off"),
-            participantId: astraId,
-          });
+          yield* sessionSet(
+            "astra-hand-off-running",
+            {
+              status: "running",
+              activeTurnId: asTurnId("turn-astra-hand-off"),
+              participantId: astraId,
+            },
+            id("hand-off"),
+          );
           yield* answer("turn-astra-hand-off", astraId, "retry tests fixed");
           yield* sessionSet("astra-hand-off-ready", { participantId: astraId });
         }

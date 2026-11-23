@@ -2369,18 +2369,20 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             threadId: event.payload.threadId,
             turnId,
           });
-          // The pending message is this turn's unless the writer that marked
-          // it running said otherwise: a turn the provider started (a
-          // check-back while the message is still being prepared) leaves the
-          // message waiting for its own turn.
+          // The pending message becomes this turn's only when the writer that
+          // marked it running named it. A turn the provider started (a
+          // check-back, a background agent finishing) leaves the message
+          // waiting for its own turn, and an update that names nothing (a
+          // task count, a repeat) changes nothing.
           const startedBy = event.payload.turnStartedBy;
           const pendingTurnStart = Option.filter(
             yield* projectionTurnRepository.getPendingTurnStartByThreadId({
               threadId: event.payload.threadId,
             }),
             (pending) =>
-              startedBy === undefined ||
-              ("messageId" in startedBy && startedBy.messageId === pending.messageId),
+              startedBy !== undefined &&
+              "messageId" in startedBy &&
+              startedBy.messageId === pending.messageId,
           );
           if (Option.isSome(existingTurn)) {
             const nextState =

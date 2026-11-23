@@ -3470,8 +3470,14 @@ const make = Effect.gen(function* () {
         ) {
           return {};
         }
+        // A turn Claude opened by itself (a background agent finishing, a
+        // check-back) says so; Threadlines starts a message's turn through
+        // the provider, never that way.
+        const providerOpened =
+          turnTriggerOf(event)?.kind === "check-back" ||
+          event.raw?.method === "claude/synthetic-turn-start";
         const turnStartedBy: TurnStartedBy =
-          turnTriggerOf(event)?.kind !== "check-back" &&
+          !providerOpened &&
           thread.session?.status === "starting" &&
           Option.isSome(pendingTurnStart)
             ? { messageId: pendingTurnStart.value.messageId }

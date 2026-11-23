@@ -5673,6 +5673,20 @@ const ThreadChildRequestSettleCommand = Schema.Struct({
 });
 
 /**
+ * Child threads, server only: a child's report taken off its parent's queue
+ * to start a turn that a restart cut off before the provider took it goes
+ * back on the queue, as it was, so the parent's agent still hears it. Never
+ * a report whose delivery was cancelled since, and never the user writing.
+ */
+const ThreadFollowUpRestoreCommand = Schema.Struct({
+  type: Schema.Literal("thread.follow-up.restore"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  messageId: MessageId,
+  createdAt: IsoDateTime,
+});
+
+/**
  * Child threads, server only: a turn a child owes its parent a report for is
  * over (docs/design/agent-autonomy-no-limits.md, "Delivery rules", rules 5
  * to 8). With `text`, the report is written into the parent and queued for
@@ -6216,6 +6230,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadChildRequestUpdateCommand,
   ThreadChildRequestSettleCommand,
   ThreadChildReportSettleCommand,
+  ThreadFollowUpRestoreCommand,
   ThreadChildNotesDeliveredCommand,
   ThreadRemoteChildUpdateCommand,
   ThreadRemoteCancelsDeliveredCommand,

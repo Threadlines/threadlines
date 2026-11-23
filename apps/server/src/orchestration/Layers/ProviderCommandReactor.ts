@@ -51,6 +51,7 @@ import {
   type TurnStartedBy,
 } from "@threadlines/contracts";
 import { renderThreadContextSeed, withContextSeedPreamble } from "@threadlines/shared/contextSeed";
+import { firstArrived } from "@threadlines/shared/queuedFollowUps";
 import { LEAD_WITHOUT_TOOLS_TEXT, leadRoleText } from "@threadlines/shared/projectLead";
 import { agentInvitesMode, agentThreadsMode } from "@threadlines/shared/serverSettings";
 import {
@@ -6121,8 +6122,7 @@ const make = Effect.gen(function* () {
     const next =
       fromUser || waitsForMove
         ? event.payload.followUp
-        : ((thread.queuedFollowUps ?? []).find((entry) => isAgentOrigin(entry)) ??
-          event.payload.followUp);
+        : (firstArrived(thread.queuedFollowUps ?? [], isAgentOrigin) ?? event.payload.followUp);
     if (yield* releaseSlotForQueuedAgent(thread, next)) {
       releasedMessageByThread.set(thread.id, next.messageId);
       return;
@@ -7319,6 +7319,41 @@ const make = Effect.gen(function* () {
       });
     }).pipe(Effect.ignoreCause({ log: true }));
 
+  /**
+   * A restart cut off a turn the provider never took, and its message was a
+   * child's report taken off the queue to start it: the report goes back on
+   * the queue as it was (`thread.follow-up.restore`), found by the exact
+   * message the turn was started for, so the parent's agent still hears it.
+   * The decider leaves it off if its delivery was cancelled meanwhile.
+   */
+  const restoreReportCutBeforeStart = (threadId: ThreadId) =>
+    Effect.gen(function* () {
+      const pending = yield* projectionTurnRepository.getPendingTurnStartByThreadId({ threadId });
+      if (Option.isNone(pending)) return;
+      const thread = yield* resolveThread(threadId);
+      const message = thread?.messages.find((entry) => entry.id === pending.value.messageId);
+      if (message?.fromThread?.kind !== "report") return;
+      yield* orchestrationEngine
+        .dispatch({
+          type: "thread.follow-up.restore",
+          commandId: CommandId.make(
+            `server:report-restore:${threadId}:${message.id}:${pending.value.requestedAt}`,
+          ),
+          threadId,
+          messageId: message.id,
+          createdAt: yield* nowIso,
+        })
+        .pipe(
+          Effect.catch((error) =>
+            Effect.logInfo("provider command reactor did not put a cut-off report back", {
+              threadId,
+              messageId: message.id,
+              detail: String(error),
+            }),
+          ),
+        );
+    }).pipe(Effect.ignoreCause({ log: true }));
+
   const settleSessionsFromPreviousProcess = Effect.fn("settleSessionsFromPreviousProcess")(
     function* () {
       const snapshot = yield* projectionSnapshotQuery.getShellSnapshot();
@@ -7407,6 +7442,9 @@ const make = Effect.gen(function* () {
           createdAt,
         });
         yield* takeBackOutsideQueued(thread.id, createdAt);
+        if (session.activeTurnId === null) {
+          yield* restoreReportCutBeforeStart(thread.id);
+        }
         // Read now: startup expires the questions the previous process left.
         const activities = (yield* resolveThread(thread.id))?.activities ?? [];
         turnsCutByRestart.push({

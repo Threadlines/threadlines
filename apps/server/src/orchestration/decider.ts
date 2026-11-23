@@ -896,45 +896,6 @@ function answersHeldableRequest(
 }
 
 /**
- * The child's report `participantId` was being started on when a restart cut
- * the thread off before the provider took it: the newest message that starts
- * a turn for that agent (not one still queued), a report nothing answered
- * since. Null when there is none, or the thread can't take it now.
- */
-function reportCutBeforeItsTurn(
-  thread: OrchestrationThread,
-  participantId: ThreadParticipantId | null,
-): OrchestrationMessage | null {
-  const session = thread.session;
-  if (
-    session === null ||
-    (session.status !== "interrupted" && session.status !== "stopped") ||
-    thread.archivedAt !== null ||
-    (thread.move ?? null) !== null
-  ) {
-    return null;
-  }
-  const queued = new Set((thread.queuedFollowUps ?? []).map((entry) => entry.messageId));
-  const index = thread.messages.findLastIndex(
-    (message) =>
-      message.role === "user" &&
-      !isTurnAside(message) &&
-      !queued.has(message.id) &&
-      (message.participantId ?? null) === participantId,
-  );
-  const message = index < 0 ? undefined : thread.messages[index];
-  if (
-    message === undefined ||
-    message.fromThread?.kind !== "report" ||
-    message.notSent === true ||
-    thread.messages.slice(index + 1).some((later) => later.role === "assistant")
-  ) {
-    return null;
-  }
-  return message;
-}
-
-/**
  * A report from one of its threads: its turn continues by itself at the
  * reset, in a thread with a parent too, whose own report of that turn went
  * up when it failed (docs/design/agent-autonomy-no-limits.md, rule 13).
@@ -4315,6 +4276,66 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       return yield* decideFollowUpSubmit(targetThread, command);
     }
 
+    // A child's report a restart cut off before the provider took its turn
+    // goes back on the queue as it was (docs/design/agent-autonomy-no-limits.md,
+    // rule 14). It is the report's own record: nothing about the thread
+    // changes, the Stop hold included, and one whose delivery was cancelled
+    // since (Stop, a wrap, the child separated) stays off.
+    case "thread.follow-up.restore": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const message = thread.messages.find((entry) => entry.id === command.messageId);
+      const fromThread = message?.fromThread;
+      if (
+        message === undefined ||
+        fromThread === undefined ||
+        fromThread.kind !== "report" ||
+        message.notSent === true ||
+        (thread.queuedFollowUps ?? []).some((queued) => queued.messageId === message.id)
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "That message is not a report waiting to be heard.",
+        });
+      }
+      if (isStaleReport(readModel, thread, fromThread)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "That report's delivery was cancelled.",
+        });
+      }
+      const participantId = message.participantId ?? null;
+      const present =
+        participantId !== null &&
+        activeParticipants(thread).some((entry) => entry.id === participantId);
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.follow-up-queued",
+        payload: {
+          threadId: command.threadId,
+          followUp: {
+            messageId: message.id,
+            text: message.text,
+            attachments: message.attachments ?? [],
+            ...(present ? { participantId } : {}),
+            fromThread,
+            runtimeMode: thread.runtimeMode,
+            interactionMode: thread.interactionMode,
+            // When it first arrived: agents' messages run in that order.
+            createdAt: message.createdAt,
+          },
+        },
+      };
+    }
+
     case "thread.follow-up.unqueue": {
       const targetThread = yield* requireThread({
         readModel,
@@ -5661,25 +5682,6 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
-      // A child's report the restart cut off before its agent ever got it
-      // (taken off the queue, then the process stopped) is sent again: the
-      // parent's agent never heard it, and nothing else brings it back.
-      const unheardReport =
-        command.turnId === null ? reportCutBeforeItsTurn(thread, command.participantId) : null;
-      if (unheardReport !== null) {
-        return yield* decideCommandSequence({
-          commands: [
-            {
-              type: "thread.turn.resend",
-              commandId: command.commandId,
-              threadId: command.threadId,
-              messageId: unheardReport.id,
-              createdAt: command.createdAt,
-            },
-          ],
-          readModel,
-        });
-      }
       const verdict = restartContinueVerdict(thread, {
         turnStarted: command.turnId !== null,
         participantId: command.participantId,

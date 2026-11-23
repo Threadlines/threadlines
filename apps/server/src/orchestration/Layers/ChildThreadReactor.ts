@@ -8,6 +8,7 @@ import {
   type OrchestrationEvent,
   type OrchestrationThread,
   type ThreadId,
+  type TurnId,
 } from "@threadlines/contracts";
 import { makeDrainableWorker } from "@threadlines/shared/DrainableWorker";
 import { agentThreadsMode, agentThreadsShareWorktrees } from "@threadlines/shared/serverSettings";
@@ -23,6 +24,7 @@ import * as Stream from "effect/Stream";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { firstArrived } from "@threadlines/shared/queuedFollowUps";
 import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
 import {
   childHasLiveWork,
@@ -78,6 +80,26 @@ type ReactorEvent = Extract<
 >;
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
+
+/** The newest turn a message started, asked for no earlier than `since`. */
+const newestTurnFor = <
+  Turn extends {
+    readonly turnId: TurnId | null;
+    readonly pendingMessageId: MessageId | null;
+    readonly requestedAt: string;
+  },
+>(
+  turns: ReadonlyArray<Turn>,
+  messageId: MessageId,
+  since = "",
+): Turn | undefined =>
+  turns
+    .filter(
+      (turn) =>
+        turn.turnId !== null && turn.pendingMessageId === messageId && turn.requestedAt >= since,
+    )
+    .toSorted((left, right) => left.requestedAt.localeCompare(right.requestedAt))
+    .at(-1);
 
 export const makeChildThreadReactor = Effect.gen(function* () {
   const engine = yield* OrchestrationEngineService;
@@ -370,11 +392,12 @@ export const makeChildThreadReactor = Effect.gen(function* () {
           : yield* turns
               .listByThreadId({ threadId: child.id })
               .pipe(Effect.orElseSucceed(() => [] as const));
+      // A retry or a resend runs the same message again: its newest turn is
+      // the one the request is on.
       const requestTurnId = (request: OrchestrationChildRequest) =>
         request.status === "awaiting_background"
           ? (request.candidateTurnId ?? null)
-          : (childTurns.find((turn) => turn.pendingMessageId === request.childMessageId)?.turnId ??
-            null);
+          : (newestTurnFor(childTurns, request.childMessageId)?.turnId ?? null);
       for (const request of parent.childRequests.open) {
         if (
           request.childThreadId !== childId ||
@@ -533,11 +556,12 @@ export const makeChildThreadReactor = Effect.gen(function* () {
           .listByThreadId({ threadId: child.id })
           .pipe(Effect.orElseSucceed(() => [] as const));
         for (const entry of owed) {
-          const turn = childTurns.find((candidate) =>
+          // A message run again (a resend) has a turn per run: only one
+          // asked for since this entry was made is its turn.
+          const turn =
             "turnId" in entry
-              ? candidate.turnId === entry.turnId
-              : candidate.pendingMessageId === entry.messageId && candidate.turnId !== null,
-          );
+              ? childTurns.find((candidate) => candidate.turnId === entry.turnId)
+              : newestTurnFor(childTurns, entry.messageId, entry.createdAt);
           const delivery = childReportAfterRestart(child, entry, turn);
           yield* dispatch(
             { ...delivery, threadId: child.id, createdAt: yield* nowIso },
@@ -558,7 +582,8 @@ export const makeChildThreadReactor = Effect.gen(function* () {
     const shell = yield* snapshots.getShellSnapshot().pipe(Effect.orElseSucceed(() => undefined));
     return (shell?.threads ?? []).flatMap((summary) => {
       const queued = summary.queuedFollowUps ?? [];
-      const report = queued.find((entry) => entry.fromThread?.kind === "report");
+      // The one that arrived first: one put back after a restart keeps its time.
+      const report = firstArrived(queued, (entry) => entry.fromThread?.kind === "report");
       const status = summary.session?.status;
       return report === undefined ||
         familyWorkStopped(summary) ||

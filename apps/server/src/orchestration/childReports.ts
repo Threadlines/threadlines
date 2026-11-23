@@ -187,48 +187,32 @@ export function reportDropReason(
  * The agent of `parent` a child's later reports go to: the one whose request
  * started it (`reportsTo`, kept on the child), while that agent is still in
  * the room; otherwise the thread's own. A child started before that was kept
- * goes by its first answer's agent, or the one whose turn started it, as far
- * as the parent's history still shows them.
+ * reports to the thread's own agent: the parent's history can't say for sure
+ * who started it, and the wrong room agent is worse than the thread's own.
  */
 export function reportRecipient(
   parent: OrchestrationThread,
-  child: Pick<OrchestrationThread, "id" | "parentTurnId" | "childRequests">,
+  child: Pick<OrchestrationThread, "childRequests">,
 ): ThreadParticipantId | null {
-  const kept = child.childRequests.reportsTo;
-  if (kept !== undefined) {
-    const keptId = kept.participantId;
-    return keptId !== null &&
-      activeParticipants(parent).some((participant) => participant.id === keptId)
-      ? keptId
-      : null;
-  }
-  const firstReport = parent.messages.find(
-    (message) =>
-      message.fromThread?.kind === "report" &&
-      message.fromThread.threadId === child.id &&
-      message.fromThread.environmentId === undefined,
-  );
-  const starter =
-    firstReport === undefined && child.parentTurnId !== null
-      ? parent.messages.find(
-          (message) => message.role === "assistant" && message.turnId === child.parentTurnId,
-        )
-      : undefined;
-  const participantId = (firstReport ?? starter)?.participantId ?? null;
-  return participantId !== null &&
-    activeParticipants(parent).some((participant) => participant.id === participantId)
-    ? participantId
+  const keptId = child.childRequests.reportsTo?.participantId ?? null;
+  return keptId !== null &&
+    activeParticipants(parent).some((participant) => participant.id === keptId)
+    ? keptId
     : null;
 }
 
-/** The request id a follow-up report carries, derived from the child and its turn. */
+/**
+ * The request id a follow-up report carries, derived from the child and its
+ * turn; for a turn that never started, from the owed entry itself, so a
+ * message run again is a report of its own.
+ */
 export const followUpReportRequestId = (
   child: Pick<OrchestrationThread, "id">,
   turnId: TurnId | null,
-  key: OwedReportKey,
+  entry: OwedChildReport,
 ) =>
   ChildRequestId.make(
-    `report:${child.id}:${turnId ?? ("messageId" in key ? key.messageId : key.turnId)}`,
+    `report:${child.id}:${turnId ?? `${"messageId" in entry ? entry.messageId : entry.turnId}:${entry.createdAt}`}`,
   );
 
 /**
@@ -271,7 +255,7 @@ export function decideChildReportSettle(
   ) {
     return [dropped];
   }
-  const requestId = followUpReportRequestId(child, input.turnId, key);
+  const requestId = followUpReportRequestId(child, input.turnId, entry);
   const messageId = childReportMessageId(requestId);
   if (parent.messages.some((message) => message.id === messageId)) {
     return [dropped];

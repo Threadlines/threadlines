@@ -207,6 +207,7 @@ function withReactor<A, E>(
                     turnId: TurnId.make("child-turn-1"),
                     pendingMessageId: options.completedTurnFor,
                     state: "completed",
+                    requestedAt: now,
                   },
                 ],
           ),
@@ -351,6 +352,42 @@ describe("ChildThreadReactor", () => {
           ]);
         }),
     ),
+  );
+
+  it.effect(
+    "after a restart, never takes an earlier run of the same message for a resend's entry (finding 6)",
+    () =>
+      withReactor(
+        [
+          parentWith([]),
+          thread(CHILD, {
+            childRequests: {
+              ...EMPTY_CHILD_REQUEST_STATE,
+              // Made when the message was sent again, after its first run ended.
+              owedReports: [
+                {
+                  messageId: CHILD_MESSAGE,
+                  deliveryEpoch: 0,
+                  attachmentEpoch: 0,
+                  createdAt: "2026-10-04T10:00:30.000Z",
+                },
+              ],
+            },
+          }),
+        ],
+        { completedTurnFor: CHILD_MESSAGE },
+        (harness) =>
+          Effect.sync(() => {
+            expect(
+              harness.dispatched.filter((command) => command.type === "thread.child-report.settle"),
+            ).toMatchObject([
+              {
+                turnId: null,
+                text: "'Write the changelog' was interrupted by a Threadlines restart. Send it a message with thread_send to continue.",
+              },
+            ]);
+          }),
+      ),
   );
 
   it.effect("resumes a setup the previous process left unfinished", () =>
@@ -758,5 +795,53 @@ describe("ChildThreadReactor", () => {
           ).toEqual(["child-report:request-1"]);
         }),
     ),
+  );
+
+  it.effect(
+    "after a restart, sends first the report that arrived first, one put back after the cut included (finding 5)",
+    () => {
+      const report = (id: string, createdAt: string) => ({
+        messageId: MessageId.make(id),
+        text: "done",
+        attachments: [],
+        fromThread: {
+          threadId: CHILD,
+          requestId: ChildRequestId.make(id),
+          kind: "report" as const,
+        },
+        runtimeMode: "auto-accept-edits" as const,
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        createdAt,
+      });
+      return withReactor(
+        [
+          thread(PARENT, {
+            session: {
+              threadId: PARENT,
+              status: "interrupted",
+              providerName: "claudeAgent",
+              runtimeMode: "auto-accept-edits",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: now,
+            },
+            // A was put back after B: it keeps the time it first arrived.
+            queuedFollowUps: [
+              report("report-b", "2026-10-04T10:00:02.000Z"),
+              report("report-a", "2026-10-04T10:00:01.000Z"),
+            ],
+          }),
+        ],
+        {},
+        (harness) =>
+          Effect.sync(() => {
+            expect(
+              harness.dispatched
+                .filter((command) => command.type === "thread.follow-up.send-queued")
+                .map((command) => (command as { messageId: string }).messageId),
+            ).toEqual(["report-a"]);
+          }),
+      );
+    },
   );
 });

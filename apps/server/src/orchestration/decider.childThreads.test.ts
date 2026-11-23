@@ -2184,7 +2184,7 @@ describe("decider child reports", () => {
     ]);
   });
 
-  it("sends again a report the restart cut off after it left the parent's queue (finding 3)", async () => {
+  it("puts a report a restart cut off back on the queue as it was, unless Stop came since (findings 3, 4)", async () => {
     const owing = (await run(await answeredFamily(), providerTurn("child-turn-2"))).model;
     const delivered = await run(
       owing,
@@ -2208,22 +2208,26 @@ describe("decider child reports", () => {
           : entry,
       ),
     };
-    const restarted = await run(cut, {
-      type: "thread.restart.continue",
-      commandId: CommandId.make("restart"),
+    const restore = {
+      type: "thread.follow-up.restore" as const,
+      commandId: CommandId.make("restore"),
       threadId: PARENT,
-      turnId: null,
-      participantId: null,
-      waitingOnUser: false,
-      continueAfterRestart: false,
-      messageId: MessageId.make("restart-continue"),
-      activityId: EventId.make("restart-activity"),
+      messageId: report.messageId,
       createdAt: at(50),
+    };
+    const restored = await run(cut, restore);
+    expect(threadIn(restored.model, PARENT).queuedFollowUps).toEqual([
+      expect.objectContaining({ messageId: report.messageId, createdAt: report.createdAt }),
+    ]);
+    // Stop landed after it left the queue: it stays off, and the hold stays on.
+    const stopped = await run(cut, {
+      type: "thread.turn.interrupt",
+      commandId: CommandId.make("stop-after-dequeue"),
+      threadId: PARENT,
+      createdAt: at(45),
     });
-    const resent = (restarted.events as ReadonlyArray<OrchestrationEvent>).find(
-      (event) => event.type === "thread.turn-start-requested",
-    );
-    expect(resent?.payload).toMatchObject({ messageId: report.messageId });
+    expect(await refused(stopped.model, restore)).toBe(true);
+    expect(threadIn(stopped.model, PARENT).agentRequests.hold).toBe(true);
   });
 
   it("holds a stopped parent with a family, so a child's later report can't wake it (finding 4)", async () => {
@@ -2323,6 +2327,18 @@ describe("decider child reports", () => {
       ),
     };
     expect(reportRecipient(threadIn(rolled, PARENT), threadIn(rolled, CHILD))).toBeNull();
+    // A child from before it was kept goes to the thread's own agent, not to
+    // whichever agent's report history still shows.
+    const unkept = { ...threadIn(rolled, CHILD).childRequests, reportsTo: undefined };
+    expect(
+      reportRecipient(threadIn(rolled, PARENT), { childRequests: unkept as never }),
+    ).toBeNull();
+    // A kept room agent still in the room gets them.
+    expect(
+      reportRecipient(threadIn(rolled, PARENT), {
+        childRequests: { ...unkept, reportsTo: { participantId: reviewer } } as never,
+      }),
+    ).toBe(reviewer);
   });
 
   it("hands a leaving agent's queued follow-up report to the thread's own agent, and takes its answers off", async () => {

@@ -931,11 +931,16 @@ describe("ProviderRuntimeIngestion", () => {
       id: string,
       participantId: ThreadParticipantId | null,
       turn: string | null,
+      startedBy?: string,
     ) =>
       dispatch({
         type: "thread.session.set",
         commandId: CommandId.make(id),
         threadId,
+        // As the reactor names the message the provider took the turn for.
+        ...(startedBy !== undefined
+          ? { turnStartedBy: { messageId: asMessageId(startedBy) } }
+          : {}),
         session: {
           threadId,
           status: turn === null ? "ready" : "running",
@@ -989,7 +994,7 @@ describe("ProviderRuntimeIngestion", () => {
       messageId: asMessageId("hand-off-request"),
       createdAt: now,
     });
-    await setSession("cmd-astra-working", astraId, "turn-astra");
+    await setSession("cmd-astra-working", astraId, "turn-astra", "hand-off-request");
 
     const astraEvent = (id: string, event: Record<string, unknown>) =>
       harness.emit({
@@ -1550,10 +1555,106 @@ describe("ProviderRuntimeIngestion", () => {
     ).childRequests.owedReports;
     // Both stay owed: the message waits for its own turn, the check-back owes its own.
     expect(owed).toMatchObject([{ messageId: "fix-message" }, { turnId: "check-back-turn" }]);
-    const parent = (await harness.readModel()).threads.find(
-      (entry) => entry.id === asThreadId("thread-1"),
+    // The check-back starts a task: a second running update that names no message.
+    harness.emit({
+      type: "task.snapshot.updated",
+      eventId: asEventId("evt-child-2-task"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: child,
+      createdAt: "2026-01-01T00:00:03.000Z",
+      payload: {
+        tasks: [
+          { taskId: "task-1", taskType: "local_bash", kind: "command", description: "Run CI" },
+        ],
+      },
+    } as never);
+    await harness.drain();
+    // The check-back's turn ends: it settles its own report, never the message's.
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-child-2-check-back-done"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: child,
+      createdAt: "2026-01-01T00:00:04.000Z",
+      turnId: asTurnId("check-back-turn"),
+      payload: { state: "completed" },
+    } as never);
+    await harness.drain();
+    const after = await waitForThread(
+      harness.readModel,
+      (entry) => (entry.childRequests.owedReports ?? []).length === 1,
+      10_000,
+      child,
     );
-    expect(parent?.messages.filter((message) => message.fromThread !== undefined)).toEqual([]);
+    expect(after.childRequests.owedReports).toMatchObject([{ messageId: "fix-message" }]);
+  });
+
+  it("takes a turn Claude opens by itself while a message is being prepared for its own (finding 1)", async () => {
+    const harness = await createHarness();
+    const createdAt = "2026-01-01T00:00:00.000Z";
+    const child = asThreadId("child-3");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-child-3-create"),
+        threadId: child,
+        projectId: asProjectId("project-1"),
+        title: "Watch CI",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        parentThreadId: asThreadId("thread-1"),
+        attachedToParent: true,
+        createdAt,
+      }),
+    );
+    harness.setProviderSession({
+      provider: ProviderDriverKind.make("codex"),
+      status: "ready",
+      runtimeMode: "approval-required",
+      threadId: child,
+      createdAt,
+      updatedAt: createdAt,
+    });
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-child-3-turn"),
+        threadId: child,
+        message: {
+          messageId: asMessageId("fix-message-3"),
+          role: "user",
+          text: "CI failed; fix it.",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+    // A background agent finishes: Claude opens a turn with no trigger.
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-child-3-synthetic"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: child,
+      createdAt: "2026-01-01T00:00:02.000Z",
+      turnId: asTurnId("background-turn"),
+      payload: {},
+      raw: { source: "claude.sdk.message", method: "claude/synthetic-turn-start", payload: {} },
+    } as never);
+    await harness.drain();
+    const owed = (
+      await waitForThread(
+        harness.readModel,
+        (entry) => (entry.childRequests.owedReports ?? []).length === 2,
+        10_000,
+        child,
+      )
+    ).childRequests.owedReports;
+    expect(owed).toMatchObject([{ messageId: "fix-message-3" }, { turnId: "background-turn" }]);
   });
 
   it("maps turn started/completed events into thread session updates", async () => {
