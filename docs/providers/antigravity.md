@@ -57,6 +57,41 @@ has them. The reasoning level is its own choice next to the model.
 
 Plan mode sends the task as `/plan`, and the plan shows on the plan card for review.
 
+## Your Rules and Skills
+
+Each Antigravity account runs in its own profile, so Threadlines brings your own global setup from
+`~/.gemini` into it before every start. These are shared:
+
+- Rules: `AGENTS.md` and `GEMINI.md`, both in `~/.gemini` and in `~/.gemini/config`, the
+  `~/.gemini/config/rules` folder, and `~/.gemini/config/rules.json`.
+- Skills: the `~/.gemini/config/skills` and `~/.gemini/antigravity-cli/skills` folders, and
+  `~/.gemini/config/skills.json`.
+
+On macOS and Linux each one is a link, so an edit shows up in the next chat. On Windows the folders
+are junctions and the files are copies, refreshed at each start; a copy changed inside the profile
+is left alone from then on. Something you add later is picked up at the next start. Your sign-in,
+hooks, plugins, subagents (`agents.json`) and MCP servers (`mcp_config.json`) stay out, so an
+Antigravity account in Threadlines never runs them.
+
+Project rules and skills come from the project as usual: `AGENTS.md` and `GEMINI.md`, and skills in
+`.agents/skills`, `.gemini/skills` and the older `.agent/skills`.
+
+Threadlines reads which skills Antigravity loads, the way Antigravity finds them, and Settings
+search lists them. When two have the same name, the first wins in this order:
+`~/.gemini/config/skills`, the project's `.gemini/skills`, `~/.gemini/antigravity-cli/skills`, the
+project's `.agents/skills`, then `.agent/skills`. Folders a `skills.json` declares come after those: the project's
+`.agents/skills.json` in the project and each folder above it up to the repository root, then
+`~/.gemini/config/skills.json`. Threadlines follows the same rules as Antigravity for these files:
+`inherits` reads another file, `include_only` and `exclude` match names exactly, a nested skill
+loads only when `include_only` names it (`category/my-skill`), `~` is not expanded, and a project's
+file can only point inside the project. Skills of plugins installed in that account's profile are
+listed unless the plugin is turned off. The list is read from the folder Threadlines runs in, like
+other agents' lists, so a project's own skills show only when Threadlines runs inside it.
+
+To use a skill, start the message with `/` and its name, as in a terminal (`/review this diff`).
+Antigravity also picks a skill on its own when the task matches its description. The composer's
+`$` skill list is for Codex only.
+
 ## Sign-In Methods
 
 Open `Settings -> Providers`, open the Antigravity row, and pick a method under `Sign-in method` on
