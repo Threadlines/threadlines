@@ -36,7 +36,10 @@
  * - `tools`: an MCP call through `call_mcp_tool`, a long command line, and
  *   a screenshot in a tool's content.
  * - `mcp-permission`: asks to run a real `call_mcp_tool` call, then a
- *   command whose input also names an MCP tool. It writes no subagent records.
+ *   command whose input also names an MCP tool.
+ * - `mcp-lossy`: an MCP-looking call with big arguments and a field no
+ *   wrapper has, after them.
+ * - `mcp-then-location`: an MCP call whose later update names a file. It writes no subagent records.
  * - `records-one-reply`: as `subagent-records`, but both children report
  *   before the agent wakes, and it answers both in one reply.
  * - `records-killed`: as `subagent-records`, but in the reply to the first
@@ -275,6 +278,52 @@ const program = Effect.gen(function* () {
       if (scenario === "ignore-cancel") {
         yield* say(sessionId, "Thinking hard.");
         return yield* Effect.never;
+      }
+      if (scenario === "mcp-lossy") {
+        // Big arguments, then a field no wrapper has: bounding could drop it.
+        yield* update(sessionId, {
+          sessionUpdate: "tool_call",
+          toolCallId: "call_lossy",
+          kind: "execute",
+          title: "MCP Tool list_issues",
+          status: "completed",
+          rawInput: {
+            ServerName: "github",
+            ToolName: "list_issues",
+            Arguments: Object.fromEntries(
+              Array.from({ length: 600 }, (_, index) => [`k${index}`, index]),
+            ),
+            Cwd: "/",
+          },
+        });
+        yield* say(sessionId, "Done.");
+        yield* modelCallEnds(sessionId);
+        return { stopReason: "end_turn" as const };
+      }
+      if (scenario === "mcp-then-location") {
+        yield* update(sessionId, {
+          sessionUpdate: "tool_call",
+          toolCallId: "call_wrapped",
+          kind: "execute",
+          title: "MCP Tool list_issues",
+          status: "in_progress",
+          rawInput: { ServerName: "github", ToolName: "list_issues", Arguments: {} },
+        });
+        // A later update that names a file: not an MCP call after all.
+        yield* update(sessionId, {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "call_wrapped",
+          status: "in_progress",
+          locations: [{ path: "/tmp/agy-target" }],
+        });
+        yield* say(sessionId, "Done.");
+        yield* update(sessionId, {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "call_wrapped",
+          status: "completed",
+        });
+        yield* modelCallEnds(sessionId);
+        return { stopReason: "end_turn" as const };
       }
       if (scenario === "mcp-permission") {
         const ask = (toolCall: AcpSchema.ToolCallUpdate) =>

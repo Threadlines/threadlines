@@ -1084,6 +1084,38 @@ describe("Antigravity tool rows and attachments", () => {
       }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 
+  it.live("classifies a call by what the agent sent, not by the bounded copy", () =>
+    Effect.gen(function* () {
+      const agy = yield* startAgy("mcp-lossy");
+      yield* agy.adapter.sendTurn({ threadId: agy.threadId, input: "go", attachments: [] });
+      yield* agy.waitFor((events) => completedTurns(events).length === 1);
+      // Bounding drops the trailing `Cwd`; the call still isn't the wrapper.
+      expect(toolItem(agy.events, "call_lossy")?.payload.itemType).not.toBe("mcp_tool_call");
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+  it.live("stops showing a call as MCP once a later update names a file", () =>
+    Effect.gen(function* () {
+      const agy = yield* startAgy("mcp-then-location");
+      yield* agy.adapter.sendTurn({ threadId: agy.threadId, input: "go", attachments: [] });
+      yield* agy.waitFor((events) => completedTurns(events).length === 1);
+      const rows = agy.events.flatMap((event) =>
+        (event.type === "item.updated" || event.type === "item.completed") &&
+        String(event.itemId) === "call_wrapped"
+          ? [event.payload]
+          : [],
+      );
+      expect(rows[0]).toMatchObject({ itemType: "mcp_tool_call", title: "list_issues" });
+      // The later, still-running update is shown at once, with no MCP label.
+      expect(rows).toHaveLength(3);
+      for (const row of rows.slice(1)) {
+        expect(row?.itemType).toBe("command_execution");
+        expect(row?.title).not.toBe("list_issues");
+        expect(row?.detail ?? "").not.toContain("MCP tool");
+      }
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
   it.live("shows call_mcp_tool as the MCP tool, keeps a command's start, drops images", () =>
     Effect.gen(function* () {
       const agy = yield* startAgy("tools");

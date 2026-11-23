@@ -432,7 +432,12 @@ function canonicalItemTypeFromAcpToolKind(kind: string | undefined): ToolLifecyc
   }
 }
 
-function makeToolCallState(
+/**
+ * A tool call's state from one report of it, named and described the way
+ * the core shows every call. Also how a descriptor's `normalizeToolCall`
+ * rebuilds a call it stops retyping, so no earlier label stays on it.
+ */
+export function makeToolCallState(
   input: {
     readonly toolCallId: string;
     readonly title?: string | null | undefined;
