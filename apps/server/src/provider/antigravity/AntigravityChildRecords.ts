@@ -62,7 +62,10 @@ export interface AntigravityChildLaunch {
 /** One child the session started, as its records describe it. */
 export interface AntigravityChild {
   readonly conversationId: string;
-  /** The parent's `invoke_subagent` tool call that started it. */
+  /**
+   * The parent's `invoke_subagent` tool call (the ACP tool call id) that
+   * started it, when the records tie exactly this child to one call.
+   */
   readonly launchCallId: string | undefined;
   readonly launch: AntigravityChildLaunch;
   /** `reported`: its report is in the parent's inbox. */
@@ -167,29 +170,51 @@ function launchCall(message: unknown, parentId: string) {
 }
 
 /**
- * Every child the session started, with its launch and state, or
- * `undefined` when the records can't be read whole.
+ * What a session's records say about its children.
+ * - `available: false, reason: "no-records"`: the session has no subagent
+ *   records at all, so they can't tell "none started" from "not written".
+ * - `available: false, reason: "unreadable"`: some record is missing, a
+ *   link, too big, not what the layout says, or the session id is not one
+ *   the CLI would write. Nothing is proven then.
+ * - `available: true`: every child the session started, sorted by state.
+ *   A child reported once its report is in the parent's inbox (it may
+ *   still be answering a follow-up), and was killed when its entry says so.
  */
+export type AntigravityChildrenReading =
+  | { readonly available: false; readonly reason: "no-records" | "unreadable" }
+  | {
+      readonly available: true;
+      readonly running: ReadonlyArray<AntigravityChild>;
+      readonly reported: ReadonlyArray<AntigravityChild>;
+      readonly killed: ReadonlyArray<AntigravityChild>;
+    };
+
+const UNREADABLE = { available: false, reason: "unreadable" } as const;
+
+/** Every child the session started, or why the records can't say. */
 async function readChildren(
   profileDir: string,
   parentId: string,
-): Promise<ReadonlyArray<AntigravityChild> | undefined> {
-  if (!NATIVE_ID.test(parentId)) return undefined;
+): Promise<
+  | { readonly children: ReadonlyArray<AntigravityChild> }
+  | { readonly reason: "no-records" | "unreadable" }
+> {
+  if (!NATIVE_ID.test(parentId)) return { reason: "unreadable" };
   const folder = await antigravityProfileEntry(
     profileDir,
     generated(parentId, "subagents"),
     "directory",
   );
-  if (folder === undefined) return [];
+  if (folder === undefined) return { reason: "no-records" };
   const names = await NodeFSP.readdir(folder.path).catch(() => undefined);
-  if (names === undefined) return undefined;
+  if (names === undefined) return { reason: "unreadable" };
   const childIds = names.flatMap((name) =>
     name.endsWith(".json") && NATIVE_ID.test(name.slice(0, -5)) ? [name.slice(0, -5)] : [],
   );
-  if (childIds.length > MAX_CHILDREN) return undefined;
+  if (childIds.length > MAX_CHILDREN) return { reason: "unreadable" };
   const budget: ReadBudget = { bytes: MAX_READ_BYTES };
   const parentInbox = await readInbox(profileDir, parentId, budget);
-  if (parentInbox === undefined) return undefined;
+  if (parentInbox === undefined) return { reason: "unreadable" };
   const children: Array<AntigravityChild> = [];
   for (const childId of childIds) {
     const record = await readRecord(
@@ -197,11 +222,11 @@ async function readChildren(
       generated(parentId, "subagents", `${childId}.json`),
       budget,
     );
-    if (!isRecord(record)) return undefined;
+    if (!isRecord(record)) return { reason: "unreadable" };
     const recordedId = stringField(record, "conversationId");
-    if (recordedId !== undefined && recordedId !== childId) return undefined;
+    if (recordedId !== undefined && recordedId !== childId) return { reason: "unreadable" };
     const inbox = await readInbox(profileDir, childId, budget);
-    if (inbox === undefined) return undefined;
+    if (inbox === undefined) return { reason: "unreadable" };
     const launches = inbox.flatMap((message) => {
       const call = launchCall(message, parentId);
       return call === undefined ? [] : [{ call, content: stringField(message, "content") }];
@@ -229,35 +254,51 @@ async function readChildren(
       report: reports.length > 0 ? boundAntigravityText(reports.join("\n\n").trim()) : undefined,
     });
   }
-  return children;
-}
-
-/** The one child a launching call started, or `undefined` when none or several claim it. */
-function childOf(children: ReadonlyArray<AntigravityChild>, launchCallId: string) {
-  const claimed = children.filter((child) => child.launchCallId === launchCallId);
-  return claimed.length === 1 ? claimed[0] : undefined;
+  // Two children claiming one call: neither is proven to be its child.
+  const claims = new Map<string, number>();
+  for (const child of children) {
+    if (child.launchCallId !== undefined) {
+      claims.set(child.launchCallId, (claims.get(child.launchCallId) ?? 0) + 1);
+    }
+  }
+  return {
+    children: children.map((child) =>
+      child.launchCallId !== undefined && claims.get(child.launchCallId) !== 1
+        ? { ...child, launchCallId: undefined }
+        : child,
+    ),
+  };
 }
 
 /**
- * What became of the children these launching calls started, by call id.
- * A call the records don't tie to exactly one child is left out; `undefined`
- * when the records can't be read.
+ * Which of a session's children are still running, which have reported and
+ * which were killed, each with the launching call that started it where the
+ * records tie it to one, or why the records can't say. Never fails.
  */
-export const antigravityChildStates = (
-  profileDir: string,
-  parentId: string,
-  launchCallIds: ReadonlyArray<string>,
-) =>
-  Effect.tryPromise(async () => {
-    const children = await readChildren(profileDir, parentId);
-    if (children === undefined) return undefined;
-    const states = new Map<string, AntigravityChild>();
-    for (const id of launchCallIds) {
-      const child = childOf(children, id);
-      if (child !== undefined) states.set(id, child);
-    }
-    return states as ReadonlyMap<string, AntigravityChild>;
-  }).pipe(Effect.orElseSucceed(() => undefined));
+export const readAntigravityChildren = (profileDir: string, sessionId: string) =>
+  Effect.tryPromise(async (): Promise<AntigravityChildrenReading> => {
+    const read = await readChildren(profileDir, sessionId);
+    if ("reason" in read) return { available: false, reason: read.reason };
+    const inState = (state: AntigravityChild["state"]) =>
+      read.children.filter((child) => child.state === state);
+    return {
+      available: true,
+      running: inState("working"),
+      reported: inState("reported"),
+      killed: inState("killed"),
+    };
+  }).pipe(Effect.orElseSucceed((): AntigravityChildrenReading => UNREADABLE));
+
+/** The child a launching call started, in a reading, when the records tie it to that call. */
+export function antigravityChildOf(
+  reading: AntigravityChildrenReading,
+  launchCallId: string,
+): AntigravityChild | undefined {
+  if (!reading.available) return undefined;
+  return [...reading.running, ...reading.reported, ...reading.killed].find(
+    (child) => child.launchCallId === launchCallId,
+  );
+}
 
 // ── A child's steps ──────────────────────────────────────────────────
 
@@ -407,8 +448,11 @@ export const antigravityChildTranscript = (
   launchCallId: string,
 ) =>
   Effect.tryPromise(async () => {
-    const children = await readChildren(profileDir, parentId);
-    const child = children === undefined ? undefined : childOf(children, launchCallId);
+    const read = await readChildren(profileDir, parentId);
+    const child =
+      "reason" in read
+        ? undefined
+        : read.children.find((candidate) => candidate.launchCallId === launchCallId);
     if (child === undefined) return undefined;
     const transcript = await readTranscriptTail(profileDir, child.conversationId).catch(
       () => undefined,

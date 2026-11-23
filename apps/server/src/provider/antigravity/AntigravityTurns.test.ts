@@ -256,7 +256,7 @@ describe("Antigravity turns", () => {
     }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 
-  it.live("holds a turn until every subagent reported, and shows each with its steps", () =>
+  it.live("shows each subagent with its role, prompt, report and steps", () =>
     Effect.gen(function* () {
       const agy = yield* startAgy("subagent-records");
       const { turnId } = yield* agy.adapter.sendTurn({
@@ -341,45 +341,6 @@ describe("Antigravity turns", () => {
         }),
       );
       expect(missing.message).toContain("Antigravity did not record which subagent this started");
-    }).pipe(Effect.scoped, Effect.provide(testServices)),
-  );
-
-  it.live("ends a held turn when several subagents report in one reply", () =>
-    Effect.gen(function* () {
-      const agy = yield* startAgy("subagent-records-together");
-      const { turnId } = yield* agy.adapter.sendTurn({
-        threadId: agy.threadId,
-        input: "find and review the flaky test",
-        attachments: [],
-      });
-      // Counting replies alone would hold this until the 30-minute limit.
-      yield* agy.waitFor((events) => completedTurns(events).length === 1);
-      expect(completedTurns(agy.events)[0]).toMatchObject({
-        turnId,
-        payload: { state: "completed" },
-      });
-      expect(replyTo(agy.events, turnId)).toContain("Both reported.");
-      expect(subagentStatuses(agy.events)).toEqual({
-        call_research: "completed",
-        call_review: "completed",
-      });
-    }).pipe(Effect.scoped, Effect.provide(testServices)),
-  );
-
-  it.live("does not hold a turn for a subagent killed within it", () =>
-    Effect.gen(function* () {
-      const agy = yield* startAgy("subagent-killed");
-      const { turnId } = yield* agy.adapter.sendTurn({
-        threadId: agy.threadId,
-        input: "explore, then stop",
-        attachments: [],
-      });
-      yield* agy.waitFor((events) => completedTurns(events).length === 1);
-      expect(completedTurns(agy.events)[0]).toMatchObject({
-        turnId,
-        payload: { state: "completed" },
-      });
-      expect(subagentStatuses(agy.events)).toEqual({ call_stray: "interrupted" });
     }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 

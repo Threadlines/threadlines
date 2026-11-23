@@ -144,10 +144,8 @@ a cancel). A reply the agent starts after the turn ended opens a turn of its own
 Two limits keep a lost wake from leaving the thread working forever: a turn held only by commands
 and subagents ends after 30 minutes without a word from the agent, and a reply the agent started
 by itself ends 2 minutes after its last output if its closing usage update never comes. A timer
-holds the turn until it fires. A subagent holds the turn until it has sent the agent its report or
-the agent stopped it, as the CLI's records say (see Subagents), so several reports in one reply free
-them all and a stopped subagent frees its hold. Where the records don't name every subagent still
-out, each report (a reply no finished command or timer woke) frees one subagent; if the CLI then
+holds the turn until it fires. Subagents are only known to finish by the report the agent gives when
+one ends, so each report (a reply no finished command or timer woke) frees one subagent. If the CLI
 sends several reports in one reply, the turn holds until the 30-minute limit or Stop. If the agent
 exits while a turn is held, the turn fails with that reason and the next message starts it again.
 
@@ -161,16 +159,17 @@ When Antigravity launches a subagent (its `invoke_subagent` tool), the subagent 
 like other agents' subagents: its role, its prompt, whether it runs, and the report it sent back.
 Open it to read its recent steps. ACP says only that a launch happened, so the rest is read from the
 CLI's own records in the profile (`antigravity-acp/brain/`, a private format read only for this;
-the code is `apps/server/src/provider/antigravity/AntigravityChildRecords.ts`). They are checked
-when the agent's prompt ends and when each reply it starts by itself ends:
+the code is `apps/server/src/provider/antigravity/AntigravityChildRecords.ts`). They are read when
+each reply ends and when the turn ends:
 
 - A subagent that sent its report shows as done, with the report.
-- One the agent stopped (`manage_subagents`) shows as stopped and no longer keeps the turn running.
+- One the agent stopped (`manage_subagents`) shows as stopped.
 - Stop ends every running subagent with the turn.
-- When the records don't say which subagent a launch started, its view says "Antigravity did not
-  record which subagent this started", and the turn falls back to the rule above.
+- A subagent the records don't name shows as done once its turn has ended, and its view says
+  "Antigravity did not record which subagent this started".
 
-The view is read-only: you can't message a subagent directly.
+The view is read-only: you can't message a subagent directly. How long the turn stays open is the
+rule above; the records don't change it.
 
 ### Tool rows
 

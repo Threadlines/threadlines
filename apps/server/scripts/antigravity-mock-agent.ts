@@ -28,8 +28,6 @@
  *   subagent's report later. It writes no subagent records.
  * - `subagent-records`: as `subagents`, with the children's records (as
  *   1.5.12+ keeps them under `brain/`) and their reports in them.
- * - `subagent-records-together`: both children report before one reply.
- * - `subagent-killed`: launches a subagent and kills it within the prompt.
  * - `tools`: an MCP call through `call_mcp_tool`, a long command line, and
  *   a screenshot in a tool's content. It writes no subagent records.
  * - `subagents`: launches two subagents with their records (as 1.5.12+
@@ -169,8 +167,17 @@ const program = Effect.gen(function* () {
     agent.client.sessionUpdate({ sessionId, update: value });
   const say = (sessionId: string, text: string) =>
     update(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text } });
+  // The context grows with each model call, as the CLI reports it.
+  let contextUsed = 8_000;
   const modelCallEnds = (sessionId: string) =>
-    update(sessionId, { sessionUpdate: "usage_update", used: 9_000, size: 1_048_576 });
+    Effect.suspend(() => {
+      contextUsed += 1_000;
+      return update(sessionId, {
+        sessionUpdate: "usage_update",
+        used: contextUsed,
+        size: 1_048_576,
+      });
+    });
   const command = {
     toolCallId: "call_build",
     title: "Running node build.mjs",
@@ -406,7 +413,7 @@ const program = Effect.gen(function* () {
         }).pipe(Effect.forkDetach);
         return { stopReason: "end_turn" as const };
       }
-      if (scenario === "subagent-records" || scenario === "subagent-records-together") {
+      if (scenario === "subagent-records") {
         const launch = (callId: string, child: string, role: string, prompt: string) =>
           Effect.gen(function* () {
             recordChild({
@@ -421,7 +428,8 @@ const program = Effect.gen(function* () {
               sessionUpdate: "tool_call",
               toolCallId: callId,
               kind: "other",
-              title: "Run invoke_subagent",
+              // The title the turn's hold counts; agy 1.5 also sends "Run invoke_subagent".
+              title: "Running invoke_subagent",
               status: "completed",
               rawInput: { Role: role, Prompt: prompt },
             });
@@ -433,13 +441,6 @@ const program = Effect.gen(function* () {
         yield* Effect.gen(function* () {
           yield* Effect.sleep("400 millis");
           recordReport(sessionId, "child-research", "The flaky test is api.test.ts.");
-          if (scenario === "subagent-records-together") {
-            // Both reports wake one reply.
-            recordReport(sessionId, "child-review", "The fix looks right.");
-            yield* say(sessionId, " Both reported.");
-            yield* modelCallEnds(sessionId);
-            return;
-          }
           yield* say(sessionId, " The researcher found it.");
           yield* modelCallEnds(sessionId);
           // Longer than a held turn's settle: only the records hold it.
@@ -448,36 +449,6 @@ const program = Effect.gen(function* () {
           yield* say(sessionId, " The reviewer agreed.");
           yield* modelCallEnds(sessionId);
         }).pipe(Effect.forkDetach);
-        return { stopReason: "end_turn" as const };
-      }
-      if (scenario === "subagent-killed") {
-        recordChild({
-          parent: sessionId,
-          child: "child-stray",
-          callId: "call_stray",
-          role: "Explorer",
-          prompt: "Look around",
-          state: "SUBAGENT_STATE_ALIVE",
-        });
-        yield* update(sessionId, {
-          sessionUpdate: "tool_call",
-          toolCallId: "call_stray",
-          kind: "other",
-          title: "Run invoke_subagent",
-          status: "completed",
-          rawInput: { Role: "Explorer", Prompt: "Look around" },
-        });
-        // `manage_subagents` kill only rewrites the record's state.
-        recordChild({
-          parent: sessionId,
-          child: "child-stray",
-          callId: "call_stray",
-          role: "Explorer",
-          prompt: "Look around",
-          state: "SUBAGENT_STATE_KILLED",
-        });
-        yield* say(sessionId, "Stopped the explorer.");
-        yield* modelCallEnds(sessionId);
         return { stopReason: "end_turn" as const };
       }
       if (scenario === "tools") {

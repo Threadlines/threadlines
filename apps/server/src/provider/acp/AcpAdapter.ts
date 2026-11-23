@@ -110,25 +110,17 @@ import {
 import { makeAcpNativeLoggers } from "./AcpNativeLogging.ts";
 import type {
   AcpExtensionContext,
-  AcpExtensionRuntimeEvent,
   AcpPromptFailure,
   AcpPromptOutcome,
   AcpPromptPlanMode,
   AcpProviderDescriptor,
   AcpProviderSettings,
-  AcpSubagentLaunch,
   AcpSubagents,
   AcpTurnOutcome,
   AcpWorkAfterPrompt,
 } from "./AcpProviderDescriptor.ts";
 import { type AcpAttachmentBudget, acpAttachmentContent } from "./AcpPromptAttachments.ts";
-import {
-  type AcpSubagentStatus,
-  acpSubagentSettledEvents,
-  acpSubagentSnapshotEvent,
-  acpSubagentStartedEvents,
-  describeAcpSubagentLaunches,
-} from "./AcpSubagentEvents.ts";
+import { type AcpSubagentRoster, makeAcpSubagentRoster } from "./AcpSubagentRoster.ts";
 import {
   applyAcpModelSelection,
   defaultResolveAcpModelId,
@@ -247,6 +239,8 @@ interface AcpSessionContext {
   readonly acpSessionId: string;
   /** What the agent's `initialize` answer says it reads in a prompt. */
   readonly promptCapabilities: EffectAcpSchema.PromptCapabilities | null | undefined;
+  /** The subagents this session's tool calls launched (`subagents`), as the thread shows them. */
+  readonly subagentRoster: AcpSubagentRoster | undefined;
   /**
    * The session's running cost at the last turn boundary, when it is known
    * exactly: zero for a session opened here, or a report between turns. A turn
@@ -329,23 +323,8 @@ interface AcpSessionContext {
   readonly workAfterPrompt: Map<string, AcpWorkAfterPrompt>;
   /** Subagent launches counted so far, by tool call id, so a repeated update counts once. */
   readonly subagentLaunches: Set<string>;
-  /**
-   * Subagents launched and not heard back from. Counted down by the replies
-   * the agent starts by itself; set exactly from the agent's records
-   * (`subagents`) when they name every child still out.
-   */
+  /** Subagents launched and not heard back from (a reply the agent started by itself ended since). */
   subagentsOut: number;
-  /** The launching calls of the subagents still out, for the records (`subagents`). */
-  readonly subagentsPending: Set<string>;
-  /** Subagents shown for this session's launches (`subagents`), by launching call id. */
-  readonly subagentRoster: Map<
-    string,
-    {
-      readonly turnId: TurnId | undefined;
-      readonly launch: AcpSubagentLaunch;
-      status: AcpSubagentStatus;
-    }
-  >;
   /** A reply the agent started by itself has output and no closing `usage_update` yet. */
   replyOpen: boolean;
   /** A held command or timer ended since the last reply: the next reply is its wake. */
@@ -805,7 +784,14 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
     const makeEventStamp = () => Effect.all({ eventId: nextEventId, createdAt: nowIso });
 
     const offerRuntimeEvent = (event: ProviderRuntimeEvent) =>
-      PubSub.publish(runtimeEventPubSub, event).pipe(Effect.asVoid);
+      PubSub.publish(runtimeEventPubSub, event).pipe(
+        // The subagent view follows the session's turns and usage updates.
+        Effect.andThen(
+          Effect.suspend(
+            () => sessions.get(event.threadId)?.subagentRoster?.observe(event) ?? Effect.void,
+          ),
+        ),
+      );
 
     /** The prompt that carried the brief is gone: the conversation holds what it held before. */
     const requeueProjectBrief = (ctx: AcpSessionContext) => {
@@ -1263,17 +1249,13 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
 
     /**
      * The `usage_update` that ends each model call (`heldTurns`): a reply the
-     * agent started by itself is over. The agent's records then say which
-     * subagents are done (`subagents`); the reader moves on meanwhile.
+     * agent started by itself is over.
      */
-    const noteReplyEnd = (ctx: AcpSessionContext) =>
-      Effect.gen(function* () {
-        if (descriptor.heldTurns === undefined) return;
-        ctx.lastAgentActivityMs = Date.now();
-        if (!ctx.replyOpen) return;
-        endReply(ctx);
-        yield* checkSubagents(ctx, "reply").pipe(Effect.forkIn(ctx.scope));
-      });
+    const noteReplyEnd = (ctx: AcpSessionContext) => {
+      if (descriptor.heldTurns === undefined) return;
+      ctx.lastAgentActivityMs = Date.now();
+      if (ctx.replyOpen) endReply(ctx);
+    };
 
     /**
      * A reply the agent started by itself ended (its `usage_update`, or a
@@ -1286,122 +1268,6 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
       if (ctx.workEndedSinceReply) ctx.workEndedSinceReply = false;
       else if (ctx.subagentsOut > 0) ctx.subagentsOut -= 1;
     };
-
-    /**
-     * Reads which launched subagents are done (`subagents`). One that
-     * reported or was killed shows as ended and leaves the pending set. When
-     * the records name every child still pending, the hold is exactly those
-     * children (several reports in one reply free them all; a kill frees
-     * one). Otherwise the count the replies keep stands, and once it reaches
-     * zero after a reply, the children the records don't name show as done.
-     */
-    const checkSubagents = (ctx: AcpSessionContext, moment: "prompt" | "reply") =>
-      Effect.gen(function* () {
-        const subagents = descriptor.subagents;
-        if (subagents === undefined) return;
-        const running = [...ctx.subagentRoster].flatMap(([id, entry]) =>
-          entry.status === "running" ? [id] : [],
-        );
-        const ids = [...new Set([...running, ...ctx.subagentsPending])];
-        if (ids.length === 0) return;
-        const states = yield* subagents.states({
-          sessionId: ctx.acpSessionId,
-          launchCallIds: ids,
-        });
-        for (const [id, state] of states ?? []) {
-          if (state.state === "working") continue;
-          ctx.subagentsPending.delete(id);
-          yield* settleSubagent(
-            ctx,
-            id,
-            state.state === "killed" ? "interrupted" : "completed",
-            state.report,
-          );
-        }
-        if (states !== undefined && [...ctx.subagentsPending].every((id) => states.has(id))) {
-          ctx.subagentsOut = ctx.subagentsPending.size;
-          return;
-        }
-        if (moment === "reply" && ctx.subagentsOut === 0) {
-          for (const id of ids) {
-            ctx.subagentsPending.delete(id);
-            yield* settleSubagent(ctx, id, "completed", undefined);
-          }
-        }
-      });
-
-    /** Emits a subagent's events on the turn that launched it. */
-    const emitSubagentEvents = (
-      ctx: AcpSessionContext,
-      turnId: TurnId | undefined,
-      events: ReadonlyArray<AcpExtensionRuntimeEvent>,
-    ) =>
-      Effect.forEach(
-        events,
-        (event) =>
-          Effect.gen(function* () {
-            yield* offerRuntimeEvent({
-              ...event,
-              ...(yield* makeEventStamp()),
-              provider: PROVIDER,
-              threadId: ctx.threadId,
-              ...(turnId ? { turnId } : {}),
-            } as ProviderRuntimeEvent);
-          }),
-        { discard: true },
-      );
-
-    /** The snapshot of the subagents still running (`subagents`). */
-    const emitSubagentSnapshot = (ctx: AcpSessionContext) =>
-      emitSubagentEvents(ctx, undefined, [
-        acpSubagentSnapshotEvent(
-          [...ctx.subagentRoster].flatMap(([launchCallId, entry]) =>
-            entry.status === "running" ? [{ launchCallId, launch: entry.launch }] : [],
-          ),
-        ),
-      ]);
-
-    /** Shows a launch as a running subagent, once (`subagents`). */
-    const noteSubagentLaunch = (
-      ctx: AcpSessionContext,
-      toolCall: AcpToolCallState,
-      turnId: TurnId | undefined,
-    ) =>
-      Effect.gen(function* () {
-        const subagents = descriptor.subagents;
-        if (subagents === undefined || toolCall.status !== "completed") return;
-        const id = toolCall.toolCallId;
-        if (ctx.subagentRoster.has(id)) return;
-        const launches = subagents.launches(toolCall);
-        if (launches === undefined) return;
-        const launch = describeAcpSubagentLaunches(launches);
-        ctx.subagentRoster.set(id, { turnId, launch, status: "running" });
-        yield* emitSubagentEvents(ctx, turnId, acpSubagentStartedEvents(id, launch));
-        yield* emitSubagentSnapshot(ctx);
-      });
-
-    /** A shown subagent ended, once. */
-    const settleSubagent = (
-      ctx: AcpSessionContext,
-      id: string,
-      status: Exclude<AcpSubagentStatus, "running">,
-      report: string | undefined,
-    ) =>
-      Effect.gen(function* () {
-        const entry = ctx.subagentRoster.get(id);
-        if (entry === undefined || entry.status !== "running") return;
-        entry.status = status;
-        yield* emitSubagentEvents(ctx, entry.turnId, acpSubagentSettledEvents(id, status, report));
-        yield* emitSubagentSnapshot(ctx);
-      });
-
-    /** Stop ends the session's subagents with its turn (Antigravity 1.5.10 cancels them). */
-    const interruptSubagents = (ctx: AcpSessionContext) =>
-      Effect.forEach(
-        [...ctx.subagentRoster].flatMap(([id, entry]) => (entry.status === "running" ? [id] : [])),
-        (id) => settleSubagent(ctx, id, "interrupted", undefined),
-        { discard: true },
-      );
 
     /** Keeps count of the work a tool call goes on with after its prompt (`heldTurns`). */
     const trackWorkAfterPrompt = (ctx: AcpSessionContext, toolCall: AcpToolCallState) => {
@@ -1416,7 +1282,6 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         if (toolCall.status === "completed" && !ctx.subagentLaunches.has(id)) {
           ctx.subagentLaunches.add(id);
           ctx.subagentsOut += 1;
-          ctx.subagentsPending.add(id);
         }
         return;
       }
@@ -1435,7 +1300,6 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
     const clearWorkAfterPrompt = (ctx: AcpSessionContext) => {
       ctx.workAfterPrompt.clear();
       ctx.subagentsOut = 0;
-      ctx.subagentsPending.clear();
       ctx.replyOpen = false;
       ctx.workEndedSinceReply = false;
     };
@@ -1515,10 +1379,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             continue;
           }
           const quietMs = now - ctx.lastAgentActivityMs;
-          if (ctx.replyOpen && quietMs >= replyQuietMs) {
-            endReply(ctx);
-            yield* checkSubagents(ctx, "reply").pipe(Effect.forkIn(ctx.scope));
-          }
+          if (ctx.replyOpen && quietMs >= replyQuietMs) endReply(ctx);
           const work = [...ctx.workAfterPrompt.values()];
           const waiting = work.length > 0 || ctx.subagentsOut > 0 || ctx.replyOpen;
           const settled = !waiting && quietMs >= Duration.toMillis(ACP_HELD_TURN_SETTLE);
@@ -1582,7 +1443,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
         yield* settlePendingUserInputsAsEmptyAnswers(ctx.pendingUserInputs);
         // The agent's process takes its subagents with it.
-        yield* interruptSubagents(ctx);
+        if (ctx.subagentRoster !== undefined) yield* ctx.subagentRoster.end;
         if (ctx.promptFiber) {
           yield* Fiber.interrupt(ctx.promptFiber);
         }
@@ -2382,6 +2243,24 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             lastContextUsageKey: undefined,
             acpSessionId: started.sessionId,
             promptCapabilities: started.initializeResult.agentCapabilities?.promptCapabilities,
+            subagentRoster:
+              descriptor.subagents === undefined
+                ? undefined
+                : makeAcpSubagentRoster({
+                    subagents: descriptor.subagents,
+                    sessionId: started.sessionId,
+                    emit: (event, turnId) =>
+                      Effect.gen(function* () {
+                        yield* offerRuntimeEvent({
+                          ...event,
+                          ...(yield* makeEventStamp()),
+                          provider: PROVIDER,
+                          threadId: input.threadId,
+                          ...(turnId ? { turnId } : {}),
+                        } as ProviderRuntimeEvent);
+                      }),
+                    fork: (effect) => effect.pipe(Effect.forkIn(sessionScope), Effect.asVoid),
+                  }),
             // A session reopened from elsewhere has spent an unknown amount.
             costBaselineUsd:
               (resumeSessionId !== undefined || forkSession !== undefined) &&
@@ -2419,8 +2298,6 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             workAfterPrompt: new Map(),
             subagentLaunches: new Set(),
             subagentsOut: 0,
-            subagentsPending: new Set(),
-            subagentRoster: new Map(),
             replyOpen: false,
             workEndedSinceReply: false,
             lastAgentActivityMs: 0,
@@ -2460,7 +2337,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                     }
                     return;
                   case "ContextUsage": {
-                    yield* noteReplyEnd(ctx);
+                    noteReplyEnd(ctx);
                     // Drives the composer's context meter, same event Codex
                     // and Claude send. Not gated on a prompt: the fill after a
                     // resumed session's replay is still the right reading.
@@ -2518,11 +2395,12 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                       trackWorkAfterPrompt(ctx, event.toolCall);
                     }
                     // A launch approved earlier completes with nothing new to show.
-                    yield* noteSubagentLaunch(
-                      ctx,
-                      event.toolCall,
-                      ctx.toolCallTurns.get(event.toolCall.toolCallId) ?? ctx.activeTurnId,
-                    );
+                    if (ctx.subagentRoster !== undefined) {
+                      yield* ctx.subagentRoster.noteToolCall(
+                        event.toolCall,
+                        ctx.toolCallTurns.get(event.toolCall.toolCallId) ?? ctx.activeTurnId,
+                      );
+                    }
                     return;
                   case "ReasoningDelta":
                     yield* logNative(ctx.threadId, "session/update", event.rawPayload);
@@ -2577,7 +2455,9 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                     const turnId = yield* turnForOutput(ctx, toolCallId);
                     if (descriptor.heldTurns !== undefined)
                       trackWorkAfterPrompt(ctx, event.toolCall);
-                    yield* noteSubagentLaunch(ctx, event.toolCall, turnId);
+                    if (ctx.subagentRoster !== undefined) {
+                      yield* ctx.subagentRoster.noteToolCall(event.toolCall, turnId);
+                    }
                     if (
                       event.toolCall.status === "completed" ||
                       event.toolCall.status === "failed"
@@ -3162,10 +3042,6 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                       stopReason: result.stopReason ?? null,
                     };
             lostSession = hidden?.sessionLost === true;
-            // A child killed or done within the prompt holds nothing (`subagents`).
-            if (payload.state === "completed" && ctx.subagentsPending.size > 0) {
-              yield* checkSubagents(ctx, "prompt");
-            }
             // The agent goes on with work it started (`heldTurns`): the turn
             // stays open, working and stoppable, until that work is done.
             if (
@@ -3330,7 +3206,6 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             ),
           ),
         );
-        yield* interruptSubagents(ctx);
         if (turnId === undefined) return;
         // A turn waiting on the agent's work (`heldTurns`) has no prompt to
         // wait on: the cancel stopped that work, and the turn ends here. Taken

@@ -16,8 +16,9 @@ import type { AcpSubagentState, AcpSubagents } from "../acp/AcpProviderDescripto
 import type { AcpToolCallState } from "../acp/AcpRuntimeModel.ts";
 import {
   antigravityChildLaunches,
-  antigravityChildStates,
+  antigravityChildOf,
   antigravityChildTranscript,
+  readAntigravityChildren,
 } from "./AntigravityChildRecords.ts";
 
 /** The titles a subagent launch arrives under, asked or auto-approved. */
@@ -48,20 +49,20 @@ export function antigravitySubagents(profileDir: string): AcpSubagents {
         ? antigravityChildLaunches(toolCall.data.rawInput)
         : undefined,
     states: ({ sessionId, launchCallIds }) =>
-      antigravityChildStates(profileDir, sessionId, launchCallIds).pipe(
-        Effect.map((children) =>
-          children === undefined
-            ? undefined
-            : new Map(
-                [...children].map(([id, child]): [string, AcpSubagentState] => [
-                  id,
-                  {
-                    state: child.state,
-                    ...(child.report !== undefined ? { report: child.report } : {}),
-                  },
-                ]),
-              ),
-        ),
+      readAntigravityChildren(profileDir, sessionId).pipe(
+        Effect.map((reading) => {
+          if (!reading.available) return undefined;
+          const states = new Map<string, AcpSubagentState>();
+          for (const id of launchCallIds) {
+            const child = antigravityChildOf(reading, id);
+            if (child === undefined) continue;
+            states.set(id, {
+              state: child.state,
+              ...(child.report !== undefined ? { report: child.report } : {}),
+            });
+          }
+          return states;
+        }),
       ),
     transcript: ({ sessionId, launchCallId }) =>
       antigravityChildTranscript(profileDir, sessionId, launchCallId).pipe(

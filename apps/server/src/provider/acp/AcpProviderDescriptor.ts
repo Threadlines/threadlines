@@ -249,9 +249,8 @@ export interface AcpSubagentState {
  * Subagents an agent launches with a tool call that returns at once and
  * reports no end for (Antigravity's `invoke_subagent`): only the agent's own
  * records say which child a call started, whether it is done, and what it
- * did. With it, each launch shows as a subagent, and a turn held for
- * subagents (`heldTurns`) lasts until every child has reported or been
- * killed, as far as the records tell.
+ * did. With it, each launch shows as a subagent (`AcpSubagentRoster`). It
+ * plays no part in how long a turn is held (`heldTurns`).
  */
 export interface AcpSubagents {
   /** The subagents this tool call launches; `undefined` for any other call. */

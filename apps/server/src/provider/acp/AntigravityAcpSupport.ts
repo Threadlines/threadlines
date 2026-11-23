@@ -64,6 +64,7 @@ import {
 } from "../antigravity/AntigravityRelease.ts";
 import type { AntigravityReleaseSource } from "../antigravity/AntigravityReleaseSource.ts";
 import { antigravityAttachmentDelivery } from "../antigravity/AntigravityAttachments.ts";
+import { antigravitySubagents } from "../antigravity/AntigravitySubagents.ts";
 import {
   normalizeAntigravitySessionUpdate,
   normalizeAntigravityToolCall,
@@ -830,6 +831,8 @@ export function makeAntigravityDescriptor(
     normalizeToolCall: normalizeAntigravityToolCall,
     // Images and audio inline, PDFs linked, text files embedded.
     attachmentDelivery: antigravityAttachmentDelivery,
+    // Each launch shows as a subagent, read from the CLI's own records.
+    subagents: antigravitySubagents(paths.profileDir),
     // Work that outlives a prompt, steering, hidden failures, turn tokens.
     ...antigravityTurnBehavior<AntigravitySettings>(paths.profileDir, usage?.usageLimitFor),
     planMode: {

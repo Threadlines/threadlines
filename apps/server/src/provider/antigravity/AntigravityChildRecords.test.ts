@@ -7,7 +7,12 @@ import { it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import { describe, expect } from "vite-plus/test";
 
-import { antigravityChildStates, antigravityChildTranscript } from "./AntigravityChildRecords.ts";
+import {
+  type AntigravityChildrenReading,
+  antigravityChildOf,
+  antigravityChildTranscript,
+  readAntigravityChildren,
+} from "./AntigravityChildRecords.ts";
 
 const PARENT = "7d40e54d-5977-4239-940b-246cdd81a12b";
 
@@ -35,87 +40,144 @@ async function makeProfile() {
     });
     await write([id, ".system_generated", "messages", "read.json"], { launch: true });
   };
-  return { profile, brain, write, child };
+  const report = (child: string, content: string) =>
+    write([PARENT, ".system_generated", "messages", `${child}-report.json`], {
+      sender: child,
+      content,
+    });
+  return { profile, brain, write, child, report };
 }
 
-describe("Antigravity child records", () => {
-  it.live("reads each child's state from its records, and leaves out what they don't prove", () =>
-    Effect.gen(function* () {
-      const records = yield* Effect.promise(makeProfile);
-      yield* Effect.promise(async () => {
-        await records.child("child-working", "call_working");
-        await records.child("child-reported", "call_reported");
-        await records.child("child-killed", "call_killed", "SUBAGENT_STATE_KILLED");
-        // Two children claiming one launch: neither is proven its child.
-        await records.child("child-twin-a", "call_twin");
-        await records.child("child-twin-b", "call_twin");
-        await records.write([PARENT, ".system_generated", "messages", "report.json"], {
-          sender: "child-reported",
-          content: "README.md has 42 lines.",
-        });
-        // A follow-up message is not a launch.
-        await records.write(["child-working", ".system_generated", "messages", "followup.json"], {
-          sender: PARENT,
-          content: "Also check LICENSE",
-          sourceMetadata: { tool: { toolCall: { id: "call_followup", name: "send_message" } } },
-        });
-      });
-      const states = yield* antigravityChildStates(records.profile, PARENT, [
-        "call_working",
-        "call_reported",
-        "call_killed",
-        "call_twin",
-        "call_followup",
-      ]);
-      expect(
-        Object.fromEntries([...states!].map(([id, child]) => [id, [child.state, child.report]])),
-      ).toEqual({
-        call_working: ["working", undefined],
-        call_reported: ["reported", "README.md has 42 lines."],
-        call_killed: ["killed", undefined],
-      });
-      // Without argumentsJson the role comes from the child's entry and the prompt from its launch.
-      expect(states!.get("call_working")?.launch).toEqual({
-        role: "Line Counter",
-        prompt: "Count lines in README.md",
-      });
-      // A child with no transcript yet is still named, with its instruction.
-      const transcript = yield* antigravityChildTranscript(records.profile, PARENT, "call_working");
-      expect(transcript?.child.conversationId).toBe("child-working");
-      expect(transcript?.entries).toEqual([
-        { id: "launch", role: "user", text: "Count lines in README.md", toolUses: [] },
-      ]);
-      yield* Effect.promise(() => rm(records.profile, { recursive: true, force: true }));
-    }),
+const withProfile = <A>(
+  use: (records: Awaited<ReturnType<typeof makeProfile>>) => Effect.Effect<A>,
+) =>
+  Effect.acquireUseRelease(Effect.promise(makeProfile), use, (records) =>
+    Effect.promise(() => rm(records.profile, { recursive: true, force: true })),
   );
 
-  it.live("proves nothing through a link or an unreadable inbox", () =>
-    Effect.gen(function* () {
-      const records = yield* Effect.promise(makeProfile);
-      const elsewhere = yield* Effect.promise(() =>
-        mkdtemp(path.join(os.tmpdir(), "agy-child-elsewhere-")),
-      );
-      yield* Effect.promise(async () => {
-        await records.child("child-a", "call_a");
-        await writeFile(path.join(elsewhere, "transcript.jsonl"), '{"step_index":1}\n');
-        await mkdir(path.join(records.brain, "child-a", ".system_generated"), { recursive: true });
-        await symlink(elsewhere, path.join(records.brain, "child-a", ".system_generated", "logs"));
-      });
-      // The linked transcript is not read: only the instruction shows.
-      const transcript = yield* antigravityChildTranscript(records.profile, PARENT, "call_a");
-      expect(transcript?.entries.map((entry) => entry.id)).toEqual(["launch"]);
+/** Each bucket as `conversationId:launchCallId`, for comparing a whole reading at once. */
+const summary = (reading: AntigravityChildrenReading) =>
+  reading.available
+    ? Object.fromEntries(
+        (["running", "reported", "killed"] as const).map((state) => [
+          state,
+          reading[state].map((child) => `${child.conversationId}:${child.launchCallId ?? "?"}`),
+        ]),
+      )
+    : reading;
 
-      // A message that isn't JSON could be the one that matters.
-      yield* Effect.promise(() =>
-        records.write([PARENT, ".system_generated", "messages", "broken.json"], "{not json"),
-      );
-      expect(yield* antigravityChildStates(records.profile, PARENT, ["call_a"])).toBeUndefined();
-      // A session id that walks a path is refused outright.
-      expect(yield* antigravityChildStates(records.profile, "../x", ["call_a"])).toBeUndefined();
-      yield* Effect.promise(async () => {
-        await rm(records.profile, { recursive: true, force: true });
-        await rm(elsewhere, { recursive: true, force: true });
-      });
-    }),
+describe("readAntigravityChildren", () => {
+  it.live("sorts a session's children into running, reported and killed, by their launch", () =>
+    withProfile((records) =>
+      Effect.gen(function* () {
+        yield* Effect.promise(async () => {
+          await records.child("child-working", "call_working");
+          await records.child("child-reported", "call_reported");
+          await records.child("child-killed", "call_killed", "SUBAGENT_STATE_KILLED");
+          await records.report("child-reported", "README.md has 42 lines.");
+          // A follow-up message is not a launch.
+          await records.write(["child-working", ".system_generated", "messages", "followup.json"], {
+            sender: PARENT,
+            content: "Also check LICENSE",
+            sourceMetadata: { tool: { toolCall: { id: "call_followup", name: "send_message" } } },
+          });
+        });
+        const reading = yield* readAntigravityChildren(records.profile, PARENT);
+        expect(summary(reading)).toEqual({
+          running: ["child-working:call_working"],
+          reported: ["child-reported:call_reported"],
+          killed: ["child-killed:call_killed"],
+        });
+        expect(antigravityChildOf(reading, "call_reported")?.report).toBe(
+          "README.md has 42 lines.",
+        );
+        // Without argumentsJson the role is the entry's and the prompt the launch message's.
+        expect(antigravityChildOf(reading, "call_working")?.launch).toEqual({
+          role: "Line Counter",
+          prompt: "Count lines in README.md",
+        });
+        expect(antigravityChildOf(reading, "call_followup")).toBeUndefined();
+      }),
+    ),
+  );
+
+  it.live("ties no child to a launch two children claim", () =>
+    withProfile((records) =>
+      Effect.gen(function* () {
+        yield* Effect.promise(async () => {
+          await records.child("child-a", "call_twin");
+          await records.child("child-b", "call_twin");
+        });
+        const reading = yield* readAntigravityChildren(records.profile, PARENT);
+        expect(summary(reading)).toEqual({
+          running: ["child-a:?", "child-b:?"],
+          reported: [],
+          killed: [],
+        });
+        expect(antigravityChildOf(reading, "call_twin")).toBeUndefined();
+      }),
+    ),
+  );
+
+  it.live("says when there are no records, and when they can't be trusted", () =>
+    withProfile((records) =>
+      Effect.gen(function* () {
+        expect(yield* readAntigravityChildren(records.profile, PARENT)).toEqual({
+          available: false,
+          reason: "no-records",
+        });
+        // A session id that walks a path is refused outright.
+        expect(yield* readAntigravityChildren(records.profile, "../x")).toEqual({
+          available: false,
+          reason: "unreadable",
+        });
+        yield* Effect.promise(() => records.child("child-a", "call_a"));
+        expect((yield* readAntigravityChildren(records.profile, PARENT)).available).toBe(true);
+        // A message that isn't JSON could be the report that matters.
+        yield* Effect.promise(() =>
+          records.write([PARENT, ".system_generated", "messages", "broken.json"], "{not json"),
+        );
+        expect(yield* readAntigravityChildren(records.profile, PARENT)).toEqual({
+          available: false,
+          reason: "unreadable",
+        });
+      }),
+    ),
+  );
+
+  it.live("doesn't follow a link out of the profile", () =>
+    withProfile((records) =>
+      Effect.gen(function* () {
+        const elsewhere = yield* Effect.promise(() =>
+          mkdtemp(path.join(os.tmpdir(), "agy-child-elsewhere-")),
+        );
+        yield* Effect.promise(async () => {
+          await records.child("child-a", "call_a");
+          await writeFile(path.join(elsewhere, "transcript.jsonl"), '{"step_index":1}\n');
+          await mkdir(path.join(records.brain, "child-a", ".system_generated"), {
+            recursive: true,
+          });
+          await symlink(
+            elsewhere,
+            path.join(records.brain, "child-a", ".system_generated", "logs"),
+          );
+        });
+        // The linked transcript is not read: only the instruction shows.
+        const transcript = yield* antigravityChildTranscript(records.profile, PARENT, "call_a");
+        expect(transcript?.entries.map((entry) => entry.id)).toEqual(["launch"]);
+        // A linked subagents folder is no records at all.
+        yield* Effect.promise(async () => {
+          await rm(path.join(records.brain, PARENT, ".system_generated", "subagents"), {
+            recursive: true,
+          });
+          await symlink(
+            elsewhere,
+            path.join(records.brain, PARENT, ".system_generated", "subagents"),
+          );
+        });
+        expect((yield* readAntigravityChildren(records.profile, PARENT)).available).toBe(false);
+        yield* Effect.promise(() => rm(elsewhere, { recursive: true, force: true }));
+      }),
+    ),
   );
 });
