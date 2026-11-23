@@ -443,8 +443,16 @@ Every computer has its own set: the menu groups projects under each computer's n
       "iphone duo",
       "foldable",
       "accessibility frames",
+      "record",
+      "recording",
+      "float",
+      "floating",
+      "chips",
+      "event log",
     ],
-    body: `The Device tab in the right panel shows a live iOS Simulator or Android Emulator running on the thread's computer. You tap, swipe and type on its screen as on a phone. The screen sits in a drawing of the device's model (an unknown model gets a plain frame). The toolbar above it has Home, the app switcher, Back and Recents on Android, rotate, screenshot, accessibility frames and power off. Accessibility frames outline each element on screen and show its label on hover; their Inspect button makes a tap show the label instead of touching the device. An iPhone Duo shows its stance buttons beside the screen (closed, book, open, laptop, tent, and table mode where offered), and an Android foldable shows fold and unfold. The Tools drawer sets appearance, text size, accessibility options, location and permissions, opens a URL, launches or quits an app, shakes the device, sends a test push, and on Android sets the network.
+    body: `The Device tab in the right panel shows a live iOS Simulator or Android Emulator running on the thread's computer. You tap, swipe and type on its screen as on a phone (touch screens also get a Keyboard button). The screen sits in a drawing of the device's model (an unknown model gets a plain frame). You can open several devices at once in a thread: each open device is a chip across the top (rename from its menu or by double-clicking, + opens the picker), and only the visible one streams. The Float button moves a device into a small draggable, resizable window over the chat while the right panel shows something else; Open in right panel brings it back (floating is hidden in the phone layout).
+
+The toolbar above the screen has Home, the app switcher, Back and Recents on Android, rotate, save screenshot, record a flow, float, accessibility frames, Tools, and a More menu with Close device and Power off. Record a flow captures taps, buttons, Tools actions, key screenshots and a video of the screen (up to 3 minutes or 10 MB) and appends them to the thread's unsent draft; any file the draft cannot save stays available to download in the Device tab. Accessibility frames outline each element on screen and show its label on hover; their Inspect button makes a tap show the label instead of touching the device. An iPhone Duo shows its stance buttons beside the screen (closed, book, open, laptop, tent, and table mode where offered), and an Android foldable shows fold and unfold. The Tools drawer sets appearance, text size, accessibility options, location and permissions, opens a URL, launches or quits an app, shakes an iOS simulator, sends a test push and streams the event log on iOS, and sets the network on Android.
 
 Open it from the right panel's + menu or its launcher, or with Open device in the command palette. It shows in project threads, not General Chats.
 

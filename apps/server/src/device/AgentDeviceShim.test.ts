@@ -32,72 +32,110 @@ const listeningPort = Effect.acquireRelease(
 ).pipe(Effect.map((server) => (server.address() as NodeNet.AddressInfo).port));
 
 describe.skipIf(process.platform === "win32")("agent-device launcher", () => {
-  it.live("binds one device's flags, lets the agent's own flags win, and leaves help alone", () =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "tl-device-launcher-" });
-      const port = yield* listeningPort;
-      const entryPath = path.join(dir, "cli.mjs");
-      yield* fs.writeFileString(entryPath, "console.log(JSON.stringify(process.argv.slice(2)));");
-      const config = agentDeviceConfigPath(path, dir);
-      yield* writeAgentDeviceConfig(config, { baseUrl: `http://127.0.0.1:${port}`, token: "t" });
-      const target = [
-        "--platform",
-        "ios",
-        "--udid",
-        "UDID-1",
-        "--config",
-        config,
-        "--session",
-        "tl-a",
-      ];
-      const command = yield* bindAgentDeviceLauncher({
-        stateDir: dir,
-        threadId: "thread-1",
-        deviceId: "UDID-1",
-        node: process.execPath,
-        entryPath,
-        targetArgs: target,
-      });
-      expect(command).toBe(
-        path.join(agentDeviceLaunchersDir(path, dir), "thread-1", "UDID-1", "agent-device"),
-      );
-      const launch = (args: ReadonlyArray<string>) =>
-        exec(command, [...args]).then((result) => JSON.parse(result.stdout));
+  it.live(
+    "binds one device's flags, refuses override flags, strips Android --serial on cdp, and leaves help alone",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const dir = yield* fs.makeTempDirectoryScoped({ prefix: "tl-device-launcher-" });
+        const port = yield* listeningPort;
+        const entryPath = path.join(dir, "cli.mjs");
+        yield* fs.writeFileString(entryPath, "console.log(JSON.stringify(process.argv.slice(2)));");
+        const config = agentDeviceConfigPath(path, dir);
+        yield* writeAgentDeviceConfig(config, { baseUrl: `http://127.0.0.1:${port}`, token: "t" });
+        const target = [
+          "--platform",
+          "ios",
+          "--udid",
+          "UDID-1",
+          "--config",
+          config,
+          "--session",
+          "tl-a",
+        ];
+        const command = yield* bindAgentDeviceLauncher({
+          stateDir: dir,
+          threadId: "thread-1",
+          deviceId: "UDID-1",
+          node: process.execPath,
+          entryPath,
+          targetArgs: target,
+        });
+        expect(command).toBe(
+          path.join(agentDeviceLaunchersDir(path, dir), "thread-1", "UDID-1", "agent-device"),
+        );
+        const launch = (args: ReadonlyArray<string>) =>
+          exec(command, [...args]).then((result) => JSON.parse(result.stdout));
 
-      expect(yield* Effect.promise(() => launch(["snapshot", "-i"]))).toEqual([
-        "snapshot",
-        "-i",
-        ...target,
-      ]);
-      expect(yield* Effect.promise(() => launch(["open", "--session", "mine"]))).toEqual([
-        "open",
-        "--session",
-        "mine",
-        ...target.slice(0, 6),
-      ]);
-      // After `--` everything is text, and bound flags go before it.
-      expect(yield* Effect.promise(() => launch(["fill", "@e5", "--", "--help"]))).toEqual([
-        "fill",
-        "@e5",
-        ...target,
-        "--",
-        "--help",
-      ]);
-      for (const args of [["help", "gesture"], ["open", "--help"], []]) {
-        expect(yield* Effect.promise(() => launch(args))).toEqual(args);
-      }
-      // Commands that would replace Threadlines' connection are refused.
-      yield* Effect.promise(() =>
-        expect(launch(["daemon", "stop"])).rejects.toThrow("Threadlines manages this command"),
-      );
-      // A runtime that moved since device_open names the fix.
-      yield* fs.remove(entryPath);
-      yield* Effect.promise(() =>
-        expect(launch(["snapshot"])).rejects.toThrow("Call device_open again"),
-      );
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+        expect(yield* Effect.promise(() => launch(["snapshot", "-i"]))).toEqual([
+          "snapshot",
+          "-i",
+          ...target,
+        ]);
+        // Override flags are refused so every session stays one Threadlines ends.
+        for (const args of [
+          ["open", "--session", "mine"],
+          ["open", "-s", "mine"],
+          ["snapshot", "--udid=OTHER"],
+          ["snapshot", "--daemon-base-url", "http://127.0.0.1:9999"],
+        ]) {
+          yield* Effect.promise(() =>
+            expect(launch(args)).rejects.toThrow("bound to one device and its session"),
+          );
+        }
+        // Positional `-h` on text commands is text, not help.
+        expect(yield* Effect.promise(() => launch(["fill", "@e5", "-h"]))).toEqual([
+          "fill",
+          "@e5",
+          "-h",
+          ...target,
+        ]);
+        // Android `cdp` strips `--serial` as well as `--platform`/`--config`/`--session`.
+        const androidCommand = yield* bindAgentDeviceLauncher({
+          stateDir: dir,
+          threadId: "thread-1",
+          deviceId: "emulator-5554",
+          node: process.execPath,
+          entryPath,
+          targetArgs: [
+            "--platform",
+            "android",
+            "--serial",
+            "emulator-5554",
+            "--config",
+            config,
+            "--session",
+            "tl-b",
+          ],
+        });
+        const launchAndroid = (args: ReadonlyArray<string>) =>
+          exec(androidCommand, [...args]).then((result) => JSON.parse(result.stdout));
+        expect(yield* Effect.promise(() => launchAndroid(["cdp", "list"]))).toEqual([
+          "cdp",
+          "list",
+        ]);
+        // After `--` everything is text, and bound flags go before it.
+        expect(yield* Effect.promise(() => launch(["fill", "@e5", "--", "--help"]))).toEqual([
+          "fill",
+          "@e5",
+          ...target,
+          "--",
+          "--help",
+        ]);
+        for (const args of [["help", "gesture"], ["open", "--help"], []]) {
+          expect(yield* Effect.promise(() => launch(args))).toEqual(args);
+        }
+        // Commands that would replace Threadlines' connection are refused.
+        yield* Effect.promise(() =>
+          expect(launch(["daemon", "stop"])).rejects.toThrow("Threadlines manages this command"),
+        );
+        // A runtime that moved since device_open names the fix.
+        yield* fs.remove(entryPath);
+        yield* Effect.promise(() =>
+          expect(launch(["snapshot"])).rejects.toThrow("Call device_open again"),
+        );
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
   it.live("says the device connection is down before running agent-device", () =>

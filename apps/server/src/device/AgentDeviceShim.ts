@@ -1,4 +1,5 @@
 // @effect-diagnostics globalJsonInEffect:off - JSON string literals embed paths safely into generated JavaScript.
+// @effect-diagnostics nodeBuiltinImport:off - sha256 digest for non-plain device ids.
 /**
  * The `agent-device` launcher `device_open` hands an agent
  * (docs/design/devices.md). One per thread and device, at
@@ -9,10 +10,13 @@
  * would replace Threadlines' connection, and checks the connection first so a
  * sandboxed shell and a dead daemon get different messages.
  */
+import { createHash } from "node:crypto";
+
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 
+import { writeFileStringAtomically } from "../atomicWrite.ts";
 import { deviceStateDir } from "./DeviceToolchain.ts";
 
 const STALE_RUNTIME =
@@ -169,7 +173,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { connect } from "node:net";
 const entry = ${JSON.stringify(entryPath)};
 const bound = ${JSON.stringify(boundArgs)};
-const refused = new Map([["cdp", ["--platform", "--udid", "--config", "--session"]], ["connection", ["--platform", "--udid"]]]);
+const refused = new Map([["cdp", ["--platform", "--udid", "--serial", "--config", "--session"]], ["connection", ["--platform", "--udid", "--serial"]]]);
 const managed = ["connect", "disconnect", "auth", "daemon"];
 const args = process.argv.slice(2);
 const end = args.indexOf("--");
@@ -182,7 +186,14 @@ for (let index = 0; index < args.length; index++) {
   if (!arg.startsWith("-")) { name = arg; break; }
   if (!arg.includes("=") && valued.has(arg)) index++;
 }
-const informational = args.length === 0 || ["help", "--help", "-h", "--version", "version"].includes(args[0]) || options.includes("--help") || options.includes("-h");
+const textCommands = new Set(["fill", "type"]);
+let hasHelpFlag = false;
+for (let index = 0; index < options.length; index++) {
+  const arg = options[index];
+  if (arg === "--help" || (arg === "-h" && !textCommands.has(name))) { hasHelpFlag = true; break; }
+  if (!arg.includes("=") && valued.has(arg)) index++;
+}
+const informational = args.length === 0 || ["help", "--help", "-h", "--version", "version"].includes(args[0]) || hasHelpFlag;
 if (!informational && managed.includes(name)) {
   console.error("Threadlines manages this command's connection to the device, so \`" + name + "\` is not available through it.");
   process.exit(1);
@@ -192,6 +203,22 @@ if (!informational && name === "device") {
   process.exit(1);
 }
 const skip = refused.get(name) ?? [];
+// Its device, session and daemon are bound: an agent's own would open a session Threadlines cannot end.
+const locked = new Set([...bound.filter((_, index) => index % 2 === 0), "--device", "-d", "--serial", "--udid", "--platform", "--session", "-s", "--config", "--daemon-base-url", "--daemon-auth-token", "--state-dir"]);
+let overridden;
+if (bound.length > 0 && !informational) {
+  for (let index = 0; index < options.length; index++) {
+    const arg = options[index];
+    const eq = arg.indexOf("=");
+    const flag = eq > 0 ? arg.slice(0, eq) : arg;
+    if (locked.has(flag)) { overridden = flag; break; }
+    if (eq < 0 && valued.has(arg)) index++;
+  }
+}
+if (overridden) {
+  console.error("This command is bound to one device and its session, so it takes no " + overridden + ". Leave it out, or call device_open for another device.");
+  process.exit(1);
+}
 if (!informational) for (let index = 0; index + 1 < bound.length; index += 2) if (!skip.includes(bound[index]) && !options.some(arg => arg === bound[index] || arg.startsWith(bound[index] + "="))) options.push(bound[index], bound[index + 1]);
 const command = end < 0 ? options : [...options, ...args.slice(end)];
 const hasValue = flag => { const index = options.indexOf(flag); return options.some(arg => arg.startsWith(flag + "=") && arg.length > flag.length + 1) || (index >= 0 && !!options[index + 1] && !options[index + 1].startsWith("--")); };
@@ -227,9 +254,12 @@ delete env.AGENT_DEVICE_DAEMON_BASE_URL;
 delete env.AGENT_DEVICE_DAEMON_AUTH_TOKEN;
 delete env.AGENT_DEVICE_CONFIG;
 const child = spawn(${JSON.stringify(node)}, [entry, ...command], { stdio: "inherit", env });
+for (const signal of ["SIGTERM", "SIGINT"]) process.on(signal, () => { if (!child.killed) child.kill(signal); });
 child.on("error", error => { console.error(error.message); process.exitCode = 1; });
 child.on("exit", code => { process.exitCode = code ?? 1; });
 `;
+
+const escapeCmd = (value: string) => value.replaceAll("%", "%%");
 
 /** Writes a launcher into `dir` and returns the executable agents run. */
 const writeLauncher = Effect.fn("AgentDeviceShim.writeLauncher")(function* (input: {
@@ -243,27 +273,32 @@ const writeLauncher = Effect.fn("AgentDeviceShim.writeLauncher")(function* (inpu
   const node = input.node;
   yield* fs.makeDirectory(input.dir, { recursive: true });
   const launcherPath = path.join(input.dir, "agent-device-launcher.mjs");
-  yield* fs.writeFileString(launcherPath, launcherSource(node, input.entryPath, input.boundArgs));
+  yield* writeFileStringAtomically({
+    filePath: launcherPath,
+    contents: launcherSource(node, input.entryPath, input.boundArgs),
+  });
   if (process.platform === "win32") {
-    const script = `@echo off\r\nsetlocal EnableExtensions DisableDelayedExpansion\r\nif not exist "${node}" (echo ${STALE_RUNTIME} 1>&2 & exit /b 1)\r\n"${node}" "${launcherPath}" %*\r\n`;
+    const safeNode = escapeCmd(node);
+    const safeLauncher = escapeCmd(launcherPath);
+    const script = `@echo off\r\nsetlocal EnableExtensions DisableDelayedExpansion\r\nif not exist "${safeNode}" (echo ${STALE_RUNTIME} 1>&2 & exit /b 1)\r\n"${safeNode}" "${safeLauncher}" %*\r\n`;
     const scriptPath = path.join(input.dir, "agent-device.cmd");
-    yield* fs.writeFileString(scriptPath, script);
+    yield* writeFileStringAtomically({ filePath: scriptPath, contents: script });
     return scriptPath;
   }
   const script = `#!/bin/sh\n[ -x ${quoteShell(node)} ] || { echo ${quoteShell(STALE_RUNTIME)} >&2; exit 1; }\nexec ${quoteShell(node)} ${quoteShell(launcherPath)} "$@"\n`;
   const scriptPath = path.join(input.dir, "agent-device");
-  yield* fs.writeFileString(scriptPath, script);
+  yield* writeFileStringAtomically({ filePath: scriptPath, contents: script });
   yield* fs.chmod(scriptPath, 0o755);
   return scriptPath;
 });
 
 const SAFE_SEGMENT = /^[A-Za-z0-9._-]{1,128}$/;
 
-/** A path segment for an id: the id itself when it is plain, else a digest of it. */
+/** A path segment for an id: the id itself when it is plain, else a sha256 digest of it. */
 const segment = (id: string) =>
   SAFE_SEGMENT.test(id) && id !== "." && id !== ".."
     ? id
-    : `x-${Buffer.from(id).toString("base64url").slice(0, 96)}`;
+    : `x-${createHash("sha256").update(id).digest("hex").slice(0, 24)}`;
 
 /** `<stateDir>/device/bin`. */
 export const agentDeviceLaunchersDir = (path: Path.Path, stateDir: string) =>

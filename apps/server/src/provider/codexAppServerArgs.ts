@@ -70,6 +70,13 @@ export const CODEX_BROWSER_TOKEN_ENV_VAR = "THREADLINES_MCP_BEARER_TOKEN";
  */
 export const CODEX_ROOM_TOOL_TIMEOUT_SEC = Duration.toSeconds(ROOM_TOOL_CALL_TIMEOUT);
 
+/**
+ * How long Codex waits on one device tool call (its own default is 60s).
+ * A first `device_open` can install expo-device-hub / agent-device and cold-boot
+ * a simulator or emulator (up to 3 min boot timeout).
+ */
+export const CODEX_DEVICE_TOOL_TIMEOUT_SEC = 300;
+
 /** An MCP server over streamable HTTP, its credential from the environment. */
 const httpMcpServerArgs = (serverName: string, url: string): ReadonlyArray<string> => [
   "-c",
@@ -132,7 +139,18 @@ export function codexAppServerArgs(servers?: {
     ...(servers?.room !== undefined ? codexRoomServerArgs(servers.room) : []),
     ...(servers?.pages !== undefined ? codexPagesServerArgs(servers.pages) : []),
     ...(servers?.commands !== undefined ? codexPagesServerArgs(servers.commands) : []),
-    ...(servers?.device !== undefined ? codexPagesServerArgs(servers.device) : []),
+    ...(servers?.device !== undefined ? codexDeviceServerArgs(servers.device) : []),
+  ];
+}
+
+function codexDeviceServerArgs(device: {
+  readonly url: string;
+  readonly serverName: string;
+}): ReadonlyArray<string> {
+  return [
+    ...codexPagesServerArgs(device),
+    "-c",
+    `mcp_servers.${device.serverName}.tool_timeout_sec=${CODEX_DEVICE_TOOL_TIMEOUT_SEC}`,
   ];
 }
 

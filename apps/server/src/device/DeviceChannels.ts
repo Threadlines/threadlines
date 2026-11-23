@@ -54,8 +54,8 @@ const GET_PATHS: ReadonlyArray<RegExp> = [
   /^\/api\/devices$/,
   /^\/vendor\/serve-sim\/api\/screenshot$/,
   /^\/vendor\/serve-sim\/api\/event-log(\/events)?$/,
-  /^\/vendor\/serve-sim\/helper\/[^/]+\/(stream\.mjpeg|stream\.avcc|config|health|ax|foreground)$/,
-  /^\/vendor\/serve-sim\/helper\/[^/]+\/panel\/(1|3)\/stream\.avcc$/,
+  /^\/vendor\/serve-sim\/helper\/[A-Za-z0-9._-]+\/(stream\.mjpeg|stream\.avcc|config|health|ax|foreground)$/,
+  /^\/vendor\/serve-sim\/helper\/[A-Za-z0-9._-]+\/panel\/(1|3)\/stream\.avcc$/,
   /^\/vendor\/serve-sim\/appstate$/,
   /^\/vendor\/serve-emu\/api\/(devices|screenshot|stream-mode|stream-settings|accessibility|fold)$/,
   /^\/vendor\/serve-emu\/health$/,
@@ -79,12 +79,27 @@ const SCREENSHOT_PATHS = new Set([
   "/vendor/serve-emu/api/screenshot",
 ]);
 
+/** RFC 6455 subprotocol token: ASCII visible non-separator characters. */
+const WS_PROTOCOL_TOKEN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+
+const areValidProtocols = (protocols: ReadonlyArray<string> | undefined): boolean => {
+  if (protocols === undefined || protocols.length === 0) return true;
+  const seen = new Set<string>();
+  for (const protocol of protocols) {
+    if (!WS_PROTOCOL_TOKEN.test(protocol) || seen.has(protocol)) return false;
+    seen.add(protocol);
+  }
+  return true;
+};
+
 /**
- * Whether a client may open `path` this way. Segments that a URL parser
- * would rewrite (`.`, `..`, escapes, backslashes, empty) are refused outright,
- * so what is checked is what reaches the hub.
+ * Whether a client may open `path` this way. Control characters, whitespace,
+ * query/fragment markers, and segments a URL parser would rewrite (`.`, `..`,
+ * escapes, backslashes, empty) are refused outright, so what is checked is
+ * what reaches the hub.
  */
 export const isAllowedDevicePath = (kind: "GET" | "POST" | "ws", path: string): boolean => {
+  if (!path.startsWith("/") || /[\x00-\x1f\x7f?#\s]/.test(path)) return false;
   const segments = path.split("/").slice(1);
   if (
     segments.some(
@@ -113,18 +128,44 @@ const upstreamSearch = (query: Readonly<Record<string, string>> | undefined) => 
   return text === "" ? "" : `?${text}`;
 };
 
+/** Builds a hub URL and verifies WHATWG URL normalization left `path` unchanged. */
+const canonicalHubUrl = (
+  origin: string,
+  path: string,
+  query: Readonly<Record<string, string>> | undefined,
+): Effect.Effect<string, DeviceChannelError> =>
+  Effect.try({
+    try: () => {
+      const url = `${origin}${path}${upstreamSearch(query)}`;
+      const parsed = new URL(url);
+      if (parsed.pathname !== path) {
+        throw new Error("Path changed under URL normalization.");
+      }
+      return url;
+    },
+    catch: () => failure("forbidden", "That device path is not available."),
+  });
+
 const oneEvent = (event: DeviceChannelEvent): Stream.Stream<DeviceChannelEvent> =>
   Stream.succeed(event);
 
 const failure = (reason: DeviceChannelError["reason"], detail: string) =>
   new DeviceChannelError({ reason, detail });
 
+interface Chunk {
+  /** base64 */
+  readonly data: string;
+  /** Exact decoded byte count: what the client credits back. */
+  readonly bytes: number;
+}
+
 /** Slices of at most DEVICE_CHANNEL_CHUNK_BYTES, base64. */
-const toChunks = (bytes: Uint8Array): ReadonlyArray<string> => {
+const toChunks = (bytes: Uint8Array): ReadonlyArray<Chunk> => {
   const buffer = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const chunks: Array<string> = [];
+  const chunks: Array<Chunk> = [];
   for (let offset = 0; offset < buffer.length; offset += DEVICE_CHANNEL_CHUNK_BYTES) {
-    chunks.push(buffer.subarray(offset, offset + DEVICE_CHANNEL_CHUNK_BYTES).toString("base64"));
+    const slice = buffer.subarray(offset, offset + DEVICE_CHANNEL_CHUNK_BYTES);
+    chunks.push({ data: slice.toString("base64"), bytes: slice.length });
   }
   return chunks;
 };
@@ -139,8 +180,8 @@ interface Channel {
   unacknowledged: number;
   /** Credit arrived: let a waiting http body continue, or resume a paused socket. */
   readonly onCredit: () => void;
-  /** Set for a ws channel. */
-  readonly socket: WebSocket | null;
+  /** Set for a ws channel once the upstream socket is created. */
+  socket: WebSocket | null;
   nextSeq: number;
   readonly waiting: Map<number, PendingSend>;
 }
@@ -225,9 +266,8 @@ export const make = Effect.gen(function* () {
     const credited = yield* Latch.make(true);
     const channel: Channel = {
       unacknowledged: 0,
-      onCredit: () => {
-        if (channel.unacknowledged < DEVICE_CHANNEL_WINDOW_BYTES) Latch.openUnsafe(credited);
-      },
+      // The sender checks again whether its slice fits; a credit only wakes it.
+      onCredit: () => Latch.openUnsafe(credited),
       socket: null,
       nextSeq: 0,
       waiting: new Map(),
@@ -235,15 +275,20 @@ export const make = Effect.gen(function* () {
     yield* register(connectionId, input.channelId, channel, () => Latch.openUnsafe(credited));
 
     // Waits for credit before each slice goes out: the body is pulled only as fast as the client takes it.
-    const paced = (slices: Stream.Stream<string, DeviceChannelError>) =>
+    // A slice goes out only when it fits in the window whole (or nothing is outstanding).
+    const paced = (slices: Stream.Stream<Chunk, DeviceChannelError>) =>
       slices.pipe(
-        Stream.mapEffect((data) =>
+        Stream.mapEffect((chunk) =>
           Effect.gen(function* () {
-            yield* credited.await;
-            // Exact decoded size: the client credits decoded bytes, so an estimate would drift.
-            channel.unacknowledged += Buffer.byteLength(data, "base64");
-            if (channel.unacknowledged >= DEVICE_CHANNEL_WINDOW_BYTES) Latch.closeUnsafe(credited);
-            return { _tag: "data", data } as const;
+            while (
+              channel.unacknowledged > 0 &&
+              channel.unacknowledged + chunk.bytes > DEVICE_CHANNEL_WINDOW_BYTES
+            ) {
+              Latch.closeUnsafe(credited);
+              yield* credited.await;
+            }
+            channel.unacknowledged += chunk.bytes;
+            return { _tag: "data", data: chunk.data } as const;
           }),
         ),
       );
@@ -261,7 +306,7 @@ export const make = Effect.gen(function* () {
     }
 
     const hub = yield* hubOrUnavailable;
-    const url = `${hub.origin}${input.path}${upstreamSearch(input.query)}`;
+    const url = yield* canonicalHubUrl(hub.origin, input.path, input.query);
     const request = (
       input.method === "POST" ? HttpClientRequest.post(url) : HttpClientRequest.get(url)
     ).pipe(
@@ -301,51 +346,63 @@ export const make = Effect.gen(function* () {
     connectionId: string,
     input: Extract<DeviceChannelOpen, { _tag: "ws" }>,
   ) {
-    if (!isAllowedDevicePath("ws", input.path)) {
+    if (!isAllowedDevicePath("ws", input.path) || !areValidProtocols(input.protocols)) {
       return yield* failure("forbidden", "That device path is not available.");
     }
     const hub = yield* hubOrUnavailable;
-    const url = `${hub.origin.replace(/^http/, "ws")}${input.path}${upstreamSearch(input.query)}`;
+    const url = yield* canonicalHubUrl(hub.origin.replace(/^http/, "ws"), input.path, input.query);
     const queue = yield* Queue.unbounded<DeviceChannelEvent, DeviceChannelError | Cause.Done>();
     let paused = false;
-    // An `error` with no listener would take the server down: one is on from the start.
-    const socket = new WebSocket(url, input.protocols ? [...input.protocols] : [], {
-      headers: { authorization: `Bearer ${hub.token}` },
-      handshakeTimeout: OPEN_TIMEOUT_MS,
-      perMessageDeflate: false,
-    });
-    socket.binaryType = "nodebuffer";
     const channel: Channel = {
       unacknowledged: 0,
       onCredit: () => {
         if (paused && channel.unacknowledged < DEVICE_CHANNEL_WINDOW_BYTES / 2) {
           paused = false;
-          socket.resume();
+          channel.socket?.resume();
         }
       },
-      socket,
+      socket: null,
       nextSeq: 0,
       waiting: new Map(),
     };
+    // The slot first: a channel refused for the limit or a reused id never reaches the hub.
+    yield* register(connectionId, input.channelId, channel, () => channel.socket?.terminate());
+    // An `error` with no listener would take the server down: one is on from the start.
+    const socket = yield* Effect.try({
+      try: () =>
+        new WebSocket(url, input.protocols ? [...input.protocols] : [], {
+          headers: { authorization: `Bearer ${hub.token}` },
+          handshakeTimeout: OPEN_TIMEOUT_MS,
+          perMessageDeflate: false,
+        }),
+      catch: (error) =>
+        failure("forbidden", error instanceof Error ? error.message : "Invalid device socket."),
+    });
+    socket.binaryType = "nodebuffer";
+    channel.socket = socket;
     const fail = (error: DeviceChannelError) => {
       settleWaiting(channel, error);
       Queue.failCauseUnsafe(queue, Cause.fail(error));
       socket.terminate();
     };
     socket.on("error", (error) => fail(failure("broken", error.message)));
-    // A refused open (a duplicate id, or the connection's limit) must not leave the socket up.
-    yield* register(connectionId, input.channelId, channel, () => socket.terminate()).pipe(
-      Effect.onError(() => Effect.sync(() => socket.terminate())),
-    );
 
     socket.on("message", (data: Buffer | ArrayBuffer | Array<Buffer>, isBinary: boolean) => {
       const bytes = Array.isArray(data) ? Buffer.concat(data) : Buffer.from(data as Buffer);
+      // Paused, the socket may still hand over what it had read: past the cap, the client is gone.
+      if (
+        channel.unacknowledged + bytes.length >
+        DEVICE_CHANNEL_WINDOW_BYTES + DEVICE_CHANNEL_SLOW_BYTES
+      ) {
+        fail(failure("slow", "The device stream got too far ahead of this client."));
+        return;
+      }
       if (isBinary) {
         const parts = toChunks(bytes);
         parts.forEach((part, index) =>
           Queue.offerUnsafe(queue, {
             _tag: "message",
-            data: part,
+            data: part.data,
             binary: true,
             final: index === parts.length - 1,
           }),
@@ -355,20 +412,27 @@ export const make = Effect.gen(function* () {
       } else {
         const text = bytes.toString("utf8");
         const step = DEVICE_CHANNEL_CHUNK_BYTES / 4;
-        for (let offset = 0; offset < Math.max(text.length, 1); offset += step) {
-          Queue.offerUnsafe(queue, {
-            _tag: "message",
-            data: text.slice(offset, offset + step),
-            binary: false,
-            final: offset + step >= text.length,
-          });
+        if (text.length === 0) {
+          Queue.offerUnsafe(queue, { _tag: "message", data: "", binary: false, final: true });
+        } else {
+          for (let offset = 0; offset < text.length;) {
+            let end = Math.min(offset + step, text.length);
+            // Keep UTF-16 surrogate pairs together so JSON chunks stay valid UTF-8 and credit stays exact.
+            if (end < text.length) {
+              const last = text.charCodeAt(end - 1);
+              if (last >= 0xd800 && last <= 0xdbff && end - offset > 1) end -= 1;
+            }
+            Queue.offerUnsafe(queue, {
+              _tag: "message",
+              data: text.slice(offset, end),
+              binary: false,
+              final: end >= text.length,
+            });
+            offset = end;
+          }
         }
       }
       channel.unacknowledged += bytes.length;
-      if (channel.unacknowledged > DEVICE_CHANNEL_WINDOW_BYTES + DEVICE_CHANNEL_SLOW_BYTES) {
-        fail(failure("slow", "The device stream got too far ahead of this client."));
-        return;
-      }
       if (!paused && channel.unacknowledged >= DEVICE_CHANNEL_WINDOW_BYTES) {
         paused = true;
         socket.pause();
@@ -387,20 +451,46 @@ export const make = Effect.gen(function* () {
       });
     });
     yield* Effect.callback<void, DeviceChannelError>((resume) => {
-      if (socket.readyState === WebSocket.OPEN) return resume(Effect.void);
-      socket.once("open", () => resume(Effect.void));
-      socket.once("unexpected-response", (_request, response) => {
+      if (socket.readyState === WebSocket.OPEN) {
+        resume(Effect.void);
+        return;
+      }
+      if (socket.readyState === WebSocket.CLOSING || socket.readyState === WebSocket.CLOSED) {
+        resume(Effect.fail(failure("unreachable", "The device hub closed the socket.")));
+        return;
+      }
+      const cleanup = () => {
+        socket.off("open", onOpen);
+        socket.off("unexpected-response", onUnexpected);
+        socket.off("close", onClose);
+        socket.off("error", onError);
+      };
+      const onOpen = () => {
+        cleanup();
+        resume(Effect.void);
+      };
+      const onUnexpected = (_request: unknown, response: { readonly statusCode?: number }) => {
+        cleanup();
         resume(
           Effect.fail(
             failure("unreachable", `The device hub refused the socket (${response.statusCode}).`),
           ),
         );
         socket.terminate();
-      });
-      socket.once("close", () =>
-        resume(Effect.fail(failure("unreachable", "The device hub closed the socket."))),
-      );
-      socket.once("error", (error) => resume(Effect.fail(failure("unreachable", error.message))));
+      };
+      const onClose = () => {
+        cleanup();
+        resume(Effect.fail(failure("unreachable", "The device hub closed the socket.")));
+      };
+      const onError = (error: Error) => {
+        cleanup();
+        resume(Effect.fail(failure("unreachable", error.message)));
+      };
+      socket.once("open", onOpen);
+      socket.once("unexpected-response", onUnexpected);
+      socket.once("close", onClose);
+      socket.once("error", onError);
+      return Effect.sync(cleanup);
     });
     return Stream.fromQueue(queue);
   });
@@ -411,16 +501,26 @@ export const make = Effect.gen(function* () {
   const send: DeviceChannelsShape["send"] = (connectionId, input) =>
     Effect.gen(function* () {
       const channel = channels.get(keyOf(connectionId, input.channelId));
-      if (channel === undefined || channel.socket === null) {
+      if (
+        channel === undefined ||
+        channel.socket === null ||
+        channel.socket.readyState === WebSocket.CONNECTING
+      ) {
         return yield* failure("unknownChannel", "That device channel is not open.");
       }
       const socket = channel.socket;
       if (
         input.seq < channel.nextSeq ||
         channel.waiting.has(input.seq) ||
-        channel.waiting.size >= MAX_SENDS_OUT_OF_ORDER
+        (input.seq !== channel.nextSeq && channel.waiting.size >= MAX_SENDS_OUT_OF_ORDER)
       ) {
         const error = failure("limit", "The channel's messages arrived out of all order.");
+        settleWaiting(channel, error);
+        socket.terminate();
+        return yield* error;
+      }
+      if (socket.bufferedAmount > DEVICE_CHANNEL_WINDOW_BYTES) {
+        const error = failure("slow", "The device hub stopped accepting input.");
         settleWaiting(channel, error);
         socket.terminate();
         return yield* error;

@@ -162,6 +162,7 @@ export const deviceOpen = (caller: McpInvocationScope, input: DeviceToolOpenInpu
       threadId: caller.threadId,
       deviceId: target.id,
       platform: target.platform,
+      alreadyListed: true,
     });
     return {
       device: opened.device,

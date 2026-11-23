@@ -438,13 +438,13 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
       Effect.ignore,
     );
 
-  const waitForReady = (origin: string) =>
+  const waitForReady = (origin: string, token: string) =>
     Effect.gen(function* () {
       const deadline = (yield* Clock.currentTimeMillis) + HUB_READY_TIMEOUT_MS;
       while (true) {
         const ok = yield* httpClient
           .pipe(HttpClient.withScope)
-          .get(`${origin}/readyz`)
+          .get(`${origin}/readyz`, { headers: { authorization: `Bearer ${token}` } })
           .pipe(
             Effect.flatMap((response) =>
               response.arrayBuffer.pipe(Effect.as(response.status === 200)),
@@ -483,6 +483,12 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
     const scope = yield* Scope.make("sequential");
     // Not recorded yet: stop it on failure or interruption from the spawn on.
     return yield* Effect.gen(function* () {
+      // Refuse this port in the preview tunnel before the hub binds it, on every platform.
+      setOwnDeviceToolPort("hub", reserved);
+      yield* Scope.addFinalizer(
+        scope,
+        Effect.sync(() => setOwnDeviceToolPort("hub", null, reserved)),
+      );
       const node = yield* leaseDeviceNode(stateDir).pipe(
         Effect.provideService(Scope.Scope, scope),
         services,
@@ -516,8 +522,15 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
           detail: "The device hub did not print its startup line. Update it in Settings → Devices.",
         });
       }
+      if (announced.value.port !== reserved) {
+        setOwnDeviceToolPort("hub", announced.value.port);
+        yield* Scope.addFinalizer(
+          scope,
+          Effect.sync(() => setOwnDeviceToolPort("hub", null, announced.value.port)),
+        );
+      }
       const origin = `http://127.0.0.1:${announced.value.port}`;
-      yield* waitForReady(origin);
+      yield* waitForReady(origin, announced.value.token);
       const hub: HubProcess = {
         child,
         scope,
@@ -527,12 +540,6 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
         nodePath: node.node,
       };
       yield* recordHub(hub, hubTool);
-      // The preview tunnel refuses this port while the hub has it, on every platform.
-      setOwnDeviceToolPort("hub", announced.value.port);
-      yield* Scope.addFinalizer(
-        scope,
-        Effect.sync(() => setOwnDeviceToolPort("hub", null, announced.value.port)),
-      );
       yield* Effect.logInfo("Device hub started", {
         pid: Number(child.pid),
         port: announced.value.port,
@@ -541,31 +548,42 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
     }).pipe(Effect.onError(() => Scope.close(scope, Exit.void).pipe(Effect.ignore)));
   });
 
+  const lines = <E>(
+    stream: Stream.Stream<Uint8Array, E>,
+    onLine: (line: string) => Effect.Effect<void>,
+  ) => stream.pipe(Stream.decodeText(), Stream.splitLines, Stream.runForEach(onLine));
+
+  const logHubLine = (child: ChildProcessSpawner.ChildProcessHandle, line: string) => {
+    const text = line.trim();
+    return text.length === 0
+      ? Effect.void
+      : Effect.logDebug("Device hub output", {
+          pid: Number(child.pid),
+          output: redactHubLine(text),
+        });
+  };
+
   const observeHubOutput = (
     child: ChildProcessSpawner.ChildProcessHandle,
     started: Deferred.Deferred<{ readonly port: number; readonly token: string }>,
   ) =>
-    child.all.pipe(
-      Stream.decodeText(),
-      Stream.splitLines,
-      Stream.runForEach((line) =>
-        Effect.gen(function* () {
-          const startup = parseHubStartupLine(line);
-          if (startup) {
-            yield* Deferred.succeed(started, startup);
-            return;
-          }
-          const text = line.trim();
-          if (text.length > 0) {
-            yield* Effect.logDebug("Device hub output", {
-              pid: Number(child.pid),
-              output: redactHubLine(text),
-            });
-          }
-        }),
-      ),
-      Effect.ignoreCause,
-    );
+    Effect.all(
+      [
+        // The token is taken only from stdout, where the hub prints its startup line.
+        lines(child.stdout, (line) =>
+          Effect.gen(function* () {
+            const startup = parseHubStartupLine(line);
+            if (startup) {
+              yield* Deferred.succeed(started, startup);
+              return;
+            }
+            yield* logHubLine(child, line);
+          }),
+        ),
+        lines(child.stderr, (line) => logHubLine(child, line)),
+      ],
+      { concurrency: "unbounded", discard: true },
+    ).pipe(Effect.ignoreCause);
 
   // Waits for the hub's lifetime and starts a replacement with backoff; a span would nest across restarts.
   const superviseHub: (hub: HubProcess, hubTool: DeviceToolPaths) => Effect.Effect<void> =
@@ -585,16 +603,29 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
           delayMs: delay,
         });
         yield* stopHub(hub);
-        yield* Effect.sleep(Duration.millis(delay));
-        yield* startLock.withPermits(1)(
-          Effect.gen(function* () {
-            const current = yield* Ref.get(runningRef);
-            if (current?.hub.child.pid !== hub.child.pid) return;
-            const replacement = yield* spawnHub(hubTool);
-            yield* Ref.set(runningRef, { ...current, hub: replacement });
-            yield* Effect.forkDetach(superviseHub(replacement, hubTool));
-          }),
-        );
+        // Tries again with backoff until a replacement starts, or the hub is stopped or replaced.
+        let wait = delay;
+        while (true) {
+          yield* Effect.sleep(Duration.millis(wait));
+          const outcome = yield* startLock.withPermits(1)(
+            Effect.gen(function* () {
+              const current = yield* Ref.get(runningRef);
+              if (current?.hub.child.pid !== hub.child.pid) return "done" as const;
+              const replacement = yield* spawnHub(hubTool);
+              yield* Ref.set(runningRef, { ...current, hub: replacement });
+              yield* Effect.forkDetach(superviseHub(replacement, hubTool));
+              return "done" as const;
+            }).pipe(
+              Effect.catch((error) =>
+                Effect.logWarning("Device hub restart failed; trying again", {
+                  detail: error.message,
+                }).pipe(Effect.as("retry" as const)),
+              ),
+            ),
+          );
+          if (outcome === "done") return;
+          wait = Math.min(Math.max(wait * 2, 1_000), HUB_RESTART_MAX_DELAY_MS);
+        }
       },
       Effect.catchCause((cause) => Effect.logWarning("Device hub supervisor failed", { cause })),
     );
@@ -710,28 +741,34 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
     }
   });
 
-  // The daemon may predate this process (an earlier server was killed, possibly on an
-  // older pin), so it is stopped with the CLI of its recorded version when that is installed.
-  const stopAgentDeviceDaemon = Effect.gen(function* () {
-    setOwnDeviceToolPort("agent", null);
-    if (!(yield* fs.exists(daemonFilePath).pipe(Effect.orElseSucceed(() => false)))) return;
+  /**
+   * Stops the daemon with the CLI of its recorded version when that is
+   * installed: it may predate this process (an earlier server was killed,
+   * possibly on an older pin). True once no daemon runs for this state
+   * folder; false when one may still be running.
+   */
+  const stopAgentDeviceDaemon: Effect.Effect<boolean> = Effect.gen(function* () {
     const recorded = yield* readDaemonFile;
-    if (
-      Option.isSome(recorded) &&
-      recorded.value.pid &&
-      !(yield* isProcessAlive(recorded.value.pid))
-    ) {
-      return yield* fs.remove(daemonFilePath, { force: true });
+    if (Option.isNone(recorded)) {
+      setOwnDeviceToolPort("agent", null);
+      return true;
     }
+    const pid = recorded.value.pid;
+    const forget = Effect.gen(function* () {
+      setOwnDeviceToolPort("agent", null, recorded.value.httpPort);
+      yield* fs.remove(daemonFilePath, { force: true }).pipe(Effect.ignore);
+      return true;
+    });
+    if (pid !== undefined && !(yield* isProcessAlive(pid))) return yield* forget;
     const entryPath = yield* installedAgentDeviceEntry(stateDir, [
-      ...(Option.isSome(recorded) && recorded.value.version ? [recorded.value.version] : []),
+      ...(recorded.value.version ? [recorded.value.version] : []),
       AGENT_DEVICE_VERSION,
     ]).pipe(withPath, services);
-    if (!entryPath) return;
-    yield* Effect.scoped(
+    if (!entryPath) return false;
+    const result = yield* Effect.scoped(
       Effect.gen(function* () {
         const node = yield* leaseDeviceNode(stateDir).pipe(services, withPath);
-        yield* runner.run({
+        return yield* runner.run({
           command: node.node,
           args: [entryPath, "daemon", "stop", "--state-dir", agentDeviceStateDir(path, stateDir)],
           env: { ...(yield* currentHostEnvironment), AGENT_DEVICE_NO_UPDATE_NOTIFIER: "1" },
@@ -739,8 +776,25 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
           timeoutBehavior: "timedOutResult",
         });
       }),
-    );
-  }).pipe(Effect.ignore);
+    ).pipe(Effect.option);
+    // The CLI's word is not enough: the daemon is stopped once its pid is gone.
+    if (pid === undefined) {
+      if (Option.isNone(result) || result.value.code !== 0) return false;
+    } else {
+      const deadline = (yield* Clock.currentTimeMillis) + 5_000;
+      while (yield* isProcessAlive(pid)) {
+        if ((yield* Clock.currentTimeMillis) > deadline) {
+          yield* Effect.logWarning("agent-device daemon did not stop", {
+            pid,
+            exitCode: Option.isSome(result) ? result.value.code : null,
+          });
+          return false;
+        }
+        yield* Effect.sleep(Duration.millis(100));
+      }
+    }
+    return yield* forget;
+  }).pipe(Effect.orElseSucceed(() => false));
 
   const serveSimHelpers = Effect.fn("LocalDeviceHost.serveSimHelpers")(function* (
     hubTool: DeviceToolPaths,
@@ -842,6 +896,7 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
     platformAvailable: (platform) =>
       platformAvailability(platform).pipe(Effect.map((availability) => availability.available)),
     scratchDir: path.join(deviceStateDir(path, stateDir), "tmp"),
+    fs,
     androidAvds: {
       home: androidAvdHome(environment, path),
       readTextFile: (file) =>
@@ -891,39 +946,56 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
       }),
     );
 
+  // Only a hub that is running: a dead one's address may belong to something else by now.
   const current: DeviceHost.DeviceHost["Service"]["current"] = Ref.get(runningRef).pipe(
-    Effect.map((running) => (running ? toReady(running) : null)),
+    Effect.flatMap((running) =>
+      running
+        ? running.hub.child.isRunning.pipe(
+            Effect.orElseSucceed(() => false),
+            Effect.map((alive) => (alive ? toReady(running) : null)),
+          )
+        : Effect.succeed(null),
+    ),
   );
 
   const releaseAgentSession: DeviceHost.DeviceHost["Service"]["releaseAgentSession"] = (session) =>
     Effect.gen(function* () {
+      const file = yield* readDaemonFile;
+      // No daemon for this state folder, or its process is gone: its sessions went with it.
+      if (Option.isNone(file)) return true;
+      if (file.value.pid !== undefined && !(yield* isProcessAlive(file.value.pid))) {
+        setOwnDeviceToolPort("agent", null, file.value.httpPort);
+        yield* fs.remove(daemonFilePath, { force: true }).pipe(Effect.ignore);
+        yield* Ref.update(runningRef, (running) =>
+          running ? { ...running, agentDevice: null } : running,
+        );
+        return true;
+      }
       const running = yield* Ref.get(runningRef);
-      const endpoint =
-        running?.agentDevice ??
-        (yield* readDaemonFile.pipe(
-          Effect.map((file) =>
-            Option.isSome(file)
-              ? { baseUrl: `http://127.0.0.1:${file.value.httpPort}`, token: file.value.token }
-              : null,
+      const endpoint = running?.agentDevice ?? {
+        baseUrl: `http://127.0.0.1:${file.value.httpPort}`,
+        token: file.value.token,
+      };
+      return yield* releaseAgentDeviceSession(
+        httpClient,
+        endpoint,
+      )(session).pipe(
+        Effect.as(true),
+        Effect.catch((cause) =>
+          Effect.logWarning("Could not end the agent-device session", { session, cause }).pipe(
+            Effect.as(false),
           ),
-        ));
-      if (!endpoint) return true;
-      yield* releaseAgentDeviceSession(httpClient, endpoint)(session);
-      return true;
-    }).pipe(
-      Effect.catch((cause) =>
-        Effect.logWarning("Could not end the agent-device session", { session, cause }).pipe(
-          Effect.as(false),
         ),
-      ),
-    );
+      );
+    });
 
   const stopAgent: DeviceHost.DeviceHost["Service"]["stopAgent"] = startLock.withPermits(1)(
     Effect.gen(function* () {
-      yield* stopAgentDeviceDaemon;
+      const stopped = yield* stopAgentDeviceDaemon;
       yield* Ref.update(runningRef, (running) =>
         running ? { ...running, agentDevice: null } : running,
       );
+      return stopped;
     }),
   );
 
@@ -933,9 +1005,13 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
       // Hub cleanup waits for its exit; it must not strand the detached agent daemon.
       yield* Effect.all(
         [
-          stopHub(running?.hub).pipe(
-            Effect.andThen(fs.remove(hubStatePath, { force: true }).pipe(Effect.ignore)),
-          ),
+          // No hub of ours: one an earlier run left may still be recorded, so reap it
+          // rather than forget its pid.
+          running
+            ? stopHub(running.hub).pipe(
+                Effect.andThen(fs.remove(hubStatePath, { force: true }).pipe(Effect.ignore)),
+              )
+            : reapStaleHub,
           stopAgentDeviceDaemon,
         ],
         { concurrency: "unbounded", discard: true },
@@ -969,6 +1045,8 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
     });
 
   yield* Effect.addFinalizer(() => stop);
+  // A hub an earlier run left behind holds a token nobody has any more: stop it now.
+  yield* reapStaleHub.pipe(Effect.forkDetach);
 
   return DeviceHost.DeviceHost.of({
     summary,

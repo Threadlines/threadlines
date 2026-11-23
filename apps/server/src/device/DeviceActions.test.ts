@@ -151,6 +151,36 @@ describe("runDeviceAction", () => {
         expect(calls.map((call) => call.args.at(-1))).toEqual(permissions);
       }),
   );
+
+  it.effect("shakes an iOS simulator via notifyutil", () =>
+    Effect.gen(function* () {
+      const { ready, calls } = makeReady();
+      yield* runDeviceAction(ready, "ios", { type: "shake", deviceId: udid });
+      expect(calls).toEqual([
+        {
+          command: "xcrun",
+          args: ["simctl", "spawn", udid, "notifyutil", "-p", "com.apple.UIKit.simulatorShake"],
+        },
+      ]);
+    }),
+  );
+
+  it.effect("rejects Android permission reset as unsupported instead of revoking", () =>
+    Effect.gen(function* () {
+      const { ready, calls } = makeReady();
+      const error = yield* Effect.flip(
+        runDeviceAction(ready, "android", {
+          type: "setPermission",
+          deviceId: "emulator-5554",
+          appId: "com.example.app",
+          permission: "camera",
+          decision: "reset",
+        }),
+      );
+      expect(error._tag).toBe("DeviceActionUnavailableError");
+      expect(calls).toEqual([]);
+    }),
+  );
 });
 
 describe("readDeviceDetail", () => {

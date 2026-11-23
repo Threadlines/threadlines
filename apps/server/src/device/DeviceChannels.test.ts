@@ -102,6 +102,15 @@ describe("isAllowedDevicePath", () => {
     expect(
       DeviceChannels.isAllowedDevicePath("GET", "/vendor/serve-sim/helper/%2e%2e/stream.avcc"),
     ).toBe(false);
+    expect(DeviceChannels.isAllowedDevicePath("GET", "/vendor/serve-sim/helper/.\t./config")).toBe(
+      false,
+    );
+    expect(DeviceChannels.isAllowedDevicePath("GET", "/vendor/serve-sim/helper/.\n./config")).toBe(
+      false,
+    );
+    expect(
+      DeviceChannels.isAllowedDevicePath("GET", "/vendor/serve-sim/helper/SIM-1/config?x=1"),
+    ).toBe(false);
   });
 
   it("allows the viewer's stream and input routes", () => {
@@ -164,11 +173,11 @@ describe("DeviceChannels", () => {
           return event;
         });
         expect((yield* take)._tag).toBe("opened");
-        // Uncredited, the channel stops at the window instead of reading the whole body.
+        // Uncredited, the channel holds strictly inside the window instead of overshooting it.
         yield* Effect.sleep("300 millis");
         while ((yield* Queue.size(received)) > 0) yield* take;
-        expect(delivered).toBeGreaterThanOrEqual(DEVICE_CHANNEL_WINDOW_BYTES);
-        expect(delivered).toBeLessThan(DEVICE_CHANNEL_WINDOW_BYTES + DEVICE_CHANNEL_CHUNK_BYTES);
+        expect(delivered).toBeGreaterThan(0);
+        expect(delivered).toBeLessThanOrEqual(DEVICE_CHANNEL_WINDOW_BYTES);
         // Crediting lets the rest through.
         let ended = false;
         while (!ended) {
@@ -233,6 +242,79 @@ describe("DeviceChannels", () => {
         yield* channels.releaseConnection("connection");
         const end = yield* Queue.take(received);
         expect(end._tag).toBe("end");
+      }),
+    ),
+  );
+
+  it.live("refuses duplicate ws ids and invalid protocols without dialing the hub", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const hub = yield* startFakeHub;
+        const channels = yield* channelsFor(hub.origin);
+        const invalid = yield* channels
+          .open("connection", {
+            _tag: "ws",
+            channelId: "bad-proto",
+            path: "/vendor/serve-sim/helper/ws",
+            protocols: ["dup", "dup"],
+          })
+          .pipe(Effect.flip);
+        expect(invalid.reason).toBe("forbidden");
+        yield* channels
+          .open("connection", {
+            _tag: "ws",
+            channelId: "w1",
+            path: "/vendor/serve-sim/helper/ws",
+          })
+          .pipe(Effect.asVoid);
+        const dup = yield* channels
+          .open("connection", {
+            _tag: "ws",
+            channelId: "w1",
+            path: "/vendor/serve-sim/helper/ws",
+          })
+          .pipe(Effect.flip);
+        expect(dup.reason).toBe("limit");
+        expect(hub.seen).toEqual([`WS /vendor/serve-sim/helper/ws Bearer ${TOKEN}`]);
+      }),
+    ),
+  );
+
+  it.live("drains 64 queued out-of-order sends when nextSeq arrives", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const hub = yield* startFakeHub;
+        const channels = yield* channelsFor(hub.origin);
+        const events = yield* channels.open("connection", {
+          _tag: "ws",
+          channelId: "w-drain",
+          path: "/vendor/serve-sim/helper/ws",
+        });
+        const received = yield* Queue.unbounded<DeviceChannelEvent>();
+        yield* events.pipe(
+          Stream.runForEach((event) => Queue.offer(received, event)),
+          Effect.forkScoped,
+        );
+        expect((yield* Queue.take(received))._tag).toBe("opened");
+        const queued = Array.from({ length: 64 }, (_, index) =>
+          channels.send("connection", {
+            channelId: "w-drain",
+            seq: index + 1,
+            data: `m${index + 1}`,
+            binary: false,
+          }),
+        );
+        const fibers = yield* Effect.forEach(queued, (effect) => Effect.forkScoped(effect));
+        yield* Effect.sleep("20 millis");
+        yield* channels.send("connection", {
+          channelId: "w-drain",
+          seq: 0,
+          data: "m0",
+          binary: false,
+        });
+        yield* Effect.forEach(fibers, (fiber) => Fiber.join(fiber));
+        const first = yield* Queue.take(received);
+        expect(first).toEqual({ _tag: "message", data: "m0", binary: false, final: true });
       }),
     ),
   );

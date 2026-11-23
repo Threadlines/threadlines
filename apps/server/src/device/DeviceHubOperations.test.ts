@@ -1,8 +1,11 @@
 import * as Http from "node:http";
 import type { AddressInfo } from "node:net";
 
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
 import { FetchHttpClient, HttpClient } from "effect/http";
 
 import {
@@ -170,5 +173,51 @@ describe("DeviceHubOperations list", () => {
         expect(commands.filter((command) => command.startsWith("xcrun"))).toHaveLength(1);
         expect(commands.filter((command) => command.includes("getprop"))).toHaveLength(1);
       }).pipe(Effect.scoped, Effect.provide(FetchHttpClient.layer)),
+  );
+
+  it.live("captures Xcode 26 fallback screenshots via scoped temp file and cleans it up", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const scratchDir = yield* fs.makeTempDirectoryScoped({ prefix: "tl-device-shot-" });
+      const hub = yield* startFakeHub({});
+      const payload = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
+      let capturedFile = "";
+      const operations = makeDeviceHubOperations({
+        origin: hub.origin,
+        token: "t",
+        modelCache: makeDeviceModelCache(),
+        http: yield* HttpClient.HttpClient,
+        fs,
+        scratchDir,
+        platformAvailable: () => Effect.succeed(true),
+        run: (command, args) =>
+          Effect.gen(function* () {
+            expect(command).toBe("xcrun");
+            expect(args.slice(0, 5)).toEqual([
+              "simctl",
+              "io",
+              "SIM-26",
+              "screenshot",
+              "--type=png",
+            ]);
+            capturedFile = args[5]!;
+            yield* fs.writeFile(capturedFile, payload);
+            return { code: 0, stdout: "", stderr: "" };
+          }).pipe(Effect.orDie),
+      });
+      const bytes = yield* operations.screenshot({
+        id: "SIM-26",
+        name: "iPhone 16",
+        version: "iOS 26.1",
+        platform: "ios",
+        booted: true,
+        physical: false,
+      });
+      expect(bytes).toEqual(payload);
+      expect(yield* fs.exists(capturedFile)).toBe(false);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(Layer.mergeAll(FetchHttpClient.layer, NodeServices.layer)),
+    ),
   );
 });

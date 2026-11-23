@@ -43,6 +43,7 @@ const IOS_ACTIONS: ReadonlySet<DeviceActionType> = new Set([
   "openUrl",
   "launchApp",
   "terminateApp",
+  "shake",
   "sendPush",
 ]);
 
@@ -315,6 +316,13 @@ const runIos = Effect.fn("DeviceActions.runIos")(function* (
       return;
     }
     case "shake":
+      yield* simctl(
+        run,
+        udid,
+        ["spawn", "notifyutil", "-p", "com.apple.UIKit.simulatorShake"],
+        "shake",
+      );
+      return;
     case "setOrientation":
       return yield* new DeviceActionUnavailableError({
         operation: input.type,
@@ -433,6 +441,13 @@ const runAndroid = Effect.fn("DeviceActions.runAndroid")(function* (
       // The emulator cannot clear location; keep the fix and refresh the reading.
       return;
     case "setPermission": {
+      if (input.decision === "reset") {
+        return yield* new DeviceActionUnavailableError({
+          operation: "permission",
+          platform: "android",
+          reason: "unsupported",
+        });
+      }
       const permissions = ANDROID_PERMISSIONS[input.permission];
       if (!permissions) {
         return yield* new DeviceActionUnavailableError({
