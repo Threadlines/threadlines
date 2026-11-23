@@ -1310,6 +1310,79 @@ describe("ProviderRuntimeIngestion", () => {
     ).toEqual(["check-back.skipped"]);
   });
 
+  it("ends a check-back the stopped turn set, and keeps saved jobs a partial list lacks", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = asThreadId("thread-1");
+    const dispatch = (command: Parameters<typeof harness.engine.dispatch>[0]) =>
+      Effect.runPromise(harness.engine.dispatch(command));
+    const saved = {
+      id: "cron-saved",
+      participantId: null,
+      scheduledFor: "2026-01-02T09:00:00.000Z",
+      exact: false,
+      recurring: true,
+      durable: true,
+    };
+    await dispatch({
+      type: "thread.check-backs.set",
+      commandId: CommandId.make("cmd-saved-job"),
+      threadId,
+      participantId: null,
+      checkBacks: [saved],
+      createdAt: now,
+    });
+    await dispatch({
+      type: "thread.session.set",
+      commandId: CommandId.make("cmd-claude-working"),
+      threadId,
+      session: {
+        threadId,
+        status: "running",
+        providerName: "claudeAgent",
+        runtimeMode: "approval-required",
+        activeTurnId: asTurnId("turn-1"),
+        updatedAt: now,
+        lastError: null,
+      },
+      createdAt: now,
+    });
+    await dispatch({
+      type: "thread.turn.interrupt",
+      commandId: CommandId.make("cmd-stop"),
+      threadId,
+      createdAt: now,
+    });
+    const cancelsSoFar = async () =>
+      (await Effect.runPromise(Stream.runCollect(harness.engine.readEvents(0)))).filter(
+        (event) => event.type === "thread.check-back-cancel-requested",
+      ).length;
+    const cancelsAtStop = await cancelsSoFar();
+
+    // A fresh runtime's first word, from the turn just stopped: a new job,
+    // before Claude reported the saved one it restored.
+    const wakeup = {
+      id: "wakeup:1",
+      scheduledFor: "2026-01-01T00:15:00.000Z",
+      exact: true,
+      recurring: false,
+      durable: false,
+    };
+    harness.emit({
+      type: "session.check-backs.updated",
+      eventId: asEventId("evt-check-backs-after-stop"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId,
+      createdAt: now,
+      payload: { checkBacks: [wakeup], partial: true },
+    });
+    await harness.drain();
+
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(thread?.checkBacks).toEqual([{ ...wakeup, participantId: null }, saved]);
+    expect(await cancelsSoFar()).toBe(cancelsAtStop + 1);
+  });
+
   it("maps turn started/completed events into thread session updates", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

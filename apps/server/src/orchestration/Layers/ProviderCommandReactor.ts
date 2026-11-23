@@ -5066,9 +5066,17 @@ const make = Effect.gen(function* () {
       yield* note("Check-back not cancelled: couldn't reach the agent's session", "error");
       return;
     }
-    if (runtime === undefined) {
-      // Nothing is running to come back: the list was stale. Jobs saved to
-      // disk outlive the session, so they stay.
+    // A runtime whose provider sets no check-backs (the agent switched from
+    // Claude, say) holds none of them, so it is left running.
+    const holdsCheckBacks =
+      runtime?.providerInstanceId === undefined ||
+      (yield* providerService.getCapabilities(runtime.providerInstanceId).pipe(
+        Effect.map((capabilities) => capabilities.checkBacks === "supported"),
+        Effect.orElseSucceed(() => true),
+      ));
+    if (runtime === undefined || !holdsCheckBacks) {
+      // Nothing is running that could come back: the list was stale. Jobs
+      // saved to disk outlive the session, so they stay.
       const thread = yield* resolveThread(threadId);
       const kept = (thread?.checkBacks ?? []).filter(
         (checkBack) => checkBack.participantId === participantId && checkBack.durable,

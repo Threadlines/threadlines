@@ -52,10 +52,20 @@ export interface ClaudeCheckBackState {
   readonly prompts: Map<string, string>;
   /** The list as last reported to orchestration. */
   current: ReadonlyArray<RuntimeCheckBack>;
+  /** Whether Claude has reported its own list in this session. Until then
+   *  the list may lack jobs saved to the project that the CLI restored. */
+  reported: boolean;
 }
 
 export function makeClaudeCheckBackState(): ClaudeCheckBackState {
-  return { wakeups: [], crons: new Map(), nextFire: new Map(), prompts: new Map(), current: [] };
+  return {
+    wakeups: [],
+    crons: new Map(),
+    nextFire: new Map(),
+    prompts: new Map(),
+    current: [],
+    reported: false,
+  };
 }
 
 /** Longest reason or prompt a check-back carries. */

@@ -1780,7 +1780,8 @@ const make = Effect.gen(function* () {
             const thread = yield* readThreadOrFail(threadId);
             if (thread === undefined || thread.deletedAt !== null) return;
             if (thread.remoteOrigin?.linkDeviceId !== deviceId) return;
-            if (!isRunning(thread)) return;
+            // A check-back would wake it later with nobody there to hear back.
+            if (!isRunning(thread) && !hasLiveCheckBack(thread)) return;
             // A turn asked for once the link was off is this computer's user's.
             const turnsBefore = options?.turnsBefore;
             const requestedAt = thread.latestTurn?.requestedAt;

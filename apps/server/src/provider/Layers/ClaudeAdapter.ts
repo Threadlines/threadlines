@@ -5284,7 +5284,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       provider: PROVIDER,
       createdAt: stamp.createdAt,
       threadId: context.session.threadId,
-      payload: { checkBacks, ...(ended && ended.length > 0 ? { ended } : {}) },
+      payload: {
+        checkBacks,
+        ...(ended && ended.length > 0 ? { ended } : {}),
+        ...(context.checkBacks.reported ? {} : { partial: true }),
+      },
       providerRefs: nativeProviderRefs(context),
     });
   });
@@ -8937,6 +8941,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             const context = yield* Ref.get(contextRef);
             const sessionCrons = (hookInput as { session_crons?: unknown }).session_crons;
             if (!context || context.stopped || !Array.isArray(sessionCrons)) return {};
+            const firstReport = !context.checkBacks.reported;
+            context.checkBacks.reported = true;
             const checkBacks = claudeCheckBacksFromSessionCrons(
               context.checkBacks,
               sessionCrons.flatMap((cron) => {
@@ -8957,7 +8963,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
               Date.now(),
               nonEmptyString(claudeEnvironment.TZ),
             );
-            if (!sameCheckBacks(context.checkBacks.current, checkBacks)) {
+            // The first report is whole: after a partial list it is sent even
+            // when it reads the same, to settle the saved jobs that list kept.
+            if (
+              (firstReport && context.checkBacks.current.length > 0) ||
+              !sameCheckBacks(context.checkBacks.current, checkBacks)
+            ) {
               context.checkBacks.current = checkBacks;
               yield* emitCheckBacksUpdated(context, checkBacks);
             }

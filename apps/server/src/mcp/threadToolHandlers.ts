@@ -2218,11 +2218,19 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
       const open = thread.childRequests.open.filter(
         (request) => request.childThreadId === child.threadId,
       );
-      // A quiet child may still have a check-back there, which this computer
-      // can't see: the stop goes anyway, and that computer stops it only if
-      // it has something going (stopIfWorking in LinkRequests.ts).
-      const quiet =
-        open.length === 0 && child.cachedStatus !== "working" && child.cachedStatus !== "waiting";
+      // A check-back there doesn't show in its status here, so a quiet child
+      // with one is not reached (a known limit, docs/design/child-threads.md).
+      if (
+        open.length === 0 &&
+        child.cachedStatus !== "working" &&
+        child.cachedStatus !== "waiting"
+      ) {
+        return {
+          outcome: "not_running",
+          detail: "It isn't working on anything, and nothing you asked of it is waiting.",
+          threadId: child.threadId,
+        } satisfies ThreadStopResult;
+      }
       const key = [
         scope.threadId,
         scope.participantId ?? "primary",
@@ -2246,9 +2254,7 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
           }
           return {
             outcome: "stopped",
-            detail: quiet
-              ? `${child.label} is told to stop it if it still has anything going there, such as a check-back. A later thread_send starts it again.`
-              : `Stopped. ${child.label} is told to stop it; nothing more comes back from it for what you asked. A later thread_send starts it again.`,
+            detail: `Stopped. ${child.label} is told to stop it; nothing more comes back from it for what you asked. A later thread_send starts it again.`,
             threadId: child.threadId,
           } satisfies ThreadStopResult;
         }),
