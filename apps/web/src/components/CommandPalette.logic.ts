@@ -1,5 +1,6 @@
 import { type EnvironmentId, type KeybindingCommand, type MessageId } from "@threadlines/contracts";
 import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
+import type { AppCommandId } from "@threadlines/shared/appCommands";
 import {
   analyzeSearchText,
   parseSearchQuery,
@@ -9,7 +10,10 @@ import { type ReactNode } from "react";
 import { sortThreads } from "../lib/threadSort";
 import { type Project, type SidebarThreadSummary, type Thread } from "../types";
 
-export const RECENT_THREAD_LIMIT = 12;
+/** The opening list's recent threads. */
+export const RECENT_THREAD_LIMIT = 5;
+/** The opening list's suggested commands. */
+export const SUGGESTED_COMMAND_LIMIT = 4;
 export const ITEM_ICON_CLASS = "size-4 text-muted-foreground/80";
 export const ADDON_ICON_CLASS = "size-4";
 
@@ -30,6 +34,8 @@ export interface CommandPaletteItem {
   readonly shortcutCommand?: KeybindingCommand;
   readonly threadRef?: Pick<SidebarThreadSummary, "environmentId" | "id">;
   readonly threadContentMatch?: ThreadContentSearchMatch & { readonly query: string };
+  /** A registered command (or one item of a list command), resolved again by id when it runs. */
+  readonly command?: { readonly id: AppCommandId; readonly itemId?: string };
 }
 
 export interface CommandPaletteActionItem extends CommandPaletteItem {
@@ -62,6 +68,8 @@ export interface CommandPaletteView {
     EnvironmentId,
     ReadonlyArray<Project["id"]>
   >;
+  /** A list command's page: its rows are drawn from the command's current items. */
+  readonly listCommandId?: AppCommandId;
 }
 
 export function normalizeSearchText(value: string): string {
@@ -332,21 +340,28 @@ export function filterCommandPaletteGroups(input: {
   });
 }
 
-export function buildRootGroups(input: {
-  actionItems: ReadonlyArray<CommandPaletteActionItem | CommandPaletteSubmenuItem>;
+/**
+ * What the palette shows before anything is typed: where you'd go (the
+ * threads you were in), then the commands you use most, then a way into
+ * every command.
+ */
+export function buildOpeningGroups(input: {
   recentThreadItems: ReadonlyArray<CommandPaletteActionItem>;
+  suggestedItems: ReadonlyArray<CommandPaletteActionItem | CommandPaletteSubmenuItem>;
+  allCommandsItem: CommandPaletteActionItem;
 }): CommandPaletteGroup[] {
   const groups: CommandPaletteGroup[] = [];
-  if (input.actionItems.length > 0) {
-    groups.push({ value: "actions", label: "Actions", items: input.actionItems });
-  }
   if (input.recentThreadItems.length > 0) {
     groups.push({
       value: "recent-threads",
-      label: "Recent Threads",
+      label: "Recent threads",
       items: input.recentThreadItems,
     });
   }
+  if (input.suggestedItems.length > 0) {
+    groups.push({ value: "suggested", label: "Suggested", items: input.suggestedItems });
+  }
+  groups.push({ value: "all-commands", label: "Commands", items: [input.allCommandsItem] });
   return groups;
 }
 

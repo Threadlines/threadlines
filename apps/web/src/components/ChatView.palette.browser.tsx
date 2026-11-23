@@ -1,6 +1,8 @@
 import {
+  EventId,
   ORCHESTRATION_WS_METHODS,
   MessageId,
+  type OrchestrationEvent,
   type OrchestrationReadModel,
   OutsideAgentConnectionId,
   OutsideAgentRequestId,
@@ -12,10 +14,15 @@ import { page } from "vite-plus/test/browser";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import { useCommandPaletteStore } from "../commandPaletteStore";
+import { getOfferedCommands } from "../commands/commandHandlers";
+import { useCommandUsageStore } from "../commands/commandUsageStore";
+import { setCommandPaletteCommitListenerForTests } from "./CommandPalette";
 import { useComposerDraftStore } from "../composerDraftStore";
 
 import {
   THREAD_ID,
+  NOW_ISO,
+  fixture,
   PROJECT_ID,
   SECOND_PROJECT_ID,
   LOCAL_ENVIRONMENT_ID,
@@ -38,6 +45,8 @@ import {
   CHAT_FIND_KEYBINDING,
   triggerChatNewShortcutUntilPath,
   openCommandPaletteFromTrigger,
+  openCommandPaletteCommands,
+  showAllPaletteCommands,
   waitForCommandPaletteShortcutLabel,
   mountChatView,
   registerChatViewSuiteHooks,
@@ -80,7 +89,7 @@ describe("ChatView (full app): command palette and search", () => {
 
     try {
       await waitForServerConfigToApply();
-      await openCommandPaletteFromTrigger();
+      await openCommandPaletteCommands();
       const palette = page.getByTestId("command-palette");
       await expect.element(palette.getByText("Find in chat", { exact: true })).toBeInTheDocument();
       await palette.getByText("Find in chat", { exact: true }).click();
@@ -184,7 +193,7 @@ describe("ChatView (full app): command palette and search", () => {
       // What the server says from now on, should the stream open again.
       setPrimaryOutsideAgentsSnapshot({ ...outsideAgents, pending: [] });
 
-      await openCommandPaletteFromTrigger();
+      await openCommandPaletteCommands();
       await page
         .getByTestId("command-palette")
         .getByText("Connect an agent", { exact: true })
@@ -200,6 +209,7 @@ describe("ChatView (full app): command palette and search", () => {
       // "Connect an assistant" opens the Assistants group and shows a code.
       // Settings has no palette button of its own: open it as its shortcut does.
       useCommandPaletteStore.getState().setOpen(true);
+      await showAllPaletteCommands();
       await page
         .getByTestId("command-palette")
         .getByText("Connect an assistant", { exact: true })
@@ -213,6 +223,243 @@ describe("ChatView (full app): command palette and search", () => {
         wsRequests.filter((request) => request._tag === WS_METHODS.outsideAgentsAssistantCode),
       ).toHaveLength(1);
     } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("offers exactly the commands their owners register, on a thread and on the home screen", async () => {
+    // The guard for the availability rules: each moved next to the code it
+    // protects, so a rule lost in a move shows up here as a change.
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-offered-commands" as MessageId,
+        targetText: "offered commands",
+      }),
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      await openCommandPaletteFromTrigger();
+      await vi.waitFor(() => expect(getOfferedCommands().has("thread.rename")).toBe(true));
+      expect([...getOfferedCommands().keys()].toSorted()).toEqual([
+        "app.reportProblem",
+        "app.whatsNew",
+        "chat.find",
+        "chat.new",
+        "chat.newGeneral",
+        "chat.newIn",
+        "chat.newLocal",
+        "composer.planMode",
+        "composer.stash",
+        "computer.connect",
+        "diff.toggle",
+        "files.browse",
+        "modelPicker.toggle",
+        "navigate.communityAgents",
+        "navigate.fleet",
+        "navigate.generalChats",
+        "navigate.home",
+        "navigate.settings",
+        "navigate.setup",
+        "navigate.skills",
+        "navigate.terminals",
+        "navigate.usage",
+        "panel.agents",
+        "panel.diff",
+        "panel.sourceControl",
+        "panel.threads",
+        "project.add",
+        "room.addAgent",
+        "sidebar.toggle",
+        "terminal.clear",
+        "terminal.close",
+        "terminal.find",
+        "terminal.new",
+        "terminal.restart",
+        "terminal.split",
+        "terminal.toggle",
+        "theme.change",
+        "theme.editColors",
+        "theme.useDefault",
+        "thread.archive",
+        "thread.copyId",
+        "thread.copyPath",
+        "thread.delete",
+        "thread.pin",
+        "thread.rename",
+        "thread.wrapUp",
+      ]);
+
+      await showAllPaletteCommands();
+      await page.getByTestId("command-palette").getByText("Go to Home", { exact: true }).click();
+      await waitForURL(mounted.router, (path) => path === "/", "Go to Home should open Home.");
+      await openCommandPaletteFromTrigger();
+      // Nothing of the thread's is offered once it is off screen.
+      await vi.waitFor(() => expect(getOfferedCommands().has("terminal.toggle")).toBe(false));
+      expect([...getOfferedCommands().keys()].toSorted()).toEqual([
+        "app.reportProblem",
+        "app.whatsNew",
+        "chat.newGeneral",
+        "chat.newIn",
+        "chat.newLocal",
+        "computer.connect",
+        "navigate.back",
+        "navigate.communityAgents",
+        "navigate.fleet",
+        "navigate.generalChats",
+        "navigate.settings",
+        "navigate.setup",
+        "navigate.skills",
+        "navigate.terminals",
+        "navigate.usage",
+        "project.add",
+        "sidebar.toggle",
+        "theme.change",
+        "theme.editColors",
+        "theme.useDefault",
+        "thread.next",
+        "thread.previous",
+      ]);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("opens on recent threads, then suggested commands, and learns which ones are used", async () => {
+    useCommandUsageStore.setState({ byKey: {} });
+    const olderThreadId = "thread-opening-older" as ThreadId;
+    const newerThreadId = "thread-opening-newer" as ThreadId;
+    const base = addThreadToSnapshot(
+      addThreadToSnapshot(
+        createSnapshotForTargetUser({
+          targetMessageId: "msg-user-opening-list" as MessageId,
+          targetText: "opening list",
+        }),
+        olderThreadId,
+      ),
+      newerThreadId,
+    );
+    const snapshot = {
+      ...base,
+      threads: base.threads.map((thread) =>
+        thread.id === olderThreadId
+          ? { ...thread, title: "Older plan", updatedAt: "2026-03-01T10:00:00.000Z" }
+          : thread.id === newerThreadId
+            ? { ...thread, title: "Newer plan", updatedAt: "2026-03-02T10:00:00.000Z" }
+            : thread,
+      ),
+    };
+    const openTitle = snapshot.threads.find((thread) => thread.id === THREAD_ID)!.title;
+    const mounted = await mountChatView({ viewport: DEFAULT_VIEWPORT, snapshot });
+
+    const groupsAndRows = () =>
+      Array.from(
+        document.querySelectorAll<HTMLElement>(
+          '[data-testid="command-palette"] [data-slot="command-group-label"], [data-testid="command-palette"] [data-slot="command-item"]',
+        ),
+      ).map((element) =>
+        element.dataset.slot === "command-group-label"
+          ? `# ${element.textContent?.trim()}`
+          : (element.querySelector("span span")?.textContent?.trim() ??
+            element.textContent?.trim() ??
+            ""),
+      );
+
+    try {
+      await waitForServerConfigToApply();
+      await openCommandPaletteFromTrigger();
+      await vi.waitFor(() => {
+        const shown = groupsAndRows();
+        expect(shown.filter((entry) => entry.startsWith("# "))).toEqual([
+          "# Recent threads",
+          "# Suggested",
+          "# Commands",
+        ]);
+        // Latest activity first, and not the thread on screen.
+        expect(shown.indexOf("Newer plan")).toBeLessThan(shown.indexOf("Older plan"));
+        expect(shown).not.toContain(openTitle);
+      });
+      const palette = page.getByTestId("command-palette");
+      // Before this device has used anything: the first suggestions, as far as each is offered.
+      for (const title of ["Toggle terminal", "Toggle panel", "Add project"]) {
+        await expect.element(palette.getByText(title, { exact: true })).toBeInTheDocument();
+      }
+
+      await showAllPaletteCommands();
+      await palette.getByText("Open usage", { exact: true }).click();
+      await waitForURL(mounted.router, (path) => path === "/usage", "Open usage should open it.");
+
+      // Usage has no Search field of its own: open it as its shortcut does.
+      useCommandPaletteStore.getState().setOpen(true);
+      await vi.waitFor(() => {
+        const shown = groupsAndRows();
+        const suggested = shown.slice(shown.indexOf("# Suggested") + 1);
+        expect(suggested[0]).toBe("Open usage");
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("commits nothing in the palette's rows and command sources while a reply streams (Wrap up and Reopen sit outside)", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-palette-streaming" as MessageId,
+        targetText: "palette while streaming",
+      }),
+    });
+    let commits = 0;
+
+    try {
+      await waitForServerConfigToApply();
+      await openCommandPaletteFromTrigger();
+      // Let the palette and its command sources settle before counting.
+      for (let frame = 0; frame < 10; frame += 1) await waitForLayout();
+      setCommandPaletteCommitListenerForTests(() => {
+        commits += 1;
+      });
+
+      const messageId = MessageId.make("msg-assistant-streaming-behind-palette");
+      let text = "";
+      for (let token = 0; token < 20; token += 1) {
+        text += `word${token} `;
+        rpcHarness.emitStreamValue(ORCHESTRATION_WS_METHODS.subscribeThread, {
+          kind: "event",
+          event: {
+            sequence: fixture.snapshot.snapshotSequence + 1 + token,
+            eventId: EventId.make(`evt-streaming-behind-palette-${token}`),
+            aggregateKind: "thread",
+            aggregateId: THREAD_ID,
+            // Each token arrives later than the last, as a real stream's do.
+            occurredAt: new Date(Date.parse(NOW_ISO) + (token + 1) * 1000).toISOString(),
+            commandId: null,
+            causationEventId: null,
+            correlationId: null,
+            metadata: {},
+            type: "thread.message-sent",
+            payload: {
+              threadId: THREAD_ID,
+              messageId,
+              role: "assistant",
+              text,
+              turnId: null,
+              streaming: true,
+              createdAt: NOW_ISO,
+              updatedAt: NOW_ISO,
+            },
+          } satisfies OrchestrationEvent,
+        });
+        await waitForLayout();
+      }
+      // The reply did reach the chat behind the palette.
+      await vi.waitFor(() => expect(document.body.textContent).toContain("word19"));
+      for (let frame = 0; frame < 5; frame += 1) await waitForLayout();
+
+      expect(commits).toBe(0);
+    } finally {
+      setCommandPaletteCommitListenerForTests(null);
       await mounted.cleanup();
     }
   });
@@ -253,7 +500,7 @@ describe("ChatView (full app): command palette and search", () => {
     });
 
     try {
-      await openCommandPaletteFromTrigger();
+      await openCommandPaletteCommands();
       const palette = page.getByTestId("command-palette");
       await palette.getByText("Add agent", { exact: true }).click();
 

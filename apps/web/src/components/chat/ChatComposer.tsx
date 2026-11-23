@@ -121,7 +121,7 @@ import { type ComposerCommandItem, ComposerCommandMenu } from "./ComposerCommand
 import { useComposerMenuRoom } from "./useComposerMenuRoom";
 import { ComposerPendingApprovalActions } from "./ComposerPendingApprovalActions";
 import { ComposerAddMenu } from "./ComposerAddMenu";
-import { type ComposerCommandKind, useComposerCommandsStore } from "../../composerCommands";
+import { useCommandHandlers } from "../../commands/commandHandlers";
 import {
   type ComposerRoomDelivery,
   type ComposerSendOptions,
@@ -3377,10 +3377,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     if (attachmentsDisabled) return;
 
     setIsCapturingScreenshot(true);
-    void captureScreenshot({ mode: "interactive" })
+    // "cancelled" when the user backed out, for the palette's usage count.
+    return captureScreenshot({ mode: "interactive" })
       .then((result) => {
         if (result.status === "cancelled") {
-          return;
+          return "cancelled" as const;
         }
         if (result.status === "unsupported" || result.status === "failed") {
           toastManager.add(
@@ -3425,18 +3426,44 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       });
   };
 
-  // "Capture screenshot" asked for from the command palette.
-  const composerCommandRequest = useComposerCommandsStore((state) => state.request);
-  const handledComposerCommandNonceRef = useRef(composerCommandRequest?.nonce ?? 0);
-  const runComposerCommand = useEffectEvent((kind: ComposerCommandKind) => {
-    if (kind === "captureScreenshot") onCaptureScreenshot();
+  // The composer's commands in the palette, each the path its own control or
+  // shortcut takes, offered only while that control would act.
+  const runCaptureScreenshot = useEffectEvent(() => onCaptureScreenshot());
+  useCommandHandlers({
+    // A screenshot of a window or part of the screen, added to the message
+    // being written. The desktop app only; it used to sit in the "+" menu.
+    // As the capture itself: not while a question holds the composer.
+    "composer.screenshot": typeof window.desktopBridge?.captureScreenshot === "function" &&
+      !attachmentsDisabled && {
+        // After the palette has closed and handed focus back to the composer.
+        afterFocusReturns: true,
+        run: () => runCaptureScreenshot(),
+      },
+    // As the stash shortcut, which stands down while a question holds the composer.
+    "composer.stash": !attachmentsDisabled && {
+      afterFocusReturns: true,
+      run: () => {
+        void stashCurrentPrompt();
+      },
+    },
+    // The model picker sits in the toolbar an approval replaces.
+    "modelPicker.toggle": activePendingApproval === null && {
+      afterFocusReturns: true,
+      run: () => setIsComposerModelPickerOpen((open) => !open),
+    },
+    "composer.planMode": interactionMode !== "plan" && {
+      run: () => handleInteractionModeChange("plan"),
+    },
+    "composer.defaultMode": interactionMode === "plan" && {
+      run: () => handleInteractionModeChange("default"),
+    },
+    // Where the model picker lists agents: rooms on, and no approval holding
+    // the toolbar. It opens the picker ready to add one, as its "Add agent" row.
+    "room.addAgent": roomsEnabled &&
+      pendingApprovals.length === 0 && {
+        run: () => useRoomRecipientStore.getState().requestAddAgent(routeThreadRef),
+      },
   });
-  useEffect(() => {
-    if (!composerCommandRequest) return;
-    if (composerCommandRequest.nonce === handledComposerCommandNonceRef.current) return;
-    handledComposerCommandNonceRef.current = composerCommandRequest.nonce;
-    runComposerCommand(composerCommandRequest.kind);
-  }, [composerCommandRequest]);
 
   const removeComposerAttachment = (imageId: string) => {
     removeComposerAttachmentFromDraft(imageId);

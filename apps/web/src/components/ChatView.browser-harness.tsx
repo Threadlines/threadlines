@@ -3113,6 +3113,30 @@ export async function openCommandPaletteFromTrigger(): Promise<void> {
   );
 }
 
+/**
+ * Switches the open palette to every command, through its "All commands" row.
+ * The palette opens on recent threads and a few suggestions, so a test that
+ * runs a command by name goes here first, as a user would.
+ */
+export async function showAllPaletteCommands(): Promise<void> {
+  await page.getByTestId("command-palette").getByText("All commands", { exact: true }).click();
+  await vi.waitFor(
+    () => {
+      const input = document.querySelector<HTMLInputElement>(
+        '[data-testid="command-palette"] input',
+      );
+      expect(input?.value).toBe(">");
+    },
+    { timeout: 8_000, interval: 16 },
+  );
+}
+
+/** Opens the palette from the sidebar and shows every command. */
+export async function openCommandPaletteCommands(): Promise<void> {
+  await openCommandPaletteFromTrigger();
+  await showAllPaletteCommands();
+}
+
 export async function waitForNewThreadShortcutLabel(): Promise<void> {
   const newThreadButton = page.getByTestId("new-thread-button");
   await expect.element(newThreadButton).toBeInTheDocument();

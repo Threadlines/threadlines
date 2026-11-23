@@ -9,7 +9,7 @@ import {
   createSnapshotForTargetUser,
   dispatchInputKey,
   mountChatView,
-  openCommandPaletteFromTrigger,
+  openCommandPaletteCommands,
   registerChatViewSuiteHooks,
   waitForCommandPaletteInput,
   waitForServerConfigToApply,
@@ -96,7 +96,7 @@ describe("ChatView (full app): bring in a Codex conversation", () => {
 
     try {
       await waitForServerConfigToApply();
-      await openCommandPaletteFromTrigger();
+      await openCommandPaletteCommands();
       const palette = page.getByTestId("command-palette");
       await expect
         .element(palette.getByText("Bring in Codex conversation…", { exact: true }))
@@ -211,7 +211,7 @@ describe("ChatView (full app): bring in a Codex conversation", () => {
 
     try {
       await waitForServerConfigToApply();
-      await openCommandPaletteFromTrigger();
+      await openCommandPaletteCommands();
       await page
         .getByTestId("command-palette")
         .getByText("Bring in Codex conversation…", { exact: true })

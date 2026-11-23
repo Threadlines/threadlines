@@ -147,8 +147,9 @@ export function useThreadMenu() {
   }, []);
 
   /** Does what the menu item says, for the thread as it is now. */
+  /** Does what the item says; "cancelled" when the user said no to a confirmation. */
   const run = useCallback(
-    async (action: ThreadMenuAction, target: ThreadMenuTarget) => {
+    async (action: ThreadMenuAction, target: ThreadMenuTarget): Promise<void | "cancelled"> => {
       const { threadRef } = target;
       const threadKey = scopedThreadKey(threadRef);
       const byKey = summariesByKey();
@@ -270,7 +271,7 @@ export function useThreadMenu() {
             api &&
             !(await api.dialogs.confirm(`Archive thread "${thread.title}"?`))
           ) {
-            return;
+            return "cancelled";
           }
           try {
             await archiveThread(threadRef);
@@ -291,7 +292,7 @@ export function useThreadMenu() {
               title: thread.title,
               childCount,
             });
-            if (answer === null) return;
+            if (answer === null) return "cancelled";
             await deleteThread(threadRef, { withChildren: answer.withChildren });
             return;
           }
@@ -305,7 +306,7 @@ export function useThreadMenu() {
               ].join("\n"),
             ))
           ) {
-            return;
+            return "cancelled";
           }
           await deleteThread(threadRef);
           return;

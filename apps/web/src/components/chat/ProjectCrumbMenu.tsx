@@ -22,12 +22,14 @@ import {
 import { copyWithNotice } from "../ui/copyWithNotice";
 import {
   EditorOpenRadioGroup,
+  editorLabel,
   editorOpenActionLabel,
   useEditorOpenOptions,
 } from "../EditorOpenOptions";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { readLocalApi } from "~/localApi";
 import { isKeyboardOwnedByDialog } from "~/commands/shortcutBlock";
+import { useCommandHandlers } from "~/commands/commandHandlers";
 
 /**
  * The project crumb in the chat header, and everything that acts on the
@@ -79,6 +81,20 @@ export const ProjectCrumbMenu = memo(function ProjectCrumbMenu({
     if (!api) return;
     void api.shell.openInEditor(path, editor);
   }, []);
+
+  // Open in editor from the palette: what its shortcut does, where it would act.
+  const preferredEditorLabel = preferredEditor ? editorLabel(preferredEditor) : null;
+  useCommandHandlers({
+    "editor.openFavorite": canOpenInEditor &&
+      preferredEditor !== null &&
+      preferredEditorLabel !== null && {
+        title: `Open in ${preferredEditorLabel}`,
+        keywords: [preferredEditorLabel],
+        run: () => {
+          if (readLocalApi()) openIn(cwd, preferredEditor);
+        },
+      },
+  });
 
   useEffect(() => {
     if (!canOpenInEditor) return;

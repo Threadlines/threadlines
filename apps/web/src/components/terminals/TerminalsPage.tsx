@@ -20,7 +20,7 @@ import { shortenHomePath } from "@threadlines/shared/path";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import * as Schema from "effect/Schema";
 import { MonitorIcon } from "lucide-react";
-import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { readEnvironmentApi } from "../../environmentApi";
@@ -33,7 +33,7 @@ import { cn, randomUUID } from "../../lib/utils";
 import { isKeyboardOwnedByDialog } from "../../commands/shortcutBlock";
 import { useServerKeybindings } from "../../rpc/serverState";
 import { selectWorkspaceProjectsAcrossEnvironments, useStore } from "../../store";
-import { type TerminalCommandKind, useTerminalCommandsStore } from "../../terminalCommands";
+import { useCommandHandlers } from "../../commands/commandHandlers";
 import {
   selectTerminalTabs,
   selectThreadTerminalState,
@@ -72,6 +72,9 @@ import {
   tabFolderLabel,
   terminalsPageThreadRef,
 } from "./terminalsPage.logic";
+
+/** What the page's terminal shortcuts and palette commands ask its drawer to do. */
+type TerminalCommandKind = "toggle" | "new" | "split" | "find" | "clear" | "restart" | "kill";
 
 const SELECTED_PROJECT_STORAGE_KEY = "threadlines:terminals-page-project";
 /** The size a restarted shell starts at; the tab resizes it right away. */
@@ -574,14 +577,24 @@ function ComputerTerminals({
     window.addEventListener("keydown", handler, true);
     return () => window.removeEventListener("keydown", handler, true);
   }, [keybindings, terminalOpen]);
-  // The palette's terminal actions, while this page is open.
-  const commandRequest = useTerminalCommandsStore((state) => state.request);
-  const handledNonceRef = useRef(commandRequest?.nonce ?? 0);
-  useEffect(() => {
-    if (!commandRequest || commandRequest.nonce === handledNonceRef.current) return;
-    handledNonceRef.current = commandRequest.nonce;
-    runCommand(commandRequest.kind);
-  }, [commandRequest]);
+  // The palette's terminal actions, while this page is open: the same paths
+  // as its shortcuts, run once the palette has handed focus back.
+  const terminalHandler = (kind: TerminalCommandKind, description?: string) => ({
+    afterFocusReturns: true,
+    description,
+    run: () => runCommand(kind),
+  });
+  // New and Split open the first tab; the rest act on an open terminal only.
+  useCommandHandlers({
+    "terminal.new": terminalHandler("new", "Open a terminal in the project picked for new tabs"),
+    "terminal.split": terminalHandler("split"),
+    "terminal.find": terminalOpen && terminalHandler("find"),
+    "terminal.restart":
+      terminalOpen &&
+      terminalHandler("restart", "A new shell in the same folder, below the old output"),
+    "terminal.clear": terminalOpen && terminalHandler("clear"),
+    "terminal.close": terminalOpen && terminalHandler("kill"),
+  });
 
   const shortcutOptions = useMemo(
     () => ({ context: { terminalFocus: true, terminalOpen: true } }),

@@ -76,6 +76,26 @@ export function openCodexImport(request: CodexImportOpenRequest): number {
   return useCodexImportStore.getState().open(request);
 }
 
+/** The last session that ended with something done through it, as against closed. */
+let lastCompletedSessionId: number | null = null;
+
+/**
+ * How a session ended: "imported" when a conversation came in through it,
+ * "cancelled" when it was closed or replaced first. The palette counts a use
+ * of the command only for the first.
+ */
+export function waitForCodexImportSessionEnd(sessionId: number): Promise<"imported" | "cancelled"> {
+  return new Promise((resolve) => {
+    const settle = () => {
+      if (useCodexImportStore.getState().session?.id === sessionId) return;
+      unsubscribe();
+      resolve(lastCompletedSessionId === sessionId ? "imported" : "cancelled");
+    };
+    const unsubscribe = useCodexImportStore.subscribe(settle);
+    settle();
+  });
+}
+
 /**
  * What happens once a conversation was brought in. The thread exists either
  * way. If the session that started the import is still open it closes and the
@@ -92,6 +112,7 @@ export async function finishCodexImport(input: {
     input.announce(input.openThread);
     return;
   }
+  lastCompletedSessionId = input.sessionId;
   useCodexImportStore.getState().closeSession(input.sessionId);
   await input.openThread();
 }

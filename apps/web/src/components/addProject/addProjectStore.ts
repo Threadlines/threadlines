@@ -65,6 +65,26 @@ export function openAddProject(request?: AddProjectOpenRequest): number {
   return useAddProjectStore.getState().open(request);
 }
 
+/** The last session that ended with something done through it, as against closed. */
+let lastCompletedSessionId: number | null = null;
+
+/**
+ * How a session ended: "added" when a project was added or picked through
+ * it, "cancelled" when it was closed or replaced first. The palette counts a
+ * use of Add project only for the first.
+ */
+export function waitForAddProjectSessionEnd(sessionId: number): Promise<"added" | "cancelled"> {
+  return new Promise((resolve) => {
+    const settle = () => {
+      if (useAddProjectStore.getState().session?.id === sessionId) return;
+      unsubscribe();
+      resolve(lastCompletedSessionId === sessionId ? "added" : "cancelled");
+    };
+    const unsubscribe = useAddProjectStore.subscribe(settle);
+    settle();
+  });
+}
+
 export function isAddProjectSessionOpen(sessionId: number): boolean {
   return useAddProjectStore.getState().session?.id === sessionId;
 }
@@ -88,6 +108,7 @@ export async function finishAddProject(input: {
     input.announce(openProject);
     return;
   }
+  lastCompletedSessionId = session.id;
   if (session.selection) {
     session.selection.onProjectSelected(projectRef);
     useAddProjectStore.getState().closeSession(session.id);

@@ -74,6 +74,7 @@ import {
   useSidebar,
 } from "./ui/sidebar";
 import { useThreadSelectionStore } from "../threadSelectionStore";
+import { useCommandHandlers } from "../commands/commandHandlers";
 import { isKeyboardOwnedByDialog } from "../commands/shortcutBlock";
 import { openAddProject } from "./addProject/addProjectStore";
 import {
@@ -1557,6 +1558,40 @@ export default function Sidebar() {
     [clearSelection, closeSheet, navigate, setSelectionAnchor],
   );
 
+  // What the list shows (see destinationLists). This component stays mounted
+  // either way, so the thread shortcuts work on every page.
+  const destinationList = resolveShownDestinationList(selectedDestination, isMobile);
+  const PageListBody =
+    destinationList !== null && destinationList.body !== "inbox" ? destinationList.body : null;
+
+  // The sidebar's commands in the palette: the same traversal its shortcuts
+  // use, offered only when there is a thread that way, and the wrapped shelf
+  // while it is on screen.
+  const adjacentThreadRef = (direction: "previous" | "next") => {
+    const targetKey = resolveAdjacentThreadId({
+      threadIds: traversalThreadKeys,
+      currentThreadId: routeThreadKey,
+      direction,
+    });
+    const target = targetKey ? sidebarThreadByKey.get(targetKey) : undefined;
+    return target ? scopeThreadRef(target.environmentId, target.id) : null;
+  };
+  const previousThreadRef = adjacentThreadRef("previous");
+  const nextThreadRef = adjacentThreadRef("next");
+  useCommandHandlers({
+    "thread.previous": previousThreadRef !== null && {
+      run: () => navigateToThread(previousThreadRef),
+    },
+    "thread.next": nextThreadRef !== null && { run: () => navigateToThread(nextThreadRef) },
+    // Only where the inbox and its wrapped shelf are on screen, not under a
+    // page's own list (Settings, Computers).
+    "inbox.showWrapped": PageListBody === null &&
+      wrappedRows.length > 0 && {
+        ...(wrappedOpen ? { title: "Hide wrapped threads" } : {}),
+        run: toggleWrappedOpen,
+      },
+  });
+
   // A request opens where it can be read in full: the thread that asked, when
   // this app has it, else the Fleet page of the computer it would run on.
   const openLinkRequest = useCallback(
@@ -2055,12 +2090,6 @@ export default function Sidebar() {
       window.removeEventListener("mousedown", onMouseDown);
     };
   }, [clearSelection]);
-
-  // What the list shows (see destinationLists). This component stays mounted
-  // either way, so the thread shortcuts work on every page.
-  const destinationList = resolveShownDestinationList(selectedDestination, isMobile);
-  const PageListBody =
-    destinationList !== null && destinationList.body !== "inbox" ? destinationList.body : null;
 
   return (
     <>

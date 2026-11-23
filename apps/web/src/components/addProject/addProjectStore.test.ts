@@ -2,7 +2,11 @@ import { EnvironmentId, ProjectId } from "@threadlines/contracts";
 import { scopeProjectRef } from "@threadlines/client-runtime";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
-import { finishAddProject, useAddProjectStore } from "./addProjectStore";
+import {
+  finishAddProject,
+  useAddProjectStore,
+  waitForAddProjectSessionEnd,
+} from "./addProjectStore";
 
 const PROJECT_REF = scopeProjectRef(EnvironmentId.make("environment-local"), ProjectId.make("p1"));
 
@@ -14,8 +18,9 @@ function openSession(onProjectSelected?: (ref: typeof PROJECT_REF) => void) {
 }
 
 describe("add project store", () => {
+  // Session ids only ever grow, as in the app.
   beforeEach(() => {
-    useAddProjectStore.setState({ session: null, lastSessionId: 0 });
+    useAddProjectStore.setState({ session: null });
   });
 
   it("hands a finished add to the session that started it, then closes", async () => {
@@ -76,5 +81,22 @@ describe("add project store", () => {
 
     expect(openProject).not.toHaveBeenCalled();
     expect(announce).toHaveBeenCalledOnce();
+  });
+
+  it("says a session ended cancelled when it closed, and added when a project came through it", async () => {
+    const closed = openSession();
+    const closedEnd = waitForAddProjectSessionEnd(closed.id);
+    useAddProjectStore.getState().close();
+    await expect(closedEnd).resolves.toBe("cancelled");
+
+    const finished = openSession();
+    const finishedEnd = waitForAddProjectSessionEnd(finished.id);
+    await finishAddProject({
+      session: finished,
+      projectRef: PROJECT_REF,
+      openProject: async () => undefined,
+      announce: vi.fn(),
+    });
+    await expect(finishedEnd).resolves.toBe("added");
   });
 });

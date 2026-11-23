@@ -300,7 +300,8 @@ import {
   ManagedTerminalDrawer,
   type ManagedTerminalDrawerProps,
 } from "./terminal/ManagedTerminalDrawer";
-import { type TerminalCommandKind, useTerminalCommandsStore } from "../terminalCommands";
+import { useCommandHandlers } from "../commands/commandHandlers";
+import { openActiveFileViewer } from "../fileViewerStore";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
 import { McpAppSidePanel } from "./chat/McpAppCard";
 import { NO_COMPOSER_PULL_REQUESTS, type ComposerPullRequest } from "./chat/ComposerPullRequestRow";
@@ -497,6 +498,9 @@ import {
   type ProviderInstanceEntry,
   resolveComposerProviderSelection,
 } from "../providerInstances";
+
+/** The terminal actions the command palette runs for the thread on screen. */
+type TerminalCommandKind = "toggle" | "new" | "split" | "find" | "clear" | "restart" | "kill";
 
 const ATTACHMENT_ONLY_BOOTSTRAP_PROMPT =
   "[User attached one or more files without additional text. Respond using the conversation context and the attached file(s).]";
@@ -4210,8 +4214,22 @@ export default function ChatView(props: ChatViewProps) {
     [],
   );
 
+  // A Restart or Kill from the palette waits here for the confirmation's
+  // answer, so a "Cancel" isn't counted as using the command.
+  const terminalConfirmationRef = useRef<((confirmed: boolean) => void) | null>(null);
+  const settleTerminalConfirmation = (confirmed: boolean) => {
+    const settle = terminalConfirmationRef.current;
+    terminalConfirmationRef.current = null;
+    settle?.(confirmed);
+  };
+  const awaitTerminalConfirmation = () =>
+    new Promise<"cancelled" | undefined>((resolve) => {
+      settleTerminalConfirmation(false);
+      terminalConfirmationRef.current = (confirmed) => resolve(confirmed ? undefined : "cancelled");
+    });
   const confirmPendingTerminalAction = useCallback(() => {
     if (!pendingTerminalAction) return;
+    settleTerminalConfirmation(true);
     const perform =
       pendingTerminalAction.kind === "kill" ? performCloseTerminal : performRestartTerminal;
     perform(
@@ -5108,9 +5126,8 @@ export default function ChatView(props: ChatViewProps) {
     toggleTerminalVisibility,
   ]);
 
-  // Terminal actions asked for in the command palette, for this thread.
-  const terminalCommandRequest = useTerminalCommandsStore((state) => state.request);
-  const handledTerminalCommandNonceRef = useRef(terminalCommandRequest?.nonce ?? 0);
+  // The terminal's actions as the command palette runs them: a closed drawer
+  // opens for Find, and Restart and Kill ask first like the drawer's buttons.
   const runTerminalCommand = useEffectEvent((kind: TerminalCommandKind) => {
     if (!activeThreadRef || !activeThreadId) return;
     const terminalId = terminalState.activeTerminalId;
@@ -5135,25 +5152,69 @@ export default function ChatView(props: ChatViewProps) {
           ?.terminal.clear({ threadId: activeThreadId, terminalId })
           .catch(() => undefined);
         return;
-      case "restart":
+      case "restart": {
         setTerminalOpen(true);
+        const asks = terminalStopNeedsConfirm(activeThreadRef, terminalId);
         requestRestartTerminal(activeThreadRef, activeThreadId, terminalId);
-        return;
-      case "kill":
+        return asks ? awaitTerminalConfirmation() : undefined;
+      }
+      case "kill": {
+        const asks = terminalStopNeedsConfirm(activeThreadRef, terminalId);
         requestCloseTerminal(activeThreadRef, activeThreadId, terminalId);
-        return;
+        return asks ? awaitTerminalConfirmation() : undefined;
+      }
     }
   });
-  useEffect(() => {
-    if (
-      !terminalCommandRequest ||
-      terminalCommandRequest.nonce === handledTerminalCommandNonceRef.current
-    ) {
-      return;
-    }
-    handledTerminalCommandNonceRef.current = terminalCommandRequest.nonce;
-    runTerminalCommand(terminalCommandRequest.kind);
-  }, [terminalCommandRequest]);
+  // This thread's commands in the palette. Each registers what its button or
+  // shortcut ends in, and only while that path would act.
+  const projectScripts = activeProject?.scripts;
+  const scriptCommandItems = useMemo(
+    () =>
+      (projectScripts ?? []).map((script) => ({
+        id: script.id,
+        title: script.name,
+        keywords: [script.command],
+        run: () => {
+          void runProjectScript(script);
+        },
+      })),
+    [projectScripts, runProjectScript],
+  );
+  const terminalHandler = (kind: TerminalCommandKind) => ({
+    // After the palette has closed and handed focus back.
+    afterFocusReturns: true,
+    run: () => runTerminalCommand(kind),
+  });
+  useCommandHandlers({
+    "terminal.toggle": terminalHandler("toggle"),
+    "terminal.new": terminalHandler("new"),
+    "terminal.split": terminalHandler("split"),
+    "terminal.find": terminalHandler("find"),
+    "terminal.restart": terminalHandler("restart"),
+    "terminal.clear": terminalHandler("clear"),
+    "terminal.close": terminalHandler("kill"),
+    // Where find in chat can open: a saved chat on screen, off phones.
+    "chat.find": canFindInChat && {
+      // After the palette has closed and handed focus back, so the bar's
+      // field keeps it.
+      afterFocusReturns: true,
+      run: () => useChatFindStore.getState().requestOpen(null),
+    },
+    // The header's panel toggle, for a thread the panel can show.
+    "diff.toggle": activeThread !== undefined && { run: onToggleRail },
+    "project.runScript": scriptCommandItems.length > 0 && {
+      items: scriptCommandItems,
+      placeholder: "Run a script...",
+    },
+    // As the header's button: a project thread with a project to browse.
+    "files.browse": !isGeneralChatThread &&
+      activeProject !== undefined && {
+        run: () => {
+          openActiveFileViewer();
+        },
+      },
+    "browser.toggle": browserAvailable && { run: handleToggleBrowser },
+  });
 
   const onRevertToTurnCount = useCallback(
     async (turnCount: number, revertedMessageText?: string) => {
@@ -9258,7 +9319,10 @@ export default function ChatView(props: ChatViewProps) {
         action={pendingTerminalAction}
         host="thread"
         onConfirm={confirmPendingTerminalAction}
-        onCancel={() => setPendingTerminalAction(null)}
+        onCancel={() => {
+          settleTerminalConfirmation(false);
+          setPendingTerminalAction(null);
+        }}
       />
       {previewedFile && <FilePreviewDialog request={previewedFile} onClose={closePreviewedFile} />}
     </div>

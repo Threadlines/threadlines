@@ -134,6 +134,8 @@ import {
   SourceControlPanel,
   type SourceControlProjectTarget,
 } from "../components/source-control/SourceControlPanel";
+import { useCommandHandlers } from "../commands/commandHandlers";
+import { usePanelTabCommands } from "../commands/panelTabCommands";
 
 // The rail can be opened before the chat column has published its turn state
 // (or on a thread with nothing running at all), so the agents tab renders from
@@ -800,6 +802,19 @@ function ChatThreadRouteView() {
   );
   // What a transcript link to one of these opens. Only the ones the tab can
   // show are offered, so a link never lands on the tab's fallback.
+  // The panel's tabs in the palette, through the same selector the tab row
+  // uses so the URL follows, and the thread's pull request.
+  const leadPullRequestNumber = leadPullRequestTarget?.reference.number ?? null;
+  usePanelTabCommands(availableTabs, selectTab);
+  useCommandHandlers({
+    // Only where there is one to open: a command that lands on "this thread
+    // has no pull request" is a dead end the palette should not offer.
+    "thread.pullRequest": leadPullRequestNumber !== null && {
+      title: `Open pull request #${leadPullRequestNumber}`,
+      keywords: [`#${leadPullRequestNumber}`],
+      run: () => openPullRequestTab(leadPullRequestNumber),
+    },
+  });
   const threadPullRequestLinks = useMemo<ThreadPullRequestLinks | null>(
     () =>
       threadPullRequests.length === 0

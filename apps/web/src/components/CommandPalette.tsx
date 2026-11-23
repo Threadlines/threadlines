@@ -1,7 +1,7 @@
 "use client";
 
 import { useParams } from "@tanstack/react-router";
-import { lazy, Suspense, useEffect, useRef, type ReactNode } from "react";
+import { lazy, Profiler, Suspense, useEffect, useRef, type ReactNode } from "react";
 
 import { useCommandPaletteStore } from "../commandPaletteStore";
 import { isPaletteLaunchedDialogOpen } from "../commands/shortcutBlock";
@@ -21,6 +21,9 @@ const loadCommandPaletteDialog = () => import("./CommandPaletteDialog");
 const OpenCommandPaletteDialog = lazy(() =>
   loadCommandPaletteDialog().then((module) => ({ default: module.OpenCommandPaletteDialog })),
 );
+const PaletteInboxCommandSource = lazy(() =>
+  loadCommandPaletteDialog().then((module) => ({ default: module.PaletteInboxCommandSource })),
+);
 
 /**
  * Fetches the palette's body ahead of its first use. The app calls this once
@@ -29,6 +32,24 @@ const OpenCommandPaletteDialog = lazy(() =>
  */
 export function preloadCommandPaletteDialog(): void {
   void loadCommandPaletteDialog().catch(() => undefined);
+}
+
+type PaletteCommitListener = (phase: "mount" | "update" | "nested-update") => void;
+let paletteCommitListener: PaletteCommitListener | null = null;
+
+/**
+ * Tests only: hears every React commit inside the open palette, so a test can
+ * check that a streaming reply behind it commits nothing there. Counted with a
+ * Profiler, since frame sampling can't see commits.
+ */
+export function setCommandPaletteCommitListenerForTests(
+  listener: PaletteCommitListener | null,
+): void {
+  paletteCommitListener = listener;
+}
+
+function reportPaletteCommit(_id: string, phase: "mount" | "update" | "nested-update"): void {
+  paletteCommitListener?.(phase);
 }
 
 export function CommandPalette({ children }: { children: ReactNode }) {
@@ -107,7 +128,12 @@ function CommandPaletteDialog() {
   // Normally preloaded already; until it arrives the palette stays closed.
   return (
     <Suspense fallback={null}>
-      <OpenCommandPaletteDialog />
+      <Profiler id="command-palette" onRender={reportPaletteCommit}>
+        <OpenCommandPaletteDialog />
+      </Profiler>
+      {/* Outside the Profiler on purpose: its rule reads the inbox, which
+          re-derives on every streamed token (see PaletteInboxCommandSource). */}
+      <PaletteInboxCommandSource />
     </Suspense>
   );
 }

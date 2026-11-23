@@ -21,8 +21,9 @@ function openSession(): number {
 }
 
 describe("codex import store", () => {
+  // Session ids only ever grow, as in the app.
   beforeEach(() => {
-    useCodexImportStore.setState({ session: null, lastSessionId: 0 });
+    useCodexImportStore.setState({ session: null });
   });
 
   it("closes and opens the thread when its session is still open", async () => {

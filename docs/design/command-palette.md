@@ -644,6 +644,9 @@ promise exist now.
 - Composer slash commands (`/model`, `/theme`, `/plan`) reading the catalog.
 - `app_guide` answering "what commands are there" from the catalog.
 - A redesign of Add project.
+- One shared inbox derivation that the Sidebar, the desktop badge, the alert
+  sounds and the palette all read. Today each runs its own copy on every
+  streamed token.
 
 ## As built: step 1 (Nov 23 2026)
 
@@ -669,6 +672,56 @@ Where the build differs from section 7:
   stores and the focus helper are about 1 KB. The rest is the bundler
   splitting code that already loaded at startup into more files. Neither
   dialog body loads at startup.
+
+## As built: step 2 (Nov 23 2026)
+
+The catalog is `packages/shared/src/appCommands.ts`, the registry
+`apps/web/src/commands/commandHandlers.ts`, and the palette reads only what
+owners register. Where the build differs from sections 1 to 4:
+
+- **No `appliesWhen` field.** Every "where" is a registration rule, so the
+  catalog holds names only.
+- **Toggle diff is "Toggle panel".** `diff.toggle` (the shortcut) shows or
+  hides the side panel on the tab it was left on, which is also what the
+  header's button does and says. "diff" is one of its keywords.
+  "Show diff" (`panel.diff`) opens the diff tab itself, beside the other
+  panel tabs.
+- **Plan and build mode** are "Switch to plan mode" and "Switch to build
+  mode", and only the one you're not in is offered.
+- **Lead chats are a list**, "Go to lead chat…", with one item per project
+  that has a lead; typing "lead" still finds each from the main search.
+- **The thread's pull request** comes from the thread route's own answer (the
+  one the Pull request tab shows), not a second lookup in the palette.
+- **The panel's tabs** are offered on drafts too, through the draft route's
+  own tab selector.
+- **Rules changed rather than moved**, each because the command would
+  otherwise land on nothing: Capture screenshot is hidden while a question
+  holds the composer; on the Terminals page, Find, Clear, Restart and Kill
+  need an open terminal; New local thread is offered wherever its shortcut
+  works, Home included; Show wrapped threads only where the inbox and its
+  shelf are on screen.
+- **`opensDialog` is only Add project and Codex import.** Move, Move
+  threads and Rename keep the palette's return of focus to the composer,
+  because their dialogs give focus back to whatever had it when they opened.
+- **A cancelled run** is reported by Archive and Delete (the thread menu),
+  Restart and Kill on a thread's terminal (its confirmation), Add project and
+  Codex import (closed without adding), and Capture screenshot. Other dialogs
+  count as used once opened. A list item counts for its list too.
+- **Streaming.** The palette's rows and its command sources commit nothing
+  while a reply streams: the palette ignores a thread's last-activity time
+  when it has a user message (`sidebarThreadSummariesListEqual`), and "can a
+  general chat start" no longer lists every chat (`useStartGeneralChat`).
+  Wrap up, Reopen and the lead commands are the exception. They need the
+  inbox, which re-derives on every token, so their source is mounted beside
+  the palette, outside the Profiler, and still recomputes per token while the
+  palette is open, as the old palette did.
+- **Startup** went from 904.9 KB to 904.7 KB gzip. The catalog's data, the
+  icons and the palette's sources are not in it.
+- **Words that differ from the catalog**, left for the later pass: the
+  header's "Toggle terminal drawer" (Toggle terminal); the rail's
+  Terminals, Fleet, Scheduled, Usage, Settings, General Chats and Pull
+  Requests (each "Open …" here); the title row's Back and Forward (Go back,
+  Go forward).
 
 ## Rev 2 changes (Sol's review of rev 1)
 

@@ -11,6 +11,13 @@ import {
 } from "@threadlines/shared/keybindings";
 
 import { isMacPlatform } from "../../lib/utils";
+import {
+  APP_COMMAND_GROUP_TITLES,
+  APP_COMMANDS,
+  appCommandForKeybinding,
+  appCommandTitle,
+  type AppCommandGroup,
+} from "@threadlines/shared/appCommands";
 
 export type KeybindingSource = "Default" | "Custom" | "Project";
 
@@ -185,7 +192,7 @@ export function buildKeybindingRows(
   });
 
   rowsWithConflicts.sort((left, right) => {
-    const commandCompare = left.command.localeCompare(right.command);
+    const commandCompare = compareCommands(left.command, right.command);
     if (commandCompare !== 0) return commandCompare;
     return left.key.localeCompare(right.key);
   });
@@ -196,7 +203,7 @@ export function buildKeybindingRows(
 
   return rowsWithConflicts.filter((row) => {
     return (
-      // The label is what the table shows ("Terminal: Toggle"); the id is what keybindings.json says.
+      // The label is what the table shows ("Toggle terminal"); the id is what keybindings.json says.
       commandLabel(row.command).toLowerCase().includes(normalizedQuery) ||
       row.command.toLowerCase().includes(normalizedQuery) ||
       row.key.toLowerCase().includes(normalizedQuery) ||
@@ -267,12 +274,49 @@ export function buildKeybindingCommandOptions(
   );
 }
 
+/**
+ * What a shortcut command is called: the command palette's name for it (the
+ * catalog's title, with a jump's number), so the two never disagree. A
+ * project script is "Run script: <name>".
+ */
 export function commandLabel(command: KeybindingCommand): string {
   const raw = String(command);
   if (raw.startsWith("script.") && raw.endsWith(".run")) {
-    return `Run Script: ${titleCaseCommandSegment(raw.slice("script.".length, -".run".length))}`;
+    return `Run script: ${titleCaseCommandSegment(raw.slice("script.".length, -".run".length))}`;
   }
+  const named = appCommandForKeybinding(command);
+  if (named) return appCommandTitle(named.id, named.number);
   return raw.split(".").map(titleCaseCommandSegment).join(": ");
+}
+
+const GROUP_ORDER: ReadonlyArray<AppCommandGroup> = ["thread", "panels", "project", "goTo", "app"];
+const CATALOG_ORDER = new Map(Object.keys(APP_COMMANDS).map((id, index) => [id, index]));
+
+/** The palette's group a shortcut command belongs to; project scripts are the project's. */
+export function commandGroup(command: KeybindingCommand): AppCommandGroup {
+  const named = appCommandForKeybinding(command);
+  return named ? APP_COMMANDS[named.id].group : "project";
+}
+
+/** The heading a group of shortcuts sits under on the Keybindings page. */
+export function commandGroupTitle(group: AppCommandGroup): string {
+  return APP_COMMAND_GROUP_TITLES[group];
+}
+
+/** Grouped as the palette groups commands, then in the palette's order. */
+function compareCommands(left: KeybindingCommand, right: KeybindingCommand): number {
+  const groupCompare =
+    GROUP_ORDER.indexOf(commandGroup(left)) - GROUP_ORDER.indexOf(commandGroup(right));
+  if (groupCompare !== 0) return groupCompare;
+  const leftNamed = appCommandForKeybinding(left);
+  const rightNamed = appCommandForKeybinding(right);
+  const orderCompare =
+    (leftNamed ? (CATALOG_ORDER.get(leftNamed.id) ?? 0) : Number.MAX_SAFE_INTEGER) -
+    (rightNamed ? (CATALOG_ORDER.get(rightNamed.id) ?? 0) : Number.MAX_SAFE_INTEGER);
+  if (orderCompare !== 0) return orderCompare;
+  const numberCompare = (leftNamed?.number ?? 0) - (rightNamed?.number ?? 0);
+  if (numberCompare !== 0) return numberCompare;
+  return left.localeCompare(right);
 }
 
 function titleCaseCommandSegment(segment: string): string {
