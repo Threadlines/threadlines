@@ -333,9 +333,12 @@ function AgentPill(props: {
             <Menu
               open={menuOpen}
               onOpenChange={(open, details) => {
-                // The finger that held the pill, lifting.
+                // The finger that held the pill, lifting. Its press must not
+                // close the menu, nor take the keyboard focus out of it:
+                // Escape would then close the picker around the menu instead.
                 if (!open && details.reason === "outside-press" && holdStillDown()) {
                   details.cancel();
+                  details.event.preventDefault();
                   return;
                 }
                 setMenuOpen(open);
