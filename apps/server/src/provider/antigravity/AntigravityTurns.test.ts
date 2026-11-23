@@ -1556,6 +1556,39 @@ describe("Antigravity tool rows and attachments", () => {
     }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 
+  it.live("asks again when only an open approval's edit text changes", () =>
+    Effect.gen(function* () {
+      const agy = yield* startAgy("permission-edit-changed", undefined, "approval-required");
+      yield* agy.adapter.sendTurn({ threadId: agy.threadId, input: "go", attachments: [] });
+      yield* agy.waitFor((events) => opened(events).length === 2);
+      const [asked, reasked] = opened(agy.events);
+      // Same title and path; the old card is closed and can't approve the new edit.
+      expect(reasked?.payload.detail).toBe(asked?.payload.detail);
+      expect(
+        agy.events.some(
+          (event) => event.type === "request.resolved" && event.requestId === asked?.requestId,
+        ),
+      ).toBe(true);
+      const stale = yield* Effect.flip(
+        agy.adapter.respondToRequest(
+          agy.threadId,
+          ApprovalRequestId.make(String(asked!.requestId)),
+          "accept",
+        ),
+      );
+      expect(stale.message).toContain("Unknown pending approval request");
+      yield* agy.adapter.respondToRequest(
+        agy.threadId,
+        ApprovalRequestId.make(String(reasked!.requestId)),
+        "decline",
+      );
+      yield* agy.waitFor((events) => completedTurns(events).length === 1);
+      expect(answers(yield* agy.frames())).toEqual([
+        { outcome: { outcome: "selected", optionId: "deny" } },
+      ]);
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
   it.live("approves only an edit of the plan file itself without asking", () =>
     Effect.gen(function* () {
       const agy = yield* startAgy("plan-file-permission", undefined, "approval-required");

@@ -626,6 +626,36 @@ export function parsePermissionRequest(
   return describePermissionRequest(params, toolCall);
 }
 
+/**
+ * What a tool call would do, as text that changes whenever that does: its
+ * kind and row type, its command, the paths it names, its input, and an
+ * edit's old and new text. An approval is tied to this, not to how the call
+ * reads: an edit whose replacement text changed is a different edit even
+ * when its title and path are the same.
+ */
+export function toolCallSubstance(toolCall: AcpToolCallState | undefined): string {
+  if (toolCall === undefined) return "";
+  const { content, locations, rawInput } = toolCall.data;
+  const changes = Array.isArray(content)
+    ? content.flatMap((entry) =>
+        isRecord(entry) && entry.type === "diff"
+          ? [{ path: entry.path, oldText: entry.oldText ?? null, newText: entry.newText }]
+          : [],
+      )
+    : [];
+  const paths = Array.isArray(locations)
+    ? locations.flatMap((entry) => (isRecord(entry) ? [entry.path] : []))
+    : [];
+  return JSON.stringify([
+    toolCall.kind ?? null,
+    toolCall.itemType ?? null,
+    toolCall.command ?? null,
+    paths,
+    changes,
+    rawInput ?? null,
+  ]);
+}
+
 /** The kind and words of an approval for this call, as far as it is known. */
 export function describePermissionRequest(
   params: EffectAcpSchema.RequestPermissionRequest,
