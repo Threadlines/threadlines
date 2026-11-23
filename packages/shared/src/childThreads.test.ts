@@ -11,13 +11,17 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  attachedDescendantsOf,
   childAttachRefusal,
   childRequestStateOn,
   childSendRefusal,
   childStartRefusal,
   isHandedBackCompletion,
+  isStillGoing,
   remoteChildrenOf,
   remoteChildStartsOf,
+  stopReachOf,
+  type StillGoingInput,
 } from "./childThreads.ts";
 
 const PARENT = ThreadId.make("parent");
@@ -244,5 +248,92 @@ describe("isHandedBackCompletion", () => {
         latestTurn: { turnId: TurnId.make("later"), state: "completed" },
       }),
     ).toBe(false);
+  });
+});
+
+describe("family walks", () => {
+  const member = (
+    id: string,
+    parent: string | null,
+    createdAt: string,
+    extra: { attached?: boolean; stopsWithParent?: true; deletedAt?: string } = {},
+  ) => ({
+    id: ThreadId.make(id),
+    parentThreadId: parent === null ? null : ThreadId.make(parent),
+    attachedToParent: extra.attached ?? parent !== null,
+    ...(extra.stopsWithParent ? { stopsWithParent: extra.stopsWithParent } : {}),
+    deletedAt: extra.deletedAt ?? null,
+    createdAt,
+  });
+  const ids = (walk: ReadonlyArray<{ thread: { id: string }; level: number }>) =>
+    walk.map((entry) => `${entry.thread.id}@${entry.level}`);
+
+  it("lists a family in tree order with levels, and leaves out separated and deleted threads", () => {
+    const threads = [
+      member("root", null, "2026-11-23T10:00:00.000Z"),
+      member("m2", "root", "2026-11-23T10:02:00.000Z"),
+      member("m1", "root", "2026-11-23T10:01:00.000Z"),
+      member("g1", "m1", "2026-11-23T10:03:00.000Z"),
+      member("separated", "root", "2026-11-23T10:04:00.000Z", { attached: false }),
+      member("deleted", "m2", "2026-11-23T10:05:00.000Z", {
+        deletedAt: "2026-11-23T11:00:00.000Z",
+      }),
+      member("loose", "m2", "2026-11-23T10:06:00.000Z", { attached: false, stopsWithParent: true }),
+      member("under-loose", "loose", "2026-11-23T10:07:00.000Z"),
+    ];
+    expect(ids(attachedDescendantsOf(threads, ThreadId.make("root")))).toEqual([
+      "m1@1",
+      "g1@2",
+      "m2@1",
+    ]);
+    // Stop also takes a thread started without report back, and what is under it.
+    expect(ids(stopReachOf(threads, ThreadId.make("root")))).toEqual([
+      "m1@1",
+      "g1@2",
+      "m2@1",
+      "loose@2",
+      "under-loose@3",
+    ]);
+  });
+
+  it("never loops on a cycle in bad data", () => {
+    const threads = [
+      member("a", "b", "2026-11-23T10:00:00.000Z"),
+      member("b", "a", "2026-11-23T10:01:00.000Z"),
+    ];
+    expect(ids(attachedDescendantsOf(threads, ThreadId.make("a")))).toEqual(["b@1"]);
+  });
+});
+
+describe("isStillGoing", () => {
+  const idle: StillGoingInput = {
+    session: { status: "ready" },
+    latestTurn: { state: "completed" },
+    queuedCount: 0,
+    waitsOnUser: false,
+    openRequestCount: 0,
+  };
+
+  it("is false for an idle open session, and true for each kind of work", () => {
+    expect(isStillGoing(idle)).toBe(false);
+    expect(isStillGoing({ ...idle, latestTurn: { state: "running" } })).toBe(true);
+    expect(isStillGoing({ ...idle, session: { status: "starting" } })).toBe(true);
+    expect(isStillGoing({ ...idle, queuedCount: 1 })).toBe(true);
+    expect(isStillGoing({ ...idle, waitsOnUser: true })).toBe(true);
+    expect(isStillGoing({ ...idle, openRequestCount: 1 })).toBe(true);
+    expect(
+      isStillGoing({ ...idle, session: { status: "ready", pendingBackgroundTaskCount: 1 } }),
+    ).toBe(true);
+    expect(
+      isStillGoing({
+        ...idle,
+        session: { status: "error", continueAtReset: { at: "2026-11-23T12:00:00.000Z" } },
+      }),
+    ).toBe(true);
+  });
+
+  it("counts a check-back, saved or not, until it is dormant", () => {
+    expect(isStillGoing({ ...idle, checkBacks: [{}] })).toBe(true);
+    expect(isStillGoing({ ...idle, checkBacks: [{ dormant: true }] })).toBe(false);
   });
 });

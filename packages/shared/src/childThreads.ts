@@ -30,6 +30,7 @@ import {
   type TurnId,
 } from "@threadlines/contracts";
 
+import { hasLiveCheckBack } from "./checkBacks.ts";
 import { exceedsRuntimeMode, saferRuntimeMode } from "./runtimeMode.ts";
 import { isRoomThread } from "./threadParticipants.ts";
 
@@ -769,3 +770,154 @@ export const isHandedBackCompletion = (thread: {
   thread.latestTurn !== null &&
   thread.latestTurn.state !== "running" &&
   thread.latestTurn.turnId === thread.handedBackTurnId;
+
+// ── Families of any depth ────────────────────────────────────────────
+//
+// docs/design/agent-autonomy-no-limits.md. A thread's family is every thread
+// reachable from it down attached links. Stop reaches further: it also takes
+// a thread started without report back (`stopsWithParent`) until the user
+// makes it their own.
+
+/** What the family walks read about a thread. */
+export interface FamilyMember {
+  readonly id: ThreadId;
+  readonly parentThreadId: ThreadId | null;
+  readonly attachedToParent: boolean;
+  readonly stopsWithParent?: true | undefined;
+  readonly deletedAt?: string | null | undefined;
+  readonly createdAt: string;
+}
+
+/** A thread under another, and how many links down from it. */
+export interface FamilyMemberAt<T extends FamilyMember> {
+  readonly thread: T;
+  /** 1 for a direct child, 2 for its child, and so on. */
+  readonly level: number;
+}
+
+function walkDown<T extends FamilyMember>(
+  threads: ReadonlyArray<T>,
+  rootId: ThreadId,
+  follows: (thread: T) => boolean,
+): ReadonlyArray<FamilyMemberAt<T>> {
+  const childrenOf = new Map<ThreadId, T[]>();
+  for (const thread of threads) {
+    if (thread.parentThreadId === null || (thread.deletedAt ?? null) !== null) continue;
+    if (!follows(thread)) continue;
+    const siblings = childrenOf.get(thread.parentThreadId) ?? [];
+    siblings.push(thread);
+    childrenOf.set(thread.parentThreadId, siblings);
+  }
+  const out: FamilyMemberAt<T>[] = [];
+  // Bad data must never loop: a thread is visited once, the root never.
+  const visited = new Set<ThreadId>([rootId]);
+  const visit = (parentId: ThreadId, level: number) => {
+    const children = (childrenOf.get(parentId) ?? []).toSorted((left, right) =>
+      left.createdAt.localeCompare(right.createdAt),
+    );
+    for (const child of children) {
+      if (visited.has(child.id)) continue;
+      visited.add(child.id);
+      out.push({ thread: child, level });
+      visit(child.id, level + 1);
+    }
+  };
+  visit(rootId, 1);
+  return out;
+}
+
+/**
+ * Every thread attached under `rootId`, at any depth, in tree order: each
+ * thread followed by its own threads, oldest first within a level. Reports,
+ * the sidebar family, the tabs, wrap, archive, delete and revert follow this.
+ */
+export function attachedDescendantsOf<T extends FamilyMember>(
+  threads: ReadonlyArray<T>,
+  rootId: ThreadId,
+): ReadonlyArray<FamilyMemberAt<T>> {
+  return walkDown(threads, rootId, (thread) => thread.attachedToParent);
+}
+
+/**
+ * Every thread a Stop on `rootId` reaches, in tree order: the attached ones,
+ * and the ones started without report back that the user has not made their
+ * own, and so on down through both kinds. Only Stop follows this walk.
+ */
+export function stopReachOf<T extends FamilyMember>(
+  threads: ReadonlyArray<T>,
+  rootId: ThreadId,
+): ReadonlyArray<FamilyMemberAt<T>> {
+  return walkDown(
+    threads,
+    rootId,
+    (thread) => thread.attachedToParent || thread.stopsWithParent === true,
+  );
+}
+
+/**
+ * What the "still going" test reads about a thread. The thread's shell and
+ * its detail both carry these, so the server's stop and revert rules and the
+ * client's counts read the same answer.
+ */
+export interface StillGoingInput {
+  readonly session: {
+    readonly status: string;
+    readonly pendingBackgroundTaskCount?: number | undefined;
+    readonly awaitedBackgroundTaskCount?: number | undefined;
+    readonly continueAtReset?: unknown;
+  } | null;
+  readonly latestTurn: { readonly state: string } | null;
+  /** Messages waiting in its queue. */
+  readonly queuedCount: number;
+  /** An approval, a question or a plan waiting on the user. */
+  readonly waitsOnUser: boolean;
+  /** Its own open child requests, starts still waiting for the user included. */
+  readonly openRequestCount: number;
+  readonly checkBacks?: ReadonlyArray<{ readonly dormant?: true | undefined }> | undefined;
+}
+
+/**
+ * Whether a thread is still going (docs/design/agent-autonomy-no-limits.md,
+ * "Stop"): it can start a turn by itself, or is in one. What a stop targets,
+ * what "Stop N working threads" and the tab row's button count, and what
+ * holds a revert all read this, so a refusal never names a remedy that isn't
+ * on screen. An idle session with none of these is not going.
+ */
+export function isStillGoing(thread: StillGoingInput): boolean {
+  const session = thread.session;
+  return (
+    thread.latestTurn?.state === "running" ||
+    session?.status === "running" ||
+    session?.status === "starting" ||
+    thread.queuedCount > 0 ||
+    thread.waitsOnUser ||
+    (session?.pendingBackgroundTaskCount ?? 0) > 0 ||
+    (session?.awaitedBackgroundTaskCount ?? 0) > 0 ||
+    thread.openRequestCount > 0 ||
+    (session?.continueAtReset ?? null) !== null ||
+    hasLiveCheckBack(thread)
+  );
+}
+
+/** The "still going" input from a thread's shell, as the client holds it. */
+export function stillGoingInputOfShell(shell: {
+  readonly session: StillGoingInput["session"];
+  readonly latestTurn: StillGoingInput["latestTurn"];
+  readonly queuedFollowUps?: ReadonlyArray<unknown> | undefined;
+  readonly hasPendingApprovals: boolean;
+  readonly hasPendingUserInput: boolean;
+  readonly hasActionableProposedPlan: boolean;
+  readonly awaitedChildThreadCount?: number | undefined;
+  readonly pendingChildApproval?: boolean | undefined;
+  readonly checkBacks?: StillGoingInput["checkBacks"];
+}): StillGoingInput {
+  return {
+    session: shell.session,
+    latestTurn: shell.latestTurn,
+    queuedCount: shell.queuedFollowUps?.length ?? 0,
+    waitsOnUser:
+      shell.hasPendingApprovals || shell.hasPendingUserInput || shell.hasActionableProposedPlan,
+    openRequestCount: (shell.awaitedChildThreadCount ?? 0) + (shell.pendingChildApproval ? 1 : 0),
+    checkBacks: shell.checkBacks,
+  };
+}

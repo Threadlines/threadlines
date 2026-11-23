@@ -94,11 +94,12 @@ export function runtimeCheckBackOwed(
 /**
  * Whether one of the thread's agents can still wake itself up. A job saved
  * to the project counts too: in a room, the thread's session says nothing of
- * the other agents' runtimes, where it may still fire. A stop counts it as
+ * the other agents' runtimes, where it may still fire. One marked dormant
+ * can't: the runtime that could fire it has ended. A stop counts the rest as
  * work to stop.
  */
 export function hasLiveCheckBack(thread: {
-  readonly checkBacks?: ReadonlyArray<OrchestrationCheckBack> | undefined;
+  readonly checkBacks?: ReadonlyArray<Pick<OrchestrationCheckBack, "dormant">> | undefined;
 }): boolean {
-  return (thread.checkBacks ?? []).length > 0;
+  return (thread.checkBacks ?? []).some((checkBack) => checkBack.dormant !== true);
 }

@@ -625,6 +625,25 @@ export const LeadPassCeiling = Schema.Struct({
 export type LeadPassCeiling = typeof LeadPassCeiling.Type;
 
 /**
+ * The most a parent thread's work may run with in the thread it sent it to
+ * (docs/design/agent-autonomy-no-limits.md, "Access"), kept on the message
+ * that carries it and on what starts a turn from it. `requestCeiling`: the
+ * sender's access when it sent, or its pass ceiling if that was narrower;
+ * every decision that starts a turn from the message, and the reactor when it
+ * prepares and starts that turn, refuse when the thread has more access by
+ * then. A continue (a usage limit reset, a restart, an account switch) copies
+ * it from the message that started the turn it continues. `passBlocked`: the
+ * sender was working on a lead chat's pass, so the turn this starts blocks
+ * the receiver from starting threads too (docs/design/lead-chat.md, "No
+ * fan-out"). Absent: no ceiling (the user's own messages, and work queued
+ * before the ceiling existed, which gets one when its turn starts).
+ */
+export const MessageAccessFields = {
+  requestCeiling: Schema.optional(LeadPassCeiling),
+  passBlocked: Schema.optional(Schema.Literal(true)),
+};
+
+/**
  * A message that crossed between a thread and one it started: a `request` its
  * parent's agent wrote into the child, or a `report`, the child's answer
  * delivered into the parent. An agent wrote it either way, never the user. A
@@ -660,6 +679,13 @@ export const ThreadMessageOrigin = Schema.Struct({
   ceiling: Schema.optional(LeadPassCeiling),
   /** A pass: the lead's agent that passed it (a room's agent), for its notes. Absent: its own. */
   passedBy: Schema.optional(ThreadParticipantId),
+  /**
+   * A report no request asked for: a turn the child took on its own after
+   * its answer went back (a report from one of its own threads, a check-back,
+   * a scheduled run, background work that finished). `requestId` is then
+   * derived from the child's turn. Absent: an answer to a request.
+   */
+  followUp: Schema.optional(Schema.Literal(true)),
 });
 export type ThreadMessageOrigin = typeof ThreadMessageOrigin.Type;
 
@@ -685,6 +711,13 @@ export const ThreadRemoteOrigin = Schema.Struct({
   environmentLabel: TrimmedNonEmptyString,
   threadId: ThreadId,
   threadTitle: TrimmedNonEmptyString,
+  /**
+   * The access the link started the thread with. A request that arrives over
+   * the link with no ceiling (an older sender) runs with no more than this
+   * (docs/design/agent-autonomy-no-limits.md, "Access"). Absent: a thread
+   * started before it was kept.
+   */
+  launchedAccess: Schema.optional(LeadPassCeiling),
 });
 export type ThreadRemoteOrigin = typeof ThreadRemoteOrigin.Type;
 
@@ -875,6 +908,13 @@ export const OrchestrationCheckBack = Schema.Struct({
   cron: Schema.optional(TrimmedNonEmptyString),
   /** Saved by the provider to outlive the runtime that set it. */
   durable: Schema.Boolean,
+  /**
+   * The runtime that could fire it has ended (any reason), so it can't fire
+   * until that agent runs again, whose runtime then reports its list afresh
+   * and clears this. A dormant check-back doesn't make a thread still going
+   * (docs/design/agent-autonomy-no-limits.md, "Stop"). Set by the server.
+   */
+  dormant: Schema.optional(Schema.Literal(true)),
 });
 export type OrchestrationCheckBack = typeof OrchestrationCheckBack.Type;
 
@@ -1403,6 +1443,8 @@ export const OrchestrationMessage = Schema.Struct({
   invite: Schema.optional(RoomAgentInvite),
   /** Child threads: a message another thread's agent wrote. See ThreadMessageOrigin. */
   fromThread: Schema.optional(ThreadMessageOrigin),
+  /** See MessageAccessFields. */
+  ...MessageAccessFields,
   /** A user-role message an outside agent wrote. See OutsideAgentRef. */
   fromOutside: Schema.optional(OutsideAgentRef),
   /** See MessageComposer. Absent on every message an agent or automation wrote. */
@@ -2483,6 +2525,8 @@ export const OrchestrationQueuedFollowUp = Schema.Struct({
    * exists and it is never the user's.
    */
   fromThread: Schema.optional(ThreadMessageOrigin),
+  /** See MessageAccessFields. */
+  ...MessageAccessFields,
   /** See MessageComposer: kept so the message is written with it when sent. */
   composer: Schema.optional(MessageComposer),
   /** See MessageSentFrom: kept so the message is written with it when sent. */
@@ -3003,12 +3047,41 @@ export type ChildRequestNote = typeof ChildRequestNote.Type;
  * `sendsSinceUser` are no longer counted or read, and stay only so older
  * clients still decode a thread.
  */
+/**
+ * The epochs a child's report is delivered under (docs/design/
+ * agent-autonomy-no-limits.md, "Delivery rules", rule 7): its parent's
+ * delivery epoch and its own attachment epoch when the turn that owes it
+ * started. A report whose stamps no longer match is dropped.
+ */
+export const OwedReportStamps = Schema.Struct({
+  deliveryEpoch: NonNegativeInt,
+  attachmentEpoch: NonNegativeInt,
+});
+export type OwedReportStamps = typeof OwedReportStamps.Type;
+
+/**
+ * A report this thread owes its parent: a turn it takes on its own after its
+ * answer went back (rule 2). Added by the decision that starts the turn,
+ * keyed by the message that starts it or, for a turn the provider starts with
+ * no message, by the turn. Removed when the report is settled, and the whole
+ * list empties when the thread's attachment epoch moves.
+ */
+export const OwedChildReport = Schema.Struct({
+  messageId: Schema.optional(MessageId),
+  turnId: Schema.optional(TurnId),
+  ...OwedReportStamps.fields,
+  createdAt: IsoDateTime,
+});
+export type OwedChildReport = typeof OwedChildReport.Type;
+
 export const OrchestrationChildRequestState = Schema.Struct({
   open: Schema.Array(OrchestrationChildRequest),
   deliveryEpoch: NonNegativeInt,
   startsSinceUser: NonNegativeInt,
   sendsSinceUser: NonNegativeInt,
   pendingNotes: Schema.Array(ChildRequestNote),
+  /** Reports this thread owes its parent, oldest first. Absent: none. */
+  owedReports: Schema.optional(Schema.Array(OwedChildReport)),
   /** Children on linked computers, kept after their requests settle. Absent: none. */
   remoteChildren: Schema.optional(Schema.Array(RemoteChildThread)),
   /** Cancels still owed to linked computers, oldest first. Absent: none. */
@@ -3143,6 +3216,8 @@ export const OrchestrationThread = Schema.Struct({
   parentTurnId: Schema.NullOr(TurnId).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   /** See OrchestrationThreadShell.attachedToParent. */
   attachedToParent: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /** See OrchestrationThreadShell.stopsWithParent. */
+  stopsWithParent: Schema.optional(Schema.Literal(true)),
   /**
    * Raised each time this child's answers to its parent are cut off (it was
    * separated, put back, or stopped), so an answer delivered under an earlier
@@ -3408,6 +3483,15 @@ export const OrchestrationThreadShell = Schema.Struct({
    * the answers to the parent's requests go back to it. False once separated.
    */
   attachedToParent: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /**
+   * Started without report back (`thread_start` with `reportBack: false`),
+   * and not yet the user's: it is under its parent's Stop though it was never
+   * attached (docs/design/agent-autonomy-no-limits.md, "Stop"). Cleared for
+   * good by the first message a person writes in it, or by putting it back
+   * under its parent. Absent: the user's own (and every such thread started
+   * before it was kept).
+   */
+  stopsWithParent: Schema.optional(Schema.Literal(true)),
   /**
    * The turn whose answer last went back to the parent, and when: as a report,
    * as a late reply its agent was told of at its next turn, or a turn the
@@ -3675,6 +3759,8 @@ const ThreadCreateLineageFields = {
   /** The parent's turn whose agent started it. */
   parentTurnId: Schema.optional(TurnId),
   attachedToParent: Schema.optional(Schema.Boolean),
+  /** Started without report back: see OrchestrationThreadShell.stopsWithParent. */
+  stopsWithParent: Schema.optional(Schema.Literal(true)),
   /** Started over a computer link: see ThreadRemoteOrigin. Only the link handler sets it. */
   remoteOrigin: Schema.optional(ThreadRemoteOrigin),
   /** Started by a scheduled run: see ThreadScheduledRun. Only the scheduler sets it. */
@@ -3780,6 +3866,13 @@ const ThreadDeleteCommand = Schema.Struct({
    * they are separated and live on as threads of their own.
    */
   withChildren: Schema.optional(Schema.Boolean),
+  /**
+   * With `withChildren`: the threads the confirm dialog listed. The server
+   * deletes exactly those that are still attached, unarchived threads under
+   * this one, and separates any other. Absent (an older client): every
+   * attached child, one level.
+   */
+  alsoDelete: Schema.optional(Schema.Array(ThreadId)),
 });
 
 const ThreadArchiveCommand = Schema.Struct({
@@ -4069,6 +4162,8 @@ export const ThreadTurnStartCommand = Schema.Struct({
    * client turn-start schema has no such field). See ThreadMessageOrigin.
    */
   fromThread: Schema.optional(ThreadMessageOrigin),
+  /** Server only. See MessageAccessFields. */
+  ...MessageAccessFields,
   /**
    * An outside agent's turn (server only, set by `/mcp/connect`). The decider
    * refuses it when the thread's access is above `maxRuntimeMode`.
@@ -4447,6 +4542,15 @@ const ThreadSessionStopCommand = Schema.Struct({
    * for one turn never ends the next one, which may be the user's.
    */
   expectedTurnId: Schema.optional(Schema.NullOr(TurnId)),
+  /**
+   * Server only: why the session stops, which decides whether it leaves the
+   * Stop hold (docs/design/agent-autonomy-no-limits.md, "Stop"). `family`:
+   * stopped with a thread above it (its starter's Stop, "Stop N working
+   * threads", an agent's thread_stop); no new hold, and it takes its
+   * parent's next message. `cleanup`: archive, delete, the sweeper, a move,
+   * a link; no new hold and no cascade. Absent: the thread's own Stop.
+   */
+  cause: Schema.optional(Schema.Literals(["family", "cleanup"])),
   createdAt: IsoDateTime,
 });
 
@@ -6278,6 +6382,8 @@ export const ThreadCreatedPayload = Schema.Struct({
   parentThreadId: Schema.optional(ThreadId),
   parentTurnId: Schema.optional(TurnId),
   attachedToParent: Schema.optional(Schema.Boolean),
+  /** See OrchestrationThreadShell.stopsWithParent. */
+  stopsWithParent: Schema.optional(Schema.Literal(true)),
   /** See OrchestrationThreadShell.remoteOrigin. */
   remoteOrigin: Schema.optional(ThreadRemoteOrigin),
   /** See OrchestrationThreadShell.scheduledRun. */
@@ -6801,6 +6907,8 @@ export const ThreadMessageSentPayload = Schema.Struct({
   invite: Schema.optional(RoomAgentInvite),
   /** See OrchestrationMessage.fromThread. */
   fromThread: Schema.optional(ThreadMessageOrigin),
+  /** See MessageAccessFields. */
+  ...MessageAccessFields,
   /** See OrchestrationMessage.fromOutside. */
   fromOutside: Schema.optional(OutsideAgentRef),
   /** See OrchestrationMessage.composer. */
@@ -6866,6 +6974,8 @@ export const ThreadTurnStartRequestedPayload = Schema.Struct({
    * not sent.
    */
   fromThread: Schema.optional(ThreadMessageOrigin),
+  /** See MessageAccessFields. */
+  ...MessageAccessFields,
   /**
    * An outside agent's turn: who, and its ceiling. The provider starts at the
    * mode this event carries, which the decider checked against the ceiling.
