@@ -454,6 +454,9 @@ describe("ProviderCommandReactor", () => {
         if (index >= 0) runtimeSessions.splice(index, 1);
       }),
     );
+    const noteHistoryDelivered = vi.fn<ProviderServiceShape["noteHistoryDelivered"]>(
+      () => Effect.void,
+    );
     const renameBranch = vi.fn((input: unknown) =>
       Effect.succeed({
         branch:
@@ -576,6 +579,7 @@ describe("ProviderCommandReactor", () => {
       adoptNativeSession: () => Effect.void,
       forgetNativeSession: () => Effect.void,
       dropResumeCursor,
+      noteHistoryDelivered,
       getCapabilities: (_provider) =>
         Effect.succeed({
           sessionModelSwitch: input?.sessionModelSwitch ?? "in-session",
@@ -829,6 +833,7 @@ describe("ProviderCommandReactor", () => {
       respondToUserInput,
       stopSession,
       dropResumeCursor,
+      noteHistoryDelivered,
       renameBranch,
       refreshStatus,
       refreshLocalStatus,
@@ -1714,6 +1719,66 @@ describe("ProviderCommandReactor", () => {
     expect((harness.sendTurn.mock.calls[2]?.[0] as { readonly input?: string })?.input).toBe(
       "third question",
     );
+  });
+
+  it("keeps the history owed while a send goes as the agent's own command, without it", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const turnStart = (id: string, text: string) =>
+      Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make(`cmd-deferred-turn-${id}`),
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId: asMessageId(`deferred-message-${id}`),
+            role: "user",
+            text,
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: now,
+        }),
+      );
+    await turnStart("1", "first question");
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    // The session can't reopen its conversation: the history is owed.
+    const startFresh = harness.startSession.getMockImplementation();
+    if (!startFresh) throw new Error("expected the harness start implementation");
+    harness.startSession.mockImplementationOnce((key, input) =>
+      startFresh(key, input).pipe(Effect.map((session) => ({ ...session, resumeFailed: true }))),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.runtime-mode.set",
+        commandId: CommandId.make("cmd-deferred-runtime-mode"),
+        threadId: ThreadId.make("thread-1"),
+        runtimeMode: "full-access",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.startSession.mock.calls.length === 2);
+
+    // The agent ran it as its own command and sent none of the context.
+    harness.sendTurn.mockImplementationOnce(() =>
+      Effect.succeed({
+        threadId: ThreadId.make("thread-1"),
+        turnId: asTurnId("turn-2"),
+        contextDeferred: true as const,
+      }),
+    );
+    await turnStart("2", "/compact");
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+    await Effect.runPromise(Effect.sleep("50 millis"));
+    expect(harness.noteHistoryDelivered).not.toHaveBeenCalled();
+
+    // The next ordinary message carries it, and only then is it delivered.
+    await turnStart("3", "second question");
+    await waitFor(() => harness.sendTurn.mock.calls.length === 3);
+    const sent = harness.sendTurn.mock.calls[2]?.[0] as { readonly input?: string } | undefined;
+    expect(sent?.input).toContain("prior context");
+    await waitFor(() => harness.noteHistoryDelivered.mock.calls.length === 1);
   });
 
   it.each([
