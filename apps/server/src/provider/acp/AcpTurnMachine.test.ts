@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off -- the explorer hashes its seen states.
+import { createHash } from "node:crypto";
+
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -34,9 +37,20 @@ interface Monitor {
   readonly unansweredCallers: ReadonlyArray<string>;
   /** `readOutcome` commands whose `outcomeRead` hasn't come back. */
   readonly reads: ReadonlyArray<number>;
-  readonly workUsed: ReadonlyArray<string>;
-  readonly launched: boolean;
-  readonly childrenReported: boolean;
+  /** How often each call started as work (a call can start again after it was dropped). */
+  readonly workStarts: number;
+  readonly launches: number;
+  /** `readChildren` commands not answered yet, any of which may answer next (the newest two). */
+  readonly childReads: ReadonlyArray<{
+    readonly generation: number;
+    readonly launches: ReadonlyArray<readonly [string, number]>;
+  }>;
+  /** The driver stops the session: a recycle or a stop was asked for and not yet delivered. */
+  readonly stopAsked: boolean;
+  /** Prompts the machine sent, those written to the agent, and those whose delivery was reported. */
+  readonly prompts: ReadonlyArray<number>;
+  readonly written: ReadonlyArray<number>;
+  readonly reported: ReadonlyArray<number>;
 }
 
 interface World {
@@ -54,20 +68,33 @@ const initialWorld: World = {
     closed: [],
     unansweredCallers: [],
     reads: [],
-    workUsed: [],
-    launched: false,
-    childrenReported: false,
+    workStarts: 0,
+    launches: 0,
+    childReads: [],
+    stopAsked: false,
+    prompts: [],
+    written: [],
+    reported: [],
   },
 };
 
-/** Every event the adapter could produce next, with small bounded domains. */
-function possibleEvents(world: World): ReadonlyArray<Event> {
+/** The launches the explorer makes: one that records can cover, then a batch that they can't. */
+const LAUNCHES: ReadonlyArray<readonly [string, number]> = [
+  ["l1", 1],
+  ["l2", 2],
+];
+
+/**
+ * Every event the adapter could produce next, with small bounded domains.
+ * `steer` off is an agent whose messages mid-turn wait (`turnMachine.steer`).
+ */
+function possibleEvents(world: World, steer: boolean): ReadonlyArray<Event> {
   const { state, monitor } = world;
   const events: Array<Event> = [];
   if (monitor.sends < 2) {
     events.push({ type: "send", sendId: `s${monitor.sends + 1}`, turnId: `u${monitor.sends + 1}` });
   }
-  if (monitor.steers < 2) {
+  if (steer && monitor.steers < 2) {
     const steerId = `t${monitor.steers + 1}`;
     if (state.turn !== undefined) {
       events.push({ type: "steer", steerId, expectedTurnId: state.turn.id });
@@ -84,28 +111,53 @@ function possibleEvents(world: World): ReadonlyArray<Event> {
       { type: "outcomeRead", prompt, outcome: outcome("failed", true) },
     );
   }
-  if (!monitor.workUsed.includes("c1"))
-    events.push({ type: "workStarted", id: "c1", kind: "command" });
-  if (!monitor.workUsed.includes("w1"))
-    events.push({ type: "workStarted", id: "w1", kind: "timer" });
-  for (const [id] of state.running) {
-    events.push({ type: "workEnded", id }, { type: "workDropped", id });
+  // A command and a timer, each of which may start again after it was dropped.
+  if (monitor.workStarts < 3) {
+    for (const [id, kind] of [
+      ["c1", "command"],
+      ["w1", "timer"],
+    ] as const) {
+      if (!state.running.some(([running]) => running === id)) {
+        events.push({ type: "workStarted", id, kind });
+      }
+    }
   }
-  if (!monitor.launched) events.push({ type: "subagentsLaunched", id: "l1", count: 2 });
-  // The records: none running, one running, or a reading that missed a launch.
-  if (monitor.launched && !monitor.childrenReported) {
+  const ending = new Set([...state.running.map(([id]) => id), ...(state.stopping?.commands ?? [])]);
+  for (const id of ending) events.push({ type: "workEnded", id }, { type: "workDropped", id });
+  const launch = LAUNCHES[monitor.launches];
+  if (launch !== undefined) {
+    events.push({ type: "subagentsLaunched", id: launch[0], count: launch[1] });
+  }
+  // Any outstanding reading may answer next, older ones included: none at
+  // work, every child at work, or one that missed the newest launch.
+  for (const read of monitor.childReads) {
+    const covered = read.launches.filter(([, count]) => count === 1);
     events.push(
-      { type: "childrenAtWork", running: 0, known: state.launchedTotal },
-      { type: "childrenAtWork", running: 1, known: state.launchedTotal },
-      { type: "childrenAtWork", running: 0, known: 0 },
+      {
+        type: "childrenAtWork",
+        generation: read.generation,
+        launches: covered.map(([id]) => [id, 0] as const),
+      },
+      {
+        type: "childrenAtWork",
+        generation: read.generation,
+        launches: covered.map(([id, count]) => [id, count] as const),
+      },
     );
+    if (covered.length > 0) {
+      events.push({
+        type: "childrenAtWork",
+        generation: read.generation,
+        launches: covered.slice(0, -1).map(([id]) => [id, 0] as const),
+      });
+    }
   }
   const newTurnId = `a${monitor.agentTurns + 1}`;
   if (monitor.agentTurns < 2) {
     events.push(
       { type: "agentOutput", newTurnId },
       { type: "cancellationNotice", newTurnId },
-      ...(state.requestsOpen === 0 ? [{ type: "requestOpened" as const, newTurnId }] : []),
+      ...(state.requestsOpen < 2 ? [{ type: "requestOpened" as const, newTurnId }] : []),
     );
   } else if (state.turn !== undefined) {
     events.push({ type: "agentOutput", newTurnId }, { type: "cancellationNotice", newTurnId });
@@ -113,8 +165,10 @@ function possibleEvents(world: World): ReadonlyArray<Event> {
   events.push({ type: "replyEnded" });
   if (state.requestsOpen > 0) events.push({ type: "requestClosed" });
   events.push({ type: "stopRequested" });
+  // The armed timer, and a callback of the one it replaced still queued.
   for (const [timer, generation] of state.timers) {
     events.push({ type: "timerFired", timer, generation });
+    if (generation > 1) events.push({ type: "timerFired", timer, generation: generation - 1 });
   }
   events.push({ type: "processExited" }, { type: "sessionStopping" });
   return events;
@@ -127,6 +181,8 @@ function check(condition: boolean, message: string, trail: ReadonlyArray<Event>)
     );
   }
 }
+
+const ENDS_THE_READER: ReadonlySet<Command["type"]> = new Set(["recycleAgent", "stopSession"]);
 
 /** Applies one event, checking every invariant on the way; returns the next world. */
 function advance(world: World, event: Event, trail: ReadonlyArray<Event>): World {
@@ -142,13 +198,51 @@ function advance(world: World, event: Event, trail: ReadonlyArray<Event>): World
     const caller = event.type === "send" ? event.sendId : event.steerId;
     monitor = { ...monitor, unansweredCallers: [...monitor.unansweredCallers, caller] };
   }
-  if (event.type === "workStarted")
-    monitor = { ...monitor, workUsed: [...monitor.workUsed, event.id] };
-  if (event.type === "subagentsLaunched") monitor = { ...monitor, launched: true };
-  if (event.type === "childrenAtWork") monitor = { ...monitor, childrenReported: true };
+  if (event.type === "workStarted") monitor = { ...monitor, workStarts: monitor.workStarts + 1 };
+  if (event.type === "subagentsLaunched") monitor = { ...monitor, launches: monitor.launches + 1 };
+  if (event.type === "childrenAtWork") {
+    monitor = {
+      ...monitor,
+      childReads: monitor.childReads.filter((read) => read.generation !== event.generation),
+    };
+    // An older reading changes nothing.
+    if (event.generation !== before.childRead.generation) {
+      check(
+        JSON.stringify(state) === JSON.stringify(before),
+        "an older reading of the records changed the state",
+        trail,
+      );
+    }
+  }
   if (event.type === "outcomeRead") {
     monitor = { ...monitor, reads: monitor.reads.filter((prompt) => prompt !== event.prompt) };
   }
+  if (event.type === "sessionStopping") monitor = { ...monitor, stopAsked: false };
+  if (event.type === "promptDispatched" && before.undispatched.includes(event.prompt)) {
+    monitor = { ...monitor, written: [...monitor.written, event.prompt] };
+  }
+  // A prompt whose setup failed (answered before it was written) is reported undelivered.
+  if (event.type === "promptAnswered" && before.undispatched.includes(event.prompt)) {
+    check(
+      commands.some(
+        (command) =>
+          command.type === "reportDelivery" &&
+          command.prompt === event.prompt &&
+          !command.delivered,
+      ),
+      "a prompt whose setup failed was not reported undelivered",
+      trail,
+    );
+  }
+
+  // What can end the reader comes after the turn's end it goes with.
+  const lastEnd = types.lastIndexOf("endTurn");
+  const firstStop = types.findIndex((type) => ENDS_THE_READER.has(type));
+  check(
+    lastEnd < 0 || firstStop < 0 || lastEnd < firstStop,
+    "a command that ends the reader came before the turn's end",
+    trail,
+  );
 
   for (const command of commands) {
     switch (command.type) {
@@ -156,6 +250,11 @@ function advance(world: World, event: Event, trail: ReadonlyArray<Event>): World
         check(!monitor.open.includes(command.turnId), "a turn started twice", trail);
         check(!monitor.closed.includes(command.turnId), "an ended turn started again", trail);
         check(monitor.open.length === 0, "a turn started while another was open", trail);
+        check(
+          command.sendId === undefined || state.stopping === undefined,
+          "a turn of a send started while a stop waits",
+          trail,
+        );
         monitor = { ...monitor, open: [...monitor.open, command.turnId] };
         if (command.sendId === undefined)
           monitor = { ...monitor, agentTurns: monitor.agentTurns + 1 };
@@ -198,7 +297,33 @@ function advance(world: World, event: Event, trail: ReadonlyArray<Event>): World
       case "readOutcome":
         monitor = { ...monitor, reads: [...monitor.reads, command.prompt] };
         break;
+      case "reportDelivery":
+        check(!monitor.reported.includes(command.prompt), "a delivery reported twice", trail);
+        check(
+          command.delivered === monitor.written.includes(command.prompt),
+          command.delivered
+            ? "a prompt never written counted as delivered"
+            : "a written prompt counted as undelivered",
+          trail,
+        );
+        monitor = { ...monitor, reported: [...monitor.reported, command.prompt] };
+        break;
+      case "readChildren":
+        check(command.launches.length > 0, "the records were read for no launch", trail);
+        monitor = {
+          ...monitor,
+          childReads: [
+            ...monitor.childReads.slice(-1),
+            { generation: command.generation, launches: command.launches },
+          ],
+        };
+        break;
+      case "recycleAgent":
+      case "stopSession":
+        monitor = { ...monitor, stopAsked: true };
+        break;
       case "sendPrompt":
+        monitor = { ...monitor, prompts: [...monitor.prompts, command.prompt] };
         // A new turn's prompt never lands inside another turn's.
         if ("sendId" in command.source && before.turn !== undefined) {
           const previous = before.turn;
@@ -239,14 +364,27 @@ function advance(world: World, event: Event, trail: ReadonlyArray<Event>): World
     "the armed timers are not the ones the state needs",
     trail,
   );
-  // Stop always has a deadline armed until the turn ends.
-  if (state.turn?.stopRequested === true) {
+  // Stop always has a deadline armed until the turn ends and the work it stopped is over.
+  if (!state.ended && (state.turn?.stopRequested === true || state.stopping !== undefined)) {
     check(
       state.timers.some(([timer]) => timer === "cancelDeadline"),
       "Stop is pending with no deadline armed",
       trail,
     );
   }
+  check(
+    state.stopping === undefined ||
+      state.stopping.commands.length > 0 ||
+      state.stopping.launches.length > 0,
+    "a stop waits on nothing",
+    trail,
+  );
+  // A queued send waits only on a turn or a stop, both of which end.
+  check(
+    state.queue.length === 0 || state.turn !== undefined || state.stopping !== undefined,
+    "a send is queued with nothing ahead of it",
+    trail,
+  );
   // A hold with nothing left to wait for ends by itself.
   if (state.turn?.phase.tag === "waiting" && !workPending(state) && state.requestsOpen === 0) {
     check(
@@ -262,7 +400,13 @@ function advance(world: World, event: Event, trail: ReadonlyArray<Event>): World
     }
   }
   // A notice owed by a cancel is expected only until its expiry fires.
-  if (event.type === "timerFired" && event.timer === "noticeExpiry") {
+  if (
+    event.type === "timerFired" &&
+    event.timer === "noticeExpiry" &&
+    before.timers.some(
+      ([timer, generation]) => timer === "noticeExpiry" && generation === event.generation,
+    )
+  ) {
     check(state.noticesExpected === 0, "a notice is still expected after it expired", trail);
   }
   if (state.noticesExpected > 0 && !state.ended) {
@@ -280,6 +424,7 @@ function advance(world: World, event: Event, trail: ReadonlyArray<Event>): World
       trail,
     );
     check(state.queue.length === 0, "a send outlived the session", trail);
+    check(state.stopping === undefined, "a stop outlived the session", trail);
   }
   if (event.type === "processExited" || event.type === "sessionStopping") {
     check(state.ended && state.turn === undefined, "the session ended with a turn open", trail);
@@ -293,33 +438,87 @@ function callersSettled(world: World): boolean {
   return world.monitor.unansweredCallers.every((caller) => waiting.has(caller));
 }
 
-/** Breadth-first over every event sequence up to `depth`, skipping states already seen. */
-function explore(depth: number): {
-  readonly states: number;
-  readonly worlds: ReadonlyArray<World>;
-} {
+/**
+ * A fair schedule from here: the agent answers every prompt, every read
+ * comes back, every request is answered, its work and replies end, and
+ * every armed timer fires. Under it every send and steer hears back.
+ */
+function drain(world: World, steer: boolean): World {
+  let current = world;
+  const trail: Array<Event> = [];
+  for (let step = 0; step < 80; step += 1) {
+    const { state, monitor } = current;
+    if (monitor.unansweredCallers.length === 0 && state.queue.length === 0) return current;
+    const next: Event | undefined =
+      (state.undispatched[0] !== undefined
+        ? { type: "promptDispatched", prompt: state.undispatched[0] }
+        : undefined) ??
+      (state.unanswered[0] !== undefined
+        ? { type: "promptAnswered", prompt: state.unanswered[0] }
+        : undefined) ??
+      (monitor.reads[0] !== undefined
+        ? { type: "outcomeRead", prompt: monitor.reads[0], outcome: outcome("completed") }
+        : undefined) ??
+      (state.requestsOpen > 0 ? { type: "requestClosed" } : undefined) ??
+      (state.running[0] !== undefined
+        ? { type: "workEnded", id: state.running[0][0] }
+        : undefined) ??
+      (state.stopping?.commands[0] !== undefined
+        ? { type: "workEnded", id: state.stopping.commands[0] }
+        : undefined) ??
+      (state.replyOpen ? { type: "replyEnded" } : undefined) ??
+      (state.timers[0] !== undefined
+        ? { type: "timerFired", timer: state.timers[0][0], generation: state.timers[0][1] }
+        : undefined);
+    if (next === undefined) break;
+    trail.push(next);
+    current = advance(current, next, trail);
+  }
+  check(
+    current.monitor.unansweredCallers.length === 0 && current.state.queue.length === 0,
+    `a send or steer never heard back under a fair schedule (steer ${steer ? "on" : "off"})`,
+    trail,
+  );
+  // And every prompt sent says whether it was delivered.
+  check(
+    current.monitor.prompts.every(
+      (prompt) =>
+        current.monitor.reported.includes(prompt) || current.state.undispatched.includes(prompt),
+    ),
+    "a prompt's delivery was never reported",
+    trail,
+  );
+  return current;
+}
+
+/**
+ * Breadth-first over every event sequence up to `depth`, skipping states
+ * already seen; `visit` sees each new world once.
+ */
+function explore(depth: number, steer: boolean, visit: (world: World) => void): number {
   const seen = new Set<string>();
   let frontier: Array<{ world: World; trail: ReadonlyArray<Event> }> = [
     { world: initialWorld, trail: [] },
   ];
-  const all: Array<World> = [initialWorld];
+  visit(initialWorld);
   for (let level = 0; level < depth; level += 1) {
     const next: Array<{ world: World; trail: ReadonlyArray<Event> }> = [];
     for (const { world, trail } of frontier) {
-      for (const event of possibleEvents(world)) {
+      for (const event of possibleEvents(world, steer)) {
         const nextTrail = [...trail, event];
         const advanced = advance(world, event, nextTrail);
         check(callersSettled(advanced), "a send or steer was left without an answer", nextTrail);
-        const key = JSON.stringify(advanced);
+        // A digest, not the text: millions of states fit in memory.
+        const key = createHash("sha1").update(JSON.stringify(advanced)).digest("base64");
         if (seen.has(key)) continue;
         seen.add(key);
-        all.push(advanced);
-        next.push({ world: advanced, trail: nextTrail });
+        visit(advanced);
+        if (level < depth - 1) next.push({ world: advanced, trail: nextTrail });
       }
     }
     frontier = next;
   }
-  return { states: seen.size, worlds: all };
+  return seen.size;
 }
 
 /** Runs events from a fresh machine, returning every command in order and the last state. */
@@ -343,57 +542,91 @@ const fire = (state: State, timer: AcpTurnTimer): Event => {
 const ends = (commands: ReadonlyArray<Command>) =>
   commands.flatMap((command) => (command.type === "endTurn" ? [command] : []));
 
-describe("AcpTurnMachine, every reachable state", () => {
-  // Depth 10 reaches every race below (the longest takes 10 events): about
-  // 2.3 million distinct states, under a minute. The alphabet is bounded to
-  // two sends, two steers, one command, one timer, one batch of two
-  // subagents, one reading of the child records (none running, one running,
-  // or one that missed a launch) and two turns of the agent's own.
-  const { states, worlds } = explore(10);
+/** What must hold from every reachable world, checked as each is first reached. */
+function checkWorld(world: World, steer: boolean): void {
+  const state = world.state;
+  // Stop, from any state, ends the turn the user sees or arms the deadline;
+  // the deadline alone then ends everything, the turn's end before the recycle.
+  const stopped = stepTurnMachine(state, { type: "stopRequested" });
+  if (!state.ended && (state.turn !== undefined || workPending(state))) {
+    const after = stopped.state;
+    const pending = after.turn?.stopRequested === true || after.stopping !== undefined;
+    if (pending) {
+      expect(after.timers.some(([timer]) => timer === "cancelDeadline")).toBe(true);
+      const deadline = stepTurnMachine(after, fire(after, "cancelDeadline"));
+      expect(deadline.state.turn).toBeUndefined();
+      expect(deadline.state.stopping).toBeUndefined();
+      const types = deadline.commands
+        .map((command) => command.type)
+        .filter((type) => type !== "armTimer" && type !== "disarmTimer");
+      expect(types.at(-1)).toBe("recycleAgent");
+      if (after.turn !== undefined) {
+        expect(ends(deadline.commands).map((end) => end.turnId)).toEqual([after.turn.id]);
+      }
+    } else if (state.turn !== undefined) {
+      // Ended; a queued message may have started the next turn.
+      expect(after.turn?.id).not.toBe(state.turn.id);
+    }
+    // Held work Stop cancelled is kept, not forgotten.
+    const commandsHeld = state.running.some(([, kind]) => kind === "command");
+    if (
+      commandsHeld &&
+      state.turn?.phase.tag !== "prompting" &&
+      state.turn?.phase.tag !== "settling"
+    ) {
+      expect(after.stopping).toBeDefined();
+    }
+  }
+  // The session stopping or the agent exiting ends the open turn exactly once.
+  for (const type of ["sessionStopping", "processExited"] as const) {
+    if (type === "processExited" && state.ended) continue;
+    const step = stepTurnMachine(state, { type });
+    const ended = ends(step.commands).map((end) => end.turnId);
+    expect(ended).toEqual(state.turn === undefined ? [] : [state.turn.id]);
+    expect(step.state.turn).toBeUndefined();
+    expect(step.commands.some((command) => command.type === "startTurn")).toBe(false);
+  }
+  // A hold ends through timers alone once the agent's work is done.
+  if (state.turn?.phase.tag === "waiting" && state.requestsOpen === 0) {
+    const heldId = state.turn.id;
+    let current = state;
+    for (let round = 0; round < 8 && current.turn?.id === heldId; round += 1) {
+      const armed = current.timers.find(
+        ([timer]) => timer !== "cancelDeadline" && timer !== "stopCheck",
+      );
+      if (armed === undefined) break;
+      current = stepTurnMachine(current, fire(current, armed[0])).state;
+    }
+    const timerRunning = current.running.some(([, kind]) => kind === "timer");
+    // A queued message may have started the next turn: the held one is over.
+    if (!timerRunning) expect(current.turn?.id).not.toBe(heldId);
+  }
+  // Every send and steer hears back under a fair schedule.
+  if (world.monitor.unansweredCallers.length > 0) drain(world, steer);
+}
+
+describe.each([
+  { steer: true, depth: 9 },
+  { steer: false, depth: 10 },
+])("AcpTurnMachine, every reachable state (steering $steer)", ({ steer, depth }) => {
+  // The alphabet is bounded to two sends, two steers (none with steering
+  // off), a command and a timer that can each start again after a drop
+  // (three starts in all), a launch the records can cover and a batch they
+  // can't, every outstanding reading of the records answering in any order
+  // (none at work, all at work, or one that missed a launch), up to two
+  // open requests, a stale timer callback beside each armed one, and two
+  // turns of the agent's own. Depth 9 with steering (about 2.1 million
+  // states) and 10 without (about 2.6 million) take about three minutes;
+  // every named race below is shorter.
+  let checked = 0;
+  const states = explore(depth, steer, (world) => {
+    checkWorld(world, steer);
+    checked += 1;
+  });
 
   it("explores a state space large enough to mean something", () => {
     expect(states).toBeGreaterThan(1_000_000);
-  });
-
-  it("reaches a terminal event from every Stop through the deadline alone", () => {
-    for (const world of worlds) {
-      const turn = world.state.turn;
-      if (turn?.stopRequested !== true) continue;
-      const step = stepTurnMachine(world.state, fire(world.state, "cancelDeadline"));
-      expect(ends(step.commands).map((end) => end.turnId)).toEqual([turn.id]);
-      expect(step.commands.some((command) => command.type === "recycleAgent")).toBe(true);
-    }
-  });
-
-  it("ends every open turn exactly once when the session stops or the agent exits", () => {
-    for (const world of worlds) {
-      for (const type of ["sessionStopping", "processExited"] as const) {
-        if (type === "processExited" && world.state.ended) continue;
-        const step = stepTurnMachine(world.state, { type });
-        const ended = ends(step.commands).map((end) => end.turnId);
-        expect(ended).toEqual(world.state.turn === undefined ? [] : [world.state.turn.id]);
-        expect(step.state.turn).toBeUndefined();
-        expect(step.commands.some((command) => command.type === "startTurn")).toBe(false);
-      }
-    }
-  });
-
-  it("ends a hold through timers alone once the agent's work is done", () => {
-    for (const world of worlds) {
-      const state = world.state;
-      if (state.turn?.phase.tag !== "waiting" || state.requestsOpen > 0) continue;
-      // Each quiet limit that can run, run in turn, ends the hold unless a timer the agent set still runs.
-      const heldId = state.turn.id;
-      let current = state;
-      for (let round = 0; round < 6 && current.turn?.id === heldId; round += 1) {
-        const armed = current.timers.find(([timer]) => timer !== "cancelDeadline");
-        if (armed === undefined) break;
-        current = stepTurnMachine(current, fire(current, armed[0])).state;
-      }
-      const timerRunning = current.running.some(([, kind]) => kind === "timer");
-      // A queued message may have started the next turn: the held one is over.
-      if (!timerRunning) expect(current.turn?.id).not.toBe(heldId);
-    }
+    expect(checked).toBe(states + 1);
   });
 });
 
@@ -481,6 +714,13 @@ describe("AcpTurnMachine, the reviewed races", () => {
     { type: "outcomeRead", prompt: 1, outcome: outcome("completed") },
   ];
 
+  /** The records' answer to the newest reading. */
+  const records = (state: State, launches: ReadonlyArray<readonly [string, number]>): Event => ({
+    type: "childrenAtWork",
+    generation: state.childRead.generation,
+    launches,
+  });
+
   it("several reports in one reply end the hold once the records say so (child records)", () => {
     const { state, commands } = run([
       ...holdingTwo,
@@ -489,19 +729,25 @@ describe("AcpTurnMachine, the reviewed races", () => {
     ]);
     // One reply: the protocol count alone would still hold one subagent.
     expect(state.subagents).toBe(1);
-    expect(commands).toContainEqual({ type: "readChildren" });
-    const read = stepTurnMachine(state, { type: "childrenAtWork", running: 0, known: 2 });
+    expect(commands).toContainEqual({
+      type: "readChildren",
+      generation: state.childRead.generation,
+      launches: [["l1", 2]],
+    });
+    const read = stepTurnMachine(state, records(state, [["l1", 0]]));
     expect(read.state.timers.map(([timer]) => timer)).toEqual(["settle"]);
   });
 
   it("a killed child stops holding the turn (child records)", () => {
     // The records list one child reported, one killed: none running.
-    const { state } = run([...holdingTwo, { type: "childrenAtWork", running: 0, known: 2 }]);
+    const held = run(holdingTwo).state;
+    const { state } = run([...holdingTwo, records(held, [["l1", 0]])]);
     expect(state.timers.map(([timer]) => timer)).toEqual(["settle"]);
   });
 
   it("with no records, or a reading that misses a launch, the protocol count stands (child records)", () => {
-    const missed = run([...holdingTwo, { type: "childrenAtWork", running: 0, known: 1 }]);
+    const held = run(holdingTwo).state;
+    const missed = run([...holdingTwo, records(held, [])]);
     expect(missed.state.children).toBeUndefined();
     expect(missed.state.timers.map(([timer]) => timer)).toEqual(["silent"]);
     // Each report frees one subagent.
@@ -511,6 +757,113 @@ describe("AcpTurnMachine, the reviewed races", () => {
       state = stepTurnMachine(state, { type: "replyEnded" }).state;
     }
     expect(state.timers.map(([timer]) => timer)).toEqual(["settle"]);
+  });
+
+  it("records of an earlier launch don't cover a new one (finding 4)", () => {
+    // After a resume the records cover the whole conversation; the machine
+    // knows only this session's launch, whose record isn't written yet.
+    const held = run([
+      { type: "send", sendId: "s1", turnId: "u1" },
+      { type: "subagentsLaunched", id: "l-new", count: 1 },
+      { type: "promptAnswered", prompt: 1 },
+      { type: "outcomeRead", prompt: 1, outcome: outcome("completed") },
+    ]).state;
+    // An old child, reported long ago, is no launch of this machine's.
+    const read = stepTurnMachine(held, records(held, [["l-old", 0]]));
+    expect(read.state.children).toBeUndefined();
+    expect(read.state.turn?.phase.tag).toBe("waiting");
+    expect(read.state.timers.map(([timer]) => timer)).toEqual(["silent"]);
+  });
+
+  it("an older reading of the records that lands last is dropped (finding 4)", () => {
+    const { state } = run([
+      ...holdingTwo,
+      { type: "agentOutput", newTurnId: "a1" },
+      { type: "replyEnded" },
+    ]);
+    const newest = state.childRead.generation;
+    expect(newest).toBeGreaterThan(1);
+    // The newer reading says one is still at work; the older, slower one says none.
+    const current = stepTurnMachine(state, records(state, [["l1", 1]])).state;
+    const stale = stepTurnMachine(current, {
+      type: "childrenAtWork",
+      generation: newest - 1,
+      launches: [["l1", 0]],
+    });
+    expect(stale.state).toEqual(current);
+    expect(stale.state.turn?.phase.tag).toBe("waiting");
+  });
+
+  it("Stop on held work ends the turn at once and keeps the work until it ends (finding 3)", () => {
+    const held = run([
+      { type: "send", sendId: "s1", turnId: "u1" },
+      { type: "workStarted", id: "c1", kind: "command" },
+      { type: "promptAnswered", prompt: 1 },
+      { type: "outcomeRead", prompt: 1, outcome: outcome("completed") },
+    ]).state;
+    const stopped = stepTurnMachine(held, { type: "stopRequested" });
+    expect(ends(stopped.commands)).toEqual([
+      { type: "endTurn", turnId: "u1", end: { kind: "stopped" } },
+    ]);
+    expect(stopped.state.stopping).toEqual({ commands: ["c1"], launches: [] });
+    expect(stopped.state.timers.map(([timer]) => timer)).toContain("cancelDeadline");
+    // A message sent meanwhile waits for the stop.
+    const sent = stepTurnMachine(stopped.state, { type: "send", sendId: "s2", turnId: "u2" });
+    expect(sent.commands.map((command) => command.type)).not.toContain("startTurn");
+    // The agent shows the command ended: the stop is over and the message goes.
+    const ended = stepTurnMachine(sent.state, { type: "workEnded", id: "c1" });
+    expect(ended.state.stopping).toBeUndefined();
+    expect(ended.state.wakesOwed).toBe(0);
+    expect(ended.commands).toContainEqual({ type: "startTurn", turnId: "u2", sendId: "s2" });
+    expect(ended.commands).toContainEqual({ type: "disarmTimer", timer: "cancelDeadline" });
+  });
+
+  it("a cancel the agent ignores recycles it at the deadline, the turn's end first (findings 1 and 3)", () => {
+    const stopping = run([
+      { type: "send", sendId: "s1", turnId: "u1" },
+      { type: "workStarted", id: "c1", kind: "command" },
+      { type: "promptAnswered", prompt: 1 },
+      { type: "outcomeRead", prompt: 1, outcome: outcome("completed") },
+      { type: "stopRequested" },
+      { type: "send", sendId: "s2", turnId: "u2" },
+    ]).state;
+    const deadline = stepTurnMachine(stopping, fire(stopping, "cancelDeadline"));
+    expect(deadline.commands.map((command) => command.type)).toEqual(
+      expect.arrayContaining(["rejectSend", "recycleAgent"]),
+    );
+    expect(deadline.commands.findLast((command) => command.type !== "disarmTimer")).toEqual({
+      type: "recycleAgent",
+    });
+    expect(deadline.state.ended).toBe(true);
+    // Stop during a prompt: the turn's end goes out before the recycle.
+    const prompting = run([
+      { type: "send", sendId: "s1", turnId: "u1" },
+      { type: "stopRequested" },
+    ]);
+    const types = stepTurnMachine(
+      prompting.state,
+      fire(prompting.state, "cancelDeadline"),
+    ).commands.map((command) => command.type);
+    expect(types.indexOf("endTurn")).toBeLessThan(types.indexOf("recycleAgent"));
+  });
+
+  it("a stop waiting on a subagent ends once the records show it stopped", () => {
+    const held = run([
+      { type: "send", sendId: "s1", turnId: "u1" },
+      { type: "subagentsLaunched", id: "l1", count: 1 },
+      { type: "promptAnswered", prompt: 1 },
+      { type: "outcomeRead", prompt: 1, outcome: outcome("completed") },
+    ]).state;
+    const stopped = stepTurnMachine(held, { type: "stopRequested" });
+    expect(stopped.state.stopping).toEqual({ commands: [], launches: [["l1", 1]] });
+    expect(stopped.commands.map((command) => command.type)).toContain("readChildren");
+    // Still at work at first; the next check finds it killed.
+    const working = stepTurnMachine(stopped.state, records(stopped.state, [["l1", 1]])).state;
+    expect(working.stopping).toBeDefined();
+    const check = stepTurnMachine(working, fire(working, "stopCheck"));
+    const killed = stepTurnMachine(check.state, records(check.state, [["l1", 0]]));
+    expect(killed.state.stopping).toBeUndefined();
+    expect(killed.state.timers.map(([timer]) => timer)).toEqual(["noticeExpiry"]);
   });
 
   it("a call taken for a command and then shown to be an MCP call holds nothing", () => {
@@ -546,6 +899,7 @@ describe("AcpTurnMachine, the reviewed races", () => {
     const stopped = stepTurnMachine(state, { type: "stopRequested" });
     expect(stopped.commands).toContainEqual({ type: "sendCancel" });
     expect(stopped.state.running).toEqual([]);
+    expect(stopped.state.stopping).toEqual({ commands: ["c1"], launches: [] });
   });
 
   it("stopping the session during a hold ends the held turn (finding 6)", () => {
@@ -590,14 +944,5 @@ describe("AcpTurnMachine, the reviewed races", () => {
     expect(ends(commands)).toEqual([]);
     expect(state.turn?.newest).toBe(2);
     expect(state.turn?.phase.tag).toBe("prompting");
-  });
-
-  it("an older prompt answering after a steer moves the newer one's outcome reading on", () => {
-    const { commands } = run([
-      { type: "send", sendId: "s1", turnId: "u1" },
-      { type: "steer", steerId: "t1", expectedTurnId: "u1" },
-      { type: "promptAnswered", prompt: 1 },
-    ]);
-    expect(commands).toContainEqual({ type: "rebaseOutcome", prompt: 2 });
   });
 });

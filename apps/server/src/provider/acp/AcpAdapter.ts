@@ -54,6 +54,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
+import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
@@ -185,6 +186,14 @@ const ACP_OUTCOME_CHECK_TIMEOUT = Duration.seconds(10);
  * agent that never sends one must not cost a real reply in those words later.
  */
 const ACP_NOTICE_EXPIRY = Duration.seconds(30);
+/** How often a stop that waits on subagents reads their records again. */
+const ACP_STOP_CHECK_INTERVAL = Duration.seconds(1);
+/**
+ * How long stopping a machine session waits for its event reader to get
+ * through what is already queued (answers, their usage, the turn's end).
+ * The reader never waits on I/O, so this is only a guard against a bug.
+ */
+const ACP_STOP_DRAIN_LIMIT = Duration.seconds(5);
 /**
  * The most turns a resume cursor remembers the agent's prompt positions for
  * (see `conversationHistory`); a revert further back trims Threadlines' turn
@@ -227,6 +236,8 @@ export interface AcpAdapterOptions<Settings extends AcpProviderSettings> {
   ) => Effect.Effect<void>;
   /** The skills the provider status lists, by name: a typed `/name` runs one. */
   readonly skillNames?: Effect.Effect<ReadonlySet<string>>;
+  /** Tests only: holds the turn machine's driver up at its seams (`AcpTurnMachineSeam`). */
+  readonly turnMachineSeams?: (seam: AcpTurnMachineSeam) => Effect.Effect<void>;
 }
 
 interface PendingApproval {
@@ -377,6 +388,10 @@ interface AcpMachinePrompt {
   readonly configure: Effect.Effect<void, ProviderAdapterError> | undefined;
   readonly model: string | undefined;
   readonly resolvedModel: string | undefined;
+  /** The context preamble this prompt carries; back to the session if it never goes out. */
+  readonly preamble: string | undefined;
+  /** A send's: hears whether its prompt was written to the agent (`reportDelivery`). */
+  readonly delivered: Deferred.Deferred<boolean> | undefined;
 }
 
 /** A prompt the machine sent, with what its answer is read against. */
@@ -416,9 +431,36 @@ interface AcpMachineSession {
     }
   >;
   readonly timers: Map<AcpTurnTimer, Fiber.Fiber<void, never>>;
-  /** Counts what the agent did, so a quiet timer knows the quiet was real. */
-  activity: number;
+  /** When the agent last did anything: quiet timers count from here. */
+  lastActivityMs: number;
+  /**
+   * The prompts the machine sent, in its order: one sender takes them, so
+   * each (its turn's mode and model setup first) reaches the agent after
+   * every prompt the machine sent before it.
+   */
+  readonly outbox: Queue.Queue<number>;
 }
+
+/**
+ * Where a test can hold the turn machine's driver up to force an ordering
+ * (`AcpAdapterOptions.turnMachineSeams`). Each runs where it says and may
+ * wait; nothing in production sets one.
+ */
+export type AcpTurnMachineSeam =
+  /** On the event reader: a step's state is committed, its commands not yet run. */
+  | {
+      readonly point: "stepCommitted";
+      readonly event: AcpTurnEvent<unknown>["type"];
+      readonly commands: ReadonlyArray<AcpTurnCommand<unknown>["type"]>;
+    }
+  /** On the prompt sender: before a prompt's mode and model setup returns. */
+  | { readonly point: "promptSetup"; readonly prompt: number }
+  /** On the wire reader: a prompt's answer is read, not yet queued for the event reader. */
+  | { readonly point: "answerRead"; readonly prompt: number }
+  /** Off the reader: during a prompt's outcome check. */
+  | { readonly point: "outcomeRead"; readonly prompt: number }
+  /** Off the reader: the child records are read, the reading not yet posted. */
+  | { readonly point: "childrenRead"; readonly generation: number };
 
 /** A turn's end payload as the machine reads it. */
 function turnPayloadState(payload: AcpTurnCompletedPayload): "completed" | "failed" | "cancelled" {
@@ -1212,7 +1254,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
               newTurnId: crypto.randomUUID(),
             });
           } else {
-            machine.activity += 1;
+            yield* noteActivity(machine);
           }
           return earlier ?? ctx.activeTurnId;
         }
@@ -1323,7 +1365,9 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
     const stopSessionInternal = (
       ctx: AcpSessionContext,
       exitKind: "graceful" | "error" = "graceful",
-      exit?: { readonly conversationLost?: true },
+      exit?: {
+        readonly conversationLost?: { readonly sessionId: string; readonly resumeCursor?: unknown };
+      },
     ) =>
       Effect.gen(function* () {
         if (ctx.stopped) return;
@@ -1335,14 +1379,31 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         if (ctx.promptFiber) {
           yield* Fiber.interrupt(ctx.promptFiber);
         }
+        // On the turn machine the stop is an event: the reader gets to it
+        // after everything already queued (an answer and its usage, a turn's
+        // end), and only then is it stopped.
+        const machine = ctx.machine;
+        const drained =
+          machine === undefined || ctx.notificationFiber === undefined
+            ? false
+            : yield* Effect.gen(function* () {
+                const done = yield* Deferred.make<void>();
+                yield* ctx.acp.inOrder(
+                  applyTurnEvent(ctx, { type: "sessionStopping" }).pipe(
+                    Effect.andThen(Deferred.succeed(done, undefined)),
+                    Effect.asVoid,
+                  ),
+                );
+                return Option.isSome(
+                  yield* Deferred.await(done).pipe(Effect.timeoutOption(ACP_STOP_DRAIN_LIMIT)),
+                );
+              });
         if (ctx.notificationFiber) {
           yield* Fiber.interrupt(ctx.notificationFiber);
         }
-        // The reader is gone, so this is the one place left to step the
-        // machine: the open turn ends, and every waiting send hears back.
-        const machine = ctx.machine;
         if (machine !== undefined) {
-          yield* applyTurnEvent(ctx, { type: "sessionStopping" });
+          // A reader that never got there: the stop is stepped here instead.
+          if (!drained) yield* applyTurnEvent(ctx, { type: "sessionStopping" });
           for (const [id, caller] of machine.callers) {
             machine.callers.delete(id);
             yield* Deferred.succeed(caller.reply, { rejected: "no-active-turn" });
@@ -2183,7 +2244,8 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                     prompts: new Map(),
                     turns: new Map(),
                     timers: new Map(),
-                    activity: 0,
+                    lastActivityMs: yield* Clock.currentTimeMillis,
+                    outbox: yield* Queue.unbounded<number>(),
                   },
             stopped: false,
           };
@@ -2202,6 +2264,17 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                   case "InOrder":
                     yield* event.run;
                     return;
+                  case "PromptSent":
+                    // Written to the agent (`promptInOrder`): what it carries is delivered.
+                    yield* applyTurnEvent(ctx, { type: "promptDispatched", prompt: event.key });
+                    return;
+                  case "PromptAnswered": {
+                    // In its place among the updates (`promptInOrder`).
+                    const sent = ctx.machine?.prompts.get(event.key);
+                    if (sent !== undefined) sent.exit = event.answer;
+                    yield* applyTurnEvent(ctx, { type: "promptAnswered", prompt: event.key });
+                    return;
+                  }
                   case "SessionStatus":
                     if (event.message === ctx.lastProviderStatus) {
                       return;
@@ -2268,7 +2341,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                     // Work whose updates show nothing new still counts (a
                     // timer's "Running schedule" stays as it started).
                     if (ctx.machine !== undefined) {
-                      ctx.machine.activity += 1;
+                      yield* noteActivity(ctx.machine);
                       yield* trackMachineWork(ctx, event.toolCall);
                     }
                     // A launch approved earlier completes with nothing new to show.
@@ -2424,6 +2497,9 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           ).pipe(Effect.forkIn(sessionScope));
 
           ctx.notificationFiber = notificationFiber;
+          if (ctx.machine !== undefined) {
+            yield* runPromptSender(ctx, ctx.machine).pipe(Effect.forkIn(sessionScope));
+          }
           sessions.set(input.threadId, ctx);
           // A turn the machine holds open waits on no request the exit would
           // fail: the machine hears of the exit itself.
@@ -2658,20 +2734,42 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
       event.type !== "outcomeRead" &&
       event.type !== "promptDispatched";
 
-    /** Steps the machine with one event, on the event reader, and runs its commands. */
+    /** The driver's seams, for tests (`AcpAdapterOptions.turnMachineSeams`). */
+    const seam = (point: AcpTurnMachineSeam) =>
+      options?.turnMachineSeams === undefined ? Effect.void : options.turnMachineSeams(point);
+
+    /** The agent did something: quiet timers count from now. */
+    const noteActivity = (machine: AcpMachineSession) =>
+      Effect.map(Clock.currentTimeMillis, (now) => {
+        machine.lastActivityMs = now;
+      });
+
+    /**
+     * Steps the machine with one event, on the event reader, and runs its
+     * commands. One step is one unit: nothing interrupts it between the
+     * commit and its last command (a session stop is an event the reader
+     * gets to after it).
+     */
     const applyTurnEvent = (
       ctx: AcpSessionContext,
       event: AcpMachineEvent,
     ): Effect.Effect<ReadonlyArray<AcpMachineCommand>> =>
-      Effect.gen(function* () {
-        const machine = ctx.machine;
-        if (machine === undefined) return [];
-        if (isAgentActivity(event)) machine.activity += 1;
-        const step = stepTurnMachine(machine.state, event);
-        machine.state = step.state;
-        for (const command of step.commands) yield* runTurnCommand(ctx, machine, command);
-        return step.commands;
-      });
+      Effect.uninterruptible(
+        Effect.gen(function* () {
+          const machine = ctx.machine;
+          if (machine === undefined) return [];
+          if (isAgentActivity(event)) yield* noteActivity(machine);
+          const step = stepTurnMachine(machine.state, event);
+          machine.state = step.state;
+          yield* seam({
+            point: "stepCommitted",
+            event: event.type,
+            commands: step.commands.map((command) => command.type),
+          });
+          for (const command of step.commands) yield* runTurnCommand(ctx, machine, command);
+          return step.commands;
+        }),
+      );
 
     /** A request the agent made was answered (or given up on): quiet limits may run again. */
     const closeMachineRequest = (ctx: AcpSessionContext | undefined) =>
@@ -2709,9 +2807,9 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
       });
 
     /**
-     * Arms one of the machine's timers. A quiet timer fires only after so
-     * long without the agent doing anything: activity while it waits starts
-     * it over, so the machine hears it fire only when the quiet was real.
+     * Arms one of the machine's timers. A quiet timer fires once its limit
+     * has passed since the later of its arming and the agent's last
+     * activity: activity while it waits moves the end, not the whole wait.
      */
     const armTurnTimer = (
       ctx: AcpSessionContext,
@@ -2720,47 +2818,70 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
       generation: number,
     ): Effect.Effect<void> =>
       Effect.gen(function* () {
-        const seen = machine.activity;
-        const wait =
+        const armedAt = yield* Clock.currentTimeMillis;
+        const quiet =
+          timer !== "cancelDeadline" && timer !== "noticeExpiry" && timer !== "stopCheck";
+        const limit =
           timer === "cancelDeadline"
             ? ACP_CANCEL_DEADLINE
             : timer === "noticeExpiry"
               ? ACP_NOTICE_EXPIRY
-              : quietLimit(timer);
-        const fiber = yield* Effect.sleep(wait).pipe(
-          Effect.andThen(
-            ctx.acp.inOrder(
-              Effect.suspend(() => {
-                const armed = machine.state.timers.find(([name]) => name === timer);
-                if (armed?.[1] !== generation) return Effect.void;
-                return timer !== "cancelDeadline" &&
-                  timer !== "noticeExpiry" &&
-                  machine.activity !== seen
-                  ? armTurnTimer(ctx, machine, timer, generation)
-                  : applyTurnEvent(ctx, { type: "timerFired", timer, generation }).pipe(
-                      Effect.asVoid,
-                    );
-              }),
+              : timer === "stopCheck"
+                ? ACP_STOP_CHECK_INTERVAL
+                : quietLimit(timer);
+        const limitMs = Duration.toMillis(limit);
+        const wait = (ms: number): Effect.Effect<void> =>
+          Effect.sleep(Duration.millis(ms)).pipe(
+            Effect.andThen(
+              ctx.acp.inOrder(
+                Effect.gen(function* () {
+                  const armed = machine.state.timers.find(([name]) => name === timer);
+                  if (armed?.[1] !== generation) return;
+                  const since = quiet ? Math.max(armedAt, machine.lastActivityMs) : armedAt;
+                  const left = since + limitMs - (yield* Clock.currentTimeMillis);
+                  if (left > 0) {
+                    const fiber = yield* wait(left).pipe(Effect.forkIn(ctx.scope));
+                    machine.timers.set(timer, fiber);
+                    return;
+                  }
+                  yield* applyTurnEvent(ctx, { type: "timerFired", timer, generation });
+                }),
+              ),
             ),
-          ),
-          Effect.forkIn(ctx.scope),
-        );
-        machine.timers.set(timer, fiber);
+          );
+        machine.timers.set(timer, yield* wait(limitMs).pipe(Effect.forkIn(ctx.scope)));
       });
 
-    /** One prompt of a machine turn: the turn's configuration first, then the prompt. */
-    const runMachinePrompt = (
+    /**
+     * The session's one prompt sender: takes the machine's prompts in the
+     * order it sent them, and sends each (its turn's mode and model setup
+     * first) only after the one before it is on the wire, so a steer never
+     * reaches the agent ahead of the prompt it steers. A prompt's answer
+     * reaches the machine as the reader reads it (`PromptAnswered`); one that
+     * never went out answers with why.
+     */
+    const runPromptSender = (ctx: AcpSessionContext, machine: AcpMachineSession) =>
+      Effect.forever(
+        Queue.take(machine.outbox).pipe(
+          Effect.flatMap((prompt) => sendMachinePrompt(ctx, machine, prompt)),
+        ),
+      );
+
+    /** Sends one prompt for the sender: returns once it is on the wire (or failed to go). */
+    const sendMachinePrompt = (
       ctx: AcpSessionContext,
       machine: AcpMachineSession,
       prompt: number,
-      sent: AcpMachinePromptSent,
     ) =>
       Effect.gen(function* () {
+        const sent = machine.prompts.get(prompt);
+        if (sent === undefined) return;
         const exit = yield* Effect.exit(
           Effect.gen(function* () {
             if (sent.configure !== undefined) yield* sent.configure;
+            yield* seam({ point: "promptSetup", prompt });
             // Where the agent's records stand as this prompt goes out.
-            const watch =
+            sent.watch =
               machineOptions?.outcome === undefined
                 ? undefined
                 : yield* machineOptions.outcome.watch(ctx.acpSessionId, sent.model).pipe(
@@ -2771,19 +2892,25 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                       }).pipe(Effect.as(undefined)),
                     ),
                   );
-            sent.watch = watch;
-            yield* postTurnEvent(ctx, { type: "promptDispatched", prompt });
             const promptMeta = descriptor.promptMeta?.(sent.turnId);
-            return yield* ctx.acp.prompt({
-              prompt: [...sent.parts],
-              ...(promptMeta ? { _meta: { ...promptMeta } } : {}),
-            });
+            yield* ctx.acp.promptInOrder(
+              prompt,
+              {
+                prompt: [...sent.parts],
+                ...(promptMeta ? { _meta: { ...promptMeta } } : {}),
+              },
+              seam({ point: "answerRead", prompt }),
+            );
           }),
         );
         // A stopping session ends the turn itself.
-        if (Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)) return;
-        sent.exit = exit;
-        yield* postTurnEvent(ctx, { type: "promptAnswered", prompt });
+        if (Exit.isSuccess(exit) || Cause.hasInterruptsOnly(exit.cause)) return;
+        yield* ctx.acp.inOrder(
+          Effect.suspend(() => {
+            sent.exit = Exit.failCause(exit.cause);
+            return applyTurnEvent(ctx, { type: "promptAnswered", prompt });
+          }).pipe(Effect.asVoid),
+        );
       });
 
     /**
@@ -2904,9 +3031,22 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
               exit: undefined,
             };
             machine.prompts.set(command.prompt, sent);
-            yield* runMachinePrompt(ctx, machine, command.prompt, sent).pipe(
-              Effect.forkIn(ctx.scope),
-            );
+            yield* Queue.offer(machine.outbox, command.prompt);
+            return;
+          }
+          case "reportDelivery": {
+            const sent = machine.prompts.get(command.prompt);
+            if (sent === undefined) return;
+            if (!command.delivered) {
+              // Never written: the context it carried waits for the next message.
+              if (sent.preamble !== undefined && ctx.pendingContextPreamble === undefined) {
+                ctx.pendingContextPreamble = sent.preamble;
+              }
+              if (ctx.projectBriefCarrier?.turnId === sent.turnId) requeueProjectBrief(ctx);
+            }
+            if (sent.delivered !== undefined) {
+              yield* Deferred.succeed(sent.delivered, command.delivered);
+            }
             return;
           }
           case "acceptSend":
@@ -2929,7 +3069,8 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             const sent = machine.prompts.get(command.prompt);
             if (sent === undefined) return;
             const seen = { turnText: ctx.activeTurnText, providerStatus: ctx.lastProviderStatus };
-            yield* readMachineOutcome(ctx, sent, seen).pipe(
+            yield* seam({ point: "outcomeRead", prompt: command.prompt }).pipe(
+              Effect.andThen(readMachineOutcome(ctx, sent, seen)),
               Effect.flatMap((outcome) =>
                 postTurnEvent(ctx, { type: "outcomeRead", prompt: command.prompt, outcome }),
               ),
@@ -2938,29 +3079,37 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             return;
           }
           case "readChildren": {
-            // The agent's own records, off the reader and bounded; a reading
-            // that can't say leaves the protocol count standing.
-            const read = machineOptions?.childrenAtWork;
-            if (read === undefined) return;
-            yield* read(ctx.acpSessionId).pipe(
+            // The agent's own records, off the reader and bounded. A launch
+            // counts only for the child its own call id started, so records
+            // from before a resume, or of another launch, prove nothing; one
+            // the records don't tie to a single child is left out, and the
+            // protocol count stands for it.
+            const states = descriptor.subagents?.states;
+            if (states === undefined) return;
+            const { generation, launches } = command;
+            yield* states({
+              sessionId: ctx.acpSessionId,
+              launchCallIds: launches.map(([id]) => id),
+            }).pipe(
               Effect.timeoutOption(ACP_OUTCOME_CHECK_TIMEOUT),
               Effect.map(Option.getOrUndefined),
-              Effect.flatMap((children) =>
-                children === undefined
-                  ? Effect.void
-                  : postTurnEvent(ctx, {
-                      type: "childrenAtWork",
-                      running: children.running,
-                      known: children.known,
-                    }),
-              ),
+              Effect.tap(() => seam({ point: "childrenRead", generation })),
+              Effect.flatMap((reading) => {
+                if (reading === undefined) return Effect.void;
+                const covered = launches.flatMap(([id, count]) => {
+                  const child = reading.byLaunch.get(id);
+                  return child === undefined || count !== 1
+                    ? []
+                    : [[id, child.state === "working" ? 1 : 0] as const];
+                });
+                return postTurnEvent(ctx, {
+                  type: "childrenAtWork",
+                  generation,
+                  launches: covered,
+                });
+              }),
               Effect.forkIn(ctx.scope),
             );
-            return;
-          }
-          case "rebaseOutcome": {
-            const watch = machine.prompts.get(command.prompt)?.watch;
-            if (watch !== undefined) yield* watch.rebase.pipe(Effect.ignore);
             return;
           }
           case "recordUsage": {
@@ -3006,11 +3155,19 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             yield* stopFromMachine(ctx, "graceful");
             return;
           case "stopSession":
-            // A lost conversation: ProviderService forgets it in the thread's binding.
+            // A lost conversation: ProviderService forgets it in the thread's
+            // binding, if the binding still names this one.
             yield* stopFromMachine(
               ctx,
               command.reason === "exited" ? "error" : "graceful",
-              command.reason === "sessionLost" ? { conversationLost: true } : undefined,
+              command.reason === "sessionLost"
+                ? {
+                    conversationLost: {
+                      sessionId: ctx.acpSessionId,
+                      resumeCursor: ctx.session.resumeCursor,
+                    },
+                  }
+                : undefined,
             );
             return;
           case "markSessionLost":
@@ -3026,7 +3183,9 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
     const stopFromMachine = (
       ctx: AcpSessionContext,
       exitKind: "graceful" | "error",
-      exit?: { readonly conversationLost?: true },
+      exit?: {
+        readonly conversationLost?: { readonly sessionId: string; readonly resumeCursor?: unknown };
+      },
     ) =>
       withThreadLock(
         ctx.threadId,
@@ -3174,13 +3333,23 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         const prepared = yield* prepareTurnPrompt(ctx, input);
         carryPromptPreface(ctx, turnId, prepared);
         const reply = yield* Deferred.make<AcpMachineReply>();
+        const delivered = yield* Deferred.make<boolean>();
         const sendId = `send:${turnId}`;
+        /** A send that never went out leaves the context it took for the next. */
+        const keepContext = () => {
+          if (prepared.contextPreamble !== undefined && ctx.pendingContextPreamble === undefined) {
+            ctx.pendingContextPreamble = prepared.contextPreamble;
+          }
+          if (ctx.projectBriefCarrier?.turnId === turnId) requeueProjectBrief(ctx);
+        };
         machine.callers.set(sendId, {
           prompt: {
             parts: prepared.promptParts,
             configure: prepared.configure,
             model: prepared.model,
             resolvedModel: prepared.resolvedModel,
+            preamble: prepared.contextPreamble,
+            delivered,
           },
           ...(input.messageId !== undefined ? { messageId: input.messageId } : {}),
           planMode: prepared.planMode,
@@ -3188,6 +3357,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         });
         if (ctx.stopped) {
           machine.callers.delete(sendId);
+          keepContext();
           return yield* new ProviderAdapterSessionNotFoundError({
             provider: PROVIDER,
             threadId: input.threadId,
@@ -3196,18 +3366,22 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         yield* postTurnEvent(ctx, { type: "send", sendId, turnId });
         const answer = yield* Deferred.await(reply);
         if ("rejected" in answer) {
-          if (ctx.projectBriefCarrier?.turnId === turnId) requeueProjectBrief(ctx);
+          keepContext();
           return yield* new ProviderAdapterSessionNotFoundError({
             provider: PROVIDER,
             threadId: input.threadId,
           });
         }
+        // The result says whether the prompt was written: only then did the
+        // agent get the message and the context in front of it.
+        const written = yield* Deferred.await(delivered);
         return {
           threadId: input.threadId,
           turnId,
           resumeCursor: ctx.session.resumeCursor,
           // A typed agent command left the thread's history and brief owed.
           ...(prepared.contextDeferred ? { contextDeferred: true as const } : {}),
+          ...(written ? {} : { undelivered: true as const }),
         };
       });
 
@@ -3233,7 +3407,14 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         const reply = yield* Deferred.make<AcpMachineReply>();
         const steerId = `steer:${crypto.randomUUID()}`;
         machine.callers.set(steerId, {
-          prompt: { parts, configure: undefined, model: undefined, resolvedModel: undefined },
+          prompt: {
+            parts,
+            configure: undefined,
+            model: undefined,
+            resolvedModel: undefined,
+            preamble: undefined,
+            delivered: undefined,
+          },
           planMode: undefined,
           reply,
         });
@@ -3670,7 +3851,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             );
             return { threadId: input.threadId, turnId, resumeCursor: ctx.session.resumeCursor };
           })
-      : descriptor.turnMachine !== undefined
+      : descriptor.turnMachine?.steer === true
         ? steerTurnByMachine
         : undefined;
 
@@ -3800,7 +3981,9 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         // turn and the work it left, and ends the turn once.
         const machine = ctx.machine;
         const working = () =>
-          ctx.activeTurnId !== undefined || (machine !== undefined && workPending(machine.state));
+          ctx.activeTurnId !== undefined ||
+          (machine !== undefined &&
+            (workPending(machine.state) || machine.state.stopping !== undefined));
         if (working()) {
           yield* interruptTurn(ctx.threadId).pipe(Effect.ignore);
           yield* Effect.gen(function* () {
@@ -3896,7 +4079,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
       capabilities: {
         sessionModelSwitch: "in-session",
         conversationRollback: descriptor.rollbackByNewSession ? "new-session" : "none",
-        ...(descriptor.steer || descriptor.turnMachine
+        ...(descriptor.steer || descriptor.turnMachine?.steer === true
           ? { activeTurnSteering: "supported" as const }
           : {}),
         ...(descriptor.conversationHistory ? { nativeThreadFork: "supported" as const } : {}),

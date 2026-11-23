@@ -142,6 +142,43 @@ const ProviderClearThreadGoalServiceInput = Schema.Struct({
  * canonical copy is left out. Reply text and tool output pieces are kept: a
  * reply cut off mid-stream may have no whole copy anywhere.
  */
+/**
+ * Whether a saved resume cursor is the lost session's: by the session id in
+ * it when the cursor carries one (`sessionId`, as ACP's do; the rest of the
+ * cursor moves on with every turn), else the whole cursor.
+ */
+function cursorPointsAt(
+  cursor: unknown,
+  lost: { readonly sessionId: string; readonly resumeCursor?: unknown },
+): boolean {
+  if (typeof cursor === "object" && cursor !== null && "sessionId" in cursor) {
+    return cursor.sessionId === lost.sessionId;
+  }
+  return "resumeCursor" in lost && sameJsonValue(cursor, lost.resumeCursor ?? null);
+}
+
+/** Two JSON values (resume cursors) are the same, whatever their keys' order. */
+function sameJsonValue(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  if (typeof left !== "object" || typeof right !== "object" || left === null || right === null) {
+    return false;
+  }
+  if (Array.isArray(left) !== Array.isArray(right)) return false;
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  return (
+    leftKeys.length === rightKeys.length &&
+    leftKeys.every(
+      (key) =>
+        Object.hasOwn(right, key) &&
+        sameJsonValue(
+          (left as Record<string, unknown>)[key],
+          (right as Record<string, unknown>)[key],
+        ),
+    )
+  );
+}
+
 function isCanonicalStreamFragment(event: ProviderRuntimeEvent): boolean {
   return (
     event.type === "content.delta" &&
@@ -722,8 +759,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       // An agent that can't go on with its conversation: forgotten before
       // anyone hears the session ended, so no start can reopen it.
       Effect.tap((canonicalEvent) =>
-        canonicalEvent.type === "session.exited" && canonicalEvent.payload.conversationLost === true
-          ? forgetConversation(canonicalEvent.threadId)
+        canonicalEvent.type === "session.exited" &&
+        canonicalEvent.payload.conversationLost !== undefined
+          ? forgetConversation(canonicalEvent.threadId, canonicalEvent.payload.conversationLost)
           : Effect.void,
       ),
       Effect.flatMap((canonicalEvent) =>
@@ -2931,10 +2969,19 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
    * readPersistedHistoryOwed): its cursor goes and the history is owed.
    * False when the binding couldn't be written; the agent then remembers.
    */
-  const forgetConversation = (threadId: ThreadId) =>
+  /**
+   * Drops the thread's saved conversation, so the next start opens a new
+   * one seeded with its history. With `lost`, only while the binding still
+   * points at that session: a conversation started since is not the lost one.
+   */
+  const forgetConversation = (
+    threadId: ThreadId,
+    lost?: { readonly sessionId: string; readonly resumeCursor?: unknown },
+  ) =>
     Effect.gen(function* () {
       const binding = Option.getOrUndefined(yield* directory.getBinding(threadId));
       if (binding === undefined) return true;
+      if (lost !== undefined && !cursorPointsAt(binding.resumeCursor ?? null, lost)) return true;
       yield* directory.upsert({
         threadId,
         provider: binding.provider,

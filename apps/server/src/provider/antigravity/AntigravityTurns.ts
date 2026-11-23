@@ -34,7 +34,7 @@ import type {
 } from "../acp/AcpProviderDescriptor.ts";
 import type { AcpToolCallState } from "../acp/AcpRuntimeModel.ts";
 import { antigravityLogPosition, antigravityTurnSteps } from "./AntigravitySessionLog.ts";
-import { antigravityChildLaunches, readAntigravityChildren } from "./AntigravityChildRecords.ts";
+import { antigravityChildLaunches } from "./AntigravityChildRecords.ts";
 import { isAntigravitySubagentLaunch } from "./AntigravitySubagents.ts";
 
 /** `schedule` stays in progress until its wake fires; the agent then replies by itself. */
@@ -45,6 +45,11 @@ const SCHEDULE_TITLES = new Set(["Run schedule", "Running schedule"]);
  * and settled on 30 minutes, which still leaves long builds room).
  */
 export const ANTIGRAVITY_SILENT_WORK_LIMIT = Duration.minutes(30);
+/**
+ * Whether a message sent mid-turn steers the running turn (a second
+ * `session/prompt`, 1.5.0+). Off, it waits for the turn to end.
+ */
+export const ANTIGRAVITY_STEERS = true;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -236,23 +241,13 @@ export function antigravityTurnBehavior<Settings extends AcpProviderSettings>(
 ): Pick<AcpProviderDescriptor<Settings>, "turnMachine" | "usageLedger" | "turnUsageTotals"> {
   return {
     // Turns outlive their prompt (1.5.10 sends what the agent does after a
-    // prompt ends at once) and a second prompt steers (1.5.0).
+    // prompt ends at once) and a second prompt steers (1.5.0). Subagent
+    // holds follow the CLI's records (the descriptor's `subagents`).
     turnMachine: {
       workAfterPrompt: antigravityWorkAfterPrompt,
+      steer: ANTIGRAVITY_STEERS,
       silentLimit: ANTIGRAVITY_SILENT_WORK_LIMIT,
       outcome: antigravityPromptOutcome(profileDir, readUsageLimit),
-      // Which children are still at work, by the CLI's own records.
-      childrenAtWork: (sessionId) =>
-        readAntigravityChildren(profileDir, sessionId).pipe(
-          Effect.map((reading) =>
-            reading.available
-              ? {
-                  running: reading.running.length,
-                  known: reading.running.length + reading.reported.length + reading.killed.length,
-                }
-              : undefined,
-          ),
-        ),
     },
     usageLedger: { provider: "antigravity" },
     turnUsageTotals: antigravityTurnUsageTotals,
@@ -263,13 +258,14 @@ export function antigravityTurnBehavior<Settings extends AcpProviderSettings>(
  * Reads how an Antigravity prompt really ended: the JSON-RPC error it failed
  * with (1.5.9+), or, for a normal end, an error step in the CLI's session log.
  *
- * A log step is the prompt's only if it is written after the prompt went
- * out and after every older prompt of its turn answered: the CLI writes a
- * prompt's steps before it answers it, and answers a steered prompt only
- * once the steer arrives, so an older prompt's late error lands before its
- * own answer and `rebase` moves past it. When the log can't say (it can't be
- * read, or a step's prompt is in doubt), the prompt's own answer stands: the
- * turn completes and the agent's own words about the error stay in its reply.
+ * The log names no prompt, so a step counts for the newest prompt if it is
+ * the log's last step and was written after that prompt went out. That
+ * never hides the newest prompt's own failure. What it costs: an older
+ * prompt's error written after a steer went out, with nothing after it,
+ * fails the turn although the steer was answered (the CLI writes the
+ * steer's reply after it, so this needs a steer that wrote no step). When
+ * the log can't be read the prompt's own answer stands: the turn completes
+ * and the agent's own words about the error stay in its reply.
  */
 function antigravityPromptOutcome(
   profileDir: string,
@@ -278,7 +274,7 @@ function antigravityPromptOutcome(
   return {
     watch: (sessionId, model) =>
       Effect.gen(function* () {
-        let before = yield* antigravityLogPosition(profileDir, sessionId);
+        const before = yield* antigravityLogPosition(profileDir, sessionId);
         const withMeterReset = (failure: AcpPromptFailure | undefined) =>
           failure?.usageLimit !== undefined &&
           failure.usageLimit.resetsAt === undefined &&
@@ -288,10 +284,6 @@ function antigravityPromptOutcome(
                 Effect.map((limit) => (limit ? { ...failure, usageLimit: limit } : failure)),
               )
             : Effect.succeed(failure);
-        const rebase = Effect.gen(function* () {
-          const now = yield* antigravityLogPosition(profileDir, sessionId);
-          if (now !== undefined) before = before === undefined ? now : Math.max(before, now);
-        });
         const check: AcpPromptOutcomeWatch["check"] = (answer) =>
           Effect.gen(function* () {
             const nowMs = yield* Clock.currentTimeMillis;
@@ -324,7 +316,7 @@ function antigravityPromptOutcome(
               }),
             );
           });
-        return { check, rebase };
+        return { check };
       }),
   };
 }

@@ -29,6 +29,8 @@
  *   for a permission before it replies.
  * - `steer-log-error`: as `steer`, but the first prompt's log ends in an
  *   error before the steer comes; the second answers cleanly.
+ * - `steer-own-log-error`: as `steer`, but the steer fails upstream: its
+ *   error is logged before the first prompt answers, and nothing after it.
  * - `subagent`: launches a subagent, ends its prompt, and replies with the
  *   subagent's report later. It writes no subagent records.
  * - `subagent-records`: as `subagents`, with the children's records (as
@@ -42,6 +44,13 @@
  * - `records-killed`: as `subagent-records`, but in the reply to the first
  *   child's report the agent kills the second (its record says so).
  * - `wake`: ends its prompt with nothing running, then replies by itself.
+ * - `background-quick`: as `background`, but the command ends 20 ms after
+ *   the answer, and the wake's reply streams in two parts 300 ms apart.
+ * - `quiet-activity`: starts a command that never ends; 100 ms after the
+ *   answer an update about it shows nothing new.
+ * - `stuck`: starts a command that never ends, and ignores a cancel.
+ * - `mode-fails-once`: the first switch back to the `default` mode fails;
+ *   later ones work.
  * - `steer`: holds its first prompt until a second arrives, answers the first
  *   `end_turn`, and replies to the second.
  * - `log-error`: ends `end_turn`, its log's last step an upstream 502 error.
@@ -248,6 +257,24 @@ const program = Effect.gen(function* () {
       };
     }),
   );
+  // A mode switch, either way the client sends it. In `mode-fails-once`
+  // the first switch back to `default` fails.
+  let modeFailed = false;
+  const switchMode = (modeId: unknown) => {
+    if (scenario === "mode-fails-once" && modeId === "default" && !modeFailed) {
+      modeFailed = true;
+      return Effect.fail(AcpError.AcpRequestError.internalError("Could not switch mode."));
+    }
+    return Effect.void;
+  };
+  yield* agent.handleUnknownExtRequest((method, params) =>
+    method === "session/set_mode"
+      ? switchMode((params as { readonly modeId?: unknown }).modeId).pipe(Effect.as({}))
+      : Effect.fail(AcpError.AcpRequestError.methodNotFound(method)),
+  );
+  yield* agent.handleSetSessionConfigOption((request) =>
+    switchMode(request.value).pipe(Effect.as({ configOptions: [] })),
+  );
   yield* agent.handleResumeSession(() => Effect.succeed({}));
   yield* agent.handleLoadSession(() => Effect.succeed({}));
   yield* agent.handleCancel(({ sessionId }) =>
@@ -333,7 +360,8 @@ const program = Effect.gen(function* () {
       if (
         scenario === "steer" ||
         scenario === "steer-log-error" ||
-        scenario === "steer-late-log-error"
+        scenario === "steer-late-log-error" ||
+        scenario === "steer-own-log-error"
       ) {
         if (promptsSeen === 1) {
           if (scenario === "steer-log-error") appendLogSteps(sessionId, [[17, GATEWAY_ERROR]]);
@@ -349,8 +377,16 @@ const program = Effect.gen(function* () {
             usage: { inputTokens: 100, outputTokens: 5, totalTokens: 105 },
           };
         }
+        // The steer's own upstream error, logged before the first prompt answers.
+        if (scenario === "steer-own-log-error") appendLogSteps(sessionId, [[17, GATEWAY_ERROR]]);
         yield* Deferred.succeed(secondPrompt, undefined);
         yield* Effect.sleep("50 millis");
+        if (scenario === "steer-own-log-error") {
+          yield* say(sessionId, "API error: the request failed.");
+          return { stopReason: "end_turn" as const };
+        }
+        // The CLI logs the model's reply to the steer as a step of its own.
+        appendLogSteps(sessionId, [[15, `Steered: ${textOf(request.prompt)}`]]);
         yield* say(sessionId, `Steered: ${textOf(request.prompt)}`);
         yield* modelCallEnds(sessionId);
         return {
@@ -643,9 +679,48 @@ const program = Effect.gen(function* () {
         }).pipe(Effect.forkDetach);
         return { stopReason: "end_turn" as const };
       }
+      if (
+        scenario === "background-quick" ||
+        scenario === "quiet-activity" ||
+        scenario === "stuck"
+      ) {
+        yield* update(sessionId, { sessionUpdate: "tool_call", ...command, status: "in_progress" });
+        yield* say(sessionId, "I'll report once the build finishes.");
+        yield* modelCallEnds(sessionId);
+        yield* Effect.gen(function* () {
+          yield* Effect.sleep(scenario === "quiet-activity" ? "100 millis" : "20 millis");
+          if (scenario === "quiet-activity") {
+            // An update about the command that shows nothing new.
+            yield* update(sessionId, {
+              sessionUpdate: "tool_call_update",
+              toolCallId: command.toolCallId,
+              status: "in_progress",
+            });
+            return;
+          }
+          if (scenario === "stuck") return;
+          yield* update(sessionId, {
+            sessionUpdate: "tool_call_update",
+            toolCallId: command.toolCallId,
+            status: "completed",
+            rawOutput: { output: "Command exited with code 0.", exit_code: 0 },
+          });
+          yield* say(sessionId, "The build");
+          yield* Effect.sleep("300 millis");
+          yield* say(sessionId, " passed.");
+          yield* modelCallEnds(sessionId);
+        }).pipe(Effect.forkDetach);
+        return {
+          stopReason: "end_turn" as const,
+          usage: { inputTokens: 700, outputTokens: 30, totalTokens: 730 },
+        };
+      }
       yield* say(sessionId, "hello from agy");
       yield* modelCallEnds(sessionId);
-      return { stopReason: "end_turn" as const };
+      return {
+        stopReason: "end_turn" as const,
+        usage: { inputTokens: 10, outputTokens: 3, totalTokens: 13 },
+      };
     }),
   );
 

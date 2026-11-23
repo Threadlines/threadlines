@@ -3768,7 +3768,8 @@ const make = Effect.gen(function* () {
           // context in front of it: every debt it was to pay stays.
           Effect.tap((turn) =>
             Effect.suspend(() => {
-              contextDeferred = turn.contextDeferred === true;
+              // Or its prompt never went out (`undelivered`): nothing was paid.
+              contextDeferred = turn.contextDeferred === true || turn.undelivered === true;
               return contextDeferred ? historyDebtReturned : historyDebtPaid;
             }),
           ),

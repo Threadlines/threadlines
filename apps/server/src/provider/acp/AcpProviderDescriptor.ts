@@ -201,12 +201,6 @@ export interface AcpPromptOutcomeWatch {
       /** What `session/prompt` failed with, usually an `AcpRequestError`. */
       | { readonly error: unknown },
   ) => Effect.Effect<AcpPromptFailure | undefined>;
-  /**
-   * An older prompt of the turn answered after this one went out: what the
-   * agent recorded until now was the older prompt's, so the check reads
-   * only what comes after.
-   */
-  readonly rebase: Effect.Effect<void>;
 }
 
 /**
@@ -222,13 +216,18 @@ export type AcpWorkAfterPrompt =
  * An agent whose turns run on the turn machine (`AcpTurnMachine`,
  * Antigravity 1.5.10+): it answers its prompt while work it started goes on
  * and replies by itself when that work ends, so the turn stays open, working
- * and stoppable, until the work and the replies it wakes are done; a message
- * sent mid-turn goes as another `session/prompt`, which steers the turn.
- * Only for an agent that sends `usage_update` after each model call: that
- * update is how a reply it started by itself is known to end.
+ * and stoppable, until the work and the replies it wakes are done. Only for
+ * an agent that sends `usage_update` after each model call: that update is
+ * how a reply it started by itself is known to end. With `subagents`, the
+ * hold on launched subagents follows the agent's records of them.
  */
 export interface AcpTurnMachineOptions {
   readonly workAfterPrompt: (toolCall: AcpToolCallState) => AcpWorkAfterPrompt | undefined;
+  /**
+   * A message sent mid-turn goes as another `session/prompt`, which steers
+   * the turn. Off, it waits for the turn to end, as for any agent.
+   */
+  readonly steer: boolean;
   /**
    * How long the turn waits without a word from the agent while only
    * commands and subagents hold it; past it, the turn ends. A timer the
@@ -243,16 +242,6 @@ export interface AcpTurnMachineOptions {
   readonly replyQuietLimit?: Duration.Duration;
   /** How a prompt really ended, where the agent's answer can hide a failure. */
   readonly outcome?: AcpPromptOutcome;
-  /**
-   * How many of the session's subagents are still at work, by the agent's
-   * own records, and how many children the records know of at all;
-   * `undefined` when they can't say. The hold then covers exactly the
-   * children still running; without it, each report the agent wakes to give
-   * frees one launched subagent. Never fails.
-   */
-  readonly childrenAtWork?: (
-    sessionId: string,
-  ) => Effect.Effect<{ readonly running: number; readonly known: number } | undefined>;
 }
 
 /** A subagent a tool call launched, as the launch named it. */
@@ -273,8 +262,8 @@ export interface AcpSubagentState {
  * Subagents an agent launches with a tool call that returns at once and
  * reports no end for (Antigravity's `invoke_subagent`): only the agent's own
  * records say which child a call started, whether it is done, and what it
- * did. With it, each launch shows as a subagent (`AcpSubagentRoster`). It
- * plays no part in how long a turn is held (`turnMachine.childrenAtWork` does).
+ * did. With it, each launch shows as a subagent (`AcpSubagentRoster`), and
+ * on the turn machine a launch holds the turn while its child is at work.
  */
 export interface AcpSubagents {
   /** The subagents this tool call launches; `undefined` for any other call. */

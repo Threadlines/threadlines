@@ -3580,7 +3580,10 @@ startingOver.layer("ProviderServiceLive forgetting a conversation", (it) => {
         providerInstanceId: instanceId,
         threadId: key,
         createdAt: "2026-01-01T00:00:00.000Z",
-        payload: { exitKind: "graceful", conversationLost: true },
+        payload: {
+          exitKind: "graceful",
+          conversationLost: { sessionId: "session-lost", resumeCursor: first.resumeCursor },
+        },
       });
       for (let attempt = 0; attempt < 100; attempt += 1) {
         const binding = Option.getOrUndefined(yield* directory.getBinding(key));
@@ -3591,6 +3594,48 @@ startingOver.layer("ProviderServiceLive forgetting a conversation", (it) => {
       const reopened = yield* start(key, first.resumeCursor);
       assert.isUndefined(lastStartCursor());
       assert.isTrue(reopened.resumeFailed);
+    }),
+  );
+
+  it.effect("keeps a conversation started since when a lost one's exit comes late", () =>
+    Effect.gen(function* () {
+      const directory = yield* ProviderSessionDirectory;
+      const key = asThreadId("thread-conversation-lost-late");
+      const first = yield* start(key);
+      yield* advanceTestClock(10);
+      // A new conversation took the binding before the old one's exit was heard.
+      const replacement = { schemaVersion: 1, sessionId: "replacement", history: [] };
+      yield* directory.upsert({
+        threadId: key,
+        provider: startingOver.ANTIGRAVITY,
+        providerInstanceId: instanceId,
+        resumeCursor: replacement,
+      });
+      const lostExit = (eventId: string, sessionId: string) =>
+        startingOver.agent.emit({
+          type: "session.exited",
+          eventId: asEventId(eventId),
+          provider: startingOver.ANTIGRAVITY,
+          providerInstanceId: instanceId,
+          threadId: key,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          payload: { exitKind: "graceful", conversationLost: { sessionId } },
+        });
+      const cursorNow = Effect.map(
+        directory.getBinding(key),
+        (binding) => Option.getOrUndefined(binding)?.resumeCursor ?? null,
+      );
+      lostExit("evt-lost-late", "lost");
+      for (let attempt = 0; attempt < 20; attempt += 1) yield* advanceTestClock(5);
+      assert.deepEqual(yield* cursorNow, replacement);
+      // The exit of the conversation the binding holds does forget it, though
+      // its cursor moved on since (a later turn's history).
+      lostExit("evt-lost-current", "replacement");
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        if ((yield* cursorNow) === null) break;
+        yield* advanceTestClock(5);
+      }
+      assert.equal(yield* cursorNow, null);
     }),
   );
 });

@@ -143,30 +143,46 @@ set (`schedule`), or a subagent it launched. When that work ends, the agent wake
 itself. Threadlines keeps the turn open meanwhile, so the thread shows it working and Stop stays on
 screen, and the reply lands in the same turn. A dev server or other daemon doesn't hold the turn.
 Stop cancels the turn and that work together (Antigravity 1.5.10 stops its commands and subagents on
-a cancel). If the agent hasn't answered 15 seconds after Stop, Threadlines restarts it and the turn
-ends cancelled; the next message picks the conversation up again. Stopping the session (or
+a cancel). A turn that was only waiting on that work shows cancelled at once, but Threadlines keeps
+track of the commands and subagents until the agent shows they ended (a command's end, or the
+subagent's record saying it stopped), and a message sent meanwhile waits for that. If the agent
+hasn't answered or ended that work 15 seconds after Stop, Threadlines restarts it and the turn ends
+cancelled; a message that was waiting fails, and the next message picks the conversation up again.
+A timer gives no word when a cancel ends it, so a stop doesn't wait on one. Stopping the session (or
 Threadlines) while a turn is held ends that turn as interrupted. A reply the agent starts after the
 turn ended opens a turn of its own, except the CLI's "request was cancelled" notice after a Stop,
 which never shows. Threadlines waits 30 seconds for that notice; after that, a reply counts again.
 
 Two limits keep a lost wake from leaving the thread working forever: a turn held only by commands
 and subagents ends after 30 minutes without a word from the agent, and a reply the agent started
-by itself ends 2 minutes after its last output if its closing usage update never comes. A timer
+by itself ends 2 minutes after its last output if its closing usage update never comes. Both count
+from the agent's last activity. A timer
 holds the turn until it fires. When a reply ends with subagents still counted, Threadlines reads the
 CLI's records of them (see Subagents below) and holds the turn only for the ones still at work, so
-several reports answered in one reply, or a subagent the agent stopped, end the hold. When the
-records can't be read, or name fewer subagents than were launched, each report (a reply no finished
-command or timer woke) frees one subagent, and a batch launch counts each subagent in it. If the
+several reports answered in one reply, or a subagent the agent stopped, end the hold. A launch
+counts only for the child its own call started, so a resumed conversation's older subagents never
+stand in for a new one, and only the newest reading counts. When the records can't tie every
+launch to its child (one not written yet, or a batch launch from before 1.5), each report (a reply
+no finished command or timer woke) frees one subagent, and a batch launch counts each subagent in
+it. If the
 agent exits while a turn is held, the turn fails with that reason and the next message starts it
 again.
 
 A message sent while Antigravity works steers the turn instead of waiting: Threadlines sends it as
 another prompt, which the CLI takes into the running turn (1.5.0+), leaving its commands and
-subagents running. The turn ends with the newest prompt's answer.
+subagents running. The turn ends with the newest prompt's answer. Prompts reach the agent in the
+order they were sent, the first one's mode and model setup included, so a steer never arrives ahead
+of the message it steers. Steering is one switch (`ANTIGRAVITY_STEERS` in
+`apps/server/src/provider/antigravity/AntigravityTurns.ts`); off, a message sent mid-turn waits for
+the turn to end.
 
 All of this is one state machine (`apps/server/src/provider/acp/AcpTurnMachine.ts`), stepped in
-order with the agent's updates; its test walks every sequence of up to ten events and checks that
-each turn ends exactly once, Stop always has a deadline, and a hold with nothing left ends.
+order with the agent's updates. A prompt's answer takes its place among those updates where the
+CLI wrote it, a step and the commands it issues run as one unit, and stopping the session is an
+event the machine takes after everything already received (an answered prompt's usage included).
+The machine's test walks every sequence of up to nine events with steering on and ten with it off,
+and checks that each turn ends exactly once, Stop always has a deadline until the work it stopped
+is over, every message hears back, and a hold with nothing left ends.
 
 ### Subagents
 
@@ -217,14 +233,18 @@ never through a link, up to each kind's limit and 50 MB inline per message.
 Antigravity sometimes ends a turn normally while the reply is really an upstream error. Threadlines
 reads the error the CLI reports (1.5.9+) and, where the CLI reports none, the last step of the
 turn in the CLI's own session log (`antigravity-acp/conversations/<id>.db` in the profile, a
-private format read only for this). A log step counts for a prompt only if it was written after that prompt went out and after every
-older prompt of the turn answered; when the log can't say, the prompt's own answer stands (the
-agent's words about the error stay in its reply). The turn then fails with Google's words and a
+private format read only for this). The log doesn't say which prompt wrote a step, so an error
+counts for the newest prompt when it is the log's last step and was written after that prompt went
+out. That never hides the newest prompt's own failure; the cost is that an older prompt's late
+error, with nothing written after it, fails a turn whose steer was answered. When the log can't be
+read, the prompt's own answer stands (the agent's words about the error stay in its reply). The turn then fails with Google's words and a
 Retry. An
 exhausted quota fails with its reset time, so the usage-limit notice above the composer says when
 it resets and can continue then. A conversation Google can no longer continue (a model rejected a
 saved thinking block) stops its session, and the next message starts a new one with the thread's
-history, also one sent in the moment the session is stopping.
+history, also one sent in the moment the session is stopping. A message whose mode or model couldn't be
+set never reaches Antigravity: its turn fails, and the earlier conversation Threadlines had put in
+front of it goes with the next message instead.
 
 ### Editing an Earlier Message
 

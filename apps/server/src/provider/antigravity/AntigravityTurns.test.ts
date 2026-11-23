@@ -12,6 +12,7 @@ import {
   type ChatAttachment,
   ProviderDriverKind,
   type ProviderRuntimeEvent,
+  type ThreadContextSeed,
   ThreadId,
   type TurnId,
 } from "@threadlines/contracts";
@@ -28,7 +29,7 @@ import { describe, expect } from "vite-plus/test";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import type { UsageLedgerEntry } from "../../usage/usageLedger.ts";
-import { makeAcpAdapter } from "../acp/AcpAdapter.ts";
+import { type AcpTurnMachineSeam, makeAcpAdapter } from "../acp/AcpAdapter.ts";
 import type { AcpToolCallState } from "../acp/AcpRuntimeModel.ts";
 import { makeAntigravityDescriptor } from "../acp/AntigravityAcpSupport.ts";
 import {
@@ -80,7 +81,9 @@ type AgyDescriptor = ReturnType<typeof makeAntigravityDescriptor>;
 const startAgy = (
   scenario: string,
   adjust?: (descriptor: AgyDescriptor) => AgyDescriptor,
-  runtimeMode: "full-access" | "approval-required" = "full-access",
+  runtimeMode: "full-access" | "approval-required" | "auto-accept-edits" = "full-access",
+  turnMachineSeams?: (seam: AcpTurnMachineSeam) => Effect.Effect<void>,
+  contextSeed?: ThreadContextSeed,
 ) =>
   Effect.gen(function* () {
     const mock = yield* Effect.promise(() => makeAgyMock(scenario));
@@ -105,6 +108,7 @@ const startAgy = (
             Effect.sync(() => void commandReports.push(commands?.map((command) => command.name))),
           // The status lists one skill.
           skillNames: Effect.succeed(new Set(["review"])),
+          ...(turnMachineSeams !== undefined ? { turnMachineSeams } : {}),
         },
       );
       yield* made.streamEvents.pipe(
@@ -120,6 +124,7 @@ const startAgy = (
       provider: ProviderDriverKind.make("antigravity"),
       cwd: process.cwd(),
       runtimeMode,
+      ...(contextSeed !== undefined ? { contextSeed } : {}),
     });
     const waitFor = (
       predicate: (events: ReadonlyArray<ProviderRuntimeEvent>) => boolean,
@@ -447,8 +452,10 @@ describe("Antigravity turns", () => {
       yield* agy.waitFor((events) => events.some((event) => event.type === "session.exited"));
       // ProviderService forgets the conversation off this (see its tests),
       // so the next start opens a new one seeded with the thread's history.
+      // It names the lost conversation: the agent's session id, as in its cursor.
+      const sessionId = (agy.session.resumeCursor as { readonly sessionId: string }).sessionId;
       expect(agy.events.find((event) => event.type === "session.exited")).toMatchObject({
-        payload: { conversationLost: true },
+        payload: { conversationLost: { sessionId } },
       });
     }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
@@ -638,6 +645,31 @@ describe("Antigravity turns, the hard cases", () => {
       yield* agy.waitFor((events) => completedTurns(events).length === 1);
       expect(completedTurns(agy.events)[0]?.payload.state).toBe("completed");
     }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+  it.live(
+    "fails a steer whose own error is logged before the earlier prompt answers (finding 5)",
+    () =>
+      Effect.gen(function* () {
+        const agy = yield* startAgy("steer-own-log-error");
+        const { turnId } = yield* agy.adapter.sendTurn({
+          threadId: agy.threadId,
+          input: "go",
+          attachments: [],
+        });
+        yield* agy.waitFor((events) => replyTo(events, turnId).includes("Working on it."));
+        yield* agy.adapter.steerTurn!({
+          threadId: agy.threadId,
+          expectedTurnId: turnId,
+          input: "try again",
+        });
+        yield* agy.waitFor((events) => completedTurns(events).length === 1);
+        // Moving the reading past the older prompt's answer would hide this.
+        expect(completedTurns(agy.events)[0]?.payload).toMatchObject({
+          state: "failed",
+          errorMessage: expect.stringContaining("502"),
+        });
+      }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 
   it.live("writes the cost the agent reports with the prompt that spent it", () =>
@@ -847,6 +879,297 @@ describe("Antigravity commands and edits", () => {
       expect(frames.filter((frame) => frame.method === "session/cancel")).toHaveLength(1);
       expect(agy.events.some((event) => event.type === "session.exited")).toBe(true);
       expect(yield* agy.adapter.hasSession(agy.threadId)).toBe(false);
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+});
+
+/**
+ * Holds the turn machine's driver at the first seam `matches` picks, until
+ * released (`AcpAdapterOptions.turnMachineSeams`); `reached` waits for it to
+ * get there. A seam can also just be watched (`seen`).
+ */
+const makeGate = (matches: (seam: AcpTurnMachineSeam) => boolean) =>
+  Effect.gen(function* () {
+    const reached = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const seen: Array<AcpTurnMachineSeam> = [];
+    let held = false;
+    const seams = (seam: AcpTurnMachineSeam) =>
+      Effect.suspend(() => {
+        seen.push(seam);
+        if (held || !matches(seam)) return Effect.void;
+        held = true;
+        return Deferred.succeed(reached, undefined).pipe(Effect.andThen(Deferred.await(release)));
+      });
+    return {
+      seams,
+      seen,
+      reached: Deferred.await(reached),
+      release: Deferred.succeed(release, undefined),
+    };
+  });
+
+const eventIndex = (events: ReadonlyArray<ProviderRuntimeEvent>, type: string) =>
+  events.findIndex((event) => event.type === type);
+
+describe("Antigravity turn driver, the orderings", () => {
+  it.live("publishes a turn's end that a session stop lands on (finding 1)", () =>
+    Effect.gen(function* () {
+      const gate = yield* makeGate(
+        (seam) => seam.point === "stepCommitted" && seam.commands.includes("endTurn"),
+      );
+      const agy = yield* startAgy("simple", undefined, "full-access", gate.seams);
+      const { turnId } = yield* agy.adapter.sendTurn({
+        threadId: agy.threadId,
+        input: "hi",
+        attachments: [],
+      });
+      // The step that ends the turn is committed; its commands haven't run.
+      yield* gate.reached;
+      const stopping = yield* agy.adapter.stopSession(agy.threadId).pipe(Effect.forkScoped);
+      yield* Effect.sleep("200 millis");
+      yield* gate.release;
+      yield* Fiber.join(stopping);
+      expect(completedTurns(agy.events).map((event) => event.turnId)).toEqual([turnId]);
+      expect(agy.events.some((event) => event.type === "turn.aborted")).toBe(false);
+      expect(eventIndex(agy.events, "turn.completed")).toBeLessThan(
+        eventIndex(agy.events, "session.exited"),
+      );
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+  it.live("sends a steer only after the prompt it steers, whose setup ran first (finding 2)", () =>
+    Effect.gen(function* () {
+      const gate = yield* makeGate((seam) => seam.point === "promptSetup" && seam.prompt === 1);
+      const agy = yield* startAgy("steer", undefined, "full-access", gate.seams);
+      // The send returns once its prompt is written, so it waits on the gate too.
+      const sending = yield* agy.adapter
+        .sendTurn({ threadId: agy.threadId, input: "first message", attachments: [] })
+        .pipe(Effect.forkScoped);
+      yield* gate.reached;
+      const started = agy.events.find((event) => event.type === "turn.started");
+      const turnId = started!.turnId!;
+      // The first prompt's setup hasn't returned; the steer is taken anyway.
+      yield* agy.adapter.steerTurn!({
+        threadId: agy.threadId,
+        expectedTurnId: turnId,
+        input: "the steer",
+      });
+      yield* Effect.sleep("200 millis");
+      const prompts = (frames: ReadonlyArray<Record<string, unknown>>) =>
+        frames.flatMap((frame) =>
+          frame.method === "session/prompt" ? [JSON.stringify(frame.params)] : [],
+        );
+      expect(prompts(yield* agy.frames())).toEqual([]);
+      yield* gate.release;
+      expect((yield* Fiber.join(sending)).turnId).toBe(turnId);
+      yield* agy.waitFor((events) => completedTurns(events).length === 1);
+      const sent = prompts(yield* agy.frames());
+      expect(sent).toHaveLength(2);
+      expect(sent[0]).toContain("first message");
+      expect(sent[1]).toContain("the steer");
+      expect(replyTo(agy.events, turnId)).toContain("Steered:");
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+  it.live("keeps a wake that follows the answer at once in the answered turn (finding 6)", () =>
+    Effect.gen(function* () {
+      // The answer is read and held back while the command's end and the
+      // start of its wake sit behind it.
+      const gate = yield* makeGate((seam) => seam.point === "answerRead" && seam.prompt === 1);
+      const agy = yield* startAgy("background-quick", undefined, "full-access", gate.seams);
+      const { turnId } = yield* agy.adapter.sendTurn({
+        threadId: agy.threadId,
+        input: "build it",
+        attachments: [],
+      });
+      yield* gate.reached;
+      yield* Effect.sleep("150 millis");
+      yield* gate.release;
+      yield* agy.waitFor((events) => completedTurns(events).length === 1);
+      yield* Effect.sleep("500 millis");
+      expect(agy.events.filter((event) => event.type === "turn.started")).toHaveLength(1);
+      expect(completedTurns(agy.events).map((event) => event.turnId)).toEqual([turnId]);
+      expect(replyTo(agy.events, turnId)).toContain("The build passed.");
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+  it.live("writes an answered prompt's usage when the session stops right after (finding 8)", () =>
+    Effect.gen(function* () {
+      // The reader is held on the reply's text; the answer queues behind it.
+      const gate = yield* makeGate(
+        (seam) => seam.point === "stepCommitted" && seam.event === "agentOutput",
+      );
+      const agy = yield* startAgy("simple", undefined, "full-access", gate.seams);
+      const { turnId } = yield* agy.adapter.sendTurn({
+        threadId: agy.threadId,
+        input: "hi",
+        attachments: [],
+      });
+      yield* gate.reached;
+      yield* Effect.sleep("200 millis");
+      const stopping = yield* agy.adapter.stopSession(agy.threadId).pipe(Effect.forkScoped);
+      yield* Effect.sleep("100 millis");
+      yield* gate.release;
+      yield* Fiber.join(stopping);
+      yield* Effect.sleep("100 millis");
+      expect(agy.usage.map((entry) => [entry.turnId, entry.totals.uncachedInputTokens])).toEqual([
+        [turnId, 10],
+      ]);
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+  it.live("drops an older reading of the records that lands after a newer one (finding 4)", () =>
+    Effect.gen(function* () {
+      // The first reading (both children at work) is held until the newer
+      // one (both reported) is in.
+      const gate = yield* makeGate(
+        (seam) => seam.point === "childrenRead" && seam.generation === 1,
+      );
+      const agy = yield* startAgy("records-one-reply", undefined, "full-access", gate.seams);
+      const { turnId } = yield* agy.adapter.sendTurn({
+        threadId: agy.threadId,
+        input: "research and review",
+        attachments: [],
+      });
+      yield* gate.reached;
+      yield* agy.waitFor(() =>
+        gate.seen.some(
+          (seam) =>
+            seam.point === "stepCommitted" &&
+            seam.event === "childrenAtWork" &&
+            seam.commands.includes("armTimer"),
+        ),
+      );
+      yield* gate.release;
+      yield* agy.waitFor((events) => completedTurns(events).length === 1);
+      expect(replyTo(agy.events, turnId)).toContain("Both agents reported.");
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+  it.live("counts a quiet limit from the agent's last activity (finding 7)", () =>
+    Effect.gen(function* () {
+      const agy = yield* startAgy("quiet-activity", (descriptor) => ({
+        ...descriptor,
+        turnMachine: { ...descriptor.turnMachine!, silentLimit: Duration.millis(1_500) },
+      }));
+      const { turnId } = yield* agy.adapter.sendTurn({
+        threadId: agy.threadId,
+        input: "build it",
+        attachments: [],
+      });
+      yield* agy.waitFor((events) => replyTo(events, turnId).includes("I'll report"));
+      const answeredAt = Date.now();
+      yield* agy.waitFor((events) => completedTurns(events).length === 1, 1_000);
+      const elapsed = Date.now() - answeredAt;
+      // Activity 100 ms in: the limit ends 1.6 s in, not after a second full wait (3 s).
+      expect(elapsed).toBeGreaterThanOrEqual(1_400);
+      expect(elapsed).toBeLessThan(2_500);
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+  it.live(
+    "keeps a stopped command until the agent ends it, recycling one that won't (finding 3)",
+    () =>
+      Effect.gen(function* () {
+        const agy = yield* startAgy("stuck");
+        const { turnId } = yield* agy.adapter.sendTurn({
+          threadId: agy.threadId,
+          input: "build it",
+          attachments: [],
+        });
+        yield* agy.waitFor((events) => replyTo(events, turnId).includes("I'll report"));
+        yield* Effect.sleep("300 millis");
+        yield* agy.adapter.interruptTurn(agy.threadId);
+        // The turn shows cancelled at once.
+        yield* agy.waitFor((events) => completedTurns(events).length === 1);
+        expect(completedTurns(agy.events)[0]?.payload.state).toBe("cancelled");
+        // A message sent now waits for the stop, which the agent never confirms.
+        const waiting = yield* agy.adapter
+          .sendTurn({ threadId: agy.threadId, input: "next", attachments: [] })
+          .pipe(Effect.exit, Effect.forkScoped);
+        yield* Effect.sleep("500 millis");
+        expect(agy.events.filter((event) => event.type === "turn.started")).toHaveLength(1);
+        // The cancel deadline (15 seconds) passes and the agent is restarted.
+        yield* agy.waitFor(
+          (events) =>
+            events.some(
+              (event) =>
+                event.type === "runtime.warning" && event.payload.warningKind === "cancel-timeout",
+            ),
+          2_000,
+        );
+        expect(Exit.isFailure(yield* Fiber.join(waiting))).toBe(true);
+        yield* agy.waitFor((events) => events.some((event) => event.type === "session.exited"));
+      }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+  it.live("keeps the history for the next message when a send's mode setup fails", () =>
+    Effect.gen(function* () {
+      const agy = yield* startAgy("mode-fails-once", undefined, "auto-accept-edits", undefined, {
+        version: 1,
+        fromProvider: ProviderDriverKind.make("claudeAgent"),
+        entries: [{ kind: "message", role: "user", text: "the earlier conversation" }],
+      });
+      // Plan mode asks for the `default` mode: switching to it fails once.
+      const first = yield* agy.adapter.sendTurn({
+        threadId: agy.threadId,
+        input: "plan it",
+        interactionMode: "plan",
+        attachments: [],
+      });
+      expect(first.undelivered).toBe(true);
+      yield* agy.waitFor((events) => completedTurns(events).length === 1);
+      expect(completedTurns(agy.events)[0]?.payload.state).toBe("failed");
+      const prompts = () =>
+        agy
+          .frames()
+          .pipe(
+            Effect.map((frames) => frames.filter((frame) => frame.method === "session/prompt")),
+          );
+      expect(yield* prompts()).toHaveLength(0);
+
+      const second = yield* agy.adapter.sendTurn({
+        threadId: agy.threadId,
+        input: "plan it again",
+        interactionMode: "plan",
+        attachments: [],
+      });
+      expect(second.undelivered).toBeUndefined();
+      yield* agy.waitFor((events) => completedTurns(events).length === 2);
+      const sent = yield* prompts();
+      expect(sent).toHaveLength(1);
+      // The history the first send took went with the one that went out.
+      expect(JSON.stringify(sent[0])).toContain("the earlier conversation");
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+  it.live("queues a message sent mid-turn when steering is off", () =>
+    Effect.gen(function* () {
+      const agy = yield* startAgy("background", (descriptor) => ({
+        ...descriptor,
+        turnMachine: { ...descriptor.turnMachine!, steer: false },
+      }));
+      expect(agy.adapter.steerTurn).toBeUndefined();
+      expect(agy.adapter.capabilities.activeTurnSteering).toBeUndefined();
+      const first = yield* agy.adapter.sendTurn({
+        threadId: agy.threadId,
+        input: "build it",
+        attachments: [],
+      });
+      // Sent while the first prompt runs: it waits for that turn to end.
+      const second = yield* agy.adapter.sendTurn({
+        threadId: agy.threadId,
+        input: "and then lint",
+        attachments: [],
+      });
+      yield* agy.waitFor((events) => completedTurns(events).length === 2);
+      expect(completedTurns(agy.events).map((event) => event.turnId)).toEqual([
+        first.turnId,
+        second.turnId,
+      ]);
+      const prompts = (yield* agy.frames()).filter((frame) => frame.method === "session/prompt");
+      expect(prompts).toHaveLength(2);
     }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 });

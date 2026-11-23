@@ -6,13 +6,14 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Context from "effect/Context";
 import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/process";
 import * as EffectAcpClient from "effect-acp/client";
 import * as EffectAcpErrors from "effect-acp/errors";
-import type * as EffectAcpSchema from "effect-acp/schema";
+import * as EffectAcpSchema from "effect-acp/schema";
 import type * as EffectAcpProtocol from "effect-acp/protocol";
 import { hideWindowsConsole, makeCommandWithShell } from "@threadlines/shared/childProcess";
 
@@ -287,6 +288,23 @@ export interface AcpSessionRuntimeShape {
   readonly prompt: (
     payload: Omit<EffectAcpSchema.PromptRequest, "sessionId">,
   ) => Effect.Effect<EffectAcpSchema.PromptResponse, EffectAcpErrors.AcpError>;
+  /**
+   * Sends a prompt whose answer the reader sees in its place among the
+   * agent's updates: `PromptAnswered` with `key` is queued as the response
+   * is read, ahead of every update the agent sent after it, with the reply
+   * it closed already queued before it. `PromptSent` with `key` comes first,
+   * once the prompt is written to the agent; a prompt that fails before
+   * that gets neither. Returns once the prompt is on its way, so prompts
+   * sent one after another reach the agent in that order.
+   * A session sends its prompts this way or with `prompt`, not both.
+   * `beforeQueued` runs on the wire reader just before the answer is
+   * queued (tests hold the reader there).
+   */
+  readonly promptInOrder: (
+    key: number,
+    payload: Omit<EffectAcpSchema.PromptRequest, "sessionId">,
+    beforeQueued?: Effect.Effect<void>,
+  ) => Effect.Effect<void, EffectAcpErrors.AcpError>;
   readonly cancel: Effect.Effect<void, EffectAcpErrors.AcpError>;
   readonly setMode: (
     modeId: string,
@@ -327,6 +345,19 @@ export interface AcpSessionCancellationNotice {
   readonly rawPayload: unknown;
 }
 
+/** A prompt sent with `promptInOrder` was written to the agent. Always before its `PromptAnswered`. */
+export interface AcpSessionPromptSent {
+  readonly _tag: "PromptSent";
+  readonly key: number;
+}
+
+/** A prompt sent with `promptInOrder` answered (or failed), placed where the answer was read. */
+export interface AcpSessionPromptAnswered {
+  readonly _tag: "PromptAnswered";
+  readonly key: number;
+  readonly answer: Exit.Exit<EffectAcpSchema.PromptResponse, EffectAcpErrors.AcpError>;
+}
+
 /** Work for the reader to run where it was queued (see `inOrder`). */
 export interface AcpSessionInOrderWork {
   readonly _tag: "InOrder";
@@ -338,7 +369,9 @@ export type AcpSessionRuntimeEvent =
   | AcpSessionEventStreamBarrier
   | AcpSessionInOrderWork
   | AcpSessionToolCallTracked
-  | AcpSessionCancellationNotice;
+  | AcpSessionCancellationNotice
+  | AcpSessionPromptSent
+  | AcpSessionPromptAnswered;
 
 /** Upper bound on waiting for the reader; a dead consumer must not wedge a turn. */
 const EVENT_FLUSH_TIMEOUT = "5 seconds";
@@ -1083,6 +1116,90 @@ const makeAcpSessionRuntime = (
             });
           }),
         ),
+      promptInOrder: (key, payload, beforeQueued) =>
+        Effect.gen(function* () {
+          const started = yield* getStartedState;
+          const requestPayload = {
+            sessionId: started.sessionId,
+            ...payload,
+          } satisfies EffectAcpSchema.PromptRequest;
+          yield* closeActiveAssistantSegment({ queue: eventQueue, assistantSegmentRef });
+          const boundariesBefore = yield* Ref.get(agentTurnBoundariesRef);
+          yield* Ref.update(promptsInFlightRef, (count) => count + 1);
+          yield* logRequest({
+            method: "session/prompt",
+            payload: requestPayload,
+            status: "started",
+          });
+          // Queued once: when the request is out, or by its answer if that
+          // is read first (an answer proves the prompt was written).
+          let sentQueued = false;
+          const queueSent = Effect.suspend(() => {
+            if (sentQueued) return Effect.void;
+            sentQueued = true;
+            return Queue.offer(eventQueue, { _tag: "PromptSent", key }).pipe(Effect.asVoid);
+          });
+          // Runs on the reader, as the response is read: nothing the agent
+          // sent after it is handled before this is queued.
+          const onAnswer = (answer: Exit.Exit<unknown, EffectAcpErrors.AcpError>) =>
+            Effect.gen(function* () {
+              yield* queueSent;
+              yield* Ref.update(promptsInFlightRef, (count) => count - 1);
+              // As `prompt`: the answer ends the prompt's reply, unless a turn
+              // the agent began itself, or a newer prompt, carries one on.
+              if (
+                (yield* Ref.get(agentTurnBoundariesRef)) === boundariesBefore &&
+                (yield* Ref.get(promptsInFlightRef)) === 0
+              ) {
+                yield* closeActiveAssistantSegment({ queue: eventQueue, assistantSegmentRef });
+              }
+              const decoded: Exit.Exit<EffectAcpSchema.PromptResponse, EffectAcpErrors.AcpError> =
+                Exit.isSuccess(answer)
+                  ? Exit.mapError(
+                      decodePromptResponse(answer.value),
+                      (issue) =>
+                        new EffectAcpErrors.AcpProtocolParseError({
+                          detail: "Invalid session/prompt response",
+                          cause: issue,
+                        }),
+                    )
+                  : Exit.failCause(answer.cause);
+              const failed = Exit.isFailure(decoded) ? decoded : undefined;
+              const fatal = failed === undefined ? undefined : yield* Ref.get(fatalRef);
+              const settled =
+                fatal === undefined
+                  ? decoded
+                  : Exit.fail(
+                      new EffectAcpErrors.AcpRequestError({
+                        code: -32000,
+                        errorMessage: fatal,
+                        data: { reason: "stderr" },
+                      }),
+                    );
+              if (beforeQueued !== undefined) yield* beforeQueued;
+              yield* Queue.offer(eventQueue, { _tag: "PromptAnswered", key, answer: settled });
+              // The log only reads it: it never holds the reader up.
+              yield* (
+                Exit.isSuccess(settled)
+                  ? logRequest({
+                      method: "session/prompt",
+                      payload: requestPayload,
+                      status: "succeeded",
+                      result: settled.value,
+                    })
+                  : logRequest({
+                      method: "session/prompt",
+                      payload: requestPayload,
+                      status: "failed",
+                      cause: settled.cause,
+                    })
+              ).pipe(Effect.forkIn(runtimeScope));
+            });
+          yield* acp.raw
+            .requestInOrder("session/prompt", requestPayload, onAnswer)
+            .pipe(Effect.tapError(() => Ref.update(promptsInFlightRef, (count) => count - 1)));
+          yield* queueSent;
+        }),
       cancel: getStartedState.pipe(
         Effect.flatMap((started) =>
           acp.agent.cancel({
@@ -1355,6 +1472,8 @@ const ensureActiveAssistantSegment = ({
         : Effect.succeed(result.itemId),
     ),
   );
+
+const decodePromptResponse = Schema.decodeUnknownExit(EffectAcpSchema.PromptResponse);
 
 const closeActiveAssistantSegment = ({
   queue,

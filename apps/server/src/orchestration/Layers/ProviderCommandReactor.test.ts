@@ -1721,7 +1721,10 @@ describe("ProviderCommandReactor", () => {
     );
   });
 
-  it("keeps the history owed while a send goes as the agent's own command, without it", async () => {
+  it.each([
+    ["goes as the agent's own command, without it", { contextDeferred: true as const }],
+    ["never reaches the agent (its setup failed)", { undelivered: true as const }],
+  ])("keeps the history owed while a send %s", async (_, outcome) => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
     const turnStart = (id: string, text: string) =>
@@ -1760,12 +1763,13 @@ describe("ProviderCommandReactor", () => {
     );
     await waitFor(() => harness.startSession.mock.calls.length === 2);
 
-    // The agent ran it as its own command and sent none of the context.
+    // None of the context went: the agent ran it as its own command, or
+    // the prompt was never written.
     harness.sendTurn.mockImplementationOnce(() =>
       Effect.succeed({
         threadId: ThreadId.make("thread-1"),
         turnId: asTurnId("turn-2"),
-        contextDeferred: true as const,
+        ...outcome,
       }),
     );
     await turnStart("2", "/compact");
