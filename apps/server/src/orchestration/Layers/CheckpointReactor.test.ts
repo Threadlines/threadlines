@@ -3132,7 +3132,7 @@ describe("CheckpointReactor", () => {
     );
   });
 
-  it("restores nothing when it can't tell whether the agent still runs", async () => {
+  it("restores the files of a thread whose provider is no longer registered", async () => {
     const harness = await createHarness({ hasSession: false, capabilitiesFail: true });
     const threadId = ThreadId.make("thread-1");
     const createdAt = "2026-01-01T00:00:00.000Z";
@@ -3162,18 +3162,15 @@ describe("CheckpointReactor", () => {
         createdAt,
       }),
     );
-    const thread = await waitForThread(harness.readModel, (entry) =>
-      entry.activities.some((activity) => activity.kind === "checkpoint.revert.failed"),
+    // A removed provider has no runtime left that could write, so the revert
+    // goes on without asking it for anything.
+    await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some((activity) => activity.kind === "checkpoint.reverted"),
     );
-    const detail = (
-      thread.activities.find((activity) => activity.kind === "checkpoint.revert.failed")
-        ?.payload as { readonly detail?: string } | undefined
-    )?.detail;
-    expect(detail).toContain("no file was restored");
     expect(harness.provider.rollbackConversation).not.toHaveBeenCalled();
     expect(
       fs.readFileSync(path.join(harness.cwd, "README.md"), "utf8").replaceAll("\r\n", "\n"),
-    ).toBe("v3\n");
+    ).toBe("v2\n");
   });
 
   it.each([

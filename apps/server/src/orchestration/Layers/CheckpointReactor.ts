@@ -1231,8 +1231,10 @@ const make = Effect.gen(function* () {
     // its conversation forgotten, before any file is restored: a command it
     // still ran could otherwise write over a restored file. Nothing is
     // started for an agent that isn't running.
-    // An agent whose capabilities can't be read may be one of those, and
-    // may still be running: the revert fails and restores nothing.
+    // The lookup fails only when the thread's provider instance is no longer
+    // registered (removed or turned off). Removing an instance ends its
+    // runtimes, so nothing of it can still write: the files are restored as
+    // for an agent that isn't running.
     const capabilities =
       rolledBackTurns > 0
         ? yield* Effect.result(
@@ -1242,16 +1244,6 @@ const make = Effect.gen(function* () {
             ),
           )
         : undefined;
-    if (capabilities?._tag === "Failure") {
-      yield* Effect.logWarning("checkpoint revert could not read the agent's capabilities", {
-        threadId: event.payload.threadId,
-        cause: String(capabilities.failure),
-      });
-      yield* failRevert(
-        "Threadlines couldn't check whether the agent still runs, so no file was restored. Try again.",
-      );
-      return;
-    }
     const startsOver =
       capabilities?._tag === "Success" &&
       capabilities.success.conversationRollback === "new-session";
