@@ -20,7 +20,7 @@ import {
   liveFamilyOf,
 } from "../Sidebar.logic";
 import { shortFamilyTitles } from "../familyTitles.logic";
-import { countStillGoingInReach } from "../threadMenu.logic";
+import { countThreadsToStop } from "../threadMenu.logic";
 
 /** One tab on the row. */
 export interface FamilyTab {
@@ -63,9 +63,9 @@ export interface FamilyTabs {
   readonly openKey: string;
   /**
    * The "Stop N threads" button at the row's end: the open thread, and how
-   * many threads its Stop reaches that are still going (the count its menu's
-   * "Stop N working threads" shows). Null while none are, or when the open
-   * thread is one this app reads through the link.
+   * many threads stopping its threads would stop (`countThreadsToStop`, the
+   * count its menu's "Stop N working threads" shows). Null while that is
+   * none, or when the open thread is one this app reads through the link.
    */
   readonly stop: { readonly threadRef: ScopedThreadRef; readonly count: number } | null;
 }
@@ -159,7 +159,7 @@ export function familyTabsOf<E extends FamilyTabEntry>(input: {
   const children = [...family.children.map(childTab), ...family.remoteChildren.map(remoteTab)];
   const shortTitles = shortFamilyTitles(children.map((tab) => tab.title));
   const stopCount =
-    open === undefined ? 0 : countStillGoingInReach(input.threads, open.thread, input.now);
+    open === undefined ? 0 : countThreadsToStop(input.threads, open.thread, input.now);
   return {
     familyKey: parent.threadKey,
     openKey: input.openKey,

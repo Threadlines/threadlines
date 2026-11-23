@@ -8,7 +8,7 @@ import { confirmThreadDeleteWithChildren } from "../components/ThreadDeleteDialo
 import { openThreadMoveDialog } from "../components/ThreadMoveDialog";
 import { openThreadRenameDialog } from "../components/ThreadRenameDialog";
 import {
-  countStillGoingInReach,
+  countThreadsToStop,
   describeThreadMenu,
   isThreadTurnRunning,
   describeThreadSelectionMenu,
@@ -89,11 +89,7 @@ export function useThreadMenu() {
     const children = [...byKey.values()].filter(
       (candidate) => candidate.archivedAt === null && attachedParentKeyOf(candidate) === threadKey,
     );
-    const stillGoingCount = countStillGoingInReach(
-      byKey.values(),
-      thread,
-      new Date().toISOString(),
-    );
+    const stopCount = countThreadsToStop(byKey.values(), thread, new Date().toISOString());
     const parent =
       thread.parentThreadId != null
         ? (byKey.get(
@@ -133,7 +129,7 @@ export function useThreadMenu() {
       inbox: target.inbox ?? null,
       attachedChild,
       putBack,
-      stillGoingCount,
+      stopCount,
       moveOffered: readThreadMoveOffered(thread),
       running: isThreadTurnRunning(full?.session),
       customOrder: target.customOrder ?? null,

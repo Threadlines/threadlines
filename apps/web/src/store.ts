@@ -443,6 +443,21 @@ function withoutStopsWithParent(thread: Thread): Thread {
 }
 
 /**
+ * A person wrote this message (the server's `personWrote`: it came from a
+ * composer or carries the device it was sent from), so the thread is theirs
+ * and leaves its starter's Stop. Every event that records such a message
+ * applies it: a message sent, queued, steered in or accepted.
+ */
+function madeOwnBy(
+  thread: Thread,
+  message: { readonly composer?: unknown; readonly sentFrom?: unknown },
+): Thread {
+  return message.composer !== undefined || message.sentFrom !== undefined
+    ? withoutStopsWithParent(thread)
+    : thread;
+}
+
+/**
  * A thread's place in a family of child threads, as every web copy of it
  * carries it: normalized so a missing field and its empty value read alike.
  */
@@ -2932,7 +2947,7 @@ function applyEnvironmentOrchestrationEvent(
 
     case "thread.follow-up-queued":
       return updateThreadState(state, event.payload.threadId, (thread) => ({
-        ...thread,
+        ...madeOwnBy(thread, event.payload.followUp),
         queuedFollowUps: withQueuedFollowUp(thread.queuedFollowUps ?? [], event.payload.followUp),
       }));
 
@@ -3099,7 +3114,7 @@ function applyEnvironmentOrchestrationEvent(
 
     case "thread.follow-up-submitted":
       return updateThreadState(state, event.payload.threadId, (thread) => ({
-        ...thread,
+        ...madeOwnBy(thread, event.payload),
         updatedAt: event.payload.createdAt,
       }));
 
@@ -3126,7 +3141,7 @@ function applyEnvironmentOrchestrationEvent(
           updatedAt: event.payload.createdAt,
         });
         return {
-          ...thread,
+          ...madeOwnBy(thread, event.payload),
           messages: upsertThreadMessage(thread.messages, message),
           updatedAt: event.payload.createdAt,
         };
@@ -3252,13 +3267,8 @@ function applyEnvironmentOrchestrationEvent(
                 assistantMessageId: event.payload.messageId,
               })
             : thread.latestTurn;
-        // A person writing here makes a thread started without report back
-        // their own: it leaves its starter's Stop, as on the server.
-        const madeOwn =
-          event.payload.role === "user" &&
-          (event.payload.composer !== undefined || event.payload.sentFrom !== undefined);
         return {
-          ...(madeOwn ? withoutStopsWithParent(thread) : thread),
+          ...(event.payload.role === "user" ? madeOwnBy(thread, event.payload) : thread),
           messages,
           turnDiffSummaries,
           latestTurn,

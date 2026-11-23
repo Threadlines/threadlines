@@ -549,6 +549,16 @@ describe("ChatView (full app): sidebar", () => {
     const mounted = await mountFamily(null);
     try {
       useComposerDraftStore.getState().setPrompt(childRef, "half-written reply");
+      // The child is open while its parent is deleted from the sidebar.
+      await mounted.router.navigate({
+        to: "/$environmentId/$threadId",
+        params: { environmentId: LOCAL_ENVIRONMENT_ID, threadId: childId },
+      });
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname.endsWith(`/${childId}`),
+        "The child should be open.",
+      );
       const row = await waitForElement(
         () => document.querySelector<HTMLElement>(`[data-testid="thread-row-${THREAD_ID}"]`),
         "The parent's sidebar row should be on screen.",
@@ -598,6 +608,8 @@ describe("ChatView (full app): sidebar", () => {
       expect(useComposerDraftStore.getState().getComposerDraft(childRef)?.prompt).toBe(
         "half-written reply",
       );
+      // Nor is its chat left: only the thread's real removal does that.
+      expect(mounted.router.state.location.pathname.endsWith(`/${childId}`)).toBe(true);
       // The thread the user named is wound down here as before.
       expect(
         wsRequests.some(

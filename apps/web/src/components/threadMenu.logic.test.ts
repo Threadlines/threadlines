@@ -8,7 +8,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import type { SidebarThreadSummary } from "../types";
 import {
-  countStillGoingInReach,
+  countThreadsToStop,
   describeThreadMenu,
   describeThreadSelectionMenu,
   type ThreadMenuFacts,
@@ -19,7 +19,7 @@ const facts = (overrides: Partial<ThreadMenuFacts> = {}): ThreadMenuFacts => ({
   inbox: { isDone: false, canMarkDone: true },
   attachedChild: false,
   putBack: null,
-  stillGoingCount: 0,
+  stopCount: 0,
   moveOffered: false,
   running: false,
   ...overrides,
@@ -36,7 +36,7 @@ describe("the thread menu", () => {
         describeThreadMenu(
           facts({
             attachedChild: true,
-            stillGoingCount: 2,
+            stopCount: 2,
             moveOffered: true,
           }),
         ),
@@ -151,13 +151,17 @@ describe("what Stop N working threads counts", () => {
       ...overrides,
     });
   const count = (threads: readonly SidebarThreadSummary[], root = "lead") =>
-    countStillGoingInReach(threads, { environmentId, id: ThreadId.make(root) }, NOW);
+    countThreadsToStop(
+      threads,
+      threads.find((entry) => entry.id === root)!,
+      NOW,
+    );
 
   it("counts a child that only checks back, until its check-back goes dormant", () => {
     // Sequence 1: M answered and sits idle with a saved, recurring check-back.
     const before = [thread("lead"), childOf("lead", "m", { checkBacks: [savedJob] })];
     expect(count(before)).toBe(1);
-    expect(read(describeThreadMenu(facts({ stillGoingCount: count(before) })))).toContain(
+    expect(read(describeThreadMenu(facts({ stopCount: count(before) })))).toContain(
       "Stop 1 working thread",
     );
     // After the Stop its runtime ended, so the job is dormant: nothing to stop.
@@ -166,7 +170,7 @@ describe("what Stop N working threads counts", () => {
       childOf("lead", "m", { checkBacks: [{ ...savedJob, dormant: true }] }),
     ];
     expect(count(after)).toBe(0);
-    expect(read(describeThreadMenu(facts({ stillGoingCount: count(after) })))).not.toContain(
+    expect(read(describeThreadMenu(facts({ stopCount: count(after) })))).not.toContain(
       "Stop 0 working threads",
     );
   });
@@ -200,5 +204,55 @@ describe("what Stop N working threads counts", () => {
       childOf("lead", "waiting", { awaitedChildThreadCount: 1 }),
     ];
     expect(count([thread("lead"), ...children])).toBe(4);
+  });
+
+  it("counts an idle child waiting on any approval its pill shows", () => {
+    // A summary rebuilt from the thread's detail keeps these apart from hasPendingApprovals.
+    for (const wait of [
+      { pendingSettingsChange: true },
+      { pendingSecretRequest: true },
+      { pendingScheduleApproval: true },
+    ]) {
+      expect(count([thread("lead"), childOf("lead", "asks", wait)])).toBe(1);
+    }
+  });
+
+  it("counts what the stop settles beyond this computer's threads", () => {
+    const linkedChild = (id: string, followed?: boolean) => ({
+      environmentId: EnvironmentId.make("environment-windows"),
+      label: "Windows PC",
+      threadId: ThreadId.make(id),
+      handle: id,
+      title: id,
+      attachmentEpoch: 0,
+      cachedStatus: "working",
+      updatedAt: "2026-11-23T11:00:00.000Z",
+      ...(followed !== undefined ? { followed } : {}),
+    });
+    const lead = thread("lead", {
+      // One it has a request open with (and one from an older server that
+      // doesn't say), and one whose request already settled.
+      remoteChildren: [
+        linkedChild("asked", true),
+        linkedChild("older"),
+        linkedChild("done", false),
+      ],
+      // One being set up here with no thread yet, and one whose thread arrived.
+      localChildStarts: [
+        {
+          requestId: "request-setup" as never,
+          childThreadId: ThreadId.make("setting-up"),
+          title: "setting up",
+          createdAt: "2026-11-23T11:00:00.000Z",
+        },
+        {
+          requestId: "request-arrived" as never,
+          childThreadId: ThreadId.make("arrived"),
+          title: "arrived",
+          createdAt: "2026-11-23T11:00:00.000Z",
+        },
+      ],
+    });
+    expect(count([lead, childOf("lead", "arrived")])).toBe(3);
   });
 });

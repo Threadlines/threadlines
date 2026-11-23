@@ -1782,7 +1782,7 @@ const IN_FLIGHT: ReadonlySet<ThreadStatusPill["label"]> = new Set([
 /**
  * A child whose row shows work in flight (Working, Starting, Answering,
  * Waiting): what a family's summary line counts as working. What a Stop
- * reaches is wider (threadMenu.logic.ts, `countStillGoingInReach`).
+ * reaches is wider (threadMenu.logic.ts, `countThreadsToStop`).
  */
 export function isChildThreadWorking<T extends InboxFamilyStatus>(entry: T): boolean {
   return !entry.isDone && entry.status !== null && IN_FLIGHT.has(entry.status.label);
@@ -1791,9 +1791,9 @@ export function isChildThreadWorking<T extends InboxFamilyStatus>(entry: T): boo
 /**
  * The "still going" facts (`isStillGoing`) from a sidebar summary. A summary
  * says `connecting` for a session the server calls `starting`, keeps only how
- * many messages are queued, and is the one place that sees a message no turn
- * has picked up yet ({@link hasQueuedTurnStart}), which counts as a turn about
- * to start.
+ * many messages are queued, keeps some approvals apart, and is the one place
+ * that sees a message no turn has picked up yet ({@link hasQueuedTurnStart}),
+ * which counts as a turn about to start.
  */
 export function stillGoingInputOfSummary(
   thread: SidebarThreadSummary,
@@ -1807,8 +1807,16 @@ export function stillGoingInputOfSummary(
       session?.status === "connecting" ||
       hasQueuedTurnStart(thread, { now }),
     queuedCount: thread.queuedFollowUpCount ?? 0,
+    // Every wait the "Pending Approval" pill reads: a summary rebuilt from the
+    // thread's detail keeps a settings change, a key or a schedule apart from
+    // hasPendingApprovals, where the server's shell folds the first two in.
     waitsOnUser:
-      thread.hasPendingApprovals || thread.hasPendingUserInput || thread.hasActionableProposedPlan,
+      thread.hasPendingApprovals ||
+      thread.pendingSettingsChange === true ||
+      thread.pendingSecretRequest === true ||
+      thread.pendingScheduleApproval === true ||
+      thread.hasPendingUserInput ||
+      thread.hasActionableProposedPlan,
     backgroundWork:
       (session?.pendingBackgroundTaskCount ?? 0) > 0 ||
       (session?.awaitedBackgroundTaskCount ?? 0) > 0,

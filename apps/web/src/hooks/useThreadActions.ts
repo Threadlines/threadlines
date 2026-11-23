@@ -284,8 +284,8 @@ export function useThreadActions() {
           (await confirmOrphanedWorktreeDeletion(orphanedWorktreePath));
 
         // An archived parent can still have live threads in its family. The
-        // server winds down and deletes the ones it takes along.
-        const deletedChildren = opts.alsoDelete ?? [];
+        // server winds down and deletes the ones it takes along; a child open
+        // here leaves the chat when its removal arrives (the thread route).
         await api.orchestration.dispatchCommand({
           type: "thread.delete",
           commandId: newCommandId(),
@@ -293,13 +293,6 @@ export function useThreadActions() {
           ...familyDeleteFields(opts.alsoDelete),
         });
         refreshArchivedThreadsForEnvironment(target.environmentId);
-        const currentRouteThreadRef = getCurrentRouteThreadRef();
-        if (
-          currentRouteThreadRef?.environmentId === target.environmentId &&
-          deletedChildren.includes(currentRouteThreadRef.threadId)
-        ) {
-          await router.navigate({ to: "/", replace: true });
-        }
 
         if (shouldDeleteWorktree && orphanedWorktreePath && projectCwd) {
           await removeOrphanedWorktree({
@@ -347,16 +340,19 @@ export function useThreadActions() {
         (await confirmOrphanedWorktreeDeletion(orphanedWorktreePath));
 
       // Its family goes with it when asked: the threads the dialog listed. The
-      // server winds each one down; this device only steers away from them.
-      const deletedChildren = opts.alsoDelete ?? [];
+      // server winds each one down and may keep one that left the family
+      // since, so a child open here is left to its removal (the thread route
+      // goes home when it arrives). Only the fallback avoids the listed ones.
       await windDownThreadBeforeDelete(api, threadRef.environmentId, thread);
 
-      const deletedThreadIds = new Set<ThreadId>([...(deletedIds ?? []), ...deletedChildren]);
+      const deletedThreadIds = new Set<ThreadId>([
+        ...(deletedIds ?? []),
+        ...(opts.alsoDelete ?? []),
+      ]);
       const currentRouteThreadRef = getCurrentRouteThreadRef();
       const shouldNavigateToFallback =
         currentRouteThreadRef?.environmentId === threadRef.environmentId &&
-        (currentRouteThreadRef.threadId === threadRef.threadId ||
-          deletedChildren.includes(currentRouteThreadRef.threadId));
+        currentRouteThreadRef.threadId === threadRef.threadId;
       const fallbackThreadId = getFallbackThreadIdAfterDelete({
         threads,
         deletedThreadId: threadRef.threadId,

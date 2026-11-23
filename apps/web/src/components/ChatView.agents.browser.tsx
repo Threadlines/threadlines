@@ -1499,6 +1499,58 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
     }
   });
 
+  it("keeps the family row's Stop in view on a phone while the tabs scroll under it", async () => {
+    const children = ["phone-first", "phone-second", "phone-third"].map(
+      (id) => `thread-family-${id}` as ThreadId,
+    );
+    const withThreads = children.reduce(
+      (snapshot, id) => addThreadToSnapshot(snapshot, id),
+      createSnapshotForTargetUser({
+        targetMessageId: "msg-user-family-phone" as MessageId,
+        targetText: "family phone target",
+      }),
+    );
+    const mounted = await mountChatView({
+      viewport: PHONE_VIEWPORT,
+      snapshot: {
+        ...withThreads,
+        threads: withThreads.threads.map((thread) => {
+          const index = children.indexOf(thread.id);
+          return index === -1
+            ? thread
+            : {
+                ...thread,
+                title: `A long title for the thread that does part ${index + 1} of the work`,
+                parentThreadId: THREAD_ID,
+                attachedToParent: true,
+                createdAt: isoAt(10 + index),
+              };
+        }),
+      },
+    });
+    const row = () => document.querySelector<HTMLElement>('[data-testid="family-tabs"]');
+    try {
+      await waitForElement(row, "The family row should show on the parent.");
+      setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, children[2]!, "needs-you");
+      const stop = await waitForElement(
+        () => row()?.querySelector<HTMLElement>('[data-testid="family-tabs-stop"]') ?? null,
+        "The Stop button should show.",
+      );
+      const strip = row()!.querySelector<HTMLElement>('[role="tablist"]')!;
+      // The tabs overflow and scroll; the button stays whole inside the row and the screen.
+      expect(strip.scrollWidth).toBeGreaterThan(strip.clientWidth);
+      const rowRect = row()!.getBoundingClientRect();
+      const stopRect = stop.getBoundingClientRect();
+      expect(stopRect.left).toBeGreaterThanOrEqual(strip.getBoundingClientRect().right);
+      expect(stopRect.right).toBeLessThanOrEqual(Math.min(rowRect.right, window.innerWidth));
+      strip.scrollLeft = strip.scrollWidth;
+      await nextFrames(2);
+      expect(stop.getBoundingClientRect().left).toBe(stopRect.left);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("opens a thread started on a computer this app can't see, read through the link", async () => {
     const windows = EnvironmentId.make("environment-windows");
     const childId = "thread-child-windows" as ThreadId;
