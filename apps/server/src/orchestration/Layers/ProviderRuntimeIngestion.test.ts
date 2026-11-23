@@ -8743,4 +8743,155 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(revived.checkBacks?.[0]?.dormant).toBeUndefined();
   });
+
+  it("marks a non-slot room agent's saved check-back dormant on session exit", async () => {
+    const harness = await createHarness();
+    const threadId = asThreadId("thread-1");
+    const astraId = ThreadParticipantId.make("11111111-1111-4111-8111-111111111111");
+    const now = "2026-01-01T00:00:00.000Z";
+
+    // Astra holds a saved check-back while the primary agent (participantId: null) holds the slot.
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.check-backs.set",
+        commandId: CommandId.make("cmd-non-slot-cb"),
+        threadId,
+        participantId: astraId,
+        checkBacks: [
+          {
+            id: "saved-astra",
+            participantId: astraId,
+            scheduledFor: "2026-01-01T01:00:00.000Z",
+            exact: true,
+            recurring: true,
+            description: "Astra watcher",
+            durable: true,
+          },
+        ],
+        createdAt: now,
+      }),
+    );
+
+    harness.emit({
+      type: "session.exited",
+      eventId: asEventId("evt-non-slot-exit"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId,
+      participantId: astraId,
+      createdAt: "2026-01-01T00:01:00.000Z",
+      payload: { exitKind: "graceful" },
+    });
+    const afterExit = await waitForThread(
+      harness.readModel,
+      (entry) =>
+        entry.checkBacks?.some(
+          (cb) => cb.id === "saved-astra" && cb.participantId === astraId && cb.dormant === true,
+        ) === true,
+    );
+    expect(afterExit.checkBacks).toEqual([
+      expect.objectContaining({ id: "saved-astra", participantId: astraId, dormant: true }),
+    ]);
+  });
+
+  it("does not schedule a carried-session fallback resend when the user already stopped the turn", async () => {
+    const harness = await createHarness();
+    const threadId = ThreadId.make("thread-carried-stopped");
+    const msgId = asMessageId("msg-carried-stopped");
+    const turnId = asTurnId("turn-carried-stopped");
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.import",
+        commandId: CommandId.make("cmd-import-carried-stopped"),
+        threadId,
+        projectId: asProjectId("project-1"),
+        title: "Moved here",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+        runtimeMode: "approval-required",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        branch: null,
+        worktreePath: null,
+        movedFrom: {
+          environmentId: EnvironmentId.make("environment-windows"),
+          label: "Windows PC",
+          threadId: ThreadId.make("thread-there-stopped"),
+          movedAt: now,
+        },
+        messages: [],
+        activities: [],
+        nativeSession: "carried",
+        createdAt: now,
+      }),
+    );
+    harness.setProviderSession({
+      provider: ProviderDriverKind.make("codex"),
+      status: "ready",
+      runtimeMode: "approval-required",
+      threadId,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-carried-start"),
+        threadId,
+        message: { messageId: msgId, role: "user", text: "Do the thing", attachments: [] },
+        runtimeMode: "approval-required",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        createdAt: now,
+      }),
+    );
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-carried-turn-started"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId,
+      turnId,
+      createdAt: "2026-01-01T00:00:01.000Z",
+    });
+    await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.activeTurnId === turnId,
+      10_000,
+      threadId,
+    );
+
+    // User presses Stop while the turn is running.
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.interrupt",
+        commandId: CommandId.make("cmd-carried-stop"),
+        threadId,
+        turnId,
+        createdAt: "2026-01-01T00:00:02.000Z",
+      }),
+    );
+
+    // Carried session then reports turn failure (encrypted content refused).
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-carried-turn-failed"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId,
+      turnId,
+      createdAt: "2026-01-01T00:00:03.000Z",
+      payload: {
+        state: "failed",
+        errorMessage:
+          '{"error":{"message":"The encrypted content could not be verified.","code":"invalid_encrypted_content"}}',
+      },
+    });
+    const fellBack = await waitForThread(
+      harness.readModel,
+      (entry) => entry.nativeSession === "fell_back",
+      10_000,
+      threadId,
+    );
+    const activity = fellBack.activities.find(
+      (entry) => entry.kind === "thread.native-session-fell-back",
+    );
+    expect(activity?.payload).toEqual({ reason: "turn_failed" });
+  });
 });

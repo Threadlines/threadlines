@@ -178,6 +178,9 @@ export function reportDropReason(
     return "Its delivery was cancelled since the turn started.";
   }
   if (parent.archivedAt !== null) return "The parent is archived.";
+  if ((parent.move ?? null) !== null || parent.pendingMove?.stage === "quiescing") {
+    return "The parent is moving to another computer.";
+  }
   if (isWrappedByHand(parent)) return "The parent is wrapped up.";
   if (parent.agentRequests.hold || child.agentRequests.hold) return "The user stopped one of them.";
   return null;

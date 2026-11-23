@@ -3428,6 +3428,158 @@ describe("child thread access ceilings (stage 1 step 3)", () => {
     expect(stoppedIds.has(WITHIN)).toBe(true);
     expect(stoppedIds.has(RAISED)).toBe(false);
   });
+
+  it("carries requestCeiling and passBlocked across accountSwitch continues, and refuses if widened", async () => {
+    const narrowCeiling = {
+      runtimeMode: "auto-accept-edits" as const,
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+    };
+    const originalMsgId = MessageId.make("m-orig-acct");
+    const origTurnId = TurnId.make("t-orig-acct");
+    const base = readModel([
+      thread(PARENT, { runtimeMode: "auto-accept-edits" }),
+      thread(CHILD, {
+        parentThreadId: PARENT,
+        attachedToParent: true,
+        runtimeMode: "auto-accept-edits",
+        messages: [
+          {
+            id: originalMsgId,
+            role: "user",
+            text: "Narrow passed work",
+            turnId: null,
+            streaming: false,
+            fromThread: { threadId: PARENT, requestId: REQUEST, kind: "request" },
+            requestCeiling: narrowCeiling,
+            passBlocked: true,
+            createdAt: at(1),
+            updatedAt: at(1),
+          },
+        ],
+        latestTurn: {
+          turnId: origTurnId,
+          state: "error",
+          requestedAt: at(1),
+          startedAt: at(1),
+          completedAt: at(2),
+          assistantMessageId: null,
+        },
+        session: session(CHILD, { status: "error", activeTurnId: null }),
+      }),
+    ]);
+
+    // Still narrow: accountSwitch continues, carrying both requestCeiling and passBlocked.
+    const switched = await run(base, {
+      type: "thread.turn.start",
+      commandId: CommandId.make("acct-switch-ok"),
+      threadId: CHILD,
+      message: {
+        messageId: MessageId.make("m-acct-switch"),
+        role: "user",
+        text: "Continue after account switch",
+        attachments: [],
+      },
+      trigger: "accountSwitch",
+      runtimeMode: "auto-accept-edits",
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      createdAt: at(5),
+    });
+    const switchMsg = threadIn(switched.model, CHILD).messages.at(-1);
+    expect(switchMsg?.requestCeiling).toEqual(narrowCeiling);
+    expect(switchMsg?.passBlocked).toBe(true);
+    expect(threadIn(switched.model, CHILD).childRequests.passCeiling).toEqual(narrowCeiling);
+
+    // Widened before accountSwitch: refused by the ceiling.
+    const widened: OrchestrationReadModel = {
+      ...base,
+      threads: base.threads.map((entry) =>
+        entry.id === CHILD ? { ...entry, runtimeMode: "full-access" } : entry,
+      ),
+    };
+    expect(
+      await refused(widened, {
+        type: "thread.turn.start",
+        commandId: CommandId.make("acct-switch-widened"),
+        threadId: CHILD,
+        message: {
+          messageId: MessageId.make("m-acct-switch-widened"),
+          role: "user",
+          text: "Continue after account switch",
+          attachments: [],
+        },
+        trigger: "accountSwitch",
+        runtimeMode: "full-access",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        createdAt: at(6),
+      }),
+    ).toBe(true);
+  });
+
+  it("bumps chainEpoch without adding a hold on family stop of a starting single-agent child or loose thread", async () => {
+    const LOOSE = ThreadId.make("loose-starting");
+    const start = readModel([
+      thread(PARENT, { session: session(PARENT, { status: "ready", activeTurnId: null }) }),
+      thread(CHILD, {
+        parentThreadId: PARENT,
+        attachedToParent: true,
+        session: session(CHILD, { status: "starting", activeTurnId: null }),
+      }),
+      thread(LOOSE, {
+        parentThreadId: PARENT,
+        attachedToParent: false,
+        stopsWithParent: true,
+        session: session(LOOSE, { status: "starting", activeTurnId: null }),
+      }),
+    ]);
+
+    const stopped = await run(start, {
+      type: "thread.turn.interrupt",
+      commandId: CommandId.make("stop-starting-children"),
+      threadId: PARENT,
+      createdAt: at(10),
+    });
+    expect(threadIn(stopped.model, CHILD).agentRequests.chainEpoch).toBe(1);
+    expect(threadIn(stopped.model, CHILD).agentRequests.hold).toBe(false);
+    expect(threadIn(stopped.model, LOOSE).agentRequests.chainEpoch).toBe(1);
+    expect(threadIn(stopped.model, LOOSE).agentRequests.hold).toBe(false);
+  });
+
+  it("drops a child follow-up report when the parent is frozen for a move", async () => {
+    const turnId = TurnId.make("child-owed-turn");
+    const start = readModel([
+      thread(PARENT, {
+        move: {
+          transferId: "move-1" as never,
+          target: { environmentId: EnvironmentId.make("env-remote"), label: "Mac mini" },
+          agent: model,
+          startedAt: at(1),
+          phase: "sending",
+          cancelRequested: false,
+        },
+      }),
+      thread(CHILD, {
+        parentThreadId: PARENT,
+        attachedToParent: true,
+        childRequests: {
+          ...EMPTY_CHILD_REQUEST_STATE,
+          owedReports: [{ turnId, deliveryEpoch: 0, attachmentEpoch: 0, createdAt: at(1) }],
+        },
+      }),
+    ]);
+
+    const settled = await run(start, {
+      type: "thread.child-report.settle",
+      commandId: CommandId.make("settle-frozen-parent"),
+      threadId: CHILD,
+      owed: { turnId },
+      turnId,
+      text: "Late report after freeze",
+      createdAt: at(5),
+    });
+    expect(threadIn(settled.model, CHILD).childRequests.owedReports ?? []).toEqual([]);
+    expect(threadIn(settled.model, PARENT).messages).toEqual([]);
+    expect(threadIn(settled.model, PARENT).queuedFollowUps ?? []).toEqual([]);
+  });
 });
 
 function modelSelectionOf(entry: OrchestrationThread) {

@@ -2708,9 +2708,12 @@ const make = Effect.gen(function* () {
         Effect.orElseSucceed(() => undefined),
       );
     // The message that started this turn. Only that one goes again; a turn
-    // whose message isn't known (one the provider started) sends nothing
-    // again, and the line tells the user to.
+    // whose message isn't known (one the provider started) or that the user
+    // already stopped sends nothing again, and the line tells the user to.
     const startedBy = endedTurn?.pendingMessageId ?? undefined;
+    const stoppedByUser =
+      input.thread.agentRequests.hold || input.thread.session?.stopRequestedTurnId === input.turnId;
+    const resendMessageId = stoppedByUser ? undefined : startedBy;
     if (rejected) {
       // Off the ingestion queue: ending the session waits for its process,
       // whose last events come through here.
@@ -2723,8 +2726,9 @@ const make = Effect.gen(function* () {
               commandId: providerCommandId(input.event, "native-session-fall-back"),
               threadId: input.thread.id,
               reason: "turn_failed",
-              ...(startedBy !== undefined ? { resendMessageId: startedBy } : {}),
-              chainEpoch: input.thread.agentRequests.chainEpoch,
+              ...(resendMessageId !== undefined
+                ? { resendMessageId, chainEpoch: input.thread.agentRequests.chainEpoch }
+                : {}),
               ...(input.participantId !== null ? { participantId: input.participantId } : {}),
               createdAt: input.now,
             }),
@@ -3092,6 +3096,41 @@ const make = Effect.gen(function* () {
         );
         return;
       }
+      // A runtime that ended can no longer fire any check-back still listed
+      // for its agent (saved jobs stay listed as dormant; session-only ones
+      // drop). Handle before the slot, active-session, and archive guards so
+      // non-slot room agents, switched providers, and archived threads never
+      // leave saved check-backs looking live.
+      if (event.type === "session.exited") {
+        const exitThread =
+          thread ??
+          Option.getOrUndefined(
+            yield* projectionSnapshotQuery
+              .getThreadDetailById(event.threadId, { includeArchived: true })
+              .pipe(Effect.orElseSucceed(() => Option.none())),
+          );
+        if (exitThread !== undefined) {
+          const participantId = event.participantId ?? null;
+          const current = (exitThread.checkBacks ?? []).filter(
+            (checkBack) => checkBack.participantId === participantId,
+          );
+          if (current.length > 0) {
+            const dormant = markCheckBacksDormant(exitThread.checkBacks ?? [], participantId);
+            if (!sameCheckBacks(current, dormant)) {
+              yield* orchestrationEngine
+                .dispatch({
+                  type: "thread.check-backs.set",
+                  commandId: providerCommandId(event, "check-backs-dormant"),
+                  threadId: exitThread.id,
+                  participantId,
+                  checkBacks: dormant,
+                  createdAt: event.createdAt,
+                })
+                .pipe(Effect.asVoid, Effect.ignoreCause({ log: true }));
+            }
+          }
+        }
+      }
       if (!thread) return;
       if (event.sideTurnId !== undefined) {
         yield* recordMcpAppCall(event, thread.id);
@@ -3399,26 +3438,6 @@ const make = Effect.gen(function* () {
           yield* clearSettledSubagentResultState(`${thread.id}:`);
         } else {
           yield* sealSubagentResultState(`${thread.id}:`);
-          // The runtime ended: any check-backs still listed for this agent
-          // can no longer fire until the agent runs again (saved jobs stay
-          // listed as dormant; session-only ones are gone).
-          const participantId = event.participantId ?? null;
-          const current = (thread.checkBacks ?? []).filter(
-            (checkBack) => checkBack.participantId === participantId,
-          );
-          if (current.length > 0) {
-            const dormant = markCheckBacksDormant(thread.checkBacks ?? [], participantId);
-            if (!sameCheckBacks(current, dormant)) {
-              yield* orchestrationEngine.dispatch({
-                type: "thread.check-backs.set",
-                commandId: providerCommandId(event, "check-backs-dormant"),
-                threadId: thread.id,
-                participantId,
-                checkBacks: dormant,
-                createdAt: now,
-              });
-            }
-          }
         }
       }
 

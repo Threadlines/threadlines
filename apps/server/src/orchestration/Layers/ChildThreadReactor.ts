@@ -24,7 +24,7 @@ import * as Stream from "effect/Stream";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
-import { effectiveRequestCeiling } from "@threadlines/shared/childThreads";
+import { effectiveRequestCeiling, narrowerModeCeiling } from "@threadlines/shared/childThreads";
 import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
 import {
   childHasLiveWork,
@@ -268,7 +268,10 @@ export const makeChildThreadReactor = Effect.gen(function* () {
             // when it asked (an approval can come much later).
             launch: clampLaunchToCeiling(launch, parent),
             fromThread: { threadId: parent.id, requestId, kind: "request" },
-            requestCeiling: request.requestCeiling ?? effectiveRequestCeiling(parent),
+            requestCeiling: narrowerModeCeiling(
+              request.requestCeiling,
+              effectiveRequestCeiling(parent),
+            ),
             createdAt: request.createdAt,
           }),
         );

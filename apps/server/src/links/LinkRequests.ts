@@ -60,7 +60,7 @@ import {
   TurnId,
 } from "@threadlines/contracts";
 import { hasLiveCheckBack } from "@threadlines/shared/checkBacks";
-import { sameRemoteThreadFiling } from "@threadlines/shared/childThreads";
+import { requestCeilingRefusal, sameRemoteThreadFiling } from "@threadlines/shared/childThreads";
 import { remoteThreadFilingOf } from "@threadlines/shared/threadFiling";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -2135,13 +2135,26 @@ const make = Effect.gen(function* () {
           const deviceId = thread?.remoteOrigin?.linkDeviceId;
           if (thread === undefined || deviceId === undefined) return;
           const rows = yield* openRowsForThread(thread);
+          const storedMessage = thread.messages.find(
+            (entry) => entry.id === event.payload.messageId,
+          );
+          const ceilingRefusal = !thread.agentRequests.hold
+            ? requestCeilingRefusal(
+                storedMessage?.requestCeiling ?? thread.remoteOrigin?.launchedAccess,
+                thread,
+              )
+            : null;
           for (const row of rows) {
             if (row.messageId !== event.payload.messageId) continue;
-            yield* settle(
-              row,
-              "cancelled",
-              `Your message to '${thread.title}' on ${ownLabel()} was taken back before it ran.`,
-            );
+            if (ceilingRefusal !== null) {
+              yield* settle(row, "failed", ceilingRefusal);
+            } else {
+              yield* settle(
+                row,
+                "cancelled",
+                `Your message to '${thread.title}' on ${ownLabel()} was taken back before it ran.`,
+              );
+            }
           }
           return;
         }

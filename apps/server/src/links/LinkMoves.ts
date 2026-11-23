@@ -2364,6 +2364,10 @@ const make = Effect.gen(function* () {
     projectId: string,
     pinnedEnvironmentId: string | null,
     fromLabel: string,
+    launchedAccess: {
+      readonly runtimeMode: RuntimeMode;
+      readonly interactionMode: ProviderInteractionMode;
+    },
   ) =>
     Effect.gen(function* () {
       const lineage = row.manifest.linkLineage;
@@ -2388,6 +2392,7 @@ const make = Effect.gen(function* () {
           environmentLabel: fromLabel,
           threadId: remoteParent.threadId,
           threadTitle: remoteParent.title,
+          launchedAccess,
         };
         return { remoteOrigin };
       }
@@ -2771,6 +2776,7 @@ const make = Effect.gen(function* () {
         land.project.id,
         authority.pinnedEnvironmentId,
         fromLabel,
+        { runtimeMode: capped.runtimeMode, interactionMode: capped.interactionMode },
       );
       if (across.left !== undefined) familyLeft.push(across.left);
       // The threads it started here that may be its children again (Part 3f,

@@ -3834,10 +3834,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: passStartRefusal,
         });
       }
-      // A parent's request (and any continue of its turn) never starts above
-      // the sender's access ceiling (docs/design/agent-autonomy-no-limits.md).
+      // A parent's request (and any continue of its turn, including account
+      // switch) never starts above the sender's access ceiling
+      // (docs/design/agent-autonomy-no-limits.md).
       const continuedStartAccess =
-        command.trigger !== undefined && isContinueTrigger(command.trigger)
+        command.trigger !== undefined
           ? continuedMessageAccess(
               readModel,
               targetThread,
@@ -5579,13 +5580,16 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // Stop does, so a turn still being prepared for an agent is dropped.
       // The user's own session stop holds a family like their Stop does; one
       // the server makes (with its family, as cleanup) leaves no new hold.
+      const inFamily =
+        thread.childRequests.open.length > 0 ||
+        attachedChildrenOf(readModel, thread.id).length > 0 ||
+        isAttachedChild(thread);
       const chainStop = [
         ...decideAgentChainStop(thread, base, command.createdAt, {
           holdsFamily:
-            command.cause === undefined &&
-            (thread.childRequests.open.length > 0 ||
-              attachedChildrenOf(readModel, thread.id).length > 0 ||
-              isAttachedChild(thread)),
+            inFamily ||
+            (command.cause !== undefined &&
+              (thread.stopsWithParent === true || thread.session?.status === "starting")),
           keepHold: command.cause !== undefined,
         }),
         ...childStopEvents(readModel, thread, command, command.createdAt),

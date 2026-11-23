@@ -9,6 +9,7 @@ import {
   ProviderInstanceId,
   type ProviderSession,
 } from "@threadlines/contracts";
+import { participantSessionKey } from "@threadlines/shared/threadParticipants";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -1323,6 +1324,81 @@ describe("ProviderSessionReaper", () => {
     expect(setCommand).toMatchObject({
       type: "thread.check-backs.set",
       threadId,
+      checkBacks: [{ ...savedJob, dormant: true }],
+    });
+  });
+
+  it("marks a non-slot room agent's saved check-backs dormant when reaping its idle runtime", async () => {
+    const threadId = ThreadId.make("11111111-1111-4111-8111-111111111111");
+    const astraId = ThreadParticipantId.make("22222222-2222-4222-8222-222222222222");
+    const astraSessionKey = participantSessionKey(threadId, astraId);
+    const now = "2026-01-01T00:00:00.000Z";
+    const savedJob: OrchestrationCheckBack = {
+      id: "saved-job-non-slot",
+      participantId: astraId,
+      scheduledFor: "2999-01-01T00:00:00.000Z",
+      exact: true,
+      recurring: true,
+      description: "Astra nightly check",
+      durable: true,
+    };
+    const harness = await createHarness({
+      // Astra's runtime is alive and idle so the inactivity sweep (not startup orphan cleanup) reaps it.
+      activeProviderSessions: [
+        makeProviderSession({
+          threadId: astraSessionKey,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+          status: "ready",
+        }),
+      ],
+      readModel: makeReadModel([
+        {
+          id: threadId,
+          // Primary agent (participantId: null) holds the slot, not Astra.
+          session: {
+            threadId,
+            status: "ready",
+            providerName: "codex",
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: now,
+          },
+          checkBacks: [savedJob],
+        },
+      ]),
+    });
+    const repository = await runtime!.runPromise(Effect.service(ProviderSessionRuntimeRepository));
+    await runtime!.runPromise(
+      repository.upsert({
+        threadId: astraSessionKey,
+        providerName: "claudeAgent",
+        providerInstanceId: null,
+        adapterKey: "claudeAgent",
+        runtimeMode: "full-access",
+        status: "running",
+        lastSeenAt: "2026-04-14T00:00:00.000Z",
+        resumeCursor: { opaque: "resume-non-slot-cb" },
+        runtimePayload: null,
+      }),
+    );
+
+    const reaper = await runtime!.runPromise(Effect.service(ProviderSessionReaper));
+    scope = await Effect.runPromise(Scope.make("sequential"));
+    await Effect.runPromise(reaper.start().pipe(Scope.provide(scope)));
+
+    await waitFor(() =>
+      harness.dispatch.mock.calls.some(([command]) => command.type === "thread.check-backs.set"),
+    );
+    await Effect.runPromise(drainFibers);
+    const setCommand = harness.dispatch.mock.calls
+      .map(([command]) => command)
+      .find((command) => command.type === "thread.check-backs.set");
+    expect(setCommand).toMatchObject({
+      type: "thread.check-backs.set",
+      threadId,
+      participantId: astraId,
       checkBacks: [{ ...savedJob, dormant: true }],
     });
   });

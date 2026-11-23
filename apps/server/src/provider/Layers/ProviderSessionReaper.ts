@@ -170,6 +170,39 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
           : { ...thread, session: null };
       });
 
+    const markReapedCheckBacksDormant = (input: {
+      readonly binding: ProviderRuntimeBindingWithMetadata;
+      readonly thread: ThreadShellWithSession | undefined;
+      readonly nowIso: string;
+    }) =>
+      Effect.gen(function* () {
+        // The runtime has ended: mark any check-backs still listed for this
+        // agent dormant (dropping session-only ones, keeping saved jobs dormant).
+        const participantId = parseParticipantSessionKey(input.binding.threadId).participantId;
+        const currentCheckBacks = (input.thread?.checkBacks ?? []).filter(
+          (checkBack) => checkBack.participantId === participantId,
+        );
+        if (currentCheckBacks.length === 0) {
+          return;
+        }
+        const dormant = markCheckBacksDormant(input.thread?.checkBacks ?? [], participantId);
+        if (sameCheckBacks(currentCheckBacks, dormant)) {
+          return;
+        }
+        yield* orchestrationEngine
+          .dispatch({
+            type: "thread.check-backs.set",
+            commandId: CommandId.make(
+              `provider-session-reaper:check-backs-dormant:${input.binding.threadId}:${randomUUID()}`,
+            ),
+            threadId: sessionKeyThreadId(input.binding.threadId),
+            participantId,
+            checkBacks: dormant,
+            createdAt: input.nowIso,
+          })
+          .pipe(Effect.asVoid, Effect.ignoreCause({ log: true }));
+      });
+
     const dispatchStoppedProjection = (input: {
       readonly binding: ProviderRuntimeBindingWithMetadata;
       readonly thread: ThreadShellWithSession | undefined;
@@ -193,29 +226,7 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
             createdAt: input.nowIso,
           })
           .pipe(Effect.asVoid);
-        // The runtime has ended: mark any check-backs still listed for this
-        // agent dormant (dropping session-only ones, keeping saved jobs dormant).
-        const participantId = parseParticipantSessionKey(input.binding.threadId).participantId;
-        const currentCheckBacks = (input.thread?.checkBacks ?? []).filter(
-          (checkBack) => checkBack.participantId === participantId,
-        );
-        if (currentCheckBacks.length > 0) {
-          const dormant = markCheckBacksDormant(input.thread?.checkBacks ?? [], participantId);
-          if (!sameCheckBacks(currentCheckBacks, dormant)) {
-            yield* orchestrationEngine
-              .dispatch({
-                type: "thread.check-backs.set",
-                commandId: CommandId.make(
-                  `provider-session-reaper:check-backs-dormant:${input.binding.threadId}:${randomUUID()}`,
-                ),
-                threadId: sessionKeyThreadId(input.binding.threadId),
-                participantId,
-                checkBacks: dormant,
-                createdAt: input.nowIso,
-              })
-              .pipe(Effect.asVoid, Effect.ignoreCause({ log: true }));
-          }
-        }
+        yield* markReapedCheckBacksDormant(input);
         return true;
       });
 
@@ -478,7 +489,7 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
                   reason: "inactivity_threshold",
                 }),
                 !thread?.session || thread.session.status === "stopped"
-                  ? Effect.void
+                  ? markReapedCheckBacksDormant({ binding, thread, nowIso })
                   : dispatchStoppedProjection({
                       binding,
                       thread,
