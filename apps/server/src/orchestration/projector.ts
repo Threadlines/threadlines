@@ -1522,6 +1522,10 @@ export function projectEvent(
               : {}),
             ...(payload.requestError !== undefined ? { requestError: payload.requestError } : {}),
             ...(payload.afterMove === true ? { afterMove: true as const } : {}),
+            ...(payload.requestCeiling !== undefined
+              ? { requestCeiling: payload.requestCeiling }
+              : {}),
+            ...(payload.passBlocked === true ? { passBlocked: true as const } : {}),
             turnId: payload.turnId,
             streaming: payload.streaming,
             createdAt: payload.createdAt,
@@ -1565,6 +1569,12 @@ export function projectEvent(
                       : {}),
                     ...(entry.afterMove === true || message.afterMove === true
                       ? { afterMove: true as const }
+                      : {}),
+                    ...(entry.requestCeiling === undefined && message.requestCeiling !== undefined
+                      ? { requestCeiling: message.requestCeiling }
+                      : {}),
+                    ...(entry.passBlocked === true || message.passBlocked === true
+                      ? { passBlocked: true as const }
                       : {}),
                   }
                 : entry,

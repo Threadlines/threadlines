@@ -928,6 +928,10 @@ const make = Effect.gen(function* () {
             environmentLabel: input.parent.environmentLabel,
             threadId: input.parent.threadId,
             threadTitle: input.parent.threadTitle,
+            launchedAccess: {
+              runtimeMode: launch.runtimeMode,
+              interactionMode: launch.interactionMode,
+            },
           };
           // Still open, and the link still lets it go on; a link that no
           // longer does ends it here, with the reason.
@@ -956,6 +960,10 @@ const make = Effect.gen(function* () {
                 requestId,
                 kind: "request",
                 environmentId: input.parent.environmentId,
+              },
+              requestCeiling: {
+                runtimeMode: launch.runtimeMode,
+                interactionMode: launch.interactionMode,
               },
               createdAt: row.createdAt,
               checkpoint: () => mayGoOn,
@@ -1130,6 +1138,7 @@ const make = Effect.gen(function* () {
             kind: "request",
             environmentId: origin.environmentId,
           },
+          ...(input.ceiling !== undefined ? { requestCeiling: input.ceiling } : {}),
           createdAt: row.createdAt,
         },
         "queue a linked computer's message",

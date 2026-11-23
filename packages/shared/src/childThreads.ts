@@ -42,6 +42,8 @@ export interface ChildRequestCaller {
   readonly id: ThreadId;
   readonly parentThreadId: ThreadId | null;
   readonly attachedToParent: boolean;
+  readonly runtimeMode?: RuntimeMode | undefined;
+  readonly interactionMode?: ProviderInteractionMode | undefined;
   readonly session: {
     readonly participantId?: ThreadParticipantId | null | undefined;
     readonly activeTurnId: TurnId | null;
@@ -147,6 +149,7 @@ export function childSendRefusal(
   thread: ChildRequestCaller,
   child: {
     readonly id: ThreadId;
+    readonly title?: string | undefined;
     readonly parentThreadId: ThreadId | null;
     readonly attachedToParent: boolean;
     readonly archivedAt: string | null;
@@ -189,6 +192,24 @@ export function childSendRefusal(
           "This thread is working on something the lead chat passed on, and that thread has more access than the lead chat. Do the work here, or tell the user, who can send it there.",
       };
     }
+  }
+  // A parent's work never runs in a child with more access than the parent
+  // has now (docs/design/agent-autonomy-no-limits.md, "Access").
+  if (
+    child !== null &&
+    thread.runtimeMode !== undefined &&
+    thread.interactionMode !== undefined &&
+    child.runtimeMode !== undefined &&
+    child.interactionMode !== undefined &&
+    !withinModeCeiling(
+      { runtimeMode: child.runtimeMode, interactionMode: child.interactionMode },
+      { runtimeMode: thread.runtimeMode, interactionMode: thread.interactionMode },
+    )
+  ) {
+    return {
+      outcome: "not_allowed",
+      detail: requestCeilingRefusalWords(child.title ?? "That thread"),
+    };
   }
   return null;
 }
@@ -386,6 +407,60 @@ export function leadPassRefusal(
     };
   }
   return null;
+}
+
+/** The widest access a thread can have: no ceiling can be broken above this. */
+export const WIDEST_MODE_CEILING: LeadPassCeiling = {
+  runtimeMode: "full-access",
+  interactionMode: "default",
+};
+
+/** Whether `modes` is the widest access there is. */
+export function isWidestMode(modes: {
+  readonly runtimeMode: RuntimeMode;
+  readonly interactionMode: ProviderInteractionMode;
+}): boolean {
+  return withinModeCeiling(WIDEST_MODE_CEILING, modes);
+}
+
+/** The access limit a thread's outgoing requests carry: its own, or its pass's if narrower. */
+export function effectiveRequestCeiling(thread: {
+  readonly runtimeMode: RuntimeMode;
+  readonly interactionMode: ProviderInteractionMode;
+  readonly childRequests: { readonly passCeiling?: LeadPassCeiling | undefined };
+}): LeadPassCeiling {
+  return narrowerModeCeiling(thread.childRequests.passCeiling, {
+    runtimeMode: thread.runtimeMode,
+    interactionMode: thread.interactionMode,
+  });
+}
+
+/** Refusal wording when a receiving thread has more access than a parent's request allows. */
+export function requestCeilingRefusalWords(title: string): string {
+  return `'${title}' has more access than this thread has now. Do the work here, or tell the user, who can send it there.`;
+}
+
+/** Refusal wording when a linked computer is too old to enforce a narrower sender's ceiling. */
+export function olderPeerCeilingRefusal(label: string): string {
+  return `${label} runs an older Threadlines that can't hold this thread's access limit. Update it, or send the work yourself.`;
+}
+
+/**
+ * Why a request or its continue can't start a turn in `thread` now: the
+ * thread has more access than `ceiling` allows (docs/design/
+ * agent-autonomy-no-limits.md, "Access").
+ */
+export function requestCeilingRefusal(
+  ceiling: LeadPassCeiling | undefined,
+  thread: {
+    readonly title: string;
+    readonly runtimeMode: RuntimeMode;
+    readonly interactionMode: ProviderInteractionMode;
+  },
+): string | null {
+  return ceiling === undefined || withinModeCeiling(thread, ceiling)
+    ? null
+    : requestCeilingRefusalWords(thread.title);
 }
 
 /**

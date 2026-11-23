@@ -25,6 +25,7 @@ import type {
   ChildRequestId,
   ChildThreadLaunch,
   IsoDateTime,
+  LeadPassCeiling,
   MessageId,
   OrchestrationCommand,
   OrchestrationDispatchCommandError,
@@ -99,6 +100,8 @@ export interface ChildBootstrapInput {
   readonly launch: ChildThreadLaunch;
   /** The first message's origin, `kind: "request"`; none for a scheduled run. */
   readonly fromThread?: ThreadMessageOrigin | undefined;
+  /** The sender's access limit kept on the first message (MessageAccessFields). */
+  readonly requestCeiling?: LeadPassCeiling | undefined;
   /** When the request was made; the child is created with this stamp. */
   readonly createdAt: IsoDateTime;
   /**

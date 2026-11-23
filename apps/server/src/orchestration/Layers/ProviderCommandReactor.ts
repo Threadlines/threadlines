@@ -58,6 +58,7 @@ import {
   isOwedReport,
   notesFor,
   remoteChildOf,
+  requestCeilingRefusalWords,
   withinModeCeiling,
 } from "@threadlines/shared/childThreads";
 import { settingsChangeNotesFor } from "@threadlines/shared/settingsChangeState";
@@ -282,6 +283,13 @@ interface EnsureSessionOptions {
    * raised its access after the decider let the pass through.
    */
   readonly passCeiling?: LeadPassCeiling;
+  /**
+   * The turn carries a parent's work or continues one (docs/design/
+   * agent-autonomy-no-limits.md, "Access"): it runs only while the thread is
+   * within this ceiling, checked on the same read of the thread the session
+   * starts from.
+   */
+  readonly requestCeiling?: LeadPassCeiling;
   /**
    * A turn that isn't from outside: an agent outside text reached
    * (OrchestrationOutsideWork) starts fresh for it, a new runtime with a
@@ -1499,6 +1507,14 @@ const make = Effect.gen(function* () {
         detail: PASS_ABOVE_CEILING_DETAIL,
       });
     }
+    const requestCeiling = options?.requestCeiling;
+    if (requestCeiling !== undefined && !withinModeCeiling(thread, requestCeiling)) {
+      return yield* new ProviderAdapterRequestError({
+        provider: providerErrorLabel(undefined),
+        method: "thread.turn.start",
+        detail: requestCeilingRefusalWords(thread.title),
+      });
+    }
     const sessionKey = participantSessionKey(threadId, participantId);
     const shedsOutsideWork =
       options?.shedOutsideWork === true &&
@@ -2522,6 +2538,8 @@ const make = Effect.gen(function* () {
     readonly fromThread?: ThreadMessageOrigin | undefined;
     /** An outside agent's turn: runs only within its ceiling. */
     readonly fromOutside?: OutsideTurnOrigin | undefined;
+    /** A parent request's (or its continue's) access limit. */
+    readonly requestCeiling?: LeadPassCeiling | undefined;
     /**
      * A person sent it from the app (`sentFrom`): an agent outside text
      * reached starts fresh for it (EnsureSessionOptions.shedOutsideWork).
@@ -2586,6 +2604,7 @@ const make = Effect.gen(function* () {
     // resend of a pass carries no origin on its turn.
     const storedMessage = thread.messages.find((message) => message.id === input.messageId);
     const passCeiling = storedMessage?.fromThread?.ceiling ?? input.fromThread?.ceiling;
+    const requestCeiling = storedMessage?.requestCeiling ?? input.requestCeiling;
     // Marked as never sent while this turn was prepared (a retry the user
     // made just before the mark landed): it stays unsent.
     if (passCeiling !== undefined && storedMessage?.notSent === true) {
@@ -2603,6 +2622,7 @@ const make = Effect.gen(function* () {
       ...(forkFrom !== undefined ? { forkFrom } : {}),
       ...(input.fromOutside !== undefined ? { outsideCeiling: input.fromOutside } : {}),
       ...(passCeiling !== undefined ? { passCeiling } : {}),
+      ...(requestCeiling !== undefined ? { requestCeiling } : {}),
       ...(input.sentByPerson === true && input.fromOutside === undefined
         ? { shedOutsideWork: true }
         : {}),
@@ -2645,6 +2665,30 @@ const make = Effect.gen(function* () {
         provider: providerErrorLabel(activeSession?.provider),
         method: "thread.turn.start",
         detail: PASS_ABOVE_CEILING_DETAIL,
+      });
+    }
+    // A parent's request (or its continue) goes only to a runtime within its
+    // ceiling, re-read on the thread now (the user may have widened it while
+    // the session was prepared).
+    const latestForCeiling =
+      requestCeiling === undefined ? undefined : ((yield* resolveThread(input.threadId)) ?? thread);
+    if (
+      requestCeiling !== undefined &&
+      latestForCeiling !== undefined &&
+      ((activeSession !== undefined &&
+        exceedsRuntimeMode(activeSession.runtimeMode, requestCeiling.runtimeMode)) ||
+        !withinModeCeiling(
+          {
+            runtimeMode: latestForCeiling.runtimeMode,
+            interactionMode: latestForCeiling.interactionMode,
+          },
+          requestCeiling,
+        ))
+    ) {
+      return yield* new ProviderAdapterRequestError({
+        provider: providerErrorLabel(activeSession?.provider),
+        method: "thread.turn.start",
+        detail: requestCeilingRefusalWords(latestForCeiling.title),
       });
     }
     // In a room, what the other agents said and changed since this agent's
@@ -3739,6 +3783,9 @@ const make = Effect.gen(function* () {
         ...(event.payload.fromThread !== undefined ? { fromThread: event.payload.fromThread } : {}),
         ...(event.payload.fromOutside !== undefined
           ? { fromOutside: event.payload.fromOutside }
+          : {}),
+        ...(event.payload.requestCeiling !== undefined
+          ? { requestCeiling: event.payload.requestCeiling }
           : {}),
         sentByPerson: message.sentFrom !== undefined,
         createdAt: event.payload.createdAt,

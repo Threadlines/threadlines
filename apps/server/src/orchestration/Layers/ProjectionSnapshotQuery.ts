@@ -3,6 +3,7 @@ import {
   ChatSkillReferenceList,
   CheckpointRef,
   IsoDateTime,
+  LeadPassCeiling,
   MessageId,
   NonNegativeInt,
   OrchestrationCheckpointFile,
@@ -173,6 +174,7 @@ type ThreadLineageRow = Pick<
   | "parentThreadId"
   | "parentTurnId"
   | "attachedToParent"
+  | "stopsWithParent"
   | "parentAttachmentEpoch"
   | "handedBackAt"
   | "handedBackTurnId"
@@ -199,6 +201,7 @@ const threadLineageFields = (row: ThreadLineageRow) => ({
   parentThreadId: row.parentThreadId ?? null,
   parentTurnId: row.parentTurnId ?? null,
   attachedToParent: (row.attachedToParent ?? 0) > 0,
+  ...((row.stopsWithParent ?? 0) > 0 ? { stopsWithParent: true as const } : {}),
   parentAttachmentEpoch: row.parentAttachmentEpoch ?? 0,
   handedBackAt: row.handedBackAt ?? null,
   handedBackTurnId: row.handedBackTurnId ?? null,
@@ -243,6 +246,7 @@ const shellLineageFields = (row: ThreadLineageRow) => {
     parentThreadId: row.parentThreadId ?? null,
     parentTurnId: row.parentTurnId ?? null,
     attachedToParent: (row.attachedToParent ?? 0) > 0,
+    ...((row.stopsWithParent ?? 0) > 0 ? { stopsWithParent: true as const } : {}),
     handedBackAt: row.handedBackAt ?? null,
     handedBackTurnId: row.handedBackTurnId ?? null,
     awaitedChildThreadCount: awaitedChildRequestCount(childRequests),
@@ -286,6 +290,8 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
     trigger: Schema.NullOr(MessageTrigger),
     notSent: Schema.NullOr(Schema.Number),
     afterMove: Schema.optional(Schema.NullOr(Schema.Number)),
+    requestCeiling: Schema.optional(Schema.NullOr(Schema.fromJsonString(LeadPassCeiling))),
+    passBlocked: Schema.optional(Schema.NullOr(Schema.Number)),
   }),
 );
 const ProjectionThreadProposedPlanDbRowSchema = ProjectionThreadProposedPlan.mapFields(
@@ -676,6 +682,8 @@ function mapThreadMessageRow(
     ...(row.trigger !== null ? { trigger: row.trigger } : {}),
     ...(row.notSent === 1 ? { notSent: true as const } : {}),
     ...(row.afterMove === 1 ? { afterMove: true as const } : {}),
+    ...(row.requestCeiling != null ? { requestCeiling: row.requestCeiling } : {}),
+    ...(row.passBlocked === 1 ? { passBlocked: true as const } : {}),
     turnId: row.turnId,
     streaming: row.isStreaming === 1,
     createdAt: row.createdAt,
@@ -979,6 +987,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           parent_thread_id AS "parentThreadId",
           parent_turn_id AS "parentTurnId",
           attached_to_parent AS "attachedToParent",
+          stops_with_parent AS "stopsWithParent",
           parent_attachment_epoch AS "parentAttachmentEpoch",
           handed_back_at AS "handedBackAt",
           handed_back_turn_id AS "handedBackTurnId",
@@ -1053,6 +1062,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           parent_thread_id AS "parentThreadId",
           parent_turn_id AS "parentTurnId",
           attached_to_parent AS "attachedToParent",
+          stops_with_parent AS "stopsWithParent",
           parent_attachment_epoch AS "parentAttachmentEpoch",
           handed_back_at AS "handedBackAt",
           handed_back_turn_id AS "handedBackTurnId",
@@ -1129,6 +1139,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           parent_thread_id AS "parentThreadId",
           parent_turn_id AS "parentTurnId",
           attached_to_parent AS "attachedToParent",
+          stops_with_parent AS "stopsWithParent",
           parent_attachment_epoch AS "parentAttachmentEpoch",
           handed_back_at AS "handedBackAt",
           handed_back_turn_id AS "handedBackTurnId",
@@ -1198,6 +1209,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           message_trigger AS "trigger",
           not_sent AS "notSent",
           after_move AS "afterMove",
+          request_ceiling AS "requestCeiling",
+          pass_blocked AS "passBlocked",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -1260,6 +1273,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           message_trigger AS "trigger",
           not_sent AS "notSent",
           after_move AS "afterMove",
+          request_ceiling AS "requestCeiling",
+          pass_blocked AS "passBlocked",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -1994,6 +2009,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           parent_thread_id AS "parentThreadId",
           parent_turn_id AS "parentTurnId",
           attached_to_parent AS "attachedToParent",
+          stops_with_parent AS "stopsWithParent",
           parent_attachment_epoch AS "parentAttachmentEpoch",
           handed_back_at AS "handedBackAt",
           handed_back_turn_id AS "handedBackTurnId",
@@ -2060,6 +2076,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           message_trigger AS "trigger",
           not_sent AS "notSent",
           after_move AS "afterMove",
+          request_ceiling AS "requestCeiling",
+          pass_blocked AS "passBlocked",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -3845,6 +3863,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     parent_thread_id AS "parentThreadId",
     parent_turn_id AS "parentTurnId",
     attached_to_parent AS "attachedToParent",
+    stops_with_parent AS "stopsWithParent",
     parent_attachment_epoch AS "parentAttachmentEpoch",
     handed_back_at AS "handedBackAt",
     handed_back_turn_id AS "handedBackTurnId",

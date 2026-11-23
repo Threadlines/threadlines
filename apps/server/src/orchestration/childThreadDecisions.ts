@@ -41,8 +41,10 @@ import {
   childAttachRefusal,
   childSendRefusal,
   childStartRefusal,
+  effectiveRequestCeiling,
   isAttachedChild,
   isSettingUpChildStart,
+  narrowerModeCeiling,
   ownChildRefusal,
   remoteChildOf,
   leadPassRefusal,
@@ -453,6 +455,7 @@ export function decideChildStart(
       }
     }
   }
+  const requestCeiling = effectiveRequestCeiling(parent);
   return command.children.map((child): PlannedEvent => ({
     ...baseFor(parent.id),
     type: "thread.child-request-submitted",
@@ -468,6 +471,7 @@ export function decideChildStart(
         status: command.mode === "ask" ? "awaiting_user" : "starting",
         childThreadId: child.childThreadId,
         childMessageId: child.childMessageId,
+        requestCeiling,
         launch: child.launch,
         ...(child.launch.target !== undefined
           ? {
@@ -614,6 +618,10 @@ export function decideChildSend(
     requestId: command.requestId,
     kind: "request" as const,
   };
+  const accessFields = {
+    requestCeiling: effectiveRequestCeiling(parent),
+    ...(parent.childRequests.passCeiling !== undefined ? { passBlocked: true as const } : {}),
+  };
   return [
     ...(checkout === undefined
       ? []
@@ -673,6 +681,7 @@ export function decideChildSend(
           status: "queued",
           childThreadId: child.id,
           childMessageId: command.childMessageId,
+          ...accessFields,
           createdAt: command.createdAt,
         },
         createdAt: command.createdAt,
@@ -688,6 +697,7 @@ export function decideChildSend(
         text: command.text,
         attachments: [],
         fromThread,
+        ...accessFields,
         turnId: null,
         streaming: false,
         createdAt: command.createdAt,
@@ -704,6 +714,7 @@ export function decideChildSend(
           text: command.text,
           attachments: [],
           fromThread,
+          ...accessFields,
           runtimeMode: child.runtimeMode,
           interactionMode: child.interactionMode,
           createdAt: command.createdAt,
@@ -837,6 +848,10 @@ function decideRemoteChildSend(
   ) {
     return refuse("That thread is still being set up. Send it a message once it has started.");
   }
+  const accessFields = {
+    requestCeiling: effectiveRequestCeiling(parent),
+    ...(parent.childRequests.passCeiling !== undefined ? { passBlocked: true as const } : {}),
+  };
   return [
     {
       ...baseFor(parent.id),
@@ -854,6 +869,7 @@ function decideRemoteChildSend(
           childThreadId: remoteChild.threadId,
           childMessageId: command.childMessageId,
           text: command.text,
+          ...accessFields,
           remote: {
             environmentId: remoteChild.environmentId,
             label: remoteLabelOf(parent, remoteChild.environmentId, remoteChild.label),
@@ -1297,6 +1313,19 @@ export function decideRemoteRequestQueue(
   if (thread.messages.some((message) => message.id === command.messageId)) {
     return refuse("That message was already sent.");
   }
+  // Older senders send no ceiling: hold the request to the thread's access
+  // now, or to the access the link started the thread with if narrower
+  // (docs/design/agent-autonomy-no-limits.md, "Access", sequence 2).
+  const requestCeiling =
+    command.requestCeiling ??
+    narrowerModeCeiling(origin.launchedAccess, {
+      runtimeMode: thread.runtimeMode,
+      interactionMode: thread.interactionMode,
+    });
+  const accessFields = {
+    requestCeiling,
+    ...(command.passBlocked === true ? { passBlocked: true as const } : {}),
+  };
   return [
     {
       ...baseFor(thread.id),
@@ -1308,6 +1337,7 @@ export function decideRemoteRequestQueue(
         text: command.text,
         attachments: [],
         fromThread: command.fromThread,
+        ...accessFields,
         turnId: null,
         streaming: false,
         createdAt: command.createdAt,
@@ -1324,6 +1354,7 @@ export function decideRemoteRequestQueue(
           text: command.text,
           attachments: [],
           fromThread: command.fromThread,
+          ...accessFields,
           runtimeMode: thread.runtimeMode,
           interactionMode: thread.interactionMode,
           createdAt: command.createdAt,

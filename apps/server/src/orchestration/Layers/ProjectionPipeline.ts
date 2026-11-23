@@ -1816,6 +1816,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               ? { requestError: event.payload.requestError }
               : {}),
             ...(event.payload.afterMove === true ? { afterMove: true as const } : {}),
+            ...(event.payload.requestCeiling !== undefined
+              ? { requestCeiling: event.payload.requestCeiling }
+              : {}),
+            ...(event.payload.passBlocked === true ? { passBlocked: true as const } : {}),
             isStreaming: event.payload.streaming,
             createdAt: previousMessage?.createdAt ?? event.payload.createdAt,
             updatedAt: event.payload.updatedAt,

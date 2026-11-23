@@ -57,8 +57,11 @@ import {
   type ChildRequestRefusal,
   childSendRefusal,
   childStartRefusal,
+  effectiveRequestCeiling,
   isAttachedChild,
+  isWidestMode,
   leadPassRefusal,
+  olderPeerCeilingRefusal,
   ownChildRefusal,
   remoteChildOf,
   withinModeCeiling,
@@ -2158,6 +2161,18 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
         return {
           outcome: "refused",
           detail: `This computer is no longer linked to ${child.label}.`,
+        } satisfies ThreadSendResult;
+      }
+      // An older peer can't enforce our ceiling; refuse early when we know it.
+      if (
+        computer.descriptor !== null &&
+        computer.descriptor.enforcesRequestCeiling !== true &&
+        !isWidestMode(effectiveRequestCeiling(thread))
+      ) {
+        return {
+          outcome: "not_allowed",
+          detail: olderPeerCeilingRefusal(computer.label),
+          threadId: child.threadId,
         } satisfies ThreadSendResult;
       }
       const callerTurnId = thread.session?.activeTurnId ?? NO_TURN;

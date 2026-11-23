@@ -52,9 +52,12 @@ import { secretRequestIdOfAnswerMessage } from "@threadlines/shared/secretReques
 import { isTurnAside } from "@threadlines/shared/transcriptRevert";
 import { CONTINUE_AT_RESET_MESSAGE, continueAtResetTimeMs } from "@threadlines/shared/usageLimits";
 import {
+  effectiveRequestCeiling,
   isAttachedChild,
   isOwedReport,
+  narrowerModeCeiling,
   passCeilingRefusal,
+  requestCeilingRefusal,
 } from "@threadlines/shared/childThreads";
 import { leadSetRefusal } from "@threadlines/shared/projectLead";
 import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
@@ -97,6 +100,7 @@ import {
   personWrote,
   childArchivePlan,
   childDeletionEvents,
+  childReportMessageId,
   childRevertRefusal,
   childrenArchivedWith,
   decideChildDeliveriesStop,
@@ -361,6 +365,72 @@ function resetChildRequestsForUser(
       payload: { threadId: thread.id, createdAt },
     },
   ];
+}
+
+/**
+ * The access limit a stored or incoming message carries into `thread`
+ * (docs/design/agent-autonomy-no-limits.md, "Access"): its recorded
+ * `requestCeiling`, or, for a parent's request queued or started before the
+ * ceiling existed, the parent's access now (on this computer) or the narrower
+ * of the link's launch access and this thread's access (over a link).
+ */
+function storedRequestCeiling(
+  readModel: OrchestrationReadModel,
+  thread: OrchestrationThread,
+  message: {
+    readonly requestCeiling?: OrchestrationMessage["requestCeiling"];
+    readonly fromThread?: OrchestrationMessage["fromThread"];
+  },
+): OrchestrationMessage["requestCeiling"] {
+  if (message.requestCeiling !== undefined) {
+    return message.requestCeiling;
+  }
+  const origin = message.fromThread;
+  if (origin?.kind !== "request" || origin.ceiling !== undefined) {
+    return undefined;
+  }
+  if (origin.environmentId === undefined) {
+    const parent = readModel.threads.find((entry) => entry.id === origin.threadId);
+    return parent === undefined ? undefined : effectiveRequestCeiling(parent);
+  }
+  return narrowerModeCeiling(thread.remoteOrigin?.launchedAccess, {
+    runtimeMode: thread.runtimeMode,
+    interactionMode: thread.interactionMode,
+  });
+}
+
+/**
+ * The access limit and pass block a continue inherits from the turn it
+ * continues (docs/design/agent-autonomy-no-limits.md, "Access"): every
+ * continue (usage limit reset, restart, account switch) keeps the ceiling of
+ * the message that started that turn.
+ */
+function continuedMessageAccess(
+  readModel: OrchestrationReadModel,
+  thread: OrchestrationThread,
+  participantId: ThreadParticipantId | null,
+  excludeMessageId: MessageId,
+  originMessageId?: MessageId | null,
+): {
+  readonly requestCeiling: OrchestrationMessage["requestCeiling"];
+  readonly passBlocked: true | undefined;
+} {
+  const origin =
+    originMessageId !== undefined && originMessageId !== null
+      ? (thread.messages.find((entry) => entry.id === originMessageId) ??
+        continuedTurnMessage(thread, participantId, excludeMessageId))
+      : continuedTurnMessage(thread, participantId, excludeMessageId);
+  if (origin === undefined) {
+    return { requestCeiling: undefined, passBlocked: undefined };
+  }
+  const requestCeiling =
+    origin.requestCeiling ??
+    origin.fromThread?.ceiling ??
+    storedRequestCeiling(readModel, thread, origin);
+  return {
+    requestCeiling,
+    passBlocked: origin.passBlocked === true ? (true as const) : undefined,
+  };
 }
 
 /**
@@ -3728,6 +3798,32 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: passStartRefusal,
         });
       }
+      // A parent's request (and any continue of its turn) never starts above
+      // the sender's access ceiling (docs/design/agent-autonomy-no-limits.md).
+      const continuedStartAccess =
+        command.trigger !== undefined && isContinueTrigger(command.trigger)
+          ? continuedMessageAccess(
+              readModel,
+              targetThread,
+              command.participantId ?? null,
+              command.message.messageId,
+            )
+          : { requestCeiling: undefined, passBlocked: undefined };
+      const turnRequestCeiling =
+        command.requestCeiling ??
+        continuedStartAccess.requestCeiling ??
+        storedRequestCeiling(readModel, targetThread, command);
+      const turnPassBlocked =
+        command.passBlocked === true || continuedStartAccess.passBlocked === true
+          ? (true as const)
+          : undefined;
+      const requestStartRefusal = requestCeilingRefusal(turnRequestCeiling, targetThread);
+      if (requestStartRefusal !== null) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: requestStartRefusal,
+        });
+      }
       // An outside agent's turn (docs/design/outside-agents.md): only in a
       // thread it started (any thread at Work), never above its ceiling,
       // never into a busy thread (an answer's own turn passes over its
@@ -3888,6 +3984,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           ...(command.composer !== undefined ? { composer: command.composer } : {}),
           ...(command.sentFrom !== undefined ? { sentFrom: command.sentFrom } : {}),
           ...(command.trigger !== undefined ? { trigger: command.trigger } : {}),
+          ...(turnRequestCeiling !== undefined ? { requestCeiling: turnRequestCeiling } : {}),
+          ...(turnPassBlocked === true ? { passBlocked: true as const } : {}),
           // Named as the turn is sent (recordTurnModel). A queued message an
           // agent wrote is already recorded, with its own stamps; sending it
           // must not restamp it.
@@ -4033,6 +4131,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             : {}),
           ...(command.fromThread !== undefined ? { fromThread: command.fromThread } : {}),
           ...(command.fromOutside !== undefined ? { fromOutside: command.fromOutside } : {}),
+          ...(turnRequestCeiling !== undefined ? { requestCeiling: turnRequestCeiling } : {}),
+          ...(turnPassBlocked === true ? { passBlocked: true as const } : {}),
           ...(command.scheduledTaskId !== undefined
             ? { scheduledTaskId: command.scheduledTaskId }
             : {}),
@@ -4079,10 +4179,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               },
             ]
           : [];
-      // A lead chat's pass starting its turn: until the user writes, no
-      // threads may be started from here, and its ceiling holds what this
-      // thread sends on (docs/design/lead-chat.md, "No fan-out").
-      const passCeiling = command.fromThread?.ceiling;
+      // A lead chat's pass (or a parent's request sent while its own pass
+      // block was active) starting its turn: until the user writes, or the
+      // parent sends a fresh unblocked request, no threads may be started from
+      // here, and its ceiling holds what this thread sends on.
+      const passCeiling =
+        command.fromThread?.ceiling ?? (turnPassBlocked === true ? turnRequestCeiling : undefined);
       const passStartedEvents: ReadonlyArray<PlannedOrchestrationEvent> =
         passCeiling !== undefined
           ? [
@@ -4099,7 +4201,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
                 },
               },
             ]
-          : [];
+          : command.fromThread?.kind === "request" &&
+              command.fromThread.ceiling === undefined &&
+              turnPassBlocked !== true
+            ? resetChildRequestsForUser(targetThread, turnBase, command.createdAt)
+            : [];
       // A turn starting while the thread waited to continue after a usage
       // limit ends that wait; the request it held won't get its continue.
       // (The continue itself, which the fire starts, answers it instead.)
@@ -4268,6 +4374,14 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: `${retryPassRefusal} Send it yourself to run it.`,
         });
       }
+      const retryRequestCeiling = storedRequestCeiling(readModel, targetThread, lastUserMessage);
+      const retryRequestRefusal = requestCeilingRefusal(retryRequestCeiling, targetThread);
+      if (retryRequestRefusal !== null) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: retryRequestRefusal,
+        });
+      }
       // A failed turn is retried with the agent that failed it: the slot
       // still holds that agent's session.
       const retryParticipantId = sessionSlotParticipantId(session);
@@ -4348,6 +4462,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           runtimeMode: targetThread.runtimeMode,
           interactionMode: targetThread.interactionMode,
           ...(lastUserMessage.skills !== undefined ? { skills: lastUserMessage.skills } : {}),
+          ...(retryRequestCeiling !== undefined ? { requestCeiling: retryRequestCeiling } : {}),
+          ...(lastUserMessage.passBlocked === true ? { passBlocked: true as const } : {}),
           chainEpoch: targetThread.agentRequests.chainEpoch,
           createdAt: command.createdAt,
           // A resend runs the same message again, so its turn owes what that
@@ -4661,6 +4777,64 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           command.createdAt,
         );
       }
+      // A parent's request runs only within the sender's ceiling (or, for work
+      // queued before the ceiling existed, the parent's access now / the link's
+      // launch access). If the thread was widened since, the request is taken
+      // back and the parent's open request settles failed.
+      const existingStoredMessage = targetThread.messages.find(
+        (message) => message.id === queued.messageId,
+      );
+      const queuedRequestCeiling =
+        queued.requestCeiling ??
+        existingStoredMessage?.requestCeiling ??
+        storedRequestCeiling(readModel, targetThread, queued);
+      const queuedPassBlocked =
+        queued.passBlocked === true || existingStoredMessage?.passBlocked === true
+          ? (true as const)
+          : undefined;
+      const queuedCeilingRefusal = requestCeilingRefusal(queuedRequestCeiling, targetThread);
+      if (queuedCeilingRefusal !== null) {
+        const settledParent =
+          fromThread?.kind === "request" && fromThread.environmentId === undefined
+            ? (() => {
+                const parent = readModel.threads.find((entry) => entry.id === fromThread.threadId);
+                const open = parent?.childRequests.open.find(
+                  (entry) =>
+                    entry.requestId === fromThread.requestId &&
+                    entry.childThreadId === targetThread.id,
+                );
+                return parent !== undefined && open !== undefined
+                  ? { parentId: parent.id, requestId: open.requestId }
+                  : null;
+              })()
+            : null;
+        const settledEvents =
+          settledParent === null
+            ? []
+            : yield* decideCommandSequence({
+                readModel,
+                commands: [
+                  {
+                    type: "thread.child-request.settle",
+                    commandId: command.commandId,
+                    threadId: settledParent.parentId,
+                    requestId: settledParent.requestId,
+                    outcome: "failed",
+                    reply: {
+                      messageId: childReportMessageId(settledParent.requestId),
+                      text: queuedCeilingRefusal,
+                      turnId: null,
+                    },
+                    error: queuedCeilingRefusal,
+                    createdAt: command.createdAt,
+                  },
+                ],
+              });
+        return [
+          { ...unqueuedEvent, payload: { ...unqueuedEvent.payload, reason: "cancelled" } },
+          ...settledEvents,
+        ];
+      }
       // A message an agent queued carries no model: its agent's current one
       // applies (the thread's own model for the thread's own agent), so a
       // model change since it was queued is honored.
@@ -4800,6 +4974,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             runtimeMode,
             interactionMode,
             ...(fromThread !== undefined ? { fromThread } : {}),
+            ...(queuedRequestCeiling !== undefined ? { requestCeiling: queuedRequestCeiling } : {}),
+            ...(queuedPassBlocked === true ? { passBlocked: true as const } : {}),
             // Only the user's own queued message carries it.
             ...(!agentQueued && queued.composer !== undefined ? { composer: queued.composer } : {}),
             ...(!agentQueued && queued.sentFrom !== undefined ? { sentFrom: queued.sentFrom } : {}),
@@ -4858,11 +5034,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         (entry) => entry.requestId === queued.requestId,
       );
       const sentEvents: PlannedOrchestrationEvent[] = turnEvents
-        .filter(
-          (event) =>
-            event.type !== "thread.agent-requests-reset" &&
-            event.type !== "thread.child-requests-reset",
-        )
+        .filter((event) => event.type !== "thread.agent-requests-reset")
         .map((event): PlannedOrchestrationEvent => {
           if (
             event.type !== "thread.message-sent" ||
@@ -5793,7 +5965,32 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         return cleared;
       }
       // A Codex goal the limit paused picks up by itself once it is active; in
-      // a room it belongs to the agent holding the slot.
+      // a room it belongs to the agent holding the slot. Otherwise the continue
+      // keeps the access ceiling of the turn it continues: if the thread was
+      // widened above it while waiting, the wait ends and any held request
+      // settles failed (docs/design/agent-autonomy-no-limits.md, "Access").
+      const continuedAccess = continuedMessageAccess(
+        readModel,
+        thread,
+        participantId,
+        command.messageId,
+      );
+      if (thread.goal?.status !== "usageLimited") {
+        const continueCeilingRefusal = requestCeilingRefusal(
+          continuedAccess.requestCeiling,
+          thread,
+        );
+        if (continueCeilingRefusal !== null) {
+          const ended = yield* decideHeldRequestsEnd({
+            readModel,
+            child: thread,
+            outcome: "failed",
+            why: continueCeilingRefusal,
+            createdAt: command.createdAt,
+          });
+          return [cleared, ...ended];
+        }
+      }
       const continueCommand: OrchestrationCommand =
         thread.goal?.status === "usageLimited"
           ? {
@@ -5817,6 +6014,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               runtimeMode: thread.runtimeMode,
               interactionMode: thread.interactionMode,
               trigger: "usageLimitReset",
+              ...(continuedAccess.requestCeiling !== undefined
+                ? { requestCeiling: continuedAccess.requestCeiling }
+                : {}),
+              ...(continuedAccess.passBlocked === true ? { passBlocked: true as const } : {}),
               createdAt: command.createdAt,
             };
       const continued = yield* decideCommandSequence({
@@ -5904,6 +6105,37 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           },
         };
       }
+      const restartAccess = continuedMessageAccess(
+        readModel,
+        thread,
+        verdict.participantId,
+        command.messageId,
+        command.turnMessageId,
+      );
+      const restartCeilingRefusal = requestCeilingRefusal(restartAccess.requestCeiling, thread);
+      if (restartCeilingRefusal !== null) {
+        return {
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          }),
+          type: "thread.activity-appended",
+          payload: {
+            threadId: command.threadId,
+            activity: {
+              id: command.activityId,
+              tone: "error",
+              kind: "provider.session.restart-interrupted",
+              summary: "Turn interrupted by a server restart",
+              payload: { detail: restartCeilingRefusal },
+              turnId: command.turnId,
+              createdAt: command.createdAt,
+            },
+          },
+        };
+      }
       return yield* decideCommandSequence({
         commands: [
           {
@@ -5920,6 +6152,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             runtimeMode: thread.runtimeMode,
             interactionMode: thread.interactionMode,
             trigger: "serverRestart",
+            ...(restartAccess.requestCeiling !== undefined
+              ? { requestCeiling: restartAccess.requestCeiling }
+              : {}),
+            ...(restartAccess.passBlocked === true ? { passBlocked: true as const } : {}),
             createdAt: command.createdAt,
           },
         ],

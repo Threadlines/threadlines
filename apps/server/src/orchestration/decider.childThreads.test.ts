@@ -2685,3 +2685,361 @@ describe("decider child reports", () => {
     expect(threadIn(left.model, PARENT).queuedFollowUps?.[0]?.participantId).toBeUndefined();
   });
 });
+
+describe("child thread access ceilings (stage 1 step 3)", () => {
+  const run = async (model: OrchestrationReadModel, command: OrchestrationCommand) => {
+    const decided = await Effect.runPromise(
+      decideOrchestrationCommand({ command, readModel: model }),
+    );
+    const events = Array.isArray(decided) ? decided : [decided];
+    let next = model;
+    for (const event of events) {
+      next = await Effect.runPromise(
+        projectEvent(next, {
+          ...event,
+          sequence: next.snapshotSequence + 1,
+        } as OrchestrationEvent),
+      );
+    }
+    return { events: events as ReadonlyArray<OrchestrationEvent>, model: next };
+  };
+
+  const threadIn = (model: OrchestrationReadModel, id: ThreadId) =>
+    model.threads.find((entry) => entry.id === id)!;
+
+  it("unqueues a parent's request and fails it when the child was widened before its turn starts", async () => {
+    const start = readModel([
+      thread(PARENT, {
+        runtimeMode: "auto-accept-edits",
+        session: session(PARENT, { status: "running", activeTurnId: CALLER_TURN }),
+      }),
+      thread(CHILD, {
+        parentThreadId: PARENT,
+        attachedToParent: true,
+        runtimeMode: "auto-accept-edits",
+        session: session(CHILD, { status: "ready", activeTurnId: null }),
+      }),
+    ]);
+    const requestId = ChildRequestId.make("req-wide");
+    const messageId = MessageId.make("msg-wide");
+    const sent = await run(start, {
+      type: "thread.child.send",
+      commandId: CommandId.make("send-wide"),
+      threadId: PARENT,
+      requestId,
+      from: PRIMARY,
+      callerTurnId: CALLER_TURN,
+      childThreadId: CHILD,
+      childMessageId: messageId,
+      text: "Check the build.",
+      createdAt: at(10),
+    });
+    expect(threadIn(sent.model, CHILD).queuedFollowUps?.[0]?.requestCeiling).toEqual({
+      runtimeMode: "auto-accept-edits",
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+    });
+    // The user widens the child before the queued request runs.
+    const widened = await run(sent.model, {
+      type: "thread.runtime-mode.set",
+      commandId: CommandId.make("widen-child"),
+      threadId: CHILD,
+      runtimeMode: "full-access",
+      createdAt: at(15),
+    });
+    const drained = await run(widened.model, {
+      type: "thread.follow-up.send-queued",
+      commandId: CommandId.make("drain-wide"),
+      threadId: CHILD,
+      messageId,
+      createdAt: at(20),
+    });
+    expect(threadIn(drained.model, CHILD).queuedFollowUps ?? []).toHaveLength(0);
+    expect(drained.events.some((event) => event.type === "thread.turn-start-requested")).toBe(
+      false,
+    );
+    // The parent's open request settles failed with the ceiling refusal.
+    expect(threadIn(drained.model, PARENT).childRequests.open).toHaveLength(0);
+    const settled = drained.events.find((event) => event.type === "thread.child-request-settled");
+    expect(settled?.payload).toMatchObject({ requestId, outcome: "failed" });
+  });
+
+  it("refuses a usage-limit continue when the child was widened, and settles the held request failed", async () => {
+    const requestId = ChildRequestId.make("req-limit");
+    const requestMessageId = MessageId.make("msg-limit");
+    const limitAt = at(20);
+    const resetAt = at(30);
+    const start = readModel([
+      thread(PARENT, {
+        runtimeMode: "auto-accept-edits",
+        childRequests: {
+          ...EMPTY_CHILD_REQUEST_STATE,
+          open: [
+            {
+              requestId,
+              batchId: ChildRequestBatchId.make("batch-limit"),
+              kind: "send",
+              from: PRIMARY,
+              callerTurnId: CALLER_TURN,
+              deliveryEpoch: 0,
+              status: "running",
+              childThreadId: CHILD,
+              childMessageId: requestMessageId,
+              requestCeiling: {
+                runtimeMode: "auto-accept-edits",
+                interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+              },
+              createdAt: at(5),
+            },
+          ],
+        },
+      }),
+      thread(CHILD, {
+        parentThreadId: PARENT,
+        attachedToParent: true,
+        runtimeMode: "full-access",
+        messages: [
+          {
+            id: requestMessageId,
+            role: "user",
+            text: "Do the check.",
+            fromThread: { threadId: PARENT, requestId, kind: "request" },
+            requestCeiling: {
+              runtimeMode: "auto-accept-edits",
+              interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            },
+            turnId: null,
+            streaming: false,
+            createdAt: at(5),
+            updatedAt: at(5),
+          },
+        ],
+        session: session(CHILD, {
+          status: "error",
+          activeTurnId: null,
+          lastError: "Usage limit reached",
+          lastErrorAt: limitAt,
+          continueAtReset: { resetsAt: resetAt, at: resetAt },
+        }),
+      }),
+    ]);
+    const fired = await run(start, {
+      type: "thread.continue-at-reset.fire",
+      commandId: CommandId.make("fire-continue"),
+      threadId: CHILD,
+      messageId: MessageId.make("msg-continue"),
+      lastErrorAt: limitAt,
+      createdAt: at(35),
+    });
+    expect(threadIn(fired.model, CHILD).session?.continueAtReset ?? null).toBeNull();
+    expect(fired.events.some((event) => event.type === "thread.turn-start-requested")).toBe(false);
+    expect(threadIn(fired.model, PARENT).childRequests.open).toHaveLength(0);
+    const settled = fired.events.find((event) => event.type === "thread.child-request-settled");
+    expect(settled?.payload).toMatchObject({ requestId, outcome: "failed" });
+  });
+
+  it("holds an older linked computer's request (and pre-upgrade queued work) to launchedAccess (sequence 2)", async () => {
+    const REMOTE_ENV = EnvironmentId.make("env-old");
+    const REMOTE_PARENT = ThreadId.make("remote-parent");
+    const remoteOrigin = {
+      linkDeviceId: "dev-old",
+      environmentId: REMOTE_ENV,
+      environmentLabel: "Old Mac",
+      threadId: REMOTE_PARENT,
+      threadTitle: "Old parent",
+      launchedAccess: {
+        runtimeMode: "auto-accept-edits" as const,
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      },
+    };
+    const fromThread = {
+      threadId: REMOTE_PARENT,
+      requestId: ChildRequestId.make("req-remote-1"),
+      kind: "request" as const,
+      environmentId: REMOTE_ENV,
+    };
+    // 1) Widened child: no ceiling in -> gets launchedAccess -> turn refused.
+    const widenedModel = readModel([
+      thread(CHILD, {
+        runtimeMode: "full-access",
+        remoteOrigin,
+        session: session(CHILD, { status: "ready", activeTurnId: null }),
+      }),
+    ]);
+    const queuedWidened = await run(widenedModel, {
+      type: "thread.remote-request.queue",
+      commandId: CommandId.make("remote-q-wide"),
+      threadId: CHILD,
+      messageId: MessageId.make("remote-msg-wide"),
+      text: "Check logs.",
+      fromThread,
+      createdAt: at(10),
+    });
+    expect(threadIn(queuedWidened.model, CHILD).queuedFollowUps?.[0]?.requestCeiling).toEqual(
+      remoteOrigin.launchedAccess,
+    );
+    const triedWidened = await run(queuedWidened.model, {
+      type: "thread.follow-up.send-queued",
+      commandId: CommandId.make("remote-send-wide"),
+      threadId: CHILD,
+      messageId: MessageId.make("remote-msg-wide"),
+      createdAt: at(15),
+    });
+    expect(triedWidened.events.some((event) => event.type === "thread.turn-start-requested")).toBe(
+      false,
+    );
+    expect(threadIn(triedWidened.model, CHILD).queuedFollowUps ?? []).toHaveLength(0);
+
+    // 2) Unchanged child: runs as today.
+    const unchangedModel = readModel([
+      thread(CHILD, {
+        runtimeMode: "auto-accept-edits",
+        remoteOrigin,
+        session: session(CHILD, { status: "ready", activeTurnId: null }),
+      }),
+    ]);
+    const queuedUnchanged = await run(unchangedModel, {
+      type: "thread.remote-request.queue",
+      commandId: CommandId.make("remote-q-ok"),
+      threadId: CHILD,
+      messageId: MessageId.make("remote-msg-ok"),
+      text: "Check logs.",
+      fromThread,
+      createdAt: at(10),
+    });
+    const triedUnchanged = await run(queuedUnchanged.model, {
+      type: "thread.follow-up.send-queued",
+      commandId: CommandId.make("remote-send-ok"),
+      threadId: CHILD,
+      messageId: MessageId.make("remote-msg-ok"),
+      createdAt: at(15),
+    });
+    expect(
+      triedUnchanged.events.some((event) => event.type === "thread.turn-start-requested"),
+    ).toBe(true);
+
+    // 3) Pre-upgrade queued entry (no requestCeiling on entry or message) on a widened child.
+    const preUpgradeId = MessageId.make("remote-msg-legacy");
+    const legacyModel = readModel([
+      thread(CHILD, {
+        runtimeMode: "full-access",
+        remoteOrigin,
+        session: session(CHILD, { status: "ready", activeTurnId: null }),
+        messages: [
+          {
+            id: preUpgradeId,
+            role: "user",
+            text: "Legacy work.",
+            fromThread,
+            turnId: null,
+            streaming: false,
+            createdAt: at(5),
+            updatedAt: at(5),
+          },
+        ],
+        queuedFollowUps: [
+          {
+            messageId: preUpgradeId,
+            text: "Legacy work.",
+            attachments: [],
+            fromThread,
+            runtimeMode: "auto-accept-edits",
+            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            createdAt: at(5),
+          },
+        ],
+      }),
+    ]);
+    const triedLegacy = await run(legacyModel, {
+      type: "thread.follow-up.send-queued",
+      commandId: CommandId.make("remote-send-legacy"),
+      threadId: CHILD,
+      messageId: preUpgradeId,
+      createdAt: at(20),
+    });
+    expect(triedLegacy.events.some((event) => event.type === "thread.turn-start-requested")).toBe(
+      false,
+    );
+    expect(threadIn(triedLegacy.model, CHILD).queuedFollowUps ?? []).toHaveLength(0);
+  });
+
+  it("propagates a pass block to a child's turn and lifts it on the parent's next unblocked request", async () => {
+    const passCeiling = {
+      runtimeMode: "auto-accept-edits" as const,
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+    };
+    const start = readModel([
+      thread(PARENT, {
+        runtimeMode: "auto-accept-edits",
+        session: session(PARENT, { status: "running", activeTurnId: CALLER_TURN }),
+        childRequests: { ...EMPTY_CHILD_REQUEST_STATE, passCeiling },
+      }),
+      thread(CHILD, {
+        parentThreadId: PARENT,
+        attachedToParent: true,
+        runtimeMode: "auto-accept-edits",
+        session: session(CHILD, { status: "ready", activeTurnId: null }),
+      }),
+    ]);
+    const req1 = ChildRequestId.make("req-pass-1");
+    const msg1 = MessageId.make("msg-pass-1");
+    const sent = await run(start, {
+      type: "thread.child.send",
+      commandId: CommandId.make("send-pass-1"),
+      threadId: PARENT,
+      requestId: req1,
+      from: PRIMARY,
+      callerTurnId: CALLER_TURN,
+      childThreadId: CHILD,
+      childMessageId: msg1,
+      text: "Handle passed work.",
+      createdAt: at(10),
+    });
+    expect(threadIn(sent.model, CHILD).queuedFollowUps?.[0]?.passBlocked).toBe(true);
+    const started = await run(sent.model, {
+      type: "thread.follow-up.send-queued",
+      commandId: CommandId.make("drain-pass-1"),
+      threadId: CHILD,
+      messageId: msg1,
+      createdAt: at(15),
+    });
+    expect(threadIn(started.model, CHILD).childRequests.passCeiling).toEqual(passCeiling);
+
+    // Parent's pass block lifts when user writes there; next request has no passBlocked -> lifts child's block.
+    const parentCleared: OrchestrationReadModel = {
+      ...started.model,
+      threads: started.model.threads.map((entry) =>
+        entry.id === PARENT
+          ? {
+              ...entry,
+              childRequests: { ...EMPTY_CHILD_REQUEST_STATE, open: [] },
+            }
+          : entry.id === CHILD
+            ? { ...entry, session: session(CHILD, { status: "ready", activeTurnId: null }) }
+            : entry,
+      ),
+    };
+    const req2 = ChildRequestId.make("req-pass-2");
+    const msg2 = MessageId.make("msg-pass-2");
+    const sent2 = await run(parentCleared, {
+      type: "thread.child.send",
+      commandId: CommandId.make("send-pass-2"),
+      threadId: PARENT,
+      requestId: req2,
+      from: PRIMARY,
+      callerTurnId: CALLER_TURN,
+      childThreadId: CHILD,
+      childMessageId: msg2,
+      text: "Normal work now.",
+      createdAt: at(25),
+    });
+    expect(threadIn(sent2.model, CHILD).queuedFollowUps?.[0]?.passBlocked).toBeUndefined();
+    const started2 = await run(sent2.model, {
+      type: "thread.follow-up.send-queued",
+      commandId: CommandId.make("drain-pass-2"),
+      threadId: CHILD,
+      messageId: msg2,
+      createdAt: at(30),
+    });
+    expect(threadIn(started2.model, CHILD).childRequests.passCeiling).toBeUndefined();
+  });
+});

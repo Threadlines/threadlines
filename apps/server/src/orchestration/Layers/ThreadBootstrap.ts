@@ -734,6 +734,7 @@ const make = Effect.gen(function* () {
           runtimeMode: launch.runtimeMode,
           interactionMode: launch.interactionMode,
           ...(input.fromThread !== undefined ? { fromThread: input.fromThread } : {}),
+          ...(input.requestCeiling !== undefined ? { requestCeiling: input.requestCeiling } : {}),
           ...(input.lineage.kind === "scheduled"
             ? { scheduledTaskId: input.lineage.scheduledRun.taskId }
             : {}),

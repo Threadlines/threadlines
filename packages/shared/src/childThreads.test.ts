@@ -16,10 +16,13 @@ import {
   childRequestStateOn,
   childSendRefusal,
   childStartRefusal,
+  effectiveRequestCeiling,
   isHandedBackCompletion,
   isStillGoing,
+  isWidestMode,
   remoteChildrenOf,
   remoteChildStartsOf,
+  requestCeilingRefusal,
   stillGoingInputOfShell,
   stopReachOf,
   type StillGoingInput,
@@ -355,5 +358,56 @@ describe("isStillGoing", () => {
     expect(isStillGoing(stillGoingInputOfShell({ ...shell, pendingChildApproval: true }))).toBe(
       true,
     );
+  });
+});
+
+describe("request ceiling helpers", () => {
+  it("refuses a send when the child has more access than its parent", () => {
+    const parent = caller({ runtimeMode: "auto-accept-edits", interactionMode: "default" });
+    const wideChild = {
+      id: CHILD,
+      title: "Worker",
+      parentThreadId: PARENT,
+      attachedToParent: true,
+      archivedAt: null,
+      runtimeMode: "full-access" as const,
+      interactionMode: "default" as const,
+    };
+    expect(childSendRefusal(parent, wideChild, { from: PRIMARY, callerTurnId: TURN })).toEqual({
+      outcome: "not_allowed",
+      detail:
+        "'Worker' has more access than this thread has now. Do the work here, or tell the user, who can send it there.",
+    });
+    expect(
+      childSendRefusal(
+        parent,
+        { ...wideChild, runtimeMode: "approval-required" },
+        { from: PRIMARY, callerTurnId: TURN },
+      ),
+    ).toBeNull();
+  });
+
+  it("narrows effectiveRequestCeiling by passCeiling and detects widest access", () => {
+    expect(
+      effectiveRequestCeiling({
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        childRequests: {
+          ...EMPTY_CHILD_REQUEST_STATE,
+          passCeiling: { runtimeMode: "auto-accept-edits", interactionMode: "plan" },
+        },
+      }),
+    ).toEqual({ runtimeMode: "auto-accept-edits", interactionMode: "plan" });
+    expect(isWidestMode({ runtimeMode: "full-access", interactionMode: "default" })).toBe(true);
+    expect(isWidestMode({ runtimeMode: "full-access", interactionMode: "plan" })).toBe(false);
+    expect(isWidestMode({ runtimeMode: "auto-accept-edits", interactionMode: "default" })).toBe(
+      false,
+    );
+    expect(
+      requestCeilingRefusal(
+        { runtimeMode: "auto-accept-edits", interactionMode: "default" },
+        { title: "Worker", runtimeMode: "full-access", interactionMode: "default" },
+      ),
+    ).toContain("'Worker' has more access");
   });
 });

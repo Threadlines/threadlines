@@ -187,6 +187,7 @@ export const ProjectionThread = Schema.Struct({
   parentThreadId: Schema.optional(Schema.NullOr(ThreadId)),
   parentTurnId: Schema.optional(Schema.NullOr(TurnId)),
   attachedToParent: Schema.optional(Schema.NullOr(NonNegativeInt)),
+  stopsWithParent: Schema.optional(Schema.NullOr(NonNegativeInt)),
   parentAttachmentEpoch: Schema.optional(Schema.NullOr(NonNegativeInt)),
   handedBackAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   handedBackTurnId: Schema.optional(Schema.NullOr(TurnId)),
