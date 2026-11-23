@@ -331,6 +331,59 @@ function childEventBase(
 }
 
 /**
+ * What archiving `thread` does to its check-backs: each agent's ones that die
+ * with its runtime are cleared, with a note in the chat, and the saved ones
+ * stay. The runtime's own report of it comes after the archive and isn't
+ * recorded, so without this an unarchived thread would show them still set
+ * and auto-archive would skip it for good (holdsRuntimeCheckBack).
+ */
+function archiveEndsCheckBacks(
+  thread: OrchestrationThread,
+  baseFor: ChildEventBase,
+  at: string,
+  commandId: OrchestrationCommand["commandId"],
+): ReadonlyArray<PlannedOrchestrationEvent> {
+  const checkBacks = thread.checkBacks ?? [];
+  const ended = checkBacks.filter((checkBack) => !checkBack.durable);
+  const agents = [...new Set(ended.map((checkBack) => checkBack.participantId))];
+  return [
+    ...agents.map((participantId): PlannedOrchestrationEvent => ({
+      ...baseFor(thread.id),
+      type: "thread.check-backs-set",
+      payload: {
+        threadId: thread.id,
+        participantId,
+        checkBacks: checkBacks.filter(
+          (checkBack) => checkBack.participantId === participantId && checkBack.durable,
+        ),
+        updatedAt: at,
+      },
+    })),
+    ...ended.map((checkBack): PlannedOrchestrationEvent => ({
+      ...baseFor(thread.id),
+      type: "thread.activity-appended",
+      payload: {
+        threadId: thread.id,
+        activity: {
+          id: EventId.make(`archive-check-back-ended:${commandId}:${checkBack.id}`),
+          tone: "info",
+          kind: "check-back.ended",
+          summary: "Check-back ended: this thread was archived",
+          payload: {
+            scheduledFor: checkBack.scheduledFor,
+            recurring: checkBack.recurring,
+            ...(checkBack.description ? { description: checkBack.description } : {}),
+          },
+          turnId: null,
+          participantId: checkBack.participantId,
+          createdAt: at,
+        },
+      },
+    })),
+  ];
+}
+
+/**
  * The user wrote: the per-message child thread counts start over, and a
  * lead chat's pass no longer blocks starting threads. A turn Threadlines
  * started for the user (`keepsPassBlock`: a continue, a restart) resets the
@@ -1961,7 +2014,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // Child threads: nothing it asked for comes back any more; its settled
       // children are archived with it and its live ones separated; a child's
       // parent stops waiting on it.
-      const plan = childArchivePlan(readModel, thread, Date.parse(occurredAt));
+      const plan = childArchivePlan(readModel, thread);
       const familyEvents: ReadonlyArray<PlannedOrchestrationEvent> = [
         ...decideChildDeliveriesStop(readModel, thread, baseFor, occurredAt, "archived"),
         ...plan.separate.map((child): PlannedOrchestrationEvent => ({
@@ -2002,6 +2055,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             occurredAt,
             baseFor,
           ),
+        ),
+        // Archiving stops its runtimes, and with them each check-back not
+        // saved to outlive them. Their report of it arrives once the thread
+        // is archived and isn't recorded, so the archive clears them itself.
+        ...[thread, ...plan.archive].flatMap((archived) =>
+          archiveEndsCheckBacks(archived, baseFor, occurredAt, command.commandId),
         ),
         // An archived thread doesn't continue by itself, now or after it comes back.
         ...[thread, ...plan.archive].flatMap((archived): PlannedOrchestrationEvent[] => {

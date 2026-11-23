@@ -1,3 +1,5 @@
+import { holdsRuntimeCheckBack } from "./checkBacks.ts";
+
 export const AUTO_ARCHIVE_SUGGESTED_INACTIVE_DAYS = 30 as const;
 
 export interface AutoArchiveThreadFields {
@@ -17,6 +19,8 @@ export interface AutoArchiveThreadFields {
   readonly awaitedChildThreadCount?: number | undefined;
   /** Child threads: threads its agent asked to start wait for the user. */
   readonly pendingChildApproval?: boolean | undefined;
+  /** Times its agents set to come back (holdsRuntimeCheckBack). */
+  readonly checkBacks?: ReadonlyArray<{ readonly durable: boolean }> | undefined;
   readonly session: {
     readonly status: string;
     readonly orchestrationStatus?: string | undefined;
@@ -50,6 +54,11 @@ export function isAutoArchiveProtectedThread(thread: AutoArchiveThreadFields): b
   }
 
   if (thread.latestTurn?.state === "running") {
+    return true;
+  }
+
+  // Its agent will come back in a runtime archiving would stop.
+  if (holdsRuntimeCheckBack(thread)) {
     return true;
   }
 

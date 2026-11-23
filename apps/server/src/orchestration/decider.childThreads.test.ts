@@ -552,42 +552,46 @@ describe("decider child threads", () => {
     expect(threadIn(archived.model, ranEarlier.id).archivedAt).not.toBeNull();
   });
 
-  it("archiving a parent separates a child whose check-back would die with its runtime", async () => {
-    // The decider stamps the archive from the real clock.
-    const fromNow = (minutes: number) => new Date(Date.now() + minutes * 60_000).toISOString();
-    const checkBack = (
-      id: string,
-      scheduledFor: string,
-      durable: boolean,
-    ): OrchestrationCheckBack => ({
+  it("archiving a parent separates a child whose check-back would die with its runtime, and clears its own", async () => {
+    const checkBack = (id: string, durable: boolean): OrchestrationCheckBack => ({
       id,
       participantId: null,
-      scheduledFor,
+      scheduledFor: at(20 * 60),
       exact: true,
       recurring: false,
       durable,
     });
     const child = (id: string, checkBacks: ReadonlyArray<OrchestrationCheckBack>) =>
       thread(ThreadId.make(id), { parentThreadId: PARENT, attachedToParent: true, checkBacks });
-    // Idle after answering, set to come back in 20 minutes.
-    const willCheckBack = child("will-check-back", [checkBack("cb-soon", fromNow(20), false)]);
+    // Idle after answering, set to come back in its session.
+    const willCheckBack = child("will-check-back", [checkBack("cb-soon", false)]);
     // Saved to disk: it outlives the session the archive stops.
-    const savedCheckBack = child("saved-check-back", [checkBack("cb-saved", fromNow(20), true)]);
-    // Long past its time and never fired: nothing is owed any more.
-    const staleCheckBack = child("stale-check-back", [checkBack("cb-old", fromNow(-120), false)]);
-    const archived = await run(
-      readModel([thread(PARENT), willCheckBack, savedCheckBack, staleCheckBack]),
-      { type: "thread.archive", commandId: CommandId.make("archive"), threadId: PARENT },
-    );
+    const savedCheckBack = child("saved-check-back", [checkBack("cb-saved", true)]);
+    // The parent's own check-backs: archiving it ends the one in its session.
+    const parent = thread(PARENT, {
+      checkBacks: [checkBack("cb-parent", false), checkBack("cb-parent-saved", true)],
+    });
+    const archived = await run(readModel([parent, willCheckBack, savedCheckBack]), {
+      type: "thread.archive",
+      commandId: CommandId.make("archive"),
+      threadId: PARENT,
+    });
     const eventsFor = (id: ThreadId) =>
       archived.events
         .filter((event) => "threadId" in event.payload && event.payload.threadId === id)
         .map((event) => event.type);
     expect(eventsFor(willCheckBack.id)).toEqual(["thread.parent-attachment-set"]);
     expect(eventsFor(savedCheckBack.id)).toEqual(["thread.archived"]);
-    expect(eventsFor(staleCheckBack.id)).toEqual(["thread.archived"]);
-    expect(threadIn(archived.model, willCheckBack.id).attachedToParent).toBe(false);
-    expect(threadIn(archived.model, willCheckBack.id).archivedAt).toBeNull();
+    expect(threadIn(archived.model, willCheckBack.id).checkBacks).toEqual([
+      checkBack("cb-soon", false),
+    ]);
+    const archivedParent = threadIn(archived.model, PARENT);
+    expect(archivedParent.checkBacks?.map((entry) => entry.id)).toEqual(["cb-parent-saved"]);
+    expect(
+      archivedParent.activities
+        .filter((activity) => activity.kind === "check-back.ended")
+        .map((activity) => activity.summary),
+    ).toEqual(["Check-back ended: this thread was archived"]);
   });
 
   it("lets only the server start a thread as another's child, and never under a child", async () => {

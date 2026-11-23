@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 
 import { CommandId } from "@threadlines/contracts";
-import { holdsRuntimeCheckBack } from "@threadlines/shared/checkBacks";
 import {
   isAutoArchiveProtectedThread,
   selectAutoArchiveCandidates,
@@ -81,10 +80,9 @@ const makeThreadAutoArchiveSweeper = (options?: ThreadAutoArchiveSweeperLiveOpti
             (thread) =>
               thread.parentThreadId !== null &&
               thread.attachedToParent &&
-              // At work or waiting on the user (a pin is not work), or owing a
-              // check-back that archiving would cancel with its runtime.
-              (isAutoArchiveProtectedThread({ ...thread, pinnedAt: null }) ||
-                holdsRuntimeCheckBack(thread, nowMs)) &&
+              // At work, waiting on the user or set to check back (a pin is
+              // not work).
+              isAutoArchiveProtectedThread({ ...thread, pinnedAt: null }) &&
               thread.archivedAt === null,
           )
           .map((thread) => thread.parentThreadId),

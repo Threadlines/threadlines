@@ -2074,14 +2074,13 @@ export function childDeletionEvents(
 }
 
 /**
- * What archiving a parent at `nowMs` does to its family: settled children
- * archive with it (stamped, so unarchiving the parent brings them back), live
- * ones are separated first and keep running on their own.
+ * What archiving a parent does to its family: settled children archive with
+ * it (stamped, so unarchiving the parent brings them back), live ones are
+ * separated first and keep running on their own.
  */
 export function childArchivePlan(
   readModel: OrchestrationReadModel,
   parent: OrchestrationThread,
-  nowMs: number,
 ): {
   readonly archive: ReadonlyArray<OrchestrationThread>;
   readonly separate: ReadonlyArray<OrchestrationThread>;
@@ -2098,7 +2097,7 @@ export function childArchivePlan(
   const live = (child: OrchestrationThread) =>
     childHasLiveWork(child, { running: true }) ||
     requestsFor(parent, child.id).length > 0 ||
-    holdsRuntimeCheckBack(child, nowMs);
+    holdsRuntimeCheckBack(child);
   return {
     archive: children.filter((child) => !live(child)),
     separate: children.filter(live),

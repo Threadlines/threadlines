@@ -352,6 +352,9 @@ describe("ThreadAutoArchiveSweeper", () => {
     expect(dispatched.map((command) => command.threadId)).not.toContain(waitingParent.id);
     expect(stopped).toEqual(expect.arrayContaining([idleParent.id, "idle-child"]));
     expect(stopped).not.toContain("separated-child");
+    // Inactive long enough itself, but archiving it would end its check-back.
+    expect(dispatched.map((command) => command.threadId)).not.toContain("check-back-child");
+    expect(stopped).not.toContain("check-back-child");
   });
 
   it("does not archive protected or recently active threads", async () => {

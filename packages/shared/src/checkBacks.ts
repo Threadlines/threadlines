@@ -44,33 +44,16 @@ export function sameCheckBacks(
   );
 }
 
-/** How long past a check-back's time it is still owed. Claude states a
- *  wake-up's exact time but may run a cron job up to 30 minutes late (its
- *  scheduler spreads jobs out). */
-const CHECK_BACK_EXACT_GRACE_MS = 5 * 60 * 1000;
-const CHECK_BACK_SCHEDULE_GRACE_MS = 35 * 60 * 1000;
-
 /**
- * Whether a check-back that dies with its runtime is still owed at `nowMs`:
- * not saved to outlive it, and repeating or not yet past its time. Stopping
- * a runtime that holds one cancels a promise its agent made. The idle reaper
- * keeps such a runtime; archiving a parent separates such a child instead of
- * archiving it.
+ * Whether any of a thread's agents holds a check-back that dies with its
+ * runtime (not saved to outlive it). Stopping that runtime cancels a promise
+ * its agent made, so archiving leaves such a thread running: a parent's
+ * archive separates the child instead, and auto-archive and "Archive
+ * inactive threads now" skip it. No clock is read: a runtime that stops
+ * reports its list emptied, and archiving clears what it ends.
  */
-export function runtimeCheckBackOwed(checkBack: OrchestrationCheckBack, nowMs: number): boolean {
-  if (checkBack.durable) return false;
-  if (checkBack.recurring) return true;
-  const due =
-    Date.parse(checkBack.scheduledFor) +
-    (checkBack.exact ? CHECK_BACK_EXACT_GRACE_MS : CHECK_BACK_SCHEDULE_GRACE_MS);
-  return Number.isFinite(due) && nowMs < due;
-}
-
-/** Whether any of a thread's agents still owes a check-back a session stop
- *  would cancel (runtimeCheckBackOwed). */
-export function holdsRuntimeCheckBack(
-  thread: { readonly checkBacks?: ReadonlyArray<OrchestrationCheckBack> | undefined },
-  nowMs: number,
-): boolean {
-  return (thread.checkBacks ?? []).some((checkBack) => runtimeCheckBackOwed(checkBack, nowMs));
+export function holdsRuntimeCheckBack(thread: {
+  readonly checkBacks?: ReadonlyArray<Pick<OrchestrationCheckBack, "durable">> | undefined;
+}): boolean {
+  return (thread.checkBacks ?? []).some((checkBack) => !checkBack.durable);
 }

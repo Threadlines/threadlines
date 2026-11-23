@@ -121,4 +121,18 @@ describe("thread auto-archive rules", () => {
 
     expect(candidates.map(({ id }) => id)).toEqual(["included"]);
   });
+
+  it("keeps a thread whose agent will check back in a session archiving would stop", () => {
+    const candidates = selectAutoArchiveCandidates({
+      threads: [
+        thread("checks-back", { checkBacks: [{ durable: false }] }),
+        // Saved to disk, it outlives the session.
+        thread("saved-check-back", { checkBacks: [{ durable: true }] }),
+      ],
+      inactiveDays: 30,
+      nowMs: NOW_MS,
+    });
+
+    expect(candidates.map(({ id }) => id)).toEqual(["saved-check-back"]);
+  });
 });
