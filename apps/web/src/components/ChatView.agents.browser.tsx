@@ -76,6 +76,7 @@ import {
   fixture,
   rpcHarness,
   createUserMessage,
+  withLinkedThreadReadFixture,
 } from "./ChatView.browser-harness";
 import { selectSidebarThreadSummaryByRef, useStore } from "../store";
 import { resolveThreadStatusPill } from "./Sidebar.logic";
@@ -1420,6 +1421,117 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
         params: { environmentId: LOCAL_ENVIRONMENT_ID, threadId: loner },
       });
       await vi.waitFor(() => expect(row()).toBeNull(), { timeout: 10_000 });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("opens a thread started on a computer this app can't see, read through the link", async () => {
+    const windows = EnvironmentId.make("environment-windows");
+    const childId = "thread-child-windows" as ThreadId;
+    const childKey = scopedThreadKey(scopeThreadRef(windows, childId));
+    const base = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-linked-child" as MessageId,
+      targetText: "linked child target",
+    });
+    const reads: Array<Record<string, unknown>> = [];
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...base,
+        threads: base.threads.map((thread) =>
+          thread.id === THREAD_ID
+            ? {
+                ...thread,
+                childRequests: {
+                  ...EMPTY_CHILD_REQUEST_STATE,
+                  remoteChildren: [
+                    {
+                      environmentId: windows,
+                      label: "Windows PC",
+                      threadId: childId,
+                      handle: "Codex",
+                      title: "Check the Windows build",
+                      attachmentEpoch: 0,
+                      cachedStatus: "working",
+                      updatedAt: isoAt(300),
+                    },
+                  ],
+                },
+              }
+            : thread,
+        ),
+      },
+      configureFixture: withLinkedThreadReadFixture,
+      resolveRpc: (body) => {
+        if (body._tag !== WS_METHODS.linksReadThread) return undefined;
+        reads.push(body);
+        return {
+          outcome: "ok",
+          messages: [
+            {
+              messageId: "m-ask",
+              sequence: 1,
+              at: isoAt(301),
+              role: "user",
+              author: "Browser test thread (on Local environment)",
+              origin: "thread_request",
+              text: "Check the Windows build.",
+            },
+            {
+              messageId: "m-answer",
+              sequence: 2,
+              at: isoAt(302),
+              role: "assistant",
+              author: "Codex",
+              origin: "agent",
+              text: "The Windows build passes.",
+            },
+          ],
+          next: 2,
+          more: false,
+        };
+      },
+    });
+    try {
+      const tab = page.getByTestId(`family-tab-${childKey}`);
+      await vi.waitFor(() => expect(tab.element()).not.toHaveAttribute("disabled"), {
+        timeout: 10_000,
+      });
+      await tab.click();
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname.endsWith(`/linked/${windows}/${childId}`),
+        "The tab should open the thread read through the link.",
+      );
+      await expect.element(page.getByText("The Windows build passes.")).toBeVisible();
+      await expect.element(page.getByText("Check the Windows build.")).toBeVisible();
+      await vi.waitFor(() =>
+        expect(
+          document
+            .querySelector('[data-testid="linked-thread-place"]')
+            ?.textContent?.replace(/\s+/g, " "),
+        ).toBe("Windows PC·working"),
+      );
+      expect(reads[0]).toMatchObject({
+        parentThreadId: THREAD_ID,
+        environmentId: windows,
+        threadId: childId,
+        limit: 50,
+      });
+      // The family row stays, with this thread's tab open.
+      await vi.waitFor(() =>
+        expect(page.getByTestId(`family-tab-${childKey}`).element()).toHaveAttribute(
+          "aria-selected",
+          "true",
+        ),
+      );
+      await page.getByTestId(`family-tab-${THREAD_KEY}`).click();
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname.endsWith(`/${THREAD_ID}`),
+        "The parent's tab should open the parent again.",
+      );
     } finally {
       await mounted.cleanup();
     }

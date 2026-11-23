@@ -103,6 +103,7 @@ import {
   RelayDeviceRepository,
   type RelayDeviceRepositoryShape,
 } from "./relay/RelayDeviceRepository.ts";
+import { ComputerLinkClient } from "./links/ComputerLinkClient.ts";
 import { ComputerLinks, type ComputerLinksShape } from "./links/ComputerLinks.ts";
 import { ScheduledTasks, type ScheduledTasksShape } from "./scheduled/ScheduledTasks.ts";
 import { ThemeLibrary, type ThemeLibraryShape } from "./themes/ThemeLibrary.ts";
@@ -906,6 +907,11 @@ const buildAppUnderTest = (options?: {
           }),
           Layer.mock(ThreadMoves)({}),
           Layer.mock(MoveQueue)({}),
+          Layer.mock(ComputerLinkClient)({
+            cachedDescribe: () => null,
+            noteRemoteLabel: () => undefined,
+            remoteLabelChanges: Stream.empty,
+          }),
           Layer.mock(ProjectSetups)({}),
           Layer.mock(ProjectContext)({
             changes: Stream.make({ briefs: [], notes: [], suggestions: [] }),

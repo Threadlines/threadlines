@@ -131,9 +131,16 @@ import {
   InboxRemoteDoneRow,
   InboxThreadRow,
   type InboxThreadFamily,
+  type RemoteChildOpen,
   type RemoteChildSetDone,
   type RemoteParentLine,
 } from "./sidebar/InboxRows";
+import { linkedRefOf } from "./chat/familyTabs.logic";
+import { useConnectedComputerCapabilityCheck } from "../environments/computerCapabilities";
+import {
+  linkedThreadRouteParams,
+  resolveLinkedThreadRouteRef,
+} from "../environments/links/linkedThreads";
 import {
   groupPendingLinkRequests,
   useComputerLabel,
@@ -653,6 +660,17 @@ export default function Sidebar() {
     select: (params) => resolveThreadRouteRef(params),
   });
   const routeThreadKey = routeThreadRef ? scopedThreadKey(routeThreadRef) : null;
+  // A child on a computer this app can't see, open read through the link.
+  const linkedRouteKey = useParams({
+    strict: false,
+    select: (params) => {
+      const ref = resolveLinkedThreadRouteRef(params);
+      return ref === null ? null : scopedThreadKey(ref);
+    },
+  });
+  // The thread open in the chat, as the list keeps it on screen: one here, or
+  // one read through the link.
+  const openInboxKey = routeThreadKey ?? linkedRouteKey;
   const keybindings = useServerKeybindings();
   const openAddProjectCommandPalette = useCommandPaletteStore((store) => store.openAddProject);
   const { showThreadJumpHints, updateThreadJumpHintsVisibility } = useThreadJumpHintVisibility();
@@ -899,7 +917,7 @@ export default function Sidebar() {
           ),
         ),
       isFamilyOpen: (parentKey) => childThreadFamilyOpenById[parentKey] === true,
-      activeThreadKey: routeThreadKey,
+      activeThreadKey: openInboxKey,
       now: nowIso,
       sortLive: (heads) =>
         sortInboxThreadsBy(
@@ -925,6 +943,7 @@ export default function Sidebar() {
     entries,
     inboxCustomOrder,
     inboxSort,
+    linkedRouteKey,
     nowIso,
     roomsFilterActive,
     routeThreadKey,
@@ -1036,13 +1055,13 @@ export default function Sidebar() {
           groupKey !== null &&
           collapsedInboxGroups[groupKey] === true &&
           !row.entry.isLead &&
-          !inboxLiveRowHolds(row, routeThreadKey);
+          !inboxLiveRowHolds(row, openInboxKey);
         const isFamily = row.children.length > 0 || row.remoteChildren.length > 0;
         return {
           pinned: staysOnTop(row.entry),
           alwaysShown:
             inboxLiveRowHasAttention(row) ||
-            inboxLiveRowHolds(row, routeThreadKey) ||
+            inboxLiveRowHolds(row, openInboxKey) ||
             inboxLiveRowHolds(row, renamingThreadKey),
           costPx: hiddenByGroup ? 0 : isFamily ? familyPx : plainPx,
           childrenPx: hiddenByGroup
@@ -1078,9 +1097,9 @@ export default function Sidebar() {
     liveRoomPx,
     localChildRowPx,
     plainRowPx,
+    openInboxKey,
     remoteChildRowPx,
     renamingThreadKey,
-    routeThreadKey,
     sidebarGrouping,
   ]);
   const { visible: visibleLiveEntries, hiddenCount: hiddenLiveCount } = useMemo(
@@ -1089,7 +1108,7 @@ export default function Sidebar() {
         rows: liveEntries,
         hasAttention: (row) =>
           inboxLiveRowHasAttention(row) ||
-          inboxLiveRowHolds(row, routeThreadKey) ||
+          inboxLiveRowHolds(row, openInboxKey) ||
           inboxLiveRowHolds(row, renamingThreadKey),
         isPinned: (row) => staysOnTop(row.entry),
         limit: liveFoldLimit + revealedLiveCount,
@@ -1097,12 +1116,12 @@ export default function Sidebar() {
         // the newest ones. Every row there is where the user put it.
         expanded: inboxSort === "custom",
       }),
-    [inboxSort, liveEntries, liveFoldLimit, renamingThreadKey, revealedLiveCount, routeThreadKey],
+    [inboxSort, liveEntries, liveFoldLimit, openInboxKey, renamingThreadKey, revealedLiveCount],
   );
   const nextLiveRevealCount = Math.min(LIVE_REVEAL_STEP, hiddenLiveCount);
   const visibleDoneEntries = useMemo(
-    () => windowInboxDoneRows(wrappedRows, DONE_PREVIEW_COUNT + revealedDoneCount, routeThreadKey),
-    [wrappedRows, revealedDoneCount, routeThreadKey],
+    () => windowInboxDoneRows(wrappedRows, DONE_PREVIEW_COUNT + revealedDoneCount, openInboxKey),
+    [wrappedRows, revealedDoneCount, openInboxKey],
   );
   const nextDoneRevealCount = Math.min(
     DONE_REVEAL_STEP,
@@ -1116,10 +1135,11 @@ export default function Sidebar() {
         ? visibleDoneEntries
         : wrappedRows.filter(
             (row) =>
-              row.kind === "thread" &&
-              (row.row.entry.threadKey === routeThreadKey || row.row.openChild !== null),
+              (row.kind === "thread" &&
+                (row.row.entry.threadKey === routeThreadKey || row.row.openChild !== null)) ||
+              (row.kind === "remote" && row.row.child.threadKey === linkedRouteKey),
           ),
-    [wrappedRows, routeThreadKey, visibleDoneEntries, wrappedOpen],
+    [linkedRouteKey, wrappedRows, routeThreadKey, visibleDoneEntries, wrappedOpen],
   );
   // Open, the shelf sorts its rows under days; closed, its header says how
   // many wrapped today, so a thread filed away on its own is not lost.
@@ -1310,7 +1330,7 @@ export default function Sidebar() {
               (row) =>
                 row.entry.isLead ||
                 row.entry.threadKey === routeThreadKey ||
-                inboxLiveRowHoldsOpenChild(row, routeThreadKey),
+                inboxLiveRowHoldsOpenChild(row, openInboxKey),
             )
           : group.rows,
       };
@@ -1319,6 +1339,7 @@ export default function Sidebar() {
     collapsedInboxGroups,
     environmentScopeOptions,
     liveEntries,
+    openInboxKey,
     routeThreadKey,
     sidebarGrouping,
     sidebarProjectByKey,
@@ -1573,6 +1594,28 @@ export default function Sidebar() {
     },
     [closeSheet, navigate, navigateToThread],
   );
+
+  // A child on a computer this app can't see opens read through the link,
+  // where its parent's computer does that (LinkedThreadView).
+  const readsLinked = useConnectedComputerCapabilityCheck("linkedThreadRead");
+  const openLinkedChild = useCallback<RemoteChildOpen>(
+    (child) => {
+      const ref = linkedRefOf(child);
+      if (ref === null) return;
+      closeSheet();
+      void navigate({
+        to: "/linked/$computerId/$linkedThreadId",
+        params: linkedThreadRouteParams(ref),
+      });
+    },
+    [closeSheet, navigate],
+  );
+  const linkedChildOpener = (child: InboxRemoteChild): RemoteChildOpen | undefined =>
+    child.parentRef !== undefined &&
+    linkedRefOf(child) !== null &&
+    readsLinked(child.parentRef.environmentId)
+      ? openLinkedChild
+      : undefined;
 
   const openFleetComputer = useCallback(
     (environmentId: EnvironmentId) => {
@@ -2352,6 +2395,8 @@ export default function Sidebar() {
                                         child={child}
                                         shortTitle={childShortTitles.get(child.threadKey)}
                                         onSetDone={setRemoteChildDone}
+                                        onOpen={linkedChildOpener(child)}
+                                        isActive={child.threadKey === linkedRouteKey}
                                       />
                                     ))}
                                   </InboxReorderRow>
@@ -2499,6 +2544,8 @@ export default function Sidebar() {
                                 child={child}
                                 startedByTitle={startedBy.thread.title}
                                 onSetDone={setRemoteChildDone}
+                                onOpen={linkedChildOpener(child)}
+                                isActive={child.threadKey === linkedRouteKey}
                               />
                             </React.Fragment>
                           );

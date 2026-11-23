@@ -68,6 +68,12 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
    * then hide link UI for them.
    */
   computerLinks: Schema.optionalKey(Schema.Boolean),
+  /**
+   * The server reads a thread one of its threads started on a linked computer
+   * for its clients (`links.readThread`), so a client that can't see that
+   * computer can still open it. Absent: such a child can't be opened.
+   */
+  linkedThreadRead: Schema.optionalKey(Schema.Boolean),
   /** The server runs scheduled tasks. Absent until a server ships them. */
   scheduledTasks: Schema.optionalKey(Schema.Boolean),
   /** The server keeps a theme library (`themes.*`, docs/design/custom-themes.md). */

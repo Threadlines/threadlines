@@ -172,6 +172,7 @@ import {
   resolveThreadStatusPill,
 } from "../Sidebar.logic";
 import { useComputerLabel } from "../sidebar/linkedComputers";
+import { useConnectedComputerCapability } from "../../environments/computerCapabilities";
 import {
   describeScheduleCall,
   parseScheduleCallResult,
@@ -292,6 +293,13 @@ import { providerInstanceShowsBadge } from "../../providerInstances";
 // components (WorkingTimer, LiveElapsed) handle it.
 // ---------------------------------------------------------------------------
 
+/** Opens another thread; see MessagesTimelineProps.onOpenThread. */
+export type OpenThread = (
+  threadId: ThreadId,
+  environmentId?: EnvironmentId,
+  how?: "linked",
+) => void;
+
 interface TimelineRowSharedState {
   timestampFormat: TimestampFormat;
   /** Room agents by `roomAgentKey`; null outside rooms. */
@@ -354,7 +362,7 @@ interface TimelineRowSharedState {
   /** See MessagesTimelineProps.workflowRunActions. */
   workflowRunActions: WorkflowRunActions | null;
   /** See MessagesTimelineProps.onOpenThread. */
-  onOpenThread: ((threadId: ThreadId, environmentId?: EnvironmentId) => void) | null;
+  onOpenThread: OpenThread | null;
   /** Every finished `thread_start` call, by turn: a call's record reads its turn's. */
   threadStartCallsByTurn: ReadonlyMap<string, ReadonlyArray<ThreadStartCall>>;
   /** A run thread's own first message and the line it folds to (MessagesTimelineProps.scheduledRunLabel). */
@@ -909,8 +917,10 @@ interface MessagesTimelineProps {
    * Opens another thread: the one that started this thread, or one this
    * thread's agent started (child threads). `environmentId` names the
    * computer it lives on when that is another one; absent, this thread's.
+   * `"linked"`: a child on a computer this app can't see, read through the
+   * link (LinkedThreadView).
    */
-  onOpenThread?: ((threadId: ThreadId, environmentId?: EnvironmentId) => void) | null | undefined;
+  onOpenThread?: OpenThread | null | undefined;
   /**
    * The thread was started by a scheduled task's run: its first message, the
    * run's own, folds to this line ("Event · <task>", "Scheduled · <task>")
@@ -3344,7 +3354,7 @@ function ThreadMessageTimelineRow({
       title={formatTimestamp(message.createdAt, ctx.timestampFormat)}
     >
       <div className="mb-1 flex min-h-5 min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-[10.5px] text-muted-foreground">
-        {ctx.onOpenThread && source.openable ? (
+        {ctx.onOpenThread && (source.openable || source.linked) ? (
           <button
             type="button"
             className="min-w-0 cursor-pointer truncate text-foreground/85 underline-offset-2 transition-colors hover:text-foreground hover:underline"
@@ -3353,6 +3363,7 @@ function ThreadMessageTimelineRow({
               ctx.onOpenThread?.(
                 origin.threadId,
                 source.computer ? source.computer.environmentId : undefined,
+                source.openable ? undefined : "linked",
               )
             }
           >
@@ -5140,10 +5151,14 @@ function StartedThreadsRecord({ entry }: { entry: TimelineWorkEntry }) {
 /**
  * A thread the agent started on a linked computer: the real thread when the
  * app has that computer's threads, else the parent's record of it, with its
- * last known status. Either way it says which computer.
+ * last known status, which opens it read through the link where this
+ * thread's computer does that (LinkedThreadView). Either way it says which
+ * computer.
  */
 function RemoteStartedThreadLine({ child }: { child: RemoteChildThread }) {
+  const { activeThreadEnvironmentId, onOpenThread } = use(TimelineRowCtx);
   const computerLabel = useComputerLabel();
+  const readsLinked = useConnectedComputerCapability(activeThreadEnvironmentId, "linkedThreadRead");
   const thread = useStore(
     (state) =>
       selectEnvironmentState(state, child.environmentId).sidebarThreadSummaryById[child.threadId],
@@ -5154,24 +5169,29 @@ function RemoteStartedThreadLine({ child }: { child: RemoteChildThread }) {
   }
   const entry = { ...remoteChildStanding(child), computerLabel: computer };
   return (
-    <li
-      className="flex min-w-0 items-center gap-1.5 text-xs leading-5 text-foreground/85"
-      data-started-thread={child.threadId}
-    >
-      <span
-        aria-label={entry.status?.label ?? "Finished"}
-        className={cn(
-          "size-1.5 shrink-0 rounded-full",
-          entry.status ? entry.status.dotClass : "bg-muted-foreground/45",
-        )}
-      />
-      <span className="min-w-0 truncate">{child.title}</span>
-      <span className="min-w-0 shrink-[2] truncate text-muted-foreground">on {computer}</span>
-      {entry.status ? (
-        <span className="ms-auto shrink-0 text-muted-foreground">
-          {remoteChildStatusText(entry)}
-        </span>
-      ) : null}
+    <li>
+      <button
+        type="button"
+        className="flex w-full min-w-0 cursor-pointer items-center gap-1.5 text-left text-xs leading-5 text-foreground/85 transition-colors hover:text-foreground disabled:cursor-default disabled:hover:text-foreground/85"
+        disabled={!readsLinked || onOpenThread === null}
+        data-started-thread={child.threadId}
+        onClick={() => onOpenThread?.(child.threadId, child.environmentId, "linked")}
+      >
+        <span
+          aria-label={entry.status?.label ?? "Finished"}
+          className={cn(
+            "size-1.5 shrink-0 rounded-full",
+            entry.status ? entry.status.dotClass : "bg-muted-foreground/45",
+          )}
+        />
+        <span className="min-w-0 truncate">{child.title}</span>
+        <span className="min-w-0 shrink-[2] truncate text-muted-foreground">on {computer}</span>
+        {entry.status ? (
+          <span className="ms-auto shrink-0 text-muted-foreground">
+            {remoteChildStatusText(entry)}
+          </span>
+        ) : null}
+      </button>
     </li>
   );
 }

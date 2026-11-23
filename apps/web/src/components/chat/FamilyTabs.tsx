@@ -8,6 +8,10 @@
  * parent, so switching between members keeps it mounted and still. It reads
  * a narrow model (`sameFamilyTabs`), so a reply streaming in one thread does
  * not redraw it.
+ *
+ * A child on a computer this app can't see opens read through the link
+ * (LinkedThreadView), where the parent's computer can do that; the row then
+ * shows with that child's tab open.
  */
 import { parseScopedThreadKey, scopedThreadKey } from "@threadlines/client-runtime";
 import type { ScopedThreadRef } from "@threadlines/contracts";
@@ -22,6 +26,8 @@ import { useRemoteFamilyChildren } from "../../hooks/useRemoteFamilyChildren";
 import { useKept } from "../../hooks/useStableIdentity";
 import { useThreadMenu } from "../../hooks/useThreadMenu";
 import { useTouchHoldMenu } from "../../hooks/useTouchHoldMenu";
+import { useConnectedComputerCapabilityCheck } from "../../environments/computerCapabilities";
+import { linkedThreadRouteParams } from "../../environments/links/linkedThreads";
 import { requestIdleThreadDetailPrewarm } from "../../environments/runtime/service";
 import { cn } from "../../lib/utils";
 import { buildThreadRouteParams } from "../../threadRoutes";
@@ -131,18 +137,42 @@ function useRowMeasure(
   return enabled ? measure : null;
 }
 
+/** What a tab opens: a thread this app has, or a child read through the link. */
+export type FamilyTabTarget =
+  | { readonly kind: "thread"; readonly ref: ScopedThreadRef }
+  | { readonly kind: "linked"; readonly ref: ScopedThreadRef };
+
+/** What a click on `tab` opens; null when it opens nothing. */
+function targetOf(tab: FamilyTab): FamilyTabTarget | null {
+  if (tab.threadRef !== null) return { kind: "thread", ref: tab.threadRef };
+  if (tab.linkedRef !== null) return { kind: "linked", ref: tab.linkedRef };
+  return null;
+}
+
 /**
- * The row for `threadRef`'s family, or nothing when it has none. While it
- * shows, the header's "Lead chat" and "Started by" chips give way to it
+ * The row for the open thread's family, or nothing when it has none.
+ * `openKey` is the open thread's key; for a child read through the link,
+ * `parentKey` names the parent that holds it. While the row shows, the
+ * header's "Lead chat" and "Started by" chips give way to it
  * (`useFamilyTabsShown`).
  */
-export function FamilyTabs({ threadRef }: { threadRef: ScopedThreadRef }) {
-  const family = useFamilyTabs(threadRef);
+export function FamilyTabs({ openKey, parentKey }: { openKey: string; parentKey?: string }) {
+  const family = useFamilyTabs(openKey, parentKey);
   const navigate = useNavigate();
 
   const open = useCallback(
-    (target: ScopedThreadRef) => {
-      void navigate({ to: "/$environmentId/$threadId", params: buildThreadRouteParams(target) });
+    (target: FamilyTabTarget) => {
+      if (target.kind === "linked") {
+        void navigate({
+          to: "/linked/$computerId/$linkedThreadId",
+          params: linkedThreadRouteParams(target.ref),
+        });
+        return;
+      }
+      void navigate({
+        to: "/$environmentId/$threadId",
+        params: buildThreadRouteParams(target.ref),
+      });
     },
     [navigate],
   );
@@ -177,22 +207,24 @@ export function FamilyTabs({ threadRef }: { threadRef: ScopedThreadRef }) {
  * changes. Membership is the sidebar's own rule (`liveFamilyOf`, through
  * `familyTabsOf`), fed by the same filing (`useInboxThreads`).
  */
-export function useFamilyTabs(threadRef: ScopedThreadRef): FamilyTabsModel | null {
-  const openKey = scopedThreadKey(threadRef);
+export function useFamilyTabs(openKey: string, parentKey?: string): FamilyTabsModel | null {
   const { entries, nowIso } = useInboxThreads();
   const remoteFamilyChildren = useRemoteFamilyChildren(nowIso);
+  const readsLinked = useConnectedComputerCapabilityCheck("linkedThreadRead");
   const family = useMemo(() => {
     const keys = new Set(entries.map((entry) => entry.threadKey));
     return familyTabsOf({
       openKey,
+      parentKey,
       entries,
       remoteChildrenOf: (parent) =>
         remoteFamilyChildren(parent.thread, (threadId) =>
           keys.has(scopedThreadKey({ environmentId: parent.thread.environmentId, threadId })),
         ),
+      canReadLinked: (parent) => readsLinked(parent.thread.environmentId),
       now: nowIso,
     });
-  }, [entries, nowIso, openKey, remoteFamilyChildren]);
+  }, [entries, nowIso, openKey, parentKey, readsLinked, remoteFamilyChildren]);
   return useKept(family, sameFamilyTabs);
 }
 
@@ -201,7 +233,7 @@ const FamilyTabRow = memo(function FamilyTabRow({
   onOpen,
 }: {
   family: FamilyTabsModel;
-  onOpen: (target: ScopedThreadRef) => void;
+  onOpen: (target: FamilyTabTarget) => void;
 }) {
   const isMobile = useIsMobile();
   const rowRef = useRef<HTMLDivElement | null>(null);
@@ -312,10 +344,11 @@ const FamilyTabButton = memo(function FamilyTabButton({
   active: boolean;
   /** May shrink when the row is crowded (desktop); on a phone each keeps its width and the row scrolls. */
   fill: boolean;
-  onOpen: (target: ScopedThreadRef) => void;
+  onOpen: (target: FamilyTabTarget) => void;
   buttonRef?: React.RefObject<HTMLButtonElement | null> | undefined;
 }) {
   const threadMenu = useThreadMenu();
+  const target = targetOf(tab);
   const openMenu = useCallback(
     (position: { readonly x: number; readonly y: number }) => {
       if (tab.threadRef !== null) {
@@ -348,7 +381,7 @@ const FamilyTabButton = memo(function FamilyTabButton({
       title={tab.computerLabel === null ? tab.title : `${tab.title} on ${tab.computerLabel}`}
       data-testid={`family-tab-${tab.key}`}
       data-family-tab-kind={tab.kind}
-      disabled={tab.threadRef === null}
+      disabled={target === null}
       className={cn(
         TAB_BOX_CLASS,
         "transition-colors focus-ring",
@@ -364,7 +397,7 @@ const FamilyTabButton = memo(function FamilyTabButton({
           : "text-muted-foreground hover:text-foreground disabled:hover:text-muted-foreground",
       )}
       onClick={() => {
-        if (tab.threadRef !== null && !active) onOpen(tab.threadRef);
+        if (target !== null && !active) onOpen(target);
         // A press on the open lead's tab says what a lead is (a phone never hovers).
         else if (active) showLeadCard?.();
       }}
@@ -410,7 +443,7 @@ function FamilyTabOverflow({
   onOpen,
 }: {
   hidden: readonly FamilyTab[];
-  onOpen: (target: ScopedThreadRef) => void;
+  onOpen: (target: FamilyTabTarget) => void;
 }) {
   // The colour of the first hidden thread that needs the user: no new colour.
   const needsYouDot = hidden.find((tab) => tab.needsYou)?.dotClass ?? null;
@@ -436,9 +469,10 @@ function FamilyTabOverflow({
         {hidden.map((tab) => (
           <MenuItem
             key={tab.key}
-            disabled={tab.threadRef === null}
+            disabled={targetOf(tab) === null}
             onClick={() => {
-              if (tab.threadRef !== null) onOpen(tab.threadRef);
+              const target = targetOf(tab);
+              if (target !== null) onOpen(target);
             }}
           >
             <span className="flex min-w-0 items-center gap-2">

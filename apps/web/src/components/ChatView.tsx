@@ -308,10 +308,12 @@ import { type ComposerGoalSetInput, threadGoalControls } from "./chat/ComposerGo
 import { getComposerProviderState } from "./chat/composerProviderState";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { useProjectBriefSupport } from "../projectBrief";
+import { linkedThreadRouteParams } from "../environments/links/linkedThreads";
 import { changeProjectNote, useThreadNoteSuggestions } from "../projectContext";
 import {
   MessagesTimeline,
   type NoteSuggestionResolver,
+  type OpenThread,
   type TimelineProposedPlanState,
   type TimelineTurnAgentsState,
 } from "./chat/MessagesTimeline";
@@ -8503,9 +8505,16 @@ export default function ChatView(props: ChatViewProps) {
     )?.text;
     void onRevertToTurnCountRef.current(targetTurnCount, revertedMessageText);
   }, []);
-  const onOpenForkSourceThread = useCallback(
-    (sourceThreadId: ThreadId, environmentId?: EnvironmentId) => {
+  const onOpenForkSourceThread = useCallback<OpenThread>(
+    (sourceThreadId, environmentId, how) => {
       if (!activeThread) {
+        return;
+      }
+      if (how === "linked" && environmentId !== undefined) {
+        void navigate({
+          to: "/linked/$computerId/$linkedThreadId",
+          params: linkedThreadRouteParams(scopeThreadRef(environmentId, sourceThreadId)),
+        });
         return;
       }
       void navigate({
@@ -8815,8 +8824,8 @@ export default function ChatView(props: ChatViewProps) {
         {chatHeader}
       </TitleBarContent>
       {/* The open thread's family: its parent and the threads it started. */}
-      {activeThreadRef !== null && routeKind === "server" ? (
-        <FamilyTabs threadRef={activeThreadRef} />
+      {activeThreadKey !== null && routeKind === "server" ? (
+        <FamilyTabs openKey={activeThreadKey} />
       ) : null}
 
       {threadErrorRateLimitResetCreditDialog}
