@@ -143,6 +143,8 @@ const ACP_RESUME_VERSION = 1 as const;
  * conversation in a fresh one.
  */
 const ACP_CANCEL_DEADLINE = Duration.seconds(15);
+/** How long a revert lets the agent stop its work before its session ends. */
+const ACP_REVERT_WIND_DOWN = Duration.seconds(3);
 /**
  * An agent's own turn (see `agentTurns`) that has gone this long without
  * output is closed here, in case its end notice never comes. Long: a command
@@ -3088,7 +3090,8 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
      * to the first reverted message's prompt, so it forgets the reverted
      * turns. Without a known position for that prompt (a turn before this
      * cursor's history, or a prompt the agent couldn't place) the agent
-     * keeps them, and the result says so.
+     * keeps them, and the result says so. With `rollbackByNewSession` the
+     * session ends instead (`forgetByNewSession`).
      */
     const rollbackThread: AcpAdapterShape["rollbackThread"] = (threadId, numTurns, options) =>
       Effect.gen(function* () {
@@ -3102,6 +3105,15 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         }
         ctx.turns.splice(Math.max(0, ctx.turns.length - numTurns));
         const conversationHistory = descriptor.conversationHistory;
+        if (conversationHistory === undefined && descriptor.rollbackByNewSession === true) {
+          yield* withThreadLock(
+            threadId,
+            Effect.suspend(() =>
+              sessions.get(threadId) === ctx ? forgetByNewSession(ctx) : Effect.void,
+            ),
+          );
+          return { threadId, turns: ctx.turns, conversationRolledBack: true };
+        }
         // The last turn's prompt position may still be on its way.
         if (ctx.activeTurnId === undefined && ctx.promptFiber !== undefined) {
           yield* Fiber.await(ctx.promptFiber).pipe(
@@ -3150,6 +3162,29 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         return { threadId, turns: ctx.turns, conversationRolledBack: rewound };
       });
 
+    /**
+     * For an agent that can't rewind (`rollbackByNewSession`): the session
+     * ends and is marked lost, so it is never reopened. The next message
+     * starts a new one, which the thread seeds with the turns it kept
+     * (`resumeFailed`), and the agent forgets the reverted ones. Work still
+     * going is stopped first as Stop does (a cancel ends the agent's commands
+     * and subagents, Antigravity 1.5.10), and the agent gets a moment to wind
+     * it down before its process ends.
+     */
+    const forgetByNewSession = (ctx: AcpSessionContext) =>
+      Effect.gen(function* () {
+        lostSessions.add(ctx.acpSessionId);
+        const working = () =>
+          ctx.activeTurnId !== undefined || ctx.workAfterPrompt.size > 0 || ctx.subagentsOut > 0;
+        if (working()) {
+          yield* interruptTurn(ctx.threadId).pipe(Effect.ignore);
+          yield* Effect.gen(function* () {
+            while (working()) yield* Effect.sleep("50 millis");
+          }).pipe(Effect.timeoutOption(ACP_REVERT_WIND_DOWN));
+        }
+        yield* stopSessionInternal(ctx);
+      });
+
     const stopSession: AcpAdapterShape["stopSession"] = (threadId) =>
       withThreadLock(threadId, Effect.flatMap(requireSession(threadId), stopSessionInternal));
 
@@ -3190,7 +3225,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
       provider: PROVIDER,
       capabilities: {
         sessionModelSwitch: "in-session",
-        conversationRollback: "none",
+        conversationRollback: descriptor.rollbackByNewSession ? "new-session" : "none",
         ...(descriptor.steer || descriptor.steerWithPrompt
           ? { activeTurnSteering: "supported" as const }
           : {}),

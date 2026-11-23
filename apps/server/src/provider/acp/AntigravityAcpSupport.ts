@@ -23,6 +23,8 @@
  *   that is plan mode.
  * - The session lists its own `/` commands and skills, which the composer
  *   offers; a message starting with one goes as typed.
+ * - It can't rewind its conversation, so a revert starts a new session
+ *   seeded with the turns kept.
  * - Edits carry exact ACP `diff` content, and the agent writes the files
  *   itself, so no client file system is offered.
  *
@@ -852,6 +854,8 @@ export function makeAntigravityDescriptor(
     },
     // The session's own `/` commands and skills reach the composer.
     agentCommands: ANTIGRAVITY_AGENT_COMMANDS,
+    // The CLI can't rewind its conversation: a revert starts a new one.
+    rollbackByNewSession: true,
     diffEvidence: true,
     isolateTextGeneration: true,
     onSessionConfigOptions: (settings, configOptions) =>

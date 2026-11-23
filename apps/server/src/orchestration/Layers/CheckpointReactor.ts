@@ -1243,16 +1243,40 @@ const make = Effect.gen(function* () {
 
     const rolledBackTurns = Math.max(0, context.currentTurnCount - event.payload.turnCount);
     if (rolledBackTurns > 0) {
-      if (context.hasProviderSession) {
+      // An agent that forgets by starting over (Antigravity) is reached with
+      // no runtime live too: the service reopens its session to end it, or
+      // the next turn would reopen the conversation as it was.
+      const startsOver =
+        !context.hasProviderSession &&
+        (yield* providerService
+          .getCapabilities(
+            context.thread.session?.providerInstanceId ?? context.thread.modelSelection.instanceId,
+          )
+          .pipe(
+            Effect.map((capabilities) => capabilities.conversationRollback === "new-session"),
+            Effect.orElseSucceed(() => false),
+          ));
+      if (context.hasProviderSession || startsOver) {
         const targetUserMessageId = targetUserMessageIdForCheckpointRewind({
           thread: context.thread,
           targetTurnCount: event.payload.turnCount,
         });
-        const rollback = yield* providerService.rollbackConversation({
+        const rollbackRequest = providerService.rollbackConversation({
           threadId: event.payload.threadId,
           numTurns: rolledBackTurns,
           ...(targetUserMessageId !== undefined ? { targetUserMessageId } : {}),
         });
+        // A session that can't be reopened to end it is said to remember.
+        const rollback = yield* startsOver
+          ? rollbackRequest.pipe(
+              Effect.catch((cause) =>
+                Effect.logWarning("checkpoint revert could not reopen the session to end it", {
+                  threadId: event.payload.threadId,
+                  cause,
+                }).pipe(Effect.as({ conversationRolledBack: false })),
+              ),
+            )
+          : rollbackRequest;
         if (!rollback.conversationRolledBack) {
           yield* orchestrationEngine
             .dispatch({

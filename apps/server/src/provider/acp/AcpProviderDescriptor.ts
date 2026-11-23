@@ -496,6 +496,14 @@ export interface AcpProviderDescriptor<Settings extends AcpProviderSettings> {
    */
   readonly conversationHistory?: AcpConversationHistory;
   /**
+   * For an agent with no `conversationHistory`: a revert stops the session
+   * (closing it stops what it runs) and the next message opens a new one
+   * seeded with the turns kept, as after a failed resume, so the agent
+   * forgets the reverted ones (Antigravity). Without it the agent remembers
+   * them, and the revert says so.
+   */
+  readonly rollbackByNewSession?: boolean;
+  /**
    * The agent's slash commands (ACP `available_commands_update`) reach the
    * composer's `/` list for the session's thread. Absent: the list is
    * ignored, as for agents whose lists were never checked in Threadlines.

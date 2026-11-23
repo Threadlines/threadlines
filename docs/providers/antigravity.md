@@ -116,7 +116,7 @@ prefix, and the project's instructions Threadlines sends with a new chat's first
 the next message. A message that starts with a path (`/tmp/out.log is empty`) is plain text.
 
 The first message after Threadlines starts Antigravity over with the thread's history (a moved
-thread, a conversation Google can't continue) carries that history in
+thread, a conversation Google can't continue, an edited earlier message) carries that history in
 front of the words, so a command there arrives as text. Send it again on its own.
 
 ## Turns
@@ -148,6 +148,16 @@ exhausted quota fails with its reset time, so the usage-limit notice above the c
 it resets and can continue then. A conversation Google can no longer continue (a model rejected a
 saved thinking block) stops its session, and the next message starts a new one with the thread's
 history.
+
+### Editing an Earlier Message
+
+Antigravity can't rewind its own conversation. When you edit an earlier message (or undo back to
+one), Threadlines restores the files, stops anything Antigravity still runs for the thread (a
+running turn, its commands and subagents, by a cancel, then a moment to wind down), and ends that
+session. The next message starts a new Antigravity session and sends it the turns that are left,
+so Antigravity no longer remembers the removed ones. This also works when no Antigravity was
+running for the thread: Threadlines opens the saved session just to end it, since the next message
+would otherwise continue it as it was.
 
 ### Tokens
 

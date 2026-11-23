@@ -362,6 +362,57 @@ describe("Antigravity commands and edits", () => {
     }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 
+  it.live("forgets reverted turns by ending the session and starting a new one", () =>
+    Effect.gen(function* () {
+      const agy = yield* startAgy("simple");
+      expect(agy.adapter.capabilities.conversationRollback).toBe("new-session");
+      yield* agy.adapter.sendTurn({ threadId: agy.threadId, input: "first", attachments: [] });
+      yield* agy.waitFor((events) => completedTurns(events).length === 1);
+      const [beforeRevert] = yield* agy.adapter.listSessions();
+
+      const rolledBack = yield* agy.adapter.rollbackThread(agy.threadId, 1);
+      expect(rolledBack.conversationRolledBack).toBe(true);
+      expect(agy.events.some((event) => event.type === "session.exited")).toBe(true);
+      expect(yield* agy.adapter.hasSession(agy.threadId)).toBe(false);
+
+      // The next message opens a new conversation the thread seeds.
+      const restarted = yield* agy.adapter.startSession({
+        threadId: agy.threadId,
+        provider: ProviderDriverKind.make("antigravity"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        resumeCursor: beforeRevert?.resumeCursor,
+      });
+      expect(restarted.resumeFailed).toBe(true);
+      const frames = yield* agy.frames();
+      expect(frames.filter((frame) => frame.method === "session/new")).toHaveLength(2);
+      expect(frames.some((frame) => frame.method === "session/resume")).toBe(false);
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+  it.live("stops the agent's running work, and its turn once, before a revert ends it", () =>
+    Effect.gen(function* () {
+      const agy = yield* startAgy("hang");
+      const { turnId } = yield* agy.adapter.sendTurn({
+        threadId: agy.threadId,
+        input: "build it",
+        attachments: [],
+      });
+      yield* agy.waitFor((events) => replyTo(events, turnId).includes("I'll report"));
+      yield* Effect.sleep("300 millis");
+
+      yield* agy.adapter.rollbackThread(agy.threadId, 1);
+      expect(completedTurns(agy.events)).toEqual([
+        expect.objectContaining({
+          turnId,
+          payload: { state: "cancelled", stopReason: "cancelled" },
+        }),
+      ]);
+      const frames = yield* agy.frames();
+      expect(frames.filter((frame) => frame.method === "session/cancel")).toHaveLength(1);
+      expect(agy.events.some((event) => event.type === "session.exited")).toBe(true);
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
 });
 
 describe("Antigravity turn reading", () => {
