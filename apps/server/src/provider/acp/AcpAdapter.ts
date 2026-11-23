@@ -128,6 +128,7 @@ import {
 } from "./AcpProviderRuntime.ts";
 import {
   type AcpPermissionRequest,
+  type AcpToolCallReport,
   type AcpPlanUpdate,
   type AcpSessionMode,
   type AcpSessionModeState,
@@ -1221,17 +1222,21 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
 
     /**
      * A permission request as the descriptor describes its tool call
-     * (`normalizeToolCall`): an MCP call the agent runs as a command asks as
-     * a tool call, not a command.
+     * (`normalizeToolCall`): an MCP call the agent runs through a command
+     * shows the server, tool and arguments it runs, under the same kind.
      */
-    const normalizedPermissionRequest = (request: AcpPermissionRequest): AcpPermissionRequest => {
+    const normalizedPermissionRequest = (
+      request: AcpPermissionRequest,
+      report: EffectAcpSchema.RequestPermissionRequest["toolCall"],
+    ): AcpPermissionRequest => {
       const normalize = descriptor.normalizeToolCall;
       if (normalize === undefined || request.toolCall === undefined) return request;
-      const toolCall = normalize(request.toolCall);
-      // A call the descriptor retyped is named by its own detail, not the command's.
+      const toolCall = normalize(request.toolCall, report as AcpToolCallReport);
+      // The request keeps its kind, so it is asked and answered as before; a
+      // call the descriptor retyped shows its own detail (what really runs).
       const detail = toolCall.itemType !== undefined ? toolCall.detail : request.detail;
       return {
-        kind: toolCall.kind ?? request.kind,
+        kind: request.kind,
         ...(detail !== undefined ? { detail } : {}),
         toolCall,
       };
@@ -2063,6 +2068,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                 }
                 const permissionRequest = normalizedPermissionRequest(
                   parsePermissionRequest(params),
+                  params.toolCall,
                 );
                 const planFileWrite =
                   permissionRequest.toolCall !== undefined &&

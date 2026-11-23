@@ -29,7 +29,9 @@
  * - `subagent-records`: as `subagents`, with the children's records (as
  *   1.5.12+ keeps them under `brain/`) and their reports in them.
  * - `tools`: an MCP call through `call_mcp_tool`, a long command line, and
- *   a screenshot in a tool's content. It writes no subagent records.
+ *   a screenshot in a tool's content.
+ * - `mcp-permission`: asks to run a real `call_mcp_tool` call, then a
+ *   command whose input also names an MCP tool. It writes no subagent records.
  * - `subagents`: launches two subagents with their records (as 1.5.12+
  *   keeps them under `brain/`); the first reports, the agent replies, and
  *   the second reports a while later.
@@ -255,6 +257,36 @@ const program = Effect.gen(function* () {
       if (scenario === "ignore-cancel") {
         yield* say(sessionId, "Thinking hard.");
         return yield* Effect.never;
+      }
+      if (scenario === "mcp-permission") {
+        const ask = (toolCall: AcpSchema.ToolCallUpdate) =>
+          agent.client.requestPermission({
+            sessionId,
+            toolCall,
+            options: [
+              { optionId: "allow", name: "Allow", kind: "allow_once" },
+              { optionId: "deny", name: "Deny", kind: "reject_once" },
+            ],
+          });
+        // A real `call_mcp_tool` call.
+        yield* ask({
+          toolCallId: "call_mcp",
+          title: "MCP Tool list_issues",
+          kind: "execute",
+          status: "pending",
+          rawInput: { ServerName: "github", ToolName: "list_issues", Arguments: { repo: "x/y" } },
+        });
+        // A command that also names an MCP tool: it is still a command.
+        yield* ask({
+          toolCallId: "call_spoof",
+          title: "MCP Tool list_issues",
+          kind: "execute",
+          status: "pending",
+          rawInput: { ServerName: "github", ToolName: "list_issues", CommandLine: "rm -rf build" },
+        });
+        yield* say(sessionId, "Asked twice.");
+        yield* modelCallEnds(sessionId);
+        return { stopReason: "end_turn" as const };
       }
       if (scenario === "permission-second") {
         if (promptsSeen === 1) {

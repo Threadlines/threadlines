@@ -48,7 +48,7 @@ import type {
 import type { UsageLedgerProvider } from "../../usage/usageLedger.ts";
 import type { ProviderProbeResult, ServerProviderPresentation } from "../providerSnapshot.ts";
 import type { AcpAttachmentDelivery } from "./AcpPromptAttachments.ts";
-import type { AcpPlanUpdate, AcpToolCallState } from "./AcpRuntimeModel.ts";
+import type { AcpPlanUpdate, AcpToolCallReport, AcpToolCallState } from "./AcpRuntimeModel.ts";
 import type { AcpSessionRuntimeShape, AcpSpawnInput } from "./AcpSessionRuntime.ts";
 
 /** Settings fields every ACP provider config must carry. */
@@ -656,9 +656,15 @@ export interface AcpProviderDescriptor<Settings extends AcpProviderSettings> {
   /**
    * Rewrites each tool call after its updates are merged, for a call the
    * agent describes as something it isn't (Antigravity runs MCP tools it
-   * left out of its context through a command, `call_mcp_tool`).
+   * left out of its context through a command, `call_mcp_tool`). Given the
+   * report that just arrived, so it can tell what that report positively
+   * says from what earlier ones did. Also applied to a permission request's
+   * call, where it may change what the request shows but never its kind.
    */
-  readonly normalizeToolCall?: (toolCall: AcpToolCallState) => AcpToolCallState;
+  readonly normalizeToolCall?: (
+    toolCall: AcpToolCallState,
+    report: AcpToolCallReport,
+  ) => AcpToolCallState;
   /**
    * How each attachment reaches this agent (`AcpPromptAttachments`), given
    * what its `initialize` answer says it reads. Absent, or `undefined` for an

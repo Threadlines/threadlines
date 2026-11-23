@@ -8,6 +8,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import {
   AntigravitySettings,
+  ApprovalRequestId,
   type ChatAttachment,
   ProviderDriverKind,
   type ProviderRuntimeEvent,
@@ -869,6 +870,56 @@ describe("Antigravity tool rows and attachments", () => {
     events.findLast((event) => event.type === "item.completed" && String(event.itemId) === id) as
       | Extract<ProviderRuntimeEvent, { type: "item.completed" }>
       | undefined;
+
+  it.live.each(["approval-required", "full-access"] as const)(
+    "asks %s for a call_mcp_tool call as a command that names the server, tool and arguments",
+    (runtimeMode) =>
+      Effect.gen(function* () {
+        const agy = yield* startAgy("mcp-permission", undefined, runtimeMode);
+        yield* agy.adapter.sendTurn({ threadId: agy.threadId, input: "go", attachments: [] });
+        if (runtimeMode === "approval-required") {
+          // Supervised asks for both, as it did before.
+          for (let asked = 1; asked <= 2; asked += 1) {
+            yield* agy.waitFor(
+              (events) =>
+                events.filter((event) => event.type === "request.opened").length === asked,
+            );
+            const request = agy.events.filter((event) => event.type === "request.opened")[
+              asked - 1
+            ] as Extract<ProviderRuntimeEvent, { type: "request.opened" }>;
+            yield* agy.adapter.respondToRequest(
+              agy.threadId,
+              ApprovalRequestId.make(String(request.requestId)),
+              "accept",
+            );
+          }
+          const [mcp, spoof] = agy.events.filter(
+            (event) => event.type === "request.opened",
+          ) as ReadonlyArray<Extract<ProviderRuntimeEvent, { type: "request.opened" }>>;
+          // The same kind of request as before; what runs is in its words.
+          expect(mcp?.payload).toMatchObject({
+            requestType: "exec_command_approval",
+            detail: 'MCP tool github · list_issues {"repo":"x/y"}',
+          });
+          // A command naming an MCP tool shows the command it runs.
+          expect(spoof?.payload).toMatchObject({
+            requestType: "exec_command_approval",
+            detail: "rm -rf build",
+          });
+        }
+        yield* agy.waitFor((events) => completedTurns(events).length === 1);
+        // Full access approves both once, as before; supervised passes on the answers.
+        const answers = (yield* agy.frames()).flatMap((frame) =>
+          frame.result !== undefined && JSON.stringify(frame.result).includes("optionId")
+            ? [JSON.stringify(frame.result)]
+            : [],
+        );
+        expect(answers).toEqual([
+          JSON.stringify({ outcome: { outcome: "selected", optionId: "allow" } }),
+          JSON.stringify({ outcome: { outcome: "selected", optionId: "allow" } }),
+        ]);
+      }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
 
   it.live("shows call_mcp_tool as the MCP tool, keeps a command's start, drops images", () =>
     Effect.gen(function* () {

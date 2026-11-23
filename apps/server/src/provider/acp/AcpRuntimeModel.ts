@@ -42,6 +42,20 @@ export interface AcpToolCallState {
   readonly data: Record<string, unknown>;
 }
 
+/**
+ * One report of a tool call as the agent sent it: a `tool_call` or
+ * `tool_call_update`, or a permission request's call. Read by a descriptor's
+ * `normalizeToolCall`, which needs what this report says, not only the
+ * merged state.
+ */
+export interface AcpToolCallReport {
+  readonly title?: string | null | undefined;
+  readonly kind?: string | null | undefined;
+  readonly rawInput?: unknown;
+  readonly content?: ReadonlyArray<{ readonly type: string }> | null | undefined;
+  readonly locations?: ReadonlyArray<unknown> | null | undefined;
+}
+
 export interface AcpPlanUpdate {
   readonly explanation?: string | null;
   readonly plan: ReadonlyArray<{
