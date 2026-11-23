@@ -165,7 +165,6 @@ function createProviderServiceHarness(
     forgetNativeSession: () => Effect.void,
     dropResumeCursor: () => Effect.void,
     noteHistoryDelivered: () => Effect.void,
-    turnDispatched: () => Effect.succeed(true),
     getCapabilities: () =>
       Effect.succeed({
         sessionModelSwitch: "in-session",

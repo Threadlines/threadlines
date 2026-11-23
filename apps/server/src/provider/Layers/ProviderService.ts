@@ -3043,23 +3043,6 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       });
     }).pipe(Effect.ignoreCause({ log: true }));
 
-  const turnDispatched: ProviderServiceShape["turnDispatched"] = ({ threadId, turnId }) =>
-    Effect.gen(function* () {
-      const binding = Option.getOrUndefined(yield* directory.getBinding(threadId));
-      if (binding?.providerInstanceId === undefined) return false;
-      const adapter = yield* registry.getByInstance(binding.providerInstanceId);
-      const dispatched = adapter.turnDispatched;
-      // Without the signal, an accepted send has already gone out.
-      return dispatched === undefined ? true : yield* dispatched(threadId, turnId);
-    }).pipe(
-      Effect.catchCause((cause) =>
-        Effect.logWarning("provider service could not tell whether a turn went out", {
-          threadId,
-          cause: Cause.pretty(cause),
-        }).pipe(Effect.as(false)),
-      ),
-    );
-
   /**
    * Every provider session key of a thread: its own agent first, then any
    * room agents. A subagent lives inside exactly one of those runtimes, and
@@ -3559,7 +3542,6 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     forgetNativeSession,
     dropResumeCursor,
     noteHistoryDelivered,
-    turnDispatched,
     getCapabilities,
     getInstanceInfo,
     rollbackConversation,

@@ -232,19 +232,6 @@ export interface ProviderAdapterShape<TError> {
   }) => Effect.Effect<ProviderExternalThreadSnapshot, TError>;
 
   /**
-   * Whether the first prompt of a turn `sendTurn` accepted went out to the
-   * agent: true once it was written to the agent (after the session was
-   * configured for it), false once it is known it never will be (the
-   * configuration failed, the session stopped, the turn was stopped first)
-   * or the adapter knows no such turn. Context that prompt carried (the
-   * thread's history, a handoff preamble) counts as delivered only on true;
-   * an adapter that holds such context itself keeps it for the next prompt
-   * on false. Absent: `sendTurn` returns only after the prompt was written,
-   * so an accepted turn has gone out.
-   */
-  readonly turnDispatched?: (threadId: ThreadId, turnId: TurnId) => Effect.Effect<boolean>;
-
-  /**
    * Send a turn to an active provider session.
    */
   readonly sendTurn: (

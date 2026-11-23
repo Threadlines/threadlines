@@ -457,10 +457,6 @@ describe("ProviderCommandReactor", () => {
     const noteHistoryDelivered = vi.fn<ProviderServiceShape["noteHistoryDelivered"]>(
       () => Effect.void,
     );
-    // Every accepted turn has gone out to the agent unless a test says otherwise.
-    const turnDispatched = vi.fn<ProviderServiceShape["turnDispatched"]>(() =>
-      Effect.succeed(true),
-    );
     const renameBranch = vi.fn((input: unknown) =>
       Effect.succeed({
         branch:
@@ -584,7 +580,6 @@ describe("ProviderCommandReactor", () => {
       forgetNativeSession: () => Effect.void,
       dropResumeCursor,
       noteHistoryDelivered,
-      turnDispatched,
       getCapabilities: (_provider) =>
         Effect.succeed({
           sessionModelSwitch: input?.sessionModelSwitch ?? "in-session",
@@ -839,7 +834,6 @@ describe("ProviderCommandReactor", () => {
       stopSession,
       dropResumeCursor,
       noteHistoryDelivered,
-      turnDispatched,
       renameBranch,
       refreshStatus,
       refreshLocalStatus,
@@ -1766,10 +1760,15 @@ describe("ProviderCommandReactor", () => {
     await waitFor(() => harness.startSession.mock.calls.length === 2);
 
     // Accepted, but the agent never got the prompt (its configuration failed).
-    harness.turnDispatched.mockImplementationOnce(() => Effect.succeed(false));
+    harness.sendTurn.mockImplementationOnce(() =>
+      Effect.succeed({
+        threadId: ThreadId.make("thread-1"),
+        turnId: asTurnId("turn-2"),
+        undelivered: true as const,
+      }),
+    );
     await turnStart("2", "second question");
     await waitFor(() => harness.sendTurn.mock.calls.length === 2);
-    await waitFor(() => harness.turnDispatched.mock.calls.length === 2);
     await Effect.runPromise(Effect.sleep("50 millis"));
     expect(harness.noteHistoryDelivered).not.toHaveBeenCalled();
 

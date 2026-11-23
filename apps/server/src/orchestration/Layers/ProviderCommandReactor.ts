@@ -3783,7 +3783,7 @@ const make = Effect.gen(function* () {
       // Whether the provider took the turn: a failure before that left the
       // message's text with no agent; one after (bookkeeping) did not.
       let providerTookTurn = false;
-      // The send went as the agent's own command, without its context.
+      // None of the context in front of the message went (see below).
       let contextDeferred = false;
       yield* providerService
         .sendTurn({
@@ -3806,27 +3806,18 @@ const make = Effect.gen(function* () {
               providerTookTurn = true;
             }),
           ),
-          // A send that went as the agent's own command carried none of the
-          // context in front of it: every debt it was to pay stays.
           // The history and a fork's summary count as delivered only once
-          // the prompt carrying them went out to the agent, not when the send
-          // was accepted (an agent configures its session first, and that can
-          // fail). Settled on its own, so the turn's bookkeeping doesn't wait.
+          // the prompt carrying them went out to the agent. A send that went
+          // as the agent's own command (`contextDeferred`), or whose prompt
+          // was never written (`undelivered`: its setup failed first),
+          // carried none of the context in front of it, so every debt it was
+          // to pay stays, the binding's `historyOwed` mark included.
           Effect.tap((turn) =>
             Effect.suspend(() => {
-              contextDeferred = turn.contextDeferred === true;
-              if (contextDeferred) return historyDebtReturned;
-              return providerService
-                .turnDispatched({ threadId: turnRequest.threadId, turnId: turn.turnId })
-                .pipe(
-                  Effect.flatMap((wentOut) =>
-                    wentOut
-                      ? Effect.andThen(historyDebtPaid, contextDelivered)
-                      : historyDebtReturned,
-                  ),
-                  Effect.forkScoped,
-                  Effect.asVoid,
-                );
+              contextDeferred = turn.contextDeferred === true || turn.undelivered === true;
+              return contextDeferred
+                ? historyDebtReturned
+                : Effect.andThen(historyDebtPaid, contextDelivered);
             }),
           ),
           Effect.onError(() => historyDebtReturned),

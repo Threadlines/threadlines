@@ -196,8 +196,6 @@ const ACP_STOP_CHECK_INTERVAL = Duration.seconds(1);
  * The reader never waits on I/O, so this is only a guard against a bug.
  */
 const ACP_STOP_DRAIN_LIMIT = Duration.seconds(5);
-/** How many machine sends' dispatch answers an adapter keeps (`turnDispatched`). */
-const ACP_DISPATCH_MEMORY = 256;
 /**
  * The most turns a resume cursor remembers the agent's prompt positions for
  * (see `conversationHistory`); a revert further back trims Threadlines' turn
@@ -3424,8 +3422,6 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           }
           if (ctx.projectBriefCarrier?.turnId === turnId) requeueProjectBrief(ctx);
         };
-        // Whether its prompt goes out is asked later (`turnDispatched`).
-        noteDispatch(ctx.threadId, turnId, delivered);
         machine.callers.set(sendId, {
           prompt: {
             parts: prepared.promptParts,
@@ -3442,7 +3438,6 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         if (ctx.stopped) {
           machine.callers.delete(sendId);
           keepContext();
-          yield* Deferred.succeed(delivered, false);
           return yield* new ProviderAdapterSessionNotFoundError({
             provider: PROVIDER,
             threadId: input.threadId,
@@ -3452,53 +3447,23 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         const answer = yield* Deferred.await(reply);
         if ("rejected" in answer) {
           keepContext();
-          yield* Deferred.succeed(delivered, false);
           return yield* new ProviderAdapterSessionNotFoundError({
             provider: PROVIDER,
             threadId: input.threadId,
           });
         }
+        // Returns once the prompt was written, or its setup failed first:
+        // only a written prompt delivered the message and the context in
+        // front of it (`undelivered`). A stop settles this too.
+        const written = yield* Deferred.await(delivered);
         return {
           threadId: input.threadId,
           turnId,
           resumeCursor: ctx.session.resumeCursor,
           // A typed agent command left the thread's history and brief owed.
           ...(prepared.contextDeferred ? { contextDeferred: true as const } : {}),
+          ...(written ? {} : { undelivered: true as const }),
         };
-      });
-
-    /**
-     * Whether each machine send's prompt was written to the agent, by thread
-     * and turn, kept past the session's end for a caller that asks late. The
-     * oldest go once there are more than `ACP_DISPATCH_MEMORY`.
-     */
-    const dispatches = new Map<string, Deferred.Deferred<boolean>>();
-    const dispatchKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}\u0000${turnId}`;
-    const noteDispatch = (
-      threadId: ThreadId,
-      turnId: TurnId,
-      written: Deferred.Deferred<boolean>,
-    ) => {
-      dispatches.set(dispatchKey(threadId, turnId), written);
-      while (dispatches.size > ACP_DISPATCH_MEMORY) {
-        const oldest = dispatches.keys().next().value;
-        if (oldest === undefined) break;
-        dispatches.delete(oldest);
-      }
-    };
-
-    /**
-     * `ProviderAdapterShape.turnDispatched` for machine agents: true once the
-     * turn's first prompt was written (after its mode and model setup), false
-     * once it never will be (the setup failed, the session or the turn
-     * stopped first) or for a turn this adapter doesn't know. A session's
-     * stop settles every one still open, so it never hangs. On false, the
-     * context preamble the send took is pending again (`reportDelivery`).
-     */
-    const turnDispatched = (threadId: ThreadId, turnId: TurnId): Effect.Effect<boolean> =>
-      Effect.suspend(() => {
-        const written = dispatches.get(dispatchKey(threadId, turnId));
-        return written === undefined ? Effect.succeed(false) : Deferred.await(written);
       });
 
     /** A message sent mid-turn to a machine agent: another prompt of the running turn. */
@@ -4203,8 +4168,6 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
       },
       startSession,
       sendTurn,
-      // Machine sends return once taken: whether the prompt went out comes later.
-      ...(descriptor.turnMachine !== undefined ? { turnDispatched } : {}),
       ...(steerTurn ? { steerTurn } : {}),
       interruptTurn,
       readThread,

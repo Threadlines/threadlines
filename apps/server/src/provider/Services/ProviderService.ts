@@ -37,7 +37,6 @@ import type {
   RuntimeThreadGoalSnapshot,
   ThreadGoalStatus,
   ThreadId,
-  TurnId,
   ProviderSubagentInputRequest,
   ProviderSubagentInputResult,
   ProviderCommandOutputInput,
@@ -390,7 +389,8 @@ export interface ProviderServiceShape {
   /**
    * The thread's history went out to the agent of this session key, in a
    * prompt the session that started at `sessionCreatedAt`
-   * (ProviderSession.createdAt) wrote to the agent (`turnDispatched`). Its
+   * (ProviderSession.createdAt) wrote to the agent (a send whose result
+   * says neither `contextDeferred` nor `undelivered`). Its
    * binding stops owing the history (`historyOwed`), so later starts resume
    * the conversation, but only while the binding still holds that session: a
    * late word from an older session clears nothing.
@@ -399,17 +399,6 @@ export interface ProviderServiceShape {
     readonly threadId: ThreadId;
     readonly sessionCreatedAt: string;
   }) => Effect.Effect<void>;
-
-  /**
-   * Whether the first prompt of a turn `sendTurn` accepted went out to the
-   * agent (see ProviderAdapterShape.turnDispatched): what context that
-   * prompt carried is delivered only on true. Never fails; false when the
-   * turn's agent can't be found.
-   */
-  readonly turnDispatched: (input: {
-    readonly threadId: ThreadId;
-    readonly turnId: TurnId;
-  }) => Effect.Effect<boolean>;
 
   /**
    * Read capabilities for the adapter bound to a configured provider instance.

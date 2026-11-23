@@ -3667,6 +3667,13 @@ startingOver.layer("ProviderServiceLive forgetting a conversation", (it) => {
       yield* advanceTestClock(20);
       const kept = Option.getOrUndefined(yield* directory.getBinding(key));
       assert.deepEqual(kept?.resumeCursor, first.resumeCursor);
+      // The runtime's cursor moves on with its turns; it is still the same session.
+      yield* directory.upsert({
+        threadId: key,
+        provider: startingOver.ANTIGRAVITY,
+        providerInstanceId: instanceId,
+        resumeCursor: { moved: "on", after: first.resumeCursor ?? null },
+      });
       startingOver.agent.emit({
         type: "session.exited",
         eventId: asEventId("evt-conversation-lost-own"),

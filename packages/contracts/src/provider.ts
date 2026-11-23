@@ -418,6 +418,16 @@ export const ProviderTurnStartResult = Schema.Struct({
    * the caller keeps every debt it paid for the next message.
    */
   contextDeferred: Schema.optional(Schema.Literal(true)),
+  /**
+   * The prompt that carried this message was never written to the provider:
+   * its setup (the mode, the model) failed first, or the session ended
+   * before it went out. Neither the message nor the context in front of it
+   * was delivered; the driver keeps the context it held for the next
+   * message, the caller keeps every debt it was to pay, and the turn ends
+   * failed. Absent: the prompt was written (a driver returns only after it
+   * was, or after its setup failed).
+   */
+  undelivered: Schema.optional(Schema.Literal(true)),
 });
 export type ProviderTurnStartResult = typeof ProviderTurnStartResult.Type;
 

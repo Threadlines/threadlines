@@ -38,6 +38,7 @@ import {
   antigravityTurnUsageTotals,
   antigravityWorkAfterPrompt,
 } from "./AntigravityTurns.ts";
+import { normalizeAntigravityToolCall } from "./AntigravityToolCalls.ts";
 
 const decodeSettings = Schema.decodeSync(AntigravitySettings);
 const mockAgentPath = path.join(
@@ -1105,7 +1106,7 @@ describe("Antigravity turn driver, the orderings", () => {
   );
 
   it.live(
-    "reports a send whose mode setup failed undispatched, keeping its history for the next",
+    "reports a send whose mode setup failed undelivered, keeping its history for the next",
     () =>
       Effect.gen(function* () {
         const agy = yield* startAgy("mode-fails-once", undefined, "auto-accept-edits", undefined, {
@@ -1121,7 +1122,7 @@ describe("Antigravity turn driver, the orderings", () => {
           interactionMode: "plan",
           attachments: [],
         });
-        expect(yield* agy.adapter.turnDispatched!(agy.threadId, first.turnId)).toBe(false);
+        expect(first.undelivered).toBe(true);
         yield* agy.waitFor((events) => completedTurns(events).length === 1);
         expect(completedTurns(agy.events)[0]?.payload.state).toBe("failed");
         const prompts = () =>
@@ -1138,7 +1139,7 @@ describe("Antigravity turn driver, the orderings", () => {
           interactionMode: "plan",
           attachments: [],
         });
-        expect(yield* agy.adapter.turnDispatched!(agy.threadId, second.turnId)).toBe(true);
+        expect(second.undelivered).toBeUndefined();
         yield* agy.waitFor((events) => completedTurns(events).length === 2);
         const sent = yield* prompts();
         expect(sent).toHaveLength(1);
@@ -1148,27 +1149,61 @@ describe("Antigravity turn driver, the orderings", () => {
   );
 
   it.live(
-    "answers undispatched, never hanging, when the session stops before the prompt goes out",
+    "returns a send undelivered, never hanging, when the session stops before its prompt goes out",
     () =>
       Effect.gen(function* () {
         const gate = yield* makeGate((seam) => seam.point === "promptSetup" && seam.prompt === 1);
         const agy = yield* startAgy("simple", undefined, "full-access", gate.seams);
-        const { turnId } = yield* agy.adapter.sendTurn({
-          threadId: agy.threadId,
-          input: "hi",
-          attachments: [],
-        });
+        // The send returns once its prompt is written: it waits on the gate.
+        const sending = yield* agy.adapter
+          .sendTurn({ threadId: agy.threadId, input: "hi", attachments: [] })
+          .pipe(Effect.forkScoped);
         yield* gate.reached;
-        const asked = yield* agy.adapter.turnDispatched!(agy.threadId, turnId).pipe(
-          Effect.forkScoped,
-        );
         yield* agy.adapter.stopSession(agy.threadId);
-        expect(yield* Fiber.join(asked)).toBe(false);
-        // A turn this adapter never took is not dispatched either.
-        expect(yield* agy.adapter.turnDispatched!(agy.threadId, "unknown" as TurnId)).toBe(false);
+        expect((yield* Fiber.join(sending)).undelivered).toBe(true);
         const frames = yield* agy.frames();
         expect(frames.filter((frame) => frame.method === "session/prompt")).toHaveLength(0);
       }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+  it.live("holds a turn through an approval asked again while the user waits", () =>
+    Effect.gen(function* () {
+      const opened = (events: ReadonlyArray<ProviderRuntimeEvent>) =>
+        events.flatMap((event) => (event.type === "request.opened" ? [event] : []));
+      // Quiet limits far shorter than the wait: a request the machine lost
+      // track of would end the turn under the open card.
+      const agy = yield* startAgy(
+        "wake-permission-reask",
+        (descriptor) => ({
+          ...descriptor,
+          turnMachine: {
+            ...descriptor.turnMachine!,
+            silentLimit: Duration.millis(500),
+            replyQuietLimit: Duration.millis(500),
+          },
+        }),
+        "approval-required",
+      );
+      const { turnId } = yield* agy.adapter.sendTurn({
+        threadId: agy.threadId,
+        input: "build it",
+        attachments: [],
+      });
+      yield* agy.waitFor((events) => opened(events).length === 2);
+      // Past the reply's quiet limit and the settle after it (2 seconds).
+      yield* Effect.sleep("3000 millis");
+      expect(completedTurns(agy.events)).toHaveLength(0);
+      const reasked = opened(agy.events)[1]!;
+      yield* agy.adapter.respondToRequest(
+        agy.threadId,
+        ApprovalRequestId.make(String(reasked.requestId)),
+        "accept",
+      );
+      yield* agy.waitFor((events) => completedTurns(events).length === 1);
+      // One turn, ended once the reply after the answer was done.
+      expect(completedTurns(agy.events).map((event) => event.turnId)).toEqual([turnId]);
+      expect(replyTo(agy.events, turnId)).toContain("Done after asking.");
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 
   it.live("queues a message sent mid-turn when steering is off", () =>
@@ -1206,6 +1241,27 @@ describe("Antigravity turn reading", () => {
     toolCallId: "call",
     data: {},
     ...fields,
+  });
+
+  it("holds nothing for a real call_mcp_tool call, as normalized before the turn sees it", () => {
+    const update = {
+      title: "MCP Tool list_issues",
+      kind: "execute",
+      rawInput: { ServerName: "github", ToolName: "list_issues", Arguments: { repo: "x/y" } },
+    };
+    const call = tool({
+      toolCallId: "call_mcp",
+      kind: "execute",
+      title: update.title,
+      data: update,
+    });
+    expect(antigravityWorkAfterPrompt(normalizeAntigravityToolCall(call, update))).toBeUndefined();
+    // A later update that shows a command makes it one again: it holds the turn.
+    const shown = { kind: "execute", rawInput: { CommandLine: "rm -rf build" } };
+    const command = normalizeAntigravityToolCall(normalizeAntigravityToolCall(call, update), shown);
+    expect(antigravityWorkAfterPrompt(command)).toEqual({
+      kind: "command",
+    });
   });
 
   it("tells the work that outlives a prompt from what ends with it", () => {

@@ -58,6 +58,8 @@
  * - `quiet-activity`: starts a command that never ends; 100 ms after the
  *   answer an update about it shows nothing new.
  * - `stuck`: starts a command that never ends, and ignores a cancel.
+ * - `wake-permission-reask`: a command ends after the answer; the wake asks
+ *   for an MCP call, and an update while it waits has it asked again.
  * - `mode-fails-once`: the first switch back to the `default` mode fails;
  *   later ones work.
  * - `steer`: holds its first prompt until a second arrives, answers the first
@@ -817,6 +819,48 @@ const program = Effect.gen(function* () {
         yield* Effect.gen(function* () {
           yield* Effect.sleep("3000 millis");
           yield* say(sessionId, "Woke up by myself.");
+          yield* modelCallEnds(sessionId);
+        }).pipe(Effect.forkDetach);
+        return { stopReason: "end_turn" as const };
+      }
+      if (scenario === "wake-permission-reask") {
+        yield* update(sessionId, { sessionUpdate: "tool_call", ...command, status: "in_progress" });
+        yield* say(sessionId, "I'll report once the build finishes.");
+        yield* modelCallEnds(sessionId);
+        yield* Effect.gen(function* () {
+          yield* Effect.sleep("100 millis");
+          yield* update(sessionId, {
+            sessionUpdate: "tool_call_update",
+            toolCallId: command.toolCallId,
+            status: "completed",
+            rawOutput: { output: "Command exited with code 0.", exit_code: 0 },
+          });
+          // Woken by the build, it asks to run an MCP tool; an update while
+          // it waits shows the call is a command, so it is asked again.
+          yield* Effect.gen(function* () {
+            yield* Effect.sleep("300 millis");
+            yield* update(sessionId, {
+              sessionUpdate: "tool_call_update",
+              toolCallId: "call_mcp",
+              status: "pending",
+              rawInput: { CommandLine: "rm -rf build" },
+            });
+          }).pipe(Effect.forkDetach);
+          yield* agent.client.requestPermission({
+            sessionId,
+            toolCall: {
+              toolCallId: "call_mcp",
+              title: "MCP Tool list_issues",
+              kind: "execute",
+              status: "pending",
+              rawInput: { ServerName: "github", ToolName: "list_issues", Arguments: {} },
+            },
+            options: [
+              { optionId: "allow", name: "Allow", kind: "allow_once" },
+              { optionId: "deny", name: "Deny", kind: "reject_once" },
+            ],
+          });
+          yield* say(sessionId, "Done after asking.");
           yield* modelCallEnds(sessionId);
         }).pipe(Effect.forkDetach);
         return { stopReason: "end_turn" as const };
