@@ -57,6 +57,11 @@ import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 
+import {
+  type AnalyticsStallDurationBucket,
+  stallDurationBucket,
+} from "../telemetry/AnalyticsProperties.ts";
+import { makeDailyAnalyticsCounter } from "../telemetry/DailyCounter.ts";
 import { readDatabaseCallMs } from "./databaseCallTime.ts";
 
 /** How often the clocks are read. */
@@ -284,6 +289,15 @@ export class StallMonitor extends Context.Service<StallMonitor, StallMonitorShap
 
 const make = Effect.gen(function* () {
   const scope = yield* Effect.scope;
+  const stallCounter = yield* makeDailyAnalyticsCounter<{
+    readonly cause: ServerStallCause;
+    readonly durationBucket: AnalyticsStallDurationBucket;
+    readonly heldByDatabase: boolean;
+  }>({
+    event: "server.stall",
+    keyOf: ({ cause, durationBucket, heldByDatabase }) =>
+      `${cause}\u0000${durationBucket}\u0000${heldByDatabase}`,
+  });
   const runId = randomUUID().slice(0, 8);
   let sequence = 0;
   const latest = yield* SubscriptionRef.make<Option.Option<RecordedStall>>(Option.none());
@@ -313,6 +327,11 @@ const make = Effect.gen(function* () {
   // and what clients are told never wait on it.
   const record = (stall: RecordedStall) =>
     Effect.gen(function* () {
+      stallCounter.increment({
+        cause: stall.cause,
+        durationBucket: stallDurationBucket(stall.durationMs),
+        heldByDatabase: stall.databaseMs !== undefined,
+      });
       if (stall.cause === "overloaded" || stall.cause === "unknown") {
         yield* Effect.forkIn(
           Effect.flatMap(readTopProcesses, (top) => logStall(stall, top)),

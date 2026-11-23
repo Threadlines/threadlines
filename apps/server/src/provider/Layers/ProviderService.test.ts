@@ -912,6 +912,175 @@ it.effect("ProviderServiceLive reports a failure under the category the agent na
   }).pipe(Effect.provide(NodeServices.layer)),
 );
 
+it.effect(
+  "ProviderServiceLive keeps custom instance ids out of fork telemetry, tags community agents, and counts active sessions on shutdown",
+  () =>
+    Effect.gen(function* () {
+      const claude = makeFakeCodexAdapter(CLAUDE_AGENT_DRIVER);
+      const communityDriver = ProviderDriverKind.make("acpRegistry");
+      const community = makeFakeCodexAdapter(communityDriver);
+      const workClaudeId = ProviderInstanceId.make("claudeAgent_acme_work");
+      const communityInstanceId = ProviderInstanceId.make("acp_pi-acp");
+
+      const recorded: Array<{
+        readonly event: string;
+        readonly properties: Readonly<Record<string, unknown>> | undefined;
+      }> = [];
+
+      const adaptersByInstance = new Map<
+        ProviderInstanceId,
+        {
+          readonly adapter: ProviderAdapterShape<ProviderAdapterError>;
+          readonly communityAgentId?: string;
+        }
+      >([
+        [workClaudeId, { adapter: claude.adapter }],
+        [communityInstanceId, { adapter: community.adapter, communityAgentId: "pi-acp" }],
+      ]);
+
+      const registry: ProviderAdapterRegistryShape = {
+        getByInstance: (instanceId) => {
+          const entry = adaptersByInstance.get(instanceId);
+          return entry
+            ? Effect.succeed(entry.adapter)
+            : Effect.fail(
+                new ProviderUnsupportedError({ provider: ProviderDriverKind.make(instanceId) }),
+              );
+        },
+        getInstanceInfo: (instanceId) => {
+          const entry = adaptersByInstance.get(instanceId);
+          if (!entry) {
+            return Effect.fail(
+              new ProviderUnsupportedError({ provider: ProviderDriverKind.make(instanceId) }),
+            );
+          }
+          return Effect.succeed({
+            instanceId,
+            driverKind: entry.adapter.provider,
+            displayName: undefined,
+            enabled: true,
+            continuationIdentity: {
+              driverKind: entry.adapter.provider,
+              continuationKey: `${entry.adapter.provider}:instance:${instanceId}`,
+            },
+            ...(entry.communityAgentId !== undefined
+              ? { communityAgentId: entry.communityAgentId }
+              : {}),
+          });
+        },
+        listInstances: () => Effect.succeed(Array.from(adaptersByInstance.keys())),
+        listProviders: () => Effect.succeed([CLAUDE_AGENT_DRIVER, communityDriver]),
+        streamChanges: Stream.empty,
+        subscribeChanges: Effect.flatMap(PubSub.unbounded<void>(), (pubsub) =>
+          PubSub.subscribe(pubsub),
+        ),
+      };
+
+      const directoryLayer = ProviderSessionDirectoryLive.pipe(
+        Layer.provide(
+          ProviderSessionRuntimeRepositoryLive.pipe(Layer.provide(SqlitePersistenceMemory)),
+        ),
+      );
+      const providerLayer = makeProviderServiceWithScrubber().pipe(
+        Layer.provide(ThreadSessionAdmissionPermissive),
+        Layer.provide(Layer.succeed(ProviderAdapterRegistry, registry)),
+        Layer.provide(directoryLayer),
+        Layer.provide(defaultServerSettingsLayer),
+        Layer.provide(
+          Layer.succeed(AnalyticsService, {
+            record: (event, properties) => Effect.sync(() => recorded.push({ event, properties })),
+            flush: Effect.void,
+          }),
+        ),
+        Layer.provide(Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers)),
+      );
+
+      yield* Effect.gen(function* () {
+        const provider = yield* ProviderService;
+        // 1. Fork from a custom-labeled Claude account onto a community agent.
+        const forkedThreadId = asThreadId("thread-fork-privacy");
+        yield* provider.startSession(forkedThreadId, {
+          provider: communityDriver,
+          providerInstanceId: communityInstanceId,
+          threadId: forkedThreadId,
+          modelSelection: createModelSelection(communityInstanceId, "gemini-4-argon"),
+          runtimeMode: "full-access",
+        });
+        yield* provider.sendTurn({
+          threadId: forkedThreadId,
+          input: "continue here",
+          modelSelection: createModelSelection(communityInstanceId, "gemini-4-argon"),
+          telemetryContext: {
+            kind: "thread_fork",
+            sourceModelSelection: createModelSelection(workClaudeId, "claude-sonnet-4-6"),
+            seedMode: "context-seed",
+            includedMessageCount: 2,
+            includedToolSummaryCount: 1,
+            includedAttachmentCount: 0,
+            omittedAttachmentCount: 0,
+          },
+        });
+
+        // 2. Stop the session (keeps persisted binding), then force a failed-resume recovery.
+        yield* provider.stopSession({ threadId: forkedThreadId });
+        const startCommunity = community.startSession.getMockImplementation()!;
+        community.startSession.mockImplementationOnce((input) =>
+          startCommunity(input).pipe(Effect.map((session) => ({ ...session, resumeFailed: true }))),
+        );
+        yield* provider.sendTurn({
+          threadId: forkedThreadId,
+          input: "after restart",
+          modelSelection: createModelSelection(communityInstanceId, "gemini-4-argon"),
+        });
+
+        // 3. A second thread is started and stopped so 2 bindings exist but only 1 session is active
+        //    when ProviderService's scope finalizer runs stopAll.
+        const stoppedThreadId = asThreadId("thread-already-stopped");
+        yield* provider.startSession(stoppedThreadId, {
+          provider: CLAUDE_AGENT_DRIVER,
+          providerInstanceId: workClaudeId,
+          threadId: stoppedThreadId,
+          runtimeMode: "full-access",
+        });
+        yield* provider.stopSession({ threadId: stoppedThreadId });
+      }).pipe(Effect.provide(providerLayer));
+
+      const fork = recorded.find((entry) => entry.event === "thread.fork.created")?.properties;
+      assert.include(fork, {
+        sourceProvider: "claudeAgent",
+        targetProvider: "acpRegistry",
+        targetCommunityAgentId: "pi-acp",
+        providerChanged: true,
+        sourceModel: "claude-sonnet-4-6",
+        targetModel: "gemini-4-argon",
+      });
+      assert.notInclude(JSON.stringify(fork), "acme");
+      assert.notInclude(JSON.stringify(fork), "acp_pi-acp");
+
+      const stoppedCommunity = recorded.find(
+        (entry) =>
+          entry.event === "provider.session.stopped" &&
+          entry.properties?.provider === "acpRegistry",
+      )?.properties;
+      assert.include(stoppedCommunity, { provider: "acpRegistry", communityAgentId: "pi-acp" });
+
+      const recovered = recorded.find(
+        (entry) => entry.event === "provider.session.recovered",
+      )?.properties;
+      assert.include(recovered, {
+        provider: "acpRegistry",
+        communityAgentId: "pi-acp",
+        strategy: "resume-thread",
+        resumeFailed: true,
+      });
+
+      const stoppedAll = recorded.find(
+        (entry) => entry.event === "provider.sessions.stopped_all",
+      )?.properties;
+      assert.deepStrictEqual(stoppedAll, { sessionCount: 1 });
+    }).pipe(Effect.provide(NodeServices.layer)),
+);
+
 it.effect("ProviderServiceLive keeps a turn the provider took when a write after it fails", () =>
   Effect.gen(function* () {
     const codex = makeFakeCodexAdapter();

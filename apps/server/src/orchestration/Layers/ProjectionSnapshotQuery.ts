@@ -433,6 +433,9 @@ const ProjectionStateDbRowSchema = ProjectionState;
 const ProjectionCountsRowSchema = Schema.Struct({
   projectCount: Schema.Number,
   threadCount: Schema.Number,
+  leadChatCount: Schema.Number,
+  projectsWithBriefCount: Schema.Number,
+  projectNoteCount: Schema.Number,
 });
 const WorkspaceRootLookupInput = Schema.Struct({
   workspaceRoot: Schema.String,
@@ -1867,7 +1870,29 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       sql`
         SELECT
           (SELECT COUNT(*) FROM projection_projects) AS "projectCount",
-          (SELECT COUNT(*) FROM projection_threads) AS "threadCount"
+          (SELECT COUNT(*) FROM projection_threads) AS "threadCount",
+          (
+            SELECT COUNT(*)
+            FROM projection_projects p
+            INNER JOIN projection_threads lead
+              ON lead.thread_id = p.lead_thread_id
+              AND lead.project_id = p.project_id
+              AND lead.archived_at IS NULL
+              AND lead.deleted_at IS NULL
+            WHERE p.deleted_at IS NULL
+          ) AS "leadChatCount",
+          (
+            SELECT COUNT(*)
+            FROM project_briefs b
+            INNER JOIN projection_projects p ON p.project_id = b.project_id
+            WHERE p.deleted_at IS NULL AND TRIM(b.text) != ''
+          ) AS "projectsWithBriefCount",
+          (
+            SELECT COUNT(*)
+            FROM project_notes n
+            INNER JOIN projection_projects p ON p.project_id = n.project_id
+            WHERE p.deleted_at IS NULL
+          ) AS "projectNoteCount"
       `,
   });
 
@@ -3597,6 +3622,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       Effect.map((row): ProjectionSnapshotCounts => ({
         projectCount: row.projectCount,
         threadCount: row.threadCount,
+        leadChatCount: row.leadChatCount,
+        projectsWithBriefCount: row.projectsWithBriefCount,
+        projectNoteCount: row.projectNoteCount,
       })),
     );
 

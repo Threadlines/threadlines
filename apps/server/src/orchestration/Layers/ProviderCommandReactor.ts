@@ -116,6 +116,7 @@ import { makeSessionLaunchGenerations, withoutLaunchMark } from "../sessionLaunc
 import { buildIndependentReviewPrompt } from "../roomReviewPrompt.ts";
 import { messageSentFromNote, previousMessageSentFrom } from "../messageSentFrom.ts";
 import { turnMessageOrigin } from "../turnOrigin.ts";
+import { AnalyticsService } from "../../telemetry/Services/AnalyticsService.ts";
 import { agentMessageFrame, buildRoomCatchUp } from "../roomCatchUp.ts";
 import { isContinueTrigger, latestTurnStartFor } from "../continueTurns.ts";
 
@@ -625,6 +626,7 @@ const make = Effect.gen(function* () {
   const vcsStatusBroadcaster = yield* VcsStatusBroadcaster;
   const textGeneration = yield* TextGeneration;
   const serverSettingsService = yield* ServerSettingsService;
+  const analytics = yield* Effect.serviceOption(AnalyticsService);
   // Absent on a CLI-only server, which has no agents to bring in.
   const providerRegistry = yield* Effect.serviceOption(ProviderRegistry);
   const fileSystem = yield* FileSystem.FileSystem;
@@ -3806,6 +3808,7 @@ const make = Effect.gen(function* () {
           ...turnRequest,
           requestedAt,
           origin,
+          lane: "main",
           // Its sender reads the reply here: Codex suggests their next message.
           ...(origin === "person" ? { suggestNextMessage: true } : {}),
           ...(resend !== undefined ? { resend } : {}),
@@ -6783,6 +6786,7 @@ const make = Effect.gen(function* () {
       ...(deviceNote !== undefined ? { deviceNote } : {}),
       modelSelection,
       interactionMode: "default",
+      lane: isReview ? "side_review" : "side",
       origin: turnMessageOrigin({
         message: question,
         askedByAgent: sideTurn.askedBy !== undefined,
@@ -6906,7 +6910,13 @@ const make = Effect.gen(function* () {
   const processSideTurnSettled = Effect.fn("processSideTurnSettled")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.side-turn-settled" }>,
   ) {
-    const { threadId, sideTurnId, participantId } = event.payload;
+    const { threadId, sideTurnId, participantId, outcome, error } = event.payload;
+    if (Option.isSome(analytics)) {
+      yield* analytics.value.record("room.side_turn.settled", {
+        outcome,
+        timedOut: error === "it ran for 30 minutes and was stopped.",
+      });
+    }
     yield* stopSideRuntime(threadId, { sideTurnId, participantId }).pipe(Effect.forkScoped);
     // Only the agent the message waits for: another agent's answer ending
     // releases nothing.
@@ -7461,6 +7471,12 @@ const make = Effect.gen(function* () {
         Effect.map((settings) => settings.continueAfterRestart),
         Effect.orElseSucceed(() => false),
       );
+      if (Option.isSome(analytics)) {
+        yield* analytics.value.record("provider.turn.restart_recovery", {
+          count: cut.length,
+          continueAfterRestart: settingOn,
+        });
+      }
       for (const { threadId, turnId, participantId, waitingOnUser } of cut) {
         const createdAt = yield* nowIso;
         yield* orchestrationEngine

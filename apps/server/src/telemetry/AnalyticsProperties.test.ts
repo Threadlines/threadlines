@@ -15,6 +15,8 @@ import {
   normalizeAnalyticsModel,
   providerChecksSettled,
   providerReadinessProperties,
+  stallDurationBucket,
+  themeAnalyticsProperties,
 } from "./AnalyticsProperties.ts";
 
 const providerSnapshot = (
@@ -60,6 +62,39 @@ describe("AnalyticsProperties", () => {
       "gpt-4o-2024-08-06",
     );
     assert.strictEqual(normalizeAnalyticsModel("grok-4.7-build-fast").model, "grok-4.7-build-fast");
+    assert.strictEqual(normalizeAnalyticsModel("grok-code-fast-1").model, "grok-code-fast-1");
+    assert.strictEqual(
+      normalizeAnalyticsModel("gemini-2.0-flash-001").model,
+      "gemini-2.0-flash-001",
+    );
+    assert.deepStrictEqual(normalizeAnalyticsModel("gemini-4-argon"), {
+      model: "gemini-4-argon",
+      modelKind: "known",
+      modelFamily: "gemini",
+    });
+    assert.strictEqual(normalizeAnalyticsModel("gemini-4-argon-high").model, "gemini-4-argon-high");
+    assert.strictEqual(normalizeAnalyticsModel("gemini-4-carbon").model, "gemini-4-carbon");
+    assert.strictEqual(normalizeAnalyticsModel("gemini-4-neon").model, "gemini-4-neon");
+    assert.strictEqual(
+      normalizeAnalyticsModel("gemini-4-hydrogen-sonar").model,
+      "gemini-4-hydrogen-sonar",
+    );
+    assert.deepStrictEqual(normalizeAnalyticsModel("muse-spark-1.3"), {
+      model: "muse-spark-1.3",
+      modelKind: "known",
+      modelFamily: "muse",
+    });
+    assert.deepStrictEqual(normalizeAnalyticsModel("claude-mythos-5-1"), {
+      model: "claude-mythos-5-1",
+      modelKind: "known",
+      modelFamily: "claude",
+    });
+    assert.deepStrictEqual(normalizeAnalyticsModel("o3"), {
+      model: "o3",
+      modelKind: "known",
+      modelFamily: "gpt",
+    });
+    assert.strictEqual(normalizeAnalyticsModel("openai/o4-mini").model, "o4-mini");
   });
 
   it("redacts custom and provider-prefixed model strings", () => {
@@ -85,6 +120,14 @@ describe("AnalyticsProperties", () => {
       "gpt-4o-acme-payroll",
       "gpt-5x-sol",
       "google/gemini-2.5-acme-payroll",
+      "gemini-4-acme",
+      "muse-acme-payroll",
+      "muse-4242-1717",
+      "gpt-5-4242-1717",
+      "grok-4-12-34-56-78",
+      "claude-sonnet-4-20999999",
+      "claude-mythos-5-acme",
+      "o3-acme",
       "openai/gpt-5.4-123456789012",
       // Whatever made a long name private may be past the cut.
       `gpt-5-${"a".repeat(96)}:acme`,
@@ -161,6 +204,14 @@ describe("AnalyticsProperties", () => {
     assert.deepStrictEqual(
       analyticsAgentProperties({ provider: "acpRegistry", communityAgentId: "/Users/someone" }),
       { provider: "acpRegistry" },
+    );
+    assert.deepStrictEqual(
+      analyticsAgentProperties({
+        provider: "acpRegistry",
+        communityAgentId: "pi-acp",
+        prefix: "source",
+      }),
+      { sourceProvider: "acpRegistry", sourceCommunityAgentId: "pi-acp" },
     );
   });
 
@@ -410,5 +461,44 @@ describe("AnalyticsProperties", () => {
       }),
       "resume",
     );
+  });
+
+  it("distinguishes VS Code / Open VSX themes and buckets stall durations", () => {
+    const baseColors = {
+      background: "#111111",
+      foreground: "#eeeeee",
+      mutedForeground: "#999999",
+      accent: "#3366ff",
+      accentForeground: "#ffffff",
+    };
+    assert.deepStrictEqual(
+      themeAnalyticsProperties({
+        format: "threadlines-theme@1",
+        name: "Dracula",
+        base: "dark",
+        colors: baseColors,
+        createdBy: {
+          kind: "imported",
+          vscode: { extension: "dracula-theme.theme-dracula", theme: "Dracula" },
+        },
+      }),
+      { origin: "vscode", base: "dark", art: "none", customFonts: false },
+    );
+    assert.deepStrictEqual(
+      themeAnalyticsProperties({
+        format: "threadlines-theme@1",
+        name: "Local",
+        base: "light",
+        colors: baseColors,
+        createdBy: { kind: "imported" },
+      }),
+      { origin: "imported", base: "light", art: "none", customFonts: false },
+    );
+
+    assert.strictEqual(stallDurationBucket(2_000), "2-5s");
+    assert.strictEqual(stallDurationBucket(4_999), "2-5s");
+    assert.strictEqual(stallDurationBucket(5_000), "5-15s");
+    assert.strictEqual(stallDurationBucket(14_999), "5-15s");
+    assert.strictEqual(stallDurationBucket(15_000), "15s+");
   });
 });
