@@ -10,7 +10,10 @@ import { useSidebarProjectSnapshots } from "../../hooks/useSidebarProjectSnapsho
 import { useWorktreePickup } from "../../hooks/useWorktreePickup";
 import { startNewGeneralChatThread } from "../../lib/chatThreadActions";
 import { resolveGeneralChatsProjectRef } from "../../lib/generalChats";
-import { orderSnapshotsByProjectRefs } from "../../sidebarProjectGrouping";
+import {
+  orderSnapshotsByProjectRefs,
+  type SidebarProjectSnapshot,
+} from "../../sidebarProjectGrouping";
 import { selectGeneralChatsProjectAcrossEnvironments, useStore } from "../../store";
 import { cn } from "../../lib/utils";
 import { ProjectFavicon } from "../ProjectFavicon";
@@ -27,15 +30,12 @@ import { ProjectThreadMap } from "./ProjectThreadMap";
 import { useDraftHeroColumnMark } from "./useDraftHero";
 import { TooltipWrapper } from "../ui/tooltip";
 import {
-  Menu,
   MENU_PICK_ITEM_CLASS_NAME,
   MENU_PICK_ITEM_SELECTED_CLASS_NAME,
   MenuGroup,
-  MenuGroupLabel,
   MenuItem,
-  MenuPopup,
-  MenuSeparator,
 } from "../ui/menu";
+import { ProjectPickerMenu } from "../ProjectPickerMenu";
 import { InlinePickerTrigger } from "../ui/inline-picker";
 
 /**
@@ -226,112 +226,62 @@ export function DraftEmptyState({
         style={riseDelay("0.16s")}
       >
         What's next in{" "}
-        <Menu>
-          <InlinePickerTrigger>
-            {isGeneralChat ? (
-              <MessagesSquareIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
-            ) : currentProject ? (
-              <ProjectFavicon
-                cwd={currentProject.cwd}
-                environmentId={currentProject.environmentId}
-                name={currentProjectName ?? currentProject.name}
-              />
-            ) : null}
-            <span className="min-w-0 truncate">{targetName}</span>
-          </InlinePickerTrigger>
-          <MenuPopup align="center">
-            {generalChatsRef ? (
-              <>
-                <MenuGroup>
-                  <MenuItem
-                    className={cn(
-                      MENU_PICK_ITEM_CLASS_NAME,
-                      isGeneralChat && MENU_PICK_ITEM_SELECTED_CLASS_NAME,
-                    )}
-                    onClick={() => {
-                      void startNewGeneralChatThread(handleNewThread, generalChatsRef);
-                    }}
-                  >
-                    <MessagesSquareIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
-                    <span className="flex-1">General chat</span>
-                  </MenuItem>
-                </MenuGroup>
-                <MenuSeparator />
-              </>
-            ) : null}
-            <MenuGroup>
-              <MenuGroupLabel>Switch project</MenuGroupLabel>
-              {menuSnapshots.map((snapshot) => {
-                const projectRef = scopeProjectRef(snapshot.environmentId, snapshot.id);
-                const isCurrentProject =
-                  currentProjectKey !== null &&
-                  snapshot.memberProjectRefs.some(
-                    (memberRef) => scopedProjectKey(memberRef) === currentProjectKey,
-                  );
-                // Where the project lives, in the glyph vocabulary the rest of
-                // the app speaks: monitor for this device, cloud for another
-                // machine, both for a repo on both, and a count when it spans
-                // several remotes. Glyphs instead of the machine's name — the
-                // name truncated to nothing at this row width, and hover still
-                // spells it out. With no remote machine connected the question
-                // does not exist, so no row carries a glyph at all.
-                const remoteNames = snapshot.remoteEnvironmentLabels.join(", ");
-                const remoteCount = snapshot.remoteEnvironmentLabels.length;
-                const hasLocal = snapshot.environmentPresence !== "remote-only";
-                const hasRemote = snapshot.environmentPresence !== "local-only";
-                return (
-                  <MenuItem
-                    key={snapshot.projectKey}
-                    className={cn(
-                      MENU_PICK_ITEM_CLASS_NAME,
-                      isCurrentProject && MENU_PICK_ITEM_SELECTED_CLASS_NAME,
-                    )}
-                    onClick={() => {
-                      void handleNewThread(projectRef);
-                    }}
-                    title={snapshot.cwd}
-                  >
-                    <ProjectFavicon
-                      cwd={snapshot.cwd}
-                      environmentId={snapshot.environmentId}
-                      name={snapshot.displayName}
-                    />
-                    <span className="max-w-56 flex-1 truncate">{snapshot.displayName}</span>
-                    {hasRemoteMachines ? (
-                      // Instant tooltip: the glyphs are the only thing naming
-                      // the machines, so a hover dwell reads as unlabelled.
-                      <TooltipWrapper
-                        delay={0}
-                        side="right"
-                        tooltip={
-                          hasLocal && hasRemote
-                            ? `On this device and ${remoteNames}`
-                            : hasRemote
-                              ? `On ${remoteNames}`
-                              : "On this device"
-                        }
-                      >
-                        <span className="inline-flex shrink-0 items-center gap-0.5">
-                          {hasLocal ? (
-                            <MonitorIcon className="size-3 text-muted-foreground/50" />
-                          ) : null}
-                          {hasRemote ? (
-                            <CloudIcon className="size-3 text-muted-foreground/50" />
-                          ) : null}
-                          {remoteCount > 1 ? (
-                            <span className="font-mono text-[10px] leading-none text-muted-foreground">
-                              {remoteCount}
-                            </span>
-                          ) : null}
-                        </span>
-                      </TooltipWrapper>
-                    ) : null}
-                  </MenuItem>
-                );
-              })}
-            </MenuGroup>
-          </MenuPopup>
-        </Menu>
+        <ProjectPickerMenu
+          align="center"
+          label="Switch project"
+          trigger={
+            <InlinePickerTrigger>
+              {isGeneralChat ? (
+                <MessagesSquareIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
+              ) : currentProject ? (
+                <ProjectFavicon
+                  cwd={currentProject.cwd}
+                  environmentId={currentProject.environmentId}
+                  name={currentProjectName ?? currentProject.name}
+                />
+              ) : null}
+              <span className="min-w-0 truncate">{targetName}</span>
+            </InlinePickerTrigger>
+          }
+          header={
+            generalChatsRef ? (
+              <MenuGroup>
+                <MenuItem
+                  className={cn(
+                    MENU_PICK_ITEM_CLASS_NAME,
+                    isGeneralChat && MENU_PICK_ITEM_SELECTED_CLASS_NAME,
+                  )}
+                  onClick={() => {
+                    void startNewGeneralChatThread(handleNewThread, generalChatsRef);
+                  }}
+                >
+                  <MessagesSquareIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
+                  <span className="flex-1">General chat</span>
+                </MenuItem>
+              </MenuGroup>
+            ) : undefined
+          }
+          rows={menuSnapshots.map((snapshot) => ({
+            key: snapshot.projectKey,
+            name: snapshot.displayName,
+            cwd: snapshot.cwd,
+            environmentId: snapshot.environmentId,
+            orderKeys: snapshot.memberProjects.map((member) => member.physicalProjectKey),
+            cwds: snapshot.memberProjects.map((member) => member.cwd),
+            selected:
+              currentProjectKey !== null &&
+              snapshot.memberProjectRefs.some(
+                (memberRef) => scopedProjectKey(memberRef) === currentProjectKey,
+              ),
+            trailing: hasRemoteMachines ? <ProjectPlaceGlyphs snapshot={snapshot} /> : null,
+          }))}
+          onPick={(row) => {
+            const snapshot = menuSnapshots.find((candidate) => candidate.projectKey === row.key);
+            if (snapshot) {
+              void handleNewThread(scopeProjectRef(snapshot.environmentId, snapshot.id));
+            }
+          }}
+        />
         ?
       </h2>
 
@@ -339,5 +289,44 @@ export function DraftEmptyState({
         <DraftRecentThreads isGeneralChat={isGeneralChat} worktreePickup={worktreePickup} />
       ) : null}
     </div>
+  );
+}
+
+/**
+ * Where a project lives, in the glyph vocabulary the rest of the app speaks:
+ * monitor for this device, cloud for another machine, both for a repo on
+ * both, and a count when it spans several remotes. Glyphs instead of the
+ * machine's name, which truncated to nothing at a menu row's width; hover
+ * still spells it out. Drawn only while a remote machine is connected.
+ */
+function ProjectPlaceGlyphs({ snapshot }: { snapshot: SidebarProjectSnapshot }) {
+  const remoteNames = snapshot.remoteEnvironmentLabels.join(", ");
+  const remoteCount = snapshot.remoteEnvironmentLabels.length;
+  const hasLocal = snapshot.environmentPresence !== "remote-only";
+  const hasRemote = snapshot.environmentPresence !== "local-only";
+  return (
+    // Instant tooltip: the glyphs are the only thing naming the machines, so a
+    // hover dwell reads as unlabelled.
+    <TooltipWrapper
+      delay={0}
+      side="right"
+      tooltip={
+        hasLocal && hasRemote
+          ? `On this device and ${remoteNames}`
+          : hasRemote
+            ? `On ${remoteNames}`
+            : "On this device"
+      }
+    >
+      <span className="inline-flex shrink-0 items-center gap-0.5">
+        {hasLocal ? <MonitorIcon className="size-3 text-muted-foreground/50" /> : null}
+        {hasRemote ? <CloudIcon className="size-3 text-muted-foreground/50" /> : null}
+        {remoteCount > 1 ? (
+          <span className="font-mono text-[10px] leading-none text-muted-foreground">
+            {remoteCount}
+          </span>
+        ) : null}
+      </span>
+    </TooltipWrapper>
   );
 }
