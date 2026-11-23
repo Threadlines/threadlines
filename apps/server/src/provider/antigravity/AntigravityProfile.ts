@@ -13,7 +13,7 @@
  */
 import { createHash, randomBytes } from "node:crypto";
 import * as fs from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import { resolveCommandPath } from "@threadlines/shared/shell";
 import * as Effect from "effect/Effect";
@@ -42,6 +42,9 @@ export function antigravityInstancePaths(
     tempRoot: join(stateDir, "agy-tmp", hash.slice(0, 12)),
   };
 }
+
+/** The Threadlines data folder a profile from `antigravityInstancePaths` sits in. */
+export const antigravityStateDirOf = (profileDir: string) => resolve(profileDir, "..", "..", "..");
 
 /** The agent's own state dir inside the profile. */
 export const antigravityAgentDir = (profileDir: string) =>
@@ -361,6 +364,7 @@ export const prepareAntigravityProfile = (
         profileDir,
         userHome: user.userHome,
         platform: user.platform,
+        threadlinesDir: antigravityStateDirOf(profileDir),
       }),
     ),
   );

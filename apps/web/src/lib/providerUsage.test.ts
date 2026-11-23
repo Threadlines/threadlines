@@ -1003,12 +1003,13 @@ describe("deriveProviderAccountUsagePresentationForProvider", () => {
   it("says what Antigravity's server says about its limits, in its words", () => {
     const antigravity = ProviderDriverKind.make("antigravity");
     const reading = (checkedAt: string): ServerProviderAccountUsage => ({
-      source: "antigravity-quota",
+      source: "grok-billing",
       checkedAt,
       primaryLimitId: "antigravity",
       limits: [
         {
           limitId: "antigravity",
+          limitName: "Antigravity usage",
           scoped: [
             {
               scopeLabel: "Gemini",
@@ -1228,12 +1229,13 @@ describe("a model's own usage limit", () => {
 
   const antigravity = deriveProviderAccountUsagePresentation(
     {
-      source: "antigravity-quota",
+      source: "grok-billing",
       checkedAt: "2026-07-03T00:00:00.000Z",
       primaryLimitId: "antigravity",
       limits: [
         {
           limitId: "antigravity",
+          limitName: "Antigravity usage",
           scoped: [
             ["Gemini", ["Gemini"], 300, 20],
             ["Gemini", ["Gemini"], 10_080, 35],

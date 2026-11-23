@@ -682,7 +682,6 @@ const PROVIDER_USAGE_SOURCE_LABELS: Record<ServerProviderAccountUsage["source"],
   "claude-oauth-usage": "Claude usage",
   "muse-subscription-usage": "Muse Code usage",
   "grok-billing": "Grok usage",
-  "antigravity-quota": "Antigravity usage",
 };
 
 export function deriveProviderAccountUsagePresentation(
@@ -861,7 +860,7 @@ function providerUsageLabel(provider: ProviderAccountUsagePresentationProvider):
     case "claudeAgent":
       return PROVIDER_USAGE_SOURCE_LABELS["claude-oauth-usage"];
     case "antigravity":
-      return PROVIDER_USAGE_SOURCE_LABELS["antigravity-quota"];
+      return "Antigravity usage";
     default:
       return "Plan usage";
   }

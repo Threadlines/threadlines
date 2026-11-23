@@ -9,11 +9,15 @@ import * as Effect from "effect/Effect";
 import * as TestClock from "effect/testing/TestClock";
 
 import { antigravityTokenPath } from "./AntigravityProfile.ts";
+import { usageLimitForModel, usageScopeHoldsModel } from "@threadlines/shared/usageLimits";
+import type * as Duration from "effect/Duration";
+
 import {
   ANTIGRAVITY_USAGE_EXPIRED_DETAIL,
   ANTIGRAVITY_USAGE_FAILED_DETAIL,
   ANTIGRAVITY_USAGE_USER_AGENT,
   makeAntigravityUsageReader,
+  withAntigravityUsage,
 } from "./AntigravityUsage.ts";
 
 const ACCESS_TOKEN = "ya29.secret-access-token";
@@ -194,6 +198,8 @@ const setup = (input: {
   route: Route;
   method?: AntigravityAuthMethod;
   token?: Parameters<typeof writeToken>[1] | false;
+  timeouts?: { request: Duration.Input; read: Duration.Input };
+  models?: ServerProvider["models"];
 }) =>
   Effect.gen(function* () {
     const profileDir = yield* makeProfile;
@@ -205,23 +211,33 @@ const setup = (input: {
       method,
       fingerprint: "fingerprint-a",
       fetch: google.fetch,
+      ...(input.timeouts ? { timeouts: input.timeouts } : {}),
     });
-    let snapshot = signedInSnapshot(method);
+    let snapshot = { ...signedInSnapshot(method), models: input.models ?? [] };
     let published = yield* Deferred.make<ServerProvider>();
-    reader.publishTo((update) =>
-      Effect.gen(function* () {
-        const next = update(snapshot);
-        if (next) snapshot = next;
-        yield* Deferred.succeed(published, snapshot);
-      }),
-    );
+    reader.attach({
+      getSnapshot: Effect.sync(() => snapshot),
+      patchSnapshot: (update) =>
+        Effect.gen(function* () {
+          const next = update(snapshot);
+          if (next) snapshot = next;
+          yield* Deferred.succeed(published, snapshot);
+        }),
+    });
     /** Runs a status check and waits for the read it starts to publish. */
     const readOnce = Effect.gen(function* () {
       published = yield* Deferred.make<ServerProvider>();
       yield* reader.status;
       return yield* Deferred.await(published);
     });
-    return { profileDir, reader, google, readOnce };
+    return {
+      profileDir,
+      reader,
+      google,
+      readOnce,
+      current: Effect.sync(() => snapshot),
+      setSnapshot: (next: ServerProvider) => Effect.sync(() => void (snapshot = next)),
+    };
   });
 
 const windowsOf = (snapshot: ServerProvider) =>
@@ -249,7 +265,13 @@ describe("Antigravity plan limits", () => {
       assert.deepEqual(scoped[0]!.scopeModels, ["Gemini"]);
       assert.deepEqual(scoped[2]!.scopeModels, ["Claude", "GPT"]);
       assert.equal(scoped[3]!.resetsAt, Date.parse("2026-10-10T15:28:22Z"));
-      assert.equal(snapshot.accountUsage!.source, "antigravity-quota");
+      // What clients built before Antigravity accept: an unknown source fails
+      // their whole config, so the reading names itself in `limitName`.
+      assert.include(
+        ["codex-rate-limits", "claude-oauth-usage", "muse-subscription-usage", "grok-billing"],
+        snapshot.accountUsage!.source,
+      );
+      assert.equal(snapshot.accountUsage!.limits[0]!.limitName, "Antigravity usage");
       assert.equal(snapshot.auth.email, "someone@example.com");
       assert.equal(snapshot.auth.capabilities?.usage, undefined);
 
@@ -279,15 +301,13 @@ describe("Antigravity plan limits", () => {
         }),
       });
       const snapshot = yield* readOnce;
-      // The fullest Gemini model stands for the family; Claude stays the summary's shared pool.
+      // Each Gemini model keeps its own quota; Claude stays the summary's shared pool.
       assert.deepEqual(windowsOf(snapshot), [
-        { label: "Gemini", minutes: undefined, used: 40 },
-        { label: "Gemini Hydrogen", minutes: undefined, used: 5 },
+        { label: "Gemini 3.1 Pro", minutes: undefined, used: 40 },
+        { label: "Gemini 4 Hydrogen Sonar", minutes: undefined, used: 5 },
         { label: "Claude & GPT", minutes: 300, used: 56 },
         { label: "Claude & GPT", minutes: 10080, used: 100 },
       ]);
-      const gemini = snapshot.accountUsage!.limits[0]!.scoped![0]!;
-      assert.deepEqual(gemini.scopeExcludes, ["Hydrogen"]);
     }),
   );
 
@@ -297,14 +317,14 @@ describe("Antigravity plan limits", () => {
         route: googleRoute({ summary: { status: 404 }, models: { body: MODELS } }),
       });
       assert.deepEqual(windowsOf(yield* readOnce), [
-        { label: "Gemini", minutes: undefined, used: 40 },
-        { label: "Gemini Hydrogen", minutes: undefined, used: 5 },
-        { label: "Claude", minutes: undefined, used: 80 },
+        { label: "Gemini 3.1 Pro", minutes: undefined, used: 40 },
+        { label: "Gemini 4 Hydrogen Sonar", minutes: undefined, used: 5 },
+        { label: "Claude Opus 5.5", minutes: undefined, used: 80 },
       ]);
     }),
   );
 
-  it.effect("folds an Enterprise answer's per-model buckets into one row per family", () =>
+  it.effect("gives each model of an Enterprise answer its own row, its levels folded", () =>
     Effect.gen(function* () {
       const { readOnce } = yield* setup({
         method: "oauth-business",
@@ -317,14 +337,31 @@ describe("Antigravity plan limits", () => {
         }),
       });
       const snapshot = yield* readOnce;
+      // Opus unused stays unused beside a Sonnet that is 70% through its quota.
       assert.deepEqual(windowsOf(snapshot), [
-        { label: "Gemini", minutes: undefined, used: 50 },
-        { label: "Gemini Argon", minutes: undefined, used: 90 },
-        { label: "Claude", minutes: undefined, used: 70 },
-        { label: "GPT", minutes: undefined, used: 5 },
+        { label: "Gemini 3.1 Pro", minutes: undefined, used: 50 },
+        { label: "Gemini 4 Argon", minutes: undefined, used: 90 },
+        { label: "Claude Opus 5.5", minutes: undefined, used: 0 },
+        { label: "Claude Sonnet 5.5", minutes: undefined, used: 70 },
+        { label: "GPT 6.1", minutes: undefined, used: 5 },
       ]);
-      const argon = snapshot.accountUsage!.limits[0]!.scoped![1]!;
-      assert.equal(argon.resetsAt, Date.parse("2026-11-24T00:00:00Z"));
+      const scoped = snapshot.accountUsage!.limits[0]!.scoped!;
+      assert.equal(scoped[1]!.resetsAt, Date.parse("2026-11-24T00:00:00Z"));
+      assert.deepEqual(scoped[2]!.scopeModels, ["Claude Opus 5.5"]);
+      const limits = snapshot.accountUsage!;
+      assert.isTrue(
+        usageScopeHoldsModel(
+          { name: scoped[3]!.scopeLabel, models: scoped[3]!.scopeModels },
+          "Claude Sonnet 5.5",
+        ),
+      );
+      assert.isFalse(
+        usageScopeHoldsModel(
+          { name: scoped[3]!.scopeLabel, models: scoped[3]!.scopeModels },
+          "Claude Opus 5.5",
+        ),
+      );
+      assert.equal(usageLimitForModel(limits, "Claude Opus 5.5", Date.now()), undefined);
     }),
   );
 
@@ -555,6 +592,154 @@ describe("Antigravity plan limits", () => {
         resetsAt: "2026-10-10T15:28:22.000Z",
       });
       assert.equal(yield* reader.usageLimitFor("Gemini 3.1 Pro"), undefined);
+    }),
+  );
+
+  it.effect("drops another account's numbers and email, even when it has no email itself", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse("2026-10-09T12:00:00Z"));
+      const { readOnce, reader, profileDir, current } = yield* setup({
+        route: googleRoute({ summary: { body: SUMMARY } }),
+      });
+      const signedInAsA = yield* readOnce;
+      assert.equal(signedInAsA.auth.email, "someone@example.com");
+
+      // Account B: no email in its sign-in, and expired, so nothing is read for it.
+      yield* writeToken(profileDir, {
+        refresh: "1//account-b",
+        email: null,
+        expiry: "2026-10-09T11:00:00Z",
+      });
+      const status = yield* reader.status;
+      assert.isDefined(status.accountId);
+      assert.notEqual(status.accountId, signedInAsA.auth.accountId);
+      assert.equal(status.accountUsage, undefined);
+      // Folded onto the row still showing A, B's status takes A's numbers and email off it.
+      const row = withAntigravityUsage(yield* current, status);
+      assert.equal(row.accountUsage, undefined);
+      assert.equal(row.auth.email, undefined);
+      assert.equal(row.auth.accountId, status.accountId);
+      // The same account keeps its last numbers.
+      const again = withAntigravityUsage(signedInAsA, {
+        accountId: signedInAsA.auth.accountId!,
+      });
+      assert.deepEqual(again.accountUsage, signedInAsA.accountUsage);
+    }),
+  );
+
+  it.effect("a read that times out never lands on another account's row", () =>
+    Effect.gen(function* () {
+      const { reader, profileDir, current, google } = yield* setup({
+        route: () => "hang",
+        timeouts: { request: "1 hour", read: "30 seconds" },
+      });
+      yield* reader.status;
+      yield* Effect.yieldNow;
+      assert.isAbove(google.sent.length, 0);
+      yield* writeToken(profileDir, { refresh: "1//account-b", email: "b@example.com" });
+      yield* TestClock.adjust("31 seconds");
+      // The landing reads the token file: give that real time to finish.
+      yield* Effect.promise(() => new Promise((done) => setTimeout(done, 200)));
+      const row = yield* current;
+      assert.equal(row.auth.email, undefined);
+      assert.equal(row.auth.accountId, undefined);
+    }),
+  );
+
+  it.effect("keeps the rows a failed host would have given, with their age", () =>
+    Effect.gen(function* () {
+      let prodDown = false;
+      const { readOnce } = yield* setup({
+        route: googleRoute({
+          // The daily host has Gemini, the production host Claude & GPT.
+          summary: (host) =>
+            host === "daily-cloudcode-pa.googleapis.com"
+              ? { body: { groups: [SUMMARY.groups[0]!] } }
+              : prodDown
+                ? { status: 503 }
+                : { body: SUMMARY_WITHOUT_GEMINI },
+        }),
+      });
+      const first = yield* readOnce;
+      const shared = first.accountUsage!.limits[0]!.scoped!.filter(
+        (window) => window.scopeLabel === "Claude & GPT",
+      );
+      assert.lengthOf(shared, 2);
+
+      prodDown = true;
+      yield* TestClock.adjust("3 minutes");
+      const second = yield* readOnce;
+      const scoped = second.accountUsage!.limits[0]!.scoped!;
+      assert.deepEqual(
+        scoped.filter((window) => window.scopeLabel === "Claude & GPT"),
+        shared,
+      );
+      // Gemini is fresh; the kept rows carry the earlier time.
+      assert.isAbove(
+        Date.parse(scoped.find((window) => window.scopeLabel === "Gemini")!.checkedAt!),
+        Date.parse(shared[0]!.checkedAt!),
+      );
+      assert.equal(second.auth.capabilities?.usage?.detail, ANTIGRAVITY_USAGE_FAILED_DETAIL);
+    }),
+  );
+
+  it.effect("keeps Gemini when the per-model quotas that filled it in don't answer", () =>
+    Effect.gen(function* () {
+      let modelsDown = false;
+      const { readOnce } = yield* setup({
+        route: googleRoute({
+          summary: { body: SUMMARY_WITHOUT_GEMINI },
+          models: () => (modelsDown ? { status: 503 } : { body: MODELS }),
+        }),
+      });
+      yield* readOnce;
+      modelsDown = true;
+      yield* TestClock.adjust("3 minutes");
+      const labels = windowsOf(yield* readOnce)!.map((window) => window.label);
+      assert.includeMembers(labels, ["Gemini 3.1 Pro", "Claude & GPT"]);
+    }),
+  );
+
+  it.effect("never rounds a quota with something left up to spent", () =>
+    Effect.gen(function* () {
+      const { readOnce } = yield* setup({
+        route: googleRoute({
+          summary: {
+            body: {
+              buckets: [
+                { bucketId: "gemini-5h", window: "5h", remainingFraction: 0.004 },
+                { bucketId: "gemini-weekly", window: "weekly", remainingFraction: 0 },
+              ],
+            },
+          },
+        }),
+      });
+      const [fiveHour, weekly] = (yield* readOnce).accountUsage!.limits[0]!.scoped!;
+      assert.deepInclude(fiveHour, { usedPercent: 99, remainingPercent: 1 });
+      assert.deepInclude(weekly, { usedPercent: 100, remainingPercent: 0 });
+    }),
+  );
+
+  it.effect("finds a picker model's limit by its slug, for Continue at reset", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse("2026-10-09T12:00:00Z"));
+      const { readOnce, reader } = yield* setup({
+        route: googleRoute({ summary: { body: SUMMARY } }),
+        models: [
+          {
+            // Agent ids don't name the model's family.
+            slug: "model-placeholder-m26",
+            name: "Claude Sonnet 5.5",
+            isCustom: false,
+            capabilities: { optionDescriptors: [] },
+          },
+        ] as unknown as ServerProvider["models"],
+      });
+      yield* readOnce;
+      assert.deepEqual(yield* reader.usageLimitFor("model-placeholder-m26"), {
+        window: "weekly",
+        resetsAt: "2026-10-10T15:28:22.000Z",
+      });
     }),
   );
 });
