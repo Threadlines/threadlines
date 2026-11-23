@@ -50,6 +50,7 @@ import {
   type TurnId,
   type TurnStartedBy,
 } from "@threadlines/contracts";
+import { markCheckBacksDormant } from "@threadlines/shared/checkBacks";
 import { renderThreadContextSeed, withContextSeedPreamble } from "@threadlines/shared/contextSeed";
 import { LEAD_WITHOUT_TOOLS_TEXT, leadRoleText } from "@threadlines/shared/projectLead";
 import { agentInvitesMode, agentThreadsMode } from "@threadlines/shared/serverSettings";
@@ -5208,11 +5209,9 @@ const make = Effect.gen(function* () {
       ));
     if (runtime === undefined || !holdsCheckBacks) {
       // Nothing is running that could come back: the list was stale. Jobs
-      // saved to disk outlive the session, so they stay.
+      // saved to disk outlive the session, so they stay listed as dormant.
       const thread = yield* resolveThread(threadId);
-      const kept = (thread?.checkBacks ?? []).filter(
-        (checkBack) => checkBack.participantId === participantId && checkBack.durable,
-      );
+      const kept = markCheckBacksDormant(thread?.checkBacks ?? [], participantId);
       yield* orchestrationEngine
         .dispatch({
           type: "thread.check-backs.set",
@@ -6562,6 +6561,7 @@ const make = Effect.gen(function* () {
         commandId: serverCommandId("native-session-resend"),
         threadId,
         messageId: payload.value.resendMessageId,
+        ...(payload.value.chainEpoch !== undefined ? { chainEpoch: payload.value.chainEpoch } : {}),
         createdAt: yield* nowIso,
       })
       .pipe(

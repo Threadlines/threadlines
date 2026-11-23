@@ -17,6 +17,7 @@ import {
   type OrchestrationReadModel,
   type OrchestrationSession,
   type OrchestrationThread,
+  OutsideAgentConnectionId,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
@@ -26,7 +27,11 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import { describe, expect, it } from "vite-plus/test";
 
-import { childReportMessageId, isCancelledReport } from "./childThreadDecisions.ts";
+import {
+  childReportMessageId,
+  childRevertRefusal,
+  isCancelledReport,
+} from "./childThreadDecisions.ts";
 import { reportRecipient } from "./childReports.ts";
 import { decideOrchestrationCommand } from "./decider.ts";
 import { projectEvent } from "./projector.ts";
@@ -3042,4 +3047,389 @@ describe("child thread access ceilings (stage 1 step 3)", () => {
     });
     expect(threadIn(started2.model, CHILD).childRequests.passCeiling).toBeUndefined();
   });
+
+  it("stops an idle child with a saved check-back, and revert unlocks once it is dormant (sequence 1)", async () => {
+    const savedJob: OrchestrationCheckBack = {
+      id: "saved-job-1",
+      participantId: null,
+      scheduledFor: "2026-10-05T10:00:00.000Z",
+      exact: true,
+      recurring: true,
+      description: "Check deploy status",
+      durable: true,
+    };
+    const start = readModel([
+      thread(PARENT, {
+        session: session(PARENT, { status: "ready", activeTurnId: null }),
+      }),
+      thread(CHILD, {
+        parentThreadId: PARENT,
+        attachedToParent: true,
+        session: session(CHILD, { status: "ready", activeTurnId: null }),
+        checkBacks: [savedJob],
+      }),
+    ]);
+
+    expect(childRevertRefusal(start, threadIn(start, PARENT))).toContain(
+      "Finish or stop its threads first",
+    );
+
+    const stopped = await run(start, {
+      type: "thread.turn.interrupt",
+      commandId: CommandId.make("stop-seq-1"),
+      threadId: PARENT,
+      createdAt: at(10),
+    });
+    expect(threadIn(stopped.model, PARENT).agentRequests.hold).toBe(true);
+    expect(threadIn(stopped.model, CHILD).agentRequests.hold).toBe(false);
+    expect(
+      stopped.events.some(
+        (event) =>
+          event.type === "thread.session-stop-requested" && event.payload.threadId === CHILD,
+      ),
+    ).toBe(true);
+    expect(
+      stopped.events.some(
+        (event) =>
+          event.type === "thread.check-back-cancel-requested" && event.payload.threadId === CHILD,
+      ),
+    ).toBe(true);
+
+    // Once the child's runtime exits and marks the saved job dormant, revert is allowed.
+    const dormant = await run(stopped.model, {
+      type: "thread.check-backs.set",
+      commandId: CommandId.make("mark-dormant-seq-1"),
+      threadId: CHILD,
+      participantId: null,
+      checkBacks: [{ ...savedJob, dormant: true }],
+      createdAt: at(15),
+    });
+    expect(childRevertRefusal(dormant.model, threadIn(dormant.model, PARENT))).toBeNull();
+  });
+
+  it("stops flagged loose threads with their starter until a person writes in one (sequence 3)", async () => {
+    const looseIds = [1, 2, 3, 4, 5].map((index) => ThreadId.make(`loose-${index}`));
+    let model = readModel([
+      thread(PARENT, { session: session(PARENT, { status: "ready", activeTurnId: null }) }),
+    ]);
+    for (const [index, looseId] of looseIds.entries()) {
+      const created = await run(model, {
+        type: "thread.create",
+        commandId: CommandId.make(`create-loose-${index}`),
+        threadId: looseId,
+        projectId,
+        title: `Loose ${index + 1}`,
+        modelSelection: modelSelectionOf(threadIn(model, PARENT)),
+        runtimeMode: "auto-accept-edits",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        branch: null,
+        worktreePath: null,
+        parentThreadId: PARENT,
+        parentTurnId: CALLER_TURN,
+        attachedToParent: false,
+        stopsWithParent: true,
+        createdAt: at(index + 1),
+      });
+      model = {
+        ...created.model,
+        threads: created.model.threads.map((entry) =>
+          entry.id === looseId
+            ? {
+                ...entry,
+                session: session(looseId, {
+                  status: "running",
+                  activeTurnId: TurnId.make(`loose-turn-${index}`),
+                }),
+              }
+            : entry,
+        ),
+      };
+      expect(threadIn(model, looseId).stopsWithParent).toBe(true);
+    }
+
+    // Stop on the parent reaches all 5 flagged loose threads.
+    const firstStop = await run(model, {
+      type: "thread.turn.interrupt",
+      commandId: CommandId.make("stop-all-loose"),
+      threadId: PARENT,
+      createdAt: at(20),
+    });
+    const stoppedFirst = new Set(
+      firstStop.events
+        .filter((event) => event.type === "thread.session-stop-requested")
+        .map((event) => event.payload.threadId),
+    );
+    for (const looseId of looseIds) {
+      expect(stoppedFirst.has(looseId)).toBe(true);
+    }
+
+    // A person writes in loose-1: its flag clears for good, so Stop leaves it alone.
+    const claimed = await run(model, {
+      type: "thread.turn.start",
+      commandId: CommandId.make("person-claims-loose-1"),
+      threadId: looseIds[0]!,
+      message: {
+        messageId: MessageId.make("msg-claim-loose-1"),
+        role: "user",
+        text: "I'll take this thread from here.",
+        attachments: [],
+      },
+      composer: "typed",
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "auto-accept-edits",
+      createdAt: at(30),
+    });
+    expect(threadIn(claimed.model, looseIds[0]!).stopsWithParent).toBeUndefined();
+    const secondStop = await run(claimed.model, {
+      type: "thread.turn.interrupt",
+      commandId: CommandId.make("stop-remaining-loose"),
+      threadId: PARENT,
+      createdAt: at(35),
+    });
+    const stoppedSecond = new Set(
+      secondStop.events
+        .filter((event) => event.type === "thread.session-stop-requested")
+        .map((event) => event.payload.threadId),
+    );
+    expect(stoppedSecond.has(looseIds[0]!)).toBe(false);
+    for (const looseId of looseIds.slice(1)) {
+      expect(stoppedSecond.has(looseId)).toBe(true);
+    }
+  });
+
+  it("stops a 3-level subtree without putting new holds on children, keeps existing holds, and skips holds on cleanup", async () => {
+    const GRANDCHILD = ThreadId.make("grandchild");
+    const HELD_SIBLING = ThreadId.make("held-sibling");
+    const start = readModel([
+      thread(PARENT, {
+        session: session(PARENT, { status: "running", activeTurnId: CALLER_TURN }),
+      }),
+      thread(CHILD, {
+        parentThreadId: PARENT,
+        attachedToParent: true,
+        session: session(CHILD, { status: "running", activeTurnId: TurnId.make("child-turn") }),
+        // Even with an agent message queued, a family stop does not add a hold.
+        queuedFollowUps: [
+          {
+            messageId: MessageId.make("queued-agent-msg"),
+            text: "Queued from parent",
+            attachments: [],
+            runtimeMode: "auto-accept-edits",
+            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            fromThread: {
+              threadId: PARENT,
+              requestId: ChildRequestId.make("req-queued"),
+              kind: "request",
+            },
+            createdAt: at(2),
+          },
+        ],
+      }),
+      thread(GRANDCHILD, {
+        parentThreadId: CHILD,
+        attachedToParent: true,
+        session: session(GRANDCHILD, {
+          status: "running",
+          activeTurnId: TurnId.make("grandchild-turn"),
+        }),
+      }),
+      thread(HELD_SIBLING, {
+        parentThreadId: PARENT,
+        attachedToParent: true,
+        agentRequests: { ...EMPTY_AGENT_REQUEST_STATE, hold: true, chainEpoch: 2 },
+        session: session(HELD_SIBLING, {
+          status: "running",
+          activeTurnId: TurnId.make("held-turn"),
+        }),
+      }),
+    ]);
+
+    const stopped = await run(start, {
+      type: "thread.turn.interrupt",
+      commandId: CommandId.make("stop-3-levels"),
+      threadId: PARENT,
+      createdAt: at(10),
+    });
+    const stoppedIds = new Set(
+      stopped.events
+        .filter((event) => event.type === "thread.session-stop-requested")
+        .map((event) => event.payload.threadId),
+    );
+    expect(stoppedIds.has(CHILD)).toBe(true);
+    expect(stoppedIds.has(GRANDCHILD)).toBe(true);
+    expect(stoppedIds.has(HELD_SIBLING)).toBe(true);
+    expect(threadIn(stopped.model, PARENT).agentRequests.hold).toBe(true);
+    expect(threadIn(stopped.model, CHILD).agentRequests.hold).toBe(false);
+    expect(threadIn(stopped.model, GRANDCHILD).agentRequests.hold).toBe(false);
+    expect(threadIn(stopped.model, HELD_SIBLING).agentRequests.hold).toBe(true);
+
+    // A cleanup stop (archive/sweeper) never adds a hold either.
+    const cleanup = await run(start, {
+      type: "thread.session.stop",
+      commandId: CommandId.make("cleanup-stop"),
+      threadId: CHILD,
+      cause: "cleanup",
+      createdAt: at(12),
+    });
+    expect(threadIn(cleanup.model, CHILD).agentRequests.hold).toBe(false);
+  });
+
+  it("refuses sending work to a child the user stopped, and refuses a fallback resend after Stop", async () => {
+    const start = readModel([
+      thread(PARENT, {
+        session: session(PARENT, { status: "running", activeTurnId: CALLER_TURN }),
+        nativeSession: "carried",
+        messages: [
+          {
+            id: MessageId.make("m-fallback"),
+            role: "user",
+            text: "Try again",
+            turnId: null,
+            streaming: false,
+            createdAt: at(1),
+            updatedAt: at(1),
+          },
+        ],
+      }),
+      thread(CHILD, {
+        parentThreadId: PARENT,
+        attachedToParent: true,
+        agentRequests: { ...EMPTY_AGENT_REQUEST_STATE, hold: true, chainEpoch: 1 },
+        session: session(CHILD, { status: "ready", activeTurnId: null }),
+      }),
+    ]);
+
+    // Parent can't send to a held child.
+    const sendExit = await Effect.runPromiseExit(
+      decideOrchestrationCommand({
+        readModel: start,
+        command: {
+          type: "thread.child.send",
+          commandId: CommandId.make("send-to-held-child"),
+          threadId: PARENT,
+          requestId: ChildRequestId.make("req-held"),
+          from: PRIMARY,
+          callerTurnId: CALLER_TURN,
+          childThreadId: CHILD,
+          childMessageId: MessageId.make("m-held"),
+          text: "Do more work",
+          createdAt: at(5),
+        },
+      }),
+    );
+    expect(Exit.isFailure(sendExit)).toBe(true);
+
+    // Fallback records chainEpoch 0; Stop bumps chainEpoch and sets hold; resend with 0 is refused.
+    const fellBack = await run(start, {
+      type: "thread.native-session.fall-back",
+      commandId: CommandId.make("fallback-with-epoch"),
+      threadId: PARENT,
+      reason: "turn_failed",
+      resendMessageId: MessageId.make("m-fallback"),
+      chainEpoch: 0,
+      createdAt: at(6),
+    });
+    const fallbackActivity = threadIn(fellBack.model, PARENT).activities.at(-1);
+    expect(fallbackActivity?.payload).toMatchObject({
+      reason: "turn_failed",
+      resendMessageId: "m-fallback",
+      chainEpoch: 0,
+    });
+
+    const stopped = await run(fellBack.model, {
+      type: "thread.turn.interrupt",
+      commandId: CommandId.make("stop-before-resend"),
+      threadId: PARENT,
+      createdAt: at(7),
+    });
+    expect(threadIn(stopped.model, PARENT).agentRequests.hold).toBe(true);
+
+    expect(
+      await refused(stopped.model, {
+        type: "thread.turn.resend",
+        commandId: CommandId.make("stale-fallback-resend"),
+        threadId: PARENT,
+        messageId: MessageId.make("m-fallback"),
+        chainEpoch: 0,
+        createdAt: at(8),
+      }),
+    ).toBe(true);
+    expect(threadIn(stopped.model, PARENT).agentRequests.hold).toBe(true);
+  });
+
+  it("deletes only the attached unarchived children named in alsoDelete and separates the rest", async () => {
+    const LISTED = ThreadId.make("child-listed");
+    const RACED = ThreadId.make("child-raced");
+    const ARCHIVED = ThreadId.make("child-archived");
+    const start = readModel([
+      thread(PARENT),
+      thread(LISTED, { parentThreadId: PARENT, attachedToParent: true }),
+      thread(RACED, { parentThreadId: PARENT, attachedToParent: true }),
+      thread(ARCHIVED, {
+        parentThreadId: PARENT,
+        attachedToParent: true,
+        archivedAt: at(1),
+      }),
+    ]);
+
+    const deleted = await run(start, {
+      type: "thread.delete",
+      commandId: CommandId.make("delete-with-also-delete"),
+      threadId: PARENT,
+      alsoDelete: [LISTED, ARCHIVED],
+    });
+    expect(threadIn(deleted.model, PARENT).deletedAt).not.toBeNull();
+    expect(threadIn(deleted.model, LISTED).deletedAt).not.toBeNull();
+    expect(threadIn(deleted.model, RACED).deletedAt).toBeNull();
+    expect(threadIn(deleted.model, RACED).attachedToParent).toBe(false);
+    expect(threadIn(deleted.model, ARCHIVED).deletedAt).toBeNull();
+    expect(threadIn(deleted.model, ARCHIVED).attachedToParent).toBe(false);
+  });
+
+  it("leaves a descendant raised above an outside agent's access limit running on Stop", async () => {
+    const RAISED = ThreadId.make("child-raised");
+    const WITHIN = ThreadId.make("child-within");
+    const start = readModel([
+      thread(PARENT, {
+        runtimeMode: "auto-accept-edits",
+        session: session(PARENT, { status: "running", activeTurnId: CALLER_TURN }),
+      }),
+      thread(WITHIN, {
+        parentThreadId: PARENT,
+        attachedToParent: true,
+        runtimeMode: "auto-accept-edits",
+        session: session(WITHIN, { status: "running", activeTurnId: TurnId.make("within-turn") }),
+      }),
+      thread(RAISED, {
+        parentThreadId: PARENT,
+        attachedToParent: true,
+        runtimeMode: "full-access",
+        session: session(RAISED, { status: "running", activeTurnId: TurnId.make("raised-turn") }),
+      }),
+    ]);
+
+    const stopped = await run(start, {
+      type: "thread.turn.interrupt",
+      commandId: CommandId.make("outside-stop"),
+      threadId: PARENT,
+      fromOutside: {
+        connectionId: OutsideAgentConnectionId.make("conn-1"),
+        name: "Outside Helper",
+        access: "work",
+        maxRuntimeMode: "auto-accept-edits",
+      },
+      createdAt: at(10),
+    });
+    const stoppedIds = new Set(
+      stopped.events
+        .filter((event) => event.type === "thread.session-stop-requested")
+        .map((event) => event.payload.threadId),
+    );
+    expect(stoppedIds.has(WITHIN)).toBe(true);
+    expect(stoppedIds.has(RAISED)).toBe(false);
+  });
 });
+
+function modelSelectionOf(entry: OrchestrationThread) {
+  return entry.modelSelection;
+}

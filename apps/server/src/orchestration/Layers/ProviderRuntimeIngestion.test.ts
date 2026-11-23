@@ -8665,4 +8665,82 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.session?.status).toBe("error");
     expect(thread.session?.lastError).toBe("runtime still processed");
   });
+
+  it("marks saved check-backs dormant on session exit and clears dormant when the runtime reports them again", async () => {
+    const harness = await createHarness();
+    const threadId = asThreadId("thread-1");
+    const now = "2026-01-01T00:00:00.000Z";
+
+    harness.emit({
+      type: "session.check-backs.updated",
+      eventId: asEventId("evt-cb-live"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId,
+      createdAt: now,
+      payload: {
+        checkBacks: [
+          {
+            id: "ephemeral-1",
+            scheduledFor: "2026-01-01T00:10:00.000Z",
+            exact: true,
+            recurring: false,
+            description: "One-off",
+            durable: false,
+          },
+          {
+            id: "saved-1",
+            scheduledFor: "2026-01-01T01:00:00.000Z",
+            exact: true,
+            recurring: true,
+            description: "Saved watcher",
+            durable: true,
+          },
+        ],
+      },
+    });
+    await waitForThread(harness.readModel, (entry) => (entry.checkBacks?.length ?? 0) === 2);
+
+    // Session exits: non-durable check-back drops, saved one becomes dormant.
+    harness.emit({
+      type: "session.exited",
+      eventId: asEventId("evt-cb-exit"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId,
+      createdAt: "2026-01-01T00:01:00.000Z",
+      payload: { exitKind: "graceful" },
+    });
+    const afterExit = await waitForThread(
+      harness.readModel,
+      (entry) => entry.checkBacks?.length === 1 && entry.checkBacks[0]?.dormant === true,
+    );
+    expect(afterExit.checkBacks).toEqual([
+      expect.objectContaining({ id: "saved-1", durable: true, dormant: true }),
+    ]);
+
+    // Runtime restarts and reports the saved job afresh: dormant clears.
+    harness.emit({
+      type: "session.check-backs.updated",
+      eventId: asEventId("evt-cb-revived"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId,
+      createdAt: "2026-01-01T00:02:00.000Z",
+      payload: {
+        checkBacks: [
+          {
+            id: "saved-1",
+            scheduledFor: "2026-01-01T01:00:00.000Z",
+            exact: true,
+            recurring: true,
+            description: "Saved watcher",
+            durable: true,
+          },
+        ],
+      },
+    });
+    const revived = await waitForThread(
+      harness.readModel,
+      (entry) => entry.checkBacks?.length === 1 && entry.checkBacks[0]?.dormant !== true,
+    );
+    expect(revived.checkBacks?.[0]?.dormant).toBeUndefined();
+  });
 });

@@ -1225,6 +1225,8 @@ export const ThreadNativeSessionFellBackPayload = Schema.Struct({
   reason: ThreadNativeSessionFellBackReason,
   /** `turn_failed`: the message the refused turn sent, sent again once on a seeded session. */
   resendMessageId: Schema.optional(MessageId),
+  /** Stop count when the refused turn ran: a resend that arrives after a Stop is refused. */
+  chainEpoch: Schema.optional(NonNegativeInt),
   /** A room agent's carried session (OrchestrationThreadParticipant.nativeSession). Absent: the thread's own agent's. */
   participantId: Schema.optional(ThreadParticipantId),
 });
@@ -6207,6 +6209,7 @@ const ThreadNativeSessionFallBackCommand = Schema.Struct({
   threadId: ThreadId,
   reason: ThreadNativeSessionFellBackReason,
   resendMessageId: Schema.optional(MessageId),
+  chainEpoch: Schema.optional(NonNegativeInt),
   /** A room agent's carried session. Absent: the thread's own agent's. */
   participantId: Schema.optional(ThreadParticipantId),
   createdAt: IsoDateTime,
@@ -6666,10 +6669,15 @@ export const ThreadAgentRequestSettledPayload = Schema.Struct({
   settledAt: IsoDateTime,
 });
 
-/** Stop in a room: the hold goes on and the chain epoch moves to `chainEpoch`. */
+/**
+ * Stop in a room or family: the chain epoch moves to `chainEpoch` and the hold
+ * goes on. `keepHold`: the thread was stopped with its family or as cleanup,
+ * so the epoch moves without adding a new hold (any existing hold stays).
+ */
 export const ThreadAgentRequestsHeldPayload = Schema.Struct({
   threadId: ThreadId,
   chainEpoch: NonNegativeInt,
+  keepHold: Schema.optional(Schema.Literal(true)),
   createdAt: IsoDateTime,
 });
 

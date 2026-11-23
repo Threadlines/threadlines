@@ -12,7 +12,11 @@ import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
-import { runtimeCheckBackOwed } from "@threadlines/shared/checkBacks";
+import {
+  markCheckBacksDormant,
+  runtimeCheckBackOwed,
+  sameCheckBacks,
+} from "@threadlines/shared/checkBacks";
 import {
   parseParticipantSessionKey,
   sessionKeyThreadId,
@@ -58,6 +62,7 @@ const holdsForCheckBack = (
 
 type ThreadShellWithSession = {
   readonly session?: OrchestrationSession | null;
+  readonly checkBacks?: ReadonlyArray<OrchestrationCheckBack> | undefined;
 };
 
 type StopProjectionReason = "inactivity_threshold" | "startup_binding_stopped" | "startup_orphaned";
@@ -188,13 +193,36 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
             createdAt: input.nowIso,
           })
           .pipe(Effect.asVoid);
+        // The runtime has ended: mark any check-backs still listed for this
+        // agent dormant (dropping session-only ones, keeping saved jobs dormant).
+        const participantId = parseParticipantSessionKey(input.binding.threadId).participantId;
+        const currentCheckBacks = (input.thread?.checkBacks ?? []).filter(
+          (checkBack) => checkBack.participantId === participantId,
+        );
+        if (currentCheckBacks.length > 0) {
+          const dormant = markCheckBacksDormant(input.thread?.checkBacks ?? [], participantId);
+          if (!sameCheckBacks(currentCheckBacks, dormant)) {
+            yield* orchestrationEngine
+              .dispatch({
+                type: "thread.check-backs.set",
+                commandId: CommandId.make(
+                  `provider-session-reaper:check-backs-dormant:${input.binding.threadId}:${randomUUID()}`,
+                ),
+                threadId: sessionKeyThreadId(input.binding.threadId),
+                participantId,
+                checkBacks: dormant,
+                createdAt: input.nowIso,
+              })
+              .pipe(Effect.asVoid, Effect.ignoreCause({ log: true }));
+          }
+        }
         return true;
       });
 
     /**
      * An agent's check-backs whose runtime is gone (the server stopped with
      * it) can't fire: they are cleared with a note in the chat. Durable ones
-     * outlive the runtime and stay.
+     * outlive the runtime and stay listed as dormant until the next run.
      */
     const dropOrphanedCheckBacks = (input: {
       readonly binding: ProviderRuntimeBindingWithMetadata;
@@ -204,7 +232,11 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
       Effect.gen(function* () {
         const participantId = parseParticipantSessionKey(input.binding.threadId).participantId;
         const lost = runtimeCheckBacks(input.thread, participantId);
-        if (lost.length === 0) return;
+        const current = (input.thread.checkBacks ?? []).filter(
+          (checkBack) => checkBack.participantId === participantId,
+        );
+        const dormant = markCheckBacksDormant(input.thread.checkBacks ?? [], participantId);
+        if (lost.length === 0 && sameCheckBacks(current, dormant)) return;
         const threadId = sessionKeyThreadId(input.binding.threadId);
         yield* orchestrationEngine.dispatch({
           type: "thread.check-backs.set",
@@ -213,9 +245,7 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
           ),
           threadId,
           participantId,
-          checkBacks: (input.thread.checkBacks ?? []).filter(
-            (checkBack) => checkBack.participantId === participantId && checkBack.durable,
-          ),
+          checkBacks: dormant,
           createdAt: input.nowIso,
         });
         for (const checkBack of lost) {

@@ -3711,7 +3711,9 @@ function applyEnvironmentOrchestrationEvent(
 
     case "thread.agent-requests-held":
       return updateAgentRequestState(state, event.payload.threadId, (current) =>
-        agentRequestStateOn.held(current, event.payload.chainEpoch),
+        agentRequestStateOn.held(current, event.payload.chainEpoch, {
+          keepHold: event.payload.keepHold === true,
+        }),
       );
 
     case "thread.agent-requests-reset":

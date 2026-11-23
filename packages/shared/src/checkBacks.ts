@@ -38,10 +38,25 @@ export function sameCheckBacks(
         checkBack.description === other.description &&
         checkBack.prompt === other.prompt &&
         checkBack.cron === other.cron &&
-        checkBack.durable === other.durable
+        checkBack.durable === other.durable &&
+        (checkBack.dormant === true) === (other.dormant === true)
       );
     })
   );
+}
+
+/**
+ * The agent's check-backs after its runtime ended: jobs that die with the
+ * runtime are gone, and saved jobs stay listed as dormant so they no longer
+ * count as live until that agent runs again and reports its list afresh.
+ */
+export function markCheckBacksDormant(
+  current: ReadonlyArray<OrchestrationCheckBack>,
+  participantId: ThreadParticipantId | null,
+): ReadonlyArray<OrchestrationCheckBack> {
+  return current
+    .filter((checkBack) => checkBack.participantId === participantId && checkBack.durable)
+    .map((checkBack) => (checkBack.dormant === true ? checkBack : { ...checkBack, dormant: true }));
 }
 
 /**

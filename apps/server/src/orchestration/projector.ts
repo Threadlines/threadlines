@@ -479,6 +479,7 @@ export function projectEvent(
             parentThreadId: payload.parentThreadId ?? null,
             parentTurnId: payload.parentTurnId ?? null,
             attachedToParent: payload.attachedToParent ?? false,
+            ...(payload.stopsWithParent === true ? { stopsWithParent: true as const } : {}),
             ...(payload.reportsTo !== undefined
               ? { childRequests: { ...EMPTY_CHILD_REQUEST_STATE, reportsTo: payload.reportsTo } }
               : {}),
@@ -945,7 +946,9 @@ export function projectEvent(
       ).pipe(
         Effect.map((payload) =>
           updateAgentRequests(nextBase, payload.threadId, (state) =>
-            agentRequestStateOn.held(state, payload.chainEpoch),
+            agentRequestStateOn.held(state, payload.chainEpoch, {
+              keepHold: payload.keepHold === true,
+            }),
           ),
         ),
       );
@@ -1245,6 +1248,7 @@ export function projectEvent(
             ...withOwed,
             threads: updateThread(withOwed.threads, payload.threadId, {
               attachedToParent: payload.attached,
+              ...(payload.attached ? { stopsWithParent: undefined } : {}),
               parentAttachmentEpoch: payload.attachmentEpoch,
               // Taken back by the thread that started it over a link, which
               // moved here (ThreadAdoptedFromLink): this computer's child now.
@@ -1582,10 +1586,14 @@ export function projectEvent(
           : [...thread.messages, message];
         const cappedMessages = messages.slice(-MAX_THREAD_MESSAGES);
 
+        const madeOwn =
+          payload.role === "user" &&
+          (payload.composer !== undefined || payload.sentFrom !== undefined);
         return {
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             messages: cappedMessages,
+            ...(madeOwn ? { stopsWithParent: undefined } : {}),
             updatedAt: event.occurredAt,
           }),
         };
@@ -1601,6 +1609,9 @@ export function projectEvent(
         Effect.map((payload) => ({
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
+            ...(payload.composer !== undefined || payload.sentFrom !== undefined
+              ? { stopsWithParent: undefined }
+              : {}),
             updatedAt: payload.createdAt,
           }),
         })),
@@ -1663,6 +1674,9 @@ export function projectEvent(
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             messages: messages.slice(-MAX_THREAD_MESSAGES),
+            ...(payload.composer !== undefined || payload.sentFrom !== undefined
+              ? { stopsWithParent: undefined }
+              : {}),
             updatedAt: payload.createdAt,
           }),
         };
@@ -1679,6 +1693,9 @@ export function projectEvent(
             ...nextBase,
             threads: updateThread(nextBase.threads, payload.threadId, {
               queuedFollowUps: withQueuedFollowUp(thread.queuedFollowUps ?? [], payload.followUp),
+              ...(payload.followUp.composer !== undefined || payload.followUp.sentFrom !== undefined
+                ? { stopsWithParent: undefined }
+                : {}),
               updatedAt: payload.followUp.createdAt,
             }),
           };

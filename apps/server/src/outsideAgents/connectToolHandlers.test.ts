@@ -969,6 +969,25 @@ describe("connect tools: review fixes", () => {
       expect((yield* racing.handlers.thread_stop(CALLER, { threadId: "racing" })).outcome).toBe(
         "not_allowed",
       );
+
+      // Stopping a parent names any child left running above this connection's access limit.
+      const parent = ownThread("parent-stop", {
+        runtimeMode: "auto-accept-edits",
+        session: { ...running!, threadId: ThreadId.make("parent-stop") },
+      });
+      const raisedChild = ownThread("raised-child", {
+        title: "Deploy prod",
+        parentThreadId: ThreadId.make("parent-stop"),
+        attachedToParent: true,
+        runtimeMode: "full-access",
+        session: { ...running!, threadId: ThreadId.make("raised-child") },
+      });
+      const familyWorld = yield* makeWorld({ threads: [parent, raisedChild] });
+      const stopped = yield* familyWorld.handlers.thread_stop(CALLER, {
+        threadId: "parent-stop",
+      });
+      expect(stopped.outcome).toBe("stopped");
+      expect(stopped.detail).toContain("Deploy prod");
     }),
   );
 });

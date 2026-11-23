@@ -1019,6 +1019,12 @@ export function decideAgentChainStop(
      * writes (docs/design/agent-autonomy-no-limits.md, "Stop").
      */
     readonly holdsFamily?: boolean;
+    /**
+     * Stopped with its family or as cleanup: bump `chainEpoch` and clear
+     * queued agent work without putting a new hold on the thread (any hold it
+     * already had stays).
+     */
+    readonly keepHold?: boolean;
   } = {},
 ): ReadonlyArray<PlannedEvent> {
   const state = thread.agentRequests;
@@ -1037,7 +1043,12 @@ export function decideAgentChainStop(
     {
       ...base(),
       type: "thread.agent-requests-held",
-      payload: { threadId: thread.id, chainEpoch: state.chainEpoch + 1, createdAt },
+      payload: {
+        threadId: thread.id,
+        chainEpoch: state.chainEpoch + 1,
+        ...(options.keepHold === true ? { keepHold: true as const } : {}),
+        createdAt,
+      },
     },
     ...state.open.map((request) => settledEvent(base, thread, request, "stopped", createdAt)),
     // Every answer an agent asked for stops; the user's own go on.

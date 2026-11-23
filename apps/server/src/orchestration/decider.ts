@@ -52,12 +52,14 @@ import { secretRequestIdOfAnswerMessage } from "@threadlines/shared/secretReques
 import { isTurnAside } from "@threadlines/shared/transcriptRevert";
 import { CONTINUE_AT_RESET_MESSAGE, continueAtResetTimeMs } from "@threadlines/shared/usageLimits";
 import {
+  attachedDescendantsOf,
   effectiveRequestCeiling,
   isAttachedChild,
   isOwedReport,
   narrowerModeCeiling,
   passCeilingRefusal,
   requestCeilingRefusal,
+  stopReachOf,
 } from "@threadlines/shared/childThreads";
 import { leadSetRefusal } from "@threadlines/shared/projectLead";
 import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
@@ -123,6 +125,8 @@ import {
   isOpenParentRequest,
   isStaleReport,
   settleParentRequestsForUnqueued,
+  stoppedTurnHandedBack,
+  threadIsStillGoing,
   withinModeCeiling,
 } from "./childThreadDecisions.ts";
 import {
@@ -1253,7 +1257,11 @@ function endCheckBacksOnStop(
   base: () => Omit<OrchestrationEvent, "sequence" | "type" | "payload">,
   createdAt: string,
 ): ReadonlyArray<PlannedOrchestrationEvent> {
-  const agents = new Set((thread.checkBacks ?? []).map((checkBack) => checkBack.participantId));
+  const agents = new Set(
+    (thread.checkBacks ?? [])
+      .filter((checkBack) => checkBack.dormant !== true)
+      .map((checkBack) => checkBack.participantId),
+  );
   return [...agents].map((participantId) => ({
     ...base(),
     type: "thread.check-back-cancel-requested" as const,
@@ -1735,6 +1743,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
                   ? { parentTurnId: command.parentTurnId }
                   : {}),
                 attachedToParent: command.attachedToParent === true,
+                ...(command.stopsWithParent === true && command.attachedToParent !== true
+                  ? { stopsWithParent: true as const }
+                  : {}),
                 ...(reportsTo !== undefined ? { reportsTo } : {}),
               }
             : {}),
@@ -1974,8 +1985,23 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         },
       };
       // Child threads: its family is separated (or deleted with it), and a
-      // child's parent stops waiting on it.
+      // child's parent stops waiting on it. `alsoDelete` names the exact
+      // threads the dialog confirmed (docs/design/agent-autonomy-no-limits.md):
+      // only attached, unarchived descendants in that list are deleted; any
+      // other attached thread under it is separated and kept.
       const withChildren = command.withChildren === true;
+      const alsoDeleteTargets =
+        command.alsoDelete === undefined
+          ? undefined
+          : attachedDescendantsOf(readModel.threads, thread.id)
+              .map((entry) => entry.thread)
+              .filter(
+                (child) => child.archivedAt === null && command.alsoDelete!.includes(child.id),
+              );
+      const deletedChildIdSet =
+        alsoDeleteTargets === undefined
+          ? undefined
+          : new Set(alsoDeleteTargets.map((child) => child.id));
       const familyEvents = [
         ...childDeletionEvents(
           readModel,
@@ -1983,6 +2009,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           childEventBase(command, occurredAt),
           occurredAt,
           withChildren,
+          "deleted",
+          deletedChildIdSet,
         ),
         // Threads it asked for on linked computers: their requests are dropped
         // there; the threads keep running, like separated children here.
@@ -1994,20 +2022,28 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           false,
         ),
       ];
-      // Only the children the user was shown: the ones not archived. An
-      // archived child is separated instead and lives on in the archive.
-      const childDeletes = withChildren
-        ? yield* decideCommandSequence({
-            readModel,
-            commands: attachedChildrenOf(readModel, thread.id)
-              .filter((child) => child.archivedAt === null)
-              .map((child): Extract<OrchestrationCommand, { type: "thread.delete" }> => ({
-                type: "thread.delete",
-                commandId: command.commandId,
-                threadId: child.id,
-              })),
-          })
-        : [];
+      // Only the children the user was shown: the ones listed in `alsoDelete`,
+      // or with `withChildren` alone the direct unarchived children. Archived
+      // or unlisted children are separated instead and kept.
+      const childrenToDelete =
+        alsoDeleteTargets !== undefined
+          ? [...alsoDeleteTargets].toReversed()
+          : withChildren
+            ? attachedChildrenOf(readModel, thread.id).filter((child) => child.archivedAt === null)
+            : [];
+      const childDeletes =
+        childrenToDelete.length > 0
+          ? yield* decideCommandSequence({
+              readModel,
+              commands: childrenToDelete.map(
+                (child): Extract<OrchestrationCommand, { type: "thread.delete" }> => ({
+                  type: "thread.delete",
+                  commandId: command.commandId,
+                  threadId: child.id,
+                }),
+              ),
+            })
+          : [];
       const leadEvents = leadClearEvents(readModel, [thread.id], command.commandId, occurredAt);
       return familyEvents.length === 0 && childDeletes.length === 0 && leadEvents.length === 0
         ? deletedEvent
@@ -5107,14 +5143,42 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           commandId: command.commandId,
         });
       // In a room, Stop also ends the agents' chain of requests; with child
-      // threads, it ends what this thread was owed by its children, and a
-      // parent's requests still queued here are taken back. Every agent's
-      // check-backs end with it.
+      // threads, it ends what this thread was owed by its children, and stops
+      // every thread in its Stop reach that is still going (attached threads
+      // and flagged loose threads, docs/design/agent-autonomy-no-limits.md).
+      // Every agent's check-backs end with it.
+      const baseFor = childEventBase(command, command.createdAt);
+      const hasOpenParentRequest = (child: OrchestrationThread) => {
+        if (child.parentThreadId === null) return false;
+        const owner = readModel.threads.find(
+          (entry) => entry.id === child.parentThreadId && entry.deletedAt === null,
+        );
+        return (
+          owner !== undefined &&
+          owner.childRequests.open.some((request) => request.childThreadId === child.id)
+        );
+      };
+      // Walk Stop's reach before settling anything so settling a parent first
+      // cannot hide threads underneath it.
+      const descendantsToStop = stopReachOf(readModel.threads, thread.id)
+        .map((entry) => entry.thread)
+        .filter((child) => {
+          if (child.archivedAt !== null) return false;
+          if (!threadIsStillGoing(child) && !hasOpenParentRequest(child)) return false;
+          if (
+            command.fromOutside !== undefined &&
+            outsideStopRefusal(child, command.fromOutside) !== null
+          ) {
+            return false;
+          }
+          return true;
+        });
       const chainStop = [
         ...decideAgentChainStop(thread, base, command.createdAt, {
           holdsFamily:
             thread.childRequests.open.length > 0 ||
-            attachedChildrenOf(readModel, thread.id).length > 0,
+            attachedChildrenOf(readModel, thread.id).length > 0 ||
+            isAttachedChild(thread),
         }),
         ...childStopEvents(readModel, thread, command, command.createdAt),
         ...holdCommandOutputOnStop(thread, base, command.createdAt),
@@ -5140,9 +5204,58 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command.commandId,
         command.createdAt,
       );
-      return chainStop.length > 0 || waitEnd.length > 0
-        ? [interruptEvent, ...chainStop, ...waitEnd]
-        : interruptEvent;
+      const ownEvents: ReadonlyArray<PlannedOrchestrationEvent> = [
+        interruptEvent,
+        ...chainStop,
+        ...waitEnd,
+      ];
+      if (descendantsToStop.length === 0) {
+        return ownEvents.length > 1 ? ownEvents : interruptEvent;
+      }
+      // Attached threads stopped with their parent owe nothing more and get
+      // their running turn stamped handed back, like `thread.children.stop`.
+      // Loose threads (stopsWithParent) were never attached and only stop.
+      const descendantPrepEvents: PlannedOrchestrationEvent[] = descendantsToStop.flatMap(
+        (child): ReadonlyArray<PlannedOrchestrationEvent> =>
+          !child.attachedToParent
+            ? []
+            : [
+                {
+                  ...baseFor(child.id),
+                  type: "thread.parent-attachment-set",
+                  payload: {
+                    threadId: child.id,
+                    attached: true,
+                    attachmentEpoch: child.parentAttachmentEpoch + 1,
+                    at: command.createdAt,
+                  },
+                },
+                ...stoppedTurnHandedBack(baseFor, child, command.createdAt),
+              ],
+      );
+      let nextReadModel = readModel;
+      let nextSequence = readModel.snapshotSequence;
+      for (const event of [...ownEvents, ...descendantPrepEvents]) {
+        nextSequence += 1;
+        nextReadModel = yield* projectEvent(nextReadModel, {
+          ...event,
+          sequence: nextSequence,
+        } as OrchestrationEvent).pipe(Effect.orDie);
+      }
+      const descendantStops = yield* decideCommandSequence({
+        readModel: nextReadModel,
+        commands: descendantsToStop.map(
+          (child): Extract<OrchestrationCommand, { type: "thread.session.stop" }> => ({
+            type: "thread.session.stop",
+            commandId: command.commandId,
+            threadId: child.id,
+            // Stopped with its family: no new Stop hold (any existing hold stays).
+            cause: "family",
+            createdAt: command.createdAt,
+          }),
+        ),
+      });
+      return [...ownEvents, ...descendantPrepEvents, ...descendantStops];
     }
 
     case "thread.realtime.start": {
@@ -5471,10 +5584,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           holdsFamily:
             command.cause === undefined &&
             (thread.childRequests.open.length > 0 ||
-              attachedChildrenOf(readModel, thread.id).length > 0),
+              attachedChildrenOf(readModel, thread.id).length > 0 ||
+              isAttachedChild(thread)),
+          keepHold: command.cause !== undefined,
         }),
         ...childStopEvents(readModel, thread, command, command.createdAt),
         ...holdCommandOutputOnStop(thread, base, command.createdAt),
+        ...(command.cause !== "cleanup"
+          ? endCheckBacksOnStop(thread, base, command.createdAt)
+          : []),
         // Stop is the user's say: a goal paused for a wait stays as Stop
         // leaves it, never resumed when the waits Stop ends are over.
         ...goalTakenByUser(thread, command),

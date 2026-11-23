@@ -2961,7 +2961,9 @@ describe("across the link: a child alone, and a thread going home (Part 3f, (h))
   });
 
   it("the parent keeps a child that moved alone as its thread there, reaches it, and hears its answer", async () => {
-    let model = await movedAlone(await asked(await parentWorking(await withChild(await seeded()))));
+    // A child waits for an open parent request before freezing, so project the
+    // request after moving alone to pin move-complete's defensive cleanup.
+    let model = await asked(await movedAlone(await parentWorking(await withChild(await seeded()))));
     // Its frozen copy here takes no message: it would never reach it.
     expect((await apply(model, sendTo(CHILD, ChildRequestId.make("r-frozen")))).refusal).toContain(
       "moving to Mac mini",
@@ -3582,7 +3584,7 @@ describe("across the link: a child alone, and a thread going home (Part 3f, (h))
       };
 
       it("lands under its parent, and the move it left on completes then", async () => {
-        const moving = await movedAlone(await asked(await withChild(await seeded())));
+        const moving = await asked(await movedAlone(await withChild(await seeded())));
         let { model, refusal } = await apply(moving, backFromThere(completesChild));
         expect(refusal).toBeNull();
         expect(threadOf(model, ARRIVED)).toMatchObject({
@@ -3980,5 +3982,87 @@ describe("a parent arriving beside threads it started here (Part 3f, (g))", () =
       [MAC_MINI.environmentId, "thread-kept-apart"],
       [THIRD.environmentId, "thread-adopted"],
     ]);
+  });
+
+  it("holds parent and child moves while a report is owed or a parent request is open (sequence 4)", async () => {
+    const CHILD = ThreadId.make("thread-child-seq4");
+    const TAKES: ThreadMoveTakes = { threadState: true, families: true, linkLineage: true };
+    const base = (
+      await apply(await seeded(), {
+        type: "thread.create",
+        commandId: nextCommandId(),
+        threadId: CHILD,
+        projectId: PROJECT,
+        title: "Worker",
+        modelSelection,
+        runtimeMode: "auto",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: `/worktrees/${CHILD}`,
+        parentThreadId: THREAD,
+        attachedToParent: true,
+        createdAt: now,
+      } as OrchestrationCommand)
+    ).model;
+
+    // An owed report on the child holds both the child's move and the parent's move.
+    const owing: OrchestrationReadModel = {
+      ...base,
+      threads: base.threads.map((entry) =>
+        entry.id === CHILD
+          ? {
+              ...entry,
+              childRequests: {
+                ...entry.childRequests,
+                owedReports: [
+                  {
+                    turnId: TurnId.make("child-turn-1"),
+                    deliveryEpoch: 0,
+                    attachmentEpoch: 0,
+                    createdAt: now,
+                  },
+                ],
+              },
+            }
+          : entry,
+      ),
+    };
+    expect(
+      threadMoveRefusals(owing, threadOf(owing, CHILD), TAKES).some(
+        (entry) => entry.kind === "wait" && entry.code === "background",
+      ),
+    ).toBe(true);
+    expect(
+      threadMoveRefusals(owing, threadOf(owing, THREAD), TAKES).some(
+        (entry) => entry.kind === "wait" && entry.code === "background",
+      ),
+    ).toBe(true);
+
+    // An open request on the parent for the child also holds the child's move.
+    const openOnParent = await project(base, "thread.child-request-submitted", {
+      threadId: THREAD,
+      request: {
+        requestId: ChildRequestId.make("req-seq4"),
+        batchId: ChildRequestBatchId.make("req-seq4"),
+        kind: "send",
+        from: { participantId: null },
+        callerTurnId: TurnId.make("parent-turn-1"),
+        deliveryEpoch: 0,
+        status: "running",
+        childThreadId: CHILD,
+        childMessageId: MessageId.make("m-seq4"),
+        createdAt: now,
+      },
+      createdAt: now,
+    });
+    expect(
+      threadMoveRefusals(openOnParent, threadOf(openOnParent, CHILD), TAKES).some(
+        (entry) => entry.kind === "wait" && entry.code === "background",
+      ),
+    ).toBe(true);
+
+    // Once both clear, neither thread waits on family reports.
+    expect(threadMoveRefusals(base, threadOf(base, CHILD), TAKES)).toEqual([]);
+    expect(threadMoveRefusals(base, threadOf(base, THREAD), TAKES)).toEqual([]);
   });
 });

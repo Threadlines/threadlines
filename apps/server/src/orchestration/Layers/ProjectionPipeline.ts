@@ -566,6 +566,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             parentThreadId: event.payload.parentThreadId ?? null,
             parentTurnId: event.payload.parentTurnId ?? null,
             attachedToParent: event.payload.attachedToParent === true ? 1 : 0,
+            stopsWithParent: event.payload.stopsWithParent === true ? 1 : null,
             ...(event.payload.reportsTo !== undefined
               ? {
                   childRequests: {
@@ -904,7 +905,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                       event.payload.outcome,
                     )
                   : event.type === "thread.agent-requests-held"
-                    ? agentRequestStateOn.held(state, event.payload.chainEpoch)
+                    ? agentRequestStateOn.held(state, event.payload.chainEpoch, {
+                        keepHold: event.payload.keepHold === true,
+                      })
                     : agentRequestStateOn.reset(state);
           yield* projectionThreadRepository.upsert({ ...existingRow.value, agentRequests });
           return;
@@ -1038,6 +1041,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                       }
                     : {}),
                   attachedToParent: event.payload.attached ? 1 : 0,
+                  ...(event.payload.attached ? { stopsWithParent: null } : {}),
                   parentAttachmentEpoch: event.payload.attachmentEpoch,
                   // See the in-memory projector: taken back over its link.
                   ...(event.payload.adoptedBy !== undefined
@@ -1401,9 +1405,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             return;
           }
           const { followUp } = event.payload;
+          const madeOwn = followUp.composer !== undefined || followUp.sentFrom !== undefined;
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             queuedFollowUps: withQueuedFollowUp(existingRow.value.queuedFollowUps ?? [], followUp),
+            ...(madeOwn ? { stopsWithParent: null } : {}),
             updatedAt: event.occurredAt,
           });
           return;
@@ -1437,8 +1443,16 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           if (Option.isNone(existingRow)) {
             return;
           }
+          const madeOwn =
+            (event.type === "thread.message-sent" &&
+              event.payload.role === "user" &&
+              (event.payload.composer !== undefined || event.payload.sentFrom !== undefined)) ||
+            ((event.type === "thread.follow-up-submitted" ||
+              event.type === "thread.follow-up-accepted") &&
+              (event.payload.composer !== undefined || event.payload.sentFrom !== undefined));
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
+            ...(madeOwn ? { stopsWithParent: null } : {}),
             updatedAt: event.occurredAt,
             // An outside answer marks the agent that asked (see the projector).
             ...(event.type === "thread.user-input-response-requested" &&

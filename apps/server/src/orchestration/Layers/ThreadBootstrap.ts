@@ -685,6 +685,7 @@ const make = Effect.gen(function* () {
           parentThreadId: input.lineage.parentThreadId,
           parentTurnId: input.lineage.parentTurnId,
           attachedToParent: launch.reportBack,
+          ...(!launch.reportBack ? { stopsWithParent: true as const } : {}),
         }
       : input.lineage.kind === "remote"
         ? { remoteOrigin: input.lineage.remoteOrigin }

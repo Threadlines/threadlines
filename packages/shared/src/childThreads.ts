@@ -155,6 +155,7 @@ export function childSendRefusal(
     readonly archivedAt: string | null;
     readonly runtimeMode?: RuntimeMode | undefined;
     readonly interactionMode?: ProviderInteractionMode | undefined;
+    readonly agentRequests?: { readonly hold: boolean } | undefined;
   } | null,
   input: {
     readonly from: RoomAgentRef;
@@ -168,6 +169,14 @@ export function childSendRefusal(
   const ownRefusal = ownChildRefusal(thread, child);
   if (ownRefusal !== null) {
     return ownRefusal;
+  }
+  // A child the user stopped holds its queue until the user writes there:
+  // sending it work would sit unseen (docs/design/agent-autonomy-no-limits.md).
+  if (child !== null && child.agentRequests?.hold === true) {
+    return {
+      outcome: "refused",
+      detail: "The user stopped that thread. It takes work again once they write there.",
+    };
   }
   // Work the lead chat passed on keeps its ceiling when it is handed down:
   // a pass never reaches a thread with more access than the lead's.

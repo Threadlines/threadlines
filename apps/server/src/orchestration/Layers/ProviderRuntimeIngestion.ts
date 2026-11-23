@@ -44,7 +44,7 @@ import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import { countUnifiedDiffStats, type DiffLineStats } from "@threadlines/shared/diffStats";
 import { makeDrainableWorker } from "@threadlines/shared/DrainableWorker";
-import { sameCheckBacks } from "@threadlines/shared/checkBacks";
+import { markCheckBacksDormant, sameCheckBacks } from "@threadlines/shared/checkBacks";
 import { areFilesystemPathsEqual } from "@threadlines/shared/path";
 import { ASSISTANT_STREAM_FLUSH_INTERVAL_MS } from "@threadlines/shared/threadLimits";
 import {
@@ -2724,6 +2724,7 @@ const make = Effect.gen(function* () {
               threadId: input.thread.id,
               reason: "turn_failed",
               ...(startedBy !== undefined ? { resendMessageId: startedBy } : {}),
+              chainEpoch: input.thread.agentRequests.chainEpoch,
               ...(input.participantId !== null ? { participantId: input.participantId } : {}),
               createdAt: input.now,
             }),
@@ -3001,10 +3002,12 @@ const make = Effect.gen(function* () {
       const next = event.payload.partial
         ? [
             ...reported,
-            ...current.filter(
-              (listed) =>
-                listed.durable && !reported.some((checkBack) => checkBack.id === listed.id),
-            ),
+            ...current
+              .filter(
+                (listed) =>
+                  listed.durable && !reported.some((checkBack) => checkBack.id === listed.id),
+              )
+              .map(({ dormant: _dormant, ...listed }) => listed),
           ].toSorted((left, right) => left.scheduledFor.localeCompare(right.scheduledFor))
         : reported;
       if (!sameCheckBacks(current, next)) {
@@ -3396,6 +3399,26 @@ const make = Effect.gen(function* () {
           yield* clearSettledSubagentResultState(`${thread.id}:`);
         } else {
           yield* sealSubagentResultState(`${thread.id}:`);
+          // The runtime ended: any check-backs still listed for this agent
+          // can no longer fire until the agent runs again (saved jobs stay
+          // listed as dormant; session-only ones are gone).
+          const participantId = event.participantId ?? null;
+          const current = (thread.checkBacks ?? []).filter(
+            (checkBack) => checkBack.participantId === participantId,
+          );
+          if (current.length > 0) {
+            const dormant = markCheckBacksDormant(thread.checkBacks ?? [], participantId);
+            if (!sameCheckBacks(current, dormant)) {
+              yield* orchestrationEngine.dispatch({
+                type: "thread.check-backs.set",
+                commandId: providerCommandId(event, "check-backs-dormant"),
+                threadId: thread.id,
+                participantId,
+                checkBacks: dormant,
+                createdAt: now,
+              });
+            }
+          }
         }
       }
 

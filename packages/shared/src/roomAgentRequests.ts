@@ -242,8 +242,13 @@ export const agentRequestStateOn = {
   held: (
     state: OrchestrationAgentRequestState,
     chainEpoch: number,
-  ): OrchestrationAgentRequestState =>
-    state.hold && state.chainEpoch === chainEpoch ? state : { ...state, hold: true, chainEpoch },
+    options?: { readonly keepHold?: boolean | undefined },
+  ): OrchestrationAgentRequestState => {
+    const hold = options?.keepHold === true ? state.hold : true;
+    return state.hold === hold && state.chainEpoch === chainEpoch
+      ? state
+      : { ...state, hold, chainEpoch };
+  },
   reset: (state: OrchestrationAgentRequestState): OrchestrationAgentRequestState =>
     !state.hold && !state.invitesPaused ? state : { ...state, hold: false, invitesPaused: false },
 };

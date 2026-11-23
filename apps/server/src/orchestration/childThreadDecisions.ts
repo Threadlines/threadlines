@@ -38,16 +38,19 @@ import {
   type RemoteChildThread,
 } from "@threadlines/contracts";
 import {
+  attachedDescendantsOf,
   childAttachRefusal,
   childSendRefusal,
   childStartRefusal,
   effectiveRequestCeiling,
   isAttachedChild,
   isSettingUpChildStart,
+  isStillGoing,
   narrowerModeCeiling,
   ownChildRefusal,
   remoteChildOf,
   leadPassRefusal,
+  stopReachOf,
   withinModeCeiling,
 } from "@threadlines/shared/childThreads";
 import {
@@ -1751,6 +1754,41 @@ export function childHasLiveWork(
 }
 
 /**
+ * The shared "still going" test (`isStillGoing`, docs/design/
+ * agent-autonomy-no-limits.md, "Stop") over a loaded thread: what Stop
+ * targets, what "Stop N working threads" counts, and what holds a revert.
+ */
+export function threadIsStillGoing(thread: OrchestrationThread): boolean {
+  const session = thread.session;
+  const latestTurnId = thread.latestTurn?.turnId ?? null;
+  return isStillGoing({
+    turnInFlight:
+      thread.latestTurn?.state === "running" ||
+      session?.status === "running" ||
+      session?.status === "starting",
+    queuedCount: (thread.queuedFollowUps ?? []).length,
+    waitsOnUser:
+      collectOpenPendingRequests(thread.activities, APPROVAL_ACTIVITY_KINDS).length > 0 ||
+      countPendingUserInputs(thread.activities).pendingUserInputCount > 0 ||
+      thread.proposedPlans.some(
+        (plan) =>
+          latestTurnId !== null &&
+          plan.turnId === latestTurnId &&
+          plan.implementedAt === null &&
+          plan.dismissedAt === null,
+      ) ||
+      hasPendingSettingsChange(thread.settingsRequests ?? []) ||
+      hasPendingSecretRequest(thread.secretRequests ?? []) ||
+      awaitingInvite(thread.agentRequests) !== undefined,
+    backgroundWork: hasBackgroundWork(session, "any"),
+    openRequestCount: thread.childRequests.open.length,
+    waitsForReset: (session?.continueAtReset ?? null) !== null,
+    sideAnswerRunning: hasLiveSideTurn(thread),
+    checkBacks: thread.checkBacks,
+  });
+}
+
+/**
  * The turn a parent's agent cut off with thread_stop is over as far as that
  * parent is concerned: it chose to end it, so nothing from it is owed back.
  * Recording it as handed back lets the child wrap itself once the interrupt
@@ -1809,21 +1847,45 @@ export function decideChildrenStop(
   if (pendingIds.length > 0 && isAttachedChild(parent)) {
     return refuse("This thread was started by another thread, so it cannot stop threads itself.");
   }
-  const targets =
-    command.childThreadIds === undefined
-      ? attachedChildrenOf(readModel, parent.id).filter(
-          (child) => childHasLiveWork(child) || requestsFor(parent, child.id).length > 0,
-        )
-      : command.childThreadIds
-          .filter((id) => !isRemote(id) && !pendingIds.includes(id))
-          .map((id) => findThread(readModel, id));
+  const hasOpenParentRequest = (child: OrchestrationThread) => {
+    if (child.parentThreadId === null) return false;
+    const owner = findThread(readModel, child.parentThreadId);
+    return owner !== null && requestsFor(owner, child.id).length > 0;
+  };
   const children: OrchestrationThread[] = [];
-  for (const child of targets) {
-    const refusal = ownChildRefusal(parent, child);
-    if (refusal !== null || child === null) {
-      return refuse(refusal?.detail ?? "That thread is gone.");
-    }
+  const seenChildIds = new Set<ThreadId>();
+  const addChild = (child: OrchestrationThread) => {
+    if (seenChildIds.has(child.id)) return;
+    seenChildIds.add(child.id);
     children.push(child);
+  };
+  if (command.childThreadIds === undefined) {
+    // Stop's reach: every attached thread under parent, plus flagged loose
+    // threads (reportBack: false not yet written in by the user), that is
+    // still going or has an open request on its parent.
+    for (const { thread: member } of stopReachOf(readModel.threads, parent.id)) {
+      if (member.archivedAt !== null) continue;
+      if (threadIsStillGoing(member) || hasOpenParentRequest(member)) {
+        addChild(member);
+      }
+    }
+  } else {
+    for (const id of command.childThreadIds.filter(
+      (entry) => !isRemote(entry) && !pendingIds.includes(entry),
+    )) {
+      const child = findThread(readModel, id);
+      const refusal = ownChildRefusal(parent, child);
+      if (refusal !== null || child === null) {
+        return refuse(refusal?.detail ?? "That thread is gone.");
+      }
+      addChild(child);
+      for (const { thread: member } of stopReachOf(readModel.threads, child.id)) {
+        if (member.archivedAt !== null) continue;
+        if (threadIsStillGoing(member) || hasOpenParentRequest(member)) {
+          addChild(member);
+        }
+      }
+    }
   }
   if (remoteTargets.length > 0 && isAttachedChild(parent)) {
     return refuse("This thread was started by another thread, so it cannot stop threads itself.");
@@ -1839,35 +1901,55 @@ export function decideChildrenStop(
   const remoteRequests = parent.childRequests.open.filter(
     (request) => request.remote !== undefined && stoppedIds.has(request.childThreadId),
   );
+  // Settle open requests on every parent whose child is being stopped
+  // (walking from parent down covers both direct children and any nested ones).
+  const ownersWithStoppedChildren = [
+    parent,
+    ...children.filter((child) =>
+      child.childRequests.open.some((request) => stoppedIds.has(request.childThreadId)),
+    ),
+  ];
   return {
     events: [
-      ...settleOpenRequests(
-        readModel,
-        baseFor,
-        parent,
-        parent.childRequests.open.filter((request) => stoppedIds.has(request.childThreadId)),
-        "stopped",
-        command.createdAt,
-        (titles) =>
-          `${quotedList(titles)} ${titles.length === 1 ? "was" : "were"} stopped, so no answer will come back.`,
+      ...ownersWithStoppedChildren.flatMap((owner) =>
+        settleOpenRequests(
+          readModel,
+          baseFor,
+          owner,
+          owner.childRequests.open.filter((request) => stoppedIds.has(request.childThreadId)),
+          "stopped",
+          command.createdAt,
+          (titles) =>
+            `${quotedList(titles)} ${titles.length === 1 ? "was" : "were"} stopped, so no answer will come back.`,
+        ),
       ),
-      // An answer a child gave just before it was stopped does not come back
-      // either: queued ones are taken back, and one already on its way to a
-      // turn is cut off by moving the child's delivery epoch.
-      ...children.flatMap((child): ReadonlyArray<PlannedEvent> => [
-        ...unqueueReportsFrom(baseFor, parent, child.id, command.createdAt),
-        {
-          ...baseFor(child.id),
-          type: "thread.parent-attachment-set",
-          payload: {
-            threadId: child.id,
-            attached: true,
-            attachmentEpoch: child.parentAttachmentEpoch + 1,
-            at: command.createdAt,
+      // An answer an attached child gave just before it was stopped does not
+      // come back either: queued ones are taken back, and one already on its
+      // way to a turn is cut off by moving the child's attachment epoch. A
+      // loose thread (stopsWithParent) was never attached and reports to nobody.
+      ...children.flatMap((child): ReadonlyArray<PlannedEvent> => {
+        if (!child.attachedToParent) {
+          return [];
+        }
+        const owner =
+          child.parentThreadId === null ? null : findThread(readModel, child.parentThreadId);
+        return [
+          ...(owner !== null
+            ? unqueueReportsFrom(baseFor, owner, child.id, command.createdAt)
+            : []),
+          {
+            ...baseFor(child.id),
+            type: "thread.parent-attachment-set",
+            payload: {
+              threadId: child.id,
+              attached: true,
+              attachmentEpoch: child.parentAttachmentEpoch + 1,
+              at: command.createdAt,
+            },
           },
-        },
-        ...stoppedTurnHandedBack(baseFor, child, command.createdAt),
-      ]),
+          ...stoppedTurnHandedBack(baseFor, child, command.createdAt),
+        ];
+      }),
       // A child on a linked computer: the same, kept on the parent, and its
       // computer is told to drop the requests and stop its session.
       ...remoteCancelEvents(baseFor, parent, remoteRequests, command.createdAt, true),
@@ -2028,11 +2110,17 @@ export function childDeletionEvents(
   createdAt: string,
   withChildren: boolean,
   verb: "deleted" | "archived" = "deleted",
+  deletedChildIds?: ReadonlySet<ThreadId>,
 ): ReadonlyArray<PlannedEvent> {
   // Children deleted along with it need nothing; the rest (all of them, or
-  // with `withChildren` the archived ones) are separated.
+  // with `withChildren` the archived ones, or with `deletedChildIds` any not
+  // named in the list) are separated.
   const familyEvents = attachedChildrenOf(readModel, thread.id)
-    .filter((child) => !withChildren || child.archivedAt !== null)
+    .filter((child) =>
+      deletedChildIds !== undefined
+        ? !deletedChildIds.has(child.id)
+        : !withChildren || child.archivedAt !== null,
+    )
     .map((child): PlannedEvent => ({
       ...baseFor(child.id),
       type: "thread.parent-attachment-set",
@@ -2124,6 +2212,7 @@ export function agentWrapRefusal(
   }
   if (
     childHasLiveWork(child) ||
+    (child.childRequests.owedReports ?? []).length > 0 ||
     hasPendingSettingsChange(child.settingsRequests ?? []) ||
     hasPendingSecretRequest(child.secretRequests ?? []) ||
     awaitingInvite(child.agentRequests) !== undefined ||
@@ -2190,9 +2279,15 @@ export function childRevertRefusal(
   readModel: OrchestrationReadModel,
   thread: OrchestrationThread,
 ): string | null {
+  // Any attached thread under this one that is still going (by Stop's test,
+  // excluding loose threads which report to nobody) can still wake it about
+  // work a revert would take back (docs/design/agent-autonomy-no-limits.md).
   if (
     thread.childRequests.open.length > 0 ||
-    (thread.queuedFollowUps ?? []).some((queued) => queued.fromThread?.kind === "report")
+    (thread.queuedFollowUps ?? []).some((queued) => queued.fromThread?.kind === "report") ||
+    attachedDescendantsOf(readModel.threads, thread.id).some(
+      ({ thread: child }) => child.archivedAt === null && threadIsStillGoing(child),
+    )
   ) {
     return "Finish or stop its threads first: their answers are about work a revert would take back.";
   }

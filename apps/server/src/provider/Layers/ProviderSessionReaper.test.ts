@@ -1264,4 +1264,66 @@ describe("ProviderSessionReaper", () => {
       reapedThreadId,
     ]);
   });
+
+  it("marks saved check-backs dormant when reaping an idle session", async () => {
+    const threadId = ThreadId.make("thread-reaper-saved-check-back");
+    const now = "2026-01-01T00:00:00.000Z";
+    const savedJob: OrchestrationCheckBack = {
+      id: "saved-job-reap",
+      participantId: null,
+      scheduledFor: "2999-01-01T00:00:00.000Z",
+      exact: true,
+      recurring: true,
+      description: "Nightly check",
+      durable: true,
+    };
+    const harness = await createHarness({
+      readModel: makeReadModel([
+        {
+          id: threadId,
+          session: {
+            threadId,
+            status: "ready",
+            providerName: "claudeAgent",
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: now,
+          },
+          checkBacks: [savedJob],
+        },
+      ]),
+    });
+    const repository = await runtime!.runPromise(Effect.service(ProviderSessionRuntimeRepository));
+    await runtime!.runPromise(
+      repository.upsert({
+        threadId,
+        providerName: "claudeAgent",
+        providerInstanceId: null,
+        adapterKey: "claudeAgent",
+        runtimeMode: "full-access",
+        status: "running",
+        lastSeenAt: "2026-04-14T00:00:00.000Z",
+        resumeCursor: { opaque: "resume-saved-check-back" },
+        runtimePayload: null,
+      }),
+    );
+
+    const reaper = await runtime!.runPromise(Effect.service(ProviderSessionReaper));
+    scope = await Effect.runPromise(Scope.make("sequential"));
+    await Effect.runPromise(reaper.start().pipe(Scope.provide(scope)));
+
+    await waitFor(() =>
+      harness.dispatch.mock.calls.some(([command]) => command.type === "thread.check-backs.set"),
+    );
+    await Effect.runPromise(drainFibers);
+    const setCommand = harness.dispatch.mock.calls
+      .map(([command]) => command)
+      .find((command) => command.type === "thread.check-backs.set");
+    expect(setCommand).toMatchObject({
+      type: "thread.check-backs.set",
+      threadId,
+      checkBacks: [{ ...savedJob, dormant: true }],
+    });
+  });
 });

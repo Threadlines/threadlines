@@ -50,7 +50,6 @@ import {
   TurnId,
 } from "@threadlines/contracts";
 import { placeMarkdownLink } from "@threadlines/shared/appPlaces";
-import { hasLiveCheckBack } from "@threadlines/shared/checkBacks";
 import { areFilesystemPathsEqual } from "@threadlines/shared/path";
 import { saferRuntimeMode } from "@threadlines/shared/runtimeMode";
 import {
@@ -77,6 +76,7 @@ import {
   checkoutMoveRefusal,
   childHasLiveWork,
   pendingChildRequest,
+  threadIsStillGoing,
 } from "../orchestration/childThreadDecisions.ts";
 import type { ProjectPlace } from "../project/projectPlace.ts";
 import { linkMessageId, linkThreadId } from "../links/linkIds.ts";
@@ -333,17 +333,10 @@ const remoteLabel = (thread: OrchestrationThread, environmentId: string) =>
     ?.remote?.label ??
   "the other computer";
 
-/** Whether a child has anything to stop: work in flight, a check-back that
- *  would wake it later, or work its parent still waits on. */
+/** Whether a child has anything to stop: the shared "still going" test, or
+ *  an open request its parent still waits on. */
 const childHasWork = (child: OrchestrationThread, parent: OrchestrationThread) =>
-  child.latestTurn?.state === "running" ||
-  hasLiveCheckBack(child) ||
-  (child.session !== null &&
-    (child.session.activeTurnId !== null ||
-      child.session.status === "running" ||
-      child.session.status === "starting" ||
-      (child.session.pendingBackgroundTaskCount ?? 0) > 0)) ||
-  (child.queuedFollowUps ?? []).some((entry) => entry.fromThread?.threadId === parent.id) ||
+  threadIsStillGoing(child) ||
   parent.childRequests.open.some(
     (request) => request.childThreadId === child.id && request.status !== "awaiting_user",
   );
