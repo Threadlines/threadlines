@@ -87,6 +87,10 @@ import type {
   AntigravityInstalledRuntime,
   AntigravityRuntime,
 } from "../antigravity/AntigravityRuntime.ts";
+import {
+  type AntigravityUsageReader,
+  withAntigravityUsage,
+} from "../antigravity/AntigravityUsage.ts";
 import { detectionAt } from "../providerDetection.ts";
 import type {
   ProviderMaintenanceCapabilities,
@@ -634,12 +638,14 @@ export interface AntigravityDescriptorInput {
   readonly gate?: LaunchGate;
   /** The instance's sign-in method, project and key (fixed for an instance build). */
   readonly signIn: AntigravitySignInConfig;
+  /** Plan limits and email for a Google sign-in; the status check shows its last reading. */
+  readonly usage?: AntigravityUsageReader;
 }
 
 export function makeAntigravityDescriptor(
   input: AntigravityDescriptorInput,
 ): AcpProviderDescriptor<AntigravitySettings> {
-  const { paths, runtime, releases, gate, signIn } = input;
+  const { paths, runtime, releases, gate, signIn, usage } = input;
   const platform = process.platform;
   const fingerprint = antigravityCredentialFingerprint(signIn);
   const isGoogleAccount = signIn.method === "oauth-personal";
@@ -927,13 +933,14 @@ export function makeAntigravityDescriptor(
           } satisfies AcpProviderProbeOutcome;
         }
         const catalog = yield* readCatalog(tag);
-        return {
+        const outcome = {
           installed: true,
           version,
           ...signInStatus,
           ...latest,
           ...(catalog ? { models: antigravityModelsFromCatalog(catalog) } : {}),
         } satisfies AcpProviderProbeOutcome;
+        return usage ? withAntigravityUsage(outcome, yield* usage.status) : outcome;
       }),
     modelDiscoveryTimeoutMs: ANTIGRAVITY_DISCOVERY_TIMEOUT_MS,
     // Discovery mirrors the selected model's options (its reasoning levels)
