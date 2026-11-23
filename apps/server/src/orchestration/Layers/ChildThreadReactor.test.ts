@@ -403,6 +403,48 @@ describe("ChildThreadReactor", () => {
       ),
   );
 
+  it.effect(
+    "after a restart, sends nothing for a turn a Stop named before the process stopped (round 3, finding 4)",
+    () =>
+      withReactor(
+        [
+          parentWith([]),
+          thread(CHILD, {
+            session: {
+              threadId: CHILD,
+              status: "interrupted",
+              providerName: "claudeAgent",
+              runtimeMode: "auto-accept-edits",
+              activeTurnId: null,
+              lastError: null,
+              stopRequestedTurnId: TurnId.make("stopped-turn"),
+              updatedAt: now,
+            },
+            childRequests: {
+              ...EMPTY_CHILD_REQUEST_STATE,
+              owedReports: [
+                {
+                  turnId: TurnId.make("stopped-turn"),
+                  deliveryEpoch: 0,
+                  attachmentEpoch: 0,
+                  createdAt: now,
+                },
+              ],
+            },
+          }),
+        ],
+        {},
+        (harness) =>
+          Effect.sync(() => {
+            const settles = harness.dispatched.filter(
+              (command) => command.type === "thread.child-report.settle",
+            );
+            expect(settles).toHaveLength(1);
+            expect(settles[0]).not.toHaveProperty("text");
+          }),
+      ),
+  );
+
   it.effect("resumes a setup the previous process left unfinished", () =>
     withReactor([parentWith([request({ status: "starting" })])], {}, (harness) =>
       Effect.gen(function* () {

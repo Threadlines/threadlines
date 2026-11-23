@@ -80,6 +80,15 @@ export interface TurnStartOrigin {
   readonly requestKind?: OrchestrationMessage["requestKind"];
 }
 
+/**
+ * Whether a message's own turn answers someone other than the thread's parent
+ * (rule 2): a person's, an outside agent's, the parent's request, a hand-off.
+ * A continue is judged by what it continues, so it never counts here.
+ */
+export function messageAnswersSomeoneElse(message: TurnStartOrigin): boolean {
+  return message.trigger === undefined && answersSomeoneElse(message);
+}
+
 /** Whether a message's own turn answers someone other than the thread's parent (rule 2). */
 function answersSomeoneElse(origin: TurnStartOrigin): boolean {
   return (

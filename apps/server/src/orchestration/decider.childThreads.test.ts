@@ -578,7 +578,11 @@ describe("decider child threads", () => {
         .filter((event) => "threadId" in event.payload && event.payload.threadId === id)
         .map((event) => event.type);
     expect(eventsFor(willCheckBack.id)).toEqual(["thread.parent-attachment-set"]);
-    expect(eventsFor(savedCheckBack.id)).toEqual(["thread.archived"]);
+    // Archived with its parent, it owes it nothing more: its epoch moves.
+    expect(eventsFor(savedCheckBack.id)).toEqual([
+      "thread.archived",
+      "thread.parent-attachment-set",
+    ]);
     expect(threadIn(archived.model, willCheckBack.id).archivedAt).toBeNull();
   });
 
@@ -2443,6 +2447,113 @@ describe("decider child reports", () => {
     expect(threadIn(started.model, PARENT).childRequests.open).toMatchObject([
       { requestId: REQUEST, status: "running", answeringTurnId: TurnId.make("child-turn-1") },
     ]);
+  });
+
+  it("lets the writer that names a person's message undo a turn first taken for the provider's (round 3, finding 1)", async () => {
+    const family = await answeredFamily();
+    // The person's message is being prepared; ingestion sees the turn start
+    // first and, the session no longer starting, takes it for the provider's.
+    const asked = await run(family, turnStart("typed", { composer: "typed" }));
+    const taken = await run(asked.model, providerTurn("child-turn-2"));
+    expect(threadIn(taken.model, CHILD).childRequests.owedReports).toMatchObject([
+      { turnId: TurnId.make("child-turn-2") },
+    ]);
+    // The send's acknowledgement names the message for the same turn.
+    const named = await run(taken.model, {
+      type: "thread.session.set",
+      commandId: CommandId.make("session-named"),
+      threadId: CHILD,
+      session: session(CHILD, { activeTurnId: TurnId.make("child-turn-2"), updatedAt: at(31) }),
+      turnStartedBy: { messageId: MessageId.make("typed") },
+      createdAt: at(31),
+    });
+    expect(threadIn(named.model, CHILD).childRequests.owedReports).toBeUndefined();
+    // A message that owes a report takes the turn's entry over instead.
+    const scheduled = await run(
+      family,
+      turnStart("scheduled", { scheduledTaskId: "task-1" as never }),
+    );
+    const takenAgain = await run(scheduled.model, providerTurn("child-turn-3"));
+    const namedAgain = await run(takenAgain.model, {
+      type: "thread.session.set",
+      commandId: CommandId.make("session-named-again"),
+      threadId: CHILD,
+      session: session(CHILD, { activeTurnId: TurnId.make("child-turn-3"), updatedAt: at(31) }),
+      turnStartedBy: { messageId: MessageId.make("scheduled") },
+      createdAt: at(31),
+    });
+    expect(threadIn(namedAgain.model, CHILD).childRequests.owedReports).toEqual([
+      expect.objectContaining({ turnId: TurnId.make("child-turn-3") }),
+    ]);
+  });
+
+  it("retries a report that was put back, never an earlier message of the user's (round 3, finding 2)", async () => {
+    const { model: starting, report } = await reportStarting();
+    const failed = {
+      ...starting,
+      threads: starting.threads.map((entry) =>
+        entry.id === PARENT
+          ? {
+              ...entry,
+              messages: [
+                {
+                  id: MessageId.make("publish"),
+                  role: "user" as const,
+                  text: "Publish the release.",
+                  composer: "typed" as const,
+                  turnId: null,
+                  streaming: false,
+                  createdAt: at(1),
+                  updatedAt: at(1),
+                },
+                ...entry.messages,
+              ],
+              session: session(PARENT, {
+                status: "error",
+                activeTurnId: null,
+                lastError: "spawn failed",
+              }),
+            }
+          : entry,
+      ),
+    };
+    const putBack = await run(failed, takeBack(report.messageId));
+    const retried = await run(putBack.model, {
+      type: "thread.turn.retry",
+      commandId: CommandId.make("retry"),
+      threadId: PARENT,
+      createdAt: at(60),
+    });
+    const started = (retried.events as ReadonlyArray<OrchestrationEvent>).find(
+      (event) => event.type === "thread.turn-start-requested",
+    );
+    expect(started?.payload).toMatchObject({ messageId: report.messageId });
+  });
+
+  it("holds a parent the user stops from its session stop, but not one stopped with its family (round 3, finding 3)", async () => {
+    const family = await answeredFamily();
+    const stop = (cause?: "family") => ({
+      type: "thread.session.stop" as const,
+      commandId: CommandId.make(`session-stop-${cause ?? "user"}`),
+      threadId: PARENT,
+      ...(cause !== undefined ? { cause } : {}),
+      createdAt: at(15),
+    });
+    expect(threadIn((await run(family, stop())).model, PARENT).agentRequests.hold).toBe(true);
+    expect(threadIn((await run(family, stop("family"))).model, PARENT).agentRequests.hold).toBe(
+      false,
+    );
+  });
+
+  it("ends what an archived child owed, so restoring it brings no old report back (round 3, finding 8)", async () => {
+    const owing = (await run(await answeredFamily(), providerTurn("child-turn-2"))).model;
+    const archived = await run(owing, {
+      type: "thread.archive",
+      commandId: CommandId.make("archive-child"),
+      threadId: CHILD,
+    });
+    expect(threadIn(archived.model, CHILD).childRequests.owedReports).toBeUndefined();
+    expect(threadIn(archived.model, CHILD).parentAttachmentEpoch).toBe(1);
   });
 
   it("hands a leaving agent's queued follow-up report to the thread's own agent, and takes its answers off", async () => {

@@ -3501,18 +3501,21 @@ const make = Effect.gen(function* () {
         : beforeSend
           ? markNotRun("failed")
           : Effect.void;
+      // Only a turn the provider never took: one it took ends (and settles
+      // what it owes) by its own turn end, whatever failed after. A child's
+      // report goes back to the front of the queue, before the failure is
+      // recorded, so a stop in between can't leave it out of the queue.
+      const reportStart = beforeSend && message.fromThread?.kind === "report";
       return mark.pipe(
+        Effect.andThen(
+          reportStart
+            ? takeBackReportStart(event.payload.threadId, event.payload.messageId, "failed-start")
+            : Effect.void,
+        ),
         Effect.andThen(handleTurnStartFailure(cause)),
         Effect.andThen(failHandOffForFailedStart(detail)),
-        // Only a turn the provider never took: one it took ends (and settles
-        // what it owes) by its own turn end, whatever failed after. A child's
-        // report goes back to the front of the queue instead.
         Effect.andThen(
-          !beforeSend
-            ? Effect.void
-            : message.fromThread?.kind === "report"
-              ? takeBackReportStart(event.payload.threadId, event.payload.messageId, "failed-start")
-              : settleChildWorkForUnstartedTurn(detail),
+          beforeSend && !reportStart ? settleChildWorkForUnstartedTurn(detail) : Effect.void,
         ),
       );
     };
@@ -7381,7 +7384,13 @@ const make = Effect.gen(function* () {
   const takeBackReportCutByRestart = (threadId: ThreadId) =>
     Effect.gen(function* () {
       const pending = yield* projectionTurnRepository.getPendingTurnStartByThreadId({ threadId });
-      if (Option.isNone(pending)) return false;
+      if (Option.isNone(pending)) {
+        // An earlier startup put it back and stopped before it was done.
+        const thread = yield* resolveThread(threadId);
+        return (thread?.queuedFollowUps ?? []).some(
+          (queued) => queued.putBack === true && queued.fromThread?.kind === "report",
+        );
+      }
       return yield* takeBackReportStart(threadId, pending.value.messageId, "restart");
     }).pipe(Effect.orElseSucceed(() => false));
 
@@ -7459,6 +7468,11 @@ const make = Effect.gen(function* () {
         if (session.activeTurnId === null) {
           yield* markOutsideMessageCutBeforeStart(thread.id, sessionSlotParticipantId(session));
         }
+        // A child's report cut before its start goes back on the queue first,
+        // for the same reason, and is sent from there: no restart note and no
+        // continue for it.
+        const reportPutBack =
+          session.activeTurnId === null && (yield* takeBackReportCutByRestart(thread.id));
         yield* setThreadSession({
           threadId: thread.id,
           session: {
@@ -7473,9 +7487,7 @@ const make = Effect.gen(function* () {
           createdAt,
         });
         yield* takeBackOutsideQueued(thread.id, createdAt);
-        // A child's report cut before its start goes back on the queue and is
-        // sent from there: no restart note and no continue for it.
-        if (session.activeTurnId === null && (yield* takeBackReportCutByRestart(thread.id))) {
+        if (reportPutBack) {
           continue;
         }
         // Read now: startup expires the questions the previous process left.
@@ -7508,12 +7520,22 @@ const make = Effect.gen(function* () {
       );
       for (const { threadId, turnId, participantId, waitingOnUser } of cut) {
         const createdAt = yield* nowIso;
+        // The message the cut turn was started with, from its turn record:
+        // a check-back's turn has none and is never continued.
+        const turnRow =
+          turnId === null
+            ? undefined
+            : yield* projectionTurnRepository.getByTurnId({ threadId, turnId }).pipe(
+                Effect.map(Option.getOrUndefined),
+                Effect.orElseSucceed(() => undefined),
+              );
         yield* orchestrationEngine
           .dispatch({
             type: "thread.restart.continue",
             commandId: serverCommandId("restart-continue"),
             threadId,
             turnId,
+            ...(turnRow !== undefined ? { turnMessageId: turnRow.pendingMessageId } : {}),
             participantId,
             waitingOnUser,
             continueAfterRestart: settingOn,

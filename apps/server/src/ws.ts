@@ -1387,7 +1387,12 @@ const makeCoreRpcLayer = (
                       threadId,
                       createdAt: yield* nowIso,
                     });
-                    yield* dispatchNormalizedCommand(stopCommand);
+                    // Cleanup: an archive's stop leaves no Stop hold.
+                    yield* dispatchNormalizedCommand(
+                      stopCommand.type === "thread.session.stop"
+                        ? { ...stopCommand, cause: "cleanup" as const }
+                        : stopCommand,
+                    );
                   }).pipe(
                     Effect.catchCause((cause) =>
                       Effect.logWarning("failed to stop provider session during archive", {
@@ -1479,7 +1484,12 @@ const makeCoreRpcLayer = (
                   createdAt: yield* nowIso,
                 });
 
-                yield* dispatchNormalizedCommand(stopCommand);
+                // Cleanup: an archive's stop leaves no Stop hold.
+                yield* dispatchNormalizedCommand(
+                  stopCommand.type === "thread.session.stop"
+                    ? { ...stopCommand, cause: "cleanup" as const }
+                    : stopCommand,
+                );
               }).pipe(
                 Effect.catchCause((cause) =>
                   Effect.logWarning("failed to stop provider session during archive", {

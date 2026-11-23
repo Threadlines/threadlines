@@ -604,13 +604,18 @@ export const makeChildThreadReactor = Effect.gen(function* () {
       reports,
       (report) =>
         Effect.gen(function* () {
+          // Its own id each startup: a send an earlier startup tried, whose
+          // start then died and was put back, must not replay that receipt.
+          const createdAt = yield* nowIso;
           yield* dispatch(
             {
               type: "thread.follow-up.send-queued",
-              commandId: CommandId.make(`server:child-report-after-restart:${report.messageId}`),
+              commandId: CommandId.make(
+                `server:child-report-after-restart:${report.messageId}:${createdAt}`,
+              ),
               threadId: report.threadId,
               messageId: report.messageId,
-              createdAt: yield* nowIso,
+              createdAt,
             },
             "send a report queued before a restart",
           );

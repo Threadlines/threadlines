@@ -51,7 +51,11 @@ import {
 import { secretRequestIdOfAnswerMessage } from "@threadlines/shared/secretRequests";
 import { isTurnAside } from "@threadlines/shared/transcriptRevert";
 import { CONTINUE_AT_RESET_MESSAGE, continueAtResetTimeMs } from "@threadlines/shared/usageLimits";
-import { isAttachedChild, passCeilingRefusal } from "@threadlines/shared/childThreads";
+import {
+  isAttachedChild,
+  isOwedReport,
+  passCeilingRefusal,
+} from "@threadlines/shared/childThreads";
 import { leadSetRefusal } from "@threadlines/shared/projectLead";
 import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
 
@@ -120,6 +124,7 @@ import {
 import {
   continuedTurnMessage,
   decideChildReportSettle,
+  messageAnswersSomeoneElse,
   owedReportStamps,
   settleWaitingAnswer,
   turnStartOwesReport,
@@ -1983,6 +1988,21 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             updatedAt: occurredAt,
           },
         })),
+        // An archived thread owes its parent nothing more: its attachment
+        // epoch moves, as a separate does, so no report it owed comes back
+        // after it is restored (docs/design/agent-autonomy-no-limits.md).
+        ...[thread, ...plan.archive]
+          .filter((archived) => archived.parentThreadId !== null && archived.attachedToParent)
+          .map((archived): PlannedOrchestrationEvent => ({
+            ...baseFor(archived.id),
+            type: "thread.parent-attachment-set",
+            payload: {
+              threadId: archived.id,
+              attached: true,
+              attachmentEpoch: archived.parentAttachmentEpoch + 1,
+              at: occurredAt,
+            },
+          })),
         ...childDeletionEvents(readModel, thread, baseFor, occurredAt, true, "archived"),
         // Its agents' settings cards waiting for an answer go with it.
         ...[thread, ...plan.archive].flatMap((archived) =>
@@ -3253,6 +3273,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             type: "thread.session.stop",
             commandId: command.commandId,
             threadId: childId,
+            // Stopped with its family: no new Stop hold.
+            cause: "family",
             createdAt: command.createdAt,
           }),
         ),
@@ -4166,6 +4188,26 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: `Thread '${command.threadId}' has no failed turn to retry.`,
+        });
+      }
+      // A child's report whose start failed was put back on the queue
+      // ("Restart and turn binding", rule A): that is the failed turn, so the
+      // user's Retry sends it, never an earlier message of theirs.
+      const putBack = (targetThread.queuedFollowUps ?? []).find(
+        (queued) => queued.putBack === true,
+      );
+      if (command.type === "thread.turn.retry" && putBack !== undefined) {
+        return yield* decideCommandSequence({
+          commands: [
+            {
+              type: "thread.follow-up.send-queued",
+              commandId: command.commandId,
+              threadId: command.threadId,
+              messageId: putBack.messageId,
+              createdAt: command.createdAt,
+            },
+          ],
+          readModel,
         });
       }
       if (
@@ -5242,8 +5284,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         });
       // In a room, stopping the session ends the agents' chain the same way
       // Stop does, so a turn still being prepared for an agent is dropped.
+      // The user's own session stop holds a family like their Stop does; one
+      // the server makes (with its family, as cleanup) leaves no new hold.
       const chainStop = [
-        ...decideAgentChainStop(thread, base, command.createdAt),
+        ...decideAgentChainStop(thread, base, command.createdAt, {
+          holdsFamily:
+            command.cause === undefined &&
+            (thread.childRequests.open.length > 0 ||
+              attachedChildrenOf(readModel, thread.id).length > 0),
+        }),
         ...childStopEvents(readModel, thread, command, command.createdAt),
         ...holdCommandOutputOnStop(thread, base, command.createdAt),
         // Stop is the user's say: a goal paused for a wait stays as Stop
@@ -5306,9 +5355,19 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // The turn claims the message that started it ("Restart and turn
       // binding", rule B): its owed report is keyed by the turn from here on,
       // and a parent's request it answers records the turn, so every later
-      // reader knows the turn by its id, never by its message.
+      // reader knows the turn by its id, never by its message. A writer that
+      // names the message may come after one that took the same turn for the
+      // provider's (Claude says a turn started before its send returns): the
+      // name wins, whether or not the turn is new.
+      const namedTurnId =
+        command.session.status === "running" &&
+        command.session.activeTurnId !== null &&
+        command.turnStartedBy !== undefined &&
+        "messageId" in command.turnStartedBy
+          ? command.session.activeTurnId
+          : null;
       const startedMessageId =
-        startedTurnId !== null &&
+        namedTurnId !== null &&
         command.turnStartedBy !== undefined &&
         "messageId" in command.turnStartedBy
           ? command.turnStartedBy.messageId
@@ -5320,12 +5379,39 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         )
           ? startedMessageId
           : null;
+      // Named for a message that owes nothing (a person's, a request's): a
+      // report recorded for the turn as the provider's goes.
+      const namedMessage =
+        startedMessageId === null
+          ? undefined
+          : thread.messages.find((message) => message.id === startedMessageId);
+      const providerEntryCorrected: ReadonlyArray<PlannedOrchestrationEvent> =
+        namedTurnId !== null &&
+        owedReportBinds === null &&
+        namedMessage !== undefined &&
+        messageAnswersSomeoneElse(namedMessage) &&
+        (thread.childRequests.owedReports ?? []).some((entry) =>
+          isOwedReport(entry, { turnId: namedTurnId }),
+        )
+          ? [
+              {
+                ...childEventBase(command, command.createdAt)(thread.id),
+                type: "thread.child-report-dropped",
+                payload: {
+                  threadId: thread.id,
+                  owed: { turnId: namedTurnId },
+                  turnId: namedTurnId,
+                  createdAt: command.createdAt,
+                },
+              },
+            ]
+          : [];
       const parentForTurn =
         startedMessageId !== null && thread.parentThreadId !== null
           ? readModel.threads.find((entry) => entry.id === thread.parentThreadId)
           : undefined;
       const answeredRequests: ReadonlyArray<PlannedOrchestrationEvent> =
-        parentForTurn === undefined || startedTurnId === null
+        parentForTurn === undefined || namedTurnId === null
           ? []
           : parentForTurn.childRequests.open
               .filter(
@@ -5334,7 +5420,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
                   request.remote === undefined &&
                   request.status === "running" &&
                   request.childMessageId === startedMessageId &&
-                  request.answeringTurnId !== startedTurnId,
+                  request.answeringTurnId !== namedTurnId,
               )
               .map((request) => ({
                 ...childEventBase(command, command.createdAt)(parentForTurn.id),
@@ -5343,22 +5429,22 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
                   threadId: parentForTurn.id,
                   requestId: request.requestId,
                   status: "running" as const,
-                  answeringTurnId: startedTurnId,
+                  answeringTurnId: namedTurnId,
                   updatedAt: command.createdAt,
                 },
               }));
-      const turnStartEvents: ReadonlyArray<PlannedOrchestrationEvent> =
-        startedTurnId === null
+      const turnStartEvents: ReadonlyArray<PlannedOrchestrationEvent> = [
+        ...(startedTurnId === null
           ? []
-          : [
-              ...settleWaitingAnswer(
-                readModel,
-                thread,
-                childEventBase(command, command.createdAt),
-                command.createdAt,
-              ),
-              ...answeredRequests,
-            ];
+          : settleWaitingAnswer(
+              readModel,
+              thread,
+              childEventBase(command, command.createdAt),
+              command.createdAt,
+            )),
+        ...providerEntryCorrected,
+        ...answeredRequests,
+      ];
       const sessionSetEvent = {
         ...withEventBase({
           aggregateKind: "thread",
@@ -5762,6 +5848,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         waitingOnUser: command.waitingOnUser,
         settingOn: command.continueAfterRestart,
         now: command.createdAt,
+        ...(command.turnMessageId !== undefined ? { turnMessageId: command.turnMessageId } : {}),
       });
       if (verdict.kind === "movedOn") {
         return yield* new OrchestrationCommandInvariantError({

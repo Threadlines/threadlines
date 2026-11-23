@@ -1269,6 +1269,8 @@ const make = Effect.gen(function* () {
       const stopped = yield* engine
         .dispatch({
           type: "thread.session.stop",
+          // A link's stop leaves no Stop hold here.
+          cause: "cleanup",
           commandId: CommandId.make(
             `server:link-stop:${deviceId}:${thread.id}:${turnKeyOf(thread)}${
               retry === undefined ? "" : `:retry:${retry}`
@@ -1340,6 +1342,7 @@ const make = Effect.gen(function* () {
         const stopped = yield* dispatchUnlessRefused(
           {
             type: "thread.session.stop",
+            cause: "cleanup",
             commandId: linkCommandId(
               deviceId,
               row.requestId,

@@ -365,7 +365,8 @@ export function staleOwedReports(
  * settled against that turn alone: a completed turn is delivered, a failed
  * one delivers its failure, and one the restart cut off says so. One no turn
  * claimed never started: it goes with nothing said (its message's start was
- * put back or marked not run, "Restart and turn binding", rule A).
+ * put back or marked not run, "Restart and turn binding", rule A), and so
+ * does one a Stop named before the process stopped.
  */
 export function childReportAfterRestart(
   child: OrchestrationThread,
@@ -377,11 +378,14 @@ export function childReportAfterRestart(
   const text =
     turnId === null
       ? undefined
-      : turn?.state === "completed"
-        ? reportReplyText(child, turnId)
-        : turn?.state === "error"
-          ? reportFailureText(child, child.session?.lastError ?? "Its turn did not finish.")
-          : `'${child.title}' was interrupted by a Threadlines restart. Send it a message with thread_send to continue.`;
+      : turn?.state !== "completed" && stoppedOnPurpose(child, turnId)
+        ? // A turn a Stop named was stopped on purpose, restart or not (rule 6).
+          undefined
+        : turn?.state === "completed"
+          ? reportReplyText(child, turnId)
+          : turn?.state === "error"
+            ? reportFailureText(child, child.session?.lastError ?? "Its turn did not finish.")
+            : `'${child.title}' was interrupted by a Threadlines restart. Send it a message with thread_send to continue.`;
   return {
     type: "thread.child-report.settle",
     commandId: reportSettleCommandId(child, entry),

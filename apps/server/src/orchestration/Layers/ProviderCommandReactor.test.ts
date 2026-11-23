@@ -6155,6 +6155,8 @@ describe("ProviderCommandReactor", () => {
               type: "thread.session.set",
               commandId: CommandId.make("cmd-session-set-cut"),
               threadId,
+              // Its turn took the user's message, as the reactor names it.
+              turnStartedBy: { messageId: asMessageId("user-message-cut") },
               session: {
                 threadId,
                 status: "running",

@@ -4871,6 +4871,12 @@ const ThreadRestartContinueCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   turnId: Schema.NullOr(TurnId),
+  /**
+   * The message the cut turn was started with, from its turn record: null for
+   * a turn the provider started (a check-back), which is never continued.
+   * Absent: not known, and the newest message that starts a turn stands in.
+   */
+  turnMessageId: Schema.optional(Schema.NullOr(MessageId)),
   participantId: Schema.NullOr(ThreadParticipantId),
   waitingOnUser: Schema.Boolean,
   continueAfterRestart: Schema.Boolean,
