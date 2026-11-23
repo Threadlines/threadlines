@@ -38,7 +38,8 @@ Threadlines sends product and reliability events such as:
 - how long a sent message waited, in milliseconds, before Threadlines handed it
   to the agent and before the agent's first output, how much of the first wait
   went to each step (waiting behind the chat's earlier work, getting the agent
-  ready, saving the code snapshot), whether the agent had to
+  ready, saving the code snapshot), whether that snapshot failed to save,
+  whether the agent had to
   start up for it, and whether it was started early while you typed. When it
   was started for the message or early, also how long that start took and what
   kind of start it was (a new conversation, an existing one reopened, or a
