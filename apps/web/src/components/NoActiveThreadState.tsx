@@ -24,21 +24,14 @@ import {
   useStore,
 } from "../store";
 import { OpenSourceSupportLinks } from "./OpenSourceSupportLinks";
-import { ProjectFavicon } from "./ProjectFavicon";
 import { RecentThreadsList } from "./RecentThreadsList";
 import { riseDelay, ThreadlinesFigure } from "./ThreadlinesFigure";
 import { Button } from "./ui/button";
 import { Empty, EmptyDescription, EmptyTitle } from "./ui/empty";
 import { Group } from "./ui/group";
-import {
-  Menu,
-  MenuGroup,
-  MenuGroupLabel,
-  MenuItem,
-  MenuPopup,
-  MenuSeparator,
-  MenuTrigger,
-} from "./ui/menu";
+import { MenuGroup, MenuItem, MenuTrigger } from "./ui/menu";
+import { ProjectPickerMenu } from "./ProjectPickerMenu";
+import { getProjectOrderKey } from "../logicalProject";
 import { SidebarInset } from "./ui/sidebar";
 import { PageTitlebar } from "./PageTitlebar";
 
@@ -146,53 +139,52 @@ export function NoActiveThreadState() {
                     </span>
                   </Button>
                   {orderedProjects.length > 1 || generalChatsRef ? (
-                    <Menu>
-                      <MenuTrigger
-                        render={
-                          <Button
-                            aria-label="Choose where to start the new thread"
-                            data-testid="no-thread-project-picker-trigger"
-                            size="icon-sm"
-                            variant="outline"
-                          />
-                        }
-                      >
-                        <ChevronDownIcon className="size-3.5" />
-                      </MenuTrigger>
-                      <MenuPopup align="end">
-                        {generalChatsRef ? (
-                          <>
-                            <MenuGroup>
-                              <MenuItem
-                                data-testid="no-thread-new-general-chat-item"
-                                onClick={handleNewGeneralChat}
-                              >
-                                <MessagesSquareIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
-                                General chat
-                              </MenuItem>
-                            </MenuGroup>
-                            <MenuSeparator />
-                          </>
-                        ) : null}
-                        <MenuGroup>
-                          <MenuGroupLabel>New thread in…</MenuGroupLabel>
-                          {orderedProjects.map((project) => (
+                    <ProjectPickerMenu
+                      align="end"
+                      label="New thread in…"
+                      trigger={
+                        <MenuTrigger
+                          render={
+                            <Button
+                              aria-label="Choose where to start the new thread"
+                              data-testid="no-thread-project-picker-trigger"
+                              size="icon-sm"
+                              variant="outline"
+                            />
+                          }
+                        >
+                          <ChevronDownIcon className="size-3.5" />
+                        </MenuTrigger>
+                      }
+                      header={
+                        generalChatsRef ? (
+                          <MenuGroup>
                             <MenuItem
-                              key={`${project.environmentId}:${project.id}`}
-                              onClick={() => handleNewThreadInProject(project)}
-                              title={project.cwd}
+                              data-testid="no-thread-new-general-chat-item"
+                              onClick={handleNewGeneralChat}
                             >
-                              <ProjectFavicon
-                                cwd={project.cwd}
-                                environmentId={project.environmentId}
-                                name={project.name}
-                              />
-                              <span className="max-w-56 truncate">{project.name}</span>
+                              <MessagesSquareIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
+                              General chat
                             </MenuItem>
-                          ))}
-                        </MenuGroup>
-                      </MenuPopup>
-                    </Menu>
+                          </MenuGroup>
+                        ) : undefined
+                      }
+                      rows={orderedProjects.map((project) => ({
+                        key: getProjectOrderKey(project),
+                        name: project.name,
+                        cwd: project.cwd,
+                        environmentId: project.environmentId,
+                        orderKeys: [getProjectOrderKey(project)],
+                        cwds: [project.cwd],
+                        selected: false,
+                      }))}
+                      onPick={(row) => {
+                        const project = orderedProjects.find(
+                          (candidate) => getProjectOrderKey(candidate) === row.key,
+                        );
+                        if (project) handleNewThreadInProject(project);
+                      }}
+                    />
                   ) : null}
                 </Group>
               ) : (
