@@ -503,6 +503,8 @@ export function stepTurnMachine<Answer>(
       const turn = state.turn;
       if (state.ended || turn === undefined || turn.stopRequested) break;
       commands.push({ type: "sendCancel" });
+      // Each cancel may be followed by the agent's notice; that one is dropped.
+      state.noticesExpected += 1;
       if (turn.phase.tag === "waiting") {
         // Nothing to answer: the cancel stops the agent's work, and the turn ends now.
         clearWork();
@@ -510,8 +512,6 @@ export function stepTurnMachine<Answer>(
         break;
       }
       state.turn = { ...turn, stopRequested: true };
-      // A cancelled prompt is followed by the agent's notice.
-      if (turn.phase.tag === "prompting") state.noticesExpected += 1;
       break;
     }
     case "timerFired": {

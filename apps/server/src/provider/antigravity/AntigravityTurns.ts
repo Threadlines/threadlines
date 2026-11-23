@@ -26,6 +26,8 @@ import type * as EffectAcpSchema from "effect-acp/schema";
 import { httpStatusFailureCategory } from "../providerFailureCategory.ts";
 import type {
   AcpPromptFailure,
+  AcpPromptOutcome,
+  AcpPromptOutcomeWatch,
   AcpProviderDescriptor,
   AcpProviderSettings,
   AcpWorkAfterPrompt,
@@ -52,11 +54,11 @@ export const ANTIGRAVITY_SILENT_WORK_LIMIT = Duration.minutes(30);
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** A launch's input: one subagent (`Role`, `Prompt`), or a batch (`Subagents`). */
-function isSubagentLaunch(input: unknown): boolean {
-  if (!isRecord(input)) return false;
-  if (typeof input.Role === "string" && typeof input.Prompt === "string") return true;
-  return Array.isArray(input.Subagents) && input.Subagents.length > 0;
+/** How many subagents a launch starts: one (`Role`, `Prompt`), or a batch (`Subagents`). */
+function subagentLaunchCount(input: unknown): number {
+  if (!isRecord(input)) return 0;
+  if (typeof input.Role === "string" && typeof input.Prompt === "string") return 1;
+  return Array.isArray(input.Subagents) ? input.Subagents.length : 0;
 }
 
 /**
@@ -67,18 +69,21 @@ function isSubagentLaunch(input: unknown): boolean {
 export function antigravityWorkAfterPrompt(
   toolCall: AcpToolCallState,
 ): AcpWorkAfterPrompt | undefined {
-  if (toolCall.title !== undefined && SCHEDULE_TITLES.has(toolCall.title)) return "wake";
+  if (toolCall.title !== undefined && SCHEDULE_TITLES.has(toolCall.title)) {
+    return { kind: "timer" };
+  }
   const input = toolCall.data.rawInput;
   if (toolCall.kind === "execute") {
-    return isRecord(input) && input.IsDaemon === true ? undefined : "command";
+    return isRecord(input) && input.IsDaemon === true ? undefined : { kind: "command" };
   }
+  const count = subagentLaunchCount(input);
   if (
     (toolCall.kind === undefined || toolCall.kind === "other") &&
     toolCall.title !== undefined &&
     SUBAGENT_TITLES.has(toolCall.title) &&
-    isSubagentLaunch(input)
+    count > 0
   ) {
-    return "subagent";
+    return { kind: "subagents", count };
   }
   return undefined;
 }
@@ -103,7 +108,11 @@ export function antigravityTurnUsageTotals(
     outputTokens,
     reasoningTokens: Math.min(outputTokens, count(usage.thoughtTokens)),
   };
-  return totals.uncachedInputTokens + totals.cachedInputTokens + totals.outputTokens > 0
+  return totals.uncachedInputTokens +
+    totals.cachedInputTokens +
+    totals.cacheCreationTokens +
+    totals.outputTokens >
+    0
     ? totals
     : null;
 }
@@ -239,72 +248,86 @@ function acpErrorText(error: unknown): string | undefined {
 export function antigravityTurnBehavior<Settings extends AcpProviderSettings>(
   profileDir: string,
   readUsageLimit?: (model: string) => Effect.Effect<RuntimeUsageLimit | undefined>,
-): Pick<
-  AcpProviderDescriptor<Settings>,
-  | "agentTurns"
-  | "heldTurns"
-  | "steerWithPrompt"
-  | "promptOutcome"
-  | "usageLedger"
-  | "turnUsageTotals"
-> {
+): Pick<AcpProviderDescriptor<Settings>, "turnMachine" | "usageLedger" | "turnUsageTotals"> {
   return {
-    // What the agent does after a prompt ended is live (1.5.10), and opens a
-    // turn of its own when no turn is held open for it.
-    agentTurns: true,
-    heldTurns: {
+    // Turns outlive their prompt (1.5.10 sends what the agent does after a
+    // prompt ends at once) and a second prompt steers (1.5.0).
+    turnMachine: {
       workAfterPrompt: antigravityWorkAfterPrompt,
       silentLimit: ANTIGRAVITY_SILENT_WORK_LIMIT,
-    },
-    steerWithPrompt: true,
-    promptOutcome: {
-      watch: (sessionId, model) =>
-        Effect.gen(function* () {
-          const before = yield* antigravityLogPosition(profileDir, sessionId);
-          const withMeterReset = (failure: AcpPromptFailure | undefined) =>
-            failure?.usageLimit !== undefined &&
-            failure.usageLimit.resetsAt === undefined &&
-            readUsageLimit !== undefined &&
-            model !== undefined
-              ? readUsageLimit(model).pipe(
-                  Effect.map((limit) => (limit ? { ...failure, usageLimit: limit } : failure)),
-                )
-              : Effect.succeed(failure);
-          return (answer) =>
-            Effect.gen(function* () {
-              const nowMs = yield* Clock.currentTimeMillis;
-              // 1.5.9+ fails the prompt with the real error.
-              // Words it doesn't recognize keep the core's own reading.
-              if ("error" in answer) {
-                const errorText = acpErrorText(answer.error);
-                const recognized =
-                  errorText !== undefined &&
-                  (parseApiError(errorText) !== undefined ||
-                    QUOTA_EXHAUSTED.test(errorText) ||
-                    LOST_THINKING_SIGNATURE.test(errorText));
-                return recognized
-                  ? yield* withMeterReset(antigravityFailure({ errorText, nowMs }))
-                  : undefined;
-              }
-              // A normal end can hide an upstream error that only the
-              // agent's own log records.
-              const stopReason = answer.response.stopReason;
-              const steps =
-                before === undefined
-                  ? undefined
-                  : yield* antigravityTurnSteps(profileDir, sessionId, before);
-              return yield* withMeterReset(
-                antigravityFailure({
-                  errorText: steps?.errorText,
-                  stopReason,
-                  ...(steps !== undefined ? { reachedModel: steps.reachedModel } : {}),
-                  nowMs,
-                }),
-              );
-            });
-        }),
+      outcome: antigravityPromptOutcome(profileDir, readUsageLimit),
     },
     usageLedger: { provider: "antigravity" },
     turnUsageTotals: antigravityTurnUsageTotals,
+  };
+}
+
+/**
+ * Reads how an Antigravity prompt really ended: the JSON-RPC error it failed
+ * with (1.5.9+), or, for a normal end, an error step in the CLI's session log.
+ *
+ * A log step is the prompt's only if it is written after the prompt went
+ * out and after every older prompt of its turn answered: the CLI writes a
+ * prompt's steps before it answers it, and answers a steered prompt only
+ * once the steer arrives, so an older prompt's late error lands before its
+ * own answer and `rebase` moves past it. When the log can't say (it can't be
+ * read, or a step's prompt is in doubt), the prompt's own answer stands: the
+ * turn completes and the agent's own words about the error stay in its reply.
+ */
+function antigravityPromptOutcome(
+  profileDir: string,
+  readUsageLimit?: (model: string) => Effect.Effect<RuntimeUsageLimit | undefined>,
+): AcpPromptOutcome {
+  return {
+    watch: (sessionId, model) =>
+      Effect.gen(function* () {
+        let before = yield* antigravityLogPosition(profileDir, sessionId);
+        const withMeterReset = (failure: AcpPromptFailure | undefined) =>
+          failure?.usageLimit !== undefined &&
+          failure.usageLimit.resetsAt === undefined &&
+          readUsageLimit !== undefined &&
+          model !== undefined
+            ? readUsageLimit(model).pipe(
+                Effect.map((limit) => (limit ? { ...failure, usageLimit: limit } : failure)),
+              )
+            : Effect.succeed(failure);
+        const rebase = Effect.gen(function* () {
+          const now = yield* antigravityLogPosition(profileDir, sessionId);
+          if (now !== undefined) before = before === undefined ? now : Math.max(before, now);
+        });
+        const check: AcpPromptOutcomeWatch["check"] = (answer) =>
+          Effect.gen(function* () {
+            const nowMs = yield* Clock.currentTimeMillis;
+            // 1.5.9+ fails the prompt with the real error.
+            // Words it doesn't recognize keep the core's own reading.
+            if ("error" in answer) {
+              const errorText = acpErrorText(answer.error);
+              const recognized =
+                errorText !== undefined &&
+                (parseApiError(errorText) !== undefined ||
+                  QUOTA_EXHAUSTED.test(errorText) ||
+                  LOST_THINKING_SIGNATURE.test(errorText));
+              return recognized
+                ? yield* withMeterReset(antigravityFailure({ errorText, nowMs }))
+                : undefined;
+            }
+            // A normal end can hide an upstream error that only the
+            // agent's own log records.
+            const stopReason = answer.response.stopReason;
+            const steps =
+              before === undefined
+                ? undefined
+                : yield* antigravityTurnSteps(profileDir, sessionId, before);
+            return yield* withMeterReset(
+              antigravityFailure({
+                errorText: steps?.errorText,
+                stopReason,
+                ...(steps !== undefined ? { reachedModel: steps.reachedModel } : {}),
+                nowMs,
+              }),
+            );
+          });
+        return { check, rebase };
+      }),
   };
 }

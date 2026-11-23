@@ -153,13 +153,13 @@ export interface AcpSessionRuntimeOptions {
   /**
    * Also hand the reader tool call updates that show nothing new (a status
    * change with no new detail) as `ToolCallTracked`, for a client that keeps
-   * count of running work (`AcpProviderDescriptor.heldTurns`).
+   * count of running work (`AcpProviderDescriptor.turnMachine`).
    */
   readonly trackSilentToolCalls?: boolean;
   /**
-   * Text the agent appends when a prompt is cancelled. After a cancel and
-   * until the next prompt, a reply chunk that is just this text is dropped
-   * before it starts a message.
+   * Text the agent appends when a prompt is cancelled. A reply chunk that is
+   * just this text comes as `CancellationNotice`, before it starts a
+   * message: the client decides whether it is the notice a cancel owed.
    */
   readonly cancellationNotice?: string;
   /** Context fill carried on the agent's own updates (see `AcpProviderDescriptor.contextUsage`). */
@@ -254,6 +254,19 @@ export interface AcpSessionRuntimeShape {
    */
   readonly closeAssistantSegment: Effect.Effect<void>;
   /**
+   * Ends the reply being streamed at once, for a reader that closes a turn
+   * in place: the item id it closed, for the reader to complete itself.
+   */
+  readonly closeAssistantSegmentNow: Effect.Effect<string | undefined>;
+  /**
+   * The reply being streamed, opened at once if none is, for a reader that
+   * shows text it held back: its item id, and whether the reader must start it.
+   */
+  readonly openAssistantSegmentNow: Effect.Effect<{
+    readonly itemId: string;
+    readonly opened: boolean;
+  }>;
+  /**
    * What the agent answered to `initialize`, as soon as it has: still there
    * when the session is then refused (an agent that wants a sign-in first
    * lists its sign-in methods here).
@@ -297,6 +310,13 @@ export interface AcpSessionToolCallTracked {
   readonly toolCall: AcpToolCallState;
 }
 
+/** The agent's cancellation notice, not yet shown (see `cancellationNotice`). */
+export interface AcpSessionCancellationNotice {
+  readonly _tag: "CancellationNotice";
+  readonly text: string;
+  readonly rawPayload: unknown;
+}
+
 /** Work for the reader to run where it was queued (see `inOrder`). */
 export interface AcpSessionInOrderWork {
   readonly _tag: "InOrder";
@@ -307,7 +327,8 @@ export type AcpSessionRuntimeEvent =
   | AcpParsedSessionEvent
   | AcpSessionEventStreamBarrier
   | AcpSessionInOrderWork
-  | AcpSessionToolCallTracked;
+  | AcpSessionToolCallTracked
+  | AcpSessionCancellationNotice;
 
 /** Upper bound on waiting for the reader; a dead consumer must not wedge a turn. */
 const EVENT_FLUSH_TIMEOUT = "5 seconds";
@@ -517,8 +538,6 @@ const makeAcpSessionRuntime = (
     // that starts turns of its own, anything after the session opened. A count:
     // an agent steered by a second prompt has two open at once.
     const promptsInFlightRef = yield* Ref.make(0);
-    /** A cancel was sent and no prompt since: the agent's cancellation notice is dropped. */
-    const cancelledRef = yield* Ref.make(false);
     /** Turns the agent started or ended itself so far (`markAgentTurnBoundary`). */
     const agentTurnBoundariesRef = yield* Ref.make(0);
     const liveOutsidePromptRef = yield* Ref.make(false);
@@ -561,7 +580,7 @@ const makeAcpSessionRuntime = (
           ...(nativeControls ? { configOptionsRef } : {}),
           ...(options.trackSilentToolCalls ? { trackSilentToolCalls: true } : {}),
           ...(options.cancellationNotice !== undefined
-            ? { cancellationNotice: { text: options.cancellationNotice, cancelledRef } }
+            ? { cancellationNotice: options.cancellationNotice }
             : {}),
         });
       }),
@@ -988,6 +1007,37 @@ const makeAcpSessionRuntime = (
         queue: eventQueue,
         assistantSegmentRef,
       }),
+      closeAssistantSegmentNow: Ref.modify(assistantSegmentRef, (current) =>
+        current.activeItemId === undefined
+          ? ([undefined, current] as const)
+          : ([current.activeItemId, { nextSegmentIndex: current.nextSegmentIndex }] as const),
+      ),
+      openAssistantSegmentNow: getStartedState.pipe(
+        Effect.orDie,
+        Effect.flatMap((started) =>
+          Ref.modify(
+            assistantSegmentRef,
+            (
+              current,
+            ): readonly [
+              { readonly itemId: string; readonly opened: boolean },
+              AcpAssistantSegmentState,
+            ] => {
+              if (current.activeItemId !== undefined) {
+                return [{ itemId: current.activeItemId, opened: false }, current] as const;
+              }
+              const itemId = assistantItemId(
+                `${started.sessionId}${itemIdScope}`,
+                current.nextSegmentIndex,
+              );
+              return [
+                { itemId, opened: true },
+                { nextSegmentIndex: current.nextSegmentIndex + 1, activeItemId: itemId },
+              ] as const;
+            },
+          ),
+        ),
+      ),
       getInitializeResult: Ref.get(initializeResultRef),
       getModeState: Ref.get(modeStateRef),
       getConfigOptions: readConfigOptions,
@@ -1001,7 +1051,6 @@ const makeAcpSessionRuntime = (
             return Effect.gen(function* () {
               yield* closeActiveAssistantSegment({ queue: eventQueue, assistantSegmentRef });
               const boundariesBefore = yield* Ref.get(agentTurnBoundariesRef);
-              yield* Ref.set(cancelledRef, false);
               yield* Ref.update(promptsInFlightRef, (count) => count + 1);
               const response = yield* runLoggedRequest(
                 "session/prompt",
@@ -1023,7 +1072,6 @@ const makeAcpSessionRuntime = (
           }),
         ),
       cancel: getStartedState.pipe(
-        Effect.tap(() => Ref.set(cancelledRef, true)),
         Effect.flatMap((started) =>
           acp.agent.cancel({
             sessionId: started.sessionId,
@@ -1134,7 +1182,7 @@ const handleSessionUpdate = ({
   /** Given for native controls only: the agent's own option updates land here. */
   readonly configOptionsRef?: Ref.Ref<ReadonlyArray<EffectAcpSchema.SessionConfigOption>>;
   readonly trackSilentToolCalls?: boolean;
-  readonly cancellationNotice?: { readonly text: string; readonly cancelledRef: Ref.Ref<boolean> };
+  readonly cancellationNotice?: string;
 }): Effect.Effect<void> =>
   Effect.gen(function* () {
     if (configOptionsRef && params.update.sessionUpdate === "config_option_update") {
@@ -1193,11 +1241,12 @@ const handleSessionUpdate = ({
         continue;
       }
       if (event._tag === "ContentDelta") {
-        if (
-          cancellationNotice !== undefined &&
-          event.text.trim() === cancellationNotice.text &&
-          (yield* Ref.get(cancellationNotice.cancelledRef))
-        ) {
+        if (cancellationNotice !== undefined && event.text.trim() === cancellationNotice) {
+          yield* Queue.offer(queue, {
+            _tag: "CancellationNotice",
+            text: event.text,
+            rawPayload: event.rawPayload,
+          });
           continue;
         }
         if (event.text.trim().length === 0) {

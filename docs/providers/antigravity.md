@@ -112,26 +112,38 @@ set (`schedule`), or a subagent it launched. When that work ends, the agent wake
 itself. Threadlines keeps the turn open meanwhile, so the thread shows it working and Stop stays on
 screen, and the reply lands in the same turn. A dev server or other daemon doesn't hold the turn.
 Stop cancels the turn and that work together (Antigravity 1.5.10 stops its commands and subagents on
-a cancel). A reply the agent starts after the turn ended opens a turn of its own.
+a cancel). If the agent hasn't answered 15 seconds after Stop, Threadlines restarts it and the turn
+ends cancelled; the next message picks the conversation up again. Stopping the session (or
+Threadlines) while a turn is held ends that turn as interrupted. A reply the agent starts after the
+turn ended opens a turn of its own, except the CLI's "request was cancelled" notice after a Stop,
+which never shows.
 
 Two limits keep a lost wake from leaving the thread working forever: a turn held only by commands
 and subagents ends after 30 minutes without a word from the agent, and a reply the agent started
 by itself ends 2 minutes after its last output if its closing usage update never comes. A timer
 holds the turn until it fires. Subagents are only known to finish by the report the agent gives when
-one ends, so each report (a reply no finished command or timer woke) frees one subagent. If the CLI
-sends several reports in one reply, the turn holds until the 30-minute limit or Stop. If the agent
+one ends, so each report (a reply no finished command or timer woke) frees one subagent; a batch
+launch counts each subagent in it. If the CLI sends several reports in one reply, the turn holds
+until the 30-minute limit or Stop. If the agent
 exits while a turn is held, the turn fails with that reason and the next message starts it again.
 
 A message sent while Antigravity works steers the turn instead of waiting: Threadlines sends it as
 another prompt, which the CLI takes into the running turn (1.5.0+), leaving its commands and
-subagents running.
+subagents running. The turn ends with the newest prompt's answer.
+
+All of this is one state machine (`apps/server/src/provider/acp/AcpTurnMachine.ts`), stepped in
+order with the agent's updates; its test walks every sequence of up to ten events and checks that
+each turn ends exactly once, Stop always has a deadline, and a hold with nothing left ends.
 
 ### When a turn fails
 
 Antigravity sometimes ends a turn normally while the reply is really an upstream error. Threadlines
 reads the error the CLI reports (1.5.9+) and, where the CLI reports none, the last step of the
 turn in the CLI's own session log (`antigravity-acp/conversations/<id>.db` in the profile, a
-private format read only for this). The turn then fails with Google's words and a Retry. An
+private format read only for this). A log step counts for a prompt only if it was written after that prompt went out and after every
+older prompt of the turn answered; when the log can't say, the prompt's own answer stands (the
+agent's words about the error stay in its reply). The turn then fails with Google's words and a
+Retry. An
 exhausted quota fails with its reset time, so the usage-limit notice above the composer says when
 it resets and can continue then. A conversation Google can no longer continue (a model rejected a
 saved thinking block) stops its session, and the next message starts a new one with the thread's

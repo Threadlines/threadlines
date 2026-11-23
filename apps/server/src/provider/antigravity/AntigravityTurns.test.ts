@@ -390,6 +390,24 @@ describe("Antigravity turns, the hard cases", () => {
     }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 
+  it.live("ends a held turn when its session is stopped", () =>
+    Effect.gen(function* () {
+      const agy = yield* startAgy("hang");
+      const { turnId } = yield* agy.adapter.sendTurn({
+        threadId: agy.threadId,
+        input: "build it",
+        attachments: [],
+      });
+      yield* agy.waitFor((events) => replyTo(events, turnId).includes("I'll report"));
+      yield* Effect.sleep("300 millis");
+      yield* agy.adapter.stopSession(agy.threadId);
+      expect(agy.events.filter((event) => event.type === "turn.aborted")).toEqual([
+        expect.objectContaining({ turnId }),
+      ]);
+      expect(completedTurns(agy.events)).toEqual([]);
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
   it.live("recycles an agent that ignores Stop, even while another message waits", () =>
     Effect.gen(function* () {
       const agy = yield* startAgy("ignore-cancel");
@@ -414,7 +432,7 @@ describe("Antigravity turns, the hard cases", () => {
     }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 
-  it.live("settles a turn once when a steer comes while its answer is read", () =>
+  it.live("takes a steer sent while the answer is read, and shows the steer's permission", () =>
     Effect.gen(function* () {
       const reading = yield* Deferred.make<void>();
       const release = yield* Deferred.make<void>();
@@ -422,22 +440,32 @@ describe("Antigravity turns, the hard cases", () => {
       // The first prompt's outcome check waits for the test.
       const agy = yield* startAgy(
         "permission-second",
-        (descriptor) => ({
-          ...descriptor,
-          promptOutcome: {
-            watch: (sessionId, model) =>
-              descriptor.promptOutcome!.watch(sessionId, model).pipe(
-                Effect.map((check) => (answer: Parameters<typeof check>[0]) => {
-                  if (!first) return check(answer);
-                  first = false;
-                  return Deferred.succeed(reading, undefined).pipe(
-                    Effect.andThen(Deferred.await(release)),
-                    Effect.andThen(check(answer)),
-                  );
-                }),
-              ),
-          },
-        }),
+        (descriptor) => {
+          const machine = descriptor.turnMachine!;
+          const outcome = machine.outcome!;
+          return {
+            ...descriptor,
+            turnMachine: {
+              ...machine,
+              outcome: {
+                watch: (sessionId, model) =>
+                  outcome.watch(sessionId, model).pipe(
+                    Effect.map((watch) => ({
+                      ...watch,
+                      check: (answer: Parameters<typeof watch.check>[0]) => {
+                        if (!first) return watch.check(answer);
+                        first = false;
+                        return Deferred.succeed(reading, undefined).pipe(
+                          Effect.andThen(Deferred.await(release)),
+                          Effect.andThen(watch.check(answer)),
+                        );
+                      },
+                    })),
+                  ),
+              },
+            },
+          };
+        },
         "approval-required",
       );
       const { turnId } = yield* agy.adapter.sendTurn({
@@ -446,28 +474,28 @@ describe("Antigravity turns, the hard cases", () => {
         attachments: [],
       });
       yield* Deferred.await(reading);
-      const steer = yield* agy.adapter.steerTurn!({
+      // The steer lands while the first answer is read: it carries the turn on.
+      const steered = yield* agy.adapter.steerTurn!({
         threadId: agy.threadId,
         expectedTurnId: turnId,
         input: "second",
-      }).pipe(Effect.exit, Effect.forkScoped);
-      yield* Effect.sleep("200 millis");
+      });
+      expect(steered.turnId).toBe(turnId);
+      yield* agy.waitFor((events) => events.some((event) => event.type === "request.opened"));
+      const opened = agy.events.find((event) => event.type === "request.opened");
+      expect(opened?.turnId).toBe(turnId);
+      yield* agy.adapter.respondToRequest(agy.threadId, opened!.requestId as never, "accept");
+      // The first answer's reading finishes late: it settles nothing.
       yield* Deferred.succeed(release, undefined);
-      // The turn had ended: the steer is turned down, to be sent as a turn of its own.
-      expect(Exit.isFailure(yield* Fiber.join(steer))).toBe(true);
+      yield* agy.waitFor((events) => completedTurns(events).length === 1);
+      yield* Effect.sleep("300 millis");
       expect(completedTurns(agy.events)).toEqual([
         expect.objectContaining({
           turnId,
           payload: expect.objectContaining({ state: "completed" }),
         }),
       ]);
-      const next = yield* agy.adapter.sendTurn({
-        threadId: agy.threadId,
-        input: "second",
-        attachments: [],
-      });
-      yield* agy.waitFor((events) => events.some((event) => event.type === "request.opened"));
-      expect(agy.events.find((event) => event.type === "request.opened")?.turnId).toBe(next.turnId);
+      expect(replyTo(agy.events, turnId)).toContain("Second done.");
     }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 
@@ -490,6 +518,88 @@ describe("Antigravity turns, the hard cases", () => {
     }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 
+  it.live("steers without inheriting an error the earlier prompt writes late", () =>
+    Effect.gen(function* () {
+      const agy = yield* startAgy("steer-late-log-error");
+      const { turnId } = yield* agy.adapter.sendTurn({
+        threadId: agy.threadId,
+        input: "go",
+        attachments: [],
+      });
+      yield* agy.waitFor((events) => replyTo(events, turnId).includes("Working on it."));
+      yield* agy.adapter.steerTurn!({
+        threadId: agy.threadId,
+        expectedTurnId: turnId,
+        input: "try again",
+      });
+      yield* agy.waitFor((events) => completedTurns(events).length === 1);
+      expect(completedTurns(agy.events)[0]?.payload.state).toBe("completed");
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+  it.live("writes the cost the agent reports with the prompt that spent it", () =>
+    Effect.gen(function* () {
+      const agy = yield* startAgy("cost");
+      const { turnId } = yield* agy.adapter.sendTurn({
+        threadId: agy.threadId,
+        input: "build it",
+        attachments: [],
+      });
+      yield* agy.waitFor((events) => completedTurns(events).length === 1);
+      yield* Effect.sleep("100 millis");
+      const lines = agy.usage.map((entry) => ({
+        turnId: entry.turnId,
+        input: entry.totals.uncachedInputTokens,
+        cost: Math.round((entry.costUsd ?? -1) * 1000) / 1000,
+      }));
+      // The tokens and the cost spent up to the answer share one line; the
+      // cost of the agent's own reply after it has a line of its own.
+      expect(lines).toEqual([
+        { turnId, input: 400, cost: 0.02 },
+        { turnId: `${turnId}:after`, input: 0, cost: 0.03 },
+      ]);
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+  it.live("keeps every lost session another adapter of the instance marked, across a restart", () =>
+    Effect.gen(function* () {
+      const agy = yield* startAgy("lost-signature");
+      // The instance's adapter rebuilt while the first still runs a thread
+      // (a settings change): both write the same instance's marks.
+      const rebuilt = yield* agy.newAdapter;
+      const otherThread = ThreadId.make("agy-lost-signature-2");
+      const other = yield* rebuilt.startSession({
+        threadId: otherThread,
+        provider: ProviderDriverKind.make("antigravity"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      yield* agy.adapter.sendTurn({ threadId: agy.threadId, input: "hi", attachments: [] });
+      yield* agy.waitFor(
+        (events) => events.filter((event) => event.type === "session.exited").length === 1,
+      );
+      yield* rebuilt.sendTurn({ threadId: otherThread, input: "hi", attachments: [] });
+      yield* agy.waitFor(
+        (events) => events.filter((event) => event.type === "session.exited").length === 2,
+      );
+      // A server restart: neither lost session is reopened.
+      const restartedAdapter = yield* agy.newAdapter;
+      for (const [threadId, session] of [
+        [agy.threadId, agy.session],
+        [otherThread, other],
+      ] as const) {
+        const restarted = yield* restartedAdapter.startSession({
+          threadId,
+          provider: ProviderDriverKind.make("antigravity"),
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          resumeCursor: session.resumeCursor,
+        });
+        expect(restarted.resumeFailed).toBe(true);
+      }
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
   it.live("holds a turn until each subagent has reported", () =>
     Effect.gen(function* () {
       const agy = yield* startAgy("subagents");
@@ -508,7 +618,7 @@ describe("Antigravity turns, the hard cases", () => {
     Effect.gen(function* () {
       const agy = yield* startAgy("subagent-quiet", (descriptor) => ({
         ...descriptor,
-        heldTurns: { ...descriptor.heldTurns!, replyQuietLimit: Duration.seconds(1) },
+        turnMachine: { ...descriptor.turnMachine!, replyQuietLimit: Duration.seconds(1) },
       }));
       const { turnId } = yield* agy.adapter.sendTurn({
         threadId: agy.threadId,
@@ -534,7 +644,7 @@ describe("Antigravity turn reading", () => {
       antigravityWorkAfterPrompt(
         tool({ kind: "execute", data: { rawInput: { CommandLine: "npm test" } } }),
       ),
-    ).toBe("command");
+    ).toEqual({ kind: "command" });
     // A daemon (a dev server) may never end.
     expect(
       antigravityWorkAfterPrompt(
@@ -544,9 +654,9 @@ describe("Antigravity turn reading", () => {
         }),
       ),
     ).toBeUndefined();
-    expect(antigravityWorkAfterPrompt(tool({ kind: "other", title: "Running schedule" }))).toBe(
-      "wake",
-    );
+    expect(antigravityWorkAfterPrompt(tool({ kind: "other", title: "Running schedule" }))).toEqual({
+      kind: "timer",
+    });
     expect(
       antigravityWorkAfterPrompt(
         tool({
@@ -555,7 +665,24 @@ describe("Antigravity turn reading", () => {
           data: { rawInput: { Role: "Artist", Prompt: "Paint" } },
         }),
       ),
-    ).toBe("subagent");
+    ).toEqual({ kind: "subagents", count: 1 });
+    // A batch launch counts each subagent.
+    expect(
+      antigravityWorkAfterPrompt(
+        tool({
+          kind: "other",
+          title: "Running invoke_subagent",
+          data: {
+            rawInput: {
+              Subagents: [
+                { Role: "Artist", Prompt: "Paint" },
+                { Role: "Critic", Prompt: "Judge" },
+              ],
+            },
+          },
+        }),
+      ),
+    ).toEqual({ kind: "subagents", count: 2 });
     expect(antigravityWorkAfterPrompt(tool({ kind: "read", title: "Read file" }))).toBeUndefined();
   });
 
@@ -617,7 +744,10 @@ describe("Antigravity turn reading", () => {
             return { window: "weekly" as const, resetsAt: "2026-11-24T00:00:00.000Z" };
           }),
         );
-        const check = yield* behavior.promptOutcome!.watch("session-1", "claude-sonnet-agent");
+        const { check } = yield* behavior.turnMachine!.outcome!.watch(
+          "session-1",
+          "claude-sonnet-agent",
+        );
         const quota = {
           _tag: "AcpRequestError",
           errorMessage: "Details: [map[reason:QUOTA_EXHAUSTED]]",
@@ -638,6 +768,17 @@ describe("Antigravity turn reading", () => {
         expect(asked).toHaveLength(1);
       }),
   );
+
+  it("keeps a result that only wrote to the cache", () => {
+    expect(
+      antigravityTurnUsageTotals({
+        inputTokens: 0,
+        outputTokens: 0,
+        cachedWriteTokens: 1_200,
+        totalTokens: 1_200,
+      }),
+    ).toMatchObject({ cacheCreationTokens: 1_200 });
+  });
 
   it("counts cached reads as input and thinking inside output", () => {
     expect(

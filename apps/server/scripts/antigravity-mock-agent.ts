@@ -17,7 +17,12 @@
  * - `ignore-cancel`: never answers its prompt, a cancel included.
  * - `schedule`: sets a timer (a `Running schedule` call that stays as it
  *   started), ends its prompt, and replies when the timer fires.
- * - `subagents`: launches two subagents whose reports come 3 seconds apart.
+ * - `subagents`: launches two subagents in one batch call; their reports come
+ *   3 seconds apart.
+ * - `cost`: reports a running USD cost before its answer and more after its
+ *   own reply once a command ends.
+ * - `steer-late-log-error`: as `steer`, but the first prompt writes its
+ *   error to the log only once the steer has arrived.
  * - `subagent-quiet`: launches one subagent whose report never sends the
  *   closing `usage_update`.
  * - `permission-second`: answers its first prompt at once; a second asks
@@ -106,7 +111,8 @@ const program = Effect.gen(function* () {
     Effect.sync(() => {
       sessionCount += 1;
       return {
-        sessionId: `agy-session-${sessionCount}`,
+        // Unique per process, as the CLI's are: two threads never share one.
+        sessionId: `agy-${process.pid}-${sessionCount}`,
         modes: {
           currentModeId: "default",
           availableModes: [
@@ -170,12 +176,20 @@ const program = Effect.gen(function* () {
         yield* modelCallEnds(sessionId);
         return { stopReason: "end_turn" as const };
       }
-      if (scenario === "steer" || scenario === "steer-log-error") {
+      if (
+        scenario === "steer" ||
+        scenario === "steer-log-error" ||
+        scenario === "steer-late-log-error"
+      ) {
         if (promptsSeen === 1) {
           if (scenario === "steer-log-error") appendLogSteps(sessionId, [[17, GATEWAY_ERROR]]);
           yield* say(sessionId, "Working on it.");
           // Answered once the steer arrives, as 1.5.11 does.
           yield* Deferred.await(secondPrompt);
+          // Its error written only now, while the steer is under way.
+          if (scenario === "steer-late-log-error") {
+            appendLogSteps(sessionId, [[17, GATEWAY_ERROR]]);
+          }
           return {
             stopReason: "end_turn" as const,
             usage: { inputTokens: 100, outputTokens: 5, totalTokens: 105 },
@@ -226,17 +240,23 @@ const program = Effect.gen(function* () {
         return { stopReason: "end_turn" as const };
       }
       if (scenario === "subagents" || scenario === "subagent-quiet") {
-        const launch = (toolCallId: string, Role: string) =>
-          update(sessionId, {
-            sessionUpdate: "tool_call",
-            toolCallId,
-            kind: "other",
-            title: "Running invoke_subagent",
-            status: "completed",
-            rawInput: { Role, Prompt: `Work as ${Role}` },
-          });
-        yield* launch("call_a", "Researcher");
-        if (scenario === "subagents") yield* launch("call_b", "Tester");
+        // `subagents` launches both in one batch call.
+        yield* update(sessionId, {
+          sessionUpdate: "tool_call",
+          toolCallId: "call_launch",
+          kind: "other",
+          title: "Running invoke_subagent",
+          status: "completed",
+          rawInput:
+            scenario === "subagents"
+              ? {
+                  Subagents: [
+                    { Role: "Researcher", Prompt: "Work as Researcher" },
+                    { Role: "Tester", Prompt: "Work as Tester" },
+                  ],
+                }
+              : { Role: "Researcher", Prompt: "Work as Researcher" },
+        });
         yield* say(sessionId, "Subagents are on it.");
         yield* modelCallEnds(sessionId);
         yield* Effect.gen(function* () {
@@ -249,6 +269,40 @@ const program = Effect.gen(function* () {
           yield* modelCallEnds(sessionId);
         }).pipe(Effect.forkDetach);
         return { stopReason: "end_turn" as const };
+      }
+      if (scenario === "cost") {
+        // A running cost on the context fill, as fx sends it: 2 cents by the
+        // answer, 5 once the agent's own reply after the command is done.
+        yield* update(sessionId, {
+          sessionUpdate: "tool_call",
+          ...command,
+          status: "in_progress",
+        });
+        yield* update(sessionId, {
+          sessionUpdate: "usage_update",
+          used: 9_000,
+          size: 1_048_576,
+          cost: { amount: 0.02, currency: "USD" },
+        });
+        yield* Effect.gen(function* () {
+          yield* Effect.sleep("300 millis");
+          yield* update(sessionId, {
+            sessionUpdate: "tool_call_update",
+            toolCallId: command.toolCallId,
+            status: "completed",
+          });
+          yield* say(sessionId, "Done.");
+          yield* update(sessionId, {
+            sessionUpdate: "usage_update",
+            used: 9_500,
+            size: 1_048_576,
+            cost: { amount: 0.05, currency: "USD" },
+          });
+        }).pipe(Effect.forkDetach);
+        return {
+          stopReason: "end_turn" as const,
+          usage: { inputTokens: 400, outputTokens: 10, totalTokens: 410 },
+        };
       }
       if (scenario === "background" || scenario === "hang" || scenario === "exit") {
         yield* update(sessionId, { sessionUpdate: "tool_call", ...command, status: "in_progress" });

@@ -164,53 +164,67 @@ export interface AcpPromptFailure {
 }
 
 /**
- * Reads how a prompt really ended. `watch` runs as a turn's first prompt goes
- * out (it may note where the agent's own records stand) and returns the check
- * run when the turn's last prompt answers or fails.
+ * Reads how a prompt really ended (`AcpTurnMachineOptions.outcome`). `watch`
+ * runs as each prompt goes out (it may note where the agent's own records
+ * stand) and returns the check run when that prompt answers or fails.
  */
 export interface AcpPromptOutcome {
   /** `model`: the picker slug the turn runs on, when known. */
   readonly watch: (
     sessionId: string,
     model: string | undefined,
-  ) => Effect.Effect<
-    (
-      answer:
-        | { readonly response: EffectAcpSchema.PromptResponse }
-        /** What `session/prompt` failed with, usually an `AcpRequestError`. */
-        | { readonly error: unknown },
-    ) => Effect.Effect<AcpPromptFailure | undefined>
-  >;
+  ) => Effect.Effect<AcpPromptOutcomeWatch>;
+}
+
+export interface AcpPromptOutcomeWatch {
+  readonly check: (
+    answer:
+      | { readonly response: EffectAcpSchema.PromptResponse }
+      /** What `session/prompt` failed with, usually an `AcpRequestError`. */
+      | { readonly error: unknown },
+  ) => Effect.Effect<AcpPromptFailure | undefined>;
+  /**
+   * An older prompt of the turn answered after this one went out: what the
+   * agent recorded until now was the older prompt's, so the check reads
+   * only what comes after.
+   */
+  readonly rebase: Effect.Effect<void>;
 }
 
 /**
- * What a tool call the agent goes on with after its prompt answers is
- * (`AcpHeldTurns`): a command it awaits, a scheduled wake-up, or a subagent
- * it launched. `undefined` for one that ends with the prompt.
+ * What a tool call the agent goes on with after its prompt answers is: a
+ * command it awaits, a timer it set, or subagents it launched (a batch
+ * counts each). `undefined` for one that ends with the prompt.
  */
-export type AcpWorkAfterPrompt = "command" | "wake" | "subagent";
+export type AcpWorkAfterPrompt =
+  | { readonly kind: "command" | "timer" }
+  | { readonly kind: "subagents"; readonly count: number };
 
 /**
- * An agent that answers its prompt while work it started goes on, and
- * replies by itself when that work ends (Antigravity 1.5.10+). The turn
- * stays open, working and stoppable, until the work and the replies it wakes
- * are done. Only for an agent that sends `usage_update` after each model
- * call: that update is how a reply it started by itself is known to end.
+ * An agent whose turns run on the turn machine (`AcpTurnMachine`,
+ * Antigravity 1.5.10+): it answers its prompt while work it started goes on
+ * and replies by itself when that work ends, so the turn stays open, working
+ * and stoppable, until the work and the replies it wakes are done; a message
+ * sent mid-turn goes as another `session/prompt`, which steers the turn.
+ * Only for an agent that sends `usage_update` after each model call: that
+ * update is how a reply it started by itself is known to end.
  */
-export interface AcpHeldTurns {
+export interface AcpTurnMachineOptions {
   readonly workAfterPrompt: (toolCall: AcpToolCallState) => AcpWorkAfterPrompt | undefined;
   /**
    * How long the turn waits without a word from the agent while only
-   * commands and subagents hold it; past it, the turn ends. A scheduled
-   * wake-up holds it with no limit (a timer is silent until it fires).
+   * commands and subagents hold it; past it, the turn ends. A timer the
+   * agent set holds it with no limit (a timer is silent until it fires).
    */
   readonly silentLimit: Duration.Duration;
   /**
-   * How long a reply the agent started by itself may go without output
-   * before it counts as ended when its closing `usage_update` never comes
-   * (default 2 minutes).
+   * How long a reply the agent started by itself (or a wake a finished
+   * command owes) may go without output before it counts as ended when its
+   * closing `usage_update` never comes (default 2 minutes).
    */
   readonly replyQuietLimit?: Duration.Duration;
+  /** How a prompt really ended, where the agent's answer can hide a failure. */
+  readonly outcome?: AcpPromptOutcome;
 }
 
 /** Runtime hooks handed to a vendor's extension registration. */
@@ -442,17 +456,8 @@ export interface AcpProviderDescriptor<Settings extends AcpProviderSettings> {
     readonly text: string;
     readonly content: ReadonlyArray<EffectAcpSchema.ContentBlock>;
   }) => Effect.Effect<void, EffectAcpErrors.AcpError>;
-  /**
-   * A message sent mid-turn goes as another `session/prompt` (Antigravity
-   * 1.5): the agent answers the running prompt and carries the turn on under
-   * the new one, its commands and subagents left running. The turn ends with
-   * the last prompt's answer. Ignored when `steer` is set.
-   */
-  readonly steerWithPrompt?: boolean;
-  /** Keeps a turn open while work the agent goes on with after its prompt runs. */
-  readonly heldTurns?: AcpHeldTurns;
-  /** How a prompt really ended, where the agent's answer can hide a failure. */
-  readonly promptOutcome?: AcpPromptOutcome;
+  /** Turns run on the turn machine (`AcpTurnMachineOptions`); `steer` and `agentTurns` don't apply. */
+  readonly turnMachine?: AcpTurnMachineOptions;
   /**
    * Where the Usage page counts this agent's turns when it keeps no usage on
    * disk. Only for an agent whose turn `usage` is known to be the turn's own:
