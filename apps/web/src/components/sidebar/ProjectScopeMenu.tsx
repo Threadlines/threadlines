@@ -191,7 +191,8 @@ export interface ProjectScopeMenuProps {
   sort: InboxSort;
   onSortChange: (sort: InboxSort) => void;
   onResetCustomOrder: () => void;
-  onAddProject: () => void;
+  /** `opener` is where focus returns when Add project closes. */
+  onAddProject: (opener?: HTMLElement) => void;
   /**
    * A new-thread button at the row's end, on a phone. Null on a wide screen,
    * where the rail's New thread is the one.
@@ -863,7 +864,7 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
           {searching ? null : (
             <>
               <MenuSeparator />
-              <MenuItem onClick={onAddProject}>
+              <MenuItem onClick={() => onAddProject()}>
                 <FolderPlusIcon />
                 <span className="min-w-0 flex-1 truncate">Add project…</span>
               </MenuItem>
@@ -907,7 +908,7 @@ export const ProjectScopeMenu = memo(function ProjectScopeMenu(props: ProjectSco
                   aria-label="Add project"
                   data-testid="sidebar-add-project-trigger"
                   className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-sidebar-accent/60 hover:text-foreground focus-ring"
-                  onClick={onAddProject}
+                  onClick={(event) => onAddProject(event.currentTarget)}
                 />
               }
             >

@@ -17,6 +17,7 @@ import { SegmentedControl, SegmentedControlItem } from "./ui/segmented-control";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { ProviderExternalResetsButton } from "./ProviderRateLimitResetCredit";
 import { UsagePaceMark, usagePaceLabel } from "./usage/UsagePaceMark";
+import { useUtcDayStartMs } from "../hooks/useLocalDayStartMs";
 
 type TokenActivityMode = "daily" | "weekly" | "cumulative";
 type TokenActivityRange = "13-weeks" | "1-year";
@@ -50,6 +51,8 @@ interface TokenActivityDay {
   readonly dailyTokens: number;
   readonly weeklyTokens: number;
   readonly cumulativeTokens: number;
+  /** A day up to this one has an unknown total, so the running total is only a floor. */
+  readonly cumulativeIsFloor: boolean;
 }
 
 function parseDateKey(dateKey: string): number | null {
@@ -61,6 +64,11 @@ function parseDateKey(dateKey: string): number | null {
 
 function formatDateKey(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
+}
+
+function utcDayStartMs(ms: number): number {
+  const date = new Date(ms);
+  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
 }
 
 function startOfWeekUtc(ms: number): number {
@@ -109,16 +117,23 @@ function formatTokenActivityTooltip(
   return `${tokenLabel} tokens on ${formatLongDate(ms)}`;
 }
 
+/**
+ * `isFloor` marks a total with unknown days in it: the usage it counts
+ * happened, and maybe more.
+ */
 function formatTokenActivityWeekTooltip(
   mode: TokenActivityMode,
   weekStartMs: number,
   weekEndMs: number,
   value: number | null,
+  isFloor = false,
 ): string {
   if (value === null) {
     return `Usage unavailable for week of ${formatLongDate(weekStartMs)}`;
   }
-  const tokenLabel = formatProviderTokenCount(value) ?? "0";
+  const tokenLabel = isFloor
+    ? `At least ${formatProviderTokenCount(value, { roundDown: true }) ?? "0"}`
+    : (formatProviderTokenCount(value) ?? "0");
   if (mode === "weekly") {
     return `${tokenLabel} tokens on week of ${formatLongDate(weekStartMs)}`;
   }
@@ -166,15 +181,17 @@ function buildTokenActivityWeeks(
     );
   if (datedBuckets.length === 0) return [];
 
-  const anchorDate = new Date(anchorMs);
-  const anchorDayMs = Date.UTC(
-    anchorDate.getUTCFullYear(),
-    anchorDate.getUTCMonth(),
-    anchorDate.getUTCDate(),
-  );
+  // Today is the later of this browser's day and the day the data was
+  // checked, at most a day ahead: a server whose clock runs a little ahead,
+  // or a check after midnight while the page stays open, lands on today.
+  // Anything after today is the future and stays blank.
+  const checkedAtMs = Date.parse(tokenUsage.checkedAt);
+  const browserDayMs = utcDayStartMs(anchorMs);
+  const anchorDayMs = Number.isNaN(checkedAtMs)
+    ? browserDayMs
+    : Math.min(Math.max(browserDayMs, utcDayStartMs(checkedAtMs)), browserDayMs + DAY_MS);
   const endMs = endOfWeekUtc(anchorDayMs);
   const startMs = startOfWeekUtc(endMs) - 51 * 7 * DAY_MS;
-  const checkedAtMs = Date.parse(tokenUsage.checkedAt);
   const coverageStartMs = tokenUsage.coverageStartDate
     ? parseDateKey(tokenUsage.coverageStartDate)
     : null;
@@ -198,6 +215,7 @@ function buildTokenActivityWeeks(
   let carriedCumulativeTokens = 0;
 
   for (const entry of datedBuckets) {
+    if (entry.ms > anchorDayMs) continue;
     if (entry.ms < startMs) {
       carriedCumulativeTokens += entry.bucket.tokens;
     }
@@ -207,26 +225,43 @@ function buildTokenActivityWeeks(
 
   const days: TokenActivityDay[] = [];
   let cumulativeTokens = carriedCumulativeTokens;
+  // Usage carried in from before the grid is a floor too when unknown days
+  // lie among it: the known range starts after the first of those days.
+  const earliestBucketMs = Math.min(...datedBuckets.map((entry) => entry.ms));
+  let unknownDaySeen =
+    !tokenUsage.completeLifetimeHistory &&
+    carriedCumulativeTokens > 0 &&
+    reportedStartMs > earliestBucketMs;
   for (let ms = startMs; ms <= endMs; ms += DAY_MS) {
     const dateKey = formatDateKey(ms);
-    const dailyTokens = tokenByDate.get(dateKey) ?? 0;
+    const dailyTokens = ms > anchorDayMs ? 0 : (tokenByDate.get(dateKey) ?? 0);
     cumulativeTokens += dailyTokens;
+    // A day outside the known range still shows usage it does have: only
+    // its zero is unknown, since its files may be gone.
+    const reported =
+      ms <= anchorDayMs && ((ms >= reportedStartMs && ms <= reportedEndMs) || dailyTokens > 0);
+    if (!reported && ms <= anchorDayMs) unknownDaySeen = true;
     days.push({
       dateKey,
       ms,
-      // A day outside the known range still shows usage it does have: only
-      // its zero is unknown, since its files may be gone.
-      reported: (ms >= reportedStartMs && ms <= reportedEndMs) || dailyTokens > 0,
+      reported,
       dailyTokens,
       weeklyTokens: weeklyTotals.get(formatDateKey(startOfWeekUtc(ms))) ?? 0,
       cumulativeTokens,
+      cumulativeIsFloor: unknownDaySeen,
     });
   }
 
+  // A running total stays meaningful past an unknown day, as a floor: it
+  // shows on every day so far unless it is a zero that might not be one.
+  const cumulativeValue = (day: TokenActivityDay): number | null =>
+    day.ms > anchorDayMs || (day.cumulativeTokens === 0 && day.cumulativeIsFloor)
+      ? null
+      : day.cumulativeTokens;
   const maxValue = Math.max(
     0,
     ...days
-      .filter((day) => day.reported)
+      .filter((day) => (mode === "cumulative" ? cumulativeValue(day) !== null : day.reported))
       .map((day) =>
         mode === "daily"
           ? day.dailyTokens
@@ -245,19 +280,26 @@ function buildTokenActivityWeeks(
     // have still shows.
     const weekPartlyUnknown = weekDays.some((day) => !day.reported && day.ms <= anchorDayMs);
     const weekQuiet = reportedWeekDays.every((day) => day.dailyTokens === 0);
+    // The week's running total is its last day so far.
+    const lastPastDay = weekDays.findLast((day) => day.ms <= anchorDayMs);
     const weekValue =
-      reportedWeekDays.length === 0 || (weekPartlyUnknown && weekQuiet && mode !== "cumulative")
-        ? null
-        : mode === "weekly"
-          ? (reportedWeekDays[0]?.weeklyTokens ?? 0)
-          : mode === "cumulative"
-            ? (reportedWeekDays[reportedWeekDays.length - 1]?.cumulativeTokens ?? 0)
+      mode === "cumulative"
+        ? lastPastDay
+          ? cumulativeValue(lastPastDay)
+          : null
+        : reportedWeekDays.length === 0 || (weekPartlyUnknown && weekQuiet)
+          ? null
+          : mode === "weekly"
+            ? (reportedWeekDays[0]?.weeklyTokens ?? 0)
             : reportedWeekDays.reduce((sum, day) => sum + day.dailyTokens, 0);
+    const weekIsFloor =
+      mode === "cumulative" ? lastPastDay?.cumulativeIsFloor === true : weekPartlyUnknown;
     const weekTooltip = formatTokenActivityWeekTooltip(
       mode,
       weekDays[0]?.ms ?? weekStartMs,
       weekDays[weekDays.length - 1]?.ms ?? weekStartMs,
       weekValue,
+      weekIsFloor,
     );
     let monthLabel: string | null = null;
     for (const [offset, day] of weekDays.entries()) {
@@ -267,19 +309,20 @@ function buildTokenActivityWeeks(
         monthLabel = formatMonthLabel(day.ms);
         previousMonth = month;
       }
-      const value = !day.reported
-        ? null
-        : mode === "daily"
-          ? day.dailyTokens
-          : mode === "weekly"
-            ? day.dailyTokens > 0
-              ? day.weeklyTokens
-              : weekPartlyUnknown
-                ? null
-                : 0
+      const value =
+        mode === "cumulative"
+          ? cumulativeValue(day) === null
+            ? null
             : day.cumulativeTokens > 0
               ? weekValue
-              : 0;
+              : 0
+          : !day.reported
+            ? null
+            : mode === "daily"
+              ? day.dailyTokens
+              : day.dailyTokens > 0
+                ? day.weeklyTokens
+                : 0;
       cells.push({
         dateKey: day.dateKey,
         value,
@@ -489,14 +532,13 @@ export function ProviderUsageDashboard(props: {
 }) {
   const [activityMode, setActivityMode] = useState<TokenActivityMode>("daily");
   const [activityRange, setActivityRange] = useState<TokenActivityRange>("13-weeks");
-  const [activityAnchorMs] = useState(() => Date.now());
   const tokenUsage = props.usage.tokenUsage ?? null;
+  // Moves on at UTC midnight, so a page left open overnight shows the new day.
+  const todayUtcMs = useUtcDayStartMs();
   const activityWeeks = useMemo(
     () =>
-      tokenUsage === null
-        ? []
-        : buildTokenActivityWeeks(tokenUsage, activityMode, activityAnchorMs),
-    [activityAnchorMs, activityMode, tokenUsage],
+      tokenUsage === null ? [] : buildTokenActivityWeeks(tokenUsage, activityMode, todayUtcMs),
+    [activityMode, todayUtcMs, tokenUsage],
   );
   const mobileActivityWeeks =
     activityRange === "13-weeks" ? activityWeeks.slice(-13) : activityWeeks;

@@ -1,14 +1,10 @@
-import { placeById, placeHref, type PlaceId } from "@threadlines/shared/appPlaces";
+import { placeById, type PlaceId } from "@threadlines/shared/appPlaces";
 import type { SearchQuery } from "@threadlines/shared/placeSearch";
-import { useNavigate } from "@tanstack/react-router";
 import { ChevronRightIcon } from "lucide-react";
 import { createContext, type ReactNode, useCallback, useContext, useMemo } from "react";
 
-import { placeScope, resolvePlaceLink } from "../../appPlaceLinks";
-import { nextPlaceArrivalHash } from "../../placeArrival";
+import { placeScope } from "../../appPlaceLinks";
 import { PLACE_COPIES_ATTRIBUTE } from "../../hooks/usePlaceArrival";
-import { usePrimaryEnvironmentId } from "../../environments/primary/context";
-import { isElectron } from "../../env";
 import { formatShortcutLabel } from "../../keybindings";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 import { Button } from "../ui/button";
@@ -38,6 +34,7 @@ import {
   useSettingsSearch,
 } from "./settingsSearchIndex";
 import { useSettingsSearchStore } from "./settingsSearchStore";
+import { settingsSearchItemTarget, useOpenSettingsResult } from "./settingsSearchNavigation";
 
 /**
  * Settings search (docs/design/settings-search.md): the field, and the
@@ -46,46 +43,6 @@ import { useSettingsSearchStore } from "./settingsSearchStore";
  * line opens the page at the setting.
  */
 
-/**
- * Opens what a result names: its page, at the place, with the place
- * highlighted. The search clears first, so the page (not the result's copy
- * of the row) is what the arrival finds.
- */
-function useOpenFromSearch() {
-  const navigate = useNavigate();
-  const primaryEnvironmentId = usePrimaryEnvironmentId();
-  const clear = useSettingsSearchStore((state) => state.clear);
-  const openPlace = useCallback(
-    (placeId: PlaceId) => {
-      const target = resolvePlaceLink({
-        href: placeHref(placeId),
-        threadEnvironmentId: null,
-        primaryEnvironmentId,
-        isDesktopApp: isElectron,
-      });
-      if (target?.kind !== "open") return;
-      clear();
-      void navigate({
-        href: `${target.href}#${nextPlaceArrivalHash(placeId)}`,
-        // The hash names a place, not an element id; usePlaceArrival scrolls.
-        hashScrollIntoView: false,
-        // Like the menu: moving within Settings replaces, so leaving it goes
-        // back to where the user was before opening it.
-        replace: true,
-      });
-    },
-    [clear, navigate, primaryEnvironmentId],
-  );
-  const openHref = useCallback(
-    (href: string) => {
-      clear();
-      void navigate({ href, replace: true });
-    },
-    [clear, navigate],
-  );
-  return { openPlace, openHref };
-}
-
 /** Each Settings page's glyph, drawn once: a result's line starts with its page's. */
 const PAGE_ICONS: Readonly<Record<string, ReactNode>> = Object.fromEntries(
   SETTINGS_NAV_ITEMS.map((item) => [
@@ -93,15 +50,6 @@ const PAGE_ICONS: Readonly<Record<string, ReactNode>> = Object.fromEntries(
     <item.icon key={item.place} aria-hidden className="size-3 shrink-0" />,
   ]),
 );
-
-/**
- * What a result opens: a place (highlighted on arrival), a page with its own
- * reveal, or Keybindings filtered to a shortcut.
- */
-type ResultTarget =
-  | { readonly placeId: PlaceId }
-  | { readonly href: string }
-  | { readonly shortcut: string };
 
 /** Opens the result the control sits in (ResultFrame provides it). */
 const ResultOpenContext = createContext<() => void>(() => undefined);
@@ -123,18 +71,6 @@ function OpenButton({ label }: { readonly label: string }) {
   );
 }
 
-let lastShortcutOpening = 0;
-
-/**
- * Numbers each opening of a shortcut, so the Keybindings page filters again
- * for it. Taken from the clock, so a reload never repeats one still in the URL.
- */
-function nextShortcutOpening(): number {
-  lastShortcutOpening = Math.max(Date.now(), lastShortcutOpening + 1);
-  return lastShortcutOpening;
-}
-
-/** On the phone app, a setting stored on the paired computer says so: the rest are this phone's. */
 const pairedComputerNote = (placeId: PlaceId): string | null =>
   placeScope(placeId) === "computer" ? "your paired computer" : null;
 
@@ -149,7 +85,6 @@ function ResultFrame({
   place,
   trail,
   extraNote = null,
-  target,
   children,
 }: {
   readonly result: SettingsSearchResult;
@@ -158,22 +93,15 @@ function ResultFrame({
   readonly place?: SettingsRowPlaceId | undefined;
   readonly trail: ReadonlyArray<string> | null;
   readonly extraNote?: string | null;
-  readonly target: ResultTarget;
   readonly children: ReactNode;
 }) {
-  const { openPlace, openHref } = useOpenFromSearch();
-  const targetPlace = "placeId" in target ? target.placeId : null;
-  const targetHref = "href" in target ? target.href : null;
-  const targetShortcut = "shortcut" in target ? target.shortcut : null;
-  const open = useCallback(() => {
-    if (targetPlace !== null) openPlace(targetPlace);
-    else if (targetHref !== null) openHref(targetHref);
-    else if (targetShortcut !== null) {
-      openHref(
-        `/settings/keybindings?q=${encodeURIComponent(targetShortcut)}&n=${nextShortcutOpening()}`,
-      );
-    }
-  }, [openHref, openPlace, targetHref, targetPlace, targetShortcut]);
+  // Moving within Settings replaces, so leaving it goes back to where the
+  // user was before opening it; the search clears first, so the page (not
+  // the result's copy of the row) is what the arrival finds.
+  const clear = useSettingsSearchStore((state) => state.clear);
+  const openResult = useOpenSettingsResult({ replace: true, beforeOpen: clear });
+  const item = result.item;
+  const open = useCallback(() => openResult(settingsSearchItemTarget(item)), [item, openResult]);
   const page = placeById(result.item.page);
   const where = trail === null ? null : [page.title, ...trail].join(" › ");
   const note =
@@ -227,7 +155,7 @@ function PlaceResult({
   const place = placeById(placeId);
   if (place.kind === "page") {
     return (
-      <ResultFrame result={result} query={query} trail={null} target={{ placeId }}>
+      <ResultFrame result={result} query={query} trail={null}>
         <SettingsRow
           title={<SearchHighlight text={place.title} query={query} />}
           description={place.about}
@@ -246,7 +174,6 @@ function PlaceResult({
       place={rowPlace}
       trail={section === null ? [] : [section.title]}
       extraNote={phone ? pairedComputerNote(placeId) : null}
-      target={{ placeId }}
     >
       {entry?.kind === "live" ? (
         <entry.Row />
@@ -283,14 +210,7 @@ function ResultRow({
         snapshot: provider,
       });
       return (
-        <ResultFrame
-          result={result}
-          query={query}
-          trail={[]}
-          target={{
-            href: `/settings/providers?instance=${encodeURIComponent(provider.instanceId)}`,
-          }}
-        >
+        <ResultFrame result={result} query={query} trail={[]}>
           <SettingsRow
             title={
               <span className="inline-flex items-center gap-2">
@@ -314,7 +234,7 @@ function ResultRow({
     case "shortcut": {
       const label = commandLabel(item.binding.command);
       return (
-        <ResultFrame result={result} query={query} trail={[]} target={{ shortcut: label }}>
+        <ResultFrame result={result} query={query} trail={[]}>
           <SettingsRow
             title={<SearchHighlight text={label} query={query} />}
             description={item.binding.when ? `When ${item.binding.when}` : "Always"}
@@ -337,7 +257,6 @@ function ResultRow({
           query={query}
           trail={["Skills"]}
           extraNote={item.providers.join(", ")}
-          target={{ placeId: "plugins.skills" }}
         >
           <SettingsRow
             title={<SearchHighlight text={item.fields.title} query={query} />}

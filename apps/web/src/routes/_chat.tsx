@@ -1,12 +1,12 @@
-import { scopeThreadRef } from "@threadlines/client-runtime";
+import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
 import { Outlet, createFileRoute, redirect, useParams } from "@tanstack/react-router";
 import { useEffect } from "react";
 
-import { useCommandPaletteStore } from "../commandPaletteStore";
+import { isKeyboardOwnedByDialog } from "../commands/shortcutBlock";
 import { FirstRunSetupRedirect } from "../components/setup/firstRunGateState";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
-import { recordLastVisitedThreadRoute } from "../lastVisitedThreadRoute";
+import { recordLastVisitedThreadRoute, recordRecentThreadVisit } from "../lastVisitedThreadRoute";
 import { markLaunchVisitConsumed } from "../launchVisit";
 import { resolveThreadRouteTarget } from "../threadRoutes";
 import { useStore } from "../store";
@@ -42,7 +42,7 @@ function ChatRouteGlobalShortcuts() {
         },
       });
 
-      if (useCommandPaletteStore.getState().open) {
+      if (isKeyboardOwnedByDialog()) {
         return;
       }
 
@@ -122,10 +122,9 @@ function LastVisitedThreadRouteRecorder() {
       // Being on any thread means the launch already landed somewhere; a later
       // trip to `/` is deliberate and must render the home surface.
       markLaunchVisitConsumed();
-      recordLastVisitedThreadRoute(routeThreadEnvironmentId, {
-        kind: "server",
-        threadRef: scopeThreadRef(routeThreadEnvironmentId, routeThreadId),
-      });
+      const threadRef = scopeThreadRef(routeThreadEnvironmentId, routeThreadId);
+      recordLastVisitedThreadRoute(routeThreadEnvironmentId, { kind: "server", threadRef });
+      recordRecentThreadVisit(scopedThreadKey(threadRef));
       return;
     }
     if (routeDraftId) {

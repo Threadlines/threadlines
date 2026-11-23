@@ -14,6 +14,7 @@ import { useLocation, useNavigate } from "@tanstack/react-router";
 
 import { useAppHistory } from "../appHistory";
 import { useCommandPaletteStore } from "../commandPaletteStore";
+import { isKeyboardOwnedByDialog, isPaletteLaunchedDialogOpen } from "../commands/shortcutBlock";
 import { isKnownEnvironment } from "../environments/runtime";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { getClientSettings } from "../hooks/useSettings";
@@ -83,7 +84,7 @@ function AppShellCommands({ hasList }: { readonly hasList: boolean }) {
   useEffect(() => {
     const onWindowKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.repeat) return;
-      if (useCommandPaletteStore.getState().open) return;
+      if (isKeyboardOwnedByDialog()) return;
       // Read when the key lands, like the sidebar's own shortcuts: a rule
       // the user scoped to an open terminal must see the terminal as it is.
       const terminalOpen = routeThreadRef
@@ -168,6 +169,8 @@ function AppShellCommands({ hasList }: { readonly hasList: boolean }) {
           appHistory.forward();
           return;
         case "toggle-command-palette":
+          // Not over Add project or a Codex import in progress.
+          if (isPaletteLaunchedDialogOpen()) return;
           useCommandPaletteStore.getState().toggleOpen();
           return;
         case "open-whats-new":

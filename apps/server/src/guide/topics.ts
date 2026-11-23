@@ -406,6 +406,16 @@ Show device toolbar, in the browser's options menu (⋮), sets the page's size: 
 Words typed in the browser's address bar are searched for, with the search engine set in {place:general.browserSearchEngine}. An address loads as it always did.`,
   },
   {
+    id: "search-and-commands",
+    title: "Search and commands",
+    keywords: ["search", "command palette", "cmd k", "commands", "find", "filter", "quick open"],
+    body: `Search (Cmd+K, Ctrl+K on Windows and Linux, or the Search field at the top of the sidebar) finds threads by title and by what was said in them, every command the app has, settings, and projects, in one list with the best match first. With nothing typed it shows the threads last opened on this device and a few commands you use most.
+
+The filters under the field (All, Threads, Commands, Settings, Projects) narrow it to one kind; while you type each shows how many it holds. Tab and Shift+Tab move between them, and typing > first switches to Commands. In All each kind shows five rows, then Show all for the rest. Escape clears the text, then the filter, then closes.
+
+A setting opens its page with the row lit. A typed folder path offers Add project there. Archived threads aren't searched; the empty result links to {place:settings.archived}.`,
+  },
+  {
     id: "terminals",
     title: "Terminals",
     keywords: ["terminal", "shell", "split", "dev server", "tabs", "command line", "console"],
@@ -536,7 +546,7 @@ The ↓ count is only as fresh as the last fetch, and {place:sourceControl.fetch
     id: "pages-and-command-requests",
     title: "Agent pages and command requests",
     keywords: ["page", "chart", "diagram", "mockup", "run command", "card", "artifact"],
-    body: `With {place:threads.agentPages} on, an agent can show a chart, diagram, mockup or document as a page in its reply. {place:threads.claudeArtifacts} lets Claude also publish one to claude.ai for a link you can share.
+    body: `With {place:threads.agentPages} on, an agent can show a chart, diagram, mockup or document as a page in its reply. Select text in a page to copy it or add a note on it for your next message, as in the chat's own text. {place:threads.claudeArtifacts} lets Claude also publish one to claude.ai for a link you can share.
 
 With {place:threads.commandRequests} on, an agent can ask you to run a command it can't run itself (one that needs your password or sign-in, or a long-running server): a card in the chat with Run, Put in terminal and Skip, and the output comes back to the agent.`,
   },

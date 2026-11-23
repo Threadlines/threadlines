@@ -198,7 +198,17 @@ export function ContextWindowMeter(props: {
   const [isPinnedOpen, setIsPinnedOpen] = useState(false);
   const [isHoverOpenSuppressed, setIsHoverOpenSuppressed] = useState(false);
   const [isBreakdownOpen, setIsBreakdownOpen] = useState(false);
-  const accountUsage = props.accountUsage ?? null;
+  // The popover draws no calendar, so usage that is only a token calendar
+  // (an API key, or a restart before the first check) has nothing to show.
+  const accountUsage =
+    props.accountUsage &&
+    (props.accountUsage.windows.length > 0 ||
+      props.accountUsage.notice ||
+      props.accountUsage.spendControl ||
+      props.accountUsage.resetCredits ||
+      props.accountUsage.externalResets)
+      ? props.accountUsage
+      : null;
   const breakdownSegments = buildContextBreakdownSegments(usage);
   const hasContextCategories = (usage?.contextCategories?.length ?? 0) > 0;
   const cachedInputRate = deriveCachedInputRate(usage);

@@ -133,9 +133,10 @@ describe("KeybindingsSettings.logic", () => {
     });
   });
 
-  it("formats static and project script command labels", () => {
-    expect(commandLabel("commandPalette.toggle")).toBe("Command Palette: Toggle");
-    expect(commandLabel("script.setup-db.run")).toBe("Run Script: Setup Db");
+  it("names shortcut commands as the palette does, and project scripts by name", () => {
+    expect(commandLabel("terminal.toggle")).toBe("Toggle terminal");
+    expect(commandLabel("thread.jump.3")).toBe("Jump to thread 3");
+    expect(commandLabel("script.setup-db.run")).toBe("Run script: Setup Db");
   });
 
   it("builds known when variable options from defaults without frontend labels", () => {
@@ -249,13 +250,13 @@ describe("KeybindingsSettings.logic", () => {
       "",
     );
 
-    expect(rows[0]?.conflicts).toEqual(["Chat: New Local"]);
+    expect(rows[0]?.conflicts).toEqual(["New local thread"]);
     expect(
       keybindingConflictLabels(rows, {
         rowId: rows[0]?.id ?? "",
         key: "mod+n",
         when: "",
       }),
-    ).toEqual(["Chat: New Local"]);
+    ).toEqual(["New local thread"]);
   });
 });

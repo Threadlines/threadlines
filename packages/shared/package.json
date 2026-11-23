@@ -451,6 +451,10 @@
       "types": "./src/threadFiling.ts",
       "import": "./src/threadFiling.ts"
     },
+    "./appCommands": {
+      "types": "./src/appCommands.ts",
+      "import": "./src/appCommands.ts"
+    },
     "./appPlaces": {
       "types": "./src/appPlaces.ts",
       "import": "./src/appPlaces.ts"

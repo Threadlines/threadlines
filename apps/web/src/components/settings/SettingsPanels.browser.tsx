@@ -126,7 +126,7 @@ import { useSettingsSearchStore } from "./settingsSearchStore";
 import { placePage } from "@threadlines/shared/appPlaces";
 import { SettingsGroup } from "./settingsLayout";
 import {
-  SettingsPlaceSignalsProvider,
+  SettingsAvailabilityProvider,
   type SettingsPlaceSearchId,
   type SettingsRowPlaceId,
   useSettingsPlaceShown,
@@ -3671,6 +3671,103 @@ describe("GeneralSettingsPanel observability", () => {
       .toBeVisible();
     await expect
       .element(visibleActivityGrid.getByLabelText(`Usage unavailable on ${earlyQuietDate}`))
+      .toBeVisible();
+
+    // With unknown days behind it, a running total is a floor, never an exact sum.
+    await page.getByRole("button", { name: "Cumulative" }).last().click();
+    const cumulativeGrid = page
+      .getByLabelText("Local token activity cumulative token activity")
+      .last();
+    // A week after the first usage and before the known range still shows the floor.
+    const unknownDayMs = Date.parse(`${utcDateKeyAtOffset(-34)}T00:00:00.000Z`);
+    const unknownWeekStart = new Date(
+      unknownDayMs - new Date(unknownDayMs).getUTCDay() * 86_400_000,
+    )
+      .toISOString()
+      .slice(0, 10);
+    await expect
+      .element(
+        cumulativeGrid.getByLabelText(
+          `At least 4k tokens through week of ${formatTokenActivityTestDate(unknownWeekStart)}`,
+        ),
+      )
+      .toBeVisible();
+    const weekLabels = [
+      ...cumulativeGrid.element().querySelectorAll<HTMLElement>('[role="img"]'),
+    ].map((week) => week.getAttribute("aria-label") ?? "");
+    expect(weekLabels.filter((label) => /^\d/.test(label))).toEqual([]);
+  });
+
+  it("leaves days after today blank in the token calendar", async () => {
+    // A Monday, so two days ahead falls inside the week the calendar shows.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-23T12:00:00.000Z"));
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
+    const withBuckets = (
+      dailyBuckets: ReadonlyArray<{ readonly startDate: string; readonly tokens: number }>,
+    ): ServerProvider => {
+      const provider = createClaudeProviderWithTokenHistory();
+      const tokenUsage = provider.accountUsage?.tokenUsage;
+      if (!provider.accountUsage || !tokenUsage) throw new Error("fixture has no token history");
+      return {
+        ...provider,
+        accountUsage: { ...provider.accountUsage, tokenUsage: { ...tokenUsage, dailyBuckets } },
+      };
+    };
+    setServerConfigSnapshot({
+      ...createBaseServerConfig(),
+      providers: [
+        // Logged on a paired computer whose clock runs two days ahead.
+        withBuckets([
+          { startDate: "2026-11-23", tokens: 1000 },
+          { startDate: "2026-11-25", tokens: 5000 },
+        ]),
+      ],
+    });
+
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
+        <ProviderSettingsPanel />
+      </TestAppProviders>,
+    );
+
+    await openProviderDetails("Claude");
+    await page.getByRole("button", { name: "Usage", exact: true }).click();
+    const dailyGrid = page.getByLabelText("Local token activity daily token activity").last();
+    await expect
+      .element(
+        dailyGrid.getByLabelText(`1k tokens on ${formatTokenActivityTestDate("2026-11-23")}`),
+      )
+      .toBeVisible();
+    expect(dailyGrid.getByLabelText(/^5k tokens/).elements()).toHaveLength(0);
+
+    await page.getByRole("button", { name: "Weekly" }).last().click();
+    await expect
+      .element(
+        page
+          .getByLabelText("Local token activity weekly token activity")
+          .last()
+          .getByLabelText(`1k tokens on week of ${formatTokenActivityTestDate("2026-11-22")}`),
+      )
+      .toBeVisible();
+
+    // Left open until Sunday: the calendar moves on to the new week.
+    await page.getByRole("button", { name: "Daily" }).last().click();
+    vi.setSystemTime(new Date("2026-11-29T01:00:00.000Z"));
+    window.dispatchEvent(new Event("focus"));
+    setServerConfigSnapshot({
+      ...createBaseServerConfig(),
+      providers: [withBuckets([{ startDate: "2026-11-29", tokens: 2000 }])],
+    });
+    await expect
+      .element(
+        page
+          .getByLabelText("Local token activity daily token activity")
+          .last()
+          .getByLabelText(`2k tokens on ${formatTokenActivityTestDate("2026-11-29")}`),
+      )
       .toBeVisible();
   });
 
@@ -7603,10 +7700,13 @@ describe("Settings search rows", () => {
     ] as const) {
       const screen = await renderWithTestRouter(
         <TestAppProviders>
-          <SettingsPlaceSignalsProvider>
+          <SettingsAvailabilityProvider
+            surface="full"
+            host={{ searchActive: false, searchSession: 0 }}
+          >
             <ReadShown />
             <Panel />
-          </SettingsPlaceSignalsProvider>
+          </SettingsAvailabilityProvider>
         </TestAppProviders>,
       );
       const onPage = liveRows.filter(({ id }) => placePage(id).id === page);

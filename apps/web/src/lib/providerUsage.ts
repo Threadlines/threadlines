@@ -607,8 +607,27 @@ function formatResetCreditsPresentation(
   };
 }
 
-export function formatProviderTokenCount(value: number | undefined): string | null {
-  if (value === undefined || !Number.isFinite(value) || value < 0) return null;
+/** The smallest change each size of token count shows, matching the format below. */
+function tokenCountDisplayStep(value: number): number {
+  if (value < 1_000) return 1;
+  if (value < 10_000) return 100;
+  if (value < 1_000_000) return 1_000;
+  if (value < 1_000_000_000) return 100_000;
+  return value < 10_000_000_000 ? 10_000_000 : 100_000_000;
+}
+
+/**
+ * A token count for display. `roundDown` is for a floor ("at least"): the
+ * shown number must not exceed what was counted.
+ */
+export function formatProviderTokenCount(
+  rawValue: number | undefined,
+  options?: { readonly roundDown?: boolean },
+): string | null {
+  if (rawValue === undefined || !Number.isFinite(rawValue) || rawValue < 0) return null;
+  const value = options?.roundDown
+    ? Math.floor(rawValue / tokenCountDisplayStep(rawValue)) * tokenCountDisplayStep(rawValue)
+    : rawValue;
   if (value < 1_000) return `${Math.round(value)}`;
   if (value < 10_000) return `${(value / 1_000).toFixed(1).replace(/\.0$/, "")}k`;
   if (value < 1_000_000) return `${Math.round(value / 1_000)}k`;

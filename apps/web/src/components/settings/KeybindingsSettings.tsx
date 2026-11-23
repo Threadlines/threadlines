@@ -11,6 +11,7 @@ import {
   XIcon,
 } from "lucide-react";
 import {
+  Fragment,
   type KeyboardEvent,
   type ReactNode,
   type RefObject,
@@ -52,6 +53,8 @@ import { Toggle } from "../ui/toggle";
 import { failureNotice, toastManager } from "../ui/toast";
 import {
   buildKeybindingRows,
+  commandGroup,
+  commandGroupTitle,
   buildKeybindingCommandOptions,
   buildWhenVariableOptions,
   commandLabel,
@@ -1259,18 +1262,32 @@ export function KeybindingsSettingsPanel() {
                 onCancel={() => setIsAddingBinding(false)}
               />
             ) : null}
-            {rows.map((row) => (
-              <KeybindingTableRow
-                key={row.id}
-                row={row}
-                allRows={rows}
-                variables={whenVariables}
-                isSaving={savingCommand === row.command}
-                onSave={saveKeybinding}
-                onReset={resetKeybinding}
-                onRemove={removeKeybinding}
-              />
-            ))}
+            {rows.map((row, index) => {
+              // Grouped as the command palette groups commands, each under its heading.
+              const group = commandGroup(row.command);
+              const startsGroup = index === 0 || commandGroup(rows[index - 1]!.command) !== group;
+              return (
+                <Fragment key={row.id}>
+                  {startsGroup ? (
+                    <div
+                      className="px-3.5 pt-3 pb-1.5 text-[11.5px] font-medium text-muted-foreground"
+                      data-testid="keybinding-group-heading"
+                    >
+                      {commandGroupTitle(group)}
+                    </div>
+                  ) : null}
+                  <KeybindingTableRow
+                    row={row}
+                    allRows={rows}
+                    variables={whenVariables}
+                    isSaving={savingCommand === row.command}
+                    onSave={saveKeybinding}
+                    onReset={resetKeybinding}
+                    onRemove={removeKeybinding}
+                  />
+                </Fragment>
+              );
+            })}
             {rows.length === 0 && !isAddingBinding ? (
               <div className="px-4 py-12 text-center text-sm text-muted-foreground">
                 No keybindings match your search.

@@ -88,7 +88,7 @@ import {
   toShellSnapshot,
   clickProjectMenuItem,
   registerChatViewSuiteHooks,
-  openCommandPaletteFromTrigger,
+  openCommandPaletteCommands,
 } from "./ChatView.browser-harness";
 
 vi.mock("../lib/gitStatusState", () => ({
@@ -1030,7 +1030,7 @@ describe("ChatView (full app): sidebar", () => {
       await userEvent.keyboard("{Escape}");
 
       // The palette's Rename asks in a dialog, and saving sends the new name.
-      await openCommandPaletteFromTrigger();
+      await openCommandPaletteCommands();
       await page.getByTestId("command-palette").getByText("Rename thread", { exact: true }).click();
       const input = page.getByTestId("thread-rename-input");
       await expect.element(input).toHaveValue(THREAD_TITLE);
@@ -1298,7 +1298,7 @@ describe("ChatView (full app): sidebar", () => {
 
       // The palette opens the section where the user is, adding no step to Back.
       const historyLength = window.history.length;
-      await openCommandPaletteFromTrigger();
+      await openCommandPaletteCommands();
       await page
         .getByTestId("command-palette")
         .getByText("Open general chats", { exact: true })

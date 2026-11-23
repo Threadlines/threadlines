@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import { MessageId } from "@threadlines/contracts";
+import { AgentPageId, MessageId } from "@threadlines/contracts";
 
 import {
   appendTranscriptHighlightContextsToPrompt,
@@ -45,10 +45,18 @@ describe("transcriptHighlightContext", () => {
         selectedText: "Can you clarify this?\nAnd this line?",
         note: "This should be treated as my answer.",
       },
+      {
+        sourceMessageId: AgentPageId.make("page-1"),
+        sourceRole: "page",
+        selectedText: "edwards-est-vigilant-gsa-ct2.html",
+        note: "This one failed.",
+      },
     ]);
 
     expect(prompt).toContain("<highlight_contexts>");
     expect(prompt).toContain("The user is responding to highlighted transcript text.");
+    // The page by the id show_page gave the agent.
+    expect(prompt).toContain("\n- page page-1\n");
 
     const extracted = extractTrailingTranscriptHighlightContexts(prompt);
     expect(extracted.promptText).toBe("Here is my answer");
@@ -58,6 +66,12 @@ describe("transcriptHighlightContext", () => {
         sourceMessageId: "assistant-1",
         selectedText: "Can you clarify this?\nAnd this line?",
         note: "This should be treated as my answer.",
+      },
+      {
+        sourceRole: "page",
+        sourceMessageId: "page-1",
+        selectedText: "edwards-est-vigilant-gsa-ct2.html",
+        note: "This one failed.",
       },
     ]);
   });

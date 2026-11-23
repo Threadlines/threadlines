@@ -1,4 +1,8 @@
-import type { MessageId } from "@threadlines/contracts";
+import { AgentPageId, type MessageId } from "@threadlines/contracts";
+import {
+  AGENT_PAGE_MAX_SELECTION_LENGTH,
+  readAgentPageSelection,
+} from "@threadlines/shared/agentPages";
 import { CheckIcon, CopyIcon, SquarePenIcon } from "lucide-react";
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
@@ -12,13 +16,15 @@ import {
   handleTranscriptHighlightNoteKeyDown,
 } from "./TranscriptHighlightContextCard";
 import {
+  isSameTranscriptSelection,
   nextTranscriptSelection,
   placeTranscriptSelectionPopover,
   TRANSCRIPT_SELECTION_POPOVER_MARGIN_PX,
   type TranscriptSelection,
+  type TranscriptSelectionAnchor,
 } from "./TranscriptSelectionPopover.logic";
 
-const TRANSCRIPT_SELECTION_TEXT_MAX_CHARS = 8_000;
+const TRANSCRIPT_SELECTION_TEXT_MAX_CHARS = AGENT_PAGE_MAX_SELECTION_LENGTH;
 const TRANSCRIPT_SELECTION_COPY_FEEDBACK_MS = 800;
 const TRANSCRIPT_NOTE_HIGHLIGHT_MAX_RECTS = 256;
 const TRANSCRIPT_NOTE_POPOVER_WIDTH_PX = 320;
@@ -43,6 +49,10 @@ type TranscriptNoteHighlightRect = {
  * inside the timeline container, listens to it for finished selections, and
  * keeps the popover beside its text as the list scrolls, streams and resizes.
  * It owns its state, so opening it or typing a note leaves the timeline alone.
+ *
+ * An agent page in the list is a sealed frame the app cannot read, so the page
+ * reports its own selection (agentPageDocument.ts). A report opens the actions
+ * only while the reader is in that page, so a page cannot raise them alone.
  */
 export function TranscriptSelectionLayer({
   containerRef,
@@ -95,6 +105,58 @@ export function TranscriptSelectionLayer({
         );
       },
       { capture: true, signal: listeners.signal },
+    );
+    window.addEventListener(
+      "message",
+      (event) => {
+        const reported = readAgentPageSelection(event.data);
+        if (reported === undefined) {
+          return;
+        }
+        const frame = findAgentPageFrame(container, event.source);
+        const pageId = frame?.dataset.agentPageId;
+        if (!frame || !pageId) {
+          return;
+        }
+        const selected: TranscriptSelection | null =
+          reported === null
+            ? null
+            : {
+                anchor: {
+                  kind: "page",
+                  pageId: AgentPageId.make(pageId),
+                  frame,
+                  box: {
+                    top: reported.top,
+                    left: reported.left,
+                    bottom: reported.bottom,
+                    right: reported.right,
+                  },
+                  viewportWidth: reported.viewportWidth,
+                },
+                selectedText: reported.text,
+                mode: "actions",
+                note: "",
+              };
+        // In the page and in this window: a frame stays the active element
+        // while the reader is in another tab or app.
+        const readerInPage = document.hasFocus() && document.activeElement === frame;
+        setSelection((current) => {
+          const fromThisPage = current?.anchor.kind === "page" && current.anchor.frame === frame;
+          // Nothing selected after the reader's own click or key in a page is
+          // a click elsewhere, as in the chat: it closes any actions. Focus
+          // moving between frames raises no event here to say so.
+          if (selected === null) {
+            return fromThisPage || readerInPage ? nextTranscriptSelection(current, null) : current;
+          }
+          // The same text reported again only moves; new text needs the reader there.
+          if (readerInPage || (current !== null && isSameTranscriptSelection(current, selected))) {
+            return nextTranscriptSelection(current, selected);
+          }
+          return current;
+        });
+      },
+      { signal: listeners.signal },
     );
     container.addEventListener(
       "keyup",
@@ -152,9 +214,10 @@ export function TranscriptSelectionLayer({
     if (note.length === 0) {
       return;
     }
+    const { anchor } = selection;
     onAddHighlight({
-      sourceMessageId: selection.sourceMessageId,
-      sourceRole: selection.sourceRole,
+      sourceMessageId: anchor.kind === "message" ? anchor.messageId : anchor.pageId,
+      sourceRole: anchor.kind === "message" ? anchor.role : "page",
       selectedText: selection.selectedText,
       note,
     });
@@ -167,7 +230,7 @@ export function TranscriptSelectionLayer({
   }
   return (
     <TranscriptSelectionPopover
-      key={`${selection.sourceMessageId}:${selection.textStart}:${selection.textEnd}`}
+      key={transcriptSelectionKey(selection)}
       selection={selection}
       containerRef={containerRef}
       onCopied={dismiss}
@@ -205,7 +268,11 @@ function TranscriptSelectionPopover({
   // timeout: 0 keeps the checkmark painted until the delayed dismiss unmounts
   // the popover, so it never flips back to the copy icon mid-animation.
   const { copyToClipboard, isCopied } = useCopyToClipboard<void>({ timeout: 0 });
-  const { sourceMessageId, textStart, textEnd } = selection;
+  const { anchor } = selection;
+  const messageId = anchor.kind === "message" ? anchor.messageId : null;
+  const textStart = anchor.kind === "message" ? anchor.textStart : 0;
+  const textEnd = anchor.kind === "message" ? anchor.textEnd : 0;
+  const pageAnchor = anchor.kind === "page" ? anchor : null;
   const noting = selection.mode === "note";
   const noteIsEmpty = selection.note.trim().length === 0;
 
@@ -234,7 +301,9 @@ function TranscriptSelectionPopover({
   }, [noting]);
 
   // Placement is written straight to the DOM on each scroll frame, so
-  // following the text never re-renders React.
+  // following the text never re-renders React. Text in a page is placed by
+  // the box the page last reported, inside the page's frame: the page reports
+  // again when it scrolls, and the list's own scrolling moves the frame.
   useLayoutEffect(() => {
     const container = containerRef.current;
     const popover = popoverRef.current;
@@ -247,16 +316,16 @@ function TranscriptSelectionPopover({
     // Found again when the list redraws the row, or when anything inside the
     // message changes (a re-highlighted code block can swap one end's text
     // node and leave the range covering the wrong text).
-    let anchor: {
+    let located: {
       body: HTMLElement;
       range: Range;
       clips: ReadonlyArray<ClippingAncestor>;
     } | null = null;
-    // The message body the observers watch. Kept apart from `anchor`, which
+    // The message body the observers watch. Kept apart from `located`, which
     // an edit inside the message drops before the next frame finds it again.
     let observedBody: HTMLElement | null = null;
     const bodyObserver = new MutationObserver(() => {
-      anchor = null;
+      located = null;
       reshapeHighlight = true;
       scheduleUpdate();
     });
@@ -280,7 +349,7 @@ function TranscriptSelectionPopover({
       if (moves.length === 0) {
         return;
       }
-      anchor = null;
+      located = null;
       reshapeHighlight = true;
       const page = document.getSelection();
       const caret = page?.isCollapsed ? page.anchorNode : null;
@@ -288,25 +357,62 @@ function TranscriptSelectionPopover({
         !noting && caret && moves.some((record) => record.target === caret) ? caret : null;
       scheduleUpdate();
     });
-    const resolveAnchor = () => {
-      if (anchor?.body.isConnected) {
-        return anchor;
+    const resolveMessageText = () => {
+      if (messageId === null) {
+        return null;
       }
-      anchor = null;
+      if (located?.body.isConnected) {
+        return located;
+      }
+      located = null;
       bodyObserver.disconnect();
       observedBody = null;
-      const body = findTranscriptMessageBodyById(container, sourceMessageId);
+      const body = findTranscriptMessageBodyById(container, messageId);
       const range = body ? rangeAtTextOffsets(body, textStart, textEnd) : null;
       if (body && range) {
         bodyObserver.observe(body, { childList: true, characterData: true, subtree: true });
         observedBody = body;
-        anchor = { body, range, clips: findClippingAncestors(range, container) };
+        located = {
+          body,
+          range,
+          clips: findClippingAncestors(range.commonAncestorContainer, container),
+        };
       }
-      return anchor;
+      return located;
     };
+    // The page's frame clips its text on both axes, as do the frame's own scrollers.
+    const pageClips: ClippingAncestor[] = pageAnchor
+      ? [
+          { element: pageAnchor.frame, clipsX: true, clipsY: true },
+          ...findClippingAncestors(pageAnchor.frame, container),
+        ]
+      : [];
+    const pageTextRect = () => {
+      if (!pageAnchor?.frame.isConnected) {
+        return null;
+      }
+      const { frame, box, viewportWidth } = pageAnchor;
+      const frameRect = frame.getBoundingClientRect();
+      // A zoomed frame (the full-size view's) draws the page's px bigger or smaller.
+      const scale =
+        viewportWidth !== undefined && frameRect.width > 0 ? frameRect.width / viewportWidth : 1;
+      return new DOMRect(
+        frameRect.left + box.left * scale,
+        frameRect.top + box.top * scale,
+        (box.right - box.left) * scale,
+        (box.bottom - box.top) * scale,
+      );
+    };
+    // A page loaded again (its row was moved) has lost its selection.
+    const onFrameReload = () => {
+      if (!noting) {
+        onCancel();
+      }
+    };
+    pageAnchor?.frame.addEventListener("load", onFrameReload);
     const update = () => {
       frameId = null;
-      const resolved = resolveAnchor();
+      const resolved = resolveMessageText();
       const range = resolved?.range ?? null;
       if (collapsedInto !== null) {
         const left = collapsedInto;
@@ -324,10 +430,11 @@ function TranscriptSelectionPopover({
         left: rect.left - containerRect.left,
         right: rect.right - containerRect.left,
       });
-      const textRect = range?.getBoundingClientRect() ?? null;
+      const textRect = range?.getBoundingClientRect() ?? pageTextRect();
       const text =
         textRect && (textRect.width > 0 || textRect.height > 0) ? toContainerBox(textRect) : null;
-      const clips = (resolved?.clips ?? []).map(({ element, clipsX, clipsY }) => {
+      const clipAncestors = resolved?.clips ?? (pageAnchor?.frame.isConnected ? pageClips : []);
+      const clips = clipAncestors.map(({ element, clipsX, clipsY }) => {
         const box = toContainerBox(element.getBoundingClientRect());
         return {
           top: clipsY ? box.top : -Infinity,
@@ -391,6 +498,7 @@ function TranscriptSelectionPopover({
     resizeObserver.observe(popover);
     moveObserver.observe(container, { childList: true, subtree: true });
     return () => {
+      pageAnchor?.frame.removeEventListener("load", onFrameReload);
       container.removeEventListener("scroll", scheduleUpdate, { capture: true });
       resizeObserver.disconnect();
       bodyObserver.disconnect();
@@ -399,7 +507,7 @@ function TranscriptSelectionPopover({
         window.cancelAnimationFrame(frameId);
       }
     };
-  }, [containerRef, noting, sourceMessageId, textStart, textEnd]);
+  }, [containerRef, noting, messageId, textStart, textEnd, pageAnchor, onCancel]);
 
   return (
     <>
@@ -439,6 +547,18 @@ function TranscriptSelectionPopover({
           <form
             className="min-h-0 overflow-y-auto rounded-lg border border-border/75 bg-popover/96 p-2 text-popover-foreground shadow-lg shadow-black/10 backdrop-blur"
             onSubmit={(event) => handleTranscriptHighlightNoteFormSubmit(event, onSubmitNote)}
+            // Escape anywhere in the note (its box or its buttons) closes the
+            // note and nothing around it, such as a page's full-size view.
+            onKeyDown={(event) => {
+              if (event.key !== "Escape") {
+                return;
+              }
+              event.stopPropagation();
+              if (!event.defaultPrevented) {
+                event.preventDefault();
+                onCancel();
+              }
+            }}
           >
             <p className="mb-1 line-clamp-2 text-[11px] leading-snug text-muted-foreground">
               {selection.selectedText}
@@ -524,6 +644,29 @@ function isScrollbarPress(event: MouseEvent): boolean {
   return x >= target.clientWidth || y >= target.clientHeight;
 }
 
+/** The agent page frame in the timeline whose window sent a message. */
+function findAgentPageFrame(
+  container: HTMLElement,
+  source: MessageEventSource | null,
+): HTMLIFrameElement | null {
+  if (source === null) {
+    return null;
+  }
+  for (const frame of container.querySelectorAll("iframe")) {
+    if (frame.contentWindow === source) {
+      return frame;
+    }
+  }
+  return null;
+}
+
+/** A stable key for a selection's popover: the same text keeps it as it moves. */
+function transcriptSelectionKey({ anchor, selectedText }: TranscriptSelection): string {
+  return anchor.kind === "message"
+    ? `message:${anchor.messageId}:${anchor.textStart}:${anchor.textEnd}`
+    : `page:${anchor.pageId}:${selectedText}`;
+}
+
 /** The page's selection, when it covers text inside one finished transcript message. */
 function readTranscriptSelection(container: HTMLElement): TranscriptSelection | null {
   const pageSelection = window.getSelection();
@@ -551,12 +694,16 @@ function readTranscriptSelection(container: HTMLElement): TranscriptSelection | 
   if (!sourceMessageId || (sourceRole !== "assistant" && sourceRole !== "user")) {
     return null;
   }
-  return {
-    sourceMessageId: sourceMessageId as MessageId,
-    sourceRole,
-    selectedText: selectedText.slice(0, TRANSCRIPT_SELECTION_TEXT_MAX_CHARS),
+  const anchor: TranscriptSelectionAnchor = {
+    kind: "message",
+    messageId: sourceMessageId as MessageId,
+    role: sourceRole,
     textStart: textOffsetWithin(body, range.startContainer, range.startOffset),
     textEnd: textOffsetWithin(body, range.endContainer, range.endOffset),
+  };
+  return {
+    anchor,
+    selectedText: selectedText.slice(0, TRANSCRIPT_SELECTION_TEXT_MAX_CHARS),
     mode: "actions",
     note: "",
   };
@@ -567,9 +714,10 @@ function findTranscriptMessageBody(node: Node): HTMLElement | null {
   return element?.closest<HTMLElement>(TRANSCRIPT_MESSAGE_BODY_SELECTOR) ?? null;
 }
 
-function findClippingAncestors(range: Range, container: HTMLElement): ClippingAncestor[] {
+// The scrollers between `start` and the container that can cut it off.
+// `start` itself counts when it is an element.
+function findClippingAncestors(start: Node, container: HTMLElement): ClippingAncestor[] {
   const clips: ClippingAncestor[] = [];
-  const start = range.commonAncestorContainer;
   for (
     let element = start instanceof Element ? start : start.parentElement;
     element && element !== container;

@@ -27,6 +27,12 @@ describe("deriveProviderAccountUsagePresentation", () => {
     expect(formatProviderTokenCount(279_500_000)).toBe("279.5m");
   });
 
+  it("rounds a floor down so it never claims more than was counted", () => {
+    expect(formatProviderTokenCount(10_600)).toBe("11k");
+    expect(formatProviderTokenCount(10_600, { roundDown: true })).toBe("10k");
+    expect(formatProviderTokenCount(6_229_999_999, { roundDown: true })).toBe("6.22B");
+  });
+
   it("formats Codex rate limit usage with used percent and reset time", () => {
     const usage: ServerProviderAccountUsage = {
       source: "codex-rate-limits",

@@ -10,11 +10,13 @@ import {
 import { AGENT_PAGE_MIN_HEIGHT, type AgentPageContentSize } from "@threadlines/shared/agentPages";
 import { page, userEvent } from "vite-plus/test/browser";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { useRef } from "react";
 import { render } from "vitest-browser-react";
 
 import { AgentPageFrame } from "./AgentPageFrame";
 import { AgentPageRow } from "./AgentPageRow";
 import { ExpandedImageViewerHost } from "./ExpandedImageViewerHost";
+import { TranscriptSelectionLayer } from "./TranscriptSelectionPopover";
 
 // Stored pages by version id: what `pages.read` would return.
 const storedPages = vi.hoisted(() => new Map<string, string>());
@@ -68,6 +70,13 @@ const picture = (color: string) =>
 
 /** The frame decides what a load means as it happens; this is time for the answer to show. */
 const settled = () => new Promise((resolve) => setTimeout(resolve, 150));
+
+/**
+ * Focus landing in a page soon after typing in the app counts as the page
+ * taking it (AgentPageFrame's focus guard): a reader who just typed clicks
+ * into a page a moment later.
+ */
+const pastTypingWindow = () => new Promise((resolve) => setTimeout(resolve, 1_600));
 
 /** Which of a frame's edges fade out, read from its mask. */
 function fadedEdges(frame: HTMLElement) {
@@ -282,5 +291,170 @@ describe("AgentPageRow", () => {
       watch.disconnect();
       window.removeEventListener("message", onReport);
     }
+  });
+
+  it("offers copy and add-note on text the reader selects in a page, as in the chat", async () => {
+    const version = versionOf(
+      "selectable",
+      `<p>Part 2: the products</p><p id="row">edwards-est-vigilant-gsa-ct2.html</p>` +
+        // A page cannot raise the actions by itself, without the reader in it.
+        `<script>addEventListener("load", function () { parent.postMessage({ jsonrpc: "2.0", method: "threadlines/selection-changed", params: { text: "forged", top: 0, left: 0, bottom: 10, right: 10 } }, "*"); });</script>`,
+    );
+    const other = versionOf("other", "<p>Another page</p>");
+    const onAddHighlight = vi.fn();
+    const pageProps = (ref: typeof version, title: string) => ({
+      pageId: ref.pageId,
+      versionId: ref.versionId,
+      version: 1,
+      turnId: TurnId.make("turn-1"),
+      participantId: null,
+      title,
+      kind: "html" as const,
+      height: 120,
+      createdAt: "2026-10-23T12:00:00.000Z",
+      updatedAt: "2026-10-23T12:00:00.000Z",
+    });
+    function Timeline() {
+      const containerRef = useRef<HTMLDivElement>(null);
+      return (
+        <div ref={containerRef} style={{ position: "relative", width: 600, height: 400 }}>
+          <AgentPageRow
+            environmentId={version.environmentId}
+            threadId={version.threadId}
+            page={pageProps(version, "Fixes")}
+            updated={false}
+          />
+          <AgentPageRow
+            environmentId={other.environmentId}
+            threadId={other.threadId}
+            page={{ ...pageProps(other, "Other"), pageId: AgentPageId.make("page-2") }}
+            updated={false}
+          />
+          <TranscriptSelectionLayer containerRef={containerRef} onAddHighlight={onAddHighlight} />
+        </div>
+      );
+    }
+    let forged = false;
+    const onForged = (event: MessageEvent) => {
+      if (event.data?.params?.text === "forged") forged = true;
+    };
+    window.addEventListener("message", onForged);
+    await render(<Timeline />);
+    const addNote = page.getByRole("button", { name: "Add note" });
+    const pageText = page
+      .frameLocator(page.getByTitle("Fixes"))
+      .getByText("edwards-est-vigilant-gsa-ct2.html");
+    await vi.waitFor(() => expect(forged).toBe(true));
+    window.removeEventListener("message", onForged);
+    await settled();
+    expect(addNote.elements()).toHaveLength(0);
+
+    await pageText.tripleClick();
+    await expect.element(addNote).toBeVisible();
+    // Beside the selected line, not somewhere else on the page.
+    const line = page.getByTitle("Fixes").element().getBoundingClientRect();
+    const actions = addNote.element().getBoundingClientRect();
+    expect(actions.top).toBeGreaterThan(line.top);
+    expect(actions.top).toBeLessThan(line.top + 120);
+
+    // A click into another page leaves this page's selection behind, and its actions.
+    await page.frameLocator(page.getByTitle("Other")).getByText("Another page").click();
+    await page.frameLocator(page.getByTitle("Other")).getByText("Another page").click();
+    await expect.poll(() => addNote.elements()).toHaveLength(0);
+
+    await pageText.tripleClick();
+    await expect.element(addNote).toBeVisible();
+
+    await addNote.click();
+    await userEvent.keyboard("This one failed");
+    await page.getByRole("button", { name: "Add", exact: true }).click();
+    expect(onAddHighlight).toHaveBeenCalledWith({
+      sourceMessageId: version.pageId,
+      sourceRole: "page",
+      selectedText: "edwards-est-vigilant-gsa-ct2.html",
+      note: "This one failed",
+    });
+  });
+
+  it("offers the same actions in the full-size view, beside the text at any zoom", async () => {
+    const version = versionOf(
+      "full-size",
+      `<p style="margin:0;position:absolute;top:200px;left:20px">fire-lite-ann-rly.html</p>`,
+    );
+    const onAddHighlight = vi.fn();
+    await render(
+      <AgentPageRow
+        environmentId={version.environmentId}
+        threadId={version.threadId}
+        page={{
+          pageId: version.pageId,
+          versionId: version.versionId,
+          version: 1,
+          turnId: TurnId.make("turn-1"),
+          participantId: null,
+          title: "Products",
+          kind: "html",
+          height: 120,
+          createdAt: "2026-10-23T12:00:00.000Z",
+          updatedAt: "2026-10-23T12:00:00.000Z",
+        }}
+        updated={false}
+        onAddHighlight={onAddHighlight}
+      />,
+    );
+    await page.getByRole("button", { name: "Open Products full size" }).click();
+    const dialog = page.getByRole("dialog");
+    const addNote = dialog.getByRole("button", { name: "Add note" });
+    const frame = dialog.getByTitle("Products");
+    const line = page.frameLocator(frame).getByText("fire-lite-ann-rly.html");
+    const actionsBelowFrameTop = () =>
+      addNote.element().getBoundingClientRect().top - frame.element().getBoundingClientRect().top;
+    const zoomIn = dialog.getByRole("button", { name: "Zoom in" });
+    // The view has loaded the page and settled its focus.
+    await expect.element(zoomIn).toBeEnabled();
+    // The test before typed its note just now.
+    await pastTypingWindow();
+    await line.tripleClick();
+    await expect.element(addNote).toBeVisible();
+    // The line sits 200px down the page.
+    expect(actionsBelowFrameTop()).toBeGreaterThan(210);
+    expect(actionsBelowFrameTop()).toBeLessThan(260);
+
+    // Zoomed to 125% it is drawn 250px down, and the actions follow it.
+    await zoomIn.click();
+    await zoomIn.click();
+    await expect.element(dialog.getByText("125%")).toBeVisible();
+    await expect.poll(actionsBelowFrameTop).toBeGreaterThan(265);
+
+    // Escape in the note, even on its buttons, closes the note, not the full-size view.
+    await addNote.click();
+    await userEvent.keyboard("Discontinued");
+    await userEvent.keyboard("{Tab}");
+    await expect.element(dialog.getByRole("button", { name: "Cancel" })).toHaveFocus();
+    await userEvent.keyboard("{Escape}");
+    await expect
+      .poll(() => dialog.getByRole("button", { name: "Add", exact: true }).elements())
+      .toHaveLength(0);
+    await expect.element(dialog).toBeVisible();
+
+    await dialog.getByRole("button", { name: /^Zoom 125%/ }).click();
+    await pastTypingWindow();
+    await line.tripleClick();
+    await addNote.click();
+    await userEvent.keyboard("Discontinued");
+    // A look at the source keeps the note being written.
+    const source = dialog.getByRole("button", { name: "Source" });
+    await source.click();
+    await source.click();
+    await expect
+      .element(dialog.getByPlaceholder("Add context for this highlight"))
+      .toHaveValue("Discontinued");
+    await dialog.getByRole("button", { name: "Add", exact: true }).click();
+    expect(onAddHighlight).toHaveBeenCalledWith({
+      sourceMessageId: version.pageId,
+      sourceRole: "page",
+      selectedText: "fire-lite-ann-rly.html",
+      note: "Discontinued",
+    });
   });
 });
