@@ -225,6 +225,7 @@ function FloatingDevice(props: {
       aria-label={`${props.name}, floating`}
       data-testid="device-float"
       className={cn(
+        // Under toasts (z-45), which land in the same corner it first floats to.
         "fixed z-40 flex flex-col rounded-xl bg-popover text-popover-foreground ring-1 ring-border elevate-overlay",
         live && "select-none",
       )}
