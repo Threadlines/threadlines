@@ -1483,6 +1483,79 @@ describe("ProviderRuntimeIngestion", () => {
     expect(await reportsIn()).toHaveLength(1);
   });
 
+  it("takes a check-back that fires while a message is being prepared for its own turn, not the message's (finding 2)", async () => {
+    const harness = await createHarness();
+    const createdAt = "2026-01-01T00:00:00.000Z";
+    const child = asThreadId("child-2");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-child-2-create"),
+        threadId: child,
+        projectId: asProjectId("project-1"),
+        title: "Watch CI",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        parentThreadId: asThreadId("thread-1"),
+        attachedToParent: true,
+        createdAt,
+      }),
+    );
+    harness.setProviderSession({
+      provider: ProviderDriverKind.make("codex"),
+      status: "ready",
+      runtimeMode: "approval-required",
+      threadId: child,
+      createdAt,
+      updatedAt: createdAt,
+    });
+    // An automatic fix's message is being prepared: it owes a report.
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-child-2-turn"),
+        threadId: child,
+        message: {
+          messageId: asMessageId("fix-message"),
+          role: "user",
+          text: "CI failed; fix it.",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+    // A check-back fires first.
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-child-2-check-back"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: child,
+      createdAt: "2026-01-01T00:00:02.000Z",
+      turnId: asTurnId("check-back-turn"),
+      payload: { trigger: { kind: "check-back" } },
+    } as never);
+    await harness.drain();
+    const owed = (
+      await waitForThread(
+        harness.readModel,
+        (entry) => (entry.childRequests.owedReports ?? []).length === 2,
+        10_000,
+        child,
+      )
+    ).childRequests.owedReports;
+    // Both stay owed: the message waits for its own turn, the check-back owes its own.
+    expect(owed).toMatchObject([{ messageId: "fix-message" }, { turnId: "check-back-turn" }]);
+    const parent = (await harness.readModel()).threads.find(
+      (entry) => entry.id === asThreadId("thread-1"),
+    );
+    expect(parent?.messages.filter((message) => message.fromThread !== undefined)).toEqual([]);
+  });
+
   it("maps turn started/completed events into thread session updates", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

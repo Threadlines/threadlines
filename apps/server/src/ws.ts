@@ -245,6 +245,15 @@ const isWorkspacePathOutsideRootError = Schema.is(WorkspacePathOutsideRootError)
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
+/**
+ * Events only the server reads (its own bookkeeping, like a child's dropped
+ * report). They are never sent to a client in any form: a client decodes
+ * events against a closed union, and one built before such an event would
+ * fail the whole batch it came in.
+ */
+export const isServerOnlyEvent = (event: OrchestrationEvent): boolean =>
+  event.type === "thread.child-report-dropped";
+
 export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract<
   OrchestrationEvent,
   {
@@ -1659,7 +1668,9 @@ const makeCoreRpcLayer = (
                 }),
               ),
             ).pipe(
-              Effect.map((events) => Array.from(events)),
+              Effect.map((events) =>
+                Array.from(events).filter((event) => !isServerOnlyEvent(event)),
+              ),
               Effect.flatMap(enrichOrchestrationEvents),
               Effect.mapError(
                 (cause) =>

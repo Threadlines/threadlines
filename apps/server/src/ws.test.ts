@@ -13,7 +13,7 @@ import {
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
-import { isThreadDetailEvent } from "./ws.ts";
+import { isServerOnlyEvent, isThreadDetailEvent } from "./ws.ts";
 
 function makeThreadEvent<T extends OrchestrationEvent["type"]>(
   type: T,
@@ -157,8 +157,12 @@ describe("isThreadDetailEvent", () => {
         owedReport: owed,
       }),
     ];
+    // Neither the thread stream nor orchestration.replayEvents sends it.
     const streamed = replay.filter(isThreadDetailEvent);
     expect(streamed.map((event) => event.type)).toEqual(["thread.handed-back"]);
+    expect(replay.filter((event) => !isServerOnlyEvent(event)).map((event) => event.type)).toEqual([
+      "thread.handed-back",
+    ]);
     // What a client built before the owed list knew of a handed-back event:
     // the new field is extra, and extra fields are ignored when decoding.
     const OlderHandedBack = Schema.Struct({

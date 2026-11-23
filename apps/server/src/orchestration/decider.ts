@@ -51,11 +51,7 @@ import {
 import { secretRequestIdOfAnswerMessage } from "@threadlines/shared/secretRequests";
 import { isTurnAside } from "@threadlines/shared/transcriptRevert";
 import { CONTINUE_AT_RESET_MESSAGE, continueAtResetTimeMs } from "@threadlines/shared/usageLimits";
-import {
-  isAttachedChild,
-  isOwedReport,
-  passCeilingRefusal,
-} from "@threadlines/shared/childThreads";
+import { isAttachedChild, passCeilingRefusal } from "@threadlines/shared/childThreads";
 import { leadSetRefusal } from "@threadlines/shared/projectLead";
 import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
 
@@ -126,7 +122,6 @@ import {
   decideChildReportSettle,
   owedReportStamps,
   settleWaitingAnswer,
-  sweepOwedReports,
   turnStartOwesReport,
 } from "./childReports.ts";
 import {
@@ -901,6 +896,45 @@ function answersHeldableRequest(
 }
 
 /**
+ * The child's report `participantId` was being started on when a restart cut
+ * the thread off before the provider took it: the newest message that starts
+ * a turn for that agent (not one still queued), a report nothing answered
+ * since. Null when there is none, or the thread can't take it now.
+ */
+function reportCutBeforeItsTurn(
+  thread: OrchestrationThread,
+  participantId: ThreadParticipantId | null,
+): OrchestrationMessage | null {
+  const session = thread.session;
+  if (
+    session === null ||
+    (session.status !== "interrupted" && session.status !== "stopped") ||
+    thread.archivedAt !== null ||
+    (thread.move ?? null) !== null
+  ) {
+    return null;
+  }
+  const queued = new Set((thread.queuedFollowUps ?? []).map((entry) => entry.messageId));
+  const index = thread.messages.findLastIndex(
+    (message) =>
+      message.role === "user" &&
+      !isTurnAside(message) &&
+      !queued.has(message.id) &&
+      (message.participantId ?? null) === participantId,
+  );
+  const message = index < 0 ? undefined : thread.messages[index];
+  if (
+    message === undefined ||
+    message.fromThread?.kind !== "report" ||
+    message.notSent === true ||
+    thread.messages.slice(index + 1).some((later) => later.role === "assistant")
+  ) {
+    return null;
+  }
+  return message;
+}
+
+/**
  * A report from one of its threads: its turn continues by itself at the
  * reset, in a thread with a parent too, whose own report of that turn went
  * up when it failed (docs/design/agent-autonomy-no-limits.md, rule 13).
@@ -1636,6 +1670,17 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           occurredAt: command.createdAt,
           commandId: command.commandId,
         });
+      // Child threads: the agent whose request starts it, kept for good, so
+      // its later reports go to that agent however long the parent's history
+      // grows (docs/design/agent-autonomy-no-limits.md, rule 8).
+      const reportsTo =
+        parentThreadId !== undefined && command.attachedToParent === true
+          ? readModel.threads
+              .find((entry) => entry.id === parentThreadId)
+              ?.childRequests.open.find(
+                (request) => request.kind === "start" && request.childThreadId === command.threadId,
+              )?.from
+          : undefined;
       const createdEvent: PlannedOrchestrationEvent = {
         ...threadBase(),
         type: "thread.created",
@@ -1655,6 +1700,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
                   ? { parentTurnId: command.parentTurnId }
                   : {}),
                 attachedToParent: command.attachedToParent === true,
+                ...(reportsTo !== undefined ? { reportsTo } : {}),
               }
             : {}),
           ...(command.remoteOrigin !== undefined ? { remoteOrigin: command.remoteOrigin } : {}),
@@ -4796,7 +4842,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // parent's requests still queued here are taken back. Every agent's
       // check-backs end with it.
       const chainStop = [
-        ...decideAgentChainStop(thread, base, command.createdAt),
+        ...decideAgentChainStop(thread, base, command.createdAt, {
+          holdsFamily:
+            thread.childRequests.open.length > 0 ||
+            attachedChildrenOf(readModel, thread.id).length > 0,
+        }),
         ...childStopEvents(readModel, thread, command, command.createdAt),
         ...holdCommandOutputOnStop(thread, base, command.createdAt),
         ...endCheckBacksOnStop(thread, base, command.createdAt),
@@ -5186,10 +5236,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         projectId: thread.projectId,
       });
       // Child threads: a turn starts in the runtime. One the provider started
-      // with no message owes the parent a report (rule 2), every turn before
-      // it is over, so what is still owed for one is settled (rule 3), and a
-      // request waiting on background work settles with its answer so far
-      // (rule 4).
+      // with no message owes the parent a report (rule 2), and a request
+      // waiting on background work settles with its answer so far (rule 4).
+      // What earlier turns still owe is swept by ingestion, which sees every
+      // turn's end before the next turn's start.
       const startedTurnId =
         command.session.status === "running" &&
         command.session.activeTurnId !== null &&
@@ -5197,7 +5247,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           ? command.session.activeTurnId
           : null;
       const providerTurnStamps =
-        startedTurnId !== null && command.providerStartedTurn === true
+        startedTurnId !== null &&
+        command.turnStartedBy !== undefined &&
+        "provider" in command.turnStartedBy
           ? owedReportStamps(readModel, thread)
           : null;
       const owedReport =
@@ -5207,24 +5259,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       const turnStartEvents: ReadonlyArray<PlannedOrchestrationEvent> =
         startedTurnId === null
           ? []
-          : [
-              ...sweepOwedReports(
-                readModel,
-                thread,
-                (entry) =>
-                  isOwedReport(entry, { turnId: startedTurnId }) ||
-                  (command.turnMessageId !== undefined &&
-                    isOwedReport(entry, { messageId: command.turnMessageId })),
-                childEventBase(command, command.createdAt),
-                command.createdAt,
-              ),
-              ...settleWaitingAnswer(
-                readModel,
-                thread,
-                childEventBase(command, command.createdAt),
-                command.createdAt,
-              ),
-            ];
+          : settleWaitingAnswer(
+              readModel,
+              thread,
+              childEventBase(command, command.createdAt),
+              command.createdAt,
+            );
       const sessionSetEvent = {
         ...withEventBase({
           aggregateKind: "thread",
@@ -5237,6 +5277,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           ...(owedReport !== undefined ? { owedReport } : {}),
+          ...(command.turnStartedBy !== undefined ? { turnStartedBy: command.turnStartedBy } : {}),
           session: withArmedContinueAtReset(
             readModel,
             thread,
@@ -5620,6 +5661,25 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      // A child's report the restart cut off before its agent ever got it
+      // (taken off the queue, then the process stopped) is sent again: the
+      // parent's agent never heard it, and nothing else brings it back.
+      const unheardReport =
+        command.turnId === null ? reportCutBeforeItsTurn(thread, command.participantId) : null;
+      if (unheardReport !== null) {
+        return yield* decideCommandSequence({
+          commands: [
+            {
+              type: "thread.turn.resend",
+              commandId: command.commandId,
+              threadId: command.threadId,
+              messageId: unheardReport.id,
+              createdAt: command.createdAt,
+            },
+          ],
+          readModel,
+        });
+      }
       const verdict = restartContinueVerdict(thread, {
         turnStarted: command.turnId !== null,
         participantId: command.participantId,

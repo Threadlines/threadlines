@@ -232,6 +232,16 @@ describe("childReportForTurnEnd", () => {
       interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
       createdAt: now,
     });
+    // A second failure with one report still unread counts it again.
+    expect(
+      report(owing({ queuedFollowUps: [queuedReport("g1")] }), {
+        turnId,
+        outcome: "failed",
+        error: "Overloaded",
+      })?.text,
+    ).toBe(
+      "'Write the changelog' failed: Overloaded. 1 report from its threads is waiting in it unread. Send it a message with thread_send and it reads them first.",
+    );
     const withReports = owing({ queuedFollowUps: [queuedReport("g1"), queuedReport("g2")] });
     expect(report(withReports, { turnId, outcome: "failed", error: "Overloaded" })?.text).toBe(
       "'Write the changelog' failed: Overloaded. 2 reports from its threads are waiting in it unread. Send it a message with thread_send and it reads them first.",
@@ -246,6 +256,27 @@ describe("childReportForTurnEnd", () => {
     expect(report(owing({ session: session() }), end)?.text).toBe(
       "'Write the changelog' stopped before it finished: runtime stream ended. Send it a message with thread_send to continue.",
     );
+  });
+
+  it("gives a resend's new entry for the same message a settle of its own (finding 6)", () => {
+    const messageId = MessageId.make("scheduled");
+    const entry = (createdAt: string) => ({
+      messageId,
+      deliveryEpoch: 0,
+      attachmentEpoch: 0,
+      createdAt,
+    });
+    const settleFor = (createdAt: string, ended: string) =>
+      childReportForTurnEnd({
+        child: thread(CHILD, {
+          childRequests: { ...EMPTY_CHILD_REQUEST_STATE, owedReports: [entry(createdAt)] },
+        }),
+        end: { turnId: TurnId.make(ended), outcome: "failed", error: "Rejected" },
+        pendingMessageId: messageId,
+      });
+    const first = settleFor("2026-10-04T10:00:00.000Z", "turn-first");
+    const resent = settleFor("2026-10-04T10:01:00.000Z", "turn-resent");
+    expect(first?.commandId).not.toBe(resent?.commandId);
   });
 
   it("settles a request's turn as the request, never also as a report", () => {

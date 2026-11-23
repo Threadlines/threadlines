@@ -20,6 +20,7 @@ import {
 } from "@threadlines/contracts";
 import { isOwedReport, owedReportKeyOf } from "@threadlines/shared/childThreads";
 import { activeParticipants } from "@threadlines/shared/threadParticipants";
+import { isTurnAside } from "@threadlines/shared/transcriptRevert";
 
 import {
   type ChildEventBase,
@@ -28,10 +29,7 @@ import {
   decideChildRequestSettle,
   personWrote,
 } from "./childThreadDecisions.ts";
-import {
-  childDeliveryForQuietCandidate,
-  stoppedBeforeFinishedText,
-} from "./childThreadDelivery.ts";
+import { childDeliveryForQuietCandidate } from "./childThreadDelivery.ts";
 import { currentAgentModel, messageAgentModels } from "./messageAgentModels.ts";
 
 type PlannedEvent = Extract<ChildThreadDecision, ReadonlyArray<unknown>>[number];
@@ -126,8 +124,8 @@ export function turnStartOwesReport(
 
 /**
  * The message a continue continues: the newest message that started a turn
- * for `participantId` before it, skipping continues, messages still queued
- * and the continue's own message.
+ * for `participantId` before it, skipping continues, messages still queued,
+ * messages beside a turn (isTurnAside) and the continue's own message.
  */
 export function continuedTurnMessage(
   thread: OrchestrationThread,
@@ -139,7 +137,9 @@ export function continuedTurnMessage(
     (message) =>
       message.role === "user" &&
       message.id !== continueMessageId &&
-      message.sideTurnId === undefined &&
+      // A message steered into a turn (the user's, a room agent's reply) is
+      // never the one that started it.
+      !isTurnAside(message) &&
       message.trigger === undefined &&
       !queued.has(message.id) &&
       (message.participantId ?? null) === participantId,
@@ -184,14 +184,24 @@ export function reportDropReason(
 }
 
 /**
- * The agent of `parent` a child's later reports go to: the one its first
- * answer went to, which is the agent that started it, or the one whose turn
- * started it; while that agent is still in the room. Otherwise the thread's own.
+ * The agent of `parent` a child's later reports go to: the one whose request
+ * started it (`reportsTo`, kept on the child), while that agent is still in
+ * the room; otherwise the thread's own. A child started before that was kept
+ * goes by its first answer's agent, or the one whose turn started it, as far
+ * as the parent's history still shows them.
  */
 export function reportRecipient(
   parent: OrchestrationThread,
-  child: Pick<OrchestrationThread, "id" | "parentTurnId">,
+  child: Pick<OrchestrationThread, "id" | "parentTurnId" | "childRequests">,
 ): ThreadParticipantId | null {
+  const kept = child.childRequests.reportsTo;
+  if (kept !== undefined) {
+    const keptId = kept.participantId;
+    return keptId !== null &&
+      activeParticipants(parent).some((participant) => participant.id === keptId)
+      ? keptId
+      : null;
+  }
   const firstReport = parent.messages.find(
     (message) =>
       message.fromThread?.kind === "report" &&
@@ -324,40 +334,6 @@ export function decideChildReportSettle(
       },
     },
   ];
-}
-
-/**
- * A turn is starting in `child`, so every earlier turn is over: each entry
- * still owed for one (anything `keep` doesn't name) is settled first, as a
- * turn that ended without being stopped (rule 3). Nothing leaves an entry
- * behind for good.
- */
-export function sweepOwedReports(
-  readModel: OrchestrationReadModel,
-  child: OrchestrationThread,
-  keep: (entry: OwedChildReport) => boolean,
-  baseFor: ChildEventBase,
-  createdAt: string,
-): ReadonlyArray<PlannedEvent> {
-  return (child.childRequests.owedReports ?? [])
-    .filter((entry) => !keep(entry))
-    .flatMap((entry) => {
-      const decision = decideChildReportSettle(
-        readModel,
-        child,
-        {
-          owed: owedReportKeyOf(entry),
-          turnId: "turnId" in entry ? entry.turnId : null,
-          text: stoppedBeforeFinishedText(
-            child.title,
-            "its turn ended without its reply reaching Threadlines",
-          ),
-        },
-        baseFor,
-        createdAt,
-      );
-      return "refusal" in decision ? [] : decision;
-    });
 }
 
 /**

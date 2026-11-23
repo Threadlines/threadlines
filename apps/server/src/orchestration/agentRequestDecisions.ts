@@ -1011,12 +1011,22 @@ export function decideAgentChainStop(
   thread: OrchestrationThread,
   base: EventBase,
   createdAt: string,
+  options: {
+    /**
+     * The user's Stop in a thread with a family of its own (threads attached
+     * to it, or requests open to them): the hold always goes on, so a child's
+     * later report can't wake it, now or after a restart, until the user
+     * writes (docs/design/agent-autonomy-no-limits.md, "Stop").
+     */
+    readonly holdsFamily?: boolean;
+  } = {},
 ): ReadonlyArray<PlannedEvent> {
   const state = thread.agentRequests;
   // Outside rooms only invites make requests. A thread that never had one has
   // no chain to end; one that did still moves its epoch, so a review's reply
   // already on its way to a turn is caught too.
   if (
+    options.holdsFamily !== true &&
     !hasAgentRecords(thread) &&
     state.open.length === 0 &&
     !(thread.queuedFollowUps ?? []).some(isAgentOrigin)

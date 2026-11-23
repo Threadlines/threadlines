@@ -566,6 +566,14 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             parentThreadId: event.payload.parentThreadId ?? null,
             parentTurnId: event.payload.parentTurnId ?? null,
             attachedToParent: event.payload.attachedToParent === true ? 1 : 0,
+            ...(event.payload.reportsTo !== undefined
+              ? {
+                  childRequests: {
+                    ...EMPTY_CHILD_REQUEST_STATE,
+                    reportsTo: event.payload.reportsTo,
+                  },
+                }
+              : {}),
             remoteOrigin: event.payload.remoteOrigin ?? null,
             scheduledRun: event.payload.scheduledRun ?? null,
             worktreeOrigin: event.payload.worktreeOrigin ?? null,
@@ -2361,9 +2369,19 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             threadId: event.payload.threadId,
             turnId,
           });
-          const pendingTurnStart = yield* projectionTurnRepository.getPendingTurnStartByThreadId({
-            threadId: event.payload.threadId,
-          });
+          // The pending message is this turn's unless the writer that marked
+          // it running said otherwise: a turn the provider started (a
+          // check-back while the message is still being prepared) leaves the
+          // message waiting for its own turn.
+          const startedBy = event.payload.turnStartedBy;
+          const pendingTurnStart = Option.filter(
+            yield* projectionTurnRepository.getPendingTurnStartByThreadId({
+              threadId: event.payload.threadId,
+            }),
+            (pending) =>
+              startedBy === undefined ||
+              ("messageId" in startedBy && startedBy.messageId === pending.messageId),
+          );
           if (Option.isSome(existingTurn)) {
             const nextState =
               existingTurn.value.state === "completed" || existingTurn.value.state === "error"
@@ -2427,9 +2445,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             });
           }
 
-          yield* projectionTurnRepository.deletePendingTurnStartByThreadId({
-            threadId: event.payload.threadId,
-          });
+          if (Option.isSome(pendingTurnStart)) {
+            yield* projectionTurnRepository.deletePendingTurnStartByThreadId({
+              threadId: event.payload.threadId,
+            });
+          }
           return;
         }
 

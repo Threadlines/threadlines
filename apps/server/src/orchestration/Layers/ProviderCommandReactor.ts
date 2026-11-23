@@ -48,6 +48,7 @@ import {
   ThreadNativeSessionFellBackPayload,
   ThreadForkSeedOutcomePayload,
   type TurnId,
+  type TurnStartedBy,
 } from "@threadlines/contracts";
 import { renderThreadContextSeed, withContextSeedPreamble } from "@threadlines/shared/contextSeed";
 import { LEAD_WITHOUT_TOOLS_TEXT, leadRoleText } from "@threadlines/shared/projectLead";
@@ -1075,11 +1076,14 @@ const make = Effect.gen(function* () {
     readonly threadId: ThreadId;
     readonly session: OrchestrationSession;
     readonly createdAt: string;
+    /** For an update that marks a turn running: the message it was asked with. */
+    readonly turnStartedBy?: TurnStartedBy;
   }) =>
     orchestrationEngine.dispatch({
       type: "thread.session.set",
       commandId: serverCommandId("provider-session-set"),
       threadId: input.threadId,
+      ...(input.turnStartedBy !== undefined ? { turnStartedBy: input.turnStartedBy } : {}),
       // The stored error reaches the thread and phone alerts: no saved key in it.
       session:
         input.session.lastError === null || input.session.lastError === undefined
@@ -1206,6 +1210,8 @@ const make = Effect.gen(function* () {
   const markProviderTurnAccepted = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
     readonly turnId: TurnId;
+    /** The message the provider took this turn for. */
+    readonly messageId: MessageId;
   }) {
     // The turn owes its checkpoint from now on, whether or not its thread is
     // a room yet: an agent added mid-turn must wait for it (checkpointHandover).
@@ -1243,6 +1249,7 @@ const make = Effect.gen(function* () {
         updatedAt,
       },
       createdAt: updatedAt,
+      turnStartedBy: { messageId: input.messageId },
     });
   });
 
@@ -3457,7 +3464,9 @@ const make = Effect.gen(function* () {
       return mark.pipe(
         Effect.andThen(handleTurnStartFailure(cause)),
         Effect.andThen(failHandOffForFailedStart(detail)),
-        Effect.andThen(settleChildWorkForUnstartedTurn(detail)),
+        // Only a turn the provider never took: one it took ends (and settles
+        // what it owes) by its own turn end, whatever failed after.
+        Effect.andThen(beforeSend ? settleChildWorkForUnstartedTurn(detail) : Effect.void),
       );
     };
 
@@ -3798,6 +3807,7 @@ const make = Effect.gen(function* () {
             markProviderTurnAccepted({
               threadId: event.payload.threadId,
               turnId: turn.turnId,
+              messageId: event.payload.messageId,
             }),
           ),
           Effect.tap(() =>

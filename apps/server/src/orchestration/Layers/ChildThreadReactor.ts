@@ -318,7 +318,7 @@ export const makeChildThreadReactor = Effect.gen(function* () {
                 )
               : Effect.void,
           ),
-          Effect.andThen(settleStoppedAnswers(parent.id, childId, status)),
+          Effect.andThen(settleStoppedAnswers(parent.id, childId)),
           Effect.ensuring(Effect.sync(() => stopChecks.delete(childId))),
           Effect.forkDetach,
         );
@@ -344,33 +344,49 @@ export const makeChildThreadReactor = Effect.gen(function* () {
       }
     });
 
-  const settleStoppedAnswers = (
-    parentId: ThreadId,
-    childId: ThreadId,
-    status: "stopped" | "error",
-  ) =>
+  /**
+   * A child's session stopped or errored with a request mid-answer and no
+   * turn end settled it. Read as it is now, not as it was when the check was
+   * set: an error followed by an exit is a stop. Stopped on purpose only when
+   * a Stop named that request's own turn: a runtime that died, or the idle
+   * reaper, is never the user's doing (rule 6), and an answer waiting on
+   * background work whose runtime simply ended stands as it is (the quiet
+   * check settles it answered).
+   */
+  const settleStoppedAnswers = (parentId: ThreadId, childId: ThreadId) =>
     Effect.gen(function* () {
       const [parent, child] = [yield* readThread(parentId), yield* readThread(childId)];
       if (parent === undefined || child === undefined) {
         return;
       }
-      const latestStatus = child.session?.status;
-      if (latestStatus !== "stopped" && latestStatus !== "error") {
+      const status = child.session?.status;
+      if (status !== "stopped" && status !== "error") {
         return;
       }
-      // Stopped on purpose only when a Stop named a turn: a runtime that
-      // died, or the idle reaper, is never the user's doing (rule 6).
-      const stoppedByStop = (child.session?.stopRequestedTurnId ?? null) !== null;
+      const stopRequestedTurnId = child.session?.stopRequestedTurnId ?? null;
+      const childTurns =
+        stopRequestedTurnId === null
+          ? []
+          : yield* turns
+              .listByThreadId({ threadId: child.id })
+              .pipe(Effect.orElseSucceed(() => [] as const));
+      const requestTurnId = (request: OrchestrationChildRequest) =>
+        request.status === "awaiting_background"
+          ? (request.candidateTurnId ?? null)
+          : (childTurns.find((turn) => turn.pendingMessageId === request.childMessageId)?.turnId ??
+            null);
       for (const request of parent.childRequests.open) {
         if (
           request.childThreadId !== childId ||
           (request.status !== "running" && request.status !== "awaiting_background") ||
           // Waiting to continue at a usage limit's reset: the continue answers it.
-          isHeldByContinueAtReset(child, request) ||
-          // An answer waiting on background work whose runtime ended without
-          // a Stop stands as it is: the quiet check settles it answered.
-          (request.status === "awaiting_background" && status === "stopped" && !stoppedByStop)
+          isHeldByContinueAtReset(child, request)
         ) {
+          continue;
+        }
+        const stoppedByStop =
+          stopRequestedTurnId !== null && requestTurnId(request) === stopRequestedTurnId;
+        if (request.status === "awaiting_background" && status === "stopped" && !stoppedByStop) {
           continue;
         }
         yield* settle(

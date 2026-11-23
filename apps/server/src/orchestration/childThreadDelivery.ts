@@ -221,9 +221,14 @@ export interface ChildReportDelivery {
   readonly text?: string;
 }
 
-const reportSettleCommandId = (child: Pick<OrchestrationThread, "id">, key: OwedReportKey) =>
+/**
+ * The settle's command id, from the owed entry itself: the same entry settles
+ * once however often it is routed, and a new entry for the same message (a
+ * resend runs it again) is a settle of its own.
+ */
+const reportSettleCommandId = (child: Pick<OrchestrationThread, "id">, entry: OwedChildReport) =>
   CommandId.make(
-    `server:child-report:${child.id}:${"messageId" in key ? `message:${key.messageId}` : `turn:${key.turnId}`}:settle`,
+    `server:child-report:${child.id}:${"messageId" in entry ? `message:${entry.messageId}` : `turn:${entry.turnId}`}:${entry.createdAt}:settle`,
   );
 
 /** The owed entry a turn settles: keyed by the turn, or by the message that started it. */
@@ -284,7 +289,7 @@ export function childReportForTurnEnd(input: {
           : stoppedBeforeFinishedText(child.title, end.error ?? "its runtime stopped");
   return {
     type: "thread.child-report.settle",
-    commandId: reportSettleCommandId(child, owed),
+    commandId: reportSettleCommandId(child, entry),
     owed,
     turnId: end.turnId,
     ...(text !== undefined ? { text } : {}),
@@ -313,6 +318,37 @@ export function childDeliveryForEndedTurn(input: {
 }
 
 /**
+ * A turn is starting: what the thread still owes for earlier turns, each
+ * settled as a turn that ended without being stopped (rule 3). The starting
+ * turn's entry, and the entries of `messageIds` (a message still waiting to
+ * start, or the one bound to this turn), are kept.
+ */
+export function staleOwedReports(
+  child: OrchestrationThread,
+  keep: { readonly turnId: TurnId; readonly messageIds: ReadonlyArray<MessageId> },
+): ReadonlyArray<ChildReportDelivery> {
+  return (child.childRequests.owedReports ?? [])
+    .filter(
+      (entry) =>
+        !isOwedReport(entry, { turnId: keep.turnId }) &&
+        !keep.messageIds.some((messageId) => isOwedReport(entry, { messageId })),
+    )
+    .map((entry) => {
+      const owed = owedReportKeyOf(entry);
+      return {
+        type: "thread.child-report.settle" as const,
+        commandId: reportSettleCommandId(child, entry),
+        owed,
+        turnId: "turnId" in entry ? entry.turnId : null,
+        text: stoppedBeforeFinishedText(
+          child.title,
+          "its turn ended without its reply reaching Threadlines",
+        ),
+      };
+    });
+}
+
+/**
  * An owed turn a restart cut off or left unreported (rule 14): a completed
  * turn is delivered, a failed one delivers its failure, and one the restart
  * cut off (or that never started) says so.
@@ -332,7 +368,7 @@ export function childReportAfterRestart(
         : `'${child.title}' was interrupted by a Threadlines restart. Send it a message with thread_send to continue.`;
   return {
     type: "thread.child-report.settle",
-    commandId: reportSettleCommandId(child, owed),
+    commandId: reportSettleCommandId(child, entry),
     owed,
     turnId,
     ...(text !== undefined ? { text } : {}),

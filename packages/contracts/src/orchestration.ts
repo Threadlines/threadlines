@@ -3079,6 +3079,21 @@ export const OwedChildReport = Schema.Union([
 ]);
 export type OwedChildReport = typeof OwedChildReport.Type;
 
+/**
+ * What started the turn a session update marks running, from the writer that
+ * knows: the message it was asked with, or the provider with no message (a
+ * check-back, a goal, background work that finished). The decision records
+ * the report a provider-started turn owes a parent (docs/design/
+ * agent-autonomy-no-limits.md, rules 2 and 3), and the turn record is bound
+ * to the pending message only when this names it. Absent: the writer can't
+ * tell, and the pending message, if any, is taken as the turn's.
+ */
+export const TurnStartedBy = Schema.Union([
+  Schema.Struct({ messageId: MessageId }),
+  Schema.Struct({ provider: Schema.Literal(true) }),
+]);
+export type TurnStartedBy = typeof TurnStartedBy.Type;
+
 /** Which owed report: the one keyed by the message that starts its turn, or by the turn. */
 export const OwedReportKey = Schema.Union([
   Schema.Struct({ messageId: MessageId }),
@@ -3094,6 +3109,13 @@ export const OrchestrationChildRequestState = Schema.Struct({
   pendingNotes: Schema.Array(ChildRequestNote),
   /** Reports this thread owes its parent, oldest first. Absent: none. */
   owedReports: Schema.optional(Schema.Array(OwedChildReport)),
+  /**
+   * The agent of its parent whose request started this thread, kept for
+   * good: its later reports go to that agent while it is in the room
+   * (docs/design/agent-autonomy-no-limits.md, rule 8). Absent: a thread
+   * started before it was kept, or put back under a parent.
+   */
+  reportsTo: Schema.optional(RoomAgentRef),
   /** Children on linked computers, kept after their requests settle. Absent: none. */
   remoteChildren: Schema.optional(Schema.Array(RemoteChildThread)),
   /** Cancels still owed to linked computers, oldest first. Absent: none. */
@@ -4796,19 +4818,8 @@ const ThreadSessionSetCommand = Schema.Struct({
    * usage limit with a known reset arms "Continue at reset" when it is on.
    */
   continueAfterUsageLimits: Schema.optional(Schema.Boolean),
-  /**
-   * Ingestion's word that `session.activeTurnId` is a turn the provider
-   * started with no message (a check-back, background work that finished),
-   * so the decision can record the report it owes its parent
-   * (docs/design/agent-autonomy-no-limits.md, "Delivery rules", rule 3).
-   */
-  providerStartedTurn: Schema.optional(Schema.Literal(true)),
-  /**
-   * Ingestion's word that `session.activeTurnId` is the turn this message
-   * asked for. The decision that marks a turn started settles every report
-   * the thread still owes for an earlier turn, and leaves this turn's alone.
-   */
-  turnMessageId: Schema.optional(MessageId),
+  /** See TurnStartedBy. */
+  turnStartedBy: Schema.optional(TurnStartedBy),
   createdAt: IsoDateTime,
 });
 
@@ -6431,6 +6442,8 @@ export const ThreadCreatedPayload = Schema.Struct({
   attachedToParent: Schema.optional(Schema.Boolean),
   /** See OrchestrationThreadShell.stopsWithParent. */
   stopsWithParent: Schema.optional(Schema.Literal(true)),
+  /** See OrchestrationChildRequestState.reportsTo. */
+  reportsTo: Schema.optional(RoomAgentRef),
   /** See OrchestrationThreadShell.remoteOrigin. */
   remoteOrigin: Schema.optional(ThreadRemoteOrigin),
   /** See OrchestrationThreadShell.scheduledRun. */
@@ -7201,10 +7214,11 @@ export const ThreadSessionSetPayload = Schema.Struct({
   session: OrchestrationSession,
   /**
    * The report the provider-started turn now running owes the thread's
-   * parent: added to `childRequests.owedReports`. See ThreadSessionSetCommand's
-   * `providerStartedTurn`.
+   * parent: added to `childRequests.owedReports`.
    */
   owedReport: Schema.optional(OwedChildReport),
+  /** See TurnStartedBy. */
+  turnStartedBy: Schema.optional(TurnStartedBy),
 });
 
 /** The user closed this error's notice; see `OrchestrationSession.lastErrorDismissedAt`. */

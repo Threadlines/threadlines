@@ -25,6 +25,7 @@ import {
   type OrchestrationSideTurnOutcome,
   TurnId,
   type TurnTrigger,
+  type TurnStartedBy,
   type OrchestrationCheckpointSummary,
   type OrchestrationProposedPlan,
   type OrchestrationThread,
@@ -81,7 +82,7 @@ import {
   type ProviderActivityStreamSnapshot,
 } from "./ProviderActivityProjection.ts";
 import { handOffReplyText } from "../agentRequestDecisions.ts";
-import { childDeliveryForEndedTurn } from "../childThreadDelivery.ts";
+import { childDeliveryForEndedTurn, staleOwedReports } from "../childThreadDelivery.ts";
 import { RemoteRequestTurnEnds } from "../Services/RemoteRequestTurnEnds.ts";
 import { ScheduledRunTurnEnds } from "../Services/ScheduledRunTurnEnds.ts";
 import { RealtimeVoiceDevices } from "../Services/RealtimeVoiceDevices.ts";
@@ -2847,6 +2848,51 @@ const make = Effect.gen(function* () {
   });
 
   /**
+   * Child threads: a turn is starting in `threadId`, and this handler has
+   * already taken every earlier turn's end, so a report the thread still owes
+   * for an earlier turn will never be settled by one (a lost turn end). It is
+   * settled now, as a turn that ended without being stopped (docs/design/
+   * agent-autonomy-no-limits.md, rule 3). The starting turn's own entry is
+   * kept, and so is the entry of a message still waiting to start or already
+   * bound to this turn. Only this handler sweeps: a writer outside it could
+   * run ahead of a turn end it hasn't taken yet.
+   */
+  const sweepOwedReports = Effect.fn("sweepOwedReports")(function* (input: {
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId;
+    readonly pendingMessageId: MessageId | null;
+    readonly createdAt: string;
+  }) {
+    const child = yield* resolveThreadDetail(input.threadId);
+    if (child === undefined || child === null) return;
+    if ((child.childRequests.owedReports ?? []).length === 0) return;
+    const boundTurn = yield* projectionTurnRepository
+      .getByTurnId({ threadId: input.threadId, turnId: input.turnId })
+      .pipe(
+        Effect.map(Option.getOrUndefined),
+        Effect.orElseSucceed(() => undefined),
+      );
+    const stale = staleOwedReports(child, {
+      turnId: input.turnId,
+      messageIds: [input.pendingMessageId, boundTurn?.pendingMessageId ?? null].filter(
+        (messageId): messageId is MessageId => messageId !== null,
+      ),
+    });
+    for (const delivery of stale) {
+      yield* orchestrationEngine
+        .dispatch({ ...delivery, threadId: child.id, createdAt: input.createdAt })
+        .pipe(
+          Effect.catch((error) =>
+            Effect.logInfo("provider runtime ingestion could not settle a child's lost report", {
+              threadId: input.threadId,
+              detail: String(error),
+            }),
+          ),
+        );
+    }
+  });
+
+  /**
    * A workflow run's update, recorded as the driver reported it with who runs
    * it: the agent and the provider session it lives in, so Stop and transcript
    * reads reach that owner even after another agent or provider takes the
@@ -3407,26 +3453,31 @@ const make = Effect.gen(function* () {
 
       // A turn that starts now: the message it was asked with, or none (the
       // provider started it: a check-back, a goal, background work that
-      // finished), so the decision knows what it owes a parent (rules 2, 3).
-      const turnStartFields = (nextActiveTurnId: TurnId | null) =>
-        Effect.gen(function* () {
-          if (
-            event.type !== "turn.started" ||
-            nextActiveTurnId === null ||
-            (activeTurnId !== null && sameId(activeTurnId, nextActiveTurnId))
-          ) {
-            return {};
-          }
-          const pending =
-            thread.session?.status === "starting"
-              ? yield* projectionTurnRepository
-                  .getPendingTurnStartByThreadId({ threadId: thread.id })
-                  .pipe(Effect.orElseSucceed(() => Option.none()))
-              : Option.none();
-          return Option.isSome(pending)
-            ? { turnMessageId: pending.value.messageId }
-            : { providerStartedTurn: true as const };
-        });
+      // finished), so the decision knows what it owes a parent (rule 2) and
+      // the turn record is bound to the right message. A check-back says so
+      // itself, and is never the pending message's turn.
+      const pendingTurnStart =
+        event.type === "turn.started"
+          ? yield* projectionTurnRepository
+              .getPendingTurnStartByThreadId({ threadId: thread.id })
+              .pipe(Effect.orElseSucceed(() => Option.none()))
+          : Option.none();
+      const turnStartFields = (nextActiveTurnId: TurnId | null) => {
+        if (
+          event.type !== "turn.started" ||
+          nextActiveTurnId === null ||
+          (activeTurnId !== null && sameId(activeTurnId, nextActiveTurnId))
+        ) {
+          return {};
+        }
+        const turnStartedBy: TurnStartedBy =
+          turnTriggerOf(event)?.kind !== "check-back" &&
+          thread.session?.status === "starting" &&
+          Option.isSome(pendingTurnStart)
+            ? { messageId: pendingTurnStart.value.messageId }
+            : { provider: true };
+        return { turnStartedBy };
+      };
 
       const conflictsWithActiveTurn =
         activeTurnId !== null && eventTurnId !== undefined && !sameId(activeTurnId, eventTurnId);
@@ -3606,6 +3657,16 @@ const make = Effect.gen(function* () {
               };
 
         if (shouldApplyThreadLifecycle) {
+          if (event.type === "turn.started" && eventTurnId !== undefined) {
+            yield* sweepOwedReports({
+              threadId: thread.id,
+              turnId: eventTurnId,
+              pendingMessageId: Option.isSome(pendingTurnStart)
+                ? pendingTurnStart.value.messageId
+                : null,
+              createdAt: now,
+            });
+          }
           if (event.type === "turn.started" && acceptedTurnStartedSourcePlan !== null) {
             yield* markSourceProposedPlanImplemented(
               acceptedTurnStartedSourcePlan.sourceThreadId,
@@ -3667,7 +3728,7 @@ const make = Effect.gen(function* () {
               threadId: thread.id,
               session,
               ...usageLimitFields,
-              ...(yield* turnStartFields(nextActiveTurnId)),
+              ...turnStartFields(nextActiveTurnId),
               createdAt: now,
             });
             yield* Ref.update(unstoredSessionReportAt, (reports) => {

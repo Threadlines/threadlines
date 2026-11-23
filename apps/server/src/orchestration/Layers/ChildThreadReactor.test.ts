@@ -443,6 +443,70 @@ describe("ChildThreadReactor", () => {
     ),
   );
 
+  it.effect(
+    "keeps an answer waiting on background work when its runtime errors and then exits without a Stop (finding 9)",
+    () => {
+      const childWith = (status: "error" | "stopped") =>
+        thread(CHILD, {
+          latestTurn: {
+            turnId: TurnId.make("child-turn-1"),
+            state: "completed",
+            requestedAt: now,
+            startedAt: now,
+            completedAt: now,
+            assistantMessageId: null,
+          },
+          session: {
+            threadId: CHILD,
+            status,
+            providerName: "claudeAgent",
+            runtimeMode: "auto-accept-edits",
+            activeTurnId: null,
+            awaitedBackgroundTaskCount: 0,
+            lastError: status === "error" ? "runtime crashed" : null,
+            updatedAt: now,
+          },
+          messages: [
+            {
+              id: MessageId.make("candidate"),
+              role: "assistant",
+              text: "Done; tests still running.",
+              turnId: TurnId.make("child-turn-1"),
+              streaming: false,
+              createdAt: now,
+              updatedAt: now,
+            },
+          ],
+        });
+      return withReactor([parentWith([]), childWith("error")], {}, (harness) =>
+        Effect.gen(function* () {
+          harness.threads.set(
+            PARENT,
+            parentWith([
+              request({
+                status: "awaiting_background",
+                candidateTurnId: TurnId.make("child-turn-1"),
+              }),
+            ]),
+          );
+          yield* PubSub.publish(harness.events, {
+            type: "thread.session-set",
+            payload: { threadId: CHILD },
+          } as unknown as OrchestrationEvent);
+          yield* settle;
+          // The runtime exits before the error's grace is up.
+          harness.threads.set(CHILD, childWith("stopped"));
+          yield* TestClock.adjust(Duration.seconds(6));
+          yield* settle;
+          expect(settles(harness).filter((entry) => entry.outcome === "failed")).toEqual([]);
+          yield* TestClock.adjust(Duration.seconds(10));
+          yield* settle;
+          expect(settles(harness)).toMatchObject([{ outcome: "answered" }]);
+        }),
+      );
+    },
+  );
+
   describe("a child errored on a usage limit (docs/design/lead-chat.md, ruling 3)", () => {
     const erroredTurn = TurnId.make("child-turn-1");
     const asked = {

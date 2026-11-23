@@ -8,6 +8,7 @@ import type {
   ThreadId,
 } from "@threadlines/contracts";
 import {
+  EMPTY_CHILD_REQUEST_STATE,
   OrchestrationCheckpointSummary,
   OrchestrationMessage,
   OrchestrationSession,
@@ -478,6 +479,9 @@ export function projectEvent(
             parentThreadId: payload.parentThreadId ?? null,
             parentTurnId: payload.parentTurnId ?? null,
             attachedToParent: payload.attachedToParent ?? false,
+            ...(payload.reportsTo !== undefined
+              ? { childRequests: { ...EMPTY_CHILD_REQUEST_STATE, reportsTo: payload.reportsTo } }
+              : {}),
             ...(payload.remoteOrigin !== undefined ? { remoteOrigin: payload.remoteOrigin } : {}),
             ...(payload.scheduledRun !== undefined ? { scheduledRun: payload.scheduledRun } : {}),
             ...(payload.worktreeOrigin !== undefined

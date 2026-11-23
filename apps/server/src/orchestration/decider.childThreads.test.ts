@@ -27,6 +27,7 @@ import * as Exit from "effect/Exit";
 import { describe, expect, it } from "vite-plus/test";
 
 import { childReportMessageId, isCancelledReport } from "./childThreadDecisions.ts";
+import { reportRecipient } from "./childReports.ts";
 import { decideOrchestrationCommand } from "./decider.ts";
 import { projectEvent } from "./projector.ts";
 
@@ -1940,7 +1941,7 @@ describe("decider child reports", () => {
     commandId: CommandId.make(`session-${turnId}`),
     threadId: CHILD,
     session: session(CHILD, { activeTurnId: TurnId.make(turnId), updatedAt: createdAt }),
-    providerStartedTurn: true,
+    turnStartedBy: { provider: true },
     createdAt,
   });
 
@@ -2164,25 +2165,164 @@ describe("decider child reports", () => {
     ]);
   });
 
-  it("settles what an earlier turn still owed when the next turn starts, once (sequence 6)", async () => {
-    const owing = (await run(await answeredFamily(), providerTurn("child-turn-2"))).model;
-    // The runtime exited and nothing settled that turn; a message from the
-    // parent starts the next one.
-    const next = await run(owing, {
+  it("never settles a starting turn's own report, whichever writer marks it running first (finding 1)", async () => {
+    // A scheduled run's message owes a report; the reactor marks its turn
+    // running before ingestion does.
+    const family = await answeredFamily();
+    const asked = await run(family, turnStart("scheduled", { scheduledTaskId: "task-1" as never }));
+    const accepted = await run(asked.model, {
       type: "thread.session.set",
-      commandId: CommandId.make("session-next"),
+      commandId: CommandId.make("session-accepted"),
       threadId: CHILD,
-      session: session(CHILD, { activeTurnId: TurnId.make("child-turn-3"), updatedAt: at(40) }),
-      turnMessageId: MessageId.make("next-message"),
-      createdAt: at(40),
+      session: session(CHILD, { activeTurnId: TurnId.make("child-turn-2"), updatedAt: at(21) }),
+      turnStartedBy: { messageId: MessageId.make("scheduled") },
+      createdAt: at(21),
     });
-    const reports = threadIn(next.model, PARENT).messages.filter(
-      (message) => message.fromThread?.followUp === true,
-    );
-    expect(reports.map((message) => message.text)).toEqual([
-      "'Write the changelog' stopped before it finished: its turn ended without its reply reaching Threadlines. Send it a message with thread_send to continue.",
+    expect(accepted.events.map((event) => event.type)).toEqual(["thread.session-set"]);
+    expect(threadIn(accepted.model, CHILD).childRequests.owedReports).toEqual([
+      expect.objectContaining({ messageId: MessageId.make("scheduled") }),
     ]);
-    expect(threadIn(next.model, CHILD).childRequests.owedReports).toBeUndefined();
+  });
+
+  it("sends again a report the restart cut off after it left the parent's queue (finding 3)", async () => {
+    const owing = (await run(await answeredFamily(), providerTurn("child-turn-2"))).model;
+    const delivered = await run(
+      owing,
+      settleReport({ turnId: TurnId.make("child-turn-2") }, "child-turn-2"),
+    );
+    const report = threadIn(delivered.model, PARENT).queuedFollowUps?.[0];
+    if (report === undefined) throw new Error("no report queued");
+    // Taken off the queue to start its turn, then the process stopped.
+    const sent = await run(delivered.model, {
+      type: "thread.follow-up.send-queued",
+      commandId: CommandId.make("send-report"),
+      threadId: PARENT,
+      messageId: report.messageId,
+      createdAt: at(41),
+    });
+    const cut = {
+      ...sent.model,
+      threads: sent.model.threads.map((entry) =>
+        entry.id === PARENT
+          ? { ...entry, session: session(PARENT, { status: "interrupted", activeTurnId: null }) }
+          : entry,
+      ),
+    };
+    const restarted = await run(cut, {
+      type: "thread.restart.continue",
+      commandId: CommandId.make("restart"),
+      threadId: PARENT,
+      turnId: null,
+      participantId: null,
+      waitingOnUser: false,
+      continueAfterRestart: false,
+      messageId: MessageId.make("restart-continue"),
+      activityId: EventId.make("restart-activity"),
+      createdAt: at(50),
+    });
+    const resent = (restarted.events as ReadonlyArray<OrchestrationEvent>).find(
+      (event) => event.type === "thread.turn-start-requested",
+    );
+    expect(resent?.payload).toMatchObject({ messageId: report.messageId });
+  });
+
+  it("holds a stopped parent with a family, so a child's later report can't wake it (finding 4)", async () => {
+    const family = await answeredFamily();
+    const stopped = await run(family, {
+      type: "thread.turn.interrupt",
+      commandId: CommandId.make("stop-parent"),
+      threadId: PARENT,
+      createdAt: at(15),
+    });
+    expect(threadIn(stopped.model, PARENT).agentRequests.hold).toBe(true);
+    // A check-back after Stop records the new epoch; its report is dropped all the same.
+    const owing = (await run(stopped.model, providerTurn("child-turn-2"))).model;
+    const settled = await run(
+      owing,
+      settleReport({ turnId: TurnId.make("child-turn-2") }, "child-turn-2"),
+    );
+    expect(settled.events.map((event) => event.type)).toEqual(["thread.child-report-dropped"]);
+  });
+
+  it("judges a continue by the message that started the turn, not one steered into it (finding 5)", async () => {
+    const family = await answeredFamily();
+    const typed = await run(family, turnStart("typed", { composer: "typed" }));
+    // A room agent's reply was steered into the person's turn: it carries the turn's id.
+    const withSteer = {
+      ...typed.model,
+      threads: typed.model.threads.map((entry) =>
+        entry.id === CHILD
+          ? {
+              ...entry,
+              session: session(CHILD, { status: "ready", activeTurnId: null }),
+              messages: [
+                ...entry.messages,
+                {
+                  id: MessageId.make("steered-reply"),
+                  role: "user" as const,
+                  text: "Reviewer: looks fine.",
+                  fromAgent: { participantId: null },
+                  requestKind: "reply" as const,
+                  turnId: TurnId.make("child-turn-typed"),
+                  streaming: false,
+                  createdAt: at(21),
+                  updatedAt: at(21),
+                },
+              ],
+            }
+          : entry,
+      ),
+    };
+    const continued = await run(
+      withSteer,
+      turnStart("switch", { trigger: "accountSwitch", createdAt: at(30) }),
+    );
+    expect(owesOf(continued.events)[0]).toBeNull();
+  });
+
+  it("keeps the agent that started a child as its reports' recipient for good (finding 8)", async () => {
+    const reviewer = "reviewer" as never;
+    const family = await familyWithRunningChild();
+    expect(threadIn(family, CHILD).childRequests.reportsTo).toEqual(PRIMARY);
+    // The parent's history no longer shows who started it; a room agent's
+    // report is the oldest one left.
+    const rolled = {
+      ...family,
+      threads: family.threads.map((entry) =>
+        entry.id === PARENT
+          ? {
+              ...entry,
+              participants: [
+                {
+                  id: reviewer,
+                  handle: "Reviewer",
+                  modelSelection: model,
+                  joinedAt: now,
+                  leftAt: null,
+                } as never,
+              ],
+              messages: [
+                {
+                  id: MessageId.make("reviewer-report"),
+                  role: "user" as const,
+                  text: "done",
+                  participantId: reviewer,
+                  fromThread: {
+                    threadId: CHILD,
+                    requestId: ChildRequestId.make("r2"),
+                    kind: "report" as const,
+                  },
+                  turnId: null,
+                  streaming: false,
+                  createdAt: at(5),
+                  updatedAt: at(5),
+                },
+              ],
+            }
+          : entry,
+      ),
+    };
+    expect(reportRecipient(threadIn(rolled, PARENT), threadIn(rolled, CHILD))).toBeNull();
   });
 
   it("hands a leaving agent's queued follow-up report to the thread's own agent, and takes its answers off", async () => {
@@ -2214,7 +2354,11 @@ describe("decider child reports", () => {
             leftAt: null,
           } as never,
         ],
-        queuedFollowUps: [queued("answer", false), queued("follow-up", true)],
+        queuedFollowUps: [
+          queued("answer", false),
+          queued("follow-up", true),
+          { ...queued("newer", true), participantId: undefined },
+        ],
       }),
     ]);
     const left = await run(room, {
@@ -2224,8 +2368,10 @@ describe("decider child reports", () => {
       participantId: reviewer,
       createdAt: at(10),
     });
-    expect(threadIn(left.model, PARENT).queuedFollowUps).toEqual([
-      expect.objectContaining({ messageId: MessageId.make("follow-up") }),
+    // It keeps its place ahead of the newer message (rule 10).
+    expect(threadIn(left.model, PARENT).queuedFollowUps?.map((entry) => entry.messageId)).toEqual([
+      MessageId.make("follow-up"),
+      MessageId.make("newer"),
     ]);
     expect(threadIn(left.model, PARENT).queuedFollowUps?.[0]?.participantId).toBeUndefined();
   });
