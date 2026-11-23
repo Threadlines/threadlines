@@ -255,6 +255,7 @@ describe("ProviderSessionReaper", () => {
       forgetNativeSession: () => Effect.void,
       dropResumeCursor: () => Effect.void,
       noteHistoryDelivered: () => Effect.void,
+      turnDispatched: () => Effect.succeed(true),
       getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
       getInstanceInfo: (instanceId) => {
         const driverKind = ProviderDriverKind.make(String(instanceId));

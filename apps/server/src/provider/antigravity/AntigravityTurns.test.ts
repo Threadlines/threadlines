@@ -448,7 +448,8 @@ describe("Antigravity turns", () => {
       // ProviderService forgets the conversation off this (see its tests),
       // so the next start opens a new one seeded with the thread's history.
       expect(agy.events.find((event) => event.type === "session.exited")).toMatchObject({
-        payload: { conversationLost: true },
+        // Named, so only a binding still on this session forgets it.
+        payload: { conversationLost: { sessionCreatedAt: agy.session.createdAt } },
       });
     }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
@@ -784,7 +785,7 @@ describe("Antigravity commands and edits", () => {
     Effect.gen(function* () {
       const agy = yield* startAgy("simple");
       yield* agy.waitFor(() => agy.commandReports.length > 0);
-      const send = (input: string, typed?: { text: string; context?: string; indented?: true }) =>
+      const send = (input: string, typed?: { text: string; context?: string }) =>
         Effect.gen(function* () {
           const before = completedTurns(agy.events).length;
           const turn = yield* agy.adapter.sendTurn({
@@ -800,11 +801,12 @@ describe("Antigravity commands and edits", () => {
       // Advertised, and a skill the status lists: commands.
       yield* send("/compact", { text: "/compact" });
       yield* send("/review the diff", { text: "/review the diff" });
-      // Not listed, a path, plain text and an indented one: ordinary text.
+      // Not listed, a path and plain text: ordinary text.
       yield* send("/etc is missing", { text: "/etc is missing" });
       yield* send("/tmp/out.log is empty", { text: "/tmp/out.log is empty" });
       yield* send("/compact");
-      yield* send("/compact", { text: "/compact", indented: true });
+      // Spaces in front change nothing: the trimmed text decides.
+      yield* send("  /compact", { text: "  /compact" });
       // The server's context in front: the command goes alone, its context deferred.
       const deferred = yield* send("Earlier turns\n\n---\n\n/compact", {
         text: "/compact",
@@ -817,7 +819,7 @@ describe("Antigravity commands and edits", () => {
         "/plan /etc is missing",
         "/plan /tmp/out.log is empty",
         "/plan /compact",
-        "/plan /compact",
+        "/compact",
         "/compact",
       ]);
     }).pipe(Effect.scoped, Effect.provide(testServices)),

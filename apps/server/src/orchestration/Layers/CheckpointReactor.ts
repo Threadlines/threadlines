@@ -1241,28 +1241,42 @@ const make = Effect.gen(function* () {
           Effect.map((capabilities) => capabilities.conversationRollback === "new-session"),
           Effect.orElseSucceed(() => false),
         ));
-    const startedOver = startsOver
-      ? yield* providerService
-          .rollbackConversation({
+    // Undefined: not such an agent. A failure means it couldn't be found or
+    // stopped: something it runs could still write, so no file is restored.
+    const stopped = startsOver
+      ? yield* Effect.result(
+          providerService.rollbackConversation({
             threadId: event.payload.threadId,
             numTurns: rolledBackTurns,
             ...(targetUserMessageId !== undefined ? { targetUserMessageId } : {}),
-          })
-          .pipe(
-            Effect.map((rollback) => rollback.conversationRolledBack),
-            Effect.catchCause((cause) =>
-              Effect.logWarning("checkpoint revert could not make the agent start over", {
-                threadId: event.payload.threadId,
-                cause: Cause.pretty(cause),
-              }).pipe(Effect.as(false)),
-            ),
-          )
+          }),
+        )
       : undefined;
-
-    const revertOutcome = yield* checkpointRevert.applyRevert(context);
-    if (revertOutcome === null) {
+    if (stopped !== undefined && stopped._tag === "Failure") {
+      yield* Effect.logWarning("checkpoint revert could not stop the agent", {
+        threadId: event.payload.threadId,
+        cause: String(stopped.failure),
+      });
       yield* failRevert(
-        `Filesystem checkpoint is unavailable for turn ${event.payload.turnCount}.`,
+        "The agent couldn't be stopped, so no file was restored: something it runs could still write to them. Stop it and try again.",
+      );
+      return;
+    }
+    const startedOver =
+      stopped?._tag === "Success" ? stopped.success.conversationRolledBack : undefined;
+
+    const restored = yield* Effect.result(checkpointRevert.applyRevert(context));
+    const revertOutcome = restored._tag === "Success" ? restored.success : null;
+    if (revertOutcome === null) {
+      const filesDetail =
+        restored._tag === "Failure"
+          ? restored.failure.message
+          : `Filesystem checkpoint is unavailable for turn ${event.payload.turnCount}.`;
+      // Both facts: the agent already forgot, the files stayed as they were.
+      yield* failRevert(
+        startedOver === true
+          ? `${filesDetail} The agent's conversation was already reset: it no longer remembers the turns after this point.`
+          : filesDetail,
       );
       return;
     }

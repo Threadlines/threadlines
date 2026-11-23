@@ -264,11 +264,6 @@ export const ProviderTypedInput = Schema.Struct({
   text: TrimmedNonEmptyString.check(Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_INPUT_CHARS)),
   /** What the server put in front of `text`. Absent: `input` is `text`. */
   context: Schema.optional(Schema.String),
-  /**
-   * The person's text began with whitespace, which `text` drops. A driver
-   * that reads `/name` at the start as a command reads none then.
-   */
-  indented: Schema.optional(Schema.Literal(true)),
 });
 export type ProviderTypedInput = typeof ProviderTypedInput.Type;
 

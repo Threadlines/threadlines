@@ -37,6 +37,7 @@ import type {
   RuntimeThreadGoalSnapshot,
   ThreadGoalStatus,
   ThreadId,
+  TurnId,
   ProviderSubagentInputRequest,
   ProviderSubagentInputResult,
   ProviderCommandOutputInput,
@@ -387,11 +388,28 @@ export interface ProviderServiceShape {
   readonly dropResumeCursor: (threadId: ThreadId) => Effect.Effect<void, ProviderServiceError>;
 
   /**
-   * The thread's history reached the agent of this session key (the send
-   * that carried it was taken): a conversation forgotten earlier
-   * (`historyOwed` on its binding) is whole again, so later starts resume it.
+   * The thread's history went out to the agent of this session key, in a
+   * prompt the session that started at `sessionCreatedAt`
+   * (ProviderSession.createdAt) wrote to the agent (`turnDispatched`). Its
+   * binding stops owing the history (`historyOwed`), so later starts resume
+   * the conversation, but only while the binding still holds that session: a
+   * late word from an older session clears nothing.
    */
-  readonly noteHistoryDelivered: (threadId: ThreadId) => Effect.Effect<void>;
+  readonly noteHistoryDelivered: (input: {
+    readonly threadId: ThreadId;
+    readonly sessionCreatedAt: string;
+  }) => Effect.Effect<void>;
+
+  /**
+   * Whether the first prompt of a turn `sendTurn` accepted went out to the
+   * agent (see ProviderAdapterShape.turnDispatched): what context that
+   * prompt carried is delivered only on true. Never fails; false when the
+   * turn's agent can't be found.
+   */
+  readonly turnDispatched: (input: {
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId;
+  }) => Effect.Effect<boolean>;
 
   /**
    * Read capabilities for the adapter bound to a configured provider instance.
@@ -408,9 +426,12 @@ export interface ProviderServiceShape {
    * Roll back provider conversation state by a number of turns.
    * `conversationRolledBack` is false when the provider cannot forget turns
    * (see `ProviderAdapterCapabilities.conversationRollback`). An agent that
-   * forgets by starting over (`new-session`) has its running work stopped and
-   * its saved conversation forgotten in the thread's binding; nothing is
-   * started for it, and a binding that couldn't be written answers false.
+   * forgets by starting over (`new-session`) has its running work stopped
+   * (its process ended if a cancel can't) and its saved conversation
+   * forgotten in the thread's binding; nothing is started for it. It fails
+   * when the agent couldn't be found or stopped, so nothing of it can be
+   * known to have stopped writing; it answers false when it stopped but the
+   * binding couldn't be written.
    */
   readonly rollbackConversation: (input: {
     readonly threadId: ThreadId;

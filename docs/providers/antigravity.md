@@ -126,15 +126,19 @@ list is the one of the agent the message goes to.
   `.`, `:` and `-`, and short descriptions. A list that keeps changing reaches the composer at most
   every 5 seconds.
 
-A message runs one of Antigravity's commands when the words you typed start with `/` and the name
-of a command that session offers or a skill Threadlines lists. That message goes to Antigravity
-alone, exactly as typed, since Antigravity only runs a command at the very start of a message: in
-plan mode without the `/plan` prefix, and without what Threadlines would put in front of your words
-(the project's instructions, the thread's history after a switch, an edit or a move, notes from
-other threads). That waits for your next ordinary message, also across a restart. Everything else
-is ordinary text: a name Antigravity doesn't offer (`/etc is missing`), a path
-(`/tmp/out.log is empty`), a message that starts with a space, one sent as plain text, and one an
-agent or a scheduled task wrote.
+A message runs one of Antigravity's commands when the words you typed (spaces in front don't
+matter) start with `/` and the name of a command that session offers or a skill Threadlines lists.
+That message goes to Antigravity alone, as typed, since Antigravity only runs a command at the very
+start of a message: in plan mode without the `/plan` prefix, and without what Threadlines would put
+in front of your words (the project's instructions, the thread's history after a switch, an edit or
+a move, the summary a fork starts from, notes from other threads). That waits for your next
+ordinary message, also across a restart. Everything else is ordinary text: a name Antigravity
+doesn't offer (`/etc is missing`), a path (`/tmp/out.log is empty`), a message sent as plain text,
+and one an agent or a scheduled task wrote.
+
+The thread's history counts as given to Antigravity only once the message carrying it actually went
+out to Antigravity, not when Threadlines took the message: if Antigravity fails before that (setting
+its model or mode, say), the next message carries the history again.
 
 ## Turns
 
@@ -236,7 +240,10 @@ saved conversation from its own record of the thread, so the next message starts
 session and sends it the turns that are left: Antigravity no longer remembers the removed ones,
 also when Threadlines restarts before that message. Nothing is started to do this when Antigravity
 wasn't running. If Threadlines can't update that record, the thread says Antigravity still
-remembers the reverted turns.
+remembers the reverted turns. If Antigravity can't be stopped at all, no file is restored and the
+revert fails, saying so. If the files can't be restored after Antigravity was reset, the revert
+fails and says both: the files stayed as they were, and Antigravity no longer remembers those
+turns.
 
 ### Tokens
 

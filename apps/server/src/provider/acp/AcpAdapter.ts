@@ -1323,7 +1323,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
     const stopSessionInternal = (
       ctx: AcpSessionContext,
       exitKind: "graceful" | "error" = "graceful",
-      exit?: { readonly conversationLost?: true },
+      exit?: { readonly conversationLost?: { readonly sessionCreatedAt: string } },
     ) =>
       Effect.gen(function* () {
         if (ctx.stopped) return;
@@ -3010,7 +3010,9 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             yield* stopFromMachine(
               ctx,
               command.reason === "exited" ? "error" : "graceful",
-              command.reason === "sessionLost" ? { conversationLost: true } : undefined,
+              command.reason === "sessionLost"
+                ? { conversationLost: { sessionCreatedAt: ctx.session.createdAt } }
+                : undefined,
             );
             return;
           case "markSessionLost":
@@ -3026,7 +3028,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
     const stopFromMachine = (
       ctx: AcpSessionContext,
       exitKind: "graceful" | "error",
-      exit?: { readonly conversationLost?: true },
+      exit?: { readonly conversationLost?: { readonly sessionCreatedAt: string } },
     ) =>
       withThreadLock(
         ctx.threadId,
@@ -3280,21 +3282,22 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         const resolvedModel = resolveModelId(model);
 
         // The agent runs a command (or a skill) only when the message starts
-        // with it. A message is one only when the person's own typed text
-        // (never the context in front of it, never plain text or an agent's
-        // words) starts with `/` and a name the session advertised or a skill
-        // the status lists. It then goes alone, as typed: no plan prefix, and
+        // with it. A message is one only when the person's own typed text,
+        // trimmed (never the context in front of it, never plain text or an
+        // agent's words), starts with `/` and a name the session advertised
+        // or a skill the status lists. It then goes alone, as typed: no plan prefix, and
         // the context the server put in front of it, the earlier conversation
         // and the project brief wait for the next message (`contextDeferred`
         // tells the server its debts stay).
         const typed = input.typed;
         const typedCommand =
-          descriptor.agentCommands !== undefined && typed !== undefined && typed.indented !== true
-            ? slashCommandAtStart(typed.text)
+          descriptor.agentCommands !== undefined && typed !== undefined
+            ? slashCommandAtStart(typed.text.trim())
             : undefined;
         const sendsAgentCommand =
           typedCommand !== undefined && (yield* isAgentCommand(ctx, typedCommand));
-        const userText = sendsAgentCommand && typed ? typed.text : (input.input?.trim() ?? "");
+        const userText =
+          sendsAgentCommand && typed ? typed.text.trim() : (input.input?.trim() ?? "");
         const contextDeferred =
           sendsAgentCommand &&
           (typed?.context !== undefined || ctx.pendingContextPreamble !== undefined);
