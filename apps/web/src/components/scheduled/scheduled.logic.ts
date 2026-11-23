@@ -47,7 +47,7 @@ import {
 import * as Result from "effect/Result";
 
 import { viewerTimeZone } from "../../lib/timeZones";
-import { nextCheckBack } from "../chat/checkBacks";
+import { liveCheckBacks, nextCheckBack } from "../chat/checkBacks";
 
 // ---------------------------------------------------------------------------
 // Where the page is (its search params are in scheduledShell.logic.ts)
@@ -1238,7 +1238,8 @@ export function checkBackThreads<
     .flatMap((thread) => {
       const soonest = nextCheckBack(thread.checkBacks);
       if (thread.archivedAt !== null || soonest === null) return [];
-      return [{ thread, soonest, more: (thread.checkBacks?.length ?? 1) - 1 }];
+      // A dormant one can't fire until its agent runs again, so it isn't one more.
+      return [{ thread, soonest, more: liveCheckBacks(thread.checkBacks).length - 1 }];
     })
     .toSorted(
       (left, right) =>

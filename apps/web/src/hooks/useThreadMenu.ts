@@ -3,15 +3,12 @@ import { scopedThreadKey, scopeProjectRef, scopeThreadRef } from "@threadlines/c
 import { childAttachRefusal } from "@threadlines/shared/childThreads";
 import { useCallback, useMemo } from "react";
 
-import {
-  attachedParentKeyOf,
-  isChildThreadWorking,
-  resolveThreadStatusPill,
-} from "../components/Sidebar.logic";
+import { attachedParentKeyOf } from "../components/Sidebar.logic";
 import { confirmThreadDeleteWithChildren } from "../components/ThreadDeleteDialog";
 import { openThreadMoveDialog } from "../components/ThreadMoveDialog";
 import { openThreadRenameDialog } from "../components/ThreadRenameDialog";
 import {
+  countThreadsToStop,
   describeThreadMenu,
   isThreadTurnRunning,
   describeThreadSelectionMenu,
@@ -26,6 +23,7 @@ import {
   markThreadUnreadByKey,
   reopenThreadByKey,
 } from "../lib/threadInboxSync";
+import { stopThreadsUnder } from "../lib/threadSessionCommands";
 import { newCommandId } from "../lib/utils";
 import { readLocalApi } from "../localApi";
 import {
@@ -37,7 +35,7 @@ import {
 import type { SidebarThreadSummary } from "../types";
 import { useSettings } from "./useSettings";
 import { readLeadMenuState, setProjectLead } from "../leadChat";
-import { useThreadActions } from "./useThreadActions";
+import { deletableChildThreadIds, useThreadActions } from "./useThreadActions";
 
 /** The thread a menu is for, and what only its surface knows. */
 export interface ThreadMenuTarget {
@@ -91,14 +89,7 @@ export function useThreadMenu() {
     const children = [...byKey.values()].filter(
       (candidate) => candidate.archivedAt === null && attachedParentKeyOf(candidate) === threadKey,
     );
-    const workingChildCount = children.filter((child) =>
-      isChildThreadWorking({
-        threadKey: scopedThreadKey(scopeThreadRef(child.environmentId, child.id)),
-        thread: child,
-        status: resolveThreadStatusPill({ thread: child }),
-        isDone: false,
-      }),
-    ).length;
+    const stopCount = countThreadsToStop(byKey.values(), thread, new Date().toISOString());
     const parent =
       thread.parentThreadId != null
         ? (byKey.get(
@@ -138,7 +129,7 @@ export function useThreadMenu() {
       inbox: target.inbox ?? null,
       attachedChild,
       putBack,
-      workingChildCount,
+      stopCount,
       moveOffered: readThreadMoveOffered(thread),
       running: isThreadTurnRunning(full?.session),
       customOrder: target.customOrder ?? null,
@@ -186,35 +177,30 @@ export function useThreadMenu() {
         case "reopen":
           reopenThreadByKey(threadKey);
           return;
+        case "stop-children":
+          try {
+            await stopThreadsUnder(threadRef);
+          } catch (error) {
+            errorToast("Couldn't stop its threads", error);
+          }
+          return;
         case "separate":
-        case "attach":
-        case "stop-children": {
+        case "attach": {
           const api = readEnvironmentApi(threadRef.environmentId);
           if (!api) return;
           try {
-            await api.orchestration.dispatchCommand(
-              action === "stop-children"
-                ? {
-                    type: "thread.children.stop",
-                    commandId: newCommandId(),
-                    threadId: threadRef.threadId,
-                    createdAt: new Date().toISOString(),
-                  }
-                : {
-                    type: "thread.parent-attachment.set",
-                    commandId: newCommandId(),
-                    threadId: threadRef.threadId,
-                    attached: action === "attach",
-                    createdAt: new Date().toISOString(),
-                  },
-            );
+            await api.orchestration.dispatchCommand({
+              type: "thread.parent-attachment.set",
+              commandId: newCommandId(),
+              threadId: threadRef.threadId,
+              attached: action === "attach",
+              createdAt: new Date().toISOString(),
+            });
           } catch (error) {
             errorToast(
-              action === "stop-children"
-                ? "Couldn't stop its threads"
-                : action === "attach"
-                  ? "Couldn't put the thread back"
-                  : "Couldn't make it its own thread",
+              action === "attach"
+                ? "Couldn't put the thread back"
+                : "Couldn't make it its own thread",
               error,
             );
           }
@@ -281,18 +267,16 @@ export function useThreadMenu() {
         }
         case "delete": {
           const api = readLocalApi();
-          // A parent's threads are separated, not deleted, unless the user says so.
-          const childCount = [...byKey.values()].filter(
-            (candidate) =>
-              candidate.archivedAt === null && attachedParentKeyOf(candidate) === threadKey,
-          ).length;
-          if (confirmDelete && childCount > 0) {
+          // A parent's threads are separated, not deleted, unless the user
+          // says so; then exactly the ones the dialog counted go.
+          const childIds = deletableChildThreadIds(threadRef);
+          if (confirmDelete && childIds.length > 0) {
             const answer = await confirmThreadDeleteWithChildren({
               title: thread.title,
-              childCount,
+              childCount: childIds.length,
             });
             if (answer === null) return;
-            await deleteThread(threadRef, { withChildren: answer.withChildren });
+            await deleteThread(threadRef, answer.withChildren ? { alsoDelete: childIds } : {});
             return;
           }
           if (

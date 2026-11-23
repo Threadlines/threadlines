@@ -61,10 +61,15 @@ function entry(
   };
 }
 
-const tabsFor = (open: string, entries: readonly FamilyTabEntry[]) =>
+const tabsFor = (
+  open: string,
+  entries: readonly FamilyTabEntry[],
+  threads: readonly SidebarThreadSummary[] = entries.map((member) => member.thread),
+) =>
   familyTabsOf({
     openKey: keyOf(open),
     entries,
+    threads,
     remoteChildrenOf: () => [],
     canReadLinked: () => true,
     now: NOW,
@@ -136,6 +141,31 @@ describe("family tabs", () => {
     const openGone = tabsFor("gone", wrapped);
     expect(openGone?.tabs.find((tab) => tab.key === keyOf("gone"))).toMatchObject({ done: true });
   });
+
+  it("ends with Stop on the open thread while its Stop reaches something still going", () => {
+    const running = { status: "running" } as SidebarThreadSummary["session"];
+    const busy = (member: FamilyTabEntry, extra: Partial<SidebarThreadSummary> = {}) => ({
+      ...member,
+      thread: { ...member.thread, session: running, ...extra },
+    });
+    // A child at work, and a thread started without report back the lead's
+    // Stop still reaches: not a tab, but counted, as the menu counts it.
+    const loose = busy(entry("loose", { parent: "lead", attached: false }), {
+      stopsWithParent: true,
+    });
+    const members = [family[0]!, busy(family[1]!), family[2]!];
+    const threads = [...members, loose].map((member) => member.thread);
+    const onLead = tabsFor("lead", members, threads);
+    expect(onLead?.tabs.map((tab) => tab.key)).not.toContain(keyOf("loose"));
+    expect(onLead?.stop).toEqual({
+      threadRef: scopeThreadRef(environmentId, ThreadId.make("lead")),
+      count: 2,
+    });
+    // On a child the row is the same, and the button is for the child's own reach: none.
+    expect(tabsFor("second", members, threads)?.stop).toBeNull();
+    // Nothing going: no button.
+    expect(tabsFor("lead", family)?.stop).toBeNull();
+  });
 });
 
 describe("family tabs with children on a computer this app can't see", () => {
@@ -151,6 +181,7 @@ describe("family tabs with children on a computer this app can't see", () => {
       openKey: input.open,
       parentKey: input.parentKey,
       entries: [parent],
+      threads: [parent.thread],
       remoteChildrenOf: () => input.remote ?? children,
       canReadLinked: () => input.readsLinked ?? true,
       now: NOW,
