@@ -452,10 +452,9 @@ describe("Antigravity turns", () => {
       yield* agy.waitFor((events) => events.some((event) => event.type === "session.exited"));
       // ProviderService forgets the conversation off this (see its tests),
       // so the next start opens a new one seeded with the thread's history.
-      // It names the lost conversation: the agent's session id, as in its cursor.
-      const sessionId = (agy.session.resumeCursor as { readonly sessionId: string }).sessionId;
       expect(agy.events.find((event) => event.type === "session.exited")).toMatchObject({
-        payload: { conversationLost: { sessionId } },
+        // Named, so only a binding still on this session forgets it.
+        payload: { conversationLost: { sessionCreatedAt: agy.session.createdAt } },
       });
     }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
@@ -816,7 +815,7 @@ describe("Antigravity commands and edits", () => {
     Effect.gen(function* () {
       const agy = yield* startAgy("simple");
       yield* agy.waitFor(() => agy.commandReports.length > 0);
-      const send = (input: string, typed?: { text: string; context?: string; indented?: true }) =>
+      const send = (input: string, typed?: { text: string; context?: string }) =>
         Effect.gen(function* () {
           const before = completedTurns(agy.events).length;
           const turn = yield* agy.adapter.sendTurn({
@@ -832,11 +831,12 @@ describe("Antigravity commands and edits", () => {
       // Advertised, and a skill the status lists: commands.
       yield* send("/compact", { text: "/compact" });
       yield* send("/review the diff", { text: "/review the diff" });
-      // Not listed, a path, plain text and an indented one: ordinary text.
+      // Not listed, a path and plain text: ordinary text.
       yield* send("/etc is missing", { text: "/etc is missing" });
       yield* send("/tmp/out.log is empty", { text: "/tmp/out.log is empty" });
       yield* send("/compact");
-      yield* send("/compact", { text: "/compact", indented: true });
+      // Spaces in front change nothing: the trimmed text decides.
+      yield* send("  /compact", { text: "  /compact" });
       // The server's context in front: the command goes alone, its context deferred.
       const deferred = yield* send("Earlier turns\n\n---\n\n/compact", {
         text: "/compact",
@@ -849,7 +849,7 @@ describe("Antigravity commands and edits", () => {
         "/plan /etc is missing",
         "/plan /tmp/out.log is empty",
         "/plan /compact",
-        "/plan /compact",
+        "/compact",
         "/compact",
       ]);
     }).pipe(Effect.scoped, Effect.provide(testServices)),
@@ -1104,44 +1104,71 @@ describe("Antigravity turn driver, the orderings", () => {
       }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 
-  it.live("keeps the history for the next message when a send's mode setup fails", () =>
-    Effect.gen(function* () {
-      const agy = yield* startAgy("mode-fails-once", undefined, "auto-accept-edits", undefined, {
-        version: 1,
-        fromProvider: ProviderDriverKind.make("claudeAgent"),
-        entries: [{ kind: "message", role: "user", text: "the earlier conversation" }],
-      });
-      // Plan mode asks for the `default` mode: switching to it fails once.
-      const first = yield* agy.adapter.sendTurn({
-        threadId: agy.threadId,
-        input: "plan it",
-        interactionMode: "plan",
-        attachments: [],
-      });
-      expect(first.undelivered).toBe(true);
-      yield* agy.waitFor((events) => completedTurns(events).length === 1);
-      expect(completedTurns(agy.events)[0]?.payload.state).toBe("failed");
-      const prompts = () =>
-        agy
-          .frames()
-          .pipe(
-            Effect.map((frames) => frames.filter((frame) => frame.method === "session/prompt")),
-          );
-      expect(yield* prompts()).toHaveLength(0);
+  it.live(
+    "reports a send whose mode setup failed undispatched, keeping its history for the next",
+    () =>
+      Effect.gen(function* () {
+        const agy = yield* startAgy("mode-fails-once", undefined, "auto-accept-edits", undefined, {
+          version: 1,
+          fromProvider: ProviderDriverKind.make("claudeAgent"),
+          entries: [{ kind: "message", role: "user", text: "the earlier conversation" }],
+        });
+        // The first prompt after a handoff: plan mode asks for the `default`
+        // mode, and switching to it fails once.
+        const first = yield* agy.adapter.sendTurn({
+          threadId: agy.threadId,
+          input: "plan it",
+          interactionMode: "plan",
+          attachments: [],
+        });
+        expect(yield* agy.adapter.turnDispatched!(agy.threadId, first.turnId)).toBe(false);
+        yield* agy.waitFor((events) => completedTurns(events).length === 1);
+        expect(completedTurns(agy.events)[0]?.payload.state).toBe("failed");
+        const prompts = () =>
+          agy
+            .frames()
+            .pipe(
+              Effect.map((frames) => frames.filter((frame) => frame.method === "session/prompt")),
+            );
+        expect(yield* prompts()).toHaveLength(0);
 
-      const second = yield* agy.adapter.sendTurn({
-        threadId: agy.threadId,
-        input: "plan it again",
-        interactionMode: "plan",
-        attachments: [],
-      });
-      expect(second.undelivered).toBeUndefined();
-      yield* agy.waitFor((events) => completedTurns(events).length === 2);
-      const sent = yield* prompts();
-      expect(sent).toHaveLength(1);
-      // The history the first send took went with the one that went out.
-      expect(JSON.stringify(sent[0])).toContain("the earlier conversation");
-    }).pipe(Effect.scoped, Effect.provide(testServices)),
+        const second = yield* agy.adapter.sendTurn({
+          threadId: agy.threadId,
+          input: "plan it again",
+          interactionMode: "plan",
+          attachments: [],
+        });
+        expect(yield* agy.adapter.turnDispatched!(agy.threadId, second.turnId)).toBe(true);
+        yield* agy.waitFor((events) => completedTurns(events).length === 2);
+        const sent = yield* prompts();
+        expect(sent).toHaveLength(1);
+        // The history the first send took went with the one that went out.
+        expect(JSON.stringify(sent[0])).toContain("the earlier conversation");
+      }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+  it.live(
+    "answers undispatched, never hanging, when the session stops before the prompt goes out",
+    () =>
+      Effect.gen(function* () {
+        const gate = yield* makeGate((seam) => seam.point === "promptSetup" && seam.prompt === 1);
+        const agy = yield* startAgy("simple", undefined, "full-access", gate.seams);
+        const { turnId } = yield* agy.adapter.sendTurn({
+          threadId: agy.threadId,
+          input: "hi",
+          attachments: [],
+        });
+        yield* gate.reached;
+        const asked = yield* agy.adapter.turnDispatched!(agy.threadId, turnId).pipe(
+          Effect.forkScoped,
+        );
+        yield* agy.adapter.stopSession(agy.threadId);
+        expect(yield* Fiber.join(asked)).toBe(false);
+        // A turn this adapter never took is not dispatched either.
+        expect(yield* agy.adapter.turnDispatched!(agy.threadId, "unknown" as TurnId)).toBe(false);
+        const frames = yield* agy.frames();
+        expect(frames.filter((frame) => frame.method === "session/prompt")).toHaveLength(0);
+      }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 
   it.live("queues a message sent mid-turn when steering is off", () =>

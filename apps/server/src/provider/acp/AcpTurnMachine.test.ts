@@ -230,7 +230,7 @@ function advance(world: World, event: Event, trail: ReadonlyArray<Event>): World
           command.prompt === event.prompt &&
           !command.delivered,
       ),
-      "a prompt whose setup failed was not reported undelivered",
+      "a send whose setup failed was not reported undispatched",
       trail,
     );
   }
@@ -302,8 +302,8 @@ function advance(world: World, event: Event, trail: ReadonlyArray<Event>): World
         check(
           command.delivered === monitor.written.includes(command.prompt),
           command.delivered
-            ? "a prompt never written counted as delivered"
-            : "a written prompt counted as undelivered",
+            ? "a prompt never written was reported dispatched"
+            : "a written prompt was reported undispatched",
           trail,
         );
         monitor = { ...monitor, reported: [...monitor.reported, command.prompt] };

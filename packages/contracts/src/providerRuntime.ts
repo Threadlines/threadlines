@@ -420,18 +420,11 @@ const SessionExitedPayload = Schema.Struct({
   /**
    * The agent can't go on with this conversation (a model refused its saved
    * thinking, say): the server forgets it, so the next start opens a new
-   * one seeded with the thread's history (ProviderService.forgetConversation).
-   * It names the conversation lost: the agent's own session id, and the
-   * resume cursor the session last had. The binding forgets only while it
-   * still points at that session, so a late exit never clears a
-   * conversation started since.
+   * one seeded with the thread's history. Names the session by its start
+   * time (ProviderSession.createdAt): only a binding that still holds that
+   * session forgets, so a late exit never touches its replacement.
    */
-  conversationLost: Schema.optional(
-    Schema.Struct({
-      sessionId: TrimmedNonEmptyStringSchema,
-      resumeCursor: Schema.optional(Schema.Unknown),
-    }),
-  ),
+  conversationLost: Schema.optional(Schema.Struct({ sessionCreatedAt: IsoDateTime })),
 });
 export type SessionExitedPayload = typeof SessionExitedPayload.Type;
 

@@ -142,43 +142,6 @@ const ProviderClearThreadGoalServiceInput = Schema.Struct({
  * canonical copy is left out. Reply text and tool output pieces are kept: a
  * reply cut off mid-stream may have no whole copy anywhere.
  */
-/**
- * Whether a saved resume cursor is the lost session's: by the session id in
- * it when the cursor carries one (`sessionId`, as ACP's do; the rest of the
- * cursor moves on with every turn), else the whole cursor.
- */
-function cursorPointsAt(
-  cursor: unknown,
-  lost: { readonly sessionId: string; readonly resumeCursor?: unknown },
-): boolean {
-  if (typeof cursor === "object" && cursor !== null && "sessionId" in cursor) {
-    return cursor.sessionId === lost.sessionId;
-  }
-  return "resumeCursor" in lost && sameJsonValue(cursor, lost.resumeCursor ?? null);
-}
-
-/** Two JSON values (resume cursors) are the same, whatever their keys' order. */
-function sameJsonValue(left: unknown, right: unknown): boolean {
-  if (left === right) return true;
-  if (typeof left !== "object" || typeof right !== "object" || left === null || right === null) {
-    return false;
-  }
-  if (Array.isArray(left) !== Array.isArray(right)) return false;
-  const leftKeys = Object.keys(left);
-  const rightKeys = Object.keys(right);
-  return (
-    leftKeys.length === rightKeys.length &&
-    leftKeys.every(
-      (key) =>
-        Object.hasOwn(right, key) &&
-        sameJsonValue(
-          (left as Record<string, unknown>)[key],
-          (right as Record<string, unknown>)[key],
-        ),
-    )
-  );
-}
-
 function isCanonicalStreamFragment(event: ProviderRuntimeEvent): boolean {
   return (
     event.type === "content.delta" &&
@@ -266,6 +229,9 @@ function toRuntimePayloadFromSession(
     model: session.model ?? null,
     activeTurnId: session.activeTurnId ?? null,
     lastError: session.lastError ?? null,
+    // Which runtime the binding describes: history acknowledgements and
+    // forgets name it (noteHistoryDelivered, forgetConversation).
+    sessionCreatedAt: session.createdAt,
     // Kept so a recovered runtime gets the room tools it was started with.
     ...(session.roomTools !== undefined ? { roomTools: session.roomTools } : {}),
     // A start replaces both (null clears an older start's room tools in the
@@ -293,6 +259,19 @@ function toRuntimePayloadFromSession(
  * clears it (`noteHistoryDelivered`). Kept in the binding, so a restart in
  * between can't reopen the conversation as it was.
  */
+/** The start time of the runtime the binding last described (ProviderSession.createdAt). */
+function readPersistedSessionCreatedAt(
+  runtimePayload: ProviderRuntimeBinding["runtimePayload"],
+): string | undefined {
+  return runtimePayload !== null &&
+    typeof runtimePayload === "object" &&
+    !Array.isArray(runtimePayload) &&
+    "sessionCreatedAt" in runtimePayload &&
+    typeof runtimePayload.sessionCreatedAt === "string"
+    ? runtimePayload.sessionCreatedAt
+    : undefined;
+}
+
 function readPersistedHistoryOwed(runtimePayload: ProviderRuntimeBinding["runtimePayload"]) {
   return (
     runtimePayload !== null &&
@@ -761,7 +740,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       Effect.tap((canonicalEvent) =>
         canonicalEvent.type === "session.exited" &&
         canonicalEvent.payload.conversationLost !== undefined
-          ? forgetConversation(canonicalEvent.threadId, canonicalEvent.payload.conversationLost)
+          ? forgetConversation(canonicalEvent.threadId, {
+              onlySession: canonicalEvent.payload.conversationLost.sessionCreatedAt,
+            })
           : Effect.void,
       ),
       Effect.flatMap((canonicalEvent) =>
@@ -1228,9 +1209,12 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       yield* upsertSessionBinding(sessionWithInstance, threadId, {
         modelSelection: input.modelSelection,
         earlyUnused: early && fresh,
-        // Owed until a send carries it: the forgotten conversation's, or the
-        // seed this start handed over (an adapter may hold it until a send).
-        ...(historyOwed || input.contextSeed !== undefined ? { historyOwed: true } : {}),
+        // Owed until a send carries it: the forgotten conversation's, the
+        // seed this start handed over (an adapter may hold it until a send),
+        // or the history of a conversation the adapter couldn't reopen.
+        ...(historyOwed || input.contextSeed !== undefined || session.resumeFailed === true
+          ? { historyOwed: true }
+          : {}),
         startedWith: { guideTools: input.guideTools === true },
       });
       yield* analytics.record("provider.session.started", {
@@ -2966,22 +2950,23 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
 
   /**
    * Forgets a saved conversation in the thread's binding (see
-   * readPersistedHistoryOwed): its cursor goes and the history is owed.
-   * False when the binding couldn't be written; the agent then remembers.
+   * readPersistedHistoryOwed): its cursor goes, the history is owed, and no
+   * runtime is named any more, so no older session's acknowledgement clears
+   * the debt. With `onlySession`, only while the binding still holds that
+   * session (a lost session's late exit leaves its replacement alone).
+   * False when the binding couldn't be read or written; the agent then
+   * remembers.
    */
-  /**
-   * Drops the thread's saved conversation, so the next start opens a new
-   * one seeded with its history. With `lost`, only while the binding still
-   * points at that session: a conversation started since is not the lost one.
-   */
-  const forgetConversation = (
-    threadId: ThreadId,
-    lost?: { readonly sessionId: string; readonly resumeCursor?: unknown },
-  ) =>
+  const forgetConversation = (threadId: ThreadId, options?: { readonly onlySession?: string }) =>
     Effect.gen(function* () {
       const binding = Option.getOrUndefined(yield* directory.getBinding(threadId));
       if (binding === undefined) return true;
-      if (lost !== undefined && !cursorPointsAt(binding.resumeCursor ?? null, lost)) return true;
+      if (
+        options?.onlySession !== undefined &&
+        readPersistedSessionCreatedAt(binding.runtimePayload) !== options.onlySession
+      ) {
+        return true;
+      }
       yield* directory.upsert({
         threadId,
         provider: binding.provider,
@@ -2989,7 +2974,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           ? { providerInstanceId: binding.providerInstanceId }
           : {}),
         resumeCursor: null,
-        runtimePayload: { historyOwed: true },
+        runtimePayload: { historyOwed: true, sessionCreatedAt: null },
       });
       return true;
     }).pipe(
@@ -3009,6 +2994,8 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
    */
   const forgetByStartingOver = (threadId: ThreadId, numTurns: number) =>
     Effect.gen(function* () {
+      // A binding that can't be read fails the revert: whether something of
+      // the agent still runs can't be known.
       const binding = Option.getOrUndefined(yield* directory.getBinding(threadId));
       // No saved conversation: nothing can bring the reverted turns back.
       if (binding === undefined) return true;
@@ -3018,7 +3005,16 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         .pipe(Effect.orElseSucceed(() => undefined));
       if (adapter?.capabilities.conversationRollback !== "new-session") return undefined;
       if (yield* adapter.hasSession(threadId)) {
-        yield* adapter.rollbackThread(threadId, numTurns);
+        // A rollback that can't stop the work ends the runtime instead; one
+        // that can't be ended either fails the revert.
+        yield* adapter.rollbackThread(threadId, numTurns).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("provider service ends a runtime its rollback couldn't stop", {
+              threadId,
+              cause: Cause.pretty(cause),
+            }).pipe(Effect.andThen(adapter.stopSession(threadId))),
+          ),
+        );
       }
       const forgotten = yield* forgetConversation(threadId);
       yield* analytics.record("provider.conversation.rolled_back", {
@@ -3028,10 +3024,15 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       return forgotten;
     });
 
-  const noteHistoryDelivered: ProviderServiceShape["noteHistoryDelivered"] = (threadId) =>
+  const noteHistoryDelivered: ProviderServiceShape["noteHistoryDelivered"] = ({
+    threadId,
+    sessionCreatedAt,
+  }) =>
     Effect.gen(function* () {
       const binding = Option.getOrUndefined(yield* directory.getBinding(threadId));
       if (binding === undefined || !readPersistedHistoryOwed(binding.runtimePayload)) return;
+      // Another runtime than the one that sent it: that one still owes it.
+      if (readPersistedSessionCreatedAt(binding.runtimePayload) !== sessionCreatedAt) return;
       yield* directory.upsert({
         threadId,
         provider: binding.provider,
@@ -3041,6 +3042,23 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         runtimePayload: { historyOwed: false },
       });
     }).pipe(Effect.ignoreCause({ log: true }));
+
+  const turnDispatched: ProviderServiceShape["turnDispatched"] = ({ threadId, turnId }) =>
+    Effect.gen(function* () {
+      const binding = Option.getOrUndefined(yield* directory.getBinding(threadId));
+      if (binding?.providerInstanceId === undefined) return false;
+      const adapter = yield* registry.getByInstance(binding.providerInstanceId);
+      const dispatched = adapter.turnDispatched;
+      // Without the signal, an accepted send has already gone out.
+      return dispatched === undefined ? true : yield* dispatched(threadId, turnId);
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("provider service could not tell whether a turn went out", {
+          threadId,
+          cause: Cause.pretty(cause),
+        }).pipe(Effect.as(false)),
+      ),
+    );
 
   /**
    * Every provider session key of a thread: its own agent first, then any
@@ -3541,6 +3559,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     forgetNativeSession,
     dropResumeCursor,
     noteHistoryDelivered,
+    turnDispatched,
     getCapabilities,
     getInstanceInfo,
     rollbackConversation,

@@ -158,7 +158,12 @@ export const writeProviderStatusCache = (input: {
   readonly filePath: string;
   readonly provider: ServerProvider;
 }) => {
-  const { updateState: _updateState, ...cacheableProvider } = input.provider;
+  // Live session state never goes to disk: the sessions are gone after a restart.
+  const {
+    updateState: _updateState,
+    sessionCommands: _sessionCommands,
+    ...cacheableProvider
+  } = input.provider;
   return writeFileStringAtomically({
     filePath: input.filePath,
     contents: `${JSON.stringify(cacheableProvider, null, 2)}\n`,
