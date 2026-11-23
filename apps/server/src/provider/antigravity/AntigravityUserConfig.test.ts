@@ -1,4 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off - builds a fake home and profile on disk
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import * as NodeFS from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -16,6 +18,7 @@ import { makeAntigravityDescriptor } from "../acp/AntigravityAcpSupport.ts";
 import { antigravityInstancePaths } from "./AntigravityProfile.ts";
 import { antigravitySignInConfig } from "./AntigravitySignInMethod.ts";
 import {
+  antigravitySharedConfigRecordPath,
   ANTIGRAVITY_SHARED_DIRS,
   ANTIGRAVITY_SHARED_FILES,
   antigravityUserHome,
@@ -206,6 +209,159 @@ describe("shareAntigravityUserConfigNow on Windows", () => {
     await shareAntigravityUserConfigNow({ ...setup, platform: "win32" });
 
     expect(await NodeFS.readFile(inProfile(setup.profileDir, "AGENTS.md"), "utf8")).toBe("agent's");
+  });
+});
+
+describe("shareAntigravityUserConfigNow keeps to the profile and the allowlist", () => {
+  it("never writes through a profile folder that links to the user's real config", async () => {
+    const setup = await makeSetup();
+    // The agent (or anyone) made the profile's config a link to the real one.
+    const realConfig = path.join(setup.gemini, "config");
+    await NodeFS.mkdir(path.join(realConfig, "skills"), { recursive: true });
+    await setup.write("config/GEMINI.md", "the user's own");
+    await NodeFS.symlink(realConfig, inProfile(setup.profileDir, "config"));
+
+    const problems = await shareAntigravityUserConfigNow({ ...setup, platform: "linux" });
+
+    // The real, empty skills folder is still a real folder, not a link to itself.
+    const skills = await NodeFS.lstat(path.join(realConfig, "skills"));
+    expect(skills.isDirectory()).toBe(true);
+    expect(await NodeFS.readFile(path.join(realConfig, "GEMINI.md"), "utf8")).toBe(
+      "the user's own",
+    );
+    expect(problems.map((problem) => path.relative(setup.profileDir, problem.path))).toEqual(
+      expect.arrayContaining([path.join("config", "skills"), path.join("config", "GEMINI.md")]),
+    );
+  });
+
+  it("brings in linked sources from elsewhere, but never a keep-out file or Threadlines data", async () => {
+    const setup = await makeSetup();
+    const dotfiles = path.join(setup.root, "dotfiles");
+    const threadlinesDir = path.join(setup.root, "threadlines");
+    await NodeFS.mkdir(path.join(threadlinesDir, "secrets"), { recursive: true });
+    await NodeFS.mkdir(dotfiles, { recursive: true });
+    await NodeFS.writeFile(path.join(dotfiles, "AGENTS.md"), "from dotfiles");
+    await NodeFS.writeFile(path.join(dotfiles, "mcp_config.json"), "{}");
+    const token = await setup.write("antigravity-cli/antigravity-oauth-token", "TOKEN");
+    await NodeFS.mkdir(path.join(setup.gemini, "config"), { recursive: true });
+    const link = (target: string, rel: string) =>
+      NodeFS.symlink(target, path.join(setup.gemini, ...rel.split("/")));
+    await link(path.join(dotfiles, "AGENTS.md"), "AGENTS.md");
+    await link(token, "GEMINI.md");
+    await link(path.join(dotfiles, "mcp_config.json"), "config/rules.json");
+    await link(path.join(threadlinesDir, "secrets"), "config/rules");
+    await link(path.join(setup.gemini, "AGENTS.md"), "config/AGENTS.md");
+    // Elsewhere in ~/.gemini, under any name: the CLI's own settings.
+    await link(await setup.write("antigravity-cli/settings.json", "{}"), "config/skills.json");
+
+    for (const platform of ["linux", "win32"] as const) {
+      const profileDir = path.join(setup.root, `profile-${platform}`);
+      await shareAntigravityUserConfigNow({ ...setup, profileDir, platform, threadlinesDir });
+      const read = (rel: string) =>
+        NodeFS.readFile(inProfile(profileDir, rel), "utf8").catch(() => undefined);
+      expect(await read("AGENTS.md")).toBe("from dotfiles");
+      // A shared entry linked to another shared entry is fine.
+      expect(await read("config/AGENTS.md")).toBe("from dotfiles");
+      expect(await exists(inProfile(profileDir, "GEMINI.md"))).toBe(false);
+      expect(await exists(inProfile(profileDir, "config/rules.json"))).toBe(false);
+      expect(await exists(inProfile(profileDir, "config/rules"))).toBe(false);
+      expect(await exists(inProfile(profileDir, "config/skills.json"))).toBe(false);
+    }
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "doesn't hang on a FIFO where the record or a source should be",
+    async () => {
+      const setup = await makeSetup();
+      execFileSync("mkfifo", [antigravitySharedConfigRecordPath(setup.profileDir)]);
+      await NodeFS.mkdir(setup.gemini, { recursive: true });
+      execFileSync("mkfifo", [path.join(setup.gemini, "AGENTS.md")]);
+      await setup.write("GEMINI.md", "rule");
+
+      for (const platform of ["linux", "win32"] as const) {
+        await shareAntigravityUserConfigNow({ ...setup, platform });
+      }
+
+      expect(await NodeFS.readFile(inProfile(setup.profileDir, "GEMINI.md"), "utf8")).toBe("rule");
+      expect(await exists(inProfile(setup.profileDir, "AGENTS.md"))).toBe(false);
+    },
+    5_000,
+  );
+});
+
+describe("shareAntigravityUserConfigNow only removes what it made", () => {
+  it("uses a matching link it didn't make, and leaves it when the source goes", async () => {
+    const setup = await makeSetup();
+    const source = await setup.write("GEMINI.md", "rule");
+    const skills = path.join(setup.gemini, "config", "skills");
+    await NodeFS.mkdir(path.join(setup.profileDir, "config"), { recursive: true });
+    // Someone else's links, one of them already dangling.
+    await NodeFS.symlink(source, inProfile(setup.profileDir, "GEMINI.md"));
+    await NodeFS.symlink(skills, inProfile(setup.profileDir, "config/skills"));
+
+    await shareAntigravityUserConfigNow({ ...setup, platform: "linux" });
+    expect(await linkOf(inProfile(setup.profileDir, "config/skills"))).toBe(skills);
+    await NodeFS.rm(source);
+    await shareAntigravityUserConfigNow({ ...setup, platform: "linux" });
+
+    expect(await linkOf(inProfile(setup.profileDir, "GEMINI.md"))).toBe(source);
+    expect(await linkOf(inProfile(setup.profileDir, "config/skills"))).toBe(skills);
+  });
+
+  it("keeps its record out of the profile, so a record written there authorizes nothing", async () => {
+    const setup = await makeSetup();
+    await setup.write("AGENTS.md", "the user's rule");
+    const agentRule = "the agent's own rule";
+    await NodeFS.writeFile(inProfile(setup.profileDir, "AGENTS.md"), agentRule);
+    const digest = createHash("sha256").update(agentRule).digest("hex");
+    // What the record looked like when it lived in the profile.
+    await NodeFS.writeFile(
+      path.join(setup.profileDir, "threadlines-shared-config.json"),
+      JSON.stringify({ links: {}, copies: { "AGENTS.md": digest } }),
+    );
+
+    await shareAntigravityUserConfigNow({ ...setup, platform: "win32" });
+
+    expect(await NodeFS.readFile(inProfile(setup.profileDir, "AGENTS.md"), "utf8")).toBe(agentRule);
+  });
+
+  it("still knows a copy as its own after a refresh cut short before the record caught up", async () => {
+    const setup = await makeSetup();
+    await setup.write("AGENTS.md", "v1");
+    await shareAntigravityUserConfigNow({ ...setup, platform: "win32" });
+    // A refresh to v2 that stopped after the copy landed: the record then
+    // names both versions (it is written before the copy moves).
+    await NodeFS.writeFile(inProfile(setup.profileDir, "AGENTS.md"), "v2");
+    const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+    await NodeFS.writeFile(
+      antigravitySharedConfigRecordPath(setup.profileDir),
+      JSON.stringify({ links: {}, copies: { "AGENTS.md": [sha("v1"), sha("v2")] } }),
+    );
+    await setup.write("AGENTS.md", "v3");
+
+    await shareAntigravityUserConfigNow({ ...setup, platform: "win32" });
+
+    expect(await NodeFS.readFile(inProfile(setup.profileDir, "AGENTS.md"), "utf8")).toBe("v3");
+  });
+
+  it("lets starts that overlap take turns", async () => {
+    const setup = await makeSetup();
+    for (const rel of ANTIGRAVITY_SHARED_FILES) await setup.write(rel, `rule ${rel}`);
+    const runs = await Promise.all(
+      Array.from({ length: 8 }, () =>
+        shareAntigravityUserConfigNow({ ...setup, platform: "win32" }),
+      ),
+    );
+    expect(runs.flat()).toEqual([]);
+    for (const rel of ANTIGRAVITY_SHARED_FILES) {
+      expect(await NodeFS.readFile(inProfile(setup.profileDir, rel), "utf8")).toBe(`rule ${rel}`);
+    }
+    // Every copy is still known as Threadlines', so it goes with its source.
+    await NodeFS.rm(setup.gemini, { recursive: true });
+    await shareAntigravityUserConfigNow({ ...setup, platform: "win32" });
+    for (const rel of ANTIGRAVITY_SHARED_FILES) {
+      expect(await exists(inProfile(setup.profileDir, rel))).toBe(false);
+    }
   });
 });
 

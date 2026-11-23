@@ -74,7 +74,7 @@ import {
   writeAntigravityAgentRefusal,
   writeAntigravityCatalog,
 } from "../antigravity/AntigravityProfile.ts";
-import { listAntigravitySkills } from "../antigravity/AntigravitySkills.ts";
+import { makeAntigravitySkillsLister } from "../antigravity/AntigravitySkills.ts";
 import { antigravityUserHome } from "../antigravity/AntigravityUserConfig.ts";
 import { holdLaunchGate, type LaunchGate } from "../managedRuntime/LaunchGate.ts";
 import {
@@ -652,6 +652,7 @@ export function makeAntigravityDescriptor(
 ): AcpProviderDescriptor<AntigravitySettings> {
   const { paths, runtime, releases, gate, signIn, usage } = input;
   const platform = process.platform;
+  const listSkills = makeAntigravitySkillsLister();
   const userHomeFor = (environment: NodeJS.ProcessEnv | undefined) =>
     antigravityUserHome(platform, environment ?? process.env, homedir());
   const fingerprint = antigravityCredentialFingerprint(signIn);
@@ -954,12 +955,17 @@ export function makeAntigravityDescriptor(
         } satisfies AcpProviderProbeOutcome;
         return usage ? withAntigravityUsage(outcome, yield* usage.status) : outcome;
       }),
+    // What the agent would see: the profile is brought up to date first, as
+    // a start would, and global skills are read through it.
     listSkills: (_settings, environment) =>
-      listAntigravitySkills({
-        cwd: input.skillsCwd ?? process.cwd(),
+      prepareAntigravityProfile(paths.profileDir, {
         userHome: userHomeFor(environment),
-        profileDir: paths.profileDir,
-      }),
+        platform,
+      }).pipe(
+        Effect.andThen(
+          listSkills({ cwd: input.skillsCwd ?? process.cwd(), profileDir: paths.profileDir }),
+        ),
+      ),
     modelDiscoveryTimeoutMs: ANTIGRAVITY_DISCOVERY_TIMEOUT_MS,
     // Discovery mirrors the selected model's options (its reasoning levels)
     // onto every model; the next status check reads each model's own from
