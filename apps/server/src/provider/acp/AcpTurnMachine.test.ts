@@ -615,8 +615,8 @@ describe.each([
   // can't, every outstanding reading of the records answering in any order
   // (none at work, all at work, or one that missed a launch), up to two
   // open requests, a stale timer callback beside each armed one, and two
-  // turns of the agent's own. Depth 9 with steering (about 2.1 million
-  // states) and 10 without (about 2.6 million) take about three minutes;
+  // turns of the agent's own. Depth 9 with steering (about 2.6 million
+  // states) and 10 without (about 2.8 million) take under three minutes;
   // every named race below is shorter.
   let checked = 0;
   const states = explore(depth, steer, (world) => {
