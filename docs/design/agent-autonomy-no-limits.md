@@ -142,6 +142,71 @@ Every revision since rev 2 takes option 2. What it costs: R is woken once for ev
 
 Where it goes: `routeChildReport` (`ProviderRuntimeIngestion.ts:2770`) returns early when the parent has no open request for the child. That early return goes. One pure function in `childThreadDelivery.ts` takes the turn's end, the session's stopped turn, the child's owed list and the parent's open requests, and returns the request settle, the report settle, or nothing. The turn end, the ingested exit, the sweep and startup all call it, so a turn can never be delivered as both.
 
+### Restart and turn binding (stage 1, step 2)
+
+Written after Astra's second review of step 2 as built (`feat/child-reports-stage-1-server`, 47f50bcf1 and 3ba72fedf). Its findings 3 to 6 are one family: a report that left its parent's queue but never reached the provider, and a message that starts more than one turn. Step 2 as built recovers the first by working out after a restart which report was cut off (`reportCutBeforeItsTurn`, `decider.ts:904`) and sending it again with `thread.turn.resend`. That guess is finding 3, the resend is finding 4, its place in the startup order is finding 5, and looking a turn up by its message is finding 6. These three rules replace it. Line numbers in this subsection are from 3ba72fedf.
+
+**Rule A. A report whose start dies before the provider takes it goes back to the front of the queue. Nothing sends it again by any other road.**
+
+- One new server-only command, `thread.turn-start.take-back { threadId, messageId }`, decided in `decider.ts` beside `thread.message.not-run`. It acts only on a message that is a child's report (`fromThread.kind === "report"`), is not in the queue, and has no turn.
+  - If the report could still be delivered, by the test the queue already applies to a queued report (`isStaleReport` on the stamps the message carries, the thread not held, not archived, not moving), it emits `thread.follow-up-queued` with the entry rebuilt from the stored message and a new optional `putBack` flag on the entry.
+  - If not, it marks the message not run, as a report that goes stale while its turn is prepared is marked today, and queues nothing.
+  - It never emits a turn start, never touches the chain epoch, and never calls `resetAgentRequestsForUser`.
+  - If the thread is itself a child, the unbound owed entry for that message is removed. The next start adds a new one.
+- `withQueuedFollowUp` (`packages/shared/src/queuedFollowUps.ts`) puts a `putBack` entry ahead of every other message an agent queued, behind an earlier `putBack` one. This is the pattern `afterMove` already uses. The user's own queued messages keep their place, and the sender still takes them first.
+- Two callers, the only two places a start can die:
+  - **Restart.** `settleSessionsFromPreviousProcess` (`ProviderCommandReactor.ts:7322`), at the point where it already handles an outside agent's message cut before its start (`:7393`): when the session had no active turn, it reads the thread's pending start (`getPendingTurnStartByThreadId`, `ProjectionTurns.ts:299`) and dispatches the take-back for that exact message. A thread whose report was put back is not added to `turnsCutByRestart`, so it gets no "interrupted by a restart" note and no continue.
+  - **A failed start.** `reportFailedStart` (`ProviderCommandReactor.ts:3456`) with `beforeSend`, for a report.
+- The send is the one that exists. The provider reactor's startup runs before the child reactor's (`OrchestrationReactor.ts:25`), so `reportsQueuedBeforeRestart` (`ChildThreadReactor.ts:557`) finds the report at the front and sends it through `thread.follow-up.send-queued`. That decision checks the report's own epochs, stamps the current chain epoch, carries `fromThread` on the start, and lifts no hold.
+- The turns projection drops a pending start when its message goes back on the queue or is marked not run, so a stale row can't bind to a later turn.
+- Removed: `reportCutBeforeItsTurn`, the resend inside `thread.restart.continue` (`decider.ts:5665`), and "any later assistant message means it was answered".
+
+Why put the report back instead of keeping it queued until the provider has the turn: keeping it queued means every reader of the queue has to know an entry can be in flight (the drain at a turn's end, the handler for a new entry, steering, a move's drain, the restart read), and the report would show as waiting while its turn is already starting. Putting it back touches only the two places a start dies, and from there the queue's own rules do the rest.
+
+**Rule B. A message has at most one start that no turn has claimed, and once a turn claims it, the turn's id is its identity.**
+
+- A decision that emits `thread.turn-start-requested` for a message that owes a report replaces that message's unbound owed entry, if there is one. Entries already bound to a turn belong to earlier attempts and are left to their own turn's end.
+- The session update that marks a turn running and names its message (`turnStartedBy.messageId`, the builder's rule for findings 1, 2 and 7) binds in the same decision:
+  - the message's unbound owed entry gets the turn's id and is keyed by the turn from then on;
+  - a parent's running request bound to that message records the turn in a new optional `answeringTurnId`, through `thread.child-request-updated`. A retry, a resend or a continue that reuses the message overwrites it with the new turn.
+- Every reader matches by turn id and none looks a turn up by its message:
+  - the turn end (`childDeliveryForTurnEnd`, `childThreadDelivery.ts:134`): `request.answeringTurnId === end.turnId`, or the owed entry's turn;
+  - the stopped-session backstop (`ChildThreadReactor.ts:373`): `requestTurnId` is `request.answeringTurnId`, compared with `stopRequestedTurnId`;
+  - startup (`settleOwedReportsFromPreviousProcess`, `ChildThreadReactor.ts:519`): a bound entry is settled against its own turn row; an unbound one never started, and rule A has already dealt with it or it is removed;
+  - `finishedTurnAfterRestart` (`childThreadDelivery.ts:500`).
+- `listByThreadId` orders checkpointed turns first and older first (`ProjectionTurns.ts:206`), which is why "the first turn with this message" picked an old attempt. No reader depends on that order any more.
+- A request made before this change has no `answeringTurnId`. For those only, the newest turn with that message is used, never the first.
+
+**Rule C. Nothing automatic restarts a report's turn.** `thread.restart.continue` continues or notes a turn the user asked for, as before step 2. `thread.turn.resend` stays for the user's Resend and the provider fallback. Neither is used to deliver a report.
+
+How each finding ends up:
+
+| Finding                                                                                                     | With these rules                                                                                                                                                                                               |
+| ----------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 3. A report that waited behind another agent's turn is rejected after a restart because that agent answered | The pending start names the message. The take-back needs no guess about what was answered.                                                                                                                     |
+| 4. A restart undoes the user's Stop                                                                         | The Stop moved the parent's delivery epoch, so the take-back finds the report stale and marks it not run. A report that is put back is sent by the queue's own decision, which checks again and lifts no hold. |
+| 5. A second queued report displaces the one being recovered                                                 | The first is back at the front before the child reactor reads any queue. It goes first, and the second follows when its turn ends.                                                                             |
+| 6. Attempts that reuse a message are confused                                                               | An unbound attempt is the only one for its message. A bound one is known by its turn. A Stop that names a retry's turn matches that request's `answeringTurnId`.                                               |
+
+What existing behavior this touches:
+
+- **The user's own queued messages.** Nothing. The take-back ignores them, and a user's turn the restart cut off is continued or noted as today.
+- **Room hand-offs and replies.** Nothing. A hand-off cut before its start is closed by `closeRequestsFromPreviousProcess` as today.
+- **Steering.** A report that was put back is a queued report like any other. In a thread with no parent it can be steered into a running turn, and steering still takes it off the queue only after the provider has it.
+- **Retry and resend.** Each is a new attempt for its message under rule B. Their own behavior does not change.
+- **A failed start, with no restart.** New: a report whose turn could not start waits at the front of the queue instead of sitting in the chat unheard. The queue is not sent on by itself after a failure (rule 10), so this can't loop.
+- **Older clients.** `putBack` and `answeringTurnId` are optional fields on things that exist. An older client places a put-back entry last, which only changes the order it shows. No new event type.
+
+Tests, each named for the finding it pins:
+
+- **3.** Decider: in a room, agent B answers, a report for agent A is taken off the queue and its start requested; the take-back puts it back at the front. Reactor startup: a pending start names the report and the session is `starting`; after start-up the report is queued first, sent once, and the thread has no restart note.
+- **4.** Decider: the user stops the parent after the report left the queue; the take-back queues nothing, marks the message not run, and emits no `agent-requests-reset` and no turn start. A take-back that does put a report back emits no reset either.
+- **5.** Reactor startup: report A starting, report B queued. A is sent first and is not refused, and B is sent when A's turn ends.
+- **6, reports.** A message's first turn was reported; its resend was cut off before it started. Startup settles nothing against the first turn and sends no second report for it. The resend's turn reports once when it ends.
+- **6, requests.** A request's first turn stopped on a usage limit, a retry reuses the message and starts a second turn, and the user stops that turn. The backstop says "The user stopped", with the turn rows listed in the repository's order.
+- **A failed start.** A report whose start fails is back at the front, and the next message queued in that idle thread sends the report first.
+- **Left alone.** A user's message cut before its start gets today's continue or note. A hand-off cut before its start is closed as today.
+
 ### What a child and its parent are told
 
 - **Attached child preamble** (`ProviderCommandReactor.ts:2268`). Today: "Another agent started this thread from the thread "X", and your final reply goes back to it automatically. Work in this thread's own checkout, and end with the answer it needs." Add: "If you take more turns later that the user did not start, for example when a thread you started reports back, the reply that ends each one goes back too and wakes that thread. Keep those replies short when nothing has changed."
