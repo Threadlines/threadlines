@@ -162,6 +162,7 @@ function createProviderServiceHarness(
     adoptNativeSession: () => Effect.void,
     forgetNativeSession: () => Effect.void,
     dropResumeCursor: () => Effect.void,
+    noteHistoryDelivered: () => Effect.void,
     getCapabilities: () =>
       Effect.succeed({
         sessionModelSwitch: "in-session",
@@ -3118,48 +3119,73 @@ describe("CheckpointReactor", () => {
     );
   });
 
-  it("still reaches an agent that forgets by starting over when no session runs", async () => {
-    const harness = await createHarness({ hasSession: false, conversationRollback: "new-session" });
-    const threadId = ThreadId.make("thread-1");
-    const createdAt = "2026-01-01T00:00:00.000Z";
+  it.each([
+    { running: true, forgotten: true },
+    { running: false, forgotten: true },
+    { running: false, forgotten: false },
+  ])(
+    "stops an agent that starts over before restoring any file, and says so if it can't forget (%o)",
+    async ({ running, forgotten }) => {
+      const harness = await createHarness({
+        hasSession: running,
+        conversationRollback: "new-session",
+      });
+      const threadId = ThreadId.make("thread-1");
+      const createdAt = "2026-01-01T00:00:00.000Z";
+      // What the checkout held when the agent was told to stop.
+      let readmeWhenStopped: string | undefined;
+      harness.provider.rollbackConversation.mockImplementation(() =>
+        Effect.sync(() => {
+          readmeWhenStopped = fs
+            .readFileSync(path.join(harness.cwd, "README.md"), "utf8")
+            .replaceAll("\r\n", "\n");
+          return { conversationRolledBack: forgotten };
+        }),
+      );
 
-    for (const turnCount of [1, 2] as const) {
+      for (const turnCount of [1, 2] as const) {
+        await Effect.runPromise(
+          harness.engine.dispatch({
+            type: "thread.turn.diff.complete",
+            commandId: CommandId.make(`cmd-new-session-diff-${turnCount}`),
+            threadId,
+            turnId: asTurnId(`turn-${turnCount}`),
+            completedAt: createdAt,
+            checkpointRef: checkpointRefForThreadTurn(threadId, turnCount),
+            status: "ready",
+            files: [{ path: "README.md", kind: "modified", additions: 1, deletions: 1 }],
+            checkpointTurnCount: turnCount,
+            completesTurn: true,
+            createdAt,
+          }),
+        );
+      }
+
       await Effect.runPromise(
         harness.engine.dispatch({
-          type: "thread.turn.diff.complete",
-          commandId: CommandId.make(`cmd-new-session-diff-${turnCount}`),
+          type: "thread.checkpoint.revert",
+          commandId: CommandId.make("cmd-new-session-revert"),
           threadId,
-          turnId: asTurnId(`turn-${turnCount}`),
-          completedAt: createdAt,
-          checkpointRef: checkpointRefForThreadTurn(threadId, turnCount),
-          status: "ready",
-          files: [{ path: "README.md", kind: "modified", additions: 1, deletions: 1 }],
-          checkpointTurnCount: turnCount,
-          completesTurn: true,
+          turnCount: 1,
           createdAt,
         }),
       );
-    }
 
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.checkpoint.revert",
-        commandId: CommandId.make("cmd-new-session-revert"),
-        threadId,
-        turnCount: 1,
-        createdAt,
-      }),
-    );
-
-    await waitForEvent(harness.engine, (event) => event.type === "thread.reverted");
-    // The service reopens the saved session to end it, or the next turn would
-    // pick the conversation up as it was.
-    expect(harness.provider.rollbackConversation).toHaveBeenCalledTimes(1);
-    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
-    expect(
-      thread?.activities.some((activity) => activity.kind.startsWith("checkpoint.revert.rollback")),
-    ).toBe(false);
-  });
+      await waitForEvent(harness.engine, (event) => event.type === "thread.reverted");
+      expect(harness.provider.rollbackConversation).toHaveBeenCalledTimes(1);
+      // Stopped while the reverted turn's file was still there, then restored.
+      expect(readmeWhenStopped).toBe("v3\n");
+      expect(
+        fs.readFileSync(path.join(harness.cwd, "README.md"), "utf8").replaceAll("\r\n", "\n"),
+      ).toBe("v2\n");
+      const thread = await waitForThread(harness.readModel, (entry) =>
+        entry.activities.some((activity) => activity.kind === "checkpoint.reverted"),
+      );
+      const kinds = thread.activities.map((activity) => activity.kind);
+      expect(kinds.includes("checkpoint.revert.rollback-unsupported")).toBe(!forgotten);
+      expect(kinds.includes("checkpoint.revert.rollback-skipped")).toBe(false);
+    },
+  );
 
   it("appends an error activity when revert targets a turn missing from the read model", async () => {
     const harness = await createHarness({ hasSession: false });

@@ -3436,3 +3436,161 @@ fence.layer("ProviderServiceLive moving threads", (it) => {
     }),
   );
 });
+
+/** One agent that forgets by starting over (Antigravity's `new-session`). */
+function makeStartingOverLayer() {
+  const ANTIGRAVITY = ProviderDriverKind.make("antigravity");
+  const agent = makeFakeCodexAdapter(ANTIGRAVITY);
+  const adapter = {
+    ...agent.adapter,
+    capabilities: { ...agent.adapter.capabilities, conversationRollback: "new-session" as const },
+  };
+  const runtimeRepositoryLayer = ProviderSessionRuntimeRepositoryLive.pipe(
+    Layer.provide(SqlitePersistenceMemory),
+  );
+  const directoryLayer = ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer));
+  const layer = it.layer(
+    Layer.mergeAll(
+      makeProviderServiceWithScrubber().pipe(
+        Layer.provide(ThreadSessionAdmissionPermissive),
+        Layer.provide(
+          Layer.succeed(
+            ProviderAdapterRegistry,
+            makeAdapterRegistryMock({ [ANTIGRAVITY]: adapter }),
+          ),
+        ),
+        Layer.provide(directoryLayer),
+        Layer.provide(defaultServerSettingsLayer),
+        Layer.provideMerge(AnalyticsService.layerTest),
+        Layer.provide(Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers)),
+      ),
+      directoryLayer,
+      runtimeRepositoryLayer,
+      NodeServices.layer,
+    ),
+  );
+  return { agent, ANTIGRAVITY, layer };
+}
+
+const startingOver = makeStartingOverLayer();
+
+startingOver.layer("ProviderServiceLive forgetting a conversation", (it) => {
+  const instanceId = ProviderInstanceId.make("antigravity");
+  const start = (key: ThreadId, resumeCursor?: unknown) =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      return yield* provider.startSession(key, {
+        provider: startingOver.ANTIGRAVITY,
+        providerInstanceId: instanceId,
+        threadId: key,
+        cwd: "/tmp/project",
+        ...(resumeCursor !== undefined ? { resumeCursor } : {}),
+        runtimeMode: "full-access",
+      });
+    });
+  const lastStartCursor = () =>
+    (
+      startingOver.agent.startSession.mock.calls.at(-1)?.[0] as
+        | { readonly resumeCursor?: unknown }
+        | undefined
+    )?.resumeCursor;
+
+  it.effect(
+    "forgets an idle agent's conversation without starting it, and seeds every start until a send carries the history",
+    () =>
+      Effect.gen(function* () {
+        const provider = yield* ProviderService;
+        const directory = yield* ProviderSessionDirectory;
+        const key = asThreadId("thread-starting-over");
+        const first = yield* start(key);
+        yield* startingOver.agent.stopSession(first.threadId);
+        startingOver.agent.startSession.mockClear();
+
+        const rollback = yield* provider.rollbackConversation({ threadId: key, numTurns: 1 });
+        assert.isTrue(rollback.conversationRolledBack);
+        // Nothing was started (or asked) to forget it.
+        assert.equal(startingOver.agent.startSession.mock.calls.length, 0);
+        assert.equal(startingOver.agent.rollbackThread.mock.calls.length, 0);
+        const binding = Option.getOrUndefined(yield* directory.getBinding(key));
+        assert.equal(binding?.resumeCursor ?? null, null);
+
+        // A caller that still holds the old cursor can't reopen it.
+        const reopened = yield* start(key, first.resumeCursor);
+        assert.isUndefined(lastStartCursor());
+        assert.isTrue(reopened.resumeFailed);
+        // A restart before a send carried the history: still owed.
+        yield* startingOver.agent.stopSession(key);
+        const again = yield* start(key);
+        assert.isUndefined(lastStartCursor());
+        assert.isTrue(again.resumeFailed);
+
+        yield* provider.noteHistoryDelivered(key);
+        yield* startingOver.agent.stopSession(key);
+        const whole = yield* start(key);
+        assert.deepEqual(lastStartCursor(), again.resumeCursor);
+        assert.isUndefined(whole.resumeFailed);
+      }),
+  );
+
+  it.effect("owes a handed-over history until a send carries it, across a restart", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const key = asThreadId("thread-handed-over");
+      const handedOver = yield* provider.startSession(key, {
+        provider: startingOver.ANTIGRAVITY,
+        providerInstanceId: instanceId,
+        threadId: key,
+        cwd: "/tmp/project",
+        runtimeMode: "full-access",
+        contextSeed: { version: 1, fromProvider: CODEX_DRIVER, entries: [] },
+      });
+      // The adapter carries the seed itself: this start owes none.
+      assert.isUndefined(handedOver.resumeFailed);
+      // A restart before a send carried it: the next start is seeded.
+      yield* startingOver.agent.stopSession(key);
+      const restarted = yield* start(key, handedOver.resumeCursor);
+      assert.isUndefined(lastStartCursor());
+      assert.isTrue(restarted.resumeFailed);
+    }),
+  );
+
+  it.effect("stops a running agent's work through its rollback before forgetting", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const key = asThreadId("thread-starting-over-live");
+      yield* start(key);
+      startingOver.agent.rollbackThread.mockClear();
+      const rollback = yield* provider.rollbackConversation({ threadId: key, numTurns: 2 });
+      assert.isTrue(rollback.conversationRolledBack);
+      assert.deepEqual(startingOver.agent.rollbackThread.mock.calls[0]?.slice(0, 2), [key, 2]);
+    }),
+  );
+
+  it.effect("forgets a conversation the agent reports it can't go on with", () =>
+    Effect.gen(function* () {
+      const directory = yield* ProviderSessionDirectory;
+      const key = asThreadId("thread-conversation-lost");
+      const first = yield* start(key);
+      // The service subscribes to the agent's events once it is up.
+      yield* advanceTestClock(10);
+      startingOver.agent.emit({
+        type: "session.exited",
+        eventId: asEventId("evt-conversation-lost"),
+        provider: startingOver.ANTIGRAVITY,
+        providerInstanceId: instanceId,
+        threadId: key,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        payload: { exitKind: "graceful", conversationLost: true },
+      });
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const binding = Option.getOrUndefined(yield* directory.getBinding(key));
+        if ((binding?.resumeCursor ?? null) === null) break;
+        yield* advanceTestClock(5);
+      }
+      yield* startingOver.agent.stopSession(key);
+      const reopened = yield* start(key, first.resumeCursor);
+      assert.isUndefined(lastStartCursor());
+      assert.isTrue(reopened.resumeFailed);
+    }),
+  );
+});

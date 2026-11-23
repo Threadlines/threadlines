@@ -35,7 +35,6 @@ import {
   MessageSentFrom,
   MessageTrigger,
   ModelSelection,
-  OrchestrationAgentCommands,
   OrchestrationCheckBack,
   OrchestrationThreadGoal,
   OrchestrationQueuedFollowUp,
@@ -311,12 +310,6 @@ const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
     ),
     sentModels: Schema.optional(
       Schema.fromJsonString(Schema.Record(Schema.String, ModelSelection)),
-    ),
-    // Read by the thread detail only: a thread shell never carries it.
-    agentCommands: Schema.optional(
-      Schema.NullOr(
-        Schema.fromJsonString(Schema.Record(Schema.String, OrchestrationAgentCommands)),
-      ),
     ),
     agentRequests: Schema.optional(
       Schema.NullOr(Schema.fromJsonString(OrchestrationAgentRequestState)),
@@ -1997,7 +1990,6 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           agent_role AS "agentRole",
           room_context AS "roomContext",
           sent_models AS "sentModels",
-          agent_commands AS "agentCommands",
           agent_requests AS "agentRequests",
           parent_thread_id AS "parentThreadId",
           parent_turn_id AS "parentTurnId",
@@ -4243,9 +4235,6 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           : {}),
         ...(threadRow.value.sentModels && Object.keys(threadRow.value.sentModels).length > 0
           ? { sentModels: threadRow.value.sentModels }
-          : {}),
-        ...(threadRow.value.agentCommands && Object.keys(threadRow.value.agentCommands).length > 0
-          ? { agentCommands: threadRow.value.agentCommands }
           : {}),
         doneOverride: mapThreadDoneOverride(threadRow.value),
         lastSeenAt: threadRow.value.lastSeenAt ?? null,

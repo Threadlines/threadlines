@@ -387,6 +387,13 @@ export interface ProviderServiceShape {
   readonly dropResumeCursor: (threadId: ThreadId) => Effect.Effect<void, ProviderServiceError>;
 
   /**
+   * The thread's history reached the agent of this session key (the send
+   * that carried it was taken): a conversation forgotten earlier
+   * (`historyOwed` on its binding) is whole again, so later starts resume it.
+   */
+  readonly noteHistoryDelivered: (threadId: ThreadId) => Effect.Effect<void>;
+
+  /**
    * Read capabilities for the adapter bound to a configured provider instance.
    */
   readonly getCapabilities: (
@@ -400,7 +407,10 @@ export interface ProviderServiceShape {
   /**
    * Roll back provider conversation state by a number of turns.
    * `conversationRolledBack` is false when the provider cannot forget turns
-   * (see `ProviderAdapterCapabilities.conversationRollback`).
+   * (see `ProviderAdapterCapabilities.conversationRollback`). An agent that
+   * forgets by starting over (`new-session`) has its running work stopped and
+   * its saved conversation forgotten in the thread's binding; nothing is
+   * started for it, and a binding that couldn't be written answers false.
    */
   readonly rollbackConversation: (input: {
     readonly threadId: ThreadId;

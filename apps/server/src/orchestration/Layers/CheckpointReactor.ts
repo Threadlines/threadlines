@@ -1222,6 +1222,43 @@ const make = Effect.gen(function* () {
     }
     const context = contextResult.context;
 
+    const rolledBackTurns = Math.max(0, context.currentTurnCount - event.payload.turnCount);
+    const targetUserMessageId = targetUserMessageIdForCheckpointRewind({
+      thread: context.thread,
+      targetTurnCount: event.payload.turnCount,
+    });
+    // An agent that forgets by starting over (Antigravity) is stopped, and
+    // its conversation forgotten, before any file is restored: a command it
+    // still ran could otherwise write over a restored file. Nothing is
+    // started for an agent that isn't running.
+    const startsOver =
+      rolledBackTurns > 0 &&
+      (yield* providerService
+        .getCapabilities(
+          context.thread.session?.providerInstanceId ?? context.thread.modelSelection.instanceId,
+        )
+        .pipe(
+          Effect.map((capabilities) => capabilities.conversationRollback === "new-session"),
+          Effect.orElseSucceed(() => false),
+        ));
+    const startedOver = startsOver
+      ? yield* providerService
+          .rollbackConversation({
+            threadId: event.payload.threadId,
+            numTurns: rolledBackTurns,
+            ...(targetUserMessageId !== undefined ? { targetUserMessageId } : {}),
+          })
+          .pipe(
+            Effect.map((rollback) => rollback.conversationRolledBack),
+            Effect.catchCause((cause) =>
+              Effect.logWarning("checkpoint revert could not make the agent start over", {
+                threadId: event.payload.threadId,
+                cause: Cause.pretty(cause),
+              }).pipe(Effect.as(false)),
+            ),
+          )
+      : undefined;
+
     const revertOutcome = yield* checkpointRevert.applyRevert(context);
     if (revertOutcome === null) {
       yield* failRevert(
@@ -1241,42 +1278,16 @@ const make = Effect.gen(function* () {
       createdAt: now,
     }).pipe(Effect.catch(() => Effect.void));
 
-    const rolledBackTurns = Math.max(0, context.currentTurnCount - event.payload.turnCount);
     if (rolledBackTurns > 0) {
-      // An agent that forgets by starting over (Antigravity) is reached with
-      // no runtime live too: the service reopens its session to end it, or
-      // the next turn would reopen the conversation as it was.
-      const startsOver =
-        !context.hasProviderSession &&
-        (yield* providerService
-          .getCapabilities(
-            context.thread.session?.providerInstanceId ?? context.thread.modelSelection.instanceId,
-          )
-          .pipe(
-            Effect.map((capabilities) => capabilities.conversationRollback === "new-session"),
-            Effect.orElseSucceed(() => false),
-          ));
-      if (context.hasProviderSession || startsOver) {
-        const targetUserMessageId = targetUserMessageIdForCheckpointRewind({
-          thread: context.thread,
-          targetTurnCount: event.payload.turnCount,
-        });
-        const rollbackRequest = providerService.rollbackConversation({
-          threadId: event.payload.threadId,
-          numTurns: rolledBackTurns,
-          ...(targetUserMessageId !== undefined ? { targetUserMessageId } : {}),
-        });
-        // A session that can't be reopened to end it is said to remember.
-        const rollback = yield* startsOver
-          ? rollbackRequest.pipe(
-              Effect.catch((cause) =>
-                Effect.logWarning("checkpoint revert could not reopen the session to end it", {
-                  threadId: event.payload.threadId,
-                  cause,
-                }).pipe(Effect.as({ conversationRolledBack: false })),
-              ),
-            )
-          : rollbackRequest;
+      if (startsOver || context.hasProviderSession) {
+        const rollback =
+          startedOver !== undefined
+            ? { conversationRolledBack: startedOver }
+            : yield* providerService.rollbackConversation({
+                threadId: event.payload.threadId,
+                numTurns: rolledBackTurns,
+                ...(targetUserMessageId !== undefined ? { targetUserMessageId } : {}),
+              });
         if (!rollback.conversationRolledBack) {
           yield* orchestrationEngine
             .dispatch({

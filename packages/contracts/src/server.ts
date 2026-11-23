@@ -26,7 +26,6 @@ import { ModelCapabilities, ModelUpgradeInfo } from "./model.ts";
 import { RuntimeMode } from "./orchestration.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import { ServerSettings } from "./settings.ts";
-import { ServerProviderSlashCommand, ServerProviderSlashCommandInput } from "./slashCommands.ts";
 
 const KeybindingsMalformedConfigIssue = Schema.Struct({
   kind: Schema.Literal("keybindings.malformed-config"),
@@ -379,7 +378,24 @@ export const ServerProviderModel = Schema.Struct({
 });
 export type ServerProviderModel = typeof ServerProviderModel.Type;
 
-export { ServerProviderSlashCommand, ServerProviderSlashCommandInput };
+export const ServerProviderSlashCommandInput = Schema.Struct({
+  hint: TrimmedNonEmptyString,
+});
+export type ServerProviderSlashCommandInput = typeof ServerProviderSlashCommandInput.Type;
+
+export const ServerProviderSlashCommand = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  description: Schema.optional(TrimmedNonEmptyString),
+  input: Schema.optional(ServerProviderSlashCommandInput),
+});
+export type ServerProviderSlashCommand = typeof ServerProviderSlashCommand.Type;
+
+export const ServerProviderSessionCommands = Schema.Struct({
+  /** Session keys: a thread id, or a room agent's `participantSessionKey`. */
+  sessions: Schema.Array(TrimmedNonEmptyString),
+  commands: Schema.Array(ServerProviderSlashCommand),
+});
+export type ServerProviderSessionCommands = typeof ServerProviderSessionCommands.Type;
 
 export const ServerProviderSkill = Schema.Struct({
   name: TrimmedNonEmptyString,
@@ -566,6 +582,15 @@ export const ServerProvider = Schema.Struct({
    * joins them. Absent: skills go the provider's usual way.
    */
   slashSkills: Schema.optionalKey(Schema.Boolean),
+  /**
+   * Live state, never history: the slash commands this instance's running
+   * sessions listed (ACP `available_commands_update`), each list once with
+   * the sessions that listed it. A session's entry goes when the session
+   * ends, and none survive a restart; until a session lists its own, the
+   * composer offers `slashCommands` and `skills`. Capped and cleaned on the
+   * server (`@threadlines/shared/slashCommands`).
+   */
+  sessionCommands: Schema.optionalKey(Schema.Array(ServerProviderSessionCommands)),
   versionAdvisory: Schema.optionalKey(ServerProviderVersionAdvisory),
   updateState: Schema.optionalKey(ServerProviderUpdateState),
   detection: Schema.optionalKey(ServerProviderDetection),

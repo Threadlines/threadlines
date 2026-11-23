@@ -44,7 +44,8 @@
  * - `lost-signature`: fails the prompt with the refused-thinking error.
  *
  * Every new session lists its slash commands right after it opens
- * (`available_commands_update`), as the 1.5 CLI does.
+ * (`available_commands_update`), as the 1.5 CLI does. Under `flapping` it
+ * then changes the list ten times in a row.
  */
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -212,6 +213,19 @@ const program = Effect.gen(function* () {
               { name: "logout", description: "Sign out" },
             ],
           }),
+        ),
+        Effect.andThen(
+          scenario === "flapping"
+            ? Effect.forEach(
+                Array.from({ length: 10 }, (_, index) => index),
+                (index) =>
+                  update(sessionId, {
+                    sessionUpdate: "available_commands_update",
+                    availableCommands: [{ name: "goal", description: `Version ${index}` }],
+                  }).pipe(Effect.andThen(Effect.sleep("10 millis"))),
+                { discard: true },
+              )
+            : Effect.void,
         ),
         Effect.forkDetach,
       );

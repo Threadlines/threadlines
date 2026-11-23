@@ -159,10 +159,11 @@ export interface ProviderAdapterCapabilities {
    * remembers the reverted turns, and a revert says so. Default `native`. A
    * rollback's own `conversationRolledBack` overrides it, for an agent that
    * can rewind only to the turns it knows the positions of (Grok).
-   * `new-session` (Antigravity) ends the session instead, and the next turn
-   * opens a new one seeded with the turns kept; a revert reaches it even
-   * with no runtime live, since the saved conversation would otherwise be
-   * reopened as it was.
+   * `new-session` (Antigravity): `rollbackThread` stops the running work and
+   * ends the session, and ProviderService forgets the saved conversation in
+   * the thread's binding, so the next turn opens a new one seeded with the
+   * turns kept. A revert stops it before restoring files, and reaches it with
+   * no runtime live without starting one.
    */
   readonly conversationRollback?: "native" | "none" | "new-session";
 

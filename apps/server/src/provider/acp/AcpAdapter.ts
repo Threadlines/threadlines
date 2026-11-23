@@ -25,6 +25,7 @@ import {
   type ThreadId,
   TurnId,
   type UsageTokenTotals,
+  type ServerProviderSlashCommand,
 } from "@threadlines/contracts";
 import { withFailureCategory } from "../providerFailureCategory.ts";
 import { makeAgentProcessLedger } from "../agentProcessLedger.ts";
@@ -40,6 +41,7 @@ import {
 import { renderThreadContextSeed, withContextSeedPreamble } from "@threadlines/shared/contextSeed";
 import { countTextReplacementStats } from "@threadlines/shared/textReplacementStats";
 import { randomUUIDv4 } from "@threadlines/shared/uuid";
+import { sameSlashCommands, slashCommandAtStart } from "@threadlines/shared/slashCommands";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
@@ -138,12 +140,11 @@ import {
 import { THREADLINES_ACP_CLIENT_INFO } from "./acpClientInfo.ts";
 import { type AcpSessionRuntimeShape } from "./AcpSessionRuntime.ts";
 
-const decodeLostSessions = Schema.decodeUnknownExit(
-  Schema.fromJsonString(Schema.Array(Schema.String)),
-);
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.fromJsonString(Schema.Unknown));
 
 const ACP_RESUME_VERSION = 1 as const;
+/** A session's command list reaches the clients at most this often. */
+const ACP_SESSION_COMMANDS_INTERVAL_MS = 5_000;
 /**
  * How long a cancelled prompt may take to return. Past it the turn settles
  * as cancelled here and the process is recycled; the next turn resumes the
@@ -176,8 +177,6 @@ const ACP_HELD_REPLY_QUIET_LIMIT = Duration.minutes(2);
 const ACP_HISTORY_CURSOR_LIMIT = 200;
 /** How long asking the agent where a prompt landed may take before it goes unanswered. */
 const ACP_HISTORY_POSITION_TIMEOUT = Duration.seconds(5);
-/** The most lost agent sessions an instance remembers (`markSessionLost`). */
-const ACP_LOST_SESSIONS_LIMIT = 100;
 const ACP_PLAN_MODE_ALIASES = ["plan", "architect"];
 const ACP_IMPLEMENT_MODE_ALIASES = ["code", "agent", "default", "chat", "implement"];
 const ACP_APPROVAL_MODE_ALIASES = ["ask"];
@@ -201,6 +200,17 @@ export interface AcpAdapterOptions<Settings extends AcpProviderSettings> {
    * ledger), for agents that keep no usage of their own on disk. Never fails.
    */
   readonly recordTurnUsage?: (entry: UsageLedgerEntry) => Effect.Effect<void>;
+  /**
+   * For `agentCommands` descriptors: a session's own command list changed
+   * (`undefined`: the session ended). The driver puts it on the provider
+   * status (`ServerProvider.sessionCommands`). Never fails.
+   */
+  readonly onSessionCommands?: (
+    sessionKey: ThreadId,
+    commands: ReadonlyArray<ServerProviderSlashCommand> | undefined,
+  ) => Effect.Effect<void>;
+  /** The skills the provider status lists, by name: a typed `/name` runs one. */
+  readonly skillNames?: Effect.Effect<ReadonlySet<string>>;
 }
 
 interface PendingApproval {
@@ -564,16 +574,6 @@ function findModeByAliases(
   return undefined;
 }
 
-/**
- * Whether a message starts with a slash command, as an agent with
- * `agentCommands` reads it: `/` and a name, then whitespace or the end. A
- * path (`/tmp/out.log is empty`) has a second `/` in its first word and is
- * not one.
- */
-export function startsWithAgentCommand(text: string): boolean {
-  return /^\/[\p{L}\p{N}_][\p{L}\p{N}_.:-]*(?:\s|$)/u.test(text);
-}
-
 function isPlanMode(mode: AcpSessionMode): boolean {
   return findModeByAliases([mode], ACP_PLAN_MODE_ALIASES) !== undefined;
 }
@@ -729,47 +729,6 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
       }
     >();
     const adapterScope = yield* Scope.Scope;
-    /**
-     * Agent sessions that can't go on (`AcpPromptFailure.sessionLost`): a
-     * restart opens a new session instead, seeded with the thread's history.
-     * Kept on disk per instance, so a server restart before the next message
-     * doesn't reopen one.
-     */
-    const lostSessionsFile = path.join(
-      serverConfig.stateDir,
-      "acp-lost-sessions",
-      `${encodeURIComponent(boundInstanceId)}.json`,
-    );
-    const lostSessions = new Set<string>(
-      yield* fileSystem.readFileString(lostSessionsFile).pipe(
-        Effect.map((raw): ReadonlyArray<string> => {
-          const parsed = decodeLostSessions(raw);
-          return Exit.isSuccess(parsed) ? parsed.value : [];
-        }),
-        Effect.orElseSucceed((): ReadonlyArray<string> => []),
-      ),
-    );
-    const saveLostSessions = Effect.gen(function* () {
-      yield* fileSystem.makeDirectory(path.dirname(lostSessionsFile), { recursive: true });
-      yield* fileSystem.writeFileString(
-        lostSessionsFile,
-        JSON.stringify([...lostSessions].slice(-ACP_LOST_SESSIONS_LIMIT)),
-      );
-    }).pipe(
-      Effect.catchCause((cause) =>
-        Effect.logWarning("acp.lost-sessions.save-failed", {
-          provider: PROVIDER,
-          cause: Cause.pretty(cause),
-        }),
-      ),
-    );
-    const markSessionLost = (sessionId: string) =>
-      Effect.suspend(() => {
-        lostSessions.add(sessionId);
-        return saveLostSessions;
-      });
-    const forgetLostSession = (sessionId: string) =>
-      Effect.suspend(() => (lostSessions.delete(sessionId) ? saveLostSessions : Effect.void));
     /**
      * A turn that can outlive its prompt or span several (`heldTurns`,
      * `steerWithPrompt`) writes each prompt's tokens as it answers.
@@ -1433,9 +1392,89 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
       return Effect.succeed(ctx);
     };
 
+    /**
+     * What each session last advertised, for `agentCommands` descriptors:
+     * every name (a typed `/name` is its command, hidden ones included) and
+     * the list the composer shows, reported through `onSessionCommands` no
+     * more than once per `ACP_SESSION_COMMANDS_INTERVAL` and never unchanged.
+     */
+    const sessionCommandState = new WeakMap<
+      AcpSessionContext,
+      {
+        names: ReadonlySet<string>;
+        reported: ReadonlyArray<ServerProviderSlashCommand> | undefined;
+        reportedAtMs: number;
+        pending: ReadonlyArray<ServerProviderSlashCommand> | undefined;
+      }
+    >();
+
+    const noteSessionCommands = (
+      ctx: AcpSessionContext,
+      commands: ReadonlyArray<ServerProviderSlashCommand>,
+    ) =>
+      Effect.gen(function* () {
+        const hidden = descriptor.agentCommands?.hidden;
+        const shown = commands.filter((command) => !hidden?.has(command.name));
+        const report = options?.onSessionCommands;
+        let state = sessionCommandState.get(ctx);
+        if (state === undefined) {
+          state = { names: new Set(), reported: undefined, reportedAtMs: 0, pending: undefined };
+          sessionCommandState.set(ctx, state);
+          // The list goes with the session.
+          if (report !== undefined) {
+            yield* Scope.addFinalizer(ctx.scope, report(ctx.threadId, undefined));
+          }
+        }
+        state.names = new Set(commands.map((command) => command.name));
+        if (report === undefined) return;
+        const current = state.pending ?? state.reported;
+        if (current !== undefined && sameSlashCommands(current, shown)) return;
+        const waitMs = state.reportedAtMs + ACP_SESSION_COMMANDS_INTERVAL_MS - Date.now();
+        if (waitMs <= 0 && state.pending === undefined) {
+          state.reported = shown;
+          state.reportedAtMs = Date.now();
+          yield* report(ctx.threadId, shown);
+          return;
+        }
+        // Too soon after the last report: the newest list goes when the
+        // interval is up, and lists in between are never sent.
+        const scheduled = state.pending !== undefined;
+        state.pending = shown;
+        if (scheduled) return;
+        const flushing = state;
+        yield* Effect.sleep(Math.max(0, waitMs)).pipe(
+          Effect.andThen(
+            Effect.suspend(() => {
+              const next = flushing.pending;
+              flushing.pending = undefined;
+              if (next === undefined) return Effect.void;
+              if (flushing.reported !== undefined && sameSlashCommands(flushing.reported, next)) {
+                return Effect.void;
+              }
+              flushing.reported = next;
+              flushing.reportedAtMs = Date.now();
+              return report(ctx.threadId, next);
+            }),
+          ),
+          Effect.forkIn(ctx.scope),
+        );
+      });
+
+    /**
+     * Whether a typed `/name` runs one of the agent's own commands: one this
+     * session advertised, or a skill the status lists.
+     */
+    const isAgentCommand = (ctx: AcpSessionContext, name: string) =>
+      Effect.gen(function* () {
+        if (sessionCommandState.get(ctx)?.names.has(name) === true) return true;
+        const skills = options?.skillNames;
+        return skills === undefined ? false : (yield* skills).has(name);
+      });
+
     const stopSessionInternal = (
       ctx: AcpSessionContext,
       exitKind: "graceful" | "error" = "graceful",
+      exit?: { readonly conversationLost?: true },
     ) =>
       Effect.gen(function* () {
         if (ctx.stopped) return;
@@ -1458,7 +1497,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           ...(yield* makeEventStamp()),
           provider: PROVIDER,
           threadId: ctx.threadId,
-          payload: { exitKind },
+          payload: { exitKind, ...exit },
         });
       });
 
@@ -1626,13 +1665,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           let ctx!: AcpSessionContext;
 
           const resumed = parseAcpResumeCursor(input.resumeCursor);
-          // A session the agent can no longer continue is not reopened: the
-          // thread starts a new one with its history, as after a failed resume.
-          const lostSession =
-            resumed !== undefined && lostSessions.has(resumed.sessionId)
-              ? resumed.sessionId
-              : undefined;
-          const resumeSessionId = lostSession === undefined ? resumed?.sessionId : undefined;
+          const resumeSessionId = resumed?.sessionId;
           // A native fork opens on the agent's copy of the source conversation,
           // up to the boundary. One it can't make exactly (a boundary it can't
           // place, or one before the first prompt) fails here, and the caller
@@ -2173,12 +2206,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             modelSelection: boundModelSelection,
           });
 
-          const resumeFailure =
-            started.resumeFailure ??
-            (lostSession !== undefined
-              ? `${descriptor.presentation.displayName} can no longer continue its earlier conversation.`
-              : undefined);
-          if (lostSession !== undefined) yield* forgetLostSession(lostSession);
+          const resumeFailure = started.resumeFailure;
           // A resumed conversation keeps the turn history its cursor carried.
           const keepsHistory =
             resumed !== undefined &&
@@ -2276,9 +2304,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             // A switch from another agent starts without the history: the
             // thread hands it over. (A failed resume is seeded by the reactor.)
             pendingContextPreamble:
-              input.contextSeed !== undefined &&
-              resumeSessionId === undefined &&
-              lostSession === undefined
+              input.contextSeed !== undefined && resumeSessionId === undefined
                 ? renderThreadContextSeed(input.contextSeed)
                 : undefined,
             projectBrief,
@@ -2362,21 +2388,12 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                     return;
                   }
                   case "AvailableCommandsUpdated": {
-                    // The composer's `/` list for this thread; a side runtime
-                    // answers no messages of its own, so it lists none.
-                    const agentCommands = descriptor.agentCommands;
-                    if (agentCommands === undefined || ctx.lockdown !== undefined) return;
-                    yield* offerRuntimeEvent({
-                      type: "session.commands.updated",
-                      ...(yield* makeEventStamp()),
-                      provider: PROVIDER,
-                      threadId: ctx.threadId,
-                      payload: {
-                        commands: event.commands.filter(
-                          (command) => !agentCommands.hidden.has(command.name),
-                        ),
-                      },
-                    });
+                    // The composer's `/` list for this session; a side
+                    // runtime answers no messages of its own, so it lists none.
+                    if (descriptor.agentCommands === undefined || ctx.lockdown !== undefined) {
+                      return;
+                    }
+                    yield* noteSessionCommands(ctx, event.commands);
                     return;
                   }
                   case "SessionCost":
@@ -2728,12 +2745,25 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         const model = turnModelSelection?.model ?? ctx.session.model;
         const resolvedModel = resolveModelId(model);
 
-        const userText = input.input?.trim() ?? "";
         // The agent runs a command (or a skill) only when the message starts
-        // with it, so one goes as typed: no plan prefix, and the earlier
-        // context and the project brief wait for the next message.
+        // with it. A message is one only when the person's own typed text
+        // (never the context in front of it, never plain text or an agent's
+        // words) starts with `/` and a name the session advertised or a skill
+        // the status lists. It then goes alone, as typed: no plan prefix, and
+        // the context the server put in front of it, the earlier conversation
+        // and the project brief wait for the next message (`contextDeferred`
+        // tells the server its debts stay).
+        const typed = input.typed;
+        const typedCommand =
+          descriptor.agentCommands !== undefined && typed !== undefined && typed.indented !== true
+            ? slashCommandAtStart(typed.text)
+            : undefined;
         const sendsAgentCommand =
-          descriptor.agentCommands !== undefined && startsWithAgentCommand(userText);
+          typedCommand !== undefined && (yield* isAgentCommand(ctx, typedCommand));
+        const userText = sendsAgentCommand && typed ? typed.text : (input.input?.trim() ?? "");
+        const contextDeferred =
+          sendsAgentCommand &&
+          (typed?.context !== undefined || ctx.pendingContextPreamble !== undefined);
         // Prompt-command plan mode (Antigravity's `/plan`) is a text prefix.
         const lockedDown = ctx.lockdown !== undefined;
         const planMode =
@@ -2841,7 +2871,12 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
 
         yield* sendTurnPrompt(ctx, run, promptParts);
 
-        return { threadId: input.threadId, turnId, resumeCursor: ctx.session.resumeCursor };
+        return {
+          threadId: input.threadId,
+          turnId,
+          resumeCursor: ctx.session.resumeCursor,
+          ...(contextDeferred ? { contextDeferred: true as const } : {}),
+        };
       });
 
     /** Starts reading how the turn's prompts end (`promptOutcome`); never fails. */
@@ -2961,14 +2996,16 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         }
         if (ctx.openPrompt === prompt) ctx.openPrompt = undefined;
         yield* Deferred.succeed(prompt.closed, undefined);
-        // The agent can't go on with this session: it is stopped, and
-        // the next message opens a new one with the thread's history.
+        // The agent can't go on with this session: it is stopped, and the
+        // server forgets it (`conversationLost`), so the next message opens
+        // a new one with the thread's history.
         if (lostSession) {
-          yield* markSessionLost(ctx.acpSessionId);
           yield* withThreadLock(
             ctx.threadId,
             Effect.suspend(() =>
-              sessions.get(ctx.threadId) === ctx ? stopSessionInternal(ctx) : Effect.void,
+              sessions.get(ctx.threadId) === ctx
+                ? stopSessionInternal(ctx, "graceful", { conversationLost: true })
+                : Effect.void,
             ),
           ).pipe(Effect.forkIn(adapterScope));
         }
@@ -3461,16 +3498,14 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
 
     /**
      * For an agent that can't rewind (`rollbackByNewSession`): the session
-     * ends and is marked lost, so it is never reopened. The next message
-     * starts a new one, which the thread seeds with the turns it kept
-     * (`resumeFailed`), and the agent forgets the reverted ones. Work still
-     * going is stopped first as Stop does (a cancel ends the agent's commands
-     * and subagents, Antigravity 1.5.10), and the agent gets a moment to wind
-     * it down before its process ends.
+     * ends. ProviderService then forgets its conversation in the thread's
+     * binding, so the next message starts a new one seeded with the turns
+     * kept. Work still going is stopped first as Stop does (a cancel ends the
+     * agent's commands and subagents, Antigravity 1.5.10), and the agent gets
+     * a moment to wind it down before its process ends.
      */
     const forgetByNewSession = (ctx: AcpSessionContext) =>
       Effect.gen(function* () {
-        yield* markSessionLost(ctx.acpSessionId);
         const working = () =>
           ctx.activeTurnId !== undefined || ctx.workAfterPrompt.size > 0 || ctx.subagentsOut > 0;
         if (working()) {
