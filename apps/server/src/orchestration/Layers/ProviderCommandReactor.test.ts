@@ -4685,7 +4685,14 @@ describe("ProviderCommandReactor", () => {
       runtimeMode: "full-access",
       createdAt: now,
     });
-    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+    // Count only the thread's own turns: astra's side answer can reach the
+    // provider before or after this one, so the total is not a fixed number.
+    await waitFor(
+      () =>
+        harness.sendTurn.mock.calls.filter(
+          ([request]) => (request as { threadId: string }).threadId === threadId,
+        ).length === 2,
+    );
     await dispatch({
       type: "thread.session.set",
       commandId: CommandId.make("cmd-newer-turn-failed"),

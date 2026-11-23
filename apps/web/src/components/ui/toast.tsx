@@ -794,9 +794,14 @@ function Toasts({ position = "top-right" }: { position: ToastPosition }) {
           // top-right corner the panel's tab menu opens into, so at z-100 it
           // was swallowing clicks meant for a menu the user had just opened.
           // Ambient notice yields to whatever the user is actually doing.
+          // Above the layers that are part of the workspace, all at z-40 and
+          // all able to reach this corner: the browser panel's live page, a
+          // device floated over the chat, the floating thread list. A tie
+          // would go to whichever was added to the body last, and the browser
+          // page and the device float both arrive after this viewport.
           // A dimmed backdrop is the exception: the user is in a dialog, and
           // a notice raised then must not sit blurred underneath it.
-          raisedAboveBackdrops ? "z-60" : "z-40",
+          raisedAboveBackdrops ? "z-60" : "z-45",
           "fixed mx-auto flex w-[calc(100%-var(--toast-inset)*2)] max-w-[20rem] [--toast-header-offset:52px] [--toast-inset:--spacing(4)] sm:[--toast-inset:--spacing(6)]",
           // Vertical positioning
           "data-[position*=top]:top-[calc(var(--toast-inset)+var(--toast-header-offset))]",

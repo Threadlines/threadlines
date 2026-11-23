@@ -35,6 +35,7 @@ import {
 import { buildThreadRouteParams } from "../../threadRoutes";
 import { useNavigate } from "@tanstack/react-router";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
+import { keepActivationKeys, PROJECT_SEARCH_MIN_PROJECTS } from "../ProjectPickerMenu";
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import {
   deriveProjectGroupingOverrideKey,
@@ -157,25 +158,8 @@ async function setProjectPhoneAlertsMuted(
 const SCOPE_ITEM_CLASS_NAME = MENU_PICK_ITEM_CLASS_NAME;
 const SCOPE_ITEM_SELECTED = MENU_PICK_ITEM_SELECTED_CLASS_NAME;
 
-/**
- * For a button inside a menu row: Enter and Space press the button itself.
- * Left to bubble, the menu would read them as picking the row (or, while a
- * search holds focus, the highlighted match) instead.
- */
-function keepActivationKeys(event: React.KeyboardEvent<HTMLButtonElement>) {
-  if (event.key === "Enter" || event.key === " ") {
-    event.stopPropagation();
-  }
-}
-
 /** How many picked projects the trigger draws an icon for. */
 const TRIGGER_FAVICON_LIMIT = 3;
-
-/**
- * Past this many projects the menu gets a search line. Fewer fit on screen at
- * once, where a search box would only be one more row to look past.
- */
-const PROJECT_SEARCH_MIN_PROJECTS = 9;
 
 /**
  * What the trigger calls the picked projects: their names while two fit, a

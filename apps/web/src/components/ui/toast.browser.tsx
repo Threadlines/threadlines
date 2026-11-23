@@ -32,6 +32,14 @@ import { ToastProvider, stackedThreadToast, toastManager } from "./toast";
 const APP_OVERLAY_LAYER = 50;
 
 /**
+ * The layer of things that are part of the workspace and float over the app:
+ * the browser panel's live page, a device floated over the chat, the floating
+ * thread list. They reach the toast corner and are added to the body after
+ * the toast viewport, so a tie with them puts the toast underneath.
+ */
+const WORKSPACE_LAYER = 40;
+
+/**
  * Says whether this page has focus, for the rest of the spec. Notice clocks run
  * only while the window is in front, and a spec's frame has focus only if an
  * earlier spec happened to move it there, so the clock specs say it outright.
@@ -76,8 +84,10 @@ describe("toast layering", () => {
         zIndex,
         `the toast viewport is at z-index ${zIndex}; anything at or above ${APP_OVERLAY_LAYER} swallows clicks meant for an open menu`,
       ).toBeLessThan(APP_OVERLAY_LAYER);
-      // Still above the page it floats over.
-      expect(zIndex).toBeGreaterThan(0);
+      expect(
+        zIndex,
+        `the toast viewport is at z-index ${zIndex}; the browser page and floating windows at ${WORKSPACE_LAYER} cover it`,
+      ).toBeGreaterThan(WORKSPACE_LAYER);
 
       // The card inside inherits the viewport's stacking context, so its own
       // very high z-index cannot lift it out past the overlays.

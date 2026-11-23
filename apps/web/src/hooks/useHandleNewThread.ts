@@ -46,6 +46,7 @@ import {
   useStore,
 } from "../store";
 import type { Project } from "../types";
+import { pinnedProjectsFirst } from "../projectPickerOrder";
 import { resolveThreadRouteTarget } from "../threadRoutes";
 import { useUiStateStore } from "../uiStateStore";
 import { useSettings } from "./useSettings";
@@ -311,12 +312,15 @@ function createThreadContextSelector(
 }
 
 /**
- * Projects in the order the sidebar lists them. Sorting by activity reads
- * every thread, but the result changes only when the order does, so a
- * streaming reply bumping its thread's activity does not redraw callers.
+ * Projects in the order the project pickers list them: pinned ones first, then
+ * the rest, each part by the user's dragged order or by activity. Sorting by
+ * activity reads every thread, but the result changes only when the order
+ * does, so a streaming reply bumping its thread's activity does not redraw
+ * callers.
  */
 function useOrderedProjects(): Project[] {
   const projectOrder = useUiStateStore((store) => store.projectOrder);
+  const pinnedProjectCwds = useUiStateStore((store) => store.pinnedProjectCwds);
   const sidebarProjectSortOrder = useSettings((settings) => settings.sidebarProjectSortOrder);
   return useStore(
     useShallow(
@@ -327,18 +331,17 @@ function useOrderedProjects(): Project[] {
             preferredIds: projectOrder,
             getId: getProjectOrderKey,
           });
-          if (sidebarProjectSortOrder === "manual") {
-            return manuallyOrdered;
-          }
-          // Mirror the sidebar's activity/created ordering so project pickers built
-          // on this hook list projects in the same order the user sees there.
-          return sortScopedProjectsByActivity(
-            manuallyOrdered,
-            selectSidebarThreadsAcrossEnvironments(store),
-            sidebarProjectSortOrder,
-          );
+          const ordered =
+            sidebarProjectSortOrder === "manual"
+              ? manuallyOrdered
+              : sortScopedProjectsByActivity(
+                  manuallyOrdered,
+                  selectSidebarThreadsAcrossEnvironments(store),
+                  sidebarProjectSortOrder,
+                );
+          return pinnedProjectsFirst(ordered, pinnedProjectCwds);
         },
-        [projectOrder, sidebarProjectSortOrder],
+        [pinnedProjectCwds, projectOrder, sidebarProjectSortOrder],
       ),
     ),
   );

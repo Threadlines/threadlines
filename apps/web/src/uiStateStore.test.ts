@@ -25,6 +25,7 @@ function makeUiState(overrides: Partial<UiState> = {}): UiState {
   return {
     projectExpandedById: {},
     projectOrder: [],
+    pinnedProjectCwds: [],
     seenThreadOverlays: {},
     threadSeedVisitedAtById: {},
     threadChangedFilesExpandedById: {},
@@ -90,6 +91,19 @@ describe("uiStateStore pure functions", () => {
       resendsLeft: 0,
     });
     expect(overtaken.seenThreadOverlays).toEqual({});
+  });
+
+  it("a project on a computer that connects later goes back to its saved place", () => {
+    // Saved: remote first. The local computer's projects load first.
+    hydratePersistedProjectState({ projectOrderCwds: ["/srv/remote", "/work/local"] });
+    const local = { key: "local:/work/local", logicalKey: "local", cwd: "/work/local" };
+    const remote = { key: "remote:/srv/remote", logicalKey: "remote", cwd: "/srv/remote" };
+
+    const localOnly = syncProjects(makeUiState(), [local]);
+    const both = syncProjects(localOnly, [local, remote]);
+
+    expect(both.projectOrder).toEqual([remote.key, local.key]);
+    hydratePersistedProjectState({});
   });
 
   it("reorderProjects moves a project to a target index", () => {
