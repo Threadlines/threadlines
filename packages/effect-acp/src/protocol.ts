@@ -65,6 +65,18 @@ export interface AcpPatchedProtocol {
   readonly serverProtocol: RpcServer.Protocol["Service"];
   readonly incoming: Stream.Stream<AcpIncomingNotification>;
   readonly request: (method: string, payload: unknown) => Effect.Effect<unknown, AcpError.AcpError>;
+  /**
+   * Sends a request and returns once it is queued for the wire, ahead of
+   * anything sent after. Its answer goes to `onAnswer`, which runs on the
+   * reader as the response is read, before any message that follows it is
+   * handled (notifications run there too), so the answer keeps its place
+   * among them. If the connection ends first, `onAnswer` gets that failure.
+   */
+  readonly requestInOrder: (
+    method: string,
+    payload: unknown,
+    onAnswer: (answer: Exit.Exit<unknown, AcpError.AcpError>) => Effect.Effect<void>,
+  ) => Effect.Effect<void, AcpError.AcpError>;
   readonly notify: (method: string, payload: unknown) => Effect.Effect<void, AcpError.AcpError>;
 }
 
@@ -99,6 +111,21 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
   const extPending = yield* Ref.make(
     new Map<string | number, Deferred.Deferred<unknown, AcpError.AcpError>>(),
   );
+  /** `requestInOrder`'s requests, answered on the reader. */
+  const orderedPending = yield* Ref.make(
+    new Map<
+      string | number,
+      (answer: Exit.Exit<unknown, AcpError.AcpError>) => Effect.Effect<void>
+    >(),
+  );
+  const takeOrderedPending = (requestId: string | number) =>
+    Ref.modify(orderedPending, (pending) => {
+      const onAnswer = pending.get(requestId);
+      if (onAnswer === undefined) return [undefined, pending] as const;
+      const next = new Map(pending);
+      next.delete(requestId);
+      return [onAnswer, next] as const;
+    });
 
   const logProtocol = (event: AcpProtocolLogEvent) => {
     if (event.direction === "incoming" && !options.logIncoming) {
@@ -175,14 +202,13 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
   const completeExtPendingSuccess = (requestId: string | number, value: unknown) =>
     resolveExtPending(requestId, (deferred) => Deferred.succeed(deferred, value));
 
-  const failAllExtPending = (error: AcpError.AcpError) =>
-    Ref.getAndSet(extPending, new Map()).pipe(
-      Effect.flatMap((pending) =>
-        Effect.forEach([...pending.values()], (deferred) => Deferred.fail(deferred, error), {
-          discard: true,
-        }),
-      ),
-    );
+  const failAllExtPending = (error: AcpError.AcpError): Effect.Effect<void> =>
+    Effect.gen(function* () {
+      const pending = yield* Ref.getAndSet(extPending, new Map<string | number, never>());
+      for (const deferred of pending.values()) yield* Deferred.fail(deferred, error);
+      const ordered = yield* Ref.getAndSet(orderedPending, new Map<string | number, never>());
+      for (const onAnswer of ordered.values()) yield* onAnswer(Exit.fail(error));
+    });
 
   const dispatchNotification = (notification: AcpIncomingNotification) =>
     Queue.offer(notificationQueue, notification).pipe(
@@ -327,9 +353,17 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
     return Queue.offer(serverQueue, message).pipe(Effect.asVoid);
   };
 
-  const handleExitEncoded = (received: RpcMessage.ResponseExitEncoded) => {
+  const handleExitEncoded = (received: RpcMessage.ResponseExitEncoded): Effect.Effect<void> => {
     const message = asRequestFailure(received);
-    return Ref.get(extPending).pipe(
+    return takeOrderedPending(message.requestId).pipe(
+      Effect.flatMap((onAnswer) =>
+        onAnswer === undefined ? routeExit(message) : onAnswer(responseExit(message)),
+      ),
+    );
+  };
+
+  const routeExit = (message: RpcMessage.ResponseExitEncoded): Effect.Effect<void> =>
+    Ref.get(extPending).pipe(
       Effect.flatMap((pending) => {
         if (!pending.has(message.requestId)) {
           return Queue.offer(clientQueue, message).pipe(Effect.asVoid);
@@ -350,7 +384,6 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
         );
       }),
     );
-  };
 
   const routeDecodedMessage = (
     message: RpcMessage.FromClientEncoded | RpcMessage.FromServerEncoded,
@@ -531,6 +564,29 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
     );
   });
 
+  const sendRequestInOrder = Effect.fn("sendRequestInOrder")(function* (
+    method: string,
+    payload: unknown,
+    onAnswer: (answer: Exit.Exit<unknown, AcpError.AcpError>) => Effect.Effect<void>,
+  ) {
+    const requestId = yield* Ref.modify(
+      nextRequestId,
+      (current) => [current, current + 1] as const,
+    );
+    yield* Ref.update(orderedPending, (pending) => new Map(pending).set(requestId, onAnswer));
+    yield* offerOutgoing({
+      _tag: "Request",
+      id: requestId,
+      tag: method,
+      payload,
+      headers: [],
+    }).pipe(
+      Effect.catch((error) =>
+        takeOrderedPending(requestId).pipe(Effect.andThen(Effect.fail(error))),
+      ),
+    );
+  });
+
   return {
     clientProtocol,
     serverProtocol,
@@ -538,6 +594,7 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
       return Stream.fromQueue(notificationQueue);
     },
     request: sendRequest,
+    requestInOrder: sendRequestInOrder,
     notify: sendNotification,
   } satisfies AcpPatchedProtocol;
 });
@@ -569,6 +626,19 @@ function asRequestFailure(message: RpcMessage.ResponseExitEncoded): RpcMessage.R
       ),
     },
   };
+}
+
+/** A response as its caller sees it: the value, or the request's failure. */
+function responseExit(
+  message: RpcMessage.ResponseExitEncoded,
+): Exit.Exit<unknown, AcpError.AcpError> {
+  if (message.exit._tag === "Success") return Exit.succeed(message.exit.value);
+  const failure = message.exit.cause.find((entry) => entry._tag === "Fail");
+  return Exit.fail(
+    failure && isProtocolError(failure.error)
+      ? AcpError.AcpRequestError.fromProtocolError(failure.error)
+      : AcpError.AcpRequestError.internalError("Request failed"),
+  );
 }
 
 function isProtocolError(

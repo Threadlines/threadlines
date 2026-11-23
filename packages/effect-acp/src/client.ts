@@ -37,6 +37,8 @@ export interface AcpClientOptions {
 type AcpClientRaw = {
   readonly notifications: Stream.Stream<AcpProtocol.AcpIncomingNotification>;
   readonly request: (method: string, payload: unknown) => Effect.Effect<unknown, AcpError.AcpError>;
+  /** A request whose answer keeps its place among the notifications (`AcpPatchedProtocol.requestInOrder`). */
+  readonly requestInOrder: AcpProtocol.AcpPatchedProtocol["requestInOrder"];
   readonly notify: (method: string, payload: unknown) => Effect.Effect<void, AcpError.AcpError>;
 };
 
@@ -466,6 +468,7 @@ export const make = Effect.fn("effect-acp/AcpClient.make")(function* (
     raw: {
       notifications: transport.incoming,
       request: transport.request,
+      requestInOrder: transport.requestInOrder,
       notify: transport.notify,
     },
     agent: {

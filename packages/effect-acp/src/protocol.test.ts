@@ -228,6 +228,42 @@ it.layer(NodeServices.layer)("effect-acp protocol", (it) => {
     }),
   );
 
+  it.effect("hands an in-order request's answer over where it was read among the updates", () =>
+    Effect.gen(function* () {
+      const { stdio, input, output } = yield* makeInMemoryStdio();
+      const seen: Array<string> = [];
+      const transport = yield* AcpProtocol.makeAcpPatchedProtocol({
+        stdio,
+        serverRequestMethods: new Set(),
+        onNotification: () => Effect.sync(() => void seen.push("update")),
+      });
+      const update = yield* encodeJsonl(SessionUpdateNotification, {
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: { sessionId: "session-1", update: { sessionUpdate: "plan", entries: [] } },
+      });
+      const answered = yield* Deferred.make<void>();
+      yield* transport.requestInOrder("x/test", { hello: "world" }, (answer) =>
+        Effect.sync(() => {
+          seen.push(answer._tag === "Success" ? "answer" : "failure");
+        }).pipe(Effect.andThen(Deferred.succeed(answered, undefined))),
+      );
+      // Returns once the request is out, before any answer.
+      assert.deepEqual((yield* decodeExtRequest(yield* Queue.take(output))).id, 1);
+      assert.deepEqual(seen, []);
+      // An update, the answer, and an update the agent wrote right after it.
+      yield* Queue.offer(input, update);
+      yield* Queue.offer(
+        input,
+        yield* encodeJsonl(ExtResponse, { jsonrpc: "2.0", id: 1, result: { ok: true } }),
+      );
+      yield* Queue.offer(input, update);
+      yield* Deferred.await(answered);
+      for (let attempt = 0; attempt < 100 && seen.length < 3; attempt += 1) yield* Effect.yieldNow;
+      assert.deepEqual(seen, ["update", "answer", "update"]);
+    }),
+  );
+
   it.effect("keeps reading the agent while an extension request waits for its answer", () =>
     Effect.gen(function* () {
       const { stdio, input, output } = yield* makeInMemoryStdio();
