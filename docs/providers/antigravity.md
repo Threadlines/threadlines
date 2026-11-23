@@ -55,7 +55,9 @@ has them. The reasoning level is its own choice next to the model.
 | Auto              | The CLI's own `auto` where your session offers it, otherwise `accept-edits`    |
 | Full access       | `default`, and Threadlines approves each request; questions still wait for you |
 
-Plan mode sends the task as `/plan`, and the plan shows on the plan card for review.
+Plan mode sends the task as `/plan`, and the plan shows on the plan card for review. A message
+that starts with one of Antigravity's own commands or skills goes as typed instead (see Commands and
+Skills in the Composer).
 
 ## Your Rules and Skills
 
@@ -103,7 +105,32 @@ other agents' lists, so a project's own skills show only when Threadlines runs i
 
 To use a skill, start the message with `/` and its name, as in a terminal (`/review this diff`).
 Antigravity also picks a skill on its own when the task matches its description. The composer's
-`$` skill list is for Codex only.
+`$` skill list is for Codex only; Antigravity's skills are in its `/` list (below).
+
+## Commands and Skills in the Composer
+
+Typing `/` in the composer lists Antigravity's skills and its own commands, under Threadlines' own
+(`/model`, `/plan`, `/theme`, `/default`). Picking one puts `/name ` in the message.
+
+- Before a chat has started, the list has the skills Threadlines found (above).
+- Once Antigravity has started in a thread, it sends the commands that session offers
+  (`available_commands_update`, the list Google fixed in 1.5.2 to be the session's agent's). They
+  join the list, and where a command and a skill share a name, Antigravity's entry is the one shown.
+  `/goal` and `/compact` show only when Antigravity offers them. Each thread keeps its own list,
+  saved with the thread, so it is there again after a restart, before Antigravity starts again; a
+  new list from the agent replaces it.
+- Antigravity's `/plan`, `/login` and `/logout` are left out: plan mode is the composer's `/plan`,
+  and signing in or out is on the Antigravity row in Settings, where it also stops that account's
+  chats. Typed by hand, they still go to Antigravity.
+
+A message that starts with `/` and a name goes to Antigravity exactly as typed, since Antigravity
+only runs a command at the very start of the message. In plan mode it goes without the `/plan`
+prefix, and the project's instructions Threadlines sends with a new chat's first message wait for
+the next message. A message that starts with a path (`/tmp/out.log is empty`) is plain text.
+
+The first message after Threadlines starts Antigravity over with the thread's history (a moved
+thread, a conversation Google can't continue, an edited earlier message) carries that history in
+front of the words, so a command there arrives as text. Send it again on its own.
 
 ## Turns
 
@@ -174,6 +201,16 @@ exhausted quota fails with its reset time, so the usage-limit notice above the c
 it resets and can continue then. A conversation Google can no longer continue (a model rejected a
 saved thinking block) stops its session, and the next message starts a new one with the thread's
 history.
+
+### Editing an Earlier Message
+
+Antigravity can't rewind its own conversation. When you edit an earlier message (or undo back to
+one), Threadlines restores the files, stops anything Antigravity still runs for the thread (a
+running turn, its commands and subagents, by a cancel, then a moment to wind down), and ends that
+session. The next message starts a new Antigravity session and sends it the turns that are left,
+so Antigravity no longer remembers the removed ones, also when Threadlines restarts before that
+message. This also works when no Antigravity was running for the thread: Threadlines opens the
+saved session just to end it, since the next message would otherwise continue it as it was.
 
 ### Tokens
 

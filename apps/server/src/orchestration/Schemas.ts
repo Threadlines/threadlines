@@ -75,6 +75,7 @@ import {
   ThreadEffectiveCwdSetPayload as ContractsThreadEffectiveCwdSetPayloadSchema,
   ThreadGoalStateSetPayload as ContractsThreadGoalStateSetPayloadSchema,
   ThreadCheckBacksSetPayload as ContractsThreadCheckBacksSetPayloadSchema,
+  ThreadAgentCommandsSetPayload as ContractsThreadAgentCommandsSetPayloadSchema,
   ThreadTurnDiffCompletedPayload as ContractsThreadTurnDiffCompletedPayloadSchema,
   ThreadTurnDiffSummaryUpdatedPayload as ContractsThreadTurnDiffSummaryUpdatedPayloadSchema,
   ThreadTurnCompletedPayload as ContractsThreadTurnCompletedPayloadSchema,
@@ -186,6 +187,7 @@ export const ThreadRealtimeStateSetPayload = ContractsThreadRealtimeStateSetPayl
 export const ThreadEffectiveCwdSetPayload = ContractsThreadEffectiveCwdSetPayloadSchema;
 export const ThreadGoalStateSetPayload = ContractsThreadGoalStateSetPayloadSchema;
 export const ThreadCheckBacksSetPayload = ContractsThreadCheckBacksSetPayloadSchema;
+export const ThreadAgentCommandsSetPayload = ContractsThreadAgentCommandsSetPayloadSchema;
 export const ThreadTurnDiffCompletedPayload = ContractsThreadTurnDiffCompletedPayloadSchema;
 export const ThreadTurnDiffSummaryUpdatedPayload =
   ContractsThreadTurnDiffSummaryUpdatedPayloadSchema;

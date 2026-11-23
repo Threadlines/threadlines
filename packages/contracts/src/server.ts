@@ -26,6 +26,7 @@ import { ModelCapabilities, ModelUpgradeInfo } from "./model.ts";
 import { RuntimeMode } from "./orchestration.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import { ServerSettings } from "./settings.ts";
+import { ServerProviderSlashCommand, ServerProviderSlashCommandInput } from "./slashCommands.ts";
 
 const KeybindingsMalformedConfigIssue = Schema.Struct({
   kind: Schema.Literal("keybindings.malformed-config"),
@@ -378,17 +379,7 @@ export const ServerProviderModel = Schema.Struct({
 });
 export type ServerProviderModel = typeof ServerProviderModel.Type;
 
-export const ServerProviderSlashCommandInput = Schema.Struct({
-  hint: TrimmedNonEmptyString,
-});
-export type ServerProviderSlashCommandInput = typeof ServerProviderSlashCommandInput.Type;
-
-export const ServerProviderSlashCommand = Schema.Struct({
-  name: TrimmedNonEmptyString,
-  description: Schema.optional(TrimmedNonEmptyString),
-  input: Schema.optional(ServerProviderSlashCommandInput),
-});
-export type ServerProviderSlashCommand = typeof ServerProviderSlashCommand.Type;
+export { ServerProviderSlashCommand, ServerProviderSlashCommandInput };
 
 export const ServerProviderSkill = Schema.Struct({
   name: TrimmedNonEmptyString,
@@ -568,6 +559,13 @@ export const ServerProvider = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
   skills: Schema.Array(ServerProviderSkill).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  /**
+   * The agent runs a skill when a message starts with `/<skill name>`
+   * (Antigravity), so the composer lists `skills` in its `/` list and inserts
+   * them that way; a running session's own list (OrchestrationThread.agentCommands)
+   * joins them. Absent: skills go the provider's usual way.
+   */
+  slashSkills: Schema.optionalKey(Schema.Boolean),
   versionAdvisory: Schema.optionalKey(ServerProviderVersionAdvisory),
   updateState: Schema.optionalKey(ServerProviderUpdateState),
   detection: Schema.optionalKey(ServerProviderDetection),

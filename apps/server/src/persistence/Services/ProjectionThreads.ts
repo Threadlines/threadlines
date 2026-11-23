@@ -11,6 +11,7 @@ import {
   MessageId,
   ModelSelection,
   NonNegativeInt,
+  OrchestrationAgentCommands,
   OrchestrationCheckBack,
   OrchestrationThreadGoal,
   OrchestrationQueuedFollowUp,
@@ -167,6 +168,14 @@ export const ProjectionThread = Schema.Struct({
    * migration 063 decode; absent reads as nothing recorded yet.
    */
   sentModels: Schema.optional(Schema.Record(Schema.String, ModelSelection)),
+  /**
+   * Per agent, the slash commands its session last listed; see
+   * `OrchestrationThread.agentCommands`. Optional so rows written before
+   * migration 124 decode; absent reads as none reported.
+   */
+  agentCommands: Schema.optional(
+    Schema.NullOr(Schema.Record(Schema.String, OrchestrationAgentCommands)),
+  ),
   /**
    * The user's name for the thread's own agent; see
    * `OrchestrationThreadShell.agentRole`. Optional so rows written before

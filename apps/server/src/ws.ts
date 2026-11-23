@@ -296,7 +296,8 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
       | "thread.secret-request-notes-delivered"
       | "thread.handed-back"
       | "thread.parent-attachment-set"
-      | "thread.pull-request-dismissed";
+      | "thread.pull-request-dismissed"
+      | "thread.agent-commands-set";
   }
 > {
   return (
@@ -338,6 +339,8 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
     // snapshot writes the shell too: one read before a close and delivered
     // after it would undo the close, so the change follows the snapshot here.
     event.type === "thread.pull-request-dismissed" ||
+    // The slash commands an agent's session listed: the open chat's `/` list.
+    event.type === "thread.agent-commands-set" ||
     event.type === "thread.message-sent" ||
     event.type === "thread.follow-up-submitted" ||
     event.type === "thread.follow-up-accepted" ||
@@ -1146,6 +1149,9 @@ const makeCoreRpcLayer = (
                 threadId: event.payload.threadId,
               }),
             );
+          // Detail only: nothing on the thread's shell changed.
+          case "thread.agent-commands-set":
+            return Effect.succeed(Option.none());
           case "thread.unarchived":
             return projectionSnapshotQuery.getThreadShellById(event.payload.threadId).pipe(
               Effect.map((thread) =>

@@ -1,5 +1,6 @@
 import { hasLiveSideTurn, liveSideTurns } from "@threadlines/shared/sideTurns";
 import { replaceAgentCheckBacks, sameCheckBacks } from "@threadlines/shared/checkBacks";
+import { applyAgentCommands } from "@threadlines/shared/agentCommands";
 import {
   applyLinkedPullRequestSwitches,
   applyPullRequestLinked,
@@ -19,6 +20,7 @@ import type {
   OrchestrationAgentPage,
   OrchestrationCommandRequest,
   OrchestrationCommandRun,
+  OrchestrationAgentCommands,
   OrchestrationReadModel,
   OrchestrationSecretRequest,
   OrchestrationSettingsChangeRequest,
@@ -213,6 +215,8 @@ export interface EnvironmentState {
   /** Suggested commands per thread (docs/terminal-command-runs.md); absent until a thread's detail loads. */
   commandRequestsByThreadId?: Record<ThreadId, ReadonlyArray<OrchestrationCommandRequest>>;
   commandRunsByThreadId?: Record<ThreadId, ReadonlyArray<OrchestrationCommandRun>>;
+  /** The slash commands each thread's agents' sessions listed; absent until a thread's detail loads. */
+  agentCommandsByThreadId?: Record<ThreadId, Readonly<Record<string, OrchestrationAgentCommands>>>;
   /**
    * Threads whose detail snapshot has landed (syncServerThreadDetail). Events
    * and optimistic writes fill the detail slices too, so only this says a
@@ -277,6 +281,7 @@ const initialEnvironmentState: EnvironmentState = {
   subagentsByThreadId: {},
   commandRequestsByThreadId: {},
   commandRunsByThreadId: {},
+  agentCommandsByThreadId: {},
   threadDetailLoadedById: {},
   childRequestsByThreadId: {},
   settingsRequestsByThreadId: {},
@@ -292,6 +297,7 @@ const initialState: AppState = {
 
 const EMPTY_THREAD_IDS: ThreadId[] = [];
 const EMPTY_SUBAGENTS: ReadonlyArray<OrchestrationSubagent> = [];
+const EMPTY_AGENT_COMMANDS: Readonly<Record<string, OrchestrationAgentCommands>> = {};
 
 function arraysEqual<T>(left: readonly T[], right: readonly T[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
@@ -875,6 +881,7 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     pages: thread.pages ?? [],
     commandRequests: thread.commandRequests ?? [],
     commandRuns: thread.commandRuns ?? [],
+    agentCommands: thread.agentCommands ?? EMPTY_AGENT_COMMANDS,
     error: sessionNoticeError(thread.session),
     createdAt: thread.createdAt,
     archivedAt: thread.archivedAt,
@@ -1866,6 +1873,19 @@ function writeThreadState(
   }
 
   if (
+    nextThread.agentCommands !== undefined &&
+    previousThread?.agentCommands !== nextThread.agentCommands
+  ) {
+    nextState = {
+      ...nextState,
+      agentCommandsByThreadId: {
+        ...nextState.agentCommandsByThreadId,
+        [nextThread.id]: nextThread.agentCommands,
+      },
+    };
+  }
+
+  if (
     nextThread.commandRuns !== undefined &&
     previousThread?.commandRuns !== nextThread.commandRuns
   ) {
@@ -2079,6 +2099,8 @@ function removeThreadState(state: EnvironmentState, threadId: ThreadId): Environ
     state.commandRequestsByThreadId ?? {};
   const { [threadId]: _removedCommandRuns, ...commandRunsByThreadId } =
     state.commandRunsByThreadId ?? {};
+  const { [threadId]: _removedAgentCommands, ...agentCommandsByThreadId } =
+    state.agentCommandsByThreadId ?? {};
   const { [threadId]: _removedDetailLoaded, ...threadDetailLoadedById } =
     state.threadDetailLoadedById ?? {};
   const { [threadId]: _removedChildRequests, ...childRequestsByThreadId } =
@@ -2109,6 +2131,7 @@ function removeThreadState(state: EnvironmentState, threadId: ThreadId): Environ
     subagentsByThreadId,
     commandRequestsByThreadId,
     commandRunsByThreadId,
+    agentCommandsByThreadId,
     threadDetailLoadedById,
     childRequestsByThreadId,
     settingsRequestsByThreadId,
@@ -2550,6 +2573,10 @@ function syncEnvironmentShellSnapshot(
       state.commandRunsByThreadId ?? {},
       nextThreadIds,
     ),
+    agentCommandsByThreadId: retainThreadScopedRecord(
+      state.agentCommandsByThreadId ?? {},
+      nextThreadIds,
+    ),
     threadDetailLoadedById: retainThreadScopedRecord(
       state.threadDetailLoadedById ?? {},
       nextThreadIds,
@@ -2984,6 +3011,12 @@ function applyEnvironmentOrchestrationEvent(
         ...thread,
         goal: event.payload.goal,
         updatedAt: event.payload.updatedAt,
+      }));
+
+    case "thread.agent-commands-set":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        agentCommands: applyAgentCommands(thread.agentCommands, event.payload),
       }));
 
     case "thread.check-backs-set":

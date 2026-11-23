@@ -158,6 +158,8 @@ const ACP_RESUME_VERSION = 1 as const;
  * conversation in a fresh one.
  */
 const ACP_CANCEL_DEADLINE = Duration.seconds(15);
+/** How long a revert lets the agent stop its work before its session ends. */
+const ACP_REVERT_WIND_DOWN = Duration.seconds(3);
 /**
  * An agent's own turn (see `agentTurns`) that has gone this long without
  * output is closed here, in case its end notice never comes. Long: a command
@@ -581,6 +583,16 @@ function findModeByAliases(
     }
   }
   return undefined;
+}
+
+/**
+ * Whether a message starts with a slash command, as an agent with
+ * `agentCommands` reads it: `/` and a name, then whitespace or the end. A
+ * path (`/tmp/out.log is empty`) has a second `/` in its first word and is
+ * not one.
+ */
+export function startsWithAgentCommand(text: string): boolean {
+  return /^\/[\p{L}\p{N}_][\p{L}\p{N}_.:-]*(?:\s|$)/u.test(text);
 }
 
 function isPlanMode(mode: AcpSessionMode): boolean {
@@ -2472,6 +2484,24 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                     });
                     return;
                   }
+                  case "AvailableCommandsUpdated": {
+                    // The composer's `/` list for this thread; a side runtime
+                    // answers no messages of its own, so it lists none.
+                    const agentCommands = descriptor.agentCommands;
+                    if (agentCommands === undefined || ctx.lockdown !== undefined) return;
+                    yield* offerRuntimeEvent({
+                      type: "session.commands.updated",
+                      ...(yield* makeEventStamp()),
+                      provider: PROVIDER,
+                      threadId: ctx.threadId,
+                      payload: {
+                        commands: event.commands.filter(
+                          (command) => !agentCommands.hidden.has(command.name),
+                        ),
+                      },
+                    });
+                    return;
+                  }
                   case "SessionCost":
                     ctx.latestCostUsd = event.totalUsd;
                     // A report between turns marks the boundary exactly.
@@ -2818,13 +2848,22 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         const model = turnModelSelection?.model ?? ctx.session.model;
         const resolvedModel = resolveModelId(model);
 
+        const userText = input.input?.trim() ?? "";
+        // The agent runs a command (or a skill) only when the message starts
+        // with it, so one goes as typed: no plan prefix, and the earlier
+        // context and the project brief wait for the next message.
+        const sendsAgentCommand =
+          descriptor.agentCommands !== undefined && startsWithAgentCommand(userText);
         // Prompt-command plan mode (Antigravity's `/plan`) is a text prefix.
         const lockedDown = ctx.lockdown !== undefined;
         const planMode =
-          input.interactionMode === "plan" && !lockedDown ? descriptor.planMode : undefined;
-        const contextPreamble = ctx.pendingContextPreamble;
-        const projectBrief = ctx.projectBrief;
-        const userText = input.input?.trim() ?? "";
+          input.interactionMode === "plan" && !lockedDown && !sendsAgentCommand
+            ? descriptor.planMode
+            : undefined;
+        const contextPreamble = sendsAgentCommand ? undefined : ctx.pendingContextPreamble;
+        const projectBrief: ProjectBriefPreface = sendsAgentCommand
+          ? { text: undefined, hash: ctx.projectBrief.hash }
+          : ctx.projectBrief;
         const contextText =
           contextPreamble !== undefined
             ? withContextSeedPreamble(contextPreamble, userText)
@@ -2894,7 +2933,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         ctx.turnRun = run;
         yield* openPromptPhase(ctx, run);
         resetTurnState(ctx);
-        ctx.pendingContextPreamble = undefined;
+        if (!sendsAgentCommand) ctx.pendingContextPreamble = undefined;
         if (projectBrief.text !== undefined) {
           ctx.projectBriefCarrier = {
             turnId,
@@ -3473,7 +3512,8 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
      * to the first reverted message's prompt, so it forgets the reverted
      * turns. Without a known position for that prompt (a turn before this
      * cursor's history, or a prompt the agent couldn't place) the agent
-     * keeps them, and the result says so.
+     * keeps them, and the result says so. With `rollbackByNewSession` the
+     * session ends instead (`forgetByNewSession`).
      */
     const rollbackThread: AcpAdapterShape["rollbackThread"] = (threadId, numTurns, options) =>
       Effect.gen(function* () {
@@ -3487,6 +3527,15 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         }
         ctx.turns.splice(Math.max(0, ctx.turns.length - numTurns));
         const conversationHistory = descriptor.conversationHistory;
+        if (conversationHistory === undefined && descriptor.rollbackByNewSession === true) {
+          yield* withThreadLock(
+            threadId,
+            Effect.suspend(() =>
+              sessions.get(threadId) === ctx ? forgetByNewSession(ctx) : Effect.void,
+            ),
+          );
+          return { threadId, turns: ctx.turns, conversationRolledBack: true };
+        }
         // The last turn's prompt position may still be on its way.
         if (ctx.activeTurnId === undefined && ctx.promptFiber !== undefined) {
           yield* Fiber.await(ctx.promptFiber).pipe(
@@ -3533,6 +3582,29 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           recordHistory(ctx);
         }
         return { threadId, turns: ctx.turns, conversationRolledBack: rewound };
+      });
+
+    /**
+     * For an agent that can't rewind (`rollbackByNewSession`): the session
+     * ends and is marked lost, so it is never reopened. The next message
+     * starts a new one, which the thread seeds with the turns it kept
+     * (`resumeFailed`), and the agent forgets the reverted ones. Work still
+     * going is stopped first as Stop does (a cancel ends the agent's commands
+     * and subagents, Antigravity 1.5.10), and the agent gets a moment to wind
+     * it down before its process ends.
+     */
+    const forgetByNewSession = (ctx: AcpSessionContext) =>
+      Effect.gen(function* () {
+        yield* markSessionLost(ctx.acpSessionId);
+        const working = () =>
+          ctx.activeTurnId !== undefined || ctx.workAfterPrompt.size > 0 || ctx.subagentsOut > 0;
+        if (working()) {
+          yield* interruptTurn(ctx.threadId).pipe(Effect.ignore);
+          yield* Effect.gen(function* () {
+            while (working()) yield* Effect.sleep("50 millis");
+          }).pipe(Effect.timeoutOption(ACP_REVERT_WIND_DOWN));
+        }
+        yield* stopSessionInternal(ctx);
       });
 
     const stopSession: AcpAdapterShape["stopSession"] = (threadId) =>
@@ -3620,7 +3692,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
       provider: PROVIDER,
       capabilities: {
         sessionModelSwitch: "in-session",
-        conversationRollback: "none",
+        conversationRollback: descriptor.rollbackByNewSession ? "new-session" : "none",
         ...(descriptor.steer || descriptor.steerWithPrompt
           ? { activeTurnSteering: "supported" as const }
           : {}),

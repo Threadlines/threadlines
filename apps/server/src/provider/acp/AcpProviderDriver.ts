@@ -178,6 +178,7 @@ export function makeAcpProviderDriver<Settings extends AcpProviderSettings>(
           ...(displayName ? { displayName } : {}),
           ...(accentColor ? { accentColor } : {}),
           continuation: { groupKey: continuationIdentity.continuationKey },
+          ...(descriptor.agentCommands?.slashSkills === true ? { slashSkills: true } : {}),
           ...descriptor.snapshotExtras?.(),
         });
         // A bare binary name is resolved once against the server's PATH plus

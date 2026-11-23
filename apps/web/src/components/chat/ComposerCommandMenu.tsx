@@ -53,6 +53,8 @@ export type ComposerCommandItem =
       type: "skill";
       provider: ProviderDriverKind;
       skill: ServerProviderSkill;
+      /** Inserted as `/name` (Antigravity) rather than the `$name` token. */
+      invocation?: "slash";
       label: string;
       description: string;
     }

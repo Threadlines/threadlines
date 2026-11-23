@@ -159,8 +159,12 @@ export interface ProviderAdapterCapabilities {
    * remembers the reverted turns, and a revert says so. Default `native`. A
    * rollback's own `conversationRolledBack` overrides it, for an agent that
    * can rewind only to the turns it knows the positions of (Grok).
+   * `new-session` (Antigravity) ends the session instead, and the next turn
+   * opens a new one seeded with the turns kept; a revert reaches it even
+   * with no runtime live, since the saved conversation would otherwise be
+   * reopened as it was.
    */
-  readonly conversationRollback?: "native" | "none";
+  readonly conversationRollback?: "native" | "none" | "new-session";
 
   /**
    * Whether a session may be started before its first message, while the user

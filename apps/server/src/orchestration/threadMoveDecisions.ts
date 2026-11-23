@@ -705,6 +705,7 @@ const FROZEN_THREAD_COMMANDS: ReadonlySet<OrchestrationCommand["type"]> = new Se
   "thread.activity.append",
   "thread.effective-cwd.set",
   "thread.check-backs.set",
+  "thread.agent-commands.set",
   // What the provider reports of its goal as the move's stop pauses it: the
   // goal bar must say what the provider holds, should the move be dropped.
   "thread.goal.state.set",
