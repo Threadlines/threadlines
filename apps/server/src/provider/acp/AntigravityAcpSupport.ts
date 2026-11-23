@@ -59,6 +59,7 @@ import {
   type AntigravityPlatformRelease,
 } from "../antigravity/AntigravityRelease.ts";
 import type { AntigravityReleaseSource } from "../antigravity/AntigravityReleaseSource.ts";
+import { antigravityTurnBehavior } from "../antigravity/AntigravityTurns.ts";
 import {
   acquireAntigravityTempDir,
   recordAntigravityAgent,
@@ -789,6 +790,8 @@ export function makeAntigravityDescriptor(
     classifyPermissionRequest: antigravityQuestion,
     permissionOptionWarning: antigravityOptionWarning,
     cancellationNotice: "The request was cancelled by the client.",
+    // Work that outlives a prompt, steering, hidden failures, turn tokens.
+    ...antigravityTurnBehavior<AntigravitySettings>(paths.profileDir),
     planMode: {
       promptPrefix: "/plan ",
       isPlanFile: (toolCall) => {

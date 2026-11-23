@@ -18,14 +18,17 @@ import type {
   ProviderRuntimeEvent,
   ProviderUserInputAnswers,
   RuntimeMode,
+  RuntimeUsageLimit,
   ServerProvider,
   ServerProviderDetection,
   ServerProviderModel,
   ThreadId,
   TurnId,
+  UsageTokenTotals,
   UserInputQuestion,
 } from "@threadlines/contracts";
 import type { HttpClient } from "effect/http";
+import type * as Duration from "effect/Duration";
 import type * as Effect from "effect/Effect";
 import type * as FileSystem from "effect/FileSystem";
 import type * as Path from "effect/Path";
@@ -139,6 +142,64 @@ export interface AcpTurnOutcome {
   readonly errorMessage?: string;
   /** Why it failed, when the agent's stop reason says so in a structured way. */
   readonly failureCategory?: ProviderFailureCategory;
+}
+
+/**
+ * Why a prompt the agent answered as finished, or refused with an error,
+ * really failed (Antigravity ends a turn normally on an upstream error).
+ */
+export interface AcpPromptFailure {
+  /** The words the chat shows. */
+  readonly errorMessage: string;
+  readonly failureCategory?: ProviderFailureCategory;
+  /** A plan's usage limit stopped the turn: when it resets, for the usage-limit notice. */
+  readonly usageLimit?: RuntimeUsageLimit;
+  /**
+   * The agent can no longer continue this session (Antigravity's saved
+   * thinking lost its signature). The session is stopped after the turn, and
+   * the next message starts a new one seeded with the thread's history.
+   */
+  readonly sessionLost?: boolean;
+}
+
+/**
+ * Reads how a prompt really ended. `watch` runs as a turn's first prompt goes
+ * out (it may note where the agent's own records stand) and returns the check
+ * run when the turn's last prompt answers or fails.
+ */
+export interface AcpPromptOutcome {
+  readonly watch: (sessionId: string) => Effect.Effect<
+    (
+      answer:
+        | { readonly response: EffectAcpSchema.PromptResponse }
+        /** What `session/prompt` failed with, usually an `AcpRequestError`. */
+        | { readonly error: unknown },
+    ) => Effect.Effect<AcpPromptFailure | undefined>
+  >;
+}
+
+/**
+ * What a tool call the agent goes on with after its prompt answers is
+ * (`AcpHeldTurns`): a command it awaits, a scheduled wake-up, or a subagent
+ * it launched. `undefined` for one that ends with the prompt.
+ */
+export type AcpWorkAfterPrompt = "command" | "wake" | "subagent";
+
+/**
+ * An agent that answers its prompt while work it started goes on, and
+ * replies by itself when that work ends (Antigravity 1.5.10+). The turn
+ * stays open, working and stoppable, until the work and the replies it wakes
+ * are done. Only for an agent that sends `usage_update` after each model
+ * call: that update is how a reply it started by itself is known to end.
+ */
+export interface AcpHeldTurns {
+  readonly workAfterPrompt: (toolCall: AcpToolCallState) => AcpWorkAfterPrompt | undefined;
+  /**
+   * How long the turn waits without a word from the agent while only
+   * commands and subagents hold it; past it, the turn ends. A scheduled
+   * wake-up holds it with no limit (a timer is silent until it fires).
+   */
+  readonly silentLimit: Duration.Duration;
 }
 
 /** Runtime hooks handed to a vendor's extension registration. */
@@ -371,15 +432,33 @@ export interface AcpProviderDescriptor<Settings extends AcpProviderSettings> {
     readonly content: ReadonlyArray<EffectAcpSchema.ContentBlock>;
   }) => Effect.Effect<void, EffectAcpErrors.AcpError>;
   /**
+   * A message sent mid-turn goes as another `session/prompt` (Antigravity
+   * 1.5): the agent answers the running prompt and carries the turn on under
+   * the new one, its commands and subagents left running. The turn ends with
+   * the last prompt's answer. Ignored when `steer` is set.
+   */
+  readonly steerWithPrompt?: boolean;
+  /** Keeps a turn open while work the agent goes on with after its prompt runs. */
+  readonly heldTurns?: AcpHeldTurns;
+  /** How a prompt really ended, where the agent's answer can hide a failure. */
+  readonly promptOutcome?: AcpPromptOutcome;
+  /**
    * Where the Usage page counts this agent's turns when it keeps no usage on
    * disk. Only for an agent whose turn `usage` is known to be the turn's own:
    * ACP doesn't say whether it is that or a running total, and agents differ
    * (Copilot's is a running total), so community agents have none. Unset for
    * an agent whose own files the usage scan reads (Grok), and for one that
-   * reports no turn usage (Cursor, and Antigravity, whose `usage_update`
-   * carries a bare total).
+   * reports no turn usage (Cursor).
    */
   readonly usageLedger?: { readonly provider: UsageLedgerProvider };
+  /**
+   * The agent's own reading of a prompt's `usage`, where the generic one
+   * (`acpTurnUsageTotals`, which takes input to include cached reads, as fx's
+   * does) would miscount it. Antigravity leaves cached reads out of input.
+   */
+  readonly turnUsageTotals?: (
+    usage: EffectAcpSchema.Usage | null | undefined,
+  ) => UsageTokenTotals | null;
   /**
    * The context fill an agent reports on its own updates rather than with
    * ACP's `usage_update` (Grok's `_meta.totalTokens`), and its window size.

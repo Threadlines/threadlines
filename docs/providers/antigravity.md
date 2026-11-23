@@ -57,6 +57,44 @@ has them. The reasoning level is its own choice next to the model.
 
 Plan mode sends the task as `/plan`, and the plan shows on the plan card for review.
 
+## Turns
+
+Antigravity answers a message while work it started goes on: a command it waits for, a timer it
+set (`schedule`), or a subagent it launched. When that work ends, the agent wakes and replies by
+itself. Threadlines keeps the turn open meanwhile, so the thread shows it working and Stop stays on
+screen, and the reply lands in the same turn. A dev server or other daemon doesn't hold the turn.
+Stop cancels the turn and that work together (Antigravity 1.5.10 stops its commands and subagents on
+a cancel). A reply the agent starts after the turn ended opens a turn of its own.
+
+Two limits keep a lost wake from leaving the thread working forever: a turn held only by commands
+and subagents ends after 30 minutes without a word from the agent, and a reply the agent started
+by itself ends 2 minutes after its last output if its closing usage update never comes. A timer
+holds the turn until it fires. Subagents are only known to finish by the report the agent gives when
+one ends, so the first report frees the turn; a later subagent's report opens a turn of its own.
+
+A message sent while Antigravity works steers the turn instead of waiting: Threadlines sends it as
+another prompt, which the CLI takes into the running turn (1.5.0+), leaving its commands and
+subagents running.
+
+### When a turn fails
+
+Antigravity sometimes ends a turn normally while the reply is really an upstream error. Threadlines
+reads the error the CLI reports (1.5.9+) and, where the CLI reports none, the last step of the
+turn in the CLI's own session log (`antigravity-acp/conversations/<id>.db` in the profile, a
+private format read only for this). The turn then fails with Google's words and a Retry. An
+exhausted quota fails with its reset time, so the usage-limit notice above the composer says when
+it resets and can continue then. A conversation Google can no longer continue (a model rejected a
+saved thinking block) stops its session, and the next message starts a new one with the thread's
+history.
+
+### Tokens
+
+Each turn's tokens come from the CLI's answer to the prompt: input is its input plus cached reads,
+and output already includes thinking. They count on the Usage page under Antigravity, priced at
+Google's Gemini 4 API rates (an equivalent, not what a Google plan bills). A reply the agent starts
+by itself reports no tokens, so it isn't counted. The context meter beside the composer reads the
+CLI's context usage updates (1.5.8+).
+
 ## Sign-In Methods
 
 Open `Settings -> Providers`, open the Antigravity row, and pick a method under `Sign-in method` on
@@ -96,8 +134,9 @@ Running chats stop when you switch, as with any change to a provider's settings.
 
 ### Per-Use Billing
 
-With a Gemini API key or Vertex AI, Google bills every request to you. These requests don't show on
-Threadlines' Usage page; check Google AI Studio or the Google Cloud console for spending.
+With a Gemini API key or Vertex AI, Google bills every request to you. Threadlines' Usage page counts
+the tokens of chats run in Threadlines at Google's list prices, but not what you run elsewhere;
+check Google AI Studio or the Google Cloud console for what Google bills.
 
 ### Where Keys Are Kept
 

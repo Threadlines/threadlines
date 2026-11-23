@@ -495,8 +495,9 @@ const makeAcpSessionRuntime = (
 
     // `session/load` replays the conversation as ordinary updates; only
     // updates produced by a prompt we sent are live content, or, for an agent
-    // that starts turns of its own, anything after the session opened.
-    const promptInFlightRef = yield* Ref.make(false);
+    // that starts turns of its own, anything after the session opened. A count:
+    // an agent steered by a second prompt has two open at once.
+    const promptsInFlightRef = yield* Ref.make(0);
     /** Turns the agent started or ended itself so far (`markAgentTurnBoundary`). */
     const agentTurnBoundariesRef = yield* Ref.make(0);
     const liveOutsidePromptRef = yield* Ref.make(false);
@@ -532,7 +533,7 @@ const makeAcpSessionRuntime = (
           modeStateRef,
           toolCallsRef,
           assistantSegmentRef,
-          promptInFlightRef,
+          promptsInFlightRef,
           liveOutsidePromptRef,
           itemIdScope,
           params: notification,
@@ -975,15 +976,20 @@ const makeAcpSessionRuntime = (
             return Effect.gen(function* () {
               yield* closeActiveAssistantSegment({ queue: eventQueue, assistantSegmentRef });
               const boundariesBefore = yield* Ref.get(agentTurnBoundariesRef);
-              yield* Ref.set(promptInFlightRef, true);
+              yield* Ref.update(promptsInFlightRef, (count) => count + 1);
               const response = yield* runLoggedRequest(
                 "session/prompt",
                 requestPayload,
                 acp.agent.prompt(requestPayload),
-              ).pipe(Effect.ensuring(Ref.set(promptInFlightRef, false)));
+              ).pipe(Effect.ensuring(Ref.update(promptsInFlightRef, (count) => count - 1)));
               // A turn the agent began before this answer already ended the
-              // prompt's reply; the reply streaming now is that turn's.
-              if ((yield* Ref.get(agentTurnBoundariesRef)) === boundariesBefore) {
+              // prompt's reply; the reply streaming now is that turn's. A
+              // steered prompt's answer leaves the reply of the one that
+              // carries the turn on alone.
+              if (
+                (yield* Ref.get(agentTurnBoundariesRef)) === boundariesBefore &&
+                (yield* Ref.get(promptsInFlightRef)) === 0
+              ) {
                 yield* closeActiveAssistantSegment({ queue: eventQueue, assistantSegmentRef });
               }
               return response;
@@ -1081,7 +1087,7 @@ const handleSessionUpdate = ({
   modeStateRef,
   toolCallsRef,
   assistantSegmentRef,
-  promptInFlightRef,
+  promptsInFlightRef,
   liveOutsidePromptRef,
   itemIdScope,
   params,
@@ -1091,7 +1097,7 @@ const handleSessionUpdate = ({
   readonly modeStateRef: Ref.Ref<AcpSessionModeState | undefined>;
   readonly toolCallsRef: Ref.Ref<Map<string, AcpToolCallState>>;
   readonly assistantSegmentRef: Ref.Ref<AcpAssistantSegmentState>;
-  readonly promptInFlightRef: Ref.Ref<boolean>;
+  readonly promptsInFlightRef: Ref.Ref<number>;
   readonly liveOutsidePromptRef: Ref.Ref<boolean>;
   /** Suffix keeping item ids unique across resumes (segment numbering restarts per process). */
   readonly itemIdScope: string;
@@ -1109,7 +1115,7 @@ const handleSessionUpdate = ({
         current === undefined ? current : updateModeState(current, parsed.modeId!),
       );
     }
-    const live = (yield* Ref.get(promptInFlightRef)) || (yield* Ref.get(liveOutsidePromptRef));
+    const live = (yield* Ref.get(promptsInFlightRef)) > 0 || (yield* Ref.get(liveOutsidePromptRef));
     for (const event of parsed.events) {
       if (!live && isPromptContentEvent(event)) {
         // History replay after session/load (or stray output between
