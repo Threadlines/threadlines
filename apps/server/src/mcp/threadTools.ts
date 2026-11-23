@@ -363,7 +363,7 @@ export const ThreadStopTool = loadedOnDemand(
   drivesThreads(
     Tool.make("thread_stop", {
       description:
-        "Stop one of your threads: its turn, its background work and its session. What you asked of it ends without an answer, and messages you queued for it are taken back. A later message starts it again. Only threads you started whose replies still come back to you.",
+        "Stop one of your threads: its turn, its background work, its check-backs and its session. What you asked of it ends without an answer, and messages you queued for it are taken back. A later message starts it again. Only threads you started whose replies still come back to you.",
       parameters: Schema.Struct({ threadId: ThreadIdParameter }),
       success: ThreadStopResult,
     }).annotate(Tool.Title, "Stop a thread"),

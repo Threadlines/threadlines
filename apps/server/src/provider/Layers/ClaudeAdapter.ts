@@ -202,6 +202,7 @@ import {
 } from "../Drivers/ClaudeGoals.ts";
 import {
   claudeCheckBackTrigger,
+  claudeCheckBacksAfterScheduleTool,
   claudeCheckBacksFromSessionCrons,
   isClaudeCheckBackTool,
   makeClaudeCheckBackState,
@@ -5283,7 +5284,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       provider: PROVIDER,
       createdAt: stamp.createdAt,
       threadId: context.session.threadId,
-      payload: { checkBacks, ...(ended && ended.length > 0 ? { ended } : {}) },
+      payload: {
+        checkBacks,
+        ...(ended && ended.length > 0 ? { ended } : {}),
+        ...(context.checkBacks.reported ? {} : { partial: true }),
+      },
       providerRefs: nativeProviderRefs(context),
     });
   });
@@ -6411,17 +6416,29 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
       const [index, tool] = toolEntry;
       // A check-back's exact time, reason and job id are only in the
-      // scheduling tool's own result (one tool_result per such message).
+      // scheduling tool's own result (one tool_result per such message). The
+      // change is published at once: Stop must see it if the turn never
+      // reaches Claude's own report at its end.
       if (
-        (tool.toolName === "ScheduleWakeup" || tool.toolName === "CronCreate") &&
+        (tool.toolName === "ScheduleWakeup" ||
+          tool.toolName === "CronCreate" ||
+          tool.toolName === "CronDelete") &&
         toolResults.length === 1 &&
         !toolResult.isError
       ) {
-        recordClaudeScheduleTool(context.checkBacks, {
+        const call = {
           toolName: tool.toolName,
           input: tool.input,
           result: (message as { readonly tool_use_result?: unknown }).tool_use_result,
-        });
+        };
+        recordClaudeScheduleTool(context.checkBacks, call);
+        const checkBacks = claudeCheckBacksAfterScheduleTool(
+          context.checkBacks,
+          call,
+          Date.now(),
+          nonEmptyString(claudeEnvironment.TZ),
+        );
+        if (checkBacks !== undefined) yield* emitCheckBacksUpdated(context, checkBacks);
       }
       if (tool.itemType === "collab_agent_tool_call") {
         // Background agents settle after this tool_result; keep the launch so
@@ -8924,6 +8941,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             const context = yield* Ref.get(contextRef);
             const sessionCrons = (hookInput as { session_crons?: unknown }).session_crons;
             if (!context || context.stopped || !Array.isArray(sessionCrons)) return {};
+            const firstReport = !context.checkBacks.reported;
+            context.checkBacks.reported = true;
             const checkBacks = claudeCheckBacksFromSessionCrons(
               context.checkBacks,
               sessionCrons.flatMap((cron) => {
@@ -8944,7 +8963,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
               Date.now(),
               nonEmptyString(claudeEnvironment.TZ),
             );
-            if (!sameCheckBacks(context.checkBacks.current, checkBacks)) {
+            // The first report is whole: after a partial list it is sent even
+            // when it reads the same, to settle the saved jobs that list kept.
+            if (
+              (firstReport && context.checkBacks.current.length > 0) ||
+              !sameCheckBacks(context.checkBacks.current, checkBacks)
+            ) {
               context.checkBacks.current = checkBacks;
               yield* emitCheckBacksUpdated(context, checkBacks);
             }

@@ -90,3 +90,15 @@ export function runtimeCheckBackOwed(
     (checkBack.exact ? CHECK_BACK_EXACT_GRACE_MS : CHECK_BACK_SCHEDULE_GRACE_MS);
   return Number.isFinite(due) && nowMs < due;
 }
+
+/**
+ * Whether one of the thread's agents can still wake itself up. A job saved
+ * to the project counts too: in a room, the thread's session says nothing of
+ * the other agents' runtimes, where it may still fire. A stop counts it as
+ * work to stop.
+ */
+export function hasLiveCheckBack(thread: {
+  readonly checkBacks?: ReadonlyArray<OrchestrationCheckBack> | undefined;
+}): boolean {
+  return (thread.checkBacks ?? []).length > 0;
+}

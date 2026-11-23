@@ -59,6 +59,7 @@ import {
   type ThreadRemoteOrigin,
   TurnId,
 } from "@threadlines/contracts";
+import { hasLiveCheckBack } from "@threadlines/shared/checkBacks";
 import { sameRemoteThreadFiling } from "@threadlines/shared/childThreads";
 import { remoteThreadFilingOf } from "@threadlines/shared/threadFiling";
 import * as Cause from "effect/Cause";
@@ -1217,7 +1218,6 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  /** Whether a thread still has anything going: a turn, a session at work, queued messages. */
   /**
    * Whether a thread's agent is at work: a turn, a session at work, a
    * background task. (Unlike isWorking, messages queued for later don't
@@ -1235,6 +1235,8 @@ const make = Effect.gen(function* () {
     );
   };
 
+  /** Whether a thread still has anything going: a turn, a session at work, a
+   *  check-back that would wake it later, queued messages. */
   const isWorking = (thread: OrchestrationThread) => {
     const session = thread.session;
     return (
@@ -1244,6 +1246,7 @@ const make = Effect.gen(function* () {
           session.status === "running" ||
           session.status === "starting" ||
           (session.pendingBackgroundTaskCount ?? 0) > 0)) ||
+      hasLiveCheckBack(thread) ||
       (thread.queuedFollowUps ?? []).length > 0
     );
   };
@@ -1777,7 +1780,8 @@ const make = Effect.gen(function* () {
             const thread = yield* readThreadOrFail(threadId);
             if (thread === undefined || thread.deletedAt !== null) return;
             if (thread.remoteOrigin?.linkDeviceId !== deviceId) return;
-            if (!isRunning(thread)) return;
+            // A check-back would wake it later with nobody there to hear back.
+            if (!isRunning(thread) && !hasLiveCheckBack(thread)) return;
             // A turn asked for once the link was off is this computer's user's.
             const turnsBefore = options?.turnsBefore;
             const requestedAt = thread.latestTurn?.requestedAt;
