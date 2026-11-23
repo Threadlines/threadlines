@@ -92,15 +92,13 @@ export function runtimeCheckBackOwed(
 }
 
 /**
- * Whether one of the thread's agents can still wake itself up: a check-back
- * that lives in its runtime, or one saved to the project while the thread's
- * session is up (it fires there too). A stop counts it as work to stop.
+ * Whether one of the thread's agents can still wake itself up. A job saved
+ * to the project counts too: in a room, the thread's session says nothing of
+ * the other agents' runtimes, where it may still fire. A stop counts it as
+ * work to stop.
  */
 export function hasLiveCheckBack(thread: {
   readonly checkBacks?: ReadonlyArray<OrchestrationCheckBack> | undefined;
-  readonly session?: { readonly status: string } | null | undefined;
 }): boolean {
-  const checkBacks = thread.checkBacks ?? [];
-  const sessionUp = thread.session != null && thread.session.status !== "stopped";
-  return checkBacks.some((checkBack) => !checkBack.durable) || (sessionUp && checkBacks.length > 0);
+  return (thread.checkBacks ?? []).length > 0;
 }

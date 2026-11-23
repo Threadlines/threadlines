@@ -1935,7 +1935,12 @@ describe("ClaudeAdapterLive", () => {
             },
           },
         } as unknown as SDKMessage);
-        const created = yield* nextEvent("item.completed");
+        // Listed as soon as the tool returns, before the turn's own report.
+        const toolReturned = yield* Stream.filter(
+          adapter.streamEvents,
+          (event) =>
+            event.type === "item.completed" || event.type === "session.check-backs.updated",
+        ).pipe(Stream.take(2), Stream.runCollect, Effect.forkChild);
         harness.query.emit({
           type: "user",
           session_id: "sdk-session-check-back",
@@ -1952,7 +1957,9 @@ describe("ClaudeAdapterLive", () => {
             durable: false,
           },
         } as unknown as SDKMessage);
-        const createdItem = yield* Fiber.join(created);
+        const returned = yield* Fiber.join(toolReturned);
+        const update = returned.find((event) => event.type === "session.check-backs.updated");
+        const createdItem = returned.find((event) => event.type === "item.completed");
         // Scheduling a check-back is a tool call, not a file change.
         assert.equal(
           createdItem?.type === "item.completed" ? createdItem.payload.itemType : null,
@@ -1969,14 +1976,13 @@ describe("ClaudeAdapterLive", () => {
         } as unknown as SDKMessage);
         yield* Fiber.join(turnDone);
 
-        const reported = yield* nextEvent("session.check-backs.updated");
+        // Claude's report at the turn's end says the same.
         yield* runHook("Stop", {
           hook_event_name: "Stop",
           session_crons: [
             { id: "job-1", schedule: "*/5 * * * *", recurring: true, prompt: "Look at the deploy" },
           ],
         });
-        const update = yield* Fiber.join(reported);
         assert.equal(update?.type, "session.check-backs.updated");
         if (update?.type !== "session.check-backs.updated") return;
         assert.deepEqual(
