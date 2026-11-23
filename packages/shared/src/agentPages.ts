@@ -487,6 +487,13 @@ export const OPEN_IMAGE_METHOD = "threadlines/open-image";
 // Threadlines' own: whether a page taller than its frame has more to scroll to
 // above or below what the frame shows.
 export const SCROLL_EDGES_METHOD = "threadlines/scroll-edges";
+// Threadlines' own: the text the reader selected in the page and where it is,
+// or that the selection is gone, so the host can offer to copy it or add a
+// note on it as it does for the chat's own text.
+export const SELECTION_CHANGED_METHOD = "threadlines/selection-changed";
+
+/** The most selected text a page reports; the host's own selections are held to the same. */
+export const AGENT_PAGE_MAX_SELECTION_LENGTH = 8_000;
 
 /** The most pictures one request may hand the image viewer. Even. */
 export const MAX_OPEN_IMAGES = 200;
@@ -536,6 +543,51 @@ export function readAgentPageScrollEdges(data: unknown): AgentPageScrollEdges | 
   if (typeof params !== "object" || params === null) return undefined;
   const { above, below } = params as { above?: unknown; below?: unknown };
   return { above: above === true, below: below === true };
+}
+
+/**
+ * Text the reader selected in a framed page, and its box in the frame's
+ * viewport, in the page's CSS px. The page says what is selected, so the text
+ * is the page's word; a host only acts on it while the reader is in the page.
+ */
+export interface AgentPageTextSelection {
+  readonly text: string;
+  readonly top: number;
+  readonly left: number;
+  readonly bottom: number;
+  readonly right: number;
+  /**
+   * The page's viewport width in its own CSS px. Against the frame's drawn
+   * width it gives the frame's zoom, which the box is drawn at.
+   */
+  readonly viewportWidth: number | undefined;
+}
+
+/**
+ * A framed page's `selection-changed` notification: the selection, or null
+ * once the page has none. Undefined when `data` is not one, or is malformed.
+ */
+export function readAgentPageSelection(data: unknown): AgentPageTextSelection | null | undefined {
+  if (typeof data !== "object" || data === null) return undefined;
+  const { jsonrpc, method, params } = data as Record<string, unknown>;
+  if (jsonrpc !== "2.0" || method !== SELECTION_CHANGED_METHOD) return undefined;
+  if (typeof params !== "object" || params === null) return undefined;
+  const { text, top, left, bottom, right, width } = params as Record<string, unknown>;
+  if (text === null) return null;
+  if (typeof text !== "string") return undefined;
+  const box = [top, left, bottom, right];
+  if (!box.every((value) => typeof value === "number" && Number.isFinite(value))) return undefined;
+  const trimmed = text.trim().slice(0, AGENT_PAGE_MAX_SELECTION_LENGTH);
+  if (trimmed.length === 0) return null;
+  return {
+    text: trimmed,
+    top: top as number,
+    left: left as number,
+    bottom: bottom as number,
+    right: right as number,
+    viewportWidth:
+      typeof width === "number" && Number.isFinite(width) && width > 0 ? width : undefined,
+  };
 }
 
 /** A page's `ui/open-link` request, if `data` is one with an http(s) URL. */

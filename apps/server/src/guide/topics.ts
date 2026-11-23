@@ -542,7 +542,7 @@ The ↓ count is only as fresh as the last fetch, and {place:sourceControl.fetch
     id: "pages-and-command-requests",
     title: "Agent pages and command requests",
     keywords: ["page", "chart", "diagram", "mockup", "run command", "card", "artifact"],
-    body: `With {place:threads.agentPages} on, an agent can show a chart, diagram, mockup or document as a page in its reply. {place:threads.claudeArtifacts} lets Claude also publish one to claude.ai for a link you can share.
+    body: `With {place:threads.agentPages} on, an agent can show a chart, diagram, mockup or document as a page in its reply. Select text in a page to copy it or add a note on it for your next message, as in the chat's own text. {place:threads.claudeArtifacts} lets Claude also publish one to claude.ai for a link you can share.
 
 With {place:threads.commandRequests} on, an agent can ask you to run a command it can't run itself (one that needs your password or sign-in, or a long-running server): a card in the chat with Run, Put in terminal and Skip, and the output comes back to the agent.`,
   },

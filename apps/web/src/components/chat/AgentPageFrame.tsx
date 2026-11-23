@@ -275,6 +275,7 @@ export function AgentPageFrame(props: {
         <iframe
           ref={frameRef}
           title={title}
+          data-agent-page-id={pageId}
           srcDoc={pageDocument}
           sandbox={AGENT_PAGE_FRAME_SANDBOX}
           referrerPolicy="no-referrer"

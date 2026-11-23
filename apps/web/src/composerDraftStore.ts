@@ -1,4 +1,5 @@
 import {
+  AgentPageId,
   DEFAULT_MODEL,
   DEFAULT_MODEL_BY_PROVIDER,
   defaultInstanceIdForDriver,
@@ -271,8 +272,8 @@ export const PersistedTranscriptHighlightContextDraft = Schema.Struct({
   id: Schema.String,
   threadId: ThreadId,
   createdAt: Schema.String,
-  sourceMessageId: MessageId,
-  sourceRole: Schema.Literals(["assistant", "user"]),
+  sourceMessageId: Schema.Union([MessageId, AgentPageId]),
+  sourceRole: Schema.Literals(["assistant", "user", "page"]),
   selectedText: Schema.String,
   note: Schema.String,
 });
@@ -1598,7 +1599,7 @@ function normalizePersistedTranscriptHighlightContextDraft(
     threadId.length === 0 ||
     createdAt.length === 0 ||
     sourceMessageId.length === 0 ||
-    (sourceRole !== "assistant" && sourceRole !== "user") ||
+    (sourceRole !== "assistant" && sourceRole !== "user" && sourceRole !== "page") ||
     selectedText.length === 0 ||
     note.length === 0
   ) {
@@ -1608,7 +1609,8 @@ function normalizePersistedTranscriptHighlightContextDraft(
     id,
     threadId: threadId as ThreadId,
     createdAt,
-    sourceMessageId: MessageId.make(sourceMessageId),
+    sourceMessageId:
+      sourceRole === "page" ? AgentPageId.make(sourceMessageId) : MessageId.make(sourceMessageId),
     sourceRole,
     selectedText,
     note,
