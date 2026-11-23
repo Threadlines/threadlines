@@ -755,6 +755,12 @@ const make = Effect.gen(function* () {
        */
       readonly movedAgent?: true;
       /**
+       * Owed because a start handed the runtime the history (a switch from
+       * another agent): the runtime carries it (`carriedBy`), so a room's
+       * catch-up never pays it again.
+       */
+      readonly handoff?: true;
+      /**
        * The runtime started seeded with the conversation, by its start time
        * (ProviderSession.createdAt): a send on that runtime adds no seed of
        * its own, and pays the debt once the provider takes it. A send on any
@@ -2007,23 +2013,22 @@ const make = Effect.gen(function* () {
       if (shedsOutsideWork)
         yield* shedOutsideWork(thread, participantId, createdAt, handoffSession);
       if (contextSeed !== undefined) {
-        owedHistorySeeds.delete(sessionKey);
-        // A moved thread's debt is paid once a turn reaches the provider on
-        // this seeded session, not when it starts: some adapters keep the
-        // seed in memory until their first send.
-        if (
-          participantId === null &&
+        // The debt is paid once a turn reaches the provider on this seeded
+        // session, not when it starts: some adapters keep the seed in memory
+        // until their first send, and a send that goes as the agent's own
+        // command (contextDeferred) leaves it with them. Until then the
+        // binding owes it too, so a restart seeds the next start.
+        owedHistorySeeds.set(sessionKey, {
+          driverKind: desiredDriverKind,
+          cwd: effectiveCwd ?? undefined,
+          claimed: false,
+          ...(participantId === null &&
           thread.historySeedOwed === true &&
           contextSeed.entries.length > 0
-        ) {
-          owedHistorySeeds.set(sessionKey, {
-            driverKind: desiredDriverKind,
-            cwd: effectiveCwd ?? undefined,
-            claimed: false,
-            moved: true,
-            carriedBy: handoffSession.createdAt,
-          });
-        }
+            ? { moved: true as const }
+            : { handoff: true as const }),
+          carriedBy: handoffSession.createdAt,
+        });
       }
       // Another agent than the one a move carried a session for.
       yield* noteCarriedStart("handoff");
@@ -2569,6 +2574,16 @@ const make = Effect.gen(function* () {
       isThreadForkContextPayload(forkContextActivity.payload)
         ? forkContextActivity.payload
         : undefined;
+    // The fork's summarized source, when no prompt carrying it went out yet
+    // (its first message went as the agent's own command, or never out): a
+    // later turn carries it. Its seed outcome is recorded once one did.
+    const owedForkContextText =
+      !isForkInitialTurn &&
+      forkContextActivity !== undefined &&
+      isThreadForkContextPayload(forkContextActivity.payload) &&
+      !thread.activities.some((activity) => activity.kind === ThreadForkSeedOutcomeActivityKind)
+        ? withContextSeedPreamble(forkContextActivity.payload.contextText, undefined)
+        : undefined;
     const sourceThread = forkContext ? yield* resolveThread(forkContext.sourceThreadId) : undefined;
 
     // Same-driver forks on the fork's initial turn can carry full provider
@@ -2778,7 +2793,13 @@ const make = Effect.gen(function* () {
       firstHereInMovedRoom &&
       owedCandidate !== undefined &&
       (owedCandidate.moved === true || owedCandidate.movedAgent === true);
-    const roomPaysHistory = owedCandidate !== undefined && isRoomThread(thread) && !movedSummary;
+    // A handoff's seed is in the runtime already: the room's note stays as
+    // it would be, or the first prompt carries those turns twice.
+    const roomPaysHistory =
+      owedCandidate !== undefined &&
+      owedCandidate.handoff !== true &&
+      isRoomThread(thread) &&
+      !movedSummary;
     // A carried session holds what it saw where it was: up to the last
     // message it was given there (each agent's own, not the room's last),
     // so its first turn here is caught up on everything after; with nothing
@@ -2821,7 +2842,9 @@ const make = Effect.gen(function* () {
     });
     // A natively forked session already holds the full source history; the
     // context-seed preamble and re-sent source attachments would duplicate it.
-    const forkContextText = !nativeForkApplied ? input.providerContext : undefined;
+    const forkContextText = !nativeForkApplied
+      ? (input.providerContext ?? owedForkContextText)
+      : undefined;
     const builtSeed =
       owedCandidate === undefined || roomPaysHistory || owedCandidate.carriedBy !== undefined
         ? undefined
@@ -2952,7 +2975,10 @@ const make = Effect.gen(function* () {
           }
         : undefined;
 
-    if (forkContext !== undefined) {
+    // A native fork holds the source as it starts; a summarized one has it
+    // once a prompt carrying the summary went out (`contextDelivered`).
+    let forkSeedOutcome: Effect.Effect<void> = Effect.void;
+    if (forkContext !== undefined || owedForkContextText !== undefined) {
       const seedOutcomePayload: ThreadForkSeedOutcomePayload = {
         seedMode: nativeForkApplied ? "provider-native" : "context-seed",
         ...(forkFrom !== undefined
@@ -2965,7 +2991,7 @@ const make = Effect.gen(function* () {
             }
           : {}),
       };
-      yield* orchestrationEngine
+      forkSeedOutcome = orchestrationEngine
         .dispatch({
           type: "thread.activity.append",
           commandId: serverCommandId("thread-fork-seed-outcome"),
@@ -2983,7 +3009,14 @@ const make = Effect.gen(function* () {
           },
           createdAt: input.createdAt,
         })
-        .pipe(Effect.catch(() => Effect.void));
+        .pipe(
+          Effect.asVoid,
+          Effect.catch(() => Effect.void),
+        );
+      if (nativeForkApplied) {
+        yield* forkSeedOutcome;
+        forkSeedOutcome = Effect.void;
+      }
     }
     const modelForTurn =
       input.modelSelection ??
@@ -3035,6 +3068,28 @@ const make = Effect.gen(function* () {
               if (owedSeed.moved === true) {
                 yield* markHistorySeedDelivered(input.threadId, input.messageId);
               }
+              // The binding stops owing it too, if it still describes the
+              // runtime that sent it (ProviderService.noteHistoryDelivered).
+              if (activeSession !== undefined) {
+                yield* providerService.noteHistoryDelivered({
+                  threadId: sessionKey,
+                  sessionCreatedAt: activeSession.createdAt,
+                });
+              }
+            }),
+      // What else this prompt carried that is owed until it goes out.
+      contextDelivered: forkSeedOutcome,
+      // The send reopened the runtime without its conversation
+      // (`historyOwed` on its result): the next message carries the history.
+      historyOwedAfterSend:
+        activeSession === undefined
+          ? Effect.void
+          : Effect.sync(() => {
+              owedHistorySeeds.set(sessionKey, {
+                driverKind: activeSession.provider,
+                cwd: activeSession.cwd ?? thread.worktreePath ?? undefined,
+                claimed: false,
+              });
             }),
       // A send that failed before the provider took it delivered nothing.
       historyDebtReturned:
@@ -3836,6 +3891,8 @@ const make = Effect.gen(function* () {
         historyDebtClaimed,
         historyDebtPaid,
         historyDebtReturned,
+        contextDelivered,
+        historyOwedAfterSend,
         notesDelivered,
       } = sendTurnRequest.value;
 
@@ -3874,6 +3931,8 @@ const make = Effect.gen(function* () {
       // Whether the provider took the turn: a failure before that left the
       // message's text with no agent; one after (bookkeeping) did not.
       let providerTookTurn = false;
+      // None of the context in front of the message went (see below).
+      let contextDeferred = false;
       yield* providerService
         .sendTurn({
           ...turnRequest,
@@ -3896,8 +3955,24 @@ const make = Effect.gen(function* () {
               providerTookTurn = true;
             }),
           ),
-          Effect.tap(() => historyDebtPaid),
+          // The history and a fork's summary count as delivered only once
+          // the prompt carrying them went out to the agent. A send that went
+          // as the agent's own command (`contextDeferred`), or whose prompt
+          // was never written (`undelivered`: its setup failed first),
+          // carried none of the context in front of it, so every debt it was
+          // to pay stays, the binding's `historyOwed` mark included.
+          Effect.tap((turn) =>
+            Effect.suspend(() => {
+              contextDeferred = turn.contextDeferred === true || turn.undelivered === true;
+              return contextDeferred
+                ? historyDebtReturned
+                : Effect.andThen(historyDebtPaid, contextDelivered);
+            }),
+          ),
           Effect.onError(() => historyDebtReturned),
+          // Recovery opened a conversation without the history: this message
+          // stays sent, and the next one carries the history.
+          Effect.tap((turn) => (turn.historyOwed === true ? historyOwedAfterSend : Effect.void)),
           Effect.tap((turn) =>
             Effect.sync(() => providerTakenTurns.set(event.payload.threadId, turn.turnId)),
           ),
@@ -3909,11 +3984,11 @@ const make = Effect.gen(function* () {
             }),
           ),
           Effect.tap(() =>
-            roomContext !== undefined
+            roomContext !== undefined && !contextDeferred
               ? recordRoomContext(event.payload.threadId, roomContext, event.payload.createdAt)
               : Effect.void,
           ),
-          Effect.tap(() => notesDelivered),
+          Effect.tap(() => (contextDeferred ? Effect.void : notesDelivered)),
           // Replies and reports queued while the turn was starting go in now,
           // behind its own message (and its notes), in this thread's worker.
           Effect.tap(() =>

@@ -1,6 +1,6 @@
 import { MessageId } from "@threadlines/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
-import { cdp } from "vite-plus/test/browser";
+import { cdp, page } from "vite-plus/test/browser";
 // Types `cdp()` as Playwright's session.
 import type {} from "vite-plus/test/browser-playwright";
 
@@ -9,8 +9,11 @@ import {
   DEFAULT_VIEWPORT,
   mountChatView,
   registerChatViewSuiteHooks,
+  setPrimarySessionRole,
   waitForElement,
+  waitForServerConfigToApply,
 } from "./ChatView.browser-harness";
+import { useCommandPaletteStore } from "../commandPaletteStore";
 
 // The desktop app: `isElectron` is read when modules load, so this whole file
 // runs as the app's own window would (the other ChatView suites are a browser).
@@ -189,6 +192,46 @@ describe("ChatView (full app): the desktop app's window", () => {
         "The desktop app should mount the browser host layer at its root.",
       );
     } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("offers the one-time link in the palette when other devices can reach this computer", async () => {
+    // The palette's Settings source asks what exists as Settings does: here
+    // the desktop app's owner, with the computer open to its network.
+    setPrimarySessionRole("owner");
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-palette-settings-desktop" as MessageId,
+        targetText: "palette settings desktop",
+      }),
+    });
+    window.desktopBridge = {
+      getServerExposureState: vi.fn().mockResolvedValue({
+        mode: "network-accessible",
+        endpointUrl: "http://192.168.1.44:3773",
+        advertisedHost: "192.168.1.44",
+        tailscaleServeEnabled: false,
+        tailscaleServePort: 443,
+      }),
+      getAdvertisedEndpoints: vi.fn().mockResolvedValue([]),
+    } as unknown as NonNullable<typeof window.desktopBridge>;
+
+    try {
+      await waitForServerConfigToApply();
+      useCommandPaletteStore.getState().setOpen(true);
+      await page.getByPlaceholder("Search threads, commands and settings").fill("one-time link");
+      await expect
+        .element(
+          page
+            .getByTestId("command-palette")
+            .getByText("One-time link for this network", { exact: true }),
+        )
+        .toBeInTheDocument();
+    } finally {
+      setPrimarySessionRole(null);
+      Reflect.deleteProperty(window, "desktopBridge");
       await mounted.cleanup();
     }
   });

@@ -131,6 +131,29 @@ const makeProviderSessionRuntimeRepository = Effect.gen(function* () {
       `,
   });
 
+  const patchIfSession: ProviderSessionRuntimeRepositoryShape["patchIfSession"] = (input) =>
+    sql<{ readonly threadId: string }>`
+      UPDATE provider_session_runtime
+      SET
+        runtime_payload_json = json_patch(
+          COALESCE(runtime_payload_json, '{}'),
+          ${JSON.stringify(input.runtimePayload)}
+        ),
+        resume_cursor_json = CASE
+          WHEN ${input.clearResumeCursor === true ? 1 : 0} = 1 THEN NULL
+          ELSE resume_cursor_json
+        END,
+        last_seen_at = ${input.lastSeenAt}
+      WHERE thread_id = ${input.threadId}
+        AND json_extract(runtime_payload_json, '$.sessionCreatedAt') = ${input.sessionCreatedAt}
+      RETURNING thread_id AS "threadId"
+    `.pipe(
+      Effect.map((rows) => rows.length > 0),
+      Effect.mapError(
+        toPersistenceSqlError("ProviderSessionRuntimeRepository.patchIfSession:query"),
+      ),
+    );
+
   const upsert: ProviderSessionRuntimeRepositoryShape["upsert"] = (runtime) =>
     upsertRuntimeRow(runtime).pipe(
       Effect.mapError(
@@ -196,6 +219,7 @@ const makeProviderSessionRuntimeRepository = Effect.gen(function* () {
 
   return {
     upsert,
+    patchIfSession,
     getByThreadId,
     list,
     deleteByThreadId,

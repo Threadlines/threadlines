@@ -63,6 +63,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, expect, vi } from "vite-plu
 import { render } from "vitest-browser-react";
 
 import { useCommandPaletteStore } from "../commandPaletteStore";
+import { useAddProjectStore } from "./addProject/addProjectStore";
+import { useCodexImportStore } from "./codexImport/codexImportStore";
 import {
   __resetComputerLinksForTests,
   type ComputerLinksClient,
@@ -3116,6 +3118,31 @@ export async function openCommandPaletteFromTrigger(): Promise<void> {
   );
 }
 
+/**
+ * Switches the open palette to every command, through its "All commands" row
+ * (the Commands filter). The palette opens on recent threads and a few
+ * suggestions, so a test that runs a command by name goes here first, as a
+ * user would.
+ */
+export async function showAllPaletteCommands(): Promise<void> {
+  await page.getByTestId("command-palette").getByText("All commands", { exact: true }).click();
+  await vi.waitFor(
+    () => {
+      const chosen = document.querySelector<HTMLElement>(
+        '[data-testid="command-palette"] [data-slot="command-filter"][aria-pressed="true"]',
+      );
+      expect(chosen?.textContent).toBe("Commands");
+    },
+    { timeout: 8_000, interval: 16 },
+  );
+}
+
+/** Opens the palette from the sidebar and shows every command. */
+export async function openCommandPaletteCommands(): Promise<void> {
+  await openCommandPaletteFromTrigger();
+  await showAllPaletteCommands();
+}
+
 export async function waitForNewThreadShortcutLabel(): Promise<void> {
   const newThreadButton = page.getByTestId("new-thread-button");
   await expect.element(newThreadButton).toBeInTheDocument();
@@ -3144,9 +3171,12 @@ export async function waitForCommandPaletteInput(placeholder: string): Promise<H
   );
 }
 
+/** Clicks a row in the palette, or in Add project or the Codex import it hands over to. */
 export async function clickCommandPaletteAction(label: string): Promise<void> {
   await waitForElement(() => {
-    const palette = document.querySelector('[data-testid="command-palette"]');
+    const palette = document.querySelector(
+      '[data-testid="command-palette"], [data-testid="add-project-dialog"], [data-testid="codex-import-dialog"]',
+    );
     if (!palette) return null;
     const candidates = Array.from(
       palette.querySelectorAll<HTMLElement>('[data-slot="command-item"]'),
@@ -3474,6 +3504,8 @@ export function registerChatViewSuiteHooks(): void {
       open: false,
       openIntent: null,
     });
+    useAddProjectStore.setState({ session: null });
+    useCodexImportStore.setState({ session: null });
     useStore.setState({
       activeEnvironmentId: null,
       environmentStateById: {},

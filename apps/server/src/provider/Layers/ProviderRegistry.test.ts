@@ -1552,6 +1552,47 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
         );
       });
 
+      it("never carries one account's usage to another with no email to compare", () => {
+        const usage: ServerProviderAccountUsage = {
+          source: "grok-billing",
+          checkedAt: "2026-06-10T15:00:00.000Z",
+          limits: [
+            {
+              limitId: "antigravity",
+              scoped: [{ scopeLabel: "Gemini", usedPercent: 40, remainingPercent: 60 }],
+            },
+          ],
+        };
+        const signedIn = (accountId: string) =>
+          ({
+            instanceId: ProviderInstanceId.make("antigravity"),
+            driver: ProviderDriverKind.make("antigravity"),
+            status: "ready",
+            enabled: true,
+            installed: true,
+            auth: { status: "authenticated", type: "oauth-personal", accountId },
+            checkedAt: "2026-06-10T15:05:00.000Z",
+            version: "1.5.14",
+            models: [],
+            slashCommands: [],
+            skills: [],
+          }) as const satisfies ServerProvider;
+        const previous = {
+          ...signedIn("account-a"),
+          checkedAt: "2026-06-10T15:00:00.000Z",
+          accountUsage: usage,
+        };
+
+        assert.strictEqual(
+          mergeProviderSnapshot(previous, signedIn("account-b")).accountUsage,
+          undefined,
+        );
+        assert.deepStrictEqual(
+          mergeProviderSnapshot(previous, signedIn("account-a")).accountUsage,
+          usage,
+        );
+      });
+
       it("merges sparse token history across same-account usage refreshes", () => {
         const providerBase = {
           instanceId: ProviderInstanceId.make("codex"),

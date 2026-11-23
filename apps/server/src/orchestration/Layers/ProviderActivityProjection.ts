@@ -96,8 +96,26 @@ function truncateBlock(value: string, limit = 1_200): string {
   if (value.length <= limit) {
     return value;
   }
-  return `...${value.slice(value.length - limit + 3)}`;
+  // A low surrogate at the cut would leave half a character.
+  return `...${value.slice(value.length - limit + 3).replace(/^[\uDC00-\uDFFF]/u, "")}`;
 }
+
+/** Keeps the start of a long command line: the program and its target are there. */
+function truncateCommandLine(value: string, limit: number): string {
+  if (value.length <= limit) {
+    return value;
+  }
+  return `${value.slice(0, limit - 3).replace(/[\uD800-\uDBFF]$/u, "")}...`;
+}
+
+/** Keys that hold a command line, in the spellings agents use. */
+const COMMAND_LINE_PAYLOAD_KEYS = new Set([
+  "command",
+  "commandLine",
+  "CommandLine",
+  "command_line",
+  "cmd",
+]);
 
 const OUTPUT_LIKE_PAYLOAD_KEYS = new Set([
   "aggregatedOutput",
@@ -171,9 +189,10 @@ function compactActivityPayloadData(
   limits: PayloadTextCompactionLimits = DEFAULT_PAYLOAD_TEXT_LIMITS,
 ): unknown {
   if (typeof value === "string") {
-    return shouldCompactPayloadString(key, value, limits)
-      ? truncateBlock(value, limits.text)
-      : value;
+    if (!shouldCompactPayloadString(key, value, limits)) return value;
+    return key !== undefined && COMMAND_LINE_PAYLOAD_KEYS.has(key)
+      ? truncateCommandLine(value, limits.text)
+      : truncateBlock(value, limits.text);
   }
 
   if (value === null || typeof value !== "object") {

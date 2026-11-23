@@ -413,6 +413,30 @@ export const ProviderTurnStartResult = Schema.Struct({
   threadId: ThreadId,
   turnId: TurnId,
   resumeCursor: Schema.optional(Schema.Unknown),
+  /**
+   * The provider was sent only the person's typed text (`typed.text`), as one
+   * of its own commands, without the context in front of it (`typed.context`)
+   * or context the driver holds. Nothing that context carried was delivered:
+   * the caller keeps every debt it paid for the next message.
+   */
+  contextDeferred: Schema.optional(Schema.Literal(true)),
+  /**
+   * The prompt that carried this message was never written to the provider:
+   * its setup (the mode, the model) failed first, or the session ended
+   * before it went out. Neither the message nor the context in front of it
+   * was delivered; the driver keeps the context it held for the next
+   * message, the caller keeps every debt it was to pay, and the turn ends
+   * failed. Absent: the prompt was written (a driver returns only after it
+   * was, or after its setup failed).
+   */
+  undelivered: Schema.optional(Schema.Literal(true)),
+  /**
+   * The send reopened a runtime that had gone and the provider could not
+   * reopen its conversation (`resumeFailed`): the message went to a new
+   * conversation without the thread's history. The caller owes that history
+   * to its next message, as after any start that couldn't resume.
+   */
+  historyOwed: Schema.optional(Schema.Literal(true)),
 });
 export type ProviderTurnStartResult = typeof ProviderTurnStartResult.Type;
 

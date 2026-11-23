@@ -1400,6 +1400,25 @@ function withScheduleApproval(
     : { ...summary, pendingScheduleApproval: pending };
 }
 
+/**
+ * Whether a thread reads the same in a list that dates and orders threads by
+ * their latest user message (the command palette's). A streamed reply moves
+ * `updatedAt` on every token, which such a list never shows for a thread the
+ * user has written in.
+ */
+export function sidebarThreadSummariesListEqual(
+  left: SidebarThreadSummary,
+  right: SidebarThreadSummary,
+): boolean {
+  if (left === right) return true;
+  const activityOnlyFromReplies =
+    left.latestUserMessageAt != null && left.latestUserMessageAt === right.latestUserMessageAt;
+  return sidebarThreadSummariesEqual(
+    left,
+    activityOnlyFromReplies ? { ...right, updatedAt: left.updatedAt } : right,
+  );
+}
+
 function sidebarThreadSummariesEqual(
   left: SidebarThreadSummary | undefined,
   right: SidebarThreadSummary,

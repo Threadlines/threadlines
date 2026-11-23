@@ -8,6 +8,7 @@ import type {
   ServerProviderUsageLimit,
   ServerProviderUsageWindow,
 } from "@threadlines/contracts";
+import { type UsageScope, usageScopeHoldsModel } from "@threadlines/shared/usageLimits";
 
 /**
  * `warning` is the single "render attention affordances" signal for usage
@@ -44,8 +45,7 @@ export interface ProviderAccountUsageWindowPresentation {
    * per-model weekly limits): the name the provider gives it ("Fable"), its
    * period ("Weekly"), and when it resets ("resets in 3d 16h").
    */
-  readonly scope?: {
-    readonly name: string;
+  readonly scope?: UsageScope & {
     readonly period: string | null;
     readonly resetDetail: string | null;
   };
@@ -362,6 +362,13 @@ export function compactUsageMeters(
   usage: Pick<ProviderAccountUsagePresentation, "spendControl" | "windows">,
   limit: number = COMPACT_USAGE_METER_LIMIT,
 ): ReadonlyArray<ProviderUsageMeterLine> {
+  // A short label two windows share ("Gemini" for its 5h and weekly limits)
+  // keeps its period, so the lines stay apart.
+  const shortLabelCounts = new Map<string, number>();
+  for (const window of usage.windows) {
+    if (window.shortLabel === undefined) continue;
+    shortLabelCounts.set(window.shortLabel, (shortLabelCounts.get(window.shortLabel) ?? 0) + 1);
+  }
   const lines: ReadonlyArray<ProviderUsageMeterLine> = [
     ...(usage.spendControl
       ? [
@@ -377,7 +384,10 @@ export function compactUsageMeters(
       : []),
     ...usage.windows.map((window) => ({
       key: window.key,
-      label: window.shortLabel ?? window.label,
+      label:
+        window.shortLabel !== undefined && shortLabelCounts.get(window.shortLabel) === 1
+          ? window.shortLabel
+          : window.label,
       detail: window.detail,
       usedPercent: window.usedPercent,
       warning: window.warning,
@@ -527,7 +537,13 @@ function formatScopedUsageWindowPresentation(
     reachedLimit,
     warning: reachedLimit || severityWarning || usedPercent >= USAGE_WARNING_THRESHOLD_PERCENT,
     ...usagePaceFields(window, elapsedPercent),
-    scope: { name: window.scopeLabel, period: durationLabel || null, resetDetail },
+    scope: {
+      name: window.scopeLabel,
+      ...(window.scopeModels ? { models: window.scopeModels } : {}),
+      ...(window.scopeExcludes ? { excludes: window.scopeExcludes } : {}),
+      period: durationLabel || null,
+      resetDetail,
+    },
   };
 }
 
@@ -591,8 +607,27 @@ function formatResetCreditsPresentation(
   };
 }
 
-export function formatProviderTokenCount(value: number | undefined): string | null {
-  if (value === undefined || !Number.isFinite(value) || value < 0) return null;
+/** The smallest change each size of token count shows, matching the format below. */
+function tokenCountDisplayStep(value: number): number {
+  if (value < 1_000) return 1;
+  if (value < 10_000) return 100;
+  if (value < 1_000_000) return 1_000;
+  if (value < 1_000_000_000) return 100_000;
+  return value < 10_000_000_000 ? 10_000_000 : 100_000_000;
+}
+
+/**
+ * A token count for display. `roundDown` is for a floor ("at least"): the
+ * shown number must not exceed what was counted.
+ */
+export function formatProviderTokenCount(
+  rawValue: number | undefined,
+  options?: { readonly roundDown?: boolean },
+): string | null {
+  if (rawValue === undefined || !Number.isFinite(rawValue) || rawValue < 0) return null;
+  const value = options?.roundDown
+    ? Math.floor(rawValue / tokenCountDisplayStep(rawValue)) * tokenCountDisplayStep(rawValue)
+    : rawValue;
   if (value < 1_000) return `${Math.round(value)}`;
   if (value < 10_000) return `${(value / 1_000).toFixed(1).replace(/\.0$/, "")}k`;
   if (value < 1_000_000) return `${Math.round(value / 1_000)}k`;
@@ -853,9 +888,41 @@ function deriveClaudeUsageNotice(
 }
 
 /**
+ * What another provider's server says about its own usage check, in its own
+ * words (Antigravity: "start a chat to refresh"). A failed read stays quiet
+ * while the kept numbers are recent; anything else is said either way.
+ */
+function deriveReportedUsageNotice(
+  provider: ProviderAccountUsagePresentationProvider,
+  hasNumbers: boolean,
+  hasStaleReading: boolean,
+): ProviderAccountUsageNotice | undefined {
+  if (provider.driver === "claudeAgent" || provider.auth.status !== "authenticated") {
+    return undefined;
+  }
+  const usage = provider.auth.capabilities?.usage;
+  if (usage?.status !== "unavailable" || usage.detail === undefined) return undefined;
+  if (usage.reason === "unreachable" && hasNumbers && !hasStaleReading) return undefined;
+  return { signIn: false, text: usage.detail };
+}
+
+/** What a usage surface is titled when the provider has a notice and no reading. */
+function providerUsageLabel(provider: ProviderAccountUsagePresentationProvider): string {
+  switch (provider.driver) {
+    case "claudeAgent":
+      return PROVIDER_USAGE_SOURCE_LABELS["claude-oauth-usage"];
+    case "antigravity":
+      return "Antigravity usage";
+    default:
+      return "Plan usage";
+  }
+}
+
+/**
  * The usage presentation for a provider as a whole, not just its usage
- * payload: a Claude subscription whose usage check produced no numbers comes
- * back with a `notice` (keeping the numbers it has, and any local token
+ * payload: a Claude subscription whose usage check produced no numbers, or a
+ * provider whose server explains its own (Antigravity), comes back with a
+ * `notice` (keeping the numbers it has, and any local token
  * history) instead of as nothing, so its surfaces can say what is wrong. A
  * notice with no windows means there is nothing to draw: an empty meter
  * would read as "0% used".
@@ -869,16 +936,15 @@ export function deriveProviderAccountUsagePresentationForProvider(
   const hasNumbers =
     presentation !== null &&
     (presentation.windows.length > 0 || presentation.spendControl !== undefined);
-  const notice = deriveClaudeUsageNotice(
-    provider,
-    hasNumbers,
-    hasStaleUsageReading(provider.accountUsage, nowMs),
-  );
+  const hasStaleReading = hasStaleUsageReading(provider.accountUsage, nowMs);
+  const notice =
+    deriveClaudeUsageNotice(provider, hasNumbers, hasStaleReading) ??
+    deriveReportedUsageNotice(provider, hasNumbers, hasStaleReading);
   if (!notice) return presentation;
   return presentation
     ? { ...presentation, notice }
     : {
-        label: PROVIDER_USAGE_SOURCE_LABELS["claude-oauth-usage"],
+        label: providerUsageLabel(provider),
         windows: [],
         reachedLimit: false,
         notice,
@@ -936,26 +1002,20 @@ export function providerUsageNearLimitColor(
   return usageMeterColor(hottestPercent, true);
 }
 
-const nameTokens = (name: string) => name.toLowerCase().split(/\s+/).filter(Boolean);
-
 /**
- * The limit a model has of its own, if the account reports one. Providers name
- * such a limit, not the model's id ("Fable" for every Fable model), so it
- * matches a model whose name holds the limit's name as whole words: "Fable"
- * matches "Claude Fable 5.2", while "Opus 5" does not match "Opus 5.5". The
- * fullest applies when several do.
+ * The limit a model has of its own, if the account reports one: a window
+ * whose scope holds the model's name (`usageScopeHoldsModel`). The fullest
+ * applies when several do.
  */
 export function modelOwnUsageLimit(
   usage: Pick<ProviderAccountUsagePresentation, "windows"> | null | undefined,
   modelName: string,
 ): ProviderAccountUsageWindowPresentation | null {
   if (!usage) return null;
-  const model = nameTokens(modelName);
-  const holds = (scope: ReadonlyArray<string>) =>
-    scope.length > 0 &&
-    model.some((_, start) => scope.every((token, offset) => model[start + offset] === token));
   return usage.windows.reduce<ProviderAccountUsageWindowPresentation | null>((fullest, window) => {
-    if (window.scope === undefined || !holds(nameTokens(window.scope.name))) return fullest;
+    if (window.scope === undefined || !usageScopeHoldsModel(window.scope, modelName)) {
+      return fullest;
+    }
     return fullest === null || window.usedPercent > fullest.usedPercent ? window : fullest;
   }, null);
 }

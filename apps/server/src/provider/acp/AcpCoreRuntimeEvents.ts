@@ -143,7 +143,8 @@ export function makeAcpRequestResolvedEvent(input: {
   readonly turnId: TurnId | undefined;
   readonly requestId: RuntimeRequestId;
   readonly permissionRequest: AcpPermissionRequest;
-  readonly decision: ProviderApprovalDecision;
+  /** Absent for a card withdrawn unanswered (asked again in other words). */
+  readonly decision?: ProviderApprovalDecision;
 }): ProviderRuntimeEvent {
   return {
     type: "request.resolved",
@@ -154,7 +155,7 @@ export function makeAcpRequestResolvedEvent(input: {
     requestId: input.requestId,
     payload: {
       requestType: canonicalRequestTypeFromAcpKind(input.permissionRequest.kind),
-      decision: input.decision,
+      ...(input.decision !== undefined ? { decision: input.decision } : {}),
     },
   };
 }
@@ -204,7 +205,7 @@ export function makeAcpToolCallEvent(input: {
     turnId: input.turnId,
     itemId: RuntimeItemId.make(input.toolCall.toolCallId),
     payload: {
-      itemType: canonicalItemTypeFromAcpToolKind(input.toolCall.kind),
+      itemType: input.toolCall.itemType ?? canonicalItemTypeFromAcpToolKind(input.toolCall.kind),
       ...(runtimeStatus ? { status: runtimeStatus } : {}),
       ...(input.toolCall.title ? { title: input.toolCall.title } : {}),
       ...(input.toolCall.detail ? { detail: input.toolCall.detail } : {}),

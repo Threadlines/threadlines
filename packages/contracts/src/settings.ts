@@ -670,7 +670,7 @@ export const AntigravitySettings = makeProviderSettingsSchema(
       Schema.annotateKey({
         title: "Binary path",
         description:
-          "Leave empty to use the Antigravity runtime Threadlines installs. Set it to run your own agy_acp_server.",
+          "Leave empty to use the Antigravity CLI Threadlines installs. Set it to run your own `agy` (1.5.14 or newer).",
         providerSettingsForm: { placeholder: "Managed by Threadlines", clearWhenEmpty: "omit" },
       }),
     ),

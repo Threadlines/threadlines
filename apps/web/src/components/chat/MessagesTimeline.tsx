@@ -266,7 +266,10 @@ import type {
   TranscriptHighlightContextSelection,
   TranscriptHighlightSourceRole,
 } from "~/lib/transcriptHighlightContext";
-import { formatTranscriptHighlightContextPreview } from "~/lib/transcriptHighlightContext";
+import {
+  formatTranscriptHighlightContextPreview,
+  transcriptHighlightRoleWord,
+} from "~/lib/transcriptHighlightContext";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import {
   type AgentModelLabeler,
@@ -345,6 +348,10 @@ interface TimelineRowSharedState {
   onResolveNoteSuggestion?: NoteSuggestionResolver | undefined;
   /** Puts a message an MCP app asked to send into the composer. */
   onPutMcpAppMessage?: ((text: string) => void) | undefined;
+  /** Adds a note on selected text to the composer; a page's full-size view offers it too. */
+  onAddTranscriptHighlightContext?:
+    | ((selection: TranscriptHighlightContextSelection) => void)
+    | undefined;
   /** Opens or closes a side answer's one-line status to watch it written. */
   onToggleSideAnswer: (sideTurnId: SideTurnId) => void;
   /** Scrolls to a message: a side answer posted below, or its question. */
@@ -2141,6 +2148,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onCancelCheckBack,
       onResolveNoteSuggestion,
       onPutMcpAppMessage,
+      onAddTranscriptHighlightContext,
       threadStartCallsByTurn,
       runMessage,
       anchorOwnsLiveAgents,
@@ -2187,6 +2195,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onCancelCheckBack,
       onResolveNoteSuggestion,
       onPutMcpAppMessage,
+      onAddTranscriptHighlightContext,
       threadStartCallsByTurn,
       runMessage,
       anchorOwnsLiveAgents,
@@ -4302,6 +4311,7 @@ function PageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "page" }> 
         threadId={ctx.activeThreadId}
         page={row.page}
         updated={row.updated}
+        onAddHighlight={ctx.onAddTranscriptHighlightContext}
       />
     </>
   );
@@ -5791,7 +5801,7 @@ const UserMessageTranscriptHighlightInlineLabel = memo(
     context: ParsedTranscriptHighlightContextEntry;
   }) {
     const preview = formatTranscriptHighlightContextPreview(props.context);
-    const roleWord = props.context.sourceRole === "assistant" ? "assistant" : "your";
+    const roleWord = transcriptHighlightRoleWord(props.context.sourceRole);
 
     return (
       <Popover>

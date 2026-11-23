@@ -16,10 +16,23 @@ export interface EnvironmentThreadSearchMatch extends OrchestrationThreadSearchM
   readonly environmentId: EnvironmentId;
 }
 
+/**
+ * How one computer's search went: it answered, it couldn't be asked or
+ * failed, or it stopped early. The server stops early both when it found more
+ * than the limit and when its candidate scan filled up, so "stoppedEarly"
+ * means the list may be incomplete, never that more matches exist.
+ */
+export type ThreadSearchOutcome = "answered" | "failed" | "stoppedEarly";
+
+export interface EnvironmentThreadSearchOutcome {
+  readonly environmentId: EnvironmentId;
+  readonly outcome: ThreadSearchOutcome;
+}
+
 export interface ThreadSearchAcrossEnvironmentsResult {
   readonly matches: ReadonlyArray<EnvironmentThreadSearchMatch>;
-  readonly truncated: boolean;
-  readonly failedEnvironmentIds: ReadonlyArray<EnvironmentId>;
+  /** One per computer searched, in the order asked. */
+  readonly outcomes: ReadonlyArray<EnvironmentThreadSearchOutcome>;
 }
 
 const THREAD_SEARCH_RESULT_LIMIT_PER_ENVIRONMENT = 50;
@@ -60,8 +73,7 @@ export function threadSearchQueryOptions(input: {
       );
 
       const matches: EnvironmentThreadSearchMatch[] = [];
-      const failedEnvironmentIds: EnvironmentId[] = [];
-      let truncated = false;
+      const outcomes: EnvironmentThreadSearchOutcome[] = [];
 
       searches.forEach((search, index) => {
         const target = normalizedTargets[index];
@@ -69,11 +81,14 @@ export function threadSearchQueryOptions(input: {
           return;
         }
         if (search.status === "rejected") {
-          failedEnvironmentIds.push(target.environmentId);
+          outcomes.push({ environmentId: target.environmentId, outcome: "failed" });
           return;
         }
 
-        truncated ||= search.value.result.truncated;
+        outcomes.push({
+          environmentId: target.environmentId,
+          outcome: search.value.result.truncated ? "stoppedEarly" : "answered",
+        });
         matches.push(
           ...search.value.result.matches.map((match) => ({
             ...match,
@@ -82,7 +97,7 @@ export function threadSearchQueryOptions(input: {
         );
       });
 
-      return { matches, truncated, failedEnvironmentIds };
+      return { matches, outcomes };
     },
     enabled:
       (input.enabled ?? true) &&

@@ -177,7 +177,12 @@ export class UsageAggregator {
 
     bucket.totals = addTotals(bucket.totals, record.totals);
     bucket.costUsd += priced.costUsd;
-    bucket.cacheSavingsUsd += cacheSavingsUsd(this.#options.rates, record.model, record.totals);
+    bucket.cacheSavingsUsd += cacheSavingsUsd(
+      this.#options.rates,
+      record.model,
+      record.totals,
+      record.timestampMs,
+    );
     bucket.records += 1;
     if (priced.costSource === "unpriced") bucket.unpricedRecords += 1;
     if (priced.costSource === "providerReported") bucket.providerReportedRecords += 1;

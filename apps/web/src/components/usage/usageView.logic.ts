@@ -46,6 +46,7 @@ export const USAGE_PROVIDER_LABELS: Record<UsageProviderKind, string> = {
   muse: "Muse Code",
   opencode: "OpenCode",
   fx: "fx",
+  antigravity: "Antigravity",
 };
 
 /** For the narrow columns where the product name would not fit. */
@@ -57,6 +58,7 @@ export const USAGE_PROVIDER_SHORT_LABELS: Record<UsageProviderKind, string> = {
   muse: "Muse",
   opencode: "OpenCode",
   fx: "fx",
+  antigravity: "Antigravity",
 };
 
 /**
@@ -75,6 +77,7 @@ export const USAGE_PROVIDER_COLORS: Record<UsageProviderKind, string> = {
   muse: "var(--provider-muse)",
   opencode: "var(--provider-opencode)",
   fx: "var(--provider-fx)",
+  antigravity: "var(--provider-antigravity)",
 };
 
 /** Reading order for legends and rows: the same order every time. */
@@ -86,6 +89,7 @@ export const USAGE_PROVIDER_READING_ORDER: readonly UsageProviderKind[] = [
   "muse",
   "opencode",
   "fx",
+  "antigravity",
 ];
 
 /**
@@ -1011,6 +1015,7 @@ const USAGE_PROVIDER_BY_DRIVER: ReadonlyMap<ProviderDriverKind, UsageProviderKin
   [ProviderDriverKind.make("muse"), "muse"],
   [ProviderDriverKind.make("opencode"), "opencode"],
   [ProviderDriverKind.make("fx"), "fx"],
+  [ProviderDriverKind.make("antigravity"), "antigravity"],
 ]);
 
 /**

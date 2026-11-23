@@ -5,6 +5,7 @@
  *
  * @module provider/acp/AcpTextGeneration
  */
+import { THREADLINES_ACP_CLIENT_INFO } from "./acpClientInfo.ts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -80,8 +81,9 @@ export const makeAcpTextGeneration = Effect.fn("makeAcpTextGeneration")(function
     prompt: string;
     outputSchemaJson: S;
     modelSelection: ModelSelection;
-  }): Effect.Effect<S["Type"], TextGenerationError, S["DecodingServices"]> =>
-    Effect.gen(function* () {
+  }): Effect.Effect<S["Type"], TextGenerationError, S["DecodingServices"]> => {
+    let openedSessionId: string | undefined;
+    return Effect.gen(function* () {
       const outputRef = yield* Ref.make("");
       // Workspace hooks and settings can act before a denied tool call
       // would stop them; agents that read them run in an empty directory.
@@ -93,7 +95,7 @@ export const makeAcpTextGeneration = Effect.fn("makeAcpTextGeneration")(function
         environment,
         childProcessSpawner: commandSpawner,
         cwd: runCwd,
-        clientInfo: { name: "threadlines-git-text", version: "0.0.0" },
+        clientInfo: { ...THREADLINES_ACP_CLIENT_INFO, name: "threadlines-git-text" },
       });
       // Text generation needs no tools: every request is refused.
       yield* runtime.handleRequestPermission(() =>
@@ -113,12 +115,15 @@ export const makeAcpTextGeneration = Effect.fn("makeAcpTextGeneration")(function
       });
 
       const promptResult = yield* Effect.gen(function* () {
-        yield* runtime.start();
+        const started = yield* runtime.start();
+        openedSessionId = started.sessionId;
+        const modeState = yield* runtime.getModeState;
         yield* Effect.ignore(
           runtime.setMode(
             descriptor.agentModeFor?.({
               runtimeMode: "approval-required",
               interactionMode: undefined,
+              availableModeIds: modeState?.availableModes.map((mode) => mode.id) ?? [],
             }) ?? ACP_TEXT_GENERATION_MODE_ID,
           ),
         );
@@ -191,7 +196,15 @@ export const makeAcpTextGeneration = Effect.fn("makeAcpTextGeneration")(function
           : mapAcpError(operation, `${agentName} ACP text generation failed.`, cause),
       ),
       Effect.scoped,
+      Effect.ensuring(
+        Effect.suspend(() =>
+          openedSessionId !== undefined && descriptor.onEphemeralSessionClosed
+            ? descriptor.onEphemeralSessionClosed(openedSessionId).pipe(Effect.ignore)
+            : Effect.void,
+        ),
+      ),
     );
+  };
 
   const generateCommitMessage: TextGenerationShape["generateCommitMessage"] = Effect.fn(
     "AcpTextGeneration.generateCommitMessage",

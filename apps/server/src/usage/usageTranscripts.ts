@@ -90,6 +90,7 @@ export function mightCarryUsage(line: string, provider: UsageProviderKind): bool
       // A database, read by `usageOpenCode`, never a transcript.
       return false;
     case "fx":
+    case "antigravity":
       // Threadlines' own ledger: every line is a turn.
       return true;
   }

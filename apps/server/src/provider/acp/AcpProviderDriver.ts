@@ -8,7 +8,12 @@
  *
  * @module provider/acp/AcpProviderDriver
  */
-import type { ServerProvider } from "@threadlines/contracts";
+import type {
+  ServerProvider,
+  ServerProviderSessionCommands,
+  ServerProviderSlashCommand,
+} from "@threadlines/contracts";
+import { sameSlashCommands } from "@threadlines/shared/slashCommands";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -22,6 +27,7 @@ import { appendUsageLedgerEntry, type UsageLedgerEntry } from "../../usage/usage
 import { ProviderDriverError } from "../Errors.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
+import type { ServerProviderShape } from "../Services/ServerProvider.ts";
 import {
   defaultProviderContinuationIdentity,
   type ProviderDriver,
@@ -50,6 +56,49 @@ import type { AcpProviderDescriptor, AcpProviderSettings } from "./AcpProviderDe
 import { makeAcpTextGeneration } from "./AcpTextGeneration.ts";
 
 const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
+
+/**
+ * A snapshot with the sessions' lists as they are now: the same snapshot
+ * when they didn't change (nothing is published then), and none of a list
+ * the snapshot carried from before.
+ */
+export function withSessionCommands(
+  snapshot: ServerProvider,
+  bySession: ReadonlyMap<string, ReadonlyArray<ServerProviderSlashCommand>>,
+): ServerProvider {
+  const { sessionCommands: previous, ...rest } = snapshot;
+  if (bySession.size === 0) return previous === undefined ? snapshot : rest;
+  const next = groupSessionCommands(bySession);
+  const unchanged =
+    previous !== undefined &&
+    previous.length === next.length &&
+    previous.every((group, index) => {
+      const other = next[index];
+      return (
+        other !== undefined &&
+        group.sessions.length === other.sessions.length &&
+        group.sessions.every((session, at) => session === other.sessions[at]) &&
+        sameSlashCommands(group.commands, other.commands)
+      );
+    });
+  return unchanged ? snapshot : { ...rest, sessionCommands: next };
+}
+
+/** Sessions' lists for the status: each distinct list once, with the sessions that listed it. */
+export function groupSessionCommands(
+  bySession: ReadonlyMap<string, ReadonlyArray<ServerProviderSlashCommand>>,
+): ReadonlyArray<ServerProviderSessionCommands> {
+  const groups: Array<{
+    sessions: Array<string>;
+    commands: ReadonlyArray<ServerProviderSlashCommand>;
+  }> = [];
+  for (const [session, commands] of bySession) {
+    const group = groups.find((entry) => sameSlashCommands(entry.commands, commands));
+    if (group) group.sessions.push(session);
+    else groups.push({ sessions: [session], commands });
+  }
+  return groups;
+}
 
 export type AcpProviderDriverEnv =
   | ChildProcessSpawner.ChildProcessSpawner
@@ -171,15 +220,24 @@ export function makeAcpProviderDriver<Settings extends AcpProviderSettings>(
               continuationKey: descriptor.continuationKey(config, processEnv),
             }
           : defaultProviderContinuationIdentity({ driverKind: DRIVER_KIND, instanceId });
-        const stampIdentity = (snapshot: ServerProviderDraft): ServerProvider => ({
+        // What each running session listed (`agentCommands` descriptors),
+        // by session key: live state on the status, never stored, so every
+        // snapshot (a scheduled check included) carries the current lists.
+        const sessionCommands = new Map<string, ReadonlyArray<ServerProviderSlashCommand>>();
+        const stampInstance = (snapshot: ServerProviderDraft): ServerProvider => ({
           ...snapshot,
           instanceId,
           driver: DRIVER_KIND,
           ...(displayName ? { displayName } : {}),
           ...(accentColor ? { accentColor } : {}),
           continuation: { groupKey: continuationIdentity.continuationKey },
+          ...(descriptor.agentCommands?.slashSkills === true ? { slashSkills: true } : {}),
           ...descriptor.snapshotExtras?.(),
         });
+        // Every snapshot carries the lists as they are now, never ones it was
+        // built from (an enrichment that read the status before a session ended).
+        const stampIdentity = (snapshot: ServerProviderDraft): ServerProvider =>
+          withSessionCommands(stampInstance(snapshot), sessionCommands);
         // A bare binary name is resolved once against the server's PATH plus
         // the known CLI install folders, so a CLI installed after the process
         // started (or one living outside cmd.exe's view) still spawns.
@@ -219,11 +277,45 @@ export function makeAcpProviderDriver<Settings extends AcpProviderSettings>(
                 ),
               )
           : undefined;
+        // Set once the snapshot exists; sessions only start after that.
+        let liveSnapshot: ServerProviderShape | undefined;
+        const agentCommandHooks =
+          descriptor.agentCommands === undefined
+            ? {}
+            : {
+                onSessionCommands: (
+                  sessionKey: string,
+                  commands: ReadonlyArray<ServerProviderSlashCommand> | undefined,
+                ) =>
+                  Effect.suspend(() => {
+                    if (commands === undefined) sessionCommands.delete(sessionKey);
+                    else sessionCommands.set(sessionKey, commands);
+                    // An unchanged status is not published again.
+                    return (
+                      liveSnapshot?.patchSnapshot((current) =>
+                        withSessionCommands(current, sessionCommands),
+                      ) ?? Effect.void
+                    );
+                  }).pipe(Effect.ignoreCause({ log: true })),
+                skillNames: Effect.suspend(
+                  () => liveSnapshot?.getSnapshot ?? Effect.succeed(undefined),
+                ).pipe(
+                  Effect.map(
+                    (current): ReadonlySet<string> =>
+                      new Set(
+                        (current?.skills ?? [])
+                          .filter((skill) => skill.enabled)
+                          .map((skill) => skill.name),
+                      ),
+                  ),
+                ),
+              };
         const adapter = yield* makeAcpAdapter(descriptor, effectiveConfig, {
           environment: processEnv,
           ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
           instanceId,
           ...(recordTurnUsage ? { recordTurnUsage } : {}),
+          ...agentCommandHooks,
         });
         const textGeneration = yield* makeAcpTextGeneration(
           descriptor,
@@ -284,6 +376,8 @@ export function makeAcpProviderDriver<Settings extends AcpProviderSettings>(
               }),
           ),
         );
+
+        liveSnapshot = snapshot;
 
         return {
           instanceId,

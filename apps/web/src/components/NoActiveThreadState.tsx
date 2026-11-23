@@ -10,6 +10,7 @@ import {
 import { useMemo } from "react";
 
 import { useCommandPaletteStore } from "../commandPaletteStore";
+import { openAddProject } from "./addProject/addProjectStore";
 import { usePrimaryEnvironmentId } from "../environments/primary";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import {
@@ -39,7 +40,6 @@ export function NoActiveThreadState() {
   const { activeDraftThread, activeThread, defaultProjectRef, handleNewThread, orderedProjects } =
     useHandleNewThread();
   const setCommandPaletteOpen = useCommandPaletteStore((store) => store.setOpen);
-  const openAddProject = useCommandPaletteStore((store) => store.openAddProject);
   const activeEnvironmentId = useStore((state) => state.activeEnvironmentId);
   const hasRecentThreads = useStore((state) =>
     selectSidebarThreadsAcrossEnvironments(state).some((thread) => thread.archivedAt === null),
@@ -202,7 +202,7 @@ export function NoActiveThreadState() {
                   ) : null}
                   <Button
                     data-testid="no-thread-add-project-button"
-                    onClick={() => openAddProject()}
+                    onClick={(event) => openAddProject({ returnFocus: event.currentTarget })}
                     size="sm"
                     variant="outline"
                   >

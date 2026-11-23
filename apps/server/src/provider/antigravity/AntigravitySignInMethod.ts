@@ -18,11 +18,13 @@
  * - What a check found (a key Google rejected) is kept per credential, so a
  *   new key starts fresh and an old verdict never sticks to it.
  *
- * Verified against Antigravity 1.3.0: the agent picks the method from the
- * settings file at start, `authenticate` with a key method never tests the
- * key, and a keyless Vertex AI session opens without ADC (the first prompt
- * fails). So a key or ADC is only proven by a request; status says
- * "configured" until a check passes.
+ * - A Google sign-in is the CLI's token file in the profile, and the method
+ *   it was made with, which Threadlines records itself: the file doesn't say.
+ *
+ * Verified against Antigravity's ACP server 1.3.0, and assumed of the CLI
+ * (1.5.14) until a signed-in check says otherwise: the agent picks the method
+ * from the settings file at start, and a key is only proven by a request.
+ * So status says "configured" until a check passes.
  *
  * @module provider/antigravity/AntigravitySignInMethod
  */
@@ -44,7 +46,7 @@ import {
 import * as Effect from "effect/Effect";
 
 import { checkApiKeyWithModelList } from "../apiKeyCheck.ts";
-import { antigravityAgentDir, antigravityTokenPath } from "./AntigravityProfile.ts";
+import { antigravityAgentDir, readAntigravitySavedSignIn } from "./AntigravityProfile.ts";
 import { ProviderSetupError } from "../Errors.ts";
 
 export interface AntigravitySignInConfig {
@@ -308,40 +310,71 @@ export const writeAntigravitySignInCheck = (profileDir: string, check: Antigravi
 
 // ── Which Google sign-in the profile holds ──────────────────────────
 
-/** The OAuth clients Antigravity 1.3.0 signs in with, per method. */
-const GOOGLE_ACCOUNT_CLIENT_ID =
-  "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
-const GEMINI_ENTERPRISE_CLIENT_ID =
-  "884354919052-36trc1jjb3tguiac32ov6cod268c5blh.apps.googleusercontent.com";
-/** Gemini Code Assist's scope: only a Google account sign-in asks for it. */
-const CODE_ASSIST_SCOPE = "https://www.googleapis.com/auth/aicode";
+const googleSignInRecordPath = (profileDir: string) =>
+  join(profileDir, "threadlines-google-sign-in.json");
+
+type GoogleMethod = "oauth-personal" | "oauth-business";
+
+/** Records which Google method the profile's sign-in was made with. */
+export const writeAntigravityGoogleSignIn = (profileDir: string, method: GoogleMethod) =>
+  Effect.tryPromise(async () => {
+    await fs.mkdir(profileDir, { recursive: true, mode: 0o700 });
+    await writePrivateFileAtomically(
+      googleSignInRecordPath(profileDir),
+      JSON.stringify({ method }),
+    );
+  }).pipe(Effect.ignore);
 
 /**
- * Which Google method a saved token belongs to. Google account and Gemini
- * Enterprise share one token file; the token names the OAuth client that
- * issued it, and only a Google account's carries the Code Assist scope.
+ * Forgets the profile's Google sign-in: the CLI's token file, the old
+ * server's, and the record. Only files in this profile are touched, never
+ * the OS keyring, so the user's own `agy` stays signed in.
  */
-export function classifyAntigravityGoogleToken(
-  token: unknown,
-): "oauth-personal" | "oauth-business" | undefined {
-  if (!isRecord(token) || Object.keys(token).length === 0) return undefined;
-  if (token.client_id === GOOGLE_ACCOUNT_CLIENT_ID) return "oauth-personal";
-  if (token.client_id === GEMINI_ENTERPRISE_CLIENT_ID) return "oauth-business";
-  if (!Array.isArray(token.scopes)) return "oauth-personal";
-  // Exact scope names, never a substring of one.
-  const codeAssist = token.scopes.some((scope: unknown) => scope === CODE_ASSIST_SCOPE);
-  return codeAssist ? "oauth-personal" : "oauth-business";
+export const removeAntigravityGoogleSignIn = (profileDir: string) =>
+  Effect.tryPromise({
+    try: async () => {
+      for (const path of [
+        join(antigravityAgentDir(profileDir), "antigravity-oauth-token"),
+        join(antigravityAgentDir(profileDir), "acp_token.json"),
+        googleSignInRecordPath(profileDir),
+      ]) {
+        await fs.rm(path, { force: true });
+      }
+    },
+    catch: (cause) =>
+      new ProviderSetupError({
+        detail: `Couldn't remove Antigravity's sign-in: ${String(cause)}`,
+        cause,
+      }),
+  });
+
+export interface AntigravityGoogleSignIn {
+  /** The Google method the CLI's saved sign-in was made with; undefined when it holds none. */
+  readonly method: GoogleMethod | undefined;
+  /** Only the old ACP server's sign-in is there, which the CLI doesn't read. */
+  readonly legacyOnly: boolean;
 }
 
-/** The Google method the profile's saved sign-in belongs to, or `undefined` when it holds none. */
+/** The profile's Google sign-in, as the status shows it. */
 export const readAntigravityGoogleSignIn = (profileDir: string) =>
-  Effect.promise(async () => {
-    const raw = await fs.readFile(antigravityTokenPath(profileDir), "utf8").catch(() => "");
-    try {
-      return classifyAntigravityGoogleToken(JSON.parse(raw));
-    } catch {
-      return undefined;
-    }
+  Effect.gen(function* () {
+    const saved = yield* readAntigravitySavedSignIn(profileDir);
+    const recorded = yield* Effect.promise(async () => {
+      const raw = await fs
+        .readFile(googleSignInRecordPath(profileDir), "utf8")
+        .catch(() => undefined);
+      try {
+        const method =
+          raw === undefined ? undefined : (JSON.parse(raw) as { method?: unknown }).method;
+        return method === "oauth-personal" || method === "oauth-business" ? method : undefined;
+      } catch {
+        return undefined;
+      }
+    });
+    return {
+      method: saved.cli ? recorded : undefined,
+      legacyOnly: !saved.cli && saved.legacy,
+    } satisfies AntigravityGoogleSignIn;
   });
 
 // ── Gemini API key check ─────────────────────────────────────────────
@@ -388,12 +421,15 @@ export function antigravitySignInStatus(input: {
   readonly config: AntigravitySignInConfig;
   /** Whether the profile holds a Google sign-in made with this method (Google methods). */
   readonly signedIn: boolean;
+  /** Only a sign-in from before the move to Google's CLI is there. */
+  readonly legacySignIn?: boolean;
   readonly check: AntigravitySignInCheck | undefined;
   /** ADC as found for keyless Vertex AI. */
   readonly adc: AntigravityAdcState | undefined;
 }): AntigravitySignInStatus {
   const { config, signedIn, check, adc } = input;
   const type = config.method;
+  const signInAgain = "Antigravity now runs on Google's CLI. Sign in again to keep using it.";
   const signedOut = (message: string, status: "warning" | "error" = "warning") =>
     ({ status, auth: { status: "unauthenticated", type }, message }) as const;
   const signedInAs = (label: string, chat?: "verified" | "configured", detail?: string) =>
@@ -411,16 +447,20 @@ export function antigravitySignInStatus(input: {
 
   switch (config.method) {
     case "oauth-personal":
-      return signedIn
-        ? signedInAs("Google account")
-        : signedOut("Sign in with Google to use Antigravity.");
+      if (signedIn) return signedInAs("Google account");
+      return signedOut(
+        input.legacySignIn ? signInAgain : "Sign in with Google to use Antigravity.",
+      );
     case "oauth-business":
       if (antigravityMissingSetup(config)) {
         return signedOut("Add your Google Cloud project and location to use Gemini Enterprise.");
       }
-      return signedIn
-        ? signedInAs(`Gemini Enterprise · ${config.project}`)
-        : signedOut("Sign in with your work Google account to use Gemini Enterprise.");
+      if (signedIn) return signedInAs(`Gemini Enterprise · ${config.project}`);
+      return signedOut(
+        input.legacySignIn
+          ? signInAgain
+          : "Sign in with your work Google account to use Gemini Enterprise.",
+      );
     case "gemini-api-key": {
       if (!config.key) return signedOut("Add a Gemini API key to use Antigravity.");
       if (check && !check.accepted) {

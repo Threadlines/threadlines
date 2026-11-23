@@ -1,5 +1,6 @@
 import * as Path from "effect/Path";
 import * as AcpError from "./errors.ts";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
@@ -7,6 +8,8 @@ import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as Ref from "effect/Ref";
+import * as Sink from "effect/Sink";
+import * as Stdio from "effect/Stdio";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { it, assert } from "@effect/vitest";
@@ -225,6 +228,126 @@ it.layer(NodeServices.layer)("effect-acp protocol", (it) => {
 
       const resolved = yield* Fiber.join(response);
       assert.deepEqual(resolved, { ok: true });
+    }),
+  );
+
+  it.effect("hands an in-order request's answer over where it was read among the updates", () =>
+    Effect.gen(function* () {
+      const { stdio, input, output } = yield* makeInMemoryStdio();
+      const seen: Array<string> = [];
+      const transport = yield* AcpProtocol.makeAcpPatchedProtocol({
+        stdio,
+        serverRequestMethods: new Set(),
+        onNotification: () => Effect.sync(() => void seen.push("update")),
+      });
+      const update = yield* encodeJsonl(SessionUpdateNotification, {
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: { sessionId: "session-1", update: { sessionUpdate: "plan", entries: [] } },
+      });
+      const answered = yield* Deferred.make<void>();
+      yield* transport.requestInOrder("x/test", { hello: "world" }, (answer) =>
+        Effect.sync(() => {
+          seen.push(answer._tag === "Success" ? "answer" : "failure");
+        }).pipe(Effect.andThen(Deferred.succeed(answered, undefined))),
+      );
+      // Returns once the request is out, before any answer.
+      assert.deepEqual((yield* decodeExtRequest(yield* Queue.take(output))).id, 1);
+      assert.deepEqual(seen, []);
+      // An update, the answer, and an update the agent wrote right after it.
+      yield* Queue.offer(input, update);
+      yield* Queue.offer(
+        input,
+        yield* encodeJsonl(ExtResponse, { jsonrpc: "2.0", id: 1, result: { ok: true } }),
+      );
+      yield* Queue.offer(input, update);
+      yield* Deferred.await(answered);
+      for (let attempt = 0; attempt < 100 && seen.length < 3; attempt += 1) yield* Effect.yieldNow;
+      assert.deepEqual(seen, ["update", "answer", "update"]);
+    }),
+  );
+
+  it.effect("counts an in-order request sent only once the agent's stdin took it", () =>
+    Effect.gen(function* () {
+      // The agent's stdin takes nothing until `gate` opens, then fails (it
+      // closed its end).
+      const gate = yield* Deferred.make<void>();
+      const reached = yield* Deferred.make<void>();
+      const input = yield* Queue.unbounded<Uint8Array, Cause.Done<void>>();
+      const stdio = Stdio.make({
+        args: Effect.succeed([]),
+        stdin: Stream.fromQueue(input),
+        stdout: () =>
+          Sink.forEach(() =>
+            Deferred.succeed(reached, undefined).pipe(
+              Effect.andThen(Deferred.await(gate)),
+              Effect.andThen(Effect.die(new Error("EPIPE: the agent closed its stdin"))),
+            ),
+          ),
+        stderr: () => Sink.drain,
+      });
+      const transport = yield* AcpProtocol.makeAcpPatchedProtocol({
+        stdio,
+        serverRequestMethods: new Set(),
+      });
+      const answers: Array<string> = [];
+      const sending = yield* transport
+        .requestInOrder("x/test", { hello: "world" }, (answer) =>
+          Effect.sync(() => void answers.push(answer._tag)),
+        )
+        .pipe(Effect.exit, Effect.forkScoped);
+      yield* Deferred.await(reached);
+      for (let tick = 0; tick < 20; tick += 1) yield* Effect.yieldNow;
+      // Queued and handed to the sink, but not taken: not sent yet.
+      assert.isUndefined(sending.pollUnsafe());
+      yield* Deferred.succeed(gate, undefined);
+      const exit = yield* Fiber.join(sending);
+      assert.isTrue(exit._tag === "Failure");
+      // Never written, so never answered either.
+      assert.deepEqual(answers, []);
+    }),
+  );
+
+  it.effect("never answers or queues a request once the agent's output has ended", () =>
+    Effect.gen(function* () {
+      // The agent's stdin takes nothing and never fails; its stdout ends
+      // while a request waits to be written.
+      const reached = yield* Deferred.make<void>();
+      const input = yield* Queue.unbounded<Uint8Array, Cause.Done<void>>();
+      const stdio = Stdio.make({
+        args: Effect.succeed([]),
+        stdin: Stream.fromQueue(input),
+        stdout: () =>
+          Sink.forEach(() =>
+            Deferred.succeed(reached, undefined).pipe(Effect.andThen(Effect.never)),
+          ),
+        stderr: () => Sink.drain,
+      });
+      const transport = yield* AcpProtocol.makeAcpPatchedProtocol({
+        stdio,
+        serverRequestMethods: new Set(),
+      });
+      const answers: Array<string> = [];
+      const note = (answer: { readonly _tag: string }) =>
+        Effect.sync(() => void answers.push(answer._tag));
+      const first = yield* transport
+        .requestInOrder("x/test", { n: 1 }, note)
+        .pipe(Effect.exit, Effect.forkScoped);
+      yield* Deferred.await(reached);
+      // A second request queues behind the frame the sink holds.
+      const second = yield* transport
+        .requestInOrder("x/test", { n: 2 }, note)
+        .pipe(Effect.exit, Effect.forkScoped);
+      for (let tick = 0; tick < 20; tick += 1) yield* Effect.yieldNow;
+      yield* Queue.end(input);
+      // Neither was written: both fail, and neither is reported answered.
+      assert.isTrue((yield* Fiber.join(first))._tag === "Failure");
+      assert.isTrue((yield* Fiber.join(second))._tag === "Failure");
+      assert.deepEqual(answers, []);
+      // A request made afterwards fails at once instead of waiting forever.
+      const late = yield* transport.requestInOrder("x/test", { n: 3 }, note).pipe(Effect.exit);
+      assert.isTrue(late._tag === "Failure");
+      assert.deepEqual(answers, []);
     }),
   );
 

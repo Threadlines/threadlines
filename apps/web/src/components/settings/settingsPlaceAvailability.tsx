@@ -63,7 +63,7 @@ export const SettingsSurfaceContext = createContext<SettingsSurface>("full");
 export const useSettingsSurface = (): SettingsSurface => useContext(SettingsSurfaceContext);
 
 /** What the rules below read: how Settings is shown, and live facts some rows depend on. */
-interface PlaceSignals {
+export interface PlaceSignals {
   readonly phone: boolean;
   readonly desktopApp: boolean;
   readonly keepAwakeForTasks: boolean;
@@ -160,9 +160,10 @@ const PlaceSignalsContext = createContext<PlaceSignals | null>(null);
  * Whether the desktop app's computer is reachable from other devices, read
  * from the desktop app each time a search starts (Connections can change it
  * in between). Unknown, so not offered, until this search's read answers.
+ * `search` numbers the host's searches: Settings counts them, the palette
+ * uses its opening.
  */
-function useDesktopReach(enabled: boolean): boolean {
-  const search = useSettingsSearchStore((state) => state.searchesStarted);
+function useDesktopReach(enabled: boolean, search: number): boolean {
   const [answer, setAnswer] = useState<{
     readonly search: number;
     readonly reachable: boolean;
@@ -190,8 +191,14 @@ function useDesktopReach(enabled: boolean): boolean {
   return enabled && answer?.search === search && answer.reachable;
 }
 
-function usePlaceSignals(): PlaceSignals {
-  const phone = useSettingsSurface() === "phone";
+/** What a host of the settings search tells the rules: is a search showing, and which one. */
+export interface SettingsSearchHost {
+  readonly searchActive: boolean;
+  /** Changes for each new search, so facts read per search are read again. */
+  readonly searchSession: number;
+}
+
+function usePlaceSignals(phone: boolean, host: SettingsSearchHost): PlaceSignals {
   const background = useDesktopBackgroundOptions();
   const dictation = useDictationStatus(usePrimaryEnvironmentId());
   const alertsEnabled = usePushAlertsStore((state) => state.enabled);
@@ -200,8 +207,10 @@ function usePlaceSignals(): PlaceSignals {
     (state) => Object.values(state.byId).filter((record) => relayLinkOf(record) !== null).length,
   );
   const { role, authPolicy } = usePrimarySessionAccess(!phone);
-  const searching = useSettingsSearchStore(selectSettingsSearchActive);
-  const desktopReach = useDesktopReach(isElectron && !phone && role === "owner" && searching);
+  const desktopReach = useDesktopReach(
+    isElectron && !phone && role === "owner" && host.searchActive,
+    host.searchSession,
+  );
   const primaryCapabilities = usePrimaryEnvironmentDescriptor()?.capabilities;
   const outsideAgents = primaryCapabilities?.outsideAgents === true;
   const projectContext = primaryCapabilities?.projectContext === true;
@@ -248,13 +257,56 @@ function usePlaceSignals(): PlaceSignals {
   );
 }
 
+/** Whether a place is on screen under these facts. */
+function placeShown(signals: PlaceSignals, id: SettingsPlaceSearchId): boolean {
+  const place = placeById(id);
+  if ("appliesWhen" in place && place.appliesWhen === "desktop" && !signals.desktopApp) {
+    return false;
+  }
+  return SHOWN_WHEN[id]?.(signals) ?? true;
+}
+
 /**
- * Gathers the live facts once for all of Settings (the layout mounts it), so
- * a page full of places doesn't ask the server once per row.
+ * Which settings places exist here, for a host of the settings search:
+ * Settings (through SettingsAvailabilityProvider) and the command palette,
+ * which asks with the same inputs so it never offers a row Settings hides.
  */
-export function SettingsPlaceSignalsProvider({ children }: { readonly children: ReactNode }) {
-  const signals = usePlaceSignals();
-  return <PlaceSignalsContext.Provider value={signals}>{children}</PlaceSignalsContext.Provider>;
+export function useSettingsAvailability(
+  surface: SettingsSurface,
+  host: SettingsSearchHost,
+): { readonly signals: PlaceSignals; readonly shown: (id: SettingsPlaceSearchId) => boolean } {
+  const signals = usePlaceSignals(surface === "phone", host);
+  const shown = useCallback((id: SettingsPlaceSearchId) => placeShown(signals, id), [signals]);
+  return { signals, shown };
+}
+
+/** The settings search as Settings hosts it: its own store says what is being searched. */
+export function useSettingsStoreSearchHost(): SettingsSearchHost {
+  const searchActive = useSettingsSearchStore(selectSettingsSearchActive);
+  const searchSession = useSettingsSearchStore((state) => state.searchesStarted);
+  return useMemo(() => ({ searchActive, searchSession }), [searchActive, searchSession]);
+}
+
+/**
+ * How Settings is shown and the live facts its places depend on, gathered
+ * once for everything inside (the settings layout mounts it), so a page full
+ * of places doesn't ask the server once per row.
+ */
+export function SettingsAvailabilityProvider({
+  surface,
+  host,
+  children,
+}: {
+  readonly surface: SettingsSurface;
+  readonly host: SettingsSearchHost;
+  readonly children: ReactNode;
+}) {
+  const { signals } = useSettingsAvailability(surface, host);
+  return (
+    <SettingsSurfaceContext.Provider value={surface}>
+      <PlaceSignalsContext.Provider value={signals}>{children}</PlaceSignalsContext.Provider>
+    </SettingsSurfaceContext.Provider>
+  );
 }
 
 /** Answers whether a settings place is on screen here; follows the live facts. */
@@ -266,16 +318,7 @@ export function useSettingsPlaceShown(): (id: SettingsPlaceSearchId) => boolean 
     () => (gathered.phone === phone ? gathered : { ...gathered, phone }),
     [gathered, phone],
   );
-  return useCallback(
-    (id) => {
-      const place = placeById(id);
-      if ("appliesWhen" in place && place.appliesWhen === "desktop" && !signals.desktopApp) {
-        return false;
-      }
-      return SHOWN_WHEN[id]?.(signals) ?? true;
-    },
-    [signals],
-  );
+  return useCallback((id) => placeShown(signals, id), [signals]);
 }
 
 /** Draws its children only where `place` is on screen (see SHOWN_WHEN). */

@@ -168,6 +168,14 @@ const haveMatchingChatAuthIdentity = (
   ) {
     return false;
   }
+  // Another account with no email to compare (Antigravity): its own id tells.
+  if (
+    previousProvider.auth.accountId &&
+    nextProvider.auth.accountId &&
+    previousProvider.auth.accountId !== nextProvider.auth.accountId
+  ) {
+    return false;
+  }
   return true;
 };
 

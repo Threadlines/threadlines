@@ -48,16 +48,15 @@ function resolveChatGroup(activityAt: string, nowMs: number): ChatGroupId {
  * `environmentId` narrows both to one computer, as the Threads list's
  * computer filter does: only its chats, and new ones start there.
  */
-export function useGeneralChats(options?: { readonly environmentId: string | null }): {
-  readonly chats: readonly SidebarThreadSummary[];
-  /**
-   * Null while no computer has a General Chats project to start one in.
-   * `initialPrompt` opens the chat with words to finish.
-   */
-  readonly startChat: ((initialPrompt?: string) => void) | null;
-} {
+/**
+ * Starts a new general chat (`initialPrompt` opens it with words to finish),
+ * or null while no computer has a General Chats project to start one in. It
+ * reads no threads, so a streamed reply doesn't re-render its caller.
+ */
+export function useStartGeneralChat(options?: {
+  readonly environmentId: string | null;
+}): ((initialPrompt?: string) => void) | null {
   const { handleNewThread } = useHandleNewThread();
-  const threads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
   const projects = useStore(useShallow(selectProjectsAcrossEnvironments));
   const generalChatsProject = useStore(selectGeneralChatsProjectAcrossEnvironments);
   const activeEnvironmentId = useStore((state) => state.activeEnvironmentId);
@@ -79,6 +78,30 @@ export function useGeneralChats(options?: { readonly environmentId: string | nul
     });
   }, [activeEnvironmentId, generalChatsProject, onlyEnvironmentId, primaryEnvironmentId, projects]);
 
+  const startChatInProject = useCallback(
+    (initialPrompt?: string) => {
+      if (generalChatsProjectRef) {
+        void startNewGeneralChatThread(handleNewThread, generalChatsProjectRef, initialPrompt);
+      }
+    },
+    [generalChatsProjectRef, handleNewThread],
+  );
+  return generalChatsProjectRef === null ? null : startChatInProject;
+}
+
+export function useGeneralChats(options?: { readonly environmentId: string | null }): {
+  readonly chats: readonly SidebarThreadSummary[];
+  /**
+   * Null while no computer has a General Chats project to start one in.
+   * `initialPrompt` opens the chat with words to finish.
+   */
+  readonly startChat: ((initialPrompt?: string) => void) | null;
+} {
+  const threads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
+  const projects = useStore(useShallow(selectProjectsAcrossEnvironments));
+  const startChat = useStartGeneralChat(options);
+  const onlyEnvironmentId = options?.environmentId ?? null;
+
   const chats = useMemo(() => {
     const generalChatProjectKeys = new Set(
       projects
@@ -97,19 +120,7 @@ export function useGeneralChats(options?: { readonly environmentId: string | nul
     );
   }, [onlyEnvironmentId, projects, threads]);
 
-  const startChatInProject = useCallback(
-    (initialPrompt?: string) => {
-      if (generalChatsProjectRef) {
-        void startNewGeneralChatThread(handleNewThread, generalChatsProjectRef, initialPrompt);
-      }
-    },
-    [generalChatsProjectRef, handleNewThread],
-  );
-
-  return {
-    chats,
-    startChat: generalChatsProjectRef === null ? null : startChatInProject,
-  };
+  return { chats, startChat };
 }
 
 /**

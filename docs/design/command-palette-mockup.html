@@ -1,0 +1,990 @@
+<!doctype html>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Command palette mockup</title>
+<!-- Mockup for docs/design/command-palette.md, section 8. The grouped look Will picked on Nov 23 2026
+     (over flat, framed, and flat with a preview panel). Made-up data; type in it.
+     Shown inside Threadlines it takes the app's theme; opened as a file it uses the fallback colors below. -->
+<style>
+  :where(:root) {
+    --foreground: #e9e9ea;
+    --muted-foreground: #a3a3a8;
+    --popover: #2f2f31;
+    --popover-foreground: #e9e9ea;
+    --border: #46464a;
+    --secondary: #3d3d40;
+    --accent: #414145;
+    --primary: #1855c1;
+    --warning: #e0a030;
+    --info: #6e94fa;
+    --font-sans: -apple-system, system-ui, sans-serif;
+    --font-mono: ui-monospace, Menlo, monospace;
+  }
+  :where(body) {
+    background: #232325;
+    margin: 24px;
+  }
+</style>
+<style>
+  .pm {
+    font-family: var(--font-sans);
+    font-size: 13.5px;
+    line-height: 1.4;
+    color: var(--foreground);
+  }
+  .pm * {
+    box-sizing: border-box;
+  }
+  .pm .note {
+    color: var(--muted-foreground);
+    font-size: 12.5px;
+    margin: 0 0 8px;
+  }
+  .pm .tries {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 0 0 12px;
+    align-items: center;
+  }
+  .pm .tries span {
+    color: var(--muted-foreground);
+    font-size: 12.5px;
+  }
+  .pm .try {
+    font: inherit;
+    font-size: 12.5px;
+    color: var(--foreground);
+    background: var(--secondary);
+    border: 0;
+    border-radius: 6px;
+    padding: 3px 8px;
+    cursor: pointer;
+  }
+  .pm .try:hover {
+    background: var(--accent);
+  }
+  .pm .try code {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+  }
+
+  /* The box: one popover surface. No hairline under the filters; the groups carry the structure. */
+  .pal {
+    max-width: 640px;
+    margin: 0 auto 6px;
+    background: var(--popover);
+    color: var(--popover-foreground);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow:
+      0 16px 40px rgba(0, 0, 0, 0.28),
+      0 2px 6px rgba(0, 0, 0, 0.18);
+    overflow: hidden;
+  }
+  .pal-in {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 16px 8px;
+  }
+  .pal-in svg {
+    flex: none;
+    color: var(--muted-foreground);
+  }
+  .pal-in input {
+    flex: 1;
+    min-width: 0;
+    font: inherit;
+    font-size: 15px;
+    color: inherit;
+    background: transparent;
+    border: 0;
+    outline: 0;
+    padding: 2px 0;
+  }
+  .pal-in input::placeholder {
+    color: var(--muted-foreground);
+    font-style: italic;
+  }
+  .scopes {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 0 12px 2px;
+  }
+  .scope {
+    font: inherit;
+    font-size: 12.5px;
+    color: var(--muted-foreground);
+    background: transparent;
+    border: 0;
+    border-radius: 6px;
+    padding: 3px 8px;
+    cursor: pointer;
+    display: inline-flex;
+    gap: 5px;
+    align-items: baseline;
+    white-space: nowrap;
+  }
+  .scope:hover {
+    color: var(--foreground);
+  }
+  .scope[aria-pressed="true"] {
+    color: var(--foreground);
+    background: var(--accent);
+    font-weight: 500;
+  }
+  .scope .n {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--muted-foreground);
+  }
+  .list {
+    max-height: 480px;
+    overflow-y: auto;
+    padding: 2px 12px 12px;
+  }
+
+  /* A group: the quiet filled block from design-language.md ("Groups"). In the app: --group, --group-ring, --group-divider. */
+  .sec {
+    font-size: 11.5px;
+    color: var(--muted-foreground);
+    padding: 10px 4px 5px;
+  }
+  .grp {
+    background: color-mix(in srgb, var(--foreground) 4.5%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--foreground) 5%, transparent);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .row {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 12px;
+    cursor: pointer;
+    min-height: 34px;
+  }
+  /* The divider starts at the row's text edge and is hidden beside the highlighted row. */
+  .row + .row::before {
+    content: "";
+    position: absolute;
+    left: 38px;
+    right: 0;
+    top: 0;
+    height: 1px;
+    background: color-mix(in srgb, var(--foreground) 7%, transparent);
+  }
+  .row.on {
+    background: var(--accent);
+  }
+  .row.on::before,
+  .row.on + .row::before {
+    display: none;
+  }
+  .row .ic {
+    flex: none;
+    width: 16px;
+    height: 16px;
+    color: var(--muted-foreground);
+    display: grid;
+    place-items: center;
+  }
+  .row .ic .fav {
+    width: 16px;
+    height: 16px;
+    border-radius: 4px;
+    background: var(--secondary);
+    color: var(--foreground);
+    font-size: 9.5px;
+    font-weight: 600;
+    display: grid;
+    place-items: center;
+  }
+  .row .main {
+    flex: 1;
+    min-width: 0;
+  }
+  .row .t {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-weight: 500;
+  }
+  .row .t .pre {
+    color: var(--muted-foreground);
+    font-weight: 400;
+  }
+  .row .sub {
+    display: none;
+    font-size: 12px;
+    color: var(--muted-foreground);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .row .snip {
+    font-size: 12.5px;
+    color: var(--muted-foreground);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .pal mark {
+    background: color-mix(in srgb, var(--warning) 20%, transparent);
+    color: inherit;
+    border-radius: 2px;
+    padding: 0 1px;
+  }
+  .row .meta {
+    flex: none;
+    color: var(--muted-foreground);
+    font-size: 12.5px;
+    white-space: nowrap;
+    max-width: 45%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .row .age,
+  .row .kbd {
+    flex: none;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--muted-foreground);
+    min-width: 26px;
+    text-align: right;
+  }
+  .row .kbd {
+    letter-spacing: 0.08em;
+  }
+  .dot {
+    flex: none;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    display: inline-block;
+  }
+  .dot.work {
+    background: var(--info);
+  }
+  .dot.need {
+    background: var(--warning);
+  }
+  .row.more .t {
+    font-weight: 400;
+    color: var(--muted-foreground);
+  }
+  .row.more.on .t {
+    color: var(--foreground);
+  }
+  .quiet {
+    padding: 10px 4px 0;
+    font-size: 12.5px;
+    color: var(--muted-foreground);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .spin {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    border: 1.5px solid var(--muted-foreground);
+    border-right-color: transparent;
+    animation: pmspin 0.8s steps(8) infinite;
+  }
+  @keyframes pmspin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  .empty {
+    padding: 26px 10px 10px;
+    text-align: center;
+    color: var(--muted-foreground);
+  }
+  .foot {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 8px 14px;
+    border-top: 1px solid var(--border);
+    font-size: 12px;
+    color: var(--muted-foreground);
+  }
+  .foot kbd {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    background: var(--secondary);
+    color: var(--foreground);
+    border-radius: 4px;
+    padding: 1px 5px;
+    margin-right: 5px;
+  }
+  .foot .sp {
+    flex: 1;
+  }
+  .foot .did {
+    color: var(--foreground);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  @media (max-width: 520px) {
+    .foot .hint {
+      display: none;
+    }
+    .foot:has(.did:empty) {
+      display: none;
+    }
+    .row .meta {
+      display: none;
+    }
+    .row .sub {
+      display: block;
+    }
+    .row {
+      padding: 9px 12px;
+    }
+    .scopes {
+      overflow-x: auto;
+    }
+    .list {
+      max-height: 400px;
+    }
+  }
+</style>
+<div class="pm">
+  <p class="note">
+    This one works. Type in it, use the arrow keys, press Tab to change the filter, Escape to step
+    back. It runs on made-up data.
+  </p>
+  <div class="tries">
+    <span>Try:</span>
+    <button class="try" data-q="">just opened</button>
+    <button class="try" data-q="terminal"><code>terminal</code></button>
+    <button class="try" data-q="font size"><code>font size</code></button>
+    <button class="try" data-q="checkout"><code>checkout</code></button>
+    <button class="try" data-q="theme"><code>theme</code></button>
+    <button class="try" data-q="/src/auth.ts"><code>/src/auth.ts</code></button>
+    <button class="try" data-q="stngs"><code>stngs</code></button>
+    <button class="try" data-q="webhook retry"><code>webhook retry</code></button>
+    <button class="try" data-q="zzz"><code>zzz</code></button>
+  </div>
+
+  <div class="pal" id="pal">
+    <div class="pal-in">
+      <svg
+        width="16"
+        height="16"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+      >
+        <circle cx="11" cy="11" r="7" />
+        <path d="m20 20-3.5-3.5" />
+      </svg>
+      <input
+        id="q"
+        placeholder="Search threads, commands and settings"
+        autocomplete="off"
+        spellcheck="false"
+      />
+    </div>
+    <div class="scopes" id="scopes"></div>
+    <div class="list" id="list"></div>
+    <div class="foot">
+      <span class="hint"><kbd>↑↓</kbd>Move</span>
+      <span class="hint"><kbd>↵</kbd><span id="verb">Open</span></span>
+      <span class="hint"><kbd>Tab</kbd>Filter</span>
+      <span class="sp"></span>
+      <span class="did" id="did"></span>
+    </div>
+  </div>
+</div>
+<script>
+  (() => {
+    const I = {
+      thread:
+        '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-8 8H4l2.2-3A8 8 0 1 1 21 12Z"/></svg>',
+      cmd: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 8 4 4-4 4M13 16h5"/></svg>',
+      set: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg>',
+      plus: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2ZM12 11v5M9.5 13.5h5"/></svg>',
+      arch: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h16v11H4zM3 4h18v4H3zM10 12h4"/></svg>',
+    };
+    const fav = (p) =>
+      p === "General chats" ? I.thread : '<span class="fav">' + p[0].toUpperCase() + "</span>";
+
+    const threads = [
+      { t: "Checkout: card form loses focus on error", p: "acme-web", age: "2m", st: "work" },
+      { t: "Set up Playwright for the checkout flow", p: "acme-web", age: "9m", st: "need" },
+      { t: "Search results flicker when typing fast", p: "acme-web", age: "31m" },
+      { t: "Terminal font size is ignored after restart", p: "General chats", age: "2h" },
+      { t: "Fix settings sync between tabs", p: "acme-web", age: "3h" },
+      { t: "Review PR 412: retry logic for webhooks", p: "billing-api", age: "5h" },
+      { t: "Add dark mode to the pricing page", p: "marketing", age: "1d" },
+      { t: "Fix flaky checkout test on Safari", p: "acme-web", age: "1d" },
+      { t: "Why is the build 40s slower since Monday", p: "acme-web", age: "2d" },
+      { t: "Migrate auth sessions to the new table", p: "billing-api", age: "3d" },
+      { t: "Terminal", p: "General chats", age: "4d" },
+      { t: "Upgrade to Node 24", p: "billing-api", age: "6d" },
+    ];
+    const messages = [
+      {
+        ti: 5,
+        s: "…so the webhook handler should retry three times with backoff before it gives up…",
+      },
+      { ti: 9, s: "…the session check lives in /src/auth.ts and still reads the old table…" },
+      {
+        ti: 2,
+        s: "…each keystroke restarts the checkout search request, which is why the list flickers…",
+      },
+      { ti: 8, s: "…the terminal step in CI got slower when the cache key changed…" },
+    ];
+    const commands = [
+      { t: "New thread", g: "Thread", k: "⇧⌘O", kw: ["chat", "create"] },
+      { t: "New thread in…", g: "Thread", kw: ["project", "pick"] },
+      { t: "Rename thread", g: "Thread", kw: ["title", "name"], ctx: 1 },
+      { t: "Pin thread", g: "Thread", kw: ["keep", "top"] },
+      { t: "Wrap up thread", g: "Thread", kw: ["done", "finish"] },
+      { t: "Archive thread", g: "Thread", kw: ["hide", "put away"] },
+      { t: "Find in chat", g: "Thread", k: "⌘F", kw: ["search messages"] },
+      { t: "Switch model", g: "Thread", k: "⇧⌘M", kw: ["model picker", "opus", "sol", "effort"] },
+      { t: "Add agent", g: "Thread", kw: ["room", "invite", "second opinion"] },
+      { t: "Move to another computer", g: "Thread", kw: ["transfer", "linked"] },
+      {
+        t: "Toggle terminal",
+        g: "Panels",
+        k: "⌘J",
+        kw: ["shell", "show", "hide"],
+        ctx: 1,
+        used: 9,
+      },
+      {
+        t: "Toggle panel",
+        g: "Panels",
+        k: "⌘D",
+        kw: ["diff", "changes", "review", "side panel"],
+        ctx: 1,
+        used: 6,
+      },
+      { t: "Show diff", g: "Panels", kw: ["changes", "review"] },
+      { t: "Open in editor", g: "Panels", k: "⌘O", kw: ["vscode", "cursor", "zed"] },
+      { t: "New terminal tab", g: "Panels", kw: ["shell"] },
+      { t: "Split terminal", g: "Panels", kw: ["side by side"] },
+      { t: "Find in terminal", g: "Panels", kw: ["search output"] },
+      { t: "Restart terminal", g: "Panels", kw: ["reset", "new shell"] },
+      { t: "Clear terminal output", g: "Panels", kw: ["empty"] },
+      { t: "Kill terminal", g: "Panels", kw: ["stop", "close"] },
+      { t: "Run script…", g: "Projects", kw: ["dev", "test", "build", "action"] },
+      { t: "Add project", g: "Projects", kw: ["folder", "clone", "github", "repository"] },
+      { t: "New lead chat", g: "Projects", kw: ["coordinate"] },
+      { t: "Open pull requests", g: "Go to", kw: ["prs", "reviews", "github"] },
+      { t: "Go to Home", g: "Go to", kw: ["start"] },
+      { t: "Open general chats", g: "Go to", kw: ["conversations"] },
+      { t: "Open Fleet", g: "Go to", k: "⇧⌘F", kw: ["computers", "machines", "devices"] },
+      { t: "Open Scheduled", g: "Go to", k: "⇧⌘S", kw: ["tasks", "cron"] },
+      { t: "Open usage", g: "Go to", kw: ["tokens", "cost", "spend"] },
+      { t: "Open settings", g: "Go to", kw: ["preferences", "configuration"] },
+      { t: "Go back", g: "Go to", k: "⌘[", kw: ["previous page"] },
+      { t: "Change theme…", g: "App", kw: ["appearance", "dark mode", "light mode", "colors"] },
+      { t: "Use default theme", g: "App", kw: ["reset appearance"] },
+      { t: "Hide sidebar", g: "App", k: "⌘B", kw: ["thread list", "toggle"] },
+      { t: "Connect to a computer", g: "App", kw: ["link", "pair", "remote"] },
+      { t: "What's new in Threadlines", g: "App", kw: ["release notes", "changelog"] },
+      { t: "Report a problem", g: "App", kw: ["bug", "issue", "feedback"] },
+    ];
+    const settings = [
+      { t: "Theme", path: "Appearance", kw: ["dark mode", "light mode", "colors"] },
+      { t: "Glass", path: "Appearance", kw: ["transparency", "blur"] },
+      { t: "Text size", path: "General › Terminal", kw: ["font size", "zoom", "terminal"] },
+      { t: "Font", path: "General › Terminal", kw: ["typeface", "terminal"] },
+      { t: "Scrollback", path: "General › Terminal", kw: ["history", "lines", "terminal"] },
+      { t: "Keep awake", path: "General", kw: ["sleep", "caffeinate"] },
+      { t: "Stream replies", path: "General", kw: ["typing", "live"] },
+      { t: "Usage analytics", path: "General › Privacy & about", kw: ["telemetry"] },
+      { t: "Keybindings", path: "Settings", kw: ["shortcuts", "keys", "hotkeys"] },
+      { t: "Providers", path: "Settings", kw: ["agents", "codex", "claude", "sign in"] },
+      { t: "Archived threads", path: "Threads", kw: ["archive", "restore"] },
+      { t: "New worktree base", path: "Threads › Worktrees", kw: ["branch", "main"] },
+      { t: "Follow PR templates", path: "Source Control", kw: ["pull request"] },
+      { t: "Open links in", path: "General › Browser", kw: ["browser panel", "default browser"] },
+      { t: "Checkout location", path: "Threads › Worktrees", kw: ["folder", "path"] },
+    ];
+    const projects = [
+      { t: "acme-web", path: "~/code/acme-web" },
+      { t: "billing-api", path: "~/code/billing-api" },
+      { t: "marketing", path: "~/sites/marketing" },
+    ];
+
+    const words = (s) =>
+      s
+        .toLowerCase()
+        .split(/[^\p{L}\p{N}.]+/u)
+        .filter(Boolean);
+    // A stand-in for the app's tiers (section 5): lower is better, null is no match.
+    function tier(q, qw, title, kws, extra) {
+      const tl = title.toLowerCase();
+      if (tl.startsWith(q)) return tl === q ? -1 : 0;
+      const tw = words(title);
+      if (qw.every((w) => tw.some((x) => x.startsWith(w)))) return 1;
+      const kw = (kws || []).flatMap(words);
+      const pool = tw.concat(kw);
+      if (qw.every((w) => pool.some((x) => x.startsWith(w)))) return 2;
+      const ex = pool.concat(words(extra || ""));
+      if (qw.every((w) => ex.some((x) => x.startsWith(w)))) return 3;
+      return null;
+    }
+    const subseq = (q, s) => {
+      let i = 0;
+      for (const c of s.toLowerCase()) if (c === q[i]) i++;
+      return i === q.length;
+    };
+    const esc = (s) => s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
+    function hl(text, qw) {
+      if (!qw.length) return esc(text);
+      return text
+        .split(/(\s+)/)
+        .map((part) => {
+          const w = qw
+            .filter((x) =>
+              part
+                .toLowerCase()
+                .replace(/^[^\p{L}\p{N}]+/u, "")
+                .startsWith(x),
+            )
+            .sort((a, b) => b.length - a.length)[0];
+          if (!w) return esc(part);
+          const lead = part.length - part.replace(/^[^\p{L}\p{N}]+/u, "").length;
+          return (
+            esc(part.slice(0, lead)) +
+            "<mark>" +
+            esc(part.slice(lead, lead + w.length)) +
+            "</mark>" +
+            esc(part.slice(lead + w.length))
+          );
+        })
+        .join("");
+    }
+
+    const $ = (id) => document.getElementById(id);
+    const $q = $("q"),
+      $list = $("list"),
+      $scopes = $("scopes");
+    const $verb = $("verb"),
+      $did = $("did");
+    const SCOPES = ["All", "Threads", "Commands", "Settings", "Projects"];
+    let scope = "All",
+      sel = 0,
+      rows = [],
+      userMoved = false,
+      msgReady = true,
+      msgTimer = null;
+
+    function compute() {
+      const raw = $q.value;
+      const q = raw.trim().toLowerCase();
+      const qw = words(q);
+      const eff = scope;
+      const out = {
+        q,
+        qw,
+        eff,
+        sections: [],
+        counts: {},
+        path: null,
+        fuzzy: false,
+        noMatch: false,
+      };
+      const isPath = /^(~|\/|\.\.?\/)/.test(raw.trim());
+
+      if (!q) {
+        if (eff === "All") {
+          out.sections.push({
+            label: "Recent",
+            rows: threads.slice(1, 6).map((t) => ({ kind: "thread", t })),
+          });
+          const sug = commands
+            .filter((c) => c.ctx || c.used)
+            .sort((a, b) => (b.used || 0) - (a.used || 0))
+            .slice(0, 4);
+          out.sections.push({
+            label: "Suggested",
+            rows: sug
+              .map((c) => ({ kind: "cmd", c }))
+              .concat([{ kind: "more", label: "All commands", to: "Commands" }]),
+          });
+        } else if (eff === "Threads") {
+          out.sections.push({ label: "Recent", rows: threads.map((t) => ({ kind: "thread", t })) });
+        } else if (eff === "Commands") {
+          for (const g of ["Thread", "Panels", "Projects", "Go to", "App"])
+            out.sections.push({
+              label: g,
+              rows: commands.filter((c) => c.g === g).map((c) => ({ kind: "cmd", c })),
+            });
+        } else if (eff === "Settings") {
+          out.sections.push({ label: "Settings", rows: settings.map((s) => ({ kind: "set", s })) });
+        } else {
+          out.sections.push({
+            label: "Projects",
+            rows: projects.map((p) => ({ kind: "proj", p })),
+          });
+        }
+        return out;
+      }
+
+      const T = [],
+        C = [],
+        S = [],
+        P = [];
+      threads.forEach((t, i) => {
+        let r = tier(q, qw, t.t, [], t.p);
+        if (r === null && t.t.toLowerCase().includes(q)) r = 1.5;
+        const m = msgReady
+          ? messages.find((x) => x.ti === i && qw.every((w) => x.s.toLowerCase().includes(w)))
+          : null;
+        if (r === null && m) r = 4;
+        if (r === null) return;
+        T.push({ kind: "thread", t, r: r + i / 1000, snip: r === 4 ? m.s : null });
+      });
+      commands.forEach((c, i) => {
+        const r = tier(q, qw, c.t, c.kw, c.g);
+        if (r !== null) C.push({ kind: "cmd", c, r: r - (c.used || 0) / 100 + i / 1000 });
+      });
+      settings.forEach((s, i) => {
+        const r = tier(q, qw, s.t, s.kw, s.path);
+        if (r !== null) S.push({ kind: "set", s, r: r + 0.1 + i / 1000 });
+      });
+      projects.forEach((p, i) => {
+        const r = tier(q, qw, p.t, [], p.path);
+        if (r !== null) P.push({ kind: "proj", p, r: r + 0.2 + i / 1000 });
+      });
+      // Close matches wait for the message search, as the app does.
+      if (
+        msgReady &&
+        !T.length &&
+        !C.length &&
+        !S.length &&
+        !P.length &&
+        q.length >= 3 &&
+        !isPath
+      ) {
+        commands.forEach((c) => {
+          if (subseq(q.replace(/\s/g, ""), c.t)) C.push({ kind: "cmd", c, r: 9 });
+        });
+        settings.forEach((s) => {
+          if (subseq(q.replace(/\s/g, ""), s.t)) S.push({ kind: "set", s, r: 9 });
+        });
+        out.fuzzy = C.length + S.length > 0;
+      }
+      [T, C, S, P].forEach((x) => x.sort((a, b) => a.r - b.r));
+      out.counts = {
+        Threads: T.length,
+        Commands: C.length,
+        Settings: S.length,
+        Projects: P.length,
+        All: T.length + C.length + S.length + P.length,
+      };
+      const groups = [
+        ["Threads", T],
+        ["Commands", C],
+        ["Settings", S],
+        ["Projects", P],
+      ].filter(([n, x]) => x.length && (eff === "All" || eff === n));
+      groups.sort((a, b) => Math.floor(a[1][0].r * 2) - Math.floor(b[1][0].r * 2));
+      if (isPath && eff === "All") out.path = raw.trim();
+      for (const [name, x] of groups) {
+        const cap = eff === "All" ? 5 : 99;
+        const r = x.slice(0, cap);
+        if (x.length > cap)
+          r.push({
+            kind: "more",
+            label: "Show all " + x.length + " " + name.toLowerCase(),
+            to: name,
+          });
+        out.sections.push({ label: out.fuzzy ? "Close matches" : name, rows: r });
+      }
+      out.noMatch = msgReady && out.sections.length === 0 && !out.path;
+      return out;
+    }
+
+    const rowKey = (r) =>
+      !r
+        ? null
+        : r.kind +
+          ":" +
+          (r.kind === "thread"
+            ? r.t.t
+            : r.kind === "cmd"
+              ? r.c.t
+              : r.kind === "set"
+                ? r.s.t
+                : r.kind === "proj"
+                  ? r.p.t
+                  : r.kind === "path"
+                    ? r.p
+                    : r.label);
+    function render(keepSel) {
+      const o = compute();
+      // The highlight follows a row the user moved to, not its position, when late results arrive.
+      const keepKey = keepSel && userMoved ? rowKey(rows[sel]) : null;
+      $scopes.innerHTML = SCOPES.map((s) => {
+        const n =
+          o.q && o.counts[s] !== undefined ? '<span class="n">' + o.counts[s] + "</span>" : "";
+        return (
+          '<button class="scope" data-s="' +
+          s +
+          '" aria-pressed="' +
+          (o.eff === s) +
+          '">' +
+          s +
+          n +
+          "</button>"
+        );
+      }).join("");
+
+      rows = [];
+      let h = "";
+      const add = (r, inner, cls) => {
+        const i = rows.push(r) - 1;
+        h += '<div class="row ' + (cls || "") + '" data-i="' + i + '">' + inner + "</div>";
+      };
+      if (o.path) {
+        h += '<div class="sec">Add project</div><div class="grp">';
+        add(
+          { kind: "path", p: o.path },
+          '<span class="ic">' +
+            I.plus +
+            '</span><div class="main"><div class="t"><span class="pre">Add project at </span>' +
+            esc(o.path) +
+            '</div></div><span class="meta">opens Add project</span>',
+        );
+        h += "</div>";
+      }
+      for (const s of o.sections) {
+        h += '<div class="sec">' + s.label + '</div><div class="grp">';
+        for (const r of s.rows) {
+          if (r.kind === "thread") {
+            const t = r.t;
+            add(
+              r,
+              '<span class="ic">' +
+                fav(t.p) +
+                '</span><div class="main"><div class="t">' +
+                hl(t.t, r.snip ? [] : o.qw) +
+                "</div>" +
+                (r.snip
+                  ? '<div class="snip">' + hl(r.snip, o.qw) + "</div>"
+                  : '<div class="sub">' + esc(t.p) + "</div>") +
+                "</div>" +
+                (t.st ? '<span class="dot ' + t.st + '"></span>' : "") +
+                '<span class="meta">' +
+                esc(t.p) +
+                '</span><span class="age">' +
+                t.age +
+                "</span>",
+            );
+          } else if (r.kind === "cmd") {
+            add(
+              r,
+              '<span class="ic">' +
+                I.cmd +
+                '</span><div class="main"><div class="t">' +
+                hl(r.c.t, o.qw) +
+                "</div></div>" +
+                (o.eff === "All" && o.q ? '<span class="meta">' + r.c.g + "</span>" : "") +
+                (r.c.k ? '<span class="kbd">' + r.c.k + "</span>" : ""),
+            );
+          } else if (r.kind === "set") {
+            add(
+              r,
+              '<span class="ic">' +
+                I.set +
+                '</span><div class="main"><div class="t">' +
+                hl(r.s.t, o.qw) +
+                '</div><div class="sub">' +
+                esc(r.s.path) +
+                '</div></div><span class="meta">' +
+                esc(r.s.path) +
+                "</span>",
+            );
+          } else if (r.kind === "proj") {
+            add(
+              r,
+              '<span class="ic">' +
+                fav(r.p.t) +
+                '</span><div class="main"><div class="t">' +
+                hl(r.p.t, o.qw) +
+                '</div><div class="sub">' +
+                esc(r.p.path) +
+                '</div></div><span class="meta">' +
+                esc(r.p.path) +
+                "</span>",
+            );
+          } else {
+            add(
+              r,
+              '<span class="ic"></span><div class="main"><div class="t">' +
+                r.label +
+                "</div></div>",
+              "more",
+            );
+          }
+        }
+        h += "</div>";
+      }
+      if (o.q && !msgReady && (o.eff === "All" || o.eff === "Threads"))
+        h += '<div class="quiet"><span class="spin"></span>Searching messages…</div>';
+      else if (o.noMatch) {
+        h += '<div class="sec">No matches</div><div class="grp">';
+        add(
+          { kind: "set", s: settings.find((x) => x.t === "Archived threads") },
+          '<span class="ic">' +
+            I.arch +
+            '</span><div class="main"><div class="t">Look in archived threads</div></div><span class="meta">Settings › Archived threads</span>',
+        );
+        h += "</div>";
+      }
+      $list.innerHTML = h;
+      const kept = keepKey === null ? -1 : rows.findIndex((r) => rowKey(r) === keepKey);
+      if (kept >= 0) sel = kept;
+      else {
+        sel = 0;
+        userMoved = false;
+      }
+      paint();
+    }
+    function paint() {
+      $list
+        .querySelectorAll(".row")
+        .forEach((el) => el.classList.toggle("on", +el.dataset.i === sel));
+      const r = rows[sel];
+      $verb.textContent = !r
+        ? "Open"
+        : r.kind === "cmd"
+          ? "Run"
+          : r.kind === "set"
+            ? "Go to setting"
+            : r.kind === "more"
+              ? "Show"
+              : r.kind === "path"
+                ? "Add project"
+                : r.kind === "proj"
+                  ? "Open project"
+                  : "Open thread";
+      const el = $list.querySelector('.row[data-i="' + sel + '"]');
+      if (el) {
+        const a = el.offsetTop - $list.offsetTop,
+          b = a + el.offsetHeight;
+        if (a < $list.scrollTop) $list.scrollTop = a - 30;
+        else if (b > $list.scrollTop + $list.clientHeight)
+          $list.scrollTop = b - $list.clientHeight + 12;
+      }
+    }
+    function act() {
+      const r = rows[sel];
+      if (!r) return;
+      if (r.kind === "more") {
+        scope = r.to;
+        render();
+        return;
+      }
+      $did.textContent =
+        r.kind === "thread"
+          ? "Opens “" + r.t.t + "”"
+          : r.kind === "cmd"
+            ? "Runs “" + r.c.t + "”"
+            : r.kind === "set"
+              ? "Opens " + r.s.path + " › " + r.s.t
+              : r.kind === "proj"
+                ? "Opens the latest thread in " + r.p.t
+                : "Opens Add project with " + r.p;
+    }
+    function typed() {
+      $did.textContent = "";
+      clearTimeout(msgTimer);
+      // ">" first is shorthand for the Commands filter, and leaves the field.
+      if ($q.value.startsWith(">")) {
+        scope = "Commands";
+        $q.value = $q.value.slice(1);
+      }
+      const q = $q.value.trim();
+      msgReady = q.length < 3;
+      if (!msgReady)
+        msgTimer = setTimeout(() => {
+          msgReady = true;
+          render(true);
+        }, 650);
+      render();
+    }
+    $q.addEventListener("input", typed);
+    $q.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        sel = Math.min(sel + 1, rows.length - 1);
+        userMoved = true;
+        paint();
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        sel = Math.max(sel - 1, 0);
+        userMoved = true;
+        paint();
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        act();
+      } else if (e.key === "Tab") {
+        e.preventDefault();
+        const i = SCOPES.indexOf(scope);
+        scope = SCOPES[(i + (e.shiftKey ? SCOPES.length - 1 : 1)) % SCOPES.length];
+        render();
+      }
+      // Escape in stages: the text, then the filter. In the app a third press closes.
+      else if (e.key === "Escape") {
+        if ($q.value) {
+          $q.value = "";
+          typed();
+        } else if (scope !== "All") {
+          scope = "All";
+          render();
+        }
+      }
+    });
+    $scopes.addEventListener("click", (e) => {
+      const b = e.target.closest(".scope");
+      if (b) {
+        scope = b.dataset.s;
+        render();
+        $q.focus({ preventScroll: true });
+      }
+    });
+    $list.addEventListener("mousemove", (e) => {
+      const el = e.target.closest(".row");
+      if (el && +el.dataset.i !== sel) {
+        sel = +el.dataset.i;
+        userMoved = true;
+        paint();
+      }
+    });
+    $list.addEventListener("click", (e) => {
+      const el = e.target.closest(".row");
+      if (el) {
+        sel = +el.dataset.i;
+        paint();
+        act();
+      }
+    });
+    document.querySelectorAll(".try").forEach((b) =>
+      b.addEventListener("click", () => {
+        $q.value = b.dataset.q;
+        scope = "All";
+        typed();
+        $q.focus({ preventScroll: true });
+      }),
+    );
+    render();
+  })();
+</script>

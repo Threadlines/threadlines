@@ -74,7 +74,9 @@ import {
   useSidebar,
 } from "./ui/sidebar";
 import { useThreadSelectionStore } from "../threadSelectionStore";
-import { useCommandPaletteStore } from "../commandPaletteStore";
+import { useCommandHandlers } from "../commands/commandHandlers";
+import { isKeyboardOwnedByDialog } from "../commands/shortcutBlock";
+import { openAddProject } from "./addProject/addProjectStore";
 import {
   buildInboxSections,
   buildProjectScopeOptions,
@@ -672,7 +674,6 @@ export default function Sidebar() {
   // one read through the link.
   const openInboxKey = routeThreadKey ?? linkedRouteKey;
   const keybindings = useServerKeybindings();
-  const openAddProjectCommandPalette = useCommandPaletteStore((store) => store.openAddProject);
   const { showThreadJumpHints, updateThreadJumpHintsVisibility } = useThreadJumpHintVisibility();
   const clearSelection = useThreadSelectionStore((s) => s.clearSelection);
   const setSelectionAnchor = useThreadSelectionStore((s) => s.setAnchor);
@@ -1395,7 +1396,8 @@ export default function Sidebar() {
   const scopeMenuHandlers = useStableHandlers({
     onSortChange: handleSortChange,
     onResetCustomOrder: handleResetCustomOrder,
-    onAddProject: () => openAddProjectCommandPalette(),
+    onAddProject: (opener?: HTMLElement) =>
+      openAddProject(opener ? { returnFocus: opener } : undefined),
   });
   // What a move reads when it happens; the menu and the drag outlive a render.
   const inboxSortRef = useRef(inboxSort);
@@ -1576,6 +1578,40 @@ export default function Sidebar() {
     },
     [clearSelection, closeSheet, navigate, setSelectionAnchor],
   );
+
+  // What the list shows (see destinationLists). This component stays mounted
+  // either way, so the thread shortcuts work on every page.
+  const destinationList = resolveShownDestinationList(selectedDestination, isMobile);
+  const PageListBody =
+    destinationList !== null && destinationList.body !== "inbox" ? destinationList.body : null;
+
+  // The sidebar's commands in the palette: the same traversal its shortcuts
+  // use, offered only when there is a thread that way, and the wrapped shelf
+  // while it is on screen.
+  const adjacentThreadRef = (direction: "previous" | "next") => {
+    const targetKey = resolveAdjacentThreadId({
+      threadIds: traversalThreadKeys,
+      currentThreadId: routeThreadKey,
+      direction,
+    });
+    const target = targetKey ? sidebarThreadByKey.get(targetKey) : undefined;
+    return target ? scopeThreadRef(target.environmentId, target.id) : null;
+  };
+  const previousThreadRef = adjacentThreadRef("previous");
+  const nextThreadRef = adjacentThreadRef("next");
+  useCommandHandlers({
+    "thread.previous": previousThreadRef !== null && {
+      run: () => navigateToThread(previousThreadRef),
+    },
+    "thread.next": nextThreadRef !== null && { run: () => navigateToThread(nextThreadRef) },
+    // Only where the inbox and its wrapped shelf are on screen, not under a
+    // page's own list (Settings, Computers).
+    "inbox.showWrapped": PageListBody === null &&
+      wrappedRows.length > 0 && {
+        ...(wrappedOpen ? { title: "Hide wrapped threads" } : {}),
+        run: toggleWrappedOpen,
+      },
+  });
 
   // A request opens where it can be read in full: the thread that asked, when
   // this app has it, else the Fleet page of the computer it would run on.
@@ -2020,7 +2056,7 @@ export default function Sidebar() {
     const onWindowKeyDown = (event: globalThis.KeyboardEvent) => {
       const shortcutContext = getCurrentSidebarShortcutContext();
 
-      if (event.defaultPrevented || event.repeat) {
+      if (event.defaultPrevented || event.repeat || isKeyboardOwnedByDialog()) {
         return;
       }
 
@@ -2097,12 +2133,6 @@ export default function Sidebar() {
       window.removeEventListener("mousedown", onMouseDown);
     };
   }, [clearSelection]);
-
-  // What the list shows (see destinationLists). This component stays mounted
-  // either way, so the thread shortcuts work on every page.
-  const destinationList = resolveShownDestinationList(selectedDestination, isMobile);
-  const PageListBody =
-    destinationList !== null && destinationList.body !== "inbox" ? destinationList.body : null;
 
   return (
     <>
@@ -2250,7 +2280,9 @@ export default function Sidebar() {
                               type="button"
                               data-testid="inbox-empty-add-project"
                               className="cursor-pointer text-[11px] text-muted-foreground/80 underline-offset-2 transition-colors hover:text-foreground hover:underline focus-ring"
-                              onClick={() => openAddProjectCommandPalette()}
+                              onClick={(event) =>
+                                openAddProject({ returnFocus: event.currentTarget })
+                              }
                             >
                               Add a project
                             </button>
