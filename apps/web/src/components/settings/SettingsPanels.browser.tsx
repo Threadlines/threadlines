@@ -3698,6 +3698,79 @@ describe("GeneralSettingsPanel observability", () => {
     expect(weekLabels.filter((label) => /^\d/.test(label))).toEqual([]);
   });
 
+  it("leaves days after today blank in the token calendar", async () => {
+    // A Monday, so two days ahead falls inside the week the calendar shows.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-23T12:00:00.000Z"));
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
+    const withBuckets = (
+      dailyBuckets: ReadonlyArray<{ readonly startDate: string; readonly tokens: number }>,
+    ): ServerProvider => {
+      const provider = createClaudeProviderWithTokenHistory();
+      const tokenUsage = provider.accountUsage?.tokenUsage;
+      if (!provider.accountUsage || !tokenUsage) throw new Error("fixture has no token history");
+      return {
+        ...provider,
+        accountUsage: { ...provider.accountUsage, tokenUsage: { ...tokenUsage, dailyBuckets } },
+      };
+    };
+    setServerConfigSnapshot({
+      ...createBaseServerConfig(),
+      providers: [
+        // Logged on a paired computer whose clock runs two days ahead.
+        withBuckets([
+          { startDate: "2026-11-23", tokens: 1000 },
+          { startDate: "2026-11-25", tokens: 5000 },
+        ]),
+      ],
+    });
+
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
+        <ProviderSettingsPanel />
+      </TestAppProviders>,
+    );
+
+    await openProviderDetails("Claude");
+    await page.getByRole("button", { name: "Usage", exact: true }).click();
+    const dailyGrid = page.getByLabelText("Local token activity daily token activity").last();
+    await expect
+      .element(
+        dailyGrid.getByLabelText(`1k tokens on ${formatTokenActivityTestDate("2026-11-23")}`),
+      )
+      .toBeVisible();
+    expect(dailyGrid.getByLabelText(/^5k tokens/).elements()).toHaveLength(0);
+
+    await page.getByRole("button", { name: "Weekly" }).last().click();
+    await expect
+      .element(
+        page
+          .getByLabelText("Local token activity weekly token activity")
+          .last()
+          .getByLabelText(`1k tokens on week of ${formatTokenActivityTestDate("2026-11-22")}`),
+      )
+      .toBeVisible();
+
+    // Left open until Sunday: the calendar moves on to the new week.
+    await page.getByRole("button", { name: "Daily" }).last().click();
+    vi.setSystemTime(new Date("2026-11-29T01:00:00.000Z"));
+    window.dispatchEvent(new Event("focus"));
+    setServerConfigSnapshot({
+      ...createBaseServerConfig(),
+      providers: [withBuckets([{ startDate: "2026-11-29", tokens: 2000 }])],
+    });
+    await expect
+      .element(
+        page
+          .getByLabelText("Local token activity daily token activity")
+          .last()
+          .getByLabelText(`2k tokens on ${formatTokenActivityTestDate("2026-11-29")}`),
+      )
+      .toBeVisible();
+  });
+
   it("configures Claude fallback models from the provider models list", async () => {
     const updateSettings = vi
       .fn<LocalApi["server"]["updateSettings"]>()
