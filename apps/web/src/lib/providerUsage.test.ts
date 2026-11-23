@@ -999,6 +999,79 @@ describe("deriveProviderAccountUsagePresentationForProvider", () => {
       ),
     ).toBeNull();
   });
+
+  it("says what Antigravity's server says about its limits, in its words", () => {
+    const antigravity = ProviderDriverKind.make("antigravity");
+    const reading = (checkedAt: string): ServerProviderAccountUsage => ({
+      source: "antigravity-quota",
+      checkedAt,
+      primaryLimitId: "antigravity",
+      limits: [
+        {
+          limitId: "antigravity",
+          scoped: [
+            {
+              scopeLabel: "Gemini",
+              scopeModels: ["Gemini"],
+              usedPercent: 12,
+              remainingPercent: 88,
+              windowDurationMins: 300,
+              checkedAt,
+            },
+          ],
+        },
+      ],
+    });
+    const auth = (
+      usage: NonNullable<NonNullable<ServerProvider["auth"]["capabilities"]>["usage"]>,
+    ): ServerProvider["auth"] => ({
+      status: "authenticated",
+      type: "oauth-personal",
+      capabilities: { usage },
+    });
+    const expired = { status: "unavailable" as const, detail: "Start a chat to refresh." };
+    const failed = {
+      status: "unavailable" as const,
+      reason: "unreachable" as const,
+      detail: "Couldn't read Antigravity limits.",
+    };
+
+    // An expired sign-in is said beside the kept numbers, which show their age.
+    const kept = deriveProviderAccountUsagePresentationForProvider(
+      {
+        driver: antigravity,
+        auth: auth(expired),
+        accountUsage: reading("2026-07-09T10:00:00.000Z"),
+      },
+      nowMs,
+    );
+    expect(kept?.label).toBe("Antigravity usage");
+    expect(kept?.windows[0]?.detail).toBe("12% used · as of 2h ago");
+    expect(kept?.notice).toEqual({ signIn: false, text: "Start a chat to refresh." });
+
+    // A failed read stays quiet while the numbers are recent, and says so with none.
+    expect(
+      deriveProviderAccountUsagePresentationForProvider(
+        {
+          driver: antigravity,
+          auth: auth(failed),
+          accountUsage: reading("2026-07-09T11:58:00.000Z"),
+        },
+        nowMs,
+      )?.notice,
+    ).toBeUndefined();
+    expect(
+      deriveProviderAccountUsagePresentationForProvider(
+        { driver: antigravity, auth: auth(failed) },
+        nowMs,
+      ),
+    ).toEqual({
+      label: "Antigravity usage",
+      windows: [],
+      reachedLimit: false,
+      notice: { signIn: false, text: "Couldn't read Antigravity limits." },
+    });
+  });
 });
 
 const makeUsage = (usedPercent: number): ServerProviderAccountUsage => ({
@@ -1151,6 +1224,49 @@ describe("a model's own usage limit", () => {
     expect(label(64)).toMatchObject({ text: "64% of week", tone: "normal" });
     expect(label(82)).toMatchObject({ text: "82% of week", tone: "warning" });
     expect(label(100)).toMatchObject({ text: "Limit · resets in 3d 16h", tone: "reached" });
+  });
+
+  const antigravity = deriveProviderAccountUsagePresentation(
+    {
+      source: "antigravity-quota",
+      checkedAt: "2026-07-03T00:00:00.000Z",
+      primaryLimitId: "antigravity",
+      limits: [
+        {
+          limitId: "antigravity",
+          scoped: [
+            ["Gemini", ["Gemini"], 300, 20],
+            ["Gemini", ["Gemini"], 10_080, 35],
+            ["Gemini 4 Argon", ["Argon"], 10_080, 90],
+            ["Claude & GPT", ["Claude", "GPT"], 300, 60],
+          ].map(([scopeLabel, scopeModels, windowDurationMins, usedPercent]) => ({
+            scopeLabel: scopeLabel as string,
+            scopeModels: scopeModels as string[],
+            ...(scopeLabel === "Gemini" ? { scopeExcludes: ["Argon"] } : {}),
+            usedPercent: usedPercent as number,
+            remainingPercent: 100 - (usedPercent as number),
+            windowDurationMins: windowDurationMins as number,
+          })),
+        },
+      ],
+    },
+    NOW,
+  );
+
+  it("gives each Antigravity model its own family's limit", () => {
+    expect(modelOwnUsageLimit(antigravity, "Gemini 3.1 Pro")?.usedPercent).toBe(35);
+    expect(modelOwnUsageLimit(antigravity, "Gemini 4 Argon")?.usedPercent).toBe(90);
+    expect(modelOwnUsageLimit(antigravity, "Claude Sonnet 5.5")?.label).toBe("Claude & GPT (5h)");
+    expect(modelOwnUsageLimit(antigravity, "GPT-OSS 120B")?.usedPercent).toBe(60);
+  });
+
+  it("keeps the period on short labels two windows share", () => {
+    expect(compactUsageMeters(antigravity!, 10).map((line) => line.label)).toEqual([
+      "Gemini (5h)",
+      "Gemini (weekly)",
+      "Gemini 4 Argon",
+      "Claude & GPT",
+    ]);
   });
 
   it("leaves a model's own limit out of the account's near-limit mark", () => {
