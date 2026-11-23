@@ -209,11 +209,25 @@ export function lookupRate(table: RateTable, model: string, atMs?: number): Mode
   const normalized = normalizeModelName(model);
   if (normalized.length === 0 || UNPRICEABLE_MODELS.has(normalized)) return null;
   const family = GEMINI_4_FAMILY.exec(normalized)?.[1];
-  for (const name of family === undefined ? [normalized] : [normalized, family]) {
+  const names = family === undefined ? [normalized] : [normalized, family];
+  // Before a known price change, the price history decides: the fetched
+  // table holds only the current rate.
+  for (const name of names) {
+    const earlier = earlierDatedRate(name, atMs);
+    if (earlier !== undefined) return earlier;
+  }
+  for (const name of names) {
     const rate = table.get(name) ?? BUILT_IN_RATES.get(name) ?? datedRate(name, atMs);
     if (rate !== undefined) return rate;
   }
   return null;
+}
+
+/** The dated rate for a time before the model's last known change, else nothing. */
+function earlierDatedRate(name: string, atMs: number | undefined): ModelRate | undefined {
+  const lastChange = BUILT_IN_DATED_RATES.get(name)?.at(-1)?.fromMs;
+  if (atMs === undefined || lastChange === undefined || atMs >= lastChange) return undefined;
+  return datedRate(name, atMs);
 }
 
 function datedRate(name: string, atMs: number | undefined): ModelRate | undefined {

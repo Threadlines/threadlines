@@ -118,7 +118,9 @@ Two limits keep a lost wake from leaving the thread working forever: a turn held
 and subagents ends after 30 minutes without a word from the agent, and a reply the agent started
 by itself ends 2 minutes after its last output if its closing usage update never comes. A timer
 holds the turn until it fires. Subagents are only known to finish by the report the agent gives when
-one ends, so the first report frees the turn; a later subagent's report opens a turn of its own.
+one ends, so each report (a reply no finished command or timer woke) frees one subagent. If the CLI
+sends several reports in one reply, the turn holds until the 30-minute limit or Stop. If the agent
+exits while a turn is held, the turn fails with that reason and the next message starts it again.
 
 A message sent while Antigravity works steers the turn instead of waiting: Threadlines sends it as
 another prompt, which the CLI takes into the running turn (1.5.0+), leaving its commands and
