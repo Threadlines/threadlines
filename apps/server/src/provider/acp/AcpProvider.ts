@@ -16,6 +16,7 @@ import type {
   ServerProviderAuth,
   ServerProviderDetection,
   ServerProviderModel,
+  ServerProviderSkill,
 } from "@threadlines/contracts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -484,6 +485,7 @@ export function buildAcpProviderSnapshot<Settings extends AcpProviderSettings>(i
   readonly probe: AcpProviderProbeOutcome;
   readonly discoveredModels?: ReadonlyArray<ServerProviderModel>;
   readonly discoveryWarning?: string;
+  readonly skills?: ReadonlyArray<ServerProviderSkill>;
 }): ServerProviderDraft {
   const message = [input.probe.message, input.discoveryWarning]
     .map((part) => part?.trim())
@@ -502,6 +504,7 @@ export function buildAcpProviderSnapshot<Settings extends AcpProviderSettings>(i
       EMPTY_ACP_MODEL_CAPABILITIES,
     ),
     ...(discovered.length > 0 ? { modelCatalogSource: "live" as const } : {}),
+    ...(input.skills ? { skills: input.skills } : {}),
     probe: {
       installed: input.probe.installed,
       version: input.probe.version,
@@ -585,6 +588,11 @@ export const checkAcpProviderStatus = <Settings extends AcpProviderSettings>(
       discoveredModels = yield* descriptor.enrichDiscoveredModels(discoveredModels, environment);
     }
 
+    const skills =
+      descriptor.listSkills && probe.installed
+        ? yield* descriptor.listSkills(settings, environment)
+        : undefined;
+
     return buildAcpProviderSnapshot({
       descriptor,
       checkedAt,
@@ -592,6 +600,7 @@ export const checkAcpProviderStatus = <Settings extends AcpProviderSettings>(
       probe,
       discoveredModels,
       ...(discoveryWarning ? { discoveryWarning } : {}),
+      ...(skills ? { skills } : {}),
     });
   }).pipe(Effect.withSpan("checkAcpProviderStatus"));
 

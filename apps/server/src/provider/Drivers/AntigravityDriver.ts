@@ -145,6 +145,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
         releases,
         gate,
         signIn,
+        skillsCwd: serverConfig.cwd,
       });
       const instance = yield* makeAcpProviderDriver(descriptor).create(input);
       const fingerprint = antigravityCredentialFingerprint(signIn);

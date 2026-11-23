@@ -73,6 +73,7 @@ import {
   writeAntigravityAgentRefusal,
   writeAntigravityCatalog,
 } from "../antigravity/AntigravityProfile.ts";
+import { listAntigravitySkills } from "../antigravity/AntigravitySkills.ts";
 import { antigravityUserHome } from "../antigravity/AntigravityUserConfig.ts";
 import { holdLaunchGate, type LaunchGate } from "../managedRuntime/LaunchGate.ts";
 import {
@@ -635,6 +636,8 @@ export interface AntigravityDescriptorInput {
   readonly gate?: LaunchGate;
   /** The instance's sign-in method, project and key (fixed for an instance build). */
   readonly signIn: AntigravitySignInConfig;
+  /** The folder whose project skills the status lists (the server's, as for other agents). */
+  readonly skillsCwd?: string;
 }
 
 export function makeAntigravityDescriptor(
@@ -940,6 +943,12 @@ export function makeAntigravityDescriptor(
           ...latest,
           ...(catalog ? { models: antigravityModelsFromCatalog(catalog) } : {}),
         } satisfies AcpProviderProbeOutcome;
+      }),
+    listSkills: (_settings, environment) =>
+      listAntigravitySkills({
+        cwd: input.skillsCwd ?? process.cwd(),
+        userHome: userHomeFor(environment),
+        profileDir: paths.profileDir,
       }),
     modelDiscoveryTimeoutMs: ANTIGRAVITY_DISCOVERY_TIMEOUT_MS,
     // Discovery mirrors the selected model's options (its reasoning levels)

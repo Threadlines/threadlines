@@ -3,8 +3,18 @@ import * as NodeFS from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { afterEach, describe, expect, it } from "@effect/vitest";
+import { AntigravitySettings } from "@threadlines/contracts";
+import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
+import { HttpClient } from "effect/http";
+import { ChildProcessSpawner } from "effect/process";
 
+import { checkAcpProviderStatus } from "../acp/AcpProvider.ts";
+import { makeAntigravityDescriptor } from "../acp/AntigravityAcpSupport.ts";
+import { antigravityInstancePaths } from "./AntigravityProfile.ts";
+import { antigravitySignInConfig } from "./AntigravitySignInMethod.ts";
 import {
   ANTIGRAVITY_SHARED_DIRS,
   ANTIGRAVITY_SHARED_FILES,
@@ -12,6 +22,7 @@ import {
   shareAntigravityUserConfigNow,
 } from "./AntigravityUserConfig.ts";
 
+const decodeAntigravitySettings = Schema.decodeSync(AntigravitySettings);
 const roots: Array<string> = [];
 
 afterEach(async () => {
@@ -211,3 +222,58 @@ describe("antigravityUserHome", () => {
   });
 });
 
+describe("an Antigravity instance and the user's own setup", () => {
+  it("brings the user's rules in at launch and lists their skills in the status", async () => {
+    const setup = await makeSetup();
+    await setup.write("GEMINI.md", "rule");
+    const skill = await setup.write(
+      "config/skills/review/SKILL.md",
+      "---\nname: review\ndescription: Review changes.\n---\n",
+    );
+    const agy = path.join(setup.root, "agy");
+    await NodeFS.writeFile(agy, "#!/bin/sh\n", { mode: 0o755 });
+    const settings = {
+      ...decodeAntigravitySettings({}),
+      enabled: true,
+      binaryPath: agy,
+    };
+    const paths = antigravityInstancePaths(path.join(setup.root, "state"), "antigravity-test");
+    const descriptor = makeAntigravityDescriptor({
+      paths,
+      runtime: undefined,
+      releases: undefined,
+      signIn: antigravitySignInConfig(settings, undefined),
+      skillsCwd: path.join(setup.root, "project"),
+    });
+    const environment = { HOME: setup.userHome, USERPROFILE: setup.userHome };
+
+    const status = await Effect.runPromise(
+      Effect.gen(function* () {
+        // Builds the launch without starting anything.
+        const launch = descriptor.spawn(settings, setup.root, environment);
+        if (Effect.isEffect(launch)) yield* Effect.scoped(launch);
+        return yield* checkAcpProviderStatus(descriptor, settings, environment);
+      }).pipe(
+        Effect.provideService(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make(() => Effect.die("The status check must not start the agent")),
+        ),
+        Effect.provideService(
+          HttpClient.HttpClient,
+          HttpClient.make(() => Effect.die("The status check must not reach the network")),
+        ),
+        Effect.provide(NodeServices.layer),
+      ),
+    );
+
+    const rules = path.join(paths.profileDir, "GEMINI.md");
+    if (process.platform === "win32") {
+      expect(await NodeFS.readFile(rules, "utf8")).toBe("rule");
+    } else {
+      expect(await linkOf(rules)).toBe(path.join(setup.gemini, "GEMINI.md"));
+    }
+    expect(status.skills).toEqual([
+      { name: "review", description: "Review changes.", path: skill, scope: "user", enabled: true },
+    ]);
+  });
+});

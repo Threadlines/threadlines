@@ -21,6 +21,7 @@ import type {
   ServerProvider,
   ServerProviderDetection,
   ServerProviderModel,
+  ServerProviderSkill,
   ThreadId,
   TurnId,
   UserInputQuestion,
@@ -544,6 +545,15 @@ export interface AcpProviderDescriptor<Settings extends AcpProviderSettings> {
     | Path.Path
     | HttpClient.HttpClient
   >;
+  /**
+   * The skills the agent loads, read from disk for the provider snapshot
+   * (ACP has no call that lists them before a session). Asked for on each
+   * status check of an installed agent; must never fail.
+   */
+  readonly listSkills?: (
+    settings: Settings,
+    environment: NodeJS.ProcessEnv,
+  ) => Effect.Effect<ReadonlyArray<ServerProviderSkill>>;
   /**
    * How long one ACP model-discovery session may take. Defaults to 15s;
    * agents that boot a VM first (fx inside WSL) need more.
