@@ -10,14 +10,14 @@ describe("command palette store", () => {
   beforeEach(resetStore);
 
   it("advances the open generation once per opening, not per open call", () => {
-    const { setOpen, openAddProject } = useCommandPaletteStore.getState();
+    const { setOpen, openThreadSearch } = useCommandPaletteStore.getState();
 
     setOpen(true);
     expect(useCommandPaletteStore.getState().openGeneration).toBe(1);
 
     // Re-purposing an already-open palette stays in the same session.
     setOpen(true);
-    openAddProject();
+    openThreadSearch({ projectName: "Docs", memberProjectKeys: [] });
     expect(useCommandPaletteStore.getState().openGeneration).toBe(1);
 
     setOpen(false);
@@ -46,10 +46,10 @@ describe("command palette store", () => {
   });
 
   it("clears the open intent when a guarded close lands", () => {
-    const { openAddProject, closeIfGeneration } = useCommandPaletteStore.getState();
+    const { openThreadSearch, closeIfGeneration } = useCommandPaletteStore.getState();
 
-    openAddProject();
-    expect(useCommandPaletteStore.getState().openIntent?.kind).toBe("add-project");
+    openThreadSearch({ projectName: "Docs", memberProjectKeys: [] });
+    expect(useCommandPaletteStore.getState().openIntent?.kind).toBe("search-threads");
 
     closeIfGeneration(useCommandPaletteStore.getState().openGeneration);
     expect(useCommandPaletteStore.getState().openIntent).toBeNull();

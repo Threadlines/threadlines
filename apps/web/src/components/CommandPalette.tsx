@@ -4,6 +4,7 @@ import { useParams } from "@tanstack/react-router";
 import { lazy, Suspense, useEffect, useRef, type ReactNode } from "react";
 
 import { useCommandPaletteStore } from "../commandPaletteStore";
+import { isPaletteLaunchedDialogOpen } from "../commands/shortcutBlock";
 import { ComposerHandleContext } from "../composerHandleContext";
 import { resolveShortcutCommand } from "../keybindings";
 import { isTerminalFocused } from "../lib/terminalFocus";
@@ -11,6 +12,8 @@ import { useServerKeybindings } from "../rpc/serverState";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
 import { resolveThreadRouteTarget } from "../threadRoutes";
 import type { ChatComposerHandle } from "./chat/ChatComposer";
+import { AddProjectDialog } from "./addProject/AddProjectDialog";
+import { CodexSessionImportDialog } from "./codexImport/CodexSessionImportDialog";
 import { CommandDialog } from "./ui/command";
 
 const loadCommandPaletteDialog = () => import("./CommandPaletteDialog");
@@ -59,6 +62,8 @@ export function CommandPalette({ children }: { children: ReactNode }) {
       }
       event.preventDefault();
       event.stopPropagation();
+      // Never over Add project or a Codex import: they own the keyboard.
+      if (isPaletteLaunchedDialogOpen()) return;
       toggleOpen();
     };
     window.addEventListener("keydown", onKeyDown);
@@ -84,6 +89,10 @@ export function CommandPalette({ children }: { children: ReactNode }) {
         {children}
         <CommandPaletteDialog />
       </CommandDialog>
+      {/* Siblings, not children, of the palette's dialog: the palette hands
+          over to them and closes, so they must not count as nested in it. */}
+      <AddProjectDialog />
+      <CodexSessionImportDialog />
     </ComposerHandleContext>
   );
 }

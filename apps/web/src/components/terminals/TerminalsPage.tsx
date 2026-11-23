@@ -30,7 +30,7 @@ import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../../keybindings";
 import { isTerminalFocused } from "../../lib/terminalFocus";
 import { cn, randomUUID } from "../../lib/utils";
-import { useCommandPaletteStore } from "../../commandPaletteStore";
+import { isKeyboardOwnedByDialog } from "../../commands/shortcutBlock";
 import { useServerKeybindings } from "../../rpc/serverState";
 import { selectWorkspaceProjectsAcrossEnvironments, useStore } from "../../store";
 import { type TerminalCommandKind, useTerminalCommandsStore } from "../../terminalCommands";
@@ -552,7 +552,7 @@ function ComputerTerminals({
   });
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
-      if (useCommandPaletteStore.getState().open || event.defaultPrevented) return;
+      if (isKeyboardOwnedByDialog() || event.defaultPrevented) return;
       const command = resolveShortcutCommand(event, keybindings, {
         context: { terminalFocus: isTerminalFocused(), terminalOpen },
       });

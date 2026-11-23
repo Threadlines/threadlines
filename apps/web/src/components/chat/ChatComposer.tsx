@@ -86,7 +86,7 @@ import {
 import { compressImageForStash, readFileForStash } from "../../lib/stashImageCompression";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../../keybindings";
 import { isTerminalFocused } from "../../lib/terminalFocus";
-import { useCommandPaletteStore } from "../../commandPaletteStore";
+import { isKeyboardOwnedByDialog } from "../../commands/shortcutBlock";
 import {
   type TerminalContextDraft,
   type TerminalContextSelection,
@@ -2489,7 +2489,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       // even when the composer is in a state that cannot stash.
       event.preventDefault();
       event.stopPropagation();
-      if (useCommandPaletteStore.getState().open || attachmentsDisabled) {
+      if (isKeyboardOwnedByDialog() || attachmentsDisabled) {
         return;
       }
       void stashCurrentPrompt();

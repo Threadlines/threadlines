@@ -8,6 +8,7 @@ import {
 } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 
+import { isKeyboardOwnedByDialog } from "../commands/shortcutBlock";
 import { useSettingsRestore } from "../components/settings/SettingsPanels";
 import { SettingsSearchResults } from "../components/settings/SettingsSearch";
 import {
@@ -110,8 +111,9 @@ function SettingsContentLayout() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      // An open menu or dialog takes its Escape first.
-      if (event.defaultPrevented) return;
+      // An open menu or dialog takes its Escape first, and the palette or
+      // Add project takes every key while it is open.
+      if (event.defaultPrevented || isKeyboardOwnedByDialog()) return;
       if (event.key === "Escape") {
         const search = useSettingsSearchStore.getState();
         if (search.query.trim().length > 0) {

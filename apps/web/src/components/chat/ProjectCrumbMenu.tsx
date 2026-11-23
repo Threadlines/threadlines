@@ -27,6 +27,7 @@ import {
 } from "../EditorOpenOptions";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { readLocalApi } from "~/localApi";
+import { isKeyboardOwnedByDialog } from "~/commands/shortcutBlock";
 
 /**
  * The project crumb in the chat header, and everything that acts on the
@@ -82,7 +83,7 @@ export const ProjectCrumbMenu = memo(function ProjectCrumbMenu({
   useEffect(() => {
     if (!canOpenInEditor) return;
     const handler = (event: globalThis.KeyboardEvent) => {
-      if (!isOpenFavoriteEditorShortcut(event, keybindings)) return;
+      if (isKeyboardOwnedByDialog() || !isOpenFavoriteEditorShortcut(event, keybindings)) return;
       if (!preferredEditor || !readLocalApi()) return;
       event.preventDefault();
       openIn(cwd, preferredEditor);

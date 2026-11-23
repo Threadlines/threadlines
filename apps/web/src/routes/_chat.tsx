@@ -2,7 +2,7 @@ import { scopeThreadRef } from "@threadlines/client-runtime";
 import { Outlet, createFileRoute, redirect, useParams } from "@tanstack/react-router";
 import { useEffect } from "react";
 
-import { useCommandPaletteStore } from "../commandPaletteStore";
+import { isKeyboardOwnedByDialog } from "../commands/shortcutBlock";
 import { FirstRunSetupRedirect } from "../components/setup/firstRunGateState";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
@@ -42,7 +42,7 @@ function ChatRouteGlobalShortcuts() {
         },
       });
 
-      if (useCommandPaletteStore.getState().open) {
+      if (isKeyboardOwnedByDialog()) {
         return;
       }
 

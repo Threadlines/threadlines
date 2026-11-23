@@ -1,5 +1,5 @@
 import { ORCHESTRATION_WS_METHODS, MessageId, WS_METHODS } from "@threadlines/contracts";
-import { page } from "vite-plus/test/browser";
+import { page, userEvent } from "vite-plus/test/browser";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import { __setEnvironmentApiOverrideForTests } from "../environmentApi";
@@ -31,6 +31,8 @@ import {
   dispatchInputKey,
   mountChatView,
   registerChatViewSuiteHooks,
+  dispatchChatNewShortcut,
+  waitForLayout,
 } from "./ChatView.browser-harness";
 
 vi.mock("../lib/gitStatusState", () => ({
@@ -45,6 +47,40 @@ vi.mock("../lib/gitStatusState", () => ({
   refreshLocalGitStatus: () => Promise.resolve(null),
   resetGitStatusStateForTests: () => undefined,
 }));
+
+const MOD_SHORTCUT = {
+  metaKey: false,
+  ctrlKey: false,
+  altKey: false,
+  modKey: true,
+} as const;
+const NOT_IN_TERMINAL = {
+  type: "not",
+  node: { type: "identifier", name: "terminalFocus" },
+} as const;
+const CHAT_NEW_BINDING = {
+  command: "chat.new",
+  shortcut: { ...MOD_SHORTCUT, key: "o", shiftKey: true },
+  whenAst: NOT_IN_TERMINAL,
+} as const;
+const PALETTE_TOGGLE_BINDING = {
+  command: "commandPalette.toggle",
+  shortcut: { ...MOD_SHORTCUT, key: "k", shiftKey: false },
+  whenAst: NOT_IN_TERMINAL,
+} as const;
+
+function dispatchModShortcut(key: string): void {
+  const useMetaForMod = isMacPlatform(navigator.platform);
+  window.dispatchEvent(
+    new KeyboardEvent("keydown", {
+      key,
+      metaKey: useMetaForMod,
+      ctrlKey: !useMetaForMod,
+      bubbles: true,
+      cancelable: true,
+    }),
+  );
+}
 
 describe("ChatView (full app): add project", () => {
   registerChatViewSuiteHooks();
@@ -115,16 +151,15 @@ describe("ChatView (full app): add project", () => {
 
     try {
       await Promise.all([waitForServerConfigToApply(), waitForCommandPaletteShortcutLabel()]);
-      const palette = page.getByTestId("command-palette");
+      const dialog = page.getByTestId("add-project-dialog");
       await openCommandPaletteFromTrigger();
-
-      await expect.element(palette).toBeInTheDocument();
-      await palette.getByText("Add project", { exact: true }).click();
-      await palette.getByText("GitHub repository", { exact: true }).click();
+      await page.getByTestId("command-palette").getByText("Add project", { exact: true }).click();
+      await expect.element(dialog).toBeInTheDocument();
+      await dialog.getByText("GitHub repository", { exact: true }).click();
 
       await waitForCommandPaletteInput("Enter GitHub repository (owner/repo)");
-      await expect.element(palette.getByText("t3-oss/t3-env", { exact: true })).toBeVisible();
-      await palette.getByText("t3-oss/t3-env", { exact: true }).click();
+      await expect.element(dialog.getByText("t3-oss/t3-env", { exact: true })).toBeVisible();
+      await dialog.getByText("t3-oss/t3-env", { exact: true }).click();
 
       await vi.waitFor(
         () => {
@@ -189,8 +224,8 @@ describe("ChatView (full app): add project", () => {
 
       await page.getByTestId("sidebar-add-project-trigger").click();
 
-      const palette = page.getByTestId("command-palette");
-      await expect.element(palette).toBeInTheDocument();
+      const dialog = page.getByTestId("add-project-dialog");
+      await expect.element(dialog).toBeInTheDocument();
       await selectLocalFolderAction();
 
       const browseInput = await waitForCommandPaletteInput(ADD_PROJECT_SUBMENU_PLACEHOLDER);
@@ -252,8 +287,8 @@ describe("ChatView (full app): add project", () => {
 
       await page.getByTestId("sidebar-add-project-trigger").click();
 
-      const palette = page.getByTestId("command-palette");
-      await expect.element(palette).toBeInTheDocument();
+      const dialog = page.getByTestId("add-project-dialog");
+      await expect.element(dialog).toBeInTheDocument();
       await selectLocalFolderAction();
 
       const browseInput = await waitForCommandPaletteInput(ADD_PROJECT_SUBMENU_PLACEHOLDER);
@@ -310,18 +345,18 @@ describe("ChatView (full app): add project", () => {
 
     try {
       await waitForServerConfigToApply();
-      const palette = page.getByTestId("command-palette");
+      const dialog = page.getByTestId("add-project-dialog");
       await page.getByTestId("sidebar-add-project-trigger").click();
 
-      await expect.element(palette).toBeInTheDocument();
+      await expect.element(dialog).toBeInTheDocument();
       await selectLocalFolderAction();
       const browseInput = await waitForCommandPaletteInput(ADD_PROJECT_SUBMENU_PLACEHOLDER);
       await page.getByPlaceholder(ADD_PROJECT_SUBMENU_PLACEHOLDER).fill("~/Desktop/fresh-project");
 
       await expect
-        .element(palette.getByRole("button", { name: "Create & Add (Enter)" }))
+        .element(dialog.getByRole("button", { name: "Create & Add (Enter)" }))
         .toBeInTheDocument();
-      await expect.element(palette.getByText("Will create this folder")).not.toBeInTheDocument();
+      await expect.element(dialog.getByText("Will create this folder")).not.toBeInTheDocument();
 
       await dispatchInputKey(browseInput, { key: "Enter" });
 
@@ -390,10 +425,10 @@ describe("ChatView (full app): add project", () => {
 
     try {
       await waitForServerConfigToApply();
-      const palette = page.getByTestId("command-palette");
+      const dialog = page.getByTestId("add-project-dialog");
       await page.getByTestId("sidebar-add-project-trigger").click();
 
-      await expect.element(palette).toBeInTheDocument();
+      await expect.element(dialog).toBeInTheDocument();
       await selectLocalFolderAction();
       const browseInput = await waitForCommandPaletteInput(ADD_PROJECT_SUBMENU_PLACEHOLDER);
       await page.getByPlaceholder(ADD_PROJECT_SUBMENU_PLACEHOLDER).fill("~/Development/codex/");
@@ -411,11 +446,9 @@ describe("ChatView (full app): add project", () => {
         { timeout: 8_000, interval: 16 },
       );
 
+      await expect.element(dialog.getByRole("button", { name: "Add (Enter)" })).toBeInTheDocument();
       await expect
-        .element(palette.getByRole("button", { name: "Add (Enter)" }))
-        .toBeInTheDocument();
-      await expect
-        .element(palette.getByRole("button", { name: "Create & Add (Enter)" }))
+        .element(dialog.getByRole("button", { name: "Create & Add (Enter)" }))
         .not.toBeInTheDocument();
 
       await dispatchInputKey(browseInput, { key: "Enter" });
@@ -528,14 +561,13 @@ describe("ChatView (full app): add project", () => {
         connectedAt: NOW_ISO,
       });
 
-      const palette = page.getByTestId("command-palette");
+      const dialog = page.getByTestId("add-project-dialog");
       await openCommandPaletteFromTrigger();
-
-      await expect.element(palette).toBeInTheDocument();
-      await palette.getByText("Add project", { exact: true }).click();
-      await expect.element(palette.getByText("Environments", { exact: true })).toBeInTheDocument();
+      await page.getByTestId("command-palette").getByText("Add project", { exact: true }).click();
+      await expect.element(dialog).toBeInTheDocument();
+      await expect.element(dialog.getByText("Environments", { exact: true })).toBeInTheDocument();
       await expect
-        .element(palette.getByText("This device", { exact: true }).first())
+        .element(dialog.getByText("This device", { exact: true }).first())
         .toBeInTheDocument();
       await clickCommandPaletteAction("Staging");
       await selectLocalFolderAction();
@@ -557,10 +589,8 @@ describe("ChatView (full app): add project", () => {
         },
         { timeout: 8_000, interval: 16 },
       );
-      await expect.element(palette.getByText("codething", { exact: true })).toBeInTheDocument();
-      await expect
-        .element(palette.getByRole("button", { name: "Add (Enter)" }))
-        .toBeInTheDocument();
+      await expect.element(dialog.getByText("codething", { exact: true })).toBeInTheDocument();
+      await expect.element(dialog.getByRole("button", { name: "Add (Enter)" })).toBeInTheDocument();
 
       await dispatchInputKey(browseInput, { key: "Enter" });
 
@@ -630,16 +660,16 @@ describe("ChatView (full app): add project", () => {
 
       await page.getByTestId("sidebar-add-project-trigger").click();
 
-      const palette = page.getByTestId("command-palette");
-      await expect.element(palette).toBeInTheDocument();
+      const dialog = page.getByTestId("add-project-dialog");
+      await expect.element(dialog).toBeInTheDocument();
       await selectLocalFolderAction();
-      const browseInput = palette.getByPlaceholder(ADD_PROJECT_SUBMENU_PLACEHOLDER);
+      const browseInput = dialog.getByPlaceholder(ADD_PROJECT_SUBMENU_PLACEHOLDER);
       await browseInput.fill("~/Applications/access");
 
       // Named after the primary computer, which the harness makes a Mac
       // whatever runs the test.
       const fileManagerLabel = "Open in Finder";
-      await palette.getByRole("button", { name: fileManagerLabel }).click();
+      await dialog.getByRole("button", { name: fileManagerLabel }).click();
 
       await vi.waitFor(
         () => {
@@ -743,16 +773,15 @@ describe("ChatView (full app): add project", () => {
     try {
       await waitForServerConfigToApply();
       await waitForCommandPaletteShortcutLabel();
-      const palette = page.getByTestId("command-palette");
+      const dialog = page.getByTestId("add-project-dialog");
       await openCommandPaletteFromTrigger();
-
-      await expect.element(palette).toBeInTheDocument();
-      await palette.getByText("Add project", { exact: true }).click();
+      await page.getByTestId("command-palette").getByText("Add project", { exact: true }).click();
+      await expect.element(dialog).toBeInTheDocument();
       await selectLocalFolderAction();
 
       const browseInput = await waitForCommandPaletteInput(ADD_PROJECT_SUBMENU_PLACEHOLDER);
       await page.getByPlaceholder(ADD_PROJECT_SUBMENU_PLACEHOLDER).fill("~/Development/");
-      await expect.element(palette.getByText("alpha", { exact: true })).toBeInTheDocument();
+      await expect.element(dialog.getByText("alpha", { exact: true })).toBeInTheDocument();
 
       await dispatchInputKey(browseInput, { key: "ArrowDown" });
 
@@ -767,7 +796,7 @@ describe("ChatView (full app): add project", () => {
         { timeout: 8_000, interval: 16 },
       );
       await expect
-        .element(palette.getByRole("button", { name: addButtonLabel }))
+        .element(dialog.getByRole("button", { name: addButtonLabel }))
         .toBeInTheDocument();
 
       await dispatchInputKey(browseInput, {
@@ -805,6 +834,269 @@ describe("ChatView (full app): add project", () => {
         mounted.router,
         (path) => UUID_ROUTE_RE.test(path),
         "Route should have changed to a new draft thread after adding a project with Mod+Enter.",
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("adds a project from browse mode with Enter when no directory is highlighted", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-command-palette-add-project-enter" as MessageId,
+        targetText: "command palette add project enter",
+      }),
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          keybindings: [
+            {
+              command: "commandPalette.toggle",
+              shortcut: {
+                key: "k",
+                metaKey: false,
+                ctrlKey: false,
+                shiftKey: false,
+                altKey: false,
+                modKey: true,
+              },
+              whenAst: {
+                type: "not",
+                node: { type: "identifier", name: "terminalFocus" },
+              },
+            },
+          ],
+        };
+      },
+      resolveRpc: (body) => {
+        if (body._tag === WS_METHODS.filesystemBrowse) {
+          if (body.partialPath === "~/Development/") {
+            return {
+              parentPath: "~/Development/",
+              entries: [
+                { name: "alpha", fullPath: "~/Development/alpha" },
+                { name: "beta", fullPath: "~/Development/beta" },
+              ],
+            };
+          }
+
+          return {
+            parentPath: "~/",
+            entries: [{ name: "Development", fullPath: "~/Development" }],
+          };
+        }
+
+        if (body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand) {
+          return {
+            sequence: fixture.snapshot.snapshotSequence + 1,
+          };
+        }
+
+        return undefined;
+      },
+    });
+
+    try {
+      await Promise.all([waitForServerConfigToApply(), waitForCommandPaletteShortcutLabel()]);
+      const dialog = page.getByTestId("add-project-dialog");
+      await openCommandPaletteFromTrigger();
+      await page.getByTestId("command-palette").getByText("Add project", { exact: true }).click();
+      await expect.element(dialog).toBeInTheDocument();
+      await selectLocalFolderAction();
+
+      const browseInput = await waitForCommandPaletteInput(ADD_PROJECT_SUBMENU_PLACEHOLDER);
+      await page.getByPlaceholder(ADD_PROJECT_SUBMENU_PLACEHOLDER).fill("~/Development/");
+      await expect.element(dialog.getByText("alpha", { exact: true })).toBeInTheDocument();
+
+      await expect.element(dialog.getByRole("button", { name: "Add (Enter)" })).toBeInTheDocument();
+
+      await dispatchInputKey(browseInput, { key: "Enter" });
+
+      await vi.waitFor(
+        () => {
+          const dispatchRequest = wsRequests.find(
+            (request) =>
+              request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+              request.type === "project.create",
+          ) as
+            | {
+                _tag: string;
+                type?: string;
+                workspaceRoot?: string;
+                title?: string;
+              }
+            | undefined;
+
+          expect(dispatchRequest).toMatchObject({
+            _tag: ORCHESTRATION_WS_METHODS.dispatchCommand,
+            type: "project.create",
+            workspaceRoot: "~/Development",
+            title: "Development",
+          });
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      await waitForURL(
+        mounted.router,
+        (path) => UUID_ROUTE_RE.test(path),
+        "Route should have changed to a new draft thread after adding a project with Enter.",
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps shortcuts from acting behind Add project and returns focus to the sidebar button", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-add-project-shortcut-block" as MessageId,
+        targetText: "add project shortcut block",
+      }),
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          keybindings: [CHAT_NEW_BINDING, PALETTE_TOGGLE_BINDING],
+        };
+      },
+      resolveRpc: (body) => {
+        if (body._tag === WS_METHODS.filesystemBrowse) {
+          return { parentPath: "~/", entries: [] };
+        }
+        return undefined;
+      },
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      const trigger = page.getByTestId("sidebar-add-project-trigger");
+      await trigger.click();
+      const dialog = page.getByTestId("add-project-dialog");
+      await expect.element(dialog).toBeInTheDocument();
+      await selectLocalFolderAction();
+      const pathBefore = mounted.router.state.location.pathname;
+
+      // New thread and the palette's own shortcut, pressed mid-browse.
+      dispatchChatNewShortcut();
+      dispatchModShortcut("k");
+      await waitForLayout();
+      await waitForLayout();
+
+      expect(mounted.router.state.location.pathname).toBe(pathBefore);
+      expect(document.querySelector('[data-testid="command-palette"]')).toBeNull();
+      await expect.element(dialog).toBeInTheDocument();
+
+      await userEvent.keyboard("{Escape}");
+      await expect.element(dialog).not.toBeInTheDocument();
+      await vi.waitFor(() => {
+        expect(document.activeElement).toBe(trigger.element());
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("offers Add project for a typed path above the search results, and returns focus to the composer", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-add-project-path-row" as MessageId,
+        targetText: "add project path row",
+      }),
+      resolveRpc: (body) => {
+        if (body._tag === WS_METHODS.filesystemBrowse) {
+          return {
+            parentPath: "/repo/",
+            entries: [{ name: "project", fullPath: "/repo/project" }],
+          };
+        }
+        return undefined;
+      },
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      await openCommandPaletteFromTrigger();
+      const palette = page.getByTestId("command-palette");
+      await page
+        .getByPlaceholder("Search commands, projects, and threads...")
+        .fill("/repo/project");
+
+      const pathRow = palette.getByText("Add project at /repo/project", { exact: true });
+      await expect.element(pathRow).toBeInTheDocument();
+      // The search carries on underneath: the project in that folder is listed.
+      await expect.element(palette.getByText("Projects", { exact: true })).toBeInTheDocument();
+      expect(wsRequests.some((request) => request._tag === WS_METHODS.filesystemBrowse)).toBe(
+        false,
+      );
+
+      await pathRow.click();
+      const dialog = page.getByTestId("add-project-dialog");
+      await expect.element(dialog).toBeInTheDocument();
+      const browseInput = await waitForCommandPaletteInput(ADD_PROJECT_SUBMENU_PLACEHOLDER);
+      await expect.element(browseInput).toHaveValue("/repo/project");
+      expect(document.querySelector('[data-testid="command-palette"]')).toBeNull();
+
+      await userEvent.keyboard("{Escape}");
+      await expect.element(dialog).not.toBeInTheDocument();
+      await vi.waitFor(() => {
+        const composer = document.querySelector('[contenteditable="true"]');
+        expect(composer?.contains(document.activeElement)).toBe(true);
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("resolves a relative path against the open project's folder", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-add-project-relative-path" as MessageId,
+        targetText: "add project relative path",
+      }),
+      resolveRpc: (body) => {
+        if (body._tag === WS_METHODS.filesystemBrowse) {
+          return { parentPath: "/repo/project/", entries: [] };
+        }
+        if (body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand) {
+          return { sequence: fixture.snapshot.snapshotSequence + 1 };
+        }
+        return undefined;
+      },
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      await openCommandPaletteFromTrigger();
+      const palette = page.getByTestId("command-palette");
+      await page.getByPlaceholder("Search commands, projects, and threads...").fill("./fresh");
+      await palette.getByText("Add project at ./fresh", { exact: true }).click();
+
+      const browseInput = await waitForCommandPaletteInput(ADD_PROJECT_SUBMENU_PLACEHOLDER);
+      await vi.waitFor(
+        () => {
+          expect(
+            wsRequests.find((request) => request._tag === WS_METHODS.filesystemBrowse),
+          ).toMatchObject({ partialPath: "./", cwd: "/repo/project" });
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      await dispatchInputKey(browseInput, { key: "Enter" });
+
+      await vi.waitFor(
+        () => {
+          expect(
+            wsRequests.find(
+              (request) =>
+                request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+                request.type === "project.create",
+            ),
+          ).toMatchObject({ workspaceRoot: "/repo/project/fresh", title: "fresh" });
+        },
+        { timeout: 8_000, interval: 16 },
       );
     } finally {
       await mounted.cleanup();

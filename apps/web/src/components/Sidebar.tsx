@@ -74,7 +74,8 @@ import {
   useSidebar,
 } from "./ui/sidebar";
 import { useThreadSelectionStore } from "../threadSelectionStore";
-import { useCommandPaletteStore } from "../commandPaletteStore";
+import { isKeyboardOwnedByDialog } from "../commands/shortcutBlock";
+import { openAddProject } from "./addProject/addProjectStore";
 import {
   buildInboxSections,
   buildProjectScopeOptions,
@@ -654,7 +655,6 @@ export default function Sidebar() {
   });
   const routeThreadKey = routeThreadRef ? scopedThreadKey(routeThreadRef) : null;
   const keybindings = useServerKeybindings();
-  const openAddProjectCommandPalette = useCommandPaletteStore((store) => store.openAddProject);
   const { showThreadJumpHints, updateThreadJumpHintsVisibility } = useThreadJumpHintVisibility();
   const clearSelection = useThreadSelectionStore((s) => s.clearSelection);
   const setSelectionAnchor = useThreadSelectionStore((s) => s.setAnchor);
@@ -1374,7 +1374,8 @@ export default function Sidebar() {
   const scopeMenuHandlers = useStableHandlers({
     onSortChange: handleSortChange,
     onResetCustomOrder: handleResetCustomOrder,
-    onAddProject: () => openAddProjectCommandPalette(),
+    onAddProject: (opener?: HTMLElement) =>
+      openAddProject(opener ? { returnFocus: opener } : undefined),
   });
   // What a move reads when it happens; the menu and the drag outlive a render.
   const inboxSortRef = useRef(inboxSort);
@@ -1977,7 +1978,7 @@ export default function Sidebar() {
     const onWindowKeyDown = (event: globalThis.KeyboardEvent) => {
       const shortcutContext = getCurrentSidebarShortcutContext();
 
-      if (event.defaultPrevented || event.repeat) {
+      if (event.defaultPrevented || event.repeat || isKeyboardOwnedByDialog()) {
         return;
       }
 
@@ -2207,7 +2208,9 @@ export default function Sidebar() {
                               type="button"
                               data-testid="inbox-empty-add-project"
                               className="cursor-pointer text-[11px] text-muted-foreground/80 underline-offset-2 transition-colors hover:text-foreground hover:underline focus-ring"
-                              onClick={() => openAddProjectCommandPalette()}
+                              onClick={(event) =>
+                                openAddProject({ returnFocus: event.currentTarget })
+                              }
                             >
                               Add a project
                             </button>

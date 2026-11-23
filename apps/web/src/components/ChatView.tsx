@@ -178,7 +178,7 @@ import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import { useIsMobile, useMediaQuery } from "../hooks/useMediaQuery";
 import { useKept, useStableHandlers } from "../hooks/useStableIdentity";
 import { useNewThreadHandler } from "../hooks/useHandleNewThread";
-import { useCommandPaletteStore } from "../commandPaletteStore";
+import { isKeyboardOwnedByDialog } from "../commands/shortcutBlock";
 import { useChatFindStore } from "../chatFindStore";
 import { installFindRegionTracking, resolveFindShortcutOwner } from "../lib/findShortcutOwner";
 import { selectedChatText } from "./chat/chatFind/ChatFind";
@@ -4997,7 +4997,7 @@ export default function ChatView(props: ChatViewProps) {
 
   useEffect(() => {
     const handler = (event: globalThis.KeyboardEvent) => {
-      if (!activeThreadId || useCommandPaletteStore.getState().open || event.defaultPrevented) {
+      if (!activeThreadId || isKeyboardOwnedByDialog() || event.defaultPrevented) {
         return;
       }
       const shortcutContext = {

@@ -5,11 +5,9 @@ import {
   OutsideAgentConnectionId,
   OutsideAgentRequestId,
   type OutsideAgentsSnapshot,
-  ProviderInstanceId,
   type ThreadId,
   WS_METHODS,
 } from "@threadlines/contracts";
-import { createModelCapabilities } from "@threadlines/shared/model";
 import { page } from "vite-plus/test/browser";
 import { describe, expect, it, vi } from "vite-plus/test";
 
@@ -22,8 +20,6 @@ import {
   SECOND_PROJECT_ID,
   LOCAL_ENVIRONMENT_ID,
   UUID_ROUTE_RE,
-  ADD_PROJECT_SUBMENU_PLACEHOLDER,
-  fixture,
   wsRequests,
   DEFAULT_VIEWPORT,
   createSnapshotForTargetUser,
@@ -43,9 +39,6 @@ import {
   triggerChatNewShortcutUntilPath,
   openCommandPaletteFromTrigger,
   waitForCommandPaletteShortcutLabel,
-  waitForCommandPaletteInput,
-  selectLocalFolderAction,
-  dispatchInputKey,
   mountChatView,
   registerChatViewSuiteHooks,
   rpcHarness,
@@ -324,122 +317,6 @@ describe("ChatView (full app): command palette and search", () => {
       await expect
         .element(palette.getByText("New thread in Project", { exact: true }))
         .not.toBeInTheDocument();
-    } finally {
-      await mounted.cleanup();
-    }
-  });
-
-  it("opens a project-scoped Codex session browser and imports the selected conversation", async () => {
-    const externalThreadsResult = {
-      data: [
-        {
-          providerInstanceId: ProviderInstanceId.make("codex"),
-          providerThreadId: "native-codex-thread",
-          sessionId: "native-codex-session",
-          source: "cli" as const,
-          name: "Finish parser migration",
-          preview: "Finish the parser migration and verify its tests",
-          cwd: "/repo/project",
-          cliVersion: "0.145.0",
-          createdAt: "2026-03-01T12:00:00.000Z",
-          updatedAt: "2026-03-03T12:00:00.000Z",
-          status: "idle" as const,
-          canImport: true,
-        },
-      ],
-    };
-    let resolveExternalThreads!: (value: typeof externalThreadsResult) => void;
-    const externalThreadsPromise = new Promise<typeof externalThreadsResult>((resolve) => {
-      resolveExternalThreads = resolve;
-    });
-    const mounted = await mountChatView({
-      viewport: DEFAULT_VIEWPORT,
-      snapshot: createSnapshotForTargetUser({
-        targetMessageId: "msg-user-external-codex-session" as MessageId,
-        targetText: "external Codex session",
-      }),
-      configureFixture: (nextFixture) => {
-        nextFixture.serverConfig = {
-          ...nextFixture.serverConfig,
-          providers: [
-            {
-              ...nextFixture.serverConfig.providers[0]!,
-              models: [
-                {
-                  slug: "gpt-5.6-sol",
-                  name: "GPT-5.6 Sol",
-                  isCustom: false,
-                  isDefault: true,
-                  capabilities: createModelCapabilities({ optionDescriptors: [] }),
-                },
-              ],
-            },
-          ],
-        };
-      },
-      resolveRpc: (body) => {
-        if (body._tag === WS_METHODS.serverListExternalProviderThreads) {
-          return externalThreadsPromise;
-        }
-        if (body._tag === WS_METHODS.serverImportExternalProviderThread) {
-          return {
-            threadId: (body as unknown as { readonly threadId: ThreadId }).threadId,
-            importedMessageCount: 2,
-          };
-        }
-        return undefined;
-      },
-    });
-
-    try {
-      await waitForServerConfigToApply();
-      await openCommandPaletteFromTrigger();
-      const palette = page.getByTestId("command-palette");
-      await expect
-        .element(palette.getByText("Bring in Codex conversation…", { exact: true }))
-        .toBeInTheDocument();
-      await palette.getByText("Bring in Codex conversation…", { exact: true }).click();
-      await waitForCommandPaletteInput("Search other Codex conversations in Project...");
-
-      await expect
-        .element(palette.getByTestId("command-palette-results-skeleton"))
-        .toBeInTheDocument();
-      resolveExternalThreads(externalThreadsResult);
-
-      await expect
-        .element(palette.getByText("Finish parser migration", { exact: true }))
-        .toBeInTheDocument();
-      await expect
-        .element(palette.getByTestId("command-palette-results-skeleton"))
-        .not.toBeInTheDocument();
-      await expect
-        .element(palette.getByText("Codex CLI · Finish the parser migration and verify its tests"))
-        .toBeInTheDocument();
-      await palette.getByText("Finish parser migration", { exact: true }).click();
-
-      await vi.waitFor(
-        () => {
-          const listRequest = wsRequests.find(
-            (request) => request._tag === WS_METHODS.serverListExternalProviderThreads,
-          );
-          expect(listRequest).toMatchObject({
-            providerInstanceId: "codex",
-            cwd: "/repo/project",
-            limit: 20,
-          });
-          const importRequest = wsRequests.find(
-            (request) => request._tag === WS_METHODS.serverImportExternalProviderThread,
-          );
-          expect(importRequest).toMatchObject({
-            providerInstanceId: "codex",
-            providerThreadId: "native-codex-thread",
-            projectId: PROJECT_ID,
-            modelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
-            runtimeMode: "full-access",
-          });
-        },
-        { timeout: 8_000, interval: 16 },
-      );
     } finally {
       await mounted.cleanup();
     }
@@ -846,117 +723,6 @@ describe("ChatView (full app): command palette and search", () => {
           { timeout: 8_000, interval: 16 },
         );
       }
-    } finally {
-      await mounted.cleanup();
-    }
-  });
-
-  it("adds a project from browse mode with Enter when no directory is highlighted", async () => {
-    const mounted = await mountChatView({
-      viewport: DEFAULT_VIEWPORT,
-      snapshot: createSnapshotForTargetUser({
-        targetMessageId: "msg-user-command-palette-add-project-enter" as MessageId,
-        targetText: "command palette add project enter",
-      }),
-      configureFixture: (nextFixture) => {
-        nextFixture.serverConfig = {
-          ...nextFixture.serverConfig,
-          keybindings: [
-            {
-              command: "commandPalette.toggle",
-              shortcut: {
-                key: "k",
-                metaKey: false,
-                ctrlKey: false,
-                shiftKey: false,
-                altKey: false,
-                modKey: true,
-              },
-              whenAst: {
-                type: "not",
-                node: { type: "identifier", name: "terminalFocus" },
-              },
-            },
-          ],
-        };
-      },
-      resolveRpc: (body) => {
-        if (body._tag === WS_METHODS.filesystemBrowse) {
-          if (body.partialPath === "~/Development/") {
-            return {
-              parentPath: "~/Development/",
-              entries: [
-                { name: "alpha", fullPath: "~/Development/alpha" },
-                { name: "beta", fullPath: "~/Development/beta" },
-              ],
-            };
-          }
-
-          return {
-            parentPath: "~/",
-            entries: [{ name: "Development", fullPath: "~/Development" }],
-          };
-        }
-
-        if (body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand) {
-          return {
-            sequence: fixture.snapshot.snapshotSequence + 1,
-          };
-        }
-
-        return undefined;
-      },
-    });
-
-    try {
-      await Promise.all([waitForServerConfigToApply(), waitForCommandPaletteShortcutLabel()]);
-      const palette = page.getByTestId("command-palette");
-      await openCommandPaletteFromTrigger();
-
-      await expect.element(palette).toBeInTheDocument();
-      await palette.getByText("Add project", { exact: true }).click();
-      await selectLocalFolderAction();
-
-      const browseInput = await waitForCommandPaletteInput(ADD_PROJECT_SUBMENU_PLACEHOLDER);
-      await page.getByPlaceholder(ADD_PROJECT_SUBMENU_PLACEHOLDER).fill("~/Development/");
-      await expect.element(palette.getByText("alpha", { exact: true })).toBeInTheDocument();
-
-      await expect
-        .element(palette.getByRole("button", { name: "Add (Enter)" }))
-        .toBeInTheDocument();
-
-      await dispatchInputKey(browseInput, { key: "Enter" });
-
-      await vi.waitFor(
-        () => {
-          const dispatchRequest = wsRequests.find(
-            (request) =>
-              request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
-              request.type === "project.create",
-          ) as
-            | {
-                _tag: string;
-                type?: string;
-                workspaceRoot?: string;
-                title?: string;
-              }
-            | undefined;
-
-          expect(dispatchRequest).toMatchObject({
-            _tag: ORCHESTRATION_WS_METHODS.dispatchCommand,
-            type: "project.create",
-            workspaceRoot: "~/Development",
-            title: "Development",
-          });
-        },
-        { timeout: 8_000, interval: 16 },
-      );
-
-      await waitForURL(
-        mounted.router,
-        (path) => UUID_ROUTE_RE.test(path),
-        "Route should have changed to a new draft thread after adding a project with Enter.",
-      );
     } finally {
       await mounted.cleanup();
     }
