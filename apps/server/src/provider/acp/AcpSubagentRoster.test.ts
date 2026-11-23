@@ -151,4 +151,38 @@ describe("AcpSubagentRoster", () => {
       expect(roster.size()).toBe(0);
     }),
   );
+
+  it.effect(
+    "guesses an unrecorded launch done on a later reading if the one at its turn's end failed",
+    () =>
+      Effect.gen(function* () {
+        const { roster, records, statuses } = makeRoster();
+        yield* roster.noteToolCall(launch("call_a"), TURN);
+        records.next = undefined;
+        yield* roster.observe(turnCompleted("completed"));
+        expect(statuses()).toEqual(["call_a:running"]);
+        // The next complete reading still knows its turn ended.
+        records.next = { byLaunch: new Map(), complete: true };
+        yield* roster.observe(usageUpdated);
+        expect(statuses()).toEqual(["call_a:running", "call_a:completed"]);
+      }),
+  );
+
+  it.effect("never shows a launch it still keeps twice, however many came after it", () =>
+    Effect.gen(function* () {
+      const { roster, records, statuses } = makeRoster();
+      yield* roster.noteToolCall(launch("call_0"), TURN);
+      for (let index = 1; index <= 600; index += 1) {
+        yield* roster.noteToolCall(launch(`call_${index}`), TurnId.make("turn-2"));
+      }
+      // The first launch's completion comes again, from another turn.
+      yield* roster.noteToolCall(launch("call_0"), TurnId.make("turn-3"));
+      expect(statuses().filter((status) => status === "call_0:running")).toHaveLength(1);
+      // It still belongs to its own turn: that turn's end settles it.
+      records.next = { byLaunch: new Map(), complete: true };
+      yield* roster.observe(turnCompleted("completed"));
+      expect(statuses()).toContain("call_0:completed");
+      expect(statuses()).not.toContain("call_1:completed");
+    }),
+  );
 });

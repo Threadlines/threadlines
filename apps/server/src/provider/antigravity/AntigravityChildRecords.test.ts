@@ -215,6 +215,37 @@ describe("readAntigravityChildren", () => {
   );
 });
 
+describe("readAntigravityChildren, refused folders", () => {
+  it.live("counts a child inbox that is a link as unread, not as empty", () =>
+    withProfile((records) =>
+      Effect.gen(function* () {
+        const elsewhere = yield* Effect.promise(() =>
+          mkdtemp(path.join(os.tmpdir(), "agy-child-elsewhere-")),
+        );
+        yield* Effect.promise(async () => {
+          await records.child("child-a", "call_a");
+          const inbox = path.join(records.brain, "child-a", ".system_generated", "messages");
+          await rm(inbox, { recursive: true });
+          await symlink(elsewhere, inbox);
+        });
+        const reading = yield* readAntigravityChildren(records.profile, PARENT);
+        // The child is still running, tied to no launch, and the reading says it's incomplete.
+        expect(summary(reading)).toEqual({ running: ["child-a:?"], reported: [], killed: [] });
+        expect(reading.available && reading.unreadable).toBe(1);
+        // A parent inbox that is a link makes the whole reading unavailable.
+        yield* Effect.promise(() =>
+          symlink(elsewhere, path.join(records.brain, PARENT, ".system_generated", "messages")),
+        );
+        expect(yield* readAntigravityChildren(records.profile, PARENT)).toEqual({
+          available: false,
+          reason: "unreadable",
+        });
+        yield* Effect.promise(() => rm(elsewhere, { recursive: true, force: true }));
+      }),
+    ),
+  );
+});
+
 describe("openAntigravityProfileFile", () => {
   it.live("refuses a file reached through a folder swapped for a link after the check", () =>
     withProfile((records) =>

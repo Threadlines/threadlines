@@ -92,6 +92,33 @@ describe("acpAttachmentContent", () => {
         });
         expect(sent.map((block) => block.type)).toEqual(["image"]);
         expect(roomy.inlineBytes).toBe(3_000);
+
+        // Embedded text counts toward the same allowance.
+        const notes = path.join(dir, "notes.txt");
+        yield* Effect.promise(() => writeFile(notes, "x".repeat(3_000)));
+        const text: ChatAttachment = {
+          type: "file",
+          kind: "text",
+          id: "txt-1",
+          name: "notes.txt",
+          mimeType: "text/plain",
+          sizeBytes: 3_000,
+        };
+        const full = yield* acpAttachmentContent({
+          attachment: text,
+          path: notes,
+          delivery: "text",
+          budget: { inlineBytes: 50 * 1024 * 1024 - 2_000 },
+        });
+        expect(full.map((block) => block.type)).toEqual(["text"]);
+        const counted = { inlineBytes: 0 };
+        yield* acpAttachmentContent({
+          attachment: text,
+          path: notes,
+          delivery: "text",
+          budget: counted,
+        });
+        expect(counted.inlineBytes).toBe(3_000);
       }),
     ),
   );
