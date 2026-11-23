@@ -235,7 +235,8 @@ which Antigravity reads as a document. Text files go as text, in UTF-8, or UTF-1
 starts with its byte order mark; one over 100 KB goes as a path instead, so it doesn't crowd the
 conversation. Anything else (a spreadsheet, a video) goes as the saved file's path for the agent to
 open with its tools. Images, audio and text each need Antigravity to say it reads that kind;
-otherwise the file goes as a path. A PDF link needs nothing: every ACP agent reads links. A MIME
+otherwise the file goes as a path. Antigravity 1.5.15 reads images and embedded text, not audio, so
+audio goes as a path today. A PDF link needs nothing: every ACP agent reads links. A MIME
 type's parameters (`; charset=utf-8`) don't change the choice. Files are read as they are on disk,
 never through a link, up to each kind's limit and 50 MB inline per message.
 
