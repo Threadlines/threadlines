@@ -326,13 +326,6 @@ describe("room_ask", () => {
           }),
           outcome: "busy",
         },
-        // The agents used their requests.
-        {
-          thread: makeThread({
-            agentRequests: { ...EMPTY_AGENT_REQUEST_STATE, requestsSinceUser: 3 },
-          }),
-          outcome: "limit",
-        },
         // The user pressed Stop.
         {
           thread: makeThread({ agentRequests: { ...EMPTY_AGENT_REQUEST_STATE, hold: true } }),
@@ -846,7 +839,6 @@ describe("room_hand_off", () => {
         makeThread({
           agentRequests: {
             ...EMPTY_AGENT_REQUEST_STATE,
-            requestsSinceUser: 1,
             open: [
               {
                 requestId: submit!.requestId,

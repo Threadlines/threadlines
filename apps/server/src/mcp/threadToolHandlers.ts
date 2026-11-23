@@ -1029,7 +1029,6 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
             from: from(scope),
             callerTurnId,
             count: specs.length,
-            isLead: yield* isLeadThread(current),
           });
           if (refusal !== null) {
             return ruleOutcome(refusal) satisfies ThreadStartResult;
@@ -1340,7 +1339,6 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
             from: from(scope),
             callerTurnId,
             count: specs.length,
-            isLead: yield* isLeadThread(current),
           });
           if (refusal !== null) {
             return ruleOutcome(refusal) satisfies ThreadStartResult;
@@ -1856,16 +1854,11 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
           const refusal = childSendRefusal(caller, child ?? null, {
             from: from(scope),
             callerTurnId,
-            isLead: yield* isLeadThread(caller),
           });
           if (refusal !== null) {
             return {
               outcome:
-                refusal.outcome === "not_allowed"
-                  ? ("not_yours" as const)
-                  : refusal.outcome === "limit"
-                    ? ("limit" as const)
-                    : ("refused" as const),
+                refusal.outcome === "not_allowed" ? ("not_yours" as const) : ("refused" as const),
               detail: refusal.detail,
             } satisfies ThreadSendResult;
           }
@@ -1996,11 +1989,7 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
           if (refusal !== null || target === undefined) {
             return {
               outcome:
-                refusal?.outcome === "limit"
-                  ? ("limit" as const)
-                  : refusal?.outcome === "not_allowed"
-                    ? ("not_yours" as const)
-                    : ("refused" as const),
+                refusal?.outcome === "not_allowed" ? ("not_yours" as const) : ("refused" as const),
               detail: refusal?.detail ?? NOT_FOUND,
               threadId: targetId,
             } satisfies ThreadSendResult;
