@@ -5224,7 +5224,8 @@ describe("ProviderCommandReactor", () => {
 
     expect(harness.stopSession.mock.calls.length).toBe(0);
     const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
-    expect(thread?.checkBacks).toEqual([saved]);
+    // The running provider can't fire Claude's saved job, so it stays listed as dormant.
+    expect(thread?.checkBacks).toEqual([{ ...saved, dormant: true }]);
   });
 
   it("clears a stale check-back list but keeps the jobs saved to disk", async () => {
@@ -5271,7 +5272,8 @@ describe("ProviderCommandReactor", () => {
       return thread?.checkBacks?.length === 1;
     });
     const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
-    expect(thread?.checkBacks).toEqual([saved]);
+    // The runtime is gone, so the saved job stays listed as dormant until it runs again.
+    expect(thread?.checkBacks).toEqual([{ ...saved, dormant: true }]);
     expect(harness.stopSession.mock.calls.length).toBe(0);
   });
 
