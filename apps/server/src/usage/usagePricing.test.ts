@@ -104,4 +104,26 @@ describe("priceUsage", () => {
     });
     expect(lookupRate(table, "claude-fable-5-2")?.inputCostPerToken).toBe(1e-6);
   });
+
+  it("prices Gemini 4 at the rate of the day it ran, whatever level the agent names", () => {
+    const million = {
+      uncachedInputTokens: 1_000_000,
+      cachedInputTokens: 1_000_000,
+      cacheCreationTokens: 0,
+      outputTokens: 1_000_000,
+      reasoningTokens: 0,
+    };
+    const price = (model: string, timestampMs: number) =>
+      priceUsage(new Map(), {
+        model,
+        totals: million,
+        cacheCreation1hTokens: 0,
+        reportedCostUsd: null,
+        timestampMs,
+      }).costUsd;
+    // Argon doubles on December 1, 2026; Antigravity names its effort in the id.
+    expect(price("gemini-4-argon-high", Date.UTC(2026, 10, 30, 12))).toBeCloseTo(2 + 0.1 + 10, 9);
+    expect(price("gemini-4-argon", Date.UTC(2026, 11, 1, 12))).toBeCloseTo(4 + 0.2 + 20, 9);
+    expect(price("gemini-4-neon", Date.UTC(2026, 11, 1, 12))).toBeCloseTo(3 + 0.15 + 15, 9);
+  });
 });
