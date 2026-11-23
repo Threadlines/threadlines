@@ -135,6 +135,7 @@ html.electron.mac:not([data-marketing-capture]) {
   --color-provider-muse: var(--provider-muse);
   --color-provider-opencode: var(--provider-opencode);
   --color-provider-fx: var(--provider-fx);
+  --color-provider-antigravity: var(--provider-antigravity);
   --color-context-system-prompt: var(--context-system-prompt);
   --color-context-system-tools: var(--context-system-tools);
   --color-context-mcp-tools: var(--context-mcp-tools);
@@ -412,7 +413,8 @@ html.electron.mac:not([data-marketing-capture]) {
      two blues sit far enough apart in lightness to tell from each other. Muse
      leans Meta's blue toward its purple (true Meta blue sits on Pi's), OpenCode
      darkens its peach to a bronze (the peach sits on the terracotta), and fx,
-     black and white like Codex, takes a berry. Any two providers can end up
+     black and white like Codex, takes a berry, and Antigravity, whose mark has
+     every hue, a teal no other provider sits near. Any two providers can end up
      side by side in a stacked chart, so every pair passes the color-blind
      (8+) and normal-vision (15+) separation checks in both modes. Darkened on
      light, lifted on dark, so a 1.5px chart stroke stays legible against
@@ -424,6 +426,7 @@ html.electron.mac:not([data-marketing-capture]) {
   --provider-muse: #8169ec;
   --provider-opencode: #7b4c00;
   --provider-fx: #9a0a70;
+  --provider-antigravity: #0c7a66;
   /* Per-model series on the usage page, in stacking order. Adjacent pairs pass
      a color-vision-deficiency separation check in both modes, so the order is
      load-bearing: slot 1 is the terracotta family, reserved for the leading
@@ -555,6 +558,7 @@ html.electron.mac:not([data-marketing-capture]) {
     --provider-muse: #9079fe;
     --provider-opencode: #9a6a14;
     --provider-fx: #c93a82;
+    --provider-antigravity: #33b39a;
     --usage-model-1: #d95926;
     --usage-model-2: #3987e5;
     --usage-model-3: #d55181;

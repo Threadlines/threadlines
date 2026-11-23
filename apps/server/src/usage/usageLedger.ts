@@ -5,7 +5,8 @@
  *
  * Agents on the generic ACP driver report a turn's tokens in the
  * `session/prompt` result and a running session cost in `usage_update`, and
- * some keep no record of either (fx stopped in 0.0.14). The ACP core appends
+ * some keep no record of either (fx stopped in 0.0.14; Antigravity keeps its
+ * in a private format). The ACP core appends
  * one line per turn to `<state>/usage-ledger/<provider>/<UTC day>.jsonl`, and
  * the usage scan reads those folders like any provider's transcripts. Only
  * chats run in Threadlines are in it.
@@ -21,7 +22,10 @@ import * as FileSystem from "effect/FileSystem";
 import { totalTokens, type UsageRecord } from "./usageTranscripts.ts";
 
 /** The providers whose usage comes from the ledger rather than their own files. */
-export const USAGE_LEDGER_PROVIDERS = ["fx"] as const satisfies readonly UsageProviderKind[];
+export const USAGE_LEDGER_PROVIDERS = [
+  "fx",
+  "antigravity",
+] as const satisfies readonly UsageProviderKind[];
 export type UsageLedgerProvider = (typeof USAGE_LEDGER_PROVIDERS)[number];
 
 export const isUsageLedgerProvider = (

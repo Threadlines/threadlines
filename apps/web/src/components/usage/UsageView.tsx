@@ -28,6 +28,7 @@ import { RelativeTimeLabel } from "../RelativeTimeLabel";
 import { PageTitlebar } from "../PageTitlebar";
 import {
   ClaudeAI,
+  AntigravityIcon,
   FxIcon,
   GrokIcon,
   MuseIcon,
@@ -129,6 +130,7 @@ const USAGE_PROVIDER_ICONS: Record<UsageProviderKind, Icon> = {
   muse: MuseIcon,
   opencode: OpenCodeIcon,
   fx: FxIcon,
+  antigravity: AntigravityIcon,
 };
 
 function shareDigits(share: number): number {
