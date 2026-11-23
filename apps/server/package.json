@@ -61,7 +61,7 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "1.5.2",
+    "@earendil-works/pi-coding-agent": "1.6.0",
     "@effect/vitest": "catalog:",
     "@modelcontextprotocol/sdk": "1.32.2",
     "@threadlines/contracts": "workspace:*",
