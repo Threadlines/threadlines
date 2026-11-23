@@ -430,6 +430,13 @@ export const ProviderTurnStartResult = Schema.Struct({
    * was, or after its setup failed).
    */
   undelivered: Schema.optional(Schema.Literal(true)),
+  /**
+   * The send reopened a runtime that had gone and the provider could not
+   * reopen its conversation (`resumeFailed`): the message went to a new
+   * conversation without the thread's history. The caller owes that history
+   * to its next message, as after any start that couldn't resume.
+   */
+  historyOwed: Schema.optional(Schema.Literal(true)),
 });
 export type ProviderTurnStartResult = typeof ProviderTurnStartResult.Type;
 

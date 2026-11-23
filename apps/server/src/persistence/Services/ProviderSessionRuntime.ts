@@ -43,6 +43,18 @@ export const GetProviderSessionRuntimeInput = Schema.Struct({ threadId: ThreadId
 export type GetProviderSessionRuntimeInput = typeof GetProviderSessionRuntimeInput.Type;
 
 export const DeleteProviderSessionRuntimeInput = Schema.Struct({ threadId: ThreadId });
+
+/** See ProviderSessionRuntimeRepositoryShape.patchIfSession. */
+export interface PatchProviderSessionRuntimeIfSessionInput {
+  readonly threadId: ThreadId;
+  /** The runtime the row must still name (its `sessionCreatedAt` payload field). */
+  readonly sessionCreatedAt: string;
+  /** Flat fields merged into the payload; a null removes the field. */
+  readonly runtimePayload: Readonly<Record<string, string | number | boolean | null>>;
+  /** Clears the resume cursor too. */
+  readonly clearResumeCursor?: boolean;
+  readonly lastSeenAt: string;
+}
 export type DeleteProviderSessionRuntimeInput = typeof DeleteProviderSessionRuntimeInput.Type;
 
 /**
@@ -74,6 +86,15 @@ export interface ProviderSessionRuntimeRepositoryShape {
     ReadonlyArray<ProviderSessionRuntime>,
     ProviderSessionRuntimeRepositoryError
   >;
+
+  /**
+   * Merges flat fields into a row's payload, in one statement, only while
+   * the row still names runtime `sessionCreatedAt`: a write that names an
+   * older runtime never lands on its replacement. True when it was written.
+   */
+  readonly patchIfSession: (
+    input: PatchProviderSessionRuntimeIfSessionInput,
+  ) => Effect.Effect<boolean, ProviderSessionRuntimeRepositoryError>;
 
   /**
    * Delete provider runtime state by canonical thread id.

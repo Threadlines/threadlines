@@ -96,6 +96,7 @@ function createProviderServiceHarness(
   providerName: ProviderSession["provider"] = ProviderDriverKind.make("codex"),
   extraSessions: ReadonlyArray<ProviderSession> = [],
   conversationRollback?: "native" | "none" | "new-session",
+  capabilitiesFail = false,
 ) {
   const now = "2026-01-01T00:00:00.000Z";
   const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
@@ -166,10 +167,18 @@ function createProviderServiceHarness(
     dropResumeCursor: () => Effect.void,
     noteHistoryDelivered: () => Effect.void,
     getCapabilities: () =>
-      Effect.succeed({
-        sessionModelSwitch: "in-session",
-        ...(conversationRollback !== undefined ? { conversationRollback } : {}),
-      }),
+      capabilitiesFail
+        ? Effect.fail(
+            new ProviderAdapterRequestError({
+              provider: "antigravity",
+              method: "getCapabilities",
+              detail: "the instance is not reachable",
+            }),
+          )
+        : Effect.succeed({
+            sessionModelSwitch: "in-session",
+            ...(conversationRollback !== undefined ? { conversationRollback } : {}),
+          }),
     getInstanceInfo: (instanceId) =>
       Effect.succeed({
         instanceId,
@@ -375,6 +384,7 @@ describe("CheckpointReactor", () => {
     readonly extraProviderSessions?: ReadonlyArray<ProviderSession>;
     readonly gitStatusRefreshCalls?: Array<string>;
     readonly conversationRollback?: "native" | "none" | "new-session";
+    readonly capabilitiesFail?: boolean;
   }) {
     const cwd = createGitRepository();
     tempDirs.push(cwd);
@@ -403,6 +413,7 @@ describe("CheckpointReactor", () => {
       options?.providerName ?? ProviderDriverKind.make("codex"),
       extraProviderSessions,
       options?.conversationRollback,
+      options?.capabilitiesFail === true,
     );
     const orchestrationLayer = OrchestrationEngineLive.pipe(
       Layer.provide(OrchestrationProjectionSnapshotQueryLive),
@@ -3119,6 +3130,50 @@ describe("CheckpointReactor", () => {
     expect(thread.activities.some((activity) => activity.kind === "checkpoint.reverted")).toBe(
       true,
     );
+  });
+
+  it("restores nothing when it can't tell whether the agent still runs", async () => {
+    const harness = await createHarness({ hasSession: false, capabilitiesFail: true });
+    const threadId = ThreadId.make("thread-1");
+    const createdAt = "2026-01-01T00:00:00.000Z";
+    for (const turnCount of [1, 2] as const) {
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.diff.complete",
+          commandId: CommandId.make(`cmd-capabilities-diff-${turnCount}`),
+          threadId,
+          turnId: asTurnId(`turn-${turnCount}`),
+          completedAt: createdAt,
+          checkpointRef: checkpointRefForThreadTurn(threadId, turnCount),
+          status: "ready",
+          files: [{ path: "README.md", kind: "modified", additions: 1, deletions: 1 }],
+          checkpointTurnCount: turnCount,
+          completesTurn: true,
+          createdAt,
+        }),
+      );
+    }
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.checkpoint.revert",
+        commandId: CommandId.make("cmd-capabilities-revert"),
+        threadId,
+        turnCount: 1,
+        createdAt,
+      }),
+    );
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some((activity) => activity.kind === "checkpoint.revert.failed"),
+    );
+    const detail = (
+      thread.activities.find((activity) => activity.kind === "checkpoint.revert.failed")
+        ?.payload as { readonly detail?: string } | undefined
+    )?.detail;
+    expect(detail).toContain("no file was restored");
+    expect(harness.provider.rollbackConversation).not.toHaveBeenCalled();
+    expect(
+      fs.readFileSync(path.join(harness.cwd, "README.md"), "utf8").replaceAll("\r\n", "\n"),
+    ).toBe("v3\n");
   });
 
   it.each([

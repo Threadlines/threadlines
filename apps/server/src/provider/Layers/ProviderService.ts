@@ -66,7 +66,11 @@ import {
   providerTurnMetricAttributes,
   withMetrics,
 } from "../../observability/Metrics.ts";
-import { type ProviderAdapterError, ProviderValidationError } from "../Errors.ts";
+import {
+  type ProviderAdapterError,
+  ProviderAdapterRequestError,
+  ProviderValidationError,
+} from "../Errors.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import { ThreadSessionAdmission } from "../Services/ThreadSessionAdmission.ts";
 import { ProjectInstructions } from "../Services/ProjectInstructions.ts";
@@ -91,6 +95,8 @@ const COMMAND_OUTPUT_TAIL_CHARS = 4_096;
 const EARLY_SESSION_SWEEP_INTERVAL = Duration.seconds(30);
 /** How long quiesceThread waits for a start or recovery of the thread already under way. */
 const QUIESCE_START_WAIT = Duration.seconds(90);
+/** How long a revert waits for a stopping agent's process to go, before ending it, and after. */
+const REVERT_STOP_WAIT = Duration.seconds(20);
 import { AnalyticsService } from "../../telemetry/Services/AnalyticsService.ts";
 import {
   analyticsAgentProperties,
@@ -259,19 +265,6 @@ function toRuntimePayloadFromSession(
  * clears it (`noteHistoryDelivered`). Kept in the binding, so a restart in
  * between can't reopen the conversation as it was.
  */
-/** The start time of the runtime the binding last described (ProviderSession.createdAt). */
-function readPersistedSessionCreatedAt(
-  runtimePayload: ProviderRuntimeBinding["runtimePayload"],
-): string | undefined {
-  return runtimePayload !== null &&
-    typeof runtimePayload === "object" &&
-    !Array.isArray(runtimePayload) &&
-    "sessionCreatedAt" in runtimePayload &&
-    typeof runtimePayload.sessionCreatedAt === "string"
-    ? runtimePayload.sessionCreatedAt
-    : undefined;
-}
-
 function readPersistedHistoryOwed(runtimePayload: ProviderRuntimeBinding["runtimePayload"]) {
   return (
     runtimePayload !== null &&
@@ -875,7 +868,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
               strategy: "adopt-existing",
               hasResumeCursor: existing.resumeCursor !== undefined,
             });
-            return { adapter, session: existing } as const;
+            return { adapter, session: existing, historyOwed: false } as const;
           }
         }
 
@@ -926,9 +919,13 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           instanceId: bindingInstanceId,
           timing: { kind: "resume", startMs },
         });
+        // As after any start: a conversation it couldn't reopen owes the
+        // thread's history, kept in the binding until a send carries it.
+        const historyOwed = resumed.resumeFailed === true;
         yield* upsertSessionBinding(
           { ...resumed, providerInstanceId: bindingInstanceId },
           input.binding.threadId,
+          historyOwed ? { historyOwed: true } : undefined,
         );
         yield* analytics.record("provider.session.recovered", {
           provider: resumed.provider,
@@ -936,7 +933,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           hasResumeCursor: resumed.resumeCursor !== undefined,
           startMs,
         });
-        return { adapter, session: resumed } as const;
+        return { adapter, session: resumed, historyOwed } as const;
       }),
     ).pipe(
       withMetrics({
@@ -995,6 +992,8 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       instanceId,
       threadId: input.threadId,
       isActive: true,
+      // Reopened without its conversation: the thread owes it its history.
+      historyOwed: recovered.historyOwed,
     } as const;
   });
 
@@ -1824,7 +1823,12 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           }),
         ),
       );
-      return turn;
+      // The message went to a conversation recovery opened without the
+      // thread's history: the caller owes it to the next message. This one
+      // stays sent; it was prepared for the runtime that had the history.
+      return "historyOwed" in routed && routed.historyOwed
+        ? { ...turn, historyOwed: true as const }
+        : turn;
     }).pipe(
       withMetrics({
         counter: providerTurnsTotal,
@@ -2964,14 +2968,19 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
    */
   const forgetConversation = (threadId: ThreadId, options?: { readonly onlySession?: string }) =>
     Effect.gen(function* () {
-      const binding = Option.getOrUndefined(yield* directory.getBinding(threadId));
-      if (binding === undefined) return true;
-      if (
-        options?.onlySession !== undefined &&
-        readPersistedSessionCreatedAt(binding.runtimePayload) !== options.onlySession
-      ) {
+      // A forget that names its runtime checks and writes in one step: a
+      // replacement started meanwhile keeps its conversation.
+      if (options?.onlySession !== undefined) {
+        yield* directory.patchIfSession({
+          threadId,
+          sessionCreatedAt: options.onlySession,
+          runtimePayload: { historyOwed: true, sessionCreatedAt: null },
+          clearResumeCursor: true,
+        });
         return true;
       }
+      const binding = Option.getOrUndefined(yield* directory.getBinding(threadId));
+      if (binding === undefined) return true;
       yield* directory.upsert({
         threadId,
         provider: binding.provider,
@@ -3021,6 +3030,28 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           ),
         );
       }
+      // A runtime that is stopping (hasSession no longer reports it) can
+      // still write through a command it started: the files wait until its
+      // process is gone (whenStopped). A wait past the limit ends the runtime;
+      // one that still won't go fails the revert.
+      const whenStopped = adapter.whenStopped;
+      if (whenStopped !== undefined) {
+        const gone = yield* whenStopped(threadId).pipe(Effect.timeoutOption(REVERT_STOP_WAIT));
+        if (Option.isNone(gone)) {
+          yield* Effect.logWarning("provider service ends a runtime still stopping at a revert", {
+            threadId,
+          });
+          yield* adapter.stopSession(threadId).pipe(Effect.ignore);
+          const ended = yield* whenStopped(threadId).pipe(Effect.timeoutOption(REVERT_STOP_WAIT));
+          if (Option.isNone(ended)) {
+            return yield* new ProviderAdapterRequestError({
+              provider: adapter.provider,
+              method: "rollbackThread",
+              detail: "The agent's process did not stop.",
+            });
+          }
+        }
+      }
       const forgotten = yield* forgetConversation(threadId);
       yield* analytics.record("provider.conversation.rolled_back", {
         provider: adapter.provider,
@@ -3033,20 +3064,11 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     threadId,
     sessionCreatedAt,
   }) =>
-    Effect.gen(function* () {
-      const binding = Option.getOrUndefined(yield* directory.getBinding(threadId));
-      if (binding === undefined || !readPersistedHistoryOwed(binding.runtimePayload)) return;
-      // Another runtime than the one that sent it: that one still owes it.
-      if (readPersistedSessionCreatedAt(binding.runtimePayload) !== sessionCreatedAt) return;
-      yield* directory.upsert({
-        threadId,
-        provider: binding.provider,
-        ...(binding.providerInstanceId !== undefined
-          ? { providerInstanceId: binding.providerInstanceId }
-          : {}),
-        runtimePayload: { historyOwed: false },
-      });
-    }).pipe(Effect.ignoreCause({ log: true }));
+    // Checked and written in one step: another runtime than the one that
+    // sent it (a replacement started meanwhile) still owes it.
+    directory
+      .patchIfSession({ threadId, sessionCreatedAt, runtimePayload: { historyOwed: false } })
+      .pipe(Effect.asVoid, Effect.ignoreCause({ log: true }));
 
   /**
    * Every provider session key of a thread: its own agent first, then any

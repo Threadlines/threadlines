@@ -3452,14 +3452,39 @@ fence.layer("ProviderServiceLive moving threads", (it) => {
 function makeStartingOverLayer() {
   const ANTIGRAVITY = ProviderDriverKind.make("antigravity");
   const agent = makeFakeCodexAdapter(ANTIGRAVITY, { distinctStarts: true });
+  // A runtime still stopping holds the revert until this is released.
+  const hooks: {
+    stopping: Effect.Effect<void> | undefined;
+    /** Runs once, right after the next binding read: another writer landing then. */
+    afterRead: Effect.Effect<void> | undefined;
+  } = { stopping: undefined, afterRead: undefined };
   const adapter = {
     ...agent.adapter,
     capabilities: { ...agent.adapter.capabilities, conversationRollback: "new-session" as const },
+    whenStopped: () => Effect.suspend(() => hooks.stopping ?? Effect.void),
   };
   const runtimeRepositoryLayer = ProviderSessionRuntimeRepositoryLive.pipe(
     Layer.provide(SqlitePersistenceMemory),
   );
-  const directoryLayer = ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer));
+  const directoryLayer = Layer.effect(
+    ProviderSessionDirectory,
+    Effect.gen(function* () {
+      const live = yield* ProviderSessionDirectory;
+      return {
+        ...live,
+        getBinding: (threadId: ThreadId) =>
+          live.getBinding(threadId).pipe(
+            Effect.tap(() =>
+              Effect.suspend(() => {
+                const interleave = hooks.afterRead;
+                hooks.afterRead = undefined;
+                return interleave ?? Effect.void;
+              }),
+            ),
+          ),
+      };
+    }),
+  ).pipe(Layer.provide(ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer))));
   const layer = it.layer(
     Layer.mergeAll(
       makeProviderServiceWithScrubber().pipe(
@@ -3480,7 +3505,7 @@ function makeStartingOverLayer() {
       NodeServices.layer,
     ),
   );
-  return { agent, ANTIGRAVITY, layer };
+  return { agent, ANTIGRAVITY, hooks, layer };
 }
 
 const startingOver = makeStartingOverLayer();
@@ -3629,6 +3654,132 @@ startingOver.layer("ProviderServiceLive forgetting a conversation", (it) => {
         provider.rollbackConversation({ threadId: stuck, numTurns: 1 }),
       );
       assert.equal(refused._tag, "Failure");
+    }),
+  );
+
+  it.effect("waits for a stopping agent's process to go before the revert goes on", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const directory = yield* ProviderSessionDirectory;
+      const key = asThreadId("thread-starting-over-stopping");
+      const first = yield* start(key);
+      // Stopping: hasSession no longer reports it, its process is not gone.
+      yield* startingOver.agent.stopSession(key);
+      const gone = yield* Deferred.make<void>();
+      startingOver.hooks.stopping = Deferred.await(gone);
+      const revert = yield* provider
+        .rollbackConversation({ threadId: key, numTurns: 1 })
+        .pipe(Effect.forkChild);
+      yield* advanceTestClock(1_000);
+      assert.isUndefined(revert.pollUnsafe());
+      const held = Option.getOrUndefined(yield* directory.getBinding(key));
+      assert.deepEqual(held?.resumeCursor, first.resumeCursor);
+
+      yield* Deferred.succeed(gone, undefined);
+      const done = yield* Fiber.join(revert);
+      startingOver.hooks.stopping = undefined;
+      assert.isTrue(done.conversationRolledBack);
+    }),
+  );
+
+  it.effect("ends a runtime that won't finish stopping, and fails the revert if it stays", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const key = asThreadId("thread-starting-over-stuck-stopping");
+      yield* start(key);
+      yield* startingOver.agent.stopSession(key);
+      startingOver.agent.stopSession.mockClear();
+      startingOver.hooks.stopping = Effect.never;
+      const revert = yield* provider
+        .rollbackConversation({ threadId: key, numTurns: 1 })
+        .pipe(Effect.result, Effect.forkChild);
+      yield* advanceTestClock(20_000);
+      // The wait ran out: the runtime is ended, then waited on once more.
+      assert.equal(startingOver.agent.stopSession.mock.calls.length, 1);
+      yield* advanceTestClock(20_000);
+      const outcome = yield* Fiber.join(revert);
+      startingOver.hooks.stopping = undefined;
+      assert.equal(outcome._tag, "Failure");
+    }),
+  );
+
+  it.effect("never lets an older runtime's acknowledgement or forget land on its replacement", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const directory = yield* ProviderSessionDirectory;
+      const key = asThreadId("thread-replaced-meanwhile");
+      const older = yield* start(key);
+      // Runtime A owes the history.
+      yield* directory.upsert({
+        threadId: key,
+        provider: startingOver.ANTIGRAVITY,
+        providerInstanceId: instanceId,
+        runtimePayload: { historyOwed: true },
+      });
+      // Runtime B replaces it between A's read and A's write.
+      const replace = directory.upsert({
+        threadId: key,
+        provider: startingOver.ANTIGRAVITY,
+        providerInstanceId: instanceId,
+        resumeCursor: { opaque: "runtime-b" },
+        runtimePayload: { historyOwed: true, sessionCreatedAt: "2026-06-01T00:00:00.000Z" },
+      });
+      const replaced = () =>
+        Effect.map(
+          directory.getBinding(key),
+          (binding) =>
+            (Option.getOrUndefined(binding)?.runtimePayload ?? {}) as Record<string, unknown>,
+        );
+      startingOver.hooks.afterRead = replace.pipe(Effect.orDie);
+      yield* provider.noteHistoryDelivered({ threadId: key, sessionCreatedAt: older.createdAt });
+      // A write that read nothing first: B lands after it instead.
+      if (startingOver.hooks.afterRead !== undefined) {
+        startingOver.hooks.afterRead = undefined;
+        yield* replace;
+      }
+      assert.equal((yield* replaced()).historyOwed, true);
+
+      // The same for a lost-session exit that names A.
+      startingOver.hooks.afterRead = replace.pipe(Effect.orDie);
+      startingOver.agent.emit({
+        type: "session.exited",
+        eventId: asEventId("evt-lost-older-runtime"),
+        provider: startingOver.ANTIGRAVITY,
+        providerInstanceId: instanceId,
+        threadId: key,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        payload: { exitKind: "graceful", conversationLost: { sessionCreatedAt: older.createdAt } },
+      });
+      yield* advanceTestClock(20);
+      if (startingOver.hooks.afterRead !== undefined) {
+        startingOver.hooks.afterRead = undefined;
+        yield* replace;
+      }
+      const binding = Option.getOrUndefined(yield* directory.getBinding(key));
+      assert.deepEqual(binding?.resumeCursor, { opaque: "runtime-b" });
+    }),
+  );
+
+  it.effect("owes the history when a send had to reopen a runtime that couldn't resume", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const directory = yield* ProviderSessionDirectory;
+      const key = asThreadId("thread-recovered-fresh");
+      yield* start(key);
+      // The runtime went after the turn was prepared.
+      yield* startingOver.agent.stopSession(key);
+      const startAsUsual = startingOver.agent.startSession.getMockImplementation();
+      if (!startAsUsual) throw new Error("expected the fake start");
+      startingOver.agent.startSession.mockImplementationOnce((input) =>
+        startAsUsual(input).pipe(Effect.map((session) => ({ ...session, resumeFailed: true }))),
+      );
+      const turn = yield* provider.sendTurn({ threadId: key, input: "go on", attachments: [] });
+      assert.isTrue(turn.historyOwed);
+      const binding = Option.getOrUndefined(yield* directory.getBinding(key));
+      assert.equal(
+        (binding?.runtimePayload as Record<string, unknown> | null | undefined)?.historyOwed,
+        true,
+      );
     }),
   );
 

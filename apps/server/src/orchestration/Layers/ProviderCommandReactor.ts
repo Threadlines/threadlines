@@ -3031,6 +3031,18 @@ const make = Effect.gen(function* () {
             }),
       // What else this prompt carried that is owed until it goes out.
       contextDelivered: forkSeedOutcome,
+      // The send reopened the runtime without its conversation
+      // (`historyOwed` on its result): the next message carries the history.
+      historyOwedAfterSend:
+        activeSession === undefined
+          ? Effect.void
+          : Effect.sync(() => {
+              owedHistorySeeds.set(sessionKey, {
+                driverKind: activeSession.provider,
+                cwd: activeSession.cwd ?? thread.worktreePath ?? undefined,
+                claimed: false,
+              });
+            }),
       // A send that failed before the provider took it delivered nothing.
       historyDebtReturned:
         owedSeed === undefined
@@ -3748,6 +3760,7 @@ const make = Effect.gen(function* () {
         historyDebtPaid,
         historyDebtReturned,
         contextDelivered,
+        historyOwedAfterSend,
         notesDelivered,
       } = sendTurnRequest.value;
 
@@ -3825,6 +3838,9 @@ const make = Effect.gen(function* () {
             }),
           ),
           Effect.onError(() => historyDebtReturned),
+          // Recovery opened a conversation without the history: this message
+          // stays sent, and the next one carries the history.
+          Effect.tap((turn) => (turn.historyOwed === true ? historyOwedAfterSend : Effect.void)),
           Effect.tap((turn) =>
             Effect.sync(() => providerTakenTurns.set(event.payload.threadId, turn.turnId)),
           ),

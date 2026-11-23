@@ -372,6 +372,15 @@ export interface ProviderAdapterShape<TError> {
   readonly hasSession: (threadId: ThreadId) => Effect.Effect<boolean>;
 
   /**
+   * Resolves once no runtime of this session key can still act: at once when
+   * none runs or is stopping, otherwise once a stopping runtime's process
+   * (with every child process it started) is gone. A runtime `hasSession`
+   * stopped reporting may still be stopping. A revert waits on it before it
+   * restores files. Absent: a runtime `hasSession` no longer reports is gone.
+   */
+  readonly whenStopped?: (threadId: ThreadId) => Effect.Effect<void>;
+
+  /**
    * Read a provider thread snapshot.
    */
   readonly readThread: (threadId: ThreadId) => Effect.Effect<ProviderThreadSnapshot, TError>;

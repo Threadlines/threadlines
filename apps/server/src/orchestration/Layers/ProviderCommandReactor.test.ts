@@ -1788,6 +1788,43 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
+  it("owes the history after a send that reopened its runtime without the conversation", async () => {
+    const harness = await createHarness();
+    const turnStart = (id: string, text: string) =>
+      Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make(`cmd-recovered-turn-${id}`),
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId: asMessageId(`recovered-message-${id}`),
+            role: "user",
+            text,
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: "2026-01-01T00:00:00.000Z",
+        }),
+      );
+    // The service had to reopen the runtime, and it couldn't resume.
+    harness.sendTurn.mockImplementationOnce(() =>
+      Effect.succeed({
+        threadId: ThreadId.make("thread-1"),
+        turnId: asTurnId("turn-recovered"),
+        historyOwed: true as const,
+      }),
+    );
+    await turnStart("1", "first question");
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    // That message stays sent; the next one carries the history.
+    await turnStart("2", "second question");
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+    const sent = harness.sendTurn.mock.calls[1]?.[0] as { readonly input?: string } | undefined;
+    expect(sent?.input).toContain("prior context");
+    expect(sent?.input?.endsWith("second question")).toBe(true);
+  });
+
   it("keeps the history owed while a send goes as the agent's own command, without it", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

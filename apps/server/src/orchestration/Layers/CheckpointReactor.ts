@@ -1231,16 +1231,30 @@ const make = Effect.gen(function* () {
     // its conversation forgotten, before any file is restored: a command it
     // still ran could otherwise write over a restored file. Nothing is
     // started for an agent that isn't running.
+    // An agent whose capabilities can't be read may be one of those, and
+    // may still be running: the revert fails and restores nothing.
+    const capabilities =
+      rolledBackTurns > 0
+        ? yield* Effect.result(
+            providerService.getCapabilities(
+              context.thread.session?.providerInstanceId ??
+                context.thread.modelSelection.instanceId,
+            ),
+          )
+        : undefined;
+    if (capabilities?._tag === "Failure") {
+      yield* Effect.logWarning("checkpoint revert could not read the agent's capabilities", {
+        threadId: event.payload.threadId,
+        cause: String(capabilities.failure),
+      });
+      yield* failRevert(
+        "Threadlines couldn't check whether the agent still runs, so no file was restored. Try again.",
+      );
+      return;
+    }
     const startsOver =
-      rolledBackTurns > 0 &&
-      (yield* providerService
-        .getCapabilities(
-          context.thread.session?.providerInstanceId ?? context.thread.modelSelection.instanceId,
-        )
-        .pipe(
-          Effect.map((capabilities) => capabilities.conversationRollback === "new-session"),
-          Effect.orElseSucceed(() => false),
-        ));
+      capabilities?._tag === "Success" &&
+      capabilities.success.conversationRollback === "new-session";
     // Undefined: not such an agent. A failure means it couldn't be found or
     // stopped: something it runs could still write, so no file is restored.
     const stopped = startsOver
