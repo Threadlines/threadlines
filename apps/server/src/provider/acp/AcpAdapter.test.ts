@@ -473,6 +473,34 @@ it.live.skipIf(isWindows)(
 );
 
 cursorAdapterTestLayer("CursorAdapterLive", (it) => {
+  it.effect("opens a fresh session when the agent can't reopen the saved one, and says so", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const settings = yield* ServerSettingsService;
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockAgentWrapper({ T3_ACP_FAIL_LOAD_SESSION: "1" }),
+      );
+      yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+
+      const session = yield* adapter.startSession({
+        threadId: ThreadId.make("cursor-resume-refused"),
+        provider: ProviderDriverKind.make("cursor"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+        resumeCursor: { schemaVersion: 1, sessionId: "saved-before-an-update" },
+      });
+
+      // The thread's history then goes with its next message
+      // (ProviderCommandReactor's owed history seed).
+      assert.isTrue(session.resumeFailed);
+      assert.notEqual(
+        (session.resumeCursor as { readonly sessionId?: unknown } | undefined)?.sessionId,
+        "saved-before-an-update",
+      );
+    }),
+  );
+
   it.effect("starts a session and maps mock ACP prompt flow to runtime events", () =>
     Effect.gen(function* () {
       const adapter = yield* CursorAdapter;

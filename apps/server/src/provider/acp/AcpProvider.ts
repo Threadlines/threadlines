@@ -9,6 +9,7 @@
  *
  * @module provider/acp/AcpProvider
  */
+import { THREADLINES_ACP_CLIENT_INFO } from "./acpClientInfo.ts";
 import type {
   ModelCapabilities,
   ServerProvider,
@@ -270,7 +271,7 @@ const withAcpProbeRuntime = <Settings extends AcpProviderSettings, A, E, R>(
       environment,
       childProcessSpawner: spawner,
       cwd: process.cwd(),
-      clientInfo: { name: "threadlines-provider-probe", version: "0.0.0" },
+      clientInfo: { ...THREADLINES_ACP_CLIENT_INFO, name: "threadlines-provider-probe" },
     });
     return yield* useRuntime(runtime);
   }).pipe(Effect.scoped);

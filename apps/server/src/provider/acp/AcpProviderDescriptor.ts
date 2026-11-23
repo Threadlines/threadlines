@@ -421,7 +421,18 @@ export interface AcpProviderDescriptor<Settings extends AcpProviderSettings> {
   readonly agentModeFor?: (input: {
     readonly runtimeMode: RuntimeMode;
     readonly interactionMode: ProviderInteractionMode | undefined;
+    /** The modes the session offers; empty when it lists none. */
+    readonly availableModeIds: ReadonlyArray<string>;
   }) => string | undefined;
+  /**
+   * Checks the agent's `initialize` answer before a session opens, e.g. that
+   * it is a version Threadlines can run. A failure stops the start and its
+   * message is what the user sees.
+   */
+  readonly verifyAgent?: (
+    settings: Settings,
+    response: EffectAcpSchema.InitializeResponse,
+  ) => Effect.Effect<void, EffectAcpErrors.AcpError>;
   /**
    * `"native"` for agents Threadlines has never been tested with (the ACP
    * registry's), which it drives through their own controls instead of

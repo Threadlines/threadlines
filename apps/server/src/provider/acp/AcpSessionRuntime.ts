@@ -98,8 +98,16 @@ export interface AcpSessionRuntimeOptions {
   readonly cancelMeta?: Readonly<Record<string, unknown>>;
   readonly clientInfo: {
     readonly name: string;
+    readonly title?: string;
     readonly version: string;
   };
+  /**
+   * Checks the agent's `initialize` answer before anything else is sent.
+   * A failure ends the start with its message (an agent too old to run).
+   */
+  readonly verifyInitialize?: (
+    response: EffectAcpSchema.InitializeResponse,
+  ) => Effect.Effect<void, EffectAcpErrors.AcpError>;
   /**
    * ACP auth method to invoke after `initialize`. Omit for agents that
    * authenticate outside the protocol (e.g. fx, which advertises no auth
@@ -740,6 +748,7 @@ const makeAcpSessionRuntime = (
       );
 
       yield* Ref.set(initializeResultRef, initializeResult);
+      if (options.verifyInitialize) yield* options.verifyInitialize(initializeResult);
 
       if (shouldAuthenticate(options.authMethodId, initializeResult.authMethods)) {
         const authenticatePayload = {

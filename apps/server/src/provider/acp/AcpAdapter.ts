@@ -126,6 +126,7 @@ import {
   acpTurnUsageTotals,
   parsePermissionRequest,
 } from "./AcpRuntimeModel.ts";
+import { THREADLINES_ACP_CLIENT_INFO } from "./acpClientInfo.ts";
 import { type AcpSessionRuntimeShape } from "./AcpSessionRuntime.ts";
 
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.fromJsonString(Schema.Unknown));
@@ -1124,6 +1125,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         const mappedModeId = descriptor.agentModeFor?.({
           runtimeMode: input.runtimeMode,
           interactionMode: input.interactionMode,
+          availableModeIds: modeState?.availableModes.map((mode) => mode.id) ?? [],
         });
         const requestedModeId =
           mappedModeId !== undefined &&
@@ -1387,7 +1389,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
               : resumeSessionId
                 ? { resumeSessionId }
                 : {}),
-            clientInfo: { name: "threadlines", version: "0.0.0" },
+            clientInfo: THREADLINES_ACP_CLIENT_INFO,
             mcpServers,
             runtimeMode: input.runtimeMode,
             ...(descriptor.agentTurns ? { liveOutsidePrompt: true } : {}),
