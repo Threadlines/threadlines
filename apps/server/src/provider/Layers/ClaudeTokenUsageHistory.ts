@@ -7,9 +7,10 @@
  * that cache has not been generated yet. This reader imports both without
  * coupling the provider card to the all-environment `/usage` projection.
  *
- * The returned buckets are merged into the provider status cache by
- * `ProviderRegistry`, which turns the initial import into a rolling 366-day
- * Threadlines history across restarts.
+ * Claude Code deletes transcripts `cleanupPeriodDays` after they were last
+ * written, so every read is folded into a saved history in the server's state
+ * folder (`providerTokenUsageStore`). Days whose files are gone keep their
+ * totals there, which turns the import into a rolling 366-day history.
  *
  * @module provider/Layers/ClaudeTokenUsageHistory
  */
@@ -32,6 +33,7 @@ import {
   shiftProviderTokenUsageDateKey,
   summarizeProviderTokenUsageBuckets,
 } from "../providerTokenUsageHistory.ts";
+import { makeProviderTokenUsageStore, mergeTokenUsageDays } from "../providerTokenUsageStore.ts";
 import { UsageAggregator } from "../../usage/usageAggregation.ts";
 import { dedupeWithinFile, type ScanCache } from "../../usage/usageScanCache.ts";
 import { listTranscriptFiles, readTranscriptRecords } from "../../usage/usageTranscriptReader.ts";
@@ -116,9 +118,6 @@ export function parseClaudeStatsTokenUsage(document: unknown): ClaudeStatsTokenU
   };
 }
 
-const sumBuckets = (buckets: ReadonlyArray<ServerProviderAccountTokenUsageDailyBucket>): number =>
-  buckets.reduce((sum, bucket) => sum + bucket.tokens, 0);
-
 const clampDateKey = (value: string, minimum: string, maximum: string): string =>
   value < minimum ? minimum : value > maximum ? maximum : value;
 
@@ -126,6 +125,10 @@ export const makeClaudeTokenUsageHistoryReader = Effect.fn("ClaudeTokenUsageHist
   function* (
     settings: Pick<ClaudeSettings, "homePath" | "accountFolder">,
     environment: NodeJS.ProcessEnv = process.env,
+    options: {
+      /** The server's state folder, where the saved history lives. Without it nothing is saved. */
+      readonly stateDir?: string;
+    } = {},
   ) {
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -139,6 +142,13 @@ export const makeClaudeTokenUsageHistoryReader = Effect.fn("ClaudeTokenUsageHist
     const statsCachePath = path.join(dataDir, "stats-cache.json");
     const transcriptDir = path.join(dataDir, "projects");
     const fileCache: ScanCache = new Map();
+    const store = options.stateDir
+      ? yield* makeProviderTokenUsageStore({
+          stateDir: options.stateDir,
+          provider: "claude",
+          source: dataDir,
+        })
+      : undefined;
 
     const readStatsCache = Effect.gen(function* () {
       const raw = yield* fileSystem
@@ -226,7 +236,7 @@ export const makeClaudeTokenUsageHistoryReader = Effect.fn("ClaudeTokenUsageHist
       const transcriptDirExists = yield* fileSystem
         .exists(transcriptDir)
         .pipe(Effect.catchCause(() => Effect.succeed(false)));
-      if (!stats && !transcriptDirExists) return undefined;
+      if (!stats && !transcriptDirExists && !store) return undefined;
 
       const scanStartDate = clampDateKey(
         stats?.lastComputedDate ?? firstRetainedDate,
@@ -238,30 +248,39 @@ export const makeClaudeTokenUsageHistoryReader = Effect.fn("ClaudeTokenUsageHist
             Effect.catchCause(() => Effect.succeed({ buckets: [], complete: false })),
           )
         : { buckets: [], complete: false };
-      if (!stats && !scan.complete) return undefined;
 
-      const allBucketsByDay = new Map(
-        (stats?.dailyBuckets ?? []).map((bucket) => [bucket.startDate, bucket] as const),
+      // A day takes the larger of the stats cache and the transcripts. The
+      // cache's last day may have been computed mid-day, and a transcript it
+      // counted may be deleted since; a partial scan is still a lower bound.
+      const statsTokensByDay = new Map(
+        (stats?.dailyBuckets ?? []).map((bucket) => [bucket.startDate, bucket.tokens] as const),
       );
-      if (scan.complete) {
-        for (const date of allBucketsByDay.keys()) {
-          if (date >= scanStartDate) allBucketsByDay.delete(date);
-        }
-        for (const bucket of scan.buckets) allBucketsByDay.set(bucket.startDate, bucket);
-      }
-      const allBuckets = [...allBucketsByDay.values()].toSorted((left, right) =>
-        left.startDate.localeCompare(right.startDate),
-      );
+      const observedBuckets = [
+        ...mergeTokenUsageDays([
+          statsTokensByDay,
+          scan.buckets.map((bucket) => [bucket.startDate, bucket.tokens] as const),
+        ]),
+      ]
+        .map(([startDate, tokens]) => ({ startDate, tokens }))
+        .toSorted((left, right) => left.startDate.localeCompare(right.startDate));
+      const allBuckets = store ? yield* store.remember(observedBuckets, today) : observedBuckets;
+      if (!stats && !scan.complete && (!store || allBuckets.length === 0)) return undefined;
       const retainedBuckets = retainProviderTokenUsageBuckets(allBuckets, today);
 
-      const statsReplacedTokens = sumBuckets(
-        (stats?.dailyBuckets ?? []).filter((bucket) => bucket.startDate >= scanStartDate),
-      );
+      // Claude's own total, plus what the calendar knows beyond its daily
+      // figures. Each day only grows, so the total never goes down when a
+      // transcript is deleted.
       const lifetimeTokens =
-        stats?.lifetimeTokens !== undefined
-          ? Math.max(0, stats.lifetimeTokens - statsReplacedTokens) +
-            (scan.complete ? sumBuckets(scan.buckets) : statsReplacedTokens)
-          : sumBuckets(allBuckets);
+        (stats?.lifetimeTokens ?? 0) +
+        allBuckets.reduce(
+          (sum, bucket) =>
+            sum + Math.max(0, bucket.tokens - (statsTokensByDay.get(bucket.startDate) ?? 0)),
+          0,
+        );
+      const lastBucketDate = retainedBuckets.at(-1)?.startDate;
+      const statsEndDate = stats?.lastComputedDate
+        ? clampDateKey(stats.lastComputedDate, firstRetainedDate, today)
+        : undefined;
       const coverageStartDate = scan.complete
         ? firstRetainedDate
         : stats?.firstSessionDate
@@ -269,9 +288,11 @@ export const makeClaudeTokenUsageHistoryReader = Effect.fn("ClaudeTokenUsageHist
           : retainedBuckets[0]?.startDate;
       const coverageEndDate = scan.complete
         ? today
-        : stats?.lastComputedDate
-          ? clampDateKey(stats.lastComputedDate, firstRetainedDate, today)
-          : undefined;
+        : statsEndDate && lastBucketDate
+          ? statsEndDate > lastBucketDate
+            ? statsEndDate
+            : lastBucketDate
+          : (statsEndDate ?? lastBucketDate);
       const completeLifetimeHistory = Boolean(
         stats?.firstSessionDate &&
         stats.firstSessionDate >= firstRetainedDate &&

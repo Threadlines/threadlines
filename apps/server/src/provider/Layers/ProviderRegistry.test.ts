@@ -3642,6 +3642,75 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
         }),
       );
 
+      it.effect("keeps days whose Claude transcripts were deleted", () =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const homePath = yield* fileSystem.makeTempDirectoryScoped({
+            prefix: "threadlines-claude-history-",
+          });
+          const stateDir = yield* fileSystem.makeTempDirectoryScoped({
+            prefix: "threadlines-state-",
+          });
+          const projectDir = path.join(homePath, ".claude", "projects", "project");
+          yield* fileSystem.makeDirectory(projectDir, { recursive: true });
+          const now = new Date();
+          yield* TestClock.setTime(now.getTime());
+          const today = now.toISOString().slice(0, 10);
+          const oldDay = new Date(now.getTime() - 60 * 86_400_000);
+          const writeTranscript = (name: string, at: Date, tokens: number) =>
+            fileSystem.writeFileString(
+              path.join(projectDir, `${name}.jsonl`),
+              `${JSON.stringify({
+                type: "assistant",
+                timestamp: at.toISOString(),
+                sessionId: name,
+                requestId: `request-${name}`,
+                message: {
+                  id: `message-${name}`,
+                  model: "claude-opus-4-6",
+                  usage: { input_tokens: tokens, output_tokens: 0 },
+                },
+              })}\n`,
+            );
+          yield* writeTranscript("old", oldDay, 700);
+          yield* writeTranscript("new", now, 30);
+          const settings = { homePath, accountFolder: "" };
+          // Two readers of one folder: two instances, or one replaced by a settings change.
+          const readA = yield* makeClaudeTokenUsageHistoryReader(settings, {}, { stateDir });
+          const readB = yield* makeClaudeTokenUsageHistoryReader(settings, {}, { stateDir });
+
+          const first = yield* readA;
+          assert.deepStrictEqual(first?.dailyBuckets, [
+            { startDate: oldDay.toISOString().slice(0, 10), tokens: 700 },
+            { startDate: today, tokens: 30 },
+          ]);
+
+          // Claude Code's cleanup deletes the old transcript before the other reader runs.
+          yield* fileSystem.remove(path.join(projectDir, "old.jsonl"));
+          yield* writeTranscript("newer", now, 5);
+          const second = yield* readB;
+          assert.deepStrictEqual(second?.dailyBuckets, [
+            { startDate: oldDay.toISOString().slice(0, 10), tokens: 700 },
+            { startDate: today, tokens: 35 },
+          ]);
+
+          assert.strictEqual(second?.summary.lifetimeTokens, 735);
+
+          // What a restarted server reads back.
+          const historyDir = path.join(stateDir, "provider-token-history");
+          const historyFiles = yield* fileSystem.readDirectory(historyDir);
+          assert.strictEqual(historyFiles.length, 1);
+          const saved = JSON.parse(
+            yield* fileSystem.readFileString(path.join(historyDir, historyFiles[0] ?? "")),
+          ) as { readonly days: Record<string, number> };
+          assert.deepStrictEqual(saved.days, {
+            [oldDay.toISOString().slice(0, 10)]: 700,
+            [today]: 35,
+          });
+        }),
+      );
+
       it.effect("does not request account usage for API key auth", () =>
         Effect.gen(function* () {
           let usageRequested = false;
