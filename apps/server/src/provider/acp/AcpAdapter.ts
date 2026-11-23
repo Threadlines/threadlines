@@ -97,6 +97,13 @@ import {
   steerRejectedError,
 } from "../Errors.ts";
 import { buildFileAttachmentNote } from "../fileAttachmentPrompt.ts";
+import {
+  appendTailCapped,
+  PROMPT_SUGGESTION_MAX_CHARS_PER_MESSAGE,
+  PROMPT_SUGGESTION_MAX_MESSAGES,
+  type PromptSuggestionMessage,
+  sanitizePromptSuggestion,
+} from "../promptSuggestions.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "../Layers/EventNdjsonLogger.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import {
@@ -248,6 +255,19 @@ export interface AcpAdapterOptions<Settings extends AcpProviderSettings> {
   ) => Effect.Effect<void>;
   /** The skills the provider status lists, by name: a typed `/name` runs one. */
   readonly skillNames?: Effect.Effect<ReadonlySet<string>>;
+  /**
+   * Optional next-message prompt suggestion sampler (gray composer hint, taken
+   * with Tab). Run asynchronously after completed user-originated turns, never
+   * in side/lockdown sessions, and cancelled whenever a new turn or stop begins.
+   */
+  readonly promptSuggestions?: {
+    readonly shouldSuggest: (model: string | undefined) => Effect.Effect<boolean>;
+    readonly sample: (input: {
+      readonly cwd: string;
+      readonly model: string | undefined;
+      readonly messages: ReadonlyArray<PromptSuggestionMessage>;
+    }) => Effect.Effect<string | undefined>;
+  };
   /** Tests only: holds the turn machine's driver up at its seams (`AcpTurnMachineSeam`). */
   readonly turnMachineSeams?: (seam: AcpTurnMachineSeam) => Effect.Effect<void>;
 }
@@ -296,6 +316,14 @@ interface AcpSessionContext {
   activeTurnId: TurnId | undefined;
   /** Head of the current turn's assistant text, kept for plan-gate detection. */
   activeTurnText: string;
+  /** Tail of the current turn's assistant text, kept for prompt suggestions. */
+  activeTurnReplyTail: string;
+  /** Rolling recent user and assistant messages, for isolated prompt suggestions. */
+  readonly recentMessages: Array<PromptSuggestionMessage>;
+  /** In-flight prompt suggestion fiber for the last completed turn. */
+  suggestionFiber: Fiber.Fiber<void, never> | undefined;
+  /** Incremented on every turn start, interrupt, or stop so stale suggestions drop. */
+  suggestionGeneration: number;
   /** Last provider status this turn (fx rate-limit retries etc.), for failure detail. */
   lastProviderStatus: string | undefined;
   /** Last context fill reported, so repeated identical `usage_update`s stay quiet. */
@@ -447,6 +475,8 @@ interface AcpMachineSession {
     {
       readonly prompt: AcpMachinePrompt;
       readonly messageId?: string;
+      readonly userMessageText?: string;
+      readonly suggestNextMessage?: boolean;
       readonly planMode: AcpPromptPlanMode | undefined;
       readonly reply: Deferred.Deferred<AcpMachineReply>;
     }
@@ -467,6 +497,8 @@ interface AcpMachineSession {
       readonly model: string | undefined;
       readonly resolvedModel: string | undefined;
       readonly planMode: AcpPromptPlanMode | undefined;
+      readonly suggestNextMessage: boolean;
+      readonly suggestionGeneration: number;
     }
   >;
   readonly timers: Map<AcpTurnTimer, Fiber.Fiber<void, never>>;
@@ -1074,12 +1106,94 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
     const resetTurnState = (ctx: AcpSessionContext) => {
       ctx.lastPlanFingerprint = undefined;
       ctx.activeTurnText = "";
+      ctx.activeTurnReplyTail = "";
       ctx.lastProviderStatus = undefined;
       ctx.planMarkdown = undefined;
       ctx.promptOutcome = undefined;
       ctx.costTurnOpen = true;
       ctx.costReportedThisTurn = false;
     };
+
+    const pushRecentMessage = (
+      ctx: AcpSessionContext,
+      role: PromptSuggestionMessage["role"],
+      rawText: string,
+    ) => {
+      const trimmed = rawText.trim();
+      if (trimmed.length === 0) return;
+      const text =
+        trimmed.length <= PROMPT_SUGGESTION_MAX_CHARS_PER_MESSAGE
+          ? trimmed
+          : trimmed.slice(trimmed.length - PROMPT_SUGGESTION_MAX_CHARS_PER_MESSAGE);
+      ctx.recentMessages.push({ role, text });
+      if (ctx.recentMessages.length > PROMPT_SUGGESTION_MAX_MESSAGES) {
+        ctx.recentMessages.splice(0, ctx.recentMessages.length - PROMPT_SUGGESTION_MAX_MESSAGES);
+      }
+    };
+
+    /** Cancels any in-flight suggestion for this session because the thread moved on. */
+    const dropSuggestion = (ctx: AcpSessionContext) =>
+      Effect.suspend(() => {
+        ctx.suggestionGeneration += 1;
+        const fiber = ctx.suggestionFiber;
+        ctx.suggestionFiber = undefined;
+        return fiber ? Fiber.interrupt(fiber).pipe(Effect.asVoid) : Effect.void;
+      });
+
+    /** Samples the user's likely next message in the background after a completed user turn. */
+    const startSuggestion = (
+      ctx: AcpSessionContext,
+      promptSuggestions: NonNullable<AcpAdapterOptions<Settings>["promptSuggestions"]>,
+      input: {
+        readonly turnId: TurnId;
+        readonly model: string | undefined;
+        readonly completedEventId: EventId;
+      },
+    ) =>
+      Effect.gen(function* () {
+        yield* dropSuggestion(ctx);
+        if (ctx.stopped || ctx.lockdown !== undefined || ctx.recentMessages.length === 0) return;
+        const generation = ctx.suggestionGeneration;
+        const messages = [...ctx.recentMessages];
+        const fiber = yield* Effect.gen(function* () {
+          if (!(yield* promptSuggestions.shouldSuggest(input.model))) return;
+          if (ctx.stopped || ctx.suggestionGeneration !== generation) return;
+          const sampled = yield* promptSuggestions.sample({
+            cwd: ctx.session.cwd ?? ctx.cwdRoots[0] ?? process.cwd(),
+            model: input.model,
+            messages,
+          });
+          const suggestion = sanitizePromptSuggestion(sampled);
+          if (
+            suggestion === undefined ||
+            ctx.stopped ||
+            ctx.suggestionGeneration !== generation ||
+            !(yield* promptSuggestions.shouldSuggest(input.model))
+          ) {
+            return;
+          }
+          yield* offerRuntimeEvent({
+            type: "turn.prompt-suggestion.updated",
+            eventId: EventId.make(`${input.completedEventId}:prompt-suggestion`),
+            provider: PROVIDER,
+            createdAt: yield* nowIso,
+            threadId: ctx.threadId,
+            turnId: input.turnId,
+            payload: { suggestion },
+          });
+        }).pipe(
+          Effect.withSpan("AcpAdapter.suggestNextMessage"),
+          Effect.catchCause((cause) =>
+            Effect.logDebug("ACP made no prompt suggestion", {
+              provider: PROVIDER,
+              threadId: ctx.threadId,
+              cause,
+            }),
+          ),
+          Effect.forkIn(ctx.scope),
+        );
+        ctx.suggestionFiber = fiber;
+      });
 
     /**
      * Writes down what a finished prompt spent: the tokens on its result and
@@ -1136,6 +1250,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
     ) =>
       Effect.gen(function* () {
         if (ctx.stopped || ctx.activeTurnId !== undefined) return;
+        yield* dropSuggestion(ctx);
         ctx.activeTurnId = turnId;
         ctx.agentTurn = { turnId, ended: yield* Deferred.make<void>() };
         ctx.agentTurnLastActivityMs = Date.now();
@@ -1443,6 +1558,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
       Effect.gen(function* () {
         if (ctx.stopped) return;
         ctx.stopped = true;
+        yield* dropSuggestion(ctx);
         yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
         yield* settlePendingUserInputsAsEmptyAnswers(ctx.pendingUserInputs);
         // The agent's process takes its subagents with it.
@@ -2462,6 +2578,30 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             lastPlanFingerprint: undefined,
             activeTurnId: undefined,
             activeTurnText: "",
+            activeTurnReplyTail: "",
+            recentMessages: (input.contextSeed?.entries ?? [])
+              .flatMap((entry): ReadonlyArray<PromptSuggestionMessage> => {
+                if (
+                  entry.kind !== "message" ||
+                  (entry.role !== "user" && entry.role !== "assistant")
+                ) {
+                  return [];
+                }
+                const text = entry.text.trim();
+                if (text.length === 0) return [];
+                return [
+                  {
+                    role: entry.role,
+                    text:
+                      text.length <= PROMPT_SUGGESTION_MAX_CHARS_PER_MESSAGE
+                        ? text
+                        : text.slice(text.length - PROMPT_SUGGESTION_MAX_CHARS_PER_MESSAGE),
+                  },
+                ];
+              })
+              .slice(-PROMPT_SUGGESTION_MAX_MESSAGES),
+            suggestionFiber: undefined,
+            suggestionGeneration: 0,
             lastProviderStatus: undefined,
             lastContextUsageKey: undefined,
             acpSessionId: started.sessionId,
@@ -2767,6 +2907,11 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                     if (ctx.activeTurnText.length < PLAN_GATE_SCAN_MAX_CHARS) {
                       ctx.activeTurnText += event.text;
                     }
+                    ctx.activeTurnReplyTail = appendTailCapped(
+                      ctx.activeTurnReplyTail,
+                      event.text,
+                      PROMPT_SUGGESTION_MAX_CHARS_PER_MESSAGE,
+                    );
                     yield* logNative(ctx.threadId, "session/update", event.rawPayload);
                     yield* offerRuntimeEvent(
                       makeAcpContentDeltaEvent({
@@ -3292,8 +3437,12 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             const turnId = TurnId.make(command.turnId);
             const caller =
               command.sendId === undefined ? undefined : machine.callers.get(command.sendId);
+            yield* dropSuggestion(ctx);
             ctx.activeTurnId = turnId;
             resetTurnState(ctx);
+            if (caller?.userMessageText) {
+              pushRecentMessage(ctx, "user", caller.userMessageText);
+            }
             ctx.history.push(
               caller?.messageId !== undefined
                 ? { turnId, messageId: caller.messageId }
@@ -3307,6 +3456,8 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
               model: caller?.prompt.model ?? ctx.session.model,
               resolvedModel: caller?.prompt.resolvedModel ?? resolveModelId(ctx.session.model),
               planMode: caller?.planMode,
+              suggestNextMessage: caller?.suggestNextMessage === true,
+              suggestionGeneration: ctx.suggestionGeneration,
             });
             yield* offerRuntimeEvent({
               type: "turn.started",
@@ -3365,6 +3516,9 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             const caller = machine.callers.get(callerId);
             machine.callers.delete(callerId);
             if (caller === undefined) return;
+            if (command.type === "acceptSteer" && caller.userMessageText) {
+              pushRecentMessage(ctx, "user", caller.userMessageText);
+            }
             yield* Deferred.succeed(
               caller.reply,
               command.type === "acceptSend" || command.type === "acceptSteer"
@@ -3633,7 +3787,24 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           ctx.session = { ...ctx.session, activeTurnId: undefined, updatedAt: yield* nowIso };
         }
         const stamp = yield* makeEventStamp();
-        if (end.kind === "aborted") {
+        const completedPayload: AcpTurnCompletedPayload | undefined =
+          end.kind === "aborted"
+            ? undefined
+            : end.kind === "answered"
+              ? end.outcome.answer
+              : end.kind === "agentDone"
+                ? { state: "completed", stopReason: null }
+                : end.kind === "stopped"
+                  ? { state: "cancelled", stopReason: "cancelled" }
+                  : {
+                      state: "failed",
+                      stopReason: null,
+                      errorMessage: `${descriptor.presentation.displayName} stopped before its work finished.`,
+                    };
+        if (ctx.activeTurnReplyTail.trim().length > 0) {
+          pushRecentMessage(ctx, "assistant", ctx.activeTurnReplyTail);
+        }
+        if (completedPayload === undefined) {
           yield* offerRuntimeEvent({
             type: "turn.aborted",
             ...stamp,
@@ -3649,19 +3820,21 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             provider: PROVIDER,
             threadId: ctx.threadId,
             turnId: id,
-            payload:
-              end.kind === "answered"
-                ? end.outcome.answer
-                : end.kind === "agentDone"
-                  ? { state: "completed", stopReason: null }
-                  : end.kind === "stopped"
-                    ? { state: "cancelled", stopReason: "cancelled" }
-                    : {
-                        state: "failed",
-                        stopReason: null,
-                        errorMessage: `${descriptor.presentation.displayName} stopped before its work finished.`,
-                      },
+            payload: completedPayload,
           });
+          const promptSuggestions = options?.promptSuggestions;
+          if (
+            completedPayload.state === "completed" &&
+            data?.suggestNextMessage === true &&
+            ctx.suggestionGeneration === data.suggestionGeneration &&
+            promptSuggestions !== undefined
+          ) {
+            yield* startSuggestion(ctx, promptSuggestions, {
+              turnId: id,
+              model: data.model,
+              completedEventId: stamp.eventId,
+            });
+          }
         }
         // Cost reported after the turn's last prompt answered (its own replies).
         const costUsd = takeReportedCost(ctx);
@@ -3686,6 +3859,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
       input: Parameters<AcpAdapterShape["sendTurn"]>[0],
     ) =>
       Effect.gen(function* () {
+        yield* dropSuggestion(ctx);
         const turnId = TurnId.make(crypto.randomUUID());
         const prepared = yield* prepareTurnPrompt(ctx, input);
         carryPromptPreface(ctx, turnId, prepared);
@@ -3699,6 +3873,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           }
           if (ctx.projectBriefCarrier?.turnId === turnId) requeueProjectBrief(ctx);
         };
+        const userMessageText = (input.typed?.text ?? input.input ?? "").trim();
         machine.callers.set(sendId, {
           prompt: {
             parts: prepared.promptParts,
@@ -3709,6 +3884,8 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             delivered,
           },
           ...(input.messageId !== undefined ? { messageId: input.messageId } : {}),
+          ...(userMessageText.length > 0 ? { userMessageText } : {}),
+          suggestNextMessage: input.suggestNextMessage === true,
           planMode: prepared.planMode,
           reply,
         });
@@ -3773,6 +3950,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             preamble: undefined,
             delivered: undefined,
           },
+          ...(text.length > 0 ? { userMessageText: text } : {}),
           planMode: undefined,
           reply,
         });
@@ -3947,6 +4125,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
 
     const startTurn = (ctx: AcpSessionContext, input: Parameters<AcpAdapterShape["sendTurn"]>[0]) =>
       Effect.gen(function* () {
+        yield* dropSuggestion(ctx);
         if (ctx.promptFiber) {
           // ACP serializes prompts per session; a turn sent while one is in
           // flight starts after it, never interleaved with it.
@@ -3968,8 +4147,10 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         }
         const turnId = TurnId.make(crypto.randomUUID());
         const prepared = yield* prepareTurnPrompt(ctx, input);
-        const { planMode, resolvedModel, promptParts } = prepared;
+        const { planMode, model, resolvedModel, promptParts } = prepared;
         yield* prepared.configure;
+        yield* dropSuggestion(ctx);
+        const turnSuggestionGeneration = ctx.suggestionGeneration;
         ctx.activeTurnId = turnId;
         const prompt = {
           turnId,
@@ -3978,6 +4159,10 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         };
         ctx.openPrompt = prompt;
         resetTurnState(ctx);
+        const userMessageText = (input.typed?.text ?? input.input ?? "").trim();
+        if (userMessageText.length > 0) {
+          pushRecentMessage(ctx, "user", userMessageText);
+        }
         carryPromptPreface(ctx, turnId, prepared);
         ctx.session = { ...ctx.session, activeTurnId: turnId, updatedAt: yield* nowIso };
         ctx.history.push({
@@ -4041,18 +4226,36 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
               updatedAt: yield* nowIso,
               ...(resolvedModel !== undefined ? { model: resolvedModel } : {}),
             };
+            if (ctx.activeTurnReplyTail.trim().length > 0) {
+              pushRecentMessage(ctx, "assistant", ctx.activeTurnReplyTail);
+            }
+            const completedStamp = yield* makeEventStamp();
+            const completedPayload = answeredTurnPayload(
+              result.stopReason,
+              ctx.activeTurnText,
+              ctx.lastProviderStatus,
+            );
             yield* offerRuntimeEvent({
               type: "turn.completed",
-              ...(yield* makeEventStamp()),
+              ...completedStamp,
               provider: PROVIDER,
               threadId: input.threadId,
               turnId,
-              payload: answeredTurnPayload(
-                result.stopReason,
-                ctx.activeTurnText,
-                ctx.lastProviderStatus,
-              ),
+              payload: completedPayload,
             });
+            const promptSuggestions = options?.promptSuggestions;
+            if (
+              completedPayload.state === "completed" &&
+              input.suggestNextMessage === true &&
+              ctx.suggestionGeneration === turnSuggestionGeneration &&
+              promptSuggestions !== undefined
+            ) {
+              yield* startSuggestion(ctx, promptSuggestions, {
+                turnId,
+                model,
+                completedEventId: completedStamp.eventId,
+              });
+            }
             yield* settleTurnUsage(ctx, turnId, resolvedModel, usageTotalsOf(result.usage));
             return;
           }
@@ -4132,6 +4335,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
     const interruptTurn: AcpAdapterShape["interruptTurn"] = (threadId) =>
       Effect.gen(function* () {
         const ctx = yield* requireSession(threadId);
+        yield* dropSuggestion(ctx);
         const turnId = ctx.activeTurnId;
         const promptFiber = ctx.promptFiber;
         yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
