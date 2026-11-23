@@ -170,9 +170,9 @@ Antigravity can't rewind its own conversation. When you edit an earlier message 
 one), Threadlines restores the files, stops anything Antigravity still runs for the thread (a
 running turn, its commands and subagents, by a cancel, then a moment to wind down), and ends that
 session. The next message starts a new Antigravity session and sends it the turns that are left,
-so Antigravity no longer remembers the removed ones. This also works when no Antigravity was
-running for the thread: Threadlines opens the saved session just to end it, since the next message
-would otherwise continue it as it was.
+so Antigravity no longer remembers the removed ones, also when Threadlines restarts before that
+message. This also works when no Antigravity was running for the thread: Threadlines opens the
+saved session just to end it, since the next message would otherwise continue it as it was.
 
 ### Tokens
 
