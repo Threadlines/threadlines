@@ -124,7 +124,6 @@ import {
 import {
   continuedTurnMessage,
   decideChildReportSettle,
-  messageAnswersSomeoneElse,
   owedReportStamps,
   settleWaitingAnswer,
   turnStartOwesReport,
@@ -4191,12 +4190,21 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         });
       }
       // A child's report whose start failed was put back on the queue
-      // ("Restart and turn binding", rule A): that is the failed turn, so the
-      // user's Retry sends it, never an earlier message of theirs.
+      // ("Restart and turn binding", rule A). When it is the last start that
+      // failed (nothing started from a message since it was put back), the
+      // user's Retry sends it, never an earlier message of theirs; a message
+      // tried since is retried itself.
       const putBack = (targetThread.queuedFollowUps ?? []).find(
         (queued) => queued.putBack === true,
       );
-      if (command.type === "thread.turn.retry" && putBack !== undefined) {
+      const triedSincePutBack =
+        putBack !== undefined &&
+        turnMessages.some(
+          (message) =>
+            message.role === "user" &&
+            Date.parse(message.createdAt) > Date.parse(putBack.createdAt),
+        );
+      if (command.type === "thread.turn.retry" && putBack !== undefined && !triedSincePutBack) {
         return yield* decideCommandSequence({
           commands: [
             {
@@ -5355,41 +5363,58 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // The turn claims the message that started it ("Restart and turn
       // binding", rule B): its owed report is keyed by the turn from here on,
       // and a parent's request it answers records the turn, so every later
-      // reader knows the turn by its id, never by its message. A writer that
-      // names the message may come after one that took the same turn for the
-      // provider's (Claude says a turn started before its send returns): the
-      // name wins, whether or not the turn is new.
+      // reader knows the turn by its id, never by its message. Only the writer
+      // that sent the message names it, and every other start was recorded as
+      // the provider's: the name corrects that, whether or not the turn is
+      // still running (it names the turn by its id).
+      const named =
+        command.turnStartedBy !== undefined && "messageId" in command.turnStartedBy
+          ? command.turnStartedBy
+          : null;
       const namedTurnId =
-        command.session.status === "running" &&
-        command.session.activeTurnId !== null &&
-        command.turnStartedBy !== undefined &&
-        "messageId" in command.turnStartedBy
-          ? command.session.activeTurnId
-          : null;
-      const startedMessageId =
-        namedTurnId !== null &&
-        command.turnStartedBy !== undefined &&
-        "messageId" in command.turnStartedBy
-          ? command.turnStartedBy.messageId
-          : null;
+        named === null
+          ? null
+          : (named.turnId ??
+            (command.session.status === "running" ? command.session.activeTurnId : null));
+      const startedMessageId = named !== null && namedTurnId !== null ? named.messageId : null;
       const owedReportBinds =
         startedMessageId !== null &&
+        namedTurnId !== null &&
         (thread.childRequests.owedReports ?? []).some(
           (entry) => "messageId" in entry && entry.messageId === startedMessageId,
         )
-          ? startedMessageId
+          ? { messageId: startedMessageId, turnId: namedTurnId }
           : null;
-      // Named for a message that owes nothing (a person's, a request's): a
-      // report recorded for the turn as the provider's goes.
+      // Named for a message that owes nothing (a person's, a request's, a
+      // continue of either): a report recorded for the turn as the
+      // provider's goes. Judged as the turn's start was (rule 2).
       const namedMessage =
         startedMessageId === null
           ? undefined
           : thread.messages.find((message) => message.id === startedMessageId);
+      const namedOwesNothing =
+        namedMessage !== undefined &&
+        turnStartOwesReport(readModel, thread, namedMessage, {
+          origin:
+            namedMessage.trigger === undefined
+              ? undefined
+              : continuedTurnMessage(thread, namedMessage.participantId ?? null, namedMessage.id),
+          answersRequest: (
+            (thread.parentThreadId === null
+              ? undefined
+              : readModel.threads.find((entry) => entry.id === thread.parentThreadId)
+            )?.childRequests.open ?? []
+          ).some(
+            (request) =>
+              request.childThreadId === thread.id &&
+              request.status === "running" &&
+              request.childMessageId === namedMessage.id,
+          ),
+        }) === undefined;
       const providerEntryCorrected: ReadonlyArray<PlannedOrchestrationEvent> =
         namedTurnId !== null &&
         owedReportBinds === null &&
-        namedMessage !== undefined &&
-        messageAnswersSomeoneElse(namedMessage) &&
+        namedOwesNothing &&
         (thread.childRequests.owedReports ?? []).some((entry) =>
           isOwedReport(entry, { turnId: namedTurnId }),
         )

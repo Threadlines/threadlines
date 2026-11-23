@@ -3443,40 +3443,25 @@ const make = Effect.gen(function* () {
         }
       }
 
-      // A turn that starts now: the message it was asked with, or none (the
-      // provider started it: a check-back, a goal, background work that
-      // finished), so the decision knows what it owes a parent (rule 2) and
-      // the turn record is bound to the right message. A check-back says so
-      // itself, and is never the pending message's turn.
+      // A turn that starts now is recorded as the provider's, provisionally:
+      // this handler can't tell a message's turn from one the provider
+      // started (a check-back, a goal, background work that finished), so it
+      // never names a message. The reactor, which sent the message, names it
+      // with the turn's id once the provider took it, and that corrects this
+      // ("Restart and turn binding", rule B). The pending start is read only
+      // so the sweep leaves that message's report alone.
       const pendingTurnStart =
         event.type === "turn.started"
           ? yield* projectionTurnRepository
               .getPendingTurnStartByThreadId({ threadId: thread.id })
               .pipe(Effect.orElseSucceed(() => Option.none()))
           : Option.none();
-      const turnStartFields = (nextActiveTurnId: TurnId | null) => {
-        if (
-          event.type !== "turn.started" ||
-          nextActiveTurnId === null ||
-          (activeTurnId !== null && sameId(activeTurnId, nextActiveTurnId))
-        ) {
-          return {};
-        }
-        // A turn Claude opened by itself (a background agent finishing, a
-        // check-back) says so; Threadlines starts a message's turn through
-        // the provider, never that way.
-        const providerOpened =
-          turnTriggerOf(event)?.kind === "check-back" ||
-          event.raw?.method === "claude/synthetic-turn-start";
-        const turnStartedBy: TurnStartedBy =
-          !providerOpened &&
-          thread.session?.status === "starting" &&
-          Option.isSome(pendingTurnStart)
-            ? { messageId: pendingTurnStart.value.messageId }
-            : { provider: true };
-        return { turnStartedBy };
-      };
-
+      const turnStartFields = (nextActiveTurnId: TurnId | null) =>
+        event.type !== "turn.started" ||
+        nextActiveTurnId === null ||
+        (activeTurnId !== null && sameId(activeTurnId, nextActiveTurnId))
+          ? {}
+          : { turnStartedBy: { provider: true } satisfies TurnStartedBy };
       const conflictsWithActiveTurn =
         activeTurnId !== null && eventTurnId !== undefined && !sameId(activeTurnId, eventTurnId);
       const missingTurnForActiveTurn = activeTurnId !== null && eventTurnId === undefined;

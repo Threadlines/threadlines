@@ -1499,20 +1499,18 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             // See the in-memory projector: a provider-started turn's report,
             // and the turn claiming its message's report.
             ...(event.payload.owedReport !== undefined ||
-            (event.payload.owedReportBinds !== undefined &&
-              event.payload.session.activeTurnId !== null)
+            event.payload.owedReportBinds !== undefined
               ? {
                   childRequests: ((state) => {
                     const owedReport = event.payload.owedReport;
                     const binds = event.payload.owedReportBinds;
-                    const activeTurnId = event.payload.session.activeTurnId;
                     const added =
                       owedReport === undefined
                         ? state
                         : childRequestStateOn.owedAdded(state, owedReport);
-                    return binds === undefined || activeTurnId === null
+                    return binds === undefined
                       ? added
-                      : childRequestStateOn.owedBound(added, binds, activeTurnId);
+                      : childRequestStateOn.owedBound(added, binds.messageId, binds.turnId);
                   })(existingRow.value.childRequests ?? EMPTY_CHILD_REQUEST_STATE),
                 }
               : {}),

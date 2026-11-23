@@ -20,6 +20,8 @@ import {
 } from "@threadlines/contracts";
 import {
   ApprovalRequestId,
+  ChildRequestBatchId,
+  ChildRequestId,
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   EnvironmentId,
@@ -1657,6 +1659,127 @@ describe("ProviderRuntimeIngestion", () => {
     expect(owed).toMatchObject([{ messageId: "fix-message-3" }, { turnId: "background-turn" }]);
   });
 
+  it("never lets an unmarked provider turn during a request's preparation answer that request (round 4)", async () => {
+    const harness = await createHarness();
+    const createdAt = "2026-01-01T00:00:00.000Z";
+    const parent = asThreadId("thread-1");
+    const child = asThreadId("child-goal");
+    const requestId = ChildRequestId.make("request-goal");
+    const childMessageId = asMessageId("request-goal-message");
+    const modelSelection = {
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-5-codex",
+    };
+    const dispatch = (command: Parameters<typeof harness.engine.dispatch>[0]) =>
+      Effect.runPromise(harness.engine.dispatch(command));
+    // The parent's agent asks during its own turn.
+    await dispatch({
+      type: "thread.session.set",
+      commandId: CommandId.make("cmd-goal-parent-running"),
+      threadId: parent,
+      session: {
+        threadId: parent,
+        status: "running",
+        providerName: "codex",
+        runtimeMode: "approval-required",
+        activeTurnId: asTurnId("parent-turn"),
+        updatedAt: createdAt,
+        lastError: null,
+      },
+      createdAt,
+    });
+    await dispatch({
+      type: "thread.child.start",
+      commandId: CommandId.make("cmd-goal-child-start"),
+      threadId: parent,
+      batchId: ChildRequestBatchId.make("batch-goal"),
+      from: { participantId: null },
+      callerTurnId: asTurnId("parent-turn"),
+      mode: "auto",
+      children: [
+        {
+          requestId,
+          childThreadId: child,
+          childMessageId,
+          launch: {
+            title: "Watch CI",
+            prompt: "Watch CI until it is green.",
+            modelSelection,
+            runtimeMode: "approval-required",
+            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            reportBack: true,
+            runSetup: false,
+            workspace: { kind: "project_folder" },
+          },
+        },
+      ],
+      createdAt,
+    });
+    await dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("cmd-goal-child-create"),
+      threadId: child,
+      projectId: asProjectId("project-1"),
+      title: "Watch CI",
+      modelSelection,
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "approval-required",
+      branch: null,
+      worktreePath: null,
+      parentThreadId: parent,
+      attachedToParent: true,
+      createdAt,
+    });
+    harness.setProviderSession({
+      provider: ProviderDriverKind.make("codex"),
+      status: "ready",
+      runtimeMode: "approval-required",
+      threadId: child,
+      createdAt,
+      updatedAt: createdAt,
+    });
+    // The parent's request is being prepared in the child.
+    await dispatch({
+      type: "thread.turn.start",
+      commandId: CommandId.make("cmd-goal-request-turn"),
+      threadId: child,
+      message: {
+        messageId: childMessageId,
+        role: "user",
+        text: "Watch CI until it is green.",
+        attachments: [],
+      },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "approval-required",
+      fromThread: { threadId: parent, requestId, kind: "request" },
+      createdAt: "2026-01-01T00:00:01.000Z",
+    });
+    // Codex starts a goal's turn, with no trigger and no synthetic mark, and ends it.
+    for (const [type, id] of [
+      ["turn.started", "evt-goal-started"],
+      ["turn.completed", "evt-goal-completed"],
+    ] as const) {
+      harness.emit({
+        type,
+        eventId: asEventId(id),
+        provider: ProviderDriverKind.make("codex"),
+        threadId: child,
+        createdAt: "2026-01-01T00:00:02.000Z",
+        turnId: asTurnId("goal-turn"),
+        ...(type === "turn.completed" ? { payload: { state: "completed" } } : {}),
+      } as never);
+      await harness.drain();
+    }
+    const parentThread = await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.status !== undefined,
+      10_000,
+      parent,
+    );
+    // The request still waits for its own turn.
+    expect(parentThread.childRequests.open).toMatchObject([{ requestId, status: "running" }]);
+  });
+
   it("maps turn started/completed events into thread session updates", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
@@ -1758,11 +1881,25 @@ describe("ProviderRuntimeIngestion", () => {
         createdAt: now,
         turnId: asTurnId(`turn-${threadId}-${id}`),
       });
-      await waitForThread(
+      const running = await waitForThread(
         harness.readModel,
         (thread) => thread.session?.activeTurnId === `turn-${threadId}-${id}`,
         10_000,
         threadId,
+      );
+      // The reactor names the message its send started the turn for.
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make(`cmd-carried-named-${threadId}-${id}`),
+          threadId,
+          session: running.session!,
+          turnStartedBy: {
+            messageId: asMessageId(`carried-${threadId}-${id}`),
+            turnId: asTurnId(`turn-${threadId}-${id}`),
+          },
+          createdAt: now,
+        }),
       );
       harness.emit({
         type: "turn.completed",

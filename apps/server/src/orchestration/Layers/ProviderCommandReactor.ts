@@ -1261,20 +1261,20 @@ const make = Effect.gen(function* () {
     if (!thread || !session) {
       return;
     }
+    // Only this writer, which sent the message, names its turn, by id
+    // ("Restart and turn binding", rule B).
+    const turnStartedBy = { messageId: input.messageId, turnId: input.turnId };
 
+    // The turn already ended, or the session moved on: nothing is marked
+    // running, and the turn stays as it was recorded (a known limit: a turn
+    // that ends before its send is acknowledged keeps the provider's).
     if (
       session.status === "stopped" ||
       session.status === "error" ||
-      session.status === "interrupted"
+      session.status === "interrupted" ||
+      (session.activeTurnId !== null && session.activeTurnId !== input.turnId) ||
+      (thread.latestTurn?.turnId === input.turnId && thread.latestTurn.state !== "running")
     ) {
-      return;
-    }
-
-    if (session.activeTurnId !== null && session.activeTurnId !== input.turnId) {
-      return;
-    }
-
-    if (thread.latestTurn?.turnId === input.turnId && thread.latestTurn.state !== "running") {
       return;
     }
 
@@ -1289,7 +1289,7 @@ const make = Effect.gen(function* () {
         updatedAt,
       },
       createdAt: updatedAt,
-      turnStartedBy: { messageId: input.messageId },
+      turnStartedBy,
     });
   });
 
@@ -7529,13 +7529,24 @@ const make = Effect.gen(function* () {
                 Effect.map(Option.getOrUndefined),
                 Effect.orElseSucceed(() => undefined),
               );
+        // Not named yet when the process stopped (the send's acknowledgement
+        // never came): the start still pending is the message it was for.
+        const pendingStart =
+          turnRow === undefined || turnRow.pendingMessageId !== null
+            ? Option.none()
+            : yield* projectionTurnRepository
+                .getPendingTurnStartByThreadId({ threadId })
+                .pipe(Effect.orElseSucceed(() => Option.none()));
+        const turnMessageId =
+          turnRow?.pendingMessageId ??
+          (Option.isSome(pendingStart) ? pendingStart.value.messageId : null);
         yield* orchestrationEngine
           .dispatch({
             type: "thread.restart.continue",
             commandId: serverCommandId("restart-continue"),
             threadId,
             turnId,
-            ...(turnRow !== undefined ? { turnMessageId: turnRow.pendingMessageId } : {}),
+            ...(turnRow !== undefined ? { turnMessageId } : {}),
             participantId,
             waitingOnUser,
             continueAfterRestart: settingOn,

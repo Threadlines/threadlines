@@ -198,22 +198,22 @@ What existing behavior this touches:
 - **A failed start, with no restart.** New: a report whose turn could not start waits at the front of the queue instead of sitting in the chat unheard. The queue is not sent on by itself after a failure (rule 10), so this can't loop.
 - **Older clients.** `putBack` and `answeringTurnId` are optional fields on things that exist. An older client places a put-back entry last, which only changes the order it shows. No new event type.
 
-Fixed after Astra's third review of step 2 (3fddb66bc), as built:
+Fixed after Astra's third and fourth reviews of step 2 (3fddb66bc, c90d3d3d4), as built:
 
-- A writer that names a turn's message wins over an earlier writer that took the same turn for the provider's, whether or not the turn is new: a person's message drops the turn's owed entry, a message that owes a report takes the entry over.
-- The user's Retry after a report's failed start sends that report, not an earlier message of theirs.
-- The user's own `thread.session.stop` holds a thread with a family, as their Stop does. The server's own session stops say why (`cause`: `family` for `thread.children.stop`, `cleanup` for archive, the sweeper and a link) and leave no new hold.
+- **Only the writer that sent a message names it.** Ingestion records every turn start as the provider's, provisionally, and never names a pending message. The reactor names the message it sent, with the turn's id, once the provider took the turn (`turnStartedBy: { messageId, turnId }`). That name corrects the provisional record whether or not the turn is new: a message that owes a report takes the turn's entry over, and one that owes nothing (a person's, a request's, or a continue of either, judged by the turn it continues as rule 2 says) drops it. A parent's request records the turn either way. A turn the provider starts with no trigger (a Codex goal) while a message is being prepared stays the provider's, so it can never answer that message's request.
+- The user's Retry after a report's failed start sends that report, unless a message was tried since it was put back: then that message is retried.
+- The user's own `thread.session.stop` holds a thread with a family, as their Stop does. The server's own session stops say why (`cause`: `family` for `thread.children.stop`, `cleanup` for archive, the sweeper and a link). A cause only leaves out that family reason for the hold: the agents' chain hold (a room, an agent's message in the queue) applies to every session stop as before.
 - At startup a turn a Stop named is dropped, not reported as cut off by the restart.
 - A report's start is taken back before the session is marked interrupted at startup, and before a failed start's failure is recorded, so a stop in between can't leave it out of the queue.
 - The startup send of a queued report has its own command id each startup.
-- A continue after a restart is judged by the turn the restart cut (its turn record's message), so a check-back's turn is never continued.
+- A continue after a restart is judged by the turn the restart cut: its turn record's message, or, when the reactor had not named it yet, the start still pending. A check-back's turn is never continued.
 - Archiving a child moves its attachment epoch, as separating does, so no report it owed comes back after it is restored.
 
 Known limits, accepted (T3 Code has no crash recovery at all):
 
 - A process that stops after a report's start was taken back but before the session was marked interrupted gives the parent a "turn interrupted by a restart" note at the next startup. The report itself is still at the front of the queue and is sent.
-- A parent whose session was neither starting nor running when the process stopped (a check-back of its own held the active turn, say) gets no take-back at startup: a report taken off its queue in that moment stays in the chat, unheard by the agent until something else wakes it.
-- A turn the provider starts with no trigger and no synthetic mark (a Codex goal) while a message is being prepared is taken for that message's turn. The driver gives no signal.
+- Crash only: a parent whose active turn belonged to a check-back when the process stopped gets no take-back at startup, so a report taken off its queue in that moment stays in the chat, unheard by the agent until something else wakes it. Taking it back from the pending start alone is not safe: a report whose turn the provider took but the reactor had not yet named looks the same, and would run twice.
+- A turn that ends before the reactor's acknowledgement of its send (the provider fails it at once) keeps the provider's record: in a child, a person's failed turn can report its failure upward, and a request it was for settles through the stopped-session backstop instead of at the turn's end.
 - Session updates stored before turn binding carry no `turnStartedBy`. Replaying them does not bind turns, which matters only if the turns projection were rebuilt from the event log.
 - Only a child's report is taken back. Other agent messages cut before their start behave as before (a hand-off is closed as failed at startup).
 

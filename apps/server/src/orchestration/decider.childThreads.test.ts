@@ -2556,6 +2556,84 @@ describe("decider child reports", () => {
     expect(threadIn(archived.model, CHILD).parentAttachmentEpoch).toBe(1);
   });
 
+  it("drops a continue's provisional report when its name says it continues a person's turn (round 4, finding 1)", async () => {
+    const family = await answeredFamily();
+    const typed = await run(family, turnStart("typed", { composer: "typed" }));
+    const idle = {
+      ...typed.model,
+      threads: typed.model.threads.map((entry) =>
+        entry.id === CHILD
+          ? { ...entry, session: session(CHILD, { status: "ready", activeTurnId: null }) }
+          : entry,
+      ),
+    };
+    const continued = await run(
+      idle,
+      turnStart("switch", { trigger: "accountSwitch", createdAt: at(25) }),
+    );
+    // Recorded as the provider's at first, then named by the reactor.
+    const provisional = await run(continued.model, providerTurn("continue-turn"));
+    expect(threadIn(provisional.model, CHILD).childRequests.owedReports).toMatchObject([
+      { turnId: TurnId.make("continue-turn") },
+    ]);
+    const named = await run(provisional.model, {
+      type: "thread.session.set",
+      commandId: CommandId.make("session-named-continue"),
+      threadId: CHILD,
+      session: session(CHILD, { activeTurnId: TurnId.make("continue-turn"), updatedAt: at(31) }),
+      turnStartedBy: { messageId: MessageId.make("switch"), turnId: TurnId.make("continue-turn") },
+      createdAt: at(31),
+    });
+    expect(threadIn(named.model, CHILD).childRequests.owedReports).toBeUndefined();
+  });
+
+  it("retries the message whose start failed last, not a report put back before it (round 4, finding 2)", async () => {
+    const { model: starting, report } = await reportStarting();
+    const failed = (model: OrchestrationReadModel) => ({
+      ...model,
+      threads: model.threads.map((entry) =>
+        entry.id === PARENT
+          ? {
+              ...entry,
+              session: session(PARENT, {
+                status: "error",
+                activeTurnId: null,
+                lastError: "spawn failed",
+              }),
+            }
+          : entry,
+      ),
+    });
+    // A fails to start and is put back.
+    const putBack = await run(failed(starting), takeBack(report.messageId));
+    // The user types B, and B fails while it is prepared.
+    const typed = await run(failed(putBack.model), {
+      type: "thread.turn.start",
+      commandId: CommandId.make("turn-b"),
+      threadId: PARENT,
+      message: {
+        messageId: MessageId.make("message-b"),
+        role: "user",
+        text: "Ship it.",
+        attachments: [],
+      },
+      runtimeMode: "auto-accept-edits",
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      composer: "typed",
+      createdAt: at(70),
+    });
+    const retried = await run(failed(typed.model), {
+      type: "thread.turn.retry",
+      commandId: CommandId.make("retry-b"),
+      threadId: PARENT,
+      createdAt: at(80),
+    });
+    const started = (retried.events as ReadonlyArray<OrchestrationEvent>).find(
+      (event) => event.type === "thread.turn-start-requested",
+    );
+    expect(started?.payload).toMatchObject({ messageId: MessageId.make("message-b") });
+  });
+
   it("hands a leaving agent's queued follow-up report to the thread's own agent, and takes its answers off", async () => {
     const reviewer = "reviewer" as never;
     const queued = (id: string, followUp: boolean) => ({

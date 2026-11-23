@@ -3095,16 +3095,17 @@ export const OwedChildReport = Schema.Union([
 export type OwedChildReport = typeof OwedChildReport.Type;
 
 /**
- * What started the turn a session update marks running, from the writer that
- * knows: the message it was asked with, or the provider with no message (a
- * check-back, a goal, background work that finished). The decision records
- * the report a provider-started turn owes a parent (docs/design/
- * agent-autonomy-no-limits.md, rules 2 and 3), and the turn record is bound
- * to the pending message only when this names it. Absent: the writer can't
- * tell, and the pending message, if any, is taken as the turn's.
+ * What started a turn (docs/design/agent-autonomy-no-limits.md, "Restart and
+ * turn binding"). Only the writer that sent a message names it: the reactor,
+ * once the provider took the turn for it, with the turn's id (`turnId`, which
+ * may have ended or been superseded by then). Every other turn start is
+ * recorded as the provider's, provisionally: a report a provider-started turn
+ * owes a parent is recorded, and the naming update corrects it. The turn
+ * record is bound to the pending message only when a writer names it.
+ * Absent: nothing to say about what started the turn.
  */
 export const TurnStartedBy = Schema.Union([
-  Schema.Struct({ messageId: MessageId }),
+  Schema.Struct({ messageId: MessageId, turnId: Schema.optional(TurnId) }),
   Schema.Struct({ provider: Schema.Literal(true) }),
 ]);
 export type TurnStartedBy = typeof TurnStartedBy.Type;
@@ -7259,12 +7260,12 @@ export const ThreadSessionSetPayload = Schema.Struct({
   /** See TurnStartedBy. */
   turnStartedBy: Schema.optional(TurnStartedBy),
   /**
-   * The message this turn took owed the parent a report: its entry, keyed by
-   * the message until now, is keyed by the session's active turn from here
-   * on (docs/design/agent-autonomy-no-limits.md, "Restart and turn binding",
+   * The message a turn took owed the parent a report: its entry, keyed by
+   * the message until now, is keyed by that turn from here on
+   * (docs/design/agent-autonomy-no-limits.md, "Restart and turn binding",
    * rule B).
    */
-  owedReportBinds: Schema.optional(MessageId),
+  owedReportBinds: Schema.optional(Schema.Struct({ messageId: MessageId, turnId: TurnId })),
 });
 
 /** The user closed this error's notice; see `OrchestrationSession.lastErrorDismissedAt`. */

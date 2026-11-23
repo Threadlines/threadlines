@@ -1826,13 +1826,12 @@ export function projectEvent(
 
         const owedReport = payload.owedReport;
         const binds = payload.owedReportBinds;
-        const activeTurnId = payload.session.activeTurnId;
         const withOwed = updateChildRequests(nextBase, payload.threadId, (state) => {
           const added =
             owedReport === undefined ? state : childRequestStateOn.owedAdded(state, owedReport);
-          return binds === undefined || activeTurnId === null
+          return binds === undefined
             ? added
-            : childRequestStateOn.owedBound(added, binds, activeTurnId);
+            : childRequestStateOn.owedBound(added, binds.messageId, binds.turnId);
         });
         return {
           ...withOwed,
