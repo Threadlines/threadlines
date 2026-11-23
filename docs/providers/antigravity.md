@@ -174,8 +174,10 @@ Google plan is used: on the Antigravity row in Settings, on the Usage page, in t
 send button, and on each model in the picker. Google meters groups of models apart, so there is a
 row for each: Gemini, each Gemini 4 model that has a limit of its own (such as Gemini 4 Argon), and
 Claude & GPT, which share one. Each has a 5-hour and a weekly window with its reset time. Gemini
-Enterprise accounts are metered per model, with no window length; their rows show each group's
-fullest model. A group that runs out stops only its own models. The row also shows the signed-in
+Enterprise accounts (and accounts Google only reports per model) are metered per model, with no
+window length, so each model gets its own row. A group that runs out stops only its own models.
+When a limit stops a chat and Antigravity doesn't say when it resets, the reset time comes from
+these numbers, so Continue at reset still works. The row also shows the signed-in
 Google account's email (blurred until you show it).
 
 The numbers come from Google, not from Antigravity: Threadlines asks Google's Cloud Code service
@@ -187,7 +189,8 @@ keeps the last numbers.
 When the numbers can be stale:
 
 - They are read every few minutes, when the provider status refreshes, so a chat's usage shows up
-  within about five minutes.
+  within about five minutes. When one of Google's two hosts doesn't answer, the rows only it gave
+  stay from the last read, with their age.
 - Threadlines never renews the sign-in itself. Antigravity renews it while it runs, so after an
   hour or so without a chat the saved sign-in lapses. The last numbers stay, with their age, and a
   line says to start a chat to refresh them.

@@ -157,7 +157,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
         usage,
       });
       const instance = yield* makeAcpProviderDriver(descriptor).create(input);
-      usage.publishTo(instance.snapshot.patchSnapshot);
+      usage.attach(instance.snapshot);
       const builtEnvironment = providerInstanceEnvironmentKey(input.environment);
       const authFlows = makeAntigravityAuthFlows({
         descriptor: makeAntigravityDescriptor({
