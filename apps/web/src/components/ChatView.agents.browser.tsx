@@ -1823,6 +1823,117 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
     }
   });
 
+  it("opens a pill's menu on a long press in the phone drawer, and keeps it open when the finger lifts", async () => {
+    const astraId = "7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d" as ThreadParticipantId;
+    const base = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-room-hold" as MessageId,
+      targetText: "room hold target",
+    });
+    // What a phone sends for a finger held on an element and lifted: touch
+    // pointer events on it, then a mouse press and a click on whatever is
+    // under the finger by then. For a held pill that is the menu's backdrop,
+    // which came up under the finger. (Replayed by hand: real touches would
+    // put the whole test browser in touch mode.)
+    const touch = async (element: Element, holdMs: number) => {
+      const box = element.getBoundingClientRect();
+      const at = {
+        clientX: box.left + box.width / 2,
+        clientY: box.top + box.height / 2,
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+      };
+      const finger = { ...at, pointerId: 7, pointerType: "touch", isPrimary: true };
+      element.dispatchEvent(new PointerEvent("pointerdown", finger));
+      await new Promise((resolve) => setTimeout(resolve, holdMs));
+      element.dispatchEvent(new PointerEvent("pointerup", finger));
+      const under = document.elementFromPoint(at.clientX, at.clientY) ?? element;
+      for (const type of ["mousedown", "mouseup", "click"]) {
+        under.dispatchEvent(new MouseEvent(type, at));
+      }
+      // Let what those did reach the page.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    };
+    const mounted = await mountChatView({
+      viewport: PHONE_VIEWPORT,
+      configureFixture: withCodexModels,
+      snapshot: {
+        ...base,
+        threads: base.threads.map((thread) =>
+          thread.id === THREAD_ID
+            ? {
+                ...thread,
+                participants: [
+                  {
+                    id: astraId,
+                    handle: "agent-2",
+                    modelSelection: {
+                      instanceId: ProviderInstanceId.make("codex"),
+                      model: "gpt-6-astra",
+                    },
+                    joinedAt: NOW_ISO,
+                    leftAt: null,
+                  },
+                ],
+              }
+            : thread,
+        ),
+      },
+    });
+
+    try {
+      const pill = (id: string) =>
+        document.querySelector<HTMLElement>(`[data-room-agent-row="${id}"]`);
+      const sheet = () => document.querySelector('[data-model-picker-sheet="true"]');
+      const menuItem = (text: string) =>
+        [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
+          (item) => item.textContent === text,
+        ) ?? null;
+      const picker = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('[data-chat-provider-model-picker="true"]'),
+        "Unable to find the composer's model picker.",
+      );
+      picker.click();
+      await waitForElement(sheet, "A phone should open the picker as a drawer.");
+      const astra = await waitForElement(() => pill(astraId), "Unable to find astra's pill.");
+      // The drawer slides in: a touch is aimed at where the pill comes to rest.
+      await vi.waitFor(async () => {
+        const top = astra.getBoundingClientRect().top;
+        await nextFrames(2);
+        expect(astra.getBoundingClientRect().top).toBe(top);
+      });
+
+      // The hold opens the menu, and lifting the finger leaves it open,
+      // without picking the pill or closing the drawer.
+      await touch(astra, 700);
+      expect(astra.hasAttribute("data-menu-open")).toBe(true);
+      expect(menuItem("Rename…")).not.toBeNull();
+      expect(pill(astraId)?.getAttribute("aria-checked")).toBe("false");
+      expect(sheet()).not.toBeNull();
+
+      // A tap outside the menu still closes it, and only it.
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      await touch(document.querySelector('[data-slot="menu-backdrop"]')!, 40);
+      expect(astra.hasAttribute("data-menu-open")).toBe(false);
+      await vi.waitFor(() => expect(menuItem("Rename…")).toBeNull());
+      expect(sheet()).not.toBeNull();
+
+      // A tap on Rename, even a slow one, opens the name box, focused, in the
+      // open drawer: it is not taken for another hold on the pill.
+      await touch(astra, 700);
+      await touch(menuItem("Rename…")!, 600);
+      const nameBox = await waitForElement(
+        () => pill(astraId)!.querySelector<HTMLInputElement>("input"),
+        "Rename should open the pill's name box.",
+      );
+      await vi.waitFor(() => expect(document.activeElement).toBe(nameBox));
+      expect(sheet()).not.toBeNull();
+    } finally {
+      useRoomRecipientStore.getState().choose(THREAD_REF, null);
+      await mounted.cleanup();
+    }
+  });
+
   it("stacks a room's agents on a phone's model button, and drops idle ones first as it narrows", async () => {
     const agentIds = [
       "7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d",
