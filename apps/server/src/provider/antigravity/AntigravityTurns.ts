@@ -32,16 +32,10 @@ import type {
 } from "../acp/AcpProviderDescriptor.ts";
 import type { AcpToolCallState } from "../acp/AcpRuntimeModel.ts";
 import { antigravityLogPosition, antigravityTurnSteps } from "./AntigravitySessionLog.ts";
+import { antigravitySubagents, isAntigravitySubagentLaunch } from "./AntigravitySubagents.ts";
 
 /** `schedule` stays in progress until its wake fires; the agent then replies by itself. */
 const SCHEDULE_TITLES = new Set(["Run schedule", "Running schedule"]);
-/** A subagent launch: the call returns at once and the subagent works on. */
-const SUBAGENT_TITLES = new Set([
-  "Running start_subagent",
-  "Run start_subagent?",
-  "Running invoke_subagent",
-  "Run invoke_subagent?",
-]);
 /**
  * A command that has said nothing this long no longer holds its turn: the
  * agent sometimes loses a command's end or its wake (T3 Code found the same
@@ -51,13 +45,6 @@ export const ANTIGRAVITY_SILENT_WORK_LIMIT = Duration.minutes(30);
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
-
-/** A launch's input: one subagent (`Role`, `Prompt`), or a batch (`Subagents`). */
-function isSubagentLaunch(input: unknown): boolean {
-  if (!isRecord(input)) return false;
-  if (typeof input.Role === "string" && typeof input.Prompt === "string") return true;
-  return Array.isArray(input.Subagents) && input.Subagents.length > 0;
-}
 
 /**
  * What a tool call goes on with after the prompt answers: a command the
@@ -72,14 +59,9 @@ export function antigravityWorkAfterPrompt(
   if (toolCall.kind === "execute") {
     return isRecord(input) && input.IsDaemon === true ? undefined : "command";
   }
-  if (
-    (toolCall.kind === undefined || toolCall.kind === "other") &&
-    toolCall.title !== undefined &&
-    SUBAGENT_TITLES.has(toolCall.title) &&
-    isSubagentLaunch(input)
-  ) {
-    return "subagent";
-  }
+  // Stage 3: one reading of a launch, shared with the subagent rows; it adds
+  // 1.5's auto-approved title ("Run invoke_subagent").
+  if (isAntigravitySubagentLaunch(toolCall)) return "subagent";
   return undefined;
 }
 
@@ -240,6 +222,7 @@ export function antigravityTurnBehavior<Settings extends AcpProviderSettings>(
   AcpProviderDescriptor<Settings>,
   | "agentTurns"
   | "heldTurns"
+  | "subagents"
   | "steerWithPrompt"
   | "promptOutcome"
   | "usageLedger"
@@ -253,6 +236,9 @@ export function antigravityTurnBehavior<Settings extends AcpProviderSettings>(
       workAfterPrompt: antigravityWorkAfterPrompt,
       silentLimit: ANTIGRAVITY_SILENT_WORK_LIMIT,
     },
+    // Stage 3: each launch shows as a subagent, and the hold on subagents
+    // lasts until the CLI's records say every child reported or was killed.
+    subagents: antigravitySubagents(profileDir),
     steerWithPrompt: true,
     promptOutcome: {
       watch: (sessionId) =>

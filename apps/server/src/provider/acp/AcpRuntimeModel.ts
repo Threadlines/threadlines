@@ -29,6 +29,12 @@ export interface AcpToolCallState {
   readonly status?: "pending" | "inProgress" | "completed" | "failed";
   readonly command?: string;
   readonly detail?: string;
+  /**
+   * The timeline row type, when the agent's `kind` doesn't say it (an MCP
+   * call an agent runs as a command). Set by a descriptor's
+   * `normalizeToolCall`; absent, the row type follows `kind`.
+   */
+  readonly itemType?: ToolLifecycleItemType;
   readonly data: Record<string, unknown>;
 }
 

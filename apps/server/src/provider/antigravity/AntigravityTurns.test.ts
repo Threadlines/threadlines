@@ -118,6 +118,18 @@ const replyTo = (events: ReadonlyArray<ProviderRuntimeEvent>, turnId: TurnId) =>
     )
     .join("");
 
+/** Each subagent's latest status, by its launching call. */
+const subagentStatuses = (events: ReadonlyArray<ProviderRuntimeEvent>) =>
+  Object.fromEntries(
+    events.flatMap((event) =>
+      event.type === "subagent.metadata.updated" &&
+      event.payload.callId !== undefined &&
+      event.payload.status !== undefined
+        ? [[event.payload.callId, event.payload.status] as const]
+        : [],
+    ),
+  );
+
 const testServices = Layer.provideMerge(
   ServerConfig.layerTest(process.cwd(), { prefix: "threadlines-agy-adapter-test-" }),
   NodeServices.layer,
@@ -209,6 +221,111 @@ describe("Antigravity turns", () => {
       yield* agy.waitFor((events) => completedTurns(events).length === 1);
       expect(replyTo(agy.events, turnId)).toContain("The researcher found it.");
       expect(completedTurns(agy.events)[0]?.turnId).toBe(turnId);
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+  it.live("holds a turn until every subagent reported, and shows each with its steps", () =>
+    Effect.gen(function* () {
+      const agy = yield* startAgy("subagents");
+      const { turnId } = yield* agy.adapter.sendTurn({
+        threadId: agy.threadId,
+        input: "find and review the flaky test",
+        attachments: [],
+      });
+      // The first report and the reply to it leave the second subagent at work.
+      yield* agy.waitFor((events) => replyTo(events, turnId).includes("The researcher found it."));
+      yield* Effect.sleep("2500 millis");
+      expect(completedTurns(agy.events)).toHaveLength(0);
+      expect(subagentStatuses(agy.events)).toEqual({
+        call_research: "completed",
+        call_review: "running",
+      });
+
+      yield* agy.waitFor((events) => completedTurns(events).length === 1);
+      expect(completedTurns(agy.events)[0]).toMatchObject({
+        turnId,
+        payload: { state: "completed" },
+      });
+      expect(replyTo(agy.events, turnId)).toContain("The reviewer agreed.");
+      expect(subagentStatuses(agy.events)).toEqual({
+        call_research: "completed",
+        call_review: "completed",
+      });
+      // Each launch shows as a subagent with its role, prompt and report.
+      const started = agy.events.filter(
+        (event) => event.type === "subagent.metadata.updated" && event.payload.status === "running",
+      );
+      expect(started.map((event) => event.payload)).toEqual([
+        expect.objectContaining({
+          callId: "call_research",
+          agentRole: "Researcher",
+          objective: "Find the flaky test",
+          isBackgrounded: true,
+        }),
+        expect.objectContaining({ callId: "call_review", agentRole: "Reviewer" }),
+      ]);
+      expect(
+        agy.events.find(
+          (event) =>
+            event.type === "subagent.metadata.updated" &&
+            event.payload.callId === "call_research" &&
+            event.payload.status === "completed",
+        ),
+      ).toMatchObject({ turnId, payload: { resultBody: "The flaky test is api.test.ts." } });
+      // Nothing is left running in the task snapshot.
+      const snapshots = agy.events.flatMap((event) =>
+        event.type === "task.snapshot.updated" ? [event.payload.tasks.length] : [],
+      );
+      expect(snapshots.at(-1)).toBe(0);
+
+      // The subagent view reads the child's steps from the CLI's records.
+      const transcript = yield* agy.adapter.readSubagentTranscript!(agy.threadId, {
+        threadId: agy.threadId,
+        agentId: "call_research",
+      });
+      expect(transcript.agent).toMatchObject({ id: "child-research", agentType: "Researcher" });
+      expect(transcript.entries).toEqual([
+        { id: "launch", role: "user", text: "Find the flaky test", toolUses: [] },
+        {
+          id: "step-1",
+          role: "assistant",
+          text: "",
+          toolUses: [{ name: "view_file", summary: "/project/api.test.ts" }],
+        },
+        {
+          id: "step-2",
+          role: "system",
+          text: "",
+          toolUses: [],
+          outputPreview: "1: it.skip('flaky')",
+        },
+        { id: "step-3", role: "assistant", text: "Found it.", toolUses: [] },
+      ]);
+      // A launch the records don't name says so.
+      const missing = yield* Effect.flip(
+        agy.adapter.readSubagentTranscript!(agy.threadId, {
+          threadId: agy.threadId,
+          agentId: "call_unknown",
+        }),
+      );
+      expect(missing.message).toContain("Antigravity did not record which subagent this started");
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+  it.live("does not hold a turn for a subagent killed within it", () =>
+    Effect.gen(function* () {
+      const agy = yield* startAgy("subagent-killed");
+      const { turnId } = yield* agy.adapter.sendTurn({
+        threadId: agy.threadId,
+        input: "explore, then stop",
+        attachments: [],
+      });
+      yield* agy.waitFor((events) => completedTurns(events).length === 1);
+      expect(completedTurns(agy.events)[0]).toMatchObject({
+        turnId,
+        payload: { state: "completed" },
+      });
+      expect(subagentStatuses(agy.events)).toEqual({ call_stray: "interrupted" });
     }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 
@@ -411,4 +528,43 @@ describe("Antigravity turn reading", () => {
       reasoningTokens: 50,
     });
   });
+});
+
+describe("Antigravity tool rows", () => {
+  const toolItem = (events: ReadonlyArray<ProviderRuntimeEvent>, id: string) =>
+    events.findLast((event) => event.type === "item.completed" && String(event.itemId) === id) as
+      | Extract<ProviderRuntimeEvent, { type: "item.completed" }>
+      | undefined;
+
+  it.live("shows call_mcp_tool as the MCP tool, keeps a command's start, drops images", () =>
+    Effect.gen(function* () {
+      const agy = yield* startAgy("tools");
+      yield* agy.adapter.sendTurn({ threadId: agy.threadId, input: "go", attachments: [] });
+      yield* agy.waitFor((events) => completedTurns(events).length === 1);
+
+      expect(toolItem(agy.events, "call_mcp")?.payload).toMatchObject({
+        itemType: "mcp_tool_call",
+        title: "list_issues",
+        data: { server: "github", tool: "list_issues", arguments: { repo: "x/y" } },
+      });
+      expect(toolItem(agy.events, "call_mcp")?.payload.data).not.toHaveProperty("item");
+
+      const command = toolItem(agy.events, "call_long")?.payload.data as {
+        command: string;
+        item: { command: string; aggregatedOutput: string };
+      };
+      expect(command.command.startsWith("echo start")).toBe(true);
+      expect(command.command.endsWith("[Command truncated]")).toBe(true);
+      expect(command.command.length).toBeLessThanOrEqual(8_000 + "\n\n[Command truncated]".length);
+      expect(command.item.aggregatedOutput.endsWith("tail")).toBe(true);
+      expect(command.item.aggregatedOutput.length).toBeLessThan(8_100);
+
+      const shot = toolItem(agy.events, "call_shot");
+      expect(JSON.stringify(shot)).not.toContain("aGVsbG8=");
+      expect(shot?.payload.data).toMatchObject({
+        content: [{ type: "content", content: { type: "text", text: "Screenshot taken." } }],
+      });
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
 });

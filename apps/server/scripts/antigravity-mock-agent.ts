@@ -13,7 +13,13 @@
  *   finishes replies by itself (1.5.10), then a `usage_update` ends the reply.
  * - `hang`: starts a command that never finishes; a cancel fails it.
  * - `subagent`: launches a subagent, ends its prompt, and replies with the
- *   subagent's report later.
+ *   subagent's report later. It writes no subagent records.
+ * - `subagents`: launches two subagents with their records (as 1.5.12+
+ *   keeps them under `brain/`); the first reports, the agent replies, and
+ *   the second reports a while later.
+ * - `subagent-killed`: launches a subagent and kills it within the prompt.
+ * - `tools`: an MCP call through `call_mcp_tool`, a long command line, and
+ *   a screenshot in a tool's content.
  * - `wake`: ends its prompt with nothing running, then replies by itself.
  * - `steer`: holds its first prompt until a second arrives, answers the first
  *   `end_turn`, and replies to the second.
@@ -21,7 +27,7 @@
  * - `quota`: fails the prompt with Google's quota error (1.5.9).
  * - `lost-signature`: fails the prompt with the refused-thinking error.
  */
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -60,6 +66,74 @@ function appendLogSteps(sessionId: string, steps: ReadonlyArray<readonly [number
   } finally {
     database.close();
   }
+}
+
+/** Writes one of the CLI's JSON records under `brain/` in the profile. */
+function writeBrainRecord(segments: ReadonlyArray<string>, value: unknown) {
+  if (profileDir === undefined) return;
+  const file = join(profileDir, "antigravity-acp", "brain", ...segments);
+  mkdirSync(join(file, ".."), { recursive: true });
+  writeFileSync(file, typeof value === "string" ? value : JSON.stringify(value));
+}
+
+/** A child's records as `invoke_subagent` leaves them: its entry, its launch, its steps. */
+function recordChild(input: {
+  readonly parent: string;
+  readonly child: string;
+  readonly callId: string;
+  readonly role: string;
+  readonly prompt: string;
+  readonly state: string;
+}) {
+  writeBrainRecord([input.parent, ".system_generated", "subagents", `${input.child}.json`], {
+    conversationId: input.child,
+    subagentDescriptor: { typeName: "research", role: input.role },
+    state: input.state,
+  });
+  writeBrainRecord([input.child, ".system_generated", "messages", "launch.json"], {
+    sender: input.parent,
+    content: input.prompt,
+    sourceMetadata: {
+      tool: {
+        conversationId: input.parent,
+        toolCall: {
+          id: input.callId,
+          name: "invoke_subagent",
+          argumentsJson: JSON.stringify({ Role: input.role, Prompt: input.prompt }),
+        },
+      },
+    },
+  });
+  writeBrainRecord(
+    [input.child, ".system_generated", "logs", "transcript.jsonl"],
+    [
+      {
+        step_index: 0,
+        type: "SYSTEM_MESSAGE",
+        status: "DONE",
+        content: `<SYSTEM_MESSAGE>\n[Message] sender=${input.parent} content=${input.prompt}\n</SYSTEM_MESSAGE>`,
+      },
+      {
+        step_index: 1,
+        type: "PLANNER_RESPONSE",
+        status: "DONE",
+        tool_calls: [{ name: "view_file", args: { AbsolutePath: '"/project/api.test.ts"' } }],
+      },
+      { step_index: 2, type: "VIEW_FILE", status: "DONE", content: "1: it.skip('flaky')" },
+      { step_index: 3, type: "PLANNER_RESPONSE", status: "DONE", content: "Found it." },
+    ]
+      .map((line) => JSON.stringify(line))
+      .join("\n") + "\n",
+  );
+}
+
+/** A child's report, in the parent's inbox. */
+function recordReport(parent: string, child: string, content: string) {
+  writeBrainRecord([parent, ".system_generated", "messages", `${child}-report.json`], {
+    sender: child,
+    content,
+    priority: "MESSAGE_PRIORITY_HIGH",
+  });
 }
 
 const textOf = (prompt: ReadonlyArray<AcpSchema.ContentBlock>) =>
@@ -200,6 +274,110 @@ const program = Effect.gen(function* () {
           yield* say(sessionId, "The researcher found it.");
           yield* modelCallEnds(sessionId);
         }).pipe(Effect.forkDetach);
+        return { stopReason: "end_turn" as const };
+      }
+      if (scenario === "subagents") {
+        const launch = (callId: string, child: string, role: string, prompt: string) =>
+          Effect.gen(function* () {
+            recordChild({
+              parent: sessionId,
+              child,
+              callId,
+              role,
+              prompt,
+              state: "SUBAGENT_STATE_ALIVE",
+            });
+            yield* update(sessionId, {
+              sessionUpdate: "tool_call",
+              toolCallId: callId,
+              kind: "other",
+              title: "Run invoke_subagent",
+              status: "completed",
+              rawInput: { Role: role, Prompt: prompt },
+            });
+          });
+        yield* launch("call_research", "child-research", "Researcher", "Find the flaky test");
+        yield* launch("call_review", "child-review", "Reviewer", "Review the fix");
+        yield* say(sessionId, "Two agents are on it.");
+        yield* modelCallEnds(sessionId);
+        yield* Effect.gen(function* () {
+          yield* Effect.sleep("400 millis");
+          recordReport(sessionId, "child-research", "The flaky test is api.test.ts.");
+          yield* say(sessionId, " The researcher found it.");
+          yield* modelCallEnds(sessionId);
+          // Longer than a held turn's settle: only the records hold it.
+          yield* Effect.sleep("3000 millis");
+          recordReport(sessionId, "child-review", "The fix looks right.");
+          yield* say(sessionId, " The reviewer agreed.");
+          yield* modelCallEnds(sessionId);
+        }).pipe(Effect.forkDetach);
+        return { stopReason: "end_turn" as const };
+      }
+      if (scenario === "subagent-killed") {
+        recordChild({
+          parent: sessionId,
+          child: "child-stray",
+          callId: "call_stray",
+          role: "Explorer",
+          prompt: "Look around",
+          state: "SUBAGENT_STATE_ALIVE",
+        });
+        yield* update(sessionId, {
+          sessionUpdate: "tool_call",
+          toolCallId: "call_stray",
+          kind: "other",
+          title: "Run invoke_subagent",
+          status: "completed",
+          rawInput: { Role: "Explorer", Prompt: "Look around" },
+        });
+        // `manage_subagents` kill only rewrites the record's state.
+        recordChild({
+          parent: sessionId,
+          child: "child-stray",
+          callId: "call_stray",
+          role: "Explorer",
+          prompt: "Look around",
+          state: "SUBAGENT_STATE_KILLED",
+        });
+        yield* say(sessionId, "Stopped the explorer.");
+        yield* modelCallEnds(sessionId);
+        return { stopReason: "end_turn" as const };
+      }
+      if (scenario === "tools") {
+        yield* update(sessionId, {
+          sessionUpdate: "tool_call",
+          toolCallId: "call_mcp",
+          kind: "execute",
+          title: "MCP Tool list_issues",
+          status: "completed",
+          rawInput: { ServerName: "github", ToolName: "list_issues", Arguments: { repo: "x/y" } },
+          rawOutput: "[]",
+        });
+        yield* update(sessionId, {
+          sessionUpdate: "tool_call",
+          toolCallId: "call_long",
+          kind: "execute",
+          title: "Running long command",
+          status: "completed",
+          rawInput: { CommandLine: `echo start ${"x".repeat(9_000)} 😀 end` },
+          rawOutput: { output: `${"y".repeat(9_000)}tail`, exit_code: 0 },
+        });
+        yield* update(sessionId, {
+          sessionUpdate: "tool_call",
+          toolCallId: "call_shot",
+          kind: "other",
+          title: "Took a screenshot",
+          status: "completed",
+          content: [
+            {
+              type: "content",
+              content: { type: "image", data: "aGVsbG8=", mimeType: "image/png" },
+            },
+            { type: "content", content: { type: "text", text: "Screenshot taken." } },
+          ],
+        });
+        yield* say(sessionId, "Done.");
+        yield* modelCallEnds(sessionId);
         return { stopReason: "end_turn" as const };
       }
       if (scenario === "wake") {

@@ -16,6 +16,7 @@ import type {
   ProviderInteractionMode,
   ProviderOptionSelection,
   ProviderRuntimeEvent,
+  ProviderSubagentTranscriptEntry,
   ProviderUserInputAnswers,
   RuntimeMode,
   RuntimeUsageLimit,
@@ -201,6 +202,60 @@ export interface AcpHeldTurns {
    * wake-up holds it with no limit (a timer is silent until it fires).
    */
   readonly silentLimit: Duration.Duration;
+}
+
+/** A subagent a tool call launched, as the launch named it. */
+export interface AcpSubagentLaunch {
+  readonly role: string;
+  readonly prompt: string;
+}
+
+/** What became of a launched subagent, by the agent's own records. */
+export interface AcpSubagentState {
+  /** `reported`: it sent the agent its report; `killed`: the agent stopped it. */
+  readonly state: "working" | "reported" | "killed";
+  /** Its report, when it has sent one. */
+  readonly report?: string;
+}
+
+/**
+ * Subagents an agent launches with a tool call that returns at once and
+ * reports no end for (Antigravity's `invoke_subagent`): only the agent's own
+ * records say which child a call started, whether it is done, and what it
+ * did. With it, each launch shows as a subagent, and a turn held for
+ * subagents (`heldTurns`) lasts until every child has reported or been
+ * killed, as far as the records tell.
+ */
+export interface AcpSubagents {
+  /** The subagents this tool call launches; `undefined` for any other call. */
+  readonly launches: (toolCall: AcpToolCallState) => ReadonlyArray<AcpSubagentLaunch> | undefined;
+  /**
+   * The state of each launching call's child, by call id. A call the records
+   * don't tie to its child is left out; `undefined` when they can't be read.
+   */
+  readonly states: (input: {
+    readonly sessionId: string;
+    readonly launchCallIds: ReadonlyArray<string>;
+  }) => Effect.Effect<ReadonlyMap<string, AcpSubagentState> | undefined>;
+  /**
+   * The child a launching call started and its steps, or `undefined` when
+   * the records don't say which child it started.
+   */
+  readonly transcript: (input: {
+    readonly sessionId: string;
+    readonly launchCallId: string;
+  }) => Effect.Effect<
+    | {
+        readonly childId: string;
+        readonly launch: AcpSubagentLaunch;
+        readonly entries: ReadonlyArray<ProviderSubagentTranscriptEntry>;
+        /** Only the transcript's end was read. */
+        readonly truncated: boolean;
+      }
+    | undefined
+  >;
+  /** What the subagent view says when `transcript` finds nothing. */
+  readonly unrecordedMessage: string;
 }
 
 /** Runtime hooks handed to a vendor's extension registration. */
@@ -441,6 +496,8 @@ export interface AcpProviderDescriptor<Settings extends AcpProviderSettings> {
   readonly steerWithPrompt?: boolean;
   /** Keeps a turn open while work the agent goes on with after its prompt runs. */
   readonly heldTurns?: AcpHeldTurns;
+  /** Subagents launched by a tool call, read from the agent's own records. */
+  readonly subagents?: AcpSubagents;
   /** How a prompt really ended, where the agent's answer can hide a failure. */
   readonly promptOutcome?: AcpPromptOutcome;
   /**
@@ -547,6 +604,21 @@ export interface AcpProviderDescriptor<Settings extends AcpProviderSettings> {
   readonly permissionOptionWarning?: (
     option: EffectAcpSchema.PermissionOption,
   ) => string | undefined;
+  /**
+   * Rewrites each session update before the core reads it: the runtime
+   * events (and so what is stored and shown) carry only what this returns.
+   * The opt-in protocol log still records the wire as it came. Antigravity
+   * bounds its tool text and leaves out inline images here.
+   */
+  readonly normalizeSessionUpdate?: (
+    notification: EffectAcpSchema.SessionNotification,
+  ) => EffectAcpSchema.SessionNotification;
+  /**
+   * Rewrites each tool call after its updates are merged, for a call the
+   * agent describes as something it isn't (Antigravity runs MCP tools it
+   * left out of its context through a command, `call_mcp_tool`).
+   */
+  readonly normalizeToolCall?: (toolCall: AcpToolCallState) => AcpToolCallState;
   /** Text the agent appends when a prompt is cancelled; dropped from the reply. */
   readonly cancellationNotice?: string;
   readonly planMode?: AcpPromptPlanMode;

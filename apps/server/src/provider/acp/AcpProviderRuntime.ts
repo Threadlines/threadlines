@@ -125,6 +125,12 @@ export const makeAcpProviderRuntime = <Settings extends AcpProviderSettings>(
         ...(descriptor.initializeMeta ? { initializeMeta: descriptor.initializeMeta } : {}),
         ...(descriptor.cancelMeta ? { cancelMeta: descriptor.cancelMeta } : {}),
         ...(descriptor.contextUsage ? { contextUsage: descriptor.contextUsage } : {}),
+        ...(descriptor.normalizeSessionUpdate
+          ? { normalizeSessionUpdate: descriptor.normalizeSessionUpdate }
+          : {}),
+        ...(descriptor.normalizeToolCall
+          ? { normalizeToolCall: descriptor.normalizeToolCall }
+          : {}),
         ...(descriptor.verifyAgent
           ? {
               verifyInitialize: (response: EffectAcpSchema.InitializeResponse) =>

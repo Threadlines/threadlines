@@ -150,6 +150,12 @@ export interface AcpSessionRuntimeOptions {
    * that starts turns of its own), not replayed history to drop.
    */
   readonly liveOutsidePrompt?: boolean;
+  /** Rewrites each session update before anything reads it (see `AcpProviderDescriptor.normalizeSessionUpdate`). */
+  readonly normalizeSessionUpdate?: (
+    notification: EffectAcpSchema.SessionNotification,
+  ) => EffectAcpSchema.SessionNotification;
+  /** Rewrites each merged tool call (see `AcpProviderDescriptor.normalizeToolCall`). */
+  readonly normalizeToolCall?: (toolCall: AcpToolCallState) => AcpToolCallState;
   /** Context fill carried on the agent's own updates (see `AcpProviderDescriptor.contextUsage`). */
   readonly contextUsage?: {
     readonly usedTokens: (notification: EffectAcpSchema.SessionNotification) => number | undefined;
@@ -510,8 +516,9 @@ const makeAcpSessionRuntime = (
     // A resumed session restarts segment numbering at 0 in this process, so
     // its items would collide with the ones persisted by the previous run.
     const itemIdScope = options.resumeSessionId ? `:r${Date.now().toString(36)}` : "";
-    yield* acp.handleSessionUpdate((notification) =>
+    yield* acp.handleSessionUpdate((received) =>
       Effect.gen(function* () {
+        const notification = options.normalizeSessionUpdate?.(received) ?? received;
         const ownSessionId = yield* Ref.get(ownSessionIdRef);
         if (ownSessionId !== undefined && String(notification.sessionId) !== ownSessionId) {
           const handler = yield* Ref.get(foreignUpdateHandlerRef);
@@ -538,6 +545,7 @@ const makeAcpSessionRuntime = (
           itemIdScope,
           params: notification,
           ...(nativeControls ? { configOptionsRef } : {}),
+          ...(options.normalizeToolCall ? { normalizeToolCall: options.normalizeToolCall } : {}),
         });
       }),
     );
@@ -1092,6 +1100,7 @@ const handleSessionUpdate = ({
   itemIdScope,
   params,
   configOptionsRef,
+  normalizeToolCall,
 }: {
   readonly queue: Queue.Queue<AcpSessionRuntimeEvent>;
   readonly modeStateRef: Ref.Ref<AcpSessionModeState | undefined>;
@@ -1104,6 +1113,7 @@ const handleSessionUpdate = ({
   readonly params: EffectAcpSchema.SessionNotification;
   /** Given for native controls only: the agent's own option updates land here. */
   readonly configOptionsRef?: Ref.Ref<ReadonlyArray<EffectAcpSchema.SessionConfigOption>>;
+  readonly normalizeToolCall?: (toolCall: AcpToolCallState) => AcpToolCallState;
 }): Effect.Effect<void> =>
   Effect.gen(function* () {
     if (configOptionsRef && params.update.sessionUpdate === "config_option_update") {
@@ -1139,7 +1149,8 @@ const handleSessionUpdate = ({
         });
         const { previous, merged } = yield* Ref.modify(toolCallsRef, (current) => {
           const previous = current.get(event.toolCall.toolCallId);
-          const nextToolCall = mergeToolCallState(previous, event.toolCall);
+          const mergedToolCall = mergeToolCallState(previous, event.toolCall);
+          const nextToolCall = normalizeToolCall?.(mergedToolCall) ?? mergedToolCall;
           const next = new Map(current);
           if (nextToolCall.status === "completed" || nextToolCall.status === "failed") {
             next.delete(nextToolCall.toolCallId);

@@ -59,6 +59,10 @@ import {
   type AntigravityPlatformRelease,
 } from "../antigravity/AntigravityRelease.ts";
 import type { AntigravityReleaseSource } from "../antigravity/AntigravityReleaseSource.ts";
+import {
+  normalizeAntigravitySessionUpdate,
+  normalizeAntigravityToolCall,
+} from "../antigravity/AntigravityToolCalls.ts";
 import { antigravityTurnBehavior } from "../antigravity/AntigravityTurns.ts";
 import {
   acquireAntigravityTempDir,
@@ -805,6 +809,9 @@ export function makeAntigravityDescriptor(
     classifyPermissionRequest: antigravityQuestion,
     permissionOptionWarning: antigravityOptionWarning,
     cancellationNotice: "The request was cancelled by the client.",
+    // Tool text bounded, no inline images, `call_mcp_tool` shown as the MCP tool.
+    normalizeSessionUpdate: normalizeAntigravitySessionUpdate,
+    normalizeToolCall: normalizeAntigravityToolCall,
     // Work that outlives a prompt, steering, hidden failures, turn tokens.
     ...antigravityTurnBehavior<AntigravitySettings>(paths.profileDir),
     planMode: {

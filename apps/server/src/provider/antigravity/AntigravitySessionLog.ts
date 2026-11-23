@@ -2,8 +2,9 @@
 /**
  * Reads the error that ended an Antigravity turn from the agent's own session
  * log. THIS READS A PRIVATE FORMAT: Google documents none of it, and a CLI
- * update can change it without notice. It is the one place Threadlines reads
- * the CLI's session files, and only for what ACP gives no word of.
+ * update can change it without notice. With `AntigravityChildRecords` (its
+ * subagents' records) it is where Threadlines reads the CLI's session files,
+ * and only for what ACP gives no word of.
  *
  * `agy acp` reports an upstream failure (a 5xx, an exhausted quota, a history
  * the model refuses) as a chat message and a normal `end_turn`. The CLI keeps
@@ -45,22 +46,44 @@ export interface AntigravityTurnSteps {
 }
 
 /**
+ * An entry of the CLI's own data in the profile (`antigravity-acp/...`), when
+ * every step of its path exists with the expected type and none is a link,
+ * with its size; `undefined` otherwise. A link could point at another
+ * session's records, or out of the profile. Shared by every reader of the
+ * CLI's private files (this one and `AntigravityChildRecords`).
+ */
+export async function antigravityProfileEntry(
+  profileDir: string,
+  segments: ReadonlyArray<string>,
+  kind: "file" | "directory",
+): Promise<{ readonly path: string; readonly size: number } | undefined> {
+  const root = await NodeFSP.realpath(profileDir).catch(() => undefined);
+  if (root === undefined) return undefined;
+  let current = root;
+  let size = 0;
+  const path = [ANTIGRAVITY_APP_DATA_DIR, ...segments];
+  for (const [index, segment] of path.entries()) {
+    current = NodePath.join(current, segment);
+    const info = await NodeFSP.lstat(current).catch(() => undefined);
+    const last = index === path.length - 1;
+    if (info === undefined || info.isSymbolicLink()) return undefined;
+    if (last && kind === "file" ? !info.isFile() : !info.isDirectory()) return undefined;
+    size = info.size;
+  }
+  return { path: current, size };
+}
+
+/**
  * The session's log file when it is a plain file in the profile (no link at
  * any step of the path), or `undefined` when there is none yet.
  */
 async function sessionLogFile(profileDir: string, sessionId: string): Promise<string | undefined> {
-  const root = await NodeFSP.realpath(profileDir).catch(() => undefined);
-  if (root === undefined) return undefined;
-  const segments = [ANTIGRAVITY_APP_DATA_DIR, "conversations", `${sessionId}.db`];
-  let current = root;
-  for (const [index, segment] of segments.entries()) {
-    current = NodePath.join(current, segment);
-    const info = await NodeFSP.lstat(current).catch(() => undefined);
-    const last = index === segments.length - 1;
-    if (info === undefined || info.isSymbolicLink()) return undefined;
-    if (last ? !info.isFile() : !info.isDirectory()) return undefined;
-  }
-  return current;
+  const entry = await antigravityProfileEntry(
+    profileDir,
+    ["conversations", `${sessionId}.db`],
+    "file",
+  );
+  return entry?.path;
 }
 
 function readLog<A>(file: string, read: (database: DatabaseSync) => A): A | undefined {
