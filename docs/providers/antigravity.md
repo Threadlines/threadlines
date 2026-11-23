@@ -104,12 +104,49 @@ a cancel). A reply the agent starts after the turn ended opens a turn of its own
 Two limits keep a lost wake from leaving the thread working forever: a turn held only by commands
 and subagents ends after 30 minutes without a word from the agent, and a reply the agent started
 by itself ends 2 minutes after its last output if its closing usage update never comes. A timer
-holds the turn until it fires. Subagents are only known to finish by the report the agent gives when
-one ends, so the first report frees the turn; a later subagent's report opens a turn of its own.
+holds the turn until it fires. A subagent holds the turn until it has sent the agent its report or
+the agent stopped it (see Subagents). Where the CLI's records don't say which subagent a launch
+started, the first reply the agent starts by itself frees it, as before.
 
 A message sent while Antigravity works steers the turn instead of waiting: Threadlines sends it as
 another prompt, which the CLI takes into the running turn (1.5.0+), leaving its commands and
 subagents running.
+
+### Subagents
+
+When Antigravity launches a subagent (its `invoke_subagent` tool), the subagent shows in the thread
+like other agents' subagents: its role, its prompt, whether it runs, and the report it sent back.
+Open it to read its recent steps. ACP says only that a launch happened, so the rest is read from the
+CLI's own records in the profile (`antigravity-acp/brain/`, a private format read only for this;
+the code is `apps/server/src/provider/antigravity/AntigravityChildRecords.ts`). They are checked
+when the agent's prompt ends and when each reply it starts by itself ends:
+
+- A subagent that sent its report shows as done, with the report.
+- One the agent stopped (`manage_subagents`) shows as stopped and no longer keeps the turn running.
+- Stop ends every running subagent with the turn.
+- When the records don't say which subagent a launch started, its view says "Antigravity did not
+  record which subagent this started", and the turn falls back to the rule above.
+
+The view is read-only: you can't message a subagent directly.
+
+### Tool rows
+
+- An MCP tool the agent reaches through `call_mcp_tool` shows as that tool (server and name), not
+  as a shell command, and doesn't hold the turn like a command.
+- A command line longer than 8,000 characters keeps its start; output keeps its end. A cut never
+  splits a character, and the timeline keeps a long command's start too.
+- Screenshots and other inline images in a tool's result are left out of what Threadlines stores.
+- Edits show the files they change with their added and removed lines; the turn's diff shows them at
+  their real line numbers.
+
+### Attachments
+
+Images (PNG, JPEG, WebP, BMP) and audio go to Antigravity inline. PDFs go as a link to the saved file,
+which Antigravity reads as a document. Text files go as text, in UTF-8, or UTF-16 when the file
+starts with its byte order mark; one over 100 KB goes as a path instead, so it doesn't crowd the
+conversation. Anything else (a spreadsheet, a video) goes as the saved file's path for the agent to
+open with its tools. Each of these needs Antigravity to say it reads that kind; otherwise the file
+goes as a path. A MIME type's parameters (`; charset=utf-8`) don't change the choice.
 
 ### When a turn fails
 
