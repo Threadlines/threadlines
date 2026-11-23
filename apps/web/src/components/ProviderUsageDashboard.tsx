@@ -50,6 +50,8 @@ interface TokenActivityDay {
   readonly dailyTokens: number;
   readonly weeklyTokens: number;
   readonly cumulativeTokens: number;
+  /** A day up to this one has an unknown total, so the running total is only a floor. */
+  readonly cumulativeIsFloor: boolean;
 }
 
 function parseDateKey(dateKey: string): number | null {
@@ -109,16 +111,23 @@ function formatTokenActivityTooltip(
   return `${tokenLabel} tokens on ${formatLongDate(ms)}`;
 }
 
+/**
+ * `isFloor` marks a total with unknown days in it: the usage it counts
+ * happened, and maybe more.
+ */
 function formatTokenActivityWeekTooltip(
   mode: TokenActivityMode,
   weekStartMs: number,
   weekEndMs: number,
   value: number | null,
+  isFloor = false,
 ): string {
   if (value === null) {
     return `Usage unavailable for week of ${formatLongDate(weekStartMs)}`;
   }
-  const tokenLabel = formatProviderTokenCount(value) ?? "0";
+  const tokenLabel = isFloor
+    ? `At least ${formatProviderTokenCount(value, { roundDown: true }) ?? "0"}`
+    : (formatProviderTokenCount(value) ?? "0");
   if (mode === "weekly") {
     return `${tokenLabel} tokens on week of ${formatLongDate(weekStartMs)}`;
   }
@@ -207,26 +216,42 @@ function buildTokenActivityWeeks(
 
   const days: TokenActivityDay[] = [];
   let cumulativeTokens = carriedCumulativeTokens;
+  // Usage carried in from before the grid is a floor too when unknown days
+  // lie among it: the known range starts after the first of those days.
+  const earliestBucketMs = Math.min(...datedBuckets.map((entry) => entry.ms));
+  let unknownDaySeen =
+    !tokenUsage.completeLifetimeHistory &&
+    carriedCumulativeTokens > 0 &&
+    reportedStartMs > earliestBucketMs;
   for (let ms = startMs; ms <= endMs; ms += DAY_MS) {
     const dateKey = formatDateKey(ms);
     const dailyTokens = tokenByDate.get(dateKey) ?? 0;
     cumulativeTokens += dailyTokens;
+    // A day outside the known range still shows usage it does have: only
+    // its zero is unknown, since its files may be gone.
+    const reported = (ms >= reportedStartMs && ms <= reportedEndMs) || dailyTokens > 0;
+    if (!reported && ms <= anchorDayMs) unknownDaySeen = true;
     days.push({
       dateKey,
       ms,
-      // A day outside the known range still shows usage it does have: only
-      // its zero is unknown, since its files may be gone.
-      reported: (ms >= reportedStartMs && ms <= reportedEndMs) || dailyTokens > 0,
+      reported,
       dailyTokens,
       weeklyTokens: weeklyTotals.get(formatDateKey(startOfWeekUtc(ms))) ?? 0,
       cumulativeTokens,
+      cumulativeIsFloor: unknownDaySeen,
     });
   }
 
+  // A running total stays meaningful past an unknown day, as a floor: it
+  // shows on every day so far unless it is a zero that might not be one.
+  const cumulativeValue = (day: TokenActivityDay): number | null =>
+    day.ms > anchorDayMs || (day.cumulativeTokens === 0 && day.cumulativeIsFloor)
+      ? null
+      : day.cumulativeTokens;
   const maxValue = Math.max(
     0,
     ...days
-      .filter((day) => day.reported)
+      .filter((day) => (mode === "cumulative" ? cumulativeValue(day) !== null : day.reported))
       .map((day) =>
         mode === "daily"
           ? day.dailyTokens
@@ -245,19 +270,26 @@ function buildTokenActivityWeeks(
     // have still shows.
     const weekPartlyUnknown = weekDays.some((day) => !day.reported && day.ms <= anchorDayMs);
     const weekQuiet = reportedWeekDays.every((day) => day.dailyTokens === 0);
+    // The week's running total is its last day so far.
+    const lastPastDay = weekDays.findLast((day) => day.ms <= anchorDayMs);
     const weekValue =
-      reportedWeekDays.length === 0 || (weekPartlyUnknown && weekQuiet && mode !== "cumulative")
-        ? null
-        : mode === "weekly"
-          ? (reportedWeekDays[0]?.weeklyTokens ?? 0)
-          : mode === "cumulative"
-            ? (reportedWeekDays[reportedWeekDays.length - 1]?.cumulativeTokens ?? 0)
+      mode === "cumulative"
+        ? lastPastDay
+          ? cumulativeValue(lastPastDay)
+          : null
+        : reportedWeekDays.length === 0 || (weekPartlyUnknown && weekQuiet)
+          ? null
+          : mode === "weekly"
+            ? (reportedWeekDays[0]?.weeklyTokens ?? 0)
             : reportedWeekDays.reduce((sum, day) => sum + day.dailyTokens, 0);
+    const weekIsFloor =
+      mode === "cumulative" ? lastPastDay?.cumulativeIsFloor === true : weekPartlyUnknown;
     const weekTooltip = formatTokenActivityWeekTooltip(
       mode,
       weekDays[0]?.ms ?? weekStartMs,
       weekDays[weekDays.length - 1]?.ms ?? weekStartMs,
       weekValue,
+      weekIsFloor,
     );
     let monthLabel: string | null = null;
     for (const [offset, day] of weekDays.entries()) {
@@ -267,19 +299,20 @@ function buildTokenActivityWeeks(
         monthLabel = formatMonthLabel(day.ms);
         previousMonth = month;
       }
-      const value = !day.reported
-        ? null
-        : mode === "daily"
-          ? day.dailyTokens
-          : mode === "weekly"
-            ? day.dailyTokens > 0
-              ? day.weeklyTokens
-              : weekPartlyUnknown
-                ? null
-                : 0
+      const value =
+        mode === "cumulative"
+          ? cumulativeValue(day) === null
+            ? null
             : day.cumulativeTokens > 0
               ? weekValue
-              : 0;
+              : 0
+          : !day.reported
+            ? null
+            : mode === "daily"
+              ? day.dailyTokens
+              : day.dailyTokens > 0
+                ? day.weeklyTokens
+                : 0;
       cells.push({
         dateKey: day.dateKey,
         value,

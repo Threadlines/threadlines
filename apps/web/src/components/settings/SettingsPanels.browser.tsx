@@ -3672,6 +3672,30 @@ describe("GeneralSettingsPanel observability", () => {
     await expect
       .element(visibleActivityGrid.getByLabelText(`Usage unavailable on ${earlyQuietDate}`))
       .toBeVisible();
+
+    // With unknown days behind it, a running total is a floor, never an exact sum.
+    await page.getByRole("button", { name: "Cumulative" }).last().click();
+    const cumulativeGrid = page
+      .getByLabelText("Local token activity cumulative token activity")
+      .last();
+    // A week after the first usage and before the known range still shows the floor.
+    const unknownDayMs = Date.parse(`${utcDateKeyAtOffset(-34)}T00:00:00.000Z`);
+    const unknownWeekStart = new Date(
+      unknownDayMs - new Date(unknownDayMs).getUTCDay() * 86_400_000,
+    )
+      .toISOString()
+      .slice(0, 10);
+    await expect
+      .element(
+        cumulativeGrid.getByLabelText(
+          `At least 4k tokens through week of ${formatTokenActivityTestDate(unknownWeekStart)}`,
+        ),
+      )
+      .toBeVisible();
+    const weekLabels = [
+      ...cumulativeGrid.element().querySelectorAll<HTMLElement>('[role="img"]'),
+    ].map((week) => week.getAttribute("aria-label") ?? "");
+    expect(weekLabels.filter((label) => /^\d/.test(label))).toEqual([]);
   });
 
   it("configures Claude fallback models from the provider models list", async () => {
