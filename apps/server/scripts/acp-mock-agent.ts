@@ -28,6 +28,10 @@ const failSetConfigOption = process.env.T3_ACP_FAIL_SET_CONFIG_OPTION === "1";
 const authRequiredOnSetConfigOption = process.env.T3_ACP_FAIL_SET_CONFIG_OPTION === "auth";
 const exitOnSetConfigOption = process.env.T3_ACP_EXIT_ON_SET_CONFIG_OPTION === "1";
 const promptResponseText = process.env.T3_ACP_PROMPT_RESPONSE_TEXT;
+/** Refuses to reopen a saved session, as an agent that no longer has it does. */
+const failLoadSession = process.env.T3_ACP_FAIL_LOAD_SESSION === "1";
+/** `agentInfo` to report on `initialize`, as JSON (`{"name":…,"version":…}`). */
+const agentInfo = process.env.T3_ACP_AGENT_INFO;
 /** Refuses the first prompt it gets, as an agent that errors before taking it does. */
 let failFirstPrompt = process.env.T3_ACP_FAIL_FIRST_PROMPT === "1";
 /** Ends every prompt with this stop reason and no reply, as a refusing model does. */
@@ -266,6 +270,7 @@ const program = Effect.gen(function* () {
         request.clientCapabilities.elicitation.url !== null;
       return {
         protocolVersion: 1,
+        ...(agentInfo ? { agentInfo: JSON.parse(agentInfo) as AcpSchema.Implementation } : {}),
         agentCapabilities: {
           loadSession: true,
           ...(advertiseHttpMcp ? { mcpCapabilities: { http: true } } : {}),
@@ -342,20 +347,22 @@ const program = Effect.gen(function* () {
   );
 
   yield* agent.handleLoadSession((request) =>
-    agent.client
-      .sessionUpdate({
-        sessionId: String(request.sessionId ?? sessionId),
-        update: {
-          sessionUpdate: "user_message_chunk",
-          content: { type: "text", text: "replay" },
-        },
-      })
-      .pipe(
-        Effect.as({
-          modes: modeState(),
-          configOptions: configOptions(),
-        }),
-      ),
+    failLoadSession
+      ? Effect.fail(AcpError.AcpRequestError.invalidParams("Session not found", {}))
+      : agent.client
+          .sessionUpdate({
+            sessionId: String(request.sessionId ?? sessionId),
+            update: {
+              sessionUpdate: "user_message_chunk",
+              content: { type: "text", text: "replay" },
+            },
+          })
+          .pipe(
+            Effect.as({
+              modes: modeState(),
+              configOptions: configOptions(),
+            }),
+          ),
   );
 
   yield* agent.handleSetSessionConfigOption((request) =>

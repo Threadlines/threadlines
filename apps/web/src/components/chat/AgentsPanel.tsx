@@ -174,6 +174,9 @@ function trunkColor(providerLabel: string | null | undefined): string {
   if (provider !== undefined && /(^|\W)fx(\W|$)/u.test(provider)) {
     return "var(--provider-fx)";
   }
+  if (provider?.includes("antigravity")) {
+    return "var(--provider-antigravity)";
+  }
   return "var(--border)";
 }
 

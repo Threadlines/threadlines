@@ -66,6 +66,19 @@ export interface ProviderSessionDirectoryShape {
   readonly deleteBinding: (
     threadId: ThreadId,
   ) => Effect.Effect<void, ProviderSessionDirectoryPersistenceError>;
+
+  /**
+   * Merges flat payload fields into a binding (and clears its cursor), in
+   * one step, only while it still names runtime `sessionCreatedAt` (the
+   * `sessionCreatedAt` ProviderService writes on every start). False when it
+   * names another runtime, or there is none: nothing was written.
+   */
+  readonly patchIfSession: (input: {
+    readonly threadId: ThreadId;
+    readonly sessionCreatedAt: string;
+    readonly runtimePayload: Readonly<Record<string, string | number | boolean | null>>;
+    readonly clearResumeCursor?: boolean;
+  }) => Effect.Effect<boolean, ProviderSessionDirectoryPersistenceError>;
 }
 
 export class ProviderSessionDirectory extends Context.Service<

@@ -15,6 +15,7 @@ import * as Layer from "effect/Layer";
 import type * as Scope from "effect/Scope";
 import { ChildProcessSpawner } from "effect/process";
 import type * as EffectAcpErrors from "effect-acp/errors";
+import type * as EffectAcpSchema from "effect-acp/schema";
 
 import type {
   AcpConfigUpdate,
@@ -37,6 +38,7 @@ export interface AcpProviderRuntimeInput<Settings extends AcpProviderSettings> e
   AcpSessionRuntimeOptions,
   | "authMethodId"
   | "authenticateTimeoutMs"
+  | "cancellationNotice"
   | "cancelMeta"
   | "clientCapabilities"
   | "contextUsage"
@@ -44,6 +46,7 @@ export interface AcpProviderRuntimeInput<Settings extends AcpProviderSettings> e
   | "sessionControls"
   | "spawn"
   | "stderrFailure"
+  | "verifyInitialize"
 > {
   readonly childProcessSpawner: ChildProcessSpawner.ChildProcessSpawner["Service"];
   readonly settings: Settings;
@@ -123,6 +126,21 @@ export const makeAcpProviderRuntime = <Settings extends AcpProviderSettings>(
         ...(descriptor.initializeMeta ? { initializeMeta: descriptor.initializeMeta } : {}),
         ...(descriptor.cancelMeta ? { cancelMeta: descriptor.cancelMeta } : {}),
         ...(descriptor.contextUsage ? { contextUsage: descriptor.contextUsage } : {}),
+        ...(descriptor.normalizeSessionUpdate
+          ? { normalizeSessionUpdate: descriptor.normalizeSessionUpdate }
+          : {}),
+        ...(descriptor.normalizeToolCall
+          ? { normalizeToolCall: descriptor.normalizeToolCall }
+          : {}),
+        ...(descriptor.cancellationNotice !== undefined
+          ? { cancellationNotice: descriptor.cancellationNotice }
+          : {}),
+        ...(descriptor.verifyAgent
+          ? {
+              verifyInitialize: (response: EffectAcpSchema.InitializeResponse) =>
+                descriptor.verifyAgent!(settings, response),
+            }
+          : {}),
       }).pipe(
         Layer.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner)),
       ),

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { ProviderDriverKind, ThreadId } from "@threadlines/contracts";
+import { ProviderDriverKind, ProviderInstanceId, ThreadId } from "@threadlines/contracts";
 import { it, assert } from "@effect/vitest";
 import { assertSome } from "@effect/vitest/utils";
 import * as Effect from "effect/Effect";
@@ -33,6 +33,54 @@ function makeDirectoryLayer<E, R>(persistenceLayer: Layer.Layer<SqlClient.SqlCli
 }
 
 it.layer(makeDirectoryLayer(SqlitePersistenceMemory))("ProviderSessionDirectoryLive", (it) => {
+  it("writes a guarded patch only while the binding still names that runtime", () =>
+    Effect.gen(function* () {
+      const directory = yield* ProviderSessionDirectory;
+      const threadId = ThreadId.make("thread-guarded");
+      yield* directory.upsert({
+        threadId,
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        resumeCursor: { opaque: "runtime-b" },
+        runtimePayload: { sessionCreatedAt: "runtime-b", historyOwed: true, cwd: "/work" },
+      });
+      const payload = () =>
+        Effect.map(directory.getBinding(threadId), (binding) => Option.getOrUndefined(binding));
+
+      // An older runtime's write: nothing lands.
+      assert.isFalse(
+        yield* directory.patchIfSession({
+          threadId,
+          sessionCreatedAt: "runtime-a",
+          runtimePayload: { historyOwed: false, sessionCreatedAt: null },
+          clearResumeCursor: true,
+        }),
+      );
+      assert.deepEqual((yield* payload())?.runtimePayload, {
+        sessionCreatedAt: "runtime-b",
+        historyOwed: true,
+        cwd: "/work",
+      });
+      assert.deepEqual((yield* payload())?.resumeCursor, { opaque: "runtime-b" });
+
+      // Its own runtime's: merged in, the rest kept, the cursor cleared.
+      assert.isTrue(
+        yield* directory.patchIfSession({
+          threadId,
+          sessionCreatedAt: "runtime-b",
+          runtimePayload: { historyOwed: false },
+          clearResumeCursor: true,
+        }),
+      );
+      const after = yield* payload();
+      assert.deepEqual(after?.runtimePayload, {
+        sessionCreatedAt: "runtime-b",
+        historyOwed: false,
+        cwd: "/work",
+      });
+      assert.equal(after?.resumeCursor ?? null, null);
+    }));
+
   it("upserts and reads thread bindings", () =>
     Effect.gen(function* () {
       const directory = yield* ProviderSessionDirectory;

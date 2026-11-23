@@ -68,6 +68,7 @@ import {
   checkpointRefForThreadTurn,
 } from "../../checkpointing/Utils.ts";
 import { ServerConfig } from "../../config.ts";
+import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
 import { WorkspaceEntriesLive } from "../../workspace/Layers/WorkspaceEntries.ts";
 import { WorkspacePathsLive } from "../../workspace/Layers/WorkspacePaths.ts";
 
@@ -94,6 +95,8 @@ function createProviderServiceHarness(
   sessionCwd = cwd,
   providerName: ProviderSession["provider"] = ProviderDriverKind.make("codex"),
   extraSessions: ReadonlyArray<ProviderSession> = [],
+  conversationRollback?: "native" | "none" | "new-session",
+  capabilitiesFail = false,
 ) {
   const now = "2026-01-01T00:00:00.000Z";
   const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
@@ -102,7 +105,8 @@ function createProviderServiceHarness(
       readonly threadId: ThreadId;
       readonly numTurns: number;
       readonly targetUserMessageId?: MessageId;
-    }) => Effect.succeed({ conversationRolledBack: true }),
+    }): Effect.Effect<{ conversationRolledBack: boolean }, ProviderAdapterRequestError> =>
+      Effect.succeed({ conversationRolledBack: true }),
   );
 
   const unsupported = <A>() =>
@@ -161,7 +165,20 @@ function createProviderServiceHarness(
     adoptNativeSession: () => Effect.void,
     forgetNativeSession: () => Effect.void,
     dropResumeCursor: () => Effect.void,
-    getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
+    noteHistoryDelivered: () => Effect.void,
+    getCapabilities: () =>
+      capabilitiesFail
+        ? Effect.fail(
+            new ProviderAdapterRequestError({
+              provider: "antigravity",
+              method: "getCapabilities",
+              detail: "the instance is not reachable",
+            }),
+          )
+        : Effect.succeed({
+            sessionModelSwitch: "in-session",
+            ...(conversationRollback !== undefined ? { conversationRollback } : {}),
+          }),
     getInstanceInfo: (instanceId) =>
       Effect.succeed({
         instanceId,
@@ -366,6 +383,8 @@ describe("CheckpointReactor", () => {
     readonly includeConcurrentSession?: boolean;
     readonly extraProviderSessions?: ReadonlyArray<ProviderSession>;
     readonly gitStatusRefreshCalls?: Array<string>;
+    readonly conversationRollback?: "native" | "none" | "new-session";
+    readonly capabilitiesFail?: boolean;
   }) {
     const cwd = createGitRepository();
     tempDirs.push(cwd);
@@ -393,6 +412,8 @@ describe("CheckpointReactor", () => {
       options?.providerSessionCwd ?? cwd,
       options?.providerName ?? ProviderDriverKind.make("codex"),
       extraProviderSessions,
+      options?.conversationRollback,
+      options?.capabilitiesFail === true,
     );
     const orchestrationLayer = OrchestrationEngineLive.pipe(
       Layer.provide(OrchestrationProjectionSnapshotQueryLive),
@@ -3110,6 +3131,184 @@ describe("CheckpointReactor", () => {
       true,
     );
   });
+
+  it("restores the files of a thread whose provider is no longer registered", async () => {
+    const harness = await createHarness({ hasSession: false, capabilitiesFail: true });
+    const threadId = ThreadId.make("thread-1");
+    const createdAt = "2026-01-01T00:00:00.000Z";
+    for (const turnCount of [1, 2] as const) {
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.diff.complete",
+          commandId: CommandId.make(`cmd-capabilities-diff-${turnCount}`),
+          threadId,
+          turnId: asTurnId(`turn-${turnCount}`),
+          completedAt: createdAt,
+          checkpointRef: checkpointRefForThreadTurn(threadId, turnCount),
+          status: "ready",
+          files: [{ path: "README.md", kind: "modified", additions: 1, deletions: 1 }],
+          checkpointTurnCount: turnCount,
+          completesTurn: true,
+          createdAt,
+        }),
+      );
+    }
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.checkpoint.revert",
+        commandId: CommandId.make("cmd-capabilities-revert"),
+        threadId,
+        turnCount: 1,
+        createdAt,
+      }),
+    );
+    // A removed provider has no runtime left that could write, so the revert
+    // goes on without asking it for anything.
+    await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some((activity) => activity.kind === "checkpoint.reverted"),
+    );
+    expect(harness.provider.rollbackConversation).not.toHaveBeenCalled();
+    expect(
+      fs.readFileSync(path.join(harness.cwd, "README.md"), "utf8").replaceAll("\r\n", "\n"),
+    ).toBe("v2\n");
+  });
+
+  it.each([
+    { case: "the agent can't be stopped", stopFails: true },
+    { case: "the files can't be restored after it forgot", stopFails: false },
+  ])("tells the user what happened when $case", async ({ stopFails }) => {
+    const harness = await createHarness({
+      hasSession: true,
+      conversationRollback: "new-session",
+    });
+    const threadId = ThreadId.make("thread-1");
+    const createdAt = "2026-01-01T00:00:00.000Z";
+    if (stopFails) {
+      harness.provider.rollbackConversation.mockImplementation(() =>
+        Effect.fail(
+          new ProviderAdapterRequestError({
+            provider: "antigravity",
+            method: "rollbackThread",
+            detail: "the agent did not stop",
+          }),
+        ),
+      );
+    }
+    for (const turnCount of [1, 2] as const) {
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.diff.complete",
+          commandId: CommandId.make(`cmd-stop-case-diff-${turnCount}`),
+          threadId,
+          turnId: asTurnId(`turn-${turnCount}`),
+          completedAt: createdAt,
+          checkpointRef: checkpointRefForThreadTurn(threadId, turnCount),
+          status: "ready",
+          files: [{ path: "README.md", kind: "modified", additions: 1, deletions: 1 }],
+          checkpointTurnCount: turnCount,
+          completesTurn: true,
+          createdAt,
+        }),
+      );
+    }
+    // The checkpoint to restore is gone: the restore fails.
+    if (!stopFails) {
+      runGit(harness.cwd, ["update-ref", "-d", checkpointRefForThreadTurn(threadId, 1)]);
+    }
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.checkpoint.revert",
+        commandId: CommandId.make("cmd-stop-case-revert"),
+        threadId,
+        turnCount: 1,
+        createdAt,
+      }),
+    );
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some((activity) => activity.kind === "checkpoint.revert.failed"),
+    );
+    const failure = thread.activities.find(
+      (activity) => activity.kind === "checkpoint.revert.failed",
+    );
+    const detail = (failure?.payload as { readonly detail?: string } | undefined)?.detail ?? "";
+    if (stopFails) {
+      expect(detail).toContain("couldn't be stopped, so no file was restored");
+    } else {
+      expect(detail).toContain("no longer remembers the turns after this point");
+    }
+    // Either way the files are as the agent left them.
+    expect(
+      fs.readFileSync(path.join(harness.cwd, "README.md"), "utf8").replaceAll("\r\n", "\n"),
+    ).toBe("v3\n");
+  });
+
+  it.each([
+    { running: true, forgotten: true },
+    { running: false, forgotten: true },
+    { running: false, forgotten: false },
+  ])(
+    "stops an agent that starts over before restoring any file, and says so if it can't forget (%o)",
+    async ({ running, forgotten }) => {
+      const harness = await createHarness({
+        hasSession: running,
+        conversationRollback: "new-session",
+      });
+      const threadId = ThreadId.make("thread-1");
+      const createdAt = "2026-01-01T00:00:00.000Z";
+      // What the checkout held when the agent was told to stop.
+      let readmeWhenStopped: string | undefined;
+      harness.provider.rollbackConversation.mockImplementation(() =>
+        Effect.sync(() => {
+          readmeWhenStopped = fs
+            .readFileSync(path.join(harness.cwd, "README.md"), "utf8")
+            .replaceAll("\r\n", "\n");
+          return { conversationRolledBack: forgotten };
+        }),
+      );
+
+      for (const turnCount of [1, 2] as const) {
+        await Effect.runPromise(
+          harness.engine.dispatch({
+            type: "thread.turn.diff.complete",
+            commandId: CommandId.make(`cmd-new-session-diff-${turnCount}`),
+            threadId,
+            turnId: asTurnId(`turn-${turnCount}`),
+            completedAt: createdAt,
+            checkpointRef: checkpointRefForThreadTurn(threadId, turnCount),
+            status: "ready",
+            files: [{ path: "README.md", kind: "modified", additions: 1, deletions: 1 }],
+            checkpointTurnCount: turnCount,
+            completesTurn: true,
+            createdAt,
+          }),
+        );
+      }
+
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.checkpoint.revert",
+          commandId: CommandId.make("cmd-new-session-revert"),
+          threadId,
+          turnCount: 1,
+          createdAt,
+        }),
+      );
+
+      await waitForEvent(harness.engine, (event) => event.type === "thread.reverted");
+      expect(harness.provider.rollbackConversation).toHaveBeenCalledTimes(1);
+      // Stopped while the reverted turn's file was still there, then restored.
+      expect(readmeWhenStopped).toBe("v3\n");
+      expect(
+        fs.readFileSync(path.join(harness.cwd, "README.md"), "utf8").replaceAll("\r\n", "\n"),
+      ).toBe("v2\n");
+      const thread = await waitForThread(harness.readModel, (entry) =>
+        entry.activities.some((activity) => activity.kind === "checkpoint.reverted"),
+      );
+      const kinds = thread.activities.map((activity) => activity.kind);
+      expect(kinds.includes("checkpoint.revert.rollback-unsupported")).toBe(!forgotten);
+      expect(kinds.includes("checkpoint.revert.rollback-skipped")).toBe(false);
+    },
+  );
 
   it("appends an error activity when revert targets a turn missing from the read model", async () => {
     const harness = await createHarness({ hasSession: false });

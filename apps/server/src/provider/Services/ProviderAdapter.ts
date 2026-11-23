@@ -159,8 +159,13 @@ export interface ProviderAdapterCapabilities {
    * remembers the reverted turns, and a revert says so. Default `native`. A
    * rollback's own `conversationRolledBack` overrides it, for an agent that
    * can rewind only to the turns it knows the positions of (Grok).
+   * `new-session` (Antigravity): `rollbackThread` stops the running work and
+   * ends the session, and ProviderService forgets the saved conversation in
+   * the thread's binding, so the next turn opens a new one seeded with the
+   * turns kept. A revert stops it before restoring files, and reaches it with
+   * no runtime live without starting one.
    */
-  readonly conversationRollback?: "native" | "none";
+  readonly conversationRollback?: "native" | "none" | "new-session";
 
   /**
    * Whether a session may be started before its first message, while the user
@@ -365,6 +370,17 @@ export interface ProviderAdapterShape<TError> {
    * Check whether this adapter owns an active session id.
    */
   readonly hasSession: (threadId: ThreadId) => Effect.Effect<boolean>;
+
+  /**
+   * Resolves once no runtime of this session key can still act: at once when
+   * none exists, otherwise once the runtime's process (with every child
+   * process it started) is gone. `hasSession` turns false as soon as a stop
+   * begins, so a caller that must not touch files the agent may still hold
+   * open (a revert) waits on this after asking for the stop; a live runtime
+   * is waited on until something stops it. Never fails. Absent: a stopped
+   * session is gone when `stopSession` returns.
+   */
+  readonly whenStopped?: (threadId: ThreadId) => Effect.Effect<void>;
 
   /**
    * Read a provider thread snapshot.

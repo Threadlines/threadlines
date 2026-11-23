@@ -239,6 +239,10 @@
       "types": "./src/queuedFollowUps.ts",
       "import": "./src/queuedFollowUps.ts"
     },
+    "./slashCommands": {
+      "types": "./src/slashCommands.ts",
+      "import": "./src/slashCommands.ts"
+    },
     "./checkBacks": {
       "types": "./src/checkBacks.ts",
       "import": "./src/checkBacks.ts"

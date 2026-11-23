@@ -10,22 +10,28 @@
  * @module provider/acp/AcpProviderDescriptor
  */
 import type {
+  ChatAttachment,
   ModelCapabilities,
   ProviderDriverKind,
   ProviderFailureCategory,
   ProviderInteractionMode,
   ProviderOptionSelection,
   ProviderRuntimeEvent,
+  ProviderSubagentTranscriptEntry,
   ProviderUserInputAnswers,
   RuntimeMode,
+  RuntimeUsageLimit,
   ServerProvider,
   ServerProviderDetection,
   ServerProviderModel,
+  ServerProviderSkill,
   ThreadId,
   TurnId,
+  UsageTokenTotals,
   UserInputQuestion,
 } from "@threadlines/contracts";
 import type { HttpClient } from "effect/http";
+import type * as Duration from "effect/Duration";
 import type * as Effect from "effect/Effect";
 import type * as FileSystem from "effect/FileSystem";
 import type * as Path from "effect/Path";
@@ -41,7 +47,8 @@ import type {
 } from "../providerMaintenance.ts";
 import type { UsageLedgerProvider } from "../../usage/usageLedger.ts";
 import type { ProviderProbeResult, ServerProviderPresentation } from "../providerSnapshot.ts";
-import type { AcpPlanUpdate, AcpToolCallState } from "./AcpRuntimeModel.ts";
+import type { AcpAttachmentDelivery } from "./AcpPromptAttachments.ts";
+import type { AcpPlanUpdate, AcpToolCallReport, AcpToolCallState } from "./AcpRuntimeModel.ts";
 import type { AcpSessionRuntimeShape, AcpSpawnInput } from "./AcpSessionRuntime.ts";
 
 /** Settings fields every ACP provider config must carry. */
@@ -85,13 +92,30 @@ export interface AcpPromptPlanMode {
   /** Prepended to the turn's text in plan mode, e.g. `/plan `. */
   readonly promptPrefix: string;
   /**
-   * Whether this tool call writes the agent's own plan file. Such writes are
-   * approved without asking (they never touch the workspace) and are not
-   * shown as tool calls: the plan card stands for them.
+   * Whether this tool call writes the plan file of the session `sessionId`
+   * (the session asking; `undefined` when that isn't this one, and then
+   * nothing is). Such writes are approved without asking (they never touch
+   * the workspace) and are not shown as tool calls: the plan card stands for
+   * them.
    */
-  readonly isPlanFile: (toolCall: AcpToolCallState) => boolean;
+  readonly isPlanFile: (toolCall: AcpToolCallState, sessionId: string | undefined) => boolean;
   /** The plan's markdown, when this plan-file write carries it. */
   readonly planMarkdown: (toolCall: AcpToolCallState) => string | undefined;
+}
+
+/** How an agent's own slash commands reach the composer; see `agentCommands`. */
+export interface AcpAgentCommands {
+  /**
+   * Commands Threadlines does itself, left out of the list: plan mode is
+   * Threadlines' `/plan`, a sign-in belongs in Settings. A user who types
+   * one still sends it.
+   */
+  readonly hidden: ReadonlySet<string>;
+  /**
+   * The agent runs a skill when a message starts with `/<skill name>`, so the
+   * skills `listSkills` finds join the `/` list too (`ServerProvider.slashSkills`).
+   */
+  readonly slashSkills: boolean;
 }
 
 export interface AcpConfigUpdate {
@@ -139,6 +163,148 @@ export interface AcpTurnOutcome {
   readonly errorMessage?: string;
   /** Why it failed, when the agent's stop reason says so in a structured way. */
   readonly failureCategory?: ProviderFailureCategory;
+}
+
+/**
+ * Why a prompt the agent answered as finished, or refused with an error,
+ * really failed (Antigravity ends a turn normally on an upstream error).
+ */
+export interface AcpPromptFailure {
+  /** The words the chat shows. */
+  readonly errorMessage: string;
+  readonly failureCategory?: ProviderFailureCategory;
+  /** A plan's usage limit stopped the turn: when it resets, for the usage-limit notice. */
+  readonly usageLimit?: RuntimeUsageLimit;
+  /**
+   * The agent can no longer continue this session (Antigravity's saved
+   * thinking lost its signature). The session is stopped after the turn, and
+   * the next message starts a new one seeded with the thread's history.
+   */
+  readonly sessionLost?: boolean;
+}
+
+/**
+ * Reads how a prompt really ended (`AcpTurnMachineOptions.outcome`). `watch`
+ * runs as each prompt goes out (it may note where the agent's own records
+ * stand) and returns the check run when that prompt answers or fails.
+ */
+export interface AcpPromptOutcome {
+  /** `model`: the picker slug the turn runs on, when known. */
+  readonly watch: (
+    sessionId: string,
+    model: string | undefined,
+  ) => Effect.Effect<AcpPromptOutcomeWatch>;
+}
+
+export interface AcpPromptOutcomeWatch {
+  readonly check: (
+    answer:
+      | { readonly response: EffectAcpSchema.PromptResponse }
+      /** What `session/prompt` failed with, usually an `AcpRequestError`. */
+      | { readonly error: unknown },
+  ) => Effect.Effect<AcpPromptFailure | undefined>;
+}
+
+/**
+ * What a tool call the agent goes on with after its prompt answers is: a
+ * command it awaits, a timer it set, or subagents it launched (a batch
+ * counts each). `undefined` for one that ends with the prompt.
+ */
+export type AcpWorkAfterPrompt =
+  | { readonly kind: "command" | "timer" }
+  | { readonly kind: "subagents"; readonly count: number };
+
+/**
+ * An agent whose turns run on the turn machine (`AcpTurnMachine`,
+ * Antigravity 1.5.10+): it answers its prompt while work it started goes on
+ * and replies by itself when that work ends, so the turn stays open, working
+ * and stoppable, until the work and the replies it wakes are done. Only for
+ * an agent that sends `usage_update` after each model call: that update is
+ * how a reply it started by itself is known to end. With `subagents`, the
+ * hold on launched subagents follows the agent's records of them.
+ */
+export interface AcpTurnMachineOptions {
+  readonly workAfterPrompt: (toolCall: AcpToolCallState) => AcpWorkAfterPrompt | undefined;
+  /**
+   * A message sent mid-turn goes as another `session/prompt`, which steers
+   * the turn. Off, it waits for the turn to end, as for any agent.
+   */
+  readonly steer: boolean;
+  /**
+   * How long the turn waits without a word from the agent while only
+   * commands and subagents hold it; past it, the turn ends. A timer the
+   * agent set holds it with no limit (a timer is silent until it fires).
+   */
+  readonly silentLimit: Duration.Duration;
+  /**
+   * How long a reply the agent started by itself (or a wake a finished
+   * command owes) may go without output before it counts as ended when its
+   * closing `usage_update` never comes (default 2 minutes).
+   */
+  readonly replyQuietLimit?: Duration.Duration;
+  /** How a prompt really ended, where the agent's answer can hide a failure. */
+  readonly outcome?: AcpPromptOutcome;
+}
+
+/** A subagent a tool call launched, as the launch named it. */
+export interface AcpSubagentLaunch {
+  readonly role: string;
+  readonly prompt: string;
+}
+
+/** What became of a launched subagent, by the agent's own records. */
+export interface AcpSubagentState {
+  /** `reported`: it sent the agent its report; `killed`: the agent stopped it. */
+  readonly state: "working" | "reported" | "killed";
+  /** Its report, when it has sent one. */
+  readonly report?: string;
+}
+
+/**
+ * Subagents an agent launches with a tool call that returns at once and
+ * reports no end for (Antigravity's `invoke_subagent`): only the agent's own
+ * records say which child a call started, whether it is done, and what it
+ * did. With it, each launch shows as a subagent (`AcpSubagentRoster`), and
+ * on the turn machine a launch holds the turn while its child is at work.
+ */
+export interface AcpSubagents {
+  /** The subagents this tool call launches; `undefined` for any other call. */
+  readonly launches: (toolCall: AcpToolCallState) => ReadonlyArray<AcpSubagentLaunch> | undefined;
+  /**
+   * The state of each launching call's child, by call id. A call the records
+   * don't tie to its child is left out; `complete` is false when some record
+   * didn't read, so a child left out may only be unreadable. `undefined`
+   * when the records can't be read at all.
+   */
+  readonly states: (input: {
+    readonly sessionId: string;
+    readonly launchCallIds: ReadonlyArray<string>;
+  }) => Effect.Effect<
+    | {
+        readonly byLaunch: ReadonlyMap<string, AcpSubagentState>;
+        readonly complete: boolean;
+      }
+    | undefined
+  >;
+  /**
+   * The child a launching call started and its steps, or `undefined` when
+   * the records don't say which child it started.
+   */
+  readonly transcript: (input: {
+    readonly sessionId: string;
+    readonly launchCallId: string;
+  }) => Effect.Effect<
+    | {
+        readonly childId: string;
+        readonly launch: AcpSubagentLaunch;
+        readonly entries: ReadonlyArray<ProviderSubagentTranscriptEntry>;
+        /** Only the transcript's end was read. */
+        readonly truncated: boolean;
+      }
+    | undefined
+  >;
+  /** What the subagent view says when `transcript` finds nothing. */
+  readonly unrecordedMessage: string;
 }
 
 /** Runtime hooks handed to a vendor's extension registration. */
@@ -370,16 +536,27 @@ export interface AcpProviderDescriptor<Settings extends AcpProviderSettings> {
     readonly text: string;
     readonly content: ReadonlyArray<EffectAcpSchema.ContentBlock>;
   }) => Effect.Effect<void, EffectAcpErrors.AcpError>;
+  /** Turns run on the turn machine (`AcpTurnMachineOptions`); `steer` and `agentTurns` don't apply. */
+  readonly turnMachine?: AcpTurnMachineOptions;
+  /** Subagents launched by a tool call, read from the agent's own records. */
+  readonly subagents?: AcpSubagents;
   /**
    * Where the Usage page counts this agent's turns when it keeps no usage on
    * disk. Only for an agent whose turn `usage` is known to be the turn's own:
    * ACP doesn't say whether it is that or a running total, and agents differ
    * (Copilot's is a running total), so community agents have none. Unset for
    * an agent whose own files the usage scan reads (Grok), and for one that
-   * reports no turn usage (Cursor, and Antigravity, whose `usage_update`
-   * carries a bare total).
+   * reports no turn usage (Cursor).
    */
   readonly usageLedger?: { readonly provider: UsageLedgerProvider };
+  /**
+   * The agent's own reading of a prompt's `usage`, where the generic one
+   * (`acpTurnUsageTotals`, which takes input to include cached reads, as fx's
+   * does) would miscount it. Antigravity leaves cached reads out of input.
+   */
+  readonly turnUsageTotals?: (
+    usage: EffectAcpSchema.Usage | null | undefined,
+  ) => UsageTokenTotals | null;
   /**
    * The context fill an agent reports on its own updates rather than with
    * ACP's `usage_update` (Grok's `_meta.totalTokens`), and its window size.
@@ -401,6 +578,22 @@ export interface AcpProviderDescriptor<Settings extends AcpProviderSettings> {
    */
   readonly conversationHistory?: AcpConversationHistory;
   /**
+   * For an agent with no `conversationHistory`: a revert stops what the
+   * session runs and ends it (`conversationRollback: "new-session"`), and
+   * ProviderService forgets the saved conversation, so the next message
+   * opens a new one seeded with the turns kept (Antigravity). Without it the
+   * agent remembers them, and the revert says so.
+   */
+  readonly rollbackByNewSession?: boolean;
+  /**
+   * The agent's slash commands (ACP `available_commands_update`) reach the
+   * composer's `/` list for the session's thread, as live state on the
+   * provider status (`AcpAdapterOptions.onSessionCommands`), and a typed
+   * `/name` the session lists goes as the agent's own command. Absent: the
+   * list is ignored, as for agents whose lists were never checked here.
+   */
+  readonly agentCommands?: AcpAgentCommands;
+  /**
    * The `session/set_mode` mode for a turn's interaction mode, for an agent
    * that switches modes without listing them (Grok: `plan`, `default`).
    * Sent before every turn; the agent takes a repeat as a no-op.
@@ -421,7 +614,18 @@ export interface AcpProviderDescriptor<Settings extends AcpProviderSettings> {
   readonly agentModeFor?: (input: {
     readonly runtimeMode: RuntimeMode;
     readonly interactionMode: ProviderInteractionMode | undefined;
+    /** The modes the session offers; empty when it lists none. */
+    readonly availableModeIds: ReadonlyArray<string>;
   }) => string | undefined;
+  /**
+   * Checks the agent's `initialize` answer before a session opens, e.g. that
+   * it is a version Threadlines can run. A failure stops the start and its
+   * message is what the user sees.
+   */
+  readonly verifyAgent?: (
+    settings: Settings,
+    response: EffectAcpSchema.InitializeResponse,
+  ) => Effect.Effect<void, EffectAcpErrors.AcpError>;
   /**
    * `"native"` for agents Threadlines has never been tested with (the ACP
    * registry's), which it drives through their own controls instead of
@@ -456,6 +660,37 @@ export interface AcpProviderDescriptor<Settings extends AcpProviderSettings> {
   readonly permissionOptionWarning?: (
     option: EffectAcpSchema.PermissionOption,
   ) => string | undefined;
+  /**
+   * Rewrites each session update before the core reads it: the runtime
+   * events (and so what is stored and shown) carry only what this returns.
+   * The opt-in protocol log still records the wire as it came. Antigravity
+   * bounds its tool text and leaves out inline images here.
+   */
+  readonly normalizeSessionUpdate?: (
+    notification: EffectAcpSchema.SessionNotification,
+  ) => EffectAcpSchema.SessionNotification;
+  /**
+   * Rewrites each tool call after its updates are merged, for a call the
+   * agent describes as something it isn't (Antigravity runs MCP tools it
+   * left out of its context through a command, `call_mcp_tool`). Given the
+   * report that just arrived, so it can tell what that report positively
+   * says from what earlier ones did. Also applied to a permission request's
+   * call, where it may change what the request shows but never its kind.
+   */
+  readonly normalizeToolCall?: (
+    toolCall: AcpToolCallState,
+    report: AcpToolCallReport,
+  ) => AcpToolCallState;
+  /**
+   * How each attachment reaches this agent (`AcpPromptAttachments`), given
+   * what its `initialize` answer says it reads. Absent, or `undefined` for an
+   * attachment: an image goes inline and any other file as a note naming its
+   * staged path, as for every ACP agent.
+   */
+  readonly attachmentDelivery?: (
+    attachment: ChatAttachment,
+    promptCapabilities: EffectAcpSchema.PromptCapabilities | null | undefined,
+  ) => AcpAttachmentDelivery | undefined;
   /** Text the agent appends when a prompt is cancelled; dropped from the reply. */
   readonly cancellationNotice?: string;
   readonly planMode?: AcpPromptPlanMode;
@@ -533,6 +768,15 @@ export interface AcpProviderDescriptor<Settings extends AcpProviderSettings> {
     | Path.Path
     | HttpClient.HttpClient
   >;
+  /**
+   * The skills the agent loads, read from disk for the provider snapshot
+   * (ACP has no call that lists them before a session). Asked for on each
+   * status check of an installed agent; must never fail.
+   */
+  readonly listSkills?: (
+    settings: Settings,
+    environment: NodeJS.ProcessEnv,
+  ) => Effect.Effect<ReadonlyArray<ServerProviderSkill>>;
   /**
    * How long one ACP model-discovery session may take. Defaults to 15s;
    * agents that boot a VM first (fx inside WSL) need more.

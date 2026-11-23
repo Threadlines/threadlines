@@ -165,6 +165,7 @@ function createProviderServiceHarness() {
       dropFails.on
         ? Effect.die(new Error("the session would not stop"))
         : Effect.sync(() => void droppedCursors.push(threadId)),
+    noteHistoryDelivered: () => Effect.void,
     getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
     getInstanceInfo: (instanceId) => {
       const driverKind = ProviderDriverKind.make(String(instanceId));

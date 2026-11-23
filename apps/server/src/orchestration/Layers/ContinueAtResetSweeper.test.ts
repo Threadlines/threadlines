@@ -80,6 +80,55 @@ function claude(input: {
   } as unknown as ServerProvider;
 }
 
+/**
+ * Antigravity as a reading taken `readAgoMs` ago shows it: limits that each
+ * cover one family of models, Gemini's weekly and the Claude & GPT pool's.
+ */
+function antigravity(input: {
+  readonly geminiUsedPercent: number;
+  readonly sharedUsedPercent: number;
+  /** When the Claude & GPT pool resets; by default with Gemini's week. */
+  readonly sharedResetMs?: number;
+  readonly readAgoMs: number;
+}) {
+  const family = (
+    scopeLabel: string,
+    scopeModels: Array<string>,
+    usedPercent: number,
+    resetsAt = WEEKLY_RESET_MS,
+  ) => ({
+    scopeLabel,
+    scopeModels,
+    usedPercent,
+    remainingPercent: 100 - usedPercent,
+    resetsAt,
+    windowDurationMins: 7 * 24 * 60,
+    checkedAt: isoAt(NOW_MS - input.readAgoMs),
+  });
+  return {
+    instanceId: INSTANCE_ID,
+    driver: ProviderDriverKind.make("antigravity"),
+    enabled: true,
+    installed: true,
+    status: "ready",
+    auth: { status: "authenticated" },
+    models: [],
+    accountUsage: {
+      source: "grok-billing",
+      checkedAt: isoAt(NOW_MS - input.readAgoMs),
+      limits: [
+        {
+          limitId: "antigravity",
+          scoped: [
+            family("Gemini", ["Gemini"], input.geminiUsedPercent),
+            family("Claude & GPT", ["Claude", "GPT"], input.sharedUsedPercent, input.sharedResetMs),
+          ],
+        },
+      ],
+    },
+  } as unknown as ServerProvider;
+}
+
 describe("ContinueAtResetSweeper", () => {
   let runtime: ManagedRuntime.ManagedRuntime<ContinueAtResetSweeper, unknown> | null = null;
 
@@ -224,6 +273,37 @@ describe("ContinueAtResetSweeper", () => {
     );
     expect(await sweep()).toBe(0);
     read(claude({ sessionUsedPercent: 2, modelUsedPercent: 41, readAgoMs: 0 }));
+    expect(await sweep()).toBe(0);
+    expect(dispatched).toEqual([]);
+  });
+
+  it("continues a thread on one family of models while another family stays spent", async () => {
+    // The thread waits on Gemini's week; Claude & GPT's pool is spent until another time.
+    const sharedResetMs = NOW_MS + 2 * HOUR_MS;
+    const { dispatched, sweep, read } = await createHarness(
+      antigravity({
+        geminiUsedPercent: 100,
+        sharedUsedPercent: 100,
+        sharedResetMs,
+        readAgoMs: HOUR_MS,
+      }),
+    );
+    expect(await sweep()).toBe(0);
+    // Gemini reset early; the other family staying spent doesn't stop a Gemini thread.
+    read(
+      antigravity({ geminiUsedPercent: 4, sharedUsedPercent: 100, sharedResetMs, readAgoMs: 0 }),
+    );
+    expect(await sweep()).toBe(1);
+    expect(dispatched).toMatchObject([{ type: "thread.continue-at-reset.fire", resetEarly: true }]);
+  });
+
+  it("waits when the reading can't tell which family stopped the thread", async () => {
+    // Both families were spent until the reset the thread waits for.
+    const { dispatched, sweep, read } = await createHarness(
+      antigravity({ geminiUsedPercent: 100, sharedUsedPercent: 100, readAgoMs: HOUR_MS }),
+    );
+    expect(await sweep()).toBe(0);
+    read(antigravity({ geminiUsedPercent: 4, sharedUsedPercent: 100, readAgoMs: 0 }));
     expect(await sweep()).toBe(0);
     expect(dispatched).toEqual([]);
   });
