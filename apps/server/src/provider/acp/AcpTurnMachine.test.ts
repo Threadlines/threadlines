@@ -1,4 +1,13 @@
 // @effect-diagnostics nodeBuiltinImport:off -- the explorer hashes its seen states.
+/**
+ * The turn machine's tests: an exhaustive explorer over every event
+ * sequence up to a depth, with steering on and off, then the named races.
+ *
+ * Every run explores to the default depths (`DEFAULT_STEER_DEPTH`,
+ * `DEFAULT_QUEUE_DEPTH`). `ACP_EXPLORER_FULL=1` explores to the full depths
+ * instead (about two and a half minutes and 2.5 GB); run it after changing
+ * the machine.
+ */
 import { createHash } from "node:crypto";
 
 import { describe, expect, it } from "vite-plus/test";
@@ -605,19 +614,37 @@ function checkWorld(world: World, steer: boolean): void {
   if (world.monitor.unansweredCallers.length > 0) drain(world, steer);
 }
 
-describe.each([
-  { steer: true, depth: 9 },
-  { steer: false, depth: 10 },
-])("AcpTurnMachine, every reachable state (steering $steer)", ({ steer, depth }) => {
+const FULL_DEPTH = process.env.ACP_EXPLORER_FULL === "1";
+/**
+ * The default run: the deepest that stays under about 30 seconds and 1 GB
+ * (8 and 8: about 720,000 states with steering and 290,000 without, 22
+ * seconds and 0.55 GB on an M-series Mac).
+ */
+const DEFAULT_STEER_DEPTH = 8;
+const DEFAULT_STEER_STATES = 700_000;
+const DEFAULT_QUEUE_DEPTH = 8;
+const DEFAULT_QUEUE_STATES = 280_000;
+
+describe.each(
+  FULL_DEPTH
+    ? [
+        { steer: true, depth: 9, atLeast: 2_000_000 },
+        { steer: false, depth: 10, atLeast: 2_000_000 },
+      ]
+    : [
+        { steer: true, depth: DEFAULT_STEER_DEPTH, atLeast: DEFAULT_STEER_STATES },
+        { steer: false, depth: DEFAULT_QUEUE_DEPTH, atLeast: DEFAULT_QUEUE_STATES },
+      ],
+)("AcpTurnMachine, every reachable state (steering $steer)", ({ steer, depth, atLeast }) => {
   // The alphabet is bounded to two sends, two steers (none with steering
   // off), a command and a timer that can each start again after a drop
   // (three starts in all), a launch the records can cover and a batch they
   // can't, every outstanding reading of the records answering in any order
   // (none at work, all at work, or one that missed a launch), up to two
   // open requests, a stale timer callback beside each armed one, and two
-  // turns of the agent's own. Depth 9 with steering (about 2.6 million
-  // states) and 10 without (about 2.8 million) take under three minutes;
-  // every named race below is shorter.
+  // turns of the agent's own. The full depths, 9 with steering (about 2.6
+  // million states) and 10 without (about 2.8 million), take over two
+  // minutes; every named race below is shorter.
   let checked = 0;
   const states = explore(depth, steer, (world) => {
     checkWorld(world, steer);
@@ -625,7 +652,7 @@ describe.each([
   });
 
   it("explores a state space large enough to mean something", () => {
-    expect(states).toBeGreaterThan(1_000_000);
+    expect(states).toBeGreaterThan(atLeast);
     expect(checked).toBe(states + 1);
   });
 });
