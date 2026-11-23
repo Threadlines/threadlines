@@ -703,6 +703,15 @@ const SECTIONS = [
   },
   // Providers
   {
+    id: "providers.suggestions",
+    kind: "section",
+    parent: "settings.providers",
+    title: "Suggestions",
+    about:
+      "Suggested next messages in the composer after a reply, for each agent you have turned on.",
+    keywords: ["autocomplete", "prompt suggestions", "tab"],
+  },
+  {
     id: "providers.community",
     kind: "section",
     parent: "settings.providers",
@@ -1587,24 +1596,34 @@ const ROWS = [
     widensAgents: true,
   },
   {
-    id: "threads.claudeSuggestions",
+    id: "providers.claudeSuggestions",
     kind: "row",
-    parent: "threads.newThreads",
+    parent: "providers.suggestions",
     title: "Keep Claude's suggestions when you're using a lot",
     about:
       "Keep Claude suggesting your next message even when you're on track to run out of usage early.",
-    keywords: ["autocomplete", "prompt suggestions"],
+    keywords: ["autocomplete", "prompt suggestions", "claude"],
     ...editableServerSwitch("claudeSuggestionsWhenUsageRunsFast"),
   },
   {
-    id: "threads.codexSuggestions",
+    id: "providers.codexSuggestions",
     kind: "row",
-    parent: "threads.newThreads",
+    parent: "providers.suggestions",
     title: "Codex suggestions",
     about:
       "After a reply to your message, Codex suggests what you might send next. Each suggestion uses a little Codex usage.",
     keywords: ["autocomplete", "prompt suggestions", "codex"],
     ...editableServerSwitch("codexSuggestions"),
+  },
+  {
+    id: "providers.antigravitySuggestions",
+    kind: "row",
+    parent: "providers.suggestions",
+    title: "Antigravity suggestions",
+    about:
+      "After a reply to your message, Antigravity suggests what you might send next using a fast Gemini model. Each suggestion uses a little Antigravity usage.",
+    keywords: ["autocomplete", "prompt suggestions", "antigravity", "gemini"],
+    ...editableServerSwitch("antigravitySuggestions"),
   },
   {
     id: "threads.continueAfterUsageLimits",
@@ -2048,6 +2067,9 @@ const MOVED_PLACES: ReadonlyMap<string, PlaceId> = new Map([
   ["general.theme", "appearance.theme"],
   ["general.themeGlass", "appearance.glass"],
   ["general.themeMotion", "appearance.motion"],
+  // November 2026: provider suggestion toggles moved from Threads to Providers.
+  ["threads.claudeSuggestions", "providers.claudeSuggestions"],
+  ["threads.codexSuggestions", "providers.codexSuggestions"],
 ]);
 
 /** The place an id names now, following moves; null for an id this build doesn't know. */

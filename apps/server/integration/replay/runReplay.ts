@@ -36,7 +36,10 @@ const decodeCodexSettings = Schema.decodeEffect(CodexSettings);
 const decodeClaudeSettings = Schema.decodeEffect(ClaudeSettings);
 
 /** Settings that would make our code send requests at times a replay can't reproduce. */
-const REPLAY_SERVER_SETTINGS = { codexSuggestions: false } as const;
+const REPLAY_SERVER_SETTINGS = {
+  codexSuggestions: false,
+  antigravitySuggestions: false,
+} as const;
 
 type ProviderMode =
   | { readonly kind: "replay"; readonly transcript: Transcript }
