@@ -66,7 +66,7 @@ import {
   waitForElement,
   waitForURL,
   waitForServerConfigToApply,
-  openCommandPaletteFromTrigger,
+  openCommandPaletteCommands,
   mountChatView,
   registerChatViewSuiteHooks,
   PROJECT_SETUP_SOURCE,
@@ -347,7 +347,7 @@ describe("ChatView (full app): moving a thread to another computer", () => {
       await saveMacMini("disconnected");
       await expect.element(page.getByRole("button", { name: "Toggle panel" })).toBeVisible();
       // Nowhere to move it yet: the palette doesn't offer it.
-      await openCommandPaletteFromTrigger();
+      await openCommandPaletteCommands();
       expect(
         page
           .getByTestId("command-palette")
@@ -381,7 +381,7 @@ describe("ChatView (full app): moving a thread to another computer", () => {
         .toBeVisible();
       await userEvent.keyboard("{Escape}");
       // The command palette too, where the dialog opens from here.
-      await openCommandPaletteFromTrigger();
+      await openCommandPaletteCommands();
       await page
         .getByTestId("command-palette")
         .getByText("Move to another computer", { exact: true })
@@ -434,7 +434,7 @@ describe("ChatView (full app): moving a thread to another computer", () => {
           readThreadMoveOffered({ environmentId: LOCAL_ENVIRONMENT_ID, projectId: PROJECT_ID }),
         ).toBe(true);
       });
-      await openCommandPaletteFromTrigger();
+      await openCommandPaletteCommands();
       await page
         .getByTestId("command-palette")
         .getByText("Move to another computer", { exact: true })
@@ -566,7 +566,7 @@ describe("ChatView (full app): moving a thread to another computer", () => {
     try {
       await waitForServerConfigToApply();
       await saveMacMini("connected");
-      await openCommandPaletteFromTrigger();
+      await openCommandPaletteCommands();
       await page
         .getByTestId("command-palette")
         .getByText("Move to another computer", { exact: true })
@@ -800,7 +800,7 @@ describe("ChatView (full app): moving a thread to another computer", () => {
           readThreadMoveOffered({ environmentId: LOCAL_ENVIRONMENT_ID, projectId: PROJECT_ID }),
         ).toBe(true);
       });
-      await openCommandPaletteFromTrigger();
+      await openCommandPaletteCommands();
       await page
         .getByTestId("command-palette")
         .getByText("Move to another computer", { exact: true })
@@ -847,7 +847,7 @@ describe("ChatView (full app): moving a thread to another computer", () => {
       // A command runs in the user's terminal, which nothing here stops:
       // stopping isn't offered, says why, and waiting stays picked.
       waitsFor = [{ code: "command_run", words: "when its command finishes running" }];
-      await openCommandPaletteFromTrigger();
+      await openCommandPaletteCommands();
       await page
         .getByTestId("command-palette")
         .getByText("Move to another computer", { exact: true })
@@ -916,7 +916,7 @@ describe("ChatView (full app): moving a thread to another computer", () => {
           readThreadMoveOffered({ environmentId: LOCAL_ENVIRONMENT_ID, projectId: PROJECT_ID }),
         ).toBe(true);
       });
-      await openCommandPaletteFromTrigger();
+      await openCommandPaletteCommands();
       await page
         .getByTestId("command-palette")
         .getByText("Move to another computer", { exact: true })
@@ -1004,7 +1004,7 @@ describe("ChatView (full app): moving a thread to another computer", () => {
     try {
       await waitForServerConfigToApply();
       await saveMacMini("connected");
-      await openCommandPaletteFromTrigger();
+      await openCommandPaletteCommands();
       await page
         .getByTestId("command-palette")
         .getByText("Move to another computer", { exact: true })
@@ -1109,7 +1109,7 @@ describe("ChatView (full app): moving a thread to another computer", () => {
     try {
       await waitForServerConfigToApply();
       await saveMacMini("connected");
-      await openCommandPaletteFromTrigger();
+      await openCommandPaletteCommands();
       await page
         .getByTestId("command-palette")
         .getByText("Move to another computer", { exact: true })
@@ -1191,7 +1191,7 @@ describe("ChatView (full app): moving a thread to another computer", () => {
     });
 
     const openDialog = async () => {
-      await openCommandPaletteFromTrigger();
+      await openCommandPaletteCommands();
       await page
         .getByTestId("command-palette")
         .getByText("Move to another computer", { exact: true })
@@ -1460,7 +1460,7 @@ describe("ChatView (full app): moving a thread to another computer", () => {
           readThreadMoveOffered({ environmentId: LOCAL_ENVIRONMENT_ID, projectId: PROJECT_ID }),
         ).toBe(true);
       });
-      await openCommandPaletteFromTrigger();
+      await openCommandPaletteCommands();
       await page
         .getByTestId("command-palette")
         .getByText("Move to another computer", { exact: true })
@@ -1577,14 +1577,17 @@ describe("ChatView (full app): moving a thread to another computer", () => {
         .element(page.getByTestId(`thread-meta-${THREAD_ID}`))
         .toMatchTextContent("moving");
       // Nothing else to do with it here, and no other way off it.
-      await openCommandPaletteFromTrigger();
+      await openCommandPaletteCommands();
       expect(
         page
           .getByTestId("command-palette")
           .getByText("Move to another computer", { exact: true })
           .elements(),
       ).toHaveLength(0);
+      // Escape steps back from the Commands filter, then closes.
       await userEvent.keyboard("{Escape}");
+      await userEvent.keyboard("{Escape}");
+      await expect.element(page.getByTestId("command-palette")).not.toBeInTheDocument();
 
       await page.getByRole("button", { name: "Cancel the move" }).click();
       await vi.waitFor(() => {
@@ -2002,7 +2005,7 @@ describe("ChatView (full app): moving a thread to another computer", () => {
     try {
       await waitForServerConfigToApply();
       await saveMacMini("connected");
-      await openCommandPaletteFromTrigger();
+      await openCommandPaletteCommands();
       await page
         .getByTestId("command-palette")
         .getByText("Move threads to another computer…", { exact: true })
@@ -2142,7 +2145,7 @@ describe("ChatView (full app): moving a thread to another computer", () => {
     try {
       await waitForServerConfigToApply();
       await saveMacMini("connected");
-      await openCommandPaletteFromTrigger();
+      await openCommandPaletteCommands();
       await page
         .getByTestId("command-palette")
         .getByText("Move threads to another computer…", { exact: true })

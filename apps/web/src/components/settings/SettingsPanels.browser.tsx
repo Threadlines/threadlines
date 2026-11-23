@@ -126,7 +126,7 @@ import { useSettingsSearchStore } from "./settingsSearchStore";
 import { placePage } from "@threadlines/shared/appPlaces";
 import { SettingsGroup } from "./settingsLayout";
 import {
-  SettingsPlaceSignalsProvider,
+  SettingsAvailabilityProvider,
   type SettingsPlaceSearchId,
   type SettingsRowPlaceId,
   useSettingsPlaceShown,
@@ -7627,10 +7627,13 @@ describe("Settings search rows", () => {
     ] as const) {
       const screen = await renderWithTestRouter(
         <TestAppProviders>
-          <SettingsPlaceSignalsProvider>
+          <SettingsAvailabilityProvider
+            surface="full"
+            host={{ searchActive: false, searchSession: 0 }}
+          >
             <ReadShown />
             <Panel />
-          </SettingsPlaceSignalsProvider>
+          </SettingsAvailabilityProvider>
         </TestAppProviders>,
       );
       const onPage = liveRows.filter(({ id }) => placePage(id).id === page);

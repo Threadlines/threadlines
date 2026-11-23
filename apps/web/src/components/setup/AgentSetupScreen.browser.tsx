@@ -21,7 +21,7 @@ import {
 } from "@tanstack/react-router";
 import { useState, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { page } from "vite-plus/test/browser";
+import { page, userEvent } from "vite-plus/test/browser";
 import { render } from "vitest-browser-react";
 
 import {
@@ -34,6 +34,8 @@ import { resetServerStateForTests, setServerConfigSnapshot } from "../../rpc/ser
 import { useStore } from "../../store";
 import { ToastProvider } from "../ui/toast";
 import { parseSetupStep } from "./agentSetup.logic";
+import { AddProjectDialog } from "../addProject/AddProjectDialog";
+import { useAddProjectStore } from "../addProject/addProjectStore";
 import { AgentSetupScreen } from "./AgentSetupScreen";
 import { SETUP_PROGRESS_STORAGE_KEY, useSetupProgressStore } from "./setupProgress";
 import { resetTestPage } from "../../lib/testPage.browser-harness";
@@ -120,11 +122,12 @@ function SetupRoute() {
   return <AgentSetupScreen routeStep={parseSetupStep(search.step)} />;
 }
 
-function renderSetup() {
+function renderSetup(initialEntry = "/setup") {
   const rootRoute = createRootRoute({
     component: () => (
       <TestProviders>
         <Outlet />
+        <AddProjectDialog />
       </TestProviders>
     ),
   });
@@ -140,7 +143,7 @@ function renderSetup() {
   });
   const router = createRouter({
     routeTree: rootRoute.addChildren([setupRoute, indexRoute]),
-    history: createMemoryHistory({ initialEntries: ["/setup"] }),
+    history: createMemoryHistory({ initialEntries: [initialEntry] }),
   });
   return {
     router,
@@ -286,5 +289,24 @@ describe("AgentSetupScreen", () => {
       root.classList.remove("electron", "mac");
       root.style.removeProperty("--workspace-controls-right");
     }
+  });
+
+  it("returns focus to Choose a folder when Add project closes", async () => {
+    setServerConfigSnapshot(serverConfig([]));
+    const rendered = renderSetup("/setup?step=folder");
+    mounted = await rendered.mounted;
+
+    const chooseFolder = page.getByRole("button", { name: "Choose a folder" });
+    await chooseFolder.click();
+    const dialog = page.getByTestId("add-project-dialog");
+    await expect.element(dialog).toBeInTheDocument();
+    // Picking for the setup screen: the dialog stays on this computer.
+    expect(useAddProjectStore.getState().session?.selection?.environmentId).toBe(ENVIRONMENT_ID);
+
+    await userEvent.keyboard("{Escape}");
+    await expect.element(dialog).not.toBeInTheDocument();
+    await vi.waitFor(() => {
+      expect(document.activeElement).toBe(chooseFolder.element());
+    });
   });
 });

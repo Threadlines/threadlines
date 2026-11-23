@@ -5,6 +5,10 @@ import { beforeEach, describe, expect, it } from "vite-plus/test";
 import type { DraftId } from "./composerDraftStore";
 import { removeLocalStorageItem, setLocalStorageItem } from "./hooks/useLocalStorage";
 import {
+  RECENT_THREAD_VISITS_LIMIT,
+  RECENT_THREAD_VISITS_STORAGE_KEY,
+  readRecentThreadVisits,
+  recordRecentThreadVisit,
   LAST_VISITED_THREAD_ROUTE_STORAGE_KEY,
   readLastVisitedThreadRoute,
   recordLastVisitedThreadRoute,
@@ -111,5 +115,25 @@ describe("lastVisitedThreadRoute", () => {
     );
 
     expect(readLastVisitedThreadRoute(LOCAL)).toBeNull();
+  });
+});
+
+describe("recent thread visits", () => {
+  beforeEach(() => {
+    removeLocalStorageItem(RECENT_THREAD_VISITS_STORAGE_KEY);
+  });
+
+  it("keeps the threads opened newest first, once each, up to the limit", () => {
+    recordRecentThreadVisit("a");
+    recordRecentThreadVisit("b");
+    recordRecentThreadVisit("a");
+    expect(readRecentThreadVisits()).toEqual(["a", "b"]);
+
+    for (let index = 0; index < RECENT_THREAD_VISITS_LIMIT + 5; index += 1) {
+      recordRecentThreadVisit(`thread-${index}`);
+    }
+    const visits = readRecentThreadVisits();
+    expect(visits).toHaveLength(RECENT_THREAD_VISITS_LIMIT);
+    expect(visits[0]).toBe(`thread-${RECENT_THREAD_VISITS_LIMIT + 4}`);
   });
 });

@@ -56,6 +56,7 @@ import {
   buildThreadRouteParams,
   resolveDraftCanonicalThreadRef,
 } from "../threadRoutes";
+import { usePanelTabCommands } from "../commands/panelTabCommands";
 
 const FileViewerOverlay = lazy(() => import("../components/file-viewer/FileViewerOverlay"));
 
@@ -240,6 +241,8 @@ function DraftChatThreadRouteView() {
     },
     [navigateToTab, openDiffOnThreadRoute, panelStateKey],
   );
+  // The panel's tabs in the palette, through this route's own selector.
+  usePanelTabCommands(availableTabs, selectTab);
   const closeTab = useCallback(
     (tab: RightPanelTab) => {
       navigateToTab(closeRightPanelTab(panelStateKey, tab));
