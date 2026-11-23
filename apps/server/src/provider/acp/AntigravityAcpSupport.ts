@@ -21,6 +21,10 @@
  *   (High)"); that is still read as a fallback.
  * - `/plan <task>` writes a plan file into the profile and stops for review:
  *   that is plan mode.
+ * - The session lists its own `/` commands and skills, which the composer
+ *   offers; a message starting with one goes as typed.
+ * - It can't rewind its conversation, so a revert starts a new session
+ *   seeded with the turns kept.
  * - Edits carry exact ACP `diff` content, and the agent writes the files
  *   itself, so no client file system is offered.
  *
@@ -59,6 +63,12 @@ import {
   type AntigravityPlatformRelease,
 } from "../antigravity/AntigravityRelease.ts";
 import type { AntigravityReleaseSource } from "../antigravity/AntigravityReleaseSource.ts";
+import { antigravityAttachmentDelivery } from "../antigravity/AntigravityAttachments.ts";
+import { antigravitySubagents } from "../antigravity/AntigravitySubagents.ts";
+import {
+  normalizeAntigravitySessionUpdate,
+  normalizeAntigravityToolCall,
+} from "../antigravity/AntigravityToolCalls.ts";
 import { antigravityTurnBehavior } from "../antigravity/AntigravityTurns.ts";
 import {
   acquireAntigravityTempDir,
@@ -153,6 +163,16 @@ export function antigravityAgentMode(
  * is 1.5.9, and a prerelease of the minimum (`1.5.14-rc.1`) is below it.
  * Undefined when it isn't a version.
  */
+/**
+ * Antigravity's commands that Threadlines does itself: plan mode is the
+ * composer's `/plan` (sent as the CLI's `/plan`), and signing in or out is on
+ * the provider's row in Settings, where it stops the account's chats.
+ */
+const ANTIGRAVITY_AGENT_COMMANDS = {
+  hidden: new Set(["plan", "login", "logout"]),
+  slashSkills: true,
+} as const;
+
 export function meetsAntigravityMinimum(version: string): boolean | undefined {
   const parse = (value: string) => {
     const match = /^v?(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/u.exec(
@@ -806,6 +826,13 @@ export function makeAntigravityDescriptor(
     classifyPermissionRequest: antigravityQuestion,
     permissionOptionWarning: antigravityOptionWarning,
     cancellationNotice: "The request was cancelled by the client.",
+    // Tool text bounded, no inline images, `call_mcp_tool` shown as the MCP tool.
+    normalizeSessionUpdate: normalizeAntigravitySessionUpdate,
+    normalizeToolCall: normalizeAntigravityToolCall,
+    // Images and audio inline, PDFs linked, text files embedded.
+    attachmentDelivery: antigravityAttachmentDelivery,
+    // Each launch shows as a subagent, read from the CLI's own records.
+    subagents: antigravitySubagents(paths.profileDir),
     // Work that outlives a prompt, steering, hidden failures, turn tokens.
     ...antigravityTurnBehavior<AntigravitySettings>(paths.profileDir, usage?.usageLimitFor),
     planMode: {
@@ -839,6 +866,10 @@ export function makeAntigravityDescriptor(
         return undefined;
       },
     },
+    // The session's own `/` commands and skills reach the composer.
+    agentCommands: ANTIGRAVITY_AGENT_COMMANDS,
+    // The CLI can't rewind its conversation: a revert starts a new one.
+    rollbackByNewSession: true,
     diffEvidence: true,
     isolateTextGeneration: true,
     onSessionConfigOptions: (settings, configOptions) =>

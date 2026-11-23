@@ -1,13 +1,15 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as os from "node:os";
 import * as path from "node:path";
-import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import {
   AntigravitySettings,
+  ApprovalRequestId,
+  type ChatAttachment,
   ProviderDriverKind,
   type ProviderRuntimeEvent,
   ThreadId,
@@ -23,6 +25,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { describe, expect } from "vite-plus/test";
 
+import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import type { UsageLedgerEntry } from "../../usage/usageLedger.ts";
 import { makeAcpAdapter } from "../acp/AcpAdapter.ts";
@@ -90,11 +93,19 @@ const startAgy = (
     const descriptor = adjust ? adjust(base) : base;
     const usage: Array<UsageLedgerEntry> = [];
     const events: Array<ProviderRuntimeEvent> = [];
+    // What the adapter put on the provider status (`onSessionCommands`).
+    const commandReports: Array<ReadonlyArray<string> | undefined> = [];
     const newAdapter = Effect.gen(function* () {
       const made = yield* makeAcpAdapter(
         descriptor,
         decodeSettings({ enabled: true, binaryPath: mock.wrapper }),
-        { recordTurnUsage: (entry) => Effect.sync(() => void usage.push(entry)) },
+        {
+          recordTurnUsage: (entry) => Effect.sync(() => void usage.push(entry)),
+          onSessionCommands: (_sessionKey, commands) =>
+            Effect.sync(() => void commandReports.push(commands?.map((command) => command.name))),
+          // The status lists one skill.
+          skillNames: Effect.succeed(new Set(["review"])),
+        },
       );
       yield* made.streamEvents.pipe(
         Stream.runForEach((event) => Effect.sync(() => void events.push(event))),
@@ -125,6 +136,7 @@ const startAgy = (
       adapter,
       events,
       usage,
+      commandReports,
       threadId,
       session,
       waitFor,
@@ -142,6 +154,18 @@ const replyTo = (events: ReadonlyArray<ProviderRuntimeEvent>, turnId: TurnId) =>
       event.type === "content.delta" && event.turnId === turnId ? [event.payload.delta] : [],
     )
     .join("");
+
+/** Each subagent's latest status, by its launching call. */
+const subagentStatuses = (events: ReadonlyArray<ProviderRuntimeEvent>) =>
+  Object.fromEntries(
+    events.flatMap((event) =>
+      event.type === "subagent.metadata.updated" &&
+      event.payload.callId !== undefined &&
+      event.payload.status !== undefined
+        ? [[event.payload.callId, event.payload.status] as const]
+        : [],
+    ),
+  );
 
 const testServices = Layer.provideMerge(
   ServerConfig.layerTest(process.cwd(), { prefix: "threadlines-agy-adapter-test-" }),
@@ -228,17 +252,107 @@ describe("Antigravity turns", () => {
     }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 
-  it.live("holds a turn for a launched subagent until its report ends", () =>
+  it.live(
+    "holds a turn for a launched subagent until its report ends, with no records to read",
+    () =>
+      Effect.gen(function* () {
+        const agy = yield* startAgy("subagent");
+        const { turnId } = yield* agy.adapter.sendTurn({
+          threadId: agy.threadId,
+          input: "find the flaky test",
+          attachments: [],
+        });
+        yield* agy.waitFor((events) => completedTurns(events).length === 1);
+        expect(replyTo(agy.events, turnId)).toContain("The researcher found it.");
+        expect(completedTurns(agy.events)[0]?.turnId).toBe(turnId);
+      }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+  it.live("shows each subagent with its role, prompt, report and steps", () =>
     Effect.gen(function* () {
-      const agy = yield* startAgy("subagent");
+      const agy = yield* startAgy("subagent-records");
       const { turnId } = yield* agy.adapter.sendTurn({
         threadId: agy.threadId,
-        input: "find the flaky test",
+        input: "find and review the flaky test",
         attachments: [],
       });
+      // The first report and the reply to it leave the second subagent at work.
+      yield* agy.waitFor((events) => replyTo(events, turnId).includes("The researcher found it."));
+      yield* Effect.sleep("2500 millis");
+      expect(completedTurns(agy.events)).toHaveLength(0);
+      expect(subagentStatuses(agy.events)).toEqual({
+        call_research: "completed",
+        call_review: "running",
+      });
+
       yield* agy.waitFor((events) => completedTurns(events).length === 1);
-      expect(replyTo(agy.events, turnId)).toContain("The researcher found it.");
-      expect(completedTurns(agy.events)[0]?.turnId).toBe(turnId);
+      expect(completedTurns(agy.events)[0]).toMatchObject({
+        turnId,
+        payload: { state: "completed" },
+      });
+      expect(replyTo(agy.events, turnId)).toContain("The reviewer agreed.");
+      expect(subagentStatuses(agy.events)).toEqual({
+        call_research: "completed",
+        call_review: "completed",
+      });
+      // Each launch shows as a subagent with its role, prompt and report.
+      const started = agy.events.filter(
+        (event) => event.type === "subagent.metadata.updated" && event.payload.status === "running",
+      );
+      expect(started.map((event) => event.payload)).toEqual([
+        expect.objectContaining({
+          callId: "call_research",
+          agentRole: "Researcher",
+          objective: "Find the flaky test",
+          isBackgrounded: true,
+        }),
+        expect.objectContaining({ callId: "call_review", agentRole: "Reviewer" }),
+      ]);
+      expect(
+        agy.events.find(
+          (event) =>
+            event.type === "subagent.metadata.updated" &&
+            event.payload.callId === "call_research" &&
+            event.payload.status === "completed",
+        ),
+      ).toMatchObject({ turnId, payload: { resultBody: "The flaky test is api.test.ts." } });
+      // Nothing is left running in the task snapshot.
+      const snapshots = agy.events.flatMap((event) =>
+        event.type === "task.snapshot.updated" ? [event.payload.tasks.length] : [],
+      );
+      expect(snapshots.at(-1)).toBe(0);
+
+      // The subagent view reads the child's steps from the CLI's records.
+      const transcript = yield* agy.adapter.readSubagentTranscript!(agy.threadId, {
+        threadId: agy.threadId,
+        agentId: "call_research",
+      });
+      expect(transcript.agent).toMatchObject({ id: "child-research", agentType: "Researcher" });
+      expect(transcript.entries).toEqual([
+        { id: "launch", role: "user", text: "Find the flaky test", toolUses: [] },
+        {
+          id: "step-1",
+          role: "assistant",
+          text: "",
+          toolUses: [{ name: "view_file", summary: "/project/api.test.ts" }],
+        },
+        {
+          id: "step-2",
+          role: "system",
+          text: "",
+          toolUses: [],
+          outputPreview: "1: it.skip('flaky')",
+        },
+        { id: "step-3", role: "assistant", text: "Found it.", toolUses: [] },
+      ]);
+      // A launch the records don't name says so.
+      const missing = yield* Effect.flip(
+        agy.adapter.readSubagentTranscript!(agy.threadId, {
+          threadId: agy.threadId,
+          agentId: "call_unknown",
+        }),
+      );
+      expect(missing.message).toContain("Antigravity did not record which subagent this started");
     }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 
@@ -324,30 +438,19 @@ describe("Antigravity turns", () => {
     }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 
-  it.live(
-    "starts a new session with the thread's history when Google can't continue the old one",
-    () =>
-      Effect.gen(function* () {
-        const agy = yield* startAgy("lost-signature");
-        yield* agy.adapter.sendTurn({ threadId: agy.threadId, input: "hi", attachments: [] });
-        yield* agy.waitFor((events) => completedTurns(events).length === 1);
-        expect(completedTurns(agy.events)[0]?.payload).toMatchObject({ state: "failed" });
-        yield* agy.waitFor((events) => events.some((event) => event.type === "session.exited"));
-
-        // A server restart before the next message: a new adapter.
-        const restartedAdapter = yield* agy.newAdapter;
-        const restarted = yield* restartedAdapter.startSession({
-          threadId: agy.threadId,
-          provider: ProviderDriverKind.make("antigravity"),
-          cwd: process.cwd(),
-          runtimeMode: "full-access",
-          resumeCursor: agy.session.resumeCursor,
-        });
-        expect(restarted.resumeFailed).toBe(true);
-        const frames = yield* agy.frames();
-        expect(frames.filter((frame) => frame.method === "session/new")).toHaveLength(2);
-        expect(frames.some((frame) => frame.method === "session/resume")).toBe(false);
-      }).pipe(Effect.scoped, Effect.provide(testServices)),
+  it.live("ends a session Google can't continue, saying its conversation is lost", () =>
+    Effect.gen(function* () {
+      const agy = yield* startAgy("lost-signature");
+      yield* agy.adapter.sendTurn({ threadId: agy.threadId, input: "hi", attachments: [] });
+      yield* agy.waitFor((events) => completedTurns(events).length === 1);
+      expect(completedTurns(agy.events)[0]?.payload).toMatchObject({ state: "failed" });
+      yield* agy.waitFor((events) => events.some((event) => event.type === "session.exited"));
+      // ProviderService forgets the conversation off this (see its tests),
+      // so the next start opens a new one seeded with the thread's history.
+      expect(agy.events.find((event) => event.type === "session.exited")).toMatchObject({
+        payload: { conversationLost: true },
+      });
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 });
 
@@ -561,43 +664,27 @@ describe("Antigravity turns, the hard cases", () => {
     }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 
-  it.live("keeps every lost session another adapter of the instance marked, across a restart", () =>
-    Effect.gen(function* () {
-      const agy = yield* startAgy("lost-signature");
-      // The instance's adapter rebuilt while the first still runs a thread
-      // (a settings change): both write the same instance's marks.
-      const rebuilt = yield* agy.newAdapter;
-      const otherThread = ThreadId.make("agy-lost-signature-2");
-      const other = yield* rebuilt.startSession({
-        threadId: otherThread,
-        provider: ProviderDriverKind.make("antigravity"),
-        cwd: process.cwd(),
-        runtimeMode: "full-access",
-      });
-      yield* agy.adapter.sendTurn({ threadId: agy.threadId, input: "hi", attachments: [] });
-      yield* agy.waitFor(
-        (events) => events.filter((event) => event.type === "session.exited").length === 1,
-      );
-      yield* rebuilt.sendTurn({ threadId: otherThread, input: "hi", attachments: [] });
-      yield* agy.waitFor(
-        (events) => events.filter((event) => event.type === "session.exited").length === 2,
-      );
-      // A server restart: neither lost session is reopened.
-      const restartedAdapter = yield* agy.newAdapter;
-      for (const [threadId, session] of [
-        [agy.threadId, agy.session],
-        [otherThread, other],
-      ] as const) {
-        const restarted = yield* restartedAdapter.startSession({
-          threadId,
+  it.live(
+    "opens a new conversation when the lost one is resumed before its binding forgets it",
+    () =>
+      Effect.gen(function* () {
+        const agy = yield* startAgy("lost-signature");
+        yield* agy.adapter.sendTurn({ threadId: agy.threadId, input: "hi", attachments: [] });
+        yield* agy.waitFor((events) => events.some((event) => event.type === "session.exited"));
+        // A message sent at once restarts the thread on its old cursor, before
+        // ProviderService has written the forget into its binding.
+        const restarted = yield* agy.adapter.startSession({
+          threadId: agy.threadId,
           provider: ProviderDriverKind.make("antigravity"),
           cwd: process.cwd(),
           runtimeMode: "full-access",
-          resumeCursor: session.resumeCursor,
+          resumeCursor: agy.session.resumeCursor,
         });
         expect(restarted.resumeFailed).toBe(true);
-      }
-    }).pipe(Effect.scoped, Effect.provide(testServices)),
+        const frames = yield* agy.frames();
+        expect(frames.filter((frame) => frame.method === "session/new")).toHaveLength(2);
+        expect(frames.some((frame) => frame.method === "session/resume")).toBe(false);
+      }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 
   it.live("holds a turn until each subagent has reported", () =>
@@ -611,6 +698,33 @@ describe("Antigravity turns, the hard cases", () => {
       yield* agy.waitFor((events) => completedTurns(events).length === 1);
       expect(replyTo(agy.events, turnId)).toContain("The tester reported.");
       expect(agy.events.filter((event) => event.type === "turn.started")).toHaveLength(1);
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+  it.live("ends the hold when the records show every child reported in one reply", () =>
+    Effect.gen(function* () {
+      const agy = yield* startAgy("records-one-reply");
+      const { turnId } = yield* agy.adapter.sendTurn({
+        threadId: agy.threadId,
+        input: "research and review",
+        attachments: [],
+      });
+      // Counting one subagent per reply would hold the second for 30 minutes.
+      yield* agy.waitFor((events) => completedTurns(events).length === 1);
+      expect(replyTo(agy.events, turnId)).toContain("Both agents reported.");
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+  it.live("stops holding a child the agent killed", () =>
+    Effect.gen(function* () {
+      const agy = yield* startAgy("records-killed");
+      const { turnId } = yield* agy.adapter.sendTurn({
+        threadId: agy.threadId,
+        input: "research and review",
+        attachments: [],
+      });
+      yield* agy.waitFor((events) => completedTurns(events).length === 1);
+      expect(replyTo(agy.events, turnId)).toContain("I stopped the reviewer.");
     }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 
@@ -628,6 +742,111 @@ describe("Antigravity turns, the hard cases", () => {
       // Long before the 30-minute silent limit.
       yield* agy.waitFor((events) => completedTurns(events).length === 1);
       expect(replyTo(agy.events, turnId)).toContain("The researcher reported.");
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+});
+
+const promptTexts = (frames: ReadonlyArray<Record<string, unknown>>) =>
+  frames.flatMap((frame) => {
+    if (frame.method !== "session/prompt") return [];
+    const prompt = (frame.params as { prompt?: ReadonlyArray<{ type: string; text?: string }> })
+      .prompt;
+    return [(prompt ?? []).flatMap((block) => (block.text ? [block.text] : [])).join("\n")];
+  });
+
+describe("Antigravity commands and edits", () => {
+  it.live(
+    "puts the session's own commands on the status, less Threadlines' own, and clears them",
+    () =>
+      Effect.gen(function* () {
+        const agy = yield* startAgy("simple");
+        yield* agy.waitFor(() => agy.commandReports.length > 0);
+        expect(agy.commandReports).toEqual([["goal", "compact"]]);
+        yield* agy.adapter.stopSession(agy.threadId);
+        expect(agy.commandReports.at(-1)).toBeUndefined();
+      }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+  it.live("reports a list that keeps changing at most once per interval, the newest last", () =>
+    Effect.gen(function* () {
+      const agy = yield* startAgy("flapping");
+      yield* agy.waitFor(() => agy.commandReports.length > 0);
+      yield* Effect.sleep("1 second");
+      // The first list went at once; the nine changes after it wait.
+      expect(agy.commandReports).toHaveLength(1);
+      yield* agy.waitFor(() => agy.commandReports.length > 1, 700);
+      yield* Effect.sleep("500 millis");
+      expect(agy.commandReports).toEqual([["goal", "compact"], ["goal"]]);
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+  it.live("runs only the person's typed command the session lists, as typed, in plan mode", () =>
+    Effect.gen(function* () {
+      const agy = yield* startAgy("simple");
+      yield* agy.waitFor(() => agy.commandReports.length > 0);
+      const send = (input: string, typed?: { text: string; context?: string; indented?: true }) =>
+        Effect.gen(function* () {
+          const before = completedTurns(agy.events).length;
+          const turn = yield* agy.adapter.sendTurn({
+            threadId: agy.threadId,
+            input,
+            interactionMode: "plan",
+            attachments: [],
+            ...(typed ? { typed } : {}),
+          });
+          yield* agy.waitFor((events) => completedTurns(events).length === before + 1);
+          return turn;
+        });
+      // Advertised, and a skill the status lists: commands.
+      yield* send("/compact", { text: "/compact" });
+      yield* send("/review the diff", { text: "/review the diff" });
+      // Not listed, a path, plain text and an indented one: ordinary text.
+      yield* send("/etc is missing", { text: "/etc is missing" });
+      yield* send("/tmp/out.log is empty", { text: "/tmp/out.log is empty" });
+      yield* send("/compact");
+      yield* send("/compact", { text: "/compact", indented: true });
+      // The server's context in front: the command goes alone, its context deferred.
+      const deferred = yield* send("Earlier turns\n\n---\n\n/compact", {
+        text: "/compact",
+        context: "Earlier turns",
+      });
+      expect(deferred.contextDeferred).toBe(true);
+      expect(promptTexts(yield* agy.frames())).toEqual([
+        "/compact",
+        "/review the diff",
+        "/plan /etc is missing",
+        "/plan /tmp/out.log is empty",
+        "/plan /compact",
+        "/plan /compact",
+        "/compact",
+      ]);
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+  it.live("ends the session on a revert, its running work and turn stopped first", () =>
+    Effect.gen(function* () {
+      const agy = yield* startAgy("hang");
+      expect(agy.adapter.capabilities.conversationRollback).toBe("new-session");
+      const { turnId } = yield* agy.adapter.sendTurn({
+        threadId: agy.threadId,
+        input: "build it",
+        attachments: [],
+      });
+      yield* agy.waitFor((events) => replyTo(events, turnId).includes("I'll report"));
+      yield* Effect.sleep("300 millis");
+
+      const rolledBack = yield* agy.adapter.rollbackThread(agy.threadId, 1);
+      expect(rolledBack.conversationRolledBack).toBe(true);
+      expect(completedTurns(agy.events)).toEqual([
+        expect.objectContaining({
+          turnId,
+          payload: { state: "cancelled", stopReason: "cancelled" },
+        }),
+      ]);
+      const frames = yield* agy.frames();
+      expect(frames.filter((frame) => frame.method === "session/cancel")).toHaveLength(1);
+      expect(agy.events.some((event) => event.type === "session.exited")).toBe(true);
+      expect(yield* agy.adapter.hasSession(agy.threadId)).toBe(false);
     }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 });
@@ -662,6 +881,16 @@ describe("Antigravity turn reading", () => {
         tool({
           kind: "other",
           title: "Running invoke_subagent",
+          data: { rawInput: { Role: "Artist", Prompt: "Paint" } },
+        }),
+      ),
+    ).toEqual({ kind: "subagents", count: 1 });
+    // agy 1.5 titles a launch it ran without asking "Run invoke_subagent".
+    expect(
+      antigravityWorkAfterPrompt(
+        tool({
+          kind: "other",
+          title: "Run invoke_subagent",
           data: { rawInput: { Role: "Artist", Prompt: "Paint" } },
         }),
       ),
@@ -797,4 +1026,187 @@ describe("Antigravity turn reading", () => {
       reasoningTokens: 50,
     });
   });
+});
+
+describe("Antigravity tool rows and attachments", () => {
+  const toolItem = (events: ReadonlyArray<ProviderRuntimeEvent>, id: string) =>
+    events.findLast((event) => event.type === "item.completed" && String(event.itemId) === id) as
+      | Extract<ProviderRuntimeEvent, { type: "item.completed" }>
+      | undefined;
+
+  it.live.each(["approval-required", "full-access"] as const)(
+    "asks %s for a call_mcp_tool call as a command that names the server, tool and arguments",
+    (runtimeMode) =>
+      Effect.gen(function* () {
+        const agy = yield* startAgy("mcp-permission", undefined, runtimeMode);
+        yield* agy.adapter.sendTurn({ threadId: agy.threadId, input: "go", attachments: [] });
+        if (runtimeMode === "approval-required") {
+          // Supervised asks for both, as it did before.
+          for (let asked = 1; asked <= 2; asked += 1) {
+            yield* agy.waitFor(
+              (events) =>
+                events.filter((event) => event.type === "request.opened").length === asked,
+            );
+            const request = agy.events.filter((event) => event.type === "request.opened")[
+              asked - 1
+            ] as Extract<ProviderRuntimeEvent, { type: "request.opened" }>;
+            yield* agy.adapter.respondToRequest(
+              agy.threadId,
+              ApprovalRequestId.make(String(request.requestId)),
+              "accept",
+            );
+          }
+          const [mcp, spoof] = agy.events.filter(
+            (event) => event.type === "request.opened",
+          ) as ReadonlyArray<Extract<ProviderRuntimeEvent, { type: "request.opened" }>>;
+          // The same kind of request as before; what runs is in its words.
+          expect(mcp?.payload).toMatchObject({
+            requestType: "exec_command_approval",
+            detail: 'MCP tool github · list_issues {"repo":"x/y"}',
+          });
+          // A command naming an MCP tool shows the command it runs.
+          expect(spoof?.payload).toMatchObject({
+            requestType: "exec_command_approval",
+            detail: "rm -rf build",
+          });
+        }
+        yield* agy.waitFor((events) => completedTurns(events).length === 1);
+        // Full access approves both once, as before; supervised passes on the answers.
+        const answers = (yield* agy.frames()).flatMap((frame) =>
+          frame.result !== undefined && JSON.stringify(frame.result).includes("optionId")
+            ? [JSON.stringify(frame.result)]
+            : [],
+        );
+        expect(answers).toEqual([
+          JSON.stringify({ outcome: { outcome: "selected", optionId: "allow" } }),
+          JSON.stringify({ outcome: { outcome: "selected", optionId: "allow" } }),
+        ]);
+      }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+  it.live("shows call_mcp_tool as the MCP tool, keeps a command's start, drops images", () =>
+    Effect.gen(function* () {
+      const agy = yield* startAgy("tools");
+      yield* agy.adapter.sendTurn({ threadId: agy.threadId, input: "go", attachments: [] });
+      yield* agy.waitFor((events) => completedTurns(events).length === 1);
+
+      expect(toolItem(agy.events, "call_mcp")?.payload).toMatchObject({
+        itemType: "mcp_tool_call",
+        title: "list_issues",
+        data: { server: "github", tool: "list_issues", arguments: { repo: "x/y" } },
+      });
+      expect(toolItem(agy.events, "call_mcp")?.payload.data).not.toHaveProperty("item");
+
+      const command = toolItem(agy.events, "call_long")?.payload.data as {
+        command: string;
+        item: { command: string; aggregatedOutput: string };
+      };
+      expect(command.command.startsWith("echo start")).toBe(true);
+      expect(command.command.endsWith("[Command truncated]")).toBe(true);
+      expect(command.command.length).toBeLessThanOrEqual(8_000 + "\n\n[Command truncated]".length);
+      expect(command.item.aggregatedOutput.endsWith("tail")).toBe(true);
+      expect(command.item.aggregatedOutput.length).toBeLessThan(8_100);
+
+      const shot = toolItem(agy.events, "call_shot");
+      expect(JSON.stringify(shot)).not.toContain("aGVsbG8=");
+      expect(shot?.payload.data).toMatchObject({
+        content: [{ type: "content", content: { type: "text", text: "Screenshot taken." } }],
+      });
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+  it.live(
+    "sends images and audio inline, PDFs as links, text files as text, the rest as paths",
+    () =>
+      Effect.gen(function* () {
+        const config = yield* ServerConfig;
+        const attachments: ReadonlyArray<ChatAttachment> = [
+          { type: "image", id: "img-1", name: "shot.png", mimeType: "image/png", sizeBytes: 4 },
+          {
+            type: "file",
+            kind: "pdf",
+            id: "pdf-1",
+            name: "spec.pdf",
+            mimeType: "application/pdf",
+            sizeBytes: 9,
+          },
+          {
+            type: "file",
+            kind: "text",
+            id: "txt-1",
+            name: "notes.txt",
+            mimeType: "text/plain",
+            sizeBytes: 5,
+          },
+          {
+            type: "file",
+            kind: "other",
+            id: "u16-1",
+            name: "log.txt",
+            mimeType: "text/plain; charset=utf-16",
+            sizeBytes: 8,
+          },
+          {
+            type: "file",
+            kind: "other",
+            id: "aud-1",
+            name: "memo.mp3",
+            mimeType: "audio/mpeg",
+            sizeBytes: 3,
+          },
+          {
+            type: "file",
+            kind: "other",
+            id: "xls-1",
+            name: "budget.xlsx",
+            mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            sizeBytes: 2,
+          },
+        ];
+        const bytes: Record<string, Uint8Array> = {
+          "img-1": Uint8Array.from([0x89, 0x50, 0x4e, 0x47]),
+          "pdf-1": new TextEncoder().encode("%PDF-1.7\n"),
+          "txt-1": new TextEncoder().encode("hello"),
+          // "hi!" in UTF-16LE with its byte order mark.
+          "u16-1": Uint8Array.from([0xff, 0xfe, 0x68, 0x00, 0x69, 0x00, 0x21, 0x00]),
+          "aud-1": Uint8Array.from([1, 2, 3]),
+          "xls-1": Uint8Array.from([0x50, 0x4b]),
+        };
+        for (const attachment of attachments) {
+          const file = resolveAttachmentPath({
+            attachmentsDir: config.attachmentsDir,
+            attachment,
+          })!;
+          yield* Effect.promise(async () => {
+            await mkdir(path.dirname(file), { recursive: true });
+            await writeFile(file, bytes[attachment.id]!);
+          });
+        }
+        const agy = yield* startAgy("simple");
+        yield* agy.adapter.sendTurn({ threadId: agy.threadId, input: "look", attachments });
+        yield* agy.waitFor((events) => completedTurns(events).length === 1);
+
+        const prompt = (yield* agy.frames()).find((frame) => frame.method === "session/prompt")
+          ?.params as { prompt: ReadonlyArray<Record<string, unknown>> };
+        const blocks = prompt.prompt;
+        expect(blocks.map((block) => block.type)).toEqual([
+          "text",
+          "image",
+          "resource_link",
+          "resource",
+          "resource",
+          "audio",
+          "text",
+        ]);
+        expect(blocks[1]).toMatchObject({ mimeType: "image/png", data: "iVBORw==" });
+        expect(blocks[2]).toMatchObject({ name: "spec.pdf", mimeType: "application/pdf" });
+        expect(String(blocks[2]!.uri).startsWith("file://")).toBe(true);
+        expect(blocks[3]).toMatchObject({ resource: { mimeType: "text/plain", text: "hello" } });
+        // The charset parameter is dropped; the byte order mark picks UTF-16.
+        expect(blocks[4]).toMatchObject({ resource: { mimeType: "text/plain", text: "hi!" } });
+        expect(blocks[5]).toMatchObject({ mimeType: "audio/mpeg", data: "AQID" });
+        expect(blocks[6]).toMatchObject({ type: "text" });
+        expect(String(blocks[6]!.text)).toContain('Attached file "budget.xlsx"');
+      }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
 });

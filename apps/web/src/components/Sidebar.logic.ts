@@ -309,12 +309,6 @@ function awaitingInputPill(): ThreadStatusPill {
 
 export function resolveThreadStatusPill(input: {
   thread: ThreadStatusInput;
-  /**
-   * Look past waiting on the threads its agent started, to what the thread
-   * itself shows beneath it. Wrapping up reads it this way: those threads keep
-   * running wrapped or not.
-   */
-  ignoreChildThreadWait?: boolean;
 }): ThreadStatusPill | null {
   const { thread } = input;
 
@@ -430,11 +424,7 @@ export function resolveThreadStatusPill(input: {
   // Its own turn is over and the threads its agent started still owe it
   // answers: each one that comes back starts it up again on its own.
   const awaitedChildThreads = thread.awaitedChildThreadCount ?? 0;
-  if (
-    input.ignoreChildThreadWait !== true &&
-    awaitedChildThreads > 0 &&
-    isLatestTurnSettled(thread.latestTurn, thread.session)
-  ) {
+  if (awaitedChildThreads > 0 && isLatestTurnSettled(thread.latestTurn, thread.session)) {
     return {
       label: "Waiting",
       colorClass: WAITING_STATUS_TONE,
@@ -739,10 +729,10 @@ export function hasQueuedTurnStart(
  * A failed thread CAN be marked done after it has been inspected -- that is
  * "I saw it, I'm done with it" rather than an accidental dismissal.
  *
- * Waiting on the threads its agent started does not hold a thread open:
- * wrapping it up never stops them, so the check reads what the thread shows
- * beneath that wait. Nor does a check-back: the agent's turn is over, and
- * wrapping never cancels it. When it fires, that new work outranks the old
+ * Waiting on the threads its agent started holds it like any other wait:
+ * their answers start it up again, so it isn't finished until they report
+ * back. A check-back does not: the agent's turn is over, and wrapping never
+ * cancels it. When it fires, that new work outranks the old
  * word and brings the thread back by itself, like a snoozed email. (A usage
  * reset still holds: that work was cut off, not finished.)
  */
@@ -759,7 +749,7 @@ export function canMarkThreadDone(
 ): boolean {
   // The same status resolution the row uses, so "can't be marked done" and
   // "shows a status that deserves attention" can never drift apart.
-  const status = resolveThreadStatusPill({ thread, ignoreChildThreadWait: true });
+  const status = resolveThreadStatusPill({ thread });
   if (status !== null && status.label !== "Checking back") {
     const handedBack = status.label === "Completed" && options.handedBackCompletionSeen === true;
     if (!handedBack) {

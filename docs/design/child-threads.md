@@ -78,7 +78,7 @@ These rules override anything in the sections below that disagrees with them.
 - **Parent status.** Three cases:
   - Its own turn has settled and answers are still owed: cyan "Waiting" pill, word `N threads`, clock from the turn's completion.
   - A batch is waiting for approval: amber `approval`, like any pending approval. It's blocking, so the parent can't be wrapped and it notifies.
-  - Waiting on child answers alone does not block wrapping.
+  - Waiting on child answers blocks wrapping too: the parent isn't finished until they report back, and each answer starts it up again. No Wrap up check, swipe or menu item, and the idle and pull request rules leave it alone.
 - **Open family.** Child rows are sibling `li`s, one line each (~26px): status dot (grey check when wrapped), title, meta (state word + clock, or relative time), provider glyph. Same colours and words as live rows. Creation order, never re-sorted.
 - **Collapsed family.** A child that needs the user, and the child open in the chat, still render under the summary line.
 - **Fold and keyboard.** A family takes one seat in `windowInboxThreads`. It has attention if the parent or any attached child has a status pill. `orderedThreadKeys` equals the rendered rows, which keeps jump labels, prewarm, prev/next and shift-range selection correct.

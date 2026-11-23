@@ -34,16 +34,11 @@ import type {
 } from "../acp/AcpProviderDescriptor.ts";
 import type { AcpToolCallState } from "../acp/AcpRuntimeModel.ts";
 import { antigravityLogPosition, antigravityTurnSteps } from "./AntigravitySessionLog.ts";
+import { antigravityChildLaunches, readAntigravityChildren } from "./AntigravityChildRecords.ts";
+import { isAntigravitySubagentLaunch } from "./AntigravitySubagents.ts";
 
 /** `schedule` stays in progress until its wake fires; the agent then replies by itself. */
 const SCHEDULE_TITLES = new Set(["Run schedule", "Running schedule"]);
-/** A subagent launch: the call returns at once and the subagent works on. */
-const SUBAGENT_TITLES = new Set([
-  "Running start_subagent",
-  "Run start_subagent?",
-  "Running invoke_subagent",
-  "Run invoke_subagent?",
-]);
 /**
  * A command that has said nothing this long no longer holds its turn: the
  * agent sometimes loses a command's end or its wake (T3 Code found the same
@@ -53,13 +48,6 @@ export const ANTIGRAVITY_SILENT_WORK_LIMIT = Duration.minutes(30);
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
-
-/** How many subagents a launch starts: one (`Role`, `Prompt`), or a batch (`Subagents`). */
-function subagentLaunchCount(input: unknown): number {
-  if (!isRecord(input)) return 0;
-  if (typeof input.Role === "string" && typeof input.Prompt === "string") return 1;
-  return Array.isArray(input.Subagents) ? input.Subagents.length : 0;
-}
 
 /**
  * What a tool call goes on with after the prompt answers: a command the
@@ -76,15 +64,12 @@ export function antigravityWorkAfterPrompt(
   if (toolCall.kind === "execute") {
     return isRecord(input) && input.IsDaemon === true ? undefined : { kind: "command" };
   }
-  const count = subagentLaunchCount(input);
-  if (
-    (toolCall.kind === undefined || toolCall.kind === "other") &&
-    toolCall.title !== undefined &&
-    SUBAGENT_TITLES.has(toolCall.title) &&
-    count > 0
-  ) {
-    return { kind: "subagents", count };
-  }
+  // The same launches the subagent view shows (auto-approved titles too),
+  // a batch counting each subagent in it.
+  const count = isAntigravitySubagentLaunch(toolCall)
+    ? (antigravityChildLaunches(input)?.length ?? 0)
+    : 0;
+  if (count > 0) return { kind: "subagents", count };
   return undefined;
 }
 
@@ -256,6 +241,18 @@ export function antigravityTurnBehavior<Settings extends AcpProviderSettings>(
       workAfterPrompt: antigravityWorkAfterPrompt,
       silentLimit: ANTIGRAVITY_SILENT_WORK_LIMIT,
       outcome: antigravityPromptOutcome(profileDir, readUsageLimit),
+      // Which children are still at work, by the CLI's own records.
+      childrenAtWork: (sessionId) =>
+        readAntigravityChildren(profileDir, sessionId).pipe(
+          Effect.map((reading) =>
+            reading.available
+              ? {
+                  running: reading.running.length,
+                  known: reading.running.length + reading.reported.length + reading.killed.length,
+                }
+              : undefined,
+          ),
+        ),
     },
     usageLedger: { provider: "antigravity" },
     turnUsageTotals: antigravityTurnUsageTotals,

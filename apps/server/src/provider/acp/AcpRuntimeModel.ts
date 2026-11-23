@@ -1,6 +1,11 @@
 import type * as EffectAcpSchema from "effect-acp/schema";
+import { cleanSlashCommands } from "@threadlines/shared/slashCommands";
 import { deriveToolActivityPresentation } from "@threadlines/shared/toolActivity";
-import type { ToolLifecycleItemType, UsageTokenTotals } from "@threadlines/contracts";
+import type {
+  ServerProviderSlashCommand,
+  ToolLifecycleItemType,
+  UsageTokenTotals,
+} from "@threadlines/contracts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -29,7 +34,27 @@ export interface AcpToolCallState {
   readonly status?: "pending" | "inProgress" | "completed" | "failed";
   readonly command?: string;
   readonly detail?: string;
+  /**
+   * The timeline row type, when the agent's `kind` doesn't say it (an MCP
+   * call an agent runs as a command). Set by a descriptor's
+   * `normalizeToolCall`; absent, the row type follows `kind`.
+   */
+  readonly itemType?: ToolLifecycleItemType;
   readonly data: Record<string, unknown>;
+}
+
+/**
+ * One report of a tool call as the agent sent it: a `tool_call` or
+ * `tool_call_update`, or a permission request's call. Read by a descriptor's
+ * `normalizeToolCall`, which needs what this report says, not only the
+ * merged state.
+ */
+export interface AcpToolCallReport {
+  readonly title?: string | null | undefined;
+  readonly kind?: string | null | undefined;
+  readonly rawInput?: unknown;
+  readonly content?: ReadonlyArray<{ readonly type: string }> | null | undefined;
+  readonly locations?: ReadonlyArray<unknown> | null | undefined;
 }
 
 export interface AcpPlanUpdate {
@@ -96,6 +121,11 @@ export type AcpParsedSessionEvent =
       /** The session's running cost in USD so far, from ACP `usage_update`. */
       readonly _tag: "SessionCost";
       readonly totalUsd: number;
+    }
+  | {
+      /** The commands the agent runs on `/<name>`, from ACP `available_commands_update`. */
+      readonly _tag: "AvailableCommandsUpdated";
+      readonly commands: ReadonlyArray<ServerProviderSlashCommand>;
     };
 
 type AcpSessionSetupResponse =
@@ -712,6 +742,13 @@ export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotificat
       ) {
         events.push({ _tag: "SessionCost", totalUsd: cost.amount });
       }
+      break;
+    }
+    case "available_commands_update": {
+      events.push({
+        _tag: "AvailableCommandsUpdated",
+        commands: cleanSlashCommands(upd.availableCommands),
+      });
       break;
     }
     default:

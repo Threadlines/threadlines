@@ -5,6 +5,7 @@ import {
   type AcpTurnCommand,
   type AcpTurnEvent,
   type AcpTurnMachineState,
+  type AcpTurnTimer,
   desiredTimers,
   initialTurnMachineState,
   stepTurnMachine,
@@ -87,10 +88,17 @@ function possibleEvents(world: World): ReadonlyArray<Event> {
     events.push({ type: "workStarted", id: "c1", kind: "command" });
   if (!monitor.workUsed.includes("w1"))
     events.push({ type: "workStarted", id: "w1", kind: "timer" });
-  for (const [id] of state.running) events.push({ type: "workEnded", id });
+  for (const [id] of state.running) {
+    events.push({ type: "workEnded", id }, { type: "workDropped", id });
+  }
   if (!monitor.launched) events.push({ type: "subagentsLaunched", id: "l1", count: 2 });
+  // The records: none running, one running, or a reading that missed a launch.
   if (monitor.launched && !monitor.childrenReported) {
-    events.push({ type: "childrenAtWork", count: 0 });
+    events.push(
+      { type: "childrenAtWork", running: 0, known: state.launchedTotal },
+      { type: "childrenAtWork", running: 1, known: state.launchedTotal },
+      { type: "childrenAtWork", running: 0, known: 0 },
+    );
   }
   const newTurnId = `a${monitor.agentTurns + 1}`;
   if (monitor.agentTurns < 2) {
@@ -253,6 +261,17 @@ function advance(world: World, event: Event, trail: ReadonlyArray<Event>): World
       check(types.includes("sendCancel"), "a prompt went out after Stop with no cancel", trail);
     }
   }
+  // A notice owed by a cancel is expected only until its expiry fires.
+  if (event.type === "timerFired" && event.timer === "noticeExpiry") {
+    check(state.noticesExpected === 0, "a notice is still expected after it expired", trail);
+  }
+  if (state.noticesExpected > 0 && !state.ended) {
+    check(
+      state.timers.some(([timer]) => timer === "noticeExpiry"),
+      "a notice is expected with no expiry armed",
+      trail,
+    );
+  }
   // The session's end ends every turn and answers every caller.
   if (state.ended) {
     check(
@@ -315,10 +334,7 @@ function run(events: ReadonlyArray<Event>): { state: State; commands: Array<Comm
   return { state, commands };
 }
 
-const fire = (
-  state: State,
-  timer: "cancelDeadline" | "settle" | "replyQuiet" | "silent",
-): Event => {
+const fire = (state: State, timer: AcpTurnTimer): Event => {
   const armed = state.timers.find(([name]) => name === timer);
   if (armed === undefined) throw new Error(`${timer} is not armed`);
   return { type: "timerFired", timer, generation: armed[1] };
@@ -328,10 +344,11 @@ const ends = (commands: ReadonlyArray<Command>) =>
   commands.flatMap((command) => (command.type === "endTurn" ? [command] : []));
 
 describe("AcpTurnMachine, every reachable state", () => {
-  // Depth 10 reaches every race below (the longest takes 10 events): about a
-  // million distinct states, 20 seconds; depth 11 (2.2 million) passes too.
-  // The alphabet is bounded to two sends, two steers, one command, one timer,
-  // one batch of two subagents and two turns of the agent's own.
+  // Depth 10 reaches every race below (the longest takes 10 events): about
+  // 2.3 million distinct states, under a minute. The alphabet is bounded to
+  // two sends, two steers, one command, one timer, one batch of two
+  // subagents, one reading of the child records (none running, one running,
+  // or one that missed a launch) and two turns of the agent's own.
   const { states, worlds } = explore(10);
 
   it("explores a state space large enough to mean something", () => {
@@ -392,10 +409,16 @@ describe("AcpTurnMachine, the reviewed races", () => {
     ]);
     expect(ends(commands)).toHaveLength(1);
     expect(state.turn).toBeUndefined();
-    // The deadline stayed armed from Stop until the turn ended.
-    expect(commands.filter((command) => command.type === "armTimer")).toEqual([
-      { type: "armTimer", timer: "cancelDeadline", generation: 1 },
-    ]);
+    // The deadline was armed once, at Stop, and stayed armed until the turn ended.
+    const deadline = commands.filter(
+      (command) =>
+        (command.type === "armTimer" || command.type === "disarmTimer") &&
+        command.timer === "cancelDeadline",
+    );
+    expect(deadline.map((command) => command.type)).toEqual(["armTimer", "disarmTimer"]);
+    expect(commands.findIndex((command) => command.type === "disarmTimer")).toBeGreaterThan(
+      commands.findIndex((command) => command.type === "endTurn"),
+    );
   });
 
   it("Stop before the prompt went out cancels again when it does, and the deadline backs it (finding 2)", () => {
@@ -450,15 +473,79 @@ describe("AcpTurnMachine, the reviewed races", () => {
     expect(ends(settled.commands).map((end) => end.turnId)).toEqual(["u1"]);
   });
 
-  it("the agent's own count of children, once reported, decides (wiring for the child records)", () => {
+  /** A turn holding two subagents, its answer read. */
+  const holdingTwo: ReadonlyArray<Event> = [
+    { type: "send", sendId: "s1", turnId: "u1" },
+    { type: "subagentsLaunched", id: "l1", count: 2 },
+    { type: "promptAnswered", prompt: 1 },
+    { type: "outcomeRead", prompt: 1, outcome: outcome("completed") },
+  ];
+
+  it("several reports in one reply end the hold once the records say so (child records)", () => {
+    const { state, commands } = run([
+      ...holdingTwo,
+      { type: "agentOutput", newTurnId: "a1" },
+      { type: "replyEnded" },
+    ]);
+    // One reply: the protocol count alone would still hold one subagent.
+    expect(state.subagents).toBe(1);
+    expect(commands).toContainEqual({ type: "readChildren" });
+    const read = stepTurnMachine(state, { type: "childrenAtWork", running: 0, known: 2 });
+    expect(read.state.timers.map(([timer]) => timer)).toEqual(["settle"]);
+  });
+
+  it("a killed child stops holding the turn (child records)", () => {
+    // The records list one child reported, one killed: none running.
+    const { state } = run([...holdingTwo, { type: "childrenAtWork", running: 0, known: 2 }]);
+    expect(state.timers.map(([timer]) => timer)).toEqual(["settle"]);
+  });
+
+  it("with no records, or a reading that misses a launch, the protocol count stands (child records)", () => {
+    const missed = run([...holdingTwo, { type: "childrenAtWork", running: 0, known: 1 }]);
+    expect(missed.state.children).toBeUndefined();
+    expect(missed.state.timers.map(([timer]) => timer)).toEqual(["silent"]);
+    // Each report frees one subagent.
+    let state = missed.state;
+    for (let report = 0; report < 2; report += 1) {
+      state = stepTurnMachine(state, { type: "agentOutput", newTurnId: "a1" }).state;
+      state = stepTurnMachine(state, { type: "replyEnded" }).state;
+    }
+    expect(state.timers.map(([timer]) => timer)).toEqual(["settle"]);
+  });
+
+  it("a call taken for a command and then shown to be an MCP call holds nothing", () => {
     const { state } = run([
       { type: "send", sendId: "s1", turnId: "u1" },
-      { type: "subagentsLaunched", id: "l1", count: 2 },
+      { type: "workStarted", id: "c1", kind: "command" },
+      { type: "workDropped", id: "c1" },
       { type: "promptAnswered", prompt: 1 },
       { type: "outcomeRead", prompt: 1, outcome: outcome("completed") },
-      { type: "childrenAtWork", count: 0 },
     ]);
-    expect(state.timers.map(([timer]) => timer)).toEqual(["settle"]);
+    expect(state.turn).toBeUndefined();
+  });
+
+  it("a cancel's notice that never comes is no longer expected after a while", () => {
+    const { state } = run([
+      { type: "send", sendId: "s1", turnId: "u1" },
+      { type: "stopRequested" },
+      { type: "promptAnswered", prompt: 1 },
+      { type: "outcomeRead", prompt: 1, outcome: outcome("cancelled") },
+    ]);
+    expect(state.noticesExpected).toBe(1);
+    const expired = stepTurnMachine(state, fire(state, "noticeExpiry")).state;
+    expect(expired.noticesExpected).toBe(0);
+    // A later reply in those words is output, opening a turn.
+    const late = stepTurnMachine(expired, { type: "cancellationNotice", newTurnId: "a1" });
+    expect(late.commands.map((command) => command.type)).toContain("startTurn");
+  });
+
+  it("a revert's Stop with no turn cancels the work still running", () => {
+    // A command still running after its turn ended (a message ended the hold).
+    const { state } = run([{ type: "workStarted", id: "c1", kind: "command" }]);
+    expect(state.turn).toBeUndefined();
+    const stopped = stepTurnMachine(state, { type: "stopRequested" });
+    expect(stopped.commands).toContainEqual({ type: "sendCancel" });
+    expect(stopped.state.running).toEqual([]);
   });
 
   it("stopping the session during a hold ends the held turn (finding 6)", () => {
@@ -488,7 +575,7 @@ describe("AcpTurnMachine, the reviewed races", () => {
       { type: "outcomeRead", prompt: 2, outcome: outcome("completed") },
       { type: "cancellationNotice", newTurnId: "a1" },
     ]);
-    expect(commands.at(-1)).toEqual({ type: "dropNotice" });
+    expect(commands.slice(-3)).toContainEqual({ type: "dropNotice" });
     expect(commands.filter((command) => command.type === "startTurn")).toHaveLength(2);
     expect(state.turn).toBeUndefined();
   });

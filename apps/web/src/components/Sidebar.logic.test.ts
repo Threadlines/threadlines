@@ -2949,7 +2949,7 @@ describe("child thread status and wrap-up", () => {
     ).toBe(true);
   });
 
-  it("marks a parent waiting on its threads without blocking its wrap-up", () => {
+  it("holds a parent waiting on its threads out of wrap-up", () => {
     const seenParent = {
       ...base,
       awaitedChildThreadCount: 3,
@@ -2959,10 +2959,19 @@ describe("child thread status and wrap-up", () => {
       label: "Waiting",
       childThreadCount: 3,
     });
-    expect(canMarkThreadDone(seenParent, { now: NOW })).toBe(true);
-    // An unread completion under the wait still holds it, as it would alone.
-    expect(canMarkThreadDone({ ...seenParent, lastVisitedAt: undefined }, { now: NOW })).toBe(
-      false,
+    // Their answers start it up again, so it isn't finished: no Wrap up,
+    // and an earlier wrap doesn't hide it while it waits.
+    expect(canMarkThreadDone(seenParent, { now: NOW })).toBe(false);
+    expect(
+      isThreadDone(
+        { ...seenParent, pinnedAt: null },
+        { state: "done", at: "2026-10-04T12:00:00.000Z" },
+        { now: NOW },
+      ),
+    ).toBe(false);
+    // Once they have all answered, it can be wrapped as before.
+    expect(canMarkThreadDone({ ...seenParent, awaitedChildThreadCount: 0 }, { now: NOW })).toBe(
+      true,
     );
     // Threads waiting for the user's yes block like any approval.
     const asking = { ...seenParent, pendingChildApproval: true };

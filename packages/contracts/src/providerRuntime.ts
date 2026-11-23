@@ -417,6 +417,12 @@ const SessionExitedPayload = Schema.Struct({
   resendTurn: Schema.optional(
     Schema.Struct({ ...ProviderTurnResend.fields, error: TrimmedNonEmptyStringSchema }),
   ),
+  /**
+   * The agent can't go on with this conversation (a model refused its saved
+   * thinking, say): the server forgets it, so the next start opens a new
+   * one seeded with the thread's history (ProviderService.forgetConversation).
+   */
+  conversationLost: Schema.optional(Schema.Literal(true)),
 });
 export type SessionExitedPayload = typeof SessionExitedPayload.Type;
 

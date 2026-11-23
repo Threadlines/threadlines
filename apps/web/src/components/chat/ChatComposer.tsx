@@ -208,6 +208,11 @@ import {
   useRoomRecipientStore,
 } from "../../rooms";
 import { getPickerModelName } from "./providerIconUtils";
+import {
+  composerProviderSlashList,
+  composerSlashAgent,
+  sessionSlashCommands,
+} from "./composerAgentCommands";
 import { awaitingInvite } from "@threadlines/shared/roomAgentRequests";
 import { shownSettingsChange } from "@threadlines/shared/settingsChangeState";
 import { activeParticipants, hasAgentRecords } from "@threadlines/shared/threadParticipants";
@@ -264,6 +269,17 @@ const CODEX_AGENT_PROVIDER = ProviderDriverKind.make("codex");
 const CLAUDE_AGENT_PROVIDER = ProviderDriverKind.make("claudeAgent");
 const EMPTY_PROJECT_ENTRIES: ProjectEntry[] = [];
 const EMPTY_PROVIDER_SKILLS: ServerProvider["skills"] = [];
+/** The `/` commands Threadlines answers itself; an agent's own of the same name stays out of the list. */
+const THREADLINES_SLASH_COMMANDS: ReadonlySet<string> = new Set([
+  "model",
+  "plan",
+  "theme",
+  "default",
+]);
+const THREADLINES_SLASH_COMMANDS_WITH_GOAL: ReadonlySet<string> = new Set([
+  ...THREADLINES_SLASH_COMMANDS,
+  "goal",
+]);
 /** A thread with no agents besides its own, while there is no thread yet. */
 const NO_ROOM_THREAD = {};
 const COMPOSER_FLOATING_LAYER_SELECTOR = [
@@ -275,17 +291,20 @@ const COMPOSER_FLOATING_LAYER_SELECTOR = [
 ].join(",");
 
 /** Menu rows for provider skills, shared by the `$` trigger and the `/` menu's
- *  Skills section. Both insert the same `$skill-name` token on select. */
+ *  Skills section. Both insert the same `$skill-name` token on select, except
+ *  for an agent that runs skills as `/skill-name` (`invocation: "slash"`). */
 function buildComposerSkillItems(
   skills: ServerProvider["skills"],
   provider: ProviderDriverKind,
+  invocation?: "slash",
 ): Array<Extract<ComposerCommandItem, { type: "skill" }>> {
   return skills.map((skill) => ({
     id: `skill:${provider}:${skill.name}`,
     type: "skill" as const,
     provider,
     skill,
-    label: formatProviderSkillDisplayName(skill),
+    ...(invocation ? { invocation } : {}),
+    label: invocation === "slash" ? `/${skill.name}` : formatProviderSkillDisplayName(skill),
     description:
       skill.shortDescription ??
       skill.description ??
@@ -1314,14 +1333,55 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // Commands this thread will act on: the built-ins plus whatever the selected
   // provider reports. The editor tints the leading token so typed-past-the-menu
   // commands still read as commands.
+  // The provider's part of the `/` list describes the agent the next message
+  // goes to: in a room, an added agent's own provider, its skills and, for an
+  // agent that lists its own commands per session (Antigravity), the list its
+  // running session put on that provider's status.
+  const slashRecipientId = addressingRoomAgent ? roomRecipientId : null;
+  const slashRecipientInstanceId =
+    slashRecipientId === null
+      ? undefined
+      : (activeThread?.participants ?? []).find((entry) => entry.id === slashRecipientId)
+          ?.modelSelection.instanceId;
+  const slashAgent = composerSlashAgent({
+    threadId: activeThread?.id ?? null,
+    recipient:
+      slashRecipientId !== null && slashRecipientInstanceId !== undefined
+        ? { id: slashRecipientId, instanceId: slashRecipientInstanceId }
+        : null,
+    entries: providerInstanceEntries,
+    selected: {
+      status: selectedProviderStatus,
+      driverKind: selectedProvider,
+      label: selectedProviderDisplayName,
+    },
+  });
+  const slashProviderStatus = slashAgent.status;
+  const slashProvider = slashAgent.driverKind;
+  const slashProviderLabel = slashAgent.label;
+  const sessionCommands = sessionSlashCommands(slashProviderStatus, slashAgent.sessionKey);
+  const providerSlashList = useMemo(
+    () =>
+      composerProviderSlashList({
+        provider: slashProviderStatus,
+        sessionCommands,
+        threadlinesCommands: goalSupported
+          ? THREADLINES_SLASH_COMMANDS_WITH_GOAL
+          : THREADLINES_SLASH_COMMANDS,
+      }),
+    [goalSupported, sessionCommands, slashProviderStatus],
+  );
+  // Codex's `$` skills belong to the thread's own Codex, not an added agent.
+  const slashListCodexSkills = slashAgent.addedAgent ? EMPTY_PROVIDER_SKILLS : composerSkills;
   const recognizedSlashCommands = useMemo(
     () => [
       "plan",
       "default",
       ...(goalSupported ? ["goal"] : []),
-      ...(selectedProviderStatus?.slashCommands ?? []).map((command) => command.name),
+      ...providerSlashList.commands.map((command) => command.name),
+      ...providerSlashList.slashSkills.map((skill) => skill.name),
     ],
-    [goalSupported, selectedProviderStatus],
+    [goalSupported, providerSlashList],
   );
 
   useEffect(() => {
@@ -1469,13 +1529,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           description: "Switch this thread back to normal build mode",
         },
       ] satisfies ReadonlyArray<Extract<ComposerCommandItem, { type: "slash-command" }>>;
-      const providerSlashCommandItems = (selectedProviderStatus?.slashCommands ?? [])
+      const providerSlashCommandItems = providerSlashList.commands
         // Claude lists its own /goal; the goal bar's stands in for it.
         .filter((command) => !(goalSupported && command.name === "goal"))
         .map((command) => ({
-          id: `provider-slash-command:${selectedProvider}:${command.name}`,
+          id: `provider-slash-command:${slashProvider}:${command.name}`,
           type: "provider-slash-command" as const,
-          provider: selectedProvider,
+          provider: slashProvider,
           command,
           label: `/${command.name}`,
           description: command.description ?? command.input?.hint ?? "Run provider command",
@@ -1488,10 +1548,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       // Skills are ranked in their own list and appended after the commands —
       // the two kinds score on different scales, so a shared ranker would
       // interleave them arbitrarily.
-      const skillItems = buildComposerSkillItems(
-        searchProviderSkills(composerSkills, query),
-        selectedProvider,
-      );
+      const skillItems = [
+        ...buildComposerSkillItems(
+          searchProviderSkills(slashListCodexSkills, query),
+          selectedProvider,
+        ),
+        ...buildComposerSkillItems(
+          searchProviderSkills(providerSlashList.slashSkills, query),
+          slashProvider,
+          "slash",
+        ),
+      ];
       // The menu shows labeled sections even while filtering, so keyboard
       // order must match section order: built-ins, provider commands, plugin
       // skills, skills. Ranking is preserved within each section.
@@ -1519,8 +1586,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     composerSkills,
     composerTrigger,
     goalSupported,
+    providerSlashList,
     selectedProvider,
-    selectedProviderStatus,
+    slashListCodexSkills,
+    slashProvider,
     threadGoal,
     workspaceEntries,
   ]);
@@ -3038,7 +3107,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         return;
       }
       if (item.type === "skill") {
-        const replacement = `$${item.skill.name} `;
+        const replacement =
+          item.invocation === "slash" ? `/${item.skill.name} ` : `$${item.skill.name} `;
         const replacementRangeEnd = extendReplacementRangeForTrailingSpace(
           snapshot.value,
           trigger.rangeEnd,
@@ -4071,7 +4141,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       resolvedTheme={resolvedTheme}
                       isLoading={isComposerMenuLoading}
                       triggerKind={composerTriggerKind}
-                      providerGroupLabel={selectedProviderDisplayName}
+                      providerGroupLabel={slashProviderLabel}
                       emptyStateText={composerMenuEmptyState}
                       activeItemId={activeComposerMenuItem?.id ?? null}
                       onHighlightedItemChange={onComposerMenuItemHighlighted}

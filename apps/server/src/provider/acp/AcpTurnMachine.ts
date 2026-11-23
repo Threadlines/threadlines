@@ -36,13 +36,16 @@ export type AcpTurnTimer =
    */
   | "replyQuiet"
   /** A turn held only by commands and subagents ends after a long silence. */
-  | "silent";
+  | "silent"
+  /** A cancel's notice that hasn't come by now never will: it is no longer dropped. */
+  | "noticeExpiry";
 
 export const ACP_TURN_TIMERS: ReadonlyArray<AcpTurnTimer> = [
   "cancelDeadline",
   "settle",
   "replyQuiet",
   "silent",
+  "noticeExpiry",
 ];
 
 /** How a prompt's answer reads, once the adapter has checked it. `answer` is the adapter's own. */
@@ -96,8 +99,14 @@ export interface AcpTurnMachineState<Answer> {
   readonly launches: ReadonlyArray<string>;
   /** Subagents launched and not yet heard back from (protocol counting). */
   readonly subagents: number;
-  /** The children at work by the agent's own records, once a reader reports them; wins over `subagents`. */
-  readonly childrenAtWork: number | undefined;
+  /** Every subagent the session's launches started. */
+  readonly launchedTotal: number;
+  /**
+   * The children still at work by the agent's own records, and how many
+   * children those records knew of, once a reading covered every launch:
+   * then the hold follows the records, not the protocol count.
+   */
+  readonly children: { readonly running: number; readonly known: number } | undefined;
   /** A reply the agent started by itself has output and no closing update yet. */
   readonly replyOpen: boolean;
   /** Commands and timers that ended outside a prompt: each wakes the agent to reply once. */
@@ -127,9 +136,14 @@ export type AcpTurnEvent<Answer> =
     }
   | { readonly type: "workStarted"; readonly id: string; readonly kind: AcpWorkKind }
   | { readonly type: "workEnded"; readonly id: string }
+  /** A tool call taken for work turns out to be something else (an MCP call): it holds nothing. */
+  | { readonly type: "workDropped"; readonly id: string }
   | { readonly type: "subagentsLaunched"; readonly id: string; readonly count: number }
-  /** The agent's own records say this many children are still at work. */
-  | { readonly type: "childrenAtWork"; readonly count: number }
+  /**
+   * The agent's own records say `running` children are still at work, of
+   * `known` children they know of (`readChildren`).
+   */
+  | { readonly type: "childrenAtWork"; readonly running: number; readonly known: number }
   /** The agent sent something. `newTurnId` names the turn it opens if none runs. */
   | { readonly type: "agentOutput"; readonly newTurnId: string }
   /** The `usage_update` that closes each model call. */
@@ -165,6 +179,8 @@ export type AcpTurnCommand<Answer> =
   | { readonly type: "readOutcome"; readonly prompt: number }
   /** An older prompt answered after this one went out: its outcome reads only from here on. */
   | { readonly type: "rebaseOutcome"; readonly prompt: number }
+  /** Read which children are still at work, then report `childrenAtWork` (if the records say). */
+  | { readonly type: "readChildren" }
   | { readonly type: "recordUsage"; readonly prompt: number }
   | { readonly type: "sendCancel" }
   /** The turn's one terminal event. */
@@ -194,7 +210,8 @@ export function initialTurnMachineState<Answer>(): AcpTurnMachineState<Answer> {
     running: [],
     launches: [],
     subagents: 0,
-    childrenAtWork: undefined,
+    launchedTotal: 0,
+    children: undefined,
     replyOpen: false,
     wakesOwed: 0,
     requestsOpen: 0,
@@ -204,9 +221,14 @@ export function initialTurnMachineState<Answer>(): AcpTurnMachineState<Answer> {
   };
 }
 
-/** Subagents still out: the agent's own count when known, else the protocol count. */
+/**
+ * Subagents still out: by the agent's own records when a reading covered
+ * every launch (plus any launched since), else the protocol count.
+ */
 export function subagentsOut(state: AcpTurnMachineState<unknown>): number {
-  return state.childrenAtWork ?? state.subagents;
+  const children = state.children;
+  if (children === undefined) return state.subagents;
+  return children.running + Math.max(0, state.launchedTotal - children.known);
 }
 
 /** Something the agent still owes the turn: work, a subagent, a wake, an open reply. */
@@ -218,9 +240,11 @@ export function workPending(state: AcpTurnMachineState<unknown>): boolean {
 
 /** The timers a state needs armed. */
 export function desiredTimers(state: AcpTurnMachineState<unknown>): ReadonlyArray<AcpTurnTimer> {
-  const turn = state.turn;
-  if (turn === undefined || state.ended) return [];
+  if (state.ended) return [];
   const timers: Array<AcpTurnTimer> = [];
+  if (state.noticesExpected > 0) timers.push("noticeExpiry");
+  const turn = state.turn;
+  if (turn === undefined) return timers;
   if (turn.stopRequested) timers.push("cancelDeadline");
   const quietAllowed = state.requestsOpen === 0 && !turn.stopRequested;
   // A reply under way, or one a finished command owes, that never ends.
@@ -253,6 +277,8 @@ export function stepTurnMachine<Answer>(
   const clearWork = () => {
     state.running = [];
     state.subagents = 0;
+    // Back to counting by protocol until the records are read again.
+    state.children = undefined;
     state.replyOpen = false;
     state.wakesOwed = 0;
   };
@@ -333,11 +359,23 @@ export function stepTurnMachine<Answer>(
     if (turn.phase.tag !== "prompting") state.replyOpen = true;
   };
 
-  /** A reply the agent started by itself is over: it answered a wake, else a subagent. */
+  /**
+   * A reply the agent started by itself is over: it answered a wake, else a
+   * subagent's report. With subagents out, the records are read again: they
+   * say exactly which are done (several reports in one reply, a kill).
+   */
   const endReply = () => {
     state.replyOpen = false;
     if (state.wakesOwed > 0) state.wakesOwed -= 1;
-    else if (state.childrenAtWork === undefined && state.subagents > 0) state.subagents -= 1;
+    else if (state.subagents > 0) state.subagents -= 1;
+    readChildren();
+  };
+
+  /** Asks for the records' count of children at work, when any were launched. */
+  const readChildren = () => {
+    if (!state.ended && state.launchedTotal > 0 && subagentsOut(state) > 0) {
+      commands.push({ type: "readChildren" });
+    }
   };
 
   /** A held turn whose work is all done and quiet, or that went silent, ends. */
@@ -408,6 +446,7 @@ export function stepTurnMachine<Answer>(
         if (turn.newest === event.prompt && turn.phase.tag === "prompting") {
           state.turn = { ...turn, phase: { tag: "settling" } };
           commands.push({ type: "readOutcome", prompt: event.prompt });
+          readChildren();
         } else if (
           turn.prompts.includes(event.prompt) &&
           turn.newest !== undefined &&
@@ -463,14 +502,23 @@ export function stepTurnMachine<Answer>(
       if (state.turn?.phase.tag !== "prompting") state.wakesOwed += 1;
       break;
     }
+    case "workDropped": {
+      state.running = state.running.filter(([id]) => id !== event.id);
+      break;
+    }
     case "subagentsLaunched": {
       if (state.launches.includes(event.id) || event.count <= 0) break;
       state.launches = [...state.launches, event.id];
       state.subagents += event.count;
+      state.launchedTotal += event.count;
       break;
     }
     case "childrenAtWork": {
-      state.childrenAtWork = Math.max(0, event.count);
+      // A reading that misses a launch (its record not written yet) proves
+      // nothing about it: the count stands as it was.
+      if (event.known >= state.launchedTotal) {
+        state.children = { running: Math.max(0, event.running), known: event.known };
+      }
       break;
     }
     case "agentOutput": {
@@ -501,6 +549,13 @@ export function stepTurnMachine<Answer>(
     }
     case "stopRequested": {
       const turn = state.turn;
+      // No turn, but work the agent still runs (a revert stops it): cancel it.
+      if (!state.ended && turn === undefined && workPending(state)) {
+        commands.push({ type: "sendCancel" });
+        state.noticesExpected += 1;
+        clearWork();
+        break;
+      }
       if (state.ended || turn === undefined || turn.stopRequested) break;
       commands.push({ type: "sendCancel" });
       // Each cancel may be followed by the agent's notice; that one is dropped.
@@ -537,6 +592,9 @@ export function stepTurnMachine<Answer>(
         case "silent":
           clearWork();
           endWaiting();
+          break;
+        case "noticeExpiry":
+          state.noticesExpected = 0;
           break;
       }
       break;

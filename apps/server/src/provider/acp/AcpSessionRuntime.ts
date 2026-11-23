@@ -31,6 +31,7 @@ import {
   parseSessionUpdateEvent,
   type AcpParsedSessionEvent,
   type AcpSessionModeState,
+  type AcpToolCallReport,
   type AcpToolCallState,
 } from "./AcpRuntimeModel.ts";
 
@@ -150,6 +151,15 @@ export interface AcpSessionRuntimeOptions {
    * that starts turns of its own), not replayed history to drop.
    */
   readonly liveOutsidePrompt?: boolean;
+  /** Rewrites each session update before anything reads it (see `AcpProviderDescriptor.normalizeSessionUpdate`). */
+  readonly normalizeSessionUpdate?: (
+    notification: EffectAcpSchema.SessionNotification,
+  ) => EffectAcpSchema.SessionNotification;
+  /** Rewrites each merged tool call (see `AcpProviderDescriptor.normalizeToolCall`). */
+  readonly normalizeToolCall?: (
+    toolCall: AcpToolCallState,
+    report: AcpToolCallReport,
+  ) => AcpToolCallState;
   /**
    * Also hand the reader tool call updates that show nothing new (a status
    * change with no new detail) as `ToolCallTracked`, for a client that keeps
@@ -550,8 +560,9 @@ const makeAcpSessionRuntime = (
     // A resumed session restarts segment numbering at 0 in this process, so
     // its items would collide with the ones persisted by the previous run.
     const itemIdScope = options.resumeSessionId ? `:r${Date.now().toString(36)}` : "";
-    yield* acp.handleSessionUpdate((notification) =>
+    yield* acp.handleSessionUpdate((received) =>
       Effect.gen(function* () {
+        const notification = options.normalizeSessionUpdate?.(received) ?? received;
         const ownSessionId = yield* Ref.get(ownSessionIdRef);
         if (ownSessionId !== undefined && String(notification.sessionId) !== ownSessionId) {
           const handler = yield* Ref.get(foreignUpdateHandlerRef);
@@ -578,6 +589,7 @@ const makeAcpSessionRuntime = (
           itemIdScope,
           params: notification,
           ...(nativeControls ? { configOptionsRef } : {}),
+          ...(options.normalizeToolCall ? { normalizeToolCall: options.normalizeToolCall } : {}),
           ...(options.trackSilentToolCalls ? { trackSilentToolCalls: true } : {}),
           ...(options.cancellationNotice !== undefined
             ? { cancellationNotice: options.cancellationNotice }
@@ -1167,6 +1179,7 @@ const handleSessionUpdate = ({
   itemIdScope,
   params,
   configOptionsRef,
+  normalizeToolCall,
   trackSilentToolCalls,
   cancellationNotice,
 }: {
@@ -1181,6 +1194,10 @@ const handleSessionUpdate = ({
   readonly params: EffectAcpSchema.SessionNotification;
   /** Given for native controls only: the agent's own option updates land here. */
   readonly configOptionsRef?: Ref.Ref<ReadonlyArray<EffectAcpSchema.SessionConfigOption>>;
+  readonly normalizeToolCall?: (
+    toolCall: AcpToolCallState,
+    report: AcpToolCallReport,
+  ) => AcpToolCallState;
   readonly trackSilentToolCalls?: boolean;
   readonly cancellationNotice?: string;
 }): Effect.Effect<void> =>
@@ -1218,7 +1235,9 @@ const handleSessionUpdate = ({
         });
         const { previous, merged } = yield* Ref.modify(toolCallsRef, (current) => {
           const previous = current.get(event.toolCall.toolCallId);
-          const nextToolCall = mergeToolCallState(previous, event.toolCall);
+          const mergedToolCall = mergeToolCallState(previous, event.toolCall);
+          const report = params.update as AcpToolCallReport;
+          const nextToolCall = normalizeToolCall?.(mergedToolCall, report) ?? mergedToolCall;
           const next = new Map(current);
           if (nextToolCall.status === "completed" || nextToolCall.status === "failed") {
             next.delete(nextToolCall.toolCallId);

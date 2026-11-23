@@ -25,6 +25,7 @@ import {
   type ThreadId,
   TurnId,
   type UsageTokenTotals,
+  type ServerProviderSlashCommand,
 } from "@threadlines/contracts";
 import { withFailureCategory } from "../providerFailureCategory.ts";
 import { makeAgentProcessLedger } from "../agentProcessLedger.ts";
@@ -40,6 +41,7 @@ import {
 import { renderThreadContextSeed, withContextSeedPreamble } from "@threadlines/shared/contextSeed";
 import { countTextReplacementStats } from "@threadlines/shared/textReplacementStats";
 import { randomUUIDv4 } from "@threadlines/shared/uuid";
+import { sameSlashCommands, slashCommandAtStart } from "@threadlines/shared/slashCommands";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
@@ -115,14 +117,19 @@ import type {
   AcpPromptPlanMode,
   AcpProviderDescriptor,
   AcpProviderSettings,
+  AcpSubagents,
   AcpTurnOutcome,
 } from "./AcpProviderDescriptor.ts";
+import { type AcpAttachmentBudget, acpAttachmentContent } from "./AcpPromptAttachments.ts";
+import { type AcpSubagentRoster, makeAcpSubagentRoster } from "./AcpSubagentRoster.ts";
 import {
   applyAcpModelSelection,
   defaultResolveAcpModelId,
   makeAcpProviderRuntime,
 } from "./AcpProviderRuntime.ts";
 import {
+  type AcpPermissionRequest,
+  type AcpToolCallReport,
   type AcpPlanUpdate,
   type AcpSessionMode,
   type AcpSessionModeState,
@@ -140,21 +147,23 @@ import {
   type AcpTurnTimer,
   initialTurnMachineState,
   stepTurnMachine,
+  workPending,
 } from "./AcpTurnMachine.ts";
 import { type AcpSessionRuntimeShape } from "./AcpSessionRuntime.ts";
 
-const decodeLostSessions = Schema.decodeUnknownExit(
-  Schema.fromJsonString(Schema.Array(Schema.String)),
-);
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.fromJsonString(Schema.Unknown));
 
 const ACP_RESUME_VERSION = 1 as const;
+/** A session's command list reaches the clients at most this often. */
+const ACP_SESSION_COMMANDS_INTERVAL_MS = 5_000;
 /**
  * How long a cancelled prompt may take to return. Past it the turn settles
  * as cancelled here and the process is recycled; the next turn resumes the
  * conversation in a fresh one.
  */
 const ACP_CANCEL_DEADLINE = Duration.seconds(15);
+/** How long a revert lets the agent stop its work before its session ends. */
+const ACP_REVERT_WIND_DOWN = Duration.seconds(3);
 /**
  * An agent's own turn (see `agentTurns`) that has gone this long without
  * output is closed here, in case its end notice never comes. Long: a command
@@ -172,6 +181,11 @@ const ACP_HELD_REPLY_QUIET_LIMIT = Duration.minutes(2);
 /** How long reading a prompt's real outcome (`turnMachine.outcome`) may take. */
 const ACP_OUTCOME_CHECK_TIMEOUT = Duration.seconds(10);
 /**
+ * How long after a cancel its notice is still expected (and dropped). An
+ * agent that never sends one must not cost a real reply in those words later.
+ */
+const ACP_NOTICE_EXPIRY = Duration.seconds(30);
+/**
  * The most turns a resume cursor remembers the agent's prompt positions for
  * (see `conversationHistory`); a revert further back trims Threadlines' turn
  * list only.
@@ -179,17 +193,6 @@ const ACP_OUTCOME_CHECK_TIMEOUT = Duration.seconds(10);
 const ACP_HISTORY_CURSOR_LIMIT = 200;
 /** How long asking the agent where a prompt landed may take before it goes unanswered. */
 const ACP_HISTORY_POSITION_TIMEOUT = Duration.seconds(5);
-/** The most lost agent sessions an instance remembers (`markSessionLost`). */
-const ACP_LOST_SESSIONS_LIMIT = 100;
-/** One writer at a time per lost-sessions file, whichever adapter writes it. */
-const lostSessionsFileLocks = new Map<string, Semaphore.Semaphore>();
-const lostSessionsFileLock = (file: string): Semaphore.Semaphore => {
-  const existing = lostSessionsFileLocks.get(file);
-  if (existing !== undefined) return existing;
-  const created = Semaphore.makeUnsafe(1);
-  lostSessionsFileLocks.set(file, created);
-  return created;
-};
 const ACP_PLAN_MODE_ALIASES = ["plan", "architect"];
 const ACP_IMPLEMENT_MODE_ALIASES = ["code", "agent", "default", "chat", "implement"];
 const ACP_APPROVAL_MODE_ALIASES = ["ask"];
@@ -213,6 +216,17 @@ export interface AcpAdapterOptions<Settings extends AcpProviderSettings> {
    * ledger), for agents that keep no usage of their own on disk. Never fails.
    */
   readonly recordTurnUsage?: (entry: UsageLedgerEntry) => Effect.Effect<void>;
+  /**
+   * For `agentCommands` descriptors: a session's own command list changed
+   * (`undefined`: the session ended). The driver puts it on the provider
+   * status (`ServerProvider.sessionCommands`). Never fails.
+   */
+  readonly onSessionCommands?: (
+    sessionKey: ThreadId,
+    commands: ReadonlyArray<ServerProviderSlashCommand> | undefined,
+  ) => Effect.Effect<void>;
+  /** The skills the provider status lists, by name: a typed `/name` runs one. */
+  readonly skillNames?: Effect.Effect<ReadonlySet<string>>;
 }
 
 interface PendingApproval {
@@ -249,6 +263,10 @@ interface AcpSessionContext {
   lastContextUsageKey: string | undefined;
   /** The agent's session id, as its usage is recorded under. */
   readonly acpSessionId: string;
+  /** What the agent's `initialize` answer says it reads in a prompt. */
+  readonly promptCapabilities: EffectAcpSchema.PromptCapabilities | null | undefined;
+  /** The subagents this session's tool calls launched (`subagents`), as the thread shows them. */
+  readonly subagentRoster: AcpSubagentRoster | undefined;
   /**
    * The session's running cost at the last turn boundary, when it is known
    * exactly: zero for a session opened here, or a report between turns. A turn
@@ -735,53 +753,13 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
     >();
     const adapterScope = yield* Scope.Scope;
     /**
-     * Agent sessions that can't go on (`AcpPromptFailure.sessionLost`): a
-     * restart opens a new session instead, seeded with the thread's history.
-     * Kept on disk per instance, so a server restart before the next message
-     * doesn't reopen one. A lost session never comes back, so its mark stays
-     * (the newest `ACP_LOST_SESSIONS_LIMIT` are kept): nothing has to be
-     * removed at the moment a replacement takes over.
+     * Sessions the agent can no longer continue, as this adapter marked them
+     * (`markSessionLost`). ProviderService forgets each in the thread's
+     * binding when the session's exit says so (`conversationLost`); until it
+     * has, a start asked to resume one opens a new conversation here anyway,
+     * so a message sent right after the exit can't reopen it.
      */
-    const lostSessionsFile = path.join(
-      serverConfig.stateDir,
-      "acp-lost-sessions",
-      `${encodeURIComponent(boundInstanceId)}.json`,
-    );
-    const readLostSessions = fileSystem.readFileString(lostSessionsFile).pipe(
-      Effect.map((raw): ReadonlyArray<string> => {
-        const parsed = decodeLostSessions(raw);
-        return Exit.isSuccess(parsed) ? parsed.value : [];
-      }),
-      Effect.orElseSucceed((): ReadonlyArray<string> => []),
-    );
-    const lostSessions = new Set<string>(yield* readLostSessions);
-    /**
-     * Adds a mark: one writer at a time per file (adapters of one instance
-     * share it), the file read again and merged inside the lock, and written
-     * whole through a temporary file, so a crash never leaves it cut short.
-     */
-    const markSessionLost = (sessionId: string) =>
-      lostSessionsFileLock(lostSessionsFile)
-        .withPermit(
-          Effect.gen(function* () {
-            lostSessions.add(sessionId);
-            const merged = [...new Set([...(yield* readLostSessions), ...lostSessions])].slice(
-              -ACP_LOST_SESSIONS_LIMIT,
-            );
-            yield* fileSystem.makeDirectory(path.dirname(lostSessionsFile), { recursive: true });
-            const temp = `${lostSessionsFile}.${crypto.randomUUID()}.tmp`;
-            yield* fileSystem.writeFileString(temp, JSON.stringify(merged));
-            yield* fileSystem.rename(temp, lostSessionsFile);
-          }),
-        )
-        .pipe(
-          Effect.catchCause((cause) =>
-            Effect.logWarning("acp.lost-sessions.save-failed", {
-              provider: PROVIDER,
-              cause: Cause.pretty(cause),
-            }),
-          ),
-        );
+    const lostSessions = new Set<string>();
     const threadLocksRef = yield* SynchronizedRef.make(new Map<string, Semaphore.Semaphore>());
     const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
 
@@ -790,7 +768,14 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
     const makeEventStamp = () => Effect.all({ eventId: nextEventId, createdAt: nowIso });
 
     const offerRuntimeEvent = (event: ProviderRuntimeEvent) =>
-      PubSub.publish(runtimeEventPubSub, event).pipe(Effect.asVoid);
+      PubSub.publish(runtimeEventPubSub, event).pipe(
+        // The subagent view follows the session's turns and usage updates.
+        Effect.andThen(
+          Effect.suspend(
+            () => sessions.get(event.threadId)?.subagentRoster?.observe(event) ?? Effect.void,
+          ),
+        ),
+      );
 
     /** The prompt that carried the brief is gone: the conversation holds what it held before. */
     const requeueProjectBrief = (ctx: AcpSessionContext) => {
@@ -1186,6 +1171,28 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
       });
 
     /**
+     * A permission request as the descriptor describes its tool call
+     * (`normalizeToolCall`): an MCP call the agent runs through a command
+     * shows the server, tool and arguments it runs, under the same kind.
+     */
+    const normalizedPermissionRequest = (
+      request: AcpPermissionRequest,
+      report: EffectAcpSchema.RequestPermissionRequest["toolCall"],
+    ): AcpPermissionRequest => {
+      const normalize = descriptor.normalizeToolCall;
+      if (normalize === undefined || request.toolCall === undefined) return request;
+      const toolCall = normalize(request.toolCall, report as AcpToolCallReport);
+      // The request keeps its kind, so it is asked and answered as before; a
+      // call the descriptor retyped shows its own detail (what really runs).
+      const detail = toolCall.itemType !== undefined ? toolCall.detail : request.detail;
+      return {
+        kind: request.kind,
+        ...(detail !== undefined ? { detail } : {}),
+        toolCall,
+      };
+    };
+
+    /**
      * The turn an update belongs to: for a tool call that started in an
      * earlier turn (a background shell), that turn; else the active one;
      * else, for an agent that starts its own turns, a new agent turn.
@@ -1234,15 +1241,97 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
       return Effect.succeed(ctx);
     };
 
+    /**
+     * What each session last advertised, for `agentCommands` descriptors:
+     * every name (a typed `/name` is its command, hidden ones included) and
+     * the list the composer shows, reported through `onSessionCommands` no
+     * more than once per `ACP_SESSION_COMMANDS_INTERVAL` and never unchanged.
+     */
+    const sessionCommandState = new WeakMap<
+      AcpSessionContext,
+      {
+        names: ReadonlySet<string>;
+        reported: ReadonlyArray<ServerProviderSlashCommand> | undefined;
+        reportedAtMs: number;
+        pending: ReadonlyArray<ServerProviderSlashCommand> | undefined;
+      }
+    >();
+
+    const noteSessionCommands = (
+      ctx: AcpSessionContext,
+      commands: ReadonlyArray<ServerProviderSlashCommand>,
+    ) =>
+      Effect.gen(function* () {
+        const hidden = descriptor.agentCommands?.hidden;
+        const shown = commands.filter((command) => !hidden?.has(command.name));
+        const report = options?.onSessionCommands;
+        let state = sessionCommandState.get(ctx);
+        if (state === undefined) {
+          state = { names: new Set(), reported: undefined, reportedAtMs: 0, pending: undefined };
+          sessionCommandState.set(ctx, state);
+          // The list goes with the session.
+          if (report !== undefined) {
+            yield* Scope.addFinalizer(ctx.scope, report(ctx.threadId, undefined));
+          }
+        }
+        state.names = new Set(commands.map((command) => command.name));
+        if (report === undefined) return;
+        const current = state.pending ?? state.reported;
+        if (current !== undefined && sameSlashCommands(current, shown)) return;
+        const waitMs = state.reportedAtMs + ACP_SESSION_COMMANDS_INTERVAL_MS - Date.now();
+        if (waitMs <= 0 && state.pending === undefined) {
+          state.reported = shown;
+          state.reportedAtMs = Date.now();
+          yield* report(ctx.threadId, shown);
+          return;
+        }
+        // Too soon after the last report: the newest list goes when the
+        // interval is up, and lists in between are never sent.
+        const scheduled = state.pending !== undefined;
+        state.pending = shown;
+        if (scheduled) return;
+        const flushing = state;
+        yield* Effect.sleep(Math.max(0, waitMs)).pipe(
+          Effect.andThen(
+            Effect.suspend(() => {
+              const next = flushing.pending;
+              flushing.pending = undefined;
+              if (next === undefined) return Effect.void;
+              if (flushing.reported !== undefined && sameSlashCommands(flushing.reported, next)) {
+                return Effect.void;
+              }
+              flushing.reported = next;
+              flushing.reportedAtMs = Date.now();
+              return report(ctx.threadId, next);
+            }),
+          ),
+          Effect.forkIn(ctx.scope),
+        );
+      });
+
+    /**
+     * Whether a typed `/name` runs one of the agent's own commands: one this
+     * session advertised, or a skill the status lists.
+     */
+    const isAgentCommand = (ctx: AcpSessionContext, name: string) =>
+      Effect.gen(function* () {
+        if (sessionCommandState.get(ctx)?.names.has(name) === true) return true;
+        const skills = options?.skillNames;
+        return skills === undefined ? false : (yield* skills).has(name);
+      });
+
     const stopSessionInternal = (
       ctx: AcpSessionContext,
       exitKind: "graceful" | "error" = "graceful",
+      exit?: { readonly conversationLost?: true },
     ) =>
       Effect.gen(function* () {
         if (ctx.stopped) return;
         ctx.stopped = true;
         yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
         yield* settlePendingUserInputsAsEmptyAnswers(ctx.pendingUserInputs);
+        // The agent's process takes its subagents with it.
+        if (ctx.subagentRoster !== undefined) yield* ctx.subagentRoster.end;
         if (ctx.promptFiber) {
           yield* Fiber.interrupt(ctx.promptFiber);
         }
@@ -1267,7 +1356,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           ...(yield* makeEventStamp()),
           provider: PROVIDER,
           threadId: ctx.threadId,
-          payload: { exitKind },
+          payload: { exitKind, ...exit },
         });
       });
 
@@ -1850,7 +1939,10 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                   });
                   return selected(question.optionIdForAnswers(answers));
                 }
-                const permissionRequest = parsePermissionRequest(params);
+                const permissionRequest = normalizedPermissionRequest(
+                  parsePermissionRequest(params),
+                  params.toolCall,
+                );
                 const planFileWrite =
                   permissionRequest.toolCall !== undefined &&
                   descriptor.planMode?.isPlanFile(permissionRequest.toolCall) === true;
@@ -2033,6 +2125,25 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             lastProviderStatus: undefined,
             lastContextUsageKey: undefined,
             acpSessionId: started.sessionId,
+            promptCapabilities: started.initializeResult.agentCapabilities?.promptCapabilities,
+            subagentRoster:
+              descriptor.subagents === undefined
+                ? undefined
+                : makeAcpSubagentRoster({
+                    subagents: descriptor.subagents,
+                    sessionId: started.sessionId,
+                    emit: (event, turnId) =>
+                      Effect.gen(function* () {
+                        yield* offerRuntimeEvent({
+                          ...event,
+                          ...(yield* makeEventStamp()),
+                          provider: PROVIDER,
+                          threadId: input.threadId,
+                          ...(turnId ? { turnId } : {}),
+                        } as ProviderRuntimeEvent);
+                      }),
+                    fork: (effect) => effect.pipe(Effect.forkIn(sessionScope), Effect.asVoid),
+                  }),
             // A session reopened from elsewhere has spent an unknown amount.
             costBaselineUsd:
               (resumeSessionId !== undefined || forkSession !== undefined) &&
@@ -2048,9 +2159,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             // A switch from another agent starts without the history: the
             // thread hands it over. (A failed resume is seeded by the reactor.)
             pendingContextPreamble:
-              input.contextSeed !== undefined &&
-              resumeSessionId === undefined &&
-              lostSession === undefined
+              input.contextSeed !== undefined && resumeSessionId === undefined
                 ? renderThreadContextSeed(input.contextSeed)
                 : undefined,
             projectBrief,
@@ -2138,6 +2247,15 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                     });
                     return;
                   }
+                  case "AvailableCommandsUpdated": {
+                    // The composer's `/` list for this session; a side
+                    // runtime answers no messages of its own, so it lists none.
+                    if (descriptor.agentCommands === undefined || ctx.lockdown !== undefined) {
+                      return;
+                    }
+                    yield* noteSessionCommands(ctx, event.commands);
+                    return;
+                  }
                   case "SessionCost":
                     ctx.latestCostUsd = event.totalUsd;
                     // A report between turns marks the boundary exactly.
@@ -2152,6 +2270,13 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                     if (ctx.machine !== undefined) {
                       ctx.machine.activity += 1;
                       yield* trackMachineWork(ctx, event.toolCall);
+                    }
+                    // A launch approved earlier completes with nothing new to show.
+                    if (ctx.subagentRoster !== undefined) {
+                      yield* ctx.subagentRoster.noteToolCall(
+                        event.toolCall,
+                        ctx.toolCallTurns.get(event.toolCall.toolCallId) ?? ctx.activeTurnId,
+                      );
                     }
                     return;
                   case "CancellationNotice": {
@@ -2245,6 +2370,9 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                     const toolCallId = event.toolCall.toolCallId;
                     const turnId = yield* turnForOutput(ctx, toolCallId);
                     if (ctx.machine !== undefined) yield* trackMachineWork(ctx, event.toolCall);
+                    if (ctx.subagentRoster !== undefined) {
+                      yield* ctx.subagentRoster.noteToolCall(event.toolCall, turnId);
+                    }
                     if (
                       event.toolCall.status === "completed" ||
                       event.toolCall.status === "failed"
@@ -2361,11 +2489,13 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
       );
 
     /**
-     * A message as ACP content: its text, then each attachment (an image's
-     * bytes, or a note naming a file the agent reads from disk: ACP prompt
-     * input has no document type, see buildFileAttachmentNote).
+     * A message as ACP content: its text, then each attachment. By default an
+     * image's bytes, or a note naming a file the agent reads from disk (see
+     * buildFileAttachmentNote); an agent that reads more natively says how
+     * (`attachmentDelivery`, see AcpPromptAttachments).
      */
     const promptContent = (
+      ctx: AcpSessionContext,
       text: string | undefined,
       attachments: Parameters<AcpAdapterShape["sendTurn"]>[0]["attachments"],
       method: string,
@@ -2373,6 +2503,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
       Effect.gen(function* () {
         const parts: Array<EffectAcpSchema.ContentBlock> = [];
         if (text !== undefined) parts.push({ type: "text", text });
+        const budget: AcpAttachmentBudget = { inlineBytes: 0 };
         for (const attachment of attachments ?? []) {
           const attachmentPath = resolveAttachmentPath({
             attachmentsDir: serverConfig.attachmentsDir,
@@ -2384,6 +2515,27 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
               method,
               detail: `Invalid attachment id '${attachment.id}'.`,
             });
+          }
+          const delivery = descriptor.attachmentDelivery?.(attachment, ctx.promptCapabilities);
+          if (delivery !== undefined) {
+            const blocks = yield* acpAttachmentContent({
+              attachment,
+              path: attachmentPath,
+              delivery,
+              budget,
+            }).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderAdapterRequestError({
+                    provider: PROVIDER,
+                    method,
+                    detail: cause.message,
+                    cause,
+                  }),
+              ),
+            );
+            parts.push(...blocks);
+            continue;
           }
           if (attachment.type === "file") {
             parts.push({ type: "text", text: buildFileAttachmentNote(attachment, attachmentPath) });
@@ -2487,7 +2639,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
     const machineOptions = descriptor.turnMachine;
 
     /** How the machine's quiet timers last; the cancel deadline is `ACP_CANCEL_DEADLINE`. */
-    const quietLimit = (timer: Exclude<AcpTurnTimer, "cancelDeadline">) =>
+    const quietLimit = (timer: Exclude<AcpTurnTimer, "cancelDeadline" | "noticeExpiry">) =>
       timer === "settle"
         ? ACP_HELD_TURN_SETTLE
         : timer === "replyQuiet"
@@ -2497,6 +2649,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
     /** Events that are the agent doing something: each restarts the quiet timers. */
     const isAgentActivity = (event: AcpMachineEvent) =>
       event.type !== "send" &&
+      event.type !== "childrenAtWork" &&
       event.type !== "steer" &&
       event.type !== "stopRequested" &&
       event.type !== "timerFired" &&
@@ -2532,8 +2685,16 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
     const trackMachineWork = (ctx: AcpSessionContext, toolCall: AcpToolCallState) =>
       Effect.gen(function* () {
         const work = machineOptions?.workAfterPrompt(toolCall);
-        if (work === undefined) return;
         const id = toolCall.toolCallId;
+        // Taken for work before, and now shown to be something else (an MCP
+        // call the agent ran through a command): it holds nothing.
+        if (work === undefined) {
+          const machine = ctx.machine;
+          if (machine?.state.running.some(([running]) => running === id) === true) {
+            yield* applyTurnEvent(ctx, { type: "workDropped", id });
+          }
+          return;
+        }
         const ended = toolCall.status === "completed" || toolCall.status === "failed";
         if (work.kind === "subagents") {
           if (toolCall.status === "completed") {
@@ -2560,14 +2721,21 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
     ): Effect.Effect<void> =>
       Effect.gen(function* () {
         const seen = machine.activity;
-        const wait = timer === "cancelDeadline" ? ACP_CANCEL_DEADLINE : quietLimit(timer);
+        const wait =
+          timer === "cancelDeadline"
+            ? ACP_CANCEL_DEADLINE
+            : timer === "noticeExpiry"
+              ? ACP_NOTICE_EXPIRY
+              : quietLimit(timer);
         const fiber = yield* Effect.sleep(wait).pipe(
           Effect.andThen(
             ctx.acp.inOrder(
               Effect.suspend(() => {
                 const armed = machine.state.timers.find(([name]) => name === timer);
                 if (armed?.[1] !== generation) return Effect.void;
-                return timer !== "cancelDeadline" && machine.activity !== seen
+                return timer !== "cancelDeadline" &&
+                  timer !== "noticeExpiry" &&
+                  machine.activity !== seen
                   ? armTurnTimer(ctx, machine, timer, generation)
                   : applyTurnEvent(ctx, { type: "timerFired", timer, generation }).pipe(
                       Effect.asVoid,
@@ -2769,6 +2937,27 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             );
             return;
           }
+          case "readChildren": {
+            // The agent's own records, off the reader and bounded; a reading
+            // that can't say leaves the protocol count standing.
+            const read = machineOptions?.childrenAtWork;
+            if (read === undefined) return;
+            yield* read(ctx.acpSessionId).pipe(
+              Effect.timeoutOption(ACP_OUTCOME_CHECK_TIMEOUT),
+              Effect.map(Option.getOrUndefined),
+              Effect.flatMap((children) =>
+                children === undefined
+                  ? Effect.void
+                  : postTurnEvent(ctx, {
+                      type: "childrenAtWork",
+                      running: children.running,
+                      known: children.known,
+                    }),
+              ),
+              Effect.forkIn(ctx.scope),
+            );
+            return;
+          }
           case "rebaseOutcome": {
             const watch = machine.prompts.get(command.prompt)?.watch;
             if (watch !== undefined) yield* watch.rebase.pipe(Effect.ignore);
@@ -2817,10 +3006,16 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             yield* stopFromMachine(ctx, "graceful");
             return;
           case "stopSession":
-            yield* stopFromMachine(ctx, command.reason === "exited" ? "error" : "graceful");
+            // A lost conversation: ProviderService forgets it in the thread's binding.
+            yield* stopFromMachine(
+              ctx,
+              command.reason === "exited" ? "error" : "graceful",
+              command.reason === "sessionLost" ? { conversationLost: true } : undefined,
+            );
             return;
           case "markSessionLost":
-            yield* markSessionLost(ctx.acpSessionId).pipe(Effect.forkIn(adapterScope));
+            // Before the session ends: a start racing ProviderService's forget opens anew.
+            lostSessions.add(ctx.acpSessionId);
             return;
           case "dropNotice":
             return;
@@ -2828,11 +3023,17 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
       });
 
     /** Stops the session from a machine command, off the reader (stopping interrupts it). */
-    const stopFromMachine = (ctx: AcpSessionContext, exitKind: "graceful" | "error") =>
+    const stopFromMachine = (
+      ctx: AcpSessionContext,
+      exitKind: "graceful" | "error",
+      exit?: { readonly conversationLost?: true },
+    ) =>
       withThreadLock(
         ctx.threadId,
         Effect.suspend(() =>
-          sessions.get(ctx.threadId) === ctx ? stopSessionInternal(ctx, exitKind) : Effect.void,
+          sessions.get(ctx.threadId) === ctx
+            ? stopSessionInternal(ctx, exitKind, exit)
+            : Effect.void,
         ),
       ).pipe(Effect.forkIn(adapterScope), Effect.asVoid);
 
@@ -3001,7 +3202,13 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             threadId: input.threadId,
           });
         }
-        return { threadId: input.threadId, turnId, resumeCursor: ctx.session.resumeCursor };
+        return {
+          threadId: input.threadId,
+          turnId,
+          resumeCursor: ctx.session.resumeCursor,
+          // A typed agent command left the thread's history and brief owed.
+          ...(prepared.contextDeferred ? { contextDeferred: true as const } : {}),
+        };
       });
 
     /** A message sent mid-turn to a machine agent: another prompt of the running turn. */
@@ -3018,6 +3225,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         }
         const text = input.input?.trim() ?? "";
         const parts = yield* promptContent(
+          ctx,
           text.length > 0 ? text : undefined,
           input.attachments,
           "turn/steer",
@@ -3070,13 +3278,36 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           input.modelSelection?.instanceId === boundInstanceId ? input.modelSelection : undefined;
         const model = turnModelSelection?.model ?? ctx.session.model;
         const resolvedModel = resolveModelId(model);
+
+        // The agent runs a command (or a skill) only when the message starts
+        // with it. A message is one only when the person's own typed text
+        // (never the context in front of it, never plain text or an agent's
+        // words) starts with `/` and a name the session advertised or a skill
+        // the status lists. It then goes alone, as typed: no plan prefix, and
+        // the context the server put in front of it, the earlier conversation
+        // and the project brief wait for the next message (`contextDeferred`
+        // tells the server its debts stay).
+        const typed = input.typed;
+        const typedCommand =
+          descriptor.agentCommands !== undefined && typed !== undefined && typed.indented !== true
+            ? slashCommandAtStart(typed.text)
+            : undefined;
+        const sendsAgentCommand =
+          typedCommand !== undefined && (yield* isAgentCommand(ctx, typedCommand));
+        const userText = sendsAgentCommand && typed ? typed.text : (input.input?.trim() ?? "");
+        const contextDeferred =
+          sendsAgentCommand &&
+          (typed?.context !== undefined || ctx.pendingContextPreamble !== undefined);
         // Prompt-command plan mode (Antigravity's `/plan`) is a text prefix.
         const lockedDown = ctx.lockdown !== undefined;
         const planMode =
-          input.interactionMode === "plan" && !lockedDown ? descriptor.planMode : undefined;
-        const contextPreamble = ctx.pendingContextPreamble;
-        const projectBrief = ctx.projectBrief;
-        const userText = input.input?.trim() ?? "";
+          input.interactionMode === "plan" && !lockedDown && !sendsAgentCommand
+            ? descriptor.planMode
+            : undefined;
+        const contextPreamble = sendsAgentCommand ? undefined : ctx.pendingContextPreamble;
+        const projectBrief: ProjectBriefPreface = sendsAgentCommand
+          ? { text: undefined, hash: ctx.projectBrief.hash }
+          : ctx.projectBrief;
         const contextText =
           contextPreamble !== undefined
             ? withContextSeedPreamble(contextPreamble, userText)
@@ -3089,6 +3320,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
               : projectBrief.text
             : contextText;
         const promptParts = yield* promptContent(
+          ctx,
           seededText.length > 0 || planMode
             ? planMode
               ? `${planMode.promptPrefix}${seededText}`
@@ -3137,6 +3369,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           projectBrief,
           promptParts,
           configure,
+          contextDeferred,
         };
       });
 
@@ -3314,7 +3547,13 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         );
         ctx.promptFiber = yield* Effect.forkIn(runPrompt, ctx.scope);
 
-        return { threadId: input.threadId, turnId, resumeCursor: ctx.session.resumeCursor };
+        return {
+          threadId: input.threadId,
+          turnId,
+          resumeCursor: ctx.session.resumeCursor,
+          // A typed agent command left the thread's history and brief owed.
+          ...(prepared.contextDeferred ? { contextDeferred: true as const } : {}),
+        };
       });
 
     /**
@@ -3415,6 +3654,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             }
             const text = input.input?.trim() ?? "";
             const content = yield* promptContent(
+              ctx,
               text.length > 0 ? text : undefined,
               input.attachments,
               "turn/steer",
@@ -3474,7 +3714,8 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
      * to the first reverted message's prompt, so it forgets the reverted
      * turns. Without a known position for that prompt (a turn before this
      * cursor's history, or a prompt the agent couldn't place) the agent
-     * keeps them, and the result says so.
+     * keeps them, and the result says so. With `rollbackByNewSession` the
+     * session ends instead (`forgetByNewSession`).
      */
     const rollbackThread: AcpAdapterShape["rollbackThread"] = (threadId, numTurns, options) =>
       Effect.gen(function* () {
@@ -3488,6 +3729,15 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         }
         ctx.turns.splice(Math.max(0, ctx.turns.length - numTurns));
         const conversationHistory = descriptor.conversationHistory;
+        if (conversationHistory === undefined && descriptor.rollbackByNewSession === true) {
+          yield* withThreadLock(
+            threadId,
+            Effect.suspend(() =>
+              sessions.get(threadId) === ctx ? forgetByNewSession(ctx) : Effect.void,
+            ),
+          );
+          return { threadId, turns: ctx.turns, conversationRolledBack: true };
+        }
         // The last turn's prompt position may still be on its way.
         if (ctx.activeTurnId === undefined && ctx.promptFiber !== undefined) {
           yield* Fiber.await(ctx.promptFiber).pipe(
@@ -3536,6 +3786,30 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         return { threadId, turns: ctx.turns, conversationRolledBack: rewound };
       });
 
+    /**
+     * For an agent that can't rewind (`rollbackByNewSession`): the session
+     * ends. ProviderService then forgets its conversation in the thread's
+     * binding, so the next message starts a new one seeded with the turns
+     * kept. Work still going is stopped first as Stop does (a cancel ends the
+     * agent's commands and subagents, Antigravity 1.5.10), and the agent gets
+     * a moment to wind it down before its process ends.
+     */
+    const forgetByNewSession = (ctx: AcpSessionContext) =>
+      Effect.gen(function* () {
+        // On the turn machine, Stop is its own path: it cancels the running
+        // turn and the work it left, and ends the turn once.
+        const machine = ctx.machine;
+        const working = () =>
+          ctx.activeTurnId !== undefined || (machine !== undefined && workPending(machine.state));
+        if (working()) {
+          yield* interruptTurn(ctx.threadId).pipe(Effect.ignore);
+          yield* Effect.gen(function* () {
+            while (working()) yield* Effect.sleep("50 millis");
+          }).pipe(Effect.timeoutOption(ACP_REVERT_WIND_DOWN));
+        }
+        yield* stopSessionInternal(ctx);
+      });
+
     const stopSession: AcpAdapterShape["stopSession"] = (threadId) =>
       withThreadLock(
         threadId,
@@ -3570,6 +3844,46 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         }),
       );
 
+    /**
+     * A launched subagent's steps, read from the agent's own records
+     * (`subagents`), by its launching call's id. The newest page by default,
+     * like other agents' transcripts.
+     */
+    const readSubagentTranscript = (subagents: AcpSubagents) =>
+      ((threadId, input) =>
+        Effect.gen(function* () {
+          const ctx = yield* requireSession(threadId);
+          const read = yield* subagents.transcript({
+            sessionId: ctx.acpSessionId,
+            launchCallId: input.agentId,
+          });
+          if (read === undefined) {
+            return yield* new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "readSubagentTranscript",
+              detail: subagents.unrecordedMessage,
+            });
+          }
+          const total = read.entries.length;
+          const limit = input.limit !== undefined && input.limit > 0 ? input.limit : total;
+          const offset = input.fromEnd
+            ? Math.max(0, total - limit)
+            : Math.min(input.offset ?? 0, total);
+          const role = read.launch.role.trim();
+          return {
+            entries: read.entries.slice(offset, offset + limit),
+            truncated: read.truncated || offset > 0 || offset + limit < total,
+            offset,
+            totalEntries: total,
+            agent: {
+              id: read.childId,
+              ...(role ? { agentType: role, description: role } : {}),
+              spawnDepth: 1,
+              directInput: "unsupported" as const,
+            },
+          };
+        })) satisfies NonNullable<AcpAdapterShape["readSubagentTranscript"]>;
+
     yield* Effect.addFinalizer(() =>
       Effect.forEach(sessions.values(), (ctx) => stopSessionInternal(ctx), { discard: true }).pipe(
         Effect.tap(() => PubSub.shutdown(runtimeEventPubSub)),
@@ -3581,7 +3895,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
       provider: PROVIDER,
       capabilities: {
         sessionModelSwitch: "in-session",
-        conversationRollback: "none",
+        conversationRollback: descriptor.rollbackByNewSession ? "new-session" : "none",
         ...(descriptor.steer || descriptor.turnMachine
           ? { activeTurnSteering: "supported" as const }
           : {}),
@@ -3602,6 +3916,9 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
       noteBeforeStop: processes.beforeStop,
       confirmThreadStopped: processes.confirm,
       listProcesses: processes.owners,
+      ...(descriptor.subagents
+        ? { readSubagentTranscript: readSubagentTranscript(descriptor.subagents) }
+        : {}),
       streamEvents: Stream.fromPubSub(runtimeEventPubSub),
     } satisfies AcpAdapterShape;
   });

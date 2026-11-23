@@ -390,6 +390,13 @@ export const ServerProviderSlashCommand = Schema.Struct({
 });
 export type ServerProviderSlashCommand = typeof ServerProviderSlashCommand.Type;
 
+export const ServerProviderSessionCommands = Schema.Struct({
+  /** Session keys: a thread id, or a room agent's `participantSessionKey`. */
+  sessions: Schema.Array(TrimmedNonEmptyString),
+  commands: Schema.Array(ServerProviderSlashCommand),
+});
+export type ServerProviderSessionCommands = typeof ServerProviderSessionCommands.Type;
+
 export const ServerProviderSkill = Schema.Struct({
   name: TrimmedNonEmptyString,
   description: Schema.optional(TrimmedNonEmptyString),
@@ -568,6 +575,22 @@ export const ServerProvider = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
   skills: Schema.Array(ServerProviderSkill).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  /**
+   * The agent runs a skill when a message starts with `/<skill name>`
+   * (Antigravity), so the composer lists `skills` in its `/` list and inserts
+   * them that way; a running session's own list (OrchestrationThread.agentCommands)
+   * joins them. Absent: skills go the provider's usual way.
+   */
+  slashSkills: Schema.optionalKey(Schema.Boolean),
+  /**
+   * Live state, never history: the slash commands this instance's running
+   * sessions listed (ACP `available_commands_update`), each list once with
+   * the sessions that listed it. A session's entry goes when the session
+   * ends, and none survive a restart; until a session lists its own, the
+   * composer offers `slashCommands` and `skills`. Capped and cleaned on the
+   * server (`@threadlines/shared/slashCommands`).
+   */
+  sessionCommands: Schema.optionalKey(Schema.Array(ServerProviderSessionCommands)),
   versionAdvisory: Schema.optionalKey(ServerProviderVersionAdvisory),
   updateState: Schema.optionalKey(ServerProviderUpdateState),
   detection: Schema.optionalKey(ServerProviderDetection),

@@ -55,7 +55,9 @@ has them. The reasoning level is its own choice next to the model.
 | Auto              | The CLI's own `auto` where your session offers it, otherwise `accept-edits`    |
 | Full access       | `default`, and Threadlines approves each request; questions still wait for you |
 
-Plan mode sends the task as `/plan`, and the plan shows on the plan card for review.
+Plan mode sends the task as `/plan`, and the plan shows on the plan card for review. A message
+that starts with one of Antigravity's own commands or skills goes as typed instead (see Commands and
+Skills in the Composer).
 
 ## Your Rules and Skills
 
@@ -103,7 +105,36 @@ other agents' lists, so a project's own skills show only when Threadlines runs i
 
 To use a skill, start the message with `/` and its name, as in a terminal (`/review this diff`).
 Antigravity also picks a skill on its own when the task matches its description. The composer's
-`$` skill list is for Codex only.
+`$` skill list is for Codex only; Antigravity's skills are in its `/` list (below).
+
+## Commands and Skills in the Composer
+
+Typing `/` in the composer lists Antigravity's skills and its own commands, under Threadlines' own
+(`/model`, `/plan`, `/theme`, `/default`). Picking one puts `/name ` in the message. In a room, the
+list is the one of the agent the message goes to.
+
+- Before Antigravity runs in a thread, the list has the skills Threadlines found (above).
+- While it runs, it sends the commands that session offers (`available_commands_update`, the list
+  Google fixed in 1.5.2 to be the session's agent's). They join the list, and where a command and a
+  skill share a name, Antigravity's entry is the one shown. `/goal` and `/compact` show only when
+  Antigravity offers them. The list lives only as long as the session: Threadlines doesn't save
+  it, and after a restart the skills fill the list until Antigravity sends its own again.
+- Antigravity's `/plan`, `/login` and `/logout` are left out: plan mode is the composer's `/plan`,
+  and signing in or out is on the Antigravity row in Settings, where it also stops that account's
+  chats. Typed by hand, they still go to Antigravity.
+- Threadlines keeps at most 200 commands from a list, only names made of letters, digits, `_`,
+  `.`, `:` and `-`, and short descriptions. A list that keeps changing reaches the composer at most
+  every 5 seconds.
+
+A message runs one of Antigravity's commands when the words you typed start with `/` and the name
+of a command that session offers or a skill Threadlines lists. That message goes to Antigravity
+alone, exactly as typed, since Antigravity only runs a command at the very start of a message: in
+plan mode without the `/plan` prefix, and without what Threadlines would put in front of your words
+(the project's instructions, the thread's history after a switch, an edit or a move, notes from
+other threads). That waits for your next ordinary message, also across a restart. Everything else
+is ordinary text: a name Antigravity doesn't offer (`/etc is missing`), a path
+(`/tmp/out.log is empty`), a message that starts with a space, one sent as plain text, and one an
+agent or a scheduled task wrote.
 
 ## Turns
 
@@ -116,16 +147,18 @@ a cancel). If the agent hasn't answered 15 seconds after Stop, Threadlines resta
 ends cancelled; the next message picks the conversation up again. Stopping the session (or
 Threadlines) while a turn is held ends that turn as interrupted. A reply the agent starts after the
 turn ended opens a turn of its own, except the CLI's "request was cancelled" notice after a Stop,
-which never shows.
+which never shows. Threadlines waits 30 seconds for that notice; after that, a reply counts again.
 
 Two limits keep a lost wake from leaving the thread working forever: a turn held only by commands
 and subagents ends after 30 minutes without a word from the agent, and a reply the agent started
 by itself ends 2 minutes after its last output if its closing usage update never comes. A timer
-holds the turn until it fires. Subagents are only known to finish by the report the agent gives when
-one ends, so each report (a reply no finished command or timer woke) frees one subagent; a batch
-launch counts each subagent in it. If the CLI sends several reports in one reply, the turn holds
-until the 30-minute limit or Stop. If the agent
-exits while a turn is held, the turn fails with that reason and the next message starts it again.
+holds the turn until it fires. When a reply ends with subagents still counted, Threadlines reads the
+CLI's records of them (see Subagents below) and holds the turn only for the ones still at work, so
+several reports answered in one reply, or a subagent the agent stopped, end the hold. When the
+records can't be read, or name fewer subagents than were launched, each report (a reply no finished
+command or timer woke) frees one subagent, and a batch launch counts each subagent in it. If the
+agent exits while a turn is held, the turn fails with that reason and the next message starts it
+again.
 
 A message sent while Antigravity works steers the turn instead of waiting: Threadlines sends it as
 another prompt, which the CLI takes into the running turn (1.5.0+), leaving its commands and
@@ -134,6 +167,50 @@ subagents running. The turn ends with the newest prompt's answer.
 All of this is one state machine (`apps/server/src/provider/acp/AcpTurnMachine.ts`), stepped in
 order with the agent's updates; its test walks every sequence of up to ten events and checks that
 each turn ends exactly once, Stop always has a deadline, and a hold with nothing left ends.
+
+### Subagents
+
+When Antigravity launches a subagent (its `invoke_subagent` tool), the subagent shows in the thread
+like other agents' subagents: its role, its prompt, whether it runs, and the report it sent back.
+Open it to read its recent steps. ACP says only that a launch happened, so the rest is read from the
+CLI's own records in the profile (`antigravity-acp/brain/`, a private format read only for this;
+the code is `apps/server/src/provider/antigravity/AntigravityChildRecords.ts`). They are read when
+each reply ends and when the turn ends:
+
+- A subagent that sent its report shows as done, with the report.
+- One the agent stopped (`manage_subagents`) shows as stopped.
+- Stop ends every running subagent with the turn.
+- A subagent the records don't name shows as done once its turn has ended, and its view says
+  "Antigravity did not record which subagent this started". A later reading that finds it still at
+  work shows it running again.
+- When the records can't be read (one the CLI is still writing, say), nothing is marked done; the
+  next reading tries again.
+
+The view is read-only: you can't message a subagent directly. The same records decide how long the
+turn stays open (see Turns above).
+
+### Tool rows
+
+- An MCP tool the agent reaches through `call_mcp_tool` shows as that tool (server and name), not
+  as a shell command, and doesn't hold the turn like a command. Only a call that is plainly that
+  wrapper does: one that also carries a command or an edit stays a command or an edit. Its approval
+  is asked the same way as any command's, and names the server, the tool and its arguments.
+- A command line longer than 8,000 characters keeps its start; output keeps its end. A cut never
+  splits a character, and the timeline keeps a long command's start too.
+- Screenshots and other inline images in a tool's result are left out of what Threadlines stores.
+- Edits show the files they change with their added and removed lines; the turn's diff shows them at
+  their real line numbers.
+
+### Attachments
+
+Images (PNG, JPEG, WebP, BMP) and audio go to Antigravity inline. PDFs go as a link to the saved file,
+which Antigravity reads as a document. Text files go as text, in UTF-8, or UTF-16 when the file
+starts with its byte order mark; one over 100 KB goes as a path instead, so it doesn't crowd the
+conversation. Anything else (a spreadsheet, a video) goes as the saved file's path for the agent to
+open with its tools. Images, audio and text each need Antigravity to say it reads that kind;
+otherwise the file goes as a path. A PDF link needs nothing: every ACP agent reads links. A MIME
+type's parameters (`; charset=utf-8`) don't change the choice. Files are read as they are on disk,
+never through a link, up to each kind's limit and 50 MB inline per message.
 
 ### When a turn fails
 
@@ -147,7 +224,19 @@ Retry. An
 exhausted quota fails with its reset time, so the usage-limit notice above the composer says when
 it resets and can continue then. A conversation Google can no longer continue (a model rejected a
 saved thinking block) stops its session, and the next message starts a new one with the thread's
-history.
+history, also one sent in the moment the session is stopping.
+
+### Editing an Earlier Message
+
+Antigravity can't rewind its own conversation. When you edit an earlier message (or undo back to
+one), Threadlines first stops anything Antigravity still runs for the thread (a running turn, its
+commands and subagents, by a cancel, then a moment to wind down) and ends that session, so nothing
+it ran can write over the files being restored. Then it restores the files. It also drops the
+saved conversation from its own record of the thread, so the next message starts a new Antigravity
+session and sends it the turns that are left: Antigravity no longer remembers the removed ones,
+also when Threadlines restarts before that message. Nothing is started to do this when Antigravity
+wasn't running. If Threadlines can't update that record, the thread says Antigravity still
+remembers the reverted turns.
 
 ### Tokens
 

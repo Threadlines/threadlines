@@ -30,15 +30,29 @@
  * - `steer-log-error`: as `steer`, but the first prompt's log ends in an
  *   error before the steer comes; the second answers cleanly.
  * - `subagent`: launches a subagent, ends its prompt, and replies with the
- *   subagent's report later.
+ *   subagent's report later. It writes no subagent records.
+ * - `subagent-records`: as `subagents`, with the children's records (as
+ *   1.5.12+ keeps them under `brain/`) and their reports in them.
+ * - `tools`: an MCP call through `call_mcp_tool`, a long command line, and
+ *   a screenshot in a tool's content.
+ * - `mcp-permission`: asks to run a real `call_mcp_tool` call, then a
+ *   command whose input also names an MCP tool. It writes no subagent records.
+ * - `records-one-reply`: as `subagent-records`, but both children report
+ *   before the agent wakes, and it answers both in one reply.
+ * - `records-killed`: as `subagent-records`, but in the reply to the first
+ *   child's report the agent kills the second (its record says so).
  * - `wake`: ends its prompt with nothing running, then replies by itself.
  * - `steer`: holds its first prompt until a second arrives, answers the first
  *   `end_turn`, and replies to the second.
  * - `log-error`: ends `end_turn`, its log's last step an upstream 502 error.
  * - `quota`: fails the prompt with Google's quota error (1.5.9).
  * - `lost-signature`: fails the prompt with the refused-thinking error.
+ *
+ * Every new session lists its slash commands right after it opens
+ * (`available_commands_update`), as the 1.5 CLI does. Under `flapping` it
+ * then changes the list ten times in a row.
  */
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -79,6 +93,74 @@ function appendLogSteps(sessionId: string, steps: ReadonlyArray<readonly [number
   }
 }
 
+/** Writes one of the CLI's JSON records under `brain/` in the profile. */
+function writeBrainRecord(segments: ReadonlyArray<string>, value: unknown) {
+  if (profileDir === undefined) return;
+  const file = join(profileDir, "antigravity-acp", "brain", ...segments);
+  mkdirSync(join(file, ".."), { recursive: true });
+  writeFileSync(file, typeof value === "string" ? value : JSON.stringify(value));
+}
+
+/** A child's records as `invoke_subagent` leaves them: its entry, its launch, its steps. */
+function recordChild(input: {
+  readonly parent: string;
+  readonly child: string;
+  readonly callId: string;
+  readonly role: string;
+  readonly prompt: string;
+  readonly state: string;
+}) {
+  writeBrainRecord([input.parent, ".system_generated", "subagents", `${input.child}.json`], {
+    conversationId: input.child,
+    subagentDescriptor: { typeName: "research", role: input.role },
+    state: input.state,
+  });
+  writeBrainRecord([input.child, ".system_generated", "messages", "launch.json"], {
+    sender: input.parent,
+    content: input.prompt,
+    sourceMetadata: {
+      tool: {
+        conversationId: input.parent,
+        toolCall: {
+          id: input.callId,
+          name: "invoke_subagent",
+          argumentsJson: JSON.stringify({ Role: input.role, Prompt: input.prompt }),
+        },
+      },
+    },
+  });
+  writeBrainRecord(
+    [input.child, ".system_generated", "logs", "transcript.jsonl"],
+    [
+      {
+        step_index: 0,
+        type: "SYSTEM_MESSAGE",
+        status: "DONE",
+        content: `<SYSTEM_MESSAGE>\n[Message] sender=${input.parent} content=${input.prompt}\n</SYSTEM_MESSAGE>`,
+      },
+      {
+        step_index: 1,
+        type: "PLANNER_RESPONSE",
+        status: "DONE",
+        tool_calls: [{ name: "view_file", args: { AbsolutePath: '"/project/api.test.ts"' } }],
+      },
+      { step_index: 2, type: "VIEW_FILE", status: "DONE", content: "1: it.skip('flaky')" },
+      { step_index: 3, type: "PLANNER_RESPONSE", status: "DONE", content: "Found it." },
+    ]
+      .map((line) => JSON.stringify(line))
+      .join("\n") + "\n",
+  );
+}
+
+/** A child's report, in the parent's inbox. */
+function recordReport(parent: string, child: string, content: string) {
+  writeBrainRecord([parent, ".system_generated", "messages", `${child}-report.json`], {
+    sender: child,
+    content,
+    priority: "MESSAGE_PRIORITY_HIGH",
+  });
+}
+
 const textOf = (prompt: ReadonlyArray<AcpSchema.ContentBlock>) =>
   prompt.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n");
 
@@ -91,8 +173,17 @@ const program = Effect.gen(function* () {
     agent.client.sessionUpdate({ sessionId, update: value });
   const say = (sessionId: string, text: string) =>
     update(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text } });
+  // The context grows with each model call, as the CLI reports it.
+  let contextUsed = 8_000;
   const modelCallEnds = (sessionId: string) =>
-    update(sessionId, { sessionUpdate: "usage_update", used: 9_000, size: 1_048_576 });
+    Effect.suspend(() => {
+      contextUsed += 1_000;
+      return update(sessionId, {
+        sessionUpdate: "usage_update",
+        used: contextUsed,
+        size: 1_048_576,
+      });
+    });
   const command = {
     toolCallId: "call_build",
     title: "Running node build.mjs",
@@ -104,15 +195,48 @@ const program = Effect.gen(function* () {
     Effect.succeed({
       protocolVersion: 1,
       agentInfo: { name: "agy", title: "Antigravity", version: "1.5.14" },
-      agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } },
+      agentCapabilities: {
+        loadSession: true,
+        sessionCapabilities: { resume: {} },
+        promptCapabilities: { image: true, audio: true, embeddedContext: true },
+      },
     }),
   );
   yield* agent.handleCreateSession(() =>
-    Effect.sync(() => {
+    Effect.gen(function* () {
       sessionCount += 1;
+      // Unique per process, as the CLI's are: two threads never share one.
+      const sessionId = `agy-${process.pid}-${sessionCount}`;
+      // After the answer, as the CLI sends it.
+      yield* Effect.sleep("20 millis").pipe(
+        Effect.andThen(
+          update(sessionId, {
+            sessionUpdate: "available_commands_update",
+            availableCommands: [
+              { name: "goal", description: "Work toward a goal", input: { hint: "objective" } },
+              { name: "compact", description: "Summarize the conversation" },
+              { name: "plan", description: "Plan before acting" },
+              { name: "logout", description: "Sign out" },
+            ],
+          }),
+        ),
+        Effect.andThen(
+          scenario === "flapping"
+            ? Effect.forEach(
+                Array.from({ length: 10 }, (_, index) => index),
+                (index) =>
+                  update(sessionId, {
+                    sessionUpdate: "available_commands_update",
+                    availableCommands: [{ name: "goal", description: `Version ${index}` }],
+                  }).pipe(Effect.andThen(Effect.sleep("10 millis"))),
+                { discard: true },
+              )
+            : Effect.void,
+        ),
+        Effect.forkDetach,
+      );
       return {
-        // Unique per process, as the CLI's are: two threads never share one.
-        sessionId: `agy-${process.pid}-${sessionCount}`,
+        sessionId,
         modes: {
           currentModeId: "default",
           availableModes: [
@@ -151,6 +275,36 @@ const program = Effect.gen(function* () {
       if (scenario === "ignore-cancel") {
         yield* say(sessionId, "Thinking hard.");
         return yield* Effect.never;
+      }
+      if (scenario === "mcp-permission") {
+        const ask = (toolCall: AcpSchema.ToolCallUpdate) =>
+          agent.client.requestPermission({
+            sessionId,
+            toolCall,
+            options: [
+              { optionId: "allow", name: "Allow", kind: "allow_once" },
+              { optionId: "deny", name: "Deny", kind: "reject_once" },
+            ],
+          });
+        // A real `call_mcp_tool` call.
+        yield* ask({
+          toolCallId: "call_mcp",
+          title: "MCP Tool list_issues",
+          kind: "execute",
+          status: "pending",
+          rawInput: { ServerName: "github", ToolName: "list_issues", Arguments: { repo: "x/y" } },
+        });
+        // A command that also names an MCP tool: it is still a command.
+        yield* ask({
+          toolCallId: "call_spoof",
+          title: "MCP Tool list_issues",
+          kind: "execute",
+          status: "pending",
+          rawInput: { ServerName: "github", ToolName: "list_issues", CommandLine: "rm -rf build" },
+        });
+        yield* say(sessionId, "Asked twice.");
+        yield* modelCallEnds(sessionId);
+        return { stopReason: "end_turn" as const };
       }
       if (scenario === "permission-second") {
         if (promptsSeen === 1) {
@@ -355,6 +509,128 @@ const program = Effect.gen(function* () {
           yield* say(sessionId, "The researcher found it.");
           yield* modelCallEnds(sessionId);
         }).pipe(Effect.forkDetach);
+        return { stopReason: "end_turn" as const };
+      }
+      if (scenario === "records-one-reply" || scenario === "records-killed") {
+        const launch = (callId: string, child: string, role: string, prompt: string) =>
+          Effect.gen(function* () {
+            recordChild({
+              parent: sessionId,
+              child,
+              callId,
+              role,
+              prompt,
+              state: "SUBAGENT_STATE_ALIVE",
+            });
+            yield* update(sessionId, {
+              sessionUpdate: "tool_call",
+              toolCallId: callId,
+              kind: "other",
+              // How agy 1.5 titles a launch it ran without asking.
+              title: "Run invoke_subagent",
+              status: "completed",
+              rawInput: { Role: role, Prompt: prompt },
+            });
+          });
+        yield* launch("call_research", "child-research", "Researcher", "Find the flaky test");
+        yield* launch("call_review", "child-review", "Reviewer", "Review the fix");
+        yield* say(sessionId, "Two agents are on it.");
+        yield* modelCallEnds(sessionId);
+        yield* Effect.gen(function* () {
+          yield* Effect.sleep("400 millis");
+          recordReport(sessionId, "child-research", "The flaky test is api.test.ts.");
+          if (scenario === "records-one-reply") {
+            recordReport(sessionId, "child-review", "The fix looks right.");
+            yield* say(sessionId, " Both agents reported.");
+          } else {
+            // The kill only rewrites the child's entry.
+            recordChild({
+              parent: sessionId,
+              child: "child-review",
+              callId: "call_review",
+              role: "Reviewer",
+              prompt: "Review the fix",
+              state: "SUBAGENT_STATE_KILLED",
+            });
+            yield* say(sessionId, " The researcher found it, so I stopped the reviewer.");
+          }
+          yield* modelCallEnds(sessionId);
+        }).pipe(Effect.forkDetach);
+        return { stopReason: "end_turn" as const };
+      }
+      if (scenario === "subagent-records") {
+        const launch = (callId: string, child: string, role: string, prompt: string) =>
+          Effect.gen(function* () {
+            recordChild({
+              parent: sessionId,
+              child,
+              callId,
+              role,
+              prompt,
+              state: "SUBAGENT_STATE_ALIVE",
+            });
+            yield* update(sessionId, {
+              sessionUpdate: "tool_call",
+              toolCallId: callId,
+              kind: "other",
+              // The title the turn's hold counts; agy 1.5 also sends "Run invoke_subagent".
+              title: "Running invoke_subagent",
+              status: "completed",
+              rawInput: { Role: role, Prompt: prompt },
+            });
+          });
+        yield* launch("call_research", "child-research", "Researcher", "Find the flaky test");
+        yield* launch("call_review", "child-review", "Reviewer", "Review the fix");
+        yield* say(sessionId, "Two agents are on it.");
+        yield* modelCallEnds(sessionId);
+        yield* Effect.gen(function* () {
+          yield* Effect.sleep("400 millis");
+          recordReport(sessionId, "child-research", "The flaky test is api.test.ts.");
+          yield* say(sessionId, " The researcher found it.");
+          yield* modelCallEnds(sessionId);
+          // Longer than a held turn's settle: only the records hold it.
+          yield* Effect.sleep("3000 millis");
+          recordReport(sessionId, "child-review", "The fix looks right.");
+          yield* say(sessionId, " The reviewer agreed.");
+          yield* modelCallEnds(sessionId);
+        }).pipe(Effect.forkDetach);
+        return { stopReason: "end_turn" as const };
+      }
+      if (scenario === "tools") {
+        yield* update(sessionId, {
+          sessionUpdate: "tool_call",
+          toolCallId: "call_mcp",
+          kind: "execute",
+          title: "MCP Tool list_issues",
+          status: "completed",
+          rawInput: { ServerName: "github", ToolName: "list_issues", Arguments: { repo: "x/y" } },
+          rawOutput: "[]",
+        });
+        yield* update(sessionId, {
+          sessionUpdate: "tool_call",
+          toolCallId: "call_long",
+          kind: "execute",
+          title: "Running long command",
+          status: "completed",
+          rawInput: { CommandLine: `echo start ${"x".repeat(9_000)} 😀 end` },
+          rawOutput: { output: `${"y".repeat(9_000)}tail`, exit_code: 0 },
+        });
+        yield* update(sessionId, {
+          sessionUpdate: "tool_call",
+          toolCallId: "call_shot",
+          kind: "other",
+          title: "Took a screenshot",
+          status: "completed",
+          content: [
+            {
+              type: "content",
+              content: { type: "image", data: "aGVsbG8=", mimeType: "image/png" },
+            },
+            { type: "content", content: { type: "text", text: "Screenshot taken." } },
+          ],
+        });
+        yield* say(sessionId, "Done.");
+        yield* modelCallEnds(sessionId);
         return { stopReason: "end_turn" as const };
       }
       if (scenario === "wake") {
