@@ -2502,7 +2502,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
               ),
             );
         }
-        const checkOutcome = yield* watchPromptOutcome(ctx);
+        const checkOutcome = yield* watchPromptOutcome(ctx, model);
         ctx.activeTurnId = turnId;
         const run: AcpTurnRun = {
           turnId,
@@ -2552,10 +2552,10 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
       });
 
     /** Starts reading how the turn's prompts end (`promptOutcome`); never fails. */
-    const watchPromptOutcome = (ctx: AcpSessionContext) =>
+    const watchPromptOutcome = (ctx: AcpSessionContext, model: string | undefined) =>
       descriptor.promptOutcome === undefined
         ? Effect.succeed(undefined)
-        : descriptor.promptOutcome.watch(ctx.acpSessionId).pipe(
+        : descriptor.promptOutcome.watch(ctx.acpSessionId, model).pipe(
             Effect.catchCause((cause) =>
               Effect.logWarning("acp.prompt-outcome.watch-failed", {
                 provider: PROVIDER,
@@ -3004,7 +3004,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             phase: undefined,
             prompts: 0,
             usage: null,
-            checkOutcome: yield* watchPromptOutcome(ctx),
+            checkOutcome: yield* watchPromptOutcome(ctx, ctx.session.model),
           };
           ctx.turnRun = run;
         }

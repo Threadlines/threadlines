@@ -806,7 +806,7 @@ export function makeAntigravityDescriptor(
     permissionOptionWarning: antigravityOptionWarning,
     cancellationNotice: "The request was cancelled by the client.",
     // Work that outlives a prompt, steering, hidden failures, turn tokens.
-    ...antigravityTurnBehavior<AntigravitySettings>(paths.profileDir),
+    ...antigravityTurnBehavior<AntigravitySettings>(paths.profileDir, usage?.usageLimitFor),
     planMode: {
       promptPrefix: "/plan ",
       isPlanFile: (toolCall) => {

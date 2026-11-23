@@ -169,7 +169,11 @@ export interface AcpPromptFailure {
  * run when the turn's last prompt answers or fails.
  */
 export interface AcpPromptOutcome {
-  readonly watch: (sessionId: string) => Effect.Effect<
+  /** `model`: the picker slug the turn runs on, when known. */
+  readonly watch: (
+    sessionId: string,
+    model: string | undefined,
+  ) => Effect.Effect<
     (
       answer:
         | { readonly response: EffectAcpSchema.PromptResponse }

@@ -26,6 +26,7 @@ import type { AcpToolCallState } from "../acp/AcpRuntimeModel.ts";
 import { makeAntigravityDescriptor } from "../acp/AntigravityAcpSupport.ts";
 import {
   antigravityFailure,
+  antigravityTurnBehavior,
   antigravityTurnUsageTotals,
   antigravityWorkAfterPrompt,
 } from "./AntigravityTurns.ts";
@@ -393,6 +394,42 @@ describe("Antigravity turn reading", () => {
       })?.failureCategory,
     ).toBe("model_unavailable");
   });
+
+  it.effect(
+    "gives a quota with no reset time the one the plan meter knows for the turn's model",
+    () =>
+      Effect.gen(function* () {
+        const profileDir = yield* Effect.promise(() =>
+          mkdtemp(path.join(os.tmpdir(), "threadlines-agy-turn-")),
+        );
+        const asked: Array<string> = [];
+        const behavior = antigravityTurnBehavior(profileDir, (model) =>
+          Effect.sync(() => {
+            asked.push(model);
+            return { window: "weekly" as const, resetsAt: "2026-11-24T00:00:00.000Z" };
+          }),
+        );
+        const check = yield* behavior.promptOutcome!.watch("session-1", "claude-sonnet-agent");
+        const quota = {
+          _tag: "AcpRequestError",
+          errorMessage: "Details: [map[reason:QUOTA_EXHAUSTED]]",
+        };
+        expect(yield* check({ error: quota })).toMatchObject({
+          failureCategory: "rate_limit",
+          usageLimit: { window: "weekly", resetsAt: "2026-11-24T00:00:00.000Z" },
+        });
+        expect(asked).toEqual(["claude-sonnet-agent"]);
+
+        // A reset time the agent gave wins, and the meter isn't asked.
+        const timed = {
+          _tag: "AcpRequestError",
+          errorMessage:
+            "Details: [map[metadata:map[quotaResetDelay:1h0m0s] reason:QUOTA_EXHAUSTED]]",
+        };
+        expect((yield* check({ error: timed }))?.usageLimit?.window).toBeUndefined();
+        expect(asked).toHaveLength(1);
+      }),
+  );
 
   it("counts cached reads as input and thinking inside output", () => {
     expect(
