@@ -1084,6 +1084,94 @@ describe("Antigravity tool rows and attachments", () => {
       }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 
+  const opened = (events: ReadonlyArray<ProviderRuntimeEvent>) =>
+    events.filter((event) => event.type === "request.opened") as ReadonlyArray<
+      Extract<ProviderRuntimeEvent, { type: "request.opened" }>
+    >;
+  const answers = (frames: ReadonlyArray<Record<string, unknown>>) =>
+    frames.flatMap((frame) =>
+      frame.result !== undefined && JSON.stringify(frame.result).includes("outcome")
+        ? [frame.result]
+        : [],
+    );
+
+  it.live("asks about a call named by its id alone with what the session knows of it", () =>
+    Effect.gen(function* () {
+      const agy = yield* startAgy("permission-partial", undefined, "approval-required");
+      yield* agy.adapter.sendTurn({ threadId: agy.threadId, input: "go", attachments: [] });
+      yield* agy.waitFor((events) => opened(events).length === 1);
+      expect(opened(agy.events)[0]?.payload).toMatchObject({
+        requestType: "exec_command_approval",
+        detail: "rm -rf build",
+      });
+      yield* agy.adapter.respondToRequest(
+        agy.threadId,
+        ApprovalRequestId.make(String(opened(agy.events)[0]!.requestId)),
+        "decline",
+      );
+      yield* agy.waitFor((events) => completedTurns(events).length === 1);
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+  it.live("withdraws an open approval when an update shows it is for something else", () =>
+    Effect.gen(function* () {
+      const agy = yield* startAgy("permission-reask", undefined, "approval-required");
+      yield* agy.adapter.sendTurn({ threadId: agy.threadId, input: "go", attachments: [] });
+      yield* agy.waitFor((events) => opened(events).length === 2);
+      const [asked, reasked] = opened(agy.events);
+      expect(asked?.payload.detail).toBe("MCP tool github · list_issues {}");
+      expect(reasked?.payload).toMatchObject({
+        requestType: "exec_command_approval",
+        detail: "rm -rf build",
+      });
+      // The first card was closed unanswered, and can't be answered now.
+      expect(
+        agy.events.find(
+          (event) => event.type === "request.resolved" && event.requestId === asked?.requestId,
+        ),
+      ).toMatchObject({ payload: { requestType: "exec_command_approval" } });
+      const stale = yield* Effect.flip(
+        agy.adapter.respondToRequest(
+          agy.threadId,
+          ApprovalRequestId.make(String(asked!.requestId)),
+          "accept",
+        ),
+      );
+      expect(stale.message).toContain("Unknown pending approval request");
+      yield* agy.adapter.respondToRequest(
+        agy.threadId,
+        ApprovalRequestId.make(String(reasked!.requestId)),
+        "decline",
+      );
+      yield* agy.waitFor((events) => completedTurns(events).length === 1);
+      expect(answers(yield* agy.frames())).toEqual([
+        { outcome: { outcome: "selected", optionId: "deny" } },
+      ]);
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+  it.live("approves only an edit of the plan file itself without asking", () =>
+    Effect.gen(function* () {
+      const agy = yield* startAgy("plan-file-permission", undefined, "approval-required");
+      yield* agy.adapter.sendTurn({ threadId: agy.threadId, input: "plan", attachments: [] });
+      // The command naming the plan file is asked about.
+      yield* agy.waitFor((events) => opened(events).length === 1);
+      expect(opened(agy.events)[0]?.payload.requestType).toBe("exec_command_approval");
+      yield* agy.adapter.respondToRequest(
+        agy.threadId,
+        ApprovalRequestId.make(String(opened(agy.events)[0]!.requestId)),
+        "decline",
+      );
+      yield* agy.waitFor((events) => completedTurns(events).length === 1);
+      // The plan edit was allowed with no card of its own.
+      expect(opened(agy.events)).toHaveLength(1);
+      expect(answers(yield* agy.frames())).toEqual([
+        { outcome: { outcome: "selected", optionId: "deny" } },
+        { outcome: { outcome: "selected", optionId: "allow" } },
+      ]);
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
   it.live("classifies a call by what the agent sent, not by the bounded copy", () =>
     Effect.gen(function* () {
       const agy = yield* startAgy("mcp-lossy");

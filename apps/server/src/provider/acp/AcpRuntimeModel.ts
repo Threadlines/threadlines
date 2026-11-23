@@ -596,10 +596,17 @@ function diffContentPaths(
   );
 }
 
+/**
+ * A permission request as the approval shows it. ACP lets the request carry
+ * only part of the call (its id, say), so it is read on top of what the
+ * session already knows of the call (`known`, its updates merged): a command
+ * an earlier update named is never left out of the approval.
+ */
 export function parsePermissionRequest(
   params: EffectAcpSchema.RequestPermissionRequest,
+  known?: AcpToolCallState,
 ): AcpPermissionRequest {
-  const toolCall = makeToolCallState(
+  const fromRequest = makeToolCallState(
     {
       toolCallId: params.toolCall.toolCallId,
       title: params.toolCall.title,
@@ -612,9 +619,24 @@ export function parsePermissionRequest(
     },
     { fallbackStatus: "pending" },
   );
-  const kind = normalizeToolKind(params.toolCall.kind) ?? "unknown";
+  const toolCall =
+    known !== undefined && fromRequest !== undefined
+      ? mergeToolCallState(known, fromRequest)
+      : (fromRequest ?? known);
+  return describePermissionRequest(params, toolCall);
+}
+
+/** The kind and words of an approval for this call, as far as it is known. */
+export function describePermissionRequest(
+  params: EffectAcpSchema.RequestPermissionRequest,
+  toolCall: AcpToolCallState | undefined,
+): AcpPermissionRequest {
+  const kind = normalizeToolKind(params.toolCall.kind) ?? toolCall?.kind ?? "unknown";
   // An edit is named by the files it changes, not its generic title.
-  const editedPaths = diffContentPaths(params.toolCall.content);
+  const content = toolCall?.data.content;
+  const editedPaths = Array.isArray(content)
+    ? diffContentPaths(content as ReadonlyArray<EffectAcpSchema.ToolCallContent>)
+    : [];
   const detail =
     toolCall?.command ??
     (editedPaths.length > 0 ? editedPaths.join(", ") : undefined) ??
