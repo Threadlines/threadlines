@@ -1,9 +1,21 @@
-import { ProviderInstanceId, type ServerProviderSkill } from "@threadlines/contracts";
+import {
+  ProviderDriverKind,
+  ProviderInstanceId,
+  ThreadId,
+  ThreadParticipantId,
+  type ServerProvider,
+  type ServerProviderSkill,
+} from "@threadlines/contracts";
+import { participantSessionKey } from "@threadlines/shared/threadParticipants";
 import { describe, expect, it } from "vite-plus/test";
 
-import { composerProviderSlashList } from "./composerAgentCommands";
+import type { ProviderInstanceEntry } from "../../providerInstances";
+import {
+  composerProviderSlashList,
+  composerSlashAgent,
+  sessionSlashCommands,
+} from "./composerAgentCommands";
 
-const instanceId = ProviderInstanceId.make("antigravity");
 const skill = (name: string, enabled = true): ServerProviderSkill => ({
   name,
   path: `/skills/${name}/SKILL.md`,
@@ -20,12 +32,7 @@ describe("composerProviderSlashList", () => {
     expect(
       composerProviderSlashList({
         provider,
-        instanceId,
-        sessionCommands: {
-          providerInstanceId: instanceId,
-          commands: [{ name: "other" }],
-          updatedAt: "2026-11-23T00:00:00.000Z",
-        },
+        sessionCommands: [{ name: "other" }],
         threadlinesCommands: THREADLINES,
       }),
     ).toEqual({ commands: provider.slashCommands, slashSkills: [] });
@@ -34,33 +41,32 @@ describe("composerProviderSlashList", () => {
   it("lists the status's skills, then the session's commands with the session's entry first", () => {
     const provider = {
       slashCommands: [],
-      skills: [skill("review"), skill("compact"), skill("off", false), skill("two words")],
+      skills: [
+        skill("review"),
+        skill("compact"),
+        skill("off", false),
+        skill("two words"),
+        skill("a/b"),
+      ],
       slashSkills: true,
     };
-    // Before a session has opened: the skills alone.
+    // Before a session has listed its own: the skills alone, only typeable ones.
     expect(
       composerProviderSlashList({
         provider,
-        instanceId,
         sessionCommands: undefined,
         threadlinesCommands: THREADLINES,
       }),
     ).toEqual({ commands: [], slashSkills: [skill("review"), skill("compact")] });
 
-    const session = {
-      providerInstanceId: instanceId,
-      commands: [
-        { name: "goal", input: { hint: "objective" } },
-        { name: "compact", description: "Summarize the conversation" },
-        { name: "model" },
-      ],
-      updatedAt: "2026-11-23T00:00:00.000Z",
-    };
     expect(
       composerProviderSlashList({
         provider,
-        instanceId,
-        sessionCommands: session,
+        sessionCommands: [
+          { name: "goal", input: { hint: "objective" } },
+          { name: "compact", description: "Summarize the conversation" },
+          { name: "model" },
+        ],
         threadlinesCommands: THREADLINES,
       }),
     ).toEqual({
@@ -70,15 +76,63 @@ describe("composerProviderSlashList", () => {
       ],
       slashSkills: [skill("review")],
     });
+  });
 
-    // A list another account's session sent doesn't describe this one.
+  it("finds the list of the session the next message goes to, a room agent's included", () => {
+    const thread = ThreadId.make("thread-1");
+    const agent = ThreadParticipantId.make("7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d");
+    const provider = {
+      sessionCommands: [
+        { sessions: [thread], commands: [{ name: "goal" }] },
+        { sessions: [participantSessionKey(thread, agent)], commands: [{ name: "compact" }] },
+      ],
+    };
+    expect(sessionSlashCommands(provider, participantSessionKey(thread, null))).toEqual([
+      { name: "goal" },
+    ]);
+    expect(sessionSlashCommands(provider, participantSessionKey(thread, agent))).toEqual([
+      { name: "compact" },
+    ]);
+    expect(sessionSlashCommands(provider, "thread-2")).toBeUndefined();
+  });
+
+  it("describes the agent the next message goes to: a room agent's own provider and session", () => {
+    const thread = ThreadId.make("thread-1");
+    const agent = ThreadParticipantId.make("7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d");
+    const antigravity = {
+      instanceId: ProviderInstanceId.make("antigravity"),
+      driverKind: ProviderDriverKind.make("antigravity"),
+      displayName: "Antigravity",
+      snapshot: { slashSkills: true },
+    } as unknown as ProviderInstanceEntry;
+    const claude = {
+      status: { slashCommands: [{ name: "compact" }] } as unknown as ServerProvider,
+      driverKind: ProviderDriverKind.make("claudeAgent"),
+      label: "Claude",
+    };
+    // Claude's thread, Antigravity added and addressed: Antigravity's list.
     expect(
-      composerProviderSlashList({
-        provider,
-        instanceId: ProviderInstanceId.make("antigravity_work"),
-        sessionCommands: session,
-        threadlinesCommands: THREADLINES,
-      }).commands,
-    ).toEqual([]);
+      composerSlashAgent({
+        threadId: thread,
+        recipient: { id: agent, instanceId: antigravity.instanceId },
+        entries: [antigravity],
+        selected: claude,
+      }),
+    ).toEqual({
+      status: antigravity.snapshot,
+      driverKind: antigravity.driverKind,
+      label: "Antigravity",
+      sessionKey: participantSessionKey(thread, agent),
+      addedAgent: true,
+    });
+    // The thread's own agent addressed: its own provider and session.
+    expect(
+      composerSlashAgent({
+        threadId: thread,
+        recipient: null,
+        entries: [antigravity],
+        selected: claude,
+      }),
+    ).toEqual({ ...claude, sessionKey: thread, addedAgent: false });
   });
 });

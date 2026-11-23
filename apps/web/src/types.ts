@@ -8,7 +8,6 @@ import type {
   OrchestrationCheckBack,
   OrchestrationCommandRequest,
   OrchestrationCommandRun,
-  OrchestrationAgentCommands,
   OrchestrationSecretRequest,
   OrchestrationSettingsChangeRequest,
   PullRequestMergeMethod,
@@ -231,11 +230,6 @@ export interface Thread {
   commandRequests?: ReadonlyArray<OrchestrationCommandRequest>;
   /** Runs the user started from a request card or a code block. Absent until the detail loads. */
   commandRuns?: ReadonlyArray<OrchestrationCommandRun>;
-  /**
-   * Per agent (`primary` or a participant id), the slash commands its session
-   * last listed (OrchestrationThread.agentCommands). Absent until the detail loads.
-   */
-  agentCommands?: Readonly<Record<string, OrchestrationAgentCommands>>;
   error: string | null;
   createdAt: string;
   archivedAt: string | null;

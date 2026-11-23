@@ -25,7 +25,6 @@ import { retainThreadActivities } from "@threadlines/shared/threadActivityRetent
 import { applyRoomAgentUpdate, recordTurnModel } from "@threadlines/shared/threadParticipants";
 import { effectiveCwdOf } from "@threadlines/shared/threadCwd";
 import { replaceAgentCheckBacks } from "@threadlines/shared/checkBacks";
-import { applyAgentCommands } from "@threadlines/shared/agentCommands";
 import { applyPullRequestDismissed } from "@threadlines/shared/pullRequestDismissals";
 import {
   applyLinkedPullRequestSwitches,
@@ -142,7 +141,6 @@ import {
   ThreadEffectiveCwdSetPayload,
   ThreadGoalStateSetPayload,
   ThreadCheckBacksSetPayload,
-  ThreadAgentCommandsSetPayload,
   ThreadFollowUpSubmittedPayload,
   ThreadTurnStartRequestedPayload,
   ThreadFollowUpAcceptedPayload,
@@ -1870,26 +1868,6 @@ export function projectEvent(
           threads: updateThread(nextBase.threads, payload.threadId, {
             checkBacks: replaceAgentCheckBacks(thread.checkBacks ?? [], payload),
             updatedAt: event.occurredAt,
-          }),
-        };
-      });
-
-    case "thread.agent-commands-set":
-      return Effect.gen(function* () {
-        const payload = yield* decodeForEvent(
-          ThreadAgentCommandsSetPayload,
-          event.payload,
-          event.type,
-          "payload",
-        );
-        const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
-        if (!thread) {
-          return nextBase;
-        }
-        return {
-          ...nextBase,
-          threads: updateThread(nextBase.threads, payload.threadId, {
-            agentCommands: applyAgentCommands(thread.agentCommands, payload),
           }),
         };
       });

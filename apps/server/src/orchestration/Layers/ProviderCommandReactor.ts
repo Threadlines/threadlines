@@ -1948,23 +1948,22 @@ const make = Effect.gen(function* () {
       if (shedsOutsideWork)
         yield* shedOutsideWork(thread, participantId, createdAt, handoffSession);
       if (contextSeed !== undefined) {
-        owedHistorySeeds.delete(sessionKey);
-        // A moved thread's debt is paid once a turn reaches the provider on
-        // this seeded session, not when it starts: some adapters keep the
-        // seed in memory until their first send.
-        if (
-          participantId === null &&
+        // The debt is paid once a turn reaches the provider on this seeded
+        // session, not when it starts: some adapters keep the seed in memory
+        // until their first send, and a send that goes as the agent's own
+        // command (contextDeferred) leaves it with them. Until then the
+        // binding owes it too, so a restart seeds the next start.
+        owedHistorySeeds.set(sessionKey, {
+          driverKind: desiredDriverKind,
+          cwd: effectiveCwd ?? undefined,
+          claimed: false,
+          ...(participantId === null &&
           thread.historySeedOwed === true &&
           contextSeed.entries.length > 0
-        ) {
-          owedHistorySeeds.set(sessionKey, {
-            driverKind: desiredDriverKind,
-            cwd: effectiveCwd ?? undefined,
-            claimed: false,
-            moved: true,
-            carriedBy: handoffSession.createdAt,
-          });
-        }
+            ? { moved: true as const }
+            : {}),
+          carriedBy: handoffSession.createdAt,
+        });
       }
       // Another agent than the one a move carried a session for.
       yield* noteCarriedStart("handoff");
@@ -2962,6 +2961,7 @@ const make = Effect.gen(function* () {
               typed: {
                 text: typedText,
                 ...(providerContext.length > 0 ? { context: providerContext } : {}),
+                ...(/^\s/u.test(input.messageText) ? { indented: true as const } : {}),
               },
             }
           : {}),
@@ -2987,6 +2987,8 @@ const make = Effect.gen(function* () {
               if (owedSeed.moved === true) {
                 yield* markHistorySeedDelivered(input.threadId, input.messageId);
               }
+              // The binding stops owing it too (ProviderService.noteHistoryDelivered).
+              yield* providerService.noteHistoryDelivered(sessionKey);
             }),
       // A send that failed before the provider took it delivered nothing.
       historyDebtReturned:
@@ -3739,6 +3741,8 @@ const make = Effect.gen(function* () {
       // Whether the provider took the turn: a failure before that left the
       // message's text with no agent; one after (bookkeeping) did not.
       let providerTookTurn = false;
+      // The send went as the agent's own command, without its context.
+      let contextDeferred = false;
       yield* providerService
         .sendTurn({
           ...turnRequest,
@@ -3760,7 +3764,14 @@ const make = Effect.gen(function* () {
               providerTookTurn = true;
             }),
           ),
-          Effect.tap(() => historyDebtPaid),
+          // A send that went as the agent's own command carried none of the
+          // context in front of it: every debt it was to pay stays.
+          Effect.tap((turn) =>
+            Effect.suspend(() => {
+              contextDeferred = turn.contextDeferred === true;
+              return contextDeferred ? historyDebtReturned : historyDebtPaid;
+            }),
+          ),
           Effect.onError(() => historyDebtReturned),
           Effect.tap((turn) =>
             Effect.sync(() => providerTakenTurns.set(event.payload.threadId, turn.turnId)),
@@ -3772,11 +3783,11 @@ const make = Effect.gen(function* () {
             }),
           ),
           Effect.tap(() =>
-            roomContext !== undefined
+            roomContext !== undefined && !contextDeferred
               ? recordRoomContext(event.payload.threadId, roomContext, event.payload.createdAt)
               : Effect.void,
           ),
-          Effect.tap(() => notesDelivered),
+          Effect.tap(() => (contextDeferred ? Effect.void : notesDelivered)),
           // Replies and reports queued while the turn was starting go in now,
           // behind its own message (and its notes), in this thread's worker.
           Effect.tap(() =>

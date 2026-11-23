@@ -42,7 +42,6 @@ import {
   TurnId,
 } from "./baseSchemas.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
-import { ServerProviderSlashCommand } from "./slashCommands.ts";
 import { PullRequestMergeMethod } from "./pullRequest.ts";
 import { ProjectRevisionFileResult } from "./project.ts";
 import { TerminalReuseIds } from "./terminal.ts";
@@ -844,21 +843,6 @@ export type ThreadMoveTarget = typeof ThreadMoveTarget.Type;
 
 /** A check-back's prompt is kept up to this many characters (OrchestrationCheckBack.prompt). */
 export const CHECK_BACK_PROMPT_MAX_CHARS = 2_000;
-
-/**
- * The commands an agent's session last listed for this thread (ACP
- * `available_commands_update`): what the composer's `/` list offers while
- * that agent and provider instance answer the thread. Kept across restarts,
- * so the list is there before the session opens again; a new list from the
- * session replaces it.
- */
-export const OrchestrationAgentCommands = Schema.Struct({
-  /** The provider instance whose session listed them. */
-  providerInstanceId: ProviderInstanceId,
-  commands: Schema.Array(ServerProviderSlashCommand),
-  updatedAt: IsoDateTime,
-});
-export type OrchestrationAgentCommands = typeof OrchestrationAgentCommands.Type;
 
 /**
  * A time an agent set itself to come back to the thread (Claude's
@@ -3245,12 +3229,6 @@ export const OrchestrationThread = Schema.Struct({
    * OrchestrationMessage.agentModels). Absent: nothing recorded yet.
    */
   sentModels: Schema.optional(Schema.Record(Schema.String, ModelSelection)),
-  /**
-   * Per agent (`primary` or a participant id), the slash commands its
-   * session last listed; see OrchestrationAgentCommands. Only providers that
-   * report them fill it. Absent: none reported.
-   */
-  agentCommands: Schema.optional(Schema.Record(Schema.String, OrchestrationAgentCommands)),
   /** See OrchestrationThreadShell.doneOverride. */
   doneOverride: Schema.NullOr(OrchestrationThreadDoneOverride).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
@@ -4514,19 +4492,6 @@ const ThreadCheckBacksSetCommand = Schema.Struct({
   threadId: ThreadId,
   participantId: Schema.NullOr(ThreadParticipantId),
   checkBacks: Schema.Array(OrchestrationCheckBack),
-  createdAt: IsoDateTime,
-});
-
-/** Provider-internal: the slash commands an agent's session listed; replaces
- *  that agent's list. Emitted by runtime ingestion off
- *  `session.commands.updated`, only when the list changed. */
-const ThreadAgentCommandsSetCommand = Schema.Struct({
-  type: Schema.Literal("thread.agent-commands.set"),
-  commandId: CommandId,
-  threadId: ThreadId,
-  participantId: Schema.NullOr(ThreadParticipantId),
-  providerInstanceId: ProviderInstanceId,
-  commands: Schema.Array(ServerProviderSlashCommand),
   createdAt: IsoDateTime,
 });
 
@@ -6113,7 +6078,6 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadRealtimeStateSetCommand,
   ThreadEffectiveCwdSetCommand,
   ThreadCheckBacksSetCommand,
-  ThreadAgentCommandsSetCommand,
   ThreadGoalSetCommand,
   ThreadGoalClearCommand,
   ThreadGoalStateSetCommand,
@@ -6245,7 +6209,6 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.continue-at-reset-skipped",
   "thread.effective-cwd-set",
   "thread.check-backs-set",
-  "thread.agent-commands-set",
   "thread.goal-set-requested",
   "thread.goal-clear-requested",
   "thread.goal-state-set",
@@ -7128,14 +7091,6 @@ export const ThreadCheckBacksSetPayload = Schema.Struct({
   updatedAt: IsoDateTime,
 });
 
-export const ThreadAgentCommandsSetPayload = Schema.Struct({
-  threadId: ThreadId,
-  participantId: Schema.NullOr(ThreadParticipantId),
-  providerInstanceId: ProviderInstanceId,
-  commands: Schema.Array(ServerProviderSlashCommand),
-  updatedAt: IsoDateTime,
-});
-
 export const ThreadCheckBackCancelRequestedPayload = Schema.Struct({
   threadId: ThreadId,
   participantId: Schema.NullOr(ThreadParticipantId),
@@ -7728,11 +7683,6 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.check-backs-set"),
     payload: ThreadCheckBacksSetPayload,
-  }),
-  Schema.Struct({
-    ...EventBaseFields,
-    type: Schema.Literal("thread.agent-commands-set"),
-    payload: ThreadAgentCommandsSetPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

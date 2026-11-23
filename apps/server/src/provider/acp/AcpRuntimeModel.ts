@@ -1,4 +1,5 @@
 import type * as EffectAcpSchema from "effect-acp/schema";
+import { cleanSlashCommands } from "@threadlines/shared/slashCommands";
 import { deriveToolActivityPresentation } from "@threadlines/shared/toolActivity";
 import type {
   ServerProviderSlashCommand,
@@ -633,31 +634,6 @@ function sessionInfoStatusMessage(update: { readonly _meta?: unknown }): string 
   return typeof message === "string" && message.trim().length > 0 ? message.trim() : undefined;
 }
 
-/**
- * An agent's command list in the composer's terms: names without a leading
- * `/`, each once (the first wins), and none a message could not start with
- * (empty, or with whitespace inside).
- */
-export function acpSlashCommands(
-  commands: ReadonlyArray<EffectAcpSchema.AvailableCommand>,
-): ReadonlyArray<ServerProviderSlashCommand> {
-  const seen = new Set<string>();
-  return commands.flatMap((command): Array<ServerProviderSlashCommand> => {
-    const name = command.name.trim().replace(/^\//u, "");
-    if (name.length === 0 || /\s/u.test(name) || seen.has(name)) return [];
-    seen.add(name);
-    const description = command.description.trim();
-    const hint = command.input?.hint.trim();
-    return [
-      {
-        name,
-        ...(description ? { description } : {}),
-        ...(hint ? { input: { hint } } : {}),
-      },
-    ];
-  });
-}
-
 export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotification): {
   readonly modeId?: string;
   readonly events: ReadonlyArray<AcpParsedSessionEvent>;
@@ -771,7 +747,7 @@ export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotificat
     case "available_commands_update": {
       events.push({
         _tag: "AvailableCommandsUpdated",
-        commands: acpSlashCommands(upd.availableCommands),
+        commands: cleanSlashCommands(upd.availableCommands),
       });
       break;
     }

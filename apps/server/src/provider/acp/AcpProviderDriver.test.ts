@@ -10,9 +10,31 @@ import { ChildProcessSpawner } from "effect/process";
 import { describe, expect, it } from "vite-plus/test";
 
 import { checkAcpProviderStatus, makeAcpCatalogCache } from "./AcpProvider.ts";
-import { makeAcpProviderMaintenanceResolver, resolveAcpBinaryPath } from "./AcpProviderDriver.ts";
+import {
+  groupSessionCommands,
+  makeAcpProviderMaintenanceResolver,
+  resolveAcpBinaryPath,
+} from "./AcpProviderDriver.ts";
 import { CURSOR_ACP_DESCRIPTOR } from "./CursorAcpSupport.ts";
 import { FX_ACP_DESCRIPTOR } from "./FxAcpSupport.ts";
+
+describe("groupSessionCommands", () => {
+  it("sends each distinct list once, with the sessions that listed it", () => {
+    const usual = [{ name: "goal" }, { name: "compact" }];
+    expect(
+      groupSessionCommands(
+        new Map([
+          ["thread-a", usual],
+          ["thread-b", [{ name: "goal" }]],
+          ["thread-c", [...usual]],
+        ]),
+      ),
+    ).toEqual([
+      { sessions: ["thread-a", "thread-c"], commands: usual },
+      { sessions: ["thread-b"], commands: [{ name: "goal" }] },
+    ]);
+  });
+});
 
 describe("makeAcpCatalogCache", () => {
   const model = (slug: string) => ({

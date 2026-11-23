@@ -5755,31 +5755,6 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
-    case "thread.agent-commands.set": {
-      yield* requireThread({
-        readModel,
-        command,
-        threadId: command.threadId,
-      });
-      return {
-        ...withEventBase({
-          aggregateKind: "thread",
-          aggregateId: command.threadId,
-          occurredAt: command.createdAt,
-          commandId: command.commandId,
-          metadata: {},
-        }),
-        type: "thread.agent-commands-set",
-        payload: {
-          threadId: command.threadId,
-          participantId: command.participantId,
-          providerInstanceId: command.providerInstanceId,
-          commands: command.commands,
-          updatedAt: command.createdAt,
-        },
-      };
-    }
-
     case "thread.check-back.cancel": {
       const thread = yield* requireThread({
         readModel,
