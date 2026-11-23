@@ -284,8 +284,9 @@ coordinate it.
   developer message in the thread's history (`thread/inject_items`) before
   `thread/goal/set`, so the turns it runs for the goal read it; an app-server that
   refuses that still gets the goal.
-- **The role text states the lead's limits** (starts and sends per user message), and
-  so do the `thread_start` and `thread_send` descriptions.
+- **The role text says the lead may start and message as many threads as the work
+  needs**, at most 5 threads per call. (It once stated per-message limits; those were
+  removed in Nov 2026, docs/design/agent-autonomy-no-limits.md.)
 
 ### Tools
 
@@ -339,7 +340,6 @@ coordinate it.
     or one on another computer, is refused ("Do the work here, or tell the user, who
     can send it there."). The check is at send time; after that, only the user can
     raise a child's access.
-  - A pass counts against the lead's sends per user message.
   - What the target does with it is the target's business: the user's own queued
     messages go first; Stop, taking the message off the queue, revert and archive work
     as they do for any message, and need no word to the lead.
@@ -350,10 +350,8 @@ coordinate it.
   holds an observation; no network call; a branch's pull request is matched on the
   project remote's host and whole path, never on `owner/name` alone). Every agent sees
   which thread is the lead.
-- **Limits in a lead:** 10 starts and 20 sends per user message (5 and 10 elsewhere);
-  5 per call stays. A scheduled or event run into the lead already counts as the user
-  writing (`thread.follow-up.submit` resets the counters), so a lead fed by an event
-  task keeps a budget per event, bounded by the task's own daily run limit.
+- **Limits in a lead:** none per user message (there were 10 starts and 20 sends,
+  removed in Nov 2026); 5 threads per call stays.
 - **Outside agents and assistants:** the project listing they read gains optional
   `leadThreadId`, so "send this to the project's lead" needs no thread id from the user.
 - **Tool descriptions** say the lead's extra reach in one sentence each; ACP agents
@@ -443,8 +441,7 @@ Absent means the whole batch. Capability `childStartSelection` gates the checkbo
 
 ### Limits
 
-`childStartRefusal` and `childSendRefusal` take the caller's limits from one function
-`childRequestLimits({ isLead })`; the constants stay as the defaults.
+None per user message since Nov 2026 (docs/design/agent-autonomy-no-limits.md).
 
 ## Usage limits: pause, not failure
 

@@ -5,8 +5,6 @@
  */
 import { CHILD_THREADS_PER_CALL, type ProjectId, type ThreadId } from "@threadlines/contracts";
 
-import { LEAD_THREAD_SEND_LIMIT, LEAD_THREAD_START_LIMIT } from "./childThreads.ts";
-
 /** What the lead rules read from a project. */
 export interface LeadProject {
   readonly id: ProjectId;
@@ -93,7 +91,7 @@ export function leadRoleText(projectTitle: string): string {
     "- Say in a line or two what went where. When a report comes back, tell the user what finished and what needs them. Do not repeat the report.",
     "- Threads you started report back by themselves. Do not poll them. A thread you did not start does not report back: the user sees its answer there.",
     "- Rules the user gives you for the whole project belong in a project note, so the threads you start get them.",
-    `- Here you may start ${LEAD_THREAD_START_LIMIT} threads (at most ${CHILD_THREADS_PER_CALL} per call) and send ${LEAD_THREAD_SEND_LIMIT} messages per user message.`,
+    `- Start as many threads and send as many messages as the work needs, at most ${CHILD_THREADS_PER_CALL} threads per call.`,
   ].join("\n");
 }
 

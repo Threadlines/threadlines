@@ -331,10 +331,9 @@ function childEventBase(
 }
 
 /**
- * The user wrote: the per-message child thread counts start over, and a
- * lead chat's pass no longer blocks starting threads. A turn Threadlines
- * started for the user (`keepsPassBlock`: a continue, a restart) resets the
- * counts but keeps that block (docs/design/lead-chat.md, "No fan-out").
+ * The user wrote: a lead chat's pass no longer blocks starting threads. A
+ * turn Threadlines started for the user (`keepsPassBlock`: a continue, a
+ * restart) keeps that block (docs/design/lead-chat.md, "No fan-out").
  */
 function resetChildRequestsForUser(
   thread: OrchestrationThread,
@@ -342,22 +341,16 @@ function resetChildRequestsForUser(
   createdAt: string,
   options?: { readonly keepsPassBlock?: boolean },
 ): ReadonlyArray<PlannedOrchestrationEvent> {
-  const state = thread.childRequests;
-  const keepsPassBlock = options?.keepsPassBlock === true;
-  const liftsBlock = state.passCeiling !== undefined && !keepsPassBlock;
-  return state.startsSinceUser === 0 && state.sendsSinceUser === 0 && !liftsBlock
-    ? []
-    : [
-        {
-          ...base(),
-          type: "thread.child-requests-reset",
-          payload: {
-            threadId: thread.id,
-            ...(keepsPassBlock ? { keepsPassBlock: true as const } : {}),
-            createdAt,
-          },
-        },
-      ];
+  if (thread.childRequests.passCeiling === undefined || options?.keepsPassBlock === true) {
+    return [];
+  }
+  return [
+    {
+      ...base(),
+      type: "thread.child-requests-reset",
+      payload: { threadId: thread.id, createdAt },
+    },
+  ];
 }
 
 /**

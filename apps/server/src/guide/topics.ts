@@ -91,7 +91,7 @@ Some agents lack a level; they run at the next safer one they have, and the comp
 
 You add and remove agents at the top of the model button's panel in the composer: one pill per agent, the picked one being who your next message goes to (typing @ and picking an agent does the same). The model and effort under the pills are that agent's.
 
-Only one agent works at a time, in the same checkout. Agents in a room can ask each other a question on the side, ask for an independent review of the changes, or hand the next turn to another agent. Up to three agents can answer on the side at once, one answer each, so you can ask a second agent while the first is still answering, and an agent can ask two or three for a review of the same changes in one go.
+Only one agent works at a time, in the same checkout. Agents in a room can ask each other a question on the side, ask for an independent review of the changes, or hand the next turn to another agent. Up to three agents can answer on the side at once, one answer each, so you can ask a second agent while the first is still answering, and an agent can ask two or three for a review of the same changes in one go. Agents can ask and hand off to each other as often as the work needs, without you writing in between; Stop ends the back and forth.
 
 Whether the thread's agent may bring in another model on its own is {place:threads.agentInvites}: Off, Ask me first (a card asks you each time), or Without asking. Bringing in another provider's model spends that provider's quota.`,
   },
@@ -113,7 +113,7 @@ Once a thread it started has finished, the agent can wrap it up itself (thread_w
 
 A thread that keeps working after its answer went back (a check-back woke it, or a reviewer it asked replied) doesn't wake the parent. Its latest reply is passed to the parent's agent at that agent's next turn, and the thread then wraps up by itself. A thread the agent stops with thread_stop wraps up by itself too.
 
-{place:threads.agentThreads} decides this: Off, Ask me first (a card in the chat lists the threads and you decide), or Automatic. The same setting covers agents creating or changing scheduled tasks. An agent may start at most 5 threads and send 10 messages to them per message you send.
+{place:threads.agentThreads} decides this: Off, Ask me first (a card in the chat lists the threads and you decide), or Automatic. The same setting covers agents creating or changing scheduled tasks. There's no limit on how many threads an agent starts or how many messages it sends them, so an agent can keep a team of threads going for hours without you writing. Stop on the parent stops its agent and its threads' answers coming back, but the threads keep working; "Stop N working threads" in the parent's menu stops them too.
 
 A started thread works in a worktree of its own; in a project without git it shares the project's folder. With {place:threads.agentThreadsShareWorktrees} on, an agent can instead put a thread in a checkout that already exists: its own, or that of a thread it started. The new thread sees the files as they are there, uncommitted changes included, which suits a reviewer for work another thread just finished. An agent can also move an idle thread into such a checkout with a message, and the thread keeps its conversation. The thread the checkout belongs to must not be working at that moment. No worktree or branch is made and the project's setup script does not run. The two threads then share one set of files, so only one should work at a time. The thread's row under the message box reads Shared worktree. This works on one computer only, and not for threads an outside agent starts.
 
@@ -151,7 +151,7 @@ The lead's row sits at the top of the sidebar with a crown, says Lead where the 
 
 The Threads tab in the right sidebar shows the project's threads on every computer you can see, grouped as Needs you, Ready for review, Working, Landing, Idle and Done. Open it from the sidebar's list of panels or its + menu, on any thread of the project. A thread you wrapped up goes under Done (for 7 days, closed until you open it) unless its pull request is still open, which keeps it under Ready for review or Landing. Ready for review says what the pull request waits on, as the Pull requests page does. Click a row to open the thread, or right-click it for the thread's menu. The top line counts what needs you and what's working, with a Lead chat link when you're on another thread.
 
-The lead's agent is told its role at the start of every turn, and when you give it a goal. It may start 10 threads and send 20 messages to them per message you send, instead of 5 and 10. It needs {place:threads.agentThreads} to be on, and an agent that can't use the thread tools says so. General chats, a thread another thread still owns, and threads from another computer or an outside agent can't be the lead.`,
+The lead's agent is told its role at the start of every turn, and when you give it a goal. It needs {place:threads.agentThreads} to be on, and an agent that can't use the thread tools says so. General chats, a thread another thread still owns, and threads from another computer or an outside agent can't be the lead.`,
   },
   {
     id: "linking-computers",

@@ -1051,19 +1051,14 @@ export function decideAgentChainStop(
   ];
 }
 
-/** The user wrote: the hold comes off, invites resume and the agents' count starts over. */
+/** The user wrote: the hold comes off and invites resume. */
 export function resetAgentRequestsForUser(
   thread: OrchestrationThread,
   base: EventBase,
   createdAt: string,
 ): ReadonlyArray<PlannedEvent> {
   const state = thread.agentRequests;
-  if (
-    !state.hold &&
-    state.requestsSinceUser === 0 &&
-    !state.invitesPaused &&
-    state.batchesSinceUser.length === 0
-  ) {
+  if (!state.hold && !state.invitesPaused) {
     return [];
   }
   return [

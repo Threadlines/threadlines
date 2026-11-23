@@ -48,7 +48,6 @@ const RequestOutcome = Schema.Literals([
   "stopped",
   "timeout",
   "busy",
-  "limit",
   "refused",
 ]);
 
@@ -80,7 +79,7 @@ export const RoomAnswerResult = Schema.Struct({
 export type RoomAnswerResult = typeof RoomAnswerResult.Type;
 
 export const RoomHandOffResult = Schema.Struct({
-  outcome: Schema.Literals(["queued", "failed", "busy", "limit", "refused"]),
+  outcome: Schema.Literals(["queued", "failed", "busy", "refused"]),
   detail: Schema.optional(Schema.String),
   agent: Schema.optional(AgentLabel),
   requestId: Schema.optional(Schema.String),
@@ -190,7 +189,7 @@ export const RoomInviteResult = Schema.Struct({
    * (invites need no approval here). Either way its review comes back to you
    * as a message (into your turn if you are still working), if it runs.
    */
-  outcome: Schema.Literals(["asked_user", "started", "failed", "busy", "limit", "refused"]),
+  outcome: Schema.Literals(["asked_user", "started", "failed", "busy", "refused"]),
   detail: Schema.optional(Schema.String),
   agent: Schema.optional(AgentLabel),
   /** The reasoning level it reviews at, when the invite named one. */

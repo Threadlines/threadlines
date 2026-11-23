@@ -2655,18 +2655,14 @@ export const OrchestrationAgentRequest = Schema.Struct({
 export type OrchestrationAgentRequest = typeof OrchestrationAgentRequest.Type;
 
 /**
- * How many requests agents may make of each other before they wait for the
- * user. The user's next submission resets the count. A review asked of
- * several agents in one call counts once.
- */
-export const ROOM_AGENT_REQUEST_LIMIT = 3;
-
-/**
  * Room tools state on a thread. `hold` is set by Stop and cleared by the
  * user's next submission; `chainEpoch` is raised by Stop, and no request
- * from an older epoch survives it; `requestsSinceUser` counts requests
- * toward ROOM_AGENT_REQUEST_LIMIT; `invitesPaused` is set when the user
+ * from an older epoch survives it; `invitesPaused` is set when the user
  * declines an invite, and cleared, like `hold`, when the user next writes.
+ * Agents make as many requests of each other as they like
+ * (docs/design/agent-autonomy-no-limits.md): `requestsSinceUser` and
+ * `batchesSinceUser` are no longer counted or read, and stay only so older
+ * clients still decode a thread.
  */
 export const OrchestrationAgentRequestState = Schema.Struct({
   open: Schema.Array(OrchestrationAgentRequest),
@@ -2674,11 +2670,7 @@ export const OrchestrationAgentRequestState = Schema.Struct({
   chainEpoch: NonNegativeInt,
   requestsSinceUser: NonNegativeInt,
   invitesPaused: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
-  /**
-   * The batches (one review call for several agents) counted since the user
-   * last wrote: a request of a counted batch is neither counted again nor
-   * refused by the limit, however its siblings have settled.
-   */
+  /** No longer counted; see above. */
   batchesSinceUser: Schema.Array(RoomAgentBatchId).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
@@ -3006,8 +2998,10 @@ export type ChildRequestNote = typeof ChildRequestNote.Type;
 /**
  * Child threads on the thread that started them. `deliveryEpoch` is raised by
  * Stop and by wrapping this thread: no answer asked for under an older epoch
- * comes back. The counts are toward the per-message limits and start over
- * when the user writes; pending approvals count.
+ * comes back. Agents start and message as many threads as they like
+ * (docs/design/agent-autonomy-no-limits.md): `startsSinceUser` and
+ * `sendsSinceUser` are no longer counted or read, and stay only so older
+ * clients still decode a thread.
  */
 export const OrchestrationChildRequestState = Schema.Struct({
   open: Schema.Array(OrchestrationChildRequest),
@@ -3040,10 +3034,6 @@ export const EMPTY_CHILD_REQUEST_STATE: OrchestrationChildRequestState = {
 
 /** Threads one `thread_start` call may start. */
 export const CHILD_THREADS_PER_CALL = 5;
-/** Threads an agent may start per user message, pending approvals included. */
-export const CHILD_THREAD_START_LIMIT = 5;
-/** Messages an agent may send its threads per user message. */
-export const CHILD_THREAD_SEND_LIMIT = 10;
 /** Notes kept for an agent's next turn; the oldest give way. */
 export const CHILD_REQUEST_NOTE_LIMIT = 20;
 
@@ -3143,7 +3133,7 @@ export const OrchestrationThread = Schema.Struct({
   sideTurns: Schema.optional(Schema.Array(OrchestrationSideTurn)),
   /** See OrchestrationThreadShell.agentRole. */
   agentRole: Schema.optional(RoomAgentRole),
-  /** Room tools: open agent requests, the Stop hold and the limit's count. */
+  /** Room tools: open agent requests and the Stop hold. */
   agentRequests: OrchestrationAgentRequestState.pipe(
     Schema.withDecodingDefault(Effect.succeed(EMPTY_AGENT_REQUEST_STATE)),
   ),
@@ -3213,7 +3203,7 @@ export const OrchestrationThread = Schema.Struct({
    * clears the debt (`resumed`). One that can't be used pays it (`fell_back`).
    */
   nativeSession: Schema.optional(ThreadNativeSession),
-  /** Child threads this thread started: open requests, limits and notes. */
+  /** Child threads this thread started: open requests and notes. */
   childRequests: OrchestrationChildRequestState.pipe(
     Schema.withDecodingDefault(Effect.succeed(EMPTY_CHILD_REQUEST_STATE)),
   ),
@@ -6677,13 +6667,14 @@ export const ThreadChildDeliveriesCancelledPayload = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
-/** The user wrote: the per-message child thread counts start over. */
+/** The user wrote: a lead chat's pass no longer blocks starting threads. */
 export const ThreadChildRequestsResetPayload = Schema.Struct({
   threadId: ThreadId,
   /**
-   * A turn Threadlines started for the user (a continue at the reset, after a
-   * restart or an account switch), not the user writing: the counts start
-   * over, but a pass's block on starting threads stays.
+   * Only on events written while agents had per-message counts: a turn
+   * Threadlines started for the user (a continue at the reset, after a
+   * restart or an account switch) reset the counts but kept a pass's block.
+   * Such an event now changes nothing. New events never carry it.
    */
   keepsPassBlock: Schema.optional(Schema.Literal(true)),
   createdAt: IsoDateTime,
@@ -6691,7 +6682,8 @@ export const ThreadChildRequestsResetPayload = Schema.Struct({
 
 /**
  * The lead chat's passes (docs/design/lead-chat.md, "A pass"). On the lead:
- * `sent` counts one toward its sends since the user wrote; `refused` (the
+ * `sent` records that one went (it once counted toward a per-message limit,
+ * which is gone); `refused` (the
  * passed message could not run, its ceiling was over) leaves `note` for the
  * lead's next turn. On the thread passed to: `started` (the pass started its
  * turn there) blocks its agents from starting threads until the user writes.
