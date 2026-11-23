@@ -1961,7 +1961,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // Child threads: nothing it asked for comes back any more; its settled
       // children are archived with it and its live ones separated; a child's
       // parent stops waiting on it.
-      const plan = childArchivePlan(readModel, thread);
+      const plan = childArchivePlan(readModel, thread, Date.parse(occurredAt));
       const familyEvents: ReadonlyArray<PlannedOrchestrationEvent> = [
         ...decideChildDeliveriesStop(readModel, thread, baseFor, occurredAt, "archived"),
         ...plan.separate.map((child): PlannedOrchestrationEvent => ({

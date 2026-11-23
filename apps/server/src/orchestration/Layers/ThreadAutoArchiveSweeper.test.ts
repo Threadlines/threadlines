@@ -301,9 +301,10 @@ describe("ThreadAutoArchiveSweeper", () => {
     });
   });
 
-  it("stops the sessions of what it archives, and leaves a parent whose child is still at work", async () => {
+  it("stops the sessions of what it archives, and leaves a parent whose child is still at work or owes a check-back", async () => {
     const idleParent = thread("idle-parent");
     const busyParent = thread("busy-parent");
+    const waitingParent = thread("waiting-parent");
     const busyChild = thread("busy-child", {
       parentThreadId: busyParent.id,
       attachedToParent: true,
@@ -323,6 +324,22 @@ describe("ThreadAutoArchiveSweeper", () => {
         }),
         busyParent,
         { ...busyChild, session: runningSession(busyChild.id) },
+        waitingParent,
+        // Idle, but set to come back in its session, which the archive would stop.
+        thread("check-back-child", {
+          parentThreadId: waitingParent.id,
+          attachedToParent: true,
+          checkBacks: [
+            {
+              id: "cb-1",
+              participantId: null,
+              scheduledFor: new Date(NOW_MS + 20 * 60 * 1_000).toISOString(),
+              exact: true,
+              recurring: false,
+              durable: false,
+            },
+          ],
+        }),
       ],
       takesAlong: { [idleParent.id]: ["idle-child"] },
     });
@@ -332,6 +349,7 @@ describe("ThreadAutoArchiveSweeper", () => {
       expect.arrayContaining([idleParent.id]),
     );
     expect(dispatched.map((command) => command.threadId)).not.toContain(busyParent.id);
+    expect(dispatched.map((command) => command.threadId)).not.toContain(waitingParent.id);
     expect(stopped).toEqual(expect.arrayContaining([idleParent.id, "idle-child"]));
     expect(stopped).not.toContain("separated-child");
   });
