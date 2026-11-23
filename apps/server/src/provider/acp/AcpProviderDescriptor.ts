@@ -10,6 +10,7 @@
  * @module provider/acp/AcpProviderDescriptor
  */
 import type {
+  ChatAttachment,
   ModelCapabilities,
   ProviderDriverKind,
   ProviderFailureCategory,
@@ -46,6 +47,7 @@ import type {
 } from "../providerMaintenance.ts";
 import type { UsageLedgerProvider } from "../../usage/usageLedger.ts";
 import type { ProviderProbeResult, ServerProviderPresentation } from "../providerSnapshot.ts";
+import type { AcpAttachmentDelivery } from "./AcpPromptAttachments.ts";
 import type { AcpPlanUpdate, AcpToolCallState } from "./AcpRuntimeModel.ts";
 import type { AcpSessionRuntimeShape, AcpSpawnInput } from "./AcpSessionRuntime.ts";
 
@@ -619,6 +621,16 @@ export interface AcpProviderDescriptor<Settings extends AcpProviderSettings> {
    * left out of its context through a command, `call_mcp_tool`).
    */
   readonly normalizeToolCall?: (toolCall: AcpToolCallState) => AcpToolCallState;
+  /**
+   * How each attachment reaches this agent (`AcpPromptAttachments`), given
+   * what its `initialize` answer says it reads. Absent, or `undefined` for an
+   * attachment: an image goes inline and any other file as a note naming its
+   * staged path, as for every ACP agent.
+   */
+  readonly attachmentDelivery?: (
+    attachment: ChatAttachment,
+    promptCapabilities: EffectAcpSchema.PromptCapabilities | null | undefined,
+  ) => AcpAttachmentDelivery | undefined;
   /** Text the agent appends when a prompt is cancelled; dropped from the reply. */
   readonly cancellationNotice?: string;
   readonly planMode?: AcpPromptPlanMode;

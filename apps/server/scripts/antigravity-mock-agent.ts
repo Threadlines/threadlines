@@ -161,7 +161,11 @@ const program = Effect.gen(function* () {
     Effect.succeed({
       protocolVersion: 1,
       agentInfo: { name: "agy", title: "Antigravity", version: "1.5.14" },
-      agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } },
+      agentCapabilities: {
+        loadSession: true,
+        sessionCapabilities: { resume: {} },
+        promptCapabilities: { image: true, audio: true, embeddedContext: true },
+      },
     }),
   );
   yield* agent.handleCreateSession(() =>

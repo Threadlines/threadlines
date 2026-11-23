@@ -59,6 +59,7 @@ import {
   type AntigravityPlatformRelease,
 } from "../antigravity/AntigravityRelease.ts";
 import type { AntigravityReleaseSource } from "../antigravity/AntigravityReleaseSource.ts";
+import { antigravityAttachmentDelivery } from "../antigravity/AntigravityAttachments.ts";
 import {
   normalizeAntigravitySessionUpdate,
   normalizeAntigravityToolCall,
@@ -812,6 +813,8 @@ export function makeAntigravityDescriptor(
     // Tool text bounded, no inline images, `call_mcp_tool` shown as the MCP tool.
     normalizeSessionUpdate: normalizeAntigravitySessionUpdate,
     normalizeToolCall: normalizeAntigravityToolCall,
+    // Images and audio inline, PDFs linked, text files embedded.
+    attachmentDelivery: antigravityAttachmentDelivery,
     // Work that outlives a prompt, steering, hidden failures, turn tokens.
     ...antigravityTurnBehavior<AntigravitySettings>(paths.profileDir),
     planMode: {

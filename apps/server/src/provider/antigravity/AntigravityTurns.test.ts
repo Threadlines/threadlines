@@ -1,13 +1,14 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as os from "node:os";
 import * as path from "node:path";
-import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import {
   AntigravitySettings,
+  type ChatAttachment,
   ProviderDriverKind,
   type ProviderRuntimeEvent,
   ThreadId,
@@ -19,6 +20,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { describe, expect } from "vite-plus/test";
 
+import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import type { UsageLedgerEntry } from "../../usage/usageLedger.ts";
 import { makeAcpAdapter } from "../acp/AcpAdapter.ts";
@@ -530,7 +532,7 @@ describe("Antigravity turn reading", () => {
   });
 });
 
-describe("Antigravity tool rows", () => {
+describe("Antigravity tool rows and attachments", () => {
   const toolItem = (events: ReadonlyArray<ProviderRuntimeEvent>, id: string) =>
     events.findLast((event) => event.type === "item.completed" && String(event.itemId) === id) as
       | Extract<ProviderRuntimeEvent, { type: "item.completed" }>
@@ -567,4 +569,98 @@ describe("Antigravity tool rows", () => {
     }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 
+  it.live(
+    "sends images and audio inline, PDFs as links, text files as text, the rest as paths",
+    () =>
+      Effect.gen(function* () {
+        const config = yield* ServerConfig;
+        const attachments: ReadonlyArray<ChatAttachment> = [
+          { type: "image", id: "img-1", name: "shot.png", mimeType: "image/png", sizeBytes: 4 },
+          {
+            type: "file",
+            kind: "pdf",
+            id: "pdf-1",
+            name: "spec.pdf",
+            mimeType: "application/pdf",
+            sizeBytes: 9,
+          },
+          {
+            type: "file",
+            kind: "text",
+            id: "txt-1",
+            name: "notes.txt",
+            mimeType: "text/plain",
+            sizeBytes: 5,
+          },
+          {
+            type: "file",
+            kind: "other",
+            id: "u16-1",
+            name: "log.txt",
+            mimeType: "text/plain; charset=utf-16",
+            sizeBytes: 8,
+          },
+          {
+            type: "file",
+            kind: "other",
+            id: "aud-1",
+            name: "memo.mp3",
+            mimeType: "audio/mpeg",
+            sizeBytes: 3,
+          },
+          {
+            type: "file",
+            kind: "other",
+            id: "xls-1",
+            name: "budget.xlsx",
+            mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            sizeBytes: 2,
+          },
+        ];
+        const bytes: Record<string, Uint8Array> = {
+          "img-1": Uint8Array.from([0x89, 0x50, 0x4e, 0x47]),
+          "pdf-1": new TextEncoder().encode("%PDF-1.7\n"),
+          "txt-1": new TextEncoder().encode("hello"),
+          // "hi!" in UTF-16LE with its byte order mark.
+          "u16-1": Uint8Array.from([0xff, 0xfe, 0x68, 0x00, 0x69, 0x00, 0x21, 0x00]),
+          "aud-1": Uint8Array.from([1, 2, 3]),
+          "xls-1": Uint8Array.from([0x50, 0x4b]),
+        };
+        for (const attachment of attachments) {
+          const file = resolveAttachmentPath({
+            attachmentsDir: config.attachmentsDir,
+            attachment,
+          })!;
+          yield* Effect.promise(async () => {
+            await mkdir(path.dirname(file), { recursive: true });
+            await writeFile(file, bytes[attachment.id]!);
+          });
+        }
+        const agy = yield* startAgy("simple");
+        yield* agy.adapter.sendTurn({ threadId: agy.threadId, input: "look", attachments });
+        yield* agy.waitFor((events) => completedTurns(events).length === 1);
+
+        const prompt = (yield* agy.frames()).find((frame) => frame.method === "session/prompt")
+          ?.params as { prompt: ReadonlyArray<Record<string, unknown>> };
+        const blocks = prompt.prompt;
+        expect(blocks.map((block) => block.type)).toEqual([
+          "text",
+          "image",
+          "resource_link",
+          "resource",
+          "resource",
+          "audio",
+          "text",
+        ]);
+        expect(blocks[1]).toMatchObject({ mimeType: "image/png", data: "iVBORw==" });
+        expect(blocks[2]).toMatchObject({ name: "spec.pdf", mimeType: "application/pdf" });
+        expect(String(blocks[2]!.uri).startsWith("file://")).toBe(true);
+        expect(blocks[3]).toMatchObject({ resource: { mimeType: "text/plain", text: "hello" } });
+        // The charset parameter is dropped; the byte order mark picks UTF-16.
+        expect(blocks[4]).toMatchObject({ resource: { mimeType: "text/plain", text: "hi!" } });
+        expect(blocks[5]).toMatchObject({ mimeType: "audio/mpeg", data: "AQID" });
+        expect(blocks[6]).toMatchObject({ type: "text" });
+        expect(String(blocks[6]!.text)).toContain('Attached file "budget.xlsx"');
+      }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
 });

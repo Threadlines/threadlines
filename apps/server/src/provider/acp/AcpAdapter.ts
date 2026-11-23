@@ -121,6 +121,7 @@ import type {
   AcpTurnOutcome,
   AcpWorkAfterPrompt,
 } from "./AcpProviderDescriptor.ts";
+import { type AcpAttachmentBudget, acpAttachmentContent } from "./AcpPromptAttachments.ts";
 import {
   type AcpSubagentStatus,
   acpSubagentSettledEvents,
@@ -237,6 +238,8 @@ interface AcpSessionContext {
   lastContextUsageKey: string | undefined;
   /** The agent's session id, as its usage is recorded under. */
   readonly acpSessionId: string;
+  /** What the agent's `initialize` answer says it reads in a prompt. */
+  readonly promptCapabilities: EffectAcpSchema.PromptCapabilities | null | undefined;
   /**
    * The session's running cost at the last turn boundary, when it is known
    * exactly: zero for a session opened here, or a report between turns. A turn
@@ -2243,6 +2246,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             lastProviderStatus: undefined,
             lastContextUsageKey: undefined,
             acpSessionId: started.sessionId,
+            promptCapabilities: started.initializeResult.agentCapabilities?.promptCapabilities,
             // A session reopened from elsewhere has spent an unknown amount.
             costBaselineUsd:
               (resumeSessionId !== undefined || forkSession !== undefined) &&
@@ -2519,11 +2523,13 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
       );
 
     /**
-     * A message as ACP content: its text, then each attachment (an image's
-     * bytes, or a note naming a file the agent reads from disk: ACP prompt
-     * input has no document type, see buildFileAttachmentNote).
+     * A message as ACP content: its text, then each attachment. By default an
+     * image's bytes, or a note naming a file the agent reads from disk (see
+     * buildFileAttachmentNote); an agent that reads more natively says how
+     * (`attachmentDelivery`, see AcpPromptAttachments).
      */
     const promptContent = (
+      ctx: AcpSessionContext,
       text: string | undefined,
       attachments: Parameters<AcpAdapterShape["sendTurn"]>[0]["attachments"],
       method: string,
@@ -2531,6 +2537,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
       Effect.gen(function* () {
         const parts: Array<EffectAcpSchema.ContentBlock> = [];
         if (text !== undefined) parts.push({ type: "text", text });
+        const budget: AcpAttachmentBudget = { inlineBytes: 0 };
         for (const attachment of attachments ?? []) {
           const attachmentPath = resolveAttachmentPath({
             attachmentsDir: serverConfig.attachmentsDir,
@@ -2542,6 +2549,28 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
               method,
               detail: `Invalid attachment id '${attachment.id}'.`,
             });
+          }
+          const delivery = descriptor.attachmentDelivery?.(attachment, ctx.promptCapabilities);
+          if (delivery !== undefined) {
+            const blocks = yield* acpAttachmentContent({
+              attachment,
+              path: attachmentPath,
+              delivery,
+              budget,
+              fileSystem,
+            }).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderAdapterRequestError({
+                    provider: PROVIDER,
+                    method,
+                    detail: cause.message,
+                    cause,
+                  }),
+              ),
+            );
+            parts.push(...blocks);
+            continue;
           }
           if (attachment.type === "file") {
             parts.push({ type: "text", text: buildFileAttachmentNote(attachment, attachmentPath) });
@@ -2631,6 +2660,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
               : projectBrief.text
             : contextText;
         const promptParts = yield* promptContent(
+          ctx,
           seededText.length > 0 || planMode
             ? planMode
               ? `${planMode.promptPrefix}${seededText}`
@@ -3113,6 +3143,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
               }
               const text = input.input?.trim() ?? "";
               const content = yield* promptContent(
+                ctx,
                 text.length > 0 ? text : undefined,
                 input.attachments,
                 "turn/steer",
