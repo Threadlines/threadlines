@@ -471,10 +471,17 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         initialSnapshot: (settings) =>
           makePendingClaudeProvider(settings, processEnv).pipe(
             Effect.map(stampIdentity),
-            Effect.map((pending) => seedClaudeProviderUsage(pending, cachedSnapshot)),
+            Effect.map((pending) =>
+              seedClaudeProviderUsage(pending, cachedSnapshot, {
+                keepsTokenCalendar: readTokenUsage !== undefined,
+              }),
+            ),
           ),
         checkProvider,
-        reconcileSnapshot: carryClaudeUsageAcrossChecks,
+        reconcileSnapshot: (previous, next) =>
+          carryClaudeUsageAcrossChecks(previous, next, {
+            keepsTokenCalendar: readTokenUsage !== undefined,
+          }),
         // Only the advisory is this enrichment's to write. Usage and chat
         // sign-in may have been patched since it started from `snapshot`.
         enrichSnapshot: ({ snapshot, updateSnapshot }) =>

@@ -52,7 +52,9 @@ import {
   type ClaudeReportedModels,
   claudeReportedModelsFromCache,
   type ClaudeReportedModelsStore,
+  makePendingClaudeProvider,
   readClaudeNormalAuthEmail,
+  seedClaudeProviderUsage,
   stopClaudeCliAfterSignInRenewal,
 } from "./ClaudeProvider.ts";
 import { checkOpenCodeProviderStatus } from "./OpenCodeProvider.ts";
@@ -3969,6 +3971,98 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
           assert.strictEqual(afterTimeout.auth.usageEmail, "usage@example.com");
           assert.strictEqual(
             carryClaudeUsageAcrossChecks(afterTimeout, asOtherAccount).accountUsage,
+            undefined,
+          );
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              const joined = args.join(" ");
+              if (joined === "--version") return { stdout: "2.1.289\n", stderr: "", code: 0 };
+              throw new Error(`Unexpected args: ${joined}`);
+            }),
+          ),
+        ),
+      );
+
+      it.effect("keeps the token calendar on screen from startup through the first check", () =>
+        Effect.gen(function* () {
+          const identity = {
+            instanceId: ProviderInstanceId.make("claudeAgent"),
+            driver: ProviderDriverKind.make("claudeAgent"),
+          };
+          const tokenUsage = {
+            checkedAt: "2026-06-10T15:00:00.000Z",
+            scope: "local",
+            coverageStartDate: "2026-05-12",
+            coverageEndDate: "2026-06-10",
+            dailyBuckets: [{ startDate: "2026-06-09", tokens: 4200 }],
+            summary: { lifetimeTokens: 4200, peakDailyTokens: 4200 },
+          } as const;
+          const check = checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            claudeCapabilities(),
+            { [CLAUDE_CODE_OAUTH_TOKEN_ENV]: "sk-ant-oat01-test" },
+            () => Effect.succeed({ _tag: "Unavailable", reason: "unreachable" } as const),
+            () => Effect.succeed("usage@example.com"),
+          ).pipe(Effect.map((draft) => ({ ...draft, ...identity }) satisfies ServerProvider));
+          // What the last run saved: the calendar, and no subscription meters.
+          const lastRun = yield* check;
+          const saved: ServerProvider = {
+            ...lastRun,
+            accountUsage: {
+              source: "claude-oauth-usage",
+              checkedAt: tokenUsage.checkedAt,
+              limits: [],
+              tokenUsage,
+            },
+          };
+
+          // The server starts: the first snapshot is a pending one seeded from the save.
+          const pendingDraft = {
+            ...(yield* makePendingClaudeProvider(defaultClaudeSettings)),
+            ...identity,
+          };
+          const pending = seedClaudeProviderUsage(pendingDraft, saved);
+          const atStartup = mergeProviderSnapshot(saved, pending);
+          assert.deepStrictEqual(atStartup.accountUsage?.tokenUsage, tokenUsage);
+
+          // The first check reads meters but its calendar read came back partial.
+          const firstCheck = yield* checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            claudeCapabilities(),
+            { [CLAUDE_CODE_OAUTH_TOKEN_ENV]: "sk-ant-oat01-test" },
+            () =>
+              Effect.succeed({
+                _tag: "Fresh",
+                usage: {
+                  source: "claude-oauth-usage",
+                  checkedAt: "2026-06-11T09:00:00.000Z",
+                  limits: [],
+                },
+              } as const),
+            () => Effect.succeed("usage@example.com"),
+          ).pipe(Effect.map((draft) => ({ ...draft, ...identity }) satisfies ServerProvider));
+          const afterCheck = mergeProviderSnapshot(
+            atStartup,
+            carryClaudeUsageAcrossChecks(atStartup, firstCheck),
+          );
+          assert.deepStrictEqual(afterCheck.accountUsage?.tokenUsage, tokenUsage);
+
+          // An API key reads the calendar too, so its restart keeps it.
+          const onApiKey = { ...saved, auth: { ...saved.auth, type: "apiKey" } };
+          assert.deepStrictEqual(
+            seedClaudeProviderUsage(pendingDraft, onApiKey).accountUsage?.tokenUsage,
+            tokenUsage,
+          );
+
+          // An account folder that shares the main history reads no calendar, so
+          // one saved before it became one doesn't carry over.
+          const noCalendar = { keepsTokenCalendar: false } as const;
+          const sharedPending = seedClaudeProviderUsage(pendingDraft, saved, noCalendar);
+          assert.strictEqual(sharedPending.accountUsage?.tokenUsage, undefined);
+          assert.strictEqual(
+            carryClaudeUsageAcrossChecks(atStartup, firstCheck, noCalendar).accountUsage
+              ?.tokenUsage,
             undefined,
           );
         }).pipe(

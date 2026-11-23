@@ -113,6 +113,29 @@ describe("ContextWindowMeter", () => {
     }
   });
 
+  it("leaves out a usage section that would only hold a token calendar", async () => {
+    const { tokenUsage } = TEST_ACCOUNT_USAGE;
+    const screen = await render(
+      <ContextWindowMeter
+        usage={TEST_CONTEXT_WINDOW}
+        accountUsage={{
+          label: "Claude usage",
+          reachedLimit: false,
+          windows: [],
+          ...(tokenUsage ? { tokenUsage } : {}),
+        }}
+      />,
+    );
+
+    try {
+      await page.getByRole("button", { name: /Context window/ }).click();
+      await expect.element(page.getByText(/context used/)).toBeVisible();
+      await expect.element(page.getByText("Claude usage")).not.toBeInTheDocument();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("marks the pace on a usage bar and opens the Usage page from its row", async () => {
     const openUsage = vi.fn();
     const screen = await render(
