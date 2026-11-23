@@ -76,6 +76,8 @@ export interface DeviceRecorder {
     endedEarly?: "time" | "size",
     pending?: Promise<unknown>,
   ) => Promise<DeviceRecorderResult>;
+  /** Stops capture and releases video tracks immediately without taking a final screenshot. */
+  readonly discard: () => void;
 }
 
 /**
@@ -151,9 +153,11 @@ export function startDeviceRecorder(options: {
   };
 
   const frames = captureLoop(async (requestedAt) => {
-    const frame = await captureDeviceScreenshot(transport, { platform, deviceId }).catch(
-      () => null,
-    );
+    const frame = await captureDeviceScreenshot(
+      transport,
+      { platform, deviceId },
+      abort.signal,
+    ).catch(() => null);
     captures.push({ requestedAt, frame, hasFrame: frame !== null, elements: null });
     thinFrames();
   });
@@ -206,7 +210,18 @@ export function startDeviceRecorder(options: {
       logging = false;
       // The screen after the last step, unless a screenshot already followed it.
       const lastInput = inputs.at(-1)?.at ?? Number.NEGATIVE_INFINITY;
-      if (options.frames && lastInput >= lastFrameAt()) await frames.run();
+      if (options.frames && lastInput >= lastFrameAt()) {
+        const finalFrame = await captureDeviceScreenshot(transport, { platform, deviceId }).catch(
+          () => null,
+        );
+        captures.push({
+          requestedAt: now(),
+          frame: finalFrame,
+          hasFrame: finalFrame !== null,
+          elements: null,
+        });
+        thinFrames();
+      }
       const recorded = await videoResult;
       return {
         durationMs,
@@ -221,6 +236,13 @@ export function startDeviceRecorder(options: {
               : null,
         endedEarly: endedEarly ?? null,
       };
+    },
+    discard: () => {
+      stopped = true;
+      logging = false;
+      clearSettle();
+      abort.abort();
+      video.recorder?.discard();
     },
   };
 }
@@ -249,6 +271,7 @@ function startCanvasVideo(
 ): {
   readonly recorder: {
     readonly stop: () => Promise<DeviceRecorderVideo | { readonly missing: string }>;
+    readonly discard: () => void;
   } | null;
   readonly unavailable: string | null;
 } {
@@ -289,41 +312,44 @@ function startCanvasVideo(
     );
   };
   draw();
-  let stream: MediaStream;
+  let stream: MediaStream | null = null;
   let recorder: MediaRecorder;
+  const chunks: Blob[] = [];
+  let bytes = 0;
+  let failed = false;
+  let full = false;
+  let finished: Promise<void>;
   try {
     stream = canvas.captureStream(VIDEO_FRAME_RATE);
     recorder = new MediaRecorder(stream, {
       mimeType,
       videoBitsPerSecond: DEVICE_RECORDING_VIDEO_BITS_PER_SECOND,
     });
+    finished = new Promise<void>((resolve) => {
+      recorder.addEventListener("stop", () => resolve(), { once: true });
+    });
+    recorder.addEventListener("dataavailable", (event) => {
+      if (event.data.size === 0) return;
+      chunks.push(event.data);
+      bytes += event.data.size;
+      if (bytes >= DEVICE_RECORDING_VIDEO_MAX_BYTES && !full) {
+        full = true;
+        // The video ends here whatever its owner does next; the rest of the
+        // recording stops through `onFull`.
+        if (recorder.state === "recording") recorder.stop();
+        onFull();
+      }
+    });
+    recorder.addEventListener("error", () => {
+      failed = true;
+    });
+    // A chunk every second, so the budget is checked while recording.
+    recorder.start(1_000);
   } catch {
+    if (stream) for (const track of stream.getTracks()) track.stop();
     return { recorder: null, unavailable: "the browser could not record the screen" };
   }
-  const chunks: Blob[] = [];
-  let bytes = 0;
-  let failed = false;
-  let full = false;
-  const finished = new Promise<void>((resolve) => {
-    recorder.addEventListener("stop", () => resolve(), { once: true });
-  });
-  recorder.addEventListener("dataavailable", (event) => {
-    if (event.data.size === 0) return;
-    chunks.push(event.data);
-    bytes += event.data.size;
-    if (bytes >= DEVICE_RECORDING_VIDEO_MAX_BYTES && !full) {
-      full = true;
-      // The video ends here whatever its owner does next; the rest of the
-      // recording stops through `onFull`.
-      if (recorder.state === "recording") recorder.stop();
-      onFull();
-    }
-  });
-  recorder.addEventListener("error", () => {
-    failed = true;
-  });
-  // A chunk every second, so the budget is checked while recording.
-  recorder.start(1_000);
+  const activeStream = stream;
   const unobserve = observeFrames(draw);
   draw();
   return {
@@ -337,11 +363,20 @@ function startCanvasVideo(
         }
         if (recorder.state !== "inactive") recorder.stop();
         await finished;
-        for (const track of stream.getTracks()) track.stop();
+        for (const track of activeStream.getTracks()) track.stop();
         if (failed || bytes === 0) return { missing: "the browser could not record the screen" };
         const type = mimeType.split(";", 1)[0]!;
         const blob = new Blob(chunks, { type });
         return { blob, mimeType: type, tooBig: blob.size > PROVIDER_SEND_TURN_MAX_FILE_BYTES };
+      },
+      discard: () => {
+        unobserve();
+        if (recorder.state !== "inactive") {
+          try {
+            recorder.stop();
+          } catch {}
+        }
+        for (const track of activeStream.getTracks()) track.stop();
       },
     },
   };

@@ -244,9 +244,11 @@ function DeviceToolRow({
               <ToolVersionLine tool={tool} />
             )}
           </div>
-          {hostFailure !== undefined ? <div className="text-destructive">{hostFailure}</div> : null}
+          {hostFailure !== undefined ? (
+            <div className="text-destructive-foreground">{hostFailure}</div>
+          ) : null}
           {error !== null ? (
-            <div className="text-destructive" role="alert">
+            <div className="text-destructive-foreground" role="alert">
               {error}
             </div>
           ) : null}

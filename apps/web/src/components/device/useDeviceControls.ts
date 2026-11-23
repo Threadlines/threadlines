@@ -35,8 +35,10 @@ export function useDeviceControls(input: {
   readonly environmentId: EnvironmentId;
   readonly device: DeviceSummary;
   readonly visible: boolean;
+  /** Poll iOS `/foreground` only while Tools or a recording needs it. */
+  readonly pollForeground?: boolean;
 }) {
-  const { environmentId, device, visible } = input;
+  const { environmentId, device, visible, pollForeground = visible } = input;
   const [detail, setDetail] = useState<DeviceDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
@@ -49,14 +51,14 @@ export function useDeviceControls(input: {
   );
 
   useEffect(() => {
-    if (!visible || device.platform !== "ios") return;
+    if (!visible || !pollForeground || device.platform !== "ios") return;
     const transport = createDeviceHubTransport(deviceChannelApi(environmentId));
     const stop = subscribeDeviceForeground(transport, device.id, setLiveForeground);
     return () => {
       stop();
       setLiveForeground(undefined);
     };
-  }, [device.id, device.platform, environmentId, visible]);
+  }, [device.id, device.platform, environmentId, pollForeground, visible]);
 
   useEffect(() => {
     if (!visible) return;

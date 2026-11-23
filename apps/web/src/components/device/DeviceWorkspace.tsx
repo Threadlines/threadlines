@@ -65,7 +65,13 @@ export function DeviceWorkspace(props: {
   const [axOverlay, setAxOverlay] = useState(false);
   const [axInspect, setAxInspect] = useState(false);
   // Read while on screen, not only with Tools open: rotating Android goes through it too.
-  const controls = useDeviceControls({ environmentId, device, visible });
+  // iOS `/foreground` only polls while Tools is open (avoids constant 2s background traffic).
+  const controls = useDeviceControls({
+    environmentId,
+    device,
+    visible,
+    pollForeground: toolsOpen,
+  });
   const recording = useDeviceRecording({
     threadKey: props.threadKey,
     threadRef: props.threadRef,
@@ -87,6 +93,7 @@ export function DeviceWorkspace(props: {
   const [notice, setNotice] = useState<string | null>(null);
   // A capture always finishes, even if the panel hides meanwhile; the user asked for it.
   const capturing = useRef(false);
+  const composing = useRef(false);
 
   const inputReady = state.input.connected;
   // A touch screen has no hardware keys to send: the Keyboard button raises the
@@ -269,16 +276,37 @@ export function DeviceWorkspace(props: {
         <textarea
           ref={keyboardField}
           aria-label={`Type on ${device.name}`}
-          className="sr-only"
+          className="sr-only text-base"
           autoCapitalize="off"
           autoCorrect="off"
           spellCheck={false}
+          onCompositionStart={() => {
+            composing.current = true;
+          }}
+          onCompositionEnd={(event) => {
+            composing.current = false;
+            const text = event.currentTarget.value;
+            event.currentTarget.value = "";
+            if (text) stream.client.sendText(text);
+          }}
+          onBeforeInput={(event) => {
+            if (composing.current) return;
+            const native = event.nativeEvent as InputEvent;
+            if (native.inputType === "deleteContentBackward") {
+              event.preventDefault();
+              const key = new KeyboardEvent("keydown", { key: "Backspace", code: "Backspace" });
+              stream.client.sendKey(key, "down");
+              stream.client.sendKey(key, "up");
+            }
+          }}
           onInput={(event) => {
+            if (composing.current) return;
             const text = event.currentTarget.value;
             event.currentTarget.value = "";
             if (text) stream.client.sendText(text);
           }}
           onKeyDown={(event) => {
+            if (composing.current) return;
             // Keys that type nothing into the field still reach the device.
             if (event.key !== "Backspace" && event.key !== "Enter") return;
             event.preventDefault();
@@ -289,7 +317,15 @@ export function DeviceWorkspace(props: {
           }}
         />
       ) : null}
-      <div className="relative flex min-h-0 flex-1">
+      <div
+        className="relative flex min-h-0 flex-1"
+        onKeyDown={(event) => {
+          if (toolsOpen && event.key === "Escape") {
+            event.stopPropagation();
+            setToolsOpen(false);
+          }
+        }}
+      >
         <div className="flex min-h-0 min-w-0 flex-1 p-2">
           <DeviceStreamView
             platform={device.platform}
@@ -313,7 +349,7 @@ export function DeviceWorkspace(props: {
             onClose={() => setToolsOpen(false)}
             className={cn(
               // Beside the screen when the panel is wide, floating over it when not.
-              "absolute inset-y-0 right-0 z-20 w-full max-w-72 border-l border-border shadow-lg",
+              "absolute inset-y-0 right-0 z-20 w-full max-w-72 border-l border-border elevate-overlay",
               "@[560px]:static @[560px]:w-72 @[560px]:shrink-0 @[560px]:shadow-none",
             )}
           />

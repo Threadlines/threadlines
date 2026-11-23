@@ -288,4 +288,28 @@ describe("handOffDeviceRecording", () => {
       localStorage.removeItem("handoff-test-filler");
     }
   });
+
+  it("keeps files for download when saving throws before marking nonPersistedAttachmentIds", async () => {
+    const store = useComposerDraftStore.getState();
+    const originalSync = store.syncPersistedAttachments;
+    useComposerDraftStore.setState({
+      syncPersistedAttachments: async () => {
+        throw new Error("storage sync failed");
+      },
+    });
+    try {
+      const handoff = await handOffDeviceRecording({
+        threadKey,
+        threadRef,
+        result: result(1),
+        context: "iPhone 17e (iOS 27.2)",
+      });
+      expect(handoff.unsaved).toBe(2);
+      const kept = useKeptDeviceRecordings.getState()[threadKey] ?? [];
+      expect(kept).toHaveLength(1);
+      expect(kept[0]?.files).toHaveLength(2);
+    } finally {
+      useComposerDraftStore.setState({ syncPersistedAttachments: originalSync });
+    }
+  });
 });

@@ -67,6 +67,9 @@ export function appendDeviceEventLog(
   return merged.length > DEVICE_EVENT_LOG_LIMIT ? merged.slice(-DEVICE_EVENT_LOG_LIMIT) : merged;
 }
 
+/** Max buffered characters in one unfinished SSE message/line before resetting. */
+const MAX_SSE_BUFFER_CHARS = 1024 * 1024;
+
 /**
  * Splits a server-sent event stream into the data of each message. Feed it
  * text as it arrives; it calls `onData` once per complete message.
@@ -74,10 +77,13 @@ export function appendDeviceEventLog(
 export function createSseParser(onData: (data: string) => void) {
   let buffer = "";
   let data: string[] = [];
+  let dataChars = 0;
+  let sawTrailingCr = false;
   const line = (text: string) => {
     if (text === "") {
       if (data.length > 0) onData(data.join("\n"));
       data = [];
+      dataChars = 0;
       return;
     }
     if (text.startsWith(":")) return;
@@ -85,15 +91,35 @@ export function createSseParser(onData: (data: string) => void) {
     const field = colon < 0 ? text : text.slice(0, colon);
     if (field !== "data") return;
     const value = colon < 0 ? "" : text.slice(colon + 1);
-    data.push(value.startsWith(" ") ? value.slice(1) : value);
+    const trimmed = value.startsWith(" ") ? value.slice(1) : value;
+    dataChars += trimmed.length;
+    if (dataChars > MAX_SSE_BUFFER_CHARS) {
+      data = [];
+      dataChars = 0;
+      return;
+    }
+    data.push(trimmed);
   };
   return (chunk: string) => {
-    buffer += chunk;
+    let incoming = chunk;
+    if (sawTrailingCr) {
+      sawTrailingCr = false;
+      if (incoming.startsWith("\n")) incoming = incoming.slice(1);
+    }
+    buffer += incoming;
+    if (buffer.length > MAX_SSE_BUFFER_CHARS) {
+      buffer = "";
+      data = [];
+      dataChars = 0;
+      return;
+    }
     let end = buffer.search(/\r\n|\r|\n/);
     while (end >= 0) {
+      const isCrAtEnd = buffer[end] === "\r" && end === buffer.length - 1;
       const breakLength = buffer.startsWith("\r\n", end) ? 2 : 1;
       line(buffer.slice(0, end));
       buffer = buffer.slice(end + breakLength);
+      if (isCrAtEnd) sawTrailingCr = true;
       end = buffer.search(/\r\n|\r|\n/);
     }
   };
@@ -123,6 +149,10 @@ export function subscribeDeviceEventLog(
         `/vendor/serve-sim/api/event-log/events?device=${encodeURIComponent(deviceId)}&limit=${DEVICE_EVENT_LOG_LIMIT}`,
         { signal },
       );
+      if (stopped) {
+        await response.body?.cancel().catch(() => {});
+        return;
+      }
       if (!response.ok || !response.body) {
         await response.body?.cancel().catch(() => {});
         throw new Error(`The event log answered with status ${response.status}.`);

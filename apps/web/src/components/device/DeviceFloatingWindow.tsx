@@ -100,7 +100,7 @@ export function DeviceFloatingWindow(props: {
       {float && device && column
         ? createPortal(
             <FloatingDevice
-              key={`${environmentId}\u0000${device.id}`}
+              key={`${threadKey}\u0000${device.id}`}
               environmentId={environmentId}
               threadKey={threadKey}
               device={device}
@@ -168,6 +168,7 @@ function FloatingDevice(props: {
   });
   // Held while a gesture runs, so the store only hears where it ends.
   const [live, setLive] = useState<DeviceFloatRect | null>(null);
+  const liveRef = useRef<DeviceFloatRect | null>(null);
   const rect =
     live ??
     fitDeviceFloat({
@@ -192,11 +193,12 @@ function FloatingDevice(props: {
     if (!held || held.gesture.pointerId !== event.pointerId) return;
     const dx = event.clientX - held.gesture.x;
     const dy = event.clientY - held.gesture.y;
-    setLive(
+    const nextRect =
       held.gesture.kind === "drag"
         ? dragDeviceFloat(held.start, dx, dy, aspect, viewport)
-        : resizeDeviceFloat(held.start, held.gesture.edge, dx, dy, aspect, viewport),
-    );
+        : resizeDeviceFloat(held.start, held.gesture.edge, dx, dy, aspect, viewport);
+    liveRef.current = nextRect;
+    setLive(nextRect);
   };
   const end = (event: PointerEvent<HTMLElement>) => {
     const held = gesture.current;
@@ -205,10 +207,12 @@ function FloatingDevice(props: {
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
-    if (live) {
+    const settled = liveRef.current;
+    liveRef.current = null;
+    if (settled) {
       placeDeviceFloat(threadKey, device.id, {
-        position: { x: live.x, y: live.y },
-        width: live.width,
+        position: { x: settled.x, y: settled.y },
+        width: settled.width,
       });
     }
     setLive(null);
@@ -275,6 +279,9 @@ function FloatingDevice(props: {
           deviceDescription={device.version}
           stream={stream}
           state={state}
+          deviceId={device.id}
+          model={device.model}
+          physical={device.physical}
         />
       </div>
       {EDGES.map(({ edge, className }) => (

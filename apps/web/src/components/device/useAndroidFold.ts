@@ -37,15 +37,31 @@ export function useAndroidFold(input: {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const busy = useRef(false);
+  const changeController = useRef<AbortController | null>(null);
   useEffect(() => {
-    if (!active || pending || screenKey === null) return;
+    if (!active) {
+      changeController.current?.abort();
+      changeController.current = null;
+      return;
+    }
+    if (busy.current || screenKey === null) return;
     const controller = new AbortController();
     readAndroidFold(transport, deviceId, controller.signal)
-      .then(setFold)
+      .then((next) => {
+        if (!controller.signal.aborted) setFold(next);
+      })
       // A phone without a hinge answers `supported: false`; a failed read just shows no controls.
       .catch(() => {});
     return () => controller.abort();
-  }, [transport, deviceId, active, pending, screenKey]);
+  }, [transport, deviceId, active, screenKey]);
+
+  useEffect(
+    () => () => {
+      changeController.current?.abort();
+      changeController.current = null;
+    },
+    [],
+  );
 
   const change = (posture: AndroidFoldPosture) => {
     if (busy.current) return;
@@ -53,16 +69,23 @@ export function useAndroidFold(input: {
     setPending(true);
     setError(null);
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), FOLD_TIMEOUT_MS);
+    changeController.current = controller;
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, FOLD_TIMEOUT_MS);
     setAndroidFold(transport, deviceId, posture, controller.signal)
-      .then(setFold)
-      .catch((cause: unknown) =>
-        setError(
-          controller.signal.aborted ? "The emulator did not fold in time." : deviceErrorText(cause),
-        ),
-      )
+      .then((next) => {
+        if (!controller.signal.aborted) setFold(next);
+      })
+      .catch((cause: unknown) => {
+        if (controller.signal.aborted && !timedOut) return;
+        setError(timedOut ? "The emulator did not fold in time." : deviceErrorText(cause));
+      })
       .finally(() => {
         clearTimeout(timeout);
+        if (changeController.current === controller) changeController.current = null;
         busy.current = false;
         setPending(false);
       });

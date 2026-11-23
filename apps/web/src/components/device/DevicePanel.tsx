@@ -64,12 +64,16 @@ export function DevicePanel(props: {
   const [error, setError] = useState<string | null>(null);
 
   // Devices on and nothing started yet: list them, which starts the hub. Once
-  // per panel, and only while the tab is on screen.
+  // per enable cycle, and only while the tab is on screen.
   const listed = useRef(false);
   const enabled = state?.enabled === true;
   const idle = state?.hostStatus === "idle";
   useEffect(() => {
-    if (!visible || !enabled || !idle || listed.current) return;
+    if (!enabled) {
+      listed.current = false;
+      return;
+    }
+    if (!visible || !idle || listed.current) return;
     listed.current = true;
     refreshDevices(environmentId).catch((cause: unknown) => setError(deviceErrorText(cause)));
   }, [enabled, environmentId, idle, visible]);
@@ -130,14 +134,21 @@ export function DevicePanel(props: {
     }
     setPending(device.id);
     void run(async () => {
-      await openDevice(environmentId, { threadId, deviceId: device.id, platform: device.platform });
-      selectThreadDevice(threadKey, device.id);
+      // Android AVDs change id when they boot (AVD name → emulator serial), so use the returned session.
+      const session = await openDevice(environmentId, {
+        threadId,
+        deviceId: device.id,
+        platform: device.platform,
+      });
+      selectThreadDevice(threadKey, session.deviceId);
     }).finally(() => setPending(null));
   };
 
   const close = (deviceId: string, shutdown: boolean) => {
-    removeDeviceChip(threadKey, deviceId, sessions);
-    void run(() => closeDevice(environmentId, { threadId, deviceId, shutdown }));
+    void run(async () => {
+      await closeDevice(environmentId, { threadId, deviceId, shutdown });
+      removeDeviceChip(threadKey, deviceId, sessions);
+    });
   };
 
   const errorLine = error ? (
@@ -229,7 +240,7 @@ export function DevicePanel(props: {
           />
         ) : (
           <DeviceWorkspace
-            key={`${environmentId}\u0000${activeDevice.id}`}
+            key={`${threadKey}\u0000${activeDevice.id}`}
             environmentId={environmentId}
             device={activeDevice}
             visible={visible}
@@ -274,6 +285,7 @@ export function DevicePanel(props: {
             setRefreshing(true);
             void run(() => refreshDevices(environmentId)).finally(() => setRefreshing(false));
           }}
+          onOpenSetup={() => setInSetup(true)}
         />
       )}
     </div>
