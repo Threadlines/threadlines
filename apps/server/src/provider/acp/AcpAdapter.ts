@@ -2615,7 +2615,6 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
               path: attachmentPath,
               delivery,
               budget,
-              fileSystem,
             }).pipe(
               Effect.mapError(
                 (cause) =>

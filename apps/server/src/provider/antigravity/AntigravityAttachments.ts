@@ -59,8 +59,9 @@ export function antigravityAttachmentDelivery(
     return IMAGE_MIME_TYPES.has(mimeType) && capabilities?.image === true ? "inline" : "note";
   }
   if (AUDIO_MIME_TYPES.has(mimeType)) return capabilities?.audio === true ? "inline" : "note";
-  if (capabilities?.embeddedContext !== true) return "note";
+  // Every ACP agent reads a `resource_link`; `embeddedContext` is only for embedded text.
   if (attachment.kind === "pdf" || mimeType === "application/pdf") return "link";
+  if (capabilities?.embeddedContext !== true) return "note";
   if (attachment.kind === "text" || isTextType(mimeType)) return "text";
   return "note";
 }

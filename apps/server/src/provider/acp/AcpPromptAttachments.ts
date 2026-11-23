@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off -- node:url makes a staged file's file:// link.
+// @effect-diagnostics nodeBuiltinImport:off -- node:url links a staged file; node:fs reads it without following a link.
 /**
  * How an attachment reaches an ACP agent as prompt content. By default an
  * image goes inline and any other file goes as a note naming its staged path
@@ -16,10 +16,12 @@
  *
  * @module provider/acp/AcpPromptAttachments
  */
-import type { ChatAttachment } from "@threadlines/contracts";
+import { type ChatAttachment, PROVIDER_SEND_TURN_MAX_IMAGE_BYTES } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
-import type * as FileSystem from "effect/FileSystem";
+import * as Schema from "effect/Schema";
 import type * as EffectAcpSchema from "effect-acp/schema";
+import * as NodeFS from "node:fs";
+import * as NodeFSP from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 
 import {
@@ -69,23 +71,92 @@ const note = (attachment: ChatAttachment, path: string): EffectAcpSchema.Content
   text: buildFileAttachmentNote(attachment, path),
 });
 
+/** A staged attachment that couldn't be read, or isn't a regular file. */
+export class AcpAttachmentReadError extends Schema.TaggedError<AcpAttachmentReadError>()(
+  "AcpAttachmentReadError",
+  { message: Schema.String, cause: Schema.optional(Schema.Defect()) },
+) {}
+
+const isAttachmentReadError = Schema.is(AcpAttachmentReadError);
+
+const notAFile = (name: string) =>
+  new AcpAttachmentReadError({ message: `Attachment '${name}' is not a regular file.` });
+
+/** The limit one attachment sent this way may reach, before the message's own. */
+function deliveryLimit(delivery: "inline" | "text", mimeType: string): number {
+  if (delivery === "text") return INLINE_TEXT_ATTACHMENT_MAX_BYTES;
+  return mimeType.startsWith("audio/")
+    ? INLINE_AUDIO_MAX_BYTES
+    : PROVIDER_SEND_TURN_MAX_IMAGE_BYTES;
+}
+
+/**
+ * The staged file's bytes, read through one handle: never through a link,
+ * only a regular file, and no more than `maxBytes` whatever its record or
+ * its size says (it may have grown). `too-big` past the cap. Fails when the
+ * staged file isn't a regular file or can't be read.
+ */
+const readStaged = (path: string, name: string, maxBytes: number) =>
+  Effect.tryPromise({
+    try: async (): Promise<Uint8Array | "too-big"> => {
+      const handle = await NodeFSP.open(
+        path,
+        NodeFS.constants.O_RDONLY |
+          (NodeFS.constants.O_NOFOLLOW ?? 0) |
+          (NodeFS.constants.O_NONBLOCK ?? 0),
+      );
+      try {
+        const stat = await handle.stat();
+        if (!stat.isFile()) throw notAFile(name);
+        if (stat.size > maxBytes) return "too-big";
+        // One byte past the cap tells a file that grew since its size was read.
+        const buffer = Buffer.alloc(maxBytes + 1);
+        let total = 0;
+        while (total < buffer.length) {
+          const { bytesRead } = await handle.read(buffer, total, buffer.length - total, total);
+          if (bytesRead === 0) break;
+          total += bytesRead;
+        }
+        return total > maxBytes ? "too-big" : buffer.subarray(0, total);
+      } finally {
+        await handle.close();
+      }
+    },
+    catch: (cause) =>
+      isAttachmentReadError(cause)
+        ? cause
+        : new AcpAttachmentReadError({ message: `Could not read attachment '${name}'.`, cause }),
+  });
+
+/** Whether the staged file is a regular file, not a link, for a link to it. */
+const isStagedFile = (path: string) =>
+  Effect.promise(() =>
+    NodeFSP.lstat(path).then(
+      (info) => info.isFile(),
+      () => false,
+    ),
+  );
+
 /**
  * The content blocks for one attachment, sent the way `delivery` says, or
- * as its note when it doesn't fit that way. Fails only when the staged file
- * can't be read.
+ * as its note when it doesn't fit that way. Bytes sent inline are charged to
+ * the message's budget as read, not as recorded. Fails only when the staged
+ * file can't be read, or isn't a regular file.
  */
 export const acpAttachmentContent = (input: {
   readonly attachment: ChatAttachment;
   readonly path: string;
   readonly delivery: AcpAttachmentDelivery;
   readonly budget: AcpAttachmentBudget;
-  readonly fileSystem: FileSystem.FileSystem;
 }) =>
   Effect.gen(function* () {
-    const { attachment, path, delivery, budget, fileSystem } = input;
+    const { attachment, path, delivery, budget } = input;
     const mimeType = bareMimeType(attachment.mimeType);
     if (delivery === "note") return [note(attachment, path)];
     if (delivery === "link") {
+      if (!(yield* isStagedFile(path))) {
+        return yield* notAFile(attachment.name);
+      }
       return [
         {
           type: "resource_link",
@@ -96,22 +167,14 @@ export const acpAttachmentContent = (input: {
         },
       ] satisfies ReadonlyArray<EffectAcpSchema.ContentBlock>;
     }
-    const audio = mimeType.startsWith("audio/");
-    const limit =
-      delivery === "text"
-        ? INLINE_TEXT_ATTACHMENT_MAX_BYTES
-        : audio
-          ? INLINE_AUDIO_MAX_BYTES
-          : Number.POSITIVE_INFINITY;
-    // Sizes are checked before reading, so a large file is never read whole.
-    if (attachment.sizeBytes > limit) return [note(attachment, path)];
-    if (
-      delivery === "inline" &&
-      budget.inlineBytes + attachment.sizeBytes > INLINE_MESSAGE_MAX_BYTES
-    )
-      return [note(attachment, path)];
-    const bytes = yield* fileSystem.readFile(path);
-    if (bytes.byteLength > limit) return [note(attachment, path)];
+    const cap =
+      delivery === "inline"
+        ? Math.min(deliveryLimit(delivery, mimeType), INLINE_MESSAGE_MAX_BYTES - budget.inlineBytes)
+        : deliveryLimit(delivery, mimeType);
+    // A record already past the cap is never read.
+    if (cap <= 0 || attachment.sizeBytes > cap) return [note(attachment, path)];
+    const bytes = yield* readStaged(path, attachment.name, cap);
+    if (bytes === "too-big") return [note(attachment, path)];
     if (delivery === "text") {
       const text = decodeAttachmentText(bytes);
       if (text === undefined) return [note(attachment, path)];
@@ -125,7 +188,7 @@ export const acpAttachmentContent = (input: {
     budget.inlineBytes += bytes.byteLength;
     const data = Buffer.from(bytes).toString("base64");
     return [
-      audio
+      mimeType.startsWith("audio/")
         ? { type: "audio", data, mimeType }
         : { type: "image", data, mimeType: mimeType || attachment.mimeType },
     ] satisfies ReadonlyArray<EffectAcpSchema.ContentBlock>;

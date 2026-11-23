@@ -166,7 +166,10 @@ each reply ends and when the turn ends:
 - One the agent stopped (`manage_subagents`) shows as stopped.
 - Stop ends every running subagent with the turn.
 - A subagent the records don't name shows as done once its turn has ended, and its view says
-  "Antigravity did not record which subagent this started".
+  "Antigravity did not record which subagent this started". A later reading that finds it still at
+  work shows it running again.
+- When the records can't be read (one the CLI is still writing, say), nothing is marked done; the
+  next reading tries again.
 
 The view is read-only: you can't message a subagent directly. How long the turn stays open is the
 rule above; the records don't change it.
@@ -174,7 +177,9 @@ rule above; the records don't change it.
 ### Tool rows
 
 - An MCP tool the agent reaches through `call_mcp_tool` shows as that tool (server and name), not
-  as a shell command, and doesn't hold the turn like a command.
+  as a shell command, and doesn't hold the turn like a command. Only a call that is plainly that
+  wrapper does: one that also carries a command or an edit stays a command or an edit. Its approval
+  is asked the same way as any command's, and names the server, the tool and its arguments.
 - A command line longer than 8,000 characters keeps its start; output keeps its end. A cut never
   splits a character, and the timeline keeps a long command's start too.
 - Screenshots and other inline images in a tool's result are left out of what Threadlines stores.
@@ -187,8 +192,10 @@ Images (PNG, JPEG, WebP, BMP) and audio go to Antigravity inline. PDFs go as a l
 which Antigravity reads as a document. Text files go as text, in UTF-8, or UTF-16 when the file
 starts with its byte order mark; one over 100 KB goes as a path instead, so it doesn't crowd the
 conversation. Anything else (a spreadsheet, a video) goes as the saved file's path for the agent to
-open with its tools. Each of these needs Antigravity to say it reads that kind; otherwise the file
-goes as a path. A MIME type's parameters (`; charset=utf-8`) don't change the choice.
+open with its tools. Images, audio and text each need Antigravity to say it reads that kind;
+otherwise the file goes as a path. A PDF link needs nothing: every ACP agent reads links. A MIME
+type's parameters (`; charset=utf-8`) don't change the choice. Files are read as they are on disk,
+never through a link, up to each kind's limit and 50 MB inline per message.
 
 ### When a turn fails
 
