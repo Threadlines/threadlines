@@ -30,6 +30,7 @@ import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { isProcessRunning } from "../testAgentProcess.ts";
 import { PROJECT_BRIEF_CLEARED_NOTE } from "../projectBriefPreface.ts";
+import { PROJECT_NOTE_WRITE_INSTRUCTION } from "../../projectContext/projectNotesAccess.ts";
 import type { UsageLedgerEntry } from "../../usage/usageLedger.ts";
 import { type AcpAdapterShape, acpDiffFileChanges, makeAcpAdapter } from "./AcpAdapter.ts";
 import { discoverAcpModels } from "./AcpProvider.ts";
@@ -691,75 +692,177 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
     }),
   );
 
-  it.effect("offers the browser and room tools only to agents that speak HTTP MCP", () =>
-    Effect.gen(function* () {
-      const adapter = yield* CursorAdapter;
-      const serverSettings = yield* ServerSettingsService;
-      const sessionNewServers = (advertiseHttpMcp: boolean, roomTools = false) =>
+  it.effect(
+    "offers HTTP MCP tools to agents that advertise HTTP MCP, and bridges over stdio otherwise",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* CursorAdapter;
+        const serverSettings = yield* ServerSettingsService;
+        const sessionNewServers = (advertiseHttpMcp: boolean, roomTools = false) =>
+          Effect.gen(function* () {
+            const threadId = ThreadId.make(`acp-browser-mcp-${advertiseHttpMcp}-${roomTools}`);
+            const tempDir = yield* Effect.promise(() =>
+              mkdtemp(path.join(os.tmpdir(), "cursor-acp-")),
+            );
+            const requestLogPath = path.join(tempDir, "requests.ndjson");
+            yield* Effect.promise(() => writeFile(requestLogPath, "", "utf8"));
+            const wrapperPath = yield* Effect.promise(() =>
+              makeProbeWrapper(
+                requestLogPath,
+                path.join(tempDir, "argv.txt"),
+                advertiseHttpMcp ? { T3_ACP_ADVERTISE_HTTP_MCP: "1" } : undefined,
+              ),
+            );
+            yield* serverSettings.updateSettings({
+              providers: { cursor: { binaryPath: wrapperPath } },
+            });
+            const session = yield* adapter.startSession({
+              threadId,
+              provider: ProviderDriverKind.make("cursor"),
+              cwd: process.cwd(),
+              runtimeMode: "full-access",
+              modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+              ...(roomTools ? { roomTools: true } : {}),
+            });
+            yield* adapter.stopSession(threadId);
+            const requests = yield* Effect.promise(() => readJsonLines(requestLogPath));
+            const sessionNew = requests.find((entry) => entry.method === "session/new");
+            const servers = (sessionNew?.params as { readonly mcpServers?: ReadonlyArray<unknown> })
+              ?.mcpServers;
+            return Object.assign(servers ?? [], { roomTools: session.roomTools });
+          });
+
+        const offered = yield* sessionNewServers(true);
+        assert.lengthOf(offered ?? [], 1);
+        assert.equal(offered.roomTools, undefined);
+        assert.deepInclude(offered?.[0] as object, { type: "http", name: "threadlines_browser" });
+        const server = offered?.[0] as {
+          readonly url: string;
+          readonly headers: ReadonlyArray<{ readonly name: string; readonly value: string }>;
+        };
+        assert.match(server.url, /^http:\/\/127\.0\.0\.1:\d+\//);
+        assert.match(server.headers[0]?.value ?? "", /^Bearer \S+/);
+
+        // Agents that do not advertise HTTP MCP get stdio-to-HTTP bridge entries
+        // with the endpoint URL and Bearer token passed via env, never argv.
+        const bridged = yield* sessionNewServers(false);
+        assert.lengthOf(bridged, 1);
+        const bridgedBrowser = bridged[0] as {
+          readonly type?: string;
+          readonly name: string;
+          readonly command: string;
+          readonly args: ReadonlyArray<string>;
+          readonly env: ReadonlyArray<{ readonly name: string; readonly value: string }>;
+        };
+        assert.equal(bridgedBrowser.type, undefined);
+        assert.equal(bridgedBrowser.name, "threadlines_browser");
+        assert.equal(bridgedBrowser.command, process.execPath);
+        const bridgedUrl = bridgedBrowser.env.find((entry) => entry.name === "THREADLINES_MCP_URL");
+        const bridgedAuth = bridgedBrowser.env.find(
+          (entry) => entry.name === "THREADLINES_MCP_AUTHORIZATION",
+        );
+        assert.match(bridgedUrl?.value ?? "", /^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
+        assert.match(bridgedAuth?.value ?? "", /^Bearer \S+/);
+        assert.notInclude(bridgedBrowser.args.join(" "), bridgedAuth!.value);
+
+        // In a room the room endpoint rides the same credential, which dies
+        // with the session — both directly over HTTP and over the stdio bridge.
+        const inRoom = yield* sessionNewServers(true, true);
+        assert.deepEqual(
+          inRoom.map((entry) => (entry as { readonly name: string }).name),
+          ["threadlines_browser", "threadlines_room"],
+        );
+        assert.equal(inRoom.roomTools, true);
+        const roomServer = inRoom[1] as {
+          readonly url: string;
+          readonly headers: ReadonlyArray<{ readonly value: string }>;
+        };
+        assert.match(roomServer.url, /\/mcp\/room$/);
+        const token = roomServer.headers[0]!.value.replace("Bearer ", "");
+        assert.equal(yield* mcpSessionRegistry.resolve(token), null);
+
+        const inRoomBridged = yield* sessionNewServers(false, true);
+        assert.deepEqual(
+          inRoomBridged.map((entry) => (entry as { readonly name: string }).name),
+          ["threadlines_browser", "threadlines_room"],
+        );
+        assert.equal(inRoomBridged.roomTools, true);
+        const bridgedRoom = inRoomBridged[1] as {
+          readonly env: ReadonlyArray<{ readonly name: string; readonly value: string }>;
+        };
+        const bridgedRoomAuth = bridgedRoom.env.find(
+          (entry) => entry.name === "THREADLINES_MCP_AUTHORIZATION",
+        );
+        const bridgedToken = (bridgedRoomAuth?.value ?? "").replace("Bearer ", "");
+        assert.equal(yield* mcpSessionRegistry.resolve(bridgedToken), null);
+      }),
+  );
+
+  it.effect(
+    "marks roomTools false and omits project_note_write when the agent cannot reach host loopback",
+    () => {
+      const noLoopbackAdapterLayer = Layer.effect(
+        CursorAdapter,
         Effect.gen(function* () {
-          const threadId = ThreadId.make(`acp-browser-mcp-${advertiseHttpMcp}-${roomTools}`);
-          const tempDir = yield* Effect.promise(() =>
-            mkdtemp(path.join(os.tmpdir(), "cursor-acp-")),
+          const cursorConfig = decodeCursorSettings({});
+          const resolveSettings = yield* makeResolveCursorSettings;
+          return yield* makeAcpAdapter(
+            { ...CURSOR_ACP_DESCRIPTOR, reachesHostLoopback: () => false },
+            cursorConfig,
+            { resolveSettings },
           );
-          const requestLogPath = path.join(tempDir, "requests.ndjson");
-          yield* Effect.promise(() => writeFile(requestLogPath, "", "utf8"));
-          const wrapperPath = yield* Effect.promise(() =>
-            makeProbeWrapper(
-              requestLogPath,
-              path.join(tempDir, "argv.txt"),
-              advertiseHttpMcp ? { T3_ACP_ADVERTISE_HTTP_MCP: "1" } : undefined,
-            ),
-          );
-          yield* serverSettings.updateSettings({
-            providers: { cursor: { binaryPath: wrapperPath } },
-          });
-          const session = yield* adapter.startSession({
-            threadId,
-            provider: ProviderDriverKind.make("cursor"),
-            cwd: process.cwd(),
-            runtimeMode: "full-access",
-            modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
-            ...(roomTools ? { roomTools: true } : {}),
-          });
-          yield* adapter.stopSession(threadId);
-          const requests = yield* Effect.promise(() => readJsonLines(requestLogPath));
-          const sessionNew = requests.find((entry) => entry.method === "session/new");
-          const servers = (sessionNew?.params as { readonly mcpServers?: ReadonlyArray<unknown> })
-            ?.mcpServers;
-          return Object.assign(servers ?? [], { roomTools: session.roomTools });
-        });
-
-      const offered = yield* sessionNewServers(true);
-      assert.lengthOf(offered ?? [], 1);
-      assert.equal(offered.roomTools, undefined);
-      assert.deepInclude(offered?.[0] as object, { type: "http", name: "threadlines_browser" });
-      const server = offered?.[0] as {
-        readonly url: string;
-        readonly headers: ReadonlyArray<{ readonly name: string; readonly value: string }>;
-      };
-      assert.match(server.url, /^http:\/\/127\.0\.0\.1:\d+\//);
-      assert.match(server.headers[0]?.value ?? "", /^Bearer \S+/);
-
-      // ACP forbids handing HTTP servers to an agent that did not advertise them.
-      assert.deepEqual([...(yield* sessionNewServers(false))], []);
-
-      // In a room the room endpoint rides the same credential, which dies
-      // with the session; an agent that cannot take it says so.
-      const inRoom = yield* sessionNewServers(true, true);
-      assert.deepEqual(
-        inRoom.map((entry) => (entry as { readonly name: string }).name),
-        ["threadlines_browser", "threadlines_room"],
+        }),
       );
-      assert.equal(inRoom.roomTools, true);
-      const roomServer = inRoom[1] as {
-        readonly url: string;
-        readonly headers: ReadonlyArray<{ readonly value: string }>;
-      };
-      assert.match(roomServer.url, /\/mcp\/room$/);
-      const token = roomServer.headers[0]!.value.replace("Bearer ", "");
-      assert.equal(yield* mcpSessionRegistry.resolve(token), null);
-      assert.equal((yield* sessionNewServers(false, true)).roomTools, false);
-    }),
+      const isolatedLayer = noLoopbackAdapterLayer.pipe(
+        Layer.provideMerge(ServerSettingsService.layerTest()),
+        Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+        Layer.provideMerge(NodeServices.layer),
+      );
+      return Effect.gen(function* () {
+        const adapter = yield* CursorAdapter;
+        const serverSettings = yield* ServerSettingsService;
+        const threadId = ThreadId.make("acp-no-loopback-notes");
+        const tempDir = yield* Effect.promise(() => mkdtemp(path.join(os.tmpdir(), "cursor-acp-")));
+        const requestLogPath = path.join(tempDir, "requests.ndjson");
+        yield* Effect.promise(() => writeFile(requestLogPath, "", "utf8"));
+        const wrapperPath = yield* Effect.promise(() =>
+          makeProbeWrapper(requestLogPath, path.join(tempDir, "argv.txt")),
+        );
+        yield* serverSettings.updateSettings({
+          providers: { cursor: { binaryPath: wrapperPath } },
+        });
+        const session = yield* adapter.startSession({
+          threadId,
+          provider: ProviderDriverKind.make("cursor"),
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+          roomTools: true,
+          projectInstructions: `Project brief for "Demo".\n\n${PROJECT_NOTE_WRITE_INSTRUCTION}`,
+        });
+        assert.equal(session.roomTools, false);
+        const completed = yield* adapter.streamEvents.pipe(
+          Stream.takeUntil((event) => event.type === "turn.completed"),
+          Stream.runDrain,
+          Effect.forkChild,
+        );
+        yield* adapter.sendTurn({ threadId, input: "hello", attachments: [] });
+        yield* Fiber.join(completed);
+        yield* adapter.stopSession(threadId);
+        const requests = yield* Effect.promise(() => readJsonLines(requestLogPath));
+        const sessionNew = requests.find((entry) => entry.method === "session/new");
+        assert.deepEqual(
+          (sessionNew?.params as { readonly mcpServers?: ReadonlyArray<unknown> })?.mcpServers,
+          [],
+        );
+        const prompt = requests.find((entry) => entry.method === "session/prompt");
+        const text = (prompt?.params as { prompt: Array<{ text?: string }> }).prompt
+          .map((part) => part.text ?? "")
+          .join("");
+        assert.include(text, 'Project brief for "Demo".');
+        assert.notInclude(text, "project_note_write");
+      }).pipe(Effect.provide(isolatedLayer));
+    },
   );
 
   it.effect("maps app plan mode onto the ACP plan session mode", () =>

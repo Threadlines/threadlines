@@ -86,6 +86,7 @@ import {
   roomEndpointGrant,
   roomSideKindOf,
 } from "../../mcp/roomToolAccess.ts";
+import { withoutProjectNoteWriteInstruction } from "../../projectContext/projectNotesAccess.ts";
 import { driverAnswersOnTheSide } from "../sideAnswerDrivers.ts";
 import {
   type ProviderAdapterError,
@@ -261,6 +262,19 @@ interface PendingUserInput {
   readonly elicitation?: McpElicitation;
 }
 
+/**
+ * Threadlines MCP servers pre-approved in Supervised mode, matching Claude and
+ * Codex (`ClaudeAdapter.ts` `allowedTools`, `codexAppServerArgs.ts`
+ * `default_tools_approval_mode="approve"`). `threadlines_browser` stays out so
+ * browser actions still ask for approval in Supervised mode.
+ */
+const PREAPPROVED_THREADLINES_MCP_SERVERS: ReadonlySet<string> = new Set([
+  ROOM_MCP_SERVER_NAME,
+  PAGES_MCP_SERVER_NAME,
+  COMMANDS_MCP_SERVER_NAME,
+  DEVICE_MCP_SERVER_NAME,
+]);
+
 interface AcpSessionContext {
   readonly threadId: ThreadId;
   /** Done once a stop has closed the session's process scope (`whenStopped`). */
@@ -288,6 +302,8 @@ interface AcpSessionContext {
   lastContextUsageKey: string | undefined;
   /** The agent's session id, as its usage is recorded under. */
   readonly acpSessionId: string;
+  /** Attached Threadlines MCP servers pre-approved without asking (room, pages, commands, device). */
+  readonly preapprovedMcpServers: ReadonlySet<string>;
   /** What the agent's `initialize` answer says it reads in a prompt. */
   readonly promptCapabilities: EffectAcpSchema.PromptCapabilities | null | undefined;
   /** The subagents this session's tool calls launched (`subagents`), as the thread shows them. */
@@ -2196,15 +2212,15 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                   parsePermissionRequest(params, known),
                   params.toolCall,
                 );
+                const ownSession =
+                  ctx !== undefined && String(params.sessionId) === ctx.acpSessionId;
                 const planFileWrite =
                   permissionRequest.toolCall !== undefined &&
                   descriptor.planMode?.isPlanFile(
                     permissionRequest.toolCall,
                     // Only this session's own plan: a request from another
                     // session (a subagent's) never writes it unasked.
-                    ctx !== undefined && String(params.sessionId) === ctx.acpSessionId
-                      ? ctx.acpSessionId
-                      : undefined,
+                    ownSession ? ctx.acpSessionId : undefined,
                   ) === true;
                 if (planFileWrite && permissionRequest.toolCall) {
                   const planMarkdown = descriptor.planMode?.planMarkdown(
@@ -2212,6 +2228,16 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                   );
                   if (planMarkdown !== undefined && ctx) ctx.planMarkdown = planMarkdown;
                 }
+                // Threadlines' own room, page, command, and device tools follow
+                // the same pre-approval rule as Claude and Codex (never
+                // browser or third-party MCP servers, and only when normalized
+                // positively as `mcp_tool_call` with no command/edit evidence).
+                const preapprovedThreadlinesMcpCall =
+                  ownSession &&
+                  permissionRequest.toolCall !== undefined &&
+                  permissionRequest.toolCall.itemType === "mcp_tool_call" &&
+                  typeof permissionRequest.toolCall.data.server === "string" &&
+                  ctx.preapprovedMcpServers.has(permissionRequest.toolCall.data.server);
                 // Options whose "always" outlives the session are never ours to pick.
                 const offered = descriptor.isLastingPermissionOption
                   ? params.options.filter(
@@ -2221,7 +2247,11 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                 // Full access answers each request once: an "always" option
                 // would leave a standing rule behind in the agent's own store.
                 // A request with no "once" to give goes to the user instead.
-                if (input.runtimeMode === "full-access" || planFileWrite) {
+                if (
+                  input.runtimeMode === "full-access" ||
+                  planFileWrite ||
+                  preapprovedThreadlinesMcpCall
+                ) {
                   const once = acpPermissionOptionId("accept", offered);
                   if (once !== undefined) return selected(once);
                 }
@@ -2367,25 +2397,36 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             resumeFailure === undefined;
           const history = keepsHistory ? resumed.history.map((entry) => ({ ...entry })) : [];
           const resumedNewestPosition = keepsHistory ? resumed.newestPosition : forkNewest;
+          const attachedMcpServers = new Set(started.attachedMcpServerNames);
+          const roomEndpointAttached =
+            credential !== undefined && attachedMcpServers.has(ROOM_MCP_SERVER_NAME);
+          const preapprovedMcpServers = new Set(
+            credential === undefined
+              ? []
+              : started.attachedMcpServerNames.filter((name) =>
+                  PREAPPROVED_THREADLINES_MCP_SERVERS.has(name),
+                ),
+          );
           // The brief is sent again whenever it changed. Only the thread's
           // own resumed conversation is known to hold one; a side answer
-          // never gets it.
+          // never gets it. Without the room/app MCP server, leave out the
+          // `project_note_write` instruction so the agent isn't told to call
+          // a tool it does not have.
           const projectBriefHash = keepsHistory ? resumed.projectBriefHash : undefined;
+          const effectiveProjectInstructions = roomEndpointAttached
+            ? input.projectInstructions
+            : withoutProjectNoteWriteInstruction(input.projectInstructions);
           const projectBrief =
             lockdown === undefined
               ? projectBriefPreface({
-                  projectInstructions: input.projectInstructions,
+                  projectInstructions: effectiveProjectInstructions,
                   sentHash: projectBriefHash,
                 })
               : { text: undefined, hash: projectBriefHash };
           const now = yield* nowIso;
-          // ACP passes an HTTP server only to an agent that says it speaks
-          // HTTP MCP (see supportedMcpServers) or declares `assumeHttpMcp`;
-          // without that, it has no room tools, and says so.
-          const roomToolsAttached =
-            credential !== undefined &&
-            (descriptor.assumeHttpMcp === true ||
-              started.initializeResult.agentCapabilities?.mcpCapabilities?.http === true);
+          // Reflects whether `ROOM_MCP_SERVER_NAME` was actually passed in
+          // `session/new` / `session/resume` (over HTTP or via stdio fallback).
+          const roomToolsAttached = roomEndpointAttached;
           const session: ProviderSession = {
             provider: PROVIDER,
             providerInstanceId: boundInstanceId,
@@ -2424,6 +2465,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             lastProviderStatus: undefined,
             lastContextUsageKey: undefined,
             acpSessionId: started.sessionId,
+            preapprovedMcpServers,
             promptCapabilities: started.initializeResult.agentCapabilities?.promptCapabilities,
             subagentRoster:
               descriptor.subagents === undefined

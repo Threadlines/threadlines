@@ -19,6 +19,7 @@ import { hideWindowsConsole, makeCommandWithShell } from "@threadlines/shared/ch
 
 import { planCliSpawn } from "../../cliSpawn.ts";
 import { processExit, type TrackedAgentProcess } from "../agentProcessLedger.ts";
+import { httpMcpServerToStdioBridge } from "./acpMcpStdioBridge.ts";
 import {
   collectSessionConfigOptionValues,
   extractModelConfigId,
@@ -49,22 +50,29 @@ const SESSION_CLOSE_TIMEOUT = Duration.seconds(3);
 const MAX_LISTED_CONFIG_OPTION_VALUES = 8;
 
 /**
- * ACP lets a client pass HTTP/SSE MCP servers only to agents that advertise
- * them, unless `assumeHttpMcp` is set for an agent that accepts HTTP servers
- * without advertising the capability (Antigravity 1.5).
+ * Resolves MCP servers for an ACP agent's advertised capabilities. HTTP servers
+ * pass through when the agent advertises `mcpCapabilities.http` or declares
+ * `assumeHttpMcp` (Antigravity 1.5); otherwise each HTTP server falls back to
+ * the stdio-to-HTTP bridge, since stdio is ACP's baseline MCP transport. SSE
+ * servers still require `mcpCapabilities.sse`.
  */
 export function supportedMcpServers(
   servers: ReadonlyArray<EffectAcpSchema.McpServer>,
   capabilities: EffectAcpSchema.McpCapabilities | null | undefined,
   assumeHttpMcp = false,
 ): Array<EffectAcpSchema.McpServer> {
-  return servers.filter((server) =>
-    "type" in server
-      ? server.type === "http"
-        ? assumeHttpMcp || capabilities?.http === true
-        : capabilities?.sse === true
-      : true,
-  );
+  const useHttp = assumeHttpMcp || capabilities?.http === true;
+  const resolved: Array<EffectAcpSchema.McpServer> = [];
+  for (const server of servers) {
+    if (!("type" in server)) {
+      resolved.push(server);
+    } else if (server.type === "http") {
+      resolved.push(useHttp ? server : httpMcpServerToStdioBridge(server));
+    } else if (capabilities?.sse === true) {
+      resolved.push(server);
+    }
+  }
+  return resolved;
 }
 
 export interface AcpSpawnInput {
@@ -126,9 +134,10 @@ export interface AcpSessionRuntimeOptions {
   /** Limit for that `authenticate`; past it the start fails as `auth_required`. */
   readonly authenticateTimeoutMs?: number;
   /**
-   * MCP servers Threadlines offers the session (the browser panel tools).
-   * HTTP/SSE entries are dropped unless the agent's `initialize` says it
-   * speaks that transport, as ACP requires.
+   * MCP servers Threadlines offers the session (the browser panel, room, pages,
+   * commands, and device tools). HTTP entries pass directly when the agent
+   * advertises `mcpCapabilities.http` (or `assumeHttpMcp` is set), and fall
+   * back to the stdio-to-HTTP bridge otherwise.
    */
   readonly mcpServers?: ReadonlyArray<EffectAcpSchema.McpServer>;
   /** Pass `type: "http"` MCP servers even when `initialize` omits `mcpCapabilities.http`. */
@@ -215,6 +224,8 @@ export interface AcpSessionRuntimeStartResult {
     | EffectAcpSchema.NewSessionResponse
     | EffectAcpSchema.ResumeSessionResponse;
   readonly modelConfigId: string | undefined;
+  /** Names of MCP servers actually passed in `session/new`, `session/resume`, or `session/load`. */
+  readonly attachedMcpServerNames: ReadonlyArray<string>;
   /**
    * Set when a `resumeSessionId` was asked for but the agent could not reopen
    * it, so this is a fresh session without the earlier conversation.
@@ -992,6 +1003,7 @@ const makeAcpSessionRuntime = (
         initializeResult,
         sessionSetupResult,
         modelConfigId: extractModelConfigId(sessionSetupResult),
+        attachedMcpServerNames: mcpServers.map((server) => server.name),
         ...(resumeFailure !== undefined ? { resumeFailure } : {}),
       } satisfies AcpStartedState;
       return nextState;

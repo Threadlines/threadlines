@@ -221,9 +221,11 @@ turn stays open (see Turns above).
 
 - An MCP tool the agent reaches through `call_mcp_tool` shows as that tool (server and name), not
   as a shell command, and doesn't hold the turn like a command. Only a call that is plainly that
-  wrapper does: one that also carries a command or an edit stays a command or an edit. Its approval
-  is asked the same way as any command's, and names the server, the tool and its arguments.
-  If a later update shows the call is something else, it goes back to what that update says.
+  wrapper does: one that also carries a command or an edit stays a command or an edit. Threadlines'
+  own room, page, command, and device tools are approved once without asking (matching Claude and
+  Codex); browser tools and other MCP servers still ask in Supervised mode, naming the server, the
+  tool, and its arguments. If a later update shows the call is something else, it goes back to what
+  that update says.
 - An approval shows everything known about its call, even when Antigravity's request names only
   the call. If an update while you decide shows the approval is for something else, the card is
   withdrawn and asked again in the new words; the old card can't be answered.
