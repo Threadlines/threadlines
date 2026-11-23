@@ -1,44 +1,41 @@
 # Threadlines
 
-Threadlines is a minimal web GUI for using coding agents. A Node WebSocket server wraps provider CLIs (Codex, Claude) and serves web and desktop clients. Codex and Claude are the supported providers.
+Threadlines is an open-source ADE (agentic development environment) for coding agents. A Node WebSocket server wraps provider CLIs and serves web and desktop clients. Codex and Claude are the primary supported providers; Threadlines also ships built-in drivers for OpenCode, Muse Code, Pi, fx, Cursor, Antigravity, and Grok, plus community ACP agents.
 
 ## What Threadlines cares about
 
 1. **Reliability and correctness first.** Behavior stays predictable under load and during failures (session restarts, reconnects, partial streams). If a tradeoff is required, choose correctness and robustness over short-term convenience.
 2. **Performance is a close second.** Users drive agents all day and notice a dropped frame, a lying spinner, and a stale label.
-3. **Dense, flat design.** Structure comes from typography and spacing, not boxes and shadows. See the Design System section before touching any user-facing surface.
-4. **Long-term maintainability.** If you add new functionality, first check if there is shared logic that can be extracted to a separate module. Duplicate logic across multiple files is a code smell. Don't be afraid to change existing code. Don't take shortcuts by just adding local logic to solve a problem.
+3. **Quiet workspace, native controls.** Structure comes from typography, spacing, and quiet fills, not bordered cards or decorative color. See Design system below before touching any user-facing surface.
+4. **Long-term maintainability.** Before adding new functionality, check if shared logic should be extracted to a separate module. Duplicate logic across multiple files is a code smell. Don't be afraid to change existing code instead of adding local workarounds.
 
-## A note from Will
+## Ownership
 
-You are the owner and long-term maintainer of this codebase, and its design is up to you. List every change you made in your report, small ones included. Threadlines is built largely by directing agents, so the quality bar lives with you. Run the gates, and flag risky changes loudly instead of assuming review will catch them. Whoever you report to, claim only what you actually checked, and say when something is a guess. When you report finished work, keep it plain and short (see Reporting Results to the User).
+You are the owner and long-term maintainer of this codebase, and its design is up to you. Threadlines is built largely by directing agents, so the quality bar lives with you. Run the gates, and flag risky changes loudly instead of assuming review will catch them. Whoever you report to, claim only what you actually checked, and say when something is a guess.
 
-I want Threadlines to be impressive, not just tidy. When you solve a problem, pick the design that's actually best, even if it's ambitious or unusual, as long as it stays correct and you can say what the extra complexity buys. Complexity that buys nothing is still a cost. Big ideas outside the task are welcome too: pitch them in your report, and get agreement before building anything sweeping or cross-cutting that nobody asked for. The core architecture (event-sourced orchestration, provider drivers, schema-only contracts) is established.
+We want Threadlines to be impressive, not just tidy. Pick the design that is actually best, even if it is ambitious or unusual, as long as it stays correct and you can say what the extra complexity buys. Complexity that buys nothing is still a cost. Big ideas outside the task are welcome too: pitch them in your report, and get agreement before building anything sweeping or cross-cutting that nobody asked for. The core architecture (event-sourced orchestration, provider drivers, schema-only contracts) is established.
 
-Treat this file as good defaults, except the four ways to hurt yourself below, which are hard rules. The developer's direct requests override anything here, hard rules included: do what they asked and name the conflict in your report. Direct means they asked for that specific thing, not that you inferred they'd be fine with it. If a rule fights the task and nobody asked for the exception, say so and get sign-off before breaking it.
+Treat this file as good defaults, except the four ways to hurt yourself below, which are hard rules. The developer's direct requests override anything here, hard rules included: do what they asked and name the conflict in your report. Direct means they asked for that specific thing, not that you inferred they would be fine with it. If a rule fights the task and nobody asked for the exception, say so and get sign-off before breaking it.
 
-## A small glossary
+## Glossary
 
 Use this language when communicating:
 
-- **you** means the agent reading this file and changing Threadlines.
-- **we, us, and maintainers** mean Will and the other people building Threadlines. These are who you are talking to now.
+- **we, us, and maintainers** mean the people building Threadlines.
 - **developer** means the maintainer directing your current task.
 - **user** means a person using Threadlines to direct coding agents.
-- **agent** means the coding agent a user runs inside Threadlines. Depending on context, that may also include you.
-- **provider** means the agent runtime Threadlines talks to: Codex, Claude, and the experimental ones listed under Providers in Hit every surface.
-- **driver / adapter** means the server code wrapping one provider (`apps/server/src/provider/Drivers/`).
-- **client** means the web or desktop UI.
+- **agent** means a coding agent a user runs inside Threadlines (which may also include you).
+- **provider** means an agent runtime Threadlines talks to (Codex, Claude, the built-in drivers, and community ACP agents).
 - **environment** means one running Threadlines server and the machine, filesystem, provider credentials, and state it owns.
 - **project** means an environment-local workspace record rooted at a directory.
 - **thread** means the durable conversation and work history for a project.
 - **turn** means one user-to-agent cycle, including follow-up work such as checkpointing.
-- **Threadlines home** means the base data directory, `~/.threadlines` by default (`THREADLINES_HOME` overrides it). Live state sits in its `userdata` subfolder; dev-mode state sits in `dev`.
+- **Threadlines home** means the base data directory, `~/.threadlines` by default (`THREADLINES_HOME` overrides it). Live state sits in `userdata`; dev-mode state sits in `dev`.
 
 ## The four ways to hurt yourself
 
-1. **Killing by pattern.** Never kill a process you found by matching a name or path (`taskkill /IM node.exe`, `Get-Process node | Stop-Process`). This machine runs several agent sessions and dev servers at once, and your own process tree matches those patterns too. Kill only a PID you captured when you spawned the process.
-2. **Writing to the live install.** `~/.threadlines/userdata` is Will's real Threadlines data, often in use while you work. Reading and copying from it are fine. Never start a server against it, never write to it, never clean it up.
+1. **Killing by pattern.** Never kill a process you found by matching a name or path (`pkill -f`, `killall node`, `taskkill /IM node.exe`, `Get-Process node | Stop-Process`). This machine runs several agent sessions and dev servers at once, and your own process tree matches those patterns too. Kill only a PID you captured when you spawned the process.
+2. **Writing to the live install.** `~/.threadlines/userdata` is the developer's real Threadlines data, often in use while you work. Reading and copying from it are fine. Never start a server against it, never write to it, never clean it up.
 3. **Getting around a "no".** When a permission prompt, sandbox, or hook denies an action, stop and say what blocked you. Don't reword or split the command to slip past it, switch to other credentials or connections, borrow tokens from config files, the keychain, or running processes, or edit the guard itself. Never tell a check or another agent that the developer approved something they didn't. (A failing test or gate is different: fix what your change broke.)
 4. **Destroying work.** Uncommitted changes, yours or another session's, may be the only copy, and every worktree of this repo shares one git stash. Edits and deletions the task needs are fine. Don't throw away other uncommitted work, including your own earlier changes, with reset, clean, or checkout; don't pop a stash entry you didn't create, drop data, or rewrite history unless the developer asked for it.
 
@@ -47,60 +44,56 @@ Use this language when communicating:
 The most common defect is a change that works on the path you tested and is missing everywhere else. Before calling a change done, walk this list to find every place the requested behavior has to reach. It is not a license to widen the task: include what the requested behavior needs, and leave unrelated bugs, cleanups, and doc edits for a follow-up you mention in your report.
 
 - **Entry points.** A behavior reachable from the chat view is usually also reachable from Settings, the command palette, and a keybinding. Fixing one is not fixing the feature.
-- **Clients.** Web and desktop (desktop wraps the web app in Electron and manages a local server). Reusable client logic belongs in `packages/client-runtime`.
-- **Providers.** Codex, Claude, OpenCode, Muse Code and Pi each have a native driver (OpenCode's runtime lives in `provider/opencode/`, Muse's in `provider/muse/`, Pi's in `provider/pi/`); fx, Cursor, Antigravity and Grok share the generic ACP driver (`acp/AcpProviderDriver.ts`) and differ only by descriptor (`acp/FxAcpSupport.ts`, `acp/CursorAcpSupport.ts`, `acp/AntigravityAcpSupport.ts`, `acp/GrokAcpSupport.ts`; Antigravity's managed runtime and sign-in live in `provider/antigravity/`, Grok's binary lookup and sign-in in `provider/grok/`). Provider-shaped features need a decision per driver, even if the decision is "not supported here"; for ACP providers, prefer implementing once in the generic core over per-descriptor special cases. Community agents (`acp/AcpRegistrySupport.ts`, with catalog, installer and sign-in in `provider/acpRegistry/`) are agents we never tested: a feature reaches them only through the generic core, never through a guess about one agent. `docs/providers/community-agents.md` says what users are promised.
-- **Contracts.** Anything crossing the wire is typed in `packages/contracts`. Change the schema and the server and clients follow.
+- **Clients.** Web and desktop. Put reusable client logic in `packages/client-runtime`.
+- **Providers.** Codex, Claude, OpenCode, Muse Code, and Pi each have a native driver in `apps/server/src/provider/Drivers/` (runtimes for OpenCode, Muse, and Pi live in `provider/opencode/`, `provider/muse/`, `provider/pi/`). fx, Cursor, Antigravity, and Grok share the generic ACP driver (`acp/AcpProviderDriver.ts`) and differ by descriptor (`acp/*AcpSupport.ts`; Antigravity runtime/sign-in live in `provider/antigravity/`, Grok in `provider/grok/`). Provider-shaped features need a decision per driver, even if the decision is "not supported here"; for ACP providers, implement once in the generic core instead of per-descriptor special cases. Community agents (`acp/AcpRegistrySupport.ts`, catalog/installer/sign-in in `provider/acpRegistry/`) are untested agents: features reach them only through the generic core, never by guessing about one agent (`docs/providers/community-agents.md`).
+- **Contracts.** Anything crossing the wire is typed in `packages/contracts` (schema-only, no runtime logic). Change the schema and the server and clients follow.
 - **Reverse states.** If you added a way in, add the way out and the way to see it. A one-way door is a bug.
-- **The app guide.** Agents learn Threadlines from one catalog of places (`packages/shared/src/appPlaces.ts`) and short topics (`apps/server/src/guide/topics.ts`), see `docs/design/app-guide.md`. A new or moved setting row gets a place (its words come from there), and a change users can see updates its topic.
+- **The app guide.** Agents learn Threadlines from `packages/shared/src/appPlaces.ts` and `apps/server/src/guide/topics.ts` (`docs/design/app-guide.md`). A new or moved setting row gets a place, and a user-visible change updates its topic.
 
-## Task Completion Requirements
+## Task completion requirements
 
 - Finish the whole requested change before your final report. Reading code, editing inside your checkout, and running the checks below need no sign-off; stop early only for a decision that belongs to the developer. When the developer asks a question or thinks out loud rather than asking for a change, your assessment is the deliverable.
-- All of `vp fmt`, `vp lint`, and `vp run typecheck` must pass before considering a code change complete. `vp` (vite-plus) is the repo toolchain — use it for all repo tasks.
-- `vp run typecheck` also runs Effect's diagnostics, with the rule levels in `tsconfig.base.json`. Fix what they flag. A finding that is truly intended gets `// @effect-diagnostics-next-line <rule>:off` on the line above with a short reason; never lower a rule's level to get green.
-- Run the tests covering the code you changed: `vp run --cache '@threadlines/server#test' <filename substring>` (same pattern for the other packages; the filter matches file names, not repo-relative paths). Reserve `vp run test` (full Vitest suite) for broad or cross-package changes.
-- Web UI changes also need the browser suite: `vp run --cache '@threadlines/web#test:browser'`. It is not part of `vp run test`, and CI runs it — green unit tests alone do not mean a green branch.
-- A new or changed UI component also needs a polish check before it is done. Screenshot it with the app's real fonts loaded, zoom in, and check centering, alignment, spacing and truncation, in light and dark when colors changed. Browser tests don't load the bundled fonts (`main.tsx` does), so a test that takes the shot imports `@fontsource-variable/schibsted-grotesk/index.css` and `@fontsource-variable/cascadia-mono/index.css` and awaits `document.fonts.ready` first. Passing tests and a glance at a full-size shot don't count.
+- All of `vp fmt`, `vp lint`, and `vp run typecheck` must pass before considering a code change complete. `vp` (vite-plus) is the repo toolchain; use it for all repo tasks.
+- `vp run typecheck` also runs Effect's diagnostics (rule levels in `tsconfig.base.json`). Fix what they flag. A finding that is truly intended gets `// @effect-diagnostics-next-line <rule>:off` on the line above with a short reason; never lower a rule's level to get green.
+- Run the tests covering the code you changed: `vp run --cache '@threadlines/server#test' <filename substring>` (same pattern for other packages; the filter matches file names, not repo-relative paths). Reserve `vp run test` (full Vitest suite) for broad or cross-package changes.
+- Web UI changes also need the browser suite: `vp run --cache '@threadlines/web#test:browser'`. It is not part of `vp run test`, and CI runs it.
+- New or changed UI needs a screenshot polish check against `docs/design/polish-checklist.md` before it is done (in light and dark when colors changed). Browser tests do not load bundled fonts, so screenshot tests import `@fontsource-variable/schibsted-grotesk/index.css` and `@fontsource-variable/cascadia-mono/index.css` and await `document.fonts.ready`; layout assertions also need the production stylesheet (see the checklist).
 - Don't wait for another session's typecheck or test run to finish; running alongside it is fine. If a browser spec times out while other suites are running, re-run that file alone (`vp run '@threadlines/web#test:browser' <filename substring>`) before treating it as a real failure. On a low-memory machine, `THREADLINES_TEST_WORKERS` lowers how many browser tabs the suite opens.
-- When you try a real nightly or release build with a fresh data folder, put that folder inside the system temp folder or set `THREADLINES_TELEMETRY_ENABLED=false`. Otherwise every run counts as a new user in PostHog (`docs/telemetry.md`).
-- A run whose data folder is inside a temp folder (`/tmp` or the system temp folder) also keeps Claude in a folder of its own there, signed out, so it cannot read or renew the real Claude sign-in. Set `THREADLINES_SHARE_CLAUDE_SIGN_IN=true` only when a run needs the real sign-in on purpose. The same care applies to `claude` commands you run yourself: point `CLAUDE_CONFIG_DIR` at a temp folder unless the real sign-in is the thing under test, and never put a kill timeout on a `claude` run that uses it. A Claude process killed while it renews the sign-in signs Will out (`docs/providers/claude.md`).
-- Pass `--cache` only to pure check/test commands as shown above. vp fingerprints the files a task reads and its arguments, so an unchanged re-run replays instantly instead of re-executing — but never add it to side-effecting scripts (`deploy`, `clean`, `dist:*`, `release:*`), where a cache replay would silently skip the real action.
+- When trying a nightly or release build with a fresh data folder, put that folder inside the system temp folder or set `THREADLINES_TELEMETRY_ENABLED=false`, so test runs stay out of PostHog (`docs/telemetry.md`).
+- A temp data folder keeps Claude signed out in its own directory. Set `THREADLINES_SHARE_CLAUDE_SIGN_IN=true` only when a test needs the real sign-in. For direct `claude` runs, point `CLAUDE_CONFIG_DIR` at a temp folder unless testing the real sign-in, and never put a kill timeout on a run using the real sign-in (killing a token renewal signs the developer out; see `docs/providers/claude.md`).
+- Pass `--cache` only to pure check/test commands. Never pass it to side-effecting scripts (`deploy`, `clean`, `dist:*`, `release:*`), where a cache replay silently skips the action.
 - NEVER run `bun test`. The Bun toolchain is not used for repo tasks.
 
-## Testing Discipline
+## Testing discipline
 
 Tests must earn their maintenance cost. When adding or changing tests:
 
 - Extend the existing test file for a module instead of creating a new one.
-- Test observable behavior at module boundaries (commands in → events/projections out, RPC in → response out), not implementation details.
-- Don't write tests that restate the implementation or assert mock wiring — they pass when the code is wrong and break when the code is refactored.
-- One focused test that would catch a real regression beats five that mirror the code.
-- Tests are good! Endless smoke tests, "regression tests" for feature deletions, and tests added for the sake of having tests are much less good. Tests should be focused, not slop.
-- Provider adapter changes are covered by replay tests (`apps/server/integration/replay`): recorded Codex and Claude sessions run through the real adapters. A replay that fails because our code now sends something different is a protocol change: confirm it is intended, then re-record (see its README).
-- To test that something on screen doesn't jump, bounce or flash, read it after every drawn frame with `readAfterEachPaint` from `apps/web/src/lib/frameProbe.browser-harness.ts` and assert on the whole run, not just the end state.
-- Not every change needs a new test. Add one for new observable behavior or a regression you actually hit. Deletions, renames, and refactors update existing tests; they don't add new ones. Never write a test that asserts something no longer exists — the code being gone and the suite staying green is the proof.
-- Never loosen an existing test's expectation to make your change pass. The same goes for lint rules, type errors, CI workflows, and git hooks: don't disable, suppress, or skip them (`--no-verify`) to get green. A failing check is a signal about your change. If the expectation is truly outdated, fix it and say so loudly in your report.
+- Test observable behavior at module boundaries (commands in to events/projections out, RPC in to response out), not implementation details or mock wiring.
+- Not every change needs a new test. Add one for new observable behavior or a real regression, and prefer one focused test over several that mirror the code. Deletions, renames, and refactors update existing tests; never write a test asserting something no longer exists.
+- Provider adapter changes are covered by replay tests (`apps/server/integration/replay`): recorded Codex and Claude sessions run through the real adapters. A replay failure because our code now sends something different is a protocol change: confirm it is intended, then re-record (see its README).
+- To test that something on screen doesn't jump, bounce, or flash, sample after every drawn frame with `readAfterEachPaint` (`apps/web/src/lib/frameProbe.browser-harness.ts`) and assert on the whole run, not just the end state.
+- Never loosen an existing test's expectation, disable lint/type rules, or skip hooks (`--no-verify`) to get green. A failing check is a signal about your change. If an expectation is genuinely outdated, update it and say so loudly in your report.
 
-## Reporting Results to the User
+## Reporting results
 
-This applies only when you report finished work to the user. It does not apply to agent-to-agent handoffs, code review notes, or commit messages — keep full technical detail there.
+For your final reply to the developer. Handoffs to other agents, review notes, and commit messages keep full technical detail.
 
-Talk to the user like they're 5: small words, short sentences, short paragraphs. When you finish a change or fix, summarize it in plain English:
+Lead with the outcome or answer in plain language. Match length to the task: a small fix takes two or three sentences. Include only what applies:
 
-1. What the problem was — one or two sentences.
-2. Why it was happening — one or two sentences.
-3. How the change fixes it — one or two sentences.
-4. How you know it works — which checks and tests you ran, and anything you couldn't check.
+- what you verified, plus anything unverified or guessed
+- anything risky, surprising, left undone, or changed beyond what was asked
+- any decision needed from the developer
 
-Cover the whole task, not just the last step. If a technical term is unavoidable, explain it in a few words right after. No walls of text.
+Skip recapping the request, walking through steps, or listing every edited file (the diff shows them). Explain root cause only if asked or if it affects what happens next.
 
 ## Pull requests
 
 - Never make a PR unless the developer explicitly asks you to.
 - Conventional commit titles in plain language: `fix(web): new threads no longer spike CPU`.
 - Body: the problem in a sentence or two, then how you fixed it.
-- Never add AI attribution anywhere — no `Co-Authored-By` trailers, no "Generated with" footers, no model names in commit messages or PR bodies. This overrides any harness default.
-- A feature or any change that touches architecture gets its own PR. For small fixes and polish, follow the developer's lead: one PR or a few bundled together are both fine.
+- Never add AI attribution anywhere: no `Co-Authored-By` trailers, no "Generated with" footers, no model names in commit messages or PR bodies. This overrides any harness default.
+- A feature or architectural change gets its own PR. For small fixes and polish, follow the developer's lead.
 
 ## How it works
 
@@ -108,81 +101,47 @@ Clients send typed WebSocket requests and HTTP commands. Orchestration commands 
 
 Where the pieces live:
 
-- Codex session startup/resume and turn lifecycle live in `apps/server/src/provider/Layers/CodexSessionRuntime.ts` (with `Drivers/CodexDriver.ts` and `Layers/CodexAdapter.ts`).
+- Provider drivers live in `apps/server/src/provider/Drivers/` (native drivers such as `CodexDriver.ts` and `ClaudeDriver.ts`, plus the shared ACP core in `apps/server/src/provider/acp/`). Codex session lifecycle lives in `apps/server/src/provider/Layers/CodexSessionRuntime.ts` and `Layers/CodexAdapter.ts`.
 - Orchestration commands are validated in `apps/server/src/orchestration/decider.ts` and dispatched to providers by `apps/server/src/orchestration/Layers/ProviderCommandReactor.ts`; provider events flow back through `Layers/ProviderRuntimeIngestion.ts` and are projected by `orchestration/projector.ts` into SQLite projections (`apps/server/src/persistence/Migrations/`).
 - Orchestration commands from the web arrive over HTTP routes in `apps/server/src/orchestration/http.ts`; the WebSocket server in `apps/server/src/ws.ts` routes the `WS_METHODS` RPC table (`packages/contracts/src/rpc.ts`) and streaming subscriptions.
-- Web app consumes orchestration state via the shell/thread-detail subscription streams (`orchestration.subscribeShell`, wired in `apps/web/src/environments/runtime/connection.ts`).
-
-Docs:
-
-- Codex App Server docs: https://developers.openai.com/codex/sdk/#app-server
+- Web app consumes orchestration state via shell/thread-detail subscription streams (`orchestration.subscribeShell`, wired in `apps/web/src/environments/runtime/connection.ts`).
 - Repo notes on providers, design, release, and remote connections live in `docs/`.
 
 ## Where code lives
 
 - `apps/server`: Node.js WebSocket server and CLI. Manages provider sessions, serves the React web app, and owns the event-sourced orchestration core.
-- `apps/web`: React/Vite UI. Owns session UX, conversation/event rendering, and client-side state. Connects to the server via WebSocket.
+- `apps/web`: React/Vite UI. Owns session UX, conversation/event rendering, and client-side state.
 - `apps/desktop`: Electron app that wraps the web UI and manages a local server.
-- `apps/marketing`: the marketing site.
-- `apps/relay-worker`: Cloudflare relay worker for remote connections (see `docs/cloudflare-relay.md`).
-- `packages/contracts`: Shared effect/Schema schemas and TypeScript contracts for provider events, WebSocket protocol, and model/session types. Keep this package schema-only — no runtime logic.
-- `packages/shared`: Shared runtime utilities consumed by both server and web. Uses explicit subpath exports (e.g. `@threadlines/shared/git`) — no barrel index.
-- `packages/client-runtime`: client logic extracted for reuse across clients (currently consumed by the web app).
-- `packages/effect-codex-app-server`: typed client for the Codex app-server JSON-RPC protocol.
-- `packages/effect-acp`: Agent Client Protocol (ACP) bindings, used by the Cursor driver.
-- `packages/ssh`, `packages/tailscale`: remote-connection helpers.
-- `.repos/effect`: read-only copy of the Effect source for the installed `effect` version (each package's `src`, docs and `package.upstream.json`, its `package.json` renamed so GitHub doesn't scan it as ours; `LLMS.md`, `ai-docs/`, `migration/`). Read it instead of guessing Effect 4 APIs, which changed a lot from Effect 3, and prefer its patterns. Search it by path (`rg <term> .repos/effect`); searches from the repo root skip it because the folder is hidden. Never edit or import from it. `patches/` changes a few Effect files on top. After an Effect upgrade, run `node scripts/sync-effect-source.ts`; CI fails until you do.
+- `apps/marketing`: the marketing site. Links to `threadlines.dev` in `README.md` must carry `?ref=readme` (`apps/marketing/src/lib/linkSource.ts` tracks them).
+- `apps/relay-worker`: Cloudflare relay worker for remote connections (`docs/cloudflare-relay.md`).
+- `packages/contracts`: Shared Effect Schema contracts for provider events, WebSocket protocol, and model/session types. Keep this package schema-only.
+- `packages/shared`: Shared runtime utilities for server and web. Uses explicit subpath exports (e.g. `@threadlines/shared/git`), no barrel index.
+- `packages/client-runtime`: Reusable client logic shared across clients.
+- `packages/effect-codex-app-server`: Typed client for the Codex app-server JSON-RPC protocol.
+- `packages/effect-acp`: Agent Client Protocol (ACP) bindings used by the shared ACP driver (fx, Cursor, Antigravity, Grok, and community agents).
+- `packages/ssh`, `packages/tailscale`: Remote-connection helpers.
+- `.repos/effect`: Read-only copy of the installed Effect 4 source (`src`, docs, `LLMS.md`, `ai-docs/`, `migration/`). Read it instead of guessing Effect 4 APIs, and search it explicitly (`rg <term> .repos/effect`) since root searches skip hidden folders. Never edit or import from it. `patches/` holds local overrides; after an Effect upgrade, run `node scripts/sync-effect-source.ts` (CI fails until you do).
 
-## Design System
+## Design system
 
-The app (web, desktop, phone view) follows `docs/design/design-language.md`: a quiet
-continuous workspace with native-feeling controls. Read it before touching any user-facing
-surface. Its three rules:
+The app (web, desktop, phone view) follows `docs/design/design-language.md` and `docs/design/polish-checklist.md`. Read both before touching any user-facing surface.
 
-- Quiet fills group related things; borders mark only necessary boundaries; shadows mean
-  something floats above. Settings sections and lists of like items sit in a quiet group
-  (`SettingsSection` / `SettingsGroup`), not in bordered cards and not loose on the page.
-  Cards remain only for clickable tiles and input surfaces (the composer).
-- Controls in content are solid: settings, dialogs, setup, panel bodies, notices (raised
-  buttons, dropdowns with up-down chevrons, white-knob switches, pressed-in text fields).
-  Controls in toolbars and lists are plain until hover: chat header, composer chips, sidebar,
-  panel headers, row actions, menus.
-- Icons are plain glyphs, never in tiles. Color means something: on, selected, send, a
-  provider's mark, or a status. Nothing is colored for decoration.
-
-In the app, also:
-
-- Compact type scale: one page title per page (22px), section titles 15px, rows 13.5px.
-- Secondary text is opaque `--muted-foreground`, never faded with opacity.
-- Reuse the existing tokens and primitives (`components/ui`, `settingsLayout.tsx`); mono
-  `--font-mono` for meta labels like versions and dates. No new colors, radii, or shadows
-  without agreement. Check light and dark before shipping.
-
-Everywhere (app and marketing site):
-
-- If a heading feels impressive, it's too big.
-- Tight vertical rhythm. If the page scrolls mostly through whitespace, shrink the gaps, not
-  the content.
-- Copy is scannable: lead with the feature name, keep descriptions to one sentence (about
-  two rendered lines). Users skim changelogs and UIs; they don't read them.
-- Hover feedback is a color shift only — no translateY lifts, scale, or shadows.
-
-The marketing site keeps its flat style: structure from type, spacing and hairlines, no
-cards except clickable tiles, one display-size element per page (~40px max), body 15–16px,
-its own tokens (`--surface`, `--fg-*`).
+- Quiet fills group related things (`SettingsSection` / `SettingsGroup`); borders mark only necessary boundaries; shadows mean something floats above.
+- Controls in content (settings, dialogs, setup, panel bodies, notices) are solid; controls in toolbars and lists are plain until hover.
+- Icons are plain glyphs, never in tiles. Color means something (on, selected, send, a provider's mark, or a status), never decoration.
+- Reuse existing tokens and primitives (`components/ui`, `settingsLayout.tsx`), keep secondary text opaque (`--muted-foreground`), and do not add new colors, radii, or shadows without agreement. Check light and dark before shipping.
+- The marketing site keeps its flat style with its own tokens (`--surface`, `--fg-*`; see the end of `docs/design/design-language.md`).
 
 ## Taste
 
 - Complexity belongs at the driver boundary. Orchestration stays pure, UI stays dumb.
-- Typesafety is useful — take advantage of it. Inferred types over annotations; `any` is the enemy.
-- Comments describe how a thing is used: concise notes above functions and classes, not line-by-line narration. When you change code, keep its comments in sync.
-- No continuously repainting animations; they peg the GPU on high-refresh displays. One exception, approved by Will: a custom theme's live backdrop art, which the user picks, which runs in the walled-off backdrop runtime under its frame-rate cap, budget and pause rules (docs/design/custom-themes.md, "Performance"). Nothing else gets to animate behind the app.
+- Take advantage of type safety: inferred types over annotations, and avoid `any`.
+- Comments describe how a thing is used: concise notes above functions and classes, not line-by-line narration. Keep comments in sync when changing code.
+- No continuously repainting animations; they peg the GPU on high-refresh displays. One approved exception: a custom theme's live backdrop art, which runs in the walled-off backdrop runtime under its frame-rate cap, budget, and pause rules (`docs/design/custom-themes.md`, "Performance"). Nothing else animates behind the app.
 - A migration that rewrites existing rows must be timed against a database with real history (hundreds of thousands of events) before it merges. In-memory tests cannot tell a two-second backfill from one that takes hours on a user's install.
 
-## Reference Repos
+## Reference repos
 
+- Codex App Server docs: https://developers.openai.com/codex/sdk/#app-server
 - Open-source Codex repo: https://github.com/openai/codex
-- Codex-Monitor (Tauri, feature-complete, strong reference implementation): https://github.com/Dimillian/CodexMonitor
-- Effect, vendored at `.repos/effect` (see Where code lives).
-
-Use these as implementation references when designing protocol handling, UX flows, and operational safeguards.
+- Codex-Monitor (Tauri reference implementation): https://github.com/Dimillian/CodexMonitor
