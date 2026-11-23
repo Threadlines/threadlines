@@ -158,6 +158,7 @@ Written after Astra's second review of step 2 as built (`feat/child-reports-stag
   - **Restart.** `settleSessionsFromPreviousProcess` (`ProviderCommandReactor.ts:7322`), at the point where it already handles an outside agent's message cut before its start (`:7393`): when the session had no active turn, it reads the thread's pending start (`getPendingTurnStartByThreadId`, `ProjectionTurns.ts:299`) and dispatches the take-back for that exact message. A thread whose report was put back is not added to `turnsCutByRestart`, so it gets no "interrupted by a restart" note and no continue.
   - **A failed start.** `reportFailedStart` (`ProviderCommandReactor.ts:3456`) with `beforeSend`, for a report.
 - The send is the one that exists. The provider reactor's startup runs before the child reactor's (`OrchestrationReactor.ts:25`), so `reportsQueuedBeforeRestart` (`ChildThreadReactor.ts:557`) finds the report at the front and sends it through `thread.follow-up.send-queued`. That decision checks the report's own epochs, stamps the current chain epoch, carries `fromThread` on the start, and lifts no hold.
+- A report put back is not sent the moment it lands on the queue. It waits for the next thing that moves the queue: the startup send above, a new message queued in the thread, or a turn's end. Sent on by itself, a start that keeps failing would put it back and send it again without end. (Added while building: the failed-start test hit that loop.)
 - The turns projection drops a pending start when its message goes back on the queue or is marked not run, so a stale row can't bind to a later turn.
 - Removed: `reportCutBeforeItsTurn`, the resend inside `thread.restart.continue` (`decider.ts:5665`), and "any later assistant message means it was answered".
 
@@ -166,7 +167,7 @@ Why put the report back instead of keeping it queued until the provider has the 
 **Rule B. A message has at most one start that no turn has claimed, and once a turn claims it, the turn's id is its identity.**
 
 - A decision that emits `thread.turn-start-requested` for a message that owes a report replaces that message's unbound owed entry, if there is one. Entries already bound to a turn belong to earlier attempts and are left to their own turn's end.
-- The session update that marks a turn running and names its message (`turnStartedBy.messageId`, the builder's rule for findings 1, 2 and 7) binds in the same decision:
+- The session update that marks a turn running and names its message (`turnStartedBy.messageId`, the builder's rule for findings 1, 2 and 7) binds in the same decision (as built: `owedReportBinds` on `thread.session-set`):
   - the message's unbound owed entry gets the turn's id and is keyed by the turn from then on;
   - a parent's running request bound to that message records the turn in a new optional `answeringTurnId`, through `thread.child-request-updated`. A retry, a resend or a continue that reuses the message overwrites it with the new turn.
 - Every reader matches by turn id and none looks a turn up by its message:
