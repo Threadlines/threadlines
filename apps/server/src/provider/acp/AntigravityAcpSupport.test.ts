@@ -7,6 +7,7 @@ import {
   antigravityAgentProblem,
   antigravityModelsFromCatalog,
   antigravityModelsFromChoices,
+  isAntigravityPlanFileEdit,
   isLegacyAntigravityServerPath,
   nextAntigravityCatalog,
   parseAntigravitySignInUrl,
@@ -202,5 +203,25 @@ describe("parseAntigravitySignInUrl", () => {
     expect(parseAntigravitySignInUrl("I1003 server.py] Starting AGY ACP Server...")).toBe(
       undefined,
     );
+  });
+});
+
+describe("isAntigravityPlanFileEdit", () => {
+  const brain = "/profile/antigravity-acp/brain";
+  const edit = (path: string) => ({
+    toolCallId: "call_plan",
+    kind: "edit",
+    data: {
+      content: [{ type: "diff", path, oldText: "", newText: "# Plan" }],
+      locations: [{ path }],
+    },
+  });
+
+  it("takes only the asking session's own plan, never a path with dot steps", () => {
+    expect(isAntigravityPlanFileEdit(edit(`${brain}/s1/plan.md`), brain, "s1")).toBe(true);
+    // Through a link inside the session's folder these open another file.
+    expect(isAntigravityPlanFileEdit(edit(`${brain}/s1/link/../plan.md`), brain, "s1")).toBe(false);
+    expect(isAntigravityPlanFileEdit(edit(`${brain}/s1/./plan.md`), brain, "s1")).toBe(false);
+    expect(isAntigravityPlanFileEdit(edit(`${brain}/s2/plan.md`), brain, "s1")).toBe(false);
   });
 });

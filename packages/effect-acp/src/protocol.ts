@@ -129,6 +129,30 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
       return [onAnswer, next] as const;
     });
 
+  // The frame the writer holds and has not seen taken by the agent's stdin,
+  // and, once the pipe to the agent is gone either way, why nothing more
+  // can be sent.
+  let handedOver: OutgoingFrame | undefined;
+  let pipeDown: AcpError.AcpError | undefined;
+  /**
+   * Fails every frame the agent's stdin has not taken, with the in-order
+   * requests they carried: a request never written was never sent, so it is
+   * never answered either (its `onAnswer` hears nothing).
+   */
+  const failUnwrittenFrames = (error: AcpError.AcpError) =>
+    Effect.gen(function* () {
+      pipeDown ??= error;
+      const unwritten = [
+        ...(handedOver === undefined ? [] : [handedOver]),
+        ...(yield* Queue.clear(outgoing).pipe(Effect.orElseSucceed(() => []))),
+      ];
+      handedOver = undefined;
+      for (const frame of unwritten) {
+        if (frame.requestId !== undefined) yield* takeOrderedPending(frame.requestId);
+        if (frame.written !== undefined) yield* Deferred.fail(frame.written, error);
+      }
+    });
+
   const logProtocol = (event: AcpProtocolLogEvent) => {
     if (event.direction === "incoming" && !options.logIncoming) {
       return Effect.void;
@@ -172,6 +196,8 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
         payload: typeof encoded === "string" ? encoded : new TextDecoder().decode(encoded),
       });
 
+      // Nothing queues behind a pipe that is gone: it would wait forever.
+      if (pipeDown !== undefined) return yield* Effect.fail(pipeDown);
       yield* Queue.offer(outgoing, { data: encoded, written, requestId }).pipe(Effect.asVoid);
     } else if (written !== undefined) {
       yield* Deferred.succeed(written, undefined);
@@ -249,6 +275,9 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
           if (!error) {
             return;
           }
+          // The agent can answer nothing more: what its stdin has not taken
+          // was never sent, and is not reported as answered.
+          yield* failUnwrittenFrames(error);
           yield* failAllExtPending(error);
           yield* emitClientProtocolError(error);
           if (options.onTermination) {
@@ -499,7 +528,6 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
   // frame counts as handed to the agent. When the writer stops, every frame
   // not handed over fails, and so does every request it carried: none is
   // left waiting on a write that can no longer happen.
-  let handedOver: OutgoingFrame | undefined;
   const nextFrame = Effect.gen(function* () {
     const last = handedOver;
     handedOver = undefined;
@@ -514,15 +542,7 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
         detail: "Failed to write to the ACP agent",
         cause: Cause.squash(cause),
       });
-      const unwritten = [
-        ...(handedOver === undefined ? [] : [handedOver]),
-        ...(yield* Queue.clear(outgoing).pipe(Effect.orElseSucceed(() => []))),
-      ];
-      handedOver = undefined;
-      for (const frame of unwritten) {
-        if (frame.requestId !== undefined) yield* takeOrderedPending(frame.requestId);
-        if (frame.written !== undefined) yield* Deferred.fail(frame.written, error);
-      }
+      yield* failUnwrittenFrames(error);
       // Requests written earlier can no longer be answered over this pipe.
       yield* failAllExtPending(error);
     });

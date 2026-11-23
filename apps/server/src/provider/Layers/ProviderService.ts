@@ -3041,7 +3041,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           yield* Effect.logWarning("provider service ends a runtime still stopping at a revert", {
             threadId,
           });
-          yield* adapter.stopSession(threadId).pipe(Effect.ignore);
+          // Bounded too: a stop already stalled may hold the lock this one waits for.
+          yield* adapter
+            .stopSession(threadId)
+            .pipe(Effect.ignore, Effect.timeoutOption(REVERT_STOP_WAIT));
           const ended = yield* whenStopped(threadId).pipe(Effect.timeoutOption(REVERT_STOP_WAIT));
           if (Option.isNone(ended)) {
             return yield* new ProviderAdapterRequestError({

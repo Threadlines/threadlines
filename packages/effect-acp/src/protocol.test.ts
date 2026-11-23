@@ -308,6 +308,49 @@ it.layer(NodeServices.layer)("effect-acp protocol", (it) => {
     }),
   );
 
+  it.effect("never answers or queues a request once the agent's output has ended", () =>
+    Effect.gen(function* () {
+      // The agent's stdin takes nothing and never fails; its stdout ends
+      // while a request waits to be written.
+      const reached = yield* Deferred.make<void>();
+      const input = yield* Queue.unbounded<Uint8Array, Cause.Done<void>>();
+      const stdio = Stdio.make({
+        args: Effect.succeed([]),
+        stdin: Stream.fromQueue(input),
+        stdout: () =>
+          Sink.forEach(() =>
+            Deferred.succeed(reached, undefined).pipe(Effect.andThen(Effect.never)),
+          ),
+        stderr: () => Sink.drain,
+      });
+      const transport = yield* AcpProtocol.makeAcpPatchedProtocol({
+        stdio,
+        serverRequestMethods: new Set(),
+      });
+      const answers: Array<string> = [];
+      const note = (answer: { readonly _tag: string }) =>
+        Effect.sync(() => void answers.push(answer._tag));
+      const first = yield* transport
+        .requestInOrder("x/test", { n: 1 }, note)
+        .pipe(Effect.exit, Effect.forkScoped);
+      yield* Deferred.await(reached);
+      // A second request queues behind the frame the sink holds.
+      const second = yield* transport
+        .requestInOrder("x/test", { n: 2 }, note)
+        .pipe(Effect.exit, Effect.forkScoped);
+      for (let tick = 0; tick < 20; tick += 1) yield* Effect.yieldNow;
+      yield* Queue.end(input);
+      // Neither was written: both fail, and neither is reported answered.
+      assert.isTrue((yield* Fiber.join(first))._tag === "Failure");
+      assert.isTrue((yield* Fiber.join(second))._tag === "Failure");
+      assert.deepEqual(answers, []);
+      // A request made afterwards fails at once instead of waiting forever.
+      const late = yield* transport.requestInOrder("x/test", { n: 3 }, note).pipe(Effect.exit);
+      assert.isTrue(late._tag === "Failure");
+      assert.deepEqual(answers, []);
+    }),
+  );
+
   it.effect("keeps reading the agent while an extension request waits for its answer", () =>
     Effect.gen(function* () {
       const { stdio, input, output } = yield* makeInMemoryStdio();

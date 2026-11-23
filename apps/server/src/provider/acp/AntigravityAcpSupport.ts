@@ -551,7 +551,13 @@ export function isAntigravityPlanFileEdit(
     return false;
   }
   const planPath = join(brain, sessionId, "plan.md");
-  const isPlanPath = (path: string) => isAbsolute(path) && normalize(path) === planPath;
+  // A path with `.` or `..` steps is never the plan: through a link inside
+  // the session's folder, `link/../plan.md` reads as this plan and opens
+  // another file.
+  const isPlanPath = (path: string) =>
+    isAbsolute(path) &&
+    !path.split(/[\\/]/u).some((step) => step === "." || step === "..") &&
+    normalize(path) === planPath;
   // Every change is a diff, and every path the call names (diffs,
   // locations, its target) is the plan file.
   const diffsOnly =

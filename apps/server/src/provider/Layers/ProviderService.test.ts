@@ -3703,6 +3703,25 @@ startingOver.layer("ProviderServiceLive forgetting a conversation", (it) => {
     }),
   );
 
+  it.effect("fails the revert in bounded time when ending the runtime stalls too", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const key = asThreadId("thread-starting-over-stuck-stop-call");
+      yield* start(key);
+      yield* startingOver.agent.stopSession(key);
+      startingOver.hooks.stopping = Effect.never;
+      // The stop it falls back on never returns (a stalled stop holds its lock).
+      startingOver.agent.stopSession.mockImplementationOnce(() => Effect.never);
+      const revert = yield* provider
+        .rollbackConversation({ threadId: key, numTurns: 1 })
+        .pipe(Effect.result, Effect.forkChild);
+      yield* advanceTestClock(60_000);
+      const outcome = yield* Fiber.join(revert);
+      startingOver.hooks.stopping = undefined;
+      assert.equal(outcome._tag, "Failure");
+    }),
+  );
+
   it.effect("never lets an older runtime's acknowledgement or forget land on its replacement", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService;
