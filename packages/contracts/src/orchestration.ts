@@ -3005,6 +3005,13 @@ export const OrchestrationChildRequest = Schema.Struct({
   callerTurnId: TurnId,
   /** This thread's delivery epoch when it was asked; see OrchestrationChildRequestState. */
   deliveryEpoch: NonNegativeInt,
+  /**
+   * This thread's access when it asked, and its pass's block (see
+   * MessageAccessFields): kept on the request so a send delivered later, or
+   * retried over a link, carries the limit that was in force when the agent
+   * sent it. Absent: a request from before it was kept.
+   */
+  ...MessageAccessFields,
   status: ChildRequestStatus,
   /** Reserved when it is asked for, before the child exists. */
   childThreadId: ThreadId,
@@ -3066,12 +3073,10 @@ export type OwedReportStamps = typeof OwedReportStamps.Type;
  * no message, by the turn. Removed when the report is settled, and the whole
  * list empties when the thread's attachment epoch moves.
  */
-export const OwedChildReport = Schema.Struct({
-  messageId: Schema.optional(MessageId),
-  turnId: Schema.optional(TurnId),
-  ...OwedReportStamps.fields,
-  createdAt: IsoDateTime,
-});
+export const OwedChildReport = Schema.Union([
+  Schema.Struct({ messageId: MessageId, ...OwedReportStamps.fields, createdAt: IsoDateTime }),
+  Schema.Struct({ turnId: TurnId, ...OwedReportStamps.fields, createdAt: IsoDateTime }),
+]);
 export type OwedChildReport = typeof OwedChildReport.Type;
 
 export const OrchestrationChildRequestState = Schema.Struct({
@@ -4784,6 +4789,13 @@ const ThreadSessionSetCommand = Schema.Struct({
    * usage limit with a known reset arms "Continue at reset" when it is on.
    */
   continueAfterUsageLimits: Schema.optional(Schema.Boolean),
+  /**
+   * Ingestion's word that `session.activeTurnId` is a turn the provider
+   * started with no message (a check-back, background work that finished),
+   * so the decision can record the report it owes its parent
+   * (docs/design/agent-autonomy-no-limits.md, "Delivery rules", rule 3).
+   */
+  providerStartedTurn: Schema.optional(Schema.Literal(true)),
   createdAt: IsoDateTime,
 });
 
@@ -5580,6 +5592,12 @@ const ThreadRemoteRequestQueueCommand = Schema.Struct({
   messageId: MessageId,
   text: TrimmedNonEmptyString,
   fromThread: ThreadMessageOrigin,
+  /**
+   * The asking computer's ceiling (PeerSendInput's `ceiling`), or, from an
+   * older sender that sends none, the one this computer gives the request.
+   * See MessageAccessFields.
+   */
+  ...MessageAccessFields,
   createdAt: IsoDateTime,
 });
 
@@ -6994,6 +7012,12 @@ export const ThreadTurnStartRequestedPayload = Schema.Struct({
    */
   liftsMoveFence: Schema.optional(Schema.Literal(true)),
   createdAt: IsoDateTime,
+  /**
+   * The turn owes the thread's parent a report: recorded on
+   * `childRequests.owedReports`, keyed by `messageId`, with these stamps.
+   * See OwedChildReport.
+   */
+  owesReport: Schema.optional(OwedReportStamps),
 });
 
 export const ThreadFollowUpSubmittedPayload = Schema.Struct({
@@ -7131,6 +7155,12 @@ export const ThreadWorkflowRunRecordedPayload = Schema.Struct({
 export const ThreadSessionSetPayload = Schema.Struct({
   threadId: ThreadId,
   session: OrchestrationSession,
+  /**
+   * The report the provider-started turn now running owes the thread's
+   * parent: added to `childRequests.owedReports`. See ThreadSessionSetCommand's
+   * `providerStartedTurn`.
+   */
+  owedReport: Schema.optional(OwedChildReport),
 });
 
 /** The user closed this error's notice; see `OrchestrationSession.lastErrorDismissedAt`. */

@@ -31,6 +31,7 @@ import {
 } from "@threadlines/contracts";
 
 import { hasLiveCheckBack } from "./checkBacks.ts";
+import { hasLiveSideTurn, type SideTurnFields } from "./sideTurns.ts";
 import { exceedsRuntimeMode, saferRuntimeMode } from "./runtimeMode.ts";
 import { isRoomThread } from "./threadParticipants.ts";
 
@@ -855,24 +856,27 @@ export function stopReachOf<T extends FamilyMember>(
 }
 
 /**
- * What the "still going" test reads about a thread. The thread's shell and
- * its detail both carry these, so the server's stop and revert rules and the
- * client's counts read the same answer.
+ * What the "still going" test reads about a thread, as plain facts. The
+ * server builds it from a thread's detail, the client from its shell or its
+ * sidebar summary (each knows its own fields: a summary renames the session's
+ * `starting`, and only the client sees a message no turn has picked up yet),
+ * so both read the same answer from the same facts.
  */
 export interface StillGoingInput {
-  readonly session: {
-    readonly status: string;
-    readonly pendingBackgroundTaskCount?: number | undefined;
-    readonly awaitedBackgroundTaskCount?: number | undefined;
-    readonly continueAtReset?: unknown;
-  } | null;
-  readonly latestTurn: { readonly state: string } | null;
+  /** A turn running or starting, or a message about to start one. */
+  readonly turnInFlight: boolean;
   /** Messages waiting in its queue. */
   readonly queuedCount: number;
   /** An approval, a question or a plan waiting on the user. */
   readonly waitsOnUser: boolean;
+  /** Background work of any kind, awaited or not (a dev server it left running). */
+  readonly backgroundWork: boolean;
   /** Its own open child requests, starts still waiting for the user included. */
   readonly openRequestCount: number;
+  /** A wait to continue at a usage limit's reset. */
+  readonly waitsForReset: boolean;
+  /** A room agent answering on the side. */
+  readonly sideAnswerRunning: boolean;
   readonly checkBacks?: ReadonlyArray<{ readonly dormant?: true | undefined }> | undefined;
 }
 
@@ -884,40 +888,55 @@ export interface StillGoingInput {
  * on screen. An idle session with none of these is not going.
  */
 export function isStillGoing(thread: StillGoingInput): boolean {
-  const session = thread.session;
   return (
-    thread.latestTurn?.state === "running" ||
-    session?.status === "running" ||
-    session?.status === "starting" ||
+    thread.turnInFlight ||
     thread.queuedCount > 0 ||
     thread.waitsOnUser ||
-    (session?.pendingBackgroundTaskCount ?? 0) > 0 ||
-    (session?.awaitedBackgroundTaskCount ?? 0) > 0 ||
+    thread.backgroundWork ||
     thread.openRequestCount > 0 ||
-    (session?.continueAtReset ?? null) !== null ||
+    thread.waitsForReset ||
+    thread.sideAnswerRunning ||
     hasLiveCheckBack(thread)
   );
 }
 
-/** The "still going" input from a thread's shell, as the client holds it. */
-export function stillGoingInputOfShell(shell: {
-  readonly session: StillGoingInput["session"];
-  readonly latestTurn: StillGoingInput["latestTurn"];
-  readonly queuedFollowUps?: ReadonlyArray<unknown> | undefined;
-  readonly hasPendingApprovals: boolean;
-  readonly hasPendingUserInput: boolean;
-  readonly hasActionableProposedPlan: boolean;
-  readonly awaitedChildThreadCount?: number | undefined;
-  readonly pendingChildApproval?: boolean | undefined;
-  readonly checkBacks?: StillGoingInput["checkBacks"];
-}): StillGoingInput {
+/**
+ * The "still going" facts from a thread's shell as the server sends it. The
+ * client adds a message no turn has picked up yet to `turnInFlight` itself.
+ */
+export function stillGoingInputOfShell(
+  shell: SideTurnFields & {
+    readonly session: {
+      readonly status: string;
+      readonly pendingBackgroundTaskCount?: number | undefined;
+      readonly awaitedBackgroundTaskCount?: number | undefined;
+      readonly continueAtReset?: unknown;
+    } | null;
+    readonly latestTurn: { readonly state: string } | null;
+    readonly queuedFollowUps?: ReadonlyArray<unknown> | undefined;
+    readonly hasPendingApprovals: boolean;
+    readonly hasPendingUserInput: boolean;
+    readonly hasActionableProposedPlan: boolean;
+    readonly awaitedChildThreadCount?: number | undefined;
+    readonly pendingChildApproval?: boolean | undefined;
+    readonly checkBacks?: StillGoingInput["checkBacks"];
+  },
+): StillGoingInput {
+  const session = shell.session;
   return {
-    session: shell.session,
-    latestTurn: shell.latestTurn,
+    turnInFlight:
+      shell.latestTurn?.state === "running" ||
+      session?.status === "running" ||
+      session?.status === "starting",
     queuedCount: shell.queuedFollowUps?.length ?? 0,
     waitsOnUser:
       shell.hasPendingApprovals || shell.hasPendingUserInput || shell.hasActionableProposedPlan,
+    backgroundWork:
+      (session?.pendingBackgroundTaskCount ?? 0) > 0 ||
+      (session?.awaitedBackgroundTaskCount ?? 0) > 0,
     openRequestCount: (shell.awaitedChildThreadCount ?? 0) + (shell.pendingChildApproval ? 1 : 0),
+    waitsForReset: (session?.continueAtReset ?? null) !== null,
+    sideAnswerRunning: hasLiveSideTurn(shell),
     checkBacks: shell.checkBacks,
   };
 }

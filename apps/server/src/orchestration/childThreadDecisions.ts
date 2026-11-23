@@ -114,6 +114,7 @@ export function claimsServerLineage(fields: {
   readonly parentThreadId?: unknown;
   readonly parentTurnId?: unknown;
   readonly attachedToParent?: unknown;
+  readonly stopsWithParent?: unknown;
   readonly remoteOrigin?: unknown;
   readonly scheduledRun?: unknown;
   readonly outsideOrigin?: unknown;
@@ -123,6 +124,7 @@ export function claimsServerLineage(fields: {
     fields.parentThreadId !== undefined ||
     fields.parentTurnId !== undefined ||
     fields.attachedToParent !== undefined ||
+    fields.stopsWithParent !== undefined ||
     fields.remoteOrigin !== undefined ||
     fields.scheduledRun !== undefined ||
     fields.outsideOrigin !== undefined ||

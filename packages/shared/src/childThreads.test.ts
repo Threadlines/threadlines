@@ -20,6 +20,7 @@ import {
   isStillGoing,
   remoteChildrenOf,
   remoteChildStartsOf,
+  stillGoingInputOfShell,
   stopReachOf,
   type StillGoingInput,
 } from "./childThreads.ts";
@@ -307,33 +308,52 @@ describe("family walks", () => {
 
 describe("isStillGoing", () => {
   const idle: StillGoingInput = {
-    session: { status: "ready" },
-    latestTurn: { state: "completed" },
+    turnInFlight: false,
     queuedCount: 0,
     waitsOnUser: false,
+    backgroundWork: false,
     openRequestCount: 0,
+    waitsForReset: false,
+    sideAnswerRunning: false,
   };
 
   it("is false for an idle open session, and true for each kind of work", () => {
     expect(isStillGoing(idle)).toBe(false);
-    expect(isStillGoing({ ...idle, latestTurn: { state: "running" } })).toBe(true);
-    expect(isStillGoing({ ...idle, session: { status: "starting" } })).toBe(true);
-    expect(isStillGoing({ ...idle, queuedCount: 1 })).toBe(true);
-    expect(isStillGoing({ ...idle, waitsOnUser: true })).toBe(true);
-    expect(isStillGoing({ ...idle, openRequestCount: 1 })).toBe(true);
-    expect(
-      isStillGoing({ ...idle, session: { status: "ready", pendingBackgroundTaskCount: 1 } }),
-    ).toBe(true);
-    expect(
-      isStillGoing({
-        ...idle,
-        session: { status: "error", continueAtReset: { at: "2026-11-23T12:00:00.000Z" } },
-      }),
-    ).toBe(true);
+    for (const going of [
+      { turnInFlight: true },
+      { queuedCount: 1 },
+      { waitsOnUser: true },
+      { backgroundWork: true },
+      { openRequestCount: 1 },
+      { waitsForReset: true },
+      { sideAnswerRunning: true },
+    ]) {
+      expect(isStillGoing({ ...idle, ...going })).toBe(true);
+    }
   });
 
   it("counts a check-back, saved or not, until it is dormant", () => {
     expect(isStillGoing({ ...idle, checkBacks: [{}] })).toBe(true);
     expect(isStillGoing({ ...idle, checkBacks: [{ dormant: true }] })).toBe(false);
+  });
+
+  it("reads a shell: an open session with nothing in it is not going", () => {
+    const shell = {
+      session: { status: "ready" },
+      latestTurn: { state: "completed" },
+      queuedFollowUps: [],
+      hasPendingApprovals: false,
+      hasPendingUserInput: false,
+      hasActionableProposedPlan: false,
+      awaitedChildThreadCount: 0,
+      pendingChildApproval: false,
+    };
+    expect(isStillGoing(stillGoingInputOfShell(shell))).toBe(false);
+    expect(
+      isStillGoing(stillGoingInputOfShell({ ...shell, session: { status: "starting" } })),
+    ).toBe(true);
+    expect(isStillGoing(stillGoingInputOfShell({ ...shell, pendingChildApproval: true }))).toBe(
+      true,
+    );
   });
 });
