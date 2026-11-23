@@ -184,6 +184,12 @@ const ACP_HELD_REPLY_QUIET_LIMIT = Duration.minutes(2);
 /** How long reading a prompt's real outcome (`turnMachine.outcome`) may take. */
 const ACP_OUTCOME_CHECK_TIMEOUT = Duration.seconds(10);
 /**
+ * How long noting where the agent's records stand may hold a prompt back
+ * (`turnMachine.outcome.watch`): past it the prompt goes with no baseline,
+ * and its outcome is its own answer. The one sender waits on it.
+ */
+const ACP_OUTCOME_WATCH_TIMEOUT = Duration.seconds(2);
+/**
  * How long after a cancel its notice is still expected (and dropped). An
  * agent that never sends one must not cost a real reply in those words later.
  */
@@ -253,6 +259,8 @@ interface PendingUserInput {
 
 interface AcpSessionContext {
   readonly threadId: ThreadId;
+  /** Done once a stop has closed the session's process scope (`sessionStopped`). */
+  readonly closed: Deferred.Deferred<void>;
   session: ProviderSession;
   /** A room's side runtime: read-only, every request declined, its mode never changed. */
   readonly lockdown: "side-answer" | "side-review" | undefined;
@@ -454,6 +462,8 @@ export type AcpTurnMachineSeam =
       readonly point: "stepCommitted";
       readonly event: AcpTurnEvent<unknown>["type"];
       readonly commands: ReadonlyArray<AcpTurnCommand<unknown>["type"]>;
+      /** Prompt records the driver still holds as the step begins. */
+      readonly promptsHeld: number;
     }
   /** On the prompt sender: before a prompt's mode and model setup returns. */
   | { readonly point: "promptSetup"; readonly prompt: number }
@@ -461,6 +471,8 @@ export type AcpTurnMachineSeam =
   | { readonly point: "answerRead"; readonly prompt: number }
   /** Off the reader: during a prompt's outcome check. */
   | { readonly point: "outcomeRead"; readonly prompt: number }
+  /** Stopping a session: everything is settled, its process scope not yet closed. */
+  | { readonly point: "processTeardown" }
   /** Off the reader: the child records are read, the reading not yet posted. */
   | { readonly point: "childrenRead"; readonly generation: number };
 
@@ -1444,8 +1456,10 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           }
         }
 
+        yield* seam({ point: "processTeardown" });
         yield* Effect.ignore(Scope.close(ctx.scope, Exit.void));
         sessions.delete(ctx.threadId);
+        yield* Deferred.succeed(ctx.closed, undefined);
         yield* offerRuntimeEvent({
           type: "session.exited",
           ...(yield* makeEventStamp()),
@@ -2331,6 +2345,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                     outbox: yield* Queue.unbounded<number>(),
                   },
             stopped: false,
+            closed: yield* Deferred.make<void>(),
           };
 
           const notificationFiber = yield* Stream.runDrain(
@@ -2355,7 +2370,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                     // In its place among the updates (`promptInOrder`).
                     const sent = ctx.machine?.prompts.get(event.key);
                     if (sent !== undefined) sent.exit = event.answer;
-                    yield* applyTurnEvent(ctx, { type: "promptAnswered", prompt: event.key });
+                    yield* answerMachinePrompt(ctx, event.key);
                     return;
                   }
                   case "SessionStatus":
@@ -2852,10 +2867,23 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             point: "stepCommitted",
             event: event.type,
             commands: step.commands.map((command) => command.type),
+            promptsHeld: machine.prompts.size,
           });
           for (const command of step.commands) yield* runTurnCommand(ctx, machine, command);
           return step.commands;
         }),
+      );
+
+    /**
+     * A prompt's answer, stepped: the step reads its usage and starts its
+     * outcome check (which keeps what it needs), and nothing reads its
+     * record after, so it goes. Its parts can be large (inline attachments).
+     * A late answer to a prompt a steer replaced goes the same way.
+     */
+    const answerMachinePrompt = (ctx: AcpSessionContext, prompt: number) =>
+      applyTurnEvent(ctx, { type: "promptAnswered", prompt }).pipe(
+        Effect.ensuring(Effect.sync(() => void ctx.machine?.prompts.delete(prompt))),
+        Effect.asVoid,
       );
 
     /** A request the agent made was answered (or given up on): quiet limits may run again. */
@@ -2972,6 +3000,9 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
               machineOptions?.outcome === undefined
                 ? undefined
                 : yield* machineOptions.outcome.watch(ctx.acpSessionId, sent.model).pipe(
+                    // A stalled file system must not hold every prompt behind this one.
+                    Effect.timeoutOption(ACP_OUTCOME_WATCH_TIMEOUT),
+                    Effect.map(Option.getOrUndefined),
                     Effect.catchCause((cause) =>
                       Effect.logWarning("acp.prompt-outcome.watch-failed", {
                         provider: PROVIDER,
@@ -2995,7 +3026,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         yield* ctx.acp.inOrder(
           Effect.suspend(() => {
             sent.exit = Exit.failCause(exit.cause);
-            return applyTurnEvent(ctx, { type: "promptAnswered", prompt });
+            return answerMachinePrompt(ctx, prompt);
           }).pipe(Effect.asVoid),
         );
       });
@@ -4095,6 +4126,13 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         ),
       );
 
+    /** `ProviderAdapterShape.sessionStopped`: the stopping session stays in `sessions` until its scope closed. */
+    const sessionStopped = (threadId: ThreadId): Effect.Effect<void> =>
+      Effect.suspend(() => {
+        const ctx = sessions.get(threadId);
+        return ctx === undefined ? Effect.void : Deferred.await(ctx.closed);
+      });
+
     const hasSession: AcpAdapterShape["hasSession"] = (threadId) =>
       Effect.sync(() => {
         const c = sessions.get(threadId);
@@ -4177,6 +4215,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
       stopSession,
       listSessions,
       hasSession,
+      sessionStopped,
       stopAll,
       noteBeforeStop: processes.beforeStop,
       confirmThreadStopped: processes.confirm,

@@ -60,6 +60,7 @@
  * - `stuck`: starts a command that never ends, and ignores a cancel.
  * - `wake-permission-reask`: a command ends after the answer; the wake asks
  *   for an MCP call, and an update while it waits has it asked again.
+ * - `deaf`: closes its stdin once the session is up, and stays running.
  * - `mode-fails-once`: the first switch back to the `default` mode fails;
  *   later ones work.
  * - `steer`: holds its first prompt until a second arrives, answers the first
@@ -72,7 +73,7 @@
  * (`available_commands_update`), as the 1.5 CLI does. Under `flapping` it
  * then changes the list ten times in a row.
  */
-import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -227,6 +228,19 @@ const program = Effect.gen(function* () {
       sessionCount += 1;
       // Unique per process, as the CLI's are: two threads never share one.
       const sessionId = `agy-${process.pid}-${sessionCount}`;
+      if (scenario === "deaf") {
+        // Closes its stdin once the session is up (the descriptor itself:
+        // destroying the stream leaves the pipe open); stdout stays open.
+        yield* Effect.sleep("100 millis").pipe(
+          Effect.andThen(
+            Effect.sync(() => {
+              process.stdin.destroy();
+              closeSync(0);
+            }),
+          ),
+          Effect.forkDetach,
+        );
+      }
       // After the answer, as the CLI sends it.
       yield* Effect.sleep("20 millis").pipe(
         Effect.andThen(

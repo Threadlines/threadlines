@@ -372,6 +372,17 @@ export interface ProviderAdapterShape<TError> {
   readonly hasSession: (threadId: ThreadId) => Effect.Effect<boolean>;
 
   /**
+   * Resolves once no runtime of this thread runs: at once when there is
+   * none, or once a stop already under way has closed the runtime's process
+   * scope (its child processes are gone). `hasSession` turns false as soon
+   * as a stop begins, so a caller that must not touch files the agent may
+   * still hold open (a revert) waits on this, after asking for the stop (a
+   * live runtime is waited on until something stops it). Never fails.
+   * Absent: a stopped session is gone when `stopSession` returns.
+   */
+  readonly sessionStopped?: (threadId: ThreadId) => Effect.Effect<void>;
+
+  /**
    * Read a provider thread snapshot.
    */
   readonly readThread: (threadId: ThreadId) => Effect.Effect<ProviderThreadSnapshot, TError>;

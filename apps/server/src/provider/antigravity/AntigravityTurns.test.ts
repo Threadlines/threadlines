@@ -151,6 +151,12 @@ const startAgy = (
     };
   });
 
+/** Steering, which Antigravity ships without (`ANTIGRAVITY_STEERS`), on for one test. */
+const withSteering = (descriptor: AgyDescriptor): AgyDescriptor => ({
+  ...descriptor,
+  turnMachine: { ...descriptor.turnMachine!, steer: true },
+});
+
 const completedTurns = (events: ReadonlyArray<ProviderRuntimeEvent>) =>
   events.flatMap((event) => (event.type === "turn.completed" ? [event] : []));
 
@@ -382,7 +388,7 @@ describe("Antigravity turns", () => {
 
   it.live("steers a running turn with a second prompt, never cancelling it", () =>
     Effect.gen(function* () {
-      const agy = yield* startAgy("steer");
+      const agy = yield* startAgy("steer", withSteering);
       expect(agy.adapter.capabilities.activeTurnSteering).toBe("supported");
       const { turnId } = yield* agy.adapter.sendTurn({
         threadId: agy.threadId,
@@ -557,6 +563,7 @@ describe("Antigravity turns, the hard cases", () => {
             ...descriptor,
             turnMachine: {
               ...machine,
+              steer: true,
               outcome: {
                 watch: (sessionId, model) =>
                   outcome.watch(sessionId, model).pipe(
@@ -611,7 +618,7 @@ describe("Antigravity turns, the hard cases", () => {
 
   it.live("steers without inheriting the error the earlier prompt left in the log", () =>
     Effect.gen(function* () {
-      const agy = yield* startAgy("steer-log-error");
+      const agy = yield* startAgy("steer-log-error", withSteering);
       const { turnId } = yield* agy.adapter.sendTurn({
         threadId: agy.threadId,
         input: "go",
@@ -630,7 +637,7 @@ describe("Antigravity turns, the hard cases", () => {
 
   it.live("steers without inheriting an error the earlier prompt writes late", () =>
     Effect.gen(function* () {
-      const agy = yield* startAgy("steer-late-log-error");
+      const agy = yield* startAgy("steer-late-log-error", withSteering);
       const { turnId } = yield* agy.adapter.sendTurn({
         threadId: agy.threadId,
         input: "go",
@@ -651,7 +658,7 @@ describe("Antigravity turns, the hard cases", () => {
     "fails a steer whose own error is logged before the earlier prompt answers (finding 5)",
     () =>
       Effect.gen(function* () {
-        const agy = yield* startAgy("steer-own-log-error");
+        const agy = yield* startAgy("steer-own-log-error", withSteering);
         const { turnId } = yield* agy.adapter.sendTurn({
           threadId: agy.threadId,
           input: "go",
@@ -942,7 +949,7 @@ describe("Antigravity turn driver, the orderings", () => {
   it.live("sends a steer only after the prompt it steers, whose setup ran first (finding 2)", () =>
     Effect.gen(function* () {
       const gate = yield* makeGate((seam) => seam.point === "promptSetup" && seam.prompt === 1);
-      const agy = yield* startAgy("steer", undefined, "full-access", gate.seams);
+      const agy = yield* startAgy("steer", withSteering, "full-access", gate.seams);
       // The send returns once its prompt is written, so it waits on the gate too.
       const sending = yield* agy.adapter
         .sendTurn({ threadId: agy.threadId, input: "first message", attachments: [] })
@@ -1166,6 +1173,111 @@ describe("Antigravity turn driver, the orderings", () => {
       }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 
+  it.live("returns a send undelivered when the agent stopped reading its stdin", () =>
+    Effect.gen(function* () {
+      const agy = yield* startAgy("deaf", undefined, "full-access", undefined, {
+        version: 1,
+        fromProvider: ProviderDriverKind.make("claudeAgent"),
+        entries: [{ kind: "message", role: "user", text: "the earlier conversation" }],
+      });
+      yield* Effect.sleep("300 millis");
+      // The prompt can be queued, but never written: the send says so, and
+      // doesn't wait on an answer that can't come.
+      const sent = yield* agy.adapter.sendTurn({
+        threadId: agy.threadId,
+        input: "hello",
+        attachments: [],
+      });
+      expect(sent.undelivered).toBe(true);
+      const frames = yield* agy.frames();
+      expect(frames.filter((frame) => frame.method === "session/prompt")).toHaveLength(0);
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+  it.live("lets go of each prompt's record once its answer is in, a steered one's too", () =>
+    Effect.gen(function* () {
+      const gate = yield* makeGate(() => false);
+      const agy = yield* startAgy("steer", withSteering, "full-access", gate.seams);
+      const { turnId } = yield* agy.adapter.sendTurn({
+        threadId: agy.threadId,
+        input: "go",
+        attachments: [],
+      });
+      yield* agy.waitFor((events) => replyTo(events, turnId).includes("Working on it."));
+      // The first prompt is answered after the steer that replaced it.
+      yield* agy.adapter.steerTurn!({
+        threadId: agy.threadId,
+        expectedTurnId: turnId,
+        input: "try again",
+      });
+      yield* agy.waitFor((events) => completedTurns(events).length === 1);
+      yield* Effect.sleep("200 millis");
+      // The next message's first step finds no record left of either prompt.
+      const before = gate.seen.length;
+      yield* agy.adapter.sendTurn({ threadId: agy.threadId, input: "next", attachments: [] });
+      const sendStep = gate.seen
+        .slice(before)
+        .find((seam) => seam.point === "stepCommitted" && seam.event === "send");
+      expect(sendStep).toMatchObject({ promptsHeld: 0 });
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+  it.live("sends a prompt whose log baseline can't be read in time, judged by its own answer", () =>
+    Effect.gen(function* () {
+      // The profile's file system stalls: noting where the log stands never returns.
+      const agy = yield* startAgy("log-error", (descriptor) => ({
+        ...descriptor,
+        turnMachine: {
+          ...descriptor.turnMachine!,
+          outcome: { watch: () => Effect.never },
+        },
+      }));
+      const { turnId } = yield* agy.adapter.sendTurn({
+        threadId: agy.threadId,
+        input: "hi",
+        attachments: [],
+      });
+      yield* agy.waitFor((events) => completedTurns(events).length === 1, 800);
+      // With no baseline the log's error can't be tied to the prompt: its own answer stands.
+      expect(completedTurns(agy.events)[0]).toMatchObject({
+        turnId,
+        payload: { state: "completed" },
+      });
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+  it.live("lets a revert wait for a stop under way until the agent's process is gone", () =>
+    Effect.gen(function* () {
+      const gate = yield* makeGate((seam) => seam.point === "processTeardown");
+      const agy = yield* startAgy("simple", undefined, "full-access", gate.seams);
+      // The stand-in's session ids carry its process id.
+      const sessionId = (agy.session.resumeCursor as { readonly sessionId: string }).sessionId;
+      const pid = Number(sessionId.split("-")[1]);
+      const alive = () => {
+        try {
+          process.kill(pid, 0);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      const stopping = yield* agy.adapter.stopSession(agy.threadId).pipe(Effect.forkScoped);
+      yield* gate.reached;
+      // The stop has begun: the session reads as gone, but its process isn't.
+      expect(yield* agy.adapter.hasSession(agy.threadId)).toBe(false);
+      expect(alive()).toBe(true);
+      const waiting = yield* agy.adapter.sessionStopped!(agy.threadId).pipe(Effect.forkScoped);
+      yield* Effect.sleep("200 millis");
+      expect(waiting.pollUnsafe()).toBeUndefined();
+      yield* gate.release;
+      yield* Fiber.join(waiting);
+      expect(alive()).toBe(false);
+      yield* Fiber.join(stopping);
+      // With nothing running, it answers at once.
+      yield* agy.adapter.sessionStopped!(agy.threadId);
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
   it.live("holds a turn through an approval asked again while the user waits", () =>
     Effect.gen(function* () {
       const opened = (events: ReadonlyArray<ProviderRuntimeEvent>) =>
@@ -1206,12 +1318,9 @@ describe("Antigravity turn driver, the orderings", () => {
     }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 
-  it.live("queues a message sent mid-turn when steering is off", () =>
+  it.live("queues a message sent mid-turn, steering being off for Antigravity", () =>
     Effect.gen(function* () {
-      const agy = yield* startAgy("background", (descriptor) => ({
-        ...descriptor,
-        turnMachine: { ...descriptor.turnMachine!, steer: false },
-      }));
+      const agy = yield* startAgy("background");
       expect(agy.adapter.steerTurn).toBeUndefined();
       expect(agy.adapter.capabilities.activeTurnSteering).toBeUndefined();
       const first = yield* agy.adapter.sendTurn({

@@ -175,13 +175,13 @@ it. If the
 agent exits while a turn is held, the turn fails with that reason and the next message starts it
 again.
 
-A message sent while Antigravity works steers the turn instead of waiting: Threadlines sends it as
-another prompt, which the CLI takes into the running turn (1.5.0+), leaving its commands and
-subagents running. The turn ends with the newest prompt's answer. Prompts reach the agent in the
-order they were sent, the first one's mode and model setup included, so a steer never arrives ahead
-of the message it steers. Steering is one switch (`ANTIGRAVITY_STEERS` in
-`apps/server/src/provider/antigravity/AntigravityTurns.ts`); off, a message sent mid-turn waits for
-the turn to end.
+A message sent while Antigravity is answering waits for that turn to end, as with other agents. One
+sent while the turn only waits on work Antigravity started ends that turn, and goes at once.
+Prompts reach the agent in the order they were sent, each turn's mode and model setup first.
+Threadlines can also steer a running turn with a second prompt, which the CLI takes into it
+(1.5.0+), but that ships off (`ANTIGRAVITY_STEERS` in
+`apps/server/src/provider/antigravity/AntigravityTurns.ts`): a steer is recorded as accepted before
+it is written, so an agent that exits at that moment would leave a steer shown that it never got.
 
 All of this is one state machine (`apps/server/src/provider/acp/AcpTurnMachine.ts`), stepped in
 order with the agent's updates. A prompt's answer takes its place among those updates where the
