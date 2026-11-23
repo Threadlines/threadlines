@@ -146,6 +146,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
         profileDir: paths.profileDir,
         method: signIn.method,
         fingerprint,
+        ...(signIn.project ? { project: signIn.project } : {}),
       });
       const descriptor = makeAntigravityDescriptor({
         paths,

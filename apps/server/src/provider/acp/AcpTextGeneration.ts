@@ -81,8 +81,9 @@ export const makeAcpTextGeneration = Effect.fn("makeAcpTextGeneration")(function
     prompt: string;
     outputSchemaJson: S;
     modelSelection: ModelSelection;
-  }): Effect.Effect<S["Type"], TextGenerationError, S["DecodingServices"]> =>
-    Effect.gen(function* () {
+  }): Effect.Effect<S["Type"], TextGenerationError, S["DecodingServices"]> => {
+    let openedSessionId: string | undefined;
+    return Effect.gen(function* () {
       const outputRef = yield* Ref.make("");
       // Workspace hooks and settings can act before a denied tool call
       // would stop them; agents that read them run in an empty directory.
@@ -114,7 +115,8 @@ export const makeAcpTextGeneration = Effect.fn("makeAcpTextGeneration")(function
       });
 
       const promptResult = yield* Effect.gen(function* () {
-        yield* runtime.start();
+        const started = yield* runtime.start();
+        openedSessionId = started.sessionId;
         const modeState = yield* runtime.getModeState;
         yield* Effect.ignore(
           runtime.setMode(
@@ -194,7 +196,15 @@ export const makeAcpTextGeneration = Effect.fn("makeAcpTextGeneration")(function
           : mapAcpError(operation, `${agentName} ACP text generation failed.`, cause),
       ),
       Effect.scoped,
+      Effect.ensuring(
+        Effect.suspend(() =>
+          openedSessionId !== undefined && descriptor.onEphemeralSessionClosed
+            ? descriptor.onEphemeralSessionClosed(openedSessionId).pipe(Effect.ignore)
+            : Effect.void,
+        ),
+      ),
     );
+  };
 
   const generateCommitMessage: TextGenerationShape["generateCommitMessage"] = Effect.fn(
     "AcpTextGeneration.generateCommitMessage",

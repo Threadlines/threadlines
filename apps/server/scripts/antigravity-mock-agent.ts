@@ -715,7 +715,12 @@ const program = Effect.gen(function* () {
           usage: { inputTokens: 400, outputTokens: 10, totalTokens: 410 },
         };
       }
-      if (scenario === "background" || scenario === "hang" || scenario === "exit") {
+      if (
+        scenario === "background" ||
+        scenario === "background-log-error" ||
+        scenario === "hang" ||
+        scenario === "exit"
+      ) {
         yield* update(sessionId, { sessionUpdate: "tool_call", ...command, status: "in_progress" });
         yield* say(sessionId, "I'll report once the build finishes.");
         yield* modelCallEnds(sessionId);
@@ -725,7 +730,7 @@ const program = Effect.gen(function* () {
             yield* Effect.sync((): void => process.exit(1));
           }).pipe(Effect.forkDetach);
         }
-        if (scenario === "background") {
+        if (scenario === "background" || scenario === "background-log-error") {
           yield* Effect.gen(function* () {
             yield* Effect.sleep("400 millis");
             yield* update(sessionId, {
@@ -735,7 +740,15 @@ const program = Effect.gen(function* () {
               rawOutput: { output: "Command exited with code 0.", exit_code: 0 },
             });
             yield* Effect.sleep("100 millis");
-            yield* say(sessionId, "The build passed.");
+            if (scenario === "background-log-error") {
+              appendLogSteps(sessionId, [
+                [15, "I'll report once the build finishes."],
+                [17, GATEWAY_ERROR],
+              ]);
+              yield* say(sessionId, "API error: the request failed.");
+            } else {
+              yield* say(sessionId, "The build passed.");
+            }
             yield* modelCallEnds(sessionId);
           }).pipe(Effect.forkDetach);
         }
@@ -749,6 +762,50 @@ const program = Effect.gen(function* () {
             totalTokens: 5_050,
           },
         };
+      }
+      if (scenario === "ask-question") {
+        const answer = yield* agent.client.extRequest("elicitation/create", {
+          sessionId,
+          mode: "form",
+          message: "The agent has 2 questions.",
+          requestedSchema: {
+            type: "object",
+            properties: {
+              q1: {
+                type: "string",
+                title: "Which runtime should we target?",
+                oneOf: [
+                  { const: "1", title: "Node.js", description: "Default runtime" },
+                  { const: "2", title: "Deno" },
+                ],
+              },
+              q1_other: {
+                type: "string",
+                title: "Other",
+                description: "Optional free-form answer",
+              },
+              q2: {
+                type: "array",
+                title: "Which checks should run?",
+                items: {
+                  anyOf: [
+                    { const: "1", title: "Typecheck" },
+                    { const: "2", title: "Unit tests" },
+                    { const: "3", title: "Lint" },
+                  ],
+                },
+              },
+              q2_other: {
+                type: "string",
+                title: "Other",
+                description: "Optional free-form answer",
+              },
+            },
+          },
+        });
+        yield* say(sessionId, `Answers: ${JSON.stringify(answer)}`);
+        yield* modelCallEnds(sessionId);
+        return { stopReason: "end_turn" as const };
       }
       if (scenario === "subagent") {
         yield* update(sessionId, {

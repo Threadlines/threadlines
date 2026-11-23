@@ -229,3 +229,31 @@ export const antigravityTurnSteps = (profileDir: string, sessionId: string, afte
     });
     return typeof steps === "string" ? undefined : steps.value;
   }).pipe(Effect.orElseSucceed(() => undefined));
+
+/**
+ * Removes the CLI's on-disk files for one throwaway session (model discovery,
+ * sign-in verification, text generation) once its process has exited. Every
+ * path is verified inside the profile with no symlinks via
+ * `antigravityProfileEntry`.
+ */
+export const removeAntigravitySessionFiles = (profileDir: string, sessionId: string) =>
+  Effect.promise(async () => {
+    if (!SESSION_ID.test(sessionId)) return;
+    const files: ReadonlyArray<ReadonlyArray<string>> = [
+      ["conversations", `${sessionId}.db`],
+      ["conversations", `${sessionId}.db-wal`],
+      ["conversations", `${sessionId}.db-shm`],
+      ["conversations", `${sessionId}.db-journal`],
+      ["annotations", `${sessionId}.pbtxt`],
+    ];
+    for (const segments of files) {
+      const entry = await antigravityProfileEntry(profileDir, segments, "file");
+      if (typeof entry !== "string") {
+        await NodeFSP.rm(entry.path, { force: true }).catch(() => undefined);
+      }
+    }
+    const brainEntry = await antigravityProfileEntry(profileDir, ["brain", sessionId], "directory");
+    if (typeof brainEntry !== "string") {
+      await NodeFSP.rm(brainEntry.path, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });

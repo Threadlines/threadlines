@@ -557,8 +557,10 @@ const askHosts = (
   operation: "retrieveUserQuotaSummary" | "fetchAvailableModels",
   parse: (answer: unknown, requestedAtMs: number) => ReadonlyArray<QuotaWindow>,
   timeout: Duration.Input,
-) =>
-  Effect.forEach(
+  project?: string,
+) => {
+  const body = project ? JSON.stringify({ project }) : "{}";
+  return Effect.forEach(
     HOSTS_BY_METHOD[method],
     (host) =>
       Effect.gen(function* () {
@@ -566,7 +568,7 @@ const askHosts = (
         const answer = yield* requestJson(
           fetch,
           `https://${host}/v1internal:${operation}`,
-          { method: "POST", accessToken, body: "{}" },
+          { method: "POST", accessToken, body },
           timeout,
         );
         return { answered: true, windows: parse(answer, requestedAtMs) };
@@ -578,6 +580,7 @@ const askHosts = (
       windows: mergeHosts(answers.map((answer) => answer.windows)),
     })),
   );
+};
 
 /**
  * One full read. The summary comes first; when it has no Gemini row (Google
@@ -589,6 +592,7 @@ const readQuotaWindows = (
   method: GoogleMethod,
   accessToken: string,
   timeout: Duration.Input,
+  project?: string,
 ) =>
   Effect.gen(function* () {
     const summary = yield* askHosts(
@@ -598,6 +602,7 @@ const readQuotaWindows = (
       "retrieveUserQuotaSummary",
       antigravitySummaryWindows,
       timeout,
+      project,
     );
     if (summary.windows.some((window) => window.family.gemini)) return summary;
     const models = yield* askHosts(
@@ -607,6 +612,7 @@ const readQuotaWindows = (
       "fetchAvailableModels",
       antigravityModelWindows,
       timeout,
+      project,
     );
     if (summary.windows.length === 0) {
       return { windows: models.windows, complete: summary.complete && models.complete };
@@ -686,6 +692,8 @@ export interface AntigravityUsageReaderInput {
   readonly method: AntigravityAuthMethod;
   /** `antigravityCredentialFingerprint` of the instance's sign-in. */
   readonly fingerprint: string;
+  /** Google Cloud project for Gemini Enterprise (`oauth-business`), sent in Cloud Code requests. */
+  readonly project?: string;
   /** Test seam; by default a fetch held to `ANTIGRAVITY_USAGE_HOSTS` with no redirects. */
   readonly fetch?: DownloadFetch;
   /** Test seam; by default 10 seconds per request and 30 per read. */
@@ -789,7 +797,13 @@ export const makeAntigravityUsageReader = (
         return yield* Effect.gen(function* () {
           const [windows, email] = yield* Effect.all(
             [
-              readQuotaWindows(fetch, method, token.accessToken, timeouts.request),
+              readQuotaWindows(
+                fetch,
+                method,
+                token.accessToken,
+                timeouts.request,
+                input.project?.trim() || undefined,
+              ),
               token.email !== undefined || emails.has(key)
                 ? Effect.succeed(token.email ?? emails.get(key))
                 : readEmail(fetch, token.accessToken, timeouts.request),

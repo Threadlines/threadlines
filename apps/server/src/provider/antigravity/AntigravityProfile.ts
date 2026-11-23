@@ -12,6 +12,7 @@
  * @module provider/antigravity/AntigravityProfile
  */
 import { createHash, randomBytes } from "node:crypto";
+import { existsSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import { join, resolve } from "node:path";
 
@@ -61,9 +62,27 @@ export const antigravityTokenPath = (profileDir: string) =>
 export const antigravityLegacyTokenPath = (profileDir: string) =>
   join(antigravityAgentDir(profileDir), "acp_token.json");
 
-/** Credentials and project settings that would steer the agent away from this profile. */
+/** Credentials, project settings and host-Electron internals that steer or break the child. */
 const STRIPPED_ENV_KEY =
-  /^(GEMINI_|GOOGLE_|GCLOUD_|CLOUDSDK_|AGY_|ANTIGRAVITY_)|^(BROWSER|PYTHONUNBUFFERED|PYTHONHOME|PYTHONPATH)$/iu;
+  /^(GEMINI_|GOOGLE_|GCLOUD_|CLOUDSDK_|AGY_|ANTIGRAVITY_)|^(BROWSER|PYTHONUNBUFFERED|PYTHONHOME|PYTHONPATH|ELECTRON_RUN_AS_NODE|CHROME_CRASHPAD_PIPE_NAME)$/iu;
+
+const LINUX_CA_BUNDLE_PATHS = [
+  "/etc/ssl/certs/ca-bundle.crt",
+  "/etc/ssl/certs/ca-certificates.crt",
+  "/etc/pki/tls/certs/ca-bundle.crt",
+  "/etc/ssl/cert.pem",
+] as const;
+
+function resolveLinuxSslCertFile(
+  base: NodeJS.ProcessEnv,
+  exists: (path: string) => boolean,
+): string | undefined {
+  const candidates = [
+    ...(base.NIX_SSL_CERT_FILE?.trim() ? [base.NIX_SSL_CERT_FILE.trim()] : []),
+    ...LINUX_CA_BUNDLE_PATHS,
+  ];
+  return candidates.find((candidate) => exists(candidate));
+}
 
 /**
  * What the CLI takes for a session over SSH. It then keeps a Google sign-in
@@ -96,6 +115,8 @@ export function antigravityEnvironment(input: {
   readonly tempDir: string;
   readonly platform: NodeJS.Platform;
   readonly credentials?: Readonly<Record<string, string>>;
+  /** Test seam for Linux CA bundle discovery. */
+  readonly pathExists?: (path: string) => boolean;
 }): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(input.base)) {
@@ -107,6 +128,15 @@ export function antigravityEnvironment(input: {
   env.AGY_CLI_DISABLE_AUTO_UPDATE = "1";
   env.SSH_CONNECTION = input.base.SSH_CONNECTION?.trim() || SSH_CONNECTION_STAND_IN;
   env.BROWSER = noopBrowser(input.platform, input.base);
+  // Keep subcommands run by the agent non-interactive so pagers and git prompts never hang.
+  env.PAGER = "cat";
+  env.GH_PAGER = "cat";
+  env.GIT_PAGER = "cat";
+  env.GIT_TERMINAL_PROMPT = "0";
+  if (input.platform === "linux" && !env.SSL_CERT_FILE?.trim() && !env.SSL_CERT_DIR?.trim()) {
+    const certFile = resolveLinuxSslCertFile(input.base, input.pathExists ?? existsSync);
+    if (certFile) env.SSL_CERT_FILE = certFile;
+  }
   if (input.platform === "win32") {
     env.TEMP = input.tempDir;
     env.TMP = input.tempDir;
@@ -250,6 +280,8 @@ export interface AntigravityCatalogCache {
    * it had none. Models not seen yet are missing.
    */
   readonly thoughtLevels?: Readonly<Record<string, AntigravityThoughtLevels | null>>;
+  /** True once a probe pass has checked every listed model's `thought_level` options. */
+  readonly probed?: boolean;
   /** The sign-in it was listed for (`antigravityCredentialFingerprint`). */
   readonly fingerprint?: string;
   /** The managed runtime version that listed it; absent for a custom binary. */
@@ -329,6 +361,7 @@ export const readAntigravityCatalog = (
               ? { currentValue: parsed.currentValue }
               : {}),
             ...(thoughtLevels ? { thoughtLevels } : {}),
+            ...(parsed.probed === true ? { probed: true } : {}),
             fingerprint: sign.fingerprint,
             ...(sign.agentVersion ? { agentVersion: sign.agentVersion } : {}),
           }

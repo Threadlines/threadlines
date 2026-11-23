@@ -1,16 +1,28 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeFS from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
 import { RUNTIME_MODES } from "@threadlines/contracts";
+import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vite-plus/test";
 import type * as EffectAcpSchema from "effect-acp/schema";
 
+import { antigravityEnvironment } from "../antigravity/AntigravityProfile.ts";
+import { removeAntigravitySessionFiles } from "../antigravity/AntigravitySessionLog.ts";
+import { supportedMcpServers } from "./AcpSessionRuntime.ts";
 import {
   antigravityAgentMode,
   antigravityAgentProblem,
   antigravityModelsFromCatalog,
   antigravityModelsFromChoices,
+  extractAntigravityElicitationForm,
+  isAntigravityCatalogComplete,
   isAntigravityPlanFileEdit,
   isLegacyAntigravityServerPath,
   nextAntigravityCatalog,
   parseAntigravitySignInUrl,
+  probeAntigravityModelOptions,
   resolveAntigravityModelId,
 } from "./AntigravityAcpSupport.ts";
 
@@ -223,5 +235,206 @@ describe("isAntigravityPlanFileEdit", () => {
     expect(isAntigravityPlanFileEdit(edit(`${brain}/s1/link/../plan.md`), brain, "s1")).toBe(false);
     expect(isAntigravityPlanFileEdit(edit(`${brain}/s1/./plan.md`), brain, "s1")).toBe(false);
     expect(isAntigravityPlanFileEdit(edit(`${brain}/s2/plan.md`), brain, "s1")).toBe(false);
+  });
+});
+
+describe("Antigravity audit improvements", () => {
+  it("folds Extra High and XHigh effort names", () => {
+    const models = antigravityModelsFromChoices([
+      { value: "gemini-4-pro-xhigh", name: "Gemini 4 Pro (XHigh)" },
+      { value: "gemini-4-pro-high", name: "Gemini 4 Pro (High)" },
+      { value: "gemini-4-flash-extra", name: "Gemini 4 Flash (Extra High)" },
+      { value: "gemini-4-flash-low", name: "Gemini 4 Flash (Low)" },
+    ]);
+    expect(models.map((model) => model.slug)).toEqual(["gemini-4-pro", "gemini-4-flash"]);
+    const proEffort = models[0]?.capabilities?.optionDescriptors?.[0];
+    expect(proEffort?.type === "select" ? proEffort.options.map((o) => o.id) : []).toEqual([
+      "high",
+      "xhigh",
+    ]);
+  });
+
+  it("probes each model's thought_level options in one session and restores the initial model", async () => {
+    const levelsByModel: Record<string, ReadonlyArray<string> | undefined> = {
+      "gemini-4-argon": ["low", "high"],
+      "claude-sonnet": undefined,
+      "gpt-6": ["minimal", "medium", "xhigh"],
+    };
+    let current = "gemini-4-argon";
+    const switched: Array<string> = [];
+    const optionsFor = (slug: string): ReadonlyArray<EffectAcpSchema.SessionConfigOption> => [
+      {
+        id: "model",
+        name: "Model",
+        category: "model",
+        type: "select",
+        currentValue: slug,
+        options: Object.keys(levelsByModel).map((value) => ({ value, name: value })),
+      },
+      ...(levelsByModel[slug]
+        ? [
+            {
+              id: "thought_level",
+              name: "Thinking",
+              category: "thought_level" as const,
+              type: "select" as const,
+              currentValue: levelsByModel[slug]![0]!,
+              options: levelsByModel[slug]!.map((value) => ({ value, name: value })),
+            },
+          ]
+        : []),
+    ];
+    const probed = await Effect.runPromise(
+      probeAntigravityModelOptions({
+        getConfigOptions: Effect.sync(() => optionsFor(current)),
+        setConfigOption: (_configId, value) =>
+          Effect.sync(() => {
+            current = String(value);
+            switched.push(current);
+            return { configOptions: [...optionsFor(current)] };
+          }),
+      }),
+    );
+    expect(probed?.thoughtLevels["gemini-4-argon"]?.options.map((o) => o.value)).toEqual([
+      "low",
+      "high",
+    ]);
+    expect(probed?.thoughtLevels["claude-sonnet"]).toBeNull();
+    expect(probed?.thoughtLevels["gpt-6"]?.options.map((o) => o.value)).toEqual([
+      "minimal",
+      "medium",
+      "xhigh",
+    ]);
+    expect(switched).toEqual(["claude-sonnet", "gpt-6", "gemini-4-argon"]);
+    expect(current).toBe("gemini-4-argon");
+    expect(
+      isAntigravityCatalogComplete({
+        choices: probed!.choices,
+        thoughtLevels: { "gemini-4-argon": probed!.thoughtLevels["gemini-4-argon"]! },
+      }),
+    ).toBe(false);
+    expect(
+      isAntigravityCatalogComplete({
+        choices: probed!.choices,
+        thoughtLevels: probed!.thoughtLevels,
+        probed: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("folds ask_question elicitations numerically and rejects non-ask_question forms", () => {
+    const form = extractAntigravityElicitationForm({
+      mode: "form",
+      message: "The agent has 3 questions.",
+      requestedSchema: {
+        type: "object",
+        properties: {
+          q10: {
+            type: "string",
+            title: "Tenth?",
+            oneOf: [{ const: "1", title: "Yes" }],
+          },
+          q10_other: { type: "string", title: "Other" },
+          q2: {
+            type: "array",
+            title: "Pick many",
+            items: {
+              anyOf: [
+                { const: "a", title: "Alpha" },
+                { const: "b", title: "Beta" },
+              ],
+            },
+          },
+          q2_other: { type: "string", title: "Other" },
+          q1: {
+            type: "string",
+            title: "First?",
+            oneOf: [
+              { const: "1", title: "One", description: "First choice" },
+              { const: "2", title: "Two" },
+            ],
+          },
+          q1_other: { type: "string", title: "Other" },
+        },
+      },
+    });
+    expect(form?.questions.map((q) => [q.id, q.header, q.multiSelect])).toEqual([
+      ["q1", "Question 1", false],
+      ["q2", "Question 2", true],
+      ["q10", "Question 3", false],
+    ]);
+    expect(form?.responseForAnswers({ q1: "One", q2: ["Alpha", "Beta"], q10: "Maybe" })).toEqual({
+      action: "accept",
+      content: { q1: "1", q2: ["a", "b"], q10_other: "Maybe" },
+    });
+    expect(form?.responseForAnswers({})).toEqual({ action: "cancel" });
+    // Required fields or extra keys fall back to the generic elicitation form.
+    expect(
+      extractAntigravityElicitationForm({
+        mode: "form",
+        message: "Login",
+        requestedSchema: {
+          type: "object",
+          required: ["q1"],
+          properties: {
+            q1: { type: "string", title: "First?", oneOf: [{ const: "1", title: "One" }] },
+            q1_other: { type: "string", title: "Other" },
+          },
+        },
+      }),
+    ).toBeUndefined();
+  });
+
+  it("keeps HTTP MCP servers when assumeHttpMcp is set", () => {
+    const servers = [
+      { type: "http" as const, name: "room", url: "http://127.0.0.1:9999/mcp", headers: [] },
+    ];
+    expect(supportedMcpServers(servers, undefined, false)).toEqual([]);
+    expect(supportedMcpServers(servers, undefined, true)).toEqual(servers);
+  });
+
+  it("hardens Antigravity child env and sets Linux SSL_CERT_FILE when unset", () => {
+    const env = antigravityEnvironment({
+      base: {
+        PATH: "/usr/bin",
+        ELECTRON_RUN_AS_NODE: "1",
+        CHROME_CRASHPAD_PIPE_NAME: "/tmp/pipe",
+        NIX_SSL_CERT_FILE: "/nix/ca-bundle.crt",
+      },
+      profileDir: "/tmp/profile",
+      tempDir: "/tmp/run",
+      platform: "linux",
+      pathExists: (candidate) => candidate === "/nix/ca-bundle.crt",
+    });
+    expect(env.ELECTRON_RUN_AS_NODE).toBeUndefined();
+    expect(env.CHROME_CRASHPAD_PIPE_NAME).toBeUndefined();
+    expect(env.PAGER).toBe("cat");
+    expect(env.GH_PAGER).toBe("cat");
+    expect(env.GIT_PAGER).toBe("cat");
+    expect(env.GIT_TERMINAL_PROMPT).toBe("0");
+    expect(env.SSL_CERT_FILE).toBe("/nix/ca-bundle.crt");
+  });
+
+  it("removes ephemeral session artifacts inside the profile without following symlinks", async () => {
+    const dir = await NodeFS.mkdtemp(path.join(os.tmpdir(), "agy-cleanup-"));
+    try {
+      const appDir = path.join(dir, "antigravity-acp");
+      await NodeFS.mkdir(path.join(appDir, "conversations"), { recursive: true });
+      await NodeFS.mkdir(path.join(appDir, "brain", "ephemeral-1"), { recursive: true });
+      await NodeFS.mkdir(path.join(appDir, "annotations"), { recursive: true });
+      await NodeFS.writeFile(path.join(appDir, "conversations", "ephemeral-1.db"), "db");
+      await NodeFS.writeFile(path.join(appDir, "conversations", "ephemeral-1.db-wal"), "wal");
+      await NodeFS.writeFile(path.join(appDir, "conversations", "keep.db"), "keep");
+      await NodeFS.writeFile(path.join(appDir, "brain", "ephemeral-1", "plan.md"), "plan");
+      await NodeFS.writeFile(path.join(appDir, "annotations", "ephemeral-1.pbtxt"), "note");
+
+      await Effect.runPromise(removeAntigravitySessionFiles(dir, "ephemeral-1"));
+
+      expect(await NodeFS.readdir(path.join(appDir, "conversations"))).toEqual(["keep.db"]);
+      expect(await NodeFS.readdir(path.join(appDir, "brain"))).toEqual([]);
+      expect(await NodeFS.readdir(path.join(appDir, "annotations"))).toEqual([]);
+    } finally {
+      await NodeFS.rm(dir, { recursive: true, force: true });
+    }
   });
 });

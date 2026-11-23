@@ -33,6 +33,7 @@ import type {
   AcpWorkAfterPrompt,
 } from "../acp/AcpProviderDescriptor.ts";
 import type { AcpToolCallState } from "../acp/AcpRuntimeModel.ts";
+import { antigravityVerificationUrl } from "./AntigravityAuth.ts";
 import { antigravityLogPosition, antigravityTurnSteps } from "./AntigravitySessionLog.ts";
 import { antigravityChildLaunches } from "./AntigravityChildRecords.ts";
 import { isAntigravitySubagentLaunch } from "./AntigravitySubagents.ts";
@@ -117,17 +118,26 @@ export function antigravityTurnUsageTotals(
  */
 const API_ERROR =
   /Error (\d{3}), Message: ((?:(?!, Status: |Error \d{3}, Message: ).)+), Status: ([A-Z_]+|\d{3}[^,\n]*)/su;
+/** Canonical gRPC status codes, so a preceding protobuf length byte isn't swallowed into the name. */
+const GRPC_STATUS_NAMES =
+  "CANCELLED|UNKNOWN|INVALID_ARGUMENT|DEADLINE_EXCEEDED|NOT_FOUND|ALREADY_EXISTS|PERMISSION_DENIED|RESOURCE_EXHAUSTED|FAILED_PRECONDITION|ABORTED|OUT_OF_RANGE|UNIMPLEMENTED|INTERNAL|UNAVAILABLE|DATA_LOSS|UNAUTHENTICATED";
 /** 1.5 with a Google account: "STATUS (code NNN): message". */
-const STATUS_ERROR = /(?<![A-Z_])([A-Z_]+) \(code (\d{3})\): (\P{Cc}+)/u;
-const QUOTA_EXHAUSTED = /\breason:QUOTA_EXHAUSTED\b/u;
+const STATUS_ERROR = new RegExp(`(${GRPC_STATUS_NAMES}) \\(code (\\d{3})\\): (\\P{Cc}+)`, "u");
+/** Go map (`reason:QUOTA_EXHAUSTED`) or 1.5 JSON (`"reason": "QUOTA_EXHAUSTED"`). */
+const QUOTA_EXHAUSTED = /(?:\breason:QUOTA_EXHAUSTED\b|"reason"\s*:\s*"QUOTA_EXHAUSTED")/u;
+const VALIDATION_REQUIRED = /\bVALIDATION_REQUIRED\b|verify your account/iu;
 /**
  * A saved thinking block the model refuses (its signature is gone): it sits
  * in the agent's history, so every later prompt to the session fails alike.
  */
 const LOST_THINKING_SIGNATURE =
   /\bmessages\.\d+\.content\.\d+(?:\.thinking\.signature: Field required|: Invalid `signature` in `thinking` block)/u;
-const RESET_TIMESTAMP = /\bquotaResetTimeStamp:([^\s\]]+)/u;
-const RESET_DELAY = /\bquotaResetDelay:((?:\d+(?:\.\d+)?(?:ns|us|µs|μs|ms|h|m|s))+)(?=[\s\]])/u;
+const RESET_TIMESTAMP =
+  /(?:\bquotaResetTimeStamp:([^\s\]",]+)|"quotaResetTimeStamp"\s*:\s*"([^"]+)")/u;
+const RESET_DELAY =
+  /(?:\bquotaResetDelay:((?:\d+(?:\.\d+)?(?:ns|us|µs|μs|ms|h|m|s))+)(?=[\s\]",])|"quotaResetDelay"\s*:\s*"((?:\d+(?:\.\d+)?(?:ns|us|µs|μs|ms|h|m|s))+)")/u;
+const RETRY_DELAY =
+  /(?:\bretryDelay:((?:\d+(?:\.\d+)?(?:ns|us|µs|μs|ms|h|m|s))+)(?=[\s\]",])|"retryDelay"\s*:\s*"((?:\d+(?:\.\d+)?(?:ns|us|µs|μs|ms|h|m|s))+)")/u;
 const GO_DURATION_PART = /(\d+(?:\.\d+)?)(ns|us|µs|μs|ms|h|m|s)/gu;
 const GO_DURATION_UNIT_MS: Record<string, number> = {
   ns: 1e-6,
@@ -145,20 +155,33 @@ const LOST_SESSION_MESSAGE =
   "Antigravity's saved conversation can no longer be sent to the model. The next message starts a new Antigravity session with this thread's history.";
 const UNKNOWN_ERROR_MESSAGE = "Antigravity stopped this turn because of an error.";
 
-/** When an exhausted quota resets, as the error says, in ISO time. */
-function quotaResetAt(text: string, nowMs: number): string | undefined {
-  const stamp = RESET_TIMESTAMP.exec(text)?.[1];
-  if (stamp !== undefined) {
-    const ms = Date.parse(stamp);
-    if (Number.isFinite(ms)) return new Date(ms).toISOString();
-  }
-  const delay = RESET_DELAY.exec(text)?.[1];
-  if (delay === undefined) return undefined;
+function parseGoDurationMs(delay: string): number {
   let delayMs = 0;
   for (const [, amount, unit] of delay.matchAll(GO_DURATION_PART)) {
     delayMs += Number(amount) * (GO_DURATION_UNIT_MS[unit!] ?? 0);
   }
-  return delayMs > 0 ? new Date(nowMs + delayMs).toISOString() : undefined;
+  return delayMs;
+}
+
+/**
+ * When an exhausted quota resets, as the error says, in ISO time. Prefers a
+ * future `quotaResetTimeStamp`, else a positive `quotaResetDelay` or
+ * `retryDelay`, else a valid past timestamp when no delay was given.
+ */
+function quotaResetAt(text: string, nowMs: number): string | undefined {
+  const stampMatch = RESET_TIMESTAMP.exec(text);
+  const stamp = stampMatch?.[1] ?? stampMatch?.[2];
+  const stampMs = stamp !== undefined ? Date.parse(stamp) : Number.NaN;
+  if (Number.isFinite(stampMs) && stampMs > nowMs) {
+    return new Date(stampMs).toISOString();
+  }
+  const delayMatch = RESET_DELAY.exec(text) ?? RETRY_DELAY.exec(text);
+  const delay = delayMatch?.[1] ?? delayMatch?.[2];
+  if (delay !== undefined) {
+    const delayMs = parseGoDurationMs(delay);
+    if (delayMs > 0) return new Date(nowMs + Math.ceil(delayMs)).toISOString();
+  }
+  return Number.isFinite(stampMs) ? new Date(stampMs).toISOString() : undefined;
 }
 
 /** HTTP status, message and status name, from either rendering. */
@@ -201,6 +224,15 @@ export function antigravityFailure(input: {
   if (LOST_THINKING_SIGNATURE.test(text)) {
     return { errorMessage: LOST_SESSION_MESSAGE, sessionLost: true };
   }
+  if (VALIDATION_REQUIRED.test(text)) {
+    const url = antigravityVerificationUrl(text);
+    return {
+      errorMessage: url
+        ? `Google needs you to verify this account before Antigravity can continue. Verify it at ${url}, then try again.`
+        : "Google needs you to verify this account before Antigravity can continue. Sign in to Google in your browser to verify it, then try again.",
+      failureCategory: "auth",
+    };
+  }
   const api = parseApiError(text);
   if (api === undefined) return { errorMessage: UNKNOWN_ERROR_MESSAGE };
   const rateLimited = api.httpStatus === 429 || api.status === "RESOURCE_EXHAUSTED";
@@ -211,7 +243,11 @@ export function antigravityFailure(input: {
       ? input.reachedModel === true
         ? "server_error"
         : "model_unavailable"
-      : httpStatusFailureCategory(api.httpStatus);
+      : api.httpStatus === 401 || api.status === "UNAUTHENTICATED"
+        ? input.reachedModel === true
+          ? "server_error"
+          : "auth"
+        : httpStatusFailureCategory(api.httpStatus);
   return {
     errorMessage: `Antigravity: ${api.message} (${api.status.startsWith(String(api.httpStatus)) ? api.status : `${api.httpStatus} ${api.status}`})`,
     ...(failureCategory !== undefined ? { failureCategory } : {}),
@@ -296,6 +332,7 @@ function antigravityPromptOutcome(
                 errorText !== undefined &&
                 (parseApiError(errorText) !== undefined ||
                   QUOTA_EXHAUSTED.test(errorText) ||
+                  VALIDATION_REQUIRED.test(errorText) ||
                   LOST_THINKING_SIGNATURE.test(errorText));
               return recognized
                 ? yield* withMeterReset(antigravityFailure({ errorText, nowMs }))
