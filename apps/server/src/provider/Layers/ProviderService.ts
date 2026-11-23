@@ -440,6 +440,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       const text = yield* projectInstructions.value.forSession({
         sessionKey: input.threadId,
         runtimeMode: input.runtimeMode,
+        canUseNoteTools: input.roomTools === true || input.guideTools === true,
       });
       return text === undefined ? rest : { ...rest, projectInstructions: text };
     });

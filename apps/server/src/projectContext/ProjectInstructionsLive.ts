@@ -37,7 +37,11 @@ export const makeProjectInstructions = Effect.gen(function* () {
       )
     : Effect.succeed("off" as const);
 
-  const forSession: ProjectInstructionsShape["forSession"] = ({ sessionKey, runtimeMode }) =>
+  const forSession: ProjectInstructionsShape["forSession"] = ({
+    sessionKey,
+    runtimeMode,
+    canUseNoteTools,
+  }) =>
     Effect.gen(function* () {
       const target = parseSessionKey(sessionKey);
       // A side answer is short, read-only and locked down.
@@ -58,6 +62,7 @@ export const makeProjectInstructions = Effect.gen(function* () {
         projectNotesText({
           notes: visibleNotes(yield* notes.listNotes(), thread.projectId, runtimeMode),
           mode: yield* notesMode,
+          ...(canUseNoteTools !== undefined ? { canUseNoteTools } : {}),
         }),
       ].filter((part): part is string => part !== undefined);
       return parts.length === 0 ? undefined : parts.join("\n\n");

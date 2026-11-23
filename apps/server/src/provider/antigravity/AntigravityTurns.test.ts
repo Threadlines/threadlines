@@ -85,15 +85,40 @@ const startAgy = (
   runtimeMode: "full-access" | "approval-required" | "auto-accept-edits" = "full-access",
   turnMachineSeams?: (seam: AcpTurnMachineSeam) => Effect.Effect<void>,
   contextSeed?: ThreadContextSeed,
+  startOverrides?: { readonly roomTools?: boolean },
 ) =>
   Effect.gen(function* () {
     const mock = yield* Effect.promise(() => makeAgyMock(scenario));
-    const base = makeAntigravityDescriptor({
+    const baseDescriptor = makeAntigravityDescriptor({
       paths: { profileDir: path.join(mock.dir, "profile"), tempRoot: path.join(mock.dir, "tmp") },
       runtime: undefined,
       releases: undefined,
       signIn: { method: "oauth-personal", project: "", location: "", key: "" },
     });
+    // `AntigravityAcpSupport` intentionally spawns shell-less (`shell: false`),
+    // which rejects `.cmd` wrappers on Windows (Node EINVAL). Run the mock via
+    // `process.execPath` directly on Windows while keeping the descriptor's own
+    // args, env, and `shell: false`.
+    const base: AgyDescriptor = isWindows
+      ? {
+          ...baseDescriptor,
+          spawn: (settings, cwd, environment, launch) =>
+            Effect.gen(function* () {
+              const planned = baseDescriptor.spawn(settings, cwd, environment, launch);
+              const resolved = Effect.isEffect(planned) ? yield* planned : planned;
+              return {
+                ...resolved,
+                command: process.execPath,
+                args: [mockAgentPath, ...resolved.args],
+                env: {
+                  ...resolved.env,
+                  AGYMOCK_SCENARIO: scenario,
+                  AGYMOCK_LOG: mock.log,
+                },
+              };
+            }),
+        }
+      : baseDescriptor;
     const descriptor = adjust ? adjust(base) : base;
     const usage: Array<UsageLedgerEntry> = [];
     const events: Array<ProviderRuntimeEvent> = [];
@@ -126,6 +151,7 @@ const startAgy = (
       cwd: process.cwd(),
       runtimeMode,
       ...(contextSeed !== undefined ? { contextSeed } : {}),
+      ...(startOverrides?.roomTools ? { roomTools: true } : {}),
     });
     const waitFor = (
       predicate: (events: ReadonlyArray<ProviderRuntimeEvent>) => boolean,
@@ -1737,6 +1763,48 @@ describe("Antigravity tool rows and attachments", () => {
         expect(answers).toEqual([
           JSON.stringify({ outcome: { outcome: "selected", optionId: "allow" } }),
           JSON.stringify({ outcome: { outcome: "selected", optionId: "allow" } }),
+        ]);
+      }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+  it.live(
+    "auto-approves Threadlines room MCP calls in Supervised mode while still asking for browser and spoofed commands",
+    () =>
+      Effect.gen(function* () {
+        const agy = yield* startAgy(
+          "threadlines-mcp-permission",
+          undefined,
+          "approval-required",
+          undefined,
+          undefined,
+          { roomTools: true },
+        );
+        yield* agy.adapter.sendTurn({ threadId: agy.threadId, input: "go", attachments: [] });
+        // Only browser_status and the spoofed command should open approval cards; room_ask is auto-approved.
+        for (let asked = 1; asked <= 2; asked += 1) {
+          yield* agy.waitFor((events) => opened(events).length === asked);
+          const request = opened(agy.events)[asked - 1]!;
+          yield* agy.adapter.respondToRequest(
+            agy.threadId,
+            ApprovalRequestId.make(String(request.requestId)),
+            "accept",
+          );
+        }
+        yield* agy.waitFor((events) => completedTurns(events).length === 1);
+        const cards = opened(agy.events);
+        expect(cards).toHaveLength(2);
+        expect(cards[0]?.payload).toMatchObject({
+          requestType: "exec_command_approval",
+          detail: "MCP tool threadlines_browser · browser_status {}",
+        });
+        expect(cards[1]?.payload).toMatchObject({
+          requestType: "exec_command_approval",
+          detail: "rm -rf build",
+        });
+        expect(answers(yield* agy.frames())).toEqual([
+          { outcome: { outcome: "selected", optionId: "allow" } },
+          { outcome: { outcome: "selected", optionId: "allow" } },
+          { outcome: { outcome: "selected", optionId: "allow" } },
         ]);
       }).pipe(Effect.scoped, Effect.provide(testServices)),
   );

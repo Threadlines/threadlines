@@ -35,12 +35,15 @@ function writeNativeAcpLog(input: {
   });
 }
 
+import { ACP_MCP_BRIDGE_AUTH_ENV } from "./acpMcpStdioBridge.ts";
+
 const BEARER_TOKEN = /Bearer\s+[^\s"\\]+/gu;
 
 /**
- * session/new and session/load carry the browser MCP server with a bearer
- * credential for the thread. Provider logs keep the header, never the token:
- * whoever holds it can drive that thread's browser.
+ * session/new and session/load carry Threadlines' MCP servers with a bearer
+ * credential for the thread (in HTTP headers or stdio-bridge env). Provider
+ * logs keep the header/env name, never the token: whoever holds it can drive
+ * that thread's tools.
  */
 export function redactAcpLogCredentials(value: unknown): unknown {
   if (typeof value === "string") {
@@ -50,8 +53,16 @@ export function redactAcpLogCredentials(value: unknown): unknown {
     return value.map(redactAcpLogCredentials);
   }
   if (typeof value === "object" && value !== null) {
+    const record = value as Record<string, unknown>;
+    if (
+      typeof record.name === "string" &&
+      record.name === ACP_MCP_BRIDGE_AUTH_ENV &&
+      typeof record.value === "string"
+    ) {
+      return { ...record, value: "[redacted]" };
+    }
     return Object.fromEntries(
-      Object.entries(value).map(([key, entry]) => [key, redactAcpLogCredentials(entry)]),
+      Object.entries(record).map(([key, entry]) => [key, redactAcpLogCredentials(entry)]),
     );
   }
   return value;
