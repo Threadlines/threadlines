@@ -20,6 +20,7 @@ import {
   liveFamilyOf,
 } from "../Sidebar.logic";
 import { shortFamilyTitles } from "../familyTitles.logic";
+import { countStillGoingInReach } from "../threadMenu.logic";
 
 /** One tab on the row. */
 export interface FamilyTab {
@@ -60,6 +61,13 @@ export interface FamilyTabs {
   readonly familyKey: string;
   readonly tabs: readonly FamilyTab[];
   readonly openKey: string;
+  /**
+   * The "Stop N threads" button at the row's end: the open thread, and how
+   * many threads its Stop reaches that are still going (the count its menu's
+   * "Stop N working threads" shows). Null while none are, or when the open
+   * thread is one this app reads through the link.
+   */
+  readonly stop: { readonly threadRef: ScopedThreadRef; readonly count: number } | null;
 }
 
 /** What the row reads about each thread, filed the way the sidebar files it. */
@@ -85,6 +93,8 @@ export function familyTabsOf<E extends FamilyTabEntry>(input: {
   readonly openKey: string;
   readonly parentKey?: string | undefined;
   readonly entries: readonly E[];
+  /** Every thread the app holds: where a Stop on the open thread can reach. */
+  readonly threads: readonly SidebarThreadSummary[];
   readonly remoteChildrenOf: (parent: E) => readonly InboxRemoteChild[];
   readonly canReadLinked: (parent: E) => boolean;
   readonly now: string;
@@ -148,9 +158,18 @@ export function familyTabsOf<E extends FamilyTabEntry>(input: {
   });
   const children = [...family.children.map(childTab), ...family.remoteChildren.map(remoteTab)];
   const shortTitles = shortFamilyTitles(children.map((tab) => tab.title));
+  const stopCount =
+    open === undefined ? 0 : countStillGoingInReach(input.threads, open.thread, input.now);
   return {
     familyKey: parent.threadKey,
     openKey: input.openKey,
+    stop:
+      open !== undefined && stopCount > 0
+        ? {
+            threadRef: scopeThreadRef(open.thread.environmentId, open.thread.id),
+            count: stopCount,
+          }
+        : null,
     tabs: [
       {
         key: parent.threadKey,
@@ -190,6 +209,7 @@ export function sameFamilyTabs(left: FamilyTabs | null, right: FamilyTabs | null
   return (
     left.familyKey === right.familyKey &&
     left.openKey === right.openKey &&
+    left.stop?.count === right.stop?.count &&
     left.tabs.length === right.tabs.length &&
     left.tabs.every((tab, index) => {
       const other = right.tabs[index]!;

@@ -628,6 +628,25 @@ describe("resolveThreadStatusPill", () => {
       label: "Checking back",
       checkBackAt: "2026-03-09T12:00:00.000Z",
     });
+    // A dormant one can't fire until its agent runs again: the pill names the
+    // next one that can, and none once every one is dormant.
+    const [later, sooner] = settled.checkBacks;
+    expect(
+      resolveThreadStatusPill({
+        thread: { ...settled, checkBacks: [later!, { ...sooner!, dormant: true as const }] },
+      }),
+    ).toMatchObject({ label: "Checking back", checkBackAt: "2026-03-09T12:30:00.000Z" });
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...settled,
+          checkBacks: settled.checkBacks.map((checkBack) => ({
+            ...checkBack,
+            dormant: true as const,
+          })),
+        },
+      }),
+    ).toBeNull();
     // A result nobody has read comes first.
     expect(
       resolveThreadStatusPill({ thread: { ...settled, lastVisitedAt: undefined } }),

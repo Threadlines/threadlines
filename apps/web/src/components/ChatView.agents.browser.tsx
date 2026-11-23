@@ -77,6 +77,7 @@ import {
   rpcHarness,
   createUserMessage,
   withLinkedThreadReadFixture,
+  setSidebarThreadWork,
 } from "./ChatView.browser-harness";
 import { selectSidebarThreadSummaryByRef, useStore } from "../store";
 import { resolveThreadStatusPill } from "./Sidebar.logic";
@@ -1421,6 +1422,78 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
         params: { environmentId: LOCAL_ENVIRONMENT_ID, threadId: loner },
       });
       await vi.waitFor(() => expect(row()).toBeNull(), { timeout: 10_000 });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("ends the family row with Stop while the parent's threads are going, and sends what the menu sends", async () => {
+    const child = "thread-family-stop-child" as ThreadId;
+    const quiet = "thread-family-stop-quiet" as ThreadId;
+    const withThreads = addThreadToSnapshot(
+      addThreadToSnapshot(
+        createSnapshotForTargetUser({
+          targetMessageId: "msg-user-family-stop" as MessageId,
+          targetText: "family stop target",
+        }),
+        child,
+      ),
+      quiet,
+    );
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...withThreads,
+        threads: withThreads.threads.map((thread) =>
+          thread.id === child || thread.id === quiet
+            ? {
+                ...thread,
+                title: thread.id === child ? "Write the changelog" : "Fix the flaky test",
+                parentThreadId: THREAD_ID,
+                attachedToParent: true,
+                createdAt: thread.id === child ? isoAt(10) : isoAt(20),
+              }
+            : thread,
+        ),
+      },
+    });
+    const row = () => document.querySelector<HTMLElement>('[data-testid="family-tabs"]');
+    const stopButton = () =>
+      row()?.querySelector<HTMLButtonElement>('[data-testid="family-tabs-stop"]') ?? null;
+    try {
+      await waitForElement(row, "The family row should show on the parent.");
+      // Nothing under the parent is going: no button.
+      await vi.waitFor(() => expect(row()!.querySelectorAll('[role="tab"]').length).toBe(3), {
+        timeout: 10_000,
+      });
+      expect(stopButton()).toBeNull();
+
+      // A child waits on the user: the parent's Stop reaches it.
+      setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, child, "needs-you");
+      await vi.waitFor(() => expect(stopButton()?.textContent).toBe("Stop 1 thread"));
+      // It sits at the row's end, after the last tab.
+      const lastTab = [...row()!.querySelectorAll<HTMLElement>('[role="tab"]')].at(-1)!;
+      expect(stopButton()!.getBoundingClientRect().left).toBeGreaterThan(
+        lastTab.getBoundingClientRect().right,
+      );
+
+      stopButton()!.click();
+      const stops = () =>
+        wsRequests.filter(
+          (request) =>
+            request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+            request.type === "thread.children.stop",
+        );
+      await vi.waitFor(() => expect(stops()).toHaveLength(1));
+      // The parent, with no ids: every thread its Stop reaches that is still going.
+      expect(stops()[0]).toMatchObject({ threadId: THREAD_ID });
+      expect(stops()[0]).not.toHaveProperty("childThreadIds");
+
+      // Once nothing is going, the button leaves.
+      setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, child, "needs-you", {
+        hasPendingApprovals: false,
+      });
+      await vi.waitFor(() => expect(stopButton()).toBeNull());
     } finally {
       await mounted.cleanup();
     }

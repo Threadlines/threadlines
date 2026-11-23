@@ -189,6 +189,12 @@ always one click away, and so is every thread it started.
   The parent's tab and the open thread's tab are always on the row. "+N" carries an amber dot when a hidden thread
   needs the user. On a phone the row scrolls sideways instead and the open tab is
   scrolled into view.
+- **Stop.** While anything a Stop on the open thread reaches is still going, the row
+  ends with a plain "Stop N threads" button. It counts and sends what the thread
+  menu's "Stop N working threads" does (`thread.children.stop`), so a lead waiting on
+  its team, which has no running turn and so no Stop in its composer, still has a
+  brake on screen (docs/design/agent-autonomy-no-limits.md, "Stop"). The tabs take the
+  room it leaves, and on a phone it stays put while they scroll.
 - **What it replaces.** While the row shows, the header drops the "Started by" chip
   and the "Lead chat" chip: the row says both.
 - **The sidebar is unchanged.** The open child still shows under its parent's row as

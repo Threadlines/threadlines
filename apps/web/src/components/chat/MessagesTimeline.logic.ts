@@ -1,6 +1,7 @@
 import * as Equal from "effect/Equal";
 import { estimateWorkflowRunCardHeight } from "./workflowRunView";
 import { MCP_APP_CARD_ESTIMATED_PX } from "./mcpAppClient";
+import { nextCheckBack } from "./checkBacks";
 import {
   formatAwaitedTasks,
   formatSoleAwaitedWorkflow,
@@ -848,8 +849,9 @@ export function deriveMessagesTimelineRows(input: {
     });
   }
 
-  // A settled thread an agent will come back to says when, at the tail.
-  if (!input.isWorking && input.checkBacks && input.checkBacks.length > 0) {
+  // A settled thread an agent will come back to says when, at the tail. A
+  // dormant check-back can't fire until its agent runs again, so it says nothing.
+  if (!input.isWorking && input.checkBacks && nextCheckBack(input.checkBacks) !== null) {
     rows.push({
       ...UNPLACED,
       kind: "check-back",

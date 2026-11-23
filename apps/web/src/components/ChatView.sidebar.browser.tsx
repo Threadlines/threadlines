@@ -565,16 +565,22 @@ describe("ChatView (full app): sidebar", () => {
       await page.getByRole("button", { name: "Delete", exact: true }).click();
       await page.getByTestId("thread-delete-with-children").click();
       await page.getByTestId("thread-delete-confirm").click();
+      // It names the threads the dialog counted, so the server deletes those
+      // and keeps one started since; withChildren stays for an older server.
       await vi.waitFor(() => {
         expect(
-          wsRequests.some(
+          wsRequests.filter(
             (request) =>
               request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
-              request.type === "thread.delete" &&
-              request.threadId === THREAD_ID &&
-              request.withChildren === true,
+              request.type === "thread.delete",
           ),
-        ).toBe(true);
+        ).toEqual([
+          expect.objectContaining({
+            threadId: THREAD_ID,
+            withChildren: true,
+            alsoDelete: [childId],
+          }),
+        ]);
       });
 
       // The server decides which children go. This one is still here (it was

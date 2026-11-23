@@ -1,6 +1,9 @@
-import type { ContextMenuItem } from "@threadlines/contracts";
+import type { ContextMenuItem, ThreadId } from "@threadlines/contracts";
+import { type FamilyMember, isStillGoing, stopReachOf } from "@threadlines/shared/childThreads";
 
 import { LEAD_MENU_SUBLABEL, leadMenuLabel, type LeadMenuState } from "../leadChat";
+import type { SidebarThreadSummary } from "../types";
+import { stillGoingInputOfSummary } from "./Sidebar.logic";
 
 /** Everything a thread's menu can do. Every surface that offers it offers the same. */
 export type ThreadMenuAction =
@@ -32,8 +35,11 @@ export interface ThreadMenuFacts {
   readonly attachedChild: boolean;
   /** A separated child whose parent could take it back; `refusal` says why it can't now. */
   readonly putBack: { readonly parentTitle: string; readonly refusal: string | null } | null;
-  /** Threads it started that are still at work. */
-  readonly workingChildCount: number;
+  /**
+   * Threads its Stop reaches that are still going (`countStillGoingInReach`),
+   * one that only checks back and one started without report back included.
+   */
+  readonly stillGoingCount: number;
   readonly moveOffered: boolean;
   /** Its agent is mid-turn: archiving waits until it stops. */
   readonly running: boolean;
@@ -44,6 +50,38 @@ export interface ThreadMenuFacts {
     readonly canMoveUp: boolean;
     readonly canMoveDown: boolean;
   } | null;
+}
+
+/**
+ * How many threads a Stop on `thread` reaches that are still going: what
+ * "Stop N working threads" and the family row's Stop button count, by the
+ * server's own walk (`stopReachOf`) and test (`isStillGoing`). Threads
+ * started without report back that the user hasn't written in count too.
+ * `threads` is every thread the app holds; only those on the same computer
+ * can be in reach.
+ */
+export function countStillGoingInReach(
+  threads: Iterable<SidebarThreadSummary>,
+  thread: Pick<SidebarThreadSummary, "environmentId" | "id">,
+  now: string,
+): number {
+  const members: FamilyMember[] = [];
+  const summaries = new Map<ThreadId, SidebarThreadSummary>();
+  for (const candidate of threads) {
+    if (candidate.environmentId !== thread.environmentId) continue;
+    summaries.set(candidate.id, candidate);
+    members.push({
+      id: candidate.id,
+      parentThreadId: candidate.parentThreadId ?? null,
+      attachedToParent: candidate.attachedToParent ?? false,
+      stopsWithParent: candidate.stopsWithParent,
+      createdAt: candidate.createdAt,
+    });
+  }
+  return stopReachOf(members, thread.id).filter((member) => {
+    const summary = summaries.get(member.thread.id);
+    return summary !== undefined && isStillGoing(stillGoingInputOfSummary(summary, now));
+  }).length;
 }
 
 /**
@@ -121,10 +159,10 @@ export function describeThreadMenu(facts: ThreadMenuFacts): ContextMenuItem<Thre
       disabled: refusal !== null,
     });
   }
-  if (facts.workingChildCount > 0) {
+  if (facts.stillGoingCount > 0) {
     family.push({
       id: "stop-children",
-      label: `Stop ${facts.workingChildCount} working ${facts.workingChildCount === 1 ? "thread" : "threads"}`,
+      label: `Stop ${facts.stillGoingCount} working ${facts.stillGoingCount === 1 ? "thread" : "threads"}`,
     });
   }
   items.push(...asGroup(family));

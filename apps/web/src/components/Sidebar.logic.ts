@@ -25,7 +25,7 @@ import { isLatestTurnSettled, isWaitingOnBackgroundTasks } from "../session-logi
 import { startOfLocalDayMs } from "../timestampFormat";
 import { nextCheckBack } from "./chat/checkBacks";
 import { shortFamilyTitles } from "./familyTitles.logic";
-import { isHandedBackCompletion } from "@threadlines/shared/childThreads";
+import { isHandedBackCompletion, type StillGoingInput } from "@threadlines/shared/childThreads";
 import {
   hasUnseenCompletion as hasUnseenCompletionSince,
   hasUnseenSessionFailure as hasUnseenSessionFailureSince,
@@ -1779,9 +1779,44 @@ const IN_FLIGHT: ReadonlySet<ThreadStatusPill["label"]> = new Set([
   "Waiting",
 ]);
 
-/** A child with work in flight: what "Stop N working threads" stops. */
+/**
+ * A child whose row shows work in flight (Working, Starting, Answering,
+ * Waiting): what a family's summary line counts as working. What a Stop
+ * reaches is wider (threadMenu.logic.ts, `countStillGoingInReach`).
+ */
 export function isChildThreadWorking<T extends InboxFamilyStatus>(entry: T): boolean {
   return !entry.isDone && entry.status !== null && IN_FLIGHT.has(entry.status.label);
+}
+
+/**
+ * The "still going" facts (`isStillGoing`) from a sidebar summary. A summary
+ * says `connecting` for a session the server calls `starting`, keeps only how
+ * many messages are queued, and is the one place that sees a message no turn
+ * has picked up yet ({@link hasQueuedTurnStart}), which counts as a turn about
+ * to start.
+ */
+export function stillGoingInputOfSummary(
+  thread: SidebarThreadSummary,
+  now: string,
+): StillGoingInput {
+  const session = thread.session;
+  return {
+    turnInFlight:
+      thread.latestTurn?.state === "running" ||
+      session?.status === "running" ||
+      session?.status === "connecting" ||
+      hasQueuedTurnStart(thread, { now }),
+    queuedCount: thread.queuedFollowUpCount ?? 0,
+    waitsOnUser:
+      thread.hasPendingApprovals || thread.hasPendingUserInput || thread.hasActionableProposedPlan,
+    backgroundWork:
+      (session?.pendingBackgroundTaskCount ?? 0) > 0 ||
+      (session?.awaitedBackgroundTaskCount ?? 0) > 0,
+    openRequestCount: (thread.awaitedChildThreadCount ?? 0) + (thread.pendingChildApproval ? 1 : 0),
+    waitsForReset: (session?.continueAtReset ?? null) !== null,
+    sideAnswerRunning: hasLiveSideTurn(thread),
+    checkBacks: thread.checkBacks,
+  };
 }
 
 /** What a thread asks of the user right now, as the rail and Fleet count it. */

@@ -282,6 +282,8 @@ export interface Thread {
   parentTurnId?: TurnId | null;
   /** Still part of its parent's family. Absent means separated or no parent. */
   attachedToParent?: boolean;
+  /** See OrchestrationThreadShell.stopsWithParent: under its parent's Stop though never attached. */
+  stopsWithParent?: true;
   /** When its last answer went back to its parent, and from which turn. */
   handedBackAt?: string | null;
   handedBackTurnId?: TurnId | null;
@@ -403,6 +405,8 @@ export interface ThreadShell {
   parentTurnId?: TurnId | null;
   /** Still part of its parent's family. Absent means separated or no parent. */
   attachedToParent?: boolean;
+  /** See OrchestrationThreadShell.stopsWithParent: under its parent's Stop though never attached. */
+  stopsWithParent?: true;
   /** When its last answer went back to its parent, and from which turn. */
   handedBackAt?: string | null;
   handedBackTurnId?: TurnId | null;
@@ -548,6 +552,8 @@ export interface SidebarThreadSummary {
   parentTurnId?: TurnId | null;
   /** See ThreadShell.attachedToParent: nested under its parent in the inbox. */
   attachedToParent?: boolean;
+  /** See ThreadShell.stopsWithParent: under its parent's Stop though never attached. */
+  stopsWithParent?: true;
   /** See ThreadShell.scheduledRun. */
   scheduledRun?: ThreadScheduledRun | null;
   /** Its worktree is another thread's (ThreadWorktreeOrigin): a guest there, not its owner. */

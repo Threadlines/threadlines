@@ -435,6 +435,13 @@ function mapMessage(environmentId: EnvironmentId, message: OrchestrationMessage)
   };
 }
 
+/** The thread without the mark that keeps it under its starter's Stop (stopsWithParent). */
+function withoutStopsWithParent(thread: Thread): Thread {
+  if (thread.stopsWithParent === undefined) return thread;
+  const { stopsWithParent: _made, ...rest } = thread;
+  return rest;
+}
+
 /**
  * A thread's place in a family of child threads, as every web copy of it
  * carries it: normalized so a missing field and its empty value read alike.
@@ -443,6 +450,7 @@ function threadLineage(thread: {
   readonly parentThreadId?: ThreadId | null | undefined;
   readonly parentTurnId?: TurnId | null | undefined;
   readonly attachedToParent?: boolean | undefined;
+  readonly stopsWithParent?: true | undefined;
   readonly handedBackAt?: string | null | undefined;
   readonly handedBackTurnId?: TurnId | null | undefined;
   readonly scheduledRun?: ThreadScheduledRun | null | undefined;
@@ -453,6 +461,7 @@ function threadLineage(thread: {
   | "parentThreadId"
   | "parentTurnId"
   | "attachedToParent"
+  | "stopsWithParent"
   | "handedBackAt"
   | "handedBackTurnId"
   | "scheduledRun"
@@ -463,6 +472,7 @@ function threadLineage(thread: {
     parentThreadId: thread.parentThreadId ?? null,
     parentTurnId: thread.parentTurnId ?? null,
     attachedToParent: thread.attachedToParent ?? false,
+    ...(thread.stopsWithParent === true ? { stopsWithParent: true as const } : {}),
     handedBackAt: thread.handedBackAt ?? null,
     handedBackTurnId: thread.handedBackTurnId ?? null,
     scheduledRun: thread.scheduledRun ?? null,
@@ -750,6 +760,7 @@ function sidebarLineage(
     | "parentThreadId"
     | "parentTurnId"
     | "attachedToParent"
+    | "stopsWithParent"
     | "handedBackAt"
     | "handedBackTurnId"
     | "awaitedChildThreadCount"
@@ -771,6 +782,7 @@ function sidebarLineage(
   | "parentThreadId"
   | "parentTurnId"
   | "attachedToParent"
+  | "stopsWithParent"
   | "handedBackAt"
   | "handedBackTurnId"
   | "awaitedChildThreadCount"
@@ -793,6 +805,7 @@ function sidebarLineage(
     parentThreadId: thread.parentThreadId ?? null,
     parentTurnId: thread.parentTurnId ?? null,
     attachedToParent: thread.attachedToParent ?? false,
+    ...(thread.stopsWithParent === true ? { stopsWithParent: true as const } : {}),
     handedBackAt: thread.handedBackAt ?? null,
     handedBackTurnId: thread.handedBackTurnId ?? null,
     awaitedChildThreadCount: thread.awaitedChildThreadCount ?? 0,
@@ -1416,6 +1429,7 @@ function sidebarThreadSummariesEqual(
     (left.parentThreadId ?? null) === (right.parentThreadId ?? null) &&
     (left.parentTurnId ?? null) === (right.parentTurnId ?? null) &&
     (left.attachedToParent ?? false) === (right.attachedToParent ?? false) &&
+    (left.stopsWithParent ?? false) === (right.stopsWithParent ?? false) &&
     (left.handedBackAt ?? null) === (right.handedBackAt ?? null) &&
     (left.handedBackTurnId ?? null) === (right.handedBackTurnId ?? null) &&
     (left.awaitedChildThreadCount ?? 0) === (right.awaitedChildThreadCount ?? 0) &&
@@ -1536,6 +1550,7 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     (left.parentThreadId ?? null) === (right.parentThreadId ?? null) &&
     (left.parentTurnId ?? null) === (right.parentTurnId ?? null) &&
     (left.attachedToParent ?? false) === (right.attachedToParent ?? false) &&
+    (left.stopsWithParent ?? false) === (right.stopsWithParent ?? false) &&
     (left.handedBackAt ?? null) === (right.handedBackAt ?? null) &&
     (left.handedBackTurnId ?? null) === (right.handedBackTurnId ?? null) &&
     (left.awaitedChildThreadCount ?? 0) === (right.awaitedChildThreadCount ?? 0) &&
@@ -1575,8 +1590,12 @@ function checkBackListsEqual(
   const rightList = right ?? [];
   return (
     sameCheckBacks(leftList, rightList) &&
+    // The agent and the dormant mark too: a check-back whose runtime ended
+    // leaves the "Checking back" pill.
     leftList.every(
-      (checkBack, index) => checkBack.participantId === rightList[index]?.participantId,
+      (checkBack, index) =>
+        checkBack.participantId === rightList[index]?.participantId &&
+        checkBack.dormant === rightList[index]?.dormant,
     )
   );
 }
@@ -2781,6 +2800,7 @@ function applyEnvironmentOrchestrationEvent(
           parentThreadId: event.payload.parentThreadId ?? null,
           parentTurnId: event.payload.parentTurnId ?? null,
           attachedToParent: event.payload.attachedToParent ?? false,
+          ...(event.payload.stopsWithParent === true ? { stopsWithParent: true as const } : {}),
           parentAttachmentEpoch: 0,
           handedBackAt: null,
           handedBackTurnId: null,
@@ -3232,8 +3252,13 @@ function applyEnvironmentOrchestrationEvent(
                 assistantMessageId: event.payload.messageId,
               })
             : thread.latestTurn;
+        // A person writing here makes a thread started without report back
+        // their own: it leaves its starter's Stop, as on the server.
+        const madeOwn =
+          event.payload.role === "user" &&
+          (event.payload.composer !== undefined || event.payload.sentFrom !== undefined);
         return {
-          ...thread,
+          ...(madeOwn ? withoutStopsWithParent(thread) : thread),
           messages,
           turnDiffSummaries,
           latestTurn,
@@ -3856,17 +3881,22 @@ function applyEnvironmentOrchestrationEvent(
       // Taken back by the thread that started it over a link, which moved
       // here: a child here now, no longer the other computer's.
       const adoptedBy = event.payload.adoptedBy;
+      // Put back under its parent, a thread started without report back is
+      // the family's, not under Stop on its own any more.
       return updateThreadState(state, event.payload.threadId, (thread) =>
         adoptedBy !== undefined
           ? {
-              ...thread,
+              ...withoutStopsWithParent(thread),
               attachedToParent: event.payload.attached,
               parentThreadId: adoptedBy.parentThreadId,
               remoteOrigin: null,
             }
           : (thread.attachedToParent ?? false) === event.payload.attached
             ? thread
-            : { ...thread, attachedToParent: event.payload.attached },
+            : {
+                ...(event.payload.attached ? withoutStopsWithParent(thread) : thread),
+                attachedToParent: event.payload.attached,
+              },
       );
     }
 
