@@ -34,7 +34,7 @@ import { spawn as spawnChild } from "node:child_process";
 import { existsSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { isAbsolute, join, normalize, relative, resolve as resolvePath, sep } from "node:path";
+import { isAbsolute, join, normalize, resolve as resolvePath } from "node:path";
 import { createInterface } from "node:readline";
 
 import {
@@ -495,8 +495,9 @@ function antigravityOptionWarning(option: EffectAcpSchema.PermissionOption): str
 
 function toolCallPaths(data: Record<string, unknown>): ReadonlyArray<string> {
   const paths: string[] = [];
+  // As given: a padded name is another file, never trimmed into the plan's.
   const push = (value: unknown) => {
-    if (typeof value === "string" && value.trim()) paths.push(value.trim());
+    if (typeof value === "string" && value !== "") paths.push(value);
   };
   if (Array.isArray(data.content)) {
     for (const entry of data.content) {
@@ -522,15 +523,24 @@ const brainDir = (profileDir: string) => join(profileDir, "antigravity-acp", "br
 /** Input fields that say a call runs a command (as the core reads them). */
 const COMMAND_FIELDS = ["command", "commandLine", "CommandLine", "command_line", "cmd"];
 
+/** A session id as the CLI names its folders: nothing that walks a path. */
+const PLAN_SESSION_ID = /^[\w-]{1,128}$/u;
+
 /**
- * Whether a tool call is the agent writing its own plan, and nothing else:
- * an edit whose every change is a diff of a `plan.md` directly in one of the
- * session folders under the profile's `brain` (`/plan` writes
- * `brain/<session>/plan.md`), with no command about it. Such a write is
- * approved without asking and shows as the plan card, so a call that runs
- * anything, or touches any other file, never passes.
+ * Whether a tool call is this session writing its own plan, and nothing
+ * else: an edit whose every change is a diff of exactly
+ * `brain/<sessionId>/plan.md` (where `/plan` writes it), naming no other
+ * path and no command. Such a write is approved without asking and shows as
+ * the plan card, so a call that runs anything, touches any other file, or
+ * writes another session's plan never passes. Paths are compared as given,
+ * never trimmed.
  */
-export function isAntigravityPlanFileEdit(toolCall: AcpToolCallState, brain: string): boolean {
+export function isAntigravityPlanFileEdit(
+  toolCall: AcpToolCallState,
+  brain: string,
+  sessionId: string | undefined,
+): boolean {
+  if (sessionId === undefined || !PLAN_SESSION_ID.test(sessionId)) return false;
   if (toolCall.kind !== "edit" || toolCall.command !== undefined) return false;
   const { content, rawInput } = toolCall.data;
   if (
@@ -540,11 +550,8 @@ export function isAntigravityPlanFileEdit(toolCall: AcpToolCallState, brain: str
   ) {
     return false;
   }
-  const isPlanPath = (path: string) => {
-    if (!isAbsolute(path)) return false;
-    const parts = relative(brain, normalize(path)).split(sep);
-    return parts.length === 2 && parts[0] !== ".." && parts[0] !== "" && parts[1] === "plan.md";
-  };
+  const planPath = join(brain, sessionId, "plan.md");
+  const isPlanPath = (path: string) => isAbsolute(path) && normalize(path) === planPath;
   // Every change is a diff, and every path the call names (diffs,
   // locations, its target) is the plan file.
   const diffsOnly =
@@ -872,7 +879,8 @@ export function makeAntigravityDescriptor(
     ...antigravityTurnBehavior<AntigravitySettings>(paths.profileDir, usage?.usageLimitFor),
     planMode: {
       promptPrefix: "/plan ",
-      isPlanFile: (toolCall) => isAntigravityPlanFileEdit(toolCall, brainDir(paths.profileDir)),
+      isPlanFile: (toolCall, sessionId) =>
+        isAntigravityPlanFileEdit(toolCall, brainDir(paths.profileDir), sessionId),
       planMarkdown: (toolCall) => {
         const content = toolCall.data.content;
         if (!Array.isArray(content)) return undefined;

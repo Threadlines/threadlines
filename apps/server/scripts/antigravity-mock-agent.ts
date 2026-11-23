@@ -46,8 +46,12 @@
  *   names the call by its id alone.
  * - `permission-reask`: asks for an MCP call; while it waits, an update shows
  *   the call runs a command.
+ * - `permission-edit-changed`: asks for an edit; while it waits, the edit's
+ *   replacement text changes and nothing else.
  * - `plan-file-permission`: asks for a command naming the plan file, then
- *   for an edit of the plan file. It writes no subagent records.
+ *   for an edit of the plan file.
+ * - `plan-file-foreign`: asks to write another session's plan, then a
+ *   `plan.md ` with a trailing space, then its own plan. It writes no subagent records.
  * - `records-one-reply`: as `subagent-records`, but both children report
  *   before the agent wakes, and it answers both in one reply.
  * - `records-killed`: as `subagent-records`, but in the reply to the first
@@ -363,6 +367,65 @@ const program = Effect.gen(function* () {
           });
         }
         yield* say(sessionId, "Asked.");
+        yield* modelCallEnds(sessionId);
+        return { stopReason: "end_turn" as const };
+      }
+      if (scenario === "permission-edit-changed") {
+        const edit = (newText: string) => ({
+          toolCallId: "call_config",
+          title: "Edit config.json",
+          kind: "edit" as const,
+          status: "pending" as const,
+          content: [{ type: "diff" as const, path: "/repo/config.json", oldText: "{}", newText }],
+          locations: [{ path: "/repo/config.json" }],
+        });
+        yield* update(sessionId, { sessionUpdate: "tool_call", ...edit('{"a":1}') });
+        // While the approval waits, the edit changes only its replacement text.
+        yield* Effect.gen(function* () {
+          yield* Effect.sleep("300 millis");
+          yield* update(sessionId, { sessionUpdate: "tool_call_update", ...edit('{"a":2}') });
+        }).pipe(Effect.forkDetach);
+        yield* agent.client.requestPermission({
+          sessionId,
+          toolCall: edit('{"a":1}'),
+          options: [
+            { optionId: "allow", name: "Allow", kind: "allow_once" },
+            { optionId: "deny", name: "Deny", kind: "reject_once" },
+          ],
+        });
+        yield* update(sessionId, {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "call_config",
+          status: "failed",
+        });
+        yield* say(sessionId, "Asked.");
+        yield* modelCallEnds(sessionId);
+        return { stopReason: "end_turn" as const };
+      }
+      if (scenario === "plan-file-foreign") {
+        const brain = join(profileDir ?? "", "antigravity-acp", "brain");
+        const options = [
+          { optionId: "allow", name: "Allow", kind: "allow_once" as const },
+          { optionId: "deny", name: "Deny", kind: "reject_once" as const },
+        ];
+        const writePlan = (toolCallId: string, path: string) =>
+          agent.client.requestPermission({
+            sessionId,
+            toolCall: {
+              toolCallId,
+              title: "Write plan.md",
+              kind: "edit",
+              status: "pending",
+              content: [{ type: "diff", path, newText: "# Plan\n" }],
+            },
+            options,
+          });
+        // Another session's plan, and a file whose name only looks like it.
+        yield* writePlan("call_other", join(brain, "other-session", "plan.md"));
+        yield* writePlan("call_padded", join(brain, sessionId, "plan.md "));
+        // This session's own plan needs no approval.
+        yield* writePlan("call_own", join(brain, sessionId, "plan.md"));
+        yield* say(sessionId, "Planned.");
         yield* modelCallEnds(sessionId);
         return { stopReason: "end_turn" as const };
       }

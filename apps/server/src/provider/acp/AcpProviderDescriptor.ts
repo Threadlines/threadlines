@@ -92,11 +92,13 @@ export interface AcpPromptPlanMode {
   /** Prepended to the turn's text in plan mode, e.g. `/plan `. */
   readonly promptPrefix: string;
   /**
-   * Whether this tool call writes the agent's own plan file. Such writes are
-   * approved without asking (they never touch the workspace) and are not
-   * shown as tool calls: the plan card stands for them.
+   * Whether this tool call writes the plan file of the session `sessionId`
+   * (the session asking; `undefined` when that isn't this one, and then
+   * nothing is). Such writes are approved without asking (they never touch
+   * the workspace) and are not shown as tool calls: the plan card stands for
+   * them.
    */
-  readonly isPlanFile: (toolCall: AcpToolCallState) => boolean;
+  readonly isPlanFile: (toolCall: AcpToolCallState, sessionId: string | undefined) => boolean;
   /** The plan's markdown, when this plan-file write carries it. */
   readonly planMarkdown: (toolCall: AcpToolCallState) => string | undefined;
 }

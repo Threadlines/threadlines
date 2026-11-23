@@ -28,6 +28,7 @@ import {
   LEGACY_MODE_OPTION_ID,
   legacyControlConfigOptions,
   mergeToolCallState,
+  toolCallSubstance,
   parseSessionModeState,
   parseSessionUpdateEvent,
   type AcpParsedSessionEvent,
@@ -167,6 +168,12 @@ export interface AcpSessionRuntimeOptions {
    * count of running work (`AcpProviderDescriptor.turnMachine`).
    */
   readonly trackSilentToolCalls?: boolean;
+  /**
+   * Also hand the reader a tool call update that shows nothing new but
+   * changes what the call would do (`toolCallSubstance`) as
+   * `ToolCallRevised`, for a client with approvals open.
+   */
+  readonly reportRevisedToolCalls?: boolean;
   /**
    * Text the agent appends when a prompt is cancelled. A reply chunk that is
    * just this text comes as `CancellationNotice`, before it starts a
@@ -344,6 +351,16 @@ export interface AcpSessionToolCallTracked {
   readonly toolCall: AcpToolCallState;
 }
 
+/**
+ * A tool call whose update changed what it would do (`toolCallSubstance`)
+ * but nothing its row shows. Not shown; read by the approval logic, which
+ * must not keep an approval answerable for a call that changed under it.
+ */
+export interface AcpSessionToolCallRevised {
+  readonly _tag: "ToolCallRevised";
+  readonly toolCall: AcpToolCallState;
+}
+
 /** The agent's cancellation notice, not yet shown (see `cancellationNotice`). */
 export interface AcpSessionCancellationNotice {
   readonly _tag: "CancellationNotice";
@@ -375,6 +392,7 @@ export type AcpSessionRuntimeEvent =
   | AcpSessionEventStreamBarrier
   | AcpSessionInOrderWork
   | AcpSessionToolCallTracked
+  | AcpSessionToolCallRevised
   | AcpSessionCancellationNotice
   | AcpSessionPromptSent
   | AcpSessionPromptAnswered;
@@ -633,6 +651,7 @@ const makeAcpSessionRuntime = (
           ...(nativeControls ? { configOptionsRef } : {}),
           ...(options.normalizeToolCall ? { normalizeToolCall: options.normalizeToolCall } : {}),
           ...(options.trackSilentToolCalls ? { trackSilentToolCalls: true } : {}),
+          ...(options.reportRevisedToolCalls ? { reportRevisedToolCalls: true } : {}),
           ...(options.cancellationNotice !== undefined
             ? { cancellationNotice: options.cancellationNotice }
             : {}),
@@ -1310,6 +1329,7 @@ const handleSessionUpdate = ({
   configOptionsRef,
   normalizeToolCall,
   trackSilentToolCalls,
+  reportRevisedToolCalls,
   cancellationNotice,
 }: {
   readonly queue: Queue.Queue<AcpSessionRuntimeEvent>;
@@ -1330,6 +1350,12 @@ const handleSessionUpdate = ({
     report: AcpToolCallReport,
   ) => AcpToolCallState;
   readonly trackSilentToolCalls?: boolean;
+  /**
+   * Also hand the reader a tool call update that shows nothing new but
+   * changes what the call would do (`toolCallSubstance`) as
+   * `ToolCallRevised`, for a client with approvals open.
+   */
+  readonly reportRevisedToolCalls?: boolean;
   readonly cancellationNotice?: string;
 }): Effect.Effect<void> =>
   Effect.gen(function* () {
@@ -1380,6 +1406,9 @@ const handleSessionUpdate = ({
         if (!shouldEmitToolCallUpdate(previous, merged)) {
           if (trackSilentToolCalls) {
             yield* Queue.offer(queue, { _tag: "ToolCallTracked", toolCall: merged });
+          }
+          if (reportRevisedToolCalls && toolCallSubstance(previous) !== toolCallSubstance(merged)) {
+            yield* Queue.offer(queue, { _tag: "ToolCallRevised", toolCall: merged });
           }
           continue;
         }

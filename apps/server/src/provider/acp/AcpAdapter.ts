@@ -138,6 +138,7 @@ import {
   acpTurnUsageTotals,
   describePermissionRequest,
   mergeToolCallState,
+  toolCallSubstance,
   parsePermissionRequest,
 } from "./AcpRuntimeModel.ts";
 import { THREADLINES_ACP_CLIENT_INFO } from "./acpClientInfo.ts";
@@ -1241,8 +1242,11 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         ...(detail !== undefined ? { detail } : {}),
         toolCall,
       };
+      // Tied to what it would authorize, not only to how it reads.
       const same =
-        next.detail === current.detail && next.toolCall?.title === current.toolCall?.title;
+        next.detail === current.detail &&
+        next.toolCall?.title === current.toolCall?.title &&
+        toolCallSubstance(next.toolCall) === toolCallSubstance(current.toolCall);
       return same ? undefined : next;
     };
 
@@ -1791,6 +1795,8 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             runtimeMode: input.runtimeMode,
             ...(descriptor.agentTurns || descriptor.turnMachine ? { liveOutsidePrompt: true } : {}),
             ...(descriptor.turnMachine ? { trackSilentToolCalls: true } : {}),
+            // An open approval must hear of an update that changes only what it would authorize.
+            reportRevisedToolCalls: true,
             ...acpNativeLoggers,
           }).pipe(
             Effect.provideService(Scope.Scope, sessionScope),
@@ -2051,7 +2057,14 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                 );
                 const planFileWrite =
                   permissionRequest.toolCall !== undefined &&
-                  descriptor.planMode?.isPlanFile(permissionRequest.toolCall) === true;
+                  descriptor.planMode?.isPlanFile(
+                    permissionRequest.toolCall,
+                    // Only this session's own plan: a request from another
+                    // session (a subagent's) never writes it unasked.
+                    ctx !== undefined && String(params.sessionId) === ctx.acpSessionId
+                      ? ctx.acpSessionId
+                      : undefined,
+                  ) === true;
                 if (planFileWrite && permissionRequest.toolCall) {
                   const planMarkdown = descriptor.planMode?.planMarkdown(
                     permissionRequest.toolCall,
@@ -2420,6 +2433,12 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                     return;
                   case "ModeChanged":
                     return;
+                  case "ToolCallRevised": {
+                    // Changed only in what it would do: an approval open for it is asked again.
+                    const openApproval = openApprovals.get(event.toolCall.toolCallId);
+                    if (openApproval !== undefined) yield* openApproval.reask(event.toolCall);
+                    return;
+                  }
                   case "ToolCallTracked":
                     // Work whose updates show nothing new still counts (a
                     // timer's "Running schedule" stays as it started).
@@ -2515,7 +2534,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                     yield* closeReasoning(ctx);
                     yield* logNative(ctx.threadId, "session/update", event.rawPayload);
                     // The plan card stands for the agent's plan-file writes.
-                    if (descriptor.planMode?.isPlanFile(event.toolCall)) {
+                    if (descriptor.planMode?.isPlanFile(event.toolCall, ctx.acpSessionId)) {
                       const planMarkdown = descriptor.planMode.planMarkdown(event.toolCall);
                       if (planMarkdown !== undefined) ctx.planMarkdown = planMarkdown;
                       return;
