@@ -16,6 +16,7 @@ import { Button } from "./ui/button";
 import { SegmentedControl, SegmentedControlItem } from "./ui/segmented-control";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { ProviderExternalResetsButton } from "./ProviderRateLimitResetCredit";
+import { UsagePaceMark, usagePaceLabel } from "./usage/UsagePaceMark";
 
 type TokenActivityMode = "daily" | "weekly" | "cumulative";
 type TokenActivityRange = "13-weeks" | "1-year";
@@ -448,16 +449,22 @@ function UsageLimitBar(props: {
       </div>
       <div
         role="meter"
-        aria-label={`${props.usageLabel} ${props.window.label} ${props.window.usedPercent}% used`}
+        aria-label={`${props.usageLabel} ${props.window.label} ${props.window.usedPercent}% used${usagePaceLabel(props.window.paceDetail)}`}
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={props.window.usedPercent}
-        className="h-1.5 overflow-hidden rounded-full bg-muted"
+        className="relative h-1.5 rounded-full bg-muted"
       >
         <div
           className={cn("h-full rounded-full transition-[width]", !meterColor && "bg-primary")}
           style={{ width: `${props.window.usedPercent}%`, backgroundColor: meterColor }}
         />
+        {props.window.elapsedPercent !== undefined && props.window.paceDetail !== undefined ? (
+          <UsagePaceMark
+            elapsedPercent={props.window.elapsedPercent}
+            detail={props.window.paceDetail}
+          />
+        ) : null}
       </div>
     </div>
   );

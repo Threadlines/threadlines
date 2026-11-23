@@ -65,6 +65,7 @@ describe("deriveProviderAccountUsagePresentation", () => {
           reachedLimit: false,
           warning: false,
           elapsedPercent: 80,
+          paceDetail: "80% of the 5-hour window has passed",
         },
       ],
     });
@@ -113,6 +114,7 @@ describe("deriveProviderAccountUsagePresentation", () => {
           reachedLimit: false,
           warning: false,
           elapsedPercent: 80,
+          paceDetail: "80% of the 5-hour window has passed",
         },
         {
           key: "secondary",
@@ -123,6 +125,7 @@ describe("deriveProviderAccountUsagePresentation", () => {
           reachedLimit: false,
           warning: false,
           elapsedPercent: 0,
+          paceDetail: "0% of the week has passed",
         },
       ],
     });
@@ -336,6 +339,7 @@ describe("deriveProviderAccountUsagePresentation", () => {
           reachedLimit: false,
           warning: false,
           elapsedPercent: 80,
+          paceDetail: "80% of the 5-hour window has passed",
         },
       ],
     });
@@ -418,6 +422,7 @@ describe("deriveProviderAccountUsagePresentation", () => {
           reachedLimit: false,
           warning: false,
           elapsedPercent: 49.3,
+          paceDetail: "49% of the 5-hour window has passed",
         },
         {
           key: "secondary",
@@ -428,6 +433,7 @@ describe("deriveProviderAccountUsagePresentation", () => {
           reachedLimit: false,
           warning: false,
           elapsedPercent: 0,
+          paceDetail: "0% of the week has passed",
         },
       ],
     });
@@ -478,6 +484,7 @@ describe("deriveProviderAccountUsagePresentation", () => {
         reachedLimit: false,
         warning: false,
         elapsedPercent: 49.3,
+        paceDetail: "49% of the 5-hour window has passed",
       },
       {
         key: "secondary",
@@ -488,6 +495,7 @@ describe("deriveProviderAccountUsagePresentation", () => {
         reachedLimit: false,
         warning: false,
         elapsedPercent: 0,
+        paceDetail: "0% of the week has passed",
       },
       {
         key: "scoped-0",
@@ -499,6 +507,7 @@ describe("deriveProviderAccountUsagePresentation", () => {
         reachedLimit: false,
         warning: true,
         elapsedPercent: 0,
+        paceDetail: "0% of the week has passed",
         scope: { name: "Fable", period: "Weekly", resetDetail: "resets in 7d" },
       },
     ]);
@@ -554,6 +563,7 @@ describe("deriveProviderAccountUsagePresentation", () => {
         reachedLimit: true,
         warning: true,
         elapsedPercent: 0,
+        paceDetail: "0% of the week has passed",
         scope: { name: "Fable", period: "Weekly", resetDetail: "resets in 7d" },
       },
     ]);
@@ -598,6 +608,7 @@ describe("deriveProviderAccountUsagePresentation", () => {
           reachedLimit: true,
           warning: true,
           elapsedPercent: 33.3,
+          paceDetail: "33% of the 5-hour window has passed",
         },
         {
           key: "secondary",
@@ -608,6 +619,7 @@ describe("deriveProviderAccountUsagePresentation", () => {
           reachedLimit: false,
           warning: false,
           elapsedPercent: 78.7,
+          paceDetail: "79% of the week has passed",
         },
       ],
     });
@@ -657,6 +669,7 @@ describe("deriveProviderAccountUsagePresentation", () => {
           reachedLimit: true,
           warning: true,
           elapsedPercent: 33.3,
+          paceDetail: "33% of the 5-hour window has passed",
         },
         {
           key: "secondary",
@@ -667,6 +680,7 @@ describe("deriveProviderAccountUsagePresentation", () => {
           reachedLimit: false,
           warning: false,
           elapsedPercent: 78.7,
+          paceDetail: "79% of the week has passed",
         },
       ],
     });
@@ -716,6 +730,7 @@ describe("deriveProviderAccountUsagePresentation", () => {
           reachedLimit: false,
           warning: false,
           elapsedPercent: 33.3,
+          paceDetail: "33% of the 5-hour window has passed",
         },
         {
           key: "secondary",
@@ -726,6 +741,7 @@ describe("deriveProviderAccountUsagePresentation", () => {
           reachedLimit: true,
           warning: true,
           elapsedPercent: 78.7,
+          paceDetail: "79% of the week has passed",
         },
       ],
     });

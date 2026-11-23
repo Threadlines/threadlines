@@ -37,10 +37,11 @@ function AccountUsageBar(props: {
   usedPercent: number;
   warning: boolean;
   elapsedPercent?: number | undefined;
+  paceDetail?: string | undefined;
   onOpen?: (() => void) | undefined;
 }) {
   const meterColor = usageMeterColor(props.usedPercent, props.warning);
-  const meterLabel = `${props.usageLabel} ${props.rowLabel} ${props.usedPercent}% used${usagePaceLabel(props.elapsedPercent)}`;
+  const meterLabel = `${props.usageLabel} ${props.rowLabel} ${props.usedPercent}% used${usagePaceLabel(props.paceDetail)}`;
   const content = (
     <>
       <span className="flex min-w-0 items-baseline justify-between gap-3 text-xs">
@@ -62,8 +63,8 @@ function AccountUsageBar(props: {
           )}
           style={{ width: `${props.usedPercent}%`, backgroundColor: meterColor }}
         />
-        {props.elapsedPercent !== undefined ? (
-          <UsagePaceMark elapsedPercent={props.elapsedPercent} />
+        {props.elapsedPercent !== undefined && props.paceDetail !== undefined ? (
+          <UsagePaceMark elapsedPercent={props.elapsedPercent} detail={props.paceDetail} />
         ) : null}
       </span>
     </>
@@ -582,6 +583,7 @@ export function ContextWindowMeter(props: {
                   usedPercent={window.usedPercent}
                   warning={window.warning}
                   elapsedPercent={window.elapsedPercent}
+                  paceDetail={window.paceDetail}
                   onOpen={openUsage}
                 />
               ))}
