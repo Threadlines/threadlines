@@ -3682,12 +3682,15 @@ const make = Effect.gen(function* () {
       }
 
       const checkpointStartedAtMs = yield* Clock.currentTimeMillis;
-      yield* capturePreTurnCheckpointForTurnStart({ threadId: event.payload.threadId }).pipe(
+      const checkpointFailed = yield* capturePreTurnCheckpointForTurnStart({
+        threadId: event.payload.threadId,
+      }).pipe(
+        Effect.as(false),
         Effect.catchCause((cause) =>
           Effect.logWarning("provider command reactor failed to capture pre-turn checkpoint", {
             threadId: event.payload.threadId,
             cause: Cause.pretty(cause),
-          }),
+          }).pipe(Effect.as(true)),
         ),
       );
 
@@ -3751,6 +3754,7 @@ const make = Effect.gen(function* () {
             queueMs,
             prepareMs: checkpointStartedAtMs - prepareStartedAtMs,
             checkpointMs: checkpointEndedAtMs - checkpointStartedAtMs,
+            checkpointFailed,
           },
         })
         .pipe(
