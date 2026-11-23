@@ -48,12 +48,10 @@ function search(
     commands?: ReadonlyArray<PlaceSearchEntry<string>>;
     settings?: ReadonlyArray<PlaceSearchEntry<string>>;
     projects?: ReadonlyArray<PlaceSearchEntry<string>>;
-    filter?: "all" | "commands";
   },
 ) {
   return paletteSearch({
     query,
-    filter: sources.filter ?? "all",
     threads: sources.threads ?? [],
     commands: sources.commands ?? COMMANDS,
     settings: sources.settings ?? [],
@@ -181,22 +179,16 @@ describe("paletteSearch", () => {
     expect(rows.map((row) => row.value)).toEqual(["command:open-fleet", "command:open-usage"]);
   });
 
-  it("offers close matches only when nothing matched, and only from three letters", () => {
+  it("finds close matches from three letters", () => {
     const commands = [place("command:settings", "Open settings")];
-    expect(search("stngs", { commands }).closeMatches).toEqual(["command:settings"]);
+    expect(search("stngs", { commands }).closeMatches).toEqual([
+      { source: "commands", value: "command:settings" },
+    ]);
     expect(search("st", { commands }).closeMatches).toEqual([]);
     // Digits aren't letters: "k12" has one.
     expect(
       search("k12", { commands: [place("command:task", "Run task1v2")] }).closeMatches,
     ).toEqual([]);
-    // "open" matches, so there is nothing to offer instead.
-    expect(search("open", { commands }).closeMatches).toEqual([]);
-  });
-
-  it("searches only commands behind the > filter", () => {
-    expect(shape(search("term", { filter: "commands", threads: [thread("Terminal")] }))).toEqual([
-      "commands: command:toggle-terminal(2), command:connect-agent(4)",
-    ]);
   });
 
   it("matches commands by word starts: phone doesn't find microphone", () => {

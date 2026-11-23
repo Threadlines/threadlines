@@ -12,6 +12,8 @@ import {
   ArrowDownIcon,
   ArrowLeftIcon,
   ArrowUpIcon,
+  CornerDownLeftIcon,
+  DeleteIcon,
   MessageSquareIcon,
   MessagesSquareIcon,
 } from "lucide-react";
@@ -24,7 +26,7 @@ import {
 } from "../../environments/runtime";
 import { useSettings } from "../../hooks/useSettings";
 import { resolveDialogReturnFocus } from "../../lib/dialogReturnFocus";
-import { cn, newThreadId } from "../../lib/utils";
+import { newThreadId } from "../../lib/utils";
 import { resolveAppModelSelectionForInstance } from "../../modelSelection";
 import { useServerKeybindings, useServerProviders } from "../../rpc/serverState";
 import { buildThreadRouteParams } from "../../threadRoutes";
@@ -42,6 +44,7 @@ import {
   CommandFooter,
   CommandInput,
   CommandPanel,
+  CommandTitle,
 } from "../ui/command";
 import { Kbd, KbdGroup } from "../ui/kbd";
 import { failureNotice, stackedThreadToast, toastManager } from "../ui/toast";
@@ -116,7 +119,6 @@ export function OpenCodexSessionImportDialog({ session }: { session: CodexImport
   const { project } = session;
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
-  const [highlightedItemValue, setHighlightedItemValue] = useState<string | null>(null);
   // One account goes straight to its conversations; more show a picker first.
   const [providerInstanceId, setProviderInstanceId] = useState<ProviderInstanceId | null>(
     session.accounts.length === 1 ? session.accounts[0]!.instanceId : null,
@@ -255,7 +257,6 @@ export function OpenCodexSessionImportDialog({ session }: { session: CodexImport
           icon: <MessagesSquareIcon className={ITEM_ICON_CLASS} />,
           keepOpen: true,
           run: async () => {
-            setHighlightedItemValue(null);
             setQuery("");
             setProviderInstanceId(account.instanceId);
           },
@@ -347,7 +348,6 @@ export function OpenCodexSessionImportDialog({ session }: { session: CodexImport
 
   function goBack(): void {
     if (!canGoBack) return;
-    setHighlightedItemValue(null);
     setQuery("");
     setProviderInstanceId(null);
   }
@@ -369,7 +369,7 @@ export function OpenCodexSessionImportDialog({ session }: { session: CodexImport
   return (
     <CommandDialogPopup
       aria-label="Bring in Codex conversation"
-      className="overflow-hidden p-0"
+      className="p-0"
       data-testid="codex-import-dialog"
       finalFocus={() => resolveDialogReturnFocus(session.returnFocus)}
       onBackdropPointerDown={closeDialog}
@@ -379,15 +379,13 @@ export function OpenCodexSessionImportDialog({ session }: { session: CodexImport
         aria-label="Bring in Codex conversation"
         autoHighlight="always"
         mode="none"
-        onItemHighlighted={(value) => {
-          setHighlightedItemValue(typeof value === "string" ? value : null);
-        }}
-        onValueChange={(nextQuery) => {
-          setHighlightedItemValue(null);
-          setQuery(nextQuery);
-        }}
+        onValueChange={setQuery}
         value={query}
       >
+        <CommandTitle
+          title="Bring in Codex conversation"
+          step={providerInstanceId ? undefined : "Choose an account"}
+        />
         <CommandInput
           placeholder={
             providerInstanceId
@@ -418,11 +416,9 @@ export function OpenCodexSessionImportDialog({ session }: { session: CodexImport
             }
           }}
         />
-        <CommandPanel className="max-h-[min(28rem,70vh)]">
+        <CommandPanel className="max-h-[min(480px,62vh)]">
           <CommandPaletteResults
             groups={providerInstanceId ? externalCodexSessionGroups : filteredAccountGroups}
-            highlightedItemValue={highlightedItemValue}
-            isActionsOnly={false}
             isLoading={providerInstanceId !== null && externalSessionsQuery.isPending}
             keybindings={keybindings}
             query={deferredQuery}
@@ -440,32 +436,28 @@ export function OpenCodexSessionImportDialog({ session }: { session: CodexImport
             }
           />
         </CommandPanel>
-        <CommandFooter className="gap-3 max-sm:flex-col max-sm:items-start">
-          <div className="flex items-center gap-3">
+        <CommandFooter className="pointer-coarse:hidden">
+          <KbdGroup className="items-center gap-1.5">
+            <Kbd>
+              <ArrowUpIcon />
+              <ArrowDownIcon />
+            </Kbd>
+            <span>Move</span>
+          </KbdGroup>
+          <KbdGroup className="items-center gap-1.5">
+            <Kbd>
+              <CornerDownLeftIcon />
+            </Kbd>
+            <span>{providerInstanceId ? "Bring in" : "Choose"}</span>
+          </KbdGroup>
+          {canGoBack ? (
             <KbdGroup className="items-center gap-1.5">
               <Kbd>
-                <ArrowUpIcon />
+                <DeleteIcon />
               </Kbd>
-              <Kbd>
-                <ArrowDownIcon />
-              </Kbd>
-              <span className={cn("text-muted-foreground/80")}>Navigate</span>
+              <span>Back</span>
             </KbdGroup>
-            <KbdGroup className="items-center gap-1.5">
-              <Kbd>Enter</Kbd>
-              <span className={cn("text-muted-foreground/80")}>Select</span>
-            </KbdGroup>
-            {canGoBack ? (
-              <KbdGroup className="items-center gap-1.5">
-                <Kbd>Backspace</Kbd>
-                <span className={cn("text-muted-foreground/80")}>Back</span>
-              </KbdGroup>
-            ) : null}
-            <KbdGroup className="items-center gap-1.5">
-              <Kbd>Esc</Kbd>
-              <span className={cn("text-muted-foreground/80")}>Close</span>
-            </KbdGroup>
-          </div>
+          ) : null}
         </CommandFooter>
       </Command>
     </CommandDialogPopup>

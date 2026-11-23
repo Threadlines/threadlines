@@ -99,14 +99,20 @@ export interface PaletteSearchSection<T> {
   readonly rows: ReadonlyArray<PaletteSearchRow<T>>;
 }
 
-export interface PaletteSearchResult<T> {
-  readonly sections: ReadonlyArray<PaletteSearchSection<T>>;
-  /** Commands and settings whose titles hold the query's letters in order; only when nothing matched. */
-  readonly closeMatches: ReadonlyArray<T>;
+export interface PaletteCloseMatch<T> {
+  readonly source: "commands" | "settings";
+  readonly value: T;
 }
 
-/** "commands": the `>` filter. */
-export type PaletteSearchFilter = "all" | "commands";
+export interface PaletteSearchResult<T> {
+  /** Every source that found something, best first; a filter shows one of them. */
+  readonly sections: ReadonlyArray<PaletteSearchSection<T>>;
+  /**
+   * Commands and settings whose titles hold the query's letters in order. A
+   * view shows them only when it found nothing itself (paletteFilters.ts).
+   */
+  readonly closeMatches: ReadonlyArray<PaletteCloseMatch<T>>;
+}
 
 interface Scored<T> {
   readonly row: PaletteSearchRow<T>;
@@ -179,32 +185,35 @@ function searchPlaces<T>(entries: ReadonlyArray<PlaceSearchEntry<T>>, text: stri
 const CLOSE_MATCH_MIN_LETTERS = 3;
 
 function closeMatches<T>(
-  entries: ReadonlyArray<PlaceSearchEntry<T>>,
+  entries: ReadonlyArray<PlaceSearchEntry<T> & { readonly source: PaletteCloseMatch<T>["source"] }>,
   text: string,
-): ReadonlyArray<T> {
+): ReadonlyArray<PaletteCloseMatch<T>> {
   if ((text.match(/\p{L}/gu) ?? []).length < CLOSE_MATCH_MIN_LETTERS) return [];
   const letters = text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
-  const found: { value: T; score: number; order: number }[] = [];
+  const found: { match: PaletteCloseMatch<T>; score: number; order: number }[] = [];
   entries.forEach((entry, order) => {
     const title = entry.fields.title.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
     const score = scoreSubsequenceMatch(title, letters);
-    if (score !== null) found.push({ value: entry.value, score, order });
+    if (score !== null) {
+      found.push({ match: { source: entry.source, value: entry.value }, score, order });
+    }
   });
   return found
     .toSorted((left, right) => left.score - right.score || left.order - right.order)
-    .map((entry) => entry.value);
+    .map((entry) => entry.match);
 }
 
 /**
  * Searches every source for `query` and orders what it finds: rows in a
  * section by tier, then the source's own score, then (commands) use on this
  * device; sections by their best row's tier, ties going Threads, Commands,
- * Settings, Projects. When nothing matches at all, command and setting titles
- * with the query's letters in order come back as close matches.
+ * Settings, Projects. Command and setting titles with the query's letters in
+ * order come back as close matches, for a view that finds nothing else. Every
+ * source is searched whatever the palette's filter, so each filter can show
+ * its count.
  */
 export function paletteSearch<TThread, TCommand, TSetting, TProject>(input: {
   readonly query: string;
-  readonly filter: PaletteSearchFilter;
   readonly threads: ReadonlyArray<ThreadSearchEntry<TThread>>;
   readonly commands: ReadonlyArray<PlaceSearchEntry<TCommand>>;
   readonly settings: ReadonlyArray<PlaceSearchEntry<TSetting>>;
@@ -213,21 +222,11 @@ export function paletteSearch<TThread, TCommand, TSetting, TProject>(input: {
   type Value = TThread | TCommand | TSetting | TProject;
   const text = input.query.trim();
   const words = tierQueryWords(text);
-  const commandsOnly = input.filter === "commands";
   const bySource: Array<{ source: PaletteSource; rows: ReadonlyArray<PaletteSearchRow<Value>> }> = [
-    {
-      source: "threads",
-      rows: commandsOnly ? [] : sortSection<Value>(searchThreads(input.threads, text, words)),
-    },
+    { source: "threads", rows: sortSection<Value>(searchThreads(input.threads, text, words)) },
     { source: "commands", rows: sortSection<Value>(searchPlaces(input.commands, text)) },
-    {
-      source: "settings",
-      rows: commandsOnly ? [] : sortSection<Value>(searchPlaces(input.settings, text)),
-    },
-    {
-      source: "projects",
-      rows: commandsOnly ? [] : sortSection<Value>(searchPlaces(input.projects, text)),
-    },
+    { source: "settings", rows: sortSection<Value>(searchPlaces(input.settings, text)) },
+    { source: "projects", rows: sortSection<Value>(searchPlaces(input.projects, text)) },
   ];
   const sections = bySource
     .filter((section) => section.rows.length > 0)
@@ -238,13 +237,13 @@ export function paletteSearch<TThread, TCommand, TSetting, TProject>(input: {
     );
   return {
     sections,
-    closeMatches:
-      sections.length > 0
-        ? []
-        : closeMatches<Value>(
-            commandsOnly ? input.commands : [...input.commands, ...input.settings],
-            text,
-          ),
+    closeMatches: closeMatches<Value>(
+      [
+        ...input.commands.map((entry) => ({ ...entry, source: "commands" as const })),
+        ...input.settings.map((entry) => ({ ...entry, source: "settings" as const })),
+      ],
+      text,
+    ),
   };
 }
 

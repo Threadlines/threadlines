@@ -2,7 +2,8 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Command palette mockup</title>
-<!-- Mockup for docs/design/command-palette.md. Made-up data; type in it.
+<!-- Mockup for docs/design/command-palette.md, section 8. The grouped look Will picked on Nov 23 2026
+     (over flat, framed, and flat with a preview panel). Made-up data; type in it.
      Shown inside Threadlines it takes the app's theme; opened as a file it uses the fallback colors below. -->
 <style>
   :where(:root) {
@@ -68,6 +69,7 @@
     font-size: 11.5px;
   }
 
+  /* The box: one popover surface. No hairline under the filters; the groups carry the structure. */
   .pal {
     max-width: 640px;
     margin: 0 auto 6px;
@@ -109,8 +111,7 @@
     display: flex;
     align-items: center;
     gap: 2px;
-    padding: 0 12px 8px;
-    border-bottom: 1px solid var(--border);
+    padding: 0 12px 2px;
   }
   .scope {
     font: inherit;
@@ -139,33 +140,49 @@
     font-size: 10.5px;
     color: var(--muted-foreground);
   }
-  .scope.none {
-    opacity: 1;
-    color: var(--muted-foreground);
-  }
   .list {
-    max-height: 440px;
+    max-height: 480px;
     overflow-y: auto;
-    padding: 6px;
+    padding: 2px 12px 12px;
   }
+
+  /* A group: the quiet filled block from design-language.md ("Groups"). In the app: --group, --group-ring, --group-divider. */
   .sec {
     font-size: 11.5px;
     color: var(--muted-foreground);
-    padding: 8px 10px 4px;
-    display: flex;
-    justify-content: space-between;
+    padding: 10px 4px 5px;
+  }
+  .grp {
+    background: color-mix(in srgb, var(--foreground) 4.5%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--foreground) 5%, transparent);
+    border-radius: 10px;
+    overflow: hidden;
   }
   .row {
+    position: relative;
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 6px 10px;
-    border-radius: 6px;
+    padding: 7px 12px;
     cursor: pointer;
-    min-height: 32px;
+    min-height: 34px;
+  }
+  /* The divider starts at the row's text edge and is hidden beside the highlighted row. */
+  .row + .row::before {
+    content: "";
+    position: absolute;
+    left: 38px;
+    right: 0;
+    top: 0;
+    height: 1px;
+    background: color-mix(in srgb, var(--foreground) 7%, transparent);
   }
   .row.on {
     background: var(--accent);
+  }
+  .row.on::before,
+  .row.on + .row::before {
+    display: none;
   }
   .row .ic {
     flex: none;
@@ -215,7 +232,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  .row mark {
+  .pal mark {
     background: color-mix(in srgb, var(--warning) 20%, transparent);
     color: inherit;
     border-radius: 2px;
@@ -247,6 +264,7 @@
     width: 7px;
     height: 7px;
     border-radius: 50%;
+    display: inline-block;
   }
   .dot.work {
     background: var(--info);
@@ -262,7 +280,7 @@
     color: var(--foreground);
   }
   .quiet {
-    padding: 8px 10px;
+    padding: 10px 4px 0;
     font-size: 12.5px;
     color: var(--muted-foreground);
     display: flex;
@@ -328,29 +346,14 @@
       display: block;
     }
     .row {
-      padding: 8px 10px;
+      padding: 9px 12px;
     }
     .scopes {
       overflow-x: auto;
     }
     .list {
-      max-height: 380px;
+      max-height: 400px;
     }
-  }
-  .pm h4 {
-    font-size: 13.5px;
-    font-weight: 600;
-    margin: 18px 0 6px;
-  }
-  .pm ul {
-    margin: 0;
-    padding-left: 18px;
-  }
-  .pm li {
-    margin: 3px 0;
-  }
-  .pm li b {
-    font-weight: 600;
   }
 </style>
 <div class="pm">
@@ -361,8 +364,8 @@
   <div class="tries">
     <span>Try:</span>
     <button class="try" data-q="">just opened</button>
-    <button class="try" data-q="font size"><code>font size</code></button>
     <button class="try" data-q="terminal"><code>terminal</code></button>
+    <button class="try" data-q="font size"><code>font size</code></button>
     <button class="try" data-q="checkout"><code>checkout</code></button>
     <button class="try" data-q="theme"><code>theme</code></button>
     <button class="try" data-q="/src/auth.ts"><code>/src/auth.ts</code></button>
@@ -402,39 +405,6 @@
       <span class="did" id="did"></span>
     </div>
   </div>
-
-  <h4>What changed from today</h4>
-  <ul>
-    <li>
-      <b>Opens on your threads.</b> The last five, with the one you just left on top, so Search then
-      Enter takes you back. Under them, a few commands that fit what's on screen and the ones you
-      use most.
-    </li>
-    <li>
-      <b>Best match first, whatever it is.</b> The group holding the best match moves to the top.
-      Each group shows five and a "Show all" row.
-    </li>
-    <li>
-      <b>Settings are in.</b> A setting opens its page with the row lit up, the way Settings search
-      already does.
-    </li>
-    <li>
-      <b>Filters.</b> All, Threads, Commands, Settings, Projects, with a count on each while you
-      type. Typing <code>&gt;</code> first jumps to Commands.
-    </li>
-    <li>
-      <b>It says what it's doing.</b> "Searching messages" while chats are still being read, and a
-      plain line when a computer can't be reached or its search may be incomplete.
-    </li>
-    <li>
-      <b>A path is a suggestion, not a switch.</b> Typing one adds an "Add project at" row on top.
-      The search results stay.
-    </li>
-    <li>
-      <b>One flat surface.</b> No box inside a box, wider, one-line rows, about 13 rows visible
-      instead of 8.
-    </li>
-  </ul>
 </div>
 <script>
   (() => {
@@ -476,20 +446,14 @@
       { ti: 8, s: "…the terminal step in CI got slower when the cache key changed…" },
     ];
     const commands = [
-      { t: "New thread", g: "Thread", k: "⇧⌘O", kw: ["chat", "create"], ctx: 0 },
+      { t: "New thread", g: "Thread", k: "⇧⌘O", kw: ["chat", "create"] },
       { t: "New thread in…", g: "Thread", kw: ["project", "pick"] },
       { t: "Rename thread", g: "Thread", kw: ["title", "name"], ctx: 1 },
       { t: "Pin thread", g: "Thread", kw: ["keep", "top"] },
       { t: "Wrap up thread", g: "Thread", kw: ["done", "finish"] },
       { t: "Archive thread", g: "Thread", kw: ["hide", "put away"] },
       { t: "Find in chat", g: "Thread", k: "⌘F", kw: ["search messages"] },
-      {
-        t: "Switch model",
-        g: "Thread",
-        k: "⌘/",
-        kw: ["model picker", "opus", "sol", "effort"],
-        isNew: 1,
-      },
+      { t: "Switch model", g: "Thread", k: "⇧⌘M", kw: ["model picker", "opus", "sol", "effort"] },
       { t: "Add agent", g: "Thread", kw: ["room", "invite", "second opinion"] },
       { t: "Move to another computer", g: "Thread", kw: ["transfer", "linked"] },
       {
@@ -501,39 +465,34 @@
         used: 9,
       },
       {
-        t: "Toggle diff",
+        t: "Toggle panel",
         g: "Panels",
         k: "⌘D",
-        kw: ["changes", "review"],
+        kw: ["diff", "changes", "review", "side panel"],
         ctx: 1,
-        isNew: 1,
         used: 6,
       },
-      { t: "Open in editor", g: "Panels", k: "⌘O", kw: ["vscode", "cursor", "zed"], isNew: 1 },
+      { t: "Show diff", g: "Panels", kw: ["changes", "review"] },
+      { t: "Open in editor", g: "Panels", k: "⌘O", kw: ["vscode", "cursor", "zed"] },
       { t: "New terminal tab", g: "Panels", kw: ["shell"] },
       { t: "Split terminal", g: "Panels", kw: ["side by side"] },
       { t: "Find in terminal", g: "Panels", kw: ["search output"] },
       { t: "Restart terminal", g: "Panels", kw: ["reset", "new shell"] },
       { t: "Clear terminal output", g: "Panels", kw: ["empty"] },
       { t: "Kill terminal", g: "Panels", kw: ["stop", "close"] },
-      { t: "Run script…", g: "Project", kw: ["dev", "test", "build", "action"], isNew: 1 },
-      { t: "Add project", g: "Project", kw: ["folder", "clone", "github", "repository"] },
-      { t: "New lead chat", g: "Project", kw: ["coordinate"] },
+      { t: "Run script…", g: "Projects", kw: ["dev", "test", "build", "action"] },
+      { t: "Add project", g: "Projects", kw: ["folder", "clone", "github", "repository"] },
+      { t: "New lead chat", g: "Projects", kw: ["coordinate"] },
       { t: "Open pull requests", g: "Go to", kw: ["prs", "reviews", "github"] },
       { t: "Go to Home", g: "Go to", kw: ["start"] },
       { t: "Open general chats", g: "Go to", kw: ["conversations"] },
       { t: "Open Fleet", g: "Go to", k: "⇧⌘F", kw: ["computers", "machines", "devices"] },
       { t: "Open Scheduled", g: "Go to", k: "⇧⌘S", kw: ["tasks", "cron"] },
       { t: "Open usage", g: "Go to", kw: ["tokens", "cost", "spend"] },
-      { t: "Open Settings", g: "Go to", k: "⌘,", kw: ["preferences", "configuration"] },
-      { t: "Back", g: "Go to", k: "⌘[", kw: ["previous page"], isNew: 1 },
-      {
-        t: "Change theme…",
-        g: "App",
-        kw: ["appearance", "dark mode", "light mode", "colors"],
-        isNew: 1,
-      },
-      { t: "Use default theme", g: "App", kw: ["reset appearance"], isNew: 1 },
+      { t: "Open settings", g: "Go to", kw: ["preferences", "configuration"] },
+      { t: "Go back", g: "Go to", k: "⌘[", kw: ["previous page"] },
+      { t: "Change theme…", g: "App", kw: ["appearance", "dark mode", "light mode", "colors"] },
+      { t: "Use default theme", g: "App", kw: ["reset appearance"] },
       { t: "Hide sidebar", g: "App", k: "⌘B", kw: ["thread list", "toggle"] },
       { t: "Connect to a computer", g: "App", kw: ["link", "pair", "remote"] },
       { t: "What's new in Threadlines", g: "App", kw: ["release notes", "changelog"] },
@@ -556,7 +515,6 @@
       { t: "Open links in", path: "General › Browser", kw: ["browser panel", "default browser"] },
       { t: "Checkout location", path: "Threads › Worktrees", kw: ["folder", "path"] },
     ];
-
     const projects = [
       { t: "acme-web", path: "~/code/acme-web" },
       { t: "billing-api", path: "~/code/billing-api" },
@@ -568,8 +526,7 @@
         .toLowerCase()
         .split(/[^\p{L}\p{N}.]+/u)
         .filter(Boolean);
-    // 0 title starts with the query, 1 every word begins a title word, 1.5 inside the title,
-    // 2 an everyday word (keyword), 3 the place it lives. Lower is better; null is no match.
+    // A stand-in for the app's tiers (section 5): lower is better, null is no match.
     function tier(q, qw, title, kws, extra) {
       const tl = title.toLowerCase();
       if (tl.startsWith(q)) return tl === q ? -1 : 0;
@@ -614,11 +571,12 @@
         .join("");
     }
 
-    const $q = document.getElementById("q"),
-      $list = document.getElementById("list"),
-      $scopes = document.getElementById("scopes");
-    const $verb = document.getElementById("verb"),
-      $did = document.getElementById("did");
+    const $ = (id) => document.getElementById(id);
+    const $q = $("q"),
+      $list = $("list"),
+      $scopes = $("scopes");
+    const $verb = $("verb"),
+      $did = $("did");
     const SCOPES = ["All", "Threads", "Commands", "Settings", "Projects"];
     let scope = "All",
       sel = 0,
@@ -663,7 +621,7 @@
         } else if (eff === "Threads") {
           out.sections.push({ label: "Recent", rows: threads.map((t) => ({ kind: "thread", t })) });
         } else if (eff === "Commands") {
-          for (const g of ["Thread", "Panels", "Project", "Go to", "App"])
+          for (const g of ["Thread", "Panels", "Projects", "Go to", "App"])
             out.sections.push({
               label: g,
               rows: commands.filter((c) => c.g === g).map((c) => ({ kind: "cmd", c })),
@@ -705,7 +663,16 @@
         const r = tier(q, qw, p.t, [], p.path);
         if (r !== null) P.push({ kind: "proj", p, r: r + 0.2 + i / 1000 });
       });
-      if (!T.length && !C.length && !S.length && !P.length && q.length >= 3 && !isPath) {
+      // Close matches wait for the message search, as the app does.
+      if (
+        msgReady &&
+        !T.length &&
+        !C.length &&
+        !S.length &&
+        !P.length &&
+        q.length >= 3 &&
+        !isPath
+      ) {
         commands.forEach((c) => {
           if (subseq(q.replace(/\s/g, ""), c.t)) C.push({ kind: "cmd", c, r: 9 });
         });
@@ -741,7 +708,7 @@
           });
         out.sections.push({ label: out.fuzzy ? "Close matches" : name, rows: r });
       }
-      out.noMatch = out.sections.length === 0 && !out.path;
+      out.noMatch = msgReady && out.sections.length === 0 && !out.path;
       return out;
     }
 
@@ -763,6 +730,7 @@
                     : r.label);
     function render(keepSel) {
       const o = compute();
+      // The highlight follows a row the user moved to, not its position, when late results arrive.
       const keepKey = keepSel && userMoved ? rowKey(rows[sel]) : null;
       $scopes.innerHTML = SCOPES.map((s) => {
         const n =
@@ -786,7 +754,7 @@
         h += '<div class="row ' + (cls || "") + '" data-i="' + i + '">' + inner + "</div>";
       };
       if (o.path) {
-        h += '<div class="sec">Add project</div>';
+        h += '<div class="sec">Add project</div><div class="grp">';
         add(
           { kind: "path", p: o.path },
           '<span class="ic">' +
@@ -795,9 +763,10 @@
             esc(o.path) +
             '</div></div><span class="meta">opens Add project</span>',
         );
+        h += "</div>";
       }
       for (const s of o.sections) {
-        h += '<div class="sec">' + s.label + "</div>";
+        h += '<div class="sec">' + s.label + '</div><div class="grp">';
         for (const r of s.rows) {
           if (r.kind === "thread") {
             const t = r.t;
@@ -866,21 +835,19 @@
             );
           }
         }
+        h += "</div>";
       }
       if (o.q && !msgReady && (o.eff === "All" || o.eff === "Threads"))
-        h += '<div class="quiet"><span class="spin"></span>Searching messages</div>';
+        h += '<div class="quiet"><span class="spin"></span>Searching messages…</div>';
       else if (o.noMatch) {
-        h += '<div class="empty">No matches for “' + esc($q.value.trim()) + "”</div>";
-        if (o.eff === "All" || o.eff === "Threads") {
-          h += '<div class="sec"></div>';
-          add(
-            { kind: "set", s: settings.find((x) => x.t === "Archived threads") },
-            '<span class="ic">' +
-              I.arch +
-              '</span><div class="main"><div class="t">Look in archived threads</div></div><span class="meta">Settings</span>',
-            "more",
-          );
-        }
+        h += '<div class="sec">No matches</div><div class="grp">';
+        add(
+          { kind: "set", s: settings.find((x) => x.t === "Archived threads") },
+          '<span class="ic">' +
+            I.arch +
+            '</span><div class="main"><div class="t">Look in archived threads</div></div><span class="meta">Settings › Archived threads</span>',
+        );
+        h += "</div>";
       }
       $list.innerHTML = h;
       const kept = keepKey === null ? -1 : rows.findIndex((r) => rowKey(r) === keepKey);
@@ -915,7 +882,7 @@
           b = a + el.offsetHeight;
         if (a < $list.scrollTop) $list.scrollTop = a - 30;
         else if (b > $list.scrollTop + $list.clientHeight)
-          $list.scrollTop = b - $list.clientHeight + 6;
+          $list.scrollTop = b - $list.clientHeight + 12;
       }
     }
     function act() {
@@ -940,6 +907,7 @@
     function typed() {
       $did.textContent = "";
       clearTimeout(msgTimer);
+      // ">" first is shorthand for the Commands filter, and leaves the field.
       if ($q.value.startsWith(">")) {
         scope = "Commands";
         $q.value = $q.value.slice(1);
@@ -973,7 +941,9 @@
         const i = SCOPES.indexOf(scope);
         scope = SCOPES[(i + (e.shiftKey ? SCOPES.length - 1 : 1)) % SCOPES.length];
         render();
-      } else if (e.key === "Escape") {
+      }
+      // Escape in stages: the text, then the filter. In the app a third press closes.
+      else if (e.key === "Escape") {
         if ($q.value) {
           $q.value = "";
           typed();

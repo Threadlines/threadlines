@@ -8,7 +8,12 @@ import {
   scopeThreadRef,
 } from "@threadlines/client-runtime";
 import { type EnvironmentId, KeybindingCommand, type ProjectId } from "@threadlines/contracts";
-import { APP_COMMANDS, type AppCommandId } from "@threadlines/shared/appCommands";
+import {
+  APP_COMMAND_GROUP_TITLES,
+  APP_COMMANDS,
+  type AppCommandGroup,
+  type AppCommandId,
+} from "@threadlines/shared/appCommands";
 import { useQuery } from "@tanstack/react-query";
 import { useDebouncedValue } from "@tanstack/react-pacer";
 import { useNavigate } from "@tanstack/react-router";
@@ -18,16 +23,19 @@ import {
   ArrowDownIcon,
   ArrowLeftIcon,
   ArrowUpIcon,
-  CommandIcon,
+  CornerDownLeftIcon,
+  DeleteIcon,
   FolderPlusIcon,
   MessageSquareIcon,
   MessagesSquareIcon,
+  SearchIcon,
   SettingsIcon,
 } from "lucide-react";
 import {
   useCallback,
   useDeferredValue,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -45,6 +53,13 @@ import { PaletteCommandSources } from "../commands/PaletteCommandSources";
 import { paletteSettingsSurface } from "../commands/paletteSettingsSurface";
 
 export { PaletteInboxCommandSource } from "../commands/PaletteCommandSources";
+import {
+  filterPaletteSearch,
+  PALETTE_FILTERS,
+  type PaletteFilter,
+  paletteFilterCounts,
+  stepPaletteFilter,
+} from "../commands/paletteFilters";
 import {
   paletteSearch,
   paletteSearchStatus,
@@ -95,10 +110,11 @@ import {
   highlightedThreadKeyOf,
   ITEM_ICON_CLASS,
   normalizeSearchText,
+  paletteRowVerb,
   RECENT_THREAD_LIMIT,
   SUGGESTED_COMMAND_LIMIT,
 } from "./CommandPalette.logic";
-import { CommandPaletteResults } from "./CommandPaletteResults";
+import { PaletteResultList, paletteRowId } from "./CommandPaletteResults";
 import { ProjectFavicon } from "./ProjectFavicon";
 import { SETTINGS_NAV_ITEMS } from "./settings/settingsNavigation";
 import { useSettingsAvailability } from "./settings/settingsPlaceAvailability";
@@ -109,13 +125,7 @@ import {
   useOpenSettingsResult,
 } from "./settings/settingsSearchNavigation";
 import { ThreadRowLeadingStatus, ThreadRowTrailingStatus } from "./ThreadStatusIndicators";
-import {
-  Command,
-  CommandDialogPopup,
-  CommandFooter,
-  CommandInput,
-  CommandPanel,
-} from "./ui/command";
+import { CommandDialogPopup, CommandFooter, CommandPanel } from "./ui/command";
 import { Kbd, KbdGroup } from "./ui/kbd";
 import { failureNotice, toastManager } from "./ui/toast";
 
@@ -130,13 +140,23 @@ const FIRST_SUGGESTIONS: ReadonlyArray<AppCommandId> = [
   "project.add",
 ];
 const isKeybindingCommand = Schema.is(KeybindingCommand);
-/** How each source's section is headed. */
-const SECTION_GROUPS: Readonly<Record<PaletteSource, { value: string; label: string }>> = {
-  threads: { value: "threads-search", label: "Threads" },
-  commands: { value: "actions", label: "Commands" },
-  settings: { value: "settings-search", label: "Settings" },
-  projects: { value: "projects-search", label: "Projects" },
+/** How each source's section is headed, and what its "Show all" row counts. */
+const SECTION_GROUPS: Readonly<
+  Record<PaletteSource, { value: string; label: string; noun: string }>
+> = {
+  threads: { value: "threads-search", label: "Threads", noun: "threads" },
+  commands: { value: "actions", label: "Commands", noun: "commands" },
+  settings: { value: "settings-search", label: "Settings", noun: "settings" },
+  projects: { value: "projects-search", label: "Projects", noun: "projects" },
 };
+/** The Commands filter with nothing typed lists every command under its catalog group, in this order. */
+const COMMAND_GROUP_ORDER: ReadonlyArray<AppCommandGroup> = [
+  "thread",
+  "panels",
+  "project",
+  "goTo",
+  "app",
+];
 /** Each Settings page's glyph, which its settings carry in the palette. */
 const SETTINGS_PAGE_ICONS: ReadonlyMap<string, ComponentType<{ className?: string }>> = new Map<
   string,
@@ -164,6 +184,28 @@ function usePaletteThreads(): ReadonlyArray<SidebarThreadSummary> {
   });
 }
 
+interface PaletteHighlight {
+  readonly value: string | null;
+  /** The user moved to `value` (keys or pointer); until then the first row is highlighted. */
+  readonly moved: boolean;
+}
+const NO_HIGHLIGHT: PaletteHighlight = { value: null, moved: false };
+
+/**
+ * While searching All, a command row says which group it belongs to (a list
+ * item, which list), unless its owner already says something there.
+ */
+function withCommandGroup(
+  item: CommandPaletteActionItem | CommandPaletteSubmenuItem,
+): CommandPaletteActionItem | CommandPaletteSubmenuItem {
+  if (!item.command || item.description || item.whereLabel) return item;
+  const whereLabel =
+    item.command.itemId === undefined
+      ? APP_COMMAND_GROUP_TITLES[APP_COMMANDS[item.command.id].group]
+      : listHeading(item.command.id);
+  return { ...item, whereLabel };
+}
+
 function commandIcon(id: AppCommandId, className: string) {
   const Icon = COMMAND_ICONS[id];
   return <Icon className={className} />;
@@ -186,8 +228,9 @@ function commandRow(command: OfferedCommand): CommandPaletteActionItem | Command
         {titleText} <span className="font-semibold">{command.titleEmphasis}</span>
       </>
     );
-  const description =
-    command.disabledReason ?? command.description ?? ("about" in spec ? spec.about : undefined);
+  // One line: what the owner says now (why it's unavailable, a project's
+  // name) shows on the right; the catalog's sentence only helps find it.
+  const description = command.disabledReason ?? command.description;
   const common = {
     value: `command:${command.id}`,
     searchTerms: [...("keywords" in spec ? spec.keywords : []), ...(command.keywords ?? [])],
@@ -262,8 +305,11 @@ export function OpenCommandPaletteDialog() {
   }, [composerHandleRef]);
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
-  const isActionsOnly = deferredQuery.startsWith(">");
-  const [highlightedItemValue, setHighlightedItemValue] = useState<string | null>(null);
+  // The root's filter. Typing ">" first switches to Commands (handleQueryChange).
+  const [filter, setFilter] = useState<PaletteFilter>("all");
+  // The highlight is a row, not a position: once the user moves to a row it
+  // stays on it while rows arrive above it; until then it is the first row.
+  const [highlight, setHighlight] = useState<PaletteHighlight>(NO_HIGHLIGHT);
   const { handleNewThread, routeThreadRef } = useHandleNewThread();
   const projects = useStore(useShallow(selectProjectsAcrossEnvironments));
   const threads = usePaletteThreads();
@@ -330,7 +376,7 @@ export function OpenCommandPaletteDialog() {
           />
         ),
         runProject: openProjectFromSearch,
-      }),
+      }).map((row) => ({ ...row, verb: "Open project" })),
     [openProjectFromSearch, projects],
   );
 
@@ -375,7 +421,8 @@ export function OpenCommandPaletteDialog() {
   // screen left out, and a thread that no longer exists skipped.
   const activeThreadEnvironmentId = routeThreadRef?.environmentId;
   const [recentVisitKeys] = useState(readRecentThreadVisits);
-  const recentThreadItems = useMemo(() => {
+  // Every thread in that order: the Threads filter with nothing typed.
+  const threadsByVisit = useMemo(() => {
     const candidates = allThreadItems.filter(
       (item) =>
         !(
@@ -399,7 +446,7 @@ export function OpenCommandPaletteDialog() {
         (left, right) =>
           Date.parse(right.timestampAt ?? "") - Date.parse(left.timestampAt ?? "") || 0,
       );
-    return [...visited, ...byActivity].slice(0, RECENT_THREAD_LIMIT);
+    return [...visited, ...byActivity];
   }, [activeThreadEnvironmentId, activeThreadId, allThreadItems, recentVisitKeys]);
   const threadContentSearchTargets = useMemo<ReadonlyArray<ThreadSearchTarget>>(() => {
     const scopedProjectIds = currentView?.threadSearchProjectIdsByEnvironment;
@@ -425,8 +472,8 @@ export function OpenCommandPaletteDialog() {
   const threadContentSearchQuery = useQuery(
     threadSearchQueryOptions({
       query: debouncedThreadContentQuery,
+      // Every filter counts threads while there is text, so the search runs in each.
       targets: threadContentSearchTargets,
-      enabled: !isActionsOnly,
     }),
   );
   const threadContentMatches =
@@ -478,14 +525,17 @@ export function OpenCommandPaletteDialog() {
     });
   }, [commandRows, commandUsage, offeredCommands]);
 
-  const searchText = (isActionsOnly ? deferredQuery.slice(1) : deferredQuery).trim();
+  const searchText = deferredQuery.trim();
+  // A list page or a project's thread search has no filters: it is "all" of its own rows.
+  const activeFilter: PaletteFilter = currentView === null ? filter : "all";
 
   // The Settings source asks what exists here exactly as Settings does, with
   // the palette's opening as the search a fact is read for.
   const [paletteSession] = useState(() => useCommandPaletteStore.getState().openGeneration);
   const settingsSurface = paletteSettingsSurface();
   const { shown: settingShown } = useSettingsAvailability(settingsSurface, {
-    searchActive: searchText.length > 0 && !isActionsOnly,
+    // Every filter counts settings while there is text, so it is read in each.
+    searchActive: currentView === null && (activeFilter === "settings" || searchText.length > 0),
     searchSession: paletteSession,
   });
   const providers = useServerProviders();
@@ -512,6 +562,7 @@ export function OpenCommandPaletteDialog() {
               title: item.fields.title,
               icon: <PageIcon className={ITEM_ICON_CLASS} />,
               whereLabel: settingsSearchItemWhere(item),
+              verb: "Go to setting",
               run: async () => openSettingsResult(settingsSearchItemTarget(item)),
             },
           };
@@ -533,11 +584,13 @@ export function OpenCommandPaletteDialog() {
       const title = [command.title ?? spec.title, command.titleEmphasis]
         .filter((part) => part !== undefined)
         .join(" ");
+      const about =
+        command.disabledReason ?? command.description ?? ("about" in spec ? spec.about : undefined);
       entries.push({
         fields: {
           title,
           keywords: row.searchTerms,
-          ...(row.description ? { about: row.description } : {}),
+          ...(about ? { about } : {}),
         },
         order,
         usage: commandUsage[id]?.count ?? 0,
@@ -587,27 +640,22 @@ export function OpenCommandPaletteDialog() {
       searching
         ? paletteSearch({
             query: searchText,
-            filter: isActionsOnly ? "commands" : "all",
             threads: threadEntries,
             commands: commandEntries,
             settings: settingEntries,
             projects: projectEntries,
           })
         : null,
-    [
-      commandEntries,
-      isActionsOnly,
-      projectEntries,
-      searchText,
-      searching,
-      settingEntries,
-      threadEntries,
-    ],
+    [commandEntries, projectEntries, searchText, searching, settingEntries, threadEntries],
+  );
+  const filterCounts = useMemo(
+    () => (searchResult ? paletteFilterCounts(searchResult) : null),
+    [searchResult],
   );
 
   function pushPaletteView(view: CommandPaletteView): void {
     setViewStack((previousViews) => [...previousViews, view]);
-    setHighlightedItemValue(null);
+    setHighlight(NO_HIGHLIGHT);
     setQuery(view.initialQuery ?? "");
   }
 
@@ -631,16 +679,27 @@ export function OpenCommandPaletteDialog() {
 
   function popView(): void {
     setViewStack((previousViews) => previousViews.slice(0, -1));
-    setHighlightedItemValue(null);
+    setHighlight(NO_HIGHLIGHT);
     setQuery("");
   }
 
   function handleQueryChange(nextQuery: string): void {
-    setHighlightedItemValue(null);
+    setHighlight(NO_HIGHLIGHT);
+    // ">" first is the Commands filter, and leaves the field: one state, not two.
+    if (currentView === null && nextQuery.startsWith(">")) {
+      setFilter("commands");
+      setQuery(nextQuery.slice(1).trimStart());
+      return;
+    }
     setQuery(nextQuery);
     if (nextQuery === "" && currentView?.initialQuery) {
       popView();
     }
+  }
+
+  function chooseFilter(next: PaletteFilter): void {
+    setFilter(next);
+    setHighlight(NO_HIGHLIGHT);
   }
 
   // Sidebar "Search all N threads" hands off here: a submenu view scoped to
@@ -696,13 +755,45 @@ export function OpenCommandPaletteDialog() {
     value: "action:all-commands",
     searchTerms: [],
     title: "All commands",
-    description: "Type > to search only commands",
-    icon: <CommandIcon className={ITEM_ICON_CLASS} />,
+    icon: null,
+    more: true,
     keepOpen: true,
     run: async () => {
-      setHighlightedItemValue(null);
-      setQuery(">");
+      chooseFilter("commands");
+      setQuery("");
     },
+  };
+  // Each kind's rows with nothing typed, as its filter lists them.
+  const unfilteredGroups = (kind: PaletteFilter): ReadonlyArray<CommandPaletteGroup> => {
+    switch (kind) {
+      case "all":
+        return buildOpeningGroups({
+          recentThreadItems: threadsByVisit.slice(0, RECENT_THREAD_LIMIT),
+          suggestedItems: suggestedRows,
+          allCommandsItem,
+        });
+      case "threads":
+        return [{ value: "recent-threads", label: "Recent", items: threadsByVisit }];
+      case "commands":
+        return COMMAND_GROUP_ORDER.flatMap((group) => {
+          const items = commandRows.filter(
+            (row) => row.command && APP_COMMANDS[row.command.id].group === group,
+          );
+          return items.length > 0
+            ? [{ value: `commands:${group}`, label: APP_COMMAND_GROUP_TITLES[group], items }]
+            : [];
+        });
+      case "settings":
+        return [
+          {
+            value: "settings-search",
+            label: "Settings",
+            items: settingEntries.map((entry) => entry.value),
+          },
+        ];
+      case "projects":
+        return [{ value: "projects-search", label: "Projects", items: projectSearchItems }];
+    }
   };
   // A list page draws from the command's items now, not a copy from when it
   // opened, so a script renamed while its list is open shows its new name.
@@ -717,48 +808,67 @@ export function OpenCommandPaletteDialog() {
             query: deferredQuery,
           }),
         }))
-    : deferredQuery.length === 0
-      ? buildOpeningGroups({ recentThreadItems, suggestedItems: suggestedRows, allCommandsItem })
-      : // ">" alone: every command, in the catalog's order.
-        [{ value: "actions", label: "Commands", items: commandRows }];
+    : // A kind with nothing in it says so (emptyStateMessage) instead of a bare heading.
+      unfilteredGroups(activeFilter).filter((group) => group.items.length > 0);
 
   const archivedThreadsItem: CommandPaletteActionItem = {
     kind: "action",
     value: "action:archived-threads",
     searchTerms: [],
     title: "Look in archived threads",
-    description: "Archived threads aren't searched here",
     icon: <ArchiveIcon className={ITEM_ICON_CLASS} />,
     whereLabel: "Settings › Archived threads",
     run: async () => openSettingsResult({ placeId: "settings.archived" }),
   };
-  // The root's search: four sources in one ordering (commands/paletteSearch).
-  // List pages and a project's thread search keep filtering their own rows.
+  // A "Show all N" row: the rest of a kind's group, under its own filter.
+  const showAllItem = (source: PaletteSource, total: number): CommandPaletteActionItem => ({
+    kind: "action",
+    value: `more:${source}`,
+    searchTerms: [],
+    title: `Show all ${total} ${SECTION_GROUPS[source].noun}`,
+    icon: null,
+    more: true,
+    keepOpen: true,
+    run: async () => chooseFilter(source),
+  });
+  // The root's search: four sources in one ordering (commands/paletteSearch),
+  // shown through the filter. List pages and a project's thread search keep
+  // filtering their own rows.
   const listGroups = searchResult
     ? null
-    : filterCommandPaletteGroups({
-        activeGroups,
-        query: deferredQuery,
-        isInSubmenu: currentView !== null,
-        projectSearchItems: projectSearchItems,
-        threadSearchItems: allThreadSearchItems,
-      });
+    : searchText.length === 0 && currentView === null
+      ? activeGroups
+      : filterCommandPaletteGroups({
+          activeGroups,
+          query: deferredQuery,
+          isInSubmenu: currentView !== null,
+          projectSearchItems: projectSearchItems,
+          threadSearchItems: allThreadSearchItems,
+        });
+  const filteredSearch = useMemo(
+    () => (searchResult ? filterPaletteSearch(searchResult, activeFilter) : null),
+    [activeFilter, searchResult],
+  );
   // What the palette says about a search over messages (the root's, or a
   // project's thread search): still searching, a computer that couldn't
   // answer or stopped early, and No matches only once the answer for the
-  // text in the field is in.
+  // text in the field is in. Only where threads are shown.
   const searchesThreadsHere =
-    currentView === null || currentView.threadSearchProjectIdsByEnvironment !== undefined;
+    currentView === null
+      ? activeFilter === "all" || activeFilter === "threads"
+      : currentView.threadSearchProjectIdsByEnvironment !== undefined;
   const messageSearch = searchesThreadsHere && searchText.length > 0;
   const computerNames = new Map(
     addProjectEnvironmentOptions.map((option) => [option.environmentId, option.label]),
   );
+  const shownRowCount = filteredSearch
+    ? filteredSearch.sections.reduce((total, section) => total + section.total, 0) +
+      filteredSearch.closeMatches.length
+    : (listGroups ?? []).reduce((total, group) => total + group.items.length, 0);
   const searchStatus = messageSearch
     ? paletteSearchStatus({
         searchesMessages:
-          !isActionsOnly &&
-          threadContentSearchTargets.length > 0 &&
-          canSearchThreadContent(searchText),
+          threadContentSearchTargets.length > 0 && canSearchThreadContent(searchText),
         // The field's own text, not only the deferred one the list was drawn
         // for, so a keystroke never inherits the last text's answer.
         answeredCurrentText:
@@ -769,27 +879,31 @@ export function OpenCommandPaletteDialog() {
           computerName: computerNames.get(entry.environmentId) ?? "a linked computer",
           outcome: entry.outcome,
         })),
-        rowCount: searchResult
-          ? searchResult.sections.reduce((total, section) => total + section.rows.length, 0) +
-            searchResult.closeMatches.length
-          : (listGroups ?? []).reduce((total, group) => total + group.items.length, 0),
+        rowCount: shownRowCount,
       })
     : null;
   const filteredGroups: ReadonlyArray<CommandPaletteGroup> = [
-    ...(searchResult
+    ...(filteredSearch
       ? [
-          ...searchResult.sections.map((section) => ({
+          ...filteredSearch.sections.map((section) => ({
             value: SECTION_GROUPS[section.source].value,
             label: SECTION_GROUPS[section.source].label,
-            items: section.rows.map((row) => row.value),
+            items: [
+              ...(section.source === "commands" && activeFilter === "all"
+                ? section.rows.map(withCommandGroup)
+                : section.rows),
+              ...(section.total > section.rows.length
+                ? [showAllItem(section.source, section.total)]
+                : []),
+            ],
           })),
           // Only once messages are searched too: a message match would end them.
-          ...(searchResult.closeMatches.length > 0 && !searchStatus?.searching
+          ...(filteredSearch.closeMatches.length > 0 && !searchStatus?.searching
             ? [
                 {
                   value: "close-matches",
                   label: "Close matches",
-                  items: searchResult.closeMatches.map((row) => ({
+                  items: filteredSearch.closeMatches.map((row) => ({
                     ...row,
                     value: `close:${row.value}`,
                   })),
@@ -807,13 +921,16 @@ export function OpenCommandPaletteDialog() {
   // The search itself carries on underneath, so the field never turns into a
   // form.
   const addProjectPathItem: CommandPaletteActionItem | null =
-    currentView === null && isFilesystemBrowseQuery(deferredQuery, addProjectPathPlatform)
+    currentView === null &&
+    activeFilter === "all" &&
+    isFilesystemBrowseQuery(deferredQuery, addProjectPathPlatform)
       ? {
           kind: "action",
           value: "action:add-project-at-path",
           searchTerms: [],
           title: `Add project at ${deferredQuery.trim()}`,
           icon: <FolderPlusIcon className={ITEM_ICON_CLASS} />,
+          verb: "Add project",
           opensDialog: true,
           run: async () => {
             openAddProject({ initialPath: deferredQuery.trim(), returnFocus: focusComposer });
@@ -826,11 +943,66 @@ export function OpenCommandPaletteDialog() {
         ...filteredGroups,
       ]
     : filteredGroups;
+  const emptyStateMessage =
+    displayedGroups.length > 0 || searchStatus
+      ? null
+      : searchText.length > 0
+        ? `No matching ${currentView === null && activeFilter !== "all" ? SECTION_GROUPS[activeFilter].noun : "results"}`
+        : currentView === null && activeFilter === "projects"
+          ? "No projects yet"
+          : currentView === null && activeFilter === "threads"
+            ? "No other threads yet"
+            : "Nothing here";
+
+  // The highlighted row: the one the user moved to while it is still listed,
+  // else the first. A chosen row that went away hands the highlight back to
+  // the first row for good.
+  const selectableRows = displayedGroups.flatMap((group) =>
+    group.items.filter((item) => !item.disabled),
+  );
+  const chosenRowListed =
+    highlight.moved && selectableRows.some((item) => item.value === highlight.value);
+  if (highlight.moved && !chosenRowListed) {
+    setHighlight(NO_HIGHLIGHT);
+  }
+  const activeItem =
+    (chosenRowListed
+      ? selectableRows.find((item) => item.value === highlight.value)
+      : selectableRows[0]) ?? null;
+  const activeValue = activeItem?.value ?? null;
+  const listId = useId();
+  const allRows = displayedGroups.flatMap((group) => group.items);
+  const activeRowIndex =
+    activeValue === null ? -1 : allRows.findIndex((item) => item.value === activeValue);
+  const listRef = useRef<HTMLDivElement | null>(null);
+  // A different list (another filter, page or text) starts at its top, even
+  // when its first row has the same place as the last list's.
+  const shownList = `${activeFilter}\u0000${viewStack.length}\u0000${deferredQuery}`;
+  const lastShownListRef = useRef(shownList);
+  useLayoutEffect(() => {
+    if (lastShownListRef.current === shownList) return;
+    lastShownListRef.current = shownList;
+    if (listRef.current) listRef.current.scrollTop = 0;
+  }, [shownList]);
+  // Keep the highlighted row in view: a row the user moved to scrolls just
+  // into view; the first row (nothing chosen yet) brings the list to its top.
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    if (!list) return;
+    if (!highlight.moved) {
+      list.scrollTop = 0;
+      return;
+    }
+    if (activeRowIndex < 0) return;
+    document
+      .getElementById(paletteRowId(listId, activeRowIndex))
+      ?.scrollIntoView({ block: "nearest" });
+  }, [activeRowIndex, highlight.moved, listId]);
 
   // The thread a highlighted result opens starts loading once the highlight
   // rests on it, as a pointer resting on a sidebar row does, so choosing it
   // opens a chat that is ready or already on its way.
-  const highlightedThreadKey = highlightedThreadKeyOf(displayedGroups, highlightedItemValue);
+  const highlightedThreadKey = highlightedThreadKeyOf(displayedGroups, activeValue);
   useEffect(() => {
     const ref = highlightedThreadKey ? parseScopedThreadKey(highlightedThreadKey) : null;
     return ref ? prewarmHighlightedThread(ref) : undefined;
@@ -840,10 +1012,49 @@ export function OpenCommandPaletteDialog() {
   const inputPlaceholder =
     currentView?.inputPlaceholder ?? getCommandPaletteInputPlaceholder(isSubmenu);
 
+  function moveHighlight(step: 1 | -1): void {
+    if (selectableRows.length === 0) return;
+    const index = selectableRows.findIndex((item) => item.value === activeValue);
+    const next = selectableRows[Math.min(Math.max(index + step, 0), selectableRows.length - 1)];
+    if (next) setHighlight({ value: next.value, moved: true });
+  }
+
   function handleKeyDown(event: KeyboardEvent<HTMLInputElement>): void {
-    if (event.key === "Backspace" && query === "" && isSubmenu) {
-      event.preventDefault();
-      popView();
+    // An input method's Enter confirms its text (Safari reports it as key 229).
+    if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+    switch (event.key) {
+      case "ArrowDown":
+      case "ArrowUp":
+        event.preventDefault();
+        moveHighlight(event.key === "ArrowDown" ? 1 : -1);
+        return;
+      case "Enter":
+        event.preventDefault();
+        if (activeItem) executeItem(activeItem);
+        return;
+      case "Tab":
+        // Focus stays in the field; at the root Tab moves between the filters.
+        event.preventDefault();
+        if (!isSubmenu) chooseFilter(stepPaletteFilter(filter, event.shiftKey ? -1 : 1));
+        return;
+      case "Escape":
+        // In stages: the text, then the filter, then (left to the dialog) close.
+        if (query !== "") {
+          event.preventDefault();
+          event.stopPropagation();
+          handleQueryChange("");
+        } else if (!isSubmenu && filter !== "all") {
+          event.preventDefault();
+          event.stopPropagation();
+          chooseFilter("all");
+        }
+        return;
+      case "Backspace":
+        if (query === "" && isSubmenu) {
+          event.preventDefault();
+          popView();
+        }
+        return;
     }
   }
 
@@ -916,7 +1127,7 @@ export function OpenCommandPaletteDialog() {
   return (
     <CommandDialogPopup
       aria-label="Command palette"
-      className="overflow-hidden p-0"
+      className="p-0"
       data-testid="command-palette"
       finalFocus={() => {
         if (handingOverToDialogRef.current) return false;
@@ -929,85 +1140,133 @@ export function OpenCommandPaletteDialog() {
     >
       {/* Commands that need only stores and navigation register while the palette is open. */}
       <PaletteCommandSources />
-      <Command
-        key={viewStack.length}
-        aria-label="Command palette"
-        autoHighlight="always"
-        mode="none"
-        onItemHighlighted={(value) => {
-          setHighlightedItemValue(typeof value === "string" ? value : null);
-        }}
-        onValueChange={handleQueryChange}
-        value={query}
-      >
-        <CommandInput
-          placeholder={inputPlaceholder}
-          wrapperClassName={
-            isSubmenu ? "[&_[data-slot=autocomplete-start-addon]]:pointer-events-auto" : undefined
+      <div className="flex items-center gap-2.5 px-4 pt-3 pb-2">
+        {isSubmenu ? (
+          <button
+            type="button"
+            className="flex size-4 shrink-0 cursor-pointer items-center justify-center text-muted-foreground hover:text-foreground"
+            aria-label="Back"
+            onClick={popView}
+          >
+            <ArrowLeftIcon className="size-4" />
+          </button>
+        ) : (
+          <SearchIcon aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" />
+        )}
+        <input
+          // A new page of the palette starts its field afresh.
+          key={viewStack.length}
+          aria-activedescendant={
+            activeRowIndex >= 0 ? paletteRowId(listId, activeRowIndex) : undefined
           }
-          {...(isSubmenu
-            ? {
-                startAddon: (
-                  <button
-                    type="button"
-                    className="flex cursor-pointer items-center"
-                    aria-label="Back"
-                    onClick={popView}
-                  >
-                    <ArrowLeftIcon />
-                  </button>
-                ),
-              }
-            : {})}
+          aria-autocomplete="list"
+          aria-controls={listId}
+          aria-expanded
+          aria-label="Command palette"
+          autoComplete="off"
+          autoFocus
+          className="min-w-0 flex-1 bg-transparent py-0.5 text-[15px] text-foreground outline-none placeholder:text-muted-foreground"
+          placeholder={inputPlaceholder}
+          role="combobox"
+          spellCheck={false}
+          value={query}
+          onChange={(event) => handleQueryChange(event.target.value)}
           onKeyDown={handleKeyDown}
         />
-        <CommandPanel className="max-h-[min(28rem,70vh)]">
-          <CommandPaletteResults
+      </div>
+      {isSubmenu ? null : (
+        <div
+          aria-label="Show"
+          className="flex shrink-0 items-center gap-0.5 overflow-x-auto px-3 pb-0.5 [scrollbar-width:none]"
+          role="toolbar"
+        >
+          {PALETTE_FILTERS.map((option) => {
+            const count = searchText.length > 0 ? filterCounts?.[option.id] : undefined;
+            const chosen = option.id === filter;
+            return (
+              <button
+                aria-pressed={chosen}
+                className={cn(
+                  "inline-flex shrink-0 cursor-pointer items-baseline gap-1.5 rounded-lg px-2 py-[3px] text-[12.5px] whitespace-nowrap",
+                  chosen
+                    ? "bg-accent font-medium text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+                data-slot="command-filter"
+                key={option.id}
+                // Clicking a filter leaves the field focused.
+                tabIndex={-1}
+                type="button"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => chooseFilter(option.id)}
+              >
+                {option.label}
+                {count !== undefined ? (
+                  <span className="font-mono text-[10.5px] font-normal text-muted-foreground">
+                    {count}
+                  </span>
+                ) : null}
+              </button>
+            );
+          })}
+        </div>
+      )}
+      <CommandPanel>
+        <div
+          className="max-h-[min(480px,62vh)] overflow-y-auto overscroll-contain pt-0.5"
+          ref={listRef}
+        >
+          <PaletteResultList
+            activeValue={activeValue}
+            emptyStateMessage={emptyStateMessage}
             groups={displayedGroups}
-            highlightedItemValue={highlightedItemValue}
-            isActionsOnly={isActionsOnly}
-            {...(searchStatus
-              ? {
-                  statusLines: [
+            keybindings={keybindings}
+            listId={listId}
+            query={deferredQuery}
+            statusLines={
+              searchStatus
+                ? [
                     ...(searchStatus.searching ? ["Searching messages…"] : []),
                     ...searchStatus.lines,
-                  ],
-                  emptyStateMessage: "",
-                }
-              : {})}
-            keybindings={keybindings}
-            query={deferredQuery}
+                  ]
+                : []
+            }
             onExecuteItem={executeItem}
+            onHighlight={(value) => setHighlight({ value, moved: true })}
           />
-        </CommandPanel>
-        <CommandFooter className="gap-3 max-sm:flex-col max-sm:items-start">
-          <div className="flex items-center gap-3">
-            <KbdGroup className="items-center gap-1.5">
-              <Kbd>
-                <ArrowUpIcon />
-              </Kbd>
-              <Kbd>
-                <ArrowDownIcon />
-              </Kbd>
-              <span className={cn("text-muted-foreground/80")}>Navigate</span>
-            </KbdGroup>
-            <KbdGroup className="items-center gap-1.5">
-              <Kbd>Enter</Kbd>
-              <span className={cn("text-muted-foreground/80")}>Select</span>
-            </KbdGroup>
-            {isSubmenu ? (
-              <KbdGroup className="items-center gap-1.5">
-                <Kbd>Backspace</Kbd>
-                <span className={cn("text-muted-foreground/80")}>Back</span>
-              </KbdGroup>
-            ) : null}
-            <KbdGroup className="items-center gap-1.5">
-              <Kbd>Esc</Kbd>
-              <span className={cn("text-muted-foreground/80")}>Close</span>
-            </KbdGroup>
-          </div>
-        </CommandFooter>
-      </Command>
+        </div>
+      </CommandPanel>
+      {/* Keys only help with a keyboard: no footer on touch. */}
+      <CommandFooter className="pointer-coarse:hidden">
+        <KbdGroup className="items-center gap-1.5">
+          <Kbd>
+            <ArrowUpIcon />
+            <ArrowDownIcon />
+          </Kbd>
+          <span>Move</span>
+        </KbdGroup>
+        {activeItem ? (
+          <KbdGroup className="items-center gap-1.5">
+            <Kbd>
+              <CornerDownLeftIcon />
+            </Kbd>
+            <span>{paletteRowVerb(activeItem)}</span>
+          </KbdGroup>
+        ) : null}
+        {isSubmenu ? (
+          <KbdGroup className="items-center gap-1.5">
+            <Kbd>
+              <DeleteIcon />
+            </Kbd>
+            <span>Back</span>
+          </KbdGroup>
+        ) : (
+          <KbdGroup className="items-center gap-1.5">
+            <Kbd>Tab</Kbd>
+            <span>Filter</span>
+          </KbdGroup>
+        )}
+      </CommandFooter>
     </CommandDialogPopup>
   );
 }

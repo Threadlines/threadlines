@@ -221,9 +221,7 @@ describe("ChatView (full app): the desktop app's window", () => {
     try {
       await waitForServerConfigToApply();
       useCommandPaletteStore.getState().setOpen(true);
-      await page
-        .getByPlaceholder("Search commands, projects, and threads...")
-        .fill("one-time link");
+      await page.getByPlaceholder("Search threads, commands and settings").fill("one-time link");
       await expect
         .element(
           page

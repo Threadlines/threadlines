@@ -791,7 +791,7 @@ describe("ChatView (full app): add project", () => {
       await vi.waitFor(
         () => {
           const legendEntries = getCommandPaletteLegendEntries();
-          expect(legendEntries).toContain("Enter Select");
+          expect(legendEntries).toContain("Select");
         },
         { timeout: 8_000, interval: 16 },
       );
@@ -1020,14 +1020,12 @@ describe("ChatView (full app): add project", () => {
       await waitForServerConfigToApply();
       await openCommandPaletteFromTrigger();
       const palette = page.getByTestId("command-palette");
-      await page
-        .getByPlaceholder("Search commands, projects, and threads...")
-        .fill("/repo/project");
+      await page.getByPlaceholder("Search threads, commands and settings").fill("/repo/project");
 
       const pathRow = palette.getByText("Add project at /repo/project", { exact: true });
       await expect.element(pathRow).toBeInTheDocument();
       // The search carries on underneath: the project in that folder is listed.
-      await expect.element(palette.getByText("Projects", { exact: true })).toBeInTheDocument();
+      await expect.element(palette.getByRole("group", { name: "Projects" })).toBeInTheDocument();
       expect(wsRequests.some((request) => request._tag === WS_METHODS.filesystemBrowse)).toBe(
         false,
       );
@@ -1072,7 +1070,7 @@ describe("ChatView (full app): add project", () => {
       await waitForServerConfigToApply();
       await openCommandPaletteFromTrigger();
       const palette = page.getByTestId("command-palette");
-      await page.getByPlaceholder("Search commands, projects, and threads...").fill("./fresh");
+      await page.getByPlaceholder("Search threads, commands and settings").fill("./fresh");
       await palette.getByText("Add project at ./fresh", { exact: true }).click();
 
       const browseInput = await waitForCommandPaletteInput(ADD_PROJECT_SUBMENU_PLACEHOLDER);
@@ -1138,8 +1136,11 @@ describe("ChatView (full app): add project", () => {
       await openCommandPaletteFromTrigger();
 
       await expect.element(palette).toBeInTheDocument();
-      await page.getByPlaceholder("Search commands, projects, and threads...").fill("docs");
-      await expect.element(palette.getByText("Docs Portal", { exact: true })).toBeInTheDocument();
+      await page.getByPlaceholder("Search threads, commands and settings").fill("docs");
+      // The project, and its thread (whose row names the project too).
+      await expect
+        .element(palette.getByRole("group", { name: "Projects" }).getByText("Docs Portal"))
+        .toBeInTheDocument();
       await expect
         .element(palette.getByText("Release checklist", { exact: true }))
         .toBeInTheDocument();

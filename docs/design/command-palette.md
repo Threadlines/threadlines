@@ -1,6 +1,7 @@
 # Command palette and app search
 
-Status: plan, rev 3 (Nov 18 2026). Building started Nov 23 2026, step 1 first.
+Status: plan, rev 3 (Nov 18 2026). Building started Nov 23 2026. All four steps are built (see the
+"As built" sections).
 Line numbers are as of main at e5293cd83 (Nov 23); find code by name when
 they have moved. Rev 2 took Sol's seven findings,
 rev 3 takes Astra's fourteen (both listed at the end). Mockup:
@@ -83,7 +84,8 @@ open-generation guard in the store, and how a command runs today (see
 8. **Typos get a second chance.** When nothing matches, command and setting
    names are tried letter by letter in order ("stngs" finds Open Settings),
    under "Close matches".
-9. **A flatter, bigger box**: one surface, 640px wide, about 13 one-line rows.
+9. **A bigger, calmer box**: one surface, 640px wide, each kind of result in
+   its own quiet block, about ten one-line rows.
 
 Archived threads stay out of search in this build. Finding them needs the
 thread page to open an archived thread, which it can't today. See "Archived
@@ -469,24 +471,43 @@ question.
 
 ### 8. Look
 
-Follows `design-language.md`. The mockup is the reference.
+Follows `design-language.md`. The mockup is the reference. Will compared four
+looks on Nov 23 (flat, grouped, framed, flat with a preview panel) and picked
+**grouped**, because the blocks show where one kind of result ends and the
+next begins.
 
-- One `--popover` surface, 12px radius, `elevate-overlay`. The inner bordered
-  panel goes (a box in a box). Field, filters, a hairline, the list, a
-  hairline, the footer.
-- 640px wide (576 today), the list up to `min(440px, 60vh)`.
-- Rows are one line, 32px: icon, title (13.5px, 500), then on the right what
-  it belongs to (project, command group while searching All, settings path)
-  and the age or shortcut in mono 10.5px. A message match adds its snippet as
-  a second line. Thread rows keep the sidebar's status marks.
-- Filters are plain text buttons. The chosen one takes the soft `--accent`
-  fill. Counts in mono.
-- Section labels 11.5px, sentence case.
-- All secondary text is opaque `--muted-foreground`. Today's rows fade it
-  (`/60`, `/70`, `/80`, `opacity-64`), which the design language rules out.
-- Footer: Move, Enter with the highlighted row's verb (Open thread, Run, Go
-  to setting), Tab for filters. No footer on touch.
-- Phone: the box is full width under the top edge, the filters scroll
+- **The box**: one `--popover` surface, 12px radius, `elevate-overlay`. The
+  inner bordered panel goes (a box in a box). Top to bottom: the field, the
+  filters, the list, a hairline, the footer. No hairline under the filters;
+  the groups carry the structure.
+- **Groups**: each section of results (Recent, Suggested, Threads, Commands,
+  Settings, Projects, Close matches, No matches, and a list page's headings)
+  is the quiet filled block the design language calls a group: `--group`
+  fill, 10px radius, the 1px inset `--group-ring`, no border and no shadow.
+  Use the `surface-group` utility, not a hand-rolled fill. The section label
+  sits above its group, outside it, 11.5px, sentence case, aligned with the
+  row text.
+- **Rows inside a group**: square corners (the group clips them), separated
+  by `--group-divider` hairlines that start at the row's text edge and run to
+  the group's right edge. The highlighted row takes the soft `--accent` fill
+  edge to edge, and the hairlines above and below it are hidden.
+- **Size**: 640px wide (576 today), the list up to `min(480px, 62vh)`. That
+  shows about ten rows. Grouping costs about three rows against the flat
+  look, which Will accepted for the separation.
+- **A row** is one line, 34px: icon, title (13.5px, 500), then on the right
+  what it belongs to (project, command group while searching All, settings
+  path) and the age or shortcut in mono 10.5px. A message match adds its
+  snippet as a second line. Thread rows keep the sidebar's status marks.
+- **Filters** are plain text buttons. The chosen one takes the soft
+  `--accent` fill. Counts in mono.
+- All secondary text is opaque `--muted-foreground` (a group re-declares it a
+  step brighter in dark mode, which is wanted). Today's rows fade it (`/60`,
+  `/70`, `/80`, `opacity-64`), which the design language rules out.
+- **Status lines** ("Searching messages…", a computer that failed) sit under
+  the last group, outside any group.
+- **Footer**: Move, Enter with the highlighted row's verb (Open thread, Run,
+  Go to setting), Tab for filters. No footer on touch.
+- **Phone**: the box is full width under the top edge, the filters scroll
   sideways, and what a row belongs to moves to a second line under its
   title, so rows are finger-sized.
 - Field placeholder: "Search threads, commands and settings".
@@ -495,6 +516,11 @@ Follows `design-language.md`. The mockup is the reference.
   if rows are inserted above it. If the user hasn't moved, the highlight
   stays on the first row.
 - **Escape in stages**: it clears the text, then the filter, then closes.
+- **Add project and Codex import** share the box's parts, so they take the
+  same look, and each gets a title row above its field ("Add project", then
+  the step; "Bring in Codex conversation"). Step 1 left them untitled.
+- Light and dark are both checked, with the real fonts loaded and zoomed in,
+  before this step is done (AGENTS.md's polish check).
 
 ## Archived threads, a later build
 
@@ -566,8 +592,9 @@ it.
    the Settings and Projects sources, tiers, the status lines, close matches.
    Still today's look. Groups show every match as they do now (no caps), and
    `>` is the only filter. Nothing here needs a control that arrives later.
-4. **The new look** (section 8): the box, filters, five-row caps with "Show
-   all", rows, the highlight rule, staged Escape, phone.
+4. **The new look** (section 8): the box, groups, filters, five-row caps with
+   "Show all", rows, the highlight rule, staged Escape, titles on the two
+   dialogs, phone.
 
 Optional step 0, ten lines, if wanted before the rest: call
 `useThemePaletteItems` in today's dialog so the theme commands the docs
@@ -635,6 +662,10 @@ promise exist now.
 ## Follow-ups, not in this plan
 
 - Archived threads in search (its own section above).
+- A preview panel beside the list that shows what the highlighted row is
+  before you open it (a thread's last message, a setting's current value).
+  It was look D on Nov 23. Will chose the grouped look and may add the panel
+  later; it needs a cheap source for a thread's last message.
 - One keyboard dispatcher over the handler registry, replacing the eight
   listeners, and the desktop menu's action strings typed from the catalog.
 - Tooltips and the rail taking their words from the catalog.
@@ -754,6 +785,49 @@ section 5 and the thread-visits part of section 6:
   the one seam its test replaces.
 - **Startup** went from 904.7 KB to 904.9 KB gzip (118 B). The settings index,
   the places catalog and the search code are not in it.
+
+## As built: step 4 (Nov 23 2026)
+
+The box, groups and rows are shared parts in `ui/command.tsx`
+(`COMMAND_GROUP_CLASS`, `COMMAND_ROW_CLASS`, `CommandTitle`); the filters,
+caps and counts are `apps/web/src/commands/paletteFilters.ts`. Where the
+build differs from section 8 and the mockup:
+
+- **The palette has its own list.** The list part it used (Base UI
+  Autocomplete) keeps the highlight on a position, so a late message match
+  moved it to another row. The palette now draws a listbox and moves the
+  highlight itself, by row id: arrows, Enter, Tab and Escape are its own, and
+  the field points at the row with `aria-activedescendant`. Add project and
+  the Codex import keep the list part (nothing arrives late there) and take
+  the same rows.
+- **The row's divider** is its own rule, not `SETTINGS_GROUP_ROW_CLASS`: it
+  starts past the icon (38px, the row's text) and hides beside the
+  highlighted row, which a settings group never needs.
+- **Every source is searched in every filter**, so each filter's count is
+  right while another is chosen; `paletteSearch` lost its `filter` argument.
+  Close matches come back with their kind every time, and a view shows them
+  only when it found nothing itself: a thread match no longer hides a
+  command's close match from the Commands filter.
+- **With nothing typed**, Threads lists every thread (visited here first),
+  Settings every setting, Projects every project, Commands every command
+  under its catalog group. An empty kind says so ("No projects yet").
+- **Status lines and No matches** show only in All and Threads. Another
+  filter with nothing found says "No matching commands" (or settings,
+  projects). Close matches aren't capped and have no Show all row: they mix
+  two kinds.
+- **A command's catalog sentence** (`about`) no longer shows; it still finds
+  the command. What an owner says now (a disabled reason, a project's name)
+  shows on the right.
+- **A list page and a project's thread search** have no filter row; the
+  footer says Back (Backspace) there instead of Tab.
+- **On a phone** the box keeps an 8px margin each side. On touch, Add
+  project's footer keeps its file manager button and drops only the key
+  hints.
+- **Add project's title** names the step: Choose a computer, Choose a
+  source, Choose a folder, Choose a repository, Choose where to clone. The
+  Codex import says Choose an account before an account is picked.
+- **The guide** has a "Search and commands" topic.
+- **Startup** went from 904.9 KB to 905.0 KB gzip (160 B).
 
 ## Rev 2 changes (Sol's review of rev 1)
 

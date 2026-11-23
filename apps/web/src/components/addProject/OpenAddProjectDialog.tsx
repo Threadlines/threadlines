@@ -16,7 +16,9 @@ import {
   ArrowDownIcon,
   ArrowLeftIcon,
   ArrowUpIcon,
+  CornerDownLeftIcon,
   CornerLeftUpIcon,
+  DeleteIcon,
   FolderIcon,
   FolderPlusIcon,
   LinkIcon,
@@ -92,11 +94,15 @@ import { editorLabel } from "../EditorOpenOptions";
 import { AzureDevOpsIcon, BitbucketIcon, GitHubIcon, GitLabIcon } from "../Icons";
 import { Button } from "../ui/button";
 import {
+  COMMAND_GROUP_CLASS,
+  COMMAND_ROW_CLASS,
+  COMMAND_SECTION_LABEL_CLASS,
   Command,
   CommandDialogPopup,
   CommandFooter,
   CommandInput,
   CommandPanel,
+  CommandTitle,
 } from "../ui/command";
 import { Kbd, KbdGroup } from "../ui/kbd";
 import { failureNotice, stackedThreadToast, toastManager } from "../ui/toast";
@@ -1433,10 +1439,24 @@ export function OpenAddProjectDialog({ session }: { session: AddProjectSession }
     isPickingProjectFolder,
   ]);
 
+  // Where the user is in Add project, for the title row.
+  const stepTitle =
+    addProjectCloneFlow?.step === "repository"
+      ? "Choose a repository"
+      : addProjectCloneFlow?.step === "confirm"
+        ? "Choose where to clone"
+        : isBrowsing
+          ? "Choose a folder"
+          : currentView?.groups[0]?.value === "environments"
+            ? "Choose a computer"
+            : currentView?.groups[0]?.value.startsWith("sources:")
+              ? "Choose a source"
+              : undefined;
+
   return (
     <CommandDialogPopup
       aria-label="Add project"
-      className="overflow-hidden p-0"
+      className="p-0"
       data-testid="add-project-dialog"
       finalFocus={() => resolveDialogReturnFocus(session.returnFocus)}
       onBackdropPointerDown={closeDialog}
@@ -1452,6 +1472,7 @@ export function OpenAddProjectDialog({ session }: { session: AddProjectSession }
         onValueChange={handleQueryChange}
         value={query}
       >
+        <CommandTitle title="Add project" step={stepTitle} />
         <div className="relative">
           <CommandInput
             className={
@@ -1539,29 +1560,27 @@ export function OpenAddProjectDialog({ session }: { session: AddProjectSession }
             </Button>
           ) : null}
         </div>
-        <CommandPanel className="max-h-[min(28rem,70vh)]">
+        <CommandPanel className="max-h-[min(480px,62vh)]">
           {remoteProjectContext ? (
-            <div className="p-2 pb-0">
-              <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">
-                Repository
-              </div>
-              <div className="flex min-h-8 items-center gap-2 rounded-sm px-2 py-1.5">
-                {remoteProjectContext.icon}
-                <span className="flex min-w-0 flex-1 flex-col">
-                  <span className="truncate text-foreground text-sm">
+            <div className="px-3">
+              <div className={COMMAND_SECTION_LABEL_CLASS}>Repository</div>
+              <div className={COMMAND_GROUP_CLASS}>
+                <div className={cn(COMMAND_ROW_CLASS, "cursor-default")}>
+                  <span className="flex size-4 items-center justify-center [&>svg]:size-4">
+                    {remoteProjectContext.icon}
+                  </span>
+                  <span className="truncate font-medium text-foreground">
                     {remoteProjectContext.title}
                   </span>
-                  <span className="truncate text-muted-foreground/70 text-xs">
+                  <span className="ml-3 max-w-64 truncate text-[12.5px] text-muted-foreground">
                     {remoteProjectContext.description}
                   </span>
-                </span>
+                </div>
               </div>
             </div>
           ) : null}
           <CommandPaletteResults
             groups={displayedGroups}
-            highlightedItemValue={highlightedItemValue}
-            isActionsOnly={false}
             isLoading={commandResultsLoading}
             keybindings={keybindings}
             query={deferredQuery}
@@ -1580,46 +1599,49 @@ export function OpenAddProjectDialog({ session }: { session: AddProjectSession }
             }
           />
         </CommandPanel>
-        <CommandFooter className="gap-3 max-sm:flex-col max-sm:items-start">
-          <div className="flex items-center gap-3">
+        {/* Key hints only help with a keyboard; on touch the footer stays only for its button. */}
+        <CommandFooter
+          className={cn(
+            "pointer-coarse:*:data-[slot=kbd-group]:hidden",
+            !canOpenProjectFromFileManager && "pointer-coarse:hidden",
+          )}
+        >
+          <KbdGroup className="items-center gap-1.5">
+            <Kbd>
+              <ArrowUpIcon />
+              <ArrowDownIcon />
+            </Kbd>
+            <span>Move</span>
+          </KbdGroup>
+          {addProjectCloneFlow?.step === "repository" ? (
             <KbdGroup className="items-center gap-1.5">
               <Kbd>
-                <ArrowUpIcon />
+                <CornerDownLeftIcon />
               </Kbd>
-              <Kbd>
-                <ArrowDownIcon />
-              </Kbd>
-              <span className={cn("text-muted-foreground/80")}>Navigate</span>
+              <span>{remoteProjectButtonLabel ?? "Continue"}</span>
             </KbdGroup>
-            {addProjectCloneFlow?.step === "repository" ? (
-              <KbdGroup className="items-center gap-1.5">
-                <Kbd>Enter</Kbd>
-                <span className={cn("text-muted-foreground/80")}>
-                  {remoteProjectButtonLabel ?? "Continue"}
-                </span>
-              </KbdGroup>
-            ) : !canSubmitBrowsePath || hasHighlightedBrowseItem ? (
-              <KbdGroup className="items-center gap-1.5">
-                <Kbd>Enter</Kbd>
-                <span className={cn("text-muted-foreground/80")}>Select</span>
-              </KbdGroup>
-            ) : null}
-            {isSubmenu ? (
-              <KbdGroup className="items-center gap-1.5">
-                <Kbd>Backspace</Kbd>
-                <span className={cn("text-muted-foreground/80")}>Back</span>
-              </KbdGroup>
-            ) : null}
+          ) : !canSubmitBrowsePath || hasHighlightedBrowseItem ? (
             <KbdGroup className="items-center gap-1.5">
-              <Kbd>Esc</Kbd>
-              <span className={cn("text-muted-foreground/80")}>Close</span>
+              <Kbd>
+                <CornerDownLeftIcon />
+              </Kbd>
+              <span>Select</span>
             </KbdGroup>
-          </div>
+          ) : null}
+          {isSubmenu ? (
+            <KbdGroup className="items-center gap-1.5">
+              <Kbd>
+                <DeleteIcon />
+              </Kbd>
+              <span>Back</span>
+            </KbdGroup>
+          ) : null}
+          <span className="flex-1" />
           {canOpenProjectFromFileManager ? (
             <Button
               variant="ghost"
               size="xs"
-              className="h-auto px-2 text-xs text-muted-foreground/80 hover:bg-transparent hover:text-foreground"
+              className="h-auto px-2 text-xs text-muted-foreground hover:bg-transparent hover:text-foreground"
               disabled={isPickingProjectFolder}
               onClick={() => {
                 void handleOpenProjectFromFileManager();

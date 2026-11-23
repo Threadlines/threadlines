@@ -402,6 +402,16 @@ Show device toolbar, in the browser's options menu (⋮), sets the page's size: 
 Words typed in the browser's address bar are searched for, with the search engine set in {place:general.browserSearchEngine}. An address loads as it always did.`,
   },
   {
+    id: "search-and-commands",
+    title: "Search and commands",
+    keywords: ["search", "command palette", "cmd k", "commands", "find", "filter", "quick open"],
+    body: `Search (Cmd+K, Ctrl+K on Windows and Linux, or the Search field at the top of the sidebar) finds threads by title and by what was said in them, every command the app has, settings, and projects, in one list with the best match first. With nothing typed it shows the threads last opened on this device and a few commands you use most.
+
+The filters under the field (All, Threads, Commands, Settings, Projects) narrow it to one kind; while you type each shows how many it holds. Tab and Shift+Tab move between them, and typing > first switches to Commands. In All each kind shows five rows, then Show all for the rest. Escape clears the text, then the filter, then closes.
+
+A setting opens its page with the row lit. A typed folder path offers Add project there. Archived threads aren't searched; the empty result links to {place:settings.archived}.`,
+  },
+  {
     id: "terminals",
     title: "Terminals",
     keywords: ["terminal", "shell", "split", "dev server", "tabs", "command line", "console"],

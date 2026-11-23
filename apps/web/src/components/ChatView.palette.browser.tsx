@@ -11,7 +11,7 @@ import {
   WS_METHODS,
 } from "@threadlines/contracts";
 import { scopedProjectKey, scopeProjectRef } from "@threadlines/client-runtime";
-import { page } from "vite-plus/test/browser";
+import { page, userEvent } from "vite-plus/test/browser";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import { useCommandPaletteStore } from "../commandPaletteStore";
@@ -373,9 +373,8 @@ describe("ChatView (full app): command palette and search", () => {
       await vi.waitFor(() => {
         const shown = groupsAndRows();
         expect(shown.filter((entry) => entry.startsWith("# "))).toEqual([
-          "# Recent threads",
+          "# Recent",
           "# Suggested",
-          "# Commands",
         ]);
         // Latest activity first, and not the thread on screen.
         expect(shown.indexOf("Newer plan")).toBeLessThan(shown.indexOf("Older plan"));
@@ -478,7 +477,7 @@ describe("ChatView (full app): command palette and search", () => {
       await waitForServerConfigToApply();
       await openCommandPaletteFromTrigger();
       const palette = page.getByTestId("command-palette");
-      await page.getByPlaceholder("Search commands, projects, and threads...").fill("text size");
+      await page.getByPlaceholder("Search threads, commands and settings").fill("text size");
       await palette.getByText("Text size", { exact: true }).click();
 
       await waitForURL(
@@ -528,7 +527,7 @@ describe("ChatView (full app): command palette and search", () => {
       await waitForServerConfigToApply();
       await openCommandPaletteFromTrigger();
       const palette = page.getByTestId("command-palette");
-      await page.getByPlaceholder("Search commands, projects, and threads...").fill("zebracorn");
+      await page.getByPlaceholder("Search threads, commands and settings").fill("zebracorn");
 
       await expect.element(palette.getByText("Searching messages…")).toBeInTheDocument();
       await vi.waitFor(() => expect(answerSearch).toBeTypeOf("function"), {
@@ -567,7 +566,7 @@ describe("ChatView (full app): command palette and search", () => {
     try {
       await waitForServerConfigToApply();
       await openCommandPaletteFromTrigger();
-      await page.getByPlaceholder("Search commands, projects, and threads...").fill("zebracorn");
+      await page.getByPlaceholder("Search threads, commands and settings").fill("zebracorn");
       await vi.waitFor(
         () => {
           const status = document.querySelector('[data-testid="command-palette-status"]');
@@ -622,6 +621,242 @@ describe("ChatView (full app): command palette and search", () => {
         },
         { timeout: 8_000, interval: 16 },
       );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("filters by kind with counts, moves between filters with Tab, and takes > as the Commands filter", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-palette-filters" as MessageId,
+        targetText: "palette filters",
+      }),
+    });
+    const chosenFilter = () =>
+      document.querySelector<HTMLElement>(
+        '[data-testid="command-palette"] [data-slot="command-filter"][aria-pressed="true"]',
+      )?.firstChild?.textContent;
+
+    try {
+      await waitForServerConfigToApply();
+      await openCommandPaletteFromTrigger();
+      const field = page.getByPlaceholder("Search threads, commands and settings");
+      await field.fill("settings");
+      // Each filter counts what it holds while there is text.
+      await vi.waitFor(() => {
+        const counts = Object.fromEntries(
+          Array.from(
+            document.querySelectorAll<HTMLElement>(
+              '[data-testid="command-palette"] [data-slot="command-filter"]',
+            ),
+          ).map((button) => [button.firstChild?.textContent, button.lastChild?.textContent]),
+        );
+        const commands = Number(counts.Commands);
+        expect(commands).toBeGreaterThan(0);
+        expect(Number(counts.All)).toBe(
+          Number(counts.Threads) + commands + Number(counts.Settings) + Number(counts.Projects),
+        );
+      });
+
+      await userEvent.keyboard("{Tab}");
+      expect(chosenFilter()).toBe("Threads");
+      await userEvent.keyboard("{Tab}");
+      expect(chosenFilter()).toBe("Commands");
+      // Only commands now.
+      await vi.waitFor(() => {
+        const labels = Array.from(
+          document.querySelectorAll(
+            '[data-testid="command-palette"] [data-slot="command-group-label"]',
+          ),
+        ).map((label) => label.textContent);
+        expect(labels).toEqual(["Commands"]);
+      });
+      await userEvent.keyboard("{Shift>}{Tab}{/Shift}");
+      expect(chosenFilter()).toBe("Threads");
+
+      // ">" first switches to Commands and leaves the field empty: one state.
+      await field.fill("");
+      await userEvent.keyboard("{Shift>}{Tab}{/Shift}");
+      expect(chosenFilter()).toBe("All");
+      await userEvent.keyboard(">");
+      expect(chosenFilter()).toBe("Commands");
+      await expect.element(field).toHaveValue("");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("shows five rows of a kind in All, and Show all switches to its filter", async () => {
+    const planIds = Array.from({ length: 7 }, (_, index) => `thread-plan-${index}` as ThreadId);
+    const base = planIds.reduce(
+      (snapshot, threadId) => addThreadToSnapshot(snapshot, threadId),
+      createSnapshotForTargetUser({
+        targetMessageId: "msg-user-palette-caps" as MessageId,
+        targetText: "palette caps",
+      }),
+    );
+    const snapshot = {
+      ...base,
+      threads: base.threads.map((thread) => {
+        const index = planIds.indexOf(thread.id);
+        return index < 0 ? thread : { ...thread, title: `Quokka plan ${index + 1}` };
+      }),
+    };
+    const mounted = await mountChatView({ viewport: DEFAULT_VIEWPORT, snapshot });
+    const threadRows = () =>
+      Array.from(
+        document.querySelectorAll<HTMLElement>(
+          '[data-testid="command-palette"] [role="group"][aria-labelledby$="threads-search"] [data-slot="command-item"]',
+        ),
+      ).map((row) => row.textContent ?? "");
+
+    try {
+      await waitForServerConfigToApply();
+      await openCommandPaletteFromTrigger();
+      await page.getByPlaceholder("Search threads, commands and settings").fill("quokka");
+      await vi.waitFor(() => {
+        const rows = threadRows();
+        expect(rows.filter((row) => row.includes("Quokka plan"))).toHaveLength(5);
+        expect(rows.at(-1)).toBe("Show all 7 threads");
+      });
+
+      await page.getByTestId("command-palette").getByText("Show all 7 threads").click();
+      await vi.waitFor(() => {
+        expect(threadRows().filter((row) => row.includes("Quokka plan"))).toHaveLength(7);
+        expect(threadRows().some((row) => row.startsWith("Show all"))).toBe(false);
+      });
+      const chosen = document.querySelector(
+        '[data-testid="command-palette"] [data-slot="command-filter"][aria-pressed="true"]',
+      );
+      expect(chosen?.firstChild?.textContent).toBe("Threads");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("steps back with Escape: the text, then the filter, then closes", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-palette-escape" as MessageId,
+        targetText: "palette escape",
+      }),
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      await openCommandPaletteFromTrigger();
+      const field = page.getByPlaceholder("Search threads, commands and settings");
+      await userEvent.keyboard(">open");
+      await expect.element(field).toHaveValue("open");
+
+      await userEvent.keyboard("{Escape}");
+      await expect.element(field).toHaveValue("");
+      const chosen = () =>
+        document.querySelector(
+          '[data-testid="command-palette"] [data-slot="command-filter"][aria-pressed="true"]',
+        )?.firstChild?.textContent;
+      expect(chosen()).toBe("Commands");
+
+      await userEvent.keyboard("{Escape}");
+      expect(chosen()).toBe("All");
+      await expect.element(page.getByTestId("command-palette")).toBeInTheDocument();
+
+      await userEvent.keyboard("{Escape}");
+      await expect.element(page.getByTestId("command-palette")).not.toBeInTheDocument();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps the highlight on a row the user chose when a message match arrives above it", async () => {
+    const messageThreadId = "thread-late-message" as ThreadId;
+    const base = addThreadToSnapshot(
+      createSnapshotForTargetUser({
+        targetMessageId: "msg-user-palette-late-match" as MessageId,
+        targetText: "palette late match",
+      }),
+      messageThreadId,
+    );
+    const snapshot = {
+      ...base,
+      threads: base.threads.map((thread) =>
+        thread.id === THREAD_ID
+          ? { ...thread, title: "Settings sync between tabs" }
+          : thread.id === messageThreadId
+            ? { ...thread, title: "Lunch order" }
+            : thread,
+      ),
+    };
+    const answers: Array<() => void> = [];
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot,
+      resolveRpc: (body) => {
+        if (body._tag !== ORCHESTRATION_WS_METHODS.searchThreads) return undefined;
+        return new Promise((resolve) => {
+          answers.push(() =>
+            resolve({
+              matches: [
+                {
+                  threadId: messageThreadId,
+                  messageId: "msg-late-settings" as MessageId,
+                  role: "user",
+                  snippet: "…the settings page should remember the last tab…",
+                  score: 0,
+                },
+              ],
+              truncated: false,
+            }),
+          );
+        });
+      },
+    });
+    const highlighted = () =>
+      document.querySelector<HTMLElement>(
+        '[data-testid="command-palette"] [role="option"][aria-selected="true"]',
+      )?.dataset.value;
+    const firstRow = () =>
+      document.querySelector<HTMLElement>('[data-testid="command-palette"] [role="option"]')
+        ?.dataset.value;
+    const snippetShown = () =>
+      document.body.textContent?.includes("should remember the last tab") ?? false;
+
+    try {
+      await waitForServerConfigToApply();
+      await openCommandPaletteFromTrigger();
+      await page.getByPlaceholder("Search threads, commands and settings").fill("settings");
+      await vi.waitFor(() => expect(answers.length).toBeGreaterThan(0), {
+        timeout: 8_000,
+        interval: 16,
+      });
+      // The user moves off the first row (the thread) to the next one, a command.
+      await vi.waitFor(() => expect(highlighted()).toBe(firstRow()));
+      await userEvent.keyboard("{ArrowDown}");
+      const chosen = highlighted();
+      expect(chosen).toBeDefined();
+      expect(chosen).not.toBe(firstRow());
+
+      // The message match lands in Threads, above the chosen row.
+      answers.at(-1)!();
+      await vi.waitFor(() => expect(snippetShown()).toBe(true));
+      expect(highlighted()).toBe(chosen);
+
+      // Without a move, the highlight stays on the first row as matches arrive.
+      const asked = answers.length;
+      await page.getByPlaceholder("Search threads, commands and settings").fill("setting");
+      await vi.waitFor(() => expect(snippetShown()).toBe(false));
+      await vi.waitFor(() => expect(answers.length).toBeGreaterThan(asked), {
+        timeout: 8_000,
+        interval: 16,
+      });
+      await vi.waitFor(() => expect(highlighted()).toBe(firstRow()));
+      const first = firstRow();
+      answers.at(-1)!();
+      await vi.waitFor(() => expect(snippetShown()).toBe(true));
+      expect(highlighted()).toBe(first);
     } finally {
       await mounted.cleanup();
     }
@@ -775,7 +1010,7 @@ describe("ChatView (full app): command palette and search", () => {
       await openCommandPaletteFromTrigger();
 
       await expect.element(palette).toBeInTheDocument();
-      await page.getByPlaceholder("Search commands, projects, and threads...").fill("settings");
+      await page.getByPlaceholder("Search threads, commands and settings").fill("settings");
       await expect.element(palette.getByText("Open settings", { exact: true })).toBeInTheDocument();
       await expect
         .element(palette.getByText("New thread in Project", { exact: true }))
@@ -846,7 +1081,7 @@ describe("ChatView (full app): command palette and search", () => {
       const palette = page.getByTestId("command-palette");
       await openCommandPaletteFromTrigger();
 
-      await page.getByPlaceholder("Search commands, projects, and threads...").fill(searchQuery);
+      await page.getByPlaceholder("Search threads, commands and settings").fill(searchQuery);
       await vi.waitFor(
         () => {
           expect(
@@ -1230,7 +1465,7 @@ describe("ChatView (full app): command palette and search", () => {
       await openCommandPaletteFromTrigger();
 
       await expect.element(palette).toBeInTheDocument();
-      await page.getByPlaceholder("Search commands, projects, and threads...").fill("clients/docs");
+      await page.getByPlaceholder("Search threads, commands and settings").fill("clients/docs");
       await expect.element(palette.getByText("Docs Portal", { exact: true })).toBeInTheDocument();
       await expect
         .element(palette.getByText("/repo/clients/docs-portal", { exact: true }))
@@ -1292,7 +1527,7 @@ describe("ChatView (full app): command palette and search", () => {
       await openCommandPaletteFromTrigger();
 
       await expect.element(palette).toBeInTheDocument();
-      await page.getByPlaceholder("Search commands, projects, and threads...").fill("clients/docs");
+      await page.getByPlaceholder("Search threads, commands and settings").fill("clients/docs");
       await expect.element(palette.getByText("Docs Portal", { exact: true })).toBeInTheDocument();
       await expect
         .element(palette.getByText("/repo/clients/docs-portal", { exact: true }))
@@ -1349,7 +1584,7 @@ describe("ChatView (full app): command palette and search", () => {
       await waitForServerConfigToApply();
       const palette = page.getByTestId("command-palette");
       await openCommandPaletteFromTrigger();
-      await page.getByPlaceholder("Search commands, projects, and threads...").fill("clients/docs");
+      await page.getByPlaceholder("Search threads, commands and settings").fill("clients/docs");
       await palette.getByText("Docs Portal", { exact: true }).click();
       const draftPath = await waitForURL(
         mounted.router,
@@ -1362,7 +1597,7 @@ describe("ChatView (full app): command palette and search", () => {
       await expect.element(palette).not.toBeInTheDocument();
 
       await openCommandPaletteFromTrigger();
-      await page.getByPlaceholder("Search commands, projects, and threads...").fill("new lead");
+      await page.getByPlaceholder("Search threads, commands and settings").fill("new lead");
       // Named for the draft's project; the first project's lead hides nothing.
       await expect.element(palette.getByText("New lead chat", { exact: true })).toBeInTheDocument();
       await expect.element(palette.getByText("Docs Portal", { exact: true })).toBeInTheDocument();
@@ -1406,7 +1641,7 @@ describe("ChatView (full app): command palette and search", () => {
       await openCommandPaletteFromTrigger();
 
       await expect.element(palette).toBeInTheDocument();
-      await page.getByPlaceholder("Search commands, projects, and threads...").fill("docs-archive");
+      await page.getByPlaceholder("Search threads, commands and settings").fill("docs-archive");
       await expect
         .element(palette.getByText("Archived Docs Notes", { exact: true }))
         .not.toBeInTheDocument();

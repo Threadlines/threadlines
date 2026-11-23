@@ -3114,18 +3114,19 @@ export async function openCommandPaletteFromTrigger(): Promise<void> {
 }
 
 /**
- * Switches the open palette to every command, through its "All commands" row.
- * The palette opens on recent threads and a few suggestions, so a test that
- * runs a command by name goes here first, as a user would.
+ * Switches the open palette to every command, through its "All commands" row
+ * (the Commands filter). The palette opens on recent threads and a few
+ * suggestions, so a test that runs a command by name goes here first, as a
+ * user would.
  */
 export async function showAllPaletteCommands(): Promise<void> {
   await page.getByTestId("command-palette").getByText("All commands", { exact: true }).click();
   await vi.waitFor(
     () => {
-      const input = document.querySelector<HTMLInputElement>(
-        '[data-testid="command-palette"] input',
+      const chosen = document.querySelector<HTMLElement>(
+        '[data-testid="command-palette"] [data-slot="command-filter"][aria-pressed="true"]',
       );
-      expect(input?.value).toBe(">");
+      expect(chosen?.textContent).toBe("Commands");
     },
     { timeout: 8_000, interval: 16 },
   );

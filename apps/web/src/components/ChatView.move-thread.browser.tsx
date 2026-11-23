@@ -1584,7 +1584,10 @@ describe("ChatView (full app): moving a thread to another computer", () => {
           .getByText("Move to another computer", { exact: true })
           .elements(),
       ).toHaveLength(0);
+      // Escape steps back from the Commands filter, then closes.
       await userEvent.keyboard("{Escape}");
+      await userEvent.keyboard("{Escape}");
+      await expect.element(page.getByTestId("command-palette")).not.toBeInTheDocument();
 
       await page.getByRole("button", { name: "Cancel the move" }).click();
       await vi.waitFor(() => {

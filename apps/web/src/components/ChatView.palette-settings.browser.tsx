@@ -37,7 +37,7 @@ const NARROW_VIEWPORT = { ...DEFAULT_VIEWPORT, width: 390, height: 844 };
 async function searchPalette(text: string) {
   // A narrow screen keeps Search in the sheet: open it as its shortcut does.
   useCommandPaletteStore.getState().setOpen(true);
-  await page.getByPlaceholder("Search commands, projects, and threads...").fill(text);
+  await page.getByPlaceholder("Search threads, commands and settings").fill(text);
   return page.getByTestId("command-palette");
 }
 
@@ -64,12 +64,48 @@ describe("ChatView (full app): the palette's Settings source", () => {
         .element(palette.getByText("Keybindings", { exact: true }).first())
         .toBeInTheDocument();
       // Not in a browser, which can't take the desktop app's link.
-      await page
-        .getByPlaceholder("Search commands, projects, and threads...")
-        .fill("one-time link");
+      await page.getByPlaceholder("Search threads, commands and settings").fill("one-time link");
       await expect
         .element(palette.getByText("One-time link for this network", { exact: true }))
         .not.toBeInTheDocument();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("puts what a row belongs to on a second line on a phone", async () => {
+    const mounted = await mountChatView({
+      viewport: NARROW_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-palette-phone-rows" as MessageId,
+        targetText: "palette phone rows",
+      }),
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      const palette = await searchPalette("text size");
+      await expect.element(palette.getByText("Text size", { exact: true })).toBeInTheDocument();
+      await vi.waitFor(() => {
+        const row = Array.from(
+          document.querySelectorAll<HTMLElement>(
+            '[data-testid="command-palette"] [data-slot="command-item"]',
+          ),
+        ).find((candidate) => candidate.dataset.value?.startsWith("setting:") === true);
+        const title = Array.from(row?.querySelectorAll("span") ?? []).find(
+          (span) => span.textContent === "Text size",
+        );
+        const where = Array.from(row?.querySelectorAll("span") ?? []).find(
+          (span) => span.textContent === "General › Terminal",
+        );
+        expect(title).toBeDefined();
+        expect(where).toBeDefined();
+        const titleBox = title!.getBoundingClientRect();
+        const whereBox = where!.getBoundingClientRect();
+        // Under the title, from the same left edge.
+        expect(whereBox.top).toBeGreaterThanOrEqual(titleBox.bottom - 1);
+        expect(Math.abs(whereBox.left - titleBox.left)).toBeLessThan(2);
+      });
     } finally {
       await mounted.cleanup();
     }
@@ -92,7 +128,7 @@ describe("ChatView (full app): the palette's Settings source", () => {
         .element(palette.getByText("Keybindings", { exact: true }))
         .not.toBeInTheDocument();
       // The phone's own settings page is there instead.
-      await page.getByPlaceholder("Search commands, projects, and threads...").fill("text size");
+      await page.getByPlaceholder("Search threads, commands and settings").fill("text size");
       await expect.element(palette.getByText("Text size", { exact: true })).toBeInTheDocument();
     } finally {
       await mounted.cleanup();

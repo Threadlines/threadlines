@@ -14,7 +14,7 @@ import { type Project, type SidebarThreadSummary, type Thread } from "../types";
 export const RECENT_THREAD_LIMIT = 5;
 /** The opening list's suggested commands. */
 export const SUGGESTED_COMMAND_LIMIT = 4;
-export const ITEM_ICON_CLASS = "size-4 text-muted-foreground/80";
+export const ITEM_ICON_CLASS = "size-4 text-muted-foreground";
 export const ADDON_ICON_CLASS = "size-4";
 
 export interface CommandPaletteItem {
@@ -31,8 +31,16 @@ export interface CommandPaletteItem {
   readonly titleLeadingContent?: ReactNode;
   /** Optional content rendered inline after the title text (before the timestamp). */
   readonly titleTrailingContent?: ReactNode;
-  /** Where it lives, on the right of the row ("General › Terminal" for a setting). */
+  /**
+   * What it belongs to, on the right of the row: a thread's project, a
+   * setting's path ("General › Terminal"), a command's group while searching.
+   * Rows without one show their description there instead.
+   */
   readonly whereLabel?: string;
+  /** What Enter does, for the footer ("Go to setting"); see `paletteRowVerb`. */
+  readonly verb?: string;
+  /** A row that shows more of a list ("Show all 12 threads"), drawn quieter than a result. */
+  readonly more?: boolean;
   readonly shortcutCommand?: KeybindingCommand;
   readonly threadRef?: Pick<SidebarThreadSummary, "environmentId" | "id">;
   readonly threadContentMatch?: ThreadContentSearchMatch & { readonly query: string };
@@ -153,6 +161,7 @@ export function buildThreadActionItems<TThread extends BuildThreadActionItemsThr
         searchTerms: [thread.title, projectTitle ?? ``, thread.branch ?? ``],
         title: thread.title,
         description: descriptionParts.join(` · `),
+        ...(projectTitle ? { whereLabel: projectTitle } : {}),
         timestampAt: thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt,
         icon: typeof input.icon === "function" ? input.icon(thread) : input.icon,
       },
@@ -359,8 +368,8 @@ export function filterCommandPaletteGroups(input: {
 
 /**
  * What the palette shows before anything is typed: where you'd go (the
- * threads you were in), then the commands you use most, then a way into
- * every command.
+ * threads you were in), then the commands you use most and a way into every
+ * command.
  */
 export function buildOpeningGroups(input: {
   recentThreadItems: ReadonlyArray<CommandPaletteActionItem>;
@@ -369,19 +378,26 @@ export function buildOpeningGroups(input: {
 }): CommandPaletteGroup[] {
   const groups: CommandPaletteGroup[] = [];
   if (input.recentThreadItems.length > 0) {
-    groups.push({
-      value: "recent-threads",
-      label: "Recent threads",
-      items: input.recentThreadItems,
-    });
+    groups.push({ value: "recent-threads", label: "Recent", items: input.recentThreadItems });
   }
-  if (input.suggestedItems.length > 0) {
-    groups.push({ value: "suggested", label: "Suggested", items: input.suggestedItems });
-  }
-  groups.push({ value: "all-commands", label: "Commands", items: [input.allCommandsItem] });
+  groups.push({
+    value: "suggested",
+    label: "Suggested",
+    items: [...input.suggestedItems, input.allCommandsItem],
+  });
   return groups;
 }
 
 export function getCommandPaletteInputPlaceholder(isSubmenu: boolean): string {
-  return isSubmenu ? "Search..." : "Search commands, projects, and threads...";
+  return isSubmenu ? "Search..." : "Search threads, commands and settings";
+}
+
+/** What Enter does with a row, as the footer says it. */
+export function paletteRowVerb(item: CommandPaletteActionItem | CommandPaletteSubmenuItem): string {
+  if (item.verb) return item.verb;
+  if (item.more) return "Show";
+  if (item.threadRef) return "Open thread";
+  if (item.kind === "submenu") return "Show";
+  if (item.command) return "Run";
+  return "Open";
 }

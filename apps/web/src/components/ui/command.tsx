@@ -43,7 +43,10 @@ function CommandDialogBackdrop({ className, ...props }: CommandDialogPrimitive.B
   );
 }
 
-/** Centers the palette over the page beside the sidebar, not the whole window, and off the screen's side strips. */
+/**
+ * Centers the palette over the page beside the sidebar, not the whole window,
+ * and off the screen's side strips. A phone puts it under the top edge.
+ */
 function CommandDialogViewport({
   className,
   ...props
@@ -52,8 +55,10 @@ function CommandDialogViewport({
   return (
     <CommandDialogPrimitive.Viewport
       className={cn(
-        "pointer-events-none fixed inset-0 z-50 flex flex-col items-center py-[max(--spacing(4),4vh)] sm:py-[10vh]",
+        "pointer-events-none fixed inset-0 z-50 flex flex-col items-center pt-[max(--spacing(2),env(safe-area-inset-top))] pb-4 sm:py-[10vh]",
         VIEWPORT_SIDE_STRIPS_CLASS_NAME,
+        // A phone: the box runs nearly the window's width, right under its top edge.
+        "max-sm:[--side-gutter:--spacing(2)]",
         className,
       )}
       data-slot="command-dialog-viewport"
@@ -77,7 +82,7 @@ function CommandDialogPopup({
       <CommandDialogViewport>
         <CommandDialogPrimitive.Popup
           className={cn(
-            "pointer-events-auto center-on-main-area transform-[translateY(calc(-1.25rem*var(--nested-dialogs)))] relative row-start-2 flex max-h-105 min-h-0 w-full min-w-0 max-w-xl scale-[calc(1-0.1*var(--nested-dialogs))] flex-col rounded-4xl border bg-popover not-dark:bg-clip-padding text-popover-foreground opacity-[calc(1-0.1*var(--nested-dialogs))] elevate-overlay outline-none transition-[scale,opacity,transform] duration-200 ease-in-out will-change-transform before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-4xl)-1px)] before:bg-muted/72 before:shadow-[0_1px_--theme(--color-black/4%)] data-nested:data-ending-style:transform-[translateY(--spacing(8))] data-nested:data-starting-style:transform-[translateY(--spacing(8))] data-nested-dialog-open:origin-top data-ending-style:scale-98 data-starting-style:scale-98 data-ending-style:opacity-0 data-starting-style:opacity-0 **:data-[slot=scroll-area-viewport]:data-has-overflow-y:pe-1 dark:before:shadow-[0_-1px_--theme(--color-white/6%)]",
+            "pointer-events-auto center-on-main-area transform-[translateY(calc(-1.25rem*var(--nested-dialogs)))] relative row-start-2 flex min-h-0 w-full min-w-0 max-w-160 scale-[calc(1-0.1*var(--nested-dialogs))] flex-col overflow-hidden rounded-4xl border bg-popover not-dark:bg-clip-padding text-popover-foreground opacity-[calc(1-0.1*var(--nested-dialogs))] elevate-overlay outline-none transition-[scale,opacity,transform] duration-200 ease-in-out will-change-transform data-nested:data-ending-style:transform-[translateY(--spacing(8))] data-nested:data-starting-style:transform-[translateY(--spacing(8))] data-nested-dialog-open:origin-top data-ending-style:scale-98 data-starting-style:scale-98 data-ending-style:opacity-0 data-starting-style:opacity-0",
             className,
           )}
           data-slot="command-dialog-popup"
@@ -115,11 +120,11 @@ function CommandInput({
   wrapperClassName?: string | undefined;
 }) {
   return (
-    <div className={cn("px-2.5 py-1.5", wrapperClassName)}>
+    <div className={cn("px-1.5 pt-1.5", wrapperClassName)}>
       <AutocompleteInput
         autoFocus
         className={cn(
-          "border-transparent! bg-transparent! shadow-none before:hidden has-focus-visible:ring-0!",
+          "border-transparent! bg-transparent! shadow-none before:hidden has-focus-visible:ring-0! *:data-[slot=autocomplete-input]:text-[15px]",
           className,
         )}
         placeholder={placeholder}
@@ -127,6 +132,37 @@ function CommandInput({
         startAddon={<SearchIcon />}
         {...props}
       />
+    </div>
+  );
+}
+
+/**
+ * A dialog's name above its field ("Add project · Choose a folder"), for the
+ * dialogs built from these parts. The palette has none: its field says it.
+ */
+function CommandTitle({
+  title,
+  step,
+  className,
+}: {
+  title: string;
+  step?: string | undefined;
+  className?: string | undefined;
+}) {
+  return (
+    <div
+      className={cn("flex min-w-0 items-baseline gap-1.5 px-4 pt-3 text-[13px]", className)}
+      data-slot="command-title"
+    >
+      <span className="shrink-0 font-semibold text-foreground">{title}</span>
+      {step ? (
+        <>
+          <span aria-hidden="true" className="text-muted-foreground">
+            ·
+          </span>
+          <span className="truncate text-muted-foreground">{step}</span>
+        </>
+      ) : null}
     </div>
   );
 }
@@ -151,17 +187,35 @@ function CommandEmpty({ className, ...props }: React.ComponentProps<typeof Autoc
   );
 }
 
+/** The list's area: no box of its own, the groups inside carry the structure. */
 function CommandPanel({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
-      className={cn(
-        "-mx-px not-has-[+[data-slot=command-footer]]:-mb-px relative min-h-0 overflow-hidden rounded-t-xl not-has-[+[data-slot=command-footer]]:rounded-b-4xl border border-b-0 bg-popover bg-clip-padding shadow-xs/5 [clip-path:inset(0_1px)] not-has-[+[data-slot=command-footer]]:[clip-path:inset(0_1px_1px_1px_round_0_0_calc(var(--radius-4xl)-1px)_calc(var(--radius-4xl)-1px))] before:pointer-events-none before:absolute before:inset-0 before:rounded-t-[calc(var(--radius-xl)-1px)] **:data-[slot=scroll-area-scrollbar]:mt-2 [touch-action:pan-y]",
-        className,
-      )}
+      className={cn("relative flex min-h-0 flex-col [touch-action:pan-y]", className)}
+      data-slot="command-panel"
       {...props}
     />
   );
 }
+
+/**
+ * The parts of a grouped result list (docs/design/command-palette.md, section
+ * 8): a section label above its group, outside it, aligned with the row text;
+ * the group, a quiet filled block (`surface-group`); and its rows, one line
+ * each, with an inset hairline above every row but the first that starts at
+ * the row's text (past the 16px icon and its 10px gap, the first column). The highlighted row takes the soft
+ * accent fill edge to edge and hides the hairlines beside it, which
+ * `SETTINGS_GROUP_ROW_CLASS` can't, since a group there never highlights.
+ */
+const COMMAND_RESULT_LIST_CLASS = "flex flex-col px-3 pb-3";
+const COMMAND_SECTION_LABEL_CLASS =
+  "px-1 pt-2.5 pb-1.5 text-[11.5px] leading-4 text-muted-foreground first:pt-1";
+const COMMAND_GROUP_CLASS = "surface-group overflow-hidden";
+const COMMAND_ROW_CLASS =
+  "relative grid min-h-[34px] cursor-pointer select-none grid-cols-[26px_minmax(0,1fr)_auto_auto] items-center rounded-none px-3 py-[7px] text-[13.5px] leading-[19px] outline-none sm:min-h-[34px] sm:text-[13.5px] " +
+  "not-first:before:pointer-events-none not-first:before:absolute not-first:before:top-0 not-first:before:right-0 not-first:before:left-[38px] not-first:before:h-px not-first:before:bg-group-divider " +
+  "data-highlighted:bg-accent data-highlighted:text-accent-foreground data-highlighted:before:hidden [[data-highlighted]+&]:before:hidden " +
+  "max-sm:py-[9px]";
 
 function CommandGroup({ className, ...props }: React.ComponentProps<typeof AutocompleteGroup>) {
   return <AutocompleteGroup className={className} data-slot="command-group" {...props} />;
@@ -203,7 +257,7 @@ function CommandShortcut({ className, ...props }: React.ComponentProps<"kbd">) {
   return (
     <kbd
       className={cn(
-        "ms-auto font-medium font-sans text-muted-foreground/72 text-xs tracking-widest",
+        "shrink-0 font-mono text-[10.5px] text-muted-foreground tracking-[0.08em]",
         className,
       )}
       data-slot="command-shortcut"
@@ -216,7 +270,8 @@ function CommandFooter({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       className={cn(
-        "flex items-center justify-between gap-2 rounded-b-[calc(var(--radius-4xl)-1px)] border-t px-5 py-3 text-muted-foreground text-xs",
+        // A key group is a <kbd>: its words keep the app's type, not the browser's mono.
+        "flex items-center gap-3.5 border-t px-3.5 py-2 text-muted-foreground text-xs *:data-[slot=kbd-group]:font-sans",
         className,
       )}
       data-slot="command-footer"
@@ -226,6 +281,10 @@ function CommandFooter({ className, ...props }: React.ComponentProps<"div">) {
 }
 
 export {
+  COMMAND_GROUP_CLASS,
+  COMMAND_RESULT_LIST_CLASS,
+  COMMAND_ROW_CLASS,
+  COMMAND_SECTION_LABEL_CLASS,
   CommandCreateHandle,
   Command,
   CommandCollection,
@@ -242,4 +301,5 @@ export {
   CommandPanel,
   CommandSeparator,
   CommandShortcut,
+  CommandTitle,
 };
