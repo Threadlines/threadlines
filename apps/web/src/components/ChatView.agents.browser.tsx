@@ -28,7 +28,7 @@ import { createModelCapabilities } from "@threadlines/shared/model";
 import { secretAnswerMessageId } from "@threadlines/shared/secretRequests";
 import * as Effect from "effect/Effect";
 import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
-import { cdp, page, userEvent } from "vite-plus/test/browser";
+import { page, userEvent } from "vite-plus/test/browser";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
@@ -1829,24 +1829,29 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
       targetMessageId: "msg-user-room-hold" as MessageId,
       targetText: "room hold target",
     });
-    // Real touches, so the browser follows a lifted finger with the mouse
-    // press and click a phone sends: those land on whatever is under the
-    // finger by then, which is the menu's backdrop.
-    const session = cdp() as unknown as {
-      send: (method: string, params?: object) => Promise<unknown>;
-    };
-    await session.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
-    const frame = window.frameElement?.getBoundingClientRect();
+    // What a phone sends for a finger held on an element and lifted: touch
+    // pointer events on it, then a mouse press and a click on whatever is
+    // under the finger by then. For a held pill that is the menu's backdrop,
+    // which came up under the finger. (Replayed by hand: real touches would
+    // put the whole test browser in touch mode.)
     const touch = async (element: Element, holdMs: number) => {
       const box = element.getBoundingClientRect();
-      const point = {
-        x: box.left + box.width / 2 + (frame?.left ?? 0),
-        y: box.top + box.height / 2 + (frame?.top ?? 0),
+      const at = {
+        clientX: box.left + box.width / 2,
+        clientY: box.top + box.height / 2,
+        bubbles: true,
+        cancelable: true,
+        composed: true,
       };
-      await session.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [point] });
+      const finger = { ...at, pointerId: 7, pointerType: "touch", isPrimary: true };
+      element.dispatchEvent(new PointerEvent("pointerdown", finger));
       await new Promise((resolve) => setTimeout(resolve, holdMs));
-      await session.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-      // The mouse press and click that follow a lifted finger.
+      element.dispatchEvent(new PointerEvent("pointerup", finger));
+      const under = document.elementFromPoint(at.clientX, at.clientY) ?? element;
+      for (const type of ["mousedown", "mouseup", "click"]) {
+        under.dispatchEvent(new MouseEvent(type, at));
+      }
+      // Let what those did reach the page.
       await new Promise((resolve) => setTimeout(resolve, 100));
     };
     const mounted = await mountChatView({
@@ -1888,8 +1893,8 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
         () => document.querySelector<HTMLButtonElement>('[data-chat-provider-model-picker="true"]'),
         "Unable to find the composer's model picker.",
       );
-      await touch(picker, 40);
-      await waitForElement(sheet, "A tap should open the picker as a drawer.");
+      picker.click();
+      await waitForElement(sheet, "A phone should open the picker as a drawer.");
       const astra = await waitForElement(() => pill(astraId), "Unable to find astra's pill.");
       // The drawer slides in: a touch is aimed at where the pill comes to rest.
       await vi.waitFor(async () => {
@@ -1901,6 +1906,7 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
       // The hold opens the menu, and lifting the finger leaves it open,
       // without picking the pill or closing the drawer.
       await touch(astra, 700);
+      expect(astra.hasAttribute("data-menu-open")).toBe(true);
       expect(menuItem("Rename…")).not.toBeNull();
       expect(pill(astraId)?.getAttribute("aria-checked")).toBe("false");
       expect(sheet()).not.toBeNull();
@@ -1908,6 +1914,7 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
       // A tap outside the menu still closes it, and only it.
       await new Promise((resolve) => setTimeout(resolve, 500));
       await touch(document.querySelector('[data-slot="menu-backdrop"]')!, 40);
+      expect(astra.hasAttribute("data-menu-open")).toBe(false);
       await vi.waitFor(() => expect(menuItem("Rename…")).toBeNull());
       expect(sheet()).not.toBeNull();
 
@@ -1922,7 +1929,6 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
       await vi.waitFor(() => expect(document.activeElement).toBe(nameBox));
       expect(sheet()).not.toBeNull();
     } finally {
-      await session.send("Emulation.setTouchEmulationEnabled", { enabled: false });
       useRoomRecipientStore.getState().choose(THREAD_REF, null);
       await mounted.cleanup();
     }
