@@ -10,6 +10,7 @@ import {
   EMPTY_CHILD_REQUEST_STATE,
   EventId,
   MessageId,
+  type OrchestrationCheckBack,
   type OrchestrationCommand,
   type OrchestrationCommandRun,
   type OrchestrationEvent,
@@ -549,6 +550,35 @@ describe("decider child threads", () => {
       expect(threadIn(archived.model, live.id).attachedToParent).toBe(false);
     }
     expect(threadIn(archived.model, ranEarlier.id).archivedAt).not.toBeNull();
+  });
+
+  it("archiving a parent separates a child whose check-back would die with its runtime", async () => {
+    const checkBack = (id: string, durable: boolean): OrchestrationCheckBack => ({
+      id,
+      participantId: null,
+      scheduledFor: at(20 * 60),
+      exact: true,
+      recurring: false,
+      durable,
+    });
+    const child = (id: string, checkBacks: ReadonlyArray<OrchestrationCheckBack>) =>
+      thread(ThreadId.make(id), { parentThreadId: PARENT, attachedToParent: true, checkBacks });
+    // Idle after answering, set to come back in its session.
+    const willCheckBack = child("will-check-back", [checkBack("cb-soon", false)]);
+    // Saved to disk: it outlives the session the archive stops.
+    const savedCheckBack = child("saved-check-back", [checkBack("cb-saved", true)]);
+    const archived = await run(readModel([thread(PARENT), willCheckBack, savedCheckBack]), {
+      type: "thread.archive",
+      commandId: CommandId.make("archive"),
+      threadId: PARENT,
+    });
+    const eventsFor = (id: ThreadId) =>
+      archived.events
+        .filter((event) => "threadId" in event.payload && event.payload.threadId === id)
+        .map((event) => event.type);
+    expect(eventsFor(willCheckBack.id)).toEqual(["thread.parent-attachment-set"]);
+    expect(eventsFor(savedCheckBack.id)).toEqual(["thread.archived"]);
+    expect(threadIn(archived.model, willCheckBack.id).archivedAt).toBeNull();
   });
 
   it("lets only the server start a thread as another's child, and never under a child", async () => {
