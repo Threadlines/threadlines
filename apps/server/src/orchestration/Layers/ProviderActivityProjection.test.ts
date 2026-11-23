@@ -425,6 +425,28 @@ describe("ProviderActivityProjection", () => {
     );
   });
 
+  it("keeps the start of a long command line", () => {
+    const command = `node build.mjs ${"--flag ".repeat(MAX_THREAD_ACTIVITY_PAYLOAD_TEXT_LENGTH)}`;
+    const activities = projectRuntimeEventToActivities({
+      type: "item.completed",
+      eventId: EventId.make("evt-long-command"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: ThreadId.make("thread-1"),
+      turnId: TurnId.make("turn-1"),
+      createdAt: "2026-06-01T12:00:00.000Z",
+      payload: {
+        itemType: "command_execution",
+        title: "Ran command",
+        data: { item: { command, status: "completed" } },
+      },
+    } satisfies ProviderRuntimeEvent);
+
+    const item = (activities[0]?.payload as { data?: { item?: { command?: string } } })?.data?.item;
+    expect(item?.command?.startsWith("node build.mjs --flag")).toBe(true);
+    expect(item?.command?.endsWith("...")).toBe(true);
+    expect(item?.command?.length).toBeLessThanOrEqual(MAX_THREAD_ACTIVITY_PAYLOAD_TEXT_LENGTH);
+  });
+
   it("preserves completed tool lifecycle status for flat provider payloads", () => {
     const activities = projectRuntimeEventToActivities({
       type: "item.completed",
